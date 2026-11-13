@@ -37,32 +37,126 @@ func fakePath(t *testing.T, goScript string) string {
 	return dir
 }
 
-func TestDoctor(t *testing.T) {
-	pin, err := os.ReadFile(filepath.Join(root(t), ".go-version"))
+func fixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"scripts/go-tool.sh", ".go-version"} {
+		b, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pin, err := os.ReadFile(filepath.Join(dir, ".go-version"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	version := strings.TrimSpace(string(pin))
-	// The driver simulates an older executable selecting a cached toolchain.
-	selected := "[ \"$GO111MODULE\" = on ] && [ \"$GOENV\" = off ] && [ \"$GOWORK\" = off ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] && [ \"$GOTOOLCHAIN\" = go" + version + " ] && [ -z \"$GOFLAGS\" ] && [ -z \"$GOPRIVATE\" ] && [ \"$GONOPROXY\" = none ] && [ \"$GONOSUMDB\" = none ] || exit 7\nprintf 'go version go" + version + " linux/amd64\\n'\n"
-	for _, tc := range []struct {
-		name, driver, want string
-		pass               bool
-	}{
-		{"selected cached toolchain", selected, "ok: go version go" + version, true},
-		{"missing driver", "", "missing: go", false},
-		{"mismatched driver", "printf 'go version go1.2 linux/amd64\\n'\n", "fail: selected Go", false},
-		{"unavailable offline", "[ \"$GOPROXY\" = off ] || exit 8\nexit 1\n", "fail: selected Go", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", "doctor")
-			cmd.Dir = root(t)
-			cmd.Env = append(os.Environ(), "PATH="+fakePath(t, tc.driver), "GO111MODULE=off", "GOENV=hostile", "GOWORK=hostile", "GOTOOLCHAIN=local", "GOPROXY=https://invalid.example", "GOSUMDB=hostile", "GOFLAGS=-mod=mod", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*")
-			out, err := cmd.CombinedOutput()
-			if (err == nil) != tc.pass || !strings.Contains(string(out), tc.want) {
-				t.Fatalf("output %s; error %v", out, err)
+	return dir, strings.TrimSpace(string(pin))
+}
+
+func runHelper(t *testing.T, dir, path, action string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", filepath.Join(dir, "scripts/go-tool.sh"), action)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "PATH="+path, "CDPATH=/", "GO111MODULE=off", "GOENV=hostile", "GOWORK=hostile", "GOTOOLCHAIN=auto", "GOPROXY=direct", "GOSUMDB=hostile", "GOFLAGS=-mod=mod", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func TestToolchainResolution(t *testing.T) {
+	dir, version := fixture(t)
+	selectedRoot := filepath.Join(t.TempDir(), "selected toolchain")
+	if err := os.MkdirAll(filepath.Join(selectedRoot, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "calls")
+	selected := "#!/bin/sh\nprintf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|test) :;; *) exit 3;; esac\n"
+	if err := os.WriteFile(filepath.Join(selectedRoot, "bin", "go"), []byte(selected), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARKER", marker)
+	t.Setenv("SELECTED_ROOT", selectedRoot)
+	driver := "printf 'driver:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" >> \"$MARKER\"\ncase \"$1:$GOTOOLCHAIN\" in env:go" + version + ") [ \"$2\" = GOROOT ] && [ \"$GOPROXY\" = https://proxy.golang.org,direct ] && [ \"$GOSUMDB\" = sum.golang.org ] && printf '%s\\n' \"$SELECTED_ROOT\";; version:local) printf 'go version go1.22.0 linux/amd64\\n';; *) exit 4;; esac\n"
+	path := fakePath(t, driver)
+	for _, name := range []string{"mkdir", "mktemp", "mv", "rm"} {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(p, filepath.Join(path, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := runHelper(t, dir, path, "doctor"); err == nil || !strings.Contains(out, "run make bootstrap") {
+		t.Fatalf("missing state: %s %v", out, err)
+	}
+	if out, err := runHelper(t, dir, path, "bootstrap"); err != nil {
+		t.Fatalf("bootstrap: %s %v", out, err)
+	}
+	for _, action := range []string{"doctor", "test"} {
+		if out, err := runHelper(t, dir, path, action); err != nil {
+			t.Fatalf("%s: %s %v", action, out, err)
+		}
+	}
+	calls, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"driver:env:go" + version, "driver:version:local", "selected:mod:local:https://proxy.golang.org,direct:sum.golang.org", "selected:test:local:off:off"} {
+		if !strings.Contains(string(calls), want) {
+			t.Fatalf("missing %q in %s", want, calls)
+		}
+	}
+	if strings.Contains(string(calls), "driver:version:go") || strings.Contains(string(calls), "driver:test:") {
+		t.Fatalf("automatic selection in offline path: %s", calls)
+	}
+	record := filepath.Join(dir, "build/go-toolchain")
+	good, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"stale\n" + filepath.Join(selectedRoot, "bin/go") + "\n", string(good) + "extra\n", version + "\n/does/not/exist/bin/go\n", version + "\nrelative/bin/go\n"} {
+		if err := os.WriteFile(record, []byte(bad), 0644); err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range []string{"doctor", "test"} {
+			if out, err := runHelper(t, dir, path, action); err == nil || !strings.Contains(out, "run make bootstrap") {
+				t.Fatalf("bad record %q %s: %s %v", bad, action, out, err)
 			}
-		})
+		}
+	}
+	if err := os.WriteFile(record, good, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".go-version"), []byte("1.99.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runHelper(t, dir, path, "doctor"); err == nil || !strings.Contains(out, "run make bootstrap") {
+		t.Fatalf("changed pin: %s %v", out, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".go-version"), []byte(version+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(selectedRoot, "bin", "go"), []byte("#!/bin/sh\nprintf 'go version go1.2.0 linux/amd64\\n'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runHelper(t, dir, path, "doctor"); err == nil || !strings.Contains(out, "run make bootstrap") {
+		t.Fatalf("mismatched executable: %s %v", out, err)
+	}
+	if out, err := runHelper(t, dir, path, "bootstrap"); err == nil || !strings.Contains(out, "resolved Go version mismatched") {
+		t.Fatalf("mismatched bootstrap: %s %v", out, err)
+	}
+	exact := fakePath(t, "[ \"$GOTOOLCHAIN\" = local ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] || exit 8\nprintf 'go version go"+version+" linux/amd64\\n'\n")
+	if out, err := runHelper(t, dir, exact, "doctor"); err != nil {
+		t.Fatalf("exact driver: %s %v", out, err)
+	}
+	if out, err := runHelper(t, dir, fakePath(t, ""), "doctor"); err == nil || !strings.Contains(out, "missing: go") {
+		t.Fatalf("missing driver: %s %v", out, err)
 	}
 }
 
@@ -124,30 +218,9 @@ func TestInvalidPin(t *testing.T) {
 	}
 }
 
-func TestHelperEnvironment(t *testing.T) {
-	pin, err := os.ReadFile(filepath.Join(root(t), ".go-version"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	version := strings.TrimSpace(string(pin))
-	common := "[ \"$GO111MODULE\" = on ] && [ \"$GOENV\" = off ] && [ \"$GOWORK\" = off ] && [ -z \"$GOFLAGS\" ] && [ -z \"$GOPRIVATE\" ] && [ \"$GONOPROXY\" = none ] && [ \"$GONOSUMDB\" = none ] && [ \"$GOTOOLCHAIN\" = go" + version + " ] || exit 9\n"
-	for _, tc := range []struct{ action, script string }{
-		{"bootstrap", "[ \"$GOPROXY\" = https://proxy.golang.org,direct ] && [ \"$GOSUMDB\" = sum.golang.org ] || exit 8\n"},
-		{"test", "[ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] || exit 8\n"},
-	} {
-		t.Run(tc.action, func(t *testing.T) {
-			cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", tc.action)
-			cmd.Dir = root(t)
-			cmd.Env = append(os.Environ(), "PATH="+fakePath(t, common+tc.script), "GO111MODULE=off", "GOENV=hostile", "GOWORK=hostile", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=auto", "GOPROXY=direct", "GOSUMDB=off", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("%s: %v", out, err)
-			}
-		})
-	}
-	cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", "bootstrap")
-	cmd.Dir = root(t)
-	cmd.Env = append(os.Environ(), "PATH="+fakePath(t, ""))
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "missing: Go bootstrap driver") {
+func TestMissingBootstrapDriver(t *testing.T) {
+	dir, _ := fixture(t)
+	if out, err := runHelper(t, dir, fakePath(t, ""), "bootstrap"); err == nil || !strings.Contains(out, "missing: Go bootstrap driver") {
 		t.Fatalf("%s: %v", out, err)
 	}
 }

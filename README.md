@@ -36,7 +36,11 @@ selection support (Go 1.21 or newer). The driver selects the developer Go
 version pinned in `.go-version`; see [Go toolchains](https://go.dev/doc/toolchain).
 Review `make -n bootstrap` and `scripts/go-tool.sh` before running `make bootstrap`.
 The helper selects the exact pinned toolchain and downloads it and module dependencies
-using Go's verified mechanism. `make doctor` checks prerequisites offline; both
+using Go's verified mechanism. It records the resolved executable in ignored local
+build state. If the pin changes or that executable disappears, run bootstrap again.
+An already-exact Go driver works without this state. `make doctor` and the tests
+disable toolchain and dependency acquisition; they do not confine the trusted Go
+executable or change the host's Go telemetry policy. `make doctor` checks prerequisites offline; both
 `make test-dev` (development tooling) and `make test` (the complete offline suite)
 run doctor first.
 
