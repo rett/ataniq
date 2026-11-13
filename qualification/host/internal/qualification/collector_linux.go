@@ -70,12 +70,27 @@ func CollectFlat(root *os.Root, name string, limit int64, externallyStopped bool
 // passing that flag alone is not final-component protection. Openat provides
 // the kernel semantics here, with no untrusted intermediate components.
 func openFlat(root *os.Root, name string) (*os.File, error) {
+	return openFlatWithPin(root, name, pinRoot)
+}
+
+// Keep the directory pin distinct from the target openat, including its errno.
+type openDirError struct{ err error }
+
+func (e *openDirError) Error() string { return "fixture directory pin failed" }
+func (e *openDirError) Unwrap() error { return e.err }
+
+func pinRoot(root *os.Root) (*os.File, error) {
+	return root.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
+// pin is a narrow test seam for a failure between lstat and target openat.
+func openFlatWithPin(root *os.Root, name string, pin func(*os.Root) (*os.File, error)) (*os.File, error) {
 	if root == nil || !validName(name) {
 		return nil, errors.New("bad root or flat name")
 	}
-	dir, err := root.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	dir, err := pin(root)
 	if err != nil {
-		return nil, err
+		return nil, &openDirError{err: err}
 	}
 	defer dir.Close()
 	fd, err := syscall.Openat(int(dir.Fd()), name, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)

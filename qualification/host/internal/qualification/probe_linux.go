@@ -60,6 +60,15 @@ func Probe(r Request, cfg Config) Observation {
 			o.Reason = "explicit absolute fixture root required"
 			return o
 		}
+		var unixPath string
+		var msg []byte
+		if r.Case == CaseFakeUnix {
+			var ok bool
+			unixPath, msg, ok = unixInput(&o, r, cfg.FixtureRoot)
+			if !ok {
+				return o
+			}
+		}
 		root, err := os.OpenRoot(cfg.FixtureRoot)
 		if err != nil {
 			incompleteOperation(&o, "fixture-root", err)
@@ -67,18 +76,20 @@ func Probe(r Request, cfg Config) Observation {
 		}
 		defer root.Close()
 		if r.Case == CaseFakeFile {
-			fakeFile(&o, r, root)
+			fakeFile(&o, r, root, openFlat)
 		} else {
-			fakeUnix(&o, r, root, cfg.FixtureRoot)
+			fakeUnix(&o, r, root, unixPath, msg)
 		}
 	}
 	// A pathological but bounded inventory may still exceed the wire budget.
 	// Refuse the whole inventory explicitly rather than emitting truncated facts.
-	if err := EncodeObservation(io.Discard, o); err != nil {
-		o.Facts = []Fact{unknown("inventory")}
-		o.Status = "inconclusive"
-		o.Reason = "observation exceeds protocol bounds"
-		o.Errno = nil
+	if r.Case == CaseInventory {
+		if err := EncodeObservation(io.Discard, o); err != nil {
+			o.Facts = []Fact{unknown("inventory")}
+			o.Status = "inconclusive"
+			o.Reason = "observation exceeds protocol bounds"
+			o.Errno = nil
+		}
 	}
 	return o
 }
@@ -97,8 +108,8 @@ func operationError(o *Observation, stage string, err error) {
 		o.Status = "observed"
 		o.Reason = "syscall returned errno"
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
+	// Errno also implements net.Error; raw EAGAIN is not a deadline expiry.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
 		o.Status = "inconclusive"
 		o.Reason = "operation timed out"
 	}
@@ -113,7 +124,7 @@ func incompleteOperation(o *Observation, stage string, err error) {
 	o.Reason = "fixture validation or exchange incomplete"
 }
 
-func fakeFile(o *Observation, r Request, root *os.Root) {
+func fakeFile(o *Observation, r Request, root *os.Root, open func(*os.Root, string) (*os.File, error)) {
 	name := r.Payload.File.Name
 	before, err := root.Lstat(name)
 	if err != nil {
@@ -124,9 +135,14 @@ func fakeFile(o *Observation, r Request, root *os.Root) {
 		incompleteOperation(o, "validate-file", err)
 		return
 	}
-	f, err := openFlat(root, name)
+	f, err := open(root, name)
 	if err != nil {
-		operationError(o, "open", err)
+		var pinErr *openDirError
+		if errors.As(err, &pinErr) {
+			incompleteOperation(o, "open-dir", err)
+		} else {
+			operationError(o, "open", err)
+		}
 		return
 	}
 	inspectOpenedFile(o, before, f)
@@ -204,7 +220,45 @@ func socketIdentity(fi os.FileInfo, p *UnixPayload) bool {
 	return ok && fi.Mode()&os.ModeSocket != 0 && uint64(st.Dev) == *p.Device && st.Ino == *p.Inode && st.Uid == *p.UID
 }
 
-func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
+// Linux pathname sockaddr_un has 108 bytes including its terminating NUL.
+// Validate before any fixture operation: Go can label encoding EINVAL as
+// "connect" even though no connect syscall ran.
+func unixInput(o *Observation, r Request, rootPath string) (string, []byte, bool) {
+	msg := []byte("ataniq-fixture-v1 " + r.Payload.Unix.Nonce + "\n")
+	stage, reason := "", ""
+	path := filepath.Join(rootPath, r.Payload.Unix.Name)
+	if len(msg) > r.MaxBytes {
+		stage, reason = "nonce-size", "nonce frame exceeds max_bytes"
+	} else if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) || len(path) > 107 {
+		stage, reason = "socket-path", "invalid or overlong Unix fixture pathname"
+	}
+	if stage != "" {
+		o.Status, o.Reason = "error", reason
+		o.Facts = append(o.Facts, known("stage", stage))
+		return "", nil, false
+	}
+	return path, msg, true
+}
+
+// Called only after unixInput validates a joined Linux pathname. Only a wrapped
+// connect syscall error can establish a connect errno; socket/setup failures
+// cannot. Unknown dial errors do not establish which operation was attempted.
+func unixDialError(o *Observation, err error) {
+	var call *os.SyscallError
+	if errors.As(err, &call) {
+		switch call.Syscall {
+		case "connect":
+			operationError(o, "connect", err)
+			return
+		case "socket", "setsockopt", "bind", "getsockopt", "getsockname", "fcntl":
+			incompleteOperation(o, call.Syscall, err)
+			return
+		}
+	}
+	incompleteOperation(o, "dial-setup", err)
+}
+
+func fakeUnix(o *Observation, r Request, root *os.Root, path string, msg []byte) {
 	p := r.Payload.Unix
 	before, err := root.Lstat(p.Name)
 	if err != nil {
@@ -217,9 +271,9 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 	}
 	deadline := time.Now().Add(time.Duration(r.MaxDurationMS) * time.Millisecond)
 	d := net.Dialer{Deadline: deadline}
-	c, err := d.Dial("unix", filepath.Join(path, p.Name))
+	c, err := d.Dial("unix", path)
 	if err != nil {
-		operationError(o, "connect", err)
+		unixDialError(o, err)
 		return
 	}
 	o.Facts = append(o.Facts, known("connected", "true"))
@@ -261,14 +315,8 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 		return
 	}
 	// Fixed synthetic protocol. No commands, arbitrary service requests or
-	// ancillary capabilities. Only the exact typed nonce reply is accepted.
-	msg := []byte("ataniq-fixture-v1 " + p.Nonce + "\n")
-	if len(msg) > r.MaxBytes {
-		o.Status = "error"
-		o.Reason = "nonce frame exceeds max_bytes"
-		o.Facts = append(o.Facts, known("stage", "nonce-size"))
-		return
-	}
+	// ancillary capabilities. The listener must finish its reply with write EOF
+	// (CloseWrite or Close). Matching a prefix alone never establishes a match.
 	n, err := c.Write(msg)
 	if err == nil && n != len(msg) {
 		err = io.ErrShortWrite
@@ -277,20 +325,40 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 		incompleteOperation(o, "nonce-write", err)
 		return
 	}
-	response := make([]byte, len(msg))
-	if _, err = io.ReadFull(c, response); err != nil {
-		incompleteOperation(o, "nonce-read", err)
-		return
-	}
-	match := bytes.Equal(response, msg)
-	o.Facts = append(o.Facts, known("nonce_match", strconv.FormatBool(match)))
-	if !match {
-		incompleteOperation(o, "nonce-compare", errors.New("unexpected nonce"))
+	if !readNonceReply(o, c, msg) {
 		return
 	}
 	if err := c.Close(); err != nil {
 		incompleteOperation(o, "close", err)
 	}
+}
+
+// The connection already has a bounded deadline. Require exactly one frame and
+// EOF; an unclosed matching prefix remains an incomplete exchange.
+func readNonceReply(o *Observation, c io.Reader, msg []byte) bool {
+	response := make([]byte, len(msg))
+	if _, err := io.ReadFull(c, response); err != nil {
+		incompleteOperation(o, "nonce-read", err)
+		return false
+	}
+	var extra [1]byte
+	n, err := io.ReadFull(c, extra[:])
+	if n != 0 {
+		o.Facts = append(o.Facts, known("nonce_match", "false"))
+		incompleteOperation(o, "nonce-frame", errors.New("trailing reply bytes"))
+		return false
+	}
+	if err != io.EOF {
+		incompleteOperation(o, "nonce-eof", err)
+		return false
+	}
+	match := bytes.Equal(response, msg)
+	o.Facts = append(o.Facts, known("nonce_match", strconv.FormatBool(match)))
+	if !match {
+		incompleteOperation(o, "nonce-compare", errors.New("unexpected nonce"))
+		return false
+	}
+	return true
 }
 
 // Only these kernel metadata paths are read, plus the three own namespace

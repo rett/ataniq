@@ -34,7 +34,6 @@ func TestRequestCodec(t *testing.T) {
 		"ASCII alias":           strings.Replace(good, `"version":1`, `"version":1,"Version":1`, 1),
 		"Unicode s alias":       strings.Replace(good, `"request_id"`, `"requeſt_id"`, 1),
 		"escaped Unicode":       strings.Replace(good, `"request_id"`, `"reque\u017ft_id"`, 1),
-		"Unicode k alias":       strings.Replace(good, `"max_bytes"`, `"max_bytes":4096,"Kase"`, 1),
 		"unknown":               strings.Replace(good, `"version":1`, `"version":1,"extra":1`, 1),
 		"trailing":              good + ` {}`,
 		"junk":                  good + `no`,
@@ -62,6 +61,46 @@ func TestRequestCodec(t *testing.T) {
 	bad = append(bad, 0xff)
 	if _, err := DecodeRequest(bytes.NewReader(bad)); err == nil {
 		t.Fatal("invalid UTF8 accepted")
+	}
+}
+
+func TestCanonicalKeyAndDepthWalk(t *testing.T) {
+	// Test the structural guard directly so unknown-field rejection cannot mask
+	// a missing canonical-key or nesting check.
+	for _, key := range []string{"State", "ſtate", `\u017ftate`, "Key"} {
+		err := walk(json.NewDecoder(strings.NewReader(`{"`+key+`":1}`)), 1)
+		if err == nil || err.Error() != "noncanonical key" {
+			t.Fatal(key, err)
+		}
+	}
+	input := strings.Repeat(`{"a":`, maxDepth) + `1` + strings.Repeat(`}`, maxDepth)
+	err := walk(json.NewDecoder(strings.NewReader(input)), 1)
+	if err == nil || err.Error() != "nesting too deep" {
+		t.Fatal(err)
+	}
+}
+
+func TestObservationDecoderRejectsInvalidWire(t *testing.T) {
+	o := Observation{Version: Version1, RunID: "01234567", RequestID: "89abcdef", Case: CaseFakeUnix, Status: "observed", Facts: []Fact{{Name: "connected", State: "known", Value: pointer("true")}}}
+	good := wire(t, o)
+	for name, input := range map[string]string{
+		"duplicate":        strings.Replace(good, `"version":1`, `"version":1,"version":1`, 1),
+		"ASCII alias":      strings.Replace(good, `"status"`, `"Status"`, 1),
+		"Unicode alias":    strings.Replace(good, `"status"`, `"\u017ftatus"`, 1),
+		"nested alias":     strings.Replace(good, `"state"`, `"ſtate"`, 1),
+		"nested duplicate": strings.Replace(good, `"state":"known"`, `"state":"known","state":"known"`, 1),
+		"unknown":          strings.Replace(good, `"version":1`, `"version":1,"extra":1`, 1),
+		"facts null":       strings.Replace(good, `[{"name":"connected","state":"known","value":"true"}]`, `null`, 1),
+		"value null":       strings.Replace(good, `"value":"true"`, `"value":null`, 1),
+		"value missing":    strings.Replace(good, `,"value":"true"`, ``, 1),
+		"trailing":         good + ` {}`,
+		"oversized prefix": good + strings.Repeat(" ", MaxOutputBytes),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeObservation(strings.NewReader(input)); err == nil {
+				t.Fatal("invalid observation accepted")
+			}
+		})
 	}
 }
 
