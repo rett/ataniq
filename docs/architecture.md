@@ -43,6 +43,14 @@ Session launch, cancellation, pack installation, project adoption, and release
 are separate permissions. Ataniq must preserve qargi's verification, review,
 and release authority rather than interpreting terminal output as approval.
 
+## Federation
+
+Instances support permissions-based bidirectional federation for project
+coordination, task exchange, and communications. Each direction has separate
+grants and each instance retains local admission and execution authority.
+See [the federation contract](federation.md) for identity, MCP surfaces,
+revocation, recovery, and implementation acceptance criteria.
+
 ## First milestones
 
 1. Establish the Go toolchain, development gates, and canonical pack contracts.
@@ -52,7 +60,8 @@ and release authority rather than interpreting terminal output as approval.
    crash/restart reconciliation. Store explicit completion evidence.
 4. Add a tmux-manager adapter with private-socket tests and precise job targets.
 5. Add Codex observation and qargi integration as independently reviewed packs.
-6. Add the management UI and project-local outcome measurement and experiments.
+6. Implement federation in the staged slices defined by its contract.
+7. Add the management UI and project-local outcome measurement and experiments.
 
 Persistence and the internal adapter wire protocol remain design decisions.
 Go core/CLI and TypeScript UI were selected after independent Fable review;

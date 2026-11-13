@@ -10,3 +10,5 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - MIT license and copyright attribution to Everett C. Haimes III.
 - Initial MCP-first architecture brief and Go core/TypeScript UI decision.
+- Federation architecture with directional grants, MCP task and message
+  exchange, local admission, revocation, recovery, and acceptance criteria.
