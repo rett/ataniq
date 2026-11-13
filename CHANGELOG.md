@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Read qualification subject ELF dependencies from loader-visible program headers
+  and bounded runtime tables; reject RPATH/RUNPATH tags and malformed dependency
+  strings even with absent or mismatched section headers, sharing checks across
+  static and dynamic subjects and every frozen launch-chain check.
 - Distinguish sandbox probe directory pin and Unix socket/setup failures from
   target open/connect results; reject overlong Unix paths and insufficient nonce
   budgets before fixture access, and require exact nonce replies followed by EOF

@@ -54,8 +54,16 @@ an independently reviewed classic BPF binary are qualification subjects. They
 are **not** default developer prerequisites and bootstrap installs none of
 them. The selected driver and probe must be static ELF64/amd64. Bubblewrap
 may be dynamic ELF64/amd64: its original absolute PT_INTERP and DT_NEEDED
-metadata are retained, and RPATH/RUNPATH or path-valued dependencies are
-rejected so the frozen copy cannot change relative loader searches. No loader
+metadata are retained. The bounded reader uses the loader's PT_DYNAMIC and
+file-backed PT_LOAD view for DT_STRTAB/DT_STRSZ, even when section headers are
+absent or describe different tables. It rejects ambiguous/unmapped extents,
+unterminated tables, invalid dependency string offsets or termination, and
+path-valued dependencies. Any DT_RPATH/DT_RUNPATH tag is rejected by presence,
+including empty or invalid strings, so the frozen copy cannot change relative
+loader searches. The reader accepts at most 128 program headers, 65536 bytes
+per dynamic/string table and 32 dependencies. Static driver/probe checks and
+selected/frozen/pre-exec bubblewrap checks share this runtime metadata reader.
+No loader
 resolver, `ldd` or dynamic-library mounts are used. Dynamic launcher dependency
 closure remains incomplete and full runtime/profile support unqualified.
 
