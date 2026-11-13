@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Check every Codex mock request against the recorded complete tool profile,
+  and document the request-gate fixture's admission limits.
 - Restore fixture checks for isolated Go environment settings.
 - Confine documentation source reads to the checked root.
 - Record the verified bootstrap toolchain for offline checks with older Go drivers.

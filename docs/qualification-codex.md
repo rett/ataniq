@@ -9,6 +9,9 @@ the same command. The subject is not a developer tool installed by this test.
 The test accepts the research-observed SHA-256 and version only; a new binary or
 catalog requires review and requalification. Logs include the digest, reported
 version, generated configuration, advertised catalog and mock request results.
+Every request's root `tools` and each `input` `additional_tools.tools` array
+are compared with the recorded profile, including routing and schemas; prose
+descriptions are excluded. A changed profile fails pending review.
 The subject and any helper binaries must be trusted for the test environment;
 the fixture is not a sandbox and does not establish helper provenance.
 
@@ -26,7 +29,12 @@ A separate in-memory upstream observes the request-gate fixture. It exercises
 an in-flight bounded response completing after authority loss, a held request,
 stale epoch rejection, fresh admission, cancellation and errors. The external
 probe also holds a native provider continuation at its local gate until a fresh
-current-epoch decision. This is a test fixture for future broker semantics,
+current-epoch decision. The fixture holds its authority mutex until upstream
+response headers arrive, so revocation cannot commit during a blocked header
+admission; cancellation can release it. The proxy assigns a waiting request
+the current epoch after restoration, so that external probe does not establish
+stale-origin binding. The separate fixture checks explicitly supplied stale
+epochs. This is a test fixture for future broker semantics,
 not a production boundary; retries, compaction and all internal provider paths
 are not comprehensively covered. Durable grants, actual effect start and
 delivery evidence are distinct; a missing journal entry does not prove

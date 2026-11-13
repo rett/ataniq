@@ -200,3 +200,78 @@ func TestGateFixture(t *testing.T) {
 	default:
 	}
 }
+
+// Revocation is serialized behind a request stalled before response headers.
+// Cancellation releases that lock; the upstream receipt is independent proof
+// that the request had already crossed the fixture boundary.
+func TestGateBlockedHeaders(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+	listener := &pipeListener{connections: make(chan net.Conn), done: make(chan struct{})}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		<-r.Context().Done()
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		c, s := net.Pipe()
+		select {
+		case listener.connections <- s:
+			return c, nil
+		case <-ctx.Done():
+			c.Close()
+			s.Close()
+			return nil, ctx.Err()
+		case <-listener.done:
+			c.Close()
+			s.Close()
+			return nil, net.ErrClosed
+		}
+	}}
+	defer transport.CloseIdleConnections()
+	g := &requestGate{online: true, epoch: 1, changed: make(chan struct{}), upstream: "http://mock/responses", client: &http.Client{Transport: transport, Timeout: 2 * time.Second}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		resp, err := g.send(ctx, 1, "blocked")
+		if resp != nil {
+			resp.Body.Close()
+		}
+		result <- err
+	}()
+	select {
+	case <-arrived:
+	case <-ctx.Done():
+		t.Fatal("no upstream receipt")
+	}
+	revoked := make(chan struct{})
+	go func() { g.set(false, 2); close(revoked) }()
+	select {
+	case <-revoked:
+		t.Fatal("revocation committed before headers or cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("send did not cancel")
+	}
+	select {
+	case <-revoked:
+	case <-time.After(time.Second):
+		t.Fatal("revocation remained blocked")
+	}
+	if _, err := g.send(context.Background(), 1, "stale"); err == nil {
+		t.Fatal("stale epoch accepted")
+	}
+	select {
+	case <-arrived:
+		t.Fatal("stale request arrived")
+	default:
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,12 +64,15 @@ func TestExternalCodex(t *testing.T) {
 	version := exec.CommandContext(ctx, path, "--version")
 	version.Env = env
 	version.Dir = work
-	v, err := version.CombinedOutput()
+	var versionErr bytes.Buffer
+	version.Stderr = &versionErr
+	v, err := version.Output()
 	if err != nil {
-		t.Fatalf("version: %v: %s", err, v)
+		t.Fatalf("version: %v: stdout=%s stderr=%s", err, v, versionErr.String())
 	}
+	t.Logf("version stderr: %s", versionErr.String())
 	t.Logf("version: %s", strings.TrimSpace(string(v)))
-	if strings.TrimSpace(string(v)) != "codex-cli 0.169.0" {
+	if string(v) != "codex-cli 0.169.0\n" {
 		t.Fatal("unexpected version")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -90,7 +94,7 @@ func TestExternalCodex(t *testing.T) {
 		`try { text(require('node:fs')); } catch(e) { text(String(e)); }`,
 		fmt.Sprintf(`try { text(await fetch('http://%s/forbidden-egress')); } catch(e) { text(String(e)); }`, listener.Addr()),
 		`try { text(await tools.exec_command({cmd:'touch forbidden-exec'})); } catch(e) { text(String(e)); }`,
-		`try { text(await tools.apply_patch("*** Begin Patch\n*** Add File: forbidden-patch\n+forbidden\n*** End Patch")); } catch(e) { text(String(e)); }`,
+		patchScript,
 		`try { text(await tools.nonexistent_escape({})); } catch(e) { text(String(e)); }`,
 		`try { text(process.cwd()); } catch(e) { text(String(e)); }`,
 	}
@@ -291,7 +295,9 @@ func TestExternalCodex(t *testing.T) {
 				}
 				select {
 				case b := <-arrivals:
-					checkCatalog(t, b)
+					if err := validateCatalog(b); err != nil {
+						t.Fatal(err)
+					}
 				default:
 					t.Fatal("first upstream request missing")
 				}
@@ -338,6 +344,9 @@ func TestExternalCodex(t *testing.T) {
 	for {
 		select {
 		case b := <-arrivals:
+			if err := validateCatalog(b); err != nil {
+				t.Fatal(err)
+			}
 			last = b
 			count++
 		default:
@@ -417,32 +426,75 @@ func walkJSON(v any, visit func(map[string]any)) {
 	}
 }
 
-func checkCatalog(t *testing.T, b []byte) {
-	t.Helper()
-	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		t.Fatal(err)
-	}
-	found := map[string][]string{}
-	walkJSON(v, func(m map[string]any) {
-		if m["type"] != "namespace" {
-			return
-		}
-		name, _ := m["name"].(string)
-		tools, _ := m["tools"].([]any)
-		for _, tool := range tools {
-			if x, ok := tool.(map[string]any); ok {
-				n, _ := x["name"].(string)
-				found[name] = append(found[name], n)
+const patchScript = `try { text(await tools.apply_patch("*** Begin Patch\n*** Add File: forbidden-patch\n+forbidden\n*** End Patch")); } catch(e) { text(String(e)); }`
+
+//go:embed testdata/catalog.json
+var knownCatalog []byte
+
+// Descriptions are prose; retain routing, type, format and schema fields.
+func withoutDescriptions(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(x))
+		for k, v := range x {
+			if k != "description" {
+				m[k] = withoutDescriptions(v)
 			}
 		}
-	})
-	for _, names := range found {
-		sort.Strings(names)
+		return m
+	case []any:
+		a := make([]any, len(x))
+		for i, v := range x {
+			a[i] = withoutDescriptions(v)
+		}
+		return a
+	default:
+		return v
 	}
-	t.Logf("actual advertised catalog: %v", found)
-	expected := map[string][]string{"functions": {"exec", "request_user_input", "request_user_input_async", "wait"}, "clock": {"sleep"}}
-	if !reflect.DeepEqual(found, expected) {
-		t.Fatalf("unknown catalog; review and requalification required: %v", found)
+}
+
+// Examine both protocol catalog locations, including every direct entry.
+func validateCatalog(b []byte) error {
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil || root == nil {
+		return fmt.Errorf("invalid request: %v", err)
 	}
+	var found []any
+	add := func(v any) error {
+		a, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("catalog is not an array")
+		}
+		found = append(found, a...)
+		return nil
+	}
+	if v, ok := root["tools"]; ok {
+		if err := add(v); err != nil {
+			return err
+		}
+	}
+	input, ok := root["input"].([]any)
+	if !ok {
+		return fmt.Errorf("input is not an array")
+	}
+	for _, item := range input {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid input item")
+		}
+		if m["type"] == "additional_tools" {
+			if err := add(m["tools"]); err != nil {
+				return err
+			}
+		}
+	}
+	var expected []any
+	if err := json.Unmarshal(knownCatalog, &expected); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(withoutDescriptions(found), expected) {
+		actual, _ := json.Marshal(found)
+		return fmt.Errorf("unknown catalog; review and requalification required: %s", actual)
+	}
+	return nil
 }

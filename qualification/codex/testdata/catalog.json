@@ -1,0 +1,157 @@
+[
+  {
+    "type": "namespace",
+    "name": "functions",
+    "tools": [
+      {
+        "type": "custom",
+        "name": "exec",
+        "format": {
+          "type": "grammar",
+          "syntax": "lark",
+          "definition": "\nstart: pragma_source | plain_source\npragma_source: PRAGMA_LINE NEWLINE SOURCE\nplain_source: SOURCE\n\nPRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/\n"
+        }
+      },
+      {
+        "type": "function",
+        "name": "wait",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cell_id": {
+              "type": "string"
+            },
+            "max_tokens": {
+              "type": "number"
+            },
+            "terminate": {
+              "type": "boolean"
+            },
+            "yield_time_ms": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cell_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "request_user_input",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "header": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "question": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "header",
+                  "question",
+                  "options"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "questions"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "request_user_input_async",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "options": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "questions"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  {
+    "type": "namespace",
+    "name": "clock",
+    "tools": [
+      {
+        "type": "function",
+        "name": "sleep",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "duration_ms": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "duration_ms"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+]
