@@ -80,13 +80,11 @@ func TestExternalCodex(t *testing.T) {
 		t.Fatalf("mock listener: %v", err)
 	}
 	defer listener.Close()
-	arrivals := make(chan []byte, 16)
+	ledger := &requestLedger{arrival: make(chan struct{}, 1)}
 	received := make(chan int, 16)
 	forbidden := make(chan string, 16)
 	// The upstream is separate from the admission server, using in-memory HTTP.
 	pl := &pipeListener{connections: make(chan net.Conn), done: make(chan struct{})}
-	var mu sync.Mutex
-	n := 0
 	scripts := []string{
 		`text(await tools.ataniq_probe({}));`,
 		`text({fetch:typeof fetch,require:typeof require,process:typeof process,Buffer:typeof Buffer}); text(ALL_TOOLS.map(t=>t.name));`,
@@ -98,21 +96,7 @@ func TestExternalCodex(t *testing.T) {
 		`try { text(await tools.nonexistent_escape({})); } catch(e) { text(String(e)); }`,
 		`try { text(process.cwd()); } catch(e) { text(String(e)); }`,
 	}
-	upstream := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, e := io.ReadAll(io.LimitReader(r.Body, 4<<20))
-		if e != nil || len(b) >= 4<<20 {
-			http.Error(w, "bad body", 400)
-			return
-		}
-		mu.Lock()
-		n++
-		i := n
-		mu.Unlock()
-		if i > len(scripts)+2 {
-			http.Error(w, "request limit", 429)
-			return
-		}
-		arrivals <- b
+	upstream := &http.Server{ReadHeaderTimeout: time.Second, Handler: ledger.handler(len(scripts)+2, func(w http.ResponseWriter, i int) {
 		var items []any
 		if i <= len(scripts) {
 			items = []any{map[string]any{"type": "custom_tool_call", "id": fmt.Sprintf("ctc_%d", i), "call_id": fmt.Sprintf("call_%d", i), "name": "exec", "namespace": "functions", "input": scripts[i-1]}}
@@ -167,7 +151,10 @@ func TestExternalCodex(t *testing.T) {
 			http.Error(w, "body", 400)
 			return
 		}
-		received <- 1
+		select {
+		case received <- 1:
+		default:
+		}
 		for {
 			gate.mu.Lock()
 			online, epoch, changed := gate.online, gate.epoch, gate.changed
@@ -294,15 +281,12 @@ func TestExternalCodex(t *testing.T) {
 					t.Fatal("native continuation did not reach gate")
 				}
 				select {
-				case b := <-arrivals:
-					if err := validateCatalog(b); err != nil {
-						t.Fatal(err)
-					}
+				case <-ledger.arrival:
 				default:
 					t.Fatal("first upstream request missing")
 				}
 				select {
-				case <-arrivals:
+				case <-ledger.arrival:
 					t.Fatal("continuation crossed offline gate")
 				case <-time.After(200 * time.Millisecond):
 				}
@@ -310,6 +294,9 @@ func TestExternalCodex(t *testing.T) {
 				gate.set(true, 2)
 			}
 			if method == "turn/completed" {
+				if err := validateTerminal(m["params"]); err != nil {
+					t.Fatal(err)
+				}
 				completed = true
 				continue
 			}
@@ -339,23 +326,9 @@ func TestExternalCodex(t *testing.T) {
 	if callbacks != 1 || !held {
 		t.Fatal("dynamic callback and held native continuation required")
 	}
-	var last []byte
-	count := 1
-	for {
-		select {
-		case b := <-arrivals:
-			if err := validateCatalog(b); err != nil {
-				t.Fatal(err)
-			}
-			last = b
-			count++
-		default:
-			goto drained
-		}
-	}
-drained:
-	if count != len(scripts)+2 {
-		t.Fatalf("upstream requests=%d, want %d", count, len(scripts)+2)
+	last, err := ledger.check(len(scripts) + 2)
+	if err != nil {
+		t.Fatal(err)
 	}
 	// Match results by call ID, so input scripts and declarations cannot serve
 	// as their own evidence of execution.
@@ -409,6 +382,78 @@ drained:
 		t.Errorf("forbidden network receipt: %s", f)
 	default:
 	}
+}
+
+// requestLedger records every upstream receipt, including rejected and malformed
+// requests. The notification is only for the offline gate observation.
+type requestLedger struct {
+	mu             sync.Mutex
+	count, pending int
+	lastIndex      int
+	last           []byte
+	failures       []string
+	arrival        chan struct{}
+}
+
+func (l *requestLedger) handler(limit int, respond func(http.ResponseWriter, int)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		l.count++
+		i := l.count
+		l.pending++
+		l.mu.Unlock()
+		b, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		catalogErr := validateCatalog(b)
+		l.mu.Lock()
+		l.pending--
+		if err != nil || len(b) >= 4<<20 {
+			l.failures = append(l.failures, fmt.Sprintf("request %d: bad body: %v", i, err))
+		}
+		if catalogErr != nil {
+			l.failures = append(l.failures, fmt.Sprintf("request %d: %v", i, catalogErr))
+		}
+		if i > limit {
+			l.failures = append(l.failures, fmt.Sprintf("unexpected upstream request %d", i))
+		}
+		if i > l.lastIndex {
+			l.lastIndex, l.last = i, b
+		}
+		l.mu.Unlock()
+		select {
+		case l.arrival <- struct{}{}:
+		default:
+		}
+		if err != nil || len(b) >= 4<<20 {
+			http.Error(w, "bad body", 400)
+			return
+		}
+		if i > limit {
+			http.Error(w, "request limit", 429)
+			return
+		}
+		respond(w, i)
+	})
+}
+
+func (l *requestLedger) check(want int) ([]byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.count != want || l.pending != 0 || len(l.failures) != 0 {
+		return nil, fmt.Errorf("upstream requests=%d, want %d, pending=%d, failures=%v", l.count, want, l.pending, l.failures)
+	}
+	return l.last, nil
+}
+
+func validateTerminal(params json.RawMessage) error {
+	var p struct {
+		Turn struct {
+			Status string `json:"status"`
+		} `json:"turn"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || p.Turn.Status != "completed" {
+		return fmt.Errorf("turn did not complete successfully: %s", params)
+	}
+	return nil
 }
 
 // Walk the JSON tree rather than interpreting request prompts as results.
