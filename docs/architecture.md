@@ -48,6 +48,8 @@ and release authority rather than interpreting terminal output as approval.
 Instances support permissions-based bidirectional federation for project
 coordination, task exchange, and communications. Each direction has separate
 grants and each instance retains local admission and execution authority.
+The initial deployment uses two hosts with permission-aware queued-task
+load balancing, shared-capacity accounting, and safe partition recovery.
 See [the federation contract](federation.md) for identity, MCP surfaces,
 revocation, recovery, and implementation acceptance criteria.
 

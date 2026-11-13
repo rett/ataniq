@@ -12,3 +12,5 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Initial MCP-first architecture brief and Go core/TypeScript UI decision.
 - Federation architecture with directional grants, MCP task and message
   exchange, local admission, revocation, recovery, and acceptance criteria.
+- Initial two-host federation target and load-balancing requirements covering
+  eligibility, shared quotas, capacity reservations, and safe reassignment.

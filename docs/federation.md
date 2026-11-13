@@ -55,6 +55,48 @@ Results identify the executing instance, attempt, input/candidate identities,
 checks, artifacts, and provenance. Remote success is execution evidence, not
 local qargi verification, review acceptance, merge, or release approval.
 
+## Initial deployment and load balancing
+
+The initial operational target is a two-host federation, with one independent
+instance on each host. Both can originate and receive permitted work. Hostnames,
+addresses, credentials, and directional grants belong in deployment settings
+outside the public repository. Fake-backend tests precede a real two-host
+acceptance run; single-host success does not complete this milestone.
+
+Federated scheduling is capability- and permission-aware. Eligibility checks
+project grants, required pack versions and observed capabilities, execution
+platform, data and credential locality, budgets, policy, and peer health before
+ranking candidates. The receiving instance independently admits the work and
+reserves capacity; a sender's placement decision is not an execution grant.
+
+Among eligible peers, use bounded queues, fair project shares, priorities,
+locality preferences, and available execution slots. Record why a peer was
+selected or excluded. Provider rate limits and subscription capacity can be
+shared across hosts and must not be counted once per host. CPU, memory, model
+capacity, and concurrency are distinct resources. Incomparable or missing
+capacity observations must remain explicit.
+
+One originating authority owns placement for a task revision. Reservation,
+acceptance, and execution use durable job identities, idempotency keys, bounded
+leases, and generation checks. Simultaneous schedulers must not independently
+authorize the same job. Stale ownership must be fenced at the execution adapter;
+a lease expiring in the database alone does not prove that work stopped.
+
+The first version balances queued tasks. It does not transparently migrate
+running sessions. Reassign only after rejection, a proven non-start, confirmed
+termination, or an explicitly permitted duplicate-tolerant retry policy.
+A partitioned peer with unknown execution state is not an available retry slot.
+If fencing or liveness cannot be established, preserve the ambiguity and block
+unsafe reassignment. Retry budgets and backoff prevent work from bouncing
+between peers. Draining a host stops new admissions while tracking existing
+jobs.
+
+Record queue delay, reservation delay, active runtime, transfer overhead,
+completion evidence, failures, rework, and observed provider usage. Report
+routing outcomes by comparable project/task cohorts. Measurements may propose
+policy changes through the project-local improvement workflow; they do not
+automatically alter permissions, budgets, or approved provider eligibility.
+
 ## Communications and MCP surface
 
 Expose federation as a versioned canonical feature pack with typed MCP tools
@@ -99,16 +141,21 @@ they cannot automatically alter another project's model routing or packs.
 1. Define peer identities, grants, project mappings, and versioned MCP schemas.
 2. Implement two-instance observation and messaging with fake credentials.
 3. Add durable task offers, local admission, execution, and result receipts.
-4. Add partition recovery, cancellation, revocation, and credential rotation.
-5. Add operator controls for peers, grants, pending offers, and audit history.
+4. Add permission-aware placement, capacity reservations, and queued-task
+   balancing across the initial two-host topology.
+5. Add partition recovery, cancellation, revocation, and credential rotation.
+6. Add operator controls for peers, grants, pending offers, and audit history.
 
 Test asymmetric permissions, denied reverse calls, cross-project isolation,
 spoofed principals, absent delegation authority, stale policies, token audience
 mismatch, duplicate offers, lost acknowledgements, crashes around launch,
 out-of-order events, conflicting revisions, revoked subscriptions, revoked
 artifact access, disconnected cancellation, payload limits, and restart replay.
-Use two independent instances and a fake backend before private-socket or
-remote integration tests. No live federation peers are enrolled by this design.
+Also test simultaneous scheduling, stale capacity, shared provider quotas,
+project fairness, draining, reservation expiry, stale-owner fencing, and
+ambiguous execution without duplicate dispatch. Use two independent instances
+and a fake backend before private-socket or remote integration tests. No live
+federation peers are enrolled by this design.
 
 Copyright (c) 2026 Everett C. Haimes III. Licensed under the MIT License;
 see [LICENSE](../LICENSE).

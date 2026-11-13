@@ -18,7 +18,8 @@ and execution adapters are not implemented yet.
   systemd. The orchestration core must permit other platforms and backends.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
-  exchange, and communications between independent Ataniq instances.
+  exchange, communications, and permission-aware task load balancing between
+  independent Ataniq instances.
 - Project-specific improvement policies, experiments, and outcome history;
   promotion into shared packs is a separate reviewed decision.
 
