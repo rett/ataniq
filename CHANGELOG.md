@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Design contract baseline for authority, runtime recovery, client protocol,
+  security qualification, work relationships and executable acceptance scenarios.
 - MIT license and copyright attribution to Everett C. Haimes III.
 - Initial MCP-first architecture brief and Go core/TypeScript UI decision.
 - Federation architecture with directional grants, MCP task and message
