@@ -69,19 +69,40 @@ func runHelper(t *testing.T, dir, path, action string) (string, error) {
 }
 
 func TestToolchainResolution(t *testing.T) {
+	// These expectations are independent of the helper under test.
+	guard := `[ "${GO111MODULE-unset}" = on ] && [ "${GOENV-unset}" = off ] &&
+[ "${GOWORK-unset}" = off ] && [ "${GOFLAGS-unset}" = '' ] &&
+[ "${GOPRIVATE-unset}" = '' ] && [ "${GONOPROXY-unset}" = none ] &&
+[ "${GONOSUMDB-unset}" = none ] || exit 9
+`
+	clean := []string{"GO111MODULE=on", "GOENV=off", "GOWORK=off", "GOFLAGS=", "GOPRIVATE=", "GONOPROXY=none", "GONOSUMDB=none"}
+	for i, hostile := range []string{"GO111MODULE=off", "GOENV=hostile", "GOWORK=hostile", "GOFLAGS=-mod=mod", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*"} {
+		env := append([]string(nil), clean...)
+		env[i] = hostile
+		cmd := exec.Command("/bin/sh", "-c", guard)
+		cmd.Env = env
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("environment guard accepted %s", hostile)
+		}
+	}
+	cmd := exec.Command("/bin/sh", "-c", guard)
+	cmd.Env = clean
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("environment guard rejected clean environment: %v", err)
+	}
 	dir, version := fixture(t)
 	selectedRoot := filepath.Join(t.TempDir(), "selected toolchain")
 	if err := os.MkdirAll(filepath.Join(selectedRoot, "bin"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "calls")
-	selected := "#!/bin/sh\nprintf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|test) :;; *) exit 3;; esac\n"
+	selected := "#!/bin/sh\n" + guard + "printf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|test) :;; *) exit 3;; esac\n"
 	if err := os.WriteFile(filepath.Join(selectedRoot, "bin", "go"), []byte(selected), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MARKER", marker)
 	t.Setenv("SELECTED_ROOT", selectedRoot)
-	driver := "printf 'driver:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" >> \"$MARKER\"\ncase \"$1:$GOTOOLCHAIN\" in env:go" + version + ") [ \"$2\" = GOROOT ] && [ \"$GOPROXY\" = https://proxy.golang.org,direct ] && [ \"$GOSUMDB\" = sum.golang.org ] && printf '%s\\n' \"$SELECTED_ROOT\";; version:local) printf 'go version go1.22.0 linux/amd64\\n';; *) exit 4;; esac\n"
+	driver := guard + "printf 'driver:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" >> \"$MARKER\"\ncase \"$1:$GOTOOLCHAIN\" in env:go" + version + ") [ \"$2\" = GOROOT ] && [ \"$GOPROXY\" = https://proxy.golang.org,direct ] && [ \"$GOSUMDB\" = sum.golang.org ] && printf '%s\\n' \"$SELECTED_ROOT\";; version:local) printf 'go version go1.22.0 linux/amd64\\n';; *) exit 4;; esac\n"
 	path := fakePath(t, driver)
 	for _, name := range []string{"mkdir", "mktemp", "mv", "rm"} {
 		p, err := exec.LookPath(name)
@@ -151,7 +172,7 @@ func TestToolchainResolution(t *testing.T) {
 	if out, err := runHelper(t, dir, path, "bootstrap"); err == nil || !strings.Contains(out, "resolved Go version mismatched") {
 		t.Fatalf("mismatched bootstrap: %s %v", out, err)
 	}
-	exact := fakePath(t, "[ \"$GOTOOLCHAIN\" = local ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] || exit 8\nprintf 'go version go"+version+" linux/amd64\\n'\n")
+	exact := fakePath(t, guard+"[ \"$GOTOOLCHAIN\" = local ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] || exit 8\nprintf 'go version go"+version+" linux/amd64\\n'\n")
 	if out, err := runHelper(t, dir, exact, "doctor"); err != nil {
 		t.Fatalf("exact driver: %s %v", out, err)
 	}
