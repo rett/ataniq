@@ -16,6 +16,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An experimental offline Codex mock probe and request-gate fixture; the
+  exact external subject is opt-in and remains unqualified.
 - Offline checks for local documentation links, references and heading anchors.
 - Pinned Go development toolchain, bootstrap, offline doctor and test gates.
 - Clarified dispatch fencing, single-use approvals, authorization projections,
