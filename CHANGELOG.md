@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Preserve Codex fixture ledger diagnostics on failure and strengthen shutdown
+  and oversized request regression checks.
+- Check Codex proxy attempts and upstream receipts after bounded fixture shutdown,
+  and detect continuations that cross the offline gate before observation.
+- Bound Codex qualification subprocess output drains and report cleanup failures.
+- Reject extra or malformed Codex mock receipts and unsuccessful terminal turns.
+- Check every Codex mock request against the recorded complete tool profile,
+  and document the request-gate fixture's admission limits.
 - Restore fixture checks for isolated Go environment settings.
 - Confine documentation source reads to the checked root.
 - Record the verified bootstrap toolchain for offline checks with older Go drivers.
@@ -16,6 +24,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- An experimental offline Codex mock probe and request-gate fixture; the
+  exact external subject is opt-in and remains unqualified.
 - Offline checks for local documentation links, references and heading anchors.
 - Pinned Go development toolchain, bootstrap, offline doctor and test gates.
 - Clarified dispatch fencing, single-use approvals, authorization projections,
