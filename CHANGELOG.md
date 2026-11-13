@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Distinguish sandbox probe directory pin and Unix socket/setup failures from
+  target open/connect results; reject overlong Unix paths and insufficient nonce
+  budgets before fixture access, and require exact nonce replies followed by EOF
+  under a bounded deadline while preserving successful open/connect facts.
 - Preserve sandbox probe open/connect effects and exact failed stages with
   known errno, while keeping incomplete exchanges inconclusive; specify Unix
   fixture UID projection and complete frozen-path caller requirements.

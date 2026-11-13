@@ -87,6 +87,8 @@ For `fake-unix`, the trusted caller must independently freeze the **complete
 fixture pathname**, all pathname ancestors, the mount mapping and every writable
 alias for the entire call. Metadata uses the pinned `os.Root`, but `net.Dial`
 resolves the original absolute pathname again. Root alone does not confine Dial.
+The joined Linux pathname must contain no NUL and fit in 107 bytes (UTF-8
+bytes, not characters); longer paths are rejected before any fixture access.
 Nonce validation follows connection and cannot reverse exposure to a substituted
 endpoint. Mutable arbitrary host paths remain unsupported; this tranche adds no
 path-freezing mechanism or backend enforcement of this trusted caller premise.
@@ -151,7 +153,12 @@ and leaves contents private.
 Fake-Unix checks the visible endpoint's socket type, device, inode and owner
 before connecting, then peer UID and unchanged endpoint metadata before
 exchange. It sends `ataniq-fixture-v1 <nonce>\n` and compares one fixed-length
-reply with that exact frame under a deadline. This is a fresh owned fake
+reply with that exact frame, followed by EOF, under the same bounded deadline.
+The listener must call `CloseWrite` or close after its reply; it need not keep
+the connection open. A listener may keep its read half open after `CloseWrite`.
+Trailing bytes record `nonce_match:"false"` at `nonce-frame`. A matching prefix
+without EOF remains inconclusive at `nonce-eof`, with no known nonce result.
+This is a fresh owned fake
 stream fixture only: no arbitrary address, abstract name, datagram, real bus,
 command or ancillary-FD protocol. A missing path retains numeric errno and
 the exact `lstat` stage; it says nothing about a connection attempt. A working
@@ -186,20 +193,34 @@ stage. A completed syscall returning a known errno is `observed`, including
 denial at `lstat`, `open`, `connect`, initial FD `fstat` or `pread`. For example,
 `stage:"lstat"` with ENOENT records only the failed metadata lookup; it never
 implies `open` or `connect` was attempted. A visible owned socket whose connect
-returns ECONNREFUSED records `stage:"connect"`. Neither establishes protection.
+returns ECONNREFUSED records `stage:"connect"`. A connect errno is promoted
+only from a wrapped `os.SyscallError` naming `connect`, after the joined Linux
+pathname passed validation; Go can otherwise label a pre-syscall sockaddr
+encoding EINVAL as `connect`. Neither observation establishes protection.
 The future driver combines valid fixtures, applied state and paired working
 controls to determine a qualification outcome. Missing fixtures cannot qualify
 isolation even when their failed lookup is a complete raw observation.
 
-An unavailable `fixture-root`, rejected `validate-file`, `file-identity`,
+An unavailable `fixture-root` or failed directory pin at `open-dir` remains
+inconclusive, retaining any known errno. In the latter case the target `openat`
+was never attempted. Unix socket creation failures record inconclusive `socket`;
+known setup failures record `setsockopt`, `bind`, `getsockopt`, `getsockname` or
+`fcntl`. Unattributed dial failures use inconclusive `dial-setup` and do not
+claim a connect attempt. Raw EAGAIN/EWOULDBLOCK remains a syscall errno, not a
+deadline timeout; actual deadline expiry remains inconclusive.
+
+A rejected `validate-file`, `file-identity`,
 `fd-identity`, `fd-size`, `postread-fstat`/`postread-identity`, or
 `socket-identity` check remains inconclusive. Post-open `fstat`/`close` failures
 retain uncertainty about completion. Unix failures after connection identify
 `deadline`, `syscall-conn`, `peer-control`, `peer-credentials`, `peer-identity`,
 `endpoint-lstat`, `endpoint-identity`, `nonce-write`, `nonce-read`,
-`nonce-compare` or `close` as applicable. Incomplete EOF, short-write, timeout or
+`nonce-eof`, `nonce-frame`, `nonce-compare` or `close` as applicable.
+Incomplete EOF, short-write, timeout or
 mismatched nonce exchanges remain inconclusive and retain any known errno.
-An insufficient nonce-frame byte budget reports `error` at `nonce-size`.
+An insufficient nonce-frame byte budget reports `error` at `nonce-size` before
+any fixture access. An invalid or overlong joined pathname reports `error` at
+`socket-path`, also before any fixture access, with no fabricated errno.
 
 `opened:"true"` is recorded immediately after successful file open, and
 `connected:"true"` immediately after successful Unix dial. All later failures
@@ -243,7 +264,11 @@ is capped at 128 directory entries, not at a maximum FD number: sparse high
 numbers are retained. Concurrent FD disappearance makes that inventory
 unknown. Bounds never silently truncate a table. An observation exceeding
 the whole-frame limit is replaced with an inconclusive bounded inventory
-fact. The trusted driver must compare namespace identities, interfaces and
+fact. This replacement applies only to inventory and cannot erase successful
+open/connect facts from other cases. FD inventory includes descriptors created
+by the probe/runtime; its count is not an inherited-descriptor count. Capabilities
+and namespaces under `/proc/self` describe the thread-group leader, not a future
+locked-thread case. The trusted driver must compare namespace identities, interfaces and
 both route families against its declared profile; no networking decision is
 made by the workload.
 
@@ -266,8 +291,9 @@ directories, links and absent stop assertion are covered deterministically.
 
 Opened fstat identity/type/link count is checked against lstat before reading.
 An independent cap+1 read and postread identity/size/time/link checks reject
-changes; no partial evidence is returned. Limit is 1–65536 bytes. These checks
-do not make concurrent mutable sources safe, admit arbitrary workspaces,
+changes; no partial evidence is returned. Limit is 1–65536 bytes. Collection
+remains fail-closed if the directory pin fails before the target open. These
+checks do not make concurrent mutable sources safe, admit arbitrary workspaces,
 establish copied-content provenance or prevent effects of a device swapped
 by a concurrent writer. The frozen owned-tree premise is mandatory.
 
@@ -321,3 +347,11 @@ and optional owned listeners. Where the worker cannot create a Unix listener,
 the EOF/timeout/mismatch and refused-connect fixtures explicitly skip and remain
 ready for coordinator execution. No successful live exchange or actual namespace
 qualification is inferred from those skips or from the source proposal.
+
+A later source-only Fable review of candidate `131ffab` identified directory-pin,
+socket-setup and pathname-encoding errors misattributed to target syscalls. The
+appended correction separates those stages, validates nonce size before effects,
+requires exact reply framing with EOF, confines the inventory fallback and
+distinguishes raw EAGAIN from deadline expiry. Synthetic regressions cover these
+paths and observation-decoder rejection independently of optional Unix listeners.
+Fable supplied review input, not executed validation of this reconstruction.
