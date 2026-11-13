@@ -1,0 +1,83 @@
+# Architecture brief
+
+Status: planned direction, pending implementation and interoperability tests.
+The [design contract baseline](design/README.md) specifies the selected runtime,
+client, security and work-model boundaries and supersedes older assumptions.
+
+## Core and integrations
+
+Ataniq owns job identities, durable state, project-scoped permissions,
+idempotency, admission limits, event cursors, and restart reconciliation.
+A session, an agent conversation, and a job attempt are distinct identities.
+A live tmux session is not evidence that an agent completed its task.
+
+Agents may use MCP tools and resources. The UI and CLI invoke the same Ataniq
+command and event contract and authorization rules. Provider APIs use adapters.
+MCP transport sessions must not become durable job identities or authorization
+credentials.
+
+Packs declare a versioned manifest, typed capabilities, configuration schema,
+credential references, permissions, compatibility, and health checks. Local
+executables and remote endpoints run across explicit process or network
+boundaries. The core must not load arbitrary executable packs in-process.
+Provider-specific capabilities use namespaced, validated extensions.
+Declared support and independently observed support are recorded separately.
+
+The proposed execution backend is an Ataniq runner supervised by systemd on
+Linux, contingent on security qualification. tmux may serve diagnostics.
+Codex is the first live provider target, subject to version-specific capability
+and security evidence; qargi integration is limited to qualified public APIs.
+Unknown or disconnected state must remain explicit.
+
+## Authentication and authority
+
+Remote MCP access uses OAuth protected-resource discovery and scoped token
+validation. User sign-in can use OpenID Connect through an identity provider.
+mTLS authenticates selected service or worker connections; certificate-bound
+OAuth tokens are an optional policy when supported by both ends.
+
+Every operation checks the principal, project, resource, and requested action.
+Tool annotations and pack descriptions are not permission grants. Do not pass
+an Ataniq access token through to an upstream provider. Credential references
+are resolved under separate, scoped provider credentials.
+
+Session launch, cancellation, pack installation, project adoption, and release
+are separate permissions. Ataniq must preserve qargi's verification, review,
+and release authority rather than interpreting terminal output as approval.
+
+## Federation
+
+Instances support permissions-based bidirectional federation for project
+coordination, task exchange, and communications. Each direction has separate
+grants and each instance retains local admission and execution authority.
+The initial deployment uses two hosts with permission-aware queued-task
+load balancing, shared-capacity accounting, and safe partition recovery.
+See [the federation contract](federation.md) for identity, MCP surfaces,
+revocation, recovery, and implementation acceptance criteria.
+
+## First milestones
+
+1. Establish the Go toolchain, development gates, and canonical pack contracts.
+2. Test MCP transport, OAuth discovery, token validation, and project isolation
+   using fake identity and execution backends.
+3. Add durable jobs, idempotent launch, event pagination, cancellation, and
+   crash/restart reconciliation. Store explicit completion evidence.
+4. Qualify a runner boundary with private-socket tests and precise job targets.
+5. Add Codex and qargi integrations as independently reviewed adapters.
+6. Implement federation in the staged slices defined by its contract.
+7. Add the management UI and project-local outcome measurement and experiments.
+
+Persistence and the internal adapter wire protocol remain design decisions.
+Go core/CLI and TypeScript UI were selected after independent Fable review;
+no benchmark or SDK interoperability result is claimed yet.
+
+## References
+
+- [MCP authorization](https://modelcontextprotocol.io/specification/latest/basic/authorization)
+- [OAuth security best practice](https://www.rfc-editor.org/rfc/rfc9700.html)
+- [OAuth mutual TLS](https://www.rfc-editor.org/rfc/rfc8705.html)
+- [Official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
+- [Codex App Server](https://learn.chatgpt.com/docs/app-server)
+
+Copyright (c) 2026 Everett C. Haimes III. Licensed under the MIT License;
+see [LICENSE](../LICENSE).
