@@ -1,0 +1,267 @@
+//go:build linux && amd64
+
+package qualification
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"syscall"
+	"time"
+)
+
+type FDRecord struct {
+	FD       int          `json:"fd"`
+	Role     string       `json:"role"`
+	Identity FileIdentity `json:"identity"`
+	Cloexec  bool         `json:"cloexec"`
+}
+
+type Injection struct {
+	Version     int        `json:"version"`
+	Attempt     string     `json:"attempt"`
+	Invocation  string     `json:"invocation"`
+	Process     Process    `json:"process"`
+	Boundary    Boundary   `json:"boundary"`
+	Fixture     Subject    `json:"fixture"`
+	Descriptors []FDRecord `json:"descriptors"`
+	Profile     string     `json:"profile"`
+	RunID       string     `json:"run_id"`
+	RequestID   string     `json:"request_id"`
+	RoleID      string     `json:"role_id"`
+}
+
+type release struct {
+	Version    int    `json:"version"`
+	Attempt    string `json:"attempt"`
+	Invocation string `json:"invocation"`
+}
+
+func fdFlags(fd int) (int, error) {
+	n, _, e := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFD, 0)
+	if e != 0 {
+		return 0, e
+	}
+	return int(n), nil
+}
+
+func vacantFDs(limit uint64, occupied map[int]bool) error {
+	if uint64(BPFFD) >= limit || FakeFD <= 2 || BPFFD == FakeFD {
+		return errors.New("sparse descriptors exceed rlimit")
+	}
+	for _, fd := range []int{FakeFD, BPFFD} {
+		if occupied[fd] {
+			return errors.New("sparse descriptor collision")
+		}
+	}
+	return nil
+}
+
+func verifyFakeFD(fd int, s Subject) error {
+	return verifyFD(fd, s, 4096)
+}
+
+func verifyFD(fd int, s Subject, limit int64) error {
+	var before, after syscall.Stat_t
+	if err := syscall.Fstat(fd, &before); err != nil {
+		return err
+	}
+	if before.Mode&syscall.S_IFMT != syscall.S_IFREG || before.Nlink != 1 || before.Dev != s.Identity.Device || before.Ino != s.Identity.Inode || before.Uid != s.Identity.UID || before.Size < 0 || before.Size > limit {
+		return errors.New("injected descriptor identity mismatch")
+	}
+	b := make([]byte, before.Size)
+	n, err := syscall.Pread(fd, b, 0)
+	if err != nil || n != len(b) {
+		return errors.New("fake descriptor read failed")
+	}
+	if err = syscall.Fstat(fd, &after); err != nil || before.Dev != after.Dev || before.Ino != after.Ino || before.Uid != after.Uid || before.Mode != after.Mode || before.Nlink != after.Nlink || before.Size != after.Size || before.Mtim != after.Mtim || before.Ctim != after.Ctim {
+		return errors.New("fake descriptor changed")
+	}
+	h := sha256.Sum256(b)
+	if hex.EncodeToString(h[:]) != s.SHA256 {
+		return errors.New("fake descriptor digest mismatch")
+	}
+	return nil
+}
+
+func readInjection(path string) (Injection, error) {
+	var i Injection
+	b, err := readOwned(path, MaxInputBytes)
+	if err != nil {
+		return i, err
+	}
+	err = decode(bytes.NewReader(b), MaxInputBytes, &i)
+	return i, err
+}
+
+func validateInjection(a *Attempt, i Injection, u *Unit) error {
+	if i.Version != 1 || i.Attempt != a.ID || i.Invocation != u.Properties["InvocationID"] || i.Profile != a.Profile || i.RunID != a.Config.RunID || i.RequestID != a.Config.RequestID || i.RoleID != a.Config.RoleID || i.Process.Boot != a.Boot || i.Fixture != a.Fixture || i.Boundary != u.Boundary || u.Main == nil || !sameProcess(i.Process, *u.Main) || i.Process.Executable != a.Snapshots["driver"].Identity || !reflect.DeepEqual(i.Descriptors, expectedDescriptors(a)) {
+		return errors.New("invalid injection identity")
+	}
+	if !strings.Contains(i.Process.Status, "NoNewPrivs:\t1\n") {
+		return errors.New("injector no-new-privileges unverified")
+	}
+	return nil
+}
+
+func expectedDescriptors(a *Attempt) []FDRecord {
+	return []FDRecord{{0, "request", a.Streams["request"], false}, {1, "output", a.Streams["output"], false}, {2, "stderr", a.Streams["stderr"], false}, {FakeFD, "synthetic-regular", a.Fixture.Identity, false}, {BPFFD, "reviewed-bpf", a.Snapshots["bpf"].Identity, false}}
+}
+
+// PrivateInject runs ONLY in the separate transient service. It never changes
+// the orchestrator's FD table and never uses exec.Command's final FD remapping.
+func PrivateInject(path string) error {
+	if !absolute(path) || !attemptID(filepath.Base(path)) {
+		return errors.New("invalid injector root")
+	}
+	root := filepath.Dir(path)
+	// Do not acquire the controller flock from its child. Read only its exact
+	// durable record, including directory identity, before any injection.
+	d, id, err := ownedDir(root)
+	if err != nil {
+		return err
+	}
+	d.Close()
+	c := &Campaign{Path: root, Identity: id}
+	a, err := c.read(filepath.Base(path))
+	if err != nil || a.Phase != "launching-service" {
+		return errors.New("injector intent not invoking")
+	}
+	if time.Now().Unix() > a.NotAfter {
+		return errors.New("injector safety deadline elapsed")
+	}
+	self, err := process(os.Getpid())
+	if err != nil || self.Executable != a.Snapshots["driver"].Identity {
+		return errors.New("wrong injector executable")
+	}
+	if a.Parent == nil || self.Cgroup != a.Parent.Boundary.Path+"/"+a.Service {
+		return errors.New("injector outside exact service")
+	}
+	inv := os.Getenv("INVOCATION_ID")
+	if !bounded(inv, 32, 32, isHex) {
+		return errors.New("missing service invocation")
+	}
+	for _, name := range []string{"driver", "probe", "bwrap", "bpf"} {
+		s, _, err := chainSubject(name, a.Snapshots[name].Path, true)
+		if err != nil || s != a.Snapshots[name] {
+			return errors.New("frozen subject changed")
+		}
+	}
+	fake, _, err := subject(a.Fixture.Path, false, false, true, 4096)
+	if err != nil || fake != a.Fixture {
+		return errors.New("fake fixture changed")
+	}
+	var lim syscall.Rlimit
+	if err = syscall.Getrlimit(syscall.RLIMIT_NOFILE, &lim); err != nil {
+		return err
+	}
+	used := map[int]bool{0: true, 1: true, 2: true}
+	for _, fd := range []int{FakeFD, BPFFD} {
+		_, err := fdFlags(fd)
+		if err == nil {
+			used[fd] = true
+		} else if err != syscall.EBADF {
+			return err
+		}
+	}
+	if err = vacantFDs(lim.Cur, used); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		path string
+		fd   int
+	}{{a.Fixture.Path, FakeFD}, {a.Snapshots["bpf"].Path, BPFFD}} {
+		f, err := openAbsolute(item.path, syscall.O_RDONLY)
+		if err != nil {
+			return err
+		}
+		if int(f.Fd()) >= FakeFD {
+			f.Close()
+			return errors.New("source descriptor collision")
+		}
+		err = syscall.Dup3(int(f.Fd()), item.fd, 0)
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
+	defer syscall.Close(FakeFD)
+	defer syscall.Close(BPFFD)
+	if err = verifyFakeFD(FakeFD, a.Fixture); err != nil {
+		return err
+	}
+	for _, fd := range []int{FakeFD, BPFFD} {
+		flags, err := fdFlags(fd)
+		if err != nil || flags&syscall.FD_CLOEXEC != 0 {
+			return errors.New("injection CLOEXEC mismatch")
+		}
+	}
+	bnd, err := boundary(self.Cgroup)
+	if err != nil {
+		return err
+	}
+	descriptors := expectedDescriptors(a)
+	for _, want := range descriptors {
+		var st syscall.Stat_t
+		flags, e := fdFlags(want.FD)
+		if syscall.Fstat(want.FD, &st) != nil || e != nil || st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || (FileIdentity{st.Dev, st.Ino, st.Uid}) != want.Identity || flags&syscall.FD_CLOEXEC != 0 {
+			return errors.New("descriptor role identity mismatch")
+		}
+	}
+	i := Injection{1, a.ID, inv, self, bnd, a.Fixture, descriptors, a.Profile, a.Config.RunID, a.Config.RequestID, a.Config.RoleID}
+	b, err := json.Marshal(i)
+	if err != nil || len(b) > MaxOutputBytes {
+		return errors.New("injection evidence excessive")
+	}
+	if err = verifyFD(BPFFD, a.Snapshots["bpf"], 32768); err != nil {
+		return err
+	}
+	if err = publishOwned(path, "injection.json", b); err != nil {
+		return err
+	}
+	// A finite gate prevents fast cases disappearing before binding. The marker
+	// is not mounted in the workload and its read descriptor closes before exec.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		b, err := readOwned(filepath.Join(path, "release.json"), 4096)
+		if err == nil {
+			var r release
+			if decode(bytes.NewReader(b), 4096, &r) != nil || r != (release{1, a.ID, inv}) {
+				return errors.New("wrong release identity")
+			}
+			break
+		}
+		if !os.IsNotExist(err) || time.Now().After(deadline) {
+			return errors.New("injector handshake failed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err = verifyFakeFD(FakeFD, a.Fixture); err != nil {
+		return err
+	}
+	// Close BPF for the direct control; bwrap owns/consumes it for candidates.
+	if err = verifyFD(BPFFD, a.Snapshots["bpf"], 32768); err != nil {
+		return err
+	}
+	latest, err := c.read(a.ID)
+	if err != nil || latest.Phase != "released" || latest.Injector == nil || latest.Injector.Invocation != inv {
+		return errors.New("release not durably bound")
+	}
+	if a.Config.Role == "direct" {
+		syscall.Close(BPFFD)
+	}
+	for _, name := range []string{"probe", "bwrap"} {
+		s, _, err := chainSubject(name, a.Snapshots[name].Path, true)
+		if err != nil || s != a.Snapshots[name] {
+			return errors.New("exec subject changed")
+		}
+	}
+	// Environment is deliberately empty, including manager/bus/credential paths.
+	return syscall.Exec(a.Command[0], a.Command, []string{})
+}

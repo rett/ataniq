@@ -8,6 +8,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Reject qualification ELF runtime metadata touched by overlapping PT_LOAD
+  mapping pages, including logically disjoint segments; check host-page rounding
+  overflow for both dynamic and runtime string extents.
+- Keep qualification campaign fences sticky across early save/create failures
+  and later successful completions. Publish phase/reason only after durable
+  replacement, validate ownership before failure markers, and retain restart
+  fencing without changing cleanup or launch authority.
+- Read qualification subject ELF dependencies from loader-visible program headers
+  and bounded runtime tables; reject RPATH/RUNPATH tags and malformed dependency
+  strings even with absent or mismatched section headers, sharing checks across
+  static and dynamic subjects and every frozen launch-chain check.
 - Distinguish sandbox probe directory pin and Unix socket/setup failures from
   target open/connect results; reject overlong Unix paths and insufficient nonce
   budgets before fixture access, and require exact nonce replies followed by EOF
@@ -31,6 +42,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Explicit Linux/amd64 bubblewrap qualification driver with durable campaign
+  ownership and restart fencing, exact service/slice reconciliation, private
+  reexec fake-FD injection, finite ready/hold cancellation evidence and offline
+  static builds. Deterministic transcript checks cover crash/identity failures;
+  live host behavior and full profile support remain separate verification gates.
 - Bounded Linux/amd64 sandbox observation protocol and static probe for passive
   inventory and owned fake file, descriptor and Unix fixtures, plus a flat
   trusted-side reader requiring independent workload-stop and frozen-tree proof.
