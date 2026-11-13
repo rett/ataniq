@@ -24,6 +24,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Bounded Linux/amd64 sandbox observation protocol and static probe for passive
+  inventory and owned fake file, descriptor and Unix fixtures, plus a flat
+  trusted-side reader requiring independent workload-stop and frozen-tree proof.
+  Backend execution and qualification decisions remain separate gates.
 - An experimental offline Codex mock probe and request-gate fixture; the
   exact external subject is opt-in and remains unqualified.
 - Offline checks for local documentation links, references and heading anchors.
