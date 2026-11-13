@@ -31,6 +31,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Explicit Linux/amd64 bubblewrap qualification driver with durable campaign
+  ownership and restart fencing, exact service/slice reconciliation, private
+  reexec fake-FD injection, finite ready/hold cancellation evidence and offline
+  static builds. Deterministic transcript checks cover crash/identity failures;
+  live host behavior and full profile support remain separate verification gates.
 - Bounded Linux/amd64 sandbox observation protocol and static probe for passive
   inventory and owned fake file, descriptor and Unix fixtures, plus a flat
   trusted-side reader requiring independent workload-stop and frozen-tree proof.
