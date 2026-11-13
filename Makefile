@@ -1,12 +1,15 @@
-# Set up and check a checkout. Fill in both targets, then describe them in the
-# "Development environment" section of AGENTS.md.
-.PHONY: bootstrap doctor
+.PHONY: bootstrap doctor test test-dev
 
 bootstrap:
-	@echo "bootstrap: nothing is installed yet."
-	@echo "Edit this target so it installs what the project needs, idempotently (sudo only on the lines that need root)."
+	@command -v go >/dev/null || { echo 'missing: Go bootstrap driver' >&2; exit 1; }
+	GOENV=off GOWORK=off GOTOOLCHAIN=go$(shell cat .go-version)+auto go version
+	GOENV=off GOWORK=off GOTOOLCHAIN=go$(shell cat .go-version)+auto go mod download
 
 doctor:
-	@echo "missing: the doctor target checks nothing yet."
-	@echo "Edit it to print one line per item (the tool and its version), starting a line with missing when an item is absent."
-	@false
+	@sh scripts/go-tool.sh doctor
+
+test:
+	@sh scripts/go-tool.sh test ./...
+
+test-dev:
+	@sh scripts/go-tool.sh test ./tests/...

@@ -31,8 +31,12 @@ See [the design contract baseline](docs/design/README.md) and
 
 Development follows qargi's feature, review, and verification workflow.
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
-The generated bootstrap and doctor targets are placeholders; the toolchain
-and test harness must be implemented before feature acceptance.
+Install Git, Make, a POSIX shell and a Go bootstrap driver with toolchain
+selection support (Go 1.21 or newer). The driver selects the developer Go
+version pinned in `.go-version`; see [Go toolchains](https://go.dev/doc/toolchain).
+Review `make -n bootstrap` before running `make bootstrap`. Run `make doctor`
+before testing; `make test-dev` checks development tooling and `make test`
+runs the complete offline suite.
 
 ## License
 
