@@ -8,6 +8,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Confine documentation source reads to the checked root.
 - Record the verified bootstrap toolchain for offline checks with older Go drivers.
 - Isolate Go module mode and confine documentation link checks to their root.
 - Enforce the exact Go pin and isolate offline gates from inherited Go settings.

@@ -46,9 +46,26 @@ func anchor(text string) string {
 	return b.String()
 }
 
-func withinRoot(root, path string) bool {
+// readContained opens every document through the same root, including sources.
+func readContained(root, path string) ([]byte, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
 	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	if err != nil {
+		return nil, err
+	}
+	fs, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer fs.Close()
+	return fs.ReadFile(rel)
 }
 
 func checkTarget(root, source, target string) error {
@@ -59,14 +76,6 @@ func checkTarget(root, source, target string) error {
 	if u.IsAbs() || u.Host != "" {
 		return nil
 	}
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		return err
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return err
-	}
 	if filepath.IsAbs(filepath.FromSlash(u.Path)) {
 		return fmt.Errorf("%s: absolute local path %s", source, target)
 	}
@@ -74,18 +83,7 @@ func checkTarget(root, source, target string) error {
 	if u.Path != "" {
 		path = filepath.Join(filepath.Dir(source), filepath.FromSlash(u.Path))
 	}
-	path, err = filepath.Abs(path)
-	if err != nil || !withinRoot(root, path) {
-		return fmt.Errorf("%s: target outside root: %s", source, target)
-	}
-	path, err = filepath.EvalSymlinks(path)
-	if err != nil {
-		return fmt.Errorf("%s: %s: %w", source, target, err)
-	}
-	if !withinRoot(root, path) {
-		return fmt.Errorf("%s: target resolves outside root: %s", source, target)
-	}
-	data, err := os.ReadFile(path)
+	data, err := readContained(root, path)
 	if err != nil {
 		return fmt.Errorf("%s: %s: %w", source, target, err)
 	}
@@ -110,7 +108,7 @@ func checkTarget(root, source, target string) error {
 }
 
 func checkDoc(root, path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readContained(root, path)
 	if err != nil {
 		return err
 	}
@@ -211,5 +209,26 @@ func TestDocumentationLinkFixtures(t *testing.T) {
 				t.Fatalf("error: %v", err)
 			}
 		})
+	}
+}
+
+func TestDocumentationSourceContainment(t *testing.T) {
+	outer := t.TempDir()
+	root := filepath.Join(outer, "root")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(outer, "outside.md")
+	if err := os.WriteFile(outside, []byte("No links here.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "escape.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{link, filepath.Join(root, "..", "outside.md")} {
+		if err := checkDoc(root, source); err == nil {
+			t.Errorf("accepted source outside root: %s", source)
+		}
 	}
 }
