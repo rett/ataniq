@@ -8,6 +8,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Distinguish sandbox probe directory pin and Unix socket/setup failures from
+  target open/connect results; reject overlong Unix paths and insufficient nonce
+  budgets before fixture access, and require exact nonce replies followed by EOF
+  under a bounded deadline while preserving successful open/connect facts.
+- Preserve sandbox probe open/connect effects and exact failed stages with
+  known errno, while keeping incomplete exchanges inconclusive; specify Unix
+  fixture UID projection and complete frozen-path caller requirements.
 - Preserve Codex fixture ledger diagnostics on failure and strengthen shutdown
   and oversized request regression checks.
 - Check Codex proxy attempts and upstream receipts after bounded fixture shutdown,
@@ -24,6 +31,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Bounded Linux/amd64 sandbox observation protocol and static probe for passive
+  inventory and owned fake file, descriptor and Unix fixtures, plus a flat
+  trusted-side reader requiring independent workload-stop and frozen-tree proof.
+  Backend execution and qualification decisions remain separate gates.
 - An experimental offline Codex mock probe and request-gate fixture; the
   exact external subject is opt-in and remains unqualified.
 - Offline checks for local documentation links, references and heading anchors.
