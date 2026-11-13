@@ -8,7 +8,7 @@ if ! printf '%s\n' "$version" | grep -Eq '^1\.(2[1-9]|[3-9][0-9]|[1-9][0-9]{2,})
   echo 'error: invalid Go toolchain pin' >&2
   exit 1
 fi
-export GOENV=off GOWORK=off GOFLAGS=
+export GOENV=off GOWORK=off GOFLAGS= GO111MODULE=on
 export GOPRIVATE= GONOPROXY=none GONOSUMDB=none
 export GOTOOLCHAIN="go${version}"
 case "${1-}" in

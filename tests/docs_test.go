@@ -11,7 +11,8 @@ import (
 	"unicode"
 )
 
-// This deliberately covers inline links and explicit reference links, not all Markdown.
+// This covers simple inline and explicit reference links and ATX heading anchors
+// outside triple-backtick fences; it does not implement all Markdown or GFM.
 var inlineLink = regexp.MustCompile(`\[[^\]]+\]\(([^ )]+)\)`)
 var referenceLink = regexp.MustCompile(`\[[^\]]+\]\[([^\]]+)\]`)
 var referenceDef = regexp.MustCompile(`^\[([^\]]+)\]:\s*(\S+)`)
@@ -45,7 +46,12 @@ func anchor(text string) string {
 	return b.String()
 }
 
-func checkTarget(source, target string) error {
+func withinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func checkTarget(root, source, target string) error {
 	u, err := url.Parse(target)
 	if err != nil {
 		return err
@@ -53,9 +59,31 @@ func checkTarget(source, target string) error {
 	if u.IsAbs() || u.Host != "" {
 		return nil
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	if filepath.IsAbs(filepath.FromSlash(u.Path)) {
+		return fmt.Errorf("%s: absolute local path %s", source, target)
+	}
 	path := source
 	if u.Path != "" {
 		path = filepath.Join(filepath.Dir(source), filepath.FromSlash(u.Path))
+	}
+	path, err = filepath.Abs(path)
+	if err != nil || !withinRoot(root, path) {
+		return fmt.Errorf("%s: target outside root: %s", source, target)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("%s: %s: %w", source, target, err)
+	}
+	if !withinRoot(root, path) {
+		return fmt.Errorf("%s: target resolves outside root: %s", source, target)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -81,7 +109,7 @@ func checkTarget(source, target string) error {
 	return fmt.Errorf("%s: missing anchor %s", source, target)
 }
 
-func checkDoc(path string) error {
+func checkDoc(root, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -95,7 +123,7 @@ func checkDoc(path string) error {
 	}
 	for _, line := range lines {
 		for _, m := range inlineLink.FindAllStringSubmatch(line, -1) {
-			if err := checkTarget(path, m[1]); err != nil {
+			if err := checkTarget(root, path, m[1]); err != nil {
 				return err
 			}
 		}
@@ -104,7 +132,7 @@ func checkDoc(path string) error {
 			if !ok {
 				return fmt.Errorf("%s: missing reference %s", path, m[1])
 			}
-			if err := checkTarget(path, target); err != nil {
+			if err := checkTarget(root, path, target); err != nil {
 				return err
 			}
 		}
@@ -114,7 +142,7 @@ func checkDoc(path string) error {
 
 func TestRepositoryDocumentationLinks(t *testing.T) {
 	for _, name := range []string{"README.md", "AGENTS.md", "CONTRIBUTING.md", "CHANGELOG.md"} {
-		if err := checkDoc(filepath.Join(root(t), name)); err != nil {
+		if err := checkDoc(root(t), filepath.Join(root(t), name)); err != nil {
 			t.Error(err)
 		}
 	}
@@ -123,7 +151,7 @@ func TestRepositoryDocumentationLinks(t *testing.T) {
 			return err
 		}
 		if !entry.IsDir() && filepath.Ext(path) == ".md" {
-			return checkDoc(path)
+			return checkDoc(root(t), path)
 		}
 		return nil
 	})
@@ -133,7 +161,11 @@ func TestRepositoryDocumentationLinks(t *testing.T) {
 }
 
 func TestDocumentationLinkFixtures(t *testing.T) {
-	dir := t.TempDir()
+	outer := t.TempDir()
+	dir := filepath.Join(outer, "root")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	write := func(name, contents string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0600); err != nil {
@@ -141,6 +173,15 @@ func TestDocumentationLinkFixtures(t *testing.T) {
 		}
 	}
 	write("target.md", "# A heading\n# A heading\n")
+	if err := os.Mkdir(filepath.Join(dir, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outer, "outside.md"), []byte("# Outside\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outer, "outside.md"), filepath.Join(dir, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, content string
 		pass          bool
@@ -150,10 +191,22 @@ func TestDocumentationLinkFixtures(t *testing.T) {
 		{"missing anchor", "[x](target.md#missing)\n", false},
 		{"missing reference", "[x][unknown]\n", false},
 		{"bad reference target", "[x][ref]\n[ref]: missing.md\n", false},
+		{"parent within root", "[x](../target.md#a-heading)\n", true},
+		{"traversal outside root", "[x](../../outside.md)\n", false},
+		{"encoded escape", "[x](%2e%2e/%2e%2e/outside.md)\n", false},
+		{"absolute path", "[x](" + filepath.ToSlash(filepath.Join(outer, "outside.md")) + ")\n", false},
+		{"symlink escape", "[x](../escape.md)\n", false},
+		{"external offline", "[x](https://example.invalid/path)\n", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			write("source.md", tc.content)
-			err := checkDoc(filepath.Join(dir, "source.md"))
+			write("nested/source.md", tc.content)
+			// Existing fixtures use root-relative targets from a root-level source.
+			source := filepath.Join(dir, "nested/source.md")
+			if tc.name == "valid" || tc.name == "missing path" || tc.name == "missing anchor" || tc.name == "missing reference" || tc.name == "bad reference target" {
+				write("source.md", tc.content)
+				source = filepath.Join(dir, "source.md")
+			}
+			err := checkDoc(dir, source)
 			if (err == nil) != tc.pass {
 				t.Fatalf("error: %v", err)
 			}
