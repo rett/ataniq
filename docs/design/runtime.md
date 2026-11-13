@@ -60,8 +60,16 @@ broader effect and require its authorized operation. Termination accounts for
 children and remote work; disconnected or provider-native children may remain
 unknown. Preserve their results, limits and usage even after process cleanup.
 
-During control-plane outage, already dispatched work may continue within its
-qualified boundary. Pause new dispatch and wait for new approvals. On return,
+Dispatch means crossing the actual provider or tool boundary to start an
+effect, not merely admitting a turn. Record the exact bounded effects and
+limits preauthorized for a dispatch. Check current authority at each boundary
+before starting an effect; an admitted turn is not open-ended permission to
+start children, loop iterations, retries or queued operations. During an
+authority outage, already running bounded tools may finish, but new dispatches,
+children, iterations, retries and approval decisions wait for authority.
+Qualify this boundary per provider and version: combinations unable to enforce
+it are unsupported. Do not claim control of opaque provider internals that
+have not been qualified. On return,
 reconcile runner, provider, approvals, children and evidence before resuming.
 Do not infer completion from a disconnect. Reserve and reconcile child usage
 against the parent's enforceable budget; unknown usage is not zero.
@@ -79,7 +87,7 @@ the required result after restart or reconciliation.
 | Bootstrap intent saved, delivery unknown | Mark uncertain; do not send bootstrap or dependent input again without a recorded disposition. |
 | Command accepted, before dispatch | Recover the same queued command in FIFO order. |
 | Provider receives command, acknowledgement lost | Mark uncertain; no automatic duplicate dispatch. |
-| Authority disconnects during work | Existing bounded work may continue; new dispatch and approvals wait. Reconcile on return. |
+| Authority disconnects during work | Running bounded tools may finish; new boundary crossings and decisions wait. Reconcile on return. |
 | Provider or runner dies during a turn | Retain the turn and children as interrupted or unknown until evidence resolves each; no inferred success. |
 | Old epoch remains reachable | Reject its new dispatch; if boundary fencing is unproven, block replacement dispatch. |
 | Host reboot | Reconstruct desired state from the database; a new epoch does not prove prior effects absent. |
@@ -89,4 +97,8 @@ order A, B; submit explicit steering and assert it targets only the specified
 turn. With provider concurrency disabled, assert a second turn remains queued;
 with it enabled but workspace policy incompatible, assert the same. Cancel a
 lead with an unobservable native child and assert the child remains unknown,
-not completed. These are specifications, not executed checks.
+not completed. Disconnect authority after a turn starts, while a bounded tool
+is running and a child, iteration, retry and queued operation are pending:
+assert the tool may finish and none of the pending effects starts. Restore
+authority and assert each requires a fresh check. A provider unable to enforce
+that boundary is unsupported. These are specifications, not executed checks.

@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Clarified dispatch fencing, single-use approvals, authorization projections,
+  operations views and federation limits in the proposed design contract.
 - README entry point to the design contract and its selected client and runtime direction.
 - Design contract baseline for authority, runtime recovery, client protocol,
   security qualification, work relationships and executable acceptance scenarios.

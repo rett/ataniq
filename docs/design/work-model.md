@@ -17,6 +17,27 @@ Cycles in dependency graphs are rejected or explicitly reported; they must not
 silently create runnable work. Views distinguish observed, reported and
 inferred relationships and avoid exposing unauthorized nodes through edges.
 
+## Operations views
+
+The full operations console must provide equivalent authorized graph and table
+views, with navigation between related records. Its inventory includes:
+
+- An overview of project and runtime health, including unknown and stale state.
+- Lead workspaces with their conversations, queued work and bounded workers.
+- Campaign and backlog boards with dependencies, ownership and status.
+- Attempt timelines with decisions, delivery, failures and uncertainty.
+- Product and evidence lineage through attempts, evaluations and artifacts.
+- An inbox of decisions available to the designated approver or role.
+- Provider, model and qualified capabilities, observed or estimated usage, and
+  budget limits with their actual enforcement status.
+
+Each view identifies the source authority and revision, observation time or
+watermark, and freshness or unknown state. Projections must not present stale
+data as current. Apply current authorization to nodes, edges, counts and
+navigation; hidden nodes must not leak through placeholders or aggregates.
+Permission changes follow the projection reset rules in
+[client protocol](client-protocol.md).
+
 An immutable product identifies its exact content or revision and producing
 attempt. Evaluation identifies product, criteria revision, evaluator and
 version, result and evidence; a new iteration creates a new attempt and product.
@@ -68,7 +89,9 @@ non-transitive: A to B and B to C do not authorize A to C. Any separate B to C
 request requires its own grant and permitted data, preserving origin and
 restricting onward disclosure to the intersection of applicable policies.
 Across hosts, each local authority independently admits work under the
-[federation contract](../federation.md); remote success is evidence, not local
+[federation contract](../federation.md). The initial cross-host federation
+refuses onward delegation, including a further request for federated work;
+separate local relationships do not override that restriction. Remote success is evidence, not local
 verification or release approval. Revocation stops new admission and disclosure;
 already accepted work follows its recorded disposition and remote termination
 is not assumed during a partition.
@@ -98,6 +121,13 @@ With deterministic fake authorities and a bounded profile:
 6. Present a qargi release lacking a requested public action. Assert the action
    is unsupported and no internal helper is invoked. Conflicting source
    revisions produce a conflict rather than a silent overwrite.
+7. Under explicitly approved local A to B and B to C relationships, submit a
+   separate B to C request: assert its own grant, original provenance and
+   intersected disclosure are recorded. Repeat for work received through
+   initial cross-host federation: assert onward delegation is refused.
+8. Populate each operations view with authorized and hidden records and a stale
+   source revision. Assert required inventory is navigable, freshness is
+   visible, and hidden nodes are absent from edges, counts and navigation.
 
 These scenarios are test specifications and have not been executed. Profile
 transitions, adapter versions, limits and external APIs require validation.

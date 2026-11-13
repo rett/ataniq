@@ -44,18 +44,38 @@ requirement and obtain a fresh snapshot; never silently start at the current
 tail. Specify bounded retention, page size, payload and subscriber buffers in
 deployment policy, advertise effective bounds, and disconnect a slow consumer
 with a resumable position rather than silently dropping events. A cursor is not
-an authorization credential.
+an authorization credential. Bind it to project, query, schema and
+authorization projection generation. A stale or unauthorized binding produces
+an explicit reset, not a successful replay under different visibility.
+
+Each authorization projection has a generation. On narrowing permissions,
+purge now-unauthorized client state and close or refilter streams before further
+delivery. On widening, establish a fresh authorized snapshot and watermark, or
+an equivalent explicit authorized backfill, before tailing: previously hidden
+records may predate the old cursor. Apply the same filtering to graph edges,
+counts and cached artifacts so they do not reveal hidden records.
 
 ## Approvals and revocation
 
-An approval identifies the exact operation, target revision, designated
-approver or role, expiry and current state. Decision submission is authorized
+An approval identifies an immutable command, action, target revision, payload
+and execution epoch, designated approver or role, expiry and current state.
+Decision submission is authorized
 against current policy and atomically resolves an outstanding approval once.
 The receipt records decision and actor; duplicate identical commands replay
 their receipt, while a competing or stale decision is rejected with the
 resolved state if the caller may see it. Provider connection-bound ceremonies
 must be qualified; if a native path can bypass arbitration, that path cannot
-claim Ataniq approval enforcement. Other clients may observe only within scope.
+claim Ataniq approval enforcement. A stale provider-specific ceremony cannot
+authorize a changed action. The owner may approve their own request when the
+designated policy permits it. Other clients may observe only within scope.
+
+An affirmative decision grants one use under current policy. At the durable
+dispatch-prepared transition, atomically link and consume the grant with the
+command state, rechecking policy, expiry and revocation. Reconnect or retry
+cannot produce a second effect using that grant. If delivery is ambiguous,
+retain the consumed grant and uncertain command state pending reconciliation;
+any subsequent action requires an explicit disposition and applicable new
+authorization. Admission or an earlier decision alone is not dispatch authority.
 
 Revocation takes effect on new commands, subscription delivery, snapshots and
 artifact access. Terminate or refilter existing streams on policy change, and
@@ -83,6 +103,16 @@ Use two enrolled clients, a deterministic journal and both transports:
    events, commands and artifact reads are denied, including after reconnect.
 6. Saturate a bounded subscriber buffer. Assert explicit disconnection and
    replay from its last applied cursor, or reset if retention has expired.
+7. Narrow visibility while a client holds a snapshot and stream. Assert cached
+   unauthorized records are purged, the stream closes or refilters, and its
+   old-generation cursor returns reset without leaking hidden data.
+8. Hide a record, take a snapshot and cursor, then widen visibility. Assert the
+   old cursor returns reset and a fresh snapshot or explicit backfill includes
+   the older record before tailing resumes; subsequent events appear once.
+9. Consume an approval at dispatch preparation, lose the delivery receipt and
+   reconnect. Assert consumed/uncertain state and no second effect. Change the
+   payload, revision or epoch, or expire or revoke the grant before preparation:
+   assert dispatch is denied and an old provider ceremony cannot authorize it.
 
 These are test specifications; transport, provider and UI conformance remain
 unvalidated. Desktop and phone sharing through unified clients must be tested;

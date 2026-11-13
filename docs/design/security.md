@@ -41,7 +41,10 @@ required; a native child may lack that capability and must be reported as such.
 Limits specify whether they are admission-time, actively enforced, estimated
 or advisory. Do not claim a hard token or cost ceiling for an opaque call that
 cannot enforce it. On outage, retain already dispatched work within its
-boundary and pause new dispatch and approvals.
+boundary and pause new dispatch and approvals. Qualification must enforce the
+provider/tool dispatch boundary and outage rules in [runtime](runtime.md),
+including child attempts and retries; an opaque, unenforceable boundary is
+unsupported.
 
 ## Artifacts and previews
 
