@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"debug/elf"
 	"errors"
+	"os"
 	"strings"
 )
 
@@ -122,16 +123,26 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 	return m, nil
 }
 
-// Require exactly one file-backed PT_LOAD extent, excluding overlapping memory
-// mappings (including zero-fill) that could change the bytes seen by the loader.
+// Require exactly one file-backed PT_LOAD extent. Linux maps whole pages, so a
+// logically disjoint load can replace metadata through its partial first/last
+// page. Conservatively reject every other load touching a metadata page,
+// including zero-fill; program-header order cannot make an overlap acceptable.
 func runtimeExtent(e *elf.File, address, size uint64) (*elf.Prog, uint64, error) {
-	if size == 0 || address > ^uint64(0)-size {
+	start, end, err := runtimePages(address, size)
+	if size == 0 || err != nil {
 		return nil, 0, errors.New("unsupported: invalid runtime extent")
 	}
 	var found *elf.Prog
 	var offset uint64
 	for _, p := range e.Progs {
-		if p.Type != elf.PT_LOAD || address >= p.Vaddr+p.Memsz || p.Vaddr >= address+size {
+		if p.Type != elf.PT_LOAD {
+			continue
+		}
+		loadStart, loadEnd, err := runtimePages(p.Vaddr, p.Memsz)
+		if err != nil || p.Filesz > p.Memsz {
+			return nil, 0, errors.New("unsupported: invalid runtime load pages")
+		}
+		if loadStart == loadEnd || start >= loadEnd || loadStart >= end {
 			continue
 		}
 		if found != nil || address < p.Vaddr || address-p.Vaddr > p.Filesz || size > p.Filesz-(address-p.Vaddr) {
@@ -143,4 +154,20 @@ func runtimeExtent(e *elf.File, address, size uint64) (*elf.Prog, uint64, error)
 		return nil, 0, errors.New("unsupported: unmapped runtime extent")
 	}
 	return found, offset, nil
+}
+
+// Linux/amd64 uses the host base-page size for ELF mappings, independently of
+// the segment's p_align. Include partially mapped pages and reject arithmetic
+// that cannot represent the exclusive rounded end, even without byte overflow.
+func runtimePages(address, size uint64) (uint64, uint64, error) {
+	page := uint64(os.Getpagesize())
+	if page == 0 || page&(page-1) != 0 || address > ^uint64(0)-size {
+		return 0, 0, errors.New("unsupported: invalid runtime page bounds")
+	}
+	mask := page - 1
+	end := address + size
+	if end > ^uint64(0)-mask {
+		return 0, 0, errors.New("unsupported: overflowing runtime page bounds")
+	}
+	return address &^ mask, (end + mask) &^ mask, nil
 }
