@@ -72,10 +72,11 @@ case "${1-}" in
     mv -f "$tmp" "$record"
     trap - 0 HUP INT TERM
     ;;
-  test)
+  test|build)
+    action=$1
     shift
     select_offline || { echo 'fail: selected Go unavailable or mismatched; run make bootstrap' >&2; exit 1; }
-    exec "$selected" test "$@"
+    exec "$selected" "$action" "$@"
     ;;
   *) echo 'error: unknown tool action' >&2; exit 1 ;;
 esac

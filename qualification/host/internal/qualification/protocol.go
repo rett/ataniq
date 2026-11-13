@@ -223,6 +223,14 @@ func (o Observation) Validate() error {
 // Canonical ASCII keys prevent encoding/json's ASCII case and Unicode SimpleFold
 // aliases from ever reaching struct matching (including escaped aliases).
 func walk(d *json.Decoder, depth int) error {
+	return walkKeys(d, depth, canonicalKey)
+}
+
+func canonicalKey(key string) bool {
+	return bounded(key, 1, 64, func(r rune) bool { return r >= 'a' && r <= 'z' || r == '_' || r >= '0' && r <= '9' })
+}
+
+func walkKeys(d *json.Decoder, depth int, keyOK func(string) bool) error {
 	if depth > maxDepth {
 		return errors.New("nesting too deep")
 	}
@@ -245,7 +253,7 @@ func walk(d *json.Decoder, depth int) error {
 				return err
 			}
 			key, ok := k.(string)
-			if !ok || !bounded(key, 1, 64, func(r rune) bool { return r >= 'a' && r <= 'z' || r == '_' || r >= '0' && r <= '9' }) {
+			if !ok || !keyOK(key) {
 				return errors.New("noncanonical key")
 			}
 			if seen[key] {
@@ -253,7 +261,7 @@ func walk(d *json.Decoder, depth int) error {
 			}
 			seen[key] = true
 		}
-		if err := walk(d, depth+1); err != nil {
+		if err := walkKeys(d, depth+1, keyOK); err != nil {
 			return err
 		}
 	}
@@ -262,6 +270,10 @@ func walk(d *json.Decoder, depth int) error {
 }
 
 func decode(r io.Reader, limit int, target any) error {
+	return decodeKeys(r, limit, target, canonicalKey)
+}
+
+func decodeKeys(r io.Reader, limit int, target any, keyOK func(string) bool) error {
 	data, err := io.ReadAll(io.LimitReader(r, int64(limit)+1))
 	if err != nil {
 		return errors.New("wire read failed")
@@ -277,7 +289,7 @@ func decode(r io.Reader, limit int, target any) error {
 		return errors.New("frame must be an object")
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
-	if err := walk(d, 1); err != nil {
+	if err := walkKeys(d, 1, keyOK); err != nil {
 		return errors.New("invalid JSON structure")
 	}
 	if _, err := d.Token(); err != io.EOF {
