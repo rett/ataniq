@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Keep qualification campaign fences sticky across early save/create failures
+  and later successful completions. Publish phase/reason only after durable
+  replacement, validate ownership before failure markers, and retain restart
+  fencing without changing cleanup or launch authority.
 - Read qualification subject ELF dependencies from loader-visible program headers
   and bounded runtime tables; reject RPATH/RUNPATH tags and malformed dependency
   strings even with absent or mismatched section headers, sharing checks across

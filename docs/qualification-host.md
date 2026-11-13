@@ -135,7 +135,17 @@ retains root dev/inode/owner, boot ID, unique nonhyphen slice/service names,
 scope of cleanup authority, finite deadlines, profile, request/role IDs, exact
 arguments, selected executable/BPF digests and owned frozen copies. Filesystem
 sync failures poison the controller and leave an unresolved intent/marker;
-elapsed deadlines never clear launch uncertainty.
+elapsed deadlines never clear launch uncertainty. Phase/reason changes become
+visible in shared records only after replacement and directory sync succeed.
+Early encoding/size, entropy and ownership failures also set a sticky fence;
+they preserve the prior durable intent and cannot be cleared by a later save.
+Invalid phases/identities are rejected before mutation or marker writes. Failure
+markers are written only relative to a pinned, validated owned attempt directory.
+If an earlier failure had no safe marker destination, a later update first
+requires a durable marker at its validated destination. Thus even a subsequent
+successful completion keeps new starts blocked in that controller and on restart.
+Initial creation failures likewise remain fenced; cleanup evidence does not
+authorize ignoring a durability fence or creating a replacement attempt.
 
 The driver first checks that the service is not found, and the generated slice
 is inactive with empty ControlGroup/FragmentPath and no pending job. A generated
