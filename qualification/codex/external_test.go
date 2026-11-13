@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -61,7 +62,7 @@ func TestExternalCodex(t *testing.T) {
 	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "CODEX_HOME=" + ch, "TMPDIR=" + root}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	version := exec.CommandContext(ctx, path, "--version")
+	version := qualificationCommand(ctx, path, "--version")
 	version.Env = env
 	version.Dir = work
 	var versionErr bytes.Buffer
@@ -189,7 +190,7 @@ func TestExternalCodex(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ch, "config.toml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(ctx, path, "app-server", "--stdio", "--strict-config")
+	cmd := qualificationCommand(ctx, path, "app-server", "--stdio", "--strict-config")
 	cmd.Env = env
 	cmd.Dir = work
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -207,9 +208,18 @@ func TestExternalCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stdin.Close()
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		cmd.Wait()
+		if err := stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			t.Errorf("close subject stdin: %v", err)
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			t.Errorf("kill subject group: %v", err)
+		}
+		if err := cmd.Wait(); err != nil {
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || !exit.ProcessState.Sys().(syscall.WaitStatus).Signaled() || exit.ProcessState.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+				t.Errorf("wait for subject: %v", err)
+			}
+		}
 		t.Logf("subject stderr: %s", stderr.String())
 	}()
 	messages := make(chan map[string]json.RawMessage, 128)
@@ -382,6 +392,12 @@ func TestExternalCodex(t *testing.T) {
 		t.Errorf("forbidden network receipt: %s", f)
 	default:
 	}
+}
+
+func qualificationCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.WaitDelay = 500 * time.Millisecond
+	return cmd
 }
 
 // requestLedger records every upstream receipt, including rejected and malformed

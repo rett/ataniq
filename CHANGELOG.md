@@ -8,6 +8,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Bound Codex qualification subprocess output drains and report cleanup failures.
 - Reject extra or malformed Codex mock receipts and unsuccessful terminal turns.
 - Check every Codex mock request against the recorded complete tool profile,
   and document the request-gate fixture's admission limits.
