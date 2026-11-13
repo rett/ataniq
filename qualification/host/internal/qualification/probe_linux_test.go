@@ -157,8 +157,12 @@ func TestFakeFileOwnedFixtures(t *testing.T) {
 	}
 	r.Payload.File.Name = "missing"
 	o = Probe(r, Config{FixtureRoot: dir})
-	if o.Status != "inconclusive" || o.Errno == nil || *o.Errno != int(syscall.ENOENT) {
+	if o.Status != "observed" || o.Errno == nil || *o.Errno != int(syscall.ENOENT) {
 		t.Fatal("missing errno", o)
+	}
+	requireKnown(t, o, "stage", "lstat")
+	if len(o.Facts) != 1 {
+		t.Fatal("absent path implied a later operation", o)
 	}
 	r.Payload.File.Name = "fake"
 	if Probe(r, Config{}).Status != "error" {
@@ -331,8 +335,12 @@ func TestFakeUnixMissingFixture(t *testing.T) {
 	r := request(CaseFakeUnix)
 	r.Payload = &Payload{Unix: &UnixPayload{Name: "absent", Device: pointer(uint64(0)), Inode: pointer(uint64(0)), UID: pointer(uint32(0)), Nonce: "01234567"}}
 	o := Probe(r, Config{FixtureRoot: dir})
-	if o.Status != "inconclusive" || o.Errno == nil || *o.Errno != int(syscall.ENOENT) {
+	if o.Status != "observed" || o.Errno == nil || *o.Errno != int(syscall.ENOENT) {
 		t.Fatal("missing socket lost errno", o)
+	}
+	requireKnown(t, o, "stage", "lstat")
+	if len(o.Facts) != 1 {
+		t.Fatal("absent socket implied connect", o)
 	}
 	r.Payload.Unix.Inode = pointer(uint64(1))
 	if socketIdentity(fakeInfo{mode: os.ModeSocket}, r.Payload.Unix) {

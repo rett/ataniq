@@ -71,8 +71,12 @@ type UnixPayload struct {
 	Name   string  `json:"name"`
 	Device *uint64 `json:"device"`
 	Inode  *uint64 `json:"inode"`
-	UID    *uint32 `json:"uid"`
-	Nonce  string  `json:"nonce"`
+	// UID is both the inode owner and listener credential as projected into the
+	// probe's user namespace, derived by the trusted driver from verified maps.
+	// Only a same-owner fixture without idmapped ownership shifts is supported;
+	// absence is invalid and must never fall back to a host UID or zero.
+	UID   *uint32 `json:"uid"`
+	Nonce string  `json:"nonce"`
 }
 
 type FDPayload struct {

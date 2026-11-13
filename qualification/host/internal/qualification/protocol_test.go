@@ -144,6 +144,24 @@ func TestPayloadAndFDValidation(t *testing.T) {
 	}
 }
 
+func TestUnixUIDPresenceAndProjectionValue(t *testing.T) {
+	r := request(CaseFakeUnix)
+	r.Payload = &Payload{Unix: &UnixPayload{Name: "socket", Device: pointer(uint64(1)), Inode: pointer(uint64(2)), UID: pointer(uint32(12345)), Nonce: "01234567"}}
+	for _, uid := range []uint32{0, 12345} {
+		r.Payload.Unix.UID = pointer(uid)
+		got, err := DecodeRequest(strings.NewReader(wire(t, r)))
+		if err != nil || got.Payload.Unix.UID == nil || *got.Payload.Unix.UID != uid {
+			t.Fatal("explicit projected UID lost", got, err)
+		}
+	}
+	input := wire(t, r)
+	for _, replacement := range []string{`"uid":null`, `"uid":-1`, `"uid":4294967296`} {
+		if _, err := DecodeRequest(strings.NewReader(strings.Replace(input, `"uid":12345`, replacement, 1))); err == nil {
+			t.Fatal("invalid UID accepted", replacement)
+		}
+	}
+}
+
 type shortWriter struct{ calls int }
 
 func (w *shortWriter) Write(p []byte) (int, error) { w.calls++; return len(p) - 1, nil }

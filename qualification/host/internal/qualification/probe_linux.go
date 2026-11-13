@@ -21,6 +21,10 @@ import (
 // Config is supplied by a trusted launcher, never decoded from the wire.
 // FixtureRoot must be an explicit frozen owned directory containing only fake
 // fixtures. Descriptor lifetime/ownership must remain stable throughout Probe.
+// For Unix Dial the trusted caller must freeze the complete fixture pathname,
+// its ancestors, mount mapping and all writable aliases for the entire call.
+// Root pins metadata access, but Dial resolves the original absolute pathname.
+// Nonce validation happens after connecting and cannot undo that exposure.
 type Config struct{ FixtureRoot string }
 
 func known(name, value string) Fact { return Fact{Name: name, State: "known", Value: &value} }
@@ -58,7 +62,7 @@ func Probe(r Request, cfg Config) Observation {
 		}
 		root, err := os.OpenRoot(cfg.FixtureRoot)
 		if err != nil {
-			operationError(&o, err)
+			incompleteOperation(&o, "fixture-root", err)
 			return o
 		}
 		defer root.Close()
@@ -79,49 +83,77 @@ func Probe(r Request, cfg Config) Observation {
 	return o
 }
 
-func operationError(o *Observation, err error) {
+// Record only the attempted stage. A known syscall termination is a raw
+// observation; the driver needs fixture/applied-state/paired-control evidence
+// to interpret it. Never infer that a later open/connect/read was attempted.
+func operationError(o *Observation, stage string, err error) {
 	o.Status = "inconclusive"
-	o.Reason = "operation failed or fixture unavailable"
+	o.Reason = "operation did not complete"
+	o.Errno = nil
 	var errno syscall.Errno
 	if errors.As(err, &errno) && errno > 0 && errno <= 4095 {
 		n := int(errno)
 		o.Errno = &n
+		o.Status = "observed"
+		o.Reason = "syscall returned errno"
 	}
-	o.Facts = append(o.Facts, unknown("operation"))
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		o.Status = "inconclusive"
+		o.Reason = "operation timed out"
+	}
+	o.Facts = append(o.Facts, known("stage", stage))
+}
+
+// Setup/validation failures and incomplete exchanges remain uncertain even if
+// a constituent syscall returned an errno. Earlier successful effects survive.
+func incompleteOperation(o *Observation, stage string, err error) {
+	operationError(o, stage, err)
+	o.Status = "inconclusive"
+	o.Reason = "fixture validation or exchange incomplete"
 }
 
 func fakeFile(o *Observation, r Request, root *os.Root) {
 	name := r.Payload.File.Name
 	before, err := root.Lstat(name)
 	if err != nil {
-		operationError(o, err)
+		operationError(o, "lstat", err)
 		return
 	}
 	if err := checkRegular(before, int64(r.MaxBytes)); err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "validate-file", err)
 		return
 	}
 	f, err := openFlat(root, name)
 	if err != nil {
-		operationError(o, err)
+		operationError(o, "open", err)
 		return
 	}
+	inspectOpenedFile(o, before, f)
+}
+
+// Keep open success independent of the subsequent metadata and close result.
+func inspectOpenedFile(o *Observation, before os.FileInfo, f interface {
+	Stat() (os.FileInfo, error)
+	Close() error
+}) {
+	o.Facts = append(o.Facts, known("opened", "true"))
 	opened, statErr := f.Stat()
 	closeErr := f.Close()
 	if statErr != nil {
-		operationError(o, statErr)
+		incompleteOperation(o, "fstat", statErr)
 		return
 	}
 	if closeErr != nil {
-		operationError(o, closeErr)
+		incompleteOperation(o, "close", closeErr)
 		return
 	}
 	if !same(before, opened) {
-		operationError(o, errors.New("fixture changed"))
+		incompleteOperation(o, "file-identity", errors.New("fixture changed"))
 		return
 	}
 	st := opened.Sys().(*syscall.Stat_t)
-	o.Facts = append(o.Facts, known("opened", "true"), known("device", strconv.FormatUint(uint64(st.Dev), 10)), known("inode", strconv.FormatUint(st.Ino, 10)), known("size", strconv.FormatInt(opened.Size(), 10)))
+	o.Facts = append(o.Facts, known("device", strconv.FormatUint(uint64(st.Dev), 10)), known("inode", strconv.FormatUint(st.Ino, 10)), known("size", strconv.FormatInt(opened.Size(), 10)))
 }
 
 func fakeFD(o *Observation, r Request) {
@@ -130,35 +162,32 @@ func fakeFD(o *Observation, r Request) {
 	// stdio, directory or socket; fstat identity and regular type must match.
 	var before syscall.Stat_t
 	if err := syscall.Fstat(*p.FD, &before); err != nil {
-		operationError(o, err)
+		operationError(o, "fstat", err)
 		return
 	}
 	match := uint64(before.Dev) == *p.Device && before.Ino == *p.Inode && before.Mode&syscall.S_IFMT == syscall.S_IFREG
 	o.Facts = append(o.Facts, known("identity_match", strconv.FormatBool(match)))
 	if !match {
-		o.Status = "inconclusive"
-		o.Reason = "descriptor does not identify expected regular fake fixture"
+		incompleteOperation(o, "fd-identity", errors.New("unexpected descriptor"))
 		return
 	}
 	if before.Size < 0 || before.Size > int64(r.MaxBytes) {
-		o.Status = "inconclusive"
-		o.Reason = "fake descriptor exceeds read bound"
+		incompleteOperation(o, "fd-size", errors.New("descriptor exceeds bound"))
 		return
 	}
 	buf := make([]byte, r.MaxBytes+1)
 	n, err := syscall.Pread(*p.FD, buf, 0)
 	if err != nil {
-		operationError(o, err)
+		operationError(o, "pread", err)
 		return
 	}
 	var after syscall.Stat_t
 	if err := syscall.Fstat(*p.FD, &after); err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "postread-fstat", err)
 		return
 	}
 	if !stableFD(before, after) || int64(n) != before.Size {
-		o.Status = "inconclusive"
-		o.Reason = "fake descriptor changed or read incomplete"
+		incompleteOperation(o, "postread-identity", errors.New("descriptor changed or read incomplete"))
 		return
 	}
 	digest := sha256.Sum256(buf[:n])
@@ -179,30 +208,30 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 	p := r.Payload.Unix
 	before, err := root.Lstat(p.Name)
 	if err != nil {
-		operationError(o, err)
+		operationError(o, "lstat", err)
 		return
 	}
 	if !socketIdentity(before, p) {
-		o.Status = "inconclusive"
-		o.Reason = "socket does not identify expected owned fixture"
+		incompleteOperation(o, "socket-identity", errors.New("unexpected socket"))
 		return
 	}
 	deadline := time.Now().Add(time.Duration(r.MaxDurationMS) * time.Millisecond)
 	d := net.Dialer{Deadline: deadline}
 	c, err := d.Dial("unix", filepath.Join(path, p.Name))
 	if err != nil {
-		operationError(o, err)
+		operationError(o, "connect", err)
 		return
 	}
+	o.Facts = append(o.Facts, known("connected", "true"))
 	defer c.Close()
 	if err = c.SetDeadline(deadline); err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "deadline", err)
 		return
 	}
 	u := c.(*net.UnixConn)
 	raw, err := u.SyscallConn()
 	if err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "syscall-conn", err)
 		return
 	}
 	var cred *syscall.Ucred
@@ -211,26 +240,24 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 	})
 	if err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "peer-control", err)
 		return
 	}
 	if credErr != nil {
-		operationError(o, credErr)
+		incompleteOperation(o, "peer-credentials", credErr)
 		return
 	}
 	if cred == nil || cred.Uid != *p.UID {
-		o.Status = "inconclusive"
-		o.Reason = "unexpected fixture peer"
+		incompleteOperation(o, "peer-identity", errors.New("unexpected peer"))
 		return
 	}
 	after, err := root.Lstat(p.Name)
 	if err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "endpoint-lstat", err)
 		return
 	}
 	if !same(before, after) {
-		o.Status = "inconclusive"
-		o.Reason = "socket fixture changed"
+		incompleteOperation(o, "endpoint-identity", errors.New("fixture changed"))
 		return
 	}
 	// Fixed synthetic protocol. No commands, arbitrary service requests or
@@ -239,6 +266,7 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 	if len(msg) > r.MaxBytes {
 		o.Status = "error"
 		o.Reason = "nonce frame exceeds max_bytes"
+		o.Facts = append(o.Facts, known("stage", "nonce-size"))
 		return
 	}
 	n, err := c.Write(msg)
@@ -246,15 +274,23 @@ func fakeUnix(o *Observation, r Request, root *os.Root, path string) {
 		err = io.ErrShortWrite
 	}
 	if err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "nonce-write", err)
 		return
 	}
 	response := make([]byte, len(msg))
 	if _, err = io.ReadFull(c, response); err != nil {
-		operationError(o, err)
+		incompleteOperation(o, "nonce-read", err)
 		return
 	}
-	o.Facts = append(o.Facts, known("connected", "true"), known("nonce_match", strconv.FormatBool(bytes.Equal(response, msg))))
+	match := bytes.Equal(response, msg)
+	o.Facts = append(o.Facts, known("nonce_match", strconv.FormatBool(match)))
+	if !match {
+		incompleteOperation(o, "nonce-compare", errors.New("unexpected nonce"))
+		return
+	}
+	if err := c.Close(); err != nil {
+		incompleteOperation(o, "close", err)
+	}
 }
 
 // Only these kernel metadata paths are read, plus the three own namespace
