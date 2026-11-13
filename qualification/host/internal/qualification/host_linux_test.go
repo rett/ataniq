@@ -897,8 +897,7 @@ func TestFreshNamesAndSeparateUnitShapes(t *testing.T) {
 }
 
 // Build an inert ELF transcript; no selected launcher is executed or resolved.
-func launcherTranscript(t *testing.T, interp string, tag elf.DynTag, value string) *elf.File {
-	t.Helper()
+func launcherBytes(interp string, tag elf.DynTag, value string) []byte {
 	b := make([]byte, 1024)
 	copy(b, "\x7fELF\x02\x01\x01")
 	put16 := func(o int, n uint16) { binary.LittleEndian.PutUint16(b[o:], n) }
@@ -910,30 +909,48 @@ func launcherTranscript(t *testing.T, interp string, tag elf.DynTag, value strin
 	put64(40, 768)
 	put16(52, 64)
 	put16(54, 56)
+	put16(56, 3)
 	put16(58, 64)
 	put16(60, 3)
+	// Loader-visible extents, independent of the optional section headers.
+	binary.LittleEndian.PutUint32(b[64:], uint32(elf.PT_LOAD))
+	put64(80, 0x400000)
+	put64(96, uint64(len(b)))
+	put64(104, uint64(len(b)))
 	if interp != "" {
-		put16(56, 1)
-		binary.LittleEndian.PutUint32(b[64:], uint32(elf.PT_INTERP))
-		put64(72, 256)
-		put64(96, uint64(len(interp)+1))
-		copy(b[256:], interp)
+		binary.LittleEndian.PutUint32(b[120:], uint32(elf.PT_INTERP))
+		put64(128, 320)
+		put64(152, uint64(len(interp)+1))
+		put64(160, uint64(len(interp)+1))
+		copy(b[320:], interp)
 	}
-	// Dynamic section links the bounded string table.
+	binary.LittleEndian.PutUint32(b[176:], uint32(elf.PT_DYNAMIC))
+	put64(184, 512)
+	put64(192, 0x400200)
+	put64(208, 64)
+	put64(216, 64)
+	put64(512, uint64(elf.DT_STRTAB))
+	put64(520, 0x400280)
+	put64(528, uint64(elf.DT_STRSZ))
+	put64(536, uint64(len(value)+2))
+	put64(544, uint64(tag))
+	put64(552, 1)
+	// Congruent section view for the original regression cases.
 	binary.LittleEndian.PutUint32(b[768+64+4:], uint32(elf.SHT_DYNAMIC))
 	put64(768+64+24, 512)
-	put64(768+64+32, 32)
+	put64(768+64+32, 64)
 	binary.LittleEndian.PutUint32(b[768+64+40:], 2)
 	put64(768+64+56, 16)
 	binary.LittleEndian.PutUint32(b[768+128+4:], uint32(elf.SHT_STRTAB))
 	put64(768+128+24, 640)
 	put64(768+128+32, uint64(len(value)+2))
 	copy(b[641:], value)
-	if tag != elf.DT_NULL {
-		put64(512, uint64(tag))
-		put64(520, 1)
-	}
-	e, err := elf.NewFile(bytes.NewReader(b))
+	return b
+}
+
+func launcherTranscript(t *testing.T, interp string, tag elf.DynTag, value string) *elf.File {
+	t.Helper()
+	e, err := elf.NewFile(bytes.NewReader(launcherBytes(interp, tag, value)))
 	if err != nil {
 		t.Fatal(err)
 	}

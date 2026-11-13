@@ -140,20 +140,6 @@ func subject(path string, executable, static, owned bool, limit int64) (Subject,
 	if fi.Mode().Perm()&0022 != 0 || owned && id.UID != uint32(os.Getuid()) || executable && fi.Mode().Perm()&0111 == 0 {
 		return Subject{}, nil, errors.New("untrusted subject permissions")
 	}
-	if static {
-		e, err := elf.NewFile(f)
-		if err != nil {
-			return Subject{}, nil, errors.New("static ELF subject required")
-		}
-		if e.Machine != elf.EM_X86_64 || e.Class != elf.ELFCLASS64 {
-			return Subject{}, nil, errors.New("Linux amd64 subject required")
-		}
-		for _, p := range e.Progs {
-			if p.Type == elf.PT_INTERP {
-				return Subject{}, nil, errors.New("unsupported: dynamic workload launch chain")
-			}
-		}
-	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil || int64(len(b)) != fi.Size() {
 		return Subject{}, nil, errors.New("subject read failed")
@@ -161,6 +147,16 @@ func subject(path string, executable, static, owned bool, limit int64) (Subject,
 	after, err := f.Stat()
 	if err != nil || !same(fi, after) {
 		return Subject{}, nil, errors.New("subject changed")
+	}
+	if static {
+		e, err := elf.NewFile(bytes.NewReader(b))
+		if err != nil {
+			return Subject{}, nil, errors.New("static ELF subject required")
+		}
+		meta, err := launcherELF(e)
+		if err != nil || !meta.DependencyClosureComplete {
+			return Subject{}, nil, errors.New("unsupported: static Linux amd64 workload required")
+		}
 	}
 	h := sha256.Sum256(b)
 	return Subject{Path: path, Identity: id, SHA256: hex.EncodeToString(h[:])}, b, nil
@@ -181,53 +177,6 @@ func chainSubject(name, path string, owned bool) (Subject, []byte, error) {
 	}
 	s.ELF = meta
 	return s, b, nil
-}
-
-func launcherELF(e *elf.File) (ELFMetadata, error) {
-	m := ELFMetadata{}
-	for _, p := range e.Progs {
-		if p.Type == elf.PT_INTERP {
-			if m.Interpreter != "" {
-				return m, errors.New("unsupported: multiple interpreters")
-			}
-			b, err := io.ReadAll(io.LimitReader(p.Open(), 4097))
-			if err != nil || len(b) < 2 || len(b) > 4096 || b[len(b)-1] != 0 {
-				return m, errors.New("unsupported: invalid interpreter")
-			}
-			m.Interpreter = string(b[:len(b)-1])
-			if !absolute(m.Interpreter) {
-				return m, errors.New("unsupported: nonabsolute interpreter")
-			}
-		}
-	}
-	needed, err := e.DynString(elf.DT_NEEDED)
-	if err != nil {
-		return m, err
-	}
-	rpath, err := e.DynString(elf.DT_RPATH)
-	if err != nil {
-		return m, err
-	}
-	runpath, err := e.DynString(elf.DT_RUNPATH)
-	if err != nil {
-		return m, err
-	}
-	if len(rpath) > 0 || len(runpath) > 0 {
-		return m, errors.New("unsupported: bwrap RPATH or RUNPATH")
-	}
-	if len(needed) > 32 {
-		return m, errors.New("unsupported: excessive launcher dependencies")
-	}
-	for _, n := range needed {
-		if !bounded(n, 1, 128, isName) {
-			return m, errors.New("unsupported: relative launcher dependency search")
-		}
-	}
-	m.Needed = strings.Join(needed, ",")
-	m.RPath = strings.Join(rpath, ":")
-	m.RunPath = strings.Join(runpath, ":")
-	m.DependencyClosureComplete = m.Interpreter == "" && len(needed) == 0
-	return m, nil
 }
 
 func DecodeHostConfig(r io.Reader) (HostConfig, error) {
