@@ -437,9 +437,10 @@ func withoutDescriptions(v any) any {
 	case map[string]any:
 		m := make(map[string]any, len(x))
 		for k, v := range x {
-			if k != "description" {
-				m[k] = withoutDescriptions(v)
+			if _, prose := v.(string); k == "description" && prose {
+				continue
 			}
+			m[k] = withoutDescriptions(v)
 		}
 		return m
 	case []any:
