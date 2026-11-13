@@ -5,3 +5,8 @@ All notable changes are recorded here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+
+- MIT license and copyright attribution to Everett C. Haimes III.
+- Initial MCP-first architecture brief and Go core/TypeScript UI decision.
