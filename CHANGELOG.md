@@ -8,6 +8,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Reject qualification ELF runtime metadata touched by overlapping PT_LOAD
+  mapping pages, including logically disjoint segments; check host-page rounding
+  overflow for both dynamic and runtime string extents.
 - Keep qualification campaign fences sticky across early save/create failures
   and later successful completions. Publish phase/reason only after durable
   replacement, validate ownership before failure markers, and retain restart

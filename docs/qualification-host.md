@@ -58,7 +58,13 @@ metadata are retained. The bounded reader uses the loader's PT_DYNAMIC and
 file-backed PT_LOAD view for DT_STRTAB/DT_STRSZ, even when section headers are
 absent or describe different tables. It rejects ambiguous/unmapped extents,
 unterminated tables, invalid dependency string offsets or termination, and
-path-valued dependencies. Any DT_RPATH/DT_RUNPATH tag is rejected by presence,
+path-valued dependencies. Metadata extents and PT_LOAD memory ranges are expanded
+to the actual host page size with checked addition/rounding: any other load
+touching a dynamic/string metadata page is unsupported, even with disjoint
+logical bytes. Linux's [elf_map](https://github.com/torvalds/linux/blob/v6.12/fs/binfmt_elf.c)
+maps whole pages, so a later load can replace those bytes from another file page.
+Fixtures check the Linux/amd64 4096-byte page premise; they do not execute the
+loader. Any DT_RPATH/DT_RUNPATH tag is rejected by presence,
 including empty or invalid strings, so the frozen copy cannot change relative
 loader searches. The reader accepts at most 128 program headers, 65536 bytes
 per dynamic/string table and 32 dependencies. Static driver/probe checks and
