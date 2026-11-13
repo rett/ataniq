@@ -198,8 +198,16 @@ func TestExternalCodex(t *testing.T) {
 		return cleanupErr
 	}
 	defer func() {
-		if err := cleanup(); err != nil {
+		err := cleanup()
+		if err != nil {
 			t.Errorf("cleanup: %v", err)
+		}
+		if t.Failed() || err != nil {
+			if err != nil {
+				t.Log("ledger snapshots are provisional: cleanup did not complete successfully")
+			}
+			t.Logf("frontend ledger: %s", front.snapshot())
+			t.Logf("upstream ledger: %s", ledger.snapshot())
 		}
 	}()
 	messages := make(chan map[string]json.RawMessage, 128)
@@ -389,6 +397,12 @@ type requestLedger struct {
 	failures       []string
 }
 
+func (l *requestLedger) snapshot() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return fmt.Sprintf("count=%d, pending=%d, failures=%v", l.count, l.pending, l.failures)
+}
+
 func (l *requestLedger) handler(limit int, respond func(http.ResponseWriter, int)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		l.mu.Lock()
@@ -461,6 +475,12 @@ type frontLedger struct {
 	mu             sync.Mutex
 	count, pending int
 	failures       []string
+}
+
+func (l *frontLedger) snapshot() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return fmt.Sprintf("count=%d, pending=%d, failures=%v", l.count, l.pending, l.failures)
 }
 
 func (l *frontLedger) handler(gate *requestGate, received chan<- int, forbidden chan<- string) http.Handler {

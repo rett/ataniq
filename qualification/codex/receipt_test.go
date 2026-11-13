@@ -140,7 +140,11 @@ func TestOfflineReceiptSnapshot(t *testing.T) {
 }
 
 func TestFrontendRejections(t *testing.T) {
-	for _, body := range []string{"{", strings.Repeat("x", 4<<20)} {
+	oversized := `{}` + strings.Repeat(" ", 4<<20)
+	if !json.Valid([]byte(oversized)) || !json.Valid([]byte(oversized[:4<<20])) {
+		t.Fatal("oversized fixture and its first 4 MiB must be valid JSON")
+	}
+	for _, body := range []string{"{", strings.Repeat("x", 4<<20), oversized} {
 		front, backend := &frontLedger{}, &requestLedger{}
 		_, upstream := pipeHTTP(t, backend.handler(1, func(w http.ResponseWriter, _ int) {}))
 		gate := &requestGate{online: true, epoch: 1, changed: make(chan struct{}), upstream: "http://mock/", client: upstream}
@@ -194,7 +198,7 @@ func TestShutdownWaitsForHandlerAccounting(t *testing.T) {
 	if err := <-drained; err != nil {
 		t.Fatal(err)
 	}
-	if err := front.check(0); err == nil {
-		t.Fatal("late request was invisible after drain")
+	if err := front.check(1); err != nil {
+		t.Fatalf("handler not fully accounted after drain: %v", err)
 	}
 }
