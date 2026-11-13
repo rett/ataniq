@@ -81,7 +81,8 @@ func TestExternalCodex(t *testing.T) {
 		t.Fatalf("mock listener: %v", err)
 	}
 	defer listener.Close()
-	ledger := &requestLedger{arrival: make(chan struct{}, 1)}
+	ledger := &requestLedger{}
+	front := &frontLedger{}
 	received := make(chan int, 16)
 	forbidden := make(chan string, 16)
 	// The upstream is separate from the admission server, using in-memory HTTP.
@@ -138,47 +139,7 @@ func TestExternalCodex(t *testing.T) {
 	gate := &requestGate{online: true, epoch: 1, changed: make(chan struct{}), upstream: "http://mock/responses", client: &http.Client{Transport: tr, Timeout: 5 * time.Second}}
 	// A request received while offline waits for a fresh authority decision. It is
 	// assigned the current epoch only after restoration, then passes through send.
-	proxy := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/v1/responses" {
-			select {
-			case forbidden <- r.Method + " " + r.URL.Path:
-			default:
-			}
-			http.NotFound(w, r)
-			return
-		}
-		b, e := io.ReadAll(io.LimitReader(r.Body, 4<<20))
-		if e != nil || len(b) >= 4<<20 {
-			http.Error(w, "body", 400)
-			return
-		}
-		select {
-		case received <- 1:
-		default:
-		}
-		for {
-			gate.mu.Lock()
-			online, epoch, changed := gate.online, gate.epoch, gate.changed
-			gate.mu.Unlock()
-			if online {
-				resp, e := gate.send(r.Context(), epoch, string(b))
-				if e != nil {
-					http.Error(w, "gate", 503)
-					return
-				}
-				defer resp.Body.Close()
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.WriteHeader(resp.StatusCode)
-				_, _ = io.Copy(w, resp.Body)
-				return
-			}
-			select {
-			case <-changed:
-			case <-r.Context().Done():
-				return
-			}
-		}
-	})}
+	proxy := &http.Server{ReadHeaderTimeout: time.Second, Handler: front.handler(gate, received, forbidden)}
 	go proxy.Serve(listener)
 	defer proxy.Close()
 	features := strings.Fields("shell_tool multi_agent multi_agent_v2 goals guardian_approval apps plugins remote_plugin code_mode browser_use browser_use_external computer_use in_app_browser image_generation hooks skill_mcp_dependency_install workspace_dependencies view_image shell_snapshot unbounded_connection_retries enable_request_compression memories skill_search")
@@ -207,20 +168,39 @@ func TestExternalCodex(t *testing.T) {
 	if err = cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-			t.Errorf("close subject stdin: %v", err)
-		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			t.Errorf("kill subject group: %v", err)
-		}
-		if err := cmd.Wait(); err != nil {
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) || !exit.ProcessState.Sys().(syscall.WaitStatus).Signaled() || exit.ProcessState.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
-				t.Errorf("wait for subject: %v", err)
+	var cleanupOnce sync.Once
+	var cleanupErr error
+	cleanup := func() error {
+		cleanupOnce.Do(func() {
+			var errs []error
+			if err := stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				errs = append(errs, fmt.Errorf("close subject stdin: %w", err))
 			}
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				errs = append(errs, fmt.Errorf("kill subject group: %w", err))
+			}
+			if err := cmd.Wait(); err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || !exit.ProcessState.Sys().(syscall.WaitStatus).Signaled() || exit.ProcessState.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+					errs = append(errs, fmt.Errorf("wait for subject: %w", err))
+				}
+			}
+			if err := shutdownServer(proxy); err != nil {
+				errs = append(errs, fmt.Errorf("proxy: %w", err))
+			}
+			tr.CloseIdleConnections()
+			if err := shutdownServer(upstream); err != nil {
+				errs = append(errs, fmt.Errorf("upstream: %w", err))
+			}
+			cleanupErr = errors.Join(errs...)
+			t.Logf("subject stderr: %s", stderr.String())
+		})
+		return cleanupErr
+	}
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup: %v", err)
 		}
-		t.Logf("subject stderr: %s", stderr.String())
 	}()
 	messages := make(chan map[string]json.RawMessage, 128)
 	readErr := make(chan error, 1)
@@ -290,15 +270,8 @@ func TestExternalCodex(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("native continuation did not reach gate")
 				}
-				select {
-				case <-ledger.arrival:
-				default:
-					t.Fatal("first upstream request missing")
-				}
-				select {
-				case <-ledger.arrival:
-					t.Fatal("continuation crossed offline gate")
-				case <-time.After(200 * time.Millisecond):
+				if err := observeOffline(ledger, 200*time.Millisecond); err != nil {
+					t.Fatal(err)
 				}
 				held = true
 				gate.set(true, 2)
@@ -335,6 +308,12 @@ func TestExternalCodex(t *testing.T) {
 	}
 	if callbacks != 1 || !held {
 		t.Fatal("dynamic callback and held native continuation required")
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("quiescence: %v", err)
+	}
+	if err := front.check(len(scripts) + 2); err != nil {
+		t.Fatal(err)
 	}
 	last, err := ledger.check(len(scripts) + 2)
 	if err != nil {
@@ -401,14 +380,13 @@ func qualificationCommand(ctx context.Context, path string, args ...string) *exe
 }
 
 // requestLedger records every upstream receipt, including rejected and malformed
-// requests. The notification is only for the offline gate observation.
+// requests.
 type requestLedger struct {
 	mu             sync.Mutex
 	count, pending int
 	lastIndex      int
 	last           []byte
 	failures       []string
-	arrival        chan struct{}
 }
 
 func (l *requestLedger) handler(limit int, respond func(http.ResponseWriter, int)) http.Handler {
@@ -435,10 +413,6 @@ func (l *requestLedger) handler(limit int, respond func(http.ResponseWriter, int
 			l.lastIndex, l.last = i, b
 		}
 		l.mu.Unlock()
-		select {
-		case l.arrival <- struct{}{}:
-		default:
-		}
 		if err != nil || len(b) >= 4<<20 {
 			http.Error(w, "bad body", 400)
 			return
@@ -458,6 +432,105 @@ func (l *requestLedger) check(want int) ([]byte, error) {
 		return nil, fmt.Errorf("upstream requests=%d, want %d, pending=%d, failures=%v", l.count, want, l.pending, l.failures)
 	}
 	return l.last, nil
+}
+
+// observeOffline uses monotonic receipts on both sides of the hold; notifications
+// cannot prove that an earlier receipt was not coalesced.
+func observeOffline(l *requestLedger, hold time.Duration) error {
+	if _, err := l.check(1); err != nil {
+		return fmt.Errorf("before offline hold: %w", err)
+	}
+	time.Sleep(hold)
+	if _, err := l.check(1); err != nil {
+		return fmt.Errorf("after offline hold: %w", err)
+	}
+	return nil
+}
+
+// shutdownServer fails closed if accepted handlers cannot finish in time.
+func shutdownServer(s *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		return errors.Join(err, s.Close())
+	}
+	return nil
+}
+
+type frontLedger struct {
+	mu             sync.Mutex
+	count, pending int
+	failures       []string
+}
+
+func (l *frontLedger) handler(gate *requestGate, received chan<- int, forbidden chan<- string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		l.mu.Lock()
+		l.count++
+		l.pending++
+		i := l.count
+		l.mu.Unlock()
+		defer func() { l.mu.Lock(); l.pending--; l.mu.Unlock() }()
+		fail := func(reason string) {
+			l.mu.Lock()
+			l.failures = append(l.failures, fmt.Sprintf("attempt %d: %s", i, reason))
+			l.mu.Unlock()
+		}
+		if r.Method != "POST" || r.URL.Path != "/v1/responses" {
+			fail("unknown method or path")
+			select {
+			case forbidden <- r.Method + " " + r.URL.Path:
+			default:
+			}
+			http.NotFound(w, r)
+			return
+		}
+		b, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		if err != nil || len(b) >= 4<<20 || !json.Valid(b) {
+			fail(fmt.Sprintf("invalid or oversized body: %v", err))
+			http.Error(w, "body", 400)
+			return
+		}
+		select {
+		case received <- 1:
+		default:
+		}
+		for {
+			gate.mu.Lock()
+			online, epoch, changed := gate.online, gate.epoch, gate.changed
+			gate.mu.Unlock()
+			if online {
+				resp, err := gate.send(r.Context(), epoch, string(b))
+				if err != nil {
+					fail(fmt.Sprintf("gate: %v", err))
+					http.Error(w, "gate", 503)
+					return
+				}
+				defer resp.Body.Close()
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(resp.StatusCode)
+				if _, err := io.Copy(w, resp.Body); err != nil {
+					fail(fmt.Sprintf("response: %v", err))
+				}
+				return
+			}
+			select {
+			case <-changed:
+			case <-r.Context().Done():
+				fail("cancelled while offline")
+				return
+			}
+		}
+	})
+}
+
+func (l *frontLedger) check(want int) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.count != want || l.pending != 0 || len(l.failures) != 0 {
+		return fmt.Errorf("frontend attempts=%d, want %d, pending=%d, failures=%v", l.count, want, l.pending, l.failures)
+	}
+	return nil
 }
 
 func validateTerminal(params json.RawMessage) error {

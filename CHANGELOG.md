@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Check Codex proxy attempts and upstream receipts after bounded fixture shutdown,
+  and detect continuations that cross the offline gate before observation.
 - Bound Codex qualification subprocess output drains and report cleanup failures.
 - Reject extra or malformed Codex mock receipts and unsuccessful terminal turns.
 - Check every Codex mock request against the recorded complete tool profile,
