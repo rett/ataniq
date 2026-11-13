@@ -6,8 +6,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Restore fixture checks for isolated Go environment settings.
+- Confine documentation source reads to the checked root.
+- Record the verified bootstrap toolchain for offline checks with older Go drivers.
+- Isolate Go module mode and confine documentation link checks to their root.
+- Enforce the exact Go pin and isolate offline gates from inherited Go settings.
+
 ### Added
 
+- Offline checks for local documentation links, references and heading anchors.
+- Pinned Go development toolchain, bootstrap, offline doctor and test gates.
 - Clarified dispatch fencing, single-use approvals, authorization projections,
   operations views and federation limits in the proposed design contract.
 - README entry point to the design contract and its selected client and runtime direction.
