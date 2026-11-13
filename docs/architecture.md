@@ -1,6 +1,8 @@
 # Architecture brief
 
-Status: approved direction, pending implementation and interoperability tests.
+Status: planned direction, pending implementation and interoperability tests.
+The [design contract baseline](design/README.md) specifies the selected runtime,
+client, security and work-model boundaries and supersedes older assumptions.
 
 ## Core and integrations
 
@@ -9,8 +11,8 @@ idempotency, admission limits, event cursors, and restart reconciliation.
 A session, an agent conversation, and a job attempt are distinct identities.
 A live tmux session is not evidence that an agent completed its task.
 
-Agents use MCP tools and resources. The UI and CLI invoke the same application
-services and authorization rules. Provider-specific APIs live behind adapters.
+Agents may use MCP tools and resources. The UI and CLI invoke the same Ataniq
+command and event contract and authorization rules. Provider APIs use adapters.
 MCP transport sessions must not become durable job identities or authorization
 credentials.
 
@@ -21,11 +23,11 @@ boundaries. The core must not load arbitrary executable packs in-process.
 Provider-specific capabilities use namespaced, validated extensions.
 Declared support and independently observed support are recorded separately.
 
-The first adapters are tmux-manager for managed execution, qargi for project
-development, and Codex App Server for conversation observation. Codex's
-`agents` command is an interactive command center; its underlying protocol
-provides structured thread listing and status events. Observation covers only
-connected servers. Unknown or disconnected state must remain explicit.
+The proposed execution backend is an Ataniq runner supervised by systemd on
+Linux, contingent on security qualification. tmux may serve diagnostics.
+Codex is the first live provider target, subject to version-specific capability
+and security evidence; qargi integration is limited to qualified public APIs.
+Unknown or disconnected state must remain explicit.
 
 ## Authentication and authority
 
@@ -60,8 +62,8 @@ revocation, recovery, and implementation acceptance criteria.
    using fake identity and execution backends.
 3. Add durable jobs, idempotent launch, event pagination, cancellation, and
    crash/restart reconciliation. Store explicit completion evidence.
-4. Add a tmux-manager adapter with private-socket tests and precise job targets.
-5. Add Codex observation and qargi integration as independently reviewed packs.
+4. Qualify a runner boundary with private-socket tests and precise job targets.
+5. Add Codex and qargi integrations as independently reviewed adapters.
 6. Implement federation in the staged slices defined by its contract.
 7. Add the management UI and project-local outcome measurement and experiments.
 
