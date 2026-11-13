@@ -8,6 +8,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Offline checks for local documentation links, references and heading anchors.
 - Pinned Go development toolchain, bootstrap, offline doctor and test gates.
 - Clarified dispatch fencing, single-use approvals, authorization projections,
   operations views and federation limits in the proposed design contract.
