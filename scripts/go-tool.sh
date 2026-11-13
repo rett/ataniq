@@ -2,13 +2,18 @@
 set -eu
 cd "$(dirname "$0")/.."
 version=$(cat .go-version)
-case "$version" in
-  *[!0-9.]*|'') echo 'error: invalid Go toolchain pin' >&2; exit 1 ;;
-esac
-export GOENV=off GOWORK=off
-export GOTOOLCHAIN="go${version}+auto"
+# Accept only a released Go 1.x patch version, with a toolchain-aware minor.
+if ! printf '%s\n' "$version" | grep -Eq '^1\.(2[1-9]|[3-9][0-9]|[1-9][0-9]{2,})\.(0|[1-9][0-9]*)$' ||
+   [ "$(printf '%s\n' "$version" | wc -l)" -ne 1 ]; then
+  echo 'error: invalid Go toolchain pin' >&2
+  exit 1
+fi
+export GOENV=off GOWORK=off GOFLAGS=
+export GOPRIVATE= GONOPROXY=none GONOSUMDB=none
+export GOTOOLCHAIN="go${version}"
 case "${1-}" in
   doctor)
+    export GOPROXY=off GOSUMDB=off
     status=0
     for tool in git make sh go; do
       if command -v "$tool" >/dev/null 2>&1; then
@@ -19,7 +24,7 @@ case "${1-}" in
       fi
     done
     if command -v go >/dev/null 2>&1; then
-      actual=$(GOPROXY=off GOSUMDB=off go version 2>/dev/null) || actual=
+      actual=$(go version 2>/dev/null) || actual=
       case "$actual" in
         "go version go${version} "*) printf 'ok: %s\n' "$actual" ;;
         *) printf 'fail: selected Go %s unavailable or mismatched\n' "$version"; status=1 ;;
@@ -29,6 +34,7 @@ case "${1-}" in
     ;;
   bootstrap)
     command -v go >/dev/null 2>&1 || { echo 'missing: Go bootstrap driver' >&2; exit 1; }
+    export GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org
     go version
     go mod download
     ;;

@@ -34,9 +34,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
 Install Git, Make, a POSIX shell and a Go bootstrap driver with toolchain
 selection support (Go 1.21 or newer). The driver selects the developer Go
 version pinned in `.go-version`; see [Go toolchains](https://go.dev/doc/toolchain).
-Review `make -n bootstrap` before running `make bootstrap`. Run `make doctor`
-before testing; `make test-dev` checks development tooling and `make test`
-runs the complete offline suite.
+Review `make -n bootstrap` and `scripts/go-tool.sh` before running `make bootstrap`.
+The helper selects the exact pinned toolchain and downloads it and module dependencies
+using Go's verified mechanism. `make doctor` checks prerequisites offline; both
+`make test-dev` (development tooling) and `make test` (the complete offline suite)
+run doctor first.
 
 ## License
 

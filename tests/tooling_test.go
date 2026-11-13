@@ -20,7 +20,7 @@ func root(t *testing.T) string {
 func fakePath(t *testing.T, goScript string) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"git", "make", "sh", "dirname", "cat"} {
+	for _, name := range []string{"git", "make", "sh", "dirname", "cat", "grep", "wc"} {
 		path, err := exec.LookPath(name)
 		if err != nil {
 			t.Fatal(err)
@@ -44,7 +44,7 @@ func TestDoctor(t *testing.T) {
 	}
 	version := strings.TrimSpace(string(pin))
 	// The driver simulates an older executable selecting a cached toolchain.
-	selected := "[ \"$GOENV\" = off ] && [ \"$GOWORK\" = off ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] && [ \"$GOTOOLCHAIN\" = go" + version + "+auto ] || exit 7\nprintf 'go version go" + version + " linux/amd64\\n'\n"
+	selected := "[ \"$GOENV\" = off ] && [ \"$GOWORK\" = off ] && [ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] && [ \"$GOTOOLCHAIN\" = go" + version + " ] && [ -z \"$GOFLAGS\" ] && [ -z \"$GOPRIVATE\" ] && [ \"$GONOPROXY\" = none ] && [ \"$GONOSUMDB\" = none ] || exit 7\nprintf 'go version go" + version + " linux/amd64\\n'\n"
 	for _, tc := range []struct {
 		name, driver, want string
 		pass               bool
@@ -57,7 +57,7 @@ func TestDoctor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", "doctor")
 			cmd.Dir = root(t)
-			cmd.Env = append(os.Environ(), "PATH="+fakePath(t, tc.driver), "GOENV=hostile", "GOWORK=hostile", "GOTOOLCHAIN=local", "GOPROXY=https://invalid.example")
+			cmd.Env = append(os.Environ(), "PATH="+fakePath(t, tc.driver), "GOENV=hostile", "GOWORK=hostile", "GOTOOLCHAIN=local", "GOPROXY=https://invalid.example", "GOSUMDB=hostile", "GOFLAGS=-mod=mod", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*")
 			out, err := cmd.CombinedOutput()
 			if (err == nil) != tc.pass || !strings.Contains(string(out), tc.want) {
 				t.Fatalf("output %s; error %v", out, err)
@@ -72,7 +72,74 @@ func TestBootstrapPreview(t *testing.T) {
 	cmd.Dir = root(t)
 	cmd.Env = append(os.Environ(), "PATH="+dir)
 	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "go mod download") || !strings.Contains(string(out), "go version") {
+	if err != nil || !strings.Contains(string(out), "sh scripts/go-tool.sh bootstrap") {
 		t.Fatalf("preview %s; error %v", out, err)
+	}
+}
+
+// Invalid pins must fail before the driver can execute, even through make.
+func TestInvalidPin(t *testing.T) {
+	for _, pin := range []string{"1.27.2; touch injected", "1.27.2\n1.27.3", "1.027.2", "1.27", "1.27.02", "1.20.1", "1.27.2$(touch injected)"} {
+		t.Run(pin, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "scripts"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"Makefile", "scripts/go-tool.sh"} {
+				b, err := os.ReadFile(filepath.Join(root(t), name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), b, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".go-version"), []byte(pin+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			driver := fakePath(t, "touch invoked\nexit 0\n")
+			for _, action := range []string{"bootstrap", "doctor", "test-dev"} {
+				cmd := exec.Command(filepath.Join(driver, "make"), action)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), "PATH="+driver)
+				out, err := cmd.CombinedOutput()
+				if err == nil || !strings.Contains(string(out), "error: invalid Go toolchain pin") {
+					t.Fatalf("%s: %s; %v", action, out, err)
+				}
+			}
+			for _, name := range []string{"invoked", "injected"} {
+				if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+					t.Fatalf("unexpected %s", name)
+				}
+			}
+		})
+	}
+}
+
+func TestHelperEnvironment(t *testing.T) {
+	pin, err := os.ReadFile(filepath.Join(root(t), ".go-version"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := strings.TrimSpace(string(pin))
+	common := "[ \"$GOENV\" = off ] && [ \"$GOWORK\" = off ] && [ -z \"$GOFLAGS\" ] && [ -z \"$GOPRIVATE\" ] && [ \"$GONOPROXY\" = none ] && [ \"$GONOSUMDB\" = none ] && [ \"$GOTOOLCHAIN\" = go" + version + " ] || exit 9\n"
+	for _, tc := range []struct{ action, script string }{
+		{"bootstrap", "[ \"$GOPROXY\" = https://proxy.golang.org,direct ] && [ \"$GOSUMDB\" = sum.golang.org ] || exit 8\n"},
+		{"test", "[ \"$GOPROXY\" = off ] && [ \"$GOSUMDB\" = off ] || exit 8\n"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", tc.action)
+			cmd.Dir = root(t)
+			cmd.Env = append(os.Environ(), "PATH="+fakePath(t, common+tc.script), "GOENV=hostile", "GOWORK=hostile", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=auto", "GOPROXY=direct", "GOSUMDB=off", "GOPRIVATE=*", "GONOPROXY=*", "GONOSUMDB=*")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("%s: %v", out, err)
+			}
+		})
+	}
+	cmd := exec.Command("/bin/sh", "scripts/go-tool.sh", "bootstrap")
+	cmd.Dir = root(t)
+	cmd.Env = append(os.Environ(), "PATH="+fakePath(t, ""))
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "missing: Go bootstrap driver") {
+		t.Fatalf("%s: %v", out, err)
 	}
 }

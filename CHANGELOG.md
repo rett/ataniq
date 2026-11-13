@@ -6,6 +6,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Enforce the exact Go pin and isolate offline gates from inherited Go settings.
+
 ### Added
 
 - Offline checks for local documentation links, references and heading anchors.
