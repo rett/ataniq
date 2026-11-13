@@ -8,6 +8,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Preserve sandbox probe open/connect effects and exact failed stages with
+  known errno, while keeping incomplete exchanges inconclusive; specify Unix
+  fixture UID projection and complete frozen-path caller requirements.
 - Preserve Codex fixture ledger diagnostics on failure and strengthen shutdown
   and oversized request regression checks.
 - Check Codex proxy attempts and upstream receipts after bounded fixture shutdown,

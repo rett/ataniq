@@ -83,6 +83,14 @@ credentials and real services from this root. Fixture paths, identities and
 descriptor lifetimes must remain stable throughout the operation. A static
 root-confinement API alone cannot establish those premises.
 
+For `fake-unix`, the trusted caller must independently freeze the **complete
+fixture pathname**, all pathname ancestors, the mount mapping and every writable
+alias for the entire call. Metadata uses the pinned `os.Root`, but `net.Dial`
+resolves the original absolute pathname again. Root alone does not confine Dial.
+Nonce validation follows connection and cannot reverse exposure to a substituted
+endpoint. Mutable arbitrary host paths remain unsupported; this tranche adds no
+path-freezing mechanism or backend enforcement of this trusted caller premise.
+
 `inventory` and `fake-fd` do not need a fixture root. Run inventory only as an
 explicit opt-in operation: it reads the limited own-process kernel metadata
 listed below. No CLI invocation is an isolation assertion. Flags accept no
@@ -125,6 +133,15 @@ Pread. The FD operation does not change the shared file offset or close the
 caller-owned FD. It emits only identity/digest comparisons, never bytes or
 an observed digest. Injection and inheritance controls are not implemented.
 
+`UnixPayload.UID` is the expected inode owner **and** listener credential in the
+probe's user-namespace projection. The future trusted driver must derive it from
+verified UID mappings. A host UID or zero is never a fallback for missing mapping
+evidence. Explicit zero is valid only when verified in that projection. This
+single field covers only the deliberate same-owner inode/listener fixture with
+no idmapped ownership shift. Differently owned or idmapped endpoints remain
+unsupported. UID presence/range and synthetic comparison tests do not qualify
+actual namespace mapping or a future driver.
+
 Names are 1–64 ASCII letters, digits, dots, underscores or hyphens, cannot
 start with a dot or contain `..`, and are flat: no path separators, absolute
 paths, traversal or proc aliases. Fake-file rejects links, nonregular files
@@ -137,7 +154,8 @@ exchange. It sends `ataniq-fixture-v1 <nonce>\n` and compares one fixed-length
 reply with that exact frame under a deadline. This is a fresh owned fake
 stream fixture only: no arbitrary address, abstract name, datagram, real bus,
 command or ancillary-FD protocol. A missing path retains numeric errno and
-is inconclusive. A working outside positive control and listener receipts
+the exact `lstat` stage; it says nothing about a connection attempt. A working
+outside positive control and listener receipts
 remain responsibilities of the future driver. No connection result alone
 qualifies isolation or authenticates a product service.
 
@@ -158,10 +176,38 @@ Statuses have these meanings:
 
 | Status | Meaning |
 | --- | --- |
-| `observed` | Requested operation completed with known observations; comparisons can be false |
+| `observed` | Completed stage with known observations, including syscall errno; comparisons can be false |
 | `inconclusive` | Missing, unavailable, excessive, unstable or incomplete metadata/fixture/operation |
 | `unsupported` | Recognized future case; no operation implemented |
 | `error` | Invalid request/configuration; no usable case result |
+
+Core-operation failures include a known `stage` fact naming the exact failed
+stage. A completed syscall returning a known errno is `observed`, including
+denial at `lstat`, `open`, `connect`, initial FD `fstat` or `pread`. For example,
+`stage:"lstat"` with ENOENT records only the failed metadata lookup; it never
+implies `open` or `connect` was attempted. A visible owned socket whose connect
+returns ECONNREFUSED records `stage:"connect"`. Neither establishes protection.
+The future driver combines valid fixtures, applied state and paired working
+controls to determine a qualification outcome. Missing fixtures cannot qualify
+isolation even when their failed lookup is a complete raw observation.
+
+An unavailable `fixture-root`, rejected `validate-file`, `file-identity`,
+`fd-identity`, `fd-size`, `postread-fstat`/`postread-identity`, or
+`socket-identity` check remains inconclusive. Post-open `fstat`/`close` failures
+retain uncertainty about completion. Unix failures after connection identify
+`deadline`, `syscall-conn`, `peer-control`, `peer-credentials`, `peer-identity`,
+`endpoint-lstat`, `endpoint-identity`, `nonce-write`, `nonce-read`,
+`nonce-compare` or `close` as applicable. Incomplete EOF, short-write, timeout or
+mismatched nonce exchanges remain inconclusive and retain any known errno.
+An insufficient nonce-frame byte budget reports `error` at `nonce-size`.
+
+`opened:"true"` is recorded immediately after successful file open, and
+`connected:"true"` immediately after successful Unix dial. All later failures
+preserve these effects, including failed validation, close or nonce exchange.
+A full mismatched reply records `nonce_match:"false"` with the inconclusive
+`nonce-compare` stage. An incomplete reply does not imply a known nonce result.
+Absent effect facts never mean false. The generic unknown `operation` fact is
+replaced by exact failure stages; no workload qualification flag is added.
 
 There are at most 256 uniquely named facts. Fact names are case-sensitive
 ASCII names up to 64 bytes. Each fact has `state:"known"` and an explicit
@@ -267,3 +313,11 @@ the selected-Go final-symlink behavior using a pinned flat open. The core
 probe, CLI and deterministic tests are reconstruction work. Final correctness
 belongs to the implementer; tests executed for this reconstruction are
 recorded separately in the delivery log, including unavailable fixtures.
+
+Coordinator review corrections preserve syscall stages and successful effects,
+keep incomplete exchanges uncertain, and specify projected Unix UID and frozen
+pathname premises. Their regression tests use owned files, synthetic failures
+and optional owned listeners. Where the worker cannot create a Unix listener,
+the EOF/timeout/mismatch and refused-connect fixtures explicitly skip and remain
+ready for coordinator execution. No successful live exchange or actual namespace
+qualification is inferred from those skips or from the source proposal.
