@@ -24,5 +24,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
-      - name: Tests
-        run: make test
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+      - run: make -n bootstrap
+      - run: make bootstrap
+      - run: make doctor
+      - run: make test

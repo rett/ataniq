@@ -1,12 +1,18 @@
-# Set up and check a checkout. Fill in both targets, then describe them in the
-# "Development environment" section of AGENTS.md.
-.PHONY: bootstrap doctor
+.PHONY: bootstrap doctor test test-dev qualification-host-build
 
 bootstrap:
-	@echo "bootstrap: nothing is installed yet."
-	@echo "Edit this target so it installs what the project needs, idempotently (sudo only on the lines that need root)."
+	@sh scripts/go-tool.sh bootstrap
 
 doctor:
-	@echo "missing: the doctor target checks nothing yet."
-	@echo "Edit it to print one line per item (the tool and its version), starting a line with missing when an item is absent."
-	@false
+	@sh scripts/go-tool.sh doctor
+
+test: doctor
+	@sh scripts/go-tool.sh test ./...
+
+test-dev: doctor
+	@sh scripts/go-tool.sh test ./tests/...
+
+qualification-host-build: doctor
+	@mkdir -p build
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-probe ./qualification/host/cmd/probe
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-qualify ./qualification/host/cmd/qualify
