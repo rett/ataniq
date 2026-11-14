@@ -16,6 +16,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add an internal offline guarded dispatch journal on the owned SQLite lifecycle:
+  exact-attempt capabilities, immutable trusted policy registration, atomic
+  one-use grants, monotonic revocation, durable activation/recovery fences,
+  bounded retirement, exact receipts and contradictions, and eager inspection
+  with stable event identities. Exercise the frozen coordinator with fake
+  boundaries, bounded SQLite faults and waited SIGKILL/reopen fixtures.
 - Document journal OFD startup ordering, post-read verification and the separate
   SQLite-managed POSIX shared-memory lock domain, with caller path/filesystem
   responsibilities and the limits of the lifecycle regression evidence.

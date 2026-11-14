@@ -1,5 +1,5 @@
-// Package journal owns local SQLite storage on Linux. It does not yet implement
-// dispatch.Journal or authorize any external effect.
+// Package journal owns guarded local dispatch storage on Linux. It does not
+// authorize an external effect at its actual execution boundary.
 package journal
 
 import (
@@ -56,6 +56,10 @@ type Store struct {
 	options  Options
 	closed   bool
 	closeErr error
+	gate     chan struct{}
+	views    map[string]*Attempt
+	now      func() time.Time
+	fault    func(string) error // unexported, per-store deterministic test seam
 }
 
 // Info is a bounded local storage description, not a client snapshot or cursor.
@@ -80,6 +84,10 @@ func Open(ctx context.Context, path string, options Options) (*Store, error) {
 }
 
 func open(ctx context.Context, path string, options Options, create bool) (_ *Store, err error) {
+	return openWithFault(ctx, path, options, create, nil)
+}
+
+func openWithFault(ctx context.Context, path string, options Options, create bool, fault func(string) error) (_ *Store, err error) {
 	o, err := options.normalized()
 	if err != nil {
 		return nil, err
@@ -93,7 +101,7 @@ func open(ctx context.Context, path string, options Options, create bool) (_ *St
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{owner: owner, options: o}
+	s := &Store{owner: owner, options: o, gate: make(chan struct{}, 1), views: make(map[string]*Attempt), now: time.Now, fault: fault}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, s.Close())
@@ -124,6 +132,9 @@ func open(ctx context.Context, path string, options Options, create bool) (_ *St
 		}
 	}
 	if _, err = readIdentity(ctx, s.db, o.Authority); err != nil {
+		return nil, err
+	}
+	if err = s.recover(ctx); err != nil {
 		return nil, err
 	}
 	if err = owner.check(); err != nil {
@@ -170,7 +181,14 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 	if s.db != nil {
-		s.closeErr = s.db.Close()
+		// Only successfully opened views belong to this process. A failed Open
+		// must not clean another session's guards after recovery failed.
+		if len(s.views) != 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), s.options.OperationTimeout)
+			s.closeErr = s.retireAll(ctx)
+			cancel()
+		}
+		s.closeErr = errors.Join(s.closeErr, s.db.Close())
 	}
 	s.closeErr = errors.Join(s.closeErr, s.owner.close())
 	return s.closeErr

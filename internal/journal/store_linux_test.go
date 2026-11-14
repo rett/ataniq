@@ -54,7 +54,7 @@ func TestLifecycle(t *testing.T) {
 	path, o := fixture(t)
 	s := mustCreate(t, path, o)
 	want := mustInfo(t, s)
-	if len(want.StoreID) != 32 || len(want.IncarnationID) != 32 || want.StoreID == want.IncarnationID || want.Authority != o.Authority || want.SchemaVersion != 1 || want.SQLiteVersion != engineVersion || want.SQLiteSourceID != engineSource || want.PageSize != 4096 || want.PageCount != 2 || want.MaxBytes != 64<<20 {
+	if len(want.StoreID) != 32 || len(want.IncarnationID) != 32 || want.StoreID == want.IncarnationID || want.Authority != o.Authority || want.SchemaVersion != 1 || want.SQLiteVersion != engineVersion || want.SQLiteSourceID != engineSource || want.PageSize != 4096 || want.PageCount != 6 || want.MaxBytes != 64<<20 {
 		t.Fatalf("unexpected info: %+v", want)
 	}
 	if s.db.Stats().MaxOpenConnections != 1 {
@@ -283,7 +283,7 @@ func fileBytes(t *testing.T, path string) []byte {
 }
 
 func TestRefusalDoesNotMutate(t *testing.T) {
-	for _, fault := range []string{"authority", "authority WAL", "schema version", "old schema", "application", "missing identity", "extra identity", "zero identity", "foreign table", "changed schema", "empty", "garbage"} {
+	for _, fault := range []string{"authority", "authority WAL", "schema version", "old schema", "lifecycle-only schema", "application", "missing identity", "extra identity", "zero identity", "foreign table", "changed schema", "empty", "garbage"} {
 		t.Run(fault, func(t *testing.T) {
 			path, o := fixture(t)
 			s := mustCreate(t, path, o)
@@ -299,6 +299,10 @@ func TestRefusalDoesNotMutate(t *testing.T) {
 				execFixture(t, db, "PRAGMA user_version=2")
 			case "old schema":
 				execFixture(t, db, "PRAGMA user_version=0")
+			case "lifecycle-only schema":
+				for _, name := range []string{"events", "evidence", "grants", "attempts"} {
+					execFixture(t, db, "DROP TABLE "+name)
+				}
 			case "application":
 				execFixture(t, db, "PRAGMA application_id=0")
 			case "missing identity":
