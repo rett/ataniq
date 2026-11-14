@@ -34,6 +34,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Document exact-generation Release response reconciliation, empty receipt BLOB
+  preservation, failed conflict status, precise DQS diagnostics and prompt Close
+  admission refusal. Describe fixed-bound FULL recovery refusal and the existing
+  explicit larger-MaxBytes reopen path with preserved evidence and no automatic
+  bound increase or capacity guarantee.
+
 - Document journal retirement admission/publication ordering, coherent volatile
   snapshot capture, foreign-call isolation and the narrow settled-Denied
   retirement response-loss case, distinguishing draft and final regressions

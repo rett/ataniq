@@ -23,7 +23,7 @@ The internal [journal package](../../internal/journal/store_linux.go) exposes:
 | `Attempt.Prepare(ctx, Intent)` | Looks up existing state first; only a confirmed new atomic preparation and grant consumption returns PrepareNew. |
 | `Attempt.Save(ctx, Receipt)` | Retains exact evidence, including contradictions, with its causal event in one transaction. |
 | `Attempt.Revoke(ctx)` | Orders monotonic permission revocation with preparation under the active guard. |
-| `Attempt.Release(ctx)` | Invalidates this activation and retires its guard atomically with required uncertainty. |
+| `Attempt.Release(ctx)` | Invalidates this activation and retires its guard atomically with required uncertainty; an exact-generation retry can reconcile a lost committed retirement response. |
 | `Store.Inspect(ctx, id)` / `Store.Snapshot(ctx)` | Eager bounded trusted reads of exact bindings, receipts, consumed grants and events. |
 
 Paths must be clean absolute filesystem paths supplied by trusted composition.
@@ -94,9 +94,19 @@ cancellation can latch a failure on the legitimate activation. Prepare returns
 PrepareConflict without an error; Save returns ErrConflict. Such rejection
 does not append a binding-conflict event. Grant-consumption conflicts discovered
 for an exact binding still retain their transactional conflict evidence.
+If that event cannot be confirmed committed, Prepare returns PrepareUnknown
+with a nonnil error and fences the activation. A failed-before-commit event is
+absent; a committed event whose response was lost retains the original consumed
+grant binding. Neither case changes or releases grant consumption. The frozen
+Coordinator already handles errors before interpreting PrepareStatus.
 An error before lookup for an admitted exact call, including cancellation or
 busy timeout, returns unknown; it cannot falsely assert that already-started
 work was denied.
+
+PrepareRejected proves only that this invocation committed no preparation.
+It is not a permanent denial latch. Expiry checks use the observed current
+time; a later observation of an earlier valid instant can pass that check.
+This does not remove the independent current-authority check at Boundary.Start.
 
 The actual Boundary independently obtains current authority at the real effect
 seam. Recorded policy cannot permit a stale external start. For example, a
@@ -136,8 +146,15 @@ A definitive Denied record without other uncertainty can retire settled.
 Clearing a guard and recording required uncertainty commit in the same
 transaction with a release event. A failed release can leave the guard in place;
 Release may be retried while the durable activation remains active, or
-Close/reopen performs conservative retirement. A retry after a committed release
-whose response was lost can instead return ErrInactive.
+Close/reopen performs conservative retirement. If the response was lost after
+the release committed, a retry through the still-current view reads the exact
+stored binding and generation. Only an exact match with an inactive durable
+guard allows it to remove that view and return success. It changes no durable
+row, uncertainty, receipt or event. An active guard still requires the ordinary
+retirement transaction; a mismatch is refused. Once the view is removed,
+concurrent or stale retries return ErrInactive and cannot retire a newer view.
+Fresh guarded Activate then permits duplicate handling and late contradictory
+evidence in the same Store, without Close/Open or fresh execution permission.
 
 Both Release and Close publish retirement before sampling pending operations.
 Each exact Prepare, Save and Revoke increments its pending count before checking
@@ -171,10 +188,14 @@ narrow case where preparation and a definitive Denied receipt were committed,
 and retirement committed without pending calls or prior uncertainty, dirty
 reopen may retain definitive Denied even if Release's response was lost.
 An in-process response failure can still project uncertainty, and a later
-Close can persist that conservative projection. Neither path replays the
-attempt. This exception does not apply to unknown Prepare, Save or Revoke,
+Close without a successful reconciliation retry can persist that conservative
+projection. A successful exact-generation retry removes only the old view and
+its volatile response-failure overlay: the proved settled Denied remains
+settled. Neither path replays the attempt. This exception does not apply to
+unknown Prepare, Save or Revoke,
 or to the concurrent admitted failed-Save handoff: those must retain the dirty
-guard or durable uncertainty.
+guard or durable uncertainty. An exact retry preserves any uncertainty already
+committed by retirement; subsequent Activate cannot clear it.
 
 Close waits for bounded database operations, invalidates all views, and attempts
 the same atomic retirement before SQL closure and finally inode unlock. A failed
@@ -193,6 +214,10 @@ scoped to the attempt. Identical ID/content is idempotent, while same-ID changed
 content is retained as another evidence row and makes the projection uncertain.
 Different IDs with contradictory outcome states do the same. Prepared evidence
 is distinct from outcome evidence and cannot downgrade an existing outcome.
+Empty evidence is a valid BLOB. When writing scanned outcome bytes back, the
+journal binds a nonnil empty slice for a nil driver scan result, preserving the
+empty BLOB rather than SQL NULL. Binary IDs and evidence remain byte-exact;
+there is no string normalization or schema relaxation.
 Original evidence is never overwritten. Foreign bindings cannot poison the
 legitimate attempt. A failed late contradictory Save remains guarded even if
 the original Started receipt was already durable. Receipt evidence is exact
@@ -336,8 +361,12 @@ verification requires SQLite `3.54.1` and source ID
 | Page size | 4096 bytes |
 | Writer page ceiling | Configured MaxBytes divided by page size |
 
-The connector reads back settings and checks defensive/DQS behavior. A
-mismatch closes the physical connection before it can enter the pool.
+The connector reads back settings and checks defensive/DQS behavior. The pinned
+driver applies `_dqs=false` before statements and propagates configuration
+failures. The behavioral `SELECT "journal_dqs_probe"` check additionally requires
+the pinned engine's exact missing-column diagnostic and SQLite error code 1.
+BUSY, I/O, unrelated SQL errors and successful string-literal readback are
+refused. A mismatch closes the physical connection before it can enter the pool.
 Writer transactions use immediate BEGIN. The default local SQLite VFS is
 used; no alternate driver or external locking service is involved.
 
@@ -354,8 +383,14 @@ Zero-valued bounds select these defaults:
 
 Earlier caller deadlines take precedence. Pre-cancelled Create/Open calls
 touch no storage, pool waits respect the operation context, and SQLite busy
-waits are finite. Close waits for the bounded local calls rather than
-detaching cleanup. Context deadlines do not provide a hard real-time bound
+waits are finite. Store admission and Info do not wait for the lifetime lock
+when Close is pending or active: an already cancelled/expired context returns
+its context error; otherwise admission returns os.ErrClosed. Calls through an
+already retiring Attempt retain their ErrInactive classification, and foreign
+binding rejection still precedes admission. Close is the only lifetime writer;
+calls that acquired the read lock retain it until they finish, so Close still
+waits for admitted local operations. No detached cleanup is started.
+Context deadlines do not provide a hard real-time bound
 on kernel/filesystem I/O.
 
 MaxBytes bounds main database pages through `max_page_count`, including on
@@ -371,6 +406,23 @@ or unbounded fallback. These choices are engineering limits, not a capacity or
 throughput qualification. Per-view serialization waits and SQL calls share the
 operation deadline. Finite bounds are checked before copying accepted inputs;
 storage constraints and bounded accounting also limit scanned values.
+
+Reaching the page ceiling can also refuse Release, Close retirement or Open
+recovery with SQLITE_FULL: each needs room for its causal event and state
+update. Failed retirement/recovery preserves the original evidence and dirty
+guards, and exposes no partially recovered Store. Close still closes SQL and
+releases ownership even when it reports retirement failure. Reopening at the
+same fixed bound can continue to fail closed.
+
+Trusted composition may explicitly configure a larger accepted MaxBytes for
+Open of that same database. A bounded fixture fills a 64 KiB database, observes
+failed Close retirement and same-bound Open, then opens at 128 KiB with the same
+store/incarnation identity and original evidence. Recovery records uncertainty
+before returning a Store; a guarded duplicate invokes no Boundary and produces
+no effect. This uses the existing configuration path, not writable restore or
+migration. The journal never automatically increases the configured bound,
+reserves retirement capacity or guarantees recovery at any particular larger
+bound. MaxBytes remains a main-page limit, not a total WAL or disk cap.
 
 ## Reopen, restore and evidence limits
 
@@ -393,8 +445,14 @@ field, binary and nil/empty payloads, grants, expiry/revocation, fresh Boundary
 policy checks, cancellation before lookup and after actual fake start, response
 loss, failed saves and late contradictions, immutable receipts across reopen,
 stale views/releases, atomic retirement and eager snapshot consistency/bounds.
-Bounded fixtures exercise real SQLite busy and FULL errors without filling
-the host disk. Per-store unexported test seams inject journal I/O response
+Bounded fixtures exercise real SQLite busy and FULL errors, including explicit
+larger-bound recovery, without filling the host disk. Actual-driver tests save
+Prepared observations after Started and Denied with empty or binary evidence,
+checking exact receipts and projections before/after reopen without replay.
+Conflict-before/after tests retain the original grant binding and committed
+event while keeping failed commits unknown. Injected raw-connection tests
+distinguish the qualified DQS error from unrelated failures and verify subsequent
+readback errors propagate. Per-store unexported test seams inject journal I/O response
 failures without global hooks or production environment controls.
 
 Deterministic scheduling seams cover an already-admitted Save completing
@@ -402,6 +460,11 @@ failure publication between retirement samples, cancellation publication
 after leaving the lifetime lock while Close retires, new-call rejection during
 Close, stale activations and competing cancelled releases, foreign cancelled
 or blocked Save/Prepare isolation, and a coherent multi-record failure overlay.
+Held-Close tests require prompt cancelled admission and Info results alongside
+concurrent idempotent Close calls; an admitted Save must finish before SQL
+closure. Same-store Release retry tests cover concurrent/stale retries, exact
+generation proof, fresh guarded late contradictions, and preservation of unknown
+Prepare/Save/Revoke outcomes across reopen.
 The historical draft Release-before test exposed a draft defect. With the
 inherited retirement gate, that same new-call interleaving correctly returns
 ErrInactive; an obsolete expected-timeout assertion is not a reproduction on
