@@ -3,8 +3,12 @@
 Ataniq is a planned orchestration service for managing projects,
 agents, tools, and local or remote sessions through extensible feature packs.
 
-The project is in its foundation stage. The service, CLI, UI, authentication,
-and execution adapters are not implemented yet.
+The project is a developer qualification foundation for 0.0.1. It includes
+offline development checks, Codex-specific mock qualification tests and Linux
+host qualification tools. See [the Codex qualification guide](docs/qualification-codex.md)
+and [the host manual](docs/qualification-host.md) for their scope and limits.
+The production runner, durable conversations, service, clients, provisioning,
+authentication and execution adapters remain pending.
 
 ## Architecture decisions
 
