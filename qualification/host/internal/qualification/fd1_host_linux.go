@@ -83,6 +83,7 @@ func (c *Campaign) checkFD1Integrity(a *Attempt) {
 		c.poison(nil)
 		return
 	}
+	defer d.Close()
 	// O_PATH and O_NOFOLLOW inspect the name itself, including a symlink.
 	fd, markerErr := syscall.Openat(int(d.Fd()), "fd1-integrity-failed", 0x200000|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if markerErr == nil {
@@ -91,12 +92,12 @@ func (c *Campaign) checkFD1Integrity(a *Attempt) {
 	if markerErr != nil && !os.IsNotExist(markerErr) {
 		a.FD1IntegrityFailure = fd1IntegrityFailure
 		c.poison(d)
-		d.Close()
 		return
 	}
-	d.Close()
-	if a.FD1IntegrityFailure != "" || markerErr == nil || authenticateFD1Runtime(a, a.FD1Runtime) != nil {
-		c.retainFD1IntegrityFailure(a)
+	if a.FD1IntegrityFailure != "" || markerErr == nil || c.authenticateFD1(a, a.FD1Runtime) != nil {
+		a.FD1IntegrityFailure = fd1IntegrityFailure
+		c.Blocked = true
+		c.publishFD1IntegrityFailure(d)
 	}
 }
 
@@ -130,35 +131,40 @@ func (c *Campaign) retainFD1IntegrityFailure(a *Attempt) {
 			return
 		}
 		defer d.Close()
-		fd, err := syscall.Openat(int(d.Fd()), "fd1-integrity-failed", syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0400)
-		if os.IsExist(err) {
-			if c.syncDir(d) != nil {
-				c.poison(d)
-			}
-			return
-		}
-		if err != nil {
-			c.poison(d)
-			return
-		}
-		f := os.NewFile(uintptr(fd), "fd1-integrity-failed")
-		const payload = "typed runtime integrity failure\n"
-		n, err := f.WriteString(payload)
-		if err == nil && n != len(payload) {
-			err = io.ErrShortWrite
-		}
-		if err == nil {
-			err = c.syncFile(f)
-		}
-		if closeErr := f.Close(); err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = c.syncDir(d)
-		}
-		if err != nil {
+		c.publishFD1IntegrityFailure(d)
+	}
+}
+
+// publishFD1IntegrityFailure uses the validated directory without taking ownership.
+func (c *Campaign) publishFD1IntegrityFailure(d *os.File) {
+	fd, err := syscall.Openat(int(d.Fd()), "fd1-integrity-failed", syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0400)
+	if os.IsExist(err) {
+		if c.syncDir(d) != nil {
 			c.poison(d)
 		}
+		return
+	}
+	if err != nil {
+		c.poison(d)
+		return
+	}
+	f := os.NewFile(uintptr(fd), "fd1-integrity-failed")
+	const payload = "typed runtime integrity failure\n"
+	n, err := f.WriteString(payload)
+	if err == nil && n != len(payload) {
+		err = io.ErrShortWrite
+	}
+	if err == nil {
+		err = c.syncFile(f)
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = c.syncDir(d)
+	}
+	if err != nil {
+		c.poison(d)
 	}
 }
 
