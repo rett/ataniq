@@ -16,6 +16,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hold, FD1 and host launch behavior remains unchanged; R1 host launches are
   still rejected. No actual pressure run, host launcher or runtime qualification
   support is claimed.
+- Preserve nonblocking mode on R1 input/output and private child pipes by caching
+  raw descriptors before setup. A bounded stalled-handshake regression covers
+  pipe timeout and actual abort/reap without running the pressure actor.
 - Latch typed FD1 release/collection authentication incidents before fallback
   saves or finalizer reads, so immediate artifact restoration cannot erase a
   detected failure. Keep the original authenticated cleanup authority and start

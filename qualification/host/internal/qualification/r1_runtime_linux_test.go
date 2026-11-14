@@ -143,6 +143,14 @@ func TestR1PrivateOwnedChild(t *testing.T) {
 	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "r1-owned-child" {
 		os.Exit(R1PrivateChild())
 	}
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "r1-owned-stalled" {
+		if syscall.SetNonblock(4, true) != nil {
+			os.Exit(23)
+		}
+		// Deliberately keep the identity pipe open without a handshake. This
+		// child has no pressure allocation and only accepts the private token.
+		os.Exit(r1ChildTokens(r1WallClock{}, time.Now().Add(2*time.Second), r1RawRead(4)))
+	}
 }
 
 func TestR1RealPrivateHandshakeOnly(t *testing.T) {
@@ -178,6 +186,42 @@ func TestR1RealPrivateHandshakeOnly(t *testing.T) {
 		t.Fatal(r, err)
 	}
 	t.Log("private handshake and actual child reap observed; pressure actor unexecuted")
+}
+
+func TestR1StalledPrivateHandshakeRemainsNonblocking(t *testing.T) {
+	var watchdog *time.Timer
+	child, err := r1SpawnWith(r1WallClock{}, func(cmd *exec.Cmd) error {
+		cmd.Args = []string{"probe", "-test.run=^TestR1PrivateOwnedChild$", "--", "r1-owned-stalled"}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		watchdog = time.AfterFunc(3*time.Second, func() { _ = cmd.Process.Kill() })
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { watchdog.Stop(); _, _ = child.End("abort", time.Now().Add(R1ReapWait)) })
+	raw := child.(*r1ExecChild)
+	for _, fd := range []int{raw.helloFD, raw.tokenFD} {
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0)
+		if errno != 0 || flags&syscall.O_NONBLOCK == 0 {
+			t.Fatal("private endpoint became blocking", errno)
+		}
+	}
+	start := time.Now()
+	_, err = child.Ready(start.Add(50 * time.Millisecond))
+	if !errors.Is(err, errR1Deadline) || time.Since(start) >= time.Second {
+		t.Fatal("stalled pipe escaped read deadline", err, time.Since(start))
+	}
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(raw.tokenFD), syscall.F_GETFL, 0)
+	if errno != 0 || flags&syscall.O_NONBLOCK == 0 {
+		t.Fatal("cleanup pipe became blocking", errno)
+	}
+	r, err := child.End("abort", time.Now().Add(R1ReapWait))
+	if err != nil || r.Reap != "reaped" || r.ExitCode == nil || *r.ExitCode != 20 {
+		t.Fatal(r, err)
+	}
 }
 
 func TestR1NonzeroPageStrideWithoutMapping(t *testing.T) {

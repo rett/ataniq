@@ -261,12 +261,13 @@ func r1DecodeHandshake(b []byte) (r1Handshake, error) {
 }
 
 type r1ExecChild struct {
-	clock        r1Clock
-	pid          int
-	process      *os.Process
-	hello, token *os.File
-	id           *R1ActorIdentity
-	result       R1ChildResult
+	clock            r1Clock
+	pid              int
+	process          *os.Process
+	hello, token     *os.File
+	helloFD, tokenFD int
+	id               *R1ActorIdentity
+	result           R1ChildResult
 }
 
 func r1Spawn(c r1Clock) (r1Child, error) {
@@ -296,22 +297,22 @@ func r1SpawnWith(c r1Clock, start func(*exec.Cmd) error) (r1Child, error) {
 		tokenWrite.Close()
 		return nil, err
 	}
-	child := &r1ExecChild{clock: c, pid: cmd.Process.Pid, process: cmd.Process, hello: helloRead, token: tokenWrite, result: R1ChildResult{Termination: "unknown", Reap: "unknown", Token: "none"}}
+	child := &r1ExecChild{clock: c, pid: cmd.Process.Pid, process: cmd.Process, hello: helloRead, token: tokenWrite, helloFD: int(helloRead.Fd()), tokenFD: int(tokenWrite.Fd()), result: R1ChildResult{Termination: "unknown", Reap: "unknown", Token: "none"}}
 	if e1 != nil || e2 != nil {
 		return child, errors.New("R1 unused pipe close")
 	}
-	// Fd() is called before SetNonblock; no subsequent os.File Read/Write can
-	// silently restore blocking mode on these private endpoints.
-	if err := syscall.SetNonblock(int(helloRead.Fd()), true); err != nil {
+	// Cache raw descriptors before SetNonblock. Calling File.Fd again can
+	// restore blocking mode on a Go pollable pipe, even without File.Read.
+	if err := syscall.SetNonblock(child.helloFD, true); err != nil {
 		return child, err
 	}
-	if err := syscall.SetNonblock(int(tokenWrite.Fd()), true); err != nil {
+	if err := syscall.SetNonblock(child.tokenFD, true); err != nil {
 		return child, err
 	}
 	return child, nil
 }
 func (c *r1ExecChild) Ready(deadline time.Time) (R1ActorIdentity, error) {
-	b, err := r1Read(c.clock, deadline, r1RawRead(int(c.hello.Fd())), R1MaxFrame)
+	b, err := r1Read(c.clock, deadline, r1RawRead(c.helloFD), R1MaxFrame)
 	e := c.hello.Close()
 	c.hello = nil
 	if err != nil {
@@ -412,7 +413,7 @@ func (c *r1ExecChild) End(token string, deadline time.Time) (result R1ChildResul
 	if c.token == nil {
 		writeErr = errors.New("R1 token pipe closed")
 	} else {
-		writeErr = r1Write(c.clock, deadline, r1RawWrite(int(c.token.Fd())), []byte(text))
+		writeErr = r1Write(c.clock, deadline, r1RawWrite(c.tokenFD), []byte(text))
 		// A failed/partial write does not establish delivery of a token.
 		if writeErr == nil {
 			c.result.Token = token
@@ -526,13 +527,14 @@ func r1ChildTokens(c r1Clock, deadline time.Time, read func([]byte) (int, error)
 func R1Memory(in, out *os.File) error {
 	c := r1WallClock{}
 	start := c.Now()
-	if err := syscall.SetNonblock(int(in.Fd()), true); err != nil {
+	inputFD, outputFD := int(in.Fd()), int(out.Fd())
+	if err := syscall.SetNonblock(inputFD, true); err != nil {
 		return err
 	}
-	if err := syscall.SetNonblock(int(out.Fd()), true); err != nil {
+	if err := syscall.SetNonblock(outputFD, true); err != nil {
 		return err
 	}
-	return runR1(r1Deps{clock: c, read: r1RawRead(int(in.Fd())), write: r1RawWrite(int(out.Fd())),
+	return runR1(r1Deps{clock: c, read: r1RawRead(inputFD), write: r1RawWrite(outputFD),
 		open: func() (r1Control, error) { return r1OpenControl(R1ControlTarget, c, start.Add(R1MainLifetime)) },
 		self: func() (R1ActorIdentity, error) {
 			id, err := r1LocalIdentity(os.Getpid())
@@ -552,13 +554,14 @@ func R1PrivateChild() int {
 	hello, token := os.NewFile(3, "r1-private-identity"), os.NewFile(4, "r1-private-token")
 	defer token.Close()
 	// Reject accidental direct invocation or wrong inherited descriptor types.
-	for n, f := range []*os.File{hello, token} {
+	for n := 0; n < 2; n++ {
+		fd := n + 3
 		var st syscall.Stat_t
-		if syscall.Fstat(int(f.Fd()), &st) != nil || st.Mode&syscall.S_IFMT != syscall.S_IFIFO {
+		if syscall.Fstat(fd, &st) != nil || st.Mode&syscall.S_IFMT != syscall.S_IFIFO {
 			hello.Close()
 			return 23
 		}
-		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFL, 0)
+		flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_GETFL, 0)
 		access := syscall.O_WRONLY
 		if n == 1 {
 			access = syscall.O_RDONLY
@@ -567,7 +570,7 @@ func R1PrivateChild() int {
 			hello.Close()
 			return 23
 		}
-		if syscall.SetNonblock(int(f.Fd()), true) != nil {
+		if syscall.SetNonblock(fd, true) != nil {
 			hello.Close()
 			return 23
 		}

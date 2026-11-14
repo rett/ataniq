@@ -1048,7 +1048,10 @@ classify such survival as inconclusive, not reject its wire encoding.
 | Child termination/reap, including failure retry | At most 500 milliseconds |
 
 Every main stage additionally uses the one overall monotonic deadline. Retry
-loops have bounded waits and call/byte budgets. Deadline checks cannot forcibly
+loops have bounded waits and call/byte budgets. Raw pipe
+descriptors are cached before nonblocking setup: repeated Go `File.Fd()` calls
+can restore blocking mode. A stalled-handshake regression checks that private
+pipe reads time out and abort/reap remains observable. Deadline checks cannot forcibly
 eliminate scheduler delays or blocking regular-file/kernel syscalls. Future
 host unit guards remain necessary. A cleanup deadline or syscall failure leaves
 failed/unknown outcomes; it cannot create completion or a support decision.
