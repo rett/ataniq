@@ -13,6 +13,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   eight portable golden vectors. Keep authentication, durable admission and
   provider execution outside this package.
 
+- Document application wire and canonical contracts, parser limits, immutable
+  receipts and current status, and the boundary to future authentication and
+  durable admission, including owner disposition for held queued work.
+
+### Fixed
+
+- Clarify authority ownership per independent Unix-user instance and the journal
+  schema v1 shipped in 0.0.3, retaining explicit future schema evolution and
+  unchanged ordinary opening behavior.
+
 ## [0.0.3] - 2026-11-14
 
 ### Fixed

@@ -37,9 +37,9 @@ are stored as BLOBs and exposed as hexadecimal strings. Authority is also a
 BLOB, preserving its exact bytes. This local DDL initialization has no
 provider conversation bootstrap meaning. Strict recognition covers exactly
 `journal_identity`, `attempts`, `grants`, `evidence` and `events`, including
-their complete DDL. The schema remains version 1 because no persistent
-journal schema has shipped. Earlier metadata-only layouts are refused before
-writer settings, without manufacturing a migration of real state.
+their complete DDL. This schema shipped as version 1 in 0.0.3. Future schema
+evolution requires an explicit reviewed path; ordinary opening does not migrate
+state. Earlier metadata-only layouts are refused before writer settings.
 The parent directory is synced after the initialization commit.
 
 Ordinary reopen preserves both identities. An interrupted initialization is

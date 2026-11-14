@@ -11,6 +11,10 @@ The [guarded dispatch journal](journal.md) documents the implemented internal
 offline Linux journal, its durable attempt guards, retained receipt evidence,
 crash/reopen tests and qualification limits.
 
+The [application command contracts](application-contracts.md) document the
+implemented pure typed model, bounded JSON codec and canonical binary bindings,
+with authentication and durable admission kept as explicit service contracts.
+
 Read [runtime](runtime.md), [client protocol](client-protocol.md),
 [security](security.md), and [work model](work-model.md) together. The existing
 [federation contract](../federation.md) supplies the inter-instance boundary;
@@ -21,10 +25,11 @@ to be validated.
 
 ## Authority and identity
 
-Each host has one authoritative local database and authority for its own
-projects; federation exchanges authorized records, not a shared database or
-automatic failover. A project owns policy, work, grants, and evidence. A stable
-lead identity belongs to a project and may retain a resumable conversation.
+Each independent Unix-user instance has one authoritative local database and
+authority for its own projects; federation exchanges authorized records, not a
+shared database or automatic failover. A project owns policy, work, grants, and
+evidence. A stable lead identity belongs to a project and may retain a resumable
+conversation.
 Only leads are persistent agents. A runtime binding identifies the provider,
 credentials, adapter and workspace boundary; an execution epoch identifies one
 incarnation of that binding. Neither a process ID nor a transport connection is
