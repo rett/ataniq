@@ -1,6 +1,7 @@
 # Runtime and recovery contract
 
-Status: proposed; no implementation or runtime qualification is claimed.
+Status: proposed; the internal dispatch coordinator described below is
+source-only infrastructure. No runtime qualification is claimed.
 Ataniq owns durable identity, intent, readiness, bootstrap and reconciliation.
 The proposed Linux backend uses a detachable Ataniq runner supervised by a
 systemd user transient service, with cgroup v2; systemd provides lifecycle
@@ -75,6 +76,38 @@ Do not infer completion from a disconnect. Reserve and reconcile child usage
 against the parent's enforceable budget; unknown usage is not zero.
 
 ## Fault matrix and acceptance scenarios
+
+### Source dispatch coordinator
+
+The normal entrypoint is `dispatch.Coordinator.Dispatch` in
+`internal/dispatch`. It binds opaque identities and exact payload bytes to one
+attempt, prepares them through the application journal, and calls the start
+boundary only for a newly committed preparation. A duplicate returns its
+existing receipt; an identity or consumed-grant conflict is rejected. The
+journal must atomically consume an exact-target grant with preparation and
+retain contradictions. It must distinguish a new durable commit from a
+duplicate, rejection, conflict and ambiguous result. An ambiguous preparation
+requires reconciliation before a caller can submit the same attempt again;
+an error alone cannot prove a transaction was absent. Qualification campaign
+storage is a separate mechanism and is not this journal.
+
+The trusted boundary obtains current authority and verifies the matching epoch,
+policy, qualification, authorization and bounded limits at actual start. It
+serializes that crossing with observed revocation and authority changes. It
+returns a start acknowledgement, proved denial or uncertainty promptly, and
+cannot retain a callback or start after returning, even on cancellation.
+Completion is separate and does not hold an admission lock. Recovered prepared
+or dispatching attempts are never automatically replayed; uncertain delivery
+or failed outcome storage requires reconciliation and a separately authorized
+attempt for a retry. The deterministic fake tests cover duplicate concurrency,
+identity changes, current checks, failures and outage admission. Their evidence
+does not qualify production policy or any provider.
+
+This package supplies no provider adapter, disk durability, host isolation,
+client authentication or support attestation. A future application journal and
+provider integration must establish their own durability, fencing and actual
+boundary guarantees; an in-process model cannot fence an external provider.
+Version 0.0.1 remains unchanged; a proposed 0.0.2 assignment is planning only.
 
 Tests use a fake provider and deterministic fault injection. Each row defines
 the required result after restart or reconciliation.

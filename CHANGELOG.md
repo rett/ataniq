@@ -11,6 +11,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add an internal deterministic effect-dispatch coordinator with explicit
   journal and current-authority start boundary ports. This is source-only
   infrastructure and does not qualify a provider or supply durable storage.
+- Document the coordinator entrypoint, port obligations and integration limits.
 
 ## [0.0.1] - 2026-11-14
 
