@@ -14,6 +14,17 @@ import (
 // headers may be absent or disagree with the runtime tables. This is a bounded
 // metadata check, not a loader or a claim about dynamic dependency closure.
 func launcherELF(e *elf.File) (ELFMetadata, error) {
+	return executionELF(e, false)
+}
+
+// Manager helpers execute at their exact selected original path. Inventory
+// their existing search paths without treating that inventory as closure.
+// The relocated workload/bwrap validator above remains unchanged.
+func managerELF(e *elf.File) (ELFMetadata, error) {
+	return executionELF(e, true)
+}
+
+func executionELF(e *elf.File, originalManager bool) (ELFMetadata, error) {
 	m := ELFMetadata{}
 	if e.Class != elf.ELFCLASS64 || e.Data != elf.ELFDATA2LSB || e.Machine != elf.EM_X86_64 || (e.Type != elf.ET_EXEC && e.Type != elf.ET_DYN) || len(e.Progs) > 128 {
 		return m, errors.New("unsupported: Linux ELF64 amd64 launch subject required")
@@ -44,7 +55,7 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 		}
 	}
 	if dynamic == nil {
-		m.DependencyClosureComplete = m.Interpreter == ""
+		m.DependencyClosureComplete = !originalManager && m.Interpreter == ""
 		return m, nil
 	}
 	// The loader reads the dynamic table at its mapped virtual address. Require
@@ -60,6 +71,7 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 	var strtab, strsz uint64
 	var haveTable, haveSize, terminated bool
 	var needed []uint64
+	var rpath, runpath *uint64
 	for len(b) != 0 {
 		tag := elf.DynTag(e.ByteOrder.Uint64(b[:8]))
 		value := e.ByteOrder.Uint64(b[8:16])
@@ -71,7 +83,18 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 		switch tag {
 		case elf.DT_RPATH, elf.DT_RUNPATH:
 			// Presence alone is forbidden, including empty or invalid strings.
-			return m, errors.New("unsupported: bwrap RPATH or RUNPATH")
+			if !originalManager {
+				return m, errors.New("unsupported: bwrap RPATH or RUNPATH")
+			}
+			dst := &rpath
+			if tag == elf.DT_RUNPATH {
+				dst = &runpath
+			}
+			if *dst != nil {
+				return m, errors.New("unsupported: duplicate manager search path")
+			}
+			v := value
+			*dst = &v
 		case elf.DT_NEEDED:
 			needed = append(needed, value)
 			if len(needed) > 32 {
@@ -89,7 +112,7 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 			strsz, haveSize = value, true
 		}
 	}
-	if !terminated || haveTable != haveSize || len(needed) != 0 && !haveTable {
+	if !terminated || haveTable != haveSize || (len(needed) != 0 || rpath != nil || runpath != nil) && !haveTable {
 		return m, errors.New("unsupported: incomplete runtime dynamic metadata")
 	}
 	var stringsTable []byte
@@ -119,7 +142,24 @@ func launcherELF(e *elf.File) (ELFMetadata, error) {
 		names = append(names, string(rest[:end]))
 	}
 	m.Needed = strings.Join(names, ",")
-	m.DependencyClosureComplete = m.Interpreter == "" && len(needed) == 0
+	for _, p := range []struct {
+		index *uint64
+		dst   *string
+	}{{rpath, &m.RPath}, {runpath, &m.RunPath}} {
+		if p.index == nil {
+			continue
+		}
+		if *p.index >= uint64(len(stringsTable)) {
+			return m, errors.New("unsupported: invalid manager search-path index")
+		}
+		rest := stringsTable[*p.index:]
+		end := bytes.IndexByte(rest, 0)
+		if end < 0 || end > 4096 || end > 0 && !validText(string(rest[:end]), 4096) {
+			return m, errors.New("unsupported: invalid manager search-path string")
+		}
+		*p.dst = string(rest[:end])
+	}
+	m.DependencyClosureComplete = !originalManager && m.Interpreter == "" && len(needed) == 0
 	return m, nil
 }
 

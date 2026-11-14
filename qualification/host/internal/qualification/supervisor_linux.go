@@ -18,16 +18,24 @@ import (
 // hostIO has narrow deterministic test seams, not a backend interface/registry.
 // Unit tests install transcripts and never call liveHost.
 type hostIO struct {
-	call       func(string, []string) (string, error)
-	boundary   func(string) (Boundary, error)
-	population func(Boundary) (bool, error)
-	process    func(int) (Process, error)
-	ended      func(Process) (bool, error)
-	handle     func(Process) (*os.File, error)
-	exit       func(*os.File) (bool, error)
-	helper     func(Boundary, FileIdentity) (Process, error)
-	budget     func(*Unit) error
-	pause      func()
+	call           func(string, []string) (string, error)
+	boundary       func(string) (Boundary, error)
+	population     func(Boundary) (bool, error)
+	process        func(int) (Process, error)
+	ended          func(Process) (bool, error)
+	handle         func(Process) (*os.File, error)
+	exit           func(*os.File) (bool, error)
+	helper         func(Boundary, FileIdentity) (Process, error)
+	budget         func(*Unit) error
+	pause          func()
+	now            func() time.Time
+	entryMembers   func(Boundary) ([]Process, error)
+	entryEndpoints func(Process, Process) (R1EntryEndpoints, error)
+	entrySafety    func(*Attempt, *Unit) error
+	entryNull      func() (R1NullDevice, error)
+	entryTree      func(Boundary, Boundary) error
+	deadlineCall   func(string, []string, time.Time) (string, error)
+	entryUntil     time.Time
 }
 
 type cappedBuffer struct {
@@ -45,22 +53,29 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 func liveHost() hostIO {
 	return hostIO{call: func(path string, args []string) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, path, args...)
-		// Host manager connection is trusted controller authority; never forwarded
-		// to the workload. No shell, PATH search, listener or manager reconfiguration.
-		cmd.Env = []string{"LANG=C", "LC_ALL=C", "HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS")}
-		cmd.WaitDelay = time.Second
-		var out cappedBuffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
-		err := cmd.Run()
-		if out.overflow {
-			return "", errors.New("supervisor output excessive")
-		}
-		return out.String(), err
-	}, boundary: boundary, population: populated, process: process, ended: processEnded, handle: processHandle, exit: exited, helper: helperIn, pause: func() { time.Sleep(10 * time.Millisecond) }}
+		return hostCall(path, args, time.Now().Add(5*time.Second))
+	}, boundary: boundary, population: populated, process: process, ended: processEnded, handle: processHandle, exit: exited, helper: helperIn, pause: func() { time.Sleep(10 * time.Millisecond) }, now: time.Now, entryMembers: entryMembers, entryEndpoints: entryEndpoints, entrySafety: entrySafety, entryNull: entryNull, entryTree: entryTree, deadlineCall: hostCall}
+}
+
+func hostCall(path string, args []string, deadline time.Time) (string, error) {
+	if cap := time.Now().Add(5 * time.Second); cap.Before(deadline) {
+		deadline = cap
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...)
+	// Host manager connection is trusted controller authority; never forwarded
+	// to the workload. No shell, PATH search, listener or manager reconfiguration.
+	cmd.Env = []string{"LANG=C", "LC_ALL=C", "HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS")}
+	cmd.WaitDelay = time.Second
+	var out cappedBuffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	if out.overflow {
+		return "", errors.New("supervisor output excessive")
+	}
+	return out.String(), err
 }
 
 const properties = "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Type,Slice,Description,ExecStart,StopWhenUnneeded,KillMode,NoNewPrivileges,RuntimeMaxUSec,TimeoutStopUSec,MemoryMax,TasksMax,CPUQuotaPerSecUSec,Transient,StandardInput,StandardOutput,StandardError,LimitNOFILE,LimitFSIZE,Restart,RemainAfterExit,Job,FragmentPath"
@@ -128,8 +143,14 @@ func (h hostIO) ctl(a *Attempt, args ...string) (string, error) {
 
 func (h hostIO) query(a *Attempt, name string) (*Unit, error) {
 	required := properties
+	if isR1Entry(a) {
+		required = entryServiceProperties
+	}
 	if name == a.Slice {
 		required = parentProperties
+		if isR1Entry(a) {
+			required = entryParentProperties
+		}
 	}
 	s, err := h.ctl(a, "show", "--all", "--property="+required, "--", name)
 	if err != nil {
@@ -160,6 +181,14 @@ func (h hostIO) parent(a *Attempt) (*Unit, error) {
 	if a.Parent != nil && !sameUnit(a.Parent, u) {
 		return nil, errors.New("parent identity mismatch")
 	}
+	if isR1Entry(a) {
+		if err := validateEntryParent(a, u); err != nil {
+			return nil, err
+		}
+		if err := h.entryEffective(u, true); err != nil {
+			return nil, err
+		}
+	}
 	self, err := h.process(os.Getpid())
 	if err != nil {
 		return nil, err
@@ -187,9 +216,20 @@ func (h hostIO) service(a *Attempt) (*Unit, error) {
 		return nil, errors.New("service ownership mismatch")
 	}
 	for key, want := range map[string]string{"Type": "exec", "Transient": "yes", "Restart": "no", "RemainAfterExit": "no", "KillMode": "control-group", "NoNewPrivileges": "yes", "RuntimeMaxUSec": "20s", "TimeoutStopUSec": "3s", "MemoryMax": "67108864", "TasksMax": "32", "CPUQuotaPerSecUSec": "1s", "LimitNOFILE": "1024", "LimitFSIZE": "131072", "StandardInput": "file", "StandardOutput": "append", "StandardError": "append"} {
+		if isR1Entry(a) {
+			if key == "RuntimeMaxUSec" {
+				want = "30s"
+			}
+			if key == "MemoryMax" {
+				want = "100663296"
+			}
+		}
 		if p[key] != want {
 			return nil, fmt.Errorf("unverified safety property %s", key)
 		}
+	}
+	if isR1Entry(a) && (p["MemorySwapMax"] != "0" || p["Delegate"] != "no") {
+		return nil, errors.New("entry swap/delegation unverified")
 	}
 	if !commandMatches(a, p["ExecStart"]) {
 		return nil, errors.New("service command mismatch")
@@ -237,6 +277,9 @@ func (h hostIO) effective(u *Unit) error {
 
 // Reconcile never launches or releases an injector. Adoption is cleanup-only.
 func (c *Campaign) reconcile(a *Attempt, h hostIO) error {
+	if isR1Entry(a) {
+		return c.reconcileEntry(a, h)
+	}
 	if a.Phase == "complete" {
 		if a.FD1IntegrityFailure != "" {
 			return c.Save(a, "complete", a.Reason)

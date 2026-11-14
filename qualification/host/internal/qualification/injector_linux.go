@@ -186,6 +186,9 @@ func PrivateInject(path string) error {
 	if err != nil || a.Phase != "launching-service" || a.DescriptorPolicy != FinalDescriptorPolicy {
 		return errors.New("injector intent not invoking")
 	}
+	if err := entryDispatchCheck(a); err != nil {
+		return err
+	}
 	if time.Now().Unix() > a.NotAfter {
 		return errors.New("injector safety deadline elapsed")
 	}
@@ -321,6 +324,9 @@ func PrivateInject(path string) error {
 	latest, err := c.read(a.ID)
 	if err != nil || latest.Phase != "released" || latest.Injector == nil || latest.Injector.Invocation != inv {
 		return errors.New("release not durably bound")
+	}
+	if err := entryDispatchCheck(latest); err != nil {
+		return err
 	}
 	if a.Config.DescriptorProfile == FD1TypedProfile {
 		if !sameJSON(latest.FD1Runtime, a.FD1Runtime) || authenticateFD1Runtime(latest, latest.FD1Runtime) != nil || verifyFD1Endpoints(latest) != nil {

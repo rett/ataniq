@@ -114,8 +114,9 @@ These are illustrative paths, not discovery defaults. Every path is absolute,
 canonical and distinct; subjects are outside the campaign. Symlink components,
 nonregular files, hardlinks and group/other-writable subjects are rejected.
 The driver path must name the running executable. IDs use the probe vocabulary.
-Cases are `inventory`, `fake-file`, `fake-fd` and `hold`; roles are `direct`,
+Legacy cases are `inventory`, `fake-file`, `fake-fd` and `hold`; roles are `direct`,
 `candidate` and the restricted `weakened-synthetic` control described below.
+The fixed `r1-entry` candidate case has its own selection and bounds below.
 `reviewed_bpf:true` is the operator's explicit statement that the
 selected bounded classic BPF artifact was separately reviewed for this profile;
 length checks and hashing do not review its policy. The filter must enforce
@@ -921,8 +922,9 @@ The probe has a separate `--r1-memory` mode for the fixed
 `r1-memory-fixed-v1` experiment. It emits raw evidence and has no qualification
 result. Ordinary probe invocation, legacy request/hold/FD1 encodings and host
 cases retain their existing behavior. `HostConfig` continues to reject `R1`,
-`r1-memory` and the profile name as host cases. This tranche supplies schemas
-and a bounded static helper, with no host launcher or runtime support claim.
+`r1-memory` and the actor profile name as host cases. The separate fixed
+`r1-entry` host case below admits only no-pressure child entry. Neither mode
+establishes runtime support.
 The mode cannot be combined with `--fixture-root`, `--private-ready-hold` or
 `--private-r1-child`. There are no command, control-path, size or lifetime flags.
 The private child mode is exclusively for fixed self-exec with two private
@@ -1048,12 +1050,11 @@ cannot immediately look like kernel-group termination. Failure cleanup may send
 abort, which is retained as intervention evidence.
 
 Go `exec` implements the child's nil standard streams by opening `/dev/null`.
-The legacy bubblewrap layout creates an empty `/dev`, so future R1 host
-integration must first qualify the exact R1-only `--dev-bind /dev/null /dev/null`
-with a trusted character-device subject (`S_IFCHR`, device number 1:3), mount
-and readback. This requires no broad `/dev` exposure. This tranche adds no
-launcher or bind. Actual no-pressure child entry in that sandbox, followed by
-memory-pressure qualification, requires later reviewed host integration.
+The legacy bubblewrap layout creates an empty `/dev`. The entry-only host case
+adds exactly `--dev-bind /dev/null /dev/null`, with trusted character-device
+metadata (`S_IFCHR`, device number 1:3), selected endpoint and mount readback.
+The source bind and its actual observability still require independent host
+qualification. Ordinary profiles retain their empty `/dev` layout.
 
 After exact release, main emits pressure-start and maps exactly 64 MiB with
 anonymous private mmap. It writes a nonzero byte at the actual OS page stride,
@@ -1087,13 +1088,114 @@ Tests substitute allocator, clock, control reader, process and I/O seams. They
 exercise accounting/deadline composition without mapping the 64 MiB path or
 invoking the actual main actor CLI. A bounded owned child test exercises only
 the real private handshake and reap, and reports unsupported metadata explicitly.
-Readonly mount enforcement, visibility of later atomic exclusive host publication,
-late-context authentication, publication durability, host PID/pidfd and complete
-admitted membership binding (including wrappers), policy/swap/headroom readbacks,
-kernel counters, independent retention/heartbeat/oracle evidence and host cleanup
-are unimplemented/unexecuted qualification gates. No actual pressure, resource
-operation, systemd/bubblewrap launch or runtime enforcement claim follows from
-these schema/helper tests or static builds.
+Actual write-denial attacks, visibility of later inert control publication,
+kernel pressure counters and independent retention/heartbeat/oracle evidence
+remain separate qualification gates. The entry controller below supplies source
+integration and fake tests for host identities, selected endpoints, publication,
+safety readbacks and cleanup. These tests and static builds execute no host
+campaign and establish no runtime enforcement claim.
+
+## Fixed no-pressure R1 child entry
+
+This first host deliverable is based on feature source `244fc1f`. Its fixed
+profile is `r1-entry-no-pressure-v1`; it uses the existing actor request
+`r1-memory-fixed-v1`. In an otherwise normal host configuration set
+`"case":"r1-entry"`, `"role":"candidate"` and add an exact
+`"busctl":"/usr/bin/busctl"` subject. The path is illustrative. This selected
+public manager helper is a coordinator qualification input, not a developer
+prerequisite. `descriptor_profile` and `direct_control` must be absent.
+There are no command, memory, mount, lifetime or pressure-enable selectors.
+Use the normal `qualify run --allow-host-operations --config ...`, `inspect`
+and cleanup-only `reconcile --allow-host-operations` entrypoints.
+
+The controller creates a fresh retained aggregate at the user-manager root,
+outside `app.slice`, through one pinned public `StartTransientUnit` call. It
+requires `StopWhenUnneeded=no`, 256 MiB memory, no swap, 64 tasks and one CPU.
+Its only Tool service has 96 MiB memory, no swap, 32 tasks, one CPU,
+`Restart=no`, `Delegate=no`, the existing finite FD/output limits, a 30-second
+runtime guard and a 3-second stop guard. Direct kernel readbacks and conservative
+ancestor/global headroom checks are mandatory. Active/unknown system oomd is
+unsupported; the controller changes no host policy. These are safety guards,
+not evidence of resource enforcement or successful weak pressure retention.
+
+The selected static driver/probe and reviewed bwrap/BPF chain remain frozen.
+Systemctl, systemd-run and busctl hashes and ELF inventories, kernel release,
+running user-manager/client versions, ancestor identities and actual headroom
+are retained. Original-path manager search paths are inventoried; the frozen
+bwrap search-path rejection remains unchanged. Dynamic dependency closure
+remains incomplete. An owned control
+directory and exact typed stdin bytes are bound before the immutable plan hash;
+context is exclusively published afterwards with its exact captured subject/hash.
+The workload sees that directory read-only. Only this profile mounts the exact
+nofollow metadata-bound root-owned mode-0666 null character device. The source
+device is revalidated at dispatch and through the workload mount; filesystem
+device identity and `st_rdev` are distinct. Namespace ownership is projected from
+the actual UID map, including the selected kernel's overflow UID.
+
+`<attempt>/release.json` permits the injector to enter the reviewed wrapper
+chain. It does **not** authorize allocation. The controller has no operation
+that publishes `<attempt>/r1-control/release.json` or `finish.json`; either
+file, a misplaced root finish, an early wrapper gate or pressure evidence is
+an integrity failure. A marker retains detected integrity loss through restored
+bytes and reopening. Ambiguous publication or failed durable updates fence
+further progress. Structurally valid original cleanup authority is retained.
+
+All manager calls, subject work and service limits are checked while the wrapper
+is gated. The fixed controller operation deadline is 45 seconds, within the
+60-second attempt horizon with cleanup reserve. An incremental complete-frame
+reader obtains provisional readiness without waiting for output EOF. One
+monotonic observation budget retains a 250 ms margin inside the actor's unchanged
+two-second release wait. Direct proc/cgroup samples bind both distinct actors,
+strict actual `NSpid` projections and every observed bwrap/monitor member in the
+exact Tool branch, with live pidfds and identity revalidation around the batch.
+Unknown members/branches, lost actors, inaccessible metadata or exhausted margin
+are inconclusive. Two listings plus the frozen spawn chain do not continuously
+observe every transient setup process. Injector-to-bwrap exec is recorded as
+one retained PID/start identity, not PID reuse.
+
+Selected endpoint evidence requires child fd0 read-only and fd1/2 write-only
+on the exact mounted null character device, device usability/nosuid mount
+properties and a read-only containing directory. Child fd4 must be a read pipe
+with the exact main actor's unique write-pipe peer. Main stdout remains the
+owned evidence stream. Observers read metadata only. The closed hello fd3 may
+be reused by Go; runtime epoll/eventfd/pidfd descriptors and the main's pinned
+control-directory descriptor are permitted. This is not a complete runtime FD
+allowlist or proof of actor write denial or later publication consumption.
+
+Positive evidence is exactly ready sequence 0 followed by failure sequence 1:
+`stage=release`, `error=deadline`, zero touched bytes/page size,
+`cleanup=not-allocated`, empty release/finish hashes, exact child identity,
+`token=abort`, `termination=exited`, `exit_code=20`, `reap=reaped`. The public
+probe's natural exit 1 is required and distinguished from watchdog/kill/other
+failure. Missing best-effort failure output, partial/extra frames or unknown
+reap remain inconclusive even when cleanup succeeds. Final collection requires
+all retained original handles terminal, no pending service job, the same parent
+empty, saved empty evidence, a stopped parent and an unchanged owned output
+identity. Main/child 8/10-second lifetimes are unchanged; cleanup never uses
+the legacy four-second fast completion loop.
+
+Reconcile only adopts exact original stop authority and performs bounded owned
+cleanup. It never starts a replacement, republishes context or either release,
+or reconstructs a positive live observation. Changed boot/generation, missing
+required original identity or unproved cleanup retains the start fence. An
+empty original parent without a launched Tool can be stopped with explicit
+prelaunch cleanup evidence, without fabricating actor observations.
+
+Deterministic gates cover the positive controller transcript, prohibited
+transitions, the old empty-device startup ENOENT at the trusted spawn seam,
+selected metadata failures, split/partial output, publication/save faults,
+restart and sticky integrity restoration. Fake transcripts use no real pressure
+mapping or host services. A separately controlled no-pressure host run after
+source review must measure the real observer window and proc access. Heartbeat,
+paired 32/96 MiB pressure runs, OOM/group attribution and full sandbox support
+remain outside this entry profile.
+
+### Changelog [Unreleased]
+
+- Add the fixed `r1-entry` candidate host case and explicit busctl subject through
+  normal run/inspect/reconcile, with separate entry, expected timeout and cleanup
+  evidence. Preserve historical plan hashes, FD1/hold entrypoints and pressure
+  case rejection. This source change carries no executed host qualification.
 
 ## Separate implementation and support gates
 

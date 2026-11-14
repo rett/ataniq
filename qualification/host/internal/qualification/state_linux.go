@@ -47,6 +47,9 @@ type Unit struct {
 }
 
 type Attempt struct {
+	EntryStatic           *R1EntryStatic          `json:"entry_static,omitempty"`
+	EntryRuntime          *R1EntryRuntime         `json:"entry_runtime,omitempty"`
+	EntryIntegrityFailure string                  `json:"entry_integrity_failure,omitempty"`
 	FD1Static             *FD1Static              `json:"fd1_static,omitempty"`
 	FD1Runtime            *FD1Runtime             `json:"fd1_runtime,omitempty"`
 	FD1IntegrityFailure   string                  `json:"fd1_integrity_failure,omitempty"`
@@ -122,6 +125,8 @@ type Campaign struct {
 	updateID func() (string, error)
 	// Narrow seam for post-adoption authentication/restoration race tests.
 	authenticateFD1 func(*Attempt, *FD1Runtime) error
+	// Entry transport fault seam; callers select only the two fixed entry names.
+	entryPublish func(string, string, []byte) error
 }
 
 func randomID() (string, error) {
@@ -137,7 +142,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID, authenticateFD1: authenticateFD1Runtime}
+	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID, authenticateFD1: authenticateFD1Runtime, entryPublish: publishOwned}
 	fd, err := syscall.Openat(int(d.Fd()), "controller.lock", syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0600)
 	if err != nil {
 		d.Close()
@@ -178,7 +183,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 			continue
 		}
 		c.Records[a.ID] = a
-		if a.Phase != "complete" || a.FD1IntegrityFailure != "" {
+		if a.Phase != "complete" || a.FD1IntegrityFailure != "" || a.EntryIntegrityFailure != "" {
 			c.Blocked = true
 		}
 	}
@@ -273,10 +278,10 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	if err = decodeHostRecord(bytes.NewReader(b), &a); err != nil {
 		return nil, err
 	}
-	if a.Version != 1 || a.ID != id || a.Root != root || a.Campaign != c.Identity || a.Config.Campaign != c.Path || a.Config.validate() != nil || a.Profile != HostProfile || !phaseValid(a.Phase) || a.Created <= 0 || a.NotAfter != a.Created+60 || a.Slice != "aq"+id+".slice" || a.Service != "aq"+id+".service" || len(a.Subjects) != 6 || a.Request.Validate() != nil {
+	if a.Version != 1 || a.ID != id || a.Root != root || a.Campaign != c.Identity || a.Config.Campaign != c.Path || a.Config.validate() != nil || a.Profile != profileFor(a.Config) || !phaseValid(a.Phase) || a.Created <= 0 || a.NotAfter != a.Created+60 || a.Slice != "aq"+id+".slice" || a.Service != "aq"+id+".service" || len(a.Subjects) != len(selected(a.Config)) || a.Request.Validate() != nil {
 		return nil, errors.New("invalid attempt ownership or intent")
 	}
-	if a.Phase == "complete" && (!a.Empty || !a.PopulatedLive || !a.SliceStopped || a.Parent == nil || a.Workload == nil || a.Injector == nil || a.Target == nil || !a.TargetExited) {
+	if a.Phase == "complete" && (!a.Empty || !a.SliceStopped || a.Parent == nil || !entryParentOnly(&a) && (!a.PopulatedLive || a.Workload == nil || a.Injector == nil || a.Target == nil || !a.TargetExited)) {
 		return nil, errors.New("invalid completion")
 	}
 	if err = validatePlan(&a, path); err != nil {
@@ -285,6 +290,7 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	// Current artifact integrity is separate from the durable stop authority.
 	// Keep structurally validated records inspectable and cleanup-only.
 	c.checkFD1Integrity(&a)
+	c.checkEntryIntegrity(&a)
 	if _, err := os.Lstat(filepath.Join(path, "sync-failed")); !os.IsNotExist(err) {
 		return nil, errors.New("previous durability failure")
 	}
@@ -302,11 +308,19 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	}
 	next := *a
 	next.Phase = phase
+	if err := validateEntryStored(&next); err != nil {
+		c.poison(nil)
+		return err
+	}
 	if err := validateFD1Stored(&next); err != nil {
 		c.poison(nil)
 		return err
 	}
 	c.checkFD1Integrity(a)
+	c.checkEntryIntegrity(a)
+	if isR1Entry(a) && (phase == "bound" || phase == "released") && a.EntryIntegrityFailure != "" {
+		return errors.New("entry integrity fenced")
+	}
 	if a.Config.DescriptorProfile == FD1TypedProfile && (phase == "bound" || phase == "released") && a.FD1IntegrityFailure != "" {
 		return errors.New("typed runtime not durably bindable")
 	}
@@ -363,7 +377,7 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if phase == "complete" {
 		c.Blocked = c.fenced
 		for _, r := range c.Records {
-			if r.Phase != "complete" || r.FD1IntegrityFailure != "" {
+			if r.Phase != "complete" || r.FD1IntegrityFailure != "" || r.EntryIntegrityFailure != "" {
 				c.Blocked = true
 			}
 		}
@@ -442,6 +456,6 @@ func (c *Campaign) fresh(config HostConfig) (*Attempt, error) {
 		return nil, err
 	}
 	now := time.Now().Unix()
-	a := &Attempt{Version: 1, ID: id, Config: config, Profile: HostProfile, Phase: "prepared", Created: now, NotAfter: now + 60, Slice: "aq" + id + ".slice", Service: "aq" + id + ".service", Subjects: map[string]Subject{}}
+	a := &Attempt{Version: 1, ID: id, Config: config, Profile: profileFor(config), Phase: "prepared", Created: now, NotAfter: now + 60, Slice: "aq" + id + ".slice", Service: "aq" + id + ".service", Subjects: map[string]Subject{}}
 	return a, nil
 }

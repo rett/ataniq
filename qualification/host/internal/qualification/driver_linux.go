@@ -27,6 +27,9 @@ type HostReport struct {
 }
 
 func (c *Campaign) run(a *Attempt, h hostIO) error {
+	if isR1Entry(a) {
+		return c.runEntry(a, h)
+	}
 	a.Stage = "fresh-names"
 	if err := c.Save(a, "prepared", ""); err != nil {
 		return err
@@ -438,10 +441,17 @@ func RunHost(config HostConfig) HostReport {
 		r.ReasonCode = "typed-runtime-integrity-failed"
 		r.Reason = a.FD1IntegrityFailure
 	}
-	if err == nil && a.FD1IntegrityFailure == "" && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil) {
+	if a.EntryIntegrityFailure != "" {
+		r.ReasonCode, r.Reason = "entry-integrity-failed", a.EntryIntegrityFailure
+	}
+	if err == nil && a.FD1IntegrityFailure == "" && a.EntryIntegrityFailure == "" && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil || entryObserved(a)) {
 		r.Outcome = "observed"
 		r.ReasonCode = "bounded-observation"
 		r.Reason = "bounded case evidence retained; no matrix support assertion"
+		if isR1Entry(a) {
+			r.ReasonCode = "no-pressure-child-entry"
+			r.Reason = "authenticated child entry, expected release timeout and complete owned cleanup"
+		}
 	}
 	return r
 }
@@ -465,6 +475,9 @@ func ReconcileHost(campaign, id string) HostReport {
 	if a.FD1IntegrityFailure != "" {
 		r.ReasonCode = "typed-runtime-integrity-failed"
 		r.Reason = a.FD1IntegrityFailure
+	}
+	if a.EntryIntegrityFailure != "" {
+		r.ReasonCode, r.Reason = "entry-integrity-failed", a.EntryIntegrityFailure
 	}
 	r.Stage = a.Stage
 	r.Phase = a.Phase

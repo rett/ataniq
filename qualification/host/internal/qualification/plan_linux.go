@@ -59,7 +59,11 @@ func exclusiveFile(path string, b []byte, mode os.FileMode) error {
 }
 
 func selected(c HostConfig) map[string]string {
-	return map[string]string{"driver": c.Driver, "probe": c.Probe, "bwrap": c.Bwrap, "bpf": c.BPF, "systemctl": c.Systemctl, "systemd-run": c.SystemdRun}
+	m := map[string]string{"driver": c.Driver, "probe": c.Probe, "bwrap": c.Bwrap, "bpf": c.BPF, "systemctl": c.Systemctl, "systemd-run": c.SystemdRun}
+	if c.Case == R1EntryCase {
+		m["busctl"] = c.Busctl
+	}
+	return m
 }
 
 // Atomic publication without overwriting an existing evidence/release name.
@@ -115,7 +119,11 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 		return nil, err
 	}
 	paths := selected(config)
-	for _, name := range []string{"driver", "probe", "bwrap", "bpf", "systemctl", "systemd-run"} {
+	names := []string{"driver", "probe", "bwrap", "bpf", "systemctl", "systemd-run"}
+	if isR1Entry(a) {
+		names = append(names, "busctl")
+	}
+	for _, name := range names {
 		path := paths[name]
 		s, _, err := chainSubject(name, path, false)
 		if err != nil {
@@ -188,6 +196,12 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 	}
 	a.Request = hostRequest(a)
 	request, _ := json.Marshal(a.Request)
+	if isR1Entry(a) {
+		if err = prepareEntryStatic(a, path); err != nil {
+			return nil, err
+		}
+		request = a.EntryStatic.RequestBytes
+	}
 	if err = exclusiveFile(filepath.Join(path, "request.json"), request, 0400); err != nil {
 		return nil, err
 	}
@@ -220,7 +234,7 @@ func hostRequest(a *Attempt) Request {
 	c := a.Config
 	r := Request{Version: 1, RunID: c.RunID, RequestID: c.RequestID, Case: Case(c.Case), MaxDurationMS: 1500, MaxBytes: 4096}
 	switch c.Case {
-	case "hold":
+	case "hold", R1EntryCase:
 		r.Case = CaseInventory
 	case "fake-file":
 		r.Payload = &Payload{File: &NamePayload{Name: "fake-file"}}
@@ -246,6 +260,9 @@ func command(a *Attempt, path string) []string {
 }
 
 func targetCommand(a *Attempt, path string) []string {
+	if isR1Entry(a) {
+		return append([]string{filepath.Join(path, "bwrap")}, entryBubblewrapArgs(path)...)
+	}
 	args := []string{filepath.Join(path, "probe"), "--fixture-root", filepath.Join(path, "fixtures")}
 	if a.Config.Role != "direct" {
 		args = append([]string{filepath.Join(path, "bwrap")}, BubblewrapArgs(filepath.Join(path, "probe"), filepath.Join(path, "fixtures", "fake-file"))...)
@@ -270,7 +287,7 @@ func targetCommand(a *Attempt, path string) []string {
 }
 
 func launch(a *Attempt, path string) []string {
-	return []string{"--user", "--quiet", "--unit=" + a.Service, "--slice=" + a.Slice, "--service-type=exec",
+	args := []string{"--user", "--quiet", "--unit=" + a.Service, "--slice=" + a.Slice, "--service-type=exec",
 		"--property=Restart=no", "--property=RemainAfterExit=no",
 		"--property=Description=ataniq-qualification-" + a.ID,
 		"--property=RuntimeMaxSec=20s", "--property=TimeoutStopSec=3s", "--property=KillMode=control-group",
@@ -280,9 +297,24 @@ func launch(a *Attempt, path string) []string {
 		"--property=StandardOutput=append:" + filepath.Join(path, "output"),
 		"--property=StandardError=append:" + filepath.Join(path, "stderr"),
 		"--", filepath.Join(path, "driver"), "private-inject", path}
+	if isR1Entry(a) {
+		for i, arg := range args {
+			if arg == "--property=RuntimeMaxSec=20s" {
+				args[i] = "--property=RuntimeMaxSec=30s"
+			}
+			if arg == "--property=MemoryMax=67108864" {
+				args[i] = "--property=MemoryMax=100663296"
+			}
+		}
+		args = append([]string{"--property=MemorySwapMax=0", "--property=Delegate=no"}, args...)
+	}
+	return args
 }
 
 func validatePlan(a *Attempt, path string) error {
+	if err := validateEntryStatic(a, path); err != nil {
+		return err
+	}
 	if err := validateFD1Static(a, path); err != nil {
 		return err
 	}
@@ -343,10 +375,11 @@ func planDigest(a *Attempt) string {
 		Streams                  map[string]FileIdentity
 		Boot, FixtureNonce       string
 		Control                  *ControlBinding
-		DescriptorPolicy         string     `json:",omitempty"`
-		TargetCommand            []string   `json:",omitempty"`
-		FD1Static                *FD1Static `json:",omitempty"`
-	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control, a.DescriptorPolicy, a.TargetCommand, a.FD1Static})
+		DescriptorPolicy         string         `json:",omitempty"`
+		TargetCommand            []string       `json:",omitempty"`
+		FD1Static                *FD1Static     `json:",omitempty"`
+		EntryStatic              *R1EntryStatic `json:",omitempty"`
+	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control, a.DescriptorPolicy, a.TargetCommand, a.FD1Static, a.EntryStatic})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
@@ -364,6 +397,9 @@ func validProcess(p Process) bool {
 }
 
 func validateStored(a *Attempt) error {
+	if err := validateEntryStored(a); err != nil {
+		return err
+	}
 	if err := validateFD1Stored(a); err != nil {
 		return err
 	}
@@ -410,7 +446,7 @@ func validateStored(a *Attempt) error {
 	if a.Target != nil && (!validProcess(*a.Target) || a.Target.Boot != a.Boot || a.Workload == nil || a.Target.Cgroup != a.Workload.Boundary.Path) {
 		return errors.New("invalid stored target")
 	}
-	if a.Empty && (!a.TargetExited || !a.PopulatedLive || a.Target == nil || a.Injector == nil) {
+	if a.Empty && !entryParentOnly(a) && (!a.TargetExited || !a.PopulatedLive || a.Target == nil || a.Injector == nil) {
 		return errors.New("invalid stored empty proof")
 	}
 	switch a.Phase {
@@ -419,7 +455,7 @@ func validateStored(a *Attempt) error {
 			return errors.New("missing parent binding")
 		}
 	case "bound", "released", "cancelling", "empty", "complete":
-		if a.Injector == nil || a.Target == nil || a.Workload == nil {
+		if !entryParentOnly(a) && (a.Injector == nil || a.Target == nil || a.Workload == nil) {
 			return errors.New("missing launch binding")
 		}
 	}

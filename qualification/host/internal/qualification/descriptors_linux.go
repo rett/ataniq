@@ -162,6 +162,9 @@ func PrivateFinalDescriptors(path string) error {
 	if err != nil || a.DescriptorPolicy != FinalDescriptorPolicy || a.Phase != "released" || a.Injector == nil || a.Target == nil || time.Now().Unix() > a.NotAfter {
 		return errors.New("final descriptor intent not released")
 	}
+	if err := entryDispatchCheck(a); err != nil {
+		return err
+	}
 	if err := freshFD1Control(a, time.Now().Unix()); err != nil {
 		return err
 	}

@@ -35,6 +35,7 @@ type HostConfig struct {
 	DirectControl     string `json:"direct_control,omitempty"`
 	ReviewedBPF       bool   `json:"reviewed_bpf"`
 	DescriptorProfile string `json:"descriptor_profile,omitempty"`
+	Busctl            string `json:"busctl,omitempty"`
 }
 
 const HostProfile = "bwrap-static-probe-v1"
@@ -208,11 +209,18 @@ func ReadHostConfig(path string) (HostConfig, error) {
 // canonical structural vocabulary. No case-folding or arbitrary map keys.
 func decodeHostRecord(r io.Reader, a *Attempt) error {
 	return decodeKeys(r, MaxInputBytes, a, func(s string) bool {
-		return canonicalKey(s) || s == "systemd-run" || strings.Contains(","+properties+",", ","+s+",")
+		return canonicalKey(s) || s == "systemd-run" || strings.Contains(","+entryServiceProperties+","+entryParentProperties+",", ","+s+",")
 	})
 }
 
 func (c HostConfig) validate() error {
+	if c.Case == R1EntryCase {
+		if c.Role != "candidate" || c.DescriptorProfile != "" || c.DirectControl != "" || !absolute(c.Busctl) {
+			return errors.New("fixed candidate r1-entry requires pinned busctl and no control/profile selectors")
+		}
+	} else if c.Busctl != "" {
+		return errors.New("busctl is only an r1-entry subject")
+	}
 	if c.DescriptorProfile != "" && c.DescriptorProfile != FD1TypedProfile {
 		return errors.New("unknown descriptor profile")
 	}
@@ -221,7 +229,11 @@ func (c HostConfig) validate() error {
 		return errors.New("invalid host configuration")
 	}
 	seen := map[string]bool{}
-	for _, p := range []string{c.Campaign, c.Driver, c.Probe, c.Bwrap, c.BPF, c.Systemctl, c.SystemdRun} {
+	paths := []string{c.Campaign, c.Driver, c.Probe, c.Bwrap, c.BPF, c.Systemctl, c.SystemdRun}
+	if c.Case == R1EntryCase {
+		paths = append(paths, c.Busctl)
+	}
+	for _, p := range paths {
 		if !absolute(p) {
 			return errors.New("exact absolute subjects required")
 		}
@@ -234,7 +246,7 @@ func (c HostConfig) validate() error {
 		}
 	}
 	switch c.Case {
-	case "inventory", "fake-file", "fake-fd", "hold":
+	case "inventory", "fake-file", "fake-fd", "hold", R1EntryCase:
 	case "fake-dir-fd", "fake-pipe-fd", "fake-socket-fd":
 		if !typed {
 			return errors.New("typed descriptor case requires fd1-typed profile")
