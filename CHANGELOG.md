@@ -8,6 +8,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Require exact descriptor inventory rows and durable owned stdio regular-file
+  identities before accepting complete post-exec host qualification evidence.
+  Reject empty or contradictory tables while retaining failed raw observations
+  separately from lifecycle cleanup; this adds no runtime support claim.
+- Add a versioned final descriptor policy to new bounded host qualification
+  attempts: use a private static-driver reexec, pinned-thread close_range
+  CLOEXEC/UNSHARE, raw role revalidation and fail-closed syscall.Exec. Keep
+  sparse synthetic aliases and restricted weakened controls, separate planned
+  receipts from post-exec fake/BPF identity observations, and preserve legacy
+  command digests and failed isolation evidence for inspect and exact cleanup.
+  This is backend-chain hardening infrastructure, not runtime/provider support.
 - Reject qualification ELF runtime metadata touched by overlapping PT_LOAD
   mapping pages, including logically disjoint segments; check host-page rounding
   overflow for both dynamic and runtime string extents.

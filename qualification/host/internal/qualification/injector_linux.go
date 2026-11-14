@@ -24,17 +24,18 @@ type FDRecord struct {
 }
 
 type Injection struct {
-	Version     int        `json:"version"`
-	Attempt     string     `json:"attempt"`
-	Invocation  string     `json:"invocation"`
-	Process     Process    `json:"process"`
-	Boundary    Boundary   `json:"boundary"`
-	Fixture     Subject    `json:"fixture"`
-	Descriptors []FDRecord `json:"descriptors"`
-	Profile     string     `json:"profile"`
-	RunID       string     `json:"run_id"`
-	RequestID   string     `json:"request_id"`
-	RoleID      string     `json:"role_id"`
+	Version          int        `json:"version"`
+	Attempt          string     `json:"attempt"`
+	Invocation       string     `json:"invocation"`
+	Process          Process    `json:"process"`
+	Boundary         Boundary   `json:"boundary"`
+	Fixture          Subject    `json:"fixture"`
+	Descriptors      []FDRecord `json:"descriptors"`
+	Profile          string     `json:"profile"`
+	RunID            string     `json:"run_id"`
+	RequestID        string     `json:"request_id"`
+	RoleID           string     `json:"role_id"`
+	DescriptorPolicy string     `json:"descriptor_policy,omitempty"`
 }
 
 type release struct {
@@ -52,10 +53,10 @@ func fdFlags(fd int) (int, error) {
 }
 
 func vacantFDs(limit uint64, occupied map[int]bool) error {
-	if uint64(BPFFD) >= limit || FakeFD <= 2 || BPFFD == FakeFD {
-		return errors.New("sparse descriptors exceed rlimit")
-	}
-	for _, fd := range []int{FakeFD, BPFFD} {
+	for _, fd := range injectionFDs() {
+		if uint64(fd) >= limit || fd <= 2 {
+			return errors.New("sparse descriptors exceed rlimit")
+		}
 		if occupied[fd] {
 			return errors.New("sparse descriptor collision")
 		}
@@ -101,6 +102,9 @@ func readInjection(path string) (Injection, error) {
 }
 
 func validateInjection(a *Attempt, i Injection, u *Unit) error {
+	if i.DescriptorPolicy != a.DescriptorPolicy {
+		return errors.New("injection descriptor policy mismatch")
+	}
 	if i.Version != 1 || i.Attempt != a.ID || i.Invocation != u.Properties["InvocationID"] || i.Profile != a.Profile || i.RunID != a.Config.RunID || i.RequestID != a.Config.RequestID || i.RoleID != a.Config.RoleID || i.Process.Boot != a.Boot || i.Fixture != a.Fixture || i.Boundary != u.Boundary || u.Main == nil || !sameProcess(i.Process, *u.Main) || i.Process.Executable != a.Snapshots["driver"].Identity || !reflect.DeepEqual(i.Descriptors, expectedDescriptors(a)) {
 		return errors.New("invalid injection identity")
 	}
@@ -111,7 +115,25 @@ func validateInjection(a *Attempt, i Injection, u *Unit) error {
 }
 
 func expectedDescriptors(a *Attempt) []FDRecord {
-	return []FDRecord{{0, "request", a.Streams["request"], false}, {1, "output", a.Streams["output"], false}, {2, "stderr", a.Streams["stderr"], false}, {FakeFD, "synthetic-regular", a.Fixture.Identity, false}, {BPFFD, "reviewed-bpf", a.Snapshots["bpf"].Identity, false}}
+	r := []FDRecord{{0, "request", a.Streams["request"], false}, {1, "output", a.Streams["output"], false}, {2, "stderr", a.Streams["stderr"], false}}
+	for _, fd := range fakeFDs(a) {
+		role := "synthetic-alias"
+		if fd == FakeFD {
+			role = "synthetic-regular"
+		}
+		r = append(r, FDRecord{fd, role, a.Fixture.Identity, false})
+	}
+	return append(r, FDRecord{BPFFD, "reviewed-bpf", a.Snapshots["bpf"].Identity, false})
+}
+
+// Deliberate sparse aliases belong only to the owned synthetic regular file.
+// All fit the selected service's 1024 limit; no RLIMIT raising or slot fallback.
+func injectionFDs() []int { return []int{64, FakeFD, 768, 1000, BPFFD} }
+func fakeFDs(a *Attempt) []int {
+	if a.DescriptorPolicy == "" {
+		return []int{FakeFD}
+	}
+	return []int{64, FakeFD, 768, 1000}
 }
 
 // PrivateInject runs ONLY in the separate transient service. It never changes
@@ -130,7 +152,7 @@ func PrivateInject(path string) error {
 	d.Close()
 	c := &Campaign{Path: root, Identity: id}
 	a, err := c.read(filepath.Base(path))
-	if err != nil || a.Phase != "launching-service" {
+	if err != nil || a.Phase != "launching-service" || a.DescriptorPolicy != FinalDescriptorPolicy {
 		return errors.New("injector intent not invoking")
 	}
 	if time.Now().Unix() > a.NotAfter {
@@ -162,7 +184,7 @@ func PrivateInject(path string) error {
 		return err
 	}
 	used := map[int]bool{0: true, 1: true, 2: true}
-	for _, fd := range []int{FakeFD, BPFFD} {
+	for _, fd := range injectionFDs() {
 		_, err := fdFlags(fd)
 		if err == nil {
 			used[fd] = true
@@ -173,30 +195,31 @@ func PrivateInject(path string) error {
 	if err = vacantFDs(lim.Cur, used); err != nil {
 		return err
 	}
-	for _, item := range []struct {
-		path string
-		fd   int
-	}{{a.Fixture.Path, FakeFD}, {a.Snapshots["bpf"].Path, BPFFD}} {
-		f, err := openAbsolute(item.path, syscall.O_RDONLY)
+	for _, fd := range injectionFDs() {
+		source := a.Fixture.Path
+		if fd == BPFFD {
+			source = a.Snapshots["bpf"].Path
+		}
+		f, err := openAbsolute(source, syscall.O_RDONLY)
 		if err != nil {
 			return err
 		}
-		if int(f.Fd()) >= FakeFD {
+		if int(f.Fd()) >= 64 {
 			f.Close()
 			return errors.New("source descriptor collision")
 		}
-		err = syscall.Dup3(int(f.Fd()), item.fd, 0)
+		err = syscall.Dup3(int(f.Fd()), fd, 0)
 		f.Close()
 		if err != nil {
 			return err
 		}
 	}
-	defer syscall.Close(FakeFD)
-	defer syscall.Close(BPFFD)
-	if err = verifyFakeFD(FakeFD, a.Fixture); err != nil {
-		return err
+	for _, fd := range fakeFDs(a) {
+		if err = verifyFakeFD(fd, a.Fixture); err != nil {
+			return err
+		}
 	}
-	for _, fd := range []int{FakeFD, BPFFD} {
+	for _, fd := range injectionFDs() {
 		flags, err := fdFlags(fd)
 		if err != nil || flags&syscall.FD_CLOEXEC != 0 {
 			return errors.New("injection CLOEXEC mismatch")
@@ -214,7 +237,7 @@ func PrivateInject(path string) error {
 			return errors.New("descriptor role identity mismatch")
 		}
 	}
-	i := Injection{1, a.ID, inv, self, bnd, a.Fixture, descriptors, a.Profile, a.Config.RunID, a.Config.RequestID, a.Config.RoleID}
+	i := Injection{1, a.ID, inv, self, bnd, a.Fixture, descriptors, a.Profile, a.Config.RunID, a.Config.RequestID, a.Config.RoleID, a.DescriptorPolicy}
 	b, err := json.Marshal(i)
 	if err != nil || len(b) > MaxOutputBytes {
 		return errors.New("injection evidence excessive")
@@ -245,16 +268,14 @@ func PrivateInject(path string) error {
 	if err = verifyFakeFD(FakeFD, a.Fixture); err != nil {
 		return err
 	}
-	// Close BPF for the direct control; bwrap owns/consumes it for candidates.
+	// Keep every injected role through the identical self-reexec path. Only the
+	// final mode applies the compiled role policy at the terminal exec boundary.
 	if err = verifyFD(BPFFD, a.Snapshots["bpf"], 32768); err != nil {
 		return err
 	}
 	latest, err := c.read(a.ID)
 	if err != nil || latest.Phase != "released" || latest.Injector == nil || latest.Injector.Invocation != inv {
 		return errors.New("release not durably bound")
-	}
-	if a.Config.Role == "direct" {
-		syscall.Close(BPFFD)
 	}
 	for _, name := range []string{"probe", "bwrap"} {
 		s, _, err := chainSubject(name, a.Snapshots[name].Path, true)

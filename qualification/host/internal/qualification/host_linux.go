@@ -212,7 +212,7 @@ func decodeHostRecord(r io.Reader, a *Attempt) error {
 }
 
 func (c HostConfig) validate() error {
-	if c.Version != 1 || !validHex(c.RunID) || !validHex(c.RequestID) || !validHex(c.RoleID) || c.Role != "direct" && c.Role != "candidate" || !c.ReviewedBPF {
+	if c.Version != 1 || !validHex(c.RunID) || !validHex(c.RequestID) || !validHex(c.RoleID) || c.Role != "direct" && c.Role != "candidate" && c.Role != "weakened-synthetic" || !c.ReviewedBPF {
 		return errors.New("invalid host configuration")
 	}
 	seen := map[string]bool{}
@@ -232,6 +232,9 @@ func (c HostConfig) validate() error {
 	case "inventory", "fake-file", "fake-fd", "hold":
 	default:
 		return errors.New("unsupported host case")
+	}
+	if c.Role == "weakened-synthetic" && (c.Case != "fake-fd" && c.Case != "inventory" || c.DirectControl != "") {
+		return errors.New("weakened synthetic control requires owned FD or inventory fixture")
 	}
 	if c.DirectControl != "" && !attemptID(c.DirectControl) {
 		return errors.New("invalid direct control")

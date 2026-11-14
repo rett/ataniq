@@ -251,7 +251,7 @@ func validateReady(a *Attempt, f HoldFrame, p Process) error {
 	if nspid != strconv.Itoa(f.PID) {
 		return errors.New("readiness namespace pid mismatch")
 	}
-	if a.Config.Role == "candidate" {
+	if a.Config.Role != "direct" {
 		for _, name := range []string{"pid", "mnt", "net", "user", "ipc", "uts"} {
 			if p.Namespaces[name].Inode == 0 || p.Namespaces[name] == a.Injector.Process.Namespaces[name] {
 				return errors.New("candidate namespace isolation unverified")
@@ -278,6 +278,14 @@ func (c *Campaign) collect(a *Attempt) error {
 		return err
 	}
 	defer root.Close()
+	if a.DescriptorPolicy != "" {
+		b, err := CollectFlat(root, "descriptor-policy.json", MaxOutputBytes, true)
+		var r DescriptorReceipt
+		if err != nil || decode(bytes.NewReader(b), MaxOutputBytes, &r) != nil || validateDescriptorReceipt(a, r) != nil {
+			return errors.New("missing or invalid final descriptor preflight receipt")
+		}
+		a.DescriptorReceipt = &r
+	}
 	b, err := CollectFlat(root, "output", MaxOutputBytes, true)
 	if err != nil {
 		return err
@@ -314,6 +322,20 @@ func (c *Campaign) collect(a *Attempt) error {
 			return errors.New("observation identity mismatch")
 		}
 		a.Observation = &o
+		if a.DescriptorPolicy != "" {
+			// Keep failed exclusion/recovery observations durably, including all
+			// matching identities and reused numbers. Cleanup is already proved.
+			if a.Config.Case == "inventory" {
+				d := observeDescriptorIdentities(a, o)
+				a.DescriptorObservation = &d
+			}
+			if err := c.Save(a, "complete", ""); err != nil {
+				return err
+			}
+			if err := validateDescriptorObservations(a, o); err != nil {
+				return err
+			}
+		}
 		if a.Config.Case == "fake-fd" && a.Config.Role == "direct" && (o.Status != "observed" || factValue(o, "digest_match") != "true") {
 			return errors.New("direct recovery not observed")
 		}

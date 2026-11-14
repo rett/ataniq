@@ -105,6 +105,7 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 		return nil, err
 	}
 	a.Campaign = c.Identity
+	a.DescriptorPolicy = FinalDescriptorPolicy
 	a.Boot, err = bootID()
 	if err != nil {
 		return nil, err
@@ -138,6 +139,7 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 	}
 	path := filepath.Join(c.Path, a.ID)
 	a.Command = command(a, path)
+	a.TargetCommand = targetCommand(a, path)
 	a.Launch = launch(a, path)
 	a.Cleanup = []string{"stop " + a.Service, "stop " + a.Slice}
 	// Exclusive, synced initial intent precedes even supervisor inspection.
@@ -222,8 +224,15 @@ func hostRequest(a *Attempt) Request {
 }
 
 func command(a *Attempt, path string) []string {
+	if a.DescriptorPolicy != "" {
+		return []string{filepath.Join(path, "driver"), "private-final-descriptors", path}
+	}
+	return targetCommand(a, path)
+}
+
+func targetCommand(a *Attempt, path string) []string {
 	args := []string{filepath.Join(path, "probe"), "--fixture-root", filepath.Join(path, "fixtures")}
-	if a.Config.Role == "candidate" {
+	if a.Config.Role != "direct" {
 		args = append([]string{filepath.Join(path, "bwrap")}, BubblewrapArgs(filepath.Join(path, "probe"), filepath.Join(path, "fixtures", "fake-file"))...)
 	}
 	if a.Config.Case == "hold" {
@@ -246,6 +255,12 @@ func launch(a *Attempt, path string) []string {
 }
 
 func validatePlan(a *Attempt, path string) error {
+	if a.DescriptorPolicy != "" && a.DescriptorPolicy != FinalDescriptorPolicy {
+		return errors.New("unknown descriptor policy")
+	}
+	if a.DescriptorPolicy == "" && (len(a.TargetCommand) != 0 || a.Config.Role == "weakened-synthetic") || a.DescriptorPolicy != "" && !reflect.DeepEqual(a.TargetCommand, targetCommand(a, path)) {
+		return errors.New("changed final target")
+	}
 	if !validBoot(a.Boot) || !attemptID(a.FixtureNonce) {
 		return errors.New("missing boot or fixture nonce")
 	}
@@ -297,7 +312,9 @@ func planDigest(a *Attempt) string {
 		Streams                  map[string]FileIdentity
 		Boot, FixtureNonce       string
 		Control                  *ControlBinding
-	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control})
+		DescriptorPolicy         string   `json:",omitempty"`
+		TargetCommand            []string `json:",omitempty"`
+	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control, a.DescriptorPolicy, a.TargetCommand})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
@@ -315,6 +332,14 @@ func validProcess(p Process) bool {
 }
 
 func validateStored(a *Attempt) error {
+	if a.DescriptorReceipt != nil && validateDescriptorReceipt(a, *a.DescriptorReceipt) != nil {
+		return errors.New("invalid stored descriptor receipt")
+	}
+	if a.DescriptorObservation != nil {
+		if a.DescriptorPolicy != FinalDescriptorPolicy || a.Observation == nil || a.Config.Case != "inventory" || !sameJSON(*a.DescriptorObservation, observeDescriptorIdentities(a, *a.Observation)) {
+			return errors.New("invalid stored descriptor observations")
+		}
+	}
 	if a.Config.Role == "candidate" && a.Config.Case == "fake-fd" && (a.Control == nil || a.Control.Attempt != a.Config.DirectControl || a.Control.RunID != a.Config.RunID || a.Control.Boot != a.Boot || a.Control.MaxAgeSeconds != 300 || a.Control.ValidatedAt < a.Created || !bounded(a.Control.PlanSHA256, 64, 64, isHex)) {
 		return errors.New("missing scoped direct control")
 	}
@@ -376,6 +401,12 @@ func factValue(o Observation, name string) string {
 }
 
 func validateControl(a, d *Attempt, now int64) error {
+	if d != nil && (a.DescriptorPolicy != d.DescriptorPolicy || a.DescriptorPolicy != FinalDescriptorPolicy) {
+		return errors.New("control descriptor policy mismatch")
+	}
+	if d != nil && (d.DescriptorReceipt == nil || validateDescriptorReceipt(d, *d.DescriptorReceipt) != nil) {
+		return errors.New("control missing current descriptor receipt")
+	}
 	if d == nil || d.Config.Campaign != a.Config.Campaign || d.Campaign != a.Campaign || d.Phase != "complete" || d.Config.Role != "direct" || d.Config.Case != "fake-fd" || d.Config.RunID != a.Config.RunID || d.Boot != a.Boot || now < d.Created || now-d.Created > 300 || d.Observation == nil || d.Observation.Status != "observed" || factValue(*d.Observation, "digest_match") != "true" || d.Injector == nil || !d.Empty || !d.TargetExited || !d.PopulatedLive || !d.SliceStopped || d.Profile != a.Profile || !attemptID(d.FixtureNonce) {
 		return errors.New("invalid scoped direct control")
 	}
