@@ -642,7 +642,7 @@ func TestR1EntryLostParentAcknowledgementAdoptsBeforeCleanup(t *testing.T) {
 	call := f.h.call
 	f.h.call = func(path string, args []string) (string, error) {
 		out, err := call(path, args)
-		if path == f.a.Config.Busctl && err == nil {
+		if path == f.a.Config.Busctl && strings.Contains(strings.Join(args, " "), "StartTransientUnit") && err == nil {
 			return "", errors.New("lost parent acknowledgement")
 		}
 		return out, err

@@ -77,6 +77,17 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 	if err := c.Save(a, "slice-bound", ""); err != nil {
 		return err
 	}
+	admission := a.EntryRuntime.Admission
+	if admission == nil || parent.Boundary.Path != filepath.Dir(admission.User.Identity.Cgroup)+"/"+a.Slice {
+		return errors.New("entry parent outside observed user root")
+	}
+	policy, err := h.entryPolicyUnit(a, false, parent.Boundary.Path, a.Slice)
+	if err != nil {
+		return err
+	}
+	if policy.boundary() != parent.Boundary || policy.Invocation != parent.Properties["InvocationID"] {
+		return errors.New("entry parent policy generation changed")
+	}
 	pop, err := h.population(parent.Boundary)
 	if err != nil || pop {
 		return c.unknown(a, "cleanup-unknown", errors.New("fresh entry parent not empty"))
@@ -157,6 +168,15 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 	if !entryNow(h).Before(wrapperDeadline) {
 		return errors.New("wrapper gate budget exhausted")
 	}
+	if err := h.observeEntryAdmission(a, true); err != nil {
+		return err
+	}
+	if err := c.Save(a, "bound", ""); err != nil {
+		return err
+	}
+	if !entryNow(h).Before(wrapperDeadline) {
+		return errors.New("wrapper admission budget exhausted")
+	}
 	if err := c.wrapperEntry(a); err != nil {
 		return err
 	}
@@ -182,6 +202,9 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 		naturalDeadline = deadline
 	}
 	for n := 0; n < 1200; n++ {
+		if err := h.entryControllerAlive(a); err != nil {
+			return err
+		}
 		if err := authenticateEntry(a, true); err != nil {
 			c.failEntryIntegrity(a)
 			return err
@@ -245,6 +268,11 @@ func entryOperationIO(h hostIO, deadline time.Time) hostIO {
 		deadline = h.entryUntil
 	}
 	h.entryUntil = deadline
+	if h.realHost {
+		h.deadlineCall = func(path string, args []string, until time.Time) (string, error) {
+			return hostCallBus(path, args, until, true)
+		}
+	}
 	call := h.call
 	h.call = func(path string, args []string) (string, error) {
 		if !entryNow(h).Before(deadline) {

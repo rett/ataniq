@@ -37,6 +37,9 @@ type hostIO struct {
 	entryTree      func(Boundary, Boundary) error
 	deadlineCall   func(string, []string, time.Time) (string, error)
 	entryUntil     time.Time
+	entryMetadata  func(int) (entryIdentity, error)
+	entryFile      func(string, int64) ([]byte, error)
+	realHost       bool
 }
 
 type cappedBuffer struct {
@@ -55,10 +58,14 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 func liveHost() hostIO {
 	return hostIO{call: func(path string, args []string) (string, error) {
 		return hostCall(path, args, time.Now().Add(5*time.Second))
-	}, boundary: boundary, population: populated, process: process, ended: processEnded, handle: processHandle, exit: exited, helper: helperIn, pause: func() { time.Sleep(10 * time.Millisecond) }, now: time.Now, entryMembers: entryMembers, entryEndpoints: entryEndpoints, entrySafety: entrySafety, entryNull: entryNull, entryTree: entryTree, deadlineCall: hostCall}
+	}, boundary: boundary, population: populated, process: process, ended: processEnded, handle: processHandle, exit: exited, helper: helperIn, pause: func() { time.Sleep(10 * time.Millisecond) }, now: time.Now, entryMembers: entryMembers, entryEndpoints: entryEndpoints, entrySafety: entrySafety, entryNull: entryNull, entryTree: entryTree, deadlineCall: hostCall, realHost: true}
 }
 
 func hostCall(path string, args []string, deadline time.Time) (string, error) {
+	return hostCallBus(path, args, deadline, false)
+}
+
+func hostCallBus(path string, args []string, deadline time.Time, realUser bool) (string, error) {
 	if cap := time.Now().Add(5 * time.Second); cap.Before(deadline) {
 		deadline = cap
 	}
@@ -68,6 +75,9 @@ func hostCall(path string, args []string, deadline time.Time) (string, error) {
 	// Host manager connection is trusted controller authority; never forwarded
 	// to the workload. No shell, PATH search, listener or manager reconfiguration.
 	cmd.Env = []string{"LANG=C", "LC_ALL=C", "HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS")}
+	if realUser {
+		cmd.Env = entryManagerEnvironment()
+	}
 	cmd.WaitDelay = time.Second
 	var out cappedBuffer
 	cmd.Stdout = &out
