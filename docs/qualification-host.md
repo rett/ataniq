@@ -1114,9 +1114,94 @@ requires `StopWhenUnneeded=no`, 256 MiB memory, no swap, 64 tasks and one CPU.
 Its only Tool service has 96 MiB memory, no swap, 32 tasks, one CPU,
 `Restart=no`, `Delegate=no`, the existing finite FD/output limits, a 30-second
 runtime guard and a 3-second stop guard. Direct kernel readbacks and conservative
-ancestor/global headroom checks are mandatory. Active/unknown system oomd is
-unsupported; the controller changes no host policy. These are safety guards,
+ancestor/global headroom checks are mandatory. Entry requires **no applicable
+configured oomd kill policy observed** on the actual controller and target
+ancestry. A stable active oomd with only a sibling `app.slice` configured monitor
+can qualify. The controller changes no host policy. These are safety guards,
 not evidence of resource enforcement or successful weak pressure retention.
+
+The normal qualifier itself must already be the main process of a fresh user
+transient service, a direct child of the real user-manager root. A controller in
+`app.slice` refuses this profile. The fixed controller contract is `Type=exec`,
+`Slice=-.slice`, `Restart=no`, `Delegate=no`, `OOMPolicy=continue`, 512 MiB memory,
+unlimited MemoryHigh, zero swap, 128 tasks, one CPU, a 90-second runtime and a
+5-second stop timeout. It also requires `KillMode=control-group`, `SendSIGKILL=yes`
+and `FinalKillSignal=9` (SIGKILL), explicitly launched and read back so the stop
+bound covers remaining helper children. Actual kernel caps and
+`memory.oom.group=0` are checked.
+The controller cap must still leave at least 384 MiB of observed headroom after
+normal use; it does not authorize pressure allocation. The controller is separate
+from, and outside, the fresh 256 MiB workload aggregate.
+
+After source acceptance, an operator can launch the normal CLI as follows. These
+paths are examples; use the selected pinned executable and an existing owned
+configuration. The unit name must be fresh. The command has this exact argument
+order; command arguments containing whitespace or systemctl escaping are
+unsupported by this narrow observer.
+
+```sh
+controller_id=$(cat /proc/sys/kernel/random/uuid)
+runtime=/run/user/$(id -u)
+env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+  /usr/bin/systemd-run --user --unit="aq-entry-controller-$controller_id.service" \
+  --slice=-.slice --service-type=exec \
+  --property=RuntimeMaxSec=90s --property=TimeoutStopSec=5s \
+  --property=KillMode=control-group --property=SendSIGKILL=yes --property=FinalKillSignal=9 \
+  --property=Restart=no --property=Delegate=no --property=OOMPolicy=continue \
+  --property=MemoryMax=536870912 --property=MemoryHigh=infinity \
+  --property=MemorySwapMax=0 --property=TasksMax=128 --property=CPUQuota=100% \
+  /path/to/qualification-qualify run --allow-host-operations --config /path/to/entry.json
+```
+
+Entry-specific manager operations explicitly use `/run/user/UID/bus`, including
+cleanup; an inherited private session bus is never selected. Pinned busctl reads
+the public bus ID, systemd name owner and its Unix PID/UID credentials. Those
+credentials are compared with bounded readable kernel PID/start/boot/UID/cgroup
+metadata for both real managers. PID 1's executable and namespace links are not
+required. User-manager `init.scope`, its system `user@UID.service`, and the
+user-manager `-.slice` representation must agree. The current qualifier's exact
+PID/start/boot, executable, containing service generation, MainPID and declared
+normal CLI command are bound too. These checks rely on trusted managers, kernel
+and administrators; they are not an authentication mechanism against a hostile
+administrator or compromised user bus.
+
+Two bounded configured-policy snapshots precede wrapper entry: preflight before
+parent-start intent, and a final sample after original parent/Tool/injector
+bindings have been saved. The created parent is also checked before Tool-dispatch
+intent. Walks cover every component of actual controller ancestry and proposed,
+then actual, target ancestry through both user-root representations to system
+`-.slice` at `/`. At most 32 path components are accepted. Every component must
+map exactly to its manager's unit; unexplained paths, changed identities,
+conflicting mappings, missing/duplicate properties, pending jobs and exhausted
+operation/wrapper deadlines refuse entry. Each applicable unit must report
+`ManagedOOMSwap=auto`, `ManagedOOMMemoryPressure=auto`, and an empty `OOMRules`.
+An auto child cannot cancel an ancestor policy. Missing OOMRules support is
+unknown. Every nonempty rules list is rejected without interpreting rules.
+
+Shared and controller ancestors require at least 384 MiB headroom whenever their
+memory limit is finite; every non-root ancestor records memory max/current and
+the kernel group flag. The shared user-manager service requires
+`OOMPolicy=continue` and group flag zero. The cgroup root has no memory.max.
+The intentionally capped parent/Tool use their fixed 256/96 MiB budget validators
+instead of the shared headroom rule. Both samples require at least 512 MiB
+MemAvailable. oomd LoadState/ActiveState/Job, invocation, cgroup and monotonic
+state-change timestamp must be well formed and stable. Failed, transitioning or
+unreadable daemon state refuses entry. Omit/avoid, daemon dry-run and global
+policy settings are not used as protection or changed.
+
+This is a configured-policy observation under stable trusted host administration,
+not proof that all daemon-held monitor maps are empty. Manager property reads
+are not a synchronization barrier for asynchronous daemon state. An unobserved
+administrative transition and stale daemon policy remain outside the guarantee.
+The reviewed systemd v262.1 `manager_get_dump_string` omits the rules monitor map;
+no oomctl helper or complete daemon-state absence oracle is added. The public
+[resource-control manual](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html),
+[oomd manual](https://www.freedesktop.org/software/systemd/man/latest/systemd-oomd.service.html)
+and reviewed [v262.1 daemon source](https://github.com/systemd/systemd/blob/v262.1/src/oom/oomd-manager.c)
+define the applicability boundary. Installed manuals were checked during this
+implementation; daemon source inspection is the supplied Astra review, not a
+new source fetch or live qualification. Future pressure qualification remains
+unsupported and needs its own observation contract.
 
 The selected static driver/probe and reviewed bwrap/BPF chain remain frozen.
 Systemctl, systemd-run and busctl hashes and ELF inventories, kernel release,
@@ -1191,6 +1276,21 @@ termination can be proved; it does not imply `TargetExited` or completion.
 The first entry failure is retained as `entry_runtime.failure_reason` alongside
 the latest nonempty cleanup reason, including after successful cleanup.
 
+The optional version-1 `entry_runtime.admission` receipt binds manager/controller
+identities once and keeps two bounded policy snapshots, capture times, headroom
+and the configured-policy result. It adds no immutable plan/request/context
+fields and changes none of their bytes or the three-helper inventory. New wrapper
+publication and successful entry classification require complete admission
+evidence. Old records without it still decode and retain their original cleanup
+authority; they cannot acquire a new positive result or replay authority.
+Missing, incomplete or unsupported-version admission evidence does not become a
+gate for structurally valid original cleanup records.
+Historical 14-setting controller receipts still decode and authorize original
+cleanup; new publication and success require the three termination settings too.
+After wrapper publication controller liveness uses direct metadata only, without
+new manager commands in the actor observation window. Natural timeout, nullFD,
+process/member, reap and original-generation cleanup oracles remain mandatory.
+
 Before wrapper entry, the selected parent and Tool explicitly set and read back
 `MemoryHigh=infinity` and effective `memory.high=max`. Tool also requires
 `OOMPolicy=kill` and effective `memory.oom.group=1`; no service OOM policy is
@@ -1207,6 +1307,15 @@ remain outside this entry profile.
 
 ### Changelog [Unreleased]
 
+- Require explicit controller `KillMode=control-group`, `SendSIGKILL=yes` and
+  numeric `FinalKillSignal=9` in R1 entry readback and admission receipts, and
+  document them in the normal CLI launch. Preserve historical receipt cleanup.
+- Replace the R1 entry profile's global active-oomd rejection with bounded
+  configured-policy observations of the real direct-root controller and target
+  ancestry, explicit real user-bus access and compatible runtime admission
+  receipts. Document the fixed normal CLI controller service contract and the
+  unobserved/stale administrative-transition limit. No pressure support or
+  executed host qualification is added.
 - Add the fixed `r1-entry` candidate host case and explicit busctl subject through
   normal run/inspect/reconcile, with separate entry, expected timeout and cleanup
   evidence. Preserve historical plan hashes, FD1/hold entrypoints and pressure

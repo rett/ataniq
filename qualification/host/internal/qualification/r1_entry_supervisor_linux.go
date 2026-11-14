@@ -118,7 +118,10 @@ func entrySafety(a *Attempt, parent *Unit) error {
 	if !validText(host.Kernel, 511) {
 		return errors.New("kernel version unavailable")
 	}
-	for path := root; ; path = filepath.Dir(path) {
+	for path, depth := self.Cgroup, 0; ; path, depth = filepath.Dir(path), depth+1 {
+		if depth >= 32 {
+			return errors.New("entry ancestry depth exceeded")
+		}
 		max, err := entryKernel(path, "memory.max")
 		// The cgroup root has no memory controller max/current files.
 		if path == "/" {
@@ -135,11 +138,8 @@ func entrySafety(a *Attempt, parent *Unit) error {
 		if err != nil {
 			return err
 		}
-		if text := strings.TrimSpace(string(max)); text != "max" {
-			limit, err := strconv.ParseUint(text, 10, 64)
-			if err != nil || used > limit || limit-used < 384<<20 {
-				return errors.New("unsupported: insufficient or unknown ancestor headroom")
-			}
+		if !entryMemorySafe(strings.TrimSpace(string(max)), used, true) {
+			return errors.New("unsupported: insufficient or unknown ancestor headroom")
 		}
 		bound, err := boundary(path)
 		if err != nil {
@@ -151,21 +151,9 @@ func entrySafety(a *Attempt, parent *Unit) error {
 	if err != nil {
 		return err
 	}
-	available := uint64(0)
-	for _, line := range strings.Split(string(b), "\n") {
-		f := strings.Fields(line)
-		if len(f) == 3 && f[0] == "MemAvailable:" && f[2] == "kB" {
-			if available != 0 {
-				return errors.New("ambiguous host headroom")
-			}
-			available, err = strconv.ParseUint(f[1], 10, 64)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	if available < 512<<10 {
-		return errors.New("unsupported: insufficient or unknown global headroom")
+	available, err := entryAvailable(b)
+	if err != nil {
+		return err
 	}
 	host.AvailableKB = available
 	a.EntryRuntime.Host = host
@@ -179,8 +167,8 @@ func (h hostIO) entryPreflight(a *Attempt) error {
 	if err := h.entrySafety(a, nil); err != nil {
 		return err
 	}
-	// No automatic oomd/policy adjustment. Unknown or active system oomd is
-	// unsupported for this fixed safety envelope.
+	// These versions are diagnostics; credentials and kernel identities below
+	// bind the actual managers. No daemon-state absence claim is made.
 	s, _, err := subject(a.Config.Systemctl, true, false, false, 64<<20)
 	if err != nil || s != a.Subjects["systemctl"] {
 		return errors.New("systemctl changed")
@@ -199,15 +187,7 @@ func (h hostIO) entryPreflight(a *Attempt) error {
 		return errors.New("running user-manager version unavailable")
 	}
 	a.EntryRuntime.Host.Manager = versions["Version"]
-	b, err := h.call(s.Path, []string{"--system", "--no-pager", "show", "--all", "--property=LoadState,ActiveState,Job", "--", "systemd-oomd.service"})
-	if err != nil {
-		return err
-	}
-	p, err := parseProperties(b, "LoadState,ActiveState,Job")
-	if err != nil || !noJob(p) || p["ActiveState"] != "inactive" || p["LoadState"] != "loaded" && p["LoadState"] != "not-found" {
-		return errors.New("unsupported: oomd policy unknown or active")
-	}
-	return nil
+	return h.observeEntryAdmission(a, false)
 }
 
 func (h hostIO) entryTerminalExit(a *Attempt) error {

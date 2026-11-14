@@ -209,7 +209,7 @@ func ReadHostConfig(path string) (HostConfig, error) {
 // canonical structural vocabulary. No case-folding or arbitrary map keys.
 func decodeHostRecord(r io.Reader, a *Attempt) error {
 	return decodeKeys(r, MaxInputBytes, a, func(s string) bool {
-		return canonicalKey(s) || s == "systemd-run" || strings.Contains(","+entryServiceProperties+","+entryParentProperties+",", ","+s+",")
+		return canonicalKey(s) || s == "systemd-run" || strings.Contains(","+entryServiceProperties+","+entryParentProperties+","+entryPolicyProperties+",", ","+s+",")
 	})
 }
 

@@ -86,7 +86,7 @@ func TestR1EntryParentIntentSurvivesRepeatedReconcile(t *testing.T) {
 			if fault == "lost-start-ack" {
 				f.h.call = func(path string, args []string) (string, error) {
 					out, err := call(path, args)
-					if path == f.a.Config.Busctl && err == nil {
+					if path == f.a.Config.Busctl && strings.Contains(strings.Join(args, " "), "StartTransientUnit") && err == nil {
 						return "", errors.New("lost parent acknowledgement")
 					}
 					return out, err
@@ -325,10 +325,14 @@ func TestR1EntryEffectiveHighAndOOMGuards(t *testing.T) {
 			f := entryTestFixture(t)
 			f.h.budget = nil
 			seen := map[string]bool{}
+			read := f.h.entryRead
 			f.h.entryRead = func(path, key string) ([]byte, error) {
 				parent := path == f.parent.Boundary.Path
 				if !parent && path != f.service.Boundary.Path {
-					t.Fatal("unexpected kernel boundary")
+					return read(path, key)
+				}
+				if key == "memory.current" || parent && key == "memory.oom.group" {
+					return read(path, key)
 				}
 				seen[path+"/"+key] = true
 				values := map[string]string{"memory.max": "100663296", "memory.swap.max": "0", "memory.high": "max", "memory.oom.group": "1", "pids.max": "32", "cpu.max": "100000 100000"}

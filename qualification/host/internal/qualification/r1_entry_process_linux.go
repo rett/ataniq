@@ -379,6 +379,9 @@ func validateEntryEndpoints(a *Attempt, main, child Process, e R1EntryEndpoints)
 
 // No manager calls occur in the live two-second observation window.
 func (c *Campaign) observeEntry(a *Attempt, h hostIO, ready R1Evidence, receipt time.Time) ([]*os.File, error) {
+	if err := h.entryControllerAlive(a); err != nil {
+		return nil, err
+	}
 	if ready.Ready == nil || ready.R1Binding != a.EntryRuntime.Binding || ready.Ready.ControlDirectory != objectID(a.EntryStatic.Control) {
 		c.failEntryIntegrity(a)
 		return nil, errors.New("entry ready binding mismatch")
@@ -433,6 +436,9 @@ func (c *Campaign) observeEntry(a *Attempt, h hostIO, ready R1Evidence, receipt 
 		return handles, err
 	}
 	endpointsDone := entryNow(h)
+	if err := h.entryControllerAlive(a); err != nil {
+		return handles, err
+	}
 	// Re-enumerate exact membership and identities around the metadata batch.
 	after, err := h.entryMembers(a.Workload.Boundary)
 	if err != nil {

@@ -79,6 +79,9 @@ func entryTestFixture(t *testing.T) *entryFixture {
 	x.service.Properties["MemoryMax"], x.service.Properties["RuntimeMaxUSec"] = "100663296", "30s"
 	x.service.Properties["MemorySwapMax"], x.service.Properties["Delegate"] = "0", "no"
 	x.service.Properties["MemoryHigh"], x.service.Properties["OOMPolicy"] = "infinity", "kill"
+	for _, unit := range []*Unit{x.parent, x.service} {
+		unit.Properties["ManagedOOMSwap"], unit.Properties["ManagedOOMMemoryPressure"], unit.Properties["OOMRules"] = "auto", "auto", ""
+	}
 	x.service.Main.Cgroup = x.service.Boundary.Path
 	i := Injection{Version: 1, Attempt: a.ID, Invocation: x.service.Properties["InvocationID"], Process: *x.service.Main, Boundary: x.service.Boundary, Fixture: a.Fixture, Descriptors: expectedDescriptors(a), Profile: a.Profile, RunID: a.Config.RunID, RequestID: a.Config.RequestID, RoleID: a.Config.RoleID, DescriptorPolicy: a.DescriptorPolicy}
 	b, _ = json.Marshal(i)
@@ -146,7 +149,7 @@ func entryTestFixture(t *testing.T) *entryFixture {
 	x.h.entryEndpoints = func(main, child Process) (R1EntryEndpoints, error) { f.observed = true; return f.endpoints, nil }
 	x.h.process = func(pid int) (Process, error) {
 		if pid == os.Getpid() {
-			return fixtureProcess(pid, FileIdentity{Inode: 999}, root+"/app.slice/controller.service"), nil
+			return fixtureProcess(pid, a.Subjects["driver"].Identity, root+"/controller.service"), nil
 		}
 		if pid == 100 && !f.wrote {
 			return *x.service.Main, nil
@@ -284,6 +287,7 @@ func entryTestFixture(t *testing.T) *entryFixture {
 	if err := x.c.Save(a, "prepared", ""); err != nil {
 		t.Fatal(err)
 	}
+	entryAdmissionFixture(t, f)
 	return f
 }
 

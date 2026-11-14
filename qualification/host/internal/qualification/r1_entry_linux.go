@@ -48,6 +48,7 @@ type R1EntryRuntime struct {
 	ServiceStopped     bool              `json:"service_stopped,omitempty"`
 	FailureReason      string            `json:"failure_reason,omitempty"`
 	Host               *R1EntryHost      `json:"host,omitempty"`
+	Admission          *entryAdmission   `json:"admission,omitempty"`
 	ParentOnly         bool              `json:"parent_only"`
 	WrapperIntent      bool              `json:"wrapper_intent"`
 	Context            Subject           `json:"context"`
@@ -324,7 +325,7 @@ func entryAction(a *Attempt, action string) error {
 			return nil
 		}
 	case "wrapper-entry":
-		if a.Phase == "bound" && a.EntryRuntime != nil && !a.EntryRuntime.WrapperIntent && a.Injector != nil {
+		if a.Phase == "bound" && a.EntryRuntime != nil && entryAdmitted(a) && !a.EntryRuntime.WrapperIntent && a.Injector != nil {
 			return nil
 		}
 	}
@@ -482,7 +483,7 @@ func expectedEntryTrace(a *Attempt, ready, failure R1Evidence) error {
 
 func entryObserved(a *Attempt) bool {
 	r := a.EntryRuntime
-	return isR1Entry(a) && a.Phase == "complete" && a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped && a.EntryIntegrityFailure == "" && r != nil && r.FailureReason == "" && r.Host != nil && validateEntryHost(r.Host) == nil && r.Main != nil && r.Child != nil && r.Endpoints != nil && r.Ready != nil && r.Failure != nil && r.Terminal && r.Natural && r.ExpectedExit && validDigest(r.OutputSHA256) && expectedEntryTrace(a, *r.Ready, *r.Failure) == nil
+	return isR1Entry(a) && a.Phase == "complete" && a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped && a.EntryIntegrityFailure == "" && r != nil && entryAdmitted(a) && r.FailureReason == "" && r.Host != nil && validateEntryHost(r.Host) == nil && r.Main != nil && r.Child != nil && r.Endpoints != nil && r.Ready != nil && r.Failure != nil && r.Terminal && r.Natural && r.ExpectedExit && validDigest(r.OutputSHA256) && expectedEntryTrace(a, *r.Ready, *r.Failure) == nil
 }
 
 // Older entry records may still carry the original dispatch label. Retain only
@@ -509,11 +510,8 @@ func validateEntryHost(h *R1EntryHost) error {
 		if a.Boundary.Identity.Inode == 0 || !strings.HasPrefix(a.Boundary.Path, "/") || filepath.Clean(a.Boundary.Path) != a.Boundary.Path || j > 0 && a.Boundary.Path != filepath.Dir(h.Ancestors[j-1].Boundary.Path) {
 			return errors.New("entry ancestor identity invalid")
 		}
-		if a.Max != "max" {
-			max, err := strconv.ParseUint(a.Max, 10, 64)
-			if err != nil || a.Current > max || max-a.Current < 384<<20 {
-				return errors.New("entry ancestor headroom unsafe")
-			}
+		if !entryMemorySafe(a.Max, a.Current, true) {
+			return errors.New("entry ancestor headroom unsafe")
 		}
 	}
 	return nil
