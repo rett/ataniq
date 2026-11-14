@@ -15,6 +15,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Reject ASCII and Unicode whitespace in dispatch identities and approval IDs.
 - Keep cancellation-independent saving an optional integration strategy.
 - Clarify dispatch uncertainty projections and future durable recovery obligations.
 - Cover cancelled outcome saves and separately retained completion evidence.

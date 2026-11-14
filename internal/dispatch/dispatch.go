@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Intent is an immutable binding. IDs are opaque, nonempty, whitespace-free
@@ -44,11 +45,11 @@ func (i Intent) Digest() [32]byte { return sha256.Sum256(i.Payload) }
 
 func (i Intent) validate() error {
 	for _, s := range []string{i.Authority, i.Project, i.Command, i.ID, i.Attempt, i.Runtime, i.Epoch, i.Action, i.Kind, i.Policy, i.Qualification, i.Authorization, i.Limits} {
-		if s == "" || strings.TrimSpace(s) != s || strings.ContainsAny(s, "\t\r\n ") || len(s) > 256 {
+		if s == "" || strings.IndexFunc(s, unicode.IsSpace) >= 0 || len(s) > 256 {
 			return errors.New("invalid identity")
 		}
 	}
-	if i.Grant != "" && (strings.ContainsAny(i.Grant, " \t\r\n") || len(i.Grant) > 256) {
+	if i.Grant != "" && (strings.IndexFunc(i.Grant, unicode.IsSpace) >= 0 || len(i.Grant) > 256) {
 		return errors.New("invalid grant")
 	}
 	switch i.Kind {

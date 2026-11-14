@@ -607,3 +607,41 @@ func TestGrantRejectsChangedBinding(t *testing.T) {
 		})
 	}
 }
+
+func TestWhitespaceRejectedBeforePorts(t *testing.T) {
+	spaces := []string{" ", "\t", "\r", "\n", "\v", "\f", "\u0085", "\u00a0", "\u2003", "\u2028", "\u2029"}
+	for _, space := range spaces {
+		for _, field := range []string{"identity", "grant"} {
+			t.Run(fmt.Sprintf("%s/%U", field, []rune(space)[0]), func(t *testing.T) {
+				in := intent()
+				if field == "identity" {
+					in.ID = "a" + space + "b"
+				} else {
+					in.Grant = "a" + space + "b"
+				}
+				j := journalPort{
+					prepare: func(Intent) (PrepareStatus, Receipt, error) {
+						t.Fatal("invalid input reached preparation")
+						return PrepareUnknown, Receipt{}, nil
+					},
+					save: func(Receipt) error {
+						t.Fatal("invalid input reached outcome save")
+						return nil
+					},
+				}
+				b := boundaryPort(func(context.Context, Intent) (StartStatus, string, error) {
+					t.Fatal("invalid input reached start")
+					return StartUnknown, "", nil
+				})
+				if _, err := (Coordinator{j, b}).Dispatch(context.Background(), in); err == nil {
+					t.Fatal("whitespace accepted")
+				}
+			})
+		}
+	}
+	in := intent()
+	in.ID, in.Grant = "identité", ""
+	if err := in.validate(); err != nil {
+		t.Fatalf("opaque non-whitespace identity rejected: %v", err)
+	}
+}
