@@ -215,6 +215,12 @@ func TestPrivatePaths(t *testing.T) {
 				target = filepath.Dir(path) + "/../" + filepath.Base(filepath.Dir(path)) + "/" + filepath.Base(path)
 			}
 			before := fileBytes(t, path)
+			if got, err := Recognize(context.Background(), target, o); err == nil || got != (Info{}) {
+				t.Fatal("recognized unsafe path", got, err)
+			}
+			if !bytes.Equal(before, fileBytes(t, path)) {
+				t.Fatal("recognition refusal changed bytes")
+			}
 			if _, err := Open(context.Background(), target, o); err == nil {
 				t.Fatal("accepted unsafe path")
 			}
@@ -328,6 +334,12 @@ func TestRefusalDoesNotMutate(t *testing.T) {
 				}
 			}
 			before := fileBytes(t, path)
+			if got, err := Recognize(context.Background(), path, o); err == nil || got != (Info{}) {
+				t.Fatal("recognized invalid state", got, err)
+			}
+			if !bytes.Equal(before, fileBytes(t, path)) {
+				t.Fatal("recognition refusal changed database bytes")
+			}
 			if _, err := Open(context.Background(), path, o); err == nil {
 				t.Fatal("accepted invalid state")
 			}

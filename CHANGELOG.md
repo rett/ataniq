@@ -8,6 +8,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add bounded trusted internal journal v1 recognition under existing-store
+  ownership, preserving committed WAL state and pending recovery without writer
+  SQL or journal recovery. Share the read-only preflight with ordinary Open;
+  recognition grants no migration or public disclosure authority.
+
 - Add pure typed application command contracts for queued input and exact queued
   cancellation, bounded strict JSON codecs, owned canonical binary bindings and
   eight portable golden vectors. Keep authentication, durable admission and
