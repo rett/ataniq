@@ -16,6 +16,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Document guarded journal composition, exact policy/grant binding, failure and
+  retirement semantics, bounded eager inspection, and offline crash evidence
+  with its limits; retain the accepted lifecycle and OFD ownership contract.
 - Add an internal offline guarded dispatch journal on the owned SQLite lifecycle:
   exact-attempt capabilities, immutable trusted policy registration, atomic
   one-use grants, monotonic revocation, durable activation/recovery fences,

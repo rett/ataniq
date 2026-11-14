@@ -1,8 +1,8 @@
-# Journal storage lifecycle
+# Guarded dispatch journal
 
-Status: implemented internal Linux storage foundation. The persistent journal
-feature remains incomplete: this package does not implement
-`dispatch.Journal`, guarded attempts, Prepare/Save, grants, receipts or events.
+Status: implemented internal offline Linux journal with guarded exact-attempt
+views implementing the frozen `dispatch.Journal` port, immutable recorded
+policy, one-use grants, receipt evidence and causal events.
 It supplies no provider, service, client or production authentication path.
 Read it alongside the [runtime](runtime.md), [security](security.md) and
 [client protocol](client-protocol.md) contracts; none of their external
@@ -18,17 +18,28 @@ The internal [journal package](../../internal/journal/store_linux.go) exposes:
 | `Open(ctx, path, Options)` | Opens existing recognized storage for the configured authority. Never creates a missing main file or migrates state. |
 | `Store.Info(ctx)` | Returns bounded owned values describing authority, store/incarnation IDs, schema and engine identity, page count/size and configured page budget. |
 | `Store.Close()` | Waits for local operations, closes SQL and then releases the inode lock. Idempotent; repeated calls return the same close result. |
+| `Store.Register(ctx, Policy)` | Trusted composition records the full immutable intent and observed permission facts, atomically activating a durable guard before returning an Attempt. Existing IDs cannot be refreshed. |
+| `Store.Activate(ctx, Intent)` | Activates an exact existing binding for duplicate/evidence handling; grants no new execution approval. Refuses a competing live view. |
+| `Attempt.Prepare(ctx, Intent)` | Looks up existing state first; only a confirmed new atomic preparation and grant consumption returns PrepareNew. |
+| `Attempt.Save(ctx, Receipt)` | Retains exact evidence, including contradictions, with its causal event in one transaction. |
+| `Attempt.Revoke(ctx)` | Orders monotonic permission revocation with preparation under the active guard. |
+| `Attempt.Release(ctx)` | Invalidates this activation and retires its guard atomically with required uncertainty. |
+| `Store.Inspect(ctx, id)` / `Store.Snapshot(ctx)` | Eager bounded trusted reads of exact bindings, receipts, consumed grants and events. |
 
 Paths must be clean absolute filesystem paths supplied by trusted composition.
 The package constructs an escaped `file:` URI; it accepts neither user DSNs
 nor SQL. The SQL pool and connection handles are private.
 
-Creation uses one immediate transaction for the exact metadata schema,
+Creation uses one immediate transaction for the exact journal schema,
 application ID `0x41544a4c`, schema version 1, configured authority and two
 independent cryptographically random 128-bit IDs. Store and incarnation IDs
 are stored as BLOBs and exposed as hexadecimal strings. Authority is also a
 BLOB, preserving its exact bytes. This local DDL initialization has no
-provider conversation bootstrap meaning. No unused workflow tables exist.
+provider conversation bootstrap meaning. Strict recognition covers exactly
+`journal_identity`, `attempts`, `grants`, `evidence` and `events`, including
+their complete DDL. The schema remains version 1 because no persistent
+journal schema has shipped. Earlier metadata-only layouts are refused before
+writer settings, without manufacturing a migration of real state.
 The parent directory is synced after the initialization commit.
 
 Ordinary reopen preserves both identities. An interrupted initialization is
@@ -41,6 +52,119 @@ is refused without automatic adoption, repair or migration.
 Info is trusted local storage inspection. It contains no snapshot watermark,
 event cursor, principal enrollment or authorization assertion. There are no
 unbounded result sets or public SQL accessors.
+
+## Exact capabilities and recorded policy
+
+The [Attempt implementation](../../internal/journal/attempt_linux.go) keeps the
+raw Store out of the coordinator's Journal port. A view contains one owned
+immutable binding and a random writer activation generation. It supports
+concurrent calls. Neither an intent string nor a persisted approval boolean
+establishes authority: Register is a capability reserved for trusted internal
+composition and owned fixtures. It makes no network authentication claim.
+
+`Policy.Intent` supplies the complete binding. `Policy.ValidUntil` bounds all
+recorded permission facts. `RequireGrant=true` requires a nonempty intent
+grant and a `Grant` with the exact same ID and entire target binding, including
+payload. Grant validity has its own bound as well. Grant-free permission must
+be explicit through a policy with RequireGrant false and no grant. Times must
+be nonzero, within years 1970–9999; stored milliseconds conservatively round
+expiry down. Policy/source/grant IDs remain opaque strings, not parsed tokens.
+No later registration can refresh expiry, replace policy, undo consumption or
+revocation, or clear uncertainty for an existing intent ID.
+
+The store-local `Intent.ID` is the key. Authority, project, attempt, command,
+runtime, epoch, action, kind, policy, qualification, authorization, limits,
+grant and payload are all immutable. Commands are not unique: a command may
+have multiple distinct effects. There is no sibling retry policy. Scalar
+strings use length-prefixed exact bytes, including admitted NUL and non-UTF8;
+payload is binary and nil/empty payloads are equivalent. Returned payloads
+are owned copies. No JSON normalization or exported dispatch-private helper
+is involved.
+
+Prepare first verifies the exact binding and reads the existing record.
+Prepared or uncertain attempts return the current duplicate projection even
+when the recorded policy has since expired or been revoked. New preparation
+checks expiry and revocation, then atomically inserts any exact-target grant
+consumption, marks prepared, and appends its event. A consumed grant ID cannot
+be used by another binding. The grant row and original intent never change.
+Only this call's confirmed commit returns PrepareNew. A proved policy denial,
+binding/grant conflict, duplicate, and unknown commit remain distinct outcomes.
+An error before lookup, including cancellation or busy timeout, returns unknown;
+it cannot falsely assert that already-started work was denied.
+
+The actual Boundary independently obtains current authority at the real effect
+seam. Recorded policy cannot permit a stale external start. For example, a
+policy revoked after Prepare must still be rejected by Boundary.Start. The
+journal has no provider implementation and does not serialize an external
+authority source itself.
+
+## Guards, failure and retirement
+
+Registration and initial activation commit together before a Journal view can
+escape. Every Prepare, Save and Revoke therefore already has a durable dirty
+guard when storage or cancellation can fail. A per-view failure latch also
+prevents a later call through the same activation from treating absent prepared
+state as new work after the fault clears. Safety does not depend on successfully
+writing an extra fence after a storage error. Ambiguous revocation is an error
+and fences execution; it is never acknowledged as successful or silently used
+to restore permission.
+
+Open atomically appends recovery events and marks all previous active
+registrations uncertain before exposing a Store. It preserves original
+bindings, receipts and grant consumption. An active registration with no
+prepared row is still fenced. Failed recovery exposes no Store; a later Open
+must complete recovery. Successfully recovered unrelated work is not subject
+to a permanent store-wide quarantine. Activate can expose a known binding for
+duplicate/evidence handling, but an unprepared existing binding becomes
+uncertain and cannot receive a new execution approval through that operation.
+
+Trusted composition calls Release after Dispatch returns, with a fresh bounded
+context when the dispatch context has been cancelled. Release invalidates the
+activation before clearing its guard; late Journal calls require a new Activate.
+A stale view or release cannot clear a newer generation. Pending calls are
+accounted for conservatively. Prepared-only and Started records remain
+unresolved on retirement: Started proves a start acknowledgement, not completion.
+A definitive Denied record without other uncertainty can retire settled.
+Clearing a guard and recording required uncertainty commit in the same
+transaction with a release event. A failed release can leave the guard in place;
+Release may be retried, or Close/reopen performs conservative retirement.
+
+Close waits for bounded database operations, invalidates all views, and attempts
+the same atomic retirement before SQL closure and finally inode unlock. A failed
+retirement preserves the guard for recovery. A successful database call or
+PrepareNew result is not proof that external handoff has settled. Close and
+exclusive inode ownership supply no executor-quiescence proof. This journal
+has no completion API or production completed state, and new evidence never
+silently resolves stored uncertainty. Operator resolution remains separately
+scoped.
+
+## Receipts and inspection
+
+Save verifies the entire immutable binding in its transaction. Receipt IDs are
+scoped to the attempt. Identical ID/content is idempotent, while same-ID changed
+content is retained as another evidence row and makes the projection uncertain.
+Different IDs with contradictory outcome states do the same. Prepared evidence
+is distinct from outcome evidence and cannot downgrade an existing outcome.
+Original evidence is never overwritten. Foreign bindings cannot poison the
+legitimate attempt. A failed late contradictory Save remains guarded even if
+the original Started receipt was already durable. Receipt evidence is exact
+and is refused with an error if over its bound; it is never truncated.
+
+The [eager snapshot implementation](../../internal/journal/snapshot_linux.go)
+reads records, all evidence, consumed grant bindings and events in one
+transaction. Each event has the stable identity `(StoreID, IncarnationID,
+Sequence)`. State mutations and their events commit together. The watermark
+is the highest included committed sequence. The in-process failure latch may
+conservatively add uncertainty to a record's projection; it is not another
+committed event or a claim that the watermark includes an unpersisted failure.
+Active guards and the original evidence remain visible.
+
+Snapshots leave no reader open. Query, scan, row-iteration, closure, transaction
+or size-limit errors return no partial snapshot and no complete watermark.
+Inspect uses these same eager bounds. Returned slices can be changed by the
+caller without changing later reads. These are trusted control-process reads,
+not public cursors, enrolled-client snapshots or authentication-generation
+claims. A future application service must obtain current disclosure authority.
 
 ## Ownership and path requirements
 
@@ -112,7 +236,7 @@ and all private-path and inode checks remain required.
 
 After requesting OFD mode and acquiring the inode lock, Open uses `mode=ro`
 and `query_only=1`
-to check application/schema identity, the exact metadata table definition,
+to check application/schema identity, all exact journal table definitions,
 single identity row and authority. Only after this succeeds does it open a
 writer connection and apply persistent writer settings. Wrong-schema or
 wrong-authority refusal preserves existing main database bytes and journal
@@ -182,8 +306,16 @@ on kernel/filesystem I/O.
 MaxBytes bounds main database pages through `max_page_count`, including on
 replacement connections. An already larger database is refused. This is not
 a total filesystem quota: WAL, shared memory, filesystem overhead and temporary
-files are additional. There is no evidence or eager snapshot API at this
-stage, so no speculative bounds for those absent operations are exposed.
+files are additional. Internal engineering bounds also limit each receipt to
+64 KiB of exact evidence and a 1–256-byte receipt ID, and each intent payload
+to the frozen dispatch limit of 1 MiB. Each snapshot has a combined 4096-row
+budget across registrations, receipts, consumed grants and events, and a
+conservative 16 MiB copy budget, including duplicated intent payloads and row
+overhead. Exceeding either refuses the whole read. There is no public pagination
+or unbounded fallback. These choices are engineering limits, not a capacity or
+throughput qualification. Per-view serialization waits and SQL calls share the
+operation deadline. Finite bounds are checked before copying accepted inputs;
+storage constraints and bounded accounting also limit scanned values.
 
 ## Reopen, restore and evidence limits
 
@@ -198,9 +330,25 @@ waited helper subprocesses. They cover stable reopen identities, existing-only
 and overwrite refusal, exact authority bytes, schema/authority refusal without
 main-file mutation, unsafe paths and permissions, live owners and hardlinks,
 cancellation and pool waits, replacement verification, setting mismatch,
-page-limit refusal, and process death before/after metadata commit. These are
-storage lifecycle tests, not tests of guarded effect dispatch or recovery of
-uncertain provider work.
+page-limit refusal, and process death before/after metadata commit.
+
+Guarded regressions invoke the frozen Coordinator with independently counted
+fake Boundaries. They cover exact and concurrent duplicates, every binding
+field, binary and nil/empty payloads, grants, expiry/revocation, fresh Boundary
+policy checks, cancellation before lookup and after actual fake start, response
+loss, failed saves and late contradictions, immutable receipts across reopen,
+stale views/releases, atomic retirement and eager snapshot consistency/bounds.
+Bounded fixtures exercise real SQLite busy and FULL errors without filling
+the host disk. Per-store unexported test seams inject journal I/O response
+failures without global hooks or production environment controls.
+
+Waited helper children receive SIGKILL at owned seams before and after
+activation, preparation commit, receipt persistence, late contradictory saves,
+release and recovery, and at fake handoff. An independent owned file counts
+actual fake effects across fresh reopen; assertions concern the original
+attempt, not merely its row status. A dirty registration with no prepared row
+cannot replay. No live provider, network, service, namespace, runtime sandbox,
+real-state migration or host pressure is involved.
 
 Fresh subprocess regressions hold a real Store read transaction and use a
 nonwriting external POSIX `fcntl` probe to confirm contention before and after
@@ -214,5 +362,10 @@ These seams do not claim unsupported-kernel or filesystem qualification.
 
 WAL and FULL synchronization plus process-kill tests do not establish physical
 power-loss durability, storage-stack behavior or throughput guarantees.
+Injected journal-seam I/O failure is not a physical fsync fault qualification.
 Driver-only qualification evidence is separate context and does not qualify
-the journal's absent workflow or any production provider boundary.
+any production provider boundary. Source peer review, independent crash probes,
+lead per-commit reproduction and the completed-feature whole-suite checkpoint
+remain separate gates. Bootstrap, dependency freeze graphs, public admission,
+FIFO, authentication, operator APIs and writable restore remain outside this
+implementation.
