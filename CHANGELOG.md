@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Require exact descriptor inventory rows and durable owned stdio regular-file
+  identities before accepting complete post-exec host qualification evidence.
+  Reject empty or contradictory tables while retaining failed raw observations
+  separately from lifecycle cleanup; this adds no runtime support claim.
 - Add a versioned final descriptor policy to new bounded host qualification
   attempts: use a private static-driver reexec, pinned-thread close_range
   CLOEXEC/UNSHARE, raw role revalidation and fail-closed syscall.Exec. Keep

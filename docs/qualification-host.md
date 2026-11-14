@@ -283,6 +283,12 @@ inventory must retain all four synthetic descriptors. Independently, BPF513
 must be absent and its identity must appear nowhere in the workload inventory,
 demonstrating bubblewrap consumption/closure rather than assuming it. Reused
 512/513 remain explicit observations and cannot satisfy these closure checks.
+Complete inventory requires the exact declared `fds.count`/row index set,
+without duplicate, extra or unavailable FD-table facts, and descriptors 0–2
+matching the durable owned request/output/stderr dev/inode identities and
+regular-file types. Empty tables and missing or mismatched stdio cannot
+establish exclusion. These checks validate consumed evidence; the production
+probe already rejects enumeration read/stat/cap failures.
 Incomplete inventory remains inconclusive. Failed exclusion observations are
 retained durably after independently proved cleanup, never erased or relabeled.
 
