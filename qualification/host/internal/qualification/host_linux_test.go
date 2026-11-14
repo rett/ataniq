@@ -137,7 +137,7 @@ func testHost(t *testing.T) *hostFixture {
 		}
 		a.Streams[name] = s.Identity
 	}
-	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID}
+	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID, a.DescriptorPolicy}
 	b, _ := json.Marshal(i)
 	if err = exclusiveFile(filepath.Join(p, "injection.json"), b, 0400); err != nil {
 		t.Fatal(err)
@@ -982,6 +982,7 @@ func TestDirectControlScopeAndFreshSyntheticNonce(t *testing.T) {
 	x := testHost(t)
 	bindFixture(t, x)
 	d := x.a
+	d.DescriptorPolicy = FinalDescriptorPolicy
 	d.Config.Case = "fake-fd"
 	d.Phase = "complete"
 	d.Empty = true
@@ -989,12 +990,14 @@ func TestDirectControlScopeAndFreshSyntheticNonce(t *testing.T) {
 	d.SliceStopped = true
 	v := "true"
 	d.Observation = &Observation{Version: 1, RunID: d.Config.RunID, RequestID: d.Config.RequestID, Case: CaseFakeFD, Status: "observed", Facts: []Fact{{Name: "digest_match", State: "known", Value: &v}}}
+	r := descriptorReceipt(d)
+	d.DescriptorReceipt = &r
 	a := *d
 	a.Config.Role = "candidate"
 	if err := validateControl(&a, d, d.Created+1); err != nil {
 		t.Fatal(err)
 	}
-	for _, which := range []string{"campaign", "run", "boot", "age", "profile", "chain", "injection"} {
+	for _, which := range []string{"campaign", "run", "boot", "age", "profile", "chain", "injection", "legacy-policy", "missing-receipt"} {
 		b, _ := json.Marshal(d)
 		var c Attempt
 		json.Unmarshal(b, &c)
@@ -1015,6 +1018,10 @@ func TestDirectControlScopeAndFreshSyntheticNonce(t *testing.T) {
 			c.Subjects["bpf"] = s
 		case "injection":
 			c.Injector = nil
+		case "legacy-policy":
+			c.DescriptorPolicy = ""
+		case "missing-receipt":
+			c.DescriptorReceipt = nil
 		}
 		if validateControl(&a, &c, d.Created+1) == nil {
 			t.Fatal("unscoped control", which)

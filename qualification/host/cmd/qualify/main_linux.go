@@ -13,6 +13,12 @@ import (
 )
 
 func run(args []string, out io.Writer) int {
+	if len(args) == 2 && args[0] == "private-final-descriptors" {
+		if qualification.PrivateFinalDescriptors(args[1]) != nil {
+			return 4
+		}
+		return 0
+	}
 	if len(args) == 2 && args[0] == "private-inject" {
 		if qualification.PrivateInject(args[1]) != nil {
 			return 4
