@@ -106,6 +106,29 @@ func (j *fakeJournal) Save(_ context.Context, r Receipt) error {
 	return nil
 }
 
+type contextJournal struct{ *fakeJournal }
+
+func (j contextJournal) Save(ctx context.Context, r Receipt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return j.fakeJournal.Save(ctx, r)
+}
+
+type cancelBoundary struct {
+	status StartStatus
+	cancel context.CancelFunc
+	starts int
+}
+
+func (b *cancelBoundary) Start(_ context.Context, _ Intent) (StartStatus, string, error) {
+	if b.status == StartAcknowledged {
+		b.starts++
+	}
+	b.cancel()
+	return b.status, "boundary evidence", nil
+}
+
 type fakeBoundary struct {
 	mu                                   sync.Mutex
 	available, qualified                 bool
@@ -115,7 +138,7 @@ type fakeBoundary struct {
 	lost                                 bool
 	entered, release                     chan struct{}
 	work, completed                      chan struct{}
-	completionEvidence                   []string
+	completionEvidence                   []Receipt
 	grantRequired, grantRevoked          bool
 	now, expiry                          time.Time
 	grantTarget                          Intent
@@ -136,10 +159,11 @@ func (b *fakeBoundary) Start(ctx context.Context, i Intent) (StartStatus, string
 	}
 	b.starts++ // independently counted actual sink invocation
 	if b.work != nil {
+		completedIntent := cloneIntent(i)
 		go func() {
 			<-b.work
 			b.mu.Lock()
-			b.completionEvidence = append(b.completionEvidence, "completed")
+			b.completionEvidence = append(b.completionEvidence, Receipt{Intent: completedIntent, ID: "completion", State: Started, Evidence: "completed"})
 			b.mu.Unlock()
 			close(b.completed)
 		}()
@@ -258,8 +282,20 @@ func TestOutageAndCompletion(t *testing.T) {
 	b.mu.Unlock()
 	close(b.work)
 	<-b.completed
-	if len(b.completionEvidence) != 1 || b.completionEvidence[0] != "completed" {
+	if len(b.completionEvidence) != 1 || !sameIntent(b.completionEvidence[0].Intent, i) {
 		t.Fatal("completion evidence missing")
+	}
+	completion := b.completionEvidence[0]
+	for n := 0; n < 2; n++ {
+		if err := j.Save(context.Background(), completion); err != nil {
+			t.Fatalf("save completion %d: %v", n, err)
+		}
+	}
+	if len(j.evidence[i.ID]) != 2 || !reflect.DeepEqual(j.evidence[i.ID]["start"], r) || !reflect.DeepEqual(j.evidence[i.ID]["completion"], completion) {
+		t.Fatalf("start and completion evidence: %+v", j.evidence[i.ID])
+	}
+	if duplicate, err := c.Dispatch(context.Background(), i); err != nil || !reflect.DeepEqual(duplicate, completion) || b.starts != 1 {
+		t.Fatalf("outage duplicate: %+v, %v, starts %d", duplicate, err, b.starts)
 	}
 	for _, kind := range []string{"queued", "tool", "child", "iteration", "retry"} {
 		x := i
@@ -274,6 +310,49 @@ func TestOutageAndCompletion(t *testing.T) {
 	}
 	if b.starts != 1 {
 		t.Fatal("completion or outage")
+	}
+}
+
+func TestCanceledOutcomeSaveNeverReplays(t *testing.T) {
+	for _, status := range []StartStatus{StartAcknowledged, StartDenied} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			j := contextJournal{journal()}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			b := &cancelBoundary{status: status, cancel: cancel}
+			i := intent()
+			r, err := (Coordinator{j, b}).Dispatch(ctx, i)
+			if !errors.Is(err, context.Canceled) || r.State != Uncertain || r.ID != "" || r.Evidence != "boundary evidence" || !sameIntent(r.Intent, i) {
+				t.Fatalf("save failure: %+v, %v", r, err)
+			}
+			if stored := j.rows[i.ID]; stored.State != Prepared || !sameIntent(stored.Intent, i) || len(j.evidence[i.ID]) != 0 {
+				t.Fatalf("prepared record: %+v, evidence %+v", stored, j.evidence[i.ID])
+			}
+			starts := b.starts
+			if (status == StartAcknowledged && starts != 1) || (status == StartDenied && starts != 0) {
+				t.Fatalf("starts: %d", starts)
+			}
+			duplicate, err := (Coordinator{j, b}).Dispatch(context.Background(), i)
+			if err != nil || duplicate.State != Prepared || !sameIntent(duplicate.Intent, i) || b.starts != starts {
+				t.Fatalf("recreated duplicate: %+v, %v, starts %d", duplicate, err, b.starts)
+			}
+		})
+	}
+}
+
+func TestCanceledDuplicateOfStartedAttempt(t *testing.T) {
+	j, b := journal(), boundary()
+	c := Coordinator{contextJournal{j}, b}
+	i := intent()
+	started, err := c.Dispatch(context.Background(), i)
+	if err != nil || started.State != Started || b.starts != 1 {
+		t.Fatalf("start: %+v, %v, starts %d", started, err, b.starts)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	duplicate, err := c.Dispatch(ctx, i)
+	if err != nil || !reflect.DeepEqual(duplicate, started) || b.starts != 1 {
+		t.Fatalf("canceled duplicate: %+v, %v, starts %d", duplicate, err, b.starts)
 	}
 }
 func TestInvalidAndCanceled(t *testing.T) {

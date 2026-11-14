@@ -15,6 +15,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Clarify dispatch uncertainty projections and future durable recovery obligations.
+- Cover cancelled outcome saves and separately retained completion evidence.
 - Fence ambiguous dispatch preparation, retain conflicting receipt evidence,
   and recheck grant authority at the actual start boundary.
 - Document receipt identity, recovery fencing and fresh grant checks.
