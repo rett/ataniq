@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"errors"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -130,11 +129,9 @@ func cloneIntent(i dispatch.Intent) dispatch.Intent {
 // for all calls before closing SQL and then releasing the inode ownership.
 func (s *Store) enter(ctx context.Context) (context.Context, func(), error) {
 	ctx, cancel := context.WithTimeout(ctx, s.options.OperationTimeout)
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
+	if err := s.readLifetime(ctx); err != nil {
 		cancel()
-		return nil, nil, os.ErrClosed
+		return nil, nil, err
 	}
 	select {
 	case s.gate <- struct{}{}:
@@ -180,7 +177,7 @@ func (a *Attempt) releaseEntryFailure(err error) error {
 	a.store.failureMu.Lock()
 	defer a.store.failureMu.Unlock()
 	if a.retiring.Load() {
-		return ErrInactive
+		return errors.Join(ErrInactive, err)
 	}
 	a.fenced.Store(true)
 	return err
@@ -210,11 +207,17 @@ func (s *Store) commit(tx *sql.Tx, point string) error {
 	return s.hit(point + "-after")
 }
 
-func event(ctx context.Context, tx *sql.Tx, id, kind string, detail []byte) error {
-	if detail == nil {
-		detail = []byte{}
+// blob preserves exact bytes while preventing a scanned empty BLOB (nil in
+// the pinned driver) from being rebound as SQL NULL on writeback.
+func blob(b []byte) []byte {
+	if b == nil {
+		return []byte{}
 	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO events(attempt_id,kind,detail) VALUES(?,?,?)", []byte(id), kind, detail)
+	return b
+}
+
+func event(ctx context.Context, tx *sql.Tx, id, kind string, detail []byte) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO events(attempt_id,kind,detail) VALUES(?,?,?)", []byte(id), kind, blob(detail))
 	return err
 }
 
@@ -420,11 +423,23 @@ func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispa
 		var binding []byte
 		err = tx.QueryRowContext(ctx, "SELECT binding FROM grants WHERE id=?", []byte(in.Grant)).Scan(&binding)
 		if err == nil {
+			var recorded bool
+			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM events WHERE attempt_id=? AND kind='grant-conflict')", []byte(in.ID)).Scan(&recorded); err != nil {
+				return dispatch.PrepareUnknown, receipt, err
+			}
+			// This immutable attempt fixes its grant, whose consumed binding
+			// cannot change. Preserve the first exact contradiction once.
+			if recorded {
+				return dispatch.PrepareConflict, receipt, nil
+			}
 			err = event(ctx, tx, in.ID, "grant-conflict", binding)
 			if err == nil {
 				err = s.commit(tx, "conflict")
 			}
-			return dispatch.PrepareConflict, receipt, err
+			if err != nil {
+				return dispatch.PrepareUnknown, receipt, err
+			}
+			return dispatch.PrepareConflict, receipt, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return dispatch.PrepareUnknown, receipt, err
@@ -519,7 +534,7 @@ func (a *Attempt) Save(ctx context.Context, receipt dispatch.Receipt) (err error
 	if receipt.State == dispatch.Prepared && r.state != dispatch.Prepared {
 		state, id, detail = r.state, r.id, r.evidence
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE attempts SET uncertain=?,state=?,receipt_id=?,evidence=? WHERE id=?", uncertain, string(state), id, detail, []byte(a.intent.ID))
+	_, err = tx.ExecContext(ctx, "UPDATE attempts SET uncertain=?,state=?,receipt_id=?,evidence=? WHERE id=?", uncertain, string(state), blob(id), blob(detail), []byte(a.intent.ID))
 	if err != nil {
 		return err
 	}
@@ -604,9 +619,20 @@ func (a *Attempt) Release(ctx context.Context) (err error) {
 		return err
 	}
 	defer tx.Rollback()
-	r, err := a.row(ctx, tx)
+	r, err := readAttempt(ctx, tx, a.intent.ID)
 	if err != nil {
 		return err
+	}
+	if !bytes.Equal(r.generation, a.generation) || !bytes.Equal(r.binding, a.binding) {
+		return ErrInactive
+	}
+	if !r.active {
+		// Only this exact generation's committed retirement can remove its
+		// guard. Reconcile the lost response without changing durable evidence
+		// or uncertainty. Unknown effect operations were covered by the
+		// original retirement's pending-before-fenced proof.
+		delete(s.views, a.intent.ID)
+		return nil
 	}
 	uncertain := a.retirementUncertain(r)
 	if _, err = tx.ExecContext(ctx, "UPDATE attempts SET active=0,uncertain=? WHERE id=? AND generation=?", uncertain, []byte(a.intent.ID), a.generation); err != nil {
@@ -656,6 +682,11 @@ func (s *Store) retireAll(ctx context.Context) error {
 		}
 		if !bytes.Equal(r.generation, a.generation) || !bytes.Equal(r.binding, a.binding) {
 			return ErrInactive
+		}
+		if !r.active {
+			// Exact inactive proof has the same meaning as a Release retry.
+			// Preserve the prior retirement and any durable uncertainty.
+			continue
 		}
 		uncertain := a.retirementUncertain(r)
 		if _, err = tx.ExecContext(ctx, "UPDATE attempts SET uncertain=?,active=0 WHERE id=? AND generation=?", uncertain, []byte(id), a.generation); err != nil {

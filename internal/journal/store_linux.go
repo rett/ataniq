@@ -152,14 +152,10 @@ func openWithFault(ctx context.Context, path string, options Options, create boo
 func (s *Store) Info(ctx context.Context) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.options.OperationTimeout)
 	defer cancel()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
-		return Info{}, os.ErrClosed
-	}
-	if err := ctx.Err(); err != nil {
+	if err := s.readLifetime(ctx); err != nil {
 		return Info{}, err
 	}
+	defer s.mu.RUnlock()
 	i, err := readIdentity(ctx, s.db, s.options.Authority)
 	if err != nil {
 		return Info{}, err
@@ -171,6 +167,30 @@ func (s *Store) Info(ctx context.Context) (Info, error) {
 	i.MaxBytes = s.options.MaxBytes
 	i.SQLiteVersion, i.SQLiteSourceID = engineVersion, engineSource
 	return i, nil
+}
+
+// Close is the only lifetime writer. Refuse admission as soon as a writer
+// waits, without delaying cancellation behind Close's SQL/ownership cleanup.
+// Successful readers still hold the lock until their operation finishes.
+func (s *Store) readLifetime(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.mu.TryRLock() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return os.ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.RUnlock()
+		return err
+	}
+	if s.closed {
+		s.mu.RUnlock()
+		return os.ErrClosed
+	}
+	return nil
 }
 
 // Close waits for bounded local operations, closes SQL, then releases ownership.

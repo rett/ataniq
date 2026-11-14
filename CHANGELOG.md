@@ -8,6 +8,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Retain one exact grant-conflict event per immutable attempt, preserve context
+  errors on retiring Release retries, and preserve proven retired generations
+  during Close without changing their evidence or durable uncertainty.
+
+- Preserve exact empty journal BLOB outcomes when saving Prepared observations;
+  reconcile a lost Release response only from the exact retired generation.
+  Return unknown on failed grant-conflict commits, verify the pinned DQS probe
+  diagnostic, and reject new lifetime admission promptly during Close.
+  Add actual-driver, retirement, conflict, cancellation and explicit bounded
+  capacity-recovery regressions without changing the schema or dispatch policy.
+
 - Update the design index to describe the implemented guarded dispatch journal.
 
 - Validate journal policy and grant expiry bounds by UTC instant across caller
@@ -26,6 +37,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   processes already using POSIX SQLite locking are refused before acquisition.
 
 ### Added
+
+- Document exact-generation Release response reconciliation, empty receipt BLOB
+  preservation, failed conflict status, precise DQS diagnostics and prompt Close
+  admission refusal. Describe fixed-bound FULL recovery refusal and the existing
+  explicit larger-MaxBytes reopen path with preserved evidence and no automatic
+  bound increase or capacity guarantee.
 
 - Document journal retirement admission/publication ordering, coherent volatile
   snapshot capture, foreign-call isolation and the narrow settled-Denied
