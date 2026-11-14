@@ -590,3 +590,18 @@ func TestFD1SocketDomainAndType(t *testing.T) {
 		}
 	}
 }
+
+func TestFD1FrozenReaderDoesNotAssertWorkloadStop(t *testing.T) {
+	root, dir := ownedRoot(t)
+	r := typedRequest(CaseFakePipeFD)
+	data := []byte(wire(t, typedBindings(r)))
+	put(t, filepath.Join(dir, FD1BindingName), data)
+	got, err := readFrozenFlat(root, FD1BindingName, MaxFD1BindingBytes)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatal("frozen metadata read", err)
+	}
+	// Shared I/O does not weaken the collector's independent stop requirement.
+	if _, err := CollectFlat(root, FD1BindingName, MaxFD1BindingBytes, false); err == nil {
+		t.Fatal("collector stop proof bypassed")
+	}
+}

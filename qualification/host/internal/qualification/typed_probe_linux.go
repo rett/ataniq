@@ -24,9 +24,9 @@ func fakeTypedFD(o *Observation, r Request, cfg Config) {
 		return
 	}
 	defer root.Close()
-	// This true asserts the launcher's frozen trusted fixture premise, not a
-	// workload-stop claim. Only this ordinary metadata file is collected here.
-	data, err := CollectFlat(root, r.Payload.TypedFD.Name, MaxFD1BindingBytes, true)
+	// The launcher must freeze this trusted metadata outside workload write
+	// reach. The probe is running, so it cannot assert collector stop proof.
+	data, err := readFrozenFlat(root, r.Payload.TypedFD.Name, MaxFD1BindingBytes)
 	if err != nil {
 		incompleteOperation(o, "binding-read", err)
 		return
