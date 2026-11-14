@@ -1,6 +1,7 @@
 # Runtime and recovery contract
 
-Status: proposed; no implementation or runtime qualification is claimed.
+Status: proposed; the internal dispatch coordinator described below is
+source-only infrastructure. No runtime qualification is claimed.
 Ataniq owns durable identity, intent, readiness, bootstrap and reconciliation.
 The proposed Linux backend uses a detachable Ataniq runner supervised by a
 systemd user transient service, with cgroup v2; systemd provides lifecycle
@@ -75,6 +76,63 @@ Do not infer completion from a disconnect. Reserve and reconcile child usage
 against the parent's enforceable budget; unknown usage is not zero.
 
 ## Fault matrix and acceptance scenarios
+
+### Source dispatch coordinator
+
+The normal entrypoint is `dispatch.Coordinator.Dispatch` in
+`internal/dispatch`. It binds opaque identities and exact payload bytes to one
+attempt, prepares them through the application journal, and calls the start
+boundary only for a newly committed preparation. A duplicate returns its
+existing receipt; an identity or consumed-grant conflict is rejected. The
+journal must atomically consume an exact-target grant with preparation and
+retain contradictions, including receipt identity and content. The coordinator
+checks returned receipt bindings and states, and copies payloads across port
+and caller boundaries. It must distinguish a new durable commit from a
+duplicate, rejection, conflict and ambiguous result. An ambiguous preparation
+must fence the exact attempt across fault clearing and coordinator recreation
+until evidence-based reconciliation; an error alone cannot prove a transaction
+was absent. A proved rejection is distinct. Receipt IDs identify evidence,
+separately from intent IDs: identical evidence is idempotent, while changed
+content under one receipt ID or contradictory outcomes under different IDs
+are retained and make duplicate inspection uncertain. Evidence receipt IDs are
+scoped to the immutable attempt. A different immutable
+intent binding is a conflict and cannot alter the legitimate record. Start
+acknowledgement and completion evidence are separate. Qualification campaign
+storage is a separate mechanism and is not this journal.
+
+The trusted boundary obtains current authority and verifies the matching epoch,
+policy, qualification, authorization, bounded limits and any required
+exact-target grant, including its current expiry and revocation, at actual
+start, even after the journal consumed that grant. It
+serializes that crossing with observed revocation and authority changes. It
+returns a start acknowledgement, proved denial or uncertainty promptly, and
+cannot retain a callback or start after returning, even on cancellation.
+Completion is separate and does not hold an admission lock. Recovered prepared
+or dispatching attempts are never automatically replayed; uncertain delivery
+or failed outcome storage requires reconciliation and a separately authorized
+attempt for a retry. A recovered prepared receipt is unresolved evidence, not
+proof that start did not happen. A failed save may leave only that receipt;
+the caller must preserve the returned uncertainty and evidence for
+reconciliation. Synthetic error receipts are uncertainty projections carrying
+the immutable attempt and any available evidence; their absent evidence ID does
+not make them resubmittable journal evidence. A save using a cancelled caller
+context may fail even after a boundary decision. Persistent recovery must account
+for failed outcome saves.
+Cancellation-independent saving remains a future design option.
+External start cannot be atomic with the journal transaction.
+The deterministic fake tests cover duplicate concurrency, target-bound grants,
+receipt contradictions, payload ownership, current checks, failures, delayed
+dispatch calls and completion of already-started work during outage. The fake
+boundary returns after its bounded start decision and retains no callback or
+permit; these tests do not establish guarantees for an adapter that violates
+that obligation; the coordinator cannot secure a malicious trusted port. Their
+evidence does not qualify production policy or any provider.
+
+This package supplies no provider adapter, disk durability, host isolation,
+client authentication or support attestation. A future application journal and
+provider integration must establish their own durability, fencing and actual
+boundary guarantees; an in-process model cannot fence an external provider.
+Version 0.0.1 remains unchanged; a proposed 0.0.2 assignment is planning only.
 
 Tests use a fake provider and deterministic fault injection. Each row defines
 the required result after restart or reconciliation.
