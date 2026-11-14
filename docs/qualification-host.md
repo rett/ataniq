@@ -28,7 +28,8 @@ sh scripts/go-tool.sh test ./qualification/host/... ./tests/...
 
 Go test compiles the CLI and tests its framing through injected streams. It
 does not launch a sandbox. Descriptor regressions execute owned child processes,
-inspect only their own FD metadata, and use synthetic regular files. Test-only
+inspect only their own FD metadata, and use fresh synthetic files, directories,
+anonymous pipes and anonymous Unix socketpairs. Test-only
 seccomp errno rules exercise the production terminal path without production
 fault hooks. Kernel-restricted fixtures explicitly skip and remain unqualified.
 Other tests use owned fake
@@ -433,6 +434,9 @@ The payload must match exactly:
 | `fake-file` | `{"file":{"name":"fake-file"}}` | Read-only open/stat/close; no content read |
 | `fake-unix` | `{"unix":{"name":"fake-socket","device":1,"inode":2,"uid":1000,"nonce":"01234567"}}` | Owned pathname stream fixture with expected metadata and typed nonce echo |
 | `fake-fd` | `{"fd":{"name":"fake-file","fd":512,"device":1,"inode":2,"regular":true,"sha256":"<64 lowercase hex bytes>"}}` | Identity/type check before bounded offset-zero Pread and digest comparison |
+| `fake-dir-fd` | `typed_fd` challenge described below, with `fd:128` and `leaf` | Validate directory and leaf identities, open one flat leaf and compare its synthetic digest |
+| `fake-pipe-fd` | `typed_fd` challenge, with `fd:256` | Validate pipe identity/flags, read the fixed nonce frame and require EOF |
+| `fake-socket-fd` | `typed_fd` challenge, with `fd:384` | Validate Unix stream identity/flags/type, read the fixed nonce frame and require EOF |
 | Future matrix ID | absent | Explicit unsupported observation with reason |
 
 The numeric identities in this table are illustrative. Supply identities of
@@ -548,6 +552,156 @@ Unknown/missing facts require an inconclusive status. Values allow bounded
 UTF-8 text without controls, up to 1024 bytes; reasons allow 256 bytes and
 are mandatory for non-observed statuses. Encode validates and marshals the
 whole frame before any write and detects nil-error short writes.
+
+## Fixed typed inherited observations
+
+These three raw cases establish building blocks for a later FD1 evidence
+bundle. The current host command cannot prepare or dispatch them. Host dispatch,
+inode binding and release, final descriptor policy, historical records and the
+existing regular `fake-fd` API retain their current behavior. `FD1` itself still
+returns `unsupported`. No command or flag is added.
+
+Each new request has exactly one `payload.typed_fd` member, mutually exclusive
+with `file`, `unix` and `fd`. A pipe request, for example, is:
+
+```json
+{"version":1,"run_id":"01234567","request_id":"89abcdef","case":"fake-pipe-fd","payload":{"typed_fd":{"name":"inherited-bindings.json","fd":256,"profile":"fd1-typed","attempt_id":"aabbccdd","nonce":"01234567"}},"max_duration_ms":100,"max_bytes":4096}
+```
+
+The typed payload requires exactly `name`, `fd`, `profile`, `attempt_id` and
+`nonce`, plus `leaf` for `fake-dir-fd` only. `name` must be
+`inherited-bindings.json`; `profile` must be `fd1-typed`; `fd` must match the
+selected case's fixed slot. Attempt IDs and nonces use the same 8–32 lowercase
+hexadecimal character bound as run/request IDs. Channel frames are derived
+from the immutable case and nonce:
+
+```text
+ataniq-fd1-pipe-v1 <nonce>\n
+ataniq-fd1-unix-v1 <nonce>\n
+```
+
+Here `\n` represents one newline byte. Frames are type-distinct, shorter than
+128 bytes, and must fit `max_bytes` before fixture access. There is no arbitrary
+frame, descriptor list, kind selector, transport, path, peer or executable.
+The directory request's `leaf` has exactly `name`, `device`, `inode`, `size`
+and `sha256`: one flat synthetic filename and its known expected regular-file
+identity, length and content hash. Its size is 0–`max_bytes`; the hash is exactly
+64 lowercase hexadecimal characters. The trusted launcher must keep descriptor
+ownership/lifetime and the complete synthetic fixture tree stable for the call.
+
+### Frozen runtime binding artifact
+
+The artifact is trusted fixture metadata, read only through the explicit
+absolute `--fixture-root`. The future typed launcher must mount it read-only
+only for this profile, after independent trusted-side authentication. It is
+neither a broker nor a configuration allowlist. It cannot establish its own
+provenance. The directory capability and its leaf remain unmounted in hardened
+candidates; direct and weakened controls expose that tree through descriptor
+128 only. Existing frozen-tree and trusted-launcher premises still apply.
+
+`FD1Bindings` and `DecodeFD1Bindings` define the strict version-1 artifact.
+It is at most 8192 bytes and contains exactly these required top-level fields:
+`version`, `run_id`, `request_id`, `attempt_id`, `profile`, `plan_sha256`,
+`nonce`, `directory`, `pipe`, `socket`, `regular`. Version is 1; the profile is
+`fd1-typed`; IDs/nonce have the bounds above; the immutable plan hash has exactly
+64 lowercase hexadecimal characters. The four named records are mandatory.
+
+Every record has exactly these common fields: `fd`, `device`, `inode`, `type`,
+`access`, `nonblock`, plus the additional fields in this table:
+
+| Record | FD | Type | Access | Nonblock | Additional required fields |
+| --- | --- | --- | --- | --- | --- |
+| `directory` | 128 | `directory` | `read-only` | false | `leaf` object, with the five fields defined above |
+| `pipe` | 256 | `pipe` | `read-only` | true | `length`, `sha256`, `peer_closed:true` |
+| `socket` | 384 | `unix-stream` | `read-write` | true | `length`, `sha256`, `peer_closed:true` |
+| `regular` | 512 | `regular` | `read-only` | false | `size`, `sha256` |
+
+Descriptor 513 is reserved for BPF by the fixed profile and has no artifact
+record. Artifact regular/leaf sizes are 0–4096; sizes and boolean fields must be
+explicit even when zero or false. All device/inode identities, including the
+leaf's, are required and nonzero; zero is never an unknown-identity sentinel.
+Channel lengths must be positive, below 128, and exactly equal to their fixed
+nonce frame lengths; their hashes must equal those frames' SHA-256. Regular
+size/hash describe the synthetic regular fixture bound by the trusted side.
+The artifact uses the wire decoder's canonical ASCII keys, strict field types,
+depth bound and rejection of duplicate, unknown or null keys, extra values,
+invalid UTF-8 and excessive input. Missing fixed records and conflicting fixed
+slots/types/access/nonblock or impossible lengths are rejected.
+
+The probe shares the collector's bounded frozen-file reader: lstat,
+regular/single-link/size checks,
+pinned flat no-follow/nonblocking open, exact opened identity, cap+1 read,
+short-read and stable post-read checks. The launcher must establish that this
+trusted metadata file is frozen outside workload write reach. The running probe
+does not assert workload-stop proof; the separate `CollectFlat` API still
+requires that proof. Run/request/attempt IDs, profile and nonce must
+match the immutable request before any capability fstat/open/read. For the
+directory case every expected leaf field must also match. Artifact ownership
+is authenticated on the trusted side; the namespace probe matches global
+device/inode/type without comparing host UID to projected UID0. Existing
+idmapped-owner admission remains unsupported.
+
+The future service-local injector creates exact channel identities after
+request/plan freezing, publishes the artifact and its hash/identity in its
+receipt, and waits while the controller durably binds them before release.
+The trusted side must verify `plan_sha256` against the launched plan. That hash
+is deliberately absent from stdin: the existing plan hashes `request.json`,
+so including the plan hash in that request would be circular. Neither stdin
+nor an already launched plan may be rewritten or rehashed. The probe never
+learns an expected identity from its own fstat. Runtime artifact generation,
+receipt authentication, read-only mounting, wrapper revalidation and release
+integration are not implemented or executed in this probe/schema slice.
+
+### Operations and interpretation
+
+After binding validation each case first fstats its fixed slot and compares
+exact expected device/inode/type. A closed slot records `stage:"fstat"` with
+exact EBADF. A reused or wrong slot is inconclusive at `fd-identity` and stops
+before openat or receive. An unavailable/malformed/context-mismatched artifact
+is inconclusive at `binding-read`, `binding-validate` or `binding-context`,
+before any capability access. Missing artifact evidence cannot establish closure.
+
+The directory case also checks read-only flags, then performs no-follow
+relative metadata lookup on the one flat leaf. A rejected leaf is never
+opened. It uses only
+`openat(128, leaf, O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK)`, records
+`opened:"true"` immediately, and requires the opened file to retain the expected
+identity, regular type, single link and bounded exact size before offset-zero
+Pread. It compares the synthetic hash, checks stable post-read metadata and
+closes the new descriptor. It neither enumerates entries nor mutates the source.
+Post-open failures preserve the open fact. `leaf-lstat`, `leaf-identity`,
+`fstat-leaf`, `pread`, `postread-fstat`, `postread-identity`, `leaf-compare`
+and `close` distinguish validation/read/close failures from `openat` errno.
+
+Channel cases validate actual F_GETFL access and O_NONBLOCK, rejecting O_PATH
+or missing flags without repair. Socket metadata must identify AF_UNIX and
+SOCK_STREAM after identity validation. The future injector must prewrite exactly
+one frame and close every writer/peer before publication and release. The probe
+only calls raw nonblocking read; it never uses Pread/Seek, a blocking wrapper,
+writes, recvmsg or ancillary parsing. It requires exact length/hash followed by
+EOF, using at most expected length+1 storage, at most 128 read syscalls including
+EINTR, and `max_duration_ms` checked before and after each read. A successful
+byte read records `read_success:"true"` immediately. A matching frame plus EOF
+records `eof:"true"` and `frame_match:"true"`; later fstat or flag failure
+retains those known facts. Leaf reads likewise retain successful byte-read
+evidence through later failure. Payload bytes and observed digests are never
+emitted; absent effects never mean false.
+
+EAGAIN (including a kept-open producer), short/empty/wrong/trailing frames,
+missing nonblock, unsupported reads, metadata drift, deadlines and retry budget
+exhaustion are inconclusive, never closure. Stages distinguish `fd-flags`,
+`socket-type`, `channel-read`, `channel-frame`, `channel-deadline`,
+`channel-budget`, `postread-fstat`, `postread-identity` and `postread-flags`.
+The workload retains the existing observation envelope with no support/pass
+field. Socket metadata unavailable under a host syscall policy is inconclusive;
+owned-child tests explicitly skip full admission there and separately exercise
+raw socket reception and deterministic domain/type validation.
+
+These observations concern fixed regular/directory/pipe/Unix-stream inherited
+capability coverage. Live RPC, bidirectional write protocols, Unix connect
+authorization and SCM_RIGHTS remain separate FD2/US work. No direct/candidate/
+weakened/inventory FD1 evidence bundle, launcher qualification, live sandbox
+execution or runtime-binding generation is claimed by these tests.
 
 ## Inventory and evidence limits
 
