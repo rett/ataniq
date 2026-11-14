@@ -307,16 +307,45 @@ func (e R1Evidence) valid() bool {
 		c := e.Completion
 		return e.Stage == "completion" && e.Sequence == 3 && validDigest(c.ReleaseSHA256) && validDigest(c.FinishSHA256) && c.TouchedBytes == R1MemoryBytes && c.RetainedUntilFinish && c.Child.valid() && c.Child.Identity != nil && c.Child.Token == "finish" && c.Child.Termination == "exited" && c.Child.ExitCode != nil && *c.Child.ExitCode == 0 && c.Outcome == "completed"
 	case e.Failure != nil:
-		f := e.Failure
-		return e.Stage == "failure" && e.Sequence >= 0 && e.Sequence <= 3 && r1Stage(f.Stage) && r1Error(f.Error) && (f.ReleaseSHA256 == "" || validDigest(f.ReleaseSHA256)) && (f.FinishSHA256 == "" || validDigest(f.FinishSHA256)) && f.TouchedBytes >= 0 && f.TouchedBytes <= R1MemoryBytes && (f.PageSize == 0 || r1Page(f.PageSize)) && (f.Cleanup == "released" || f.Cleanup == "not-allocated" || f.Cleanup == "failed") && f.Child.valid()
+		return e.Stage == "failure" && e.Failure.valid(e.Sequence)
 	}
 	return false
 }
 func r1Page(n int) bool { return n > 0 && n <= R1MemoryBytes && n&(n-1) == 0 && R1MemoryBytes%n == 0 }
-func r1Stage(s string) bool {
-	switch s {
-	case "context", "child-ready", "ready", "release", "pressure-start", "allocate", "touch", "retained", "finish", "child-reap", "cleanup", "completion":
-		return true
+func (f R1Failure) valid(sequence int) bool {
+	if !r1Error(f.Error) || !f.Child.valid() ||
+		(f.ReleaseSHA256 != "" && !validDigest(f.ReleaseSHA256)) ||
+		(f.FinishSHA256 != "" && !validDigest(f.FinishSHA256)) ||
+		(f.FinishSHA256 != "" && f.ReleaseSHA256 == "") ||
+		f.TouchedBytes < 0 || f.TouchedBytes > R1MemoryBytes ||
+		(f.PageSize != 0 && !r1Page(f.PageSize)) ||
+		(f.Cleanup != "released" && f.Cleanup != "not-allocated" && f.Cleanup != "failed") {
+		return false
+	}
+	if f.TouchedBytes > 0 && (!r1Page(f.PageSize) || f.TouchedBytes%f.PageSize != 0 || f.Cleanup == "not-allocated") {
+		return false
+	}
+	// Sequence is the interrupted phase, never a count of output frames.
+	// Hashes describe validated records already consumed at that phase.
+	switch f.Stage {
+	case "context", "child-ready", "ready":
+		return sequence == 0 && f.ReleaseSHA256 == "" && f.FinishSHA256 == "" && f.TouchedBytes == 0 && f.PageSize == 0
+	case "release":
+		return sequence == 1 && f.FinishSHA256 == "" && f.TouchedBytes == 0 && f.PageSize == 0
+	case "pressure-start":
+		return sequence == 1 && f.ReleaseSHA256 != "" && f.FinishSHA256 == "" && f.TouchedBytes == 0 && f.PageSize == 0
+	case "allocate":
+		return sequence == 1 && f.ReleaseSHA256 != "" && f.FinishSHA256 == "" && f.TouchedBytes == 0
+	case "touch":
+		return sequence == 1 && f.ReleaseSHA256 != "" && f.FinishSHA256 == "" && r1Page(f.PageSize)
+	case "retained":
+		return sequence == 2 && f.ReleaseSHA256 != "" && f.FinishSHA256 == "" && f.TouchedBytes == R1MemoryBytes
+	case "finish":
+		return sequence == 2 && f.ReleaseSHA256 != "" && f.TouchedBytes == R1MemoryBytes
+	case "cleanup":
+		return sequence == 2 && f.ReleaseSHA256 != "" && f.FinishSHA256 != "" && f.TouchedBytes == R1MemoryBytes
+	case "child-reap", "completion":
+		return sequence == 3 && f.ReleaseSHA256 != "" && f.FinishSHA256 != "" && f.TouchedBytes == R1MemoryBytes
 	}
 	return false
 }

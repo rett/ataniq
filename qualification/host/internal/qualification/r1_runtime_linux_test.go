@@ -151,6 +151,111 @@ func TestR1PrivateOwnedChild(t *testing.T) {
 		// child has no pressure allocation and only accepts the private token.
 		os.Exit(r1ChildTokens(r1WallClock{}, time.Now().Add(2*time.Second), r1RawRead(4)))
 	}
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "r1-owned-exit" {
+		// Publish the real identity, then terminate before corroboration.
+		hello := os.NewFile(3, "test-private-hello")
+		os.Exit(runR1Child(r1WallClock{}, strings.NewReader(r1AbortToken).Read, r1RawWrite(3), func() (R1ActorIdentity, error) {
+			return r1LocalIdentity(os.Getpid())
+		}, hello.Close))
+	}
+}
+
+type r1RecordedExecChild struct {
+	*r1ExecChild
+	readyID     R1ActorIdentity
+	readyErr    error
+	ends        int
+	endStart    time.Time
+	endDeadline time.Time
+}
+
+func (c *r1RecordedExecChild) Ready(d time.Time) (R1ActorIdentity, error) {
+	c.readyID, c.readyErr = c.r1ExecChild.Ready(d)
+	return c.readyID, c.readyErr
+}
+func (c *r1RecordedExecChild) End(token string, d time.Time) (R1ChildResult, error) {
+	c.ends++
+	c.endStart, c.endDeadline = time.Now(), d
+	return c.r1ExecChild.End(token, d)
+}
+
+func TestR1UncorroboratedHandshakeKeepsCleanupHandle(t *testing.T) {
+	for _, earlyDeath := range []bool{false, true} {
+		t.Run(map[bool]string{false: "metadata-denied", true: "early-death"}[earlyDeath], func(t *testing.T) {
+			var watchdog *time.Timer
+			mode := "r1-owned-child"
+			if earlyDeath {
+				mode = "r1-owned-exit"
+			}
+			child, err := r1SpawnWith(r1WallClock{}, func(cmd *exec.Cmd) error {
+				cmd.Args = []string{"probe", "-test.run=^TestR1PrivateOwnedChild$", "--", mode}
+				if err := cmd.Start(); err != nil {
+					return err
+				}
+				watchdog = time.AfterFunc(3*time.Second, func() { _ = cmd.Process.Kill() })
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := child.(*r1ExecChild)
+			t.Cleanup(func() { _, _ = raw.End("abort", time.Now().Add(R1ReapWait)); watchdog.Stop() })
+			pid, process := raw.pid, raw.process
+			lookups := 0
+			raw.localIdentity = func(got int) (R1ActorIdentity, error) {
+				lookups++
+				if got != pid {
+					t.Fatal("lost owned PID")
+				}
+				if earlyDeath {
+					deadline := time.Now().Add(R1ReapWait)
+					for {
+						ended, err := raw.poll()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if ended {
+							break
+						}
+						if r1Pause(raw.clock, deadline) != nil {
+							t.Fatal("owned early exit did not terminate within bound")
+						}
+					}
+				}
+				return R1ActorIdentity{}, syscall.EACCES
+			}
+			recorded := &r1RecordedExecChild{r1ExecChild: raw}
+			f := newR1Fixture(t)
+			f.d.clock = r1WallClock{}
+			f.d.spawn = func() (r1Child, error) { f.spawned++; return recorded, nil }
+			if runR1(f.d) == nil {
+				t.Fatal("metadata failure became success")
+			}
+			if lookups == 0 && errors.Is(recorded.readyErr, errR1Metadata) {
+				t.Skip("unsupported child metadata before handshake: real admission unqualified")
+			}
+			failure := f.last(t)
+			if !errors.Is(recorded.readyErr, errR1Metadata) || recorded.readyID != (R1ActorIdentity{}) || raw.id != nil || failure.Child.Identity != nil {
+				t.Fatal("uncorroborated identity escaped", recorded.readyID, recorded.readyErr, failure)
+			}
+			if f.allocated != 0 || f.spawned != 1 || len(f.frames) != 1 || failure.Stage != "child-ready" || failure.Error != "metadata-unsupported" {
+				t.Fatal("effects after failed admission", failure)
+			}
+			if raw.pid != pid || raw.process != process || recorded.ends != 1 || recorded.endDeadline.After(recorded.endStart.Add(R1ReapWait)) {
+				t.Fatal("cleanup handle/bound lost", recorded)
+			}
+			if failure.Child.Reap != "reaped" || failure.Child.ExitCode == nil || *failure.Child.ExitCode != 20 {
+				t.Fatal("owned child's actual terminal evidence lost", failure)
+			}
+			wantToken := "abort"
+			if earlyDeath {
+				wantToken = "none"
+			}
+			if failure.Child.Token != wantToken {
+				t.Fatal("invented cleanup token", failure.Child)
+			}
+		})
+	}
 }
 
 func TestR1RealPrivateHandshakeOnly(t *testing.T) {

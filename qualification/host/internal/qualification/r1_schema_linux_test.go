@@ -163,6 +163,111 @@ func TestR1NestedRequiredAndFixedValues(t *testing.T) {
 
 type r1ShortWriter struct{}
 
+func TestR1FailurePhaseContradictions(t *testing.T) {
+	f := newR1Fixture(t)
+	hash := strings.Repeat("a", 64)
+	stages := [][]string{{"context", "child-ready", "ready"}, {"release", "pressure-start", "allocate", "touch"}, {"retained", "finish", "cleanup"}, {"child-reap", "completion"}}
+	for sequence, group := range stages {
+		for _, stage := range group {
+			t.Run(stage, func(t *testing.T) {
+				failure := R1Failure{Stage: stage, Error: "io", Cleanup: "not-allocated", Child: R1ChildResult{Termination: "unknown", Reap: "unknown", Token: "none"}}
+				if sequence > 0 {
+					failure.ReleaseSHA256 = hash
+				}
+				if stage == "touch" || sequence >= 2 {
+					failure.TouchedBytes, failure.PageSize, failure.Cleanup = 4096, 4096, "released"
+				}
+				if sequence >= 2 {
+					failure.TouchedBytes = R1MemoryBytes
+				}
+				if stage == "cleanup" || sequence == 3 {
+					failure.FinishSHA256 = hash
+				}
+				check := func(failure R1Failure, seq int, want bool) {
+					t.Helper()
+					e := R1Evidence{R1Binding: f.binding, Stage: "failure", Sequence: seq, Failure: &failure}
+					var out bytes.Buffer
+					encodeErr := EncodeR1Evidence(&out, e)
+					_, decodeErr := DecodeR1Evidence(r1JSON(e))
+					if (encodeErr == nil) != want || (decodeErr == nil) != want || (!want && out.Len() != 0) {
+						t.Fatalf("want valid=%v: encode=%v decode=%v frame=%s", want, encodeErr, decodeErr, r1JSON(e))
+					}
+				}
+				check(failure, sequence, true)
+				for seq := -1; seq <= 4; seq++ {
+					if seq != sequence {
+						check(failure, seq, false)
+					}
+				}
+				x := failure
+				x.ReleaseSHA256 = "bad"
+				check(x, sequence, false)
+				x = failure
+				x.FinishSHA256 = "bad"
+				check(x, sequence, false)
+				x = failure
+				x.ReleaseSHA256, x.FinishSHA256 = "", hash
+				check(x, sequence, false)
+				if sequence == 0 {
+					x = failure
+					x.ReleaseSHA256 = hash
+					check(x, sequence, false)
+				} else if stage == "release" {
+					x = failure
+					x.ReleaseSHA256 = "" // Waiting/rejected release was not consumed.
+					check(x, sequence, true)
+				} else {
+					x = failure
+					x.ReleaseSHA256 = ""
+					check(x, sequence, false)
+				}
+				x = failure
+				x.FinishSHA256 = hash
+				check(x, sequence, stage == "finish" || stage == "cleanup" || sequence == 3)
+				if stage == "cleanup" || sequence == 3 {
+					x.FinishSHA256 = ""
+					check(x, sequence, false)
+				}
+				if stage == "touch" || sequence >= 2 {
+					for _, page := range []int{0, -1, 3000, R1MemoryBytes + 1} {
+						x = failure
+						x.PageSize = page
+						check(x, sequence, false)
+					}
+					x = failure
+					x.TouchedBytes--
+					check(x, sequence, false)
+					x = failure
+					x.Cleanup = "not-allocated"
+					check(x, sequence, false)
+					x.Cleanup = "failed" // Partial/error cleanup must stay admissible.
+					check(x, sequence, true)
+					x = failure
+					x.TouchedBytes = 0
+					check(x, sequence, stage == "touch")
+					if sequence >= 2 {
+						x.TouchedBytes = 4096
+						check(x, sequence, false)
+					}
+				} else {
+					x = failure
+					x.TouchedBytes, x.PageSize, x.Cleanup = 4096, 4096, "released"
+					check(x, sequence, false)
+				}
+				if stage == "allocate" {
+					// Zero-touch allocation failures may have no mapping, a
+					// released mapping, or an explicitly failed cleanup.
+					for _, cleanup := range []string{"not-allocated", "released", "failed"} {
+						x = failure
+						x.Cleanup = cleanup
+						check(x, sequence, true)
+					}
+				}
+			})
+		}
+	}
+}
+
 func (r1ShortWriter) Write(b []byte) (int, error) { return len(b) - 1, nil }
 func TestR1EncoderShortWriteAndLegacyWire(t *testing.T) {
 	f := newR1Fixture(t)

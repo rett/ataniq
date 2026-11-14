@@ -86,10 +86,14 @@ type r1FakeChild struct {
 	deadlines                  []time.Time
 	code                       int
 	unknown                    bool
+	identityUnavailable        bool
 }
 
 func (c *r1FakeChild) Ready(d time.Time) (R1ActorIdentity, error) {
 	c.clock.Sleep(c.readyDelay)
+	if c.identityUnavailable {
+		return R1ActorIdentity{}, c.readyErr
+	}
 	return c.id, c.readyErr
 }
 func (c *r1FakeChild) Alive() error { return c.aliveErr }
@@ -106,6 +110,9 @@ func (c *r1FakeChild) End(token string, d time.Time) (R1ChildResult, error) {
 	}
 	c.clock.Sleep(delay)
 	r := R1ChildResult{Identity: &c.id, Termination: "unknown", Reap: "unknown", Token: token}
+	if c.identityUnavailable {
+		r.Identity = nil
+	}
 	if !c.unknown {
 		r.Termination, r.Reap, r.ExitCode = "exited", "reaped", &c.code
 	}
@@ -410,6 +417,105 @@ func TestR1TouchAccountingDeadlineAndCleanup(t *testing.T) {
 	}
 }
 
+func TestR1ActualFailurePhaseEvidence(t *testing.T) {
+	rejectWrite := func(f *r1Fixture, stage string) {
+		write := f.d.write
+		f.d.write = func(b []byte) (int, error) {
+			var e R1Evidence
+			_ = json.Unmarshal(b, &e)
+			if e.Stage == stage {
+				return 0, io.ErrClosedPipe
+			}
+			return write(b)
+		}
+	}
+	for _, tc := range []struct {
+		name, stage       string
+		sequence, touched int
+		release, finish   bool
+		cleanup           string
+		setup             func(*r1Fixture)
+	}{
+		{"context", "context", 0, 0, false, false, "not-allocated", func(f *r1Fixture) { f.store.checkErr = syscall.EIO }},
+		{"child-ready", "child-ready", 0, 0, false, false, "not-allocated", func(f *r1Fixture) { f.child.readyErr = io.ErrUnexpectedEOF }},
+		{"ready", "ready", 0, 0, false, false, "not-allocated", func(f *r1Fixture) { rejectWrite(f, "ready") }},
+		{"release-wait", "release", 1, 0, false, false, "not-allocated", func(f *r1Fixture) { f.autoRelease = false }},
+		{"release-rejected", "release", 1, 0, false, false, "not-allocated", func(f *r1Fixture) { f.release = []byte(`{}`) }},
+		{"release-consumed", "release", 1, 0, true, false, "not-allocated", func(f *r1Fixture) {
+			reads := 0
+			f.store.read = func(name string) error {
+				if name == R1ReleaseName && len(f.frames) > 0 {
+					reads++
+					if reads == 2 {
+						x := f.store.files[name]
+						x.Subject = "replaced"
+						f.store.files[name] = x
+					}
+				}
+				return nil
+			}
+		}},
+		{"pressure-start", "pressure-start", 1, 0, true, false, "not-allocated", func(f *r1Fixture) { rejectWrite(f, "pressure-start") }},
+		{"allocate-none", "allocate", 1, 0, true, false, "not-allocated", func(f *r1Fixture) {
+			f.d.allocate = func() (r1Memory, error) { return nil, syscall.ENOMEM }
+		}},
+		{"allocate-cleanup-error", "allocate", 1, 0, true, false, "failed", func(f *r1Fixture) {
+			f.memory.releaseErr = syscall.EIO
+			f.d.allocate = func() (r1Memory, error) { return f.memory, syscall.ENOMEM }
+		}},
+		{"touch-zero", "touch", 1, 0, true, false, "released", func(f *r1Fixture) { f.memory.errAt = 0 }},
+		{"touch-partial", "touch", 1, 3 * 4096, true, false, "released", func(f *r1Fixture) { f.memory.errAt = 3 }},
+		{"touch-partial-cleanup-error", "touch", 1, 3 * 4096, true, false, "failed", func(f *r1Fixture) { f.memory.errAt = 3; f.memory.releaseErr = syscall.EIO }},
+		{"retained", "retained", 2, R1MemoryBytes, true, false, "released", func(f *r1Fixture) { rejectWrite(f, "retained") }},
+		{"finish-wait", "finish", 2, R1MemoryBytes, true, false, "released", func(f *r1Fixture) { f.autoFinish = false }},
+		{"finish-rejected", "finish", 2, R1MemoryBytes, true, false, "released", func(f *r1Fixture) { f.finish = []byte(`{}`) }},
+		{"finish-consumed", "finish", 2, R1MemoryBytes, true, true, "released", func(f *r1Fixture) {
+			reads := 0
+			f.store.read = func(name string) error {
+				if name == R1FinishName && len(f.frames) >= 3 {
+					reads++
+					if reads == 2 {
+						return syscall.EIO
+					}
+				}
+				return nil
+			}
+		}},
+		{"cleanup", "cleanup", 2, R1MemoryBytes, true, true, "failed", func(f *r1Fixture) { f.memory.releaseErr = syscall.EINVAL }},
+		{"child-reap", "child-reap", 3, R1MemoryBytes, true, true, "released", func(f *r1Fixture) { f.child.unknown = true; f.child.endErr = syscall.ECHILD }},
+		{"completion", "completion", 3, R1MemoryBytes, true, true, "released", func(f *r1Fixture) { rejectWrite(f, "completion") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newR1Fixture(t)
+			tc.setup(f)
+			if runR1(f.d) == nil {
+				t.Fatal("failure became success")
+			}
+			failure := f.last(t)
+			e := f.frames[len(f.frames)-1]
+			if failure.Stage != tc.stage || e.Sequence != tc.sequence || failure.TouchedBytes != tc.touched || failure.Cleanup != tc.cleanup {
+				t.Fatal("failure phase/accounting lost", e)
+			}
+			if (failure.ReleaseSHA256 != "") != tc.release || (failure.FinishSHA256 != "") != tc.finish ||
+				(tc.release && failure.ReleaseSHA256 != syntheticDigest(f.release)) || (tc.finish && failure.FinishSHA256 != syntheticDigest(f.finish)) {
+				t.Fatal("consumed hashes lost", failure)
+			}
+			var out bytes.Buffer
+			if err := EncodeR1Evidence(&out, e); err != nil {
+				t.Fatal("actual failure cannot encode", err)
+			}
+			if _, err := DecodeR1Evidence(out.Bytes()); err != nil {
+				t.Fatal("actual failure cannot decode", err)
+			}
+			for _, frame := range f.frames {
+				if frame.Completion != nil {
+					t.Fatal("false completion")
+				}
+			}
+		})
+	}
+}
+
 func TestR1ChildFailuresNeverComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -417,7 +523,7 @@ func TestR1ChildFailuresNeverComplete(t *testing.T) {
 		allocation int
 	}{
 		{"not-ready", func(f *r1Fixture) { f.child.readyErr = io.ErrUnexpectedEOF }, 0},
-		{"unsupported-metadata", func(f *r1Fixture) { f.child.readyErr = errR1Metadata }, 0},
+		{"unsupported-metadata", func(f *r1Fixture) { f.child.readyErr = errR1Metadata; f.child.identityUnavailable = true }, 0},
 		{"wrong-executable", func(f *r1Fixture) { f.child.id.Executable.Inode++ }, 0},
 		{"wrong-pidns", func(f *r1Fixture) { f.child.id.PIDNamespace.Inode++ }, 0},
 		{"same-pid", func(f *r1Fixture) { f.child.id.PID = 10 }, 0},
@@ -444,7 +550,7 @@ func TestR1ChildFailuresNeverComplete(t *testing.T) {
 				t.Fatal("false success")
 			}
 			e := f.last(t)
-			if f.allocated != tc.allocation || e.Child.Identity == nil {
+			if f.allocated != tc.allocation || (e.Child.Identity == nil) != f.child.identityUnavailable {
 				t.Fatal(e)
 			}
 			if tc.name == "unsupported-metadata" && e.Error != "metadata-unsupported" {

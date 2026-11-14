@@ -262,6 +262,7 @@ func r1DecodeHandshake(b []byte) (r1Handshake, error) {
 
 type r1ExecChild struct {
 	clock            r1Clock
+	localIdentity    func(int) (R1ActorIdentity, error)
 	pid              int
 	process          *os.Process
 	hello, token     *os.File
@@ -297,7 +298,7 @@ func r1SpawnWith(c r1Clock, start func(*exec.Cmd) error) (r1Child, error) {
 		tokenWrite.Close()
 		return nil, err
 	}
-	child := &r1ExecChild{clock: c, pid: cmd.Process.Pid, process: cmd.Process, hello: helloRead, token: tokenWrite, helloFD: int(helloRead.Fd()), tokenFD: int(tokenWrite.Fd()), result: R1ChildResult{Termination: "unknown", Reap: "unknown", Token: "none"}}
+	child := &r1ExecChild{clock: c, localIdentity: r1LocalIdentity, pid: cmd.Process.Pid, process: cmd.Process, hello: helloRead, token: tokenWrite, helloFD: int(helloRead.Fd()), tokenFD: int(tokenWrite.Fd()), result: R1ChildResult{Termination: "unknown", Reap: "unknown", Token: "none"}}
 	if e1 != nil || e2 != nil {
 		return child, errors.New("R1 unused pipe close")
 	}
@@ -325,9 +326,11 @@ func (c *r1ExecChild) Ready(deadline time.Time) (R1ActorIdentity, error) {
 	if err != nil {
 		return R1ActorIdentity{}, err
 	}
-	actual, err := r1LocalIdentity(c.pid)
+	actual, err := c.localIdentity(c.pid)
 	if err != nil {
-		return *h.Identity, errR1Metadata
+		// The handshake alone cannot corroborate a public identity. The exact
+		// spawned pid/process and pipes remain owned for bounded abort/reap.
+		return R1ActorIdentity{}, errR1Metadata
 	}
 	if actual != *h.Identity {
 		c.id = &actual
@@ -400,7 +403,7 @@ func (c *r1ExecChild) End(token string, deadline time.Time) (result R1ChildResul
 	}
 	// Save a validated identity for cleanup even if readiness could not finish.
 	if c.id == nil {
-		if id, err := r1LocalIdentity(c.pid); err == nil {
+		if id, err := c.localIdentity(c.pid); err == nil {
 			c.id = &id
 		}
 	}

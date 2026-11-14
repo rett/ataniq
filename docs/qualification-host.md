@@ -980,11 +980,30 @@ payload from this table:
 | `completion` / 3 | `completion` | `release_sha256`, `finish_sha256`, `touched_bytes`, `retained_until_finish:true`, `child`, `outcome:"completed"` |
 | `failure` / interrupted sequence | `failure` | Interrupted `stage`, fixed `error`, actual `touched_bytes`/`page_size`, `cleanup`, `child`; release/finish hashes when consumed |
 
+Failure sequences describe phases, not output frame counts: 0 covers `context`,
+`child-ready`, `ready`; 1 covers `release`, `pressure-start`, `allocate`, `touch`;
+2 covers `retained`, `finish`, `cleanup`; 3 covers `child-reap`, `completion`.
+Both encoding and decoding reject contradictions. Release failures may lack a
+release hash while waiting or rejecting a record, but `pressure-start` and later
+require the consumed release hash. No earlier phase can contain it. Finish
+failures may lack a finish hash while waiting or rejecting a record; `cleanup`
+and later require it. A finish hash requires a release hash and cannot precede
+the finish phase. Positive touched bytes require valid page size/alignment and
+cleanup other than `not-allocated`. Touch failures can report partial accounting
+at sequence 1; `retained` and later require full touch. Zero-touch allocation
+errors and failed cleanup remain valid evidence; the codec never infers cleanup
+success from accounting or phase.
+
 Actor identities contain namespace-local `pid`, `start`, and `executable` and
 `pid_namespace` device/inode objects. Main independently validates its owned
 child's handshake against proc metadata and requires the same executable/PID
 namespace and a distinct PID. These local identities do not authorize host
-termination or establish actual cgroup membership.
+termination or establish actual cgroup membership. If independent metadata
+lookup fails after a valid handshake, readiness returns no public child identity.
+The exact spawned process handle/PID stays owned for bounded cleanup; a later
+independent observation may corroborate identity, but the handshake alone cannot.
+An already ended child can still have an observed reap outcome with unknown
+identity. Neither case permits readiness or completion.
 
 Child results preserve identity when available, `token` (`none`, `finish` or
 `abort`), `termination` (`unknown`, `exited` or `signaled`) and `reap` (`unknown`
@@ -1027,6 +1046,14 @@ Only exact private finish/abort tokens cause normal protocol termination.
 EOF means parent lost and retains the child's independent lifetime; main death
 cannot immediately look like kernel-group termination. Failure cleanup may send
 abort, which is retained as intervention evidence.
+
+Go `exec` implements the child's nil standard streams by opening `/dev/null`.
+The legacy bubblewrap layout creates an empty `/dev`, so future R1 host
+integration must first qualify the exact R1-only `--dev-bind /dev/null /dev/null`
+with a trusted character-device subject (`S_IFCHR`, device number 1:3), mount
+and readback. This requires no broad `/dev` exposure. This tranche adds no
+launcher or bind. Actual no-pressure child entry in that sandbox, followed by
+memory-pressure qualification, requires later reviewed host integration.
 
 After exact release, main emits pressure-start and maps exactly 64 MiB with
 anonymous private mmap. It writes a nonzero byte at the actual OS page stride,
