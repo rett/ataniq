@@ -38,7 +38,7 @@ func ErrorObservation() Observation {
 	return Observation{Version: Version1, Status: "error", Facts: []Fact{}, Reason: "invalid probe input or configuration"}
 }
 
-// Probe performs only the four core cases. It does not compute qualification.
+// Probe performs concrete raw observations. It does not compute qualification.
 func Probe(r Request, cfg Config) Observation {
 	if err := r.Validate(); err != nil {
 		return ErrorObservation()
@@ -54,6 +54,8 @@ func Probe(r Request, cfg Config) Observation {
 		o = inventory(r, kernelMetadata{}, os.LookupEnv)
 	case CaseFakeFD:
 		fakeFD(&o, r)
+	case CaseFakeDirFD, CaseFakePipeFD, CaseFakeSocketFD:
+		fakeTypedFD(&o, r, cfg)
 	case CaseFakeFile, CaseFakeUnix:
 		if !filepath.IsAbs(cfg.FixtureRoot) {
 			o.Status = "error"

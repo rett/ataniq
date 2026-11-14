@@ -25,10 +25,13 @@ const (
 type Case string
 
 const (
-	CaseInventory Case = "inventory"
-	CaseFakeFile  Case = "fake-file"
-	CaseFakeUnix  Case = "fake-unix"
-	CaseFakeFD    Case = "fake-fd"
+	CaseInventory    Case = "inventory"
+	CaseFakeFile     Case = "fake-file"
+	CaseFakeUnix     Case = "fake-unix"
+	CaseFakeFD       Case = "fake-fd"
+	CaseFakeDirFD    Case = "fake-dir-fd"
+	CaseFakePipeFD   Case = "fake-pipe-fd"
+	CaseFakeSocketFD Case = "fake-socket-fd"
 )
 
 // Future matrix IDs are recognized, but never executed by this tranche.
@@ -42,7 +45,7 @@ func futureCase(c Case) bool {
 }
 
 func validCase(c Case) bool {
-	return c == CaseInventory || c == CaseFakeFile || c == CaseFakeUnix || c == CaseFakeFD || futureCase(c)
+	return c == CaseInventory || c == CaseFakeFile || c == CaseFakeUnix || c == CaseFakeFD || typedFDCase(c) || futureCase(c)
 }
 
 // All plain numeric fields are required and nonzero. Pointers distinguish absent
@@ -58,9 +61,10 @@ type Request struct {
 }
 
 type Payload struct {
-	File *NamePayload `json:"file,omitempty"`
-	Unix *UnixPayload `json:"unix,omitempty"`
-	FD   *FDPayload   `json:"fd,omitempty"`
+	File    *NamePayload    `json:"file,omitempty"`
+	Unix    *UnixPayload    `json:"unix,omitempty"`
+	FD      *FDPayload      `json:"fd,omitempty"`
+	TypedFD *TypedFDPayload `json:"typed_fd,omitempty"`
 }
 
 type NamePayload struct {
@@ -137,7 +141,7 @@ func (r Request) payloadName() (string, error) {
 		return "", errors.New("payload required")
 	}
 	n := 0
-	for _, present := range []bool{p.File != nil, p.Unix != nil, p.FD != nil} {
+	for _, present := range []bool{p.File != nil, p.Unix != nil, p.FD != nil, p.TypedFD != nil} {
 		if present {
 			n++
 		}
@@ -146,6 +150,11 @@ func (r Request) payloadName() (string, error) {
 		return "", errors.New("exactly one payload required")
 	}
 	switch {
+	case typedFDCase(r.Case) && p.TypedFD != nil:
+		if err := p.TypedFD.validate(r); err != nil {
+			return "", err
+		}
+		return p.TypedFD.Name, nil
 	case r.Case == CaseFakeFile && p.File != nil:
 		return p.File.Name, nil
 	case r.Case == CaseFakeUnix && p.Unix != nil:
