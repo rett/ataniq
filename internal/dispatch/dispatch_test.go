@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -10,44 +11,50 @@ import (
 )
 
 type fakeJournal struct {
-	mu          sync.Mutex
-	rows        map[string]Receipt
-	grants      map[string]string
-	now, expiry time.Time
-	revoked     bool
-	prepareErr  string
-	saveErr     bool
+	mu             sync.Mutex
+	rows           map[string]Receipt
+	grants         map[string]Intent
+	used           map[string]bool
+	contradictions []Receipt
+	now, expiry    time.Time
+	revoked        bool
+	prepareErr     string
+	saveErr        bool
 }
 
 func journal() *fakeJournal {
-	return &fakeJournal{rows: map[string]Receipt{}, grants: map[string]string{}, now: time.Unix(1, 0), expiry: time.Unix(2, 0)}
+	return &fakeJournal{rows: map[string]Receipt{}, grants: map[string]Intent{"grant": intent()}, used: map[string]bool{}, now: time.Unix(1, 0), expiry: time.Unix(2, 0)}
 }
 func (j *fakeJournal) Prepare(_ context.Context, i Intent) (PrepareStatus, Receipt, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if r, ok := j.rows[i.ID]; ok {
 		if !reflect.DeepEqual(r.Intent, i) {
+			j.contradictions = append(j.contradictions, Receipt{Intent: cloneIntent(i), State: Uncertain, Evidence: "intent contradiction"})
 			return PrepareConflict, r, nil
 		}
+		r.Intent = cloneIntent(r.Intent)
 		return PrepareDuplicate, r, nil
 	}
 	if j.prepareErr == "before" {
 		return PrepareUnknown, Receipt{}, errors.New("before")
 	}
 	if i.Grant != "" {
-		if _, used := j.grants[i.Grant]; used {
+		if target, ok := j.grants[i.Grant]; !ok || !sameIntent(target, i) || j.used[i.Grant] {
+			j.contradictions = append(j.contradictions, Receipt{Intent: cloneIntent(i), State: Uncertain, Evidence: "grant contradiction"})
 			return PrepareConflict, Receipt{}, nil
 		}
 		if j.revoked || !j.now.Before(j.expiry) {
 			return PrepareRejected, Receipt{}, nil
 		}
-		j.grants[i.Grant] = i.ID
+		j.used[i.Grant] = true
 	}
-	r := Receipt{Intent: i, State: Prepared}
+	r := Receipt{Intent: cloneIntent(i), State: Prepared}
 	j.rows[i.ID] = r
 	if j.prepareErr == "after" {
 		return PrepareUnknown, Receipt{}, errors.New("after")
 	}
+	r.Intent = cloneIntent(r.Intent)
 	return PrepareNew, r, nil
 }
 func (j *fakeJournal) Save(_ context.Context, r Receipt) error {
@@ -56,6 +63,13 @@ func (j *fakeJournal) Save(_ context.Context, r Receipt) error {
 	if j.saveErr {
 		return errors.New("save")
 	}
+	old, ok := j.rows[r.Intent.ID]
+	if !ok || !sameIntent(old.Intent, r.Intent) || old.State != Prepared {
+		r.Intent = cloneIntent(r.Intent)
+		j.contradictions = append(j.contradictions, r)
+		return errors.New("receipt contradiction")
+	}
+	r.Intent = cloneIntent(r.Intent)
 	j.rows[r.Intent.ID] = r
 	return nil
 }
@@ -64,13 +78,15 @@ type fakeBoundary struct {
 	mu                                   sync.Mutex
 	available, qualified                 bool
 	epoch, policy, qualification, limits string
+	authority, runtime, authorization    string
 	starts                               int
 	lost                                 bool
 	entered, release                     chan struct{}
+	work, completed                      chan struct{}
 }
 
 func boundary() *fakeBoundary {
-	return &fakeBoundary{available: true, qualified: true, epoch: "e", policy: "p", qualification: "q", limits: "l"}
+	return &fakeBoundary{available: true, qualified: true, epoch: "e", policy: "p", qualification: "q", limits: "l", authority: "a", runtime: "runtime", authorization: "auth"}
 }
 func (b *fakeBoundary) Start(ctx context.Context, i Intent) (StartStatus, string, error) {
 	b.mu.Lock()
@@ -79,10 +95,13 @@ func (b *fakeBoundary) Start(ctx context.Context, i Intent) (StartStatus, string
 		close(b.entered)
 		<-b.release
 	}
-	if ctx.Err() != nil || !b.available || !b.qualified || i.Epoch != b.epoch || i.Policy != b.policy || i.Qualification != b.qualification || i.Limits != b.limits {
+	if ctx.Err() != nil || !b.available || !b.qualified || i.Authority != b.authority || i.Runtime != b.runtime || i.Authorization != b.authorization || i.Epoch != b.epoch || i.Policy != b.policy || i.Qualification != b.qualification || i.Limits != b.limits {
 		return StartDenied, "no start", nil
 	}
 	b.starts++ // independently counted actual sink invocation
+	if b.work != nil {
+		go func() { <-b.work; close(b.completed) }()
+	}
 	if b.lost {
 		return StartUnknown, "response lost", errors.New("lost")
 	}
@@ -189,16 +208,18 @@ func TestOutageAndCompletion(t *testing.T) {
 	j, b := journal(), boundary()
 	c := Coordinator{j, b}
 	i := intent()
+	b.work, b.completed = make(chan struct{}), make(chan struct{})
 	r, _ := c.Dispatch(context.Background(), i)
 	if r.State != Started {
 		t.Fatal(r)
 	}
 	// Completion belongs to the already-started sink, independent of admission.
-	completed := make(chan bool, 1)
+
 	b.mu.Lock()
 	b.available = false
 	b.mu.Unlock()
-	completed <- true
+	close(b.work)
+	<-b.completed
 	for _, kind := range []string{"queued", "tool", "child", "iteration", "retry"} {
 		x := i
 		x.ID = kind
@@ -210,7 +231,7 @@ func TestOutageAndCompletion(t *testing.T) {
 			t.Fatal(kind, r)
 		}
 	}
-	if !<-completed || b.starts != 1 {
+	if b.starts != 1 {
 		t.Fatal("completion or outage")
 	}
 }
@@ -227,5 +248,137 @@ func TestInvalidAndCanceled(t *testing.T) {
 	r, _ := c.Dispatch(ctx, intent())
 	if r.State != Denied || b.starts != 0 {
 		t.Fatal(r)
+	}
+}
+
+// A port can accidentally reuse buffers or return a receipt for another scope.
+type journalPort struct {
+	prepare func(Intent) (PrepareStatus, Receipt, error)
+	save    func(Receipt) error
+}
+
+func (j journalPort) Prepare(_ context.Context, i Intent) (PrepareStatus, Receipt, error) {
+	return j.prepare(i)
+}
+func (j journalPort) Save(_ context.Context, r Receipt) error { return j.save(r) }
+
+type boundaryPort func(context.Context, Intent) (StartStatus, string, error)
+
+func (b boundaryPort) Start(c context.Context, i Intent) (StartStatus, string, error) { return b(c, i) }
+
+func TestPortIsolationAndReceiptValidation(t *testing.T) {
+	for _, status := range []PrepareStatus{PrepareNew, PrepareDuplicate, PrepareConflict} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			in := intent()
+			foreign := cloneIntent(in)
+			foreign.Project = "foreign"
+			j := journalPort{prepare: func(i Intent) (PrepareStatus, Receipt, error) {
+				i.Payload[0] = 'X'
+				return status, Receipt{Intent: foreign, State: Prepared}, nil
+			}, save: func(Receipt) error { t.Fatal("save"); return nil }}
+			b := boundaryPort(func(context.Context, Intent) (StartStatus, string, error) {
+				t.Fatal("start")
+				return StartDenied, "", nil
+			})
+			r, err := (Coordinator{j, b}).Dispatch(context.Background(), in)
+			if err == nil || r.Intent.Project != in.Project || string(r.Intent.Payload) != "data" || string(in.Payload) != "data" {
+				t.Fatalf("%+v %v", r, err)
+			}
+		})
+	}
+	for _, state := range []State{Started, Denied, Uncertain, "invalid"} {
+		j := journalPort{prepare: func(i Intent) (PrepareStatus, Receipt, error) {
+			return PrepareNew, Receipt{Intent: i, State: state}, nil
+		}, save: func(Receipt) error { t.Fatal("save"); return nil }}
+		b := boundaryPort(func(context.Context, Intent) (StartStatus, string, error) {
+			t.Fatal("start")
+			return StartDenied, "", nil
+		})
+		if _, err := (Coordinator{j, b}).Dispatch(context.Background(), intent()); err == nil {
+			t.Fatal(state)
+		}
+	}
+	j := journal()
+	b := boundaryPort(func(_ context.Context, i Intent) (StartStatus, string, error) {
+		i.Payload[0] = 'X'
+		return StartAcknowledged, "accepted", nil
+	})
+	in := intent()
+	r, err := (Coordinator{j, b}).Dispatch(context.Background(), in)
+	if err != nil || string(r.Intent.Payload) != "data" || string(j.rows[in.ID].Intent.Payload) != "data" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	r.Intent.Payload[0] = 'Y'
+	if string(j.rows[in.ID].Intent.Payload) != "data" || string(in.Payload) != "data" {
+		t.Fatal("aliased receipt")
+	}
+}
+
+func TestGrantTargetAndContradictoryReceipts(t *testing.T) {
+	j, b := journal(), boundary()
+	c := Coordinator{j, b}
+	original := intent()
+	wrong := cloneIntent(original)
+	wrong.Project = "other"
+	if _, err := c.Dispatch(context.Background(), wrong); err == nil || b.starts != 0 || j.used[original.Grant] {
+		t.Fatal("wrong target consumed grant")
+	}
+	if _, err := c.Dispatch(context.Background(), original); err != nil || b.starts != 1 {
+		t.Fatal(err)
+	}
+	second := cloneIntent(original)
+	second.ID = "second"
+	if _, err := c.Dispatch(context.Background(), second); err == nil || b.starts != 1 {
+		t.Fatal("grant reused")
+	}
+	before := j.rows[original.ID]
+	altered := before
+	altered.Intent = cloneIntent(before.Intent)
+	altered.Intent.Payload = []byte("contradiction")
+	if err := j.Save(context.Background(), altered); err == nil {
+		t.Fatal("accepted altered receipt")
+	}
+	foreign := altered
+	foreign.Intent.ID = "another"
+	if err := j.Save(context.Background(), foreign); err == nil {
+		t.Fatal("accepted foreign receipt")
+	}
+	if !reflect.DeepEqual(j.rows[original.ID], before) || len(j.contradictions) != 4 || string(j.contradictions[2].Intent.Payload) != "contradiction" || j.contradictions[3].Intent.ID != "another" {
+		t.Fatalf("lost evidence: %+v", j.contradictions)
+	}
+}
+
+func TestCanceledOrUnknownNeverStartsLater(t *testing.T) {
+	for _, lost := range []bool{false, true} {
+		t.Run(fmt.Sprint(lost), func(t *testing.T) {
+			j, b := journal(), boundary()
+			b.entered, b.release = make(chan struct{}), make(chan struct{})
+			b.lost = lost
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan Receipt, 1)
+			go func() { r, _ := (Coordinator{j, b}).Dispatch(ctx, intent()); done <- r }()
+			<-b.entered
+			if !lost {
+				cancel()
+			}
+			close(b.release)
+			r := <-done
+			cancel()
+			expected := 0
+			if lost {
+				expected = 1
+				if r.State != Uncertain {
+					t.Fatal(r)
+				}
+			} else if r.State != Denied {
+				t.Fatal(r)
+			}
+			for n := 0; n < 2; n++ {
+				(Coordinator{j, b}).Dispatch(context.Background(), intent())
+			}
+			if b.starts != expected {
+				t.Fatalf("late start: %d", b.starts)
+			}
+		})
 	}
 }

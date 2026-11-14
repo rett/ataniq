@@ -2,6 +2,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -17,6 +18,21 @@ type Intent struct {
 	Policy, Qualification, Authorization, Limits string
 	Grant                                        string // empty when policy requires no one-use approval
 	Payload                                      []byte
+}
+
+func cloneIntent(i Intent) Intent {
+	i.Payload = append([]byte(nil), i.Payload...)
+	return i
+}
+
+func sameIntent(a, b Intent) bool {
+	ap, bp := a.Payload, b.Payload
+	a.Payload, b.Payload = nil, nil
+	return equalIdentity(a, b) && bytes.Equal(ap, bp)
+}
+
+func equalIdentity(a, b Intent) bool {
+	return a.Authority == b.Authority && a.Project == b.Project && a.Command == b.Command && a.ID == b.ID && a.Attempt == b.Attempt && a.Runtime == b.Runtime && a.Epoch == b.Epoch && a.Action == b.Action && a.Kind == b.Kind && a.Policy == b.Policy && a.Qualification == b.Qualification && a.Authorization == b.Authorization && a.Limits == b.Limits && a.Grant == b.Grant
 }
 
 // Digest returns the SHA-256 digest of the exact payload.
@@ -115,19 +131,29 @@ func (c Coordinator) Dispatch(ctx context.Context, in Intent) (Receipt, error) {
 	if err := in.validate(); err != nil {
 		return Receipt{}, err
 	}
-	in.Payload = append([]byte(nil), in.Payload...)
-	status, receipt, err := c.Journal.Prepare(ctx, in)
+	in = cloneIntent(in)
+	status, receipt, err := c.Journal.Prepare(ctx, cloneIntent(in))
 	if err != nil {
 		return Receipt{Intent: in, State: Uncertain}, fmt.Errorf("prepare uncertain: %w", err)
 	}
+	// A port result is untrusted until its binding and state are checked. Never
+	// disclose a foreign receipt, even on a conflict.
+	valid := sameIntent(in, receipt.Intent)
 	switch status {
 	case PrepareDuplicate:
+		if !valid || (receipt.State != Prepared && receipt.State != Started && receipt.State != Denied && receipt.State != Uncertain) {
+			return Receipt{Intent: cloneIntent(in), State: Uncertain}, errors.New("invalid duplicate receipt")
+		}
+		receipt.Intent = cloneIntent(receipt.Intent)
 		return receipt, nil
 	case PrepareConflict:
-		return receipt, errors.New("intent or grant conflict")
+		return Receipt{Intent: cloneIntent(in), State: Uncertain}, errors.New("intent or grant conflict")
 	case PrepareRejected:
-		return receipt, errors.New("preparation rejected")
+		return Receipt{Intent: cloneIntent(in), State: Denied}, errors.New("preparation rejected")
 	case PrepareNew:
+		if !valid || receipt.State != Prepared || receipt.Evidence != "" {
+			return Receipt{Intent: cloneIntent(in), State: Uncertain}, errors.New("invalid new receipt")
+		}
 	default:
 		return Receipt{Intent: in, State: Uncertain}, errors.New("prepare outcome uncertain")
 	}
@@ -135,7 +161,7 @@ func (c Coordinator) Dispatch(ctx context.Context, in Intent) (Receipt, error) {
 	// is a proved no-start; a boundary error is always uncertain.
 	state, evidence := Denied, "context canceled before start"
 	if ctx.Err() == nil {
-		result, detail, startErr := c.Boundary.Start(ctx, in)
+		result, detail, startErr := c.Boundary.Start(ctx, cloneIntent(in))
 		evidence = detail
 		switch {
 		case startErr != nil:
@@ -149,7 +175,7 @@ func (c Coordinator) Dispatch(ctx context.Context, in Intent) (Receipt, error) {
 		}
 	}
 	receipt = Receipt{Intent: in, State: state, Evidence: evidence}
-	if err := c.Journal.Save(ctx, receipt); err != nil {
+	if err := c.Journal.Save(ctx, Receipt{Intent: cloneIntent(in), State: state, Evidence: evidence}); err != nil {
 		return Receipt{Intent: in, State: Uncertain, Evidence: evidence}, fmt.Errorf("save outcome uncertain: %w", err)
 	}
 	return receipt, nil

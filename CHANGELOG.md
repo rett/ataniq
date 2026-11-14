@@ -13,6 +13,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   infrastructure and does not qualify a provider or supply durable storage.
 - Document the coordinator entrypoint, port obligations and integration limits.
 
+### Changed
+
+- Validate dispatch journal receipts and isolate payload ownership across ports.
+
 ## [0.0.1] - 2026-11-14
 
 ### Changed
