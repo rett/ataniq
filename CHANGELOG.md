@@ -53,6 +53,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Raw `fake-dir-fd`, `fake-pipe-fd` and `fake-socket-fd` observations with an
+  optional immutable `fd1-typed` challenge and a strict bounded four-record
+  `inherited-bindings.json` schema. Validate context and fixed object identities
+  before content access, bound nonblocking channel reads and require exact
+  synthetic frames plus EOF while preserving intermediate effects. Owned child
+  regressions cover rejection without consumption. Host dispatch, runtime
+  binding generation/release, launcher policy and live FD1 qualification remain
+  separate integration work; existing serialized request meanings are preserved.
 - Explicit Linux/amd64 bubblewrap qualification driver with durable campaign
   ownership and restart fencing, exact service/slice reconciliation, private
   reexec fake-FD injection, finite ready/hold cancellation evidence and offline

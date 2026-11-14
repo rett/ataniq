@@ -20,6 +20,14 @@ func CollectFlat(root *os.Root, name string, limit int64, externallyStopped bool
 	if !externallyStopped {
 		return nil, errors.New("boundary-empty and frozen-tree proof required")
 	}
+	return readFrozenFlat(root, name, limit)
+}
+
+// readFrozenFlat requires an independently trusted frozen owned source with no
+// writers or writable aliases. The collector additionally requires workload
+// stop proof; a running typed probe instead reads launcher-frozen read-only
+// fixture metadata. Neither caller can establish freezing through this reader.
+func readFrozenFlat(root *os.Root, name string, limit int64) ([]byte, error) {
 	if root == nil || !validName(name) || limit < 1 || limit > MaxCollectBytes {
 		return nil, errors.New("bad root, flat name or limit")
 	}

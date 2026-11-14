@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -58,5 +59,40 @@ func TestRunIOFailure(t *testing.T) {
 	var out bytes.Buffer
 	if run(nil, failedInput{}, &out) != 2 || strings.Contains(out.String(), "private input error") {
 		t.Fatal("input error leaked")
+	}
+}
+
+func TestTypedRequestsUseExistingFixtureRoot(t *testing.T) {
+	for _, selected := range []struct {
+		name string
+		fd   int
+	}{{"fake-dir-fd", 128}, {"fake-pipe-fd", 256}, {"fake-socket-fd", 384}} {
+		leaf := ""
+		if selected.fd == 128 {
+			leaf = `,"leaf":{"name":"leaf","device":1,"inode":2,"size":4,"sha256":"` + strings.Repeat("a", 64) + `"}`
+		}
+		input := fmt.Sprintf(`{"version":1,"run_id":"01234567","request_id":"89abcdef","case":%q,"payload":{"typed_fd":{"name":"inherited-bindings.json","fd":%d,"profile":"fd1-typed","attempt_id":"aabbccdd","nonce":"01234567"%s}},"max_duration_ms":100,"max_bytes":4096}`, selected.name, selected.fd, leaf)
+		for _, withRoot := range []bool{false, true} {
+			var args []string
+			if withRoot {
+				args = []string{"--fixture-root", t.TempDir()}
+			}
+			var out bytes.Buffer
+			code := run(args, strings.NewReader(input), &out)
+			o, err := qualification.DecodeObservation(&out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withRoot {
+				if code != 0 || o.Status != "inconclusive" || o.Errno == nil {
+					t.Fatal(code, o)
+				}
+				if len(o.Facts) != 1 || o.Facts[0].Name != "stage" || *o.Facts[0].Value != "binding-read" {
+					t.Fatal(o)
+				}
+			} else if code != 2 || o.Status != "error" {
+				t.Fatal(code, o)
+			}
+		}
 	}
 }
