@@ -525,7 +525,8 @@ func r1ChildTokens(c r1Clock, deadline time.Time, read func([]byte) (int, error)
 	return 23
 }
 
-// R1Memory is an explicit opt-in entrypoint. HostConfig still rejects R1.
+// R1Memory is an explicit opt-in entrypoint. The host admits only no-pressure
+// child entry; ordinary R1 pressure qualification remains unsupported.
 // There are no public control-root, size, lifetime or command selectors.
 func R1Memory(in, out *os.File) error {
 	c := r1WallClock{}
