@@ -9,6 +9,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Pin the SQLite journal driver and preserve its dependency notices.
+- Add Linux journal storage Create/Open/Close/Info with exclusive inode ownership,
+  transactional authority and stable identities, read-only identity preflight,
+  verified SQLite connection settings, and finite operation and page bounds.
+  This lifecycle foundation does not yet implement guarded dispatch journaling.
 
 ## [0.0.2] - 2026-11-14
 
