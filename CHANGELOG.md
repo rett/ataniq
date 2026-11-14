@@ -8,6 +8,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Preserve authenticated typed FD1 bindings during cleanup-only recovery of a
+  lost service-start acknowledgement, including interruption during cancellation.
+  Reject inconsistent typed cleanup saves. Retain original inspect/stop authority
+  after artifact loss or change, exposing `fd1_integrity_failure` and reconciliation
+  reason `typed-runtime-integrity-failed`; keep new starts fenced after cleanup and
+  restart. Artifact restoration cannot clear the recorded failure or qualify the
+  attempt. This adds no live FD1 matrix claim.
 - Add the explicit optional `descriptor_profile: fd1-typed` host selection,
   frozen directory/leaf plan challenge and metadata-only read-only bind.
   Authenticate separate runtime artifact evidence before durable binding and

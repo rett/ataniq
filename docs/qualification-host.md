@@ -150,9 +150,33 @@ closed-source provenance and exact run/request/attempt/profile/nonce/static
 challenge/plan relationships. The existing exact executable, process, service
 invocation and boundary authenticate the injector's provenance. The artifact
 alone conveys no authority. A partial binding or failed durable save cannot
-publish release. Restart reads validate the recorded artifact rather than
-reconstructing endpoints or launching another injector. Unexpected typed
-runtime fields on historical records are rejected.
+publish release. Restart validates durable binding structure separately from
+current artifact authentication; it never reconstructs endpoints or launches
+another injector. Unexpected typed runtime fields on historical records are
+rejected.
+
+After a lost service-start acknowledgement, cleanup-only reconciliation first
+validates the exact original service/injector receipt and authenticates its
+runtime artifact against the immutable plan. It adopts the runtime binding
+together with the injector, workload and target before saving cancellation.
+Cleanup saves reject missing, partial or contradictory typed bindings too.
+An interruption before or after the original service stop can resume cleanup
+from those durable identities; reconciliation never publishes release or starts
+a replacement.
+
+If an artifact disappears, changes or is replaced after a valid durable binding,
+the structurally validated original record remains available to `inspect` and
+exact-identity cleanup. Its optional `fd1_integrity_failure` field reports
+`typed runtime artifact integrity unproved`; `reconcile` reports reason code
+`typed-runtime-integrity-failed`. Cleanup saves retain this failure alongside
+the original runtime identities. It keeps new starts fenced after complete
+cleanup and restart, even if the original artifact is later restored. The
+failure is separate from filesystem durability poisoning: it does not erase
+independently validated stop authority. A completed record still permits no
+qualification claim or direct-control reuse after this failure. Release, final
+wrapper preparation, controls and successful collection continue to require
+current artifact authentication and no retained integrity failure. There is no
+artifact replacement, endpoint recovery or automatic fence reset.
 
 The fixed role table for this selector is:
 
