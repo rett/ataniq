@@ -298,9 +298,10 @@ func TestTypedDescriptorTarget(t *testing.T) {
 			t.Fatalf("denied slot survived %d %v", fd, err)
 		}
 	}
-	// The test target takes bwrap's BPF consumption position without launching
-	// a backend. This checks terminal inheritance, not actual BPF consumption.
-	if role == "weakened-synthetic" {
+	// After checking terminal inheritance, simulate bwrap's BPF consumption
+	// for both roles that inherit it. This stand-in does not test actual backend
+	// consumption; direct has no BPF descriptor to close.
+	if role == "candidate" || role == "weakened-synthetic" {
 		if err := syscall.Close(BPFFD); err != nil {
 			t.Fatal(err)
 		}
