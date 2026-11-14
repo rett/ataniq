@@ -7,6 +7,10 @@ TypeScript operations console built on assistant-ui, and MIT license are the
 selected direction. Unified Ataniq clients are primary; native compatibility is
 optional and requires direct provider support and evidence for each version.
 
+The [journal storage lifecycle](journal.md) documents the implemented internal
+Linux storage foundation and its narrower tests and limits. It does not yet
+implement guarded dispatch journaling or the broader runtime/client contracts.
+
 Read [runtime](runtime.md), [client protocol](client-protocol.md),
 [security](security.md), and [work model](work-model.md) together. The existing
 [federation contract](../federation.md) supplies the inter-instance boundary;
