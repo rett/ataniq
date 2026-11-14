@@ -22,6 +22,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Document journal retirement admission/publication ordering, coherent volatile
+  snapshot capture, foreign-call isolation and the narrow settled-Denied
+  retirement response-loss case, distinguishing draft and final regressions
+  and graceful-close evidence from waited SIGKILL recovery.
 - Document guarded journal composition, exact policy/grant binding, failure and
   retirement semantics, bounded eager inspection, and offline crash evidence
   with its limits; retain the accepted lifecycle and OFD ownership contract.

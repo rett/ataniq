@@ -89,8 +89,14 @@ consumption, marks prepared, and appends its event. A consumed grant ID cannot
 be used by another binding. The grant row and original intent never change.
 Only this call's confirmed commit returns PrepareNew. A proved policy denial,
 binding/grant conflict, duplicate, and unknown commit remain distinct outcomes.
-An error before lookup, including cancellation or busy timeout, returns unknown;
-it cannot falsely assert that already-started work was denied.
+Prepare and Save reject a foreign binding before admission, waiting or
+cancellation can latch a failure on the legitimate activation. Prepare returns
+PrepareConflict without an error; Save returns ErrConflict. Such rejection
+does not append a binding-conflict event. Grant-consumption conflicts discovered
+for an exact binding still retain their transactional conflict evidence.
+An error before lookup for an admitted exact call, including cancellation or
+busy timeout, returns unknown; it cannot falsely assert that already-started
+work was denied.
 
 The actual Boundary independently obtains current authority at the real effect
 seam. Recorded policy cannot permit a stale external start. For example, a
@@ -121,13 +127,54 @@ uncertain and cannot receive a new execution approval through that operation.
 Trusted composition calls Release after Dispatch returns, with a fresh bounded
 context when the dispatch context has been cancelled. Release invalidates the
 activation before clearing its guard; late Journal calls require a new Activate.
-A stale view or release cannot clear a newer generation. Pending calls are
+A stale view or release cannot clear a newer generation. New exact Prepare,
+Save and Revoke calls after retirement publication return ErrInactive without
+changing either activation's failure latch. Calls already admitted are
 accounted for conservatively. Prepared-only and Started records remain
 unresolved on retirement: Started proves a start acknowledgement, not completion.
 A definitive Denied record without other uncertainty can retire settled.
 Clearing a guard and recording required uncertainty commit in the same
 transaction with a release event. A failed release can leave the guard in place;
-Release may be retried, or Close/reopen performs conservative retirement.
+Release may be retried while the durable activation remains active, or
+Close/reopen performs conservative retirement. A retry after a committed release
+whose response was lost can instead return ErrInactive.
+
+Both Release and Close publish retirement before sampling pending operations.
+Each exact Prepare, Save and Revoke increments its pending count before checking
+retirement, and publishes any admitted failure before decrementing that count.
+Retirement reads pending **before** the failure latch. If an admitted call has
+not finished, a nonzero count requires durable uncertainty. If it has finished,
+its failure publication precedes the zero count and the subsequent latch read.
+Reading the latch first would allow a failure and decrement between the two
+reads to escape both checks. A caller that increments after retirement's sample
+sees retirement and exits without attempting storage. The additional early
+retirement check avoids touching the count for an already inactive view.
+
+Close publishes retirement for all its views under its lifetime write lock,
+before starting the retirement transaction, including when that transaction
+later fails. A caller that passed admission but has not acquired the lifetime
+read lock remains pending. Close conservatively records uncertainty for it;
+it does not drain that caller while holding a lock the caller needs. Callers
+that release their lifetime read lock before publishing cancellation remain
+covered by the same pending/publication ordering.
+
+Release itself does not admit an effect and is not counted as pending.
+Its failure to enter is coordinated with retirement publication using the
+store-local failure mutex: before publication it can latch a failure; after
+publication it returns ErrInactive without changing the latch. Once Release
+owns the gate, its transaction or response failure publishes before releasing
+the gate and lifetime read lock, so a subsequent Release/Close sees it.
+The short failure mutex never waits for the gate, lifetime lock or SQL.
+
+A lost retirement response is not evidence of a new external effect. In the
+narrow case where preparation and a definitive Denied receipt were committed,
+and retirement committed without pending calls or prior uncertainty, dirty
+reopen may retain definitive Denied even if Release's response was lost.
+An in-process response failure can still project uncertainty, and a later
+Close can persist that conservative projection. Neither path replays the
+attempt. This exception does not apply to unknown Prepare, Save or Revoke,
+or to the concurrent admitted failed-Save handoff: those must retain the dirty
+guard or durable uncertainty.
 
 Close waits for bounded database operations, invalidates all views, and attempts
 the same atomic retirement before SQL closure and finally inode unlock. A failed
@@ -140,7 +187,8 @@ scoped.
 
 ## Receipts and inspection
 
-Save verifies the entire immutable binding in its transaction. Receipt IDs are
+Save validates the entire immutable binding before admission and verifies the
+active row's binding and generation in its transaction. Receipt IDs are
 scoped to the attempt. Identical ID/content is idempotent, while same-ID changed
 content is retained as another evidence row and makes the projection uncertain.
 Different IDs with contradictory outcome states do the same. Prepared evidence
@@ -157,6 +205,13 @@ Sequence)`. State mutations and their events commit together. The watermark
 is the highest included committed sequence. The in-process failure latch may
 conservatively add uncertainty to a record's projection; it is not another
 committed event or a claim that the watermark includes an unpersisted failure.
+After scanning the bounded durable rows, Snapshot samples every included
+activation's failure latch under the same store-local mutex used to publish
+failures. This produces one coherent volatile overlay, rather than a sequence
+of per-row samples that could describe a set of failures that never coexisted.
+The gate keeps durable rows and activation membership unchanged throughout
+the transaction and overlay capture. The mutex covers only the bounded
+in-memory pass, never SQL or waiting for operations that need the gate.
 Active guards and the original evidence remain visible.
 
 Snapshots leave no reader open. Query, scan, row-iteration, closure, transaction
@@ -342,12 +397,27 @@ Bounded fixtures exercise real SQLite busy and FULL errors without filling
 the host disk. Per-store unexported test seams inject journal I/O response
 failures without global hooks or production environment controls.
 
+Deterministic scheduling seams cover an already-admitted Save completing
+failure publication between retirement samples, cancellation publication
+after leaving the lifetime lock while Close retires, new-call rejection during
+Close, stale activations and competing cancelled releases, foreign cancelled
+or blocked Save/Prepare isolation, and a coherent multi-record failure overlay.
+The historical draft Release-before test exposed a draft defect. With the
+inherited retirement gate, that same new-call interleaving correctly returns
+ErrInactive; an obsolete expected-timeout assertion is not a reproduction on
+final source. The admitted-call sampling regression exercises the separate
+remaining ordering defect, with per-store synchronization seams.
+
 Waited helper children receive SIGKILL at owned seams before and after
 activation, preparation commit, receipt persistence, late contradictory saves,
 release and recovery, and at fake handoff. An independent owned file counts
 actual fake effects across fresh reopen; assertions concern the original
 attempt, not merely its row status. A dirty registration with no prepared row
-cannot replay. No live provider, network, service, namespace, runtime sandbox,
+cannot replay. Additional before/after Release and Close SIGKILL cases retain
+a settled Denied receipt after committed retirement and require uncertainty
+when the dirty guard survives; an independent counting Boundary cannot start
+the original attempt on reopen. Graceful Close tests alone establish no SIGKILL
+recovery claim. No live provider, network, service, namespace, runtime sandbox,
 real-state migration or host pressure is involved.
 
 Fresh subprocess regressions hold a real Store read transaction and use a
