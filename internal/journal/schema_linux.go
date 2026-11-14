@@ -11,8 +11,9 @@ import (
 const applicationID = 0x41544a4c // ATJL
 const schemaVersion = 1
 
-// Comparing the complete unreleased schema refuses partial initialization,
-// earlier layouts and added objects. No real-state migration is performed.
+// Comparing the complete v1 schema shipped in 0.0.3 refuses partial
+// initialization, earlier layouts and added objects. Future evolution requires
+// an explicit reviewed path; no real-state migration is performed here.
 const metadataDDL = `CREATE TABLE journal_identity (
  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
  authority BLOB NOT NULL CHECK (length(authority) BETWEEN 1 AND 256),
