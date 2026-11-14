@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -380,6 +382,273 @@ func TestFD1CollectionSaveCannotHideArtifactFailure(t *testing.T) {
 			reopenFD1Fixture(t, x)
 			if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || x.a.Observation == nil {
 				t.Fatal("failed collection not durably inspectable/fenced")
+			}
+		})
+	}
+}
+
+func TestFD1FailedCollectionAlwaysPersistsIntegrity(t *testing.T) {
+	for _, caseName := range []string{"inventory", "fake-pipe-fd"} {
+		for _, changeAt := range []int{0, 1, 2} {
+			t.Run(fmt.Sprintf("%s/save%d", caseName, changeAt), func(t *testing.T) {
+				x := fakeTypedLaunch(t, "candidate", caseName)
+				path := filepath.Join(x.c.Path, x.a.ID)
+				i, err := readInjection(filepath.Join(path, "injection.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				original, err := os.ReadFile(i.FD1Runtime.Artifact.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(path, "output"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				o, err := DecodeObservation(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if caseName == "inventory" {
+					ep := i.FD1Runtime.Endpoints[1]
+					o.Facts = descriptorInventory(append(descriptorStdio(x.a), fdMetadata{999, ep.Identity.Device, ep.Identity.Inode, ep.Mode})).Facts
+				} else {
+					o.Errno = pointer(int(syscall.EAGAIN))
+				}
+				var output bytes.Buffer
+				if err := EncodeObservation(&output, o); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "output"), output.Bytes(), 0600); err != nil {
+					t.Fatal(err)
+				}
+				copy := *x.a
+				copy.FD1Runtime = i.FD1Runtime
+				observationErr := validateDescriptorObservations(&copy, o)
+				if observationErr == nil {
+					t.Fatal("fixture must fail observation validation")
+				}
+				old := x.c.syncDir
+				saves, changed := 0, false
+				x.c.syncDir = func(f *os.File) error {
+					if x.a.Observation != nil {
+						saves++
+					}
+					// Save(empty -> complete) is finishFast's last boundary,
+					// immediately before collection's entry authentication.
+					if !changed && (changeAt == 0 && x.a.Phase == "empty" || changeAt > 0 && saves == changeAt) {
+						changed = true
+						if err := rewriteFrozenFixture(i.FD1Runtime.Artifact.Path, []byte("changed at collection boundary")); err != nil {
+							return err
+						}
+					}
+					return old(f)
+				}
+				err = x.c.run(x.a, x.h)
+				if err == nil || !changed || !strings.Contains(err.Error(), fd1IntegrityFailure) {
+					t.Fatal("integrity failure accepted or lost", err)
+				}
+				if changeAt > 0 && (!strings.Contains(err.Error(), observationErr.Error()) || !strings.Contains(x.a.Reason, observationErr.Error())) {
+					t.Fatal("original observation error lost", err, x.a.Reason)
+				}
+				if x.a.Phase != "complete" || !x.a.Empty || !x.a.TargetExited || !x.a.SliceStopped || !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+					t.Fatal("cleanup proof or sticky fence lost")
+				}
+				if changeAt == 0 && x.a.Observation != nil || changeAt > 0 && !sameJSON(x.a.Observation, &o) {
+					t.Fatal("observation adopted or discarded incorrectly")
+				}
+				if changeAt > 0 && caseName == "inventory" && x.a.DescriptorObservation == nil {
+					t.Fatal("raw inventory identities discarded")
+				}
+				if err := rewriteFrozenFixture(i.FD1Runtime.Artifact.Path, original); err != nil {
+					t.Fatal(err)
+				}
+				reopenFD1Fixture(t, x)
+				if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || changeAt > 0 && !sameJSON(x.a.Observation, &o) {
+					t.Fatal("restoration erased durable incident/evidence")
+				}
+				if after, err := os.ReadFile(filepath.Join(path, "output")); err != nil || !bytes.Equal(after, output.Bytes()) {
+					t.Fatal("raw failed output changed", err)
+				}
+				if _, err := x.c.Prepare(x.a.Config); err == nil {
+					t.Fatal("new attempt allowed after incident")
+				}
+				x.c.Close()
+				// Completed reconciliation has no host effects.
+				r := ReconcileHost(x.c.Path, x.a.ID)
+				if !r.NewStartsBlocked || r.Outcome != "inconclusive" || r.ReasonCode != "typed-runtime-integrity-failed" {
+					t.Fatal("successful/unfenced report after failed collection", r)
+				}
+			})
+		}
+	}
+}
+
+func TestFD1AuthenticatedAuthoritySurvivesPreReleaseFailure(t *testing.T) {
+	for _, failure := range []string{"effective", "handle", "before-bound", "before-released"} {
+		t.Run(failure, func(t *testing.T) {
+			x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+			i, err := readInjection(filepath.Join(x.c.Path, x.a.ID, "injection.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(i.FD1Runtime.Artifact.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := unchangedFD1Recovery(t, x, i.FD1Runtime)
+			cut := errors.New("post-authentication host failure")
+			change := func() {
+				t.Helper()
+				if !sameJSON(x.a.Injector, &i) || !sameJSON(x.a.FD1Runtime, i.FD1Runtime) || !sameJSON(x.a.Target, &i.Process) || x.a.Workload == nil || x.a.Workload.Boundary != i.Boundary || x.a.Workload.Properties["InvocationID"] != i.Invocation {
+					t.Fatal("authenticated authority not retained before later effect")
+				}
+				if err := rewriteFrozenFixture(i.FD1Runtime.Artifact.Path, []byte("changed after authentication")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			budget, handle, syncDir := x.h.budget, x.h.handle, x.c.syncDir
+			switch failure {
+			case "effective", "before-bound":
+				x.h.budget = func(*Unit) error {
+					change()
+					if failure == "effective" {
+						return cut
+					}
+					return nil
+				}
+			case "handle":
+				x.h.handle = func(Process) (*os.File, error) {
+					change()
+					return nil, cut
+				}
+			case "before-released":
+				x.c.syncDir = func(f *os.File) error {
+					if x.a.Injector != nil && x.a.Phase == "launching-service" {
+						change() // Bound save has authenticated and written its bytes.
+					}
+					return syncDir(f)
+				}
+			}
+			err = x.c.run(x.a, x.h)
+			if err == nil || x.a.Phase != "cleanup-unknown" || !x.c.Blocked || x.c.fenced || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+				t.Fatal("authenticated failure lost cleanup authority or fence", err)
+			}
+			if (failure == "effective" || failure == "handle") && !errors.Is(err, cut) {
+				t.Fatal("original host failure lost", err)
+			}
+			x.h.budget, x.h.handle, x.c.syncDir = budget, handle, syncDir
+			x.calls = nil
+			check()
+			// The original receipt file and current artifact no longer authorize
+			// adoption. Cleanup must use the already authenticated durable record.
+			if err := os.Remove(filepath.Join(x.c.Path, x.a.ID, "injection.json")); err != nil {
+				t.Fatal(err)
+			}
+			reopenFD1Fixture(t, x)
+			check()
+			if err := x.c.reconcile(x.a, x.h); err != nil {
+				t.Fatal("exact original cleanup unavailable", err)
+			}
+			check()
+			if err := rewriteFrozenFixture(i.FD1Runtime.Artifact.Path, original); err != nil {
+				t.Fatal(err)
+			}
+			reopenFD1Fixture(t, x)
+			check()
+			if x.a.Phase != "complete" || !x.a.Empty || !x.a.TargetExited || !x.a.SliceStopped || !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+				t.Fatal("cleanup/restoration lost incident fence")
+			}
+			for _, unit := range []string{x.a.Service, x.a.Slice} {
+				stops := 0
+				for _, call := range x.calls {
+					if strings.Contains(call, " stop -- "+unit) {
+						stops++
+					}
+				}
+				if stops != 1 {
+					t.Fatal("original unit not stopped exactly once", unit, stops)
+				}
+			}
+			if _, err := x.c.Prepare(x.a.Config); err == nil {
+				t.Fatal("new launch admitted after incident")
+			}
+		})
+	}
+}
+
+func TestFD1CollectionFailureDoesNotInventCleanup(t *testing.T) {
+	for _, failure := range []string{"missing-proof", "completion-save", "evidence-save"} {
+		t.Run(failure, func(t *testing.T) {
+			x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+			i, err := readInjection(filepath.Join(x.c.Path, x.a.ID, "injection.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := i.FD1Runtime
+			original, err := os.ReadFile(r.Artifact.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure == "missing-proof" {
+				bindTypedFixture(t, x)
+				if err := rewriteFrozenFixture(r.Artifact.Path, []byte("changed without cleanup proof")); err != nil {
+					t.Fatal(err)
+				}
+				err = x.c.collect(x.a)
+				if err == nil || x.a.Phase != "cleanup-unknown" || x.a.Empty || x.a.TargetExited || x.a.SliceStopped || !x.c.Blocked {
+					t.Fatal("collection fabricated cleanup", err)
+				}
+			} else {
+				old := x.c.syncFile
+				x.c.syncFile = func(f *os.File) error {
+					if failure == "completion-save" && x.a.Phase == "empty" || failure == "evidence-save" && x.a.Observation != nil {
+						if err := rewriteFrozenFixture(r.Artifact.Path, []byte("changed during failed save")); err != nil {
+							return err
+						}
+						return syscall.EIO
+					}
+					return old(f)
+				}
+				err = x.c.run(x.a, x.h)
+				if !errors.Is(err, syscall.EIO) || !x.c.Blocked || !x.c.fenced {
+					t.Fatal("durability failure hidden", err)
+				}
+				if failure == "completion-save" && x.a.Phase != "empty" {
+					t.Fatal("failed cleanup save published completion")
+				}
+				x.c.syncFile = old
+				// Once writes work, retain the detected incident alongside the
+				// existing filesystem failure fence before restoring the artifact.
+				if err := x.c.Save(x.a, x.a.Phase, x.a.Reason); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := rewriteFrozenFixture(r.Artifact.Path, original); err != nil {
+				t.Fatal(err)
+			}
+			if failure != "missing-proof" {
+				// Actual durability poisoning deliberately withholds the record
+				// on reopen; it must never become ordinary proved cleanup.
+				x.c.Close()
+				c, err := OpenCampaign(x.c.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.Close()
+				if !c.Blocked || !c.fenced || c.Records[x.a.ID] != nil {
+					t.Fatal("durability-poisoned record admitted after restart")
+				}
+				data, err := os.ReadFile(filepath.Join(x.c.Path, x.a.ID, "intent.json"))
+				var stored Attempt
+				if err != nil || decodeHostRecord(bytes.NewReader(data), &stored) != nil || stored.FD1IntegrityFailure != fd1IntegrityFailure {
+					t.Fatal("durable incident lost", err)
+				}
+				return
+			}
+			reopenFD1Fixture(t, x)
+			if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || failure != "missing-proof" && !x.c.fenced {
+				t.Fatal("restoration lost integrity/durability fence")
 			}
 		})
 	}

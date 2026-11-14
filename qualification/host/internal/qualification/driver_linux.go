@@ -93,6 +93,12 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if err = authenticateFD1Runtime(a, i.FD1Runtime); err != nil {
 		return c.unknown(a, "launch-unknown", err)
 	}
+	// Preserve authenticated stop authority before any later host effect can
+	// fail. Cleanup never needs to re-adopt this receipt from a changed artifact.
+	a.Workload = u
+	a.FD1Runtime = i.FD1Runtime
+	a.Injector = &i
+	a.Target = &i.Process
 	a.Stage = "effective-budget"
 	if err = h.effective(u); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
@@ -103,10 +109,6 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
 	defer fd.Close()
-	a.Workload = u
-	a.FD1Runtime = i.FD1Runtime
-	a.Injector = &i
-	a.Target = &i.Process
 	a.Stage = "live-parent"
 	live, err := h.population(parent.Boundary)
 	if err != nil || !live {
@@ -120,9 +122,15 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 		return c.unknown(a, "launch-unknown", err)
 	}
 	if err = c.Save(a, "bound", ""); err != nil {
+		if a.FD1IntegrityFailure != "" {
+			return c.unknown(a, "cleanup-unknown", err)
+		}
 		return err
 	}
 	if err = c.Save(a, "released", ""); err != nil {
+		if a.FD1IntegrityFailure != "" {
+			return c.unknown(a, "cleanup-unknown", err)
+		}
 		return err
 	}
 	a.Stage = "release"
@@ -283,8 +291,31 @@ func validateReady(a *Attempt, f HoldFrame, p Process) error {
 	return nil
 }
 
-func (c *Campaign) collect(a *Attempt) error {
-	if !a.Empty || !a.TargetExited || !a.PopulatedLive || !a.SliceStopped {
+func (c *Campaign) collect(a *Attempt) (result error) {
+	complete := a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped
+	// Every collection return crosses the same durable completion boundary,
+	// including authentication and observation failures. Preserve the original
+	// error and raw evidence while making any detected integrity incident sticky.
+	defer func() {
+		c.checkFD1Integrity(a)
+		reason := a.Reason
+		if result != nil {
+			reason = hostReason(result)
+		}
+		if !complete {
+			if a.FD1IntegrityFailure != "" {
+				result = errors.Join(result, errors.New(fd1IntegrityFailure), c.Save(a, "cleanup-unknown", reason))
+			}
+			return
+		}
+		result = errors.Join(result, c.Save(a, "complete", reason))
+		// A save may itself race artifact loss after its pre-write check.
+		c.checkFD1Integrity(a)
+		if a.FD1IntegrityFailure != "" {
+			result = errors.Join(result, errors.New(fd1IntegrityFailure), c.Save(a, "complete", reason))
+		}
+	}()
+	if !complete {
 		return errors.New("collection without complete boundary proof")
 	}
 	if err := authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
@@ -356,19 +387,6 @@ func (c *Campaign) collect(a *Attempt) error {
 		if a.Config.Case == "fake-fd" && a.Config.Role == "direct" && (o.Status != "observed" || factValue(o, "digest_match") != "true") {
 			return errors.New("direct recovery not observed")
 		}
-	}
-	if err := c.Save(a, "complete", ""); err != nil {
-		return err
-	}
-	// Cleanup saves deliberately remain available after artifact failure. They
-	// cannot by themselves authorize a successful collection result, including
-	// when integrity changes during the durable observation update.
-	c.checkFD1Integrity(a)
-	if a.FD1IntegrityFailure != "" {
-		if err := c.Save(a, "complete", a.Reason); err != nil {
-			return err
-		}
-		return errors.New(fd1IntegrityFailure)
 	}
 	return nil
 }
