@@ -8,6 +8,41 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Latch typed FD1 release/collection authentication incidents before fallback
+  saves or finalizer reads, so immediate artifact restoration cannot erase a
+  detected failure. Keep the original authenticated cleanup authority and start
+  fence across restart without trusting never-adopted evidence. Preserve both
+  the original cause and save error when an unknown transition cannot persist;
+  a failed save cannot establish cleanup. No live qualification claim is added.
+- Retain every detected typed FD1 collection integrity incident across failed
+  observations, entry authentication and both completion saves, preserving raw
+  evidence and original errors. Retain authenticated stop authority before
+  budget/handle checks and through refused bound/released saves. Exact cleanup
+  remains available with a persistent start fence; failed durable saves retain
+  filesystem poisoning. These recovery corrections add no live matrix claim.
+- Preserve authenticated typed FD1 bindings during cleanup-only recovery of a
+  lost service-start acknowledgement, including interruption during cancellation.
+  Reject inconsistent typed cleanup saves. Retain original inspect/stop authority
+  after artifact loss or change, exposing `fd1_integrity_failure` and reconciliation
+  reason `typed-runtime-integrity-failed`; keep new starts fenced after cleanup and
+  restart. Artifact restoration cannot clear the recorded failure or qualify the
+  attempt. Recheck integrity after durable observation saves so mid-save artifact
+  changes remain inconclusive while retaining raw evidence. This adds no live FD1
+  matrix claim.
+- Add the explicit optional `descriptor_profile: fd1-typed` host selection,
+  frozen directory/leaf plan challenge and metadata-only read-only bind.
+  Authenticate separate runtime artifact evidence before durable binding and
+  release, preserving historical absent-profile encodings and plan hashes.
+  This supplies no live qualification or dynamic backend closure claim.
+- Integrate fixed directory128/pipe256/Unix-stream384/regular512 capabilities
+  through the owned injector, released final wrapper and typed observation
+  collection. Authenticate and retain runtime bindings separately from the
+  immutable plan; close every temporary alias/peer before publication, validate
+  without channel consumption and preserve strict regular-file link checks.
+  Require scoped fresh direct controls, exact typed inventories and complete
+  operation evidence. Retain failed observations and explicit socket-admission
+  test gaps; the reviewed live FD1 matrix remains a separate lead action.
+
 - Require exact descriptor inventory rows and durable owned stdio regular-file
   identities before accepting complete post-exec host qualification evidence.
   Reject empty or contradictory tables while retaining failed raw observations
@@ -58,9 +93,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `inherited-bindings.json` schema. Validate context and fixed object identities
   before content access, bound nonblocking channel reads and require exact
   synthetic frames plus EOF while preserving intermediate effects. Owned child
-  regressions cover rejection without consumption. Host dispatch, runtime
-  binding generation/release, launcher policy and live FD1 qualification remain
-  separate integration work; existing serialized request meanings are preserved.
+  regressions cover rejection without consumption. The opt-in host integration
+  is described above; live FD1 qualification remains separate and existing
+  serialized request meanings are preserved.
 - Explicit Linux/amd64 bubblewrap qualification driver with durable campaign
   ownership and restart fencing, exact service/slice reconciliation, private
   reexec fake-FD injection, finite ready/hold cancellation evidence and offline

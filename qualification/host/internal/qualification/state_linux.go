@@ -47,6 +47,9 @@ type Unit struct {
 }
 
 type Attempt struct {
+	FD1Static             *FD1Static              `json:"fd1_static,omitempty"`
+	FD1Runtime            *FD1Runtime             `json:"fd1_runtime,omitempty"`
+	FD1IntegrityFailure   string                  `json:"fd1_integrity_failure,omitempty"`
 	DescriptorPolicy      string                  `json:"descriptor_policy,omitempty"`
 	TargetCommand         []string                `json:"target_command,omitempty"`
 	DescriptorReceipt     *DescriptorReceipt      `json:"descriptor_receipt,omitempty"`
@@ -100,6 +103,7 @@ type ControlBinding struct {
 	ValidatedAt   int64  `json:"validated_at"`
 	MaxAgeSeconds int64  `json:"max_age_seconds"`
 	PlanSHA256    string `json:"plan_sha256"`
+	DirectCreated *int64 `json:"direct_created,omitempty"`
 }
 
 // Campaign owns a single flock for its entire lifetime. A failed durable update
@@ -116,6 +120,8 @@ type Campaign struct {
 	syncDir  func(*os.File) error
 	rename   func(int, string, int, string) error
 	updateID func() (string, error)
+	// Narrow seam for post-adoption authentication/restoration race tests.
+	authenticateFD1 func(*Attempt, *FD1Runtime) error
 }
 
 func randomID() (string, error) {
@@ -131,7 +137,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID}
+	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID, authenticateFD1: authenticateFD1Runtime}
 	fd, err := syscall.Openat(int(d.Fd()), "controller.lock", syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0600)
 	if err != nil {
 		d.Close()
@@ -172,7 +178,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 			continue
 		}
 		c.Records[a.ID] = a
-		if a.Phase != "complete" {
+		if a.Phase != "complete" || a.FD1IntegrityFailure != "" {
 			c.Blocked = true
 		}
 	}
@@ -276,6 +282,9 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	if err = validatePlan(&a, path); err != nil {
 		return nil, err
 	}
+	// Current artifact integrity is separate from the durable stop authority.
+	// Keep structurally validated records inspectable and cleanup-only.
+	c.checkFD1Integrity(&a)
 	if _, err := os.Lstat(filepath.Join(path, "sync-failed")); !os.IsNotExist(err) {
 		return nil, errors.New("previous durability failure")
 	}
@@ -290,6 +299,16 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if recorded := c.Records[a.ID]; recorded == nil || recorded.Root != a.Root || recorded.Campaign != a.Campaign {
 		c.poison(nil)
 		return errors.New("attempt is not recorded with this identity")
+	}
+	next := *a
+	next.Phase = phase
+	if err := validateFD1Stored(&next); err != nil {
+		c.poison(nil)
+		return err
+	}
+	c.checkFD1Integrity(a)
+	if a.Config.DescriptorProfile == FD1TypedProfile && (phase == "bound" || phase == "released") && a.FD1IntegrityFailure != "" {
+		return errors.New("typed runtime not durably bindable")
 	}
 	if err := c.checkRoot(); err != nil {
 		return err
@@ -313,7 +332,7 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	}
 	// Records may share a with the caller. Do not publish a completion in memory
 	// until the replacement and parent sync succeed; the prior intent stays live.
-	next := *a
+	next = *a
 	next.Phase = phase
 	next.Reason = reason
 	b, err := json.Marshal(&next)
@@ -344,7 +363,7 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if phase == "complete" {
 		c.Blocked = c.fenced
 		for _, r := range c.Records {
-			if r.Phase != "complete" {
+			if r.Phase != "complete" || r.FD1IntegrityFailure != "" {
 				c.Blocked = true
 			}
 		}

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type HostReport struct {
@@ -89,6 +90,15 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if err = validateInjection(a, i, u); err != nil {
 		return c.unknown(a, "launch-unknown", err)
 	}
+	if err = authenticateFD1Runtime(a, i.FD1Runtime); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
+	// Preserve authenticated stop authority before any later host effect can
+	// fail. Cleanup never needs to re-adopt this receipt from a changed artifact.
+	a.Workload = u
+	a.FD1Runtime = i.FD1Runtime
+	a.Injector = &i
+	a.Target = &i.Process
 	a.Stage = "effective-budget"
 	if err = h.effective(u); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
@@ -99,9 +109,6 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
 	defer fd.Close()
-	a.Workload = u
-	a.Injector = &i
-	a.Target = &i.Process
 	a.Stage = "live-parent"
 	live, err := h.population(parent.Boundary)
 	if err != nil || !live {
@@ -111,13 +118,29 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if _, err = h.parent(a); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
+	if err = freshFD1Control(a, time.Now().Unix()); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
 	if err = c.Save(a, "bound", ""); err != nil {
+		if a.FD1IntegrityFailure != "" {
+			return c.unknown(a, "cleanup-unknown", err)
+		}
 		return err
 	}
 	if err = c.Save(a, "released", ""); err != nil {
+		if a.FD1IntegrityFailure != "" {
+			return c.unknown(a, "cleanup-unknown", err)
+		}
 		return err
 	}
 	a.Stage = "release"
+	if err = freshFD1Control(a, time.Now().Unix()); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
+	if err = c.authenticateFD1(a, a.FD1Runtime); err != nil {
+		c.retainFD1IntegrityFailure(a)
+		return c.unknown(a, "launch-unknown", err)
+	}
 	r, _ := json.Marshal(release{1, a.ID, i.Invocation})
 	if err = publishOwned(filepath.Join(c.Path, a.ID), "release.json", r); err != nil {
 		return c.unknown(a, "launch-unknown", err)
@@ -269,9 +292,36 @@ func validateReady(a *Attempt, f HoldFrame, p Process) error {
 	return nil
 }
 
-func (c *Campaign) collect(a *Attempt) error {
-	if !a.Empty || !a.TargetExited || !a.PopulatedLive || !a.SliceStopped {
+func (c *Campaign) collect(a *Attempt) (result error) {
+	complete := a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped
+	// Every collection return crosses the same durable completion boundary,
+	// including authentication and observation failures. Preserve the original
+	// error and raw evidence while making any detected integrity incident sticky.
+	defer func() {
+		c.checkFD1Integrity(a)
+		reason := a.Reason
+		if result != nil {
+			reason = hostReason(result)
+		}
+		if !complete {
+			if a.FD1IntegrityFailure != "" {
+				result = errors.Join(result, errors.New(fd1IntegrityFailure), c.Save(a, "cleanup-unknown", reason))
+			}
+			return
+		}
+		result = errors.Join(result, c.Save(a, "complete", reason))
+		// A save may itself race artifact loss after its pre-write check.
+		c.checkFD1Integrity(a)
+		if a.FD1IntegrityFailure != "" {
+			result = errors.Join(result, errors.New(fd1IntegrityFailure), c.Save(a, "complete", reason))
+		}
+	}()
+	if !complete {
 		return errors.New("collection without complete boundary proof")
+	}
+	if err := c.authenticateFD1(a, a.FD1Runtime); err != nil {
+		c.retainFD1IntegrityFailure(a)
+		return err
 	}
 	root, err := os.OpenRoot(filepath.Join(c.Path, a.ID))
 	if err != nil {
@@ -340,7 +390,7 @@ func (c *Campaign) collect(a *Attempt) error {
 			return errors.New("direct recovery not observed")
 		}
 	}
-	return c.Save(a, "complete", "")
+	return nil
 }
 
 func RunHost(config HostConfig) HostReport {
@@ -384,7 +434,11 @@ func RunHost(config HostConfig) HostReport {
 	}
 	r.Phase = a.Phase
 	r.NewStartsBlocked = c.Blocked || a.Phase != "complete"
-	if err == nil && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil) {
+	if a.FD1IntegrityFailure != "" {
+		r.ReasonCode = "typed-runtime-integrity-failed"
+		r.Reason = a.FD1IntegrityFailure
+	}
+	if err == nil && a.FD1IntegrityFailure == "" && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil) {
 		r.Outcome = "observed"
 		r.ReasonCode = "bounded-observation"
 		r.Reason = "bounded case evidence retained; no matrix support assertion"
@@ -407,6 +461,10 @@ func ReconcileHost(campaign, id string) HostReport {
 	if err = c.reconcile(a, liveHost()); err != nil {
 		r.Reason = hostReason(err)
 		r.ReasonCode = "cleanup-unproved"
+	}
+	if a.FD1IntegrityFailure != "" {
+		r.ReasonCode = "typed-runtime-integrity-failed"
+		r.Reason = a.FD1IntegrityFailure
 	}
 	r.Stage = a.Stage
 	r.Phase = a.Phase

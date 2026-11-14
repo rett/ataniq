@@ -137,7 +137,7 @@ func testHost(t *testing.T) *hostFixture {
 		}
 		a.Streams[name] = s.Identity
 	}
-	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID, a.DescriptorPolicy}
+	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID, a.DescriptorPolicy, nil}
 	b, _ := json.Marshal(i)
 	if err = exclusiveFile(filepath.Join(p, "injection.json"), b, 0400); err != nil {
 		t.Fatal(err)
@@ -431,6 +431,40 @@ func TestSyncFailuresFenceBeforeDispatch(t *testing.T) {
 			defer c.Close()
 			if !c.Blocked {
 				t.Fatal("restart cleared failed sync")
+			}
+		})
+	}
+}
+
+func TestUnknownSaveFailureRetainsOriginalCause(t *testing.T) {
+	for _, phase := range []string{"launch-unknown", "cleanup-unknown"} {
+		t.Run(phase, func(t *testing.T) {
+			x := testHost(t)
+			cause, saveErr := errors.New("original evidence failure"), errors.New("unknown save failed")
+			before, err := os.ReadFile(filepath.Join(x.c.Path, x.a.ID, "intent.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			x.c.syncFile = func(*os.File) error { return saveErr }
+			err = x.c.unknown(x.a, phase, cause)
+			if !errors.Is(err, cause) || !errors.Is(err, saveErr) {
+				t.Fatal("original cause or save failure lost", err)
+			}
+			if !x.c.Blocked || !x.c.fenced || x.a.Phase != "prepared" || x.a.Empty || x.a.TargetExited || x.a.SliceStopped || len(x.calls) != 0 {
+				t.Fatal("failed save lost fence, dispatched or claimed cleanup")
+			}
+			after, err := os.ReadFile(filepath.Join(x.c.Path, x.a.ID, "intent.json"))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("failed save changed durable authority", err)
+			}
+			x.c.Close()
+			c, err := OpenCampaign(x.c.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			if !c.Blocked || !c.fenced || c.Records[x.a.ID] != nil {
+				t.Fatal("failed save became proved cleanup after restart")
 			}
 		})
 	}
