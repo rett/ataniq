@@ -323,15 +323,18 @@ func TestTypedFDChild(t *testing.T) {
 		}
 		stage = "binding-read"
 	}
-	o := Probe(r, Config{FixtureRoot: dir})
-	t.Log(wire(t, o))
+	o := baseObservation(r)
 	if c == CaseFakeSocketFD && scenario == "raw-channel" {
 		// Exercise actual nonblocking socket reception even on hosts whose
-		// syscall policy denies SO_DOMAIN/SO_TYPE. This is only the raw reader
-		// test, never a substitute for full probe socket admission.
-		o = baseObservation(r)
+		// syscall policy denies SO_DOMAIN/SO_TYPE. This fixture belongs only
+		// to the raw reader: Probe would consume its frame on admitted hosts.
+		// The separate valid/socket-type cases exercise full socket admission.
 		readFD1Channel(&o, r, b.Socket, childStat(t, fd), syscall.Read, syscall.Fstat, time.Now)
-	} else if c == CaseFakeSocketFD && o.Errno != nil && (*o.Errno == int(syscall.EPERM) || *o.Errno == int(syscall.EACCES)) {
+	} else {
+		o = Probe(r, Config{FixtureRoot: dir})
+	}
+	t.Log(wire(t, o))
+	if c == CaseFakeSocketFD && o.Errno != nil && (*o.Errno == int(syscall.EPERM) || *o.Errno == int(syscall.EACCES)) {
 		for _, f := range o.Facts {
 			if f.Name == "stage" && *f.Value == "socket-type" {
 				buf := make([]byte, len(frame)+1)
