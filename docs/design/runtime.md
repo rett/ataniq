@@ -89,12 +89,20 @@ retain contradictions, including receipt identity and content. The coordinator
 checks returned receipt bindings and states, and copies payloads across port
 and caller boundaries. It must distinguish a new durable commit from a
 duplicate, rejection, conflict and ambiguous result. An ambiguous preparation
-requires reconciliation before a caller can submit the same attempt again;
-an error alone cannot prove a transaction was absent. Qualification campaign
+must fence the exact attempt across fault clearing and coordinator recreation
+until evidence-based reconciliation; an error alone cannot prove a transaction
+was absent. A proved rejection is distinct. Receipt IDs identify evidence,
+separately from intent IDs: identical evidence is idempotent, while changed
+content under one receipt ID or contradictory outcomes under different IDs
+are retained and make duplicate inspection uncertain. A different immutable
+intent binding is a conflict and cannot alter the legitimate record. Start
+acknowledgement and completion evidence are separate. Qualification campaign
 storage is a separate mechanism and is not this journal.
 
 The trusted boundary obtains current authority and verifies the matching epoch,
-policy, qualification, authorization and bounded limits at actual start. It
+policy, qualification, authorization, bounded limits and any required
+exact-target grant, including its current expiry and revocation, at actual
+start, even after the journal consumed that grant. It
 serializes that crossing with observed revocation and authority changes. It
 returns a start acknowledgement, proved denial or uncertainty promptly, and
 cannot retain a callback or start after returning, even on cancellation.
@@ -110,8 +118,8 @@ receipt contradictions, payload ownership, current checks, failures, delayed
 dispatch calls and completion of already-started work during outage. The fake
 boundary returns after its bounded start decision and retains no callback or
 permit; these tests do not establish guarantees for an adapter that violates
-that obligation. Their evidence
-does not qualify production policy or any provider.
+that obligation; the coordinator cannot secure a malicious trusted port. Their
+evidence does not qualify production policy or any provider.
 
 This package supplies no provider adapter, disk durability, host isolation,
 client authentication or support attestation. A future application journal and

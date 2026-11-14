@@ -17,6 +17,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Fence ambiguous dispatch preparation, retain conflicting receipt evidence,
   and recheck grant authority at the actual start boundary.
+- Document receipt identity, recovery fencing and fresh grant checks.
 - Validate dispatch journal receipts and isolate payload ownership across ports.
 - Clarify unresolved dispatch evidence and the bounded boundary test scope.
 
