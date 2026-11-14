@@ -364,11 +364,8 @@ func validProcess(p Process) bool {
 }
 
 func validateStored(a *Attempt) error {
-	if err := validateFD1Runtime(a, a.FD1Runtime); err != nil {
+	if err := validateFD1Stored(a); err != nil {
 		return err
-	}
-	if a.Injector != nil && !sameJSON(a.FD1Runtime, a.Injector.FD1Runtime) {
-		return errors.New("stored typed runtime disagrees with injector")
 	}
 	if a.Config.DescriptorProfile == "" && a.Control != nil && a.Control.DirectCreated != nil {
 		return errors.New("unexpected typed control evidence")

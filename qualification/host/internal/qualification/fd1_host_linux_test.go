@@ -220,8 +220,12 @@ func TestFD1ControllerCollectionAndRestart(t *testing.T) {
 				if err := os.Remove(x.a.FD1Runtime.Artifact.Path); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := c.read(x.a.ID); err == nil {
-					t.Fatal("missing recorded artifact reconstructed")
+				retained, err := c.read(x.a.ID)
+				if err != nil || retained == nil || !sameJSON(retained.FD1Runtime, x.a.FD1Runtime) || retained.FD1IntegrityFailure != fd1IntegrityFailure || !c.Blocked {
+					t.Fatal("missing artifact erased original authority or failed to fence it", err)
+				}
+				if authenticateFD1Runtime(retained, retained.FD1Runtime) == nil {
+					t.Fatal("missing recorded artifact authenticated")
 				}
 			})
 		}

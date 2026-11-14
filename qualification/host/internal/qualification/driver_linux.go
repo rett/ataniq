@@ -425,6 +425,10 @@ func ReconcileHost(campaign, id string) HostReport {
 		r.Reason = hostReason(err)
 		r.ReasonCode = "cleanup-unproved"
 	}
+	if a.FD1IntegrityFailure != "" {
+		r.ReasonCode = "typed-runtime-integrity-failed"
+		r.Reason = a.FD1IntegrityFailure
+	}
 	r.Stage = a.Stage
 	r.Phase = a.Phase
 	r.NewStartsBlocked = false

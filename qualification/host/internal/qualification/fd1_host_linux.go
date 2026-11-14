@@ -36,6 +36,52 @@ type FD1Runtime struct {
 	SourcesClosed bool          `json:"sources_closed"`
 }
 
+const fd1IntegrityFailure = "typed runtime artifact integrity unproved"
+
+// Validate only durable structure here, including during cleanup transitions.
+// A disappeared artifact must not erase independently validated stop authority.
+func validateFD1Stored(a *Attempt) error {
+	if err := validateFD1Runtime(a, a.FD1Runtime); err != nil {
+		return err
+	}
+	if a.Injector != nil && !sameJSON(a.FD1Runtime, a.Injector.FD1Runtime) {
+		return errors.New("stored typed runtime disagrees with injector")
+	}
+	if a.FD1IntegrityFailure != "" && (a.FD1IntegrityFailure != fd1IntegrityFailure || a.Config.DescriptorProfile != FD1TypedProfile || a.FD1Runtime == nil) {
+		return errors.New("invalid typed integrity failure")
+	}
+	if a.Config.DescriptorProfile == FD1TypedProfile {
+		switch a.Phase {
+		case "bound", "released", "cancelling", "empty", "complete":
+			if a.Injector == nil {
+				return errors.New("missing original typed injector")
+			}
+		}
+		if a.Injector == nil && (a.Workload != nil || a.Target != nil) {
+			return errors.New("partial original typed launch binding")
+		}
+		if a.FD1Runtime != nil && a.Injector == nil {
+			return errors.New("typed runtime without original injector")
+		}
+		if a.Injector != nil && validateInjection(a, *a.Injector, a.Workload) != nil {
+			return errors.New("invalid stored typed injector")
+		}
+	}
+	return nil
+}
+
+// Sticky evidence failure, independent of filesystem durability poisoning:
+// cleanup may still save the original authority and the failure together.
+func (c *Campaign) checkFD1Integrity(a *Attempt) {
+	if a.FD1Runtime == nil {
+		return
+	}
+	if authenticateFD1Runtime(a, a.FD1Runtime) != nil {
+		a.FD1IntegrityFailure = fd1IntegrityFailure
+		c.Blocked = true
+	}
+}
+
 func needsDirectControl(a *Attempt) bool {
 	return a.Config.Role == "candidate" && (a.Config.Case == "fake-fd" || a.Config.DescriptorProfile == FD1TypedProfile)
 }
@@ -191,6 +237,9 @@ func validateFD1Runtime(a *Attempt, r *FD1Runtime) error {
 }
 
 func authenticateFD1Runtime(a *Attempt, r *FD1Runtime) error {
+	if a.FD1IntegrityFailure != "" {
+		return errors.New(fd1IntegrityFailure)
+	}
 	if a.Config.DescriptorProfile == "" {
 		return validateFD1Runtime(a, r)
 	}

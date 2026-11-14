@@ -49,6 +49,7 @@ type Unit struct {
 type Attempt struct {
 	FD1Static             *FD1Static              `json:"fd1_static,omitempty"`
 	FD1Runtime            *FD1Runtime             `json:"fd1_runtime,omitempty"`
+	FD1IntegrityFailure   string                  `json:"fd1_integrity_failure,omitempty"`
 	DescriptorPolicy      string                  `json:"descriptor_policy,omitempty"`
 	TargetCommand         []string                `json:"target_command,omitempty"`
 	DescriptorReceipt     *DescriptorReceipt      `json:"descriptor_receipt,omitempty"`
@@ -175,7 +176,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 			continue
 		}
 		c.Records[a.ID] = a
-		if a.Phase != "complete" {
+		if a.Phase != "complete" || a.FD1IntegrityFailure != "" {
 			c.Blocked = true
 		}
 	}
@@ -279,11 +280,9 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	if err = validatePlan(&a, path); err != nil {
 		return nil, err
 	}
-	if a.FD1Runtime != nil {
-		if err = authenticateFD1Runtime(&a, a.FD1Runtime); err != nil {
-			return nil, err
-		}
-	}
+	// Current artifact integrity is separate from the durable stop authority.
+	// Keep structurally validated records inspectable and cleanup-only.
+	c.checkFD1Integrity(&a)
 	if _, err := os.Lstat(filepath.Join(path, "sync-failed")); !os.IsNotExist(err) {
 		return nil, errors.New("previous durability failure")
 	}
@@ -299,11 +298,15 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 		c.poison(nil)
 		return errors.New("attempt is not recorded with this identity")
 	}
-	if a.Config.DescriptorProfile == FD1TypedProfile && (phase == "bound" || phase == "released") {
-		if a.Injector == nil || !sameJSON(a.FD1Runtime, a.Injector.FD1Runtime) || authenticateFD1Runtime(a, a.FD1Runtime) != nil {
-			c.poison(nil)
-			return errors.New("typed runtime not durably bindable")
-		}
+	next := *a
+	next.Phase = phase
+	if err := validateFD1Stored(&next); err != nil {
+		c.poison(nil)
+		return err
+	}
+	c.checkFD1Integrity(a)
+	if a.Config.DescriptorProfile == FD1TypedProfile && (phase == "bound" || phase == "released") && a.FD1IntegrityFailure != "" {
+		return errors.New("typed runtime not durably bindable")
 	}
 	if err := c.checkRoot(); err != nil {
 		return err
@@ -327,7 +330,7 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	}
 	// Records may share a with the caller. Do not publish a completion in memory
 	// until the replacement and parent sync succeed; the prior intent stays live.
-	next := *a
+	next = *a
 	next.Phase = phase
 	next.Reason = reason
 	b, err := json.Marshal(&next)
@@ -358,7 +361,7 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if phase == "complete" {
 		c.Blocked = c.fenced
 		for _, r := range c.Records {
-			if r.Phase != "complete" {
+			if r.Phase != "complete" || r.FD1IntegrityFailure != "" {
 				c.Blocked = true
 			}
 		}

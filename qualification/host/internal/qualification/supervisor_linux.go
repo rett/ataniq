@@ -238,6 +238,9 @@ func (h hostIO) effective(u *Unit) error {
 // Reconcile never launches or releases an injector. Adoption is cleanup-only.
 func (c *Campaign) reconcile(a *Attempt, h hostIO) error {
 	if a.Phase == "complete" {
+		if a.FD1IntegrityFailure != "" {
+			return c.Save(a, "complete", a.Reason)
+		}
 		return nil
 	}
 	a.Stage = "reconcile-parent"
@@ -269,6 +272,10 @@ func (c *Campaign) reconcile(a *Attempt, h hostIO) error {
 		if err != nil || validateInjection(a, i, u) != nil {
 			return c.unknown(a, "cleanup-unknown", errors.New("cannot bind exact service injector"))
 		}
+		if err = authenticateFD1Runtime(a, i.FD1Runtime); err != nil {
+			return c.unknown(a, "cleanup-unknown", err)
+		}
+		a.FD1Runtime = i.FD1Runtime
 		a.Injector = &i
 		a.Workload = u
 		p := i.Process
