@@ -6,6 +6,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add an internal deterministic effect-dispatch coordinator with explicit
+  journal and current-authority start boundary ports. This is source-only
+  infrastructure and does not qualify a provider or supply durable storage.
+- Document the coordinator entrypoint, port obligations and integration limits.
+
+### Changed
+
+- Fence ambiguous dispatch preparation, retain conflicting receipt evidence,
+  and recheck grant authority at the actual start boundary.
+- Document receipt identity, recovery fencing and fresh grant checks.
+- Cover grant target, payload and epoch binding conflicts.
+- Validate dispatch journal receipts and isolate payload ownership across ports.
+- Clarify unresolved dispatch evidence and the bounded boundary test scope.
+
 ## [0.0.1] - 2026-11-14
 
 ### Changed
