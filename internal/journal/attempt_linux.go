@@ -158,6 +158,48 @@ func (s *Store) hit(point string) error {
 	}
 	return nil
 }
+
+func (s *Store) observeAt(point string) {
+	if s.observe != nil {
+		s.observe(point)
+	}
+}
+
+func (a *Attempt) fail() {
+	a.store.observeAt("failure-before")
+	a.store.failureMu.Lock()
+	defer a.store.failureMu.Unlock()
+	a.fenced.Store(true)
+}
+
+// Release is not an admitted effect operation. An enter failure can fence only
+// before retirement begins. After that point it cannot change an old activation
+// or race a settled retirement's decision. Retrying a failed Release while its
+// view remains current is still allowed under the gate.
+func (a *Attempt) releaseEntryFailure(err error) error {
+	a.store.failureMu.Lock()
+	defer a.store.failureMu.Unlock()
+	if a.retiring.Load() {
+		return ErrInactive
+	}
+	a.fenced.Store(true)
+	return err
+}
+
+func (a *Attempt) beginRetirement() {
+	a.store.failureMu.Lock()
+	defer a.store.failureMu.Unlock()
+	a.retiring.Store(true)
+}
+
+func (a *Attempt) retirementUncertain(r attemptRow) bool {
+	// Retirement already forbids new admission. An admitted call either
+	// remains pending here, or publishes its failure before decrementing to
+	// zero. SC loads in this order cannot miss both sides of that handoff.
+	pending := a.pending.Load()
+	a.store.observeAt("retirement-sampled")
+	return r.uncertain || pending != 0 || a.fenced.Load() || !r.prepared || r.state != dispatch.Denied
+}
 func (s *Store) commit(tx *sql.Tx, point string) error {
 	if err := s.hit(point + "-before"); err != nil {
 		return err
@@ -324,6 +366,13 @@ func (a *Attempt) receipt(r attemptRow) dispatch.Receipt {
 // Prepare checks existing state before checking stale permission facts. Only
 // this invocation's confirmed new commit can return PrepareNew.
 func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispatch.PrepareStatus, receipt dispatch.Receipt, err error) {
+	b, e := encodeIntent(in)
+	if e != nil || !bytes.Equal(b, a.binding) {
+		return dispatch.PrepareConflict, receipt, nil
+	}
+	if a.retiring.Load() {
+		return dispatch.PrepareUnknown, receipt, ErrInactive
+	}
 	a.pending.Add(1)
 	defer a.pending.Add(-1)
 	if a.retiring.Load() {
@@ -332,7 +381,7 @@ func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispa
 	s := a.store
 	ctx, leave, err := s.enter(ctx)
 	if err != nil {
-		a.fenced.Store(true)
+		a.fail()
 		return dispatch.PrepareUnknown, receipt, err
 	}
 	defer leave()
@@ -341,15 +390,11 @@ func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispa
 	}
 	defer func() {
 		if err != nil {
-			a.fenced.Store(true)
+			a.fail()
 		}
 	}()
 	if err = ctx.Err(); err != nil {
 		return dispatch.PrepareUnknown, receipt, err
-	}
-	b, e := encodeIntent(in)
-	if e != nil {
-		return dispatch.PrepareConflict, receipt, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -359,12 +404,6 @@ func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispa
 	r, err := a.row(ctx, tx)
 	if err != nil {
 		return dispatch.PrepareUnknown, receipt, err
-	}
-	if !bytes.Equal(b, a.binding) {
-		if err = event(ctx, tx, a.intent.ID, "binding-conflict", b); err == nil {
-			err = s.commit(tx, "conflict")
-		}
-		return dispatch.PrepareConflict, receipt, err
 	}
 	receipt = a.receipt(r)
 	if r.prepared || r.uncertain || a.fenced.Load() {
@@ -413,15 +452,19 @@ func (a *Attempt) Save(ctx context.Context, receipt dispatch.Receipt) (err error
 	if e != nil || !bytes.Equal(b, a.binding) {
 		return ErrConflict
 	}
+	if a.retiring.Load() {
+		return ErrInactive
+	}
 	a.pending.Add(1)
 	defer a.pending.Add(-1)
 	if a.retiring.Load() {
 		return ErrInactive
 	}
 	s := a.store
+	s.observeAt("save-admitted")
 	ctx, leave, err := s.enter(ctx)
 	if err != nil {
-		a.fenced.Store(true)
+		a.fail()
 		return err
 	}
 	defer leave()
@@ -430,7 +473,7 @@ func (a *Attempt) Save(ctx context.Context, receipt dispatch.Receipt) (err error
 	}
 	defer func() {
 		if err != nil {
-			a.fenced.Store(true)
+			a.fail()
 		}
 	}()
 	if len(receipt.ID) == 0 || len(receipt.ID) > 256 || len(receipt.Evidence) > maxEvidence {
@@ -494,6 +537,9 @@ func encodeReceipt(r dispatch.Receipt) []byte {
 // Revoke orders monotonic permission revocation with Prepare under this exact
 // durable guard. An ambiguous result fences the activation; it is never success.
 func (a *Attempt) Revoke(ctx context.Context) (err error) {
+	if a.retiring.Load() {
+		return ErrInactive
+	}
 	a.pending.Add(1)
 	defer a.pending.Add(-1)
 	if a.retiring.Load() {
@@ -502,7 +548,7 @@ func (a *Attempt) Revoke(ctx context.Context) (err error) {
 	s := a.store
 	ctx, leave, err := s.enter(ctx)
 	if err != nil {
-		a.fenced.Store(true)
+		a.fail()
 		return err
 	}
 	defer leave()
@@ -511,7 +557,7 @@ func (a *Attempt) Revoke(ctx context.Context) (err error) {
 	}
 	defer func() {
 		if err != nil {
-			a.fenced.Store(true)
+			a.fail()
 		}
 	}()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -538,17 +584,16 @@ func (a *Attempt) Release(ctx context.Context) (err error) {
 	s := a.store
 	ctx, leave, err := s.enter(ctx)
 	if err != nil {
-		a.fenced.Store(true)
-		return err
+		return a.releaseEntryFailure(err)
 	}
 	defer leave()
 	if !a.current() {
 		return ErrInactive
 	}
-	a.retiring.Store(true)
+	a.beginRetirement()
 	defer func() {
 		if err != nil {
-			a.fenced.Store(true)
+			a.fail()
 		}
 	}()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -560,7 +605,7 @@ func (a *Attempt) Release(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	uncertain := r.uncertain || a.fenced.Load() || a.pending.Load() != 0 || !r.prepared || r.state != dispatch.Denied
+	uncertain := a.retirementUncertain(r)
 	if _, err = tx.ExecContext(ctx, "UPDATE attempts SET active=0,uncertain=? WHERE id=? AND generation=?", uncertain, []byte(a.intent.ID), a.generation); err != nil {
 		return err
 	}
@@ -590,6 +635,12 @@ func (s *Store) recover(ctx context.Context) error {
 }
 
 func (s *Store) retireAll(ctx context.Context) error {
+	// Close owns the lifetime write lock. Calls that passed admission but
+	// have not acquired a read lock are still counted; do not drain them here.
+	// Publish even when beginning/committing retirement subsequently fails.
+	for _, a := range s.views {
+		a.beginRetirement()
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -603,7 +654,7 @@ func (s *Store) retireAll(ctx context.Context) error {
 		if !bytes.Equal(r.generation, a.generation) || !bytes.Equal(r.binding, a.binding) {
 			return ErrInactive
 		}
-		uncertain := r.uncertain || a.fenced.Load() || a.pending.Load() != 0 || !r.prepared || r.state != dispatch.Denied
+		uncertain := a.retirementUncertain(r)
 		if _, err = tx.ExecContext(ctx, "UPDATE attempts SET uncertain=?,active=0 WHERE id=? AND generation=?", uncertain, []byte(id), a.generation); err != nil {
 			return err
 		}

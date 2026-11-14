@@ -50,16 +50,18 @@ func (o Options) normalized() (Options, error) {
 // Store owns one database inode until Close finishes. Do not copy a Store.
 // The path and its private directory must remain under trusted local control.
 type Store struct {
-	mu       sync.RWMutex
-	db       *sql.DB
-	owner    *ownership
-	options  Options
-	closed   bool
-	closeErr error
-	gate     chan struct{}
-	views    map[string]*Attempt
-	now      func() time.Time
-	fault    func(string) error // unexported, per-store deterministic test seam
+	mu        sync.RWMutex
+	failureMu sync.Mutex // bounded volatile publication/overlay only; never waits for mu, gate or SQL
+	db        *sql.DB
+	owner     *ownership
+	options   Options
+	closed    bool
+	closeErr  error
+	gate      chan struct{}
+	views     map[string]*Attempt
+	now       func() time.Time
+	fault     func(string) error // unexported, per-store deterministic test seam
+	observe   func(string)       // unexported, per-store scheduling test seam
 }
 
 // Info is a bounded local storage description, not a client snapshot or cursor.

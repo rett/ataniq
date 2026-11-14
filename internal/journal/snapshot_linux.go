@@ -86,15 +86,13 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 			return ErrConflict
 		}
 		r.Intent = i
-		if a := s.views[i.ID]; a != nil && a.fenced.Load() {
-			r.Uncertain = true
-		}
 		if r.Uncertain {
 			state = dispatch.Uncertain
 		}
 		r.Current = dispatch.Receipt{Intent: cloneIntent(i), ID: string(receiptID), State: state, Evidence: string(evidence)}
 		indices[i.ID] = len(out.Records)
 		out.Records = append(out.Records, r)
+		s.observeAt("snapshot-record")
 		return nil
 	})
 	if err != nil {
@@ -161,6 +159,19 @@ func (s *Store) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err = s.hit("snapshot"); err != nil {
 		return Snapshot{}, err
 	}
+	// The gate keeps durable state and the view map fixed. Capture all failure
+	// flags in one bounded pass after SQL scanning, under the same short lock
+	// used by failure publication. Never hold this lock across SQL or a wait
+	// for the lifetime lock/gate: cancelled callers must be able to finish.
+	s.failureMu.Lock()
+	for n := range out.Records {
+		r := &out.Records[n]
+		if a := s.views[r.Intent.ID]; a != nil && a.fenced.Load() {
+			r.Uncertain = true
+			r.Current.State = dispatch.Uncertain
+		}
+	}
+	s.failureMu.Unlock()
 	if err = tx.Commit(); err != nil {
 		return Snapshot{}, err
 	}

@@ -8,6 +8,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Preserve admitted journal failures across Release/Close retirement, reject
+  late calls without changing retired activations, and capture coherent bounded
+  snapshot failure projections. Reject foreign Prepare bindings before waiting
+  or cancellation, retaining foreign Save isolation. Cover retirement response
+  loss, cancellation, dirty reopen and independently counted no-replay behavior.
+
 - Require native main-file OFD locking before journal ownership acquisition,
   and verify it after a consumed SQLite schema read on preflight and every
   physical connection before writer settings. Rejected competing opens and
