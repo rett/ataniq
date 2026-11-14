@@ -1,0 +1,191 @@
+{
+  "encoding": "ataniq-command-binary-v1",
+  "header_hex": "4154414e49512d434f4d4d414e440001",
+  "common_field_order": [
+    "authority_id",
+    "enrolled_client_id",
+    "command_id",
+    "project_authority",
+    "project_id",
+    "target_authority",
+    "target_kind",
+    "target_client_id",
+    "target_id",
+    "operation",
+    "expected_revision"
+  ],
+  "payload_by_operation": {
+    "input.enqueue": [
+      "text"
+    ],
+    "queue.cancel": []
+  },
+  "vectors": [
+    {
+      "name": "enqueue-ascii",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "hello"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e71756575650000000272370000000568656c6c6f",
+      "byte_length": 142,
+      "sha256": "82d0efb8382abbf7a6d7064d23fa79c8edf0c3a5c94253e807ea4c742fdd9d79"
+    },
+    {
+      "name": "enqueue-composed",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "é"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e717565756500000002723700000002c3a9",
+      "byte_length": 139,
+      "sha256": "07f717f344013fb63137f335c8e846e32c933cb15b51104f8ea2e9ca2dffe2b2"
+    },
+    {
+      "name": "enqueue-decomposed",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "é"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e71756575650000000272370000000365cc81",
+      "byte_length": 140,
+      "sha256": "c8f8c968b3b25a2cc65a4619de68a5a87b1e95ffe3de393b17d99abc5b4aa405"
+    },
+    {
+      "name": "enqueue-newline",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "\n"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e7175657565000000027237000000010a",
+      "byte_length": 138,
+      "sha256": "90cce2850de300ae3750d4db941fd37d40d5d0feab510ebf734e0cdf7f8eeed8"
+    },
+    {
+      "name": "enqueue-nul",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "\u0000"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e71756575650000000272370000000100",
+      "byte_length": 138,
+      "sha256": "d85dda9d4afde9b55c2d6da573f06d62e3afddb17ae694a7404e969ee1d24778"
+    },
+    {
+      "name": "changed-revision",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r8",
+        "text": "hello"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6100000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e71756575650000000272380000000568656c6c6f",
+      "byte_length": 142,
+      "sha256": "fc8d2f70416560c173018e54e3eb707c71d263acf24adb16bd443c8dc330a3a5"
+    },
+    {
+      "name": "changed-client",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-b",
+        "command_id": "cmd-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "conversation",
+        "target_client_id": "",
+        "target_id": "conv-a",
+        "operation": "input.enqueue",
+        "expected_revision": "r7",
+        "text": "hello"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d6200000005636d642d6100000006617574682d610000000970726f6a6563742d6100000006617574682d610000000c636f6e766572736174696f6e0000000000000006636f6e762d610000000d696e7075742e656e71756575650000000272370000000568656c6c6f",
+      "byte_length": 142,
+      "sha256": "2523959a70561b0c568788d4037c4ebb1749db2ec8cbe0da71cc42b9c00b8092"
+    },
+    {
+      "name": "cancel-exact",
+      "typed_binding": {
+        "authority_id": "auth-a",
+        "enrolled_client_id": "client-a",
+        "command_id": "cancel-a",
+        "project_authority": "auth-a",
+        "project_id": "project-a",
+        "target_authority": "auth-a",
+        "target_kind": "command",
+        "target_client_id": "client-a",
+        "target_id": "cmd-a",
+        "operation": "queue.cancel",
+        "expected_revision": "s1"
+      },
+      "canonical_hex": "4154414e49512d434f4d4d414e44000100000006617574682d6100000008636c69656e742d610000000863616e63656c2d6100000006617574682d610000000970726f6a6563742d6100000006617574682d6100000007636f6d6d616e6400000008636c69656e742d6100000005636d642d610000000c71756575652e63616e63656c000000027331",
+      "byte_length": 137,
+      "sha256": "7bd768075354c897edc1045f5a2fd8b5424581f469b4fb5a6c51ed61c1cff60a"
+    }
+  ],
+  "required_properties": [
+    "composed and decomposed text remain distinct",
+    "input key ordering/whitespace/escape spelling does not alter decoded typed binding",
+    "transport/request IDs do not alter digest",
+    "credential rotation preserves enrolled client identity and immutable retry binding",
+    "full stored canonical bytes compared in addition to digest"
+  ]
+}

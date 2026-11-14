@@ -6,6 +6,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add pure typed application command contracts for queued input and exact queued
+  cancellation, bounded strict JSON codecs, owned canonical binary bindings and
+  eight portable golden vectors. Keep authentication, durable admission and
+  provider execution outside this package.
+
 ## [0.0.3] - 2026-11-14
 
 ### Fixed
