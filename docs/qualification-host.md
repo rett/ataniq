@@ -122,6 +122,42 @@ length checks and hashing do not review its policy. The filter must enforce
 the reviewed syscall/nested-userns restrictions. The driver retains its digest.
 No default filter is invented or installed.
 
+### Fixed FD1 host selection and binding
+
+The optional configuration key `"descriptor_profile":"fd1-typed"` selects
+one fixed descriptor challenge. It accepts `inventory`, `fake-fd`,
+`fake-dir-fd`, `fake-pipe-fd` and `fake-socket-fd`, under `direct`, `candidate`
+or `weakened-synthetic`. Typed `hold` and `fake-file`, unknown profiles and
+typed operation cases without this selector are rejected. Every typed
+candidate requires `direct_control` naming a completed matching direct
+attempt. Omitting the selector retains the historical launch arguments,
+descriptor policy, serialization and plan hash meaning. Neither `HostProfile`
+nor `FinalDescriptorPolicy` changes version.
+
+Preparation freezes the separate owned `capability/leaf` tree, the regular
+fixture, its static leaf challenge and the fixed metadata filename before
+creating `request.json` and its plan hash. The metadata lives at
+`fixtures/inherited-bindings.json`; typed bubblewrap arguments add only its
+read-only file bind at `/fixtures/inherited-bindings.json`. They never mount
+the capability directory or leaf. Direct controls use the same owned fixture
+root. The artifact contains fixed identities and challenges, never source
+paths or caller-selected descriptors.
+
+Runtime channel identities are separate durable evidence outside the plan
+hash. The controller authenticates their artifact's owned regular single-link
+subject, identity and hash, parsed content, fixed endpoint owner/type/flags,
+closed-source provenance and exact run/request/attempt/profile/nonce/static
+challenge/plan relationships. The existing exact executable, process, service
+invocation and boundary authenticate the injector's provenance. The artifact
+alone conveys no authority. A partial binding or failed durable save cannot
+publish release. Restart reads validate the recorded artifact rather than
+reconstructing endpoints or launching another injector. Unexpected typed
+runtime fields on historical records are rejected.
+
+These static plan and release checks do not establish endpoint execution or
+live FD1 qualification. The fixed endpoint injector and final wrapper must
+also be present and independently reviewed before coordinator host execution.
+
 The commands are:
 
 ```text

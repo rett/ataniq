@@ -8,6 +8,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Add the explicit optional `descriptor_profile: fd1-typed` host selection,
+  frozen directory/leaf plan challenge and metadata-only read-only bind.
+  Authenticate separate runtime artifact evidence before durable binding and
+  release, preserving historical absent-profile encodings and plan hashes.
+  This supplies no live qualification or dynamic backend closure claim.
+
 - Require exact descriptor inventory rows and durable owned stdio regular-file
   identities before accepting complete post-exec host qualification evidence.
   Reject empty or contradictory tables while retaining failed raw observations
