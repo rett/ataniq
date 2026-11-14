@@ -16,6 +16,9 @@ type fakeJournal struct {
 	grants         map[string]Intent
 	used           map[string]bool
 	contradictions []Receipt
+	evidence       map[string]map[string]Receipt
+	fenced         map[string]Intent
+	uncertain      map[string]bool
 	now, expiry    time.Time
 	revoked        bool
 	prepareErr     string
@@ -23,20 +26,30 @@ type fakeJournal struct {
 }
 
 func journal() *fakeJournal {
-	return &fakeJournal{rows: map[string]Receipt{}, grants: map[string]Intent{"grant": intent()}, used: map[string]bool{}, now: time.Unix(1, 0), expiry: time.Unix(2, 0)}
+	return &fakeJournal{rows: map[string]Receipt{}, grants: map[string]Intent{"grant": intent()}, used: map[string]bool{}, evidence: map[string]map[string]Receipt{}, fenced: map[string]Intent{}, uncertain: map[string]bool{}, now: time.Unix(1, 0), expiry: time.Unix(2, 0)}
 }
 func (j *fakeJournal) Prepare(_ context.Context, i Intent) (PrepareStatus, Receipt, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if r, ok := j.rows[i.ID]; ok {
-		if !reflect.DeepEqual(r.Intent, i) {
+		if !sameIntent(r.Intent, i) {
 			j.contradictions = append(j.contradictions, Receipt{Intent: cloneIntent(i), State: Uncertain, Evidence: "intent contradiction"})
 			return PrepareConflict, r, nil
 		}
 		r.Intent = cloneIntent(r.Intent)
+		if j.uncertain[i.ID] {
+			r.State = Uncertain
+		}
 		return PrepareDuplicate, r, nil
 	}
+	if f, ok := j.fenced[i.ID]; ok {
+		if !sameIntent(f, i) {
+			return PrepareConflict, Receipt{}, nil
+		}
+		return PrepareDuplicate, Receipt{Intent: cloneIntent(f), State: Uncertain}, nil
+	}
 	if j.prepareErr == "before" {
+		j.fenced[i.ID] = cloneIntent(i)
 		return PrepareUnknown, Receipt{}, errors.New("before")
 	}
 	if i.Grant != "" {
@@ -64,12 +77,31 @@ func (j *fakeJournal) Save(_ context.Context, r Receipt) error {
 		return errors.New("save")
 	}
 	old, ok := j.rows[r.Intent.ID]
-	if !ok || !sameIntent(old.Intent, r.Intent) || old.State != Prepared {
+	if !ok || !sameIntent(old.Intent, r.Intent) {
 		r.Intent = cloneIntent(r.Intent)
 		j.contradictions = append(j.contradictions, r)
 		return errors.New("receipt contradiction")
 	}
+	if j.evidence[r.Intent.ID] == nil {
+		j.evidence[r.Intent.ID] = map[string]Receipt{}
+	}
+	evidence := j.evidence[r.Intent.ID]
+	if prior, exists := evidence[r.ID]; exists && sameIntent(prior.Intent, r.Intent) && prior.State == r.State && prior.Evidence == r.Evidence {
+		return nil
+	}
+	conflict := false
+	for id, prior := range evidence {
+		if id == r.ID || (prior.State != r.State && prior.State != Uncertain && r.State != Uncertain) {
+			conflict = true
+		}
+	}
 	r.Intent = cloneIntent(r.Intent)
+	if conflict {
+		j.contradictions = append(j.contradictions, r)
+		j.uncertain[r.Intent.ID] = true
+		return errors.New("receipt contradiction")
+	}
+	evidence[r.ID] = r
 	j.rows[r.Intent.ID] = r
 	return nil
 }
@@ -83,10 +115,14 @@ type fakeBoundary struct {
 	lost                                 bool
 	entered, release                     chan struct{}
 	work, completed                      chan struct{}
+	completionEvidence                   []string
+	grantRequired, grantRevoked          bool
+	now, expiry                          time.Time
+	grantTarget                          Intent
 }
 
 func boundary() *fakeBoundary {
-	return &fakeBoundary{available: true, qualified: true, epoch: "e", policy: "p", qualification: "q", limits: "l", authority: "a", runtime: "runtime", authorization: "auth"}
+	return &fakeBoundary{available: true, qualified: true, epoch: "e", policy: "p", qualification: "q", limits: "l", authority: "a", runtime: "runtime", authorization: "auth", now: time.Unix(1, 0), expiry: time.Unix(2, 0), grantTarget: intent()}
 }
 func (b *fakeBoundary) Start(ctx context.Context, i Intent) (StartStatus, string, error) {
 	b.mu.Lock()
@@ -95,12 +131,18 @@ func (b *fakeBoundary) Start(ctx context.Context, i Intent) (StartStatus, string
 		close(b.entered)
 		<-b.release
 	}
-	if ctx.Err() != nil || !b.available || !b.qualified || i.Authority != b.authority || i.Runtime != b.runtime || i.Authorization != b.authorization || i.Epoch != b.epoch || i.Policy != b.policy || i.Qualification != b.qualification || i.Limits != b.limits {
+	if ctx.Err() != nil || !b.available || !b.qualified || i.Authority != b.authority || i.Runtime != b.runtime || i.Authorization != b.authorization || i.Epoch != b.epoch || i.Policy != b.policy || i.Qualification != b.qualification || i.Limits != b.limits || (b.grantRequired && i.Grant == "") || (i.Grant != "" && (b.grantRevoked || !b.now.Before(b.expiry) || !sameIntent(i, b.grantTarget))) {
 		return StartDenied, "no start", nil
 	}
 	b.starts++ // independently counted actual sink invocation
 	if b.work != nil {
-		go func() { <-b.work; close(b.completed) }()
+		go func() {
+			<-b.work
+			b.mu.Lock()
+			b.completionEvidence = append(b.completionEvidence, "completed")
+			b.mu.Unlock()
+			close(b.completed)
+		}()
 	}
 	if b.lost {
 		return StartUnknown, "response lost", errors.New("lost")
@@ -192,14 +234,10 @@ func TestUncertaintyNeverReplays(t *testing.T) {
 				t.Fatal(r)
 			}
 			count := b.starts
-			// A before-commit error has no durable record; it requires reconciliation,
-			// not an automatic retry. Simulate only the committed/recovered cases.
-			if scenario != "before" {
-				j.prepareErr = ""
-				(Coordinator{j, b}).Dispatch(context.Background(), i)
-				if b.starts != count {
-					t.Fatal("replayed")
-				}
+			j.prepareErr = ""
+			(Coordinator{j, b}).Dispatch(context.Background(), i)
+			if b.starts != count {
+				t.Fatal("replayed")
 			}
 		})
 	}
@@ -220,6 +258,9 @@ func TestOutageAndCompletion(t *testing.T) {
 	b.mu.Unlock()
 	close(b.work)
 	<-b.completed
+	if len(b.completionEvidence) != 1 || b.completionEvidence[0] != "completed" {
+		t.Fatal("completion evidence missing")
+	}
 	for _, kind := range []string{"queued", "tool", "child", "iteration", "retry"} {
 		x := i
 		x.ID = kind
@@ -380,5 +421,90 @@ func TestCanceledOrUnknownNeverStartsLater(t *testing.T) {
 				t.Fatalf("late start: %d", b.starts)
 			}
 		})
+	}
+}
+
+func TestEvidenceIdentityAndContradiction(t *testing.T) {
+	j, b := journal(), boundary()
+	r, err := (Coordinator{j, b}).Dispatch(context.Background(), intent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Save(context.Background(), r); err != nil || len(j.contradictions) != 0 {
+		t.Fatal("identical evidence", err)
+	}
+	contrary := r
+	contrary.ID, contrary.State, contrary.Evidence = "other", Denied, "contrary no-start proof"
+	if err := j.Save(context.Background(), contrary); err == nil {
+		t.Fatal("accepted contradiction")
+	}
+	got, _ := (Coordinator{j, b}).Dispatch(context.Background(), intent())
+	if got.State != Uncertain || j.rows[r.Intent.ID].State != Started || len(j.contradictions) != 1 {
+		t.Fatal(got)
+	}
+	changed := r
+	changed.Evidence = "different content"
+	if err := j.Save(context.Background(), changed); err == nil || len(j.contradictions) != 2 {
+		t.Fatal("same ID conflict")
+	}
+}
+
+func TestAdmissionChangesAfterPrepare(t *testing.T) {
+	for _, name := range []string{"availability", "authorization", "expiry", "revocation", "epoch", "policy", "missing qualification", "stale qualification", "limits", "missing grant"} {
+		t.Run(name, func(t *testing.T) {
+			j, b := journal(), boundary()
+			i := intent()
+			if name == "missing grant" {
+				i.Grant = ""
+				b.grantRequired = true
+			}
+			prepared := false
+			port := journalPort{prepare: func(in Intent) (PrepareStatus, Receipt, error) {
+				s, r, err := j.Prepare(context.Background(), in)
+				if s != PrepareNew || err != nil {
+					t.Fatalf("prepare: %v %v", s, err)
+				}
+				prepared = true
+				switch name {
+				case "availability":
+					b.available = false
+				case "authorization":
+					b.authorization = "revoked"
+				case "expiry":
+					b.now = b.expiry
+				case "revocation":
+					b.grantRevoked = true
+				case "epoch":
+					b.epoch = "new"
+				case "policy":
+					b.policy = "new"
+				case "missing qualification":
+					b.qualified = false
+				case "stale qualification":
+					b.qualification = "new"
+				case "limits":
+					b.limits = "new"
+				}
+				return s, r, err
+			}, save: func(r Receipt) error { return j.Save(context.Background(), r) }}
+			r, _ := (Coordinator{port, b}).Dispatch(context.Background(), i)
+			if !prepared || r.State != Denied || b.starts != 0 {
+				t.Fatalf("%+v starts=%d", r, b.starts)
+			}
+		})
+	}
+}
+
+func TestNilEmptyPayloadEquality(t *testing.T) {
+	j := journal()
+	i := intent()
+	i.Grant = ""
+	i.Payload = nil
+	if s, _, _ := j.Prepare(context.Background(), i); s != PrepareNew {
+		t.Fatal(s)
+	}
+	i.Payload = []byte{}
+	if s, _, _ := j.Prepare(context.Background(), i); s != PrepareDuplicate {
+		t.Fatal(s)
 	}
 }

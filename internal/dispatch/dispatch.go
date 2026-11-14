@@ -32,7 +32,11 @@ func sameIntent(a, b Intent) bool {
 }
 
 func equalIdentity(a, b Intent) bool {
-	return a.Authority == b.Authority && a.Project == b.Project && a.Command == b.Command && a.ID == b.ID && a.Attempt == b.Attempt && a.Runtime == b.Runtime && a.Epoch == b.Epoch && a.Action == b.Action && a.Kind == b.Kind && a.Policy == b.Policy && a.Qualification == b.Qualification && a.Authorization == b.Authorization && a.Limits == b.Limits && a.Grant == b.Grant
+	return a.Authority == b.Authority && a.Project == b.Project && a.Command == b.Command &&
+		a.ID == b.ID && a.Attempt == b.Attempt && a.Runtime == b.Runtime &&
+		a.Epoch == b.Epoch && a.Action == b.Action && a.Kind == b.Kind &&
+		a.Policy == b.Policy && a.Qualification == b.Qualification &&
+		a.Authorization == b.Authorization && a.Limits == b.Limits && a.Grant == b.Grant
 }
 
 // Digest returns the SHA-256 digest of the exact payload.
@@ -70,6 +74,7 @@ const (
 
 type Receipt struct {
 	Intent   Intent
+	ID       string // identity of this evidence, independent of intent identity
 	State    State
 	Evidence string
 }
@@ -89,9 +94,14 @@ const (
 // after checking expiry, revocation and policy. New means a durable commit by
 // this call. Duplicate returns the original receipt only for identical content;
 // conflicting identity or grant use is retained as a contradiction. An error or
-// unknown result may have committed and must never authorize start. Recovered
+// unknown result may have committed and must fence the exact attempt across
+// recreation until evidence-based reconciliation. Recovered
 // prepared/dispatching entries are duplicates, not new work. Save must retain
 // contradictory evidence and must not rewrite the immutable intent or grant.
+// Save is idempotent for identical evidence under the same receipt ID. It
+// retains differing content under that ID and contradictory outcomes under
+// different IDs; duplicate inspection then reports uncertainty. A foreign
+// immutable binding is a conflict and cannot alter the legitimate record.
 // All methods must be safe for concurrent callers.
 type Journal interface {
 	Prepare(context.Context, Intent) (PrepareStatus, Receipt, error)
@@ -108,7 +118,8 @@ const (
 
 // Boundary is trusted to serialize the actual start with observed authority,
 // epoch and revocation changes. Start obtains current authority and checks the
-// exact policy, qualification, authorization and bounded limits at that point.
+// exact policy, qualification, authorization, bounded limits and any required
+// exact-target grant including its current expiry and revocation at that point.
 // It returns promptly after acknowledgement, denial or uncertainty, without
 // waiting for completion, and must not start later after returning, including
 // after cancellation. It exposes no callback or reusable permit. Its guarantees
@@ -174,8 +185,8 @@ func (c Coordinator) Dispatch(ctx context.Context, in Intent) (Receipt, error) {
 			state = Uncertain
 		}
 	}
-	receipt = Receipt{Intent: in, State: state, Evidence: evidence}
-	if err := c.Journal.Save(ctx, Receipt{Intent: cloneIntent(in), State: state, Evidence: evidence}); err != nil {
+	receipt = Receipt{Intent: in, ID: "start", State: state, Evidence: evidence}
+	if err := c.Journal.Save(ctx, Receipt{Intent: cloneIntent(in), ID: receipt.ID, State: state, Evidence: evidence}); err != nil {
 		return Receipt{Intent: in, State: Uncertain, Evidence: evidence}, fmt.Errorf("save outcome uncertain: %w", err)
 	}
 	return receipt, nil
