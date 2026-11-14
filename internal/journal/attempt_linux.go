@@ -177,7 +177,7 @@ func (a *Attempt) releaseEntryFailure(err error) error {
 	a.store.failureMu.Lock()
 	defer a.store.failureMu.Unlock()
 	if a.retiring.Load() {
-		return ErrInactive
+		return errors.Join(ErrInactive, err)
 	}
 	a.fenced.Store(true)
 	return err
@@ -423,6 +423,15 @@ func (a *Attempt) Prepare(ctx context.Context, in dispatch.Intent) (status dispa
 		var binding []byte
 		err = tx.QueryRowContext(ctx, "SELECT binding FROM grants WHERE id=?", []byte(in.Grant)).Scan(&binding)
 		if err == nil {
+			var recorded bool
+			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM events WHERE attempt_id=? AND kind='grant-conflict')", []byte(in.ID)).Scan(&recorded); err != nil {
+				return dispatch.PrepareUnknown, receipt, err
+			}
+			// This immutable attempt fixes its grant, whose consumed binding
+			// cannot change. Preserve the first exact contradiction once.
+			if recorded {
+				return dispatch.PrepareConflict, receipt, nil
+			}
 			err = event(ctx, tx, in.ID, "grant-conflict", binding)
 			if err == nil {
 				err = s.commit(tx, "conflict")
@@ -673,6 +682,11 @@ func (s *Store) retireAll(ctx context.Context) error {
 		}
 		if !bytes.Equal(r.generation, a.generation) || !bytes.Equal(r.binding, a.binding) {
 			return ErrInactive
+		}
+		if !r.active {
+			// Exact inactive proof has the same meaning as a Release retry.
+			// Preserve the prior retirement and any durable uncertainty.
+			continue
 		}
 		uncertain := a.retirementUncertain(r)
 		if _, err = tx.ExecContext(ctx, "UPDATE attempts SET uncertain=?,active=0 WHERE id=? AND generation=?", uncertain, []byte(id), a.generation); err != nil {

@@ -8,6 +8,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Retain one exact grant-conflict event per immutable attempt, preserve context
+  errors on retiring Release retries, and preserve proven retired generations
+  during Close without changing their evidence or durable uncertainty.
+
 - Preserve exact empty journal BLOB outcomes when saving Prepared observations;
   reconcile a lost Release response only from the exact retired generation.
   Return unknown on failed grant-conflict commits, verify the pinned DQS probe

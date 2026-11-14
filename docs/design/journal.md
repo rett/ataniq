@@ -93,7 +93,9 @@ Prepare and Save reject a foreign binding before admission, waiting or
 cancellation can latch a failure on the legitimate activation. Prepare returns
 PrepareConflict without an error; Save returns ErrConflict. Such rejection
 does not append a binding-conflict event. Grant-consumption conflicts discovered
-for an exact binding still retain their transactional conflict evidence.
+for an exact binding retain their first exact transactional conflict evidence.
+An immutable attempt fixes its grant and the consumed grant binding is stable,
+so repeated clean conflicts reuse that event.
 If that event cannot be confirmed committed, Prepare returns PrepareUnknown
 with a nonnil error and fences the activation. A failed-before-commit event is
 absent; a committed event whose response was lost retains the original consumed
@@ -178,20 +180,26 @@ covered by the same pending/publication ordering.
 Release itself does not admit an effect and is not counted as pending.
 Its failure to enter is coordinated with retirement publication using the
 store-local failure mutex: before publication it can latch a failure; after
-publication it returns ErrInactive without changing the latch. Once Release
+publication it returns ErrInactive joined with the original entry error, keeping
+context cancellation/deadline diagnostics and the existing latch. Once Release
 owns the gate, its transaction or response failure publishes before releasing
 the gate and lifetime read lock, so a subsequent Release/Close sees it.
 The short failure mutex never waits for the gate, lifetime lock or SQL.
+
+Close verifies each view's stored binding and generation before retiring it.
+An exact inactive generation already proves committed retirement, so Close
+preserves its durable uncertainty, receipts and events. Active generations
+retain the ordinary pending-before-fenced retirement path.
 
 A lost retirement response is not evidence of a new external effect. In the
 narrow case where preparation and a definitive Denied receipt were committed,
 and retirement committed without pending calls or prior uncertainty, dirty
 reopen may retain definitive Denied even if Release's response was lost.
-An in-process response failure can still project uncertainty, and a later
-Close without a successful reconciliation retry can persist that conservative
-projection. A successful exact-generation retry removes only the old view and
-its volatile response-failure overlay: the proved settled Denied remains
-settled. Neither path replays the attempt. This exception does not apply to
+An in-process response failure can still project uncertainty until exact
+durable retirement is reconciled. Both a successful retry and Close preserve
+the proved inactive generation's durable state. A successful retry removes
+the old view and its volatile response-failure overlay. A proved settled Denied
+remains settled, with replay prohibited by the original prepared record. This exception does not apply to
 unknown Prepare, Save or Revoke,
 or to the concurrent admitted failed-Save handoff: those must retain the dirty
 guard or durable uncertainty. An exact retry preserves any uncertainty already
