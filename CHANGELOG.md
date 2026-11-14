@@ -6,6 +6,71 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-14
+
+### Fixed
+
+- Retain one exact grant-conflict event per immutable attempt, preserve context
+  errors on retiring Release retries, and preserve proven retired generations
+  during Close without changing their evidence or durable uncertainty.
+
+- Preserve exact empty journal BLOB outcomes when saving Prepared observations;
+  reconcile a lost Release response only from the exact retired generation.
+  Return unknown on failed grant-conflict commits, verify the pinned DQS probe
+  diagnostic, and reject new lifetime admission promptly during Close.
+  Add actual-driver, retirement, conflict, cancellation and explicit bounded
+  capacity-recovery regressions without changing the schema or dispatch policy.
+
+- Update the design index to describe the implemented guarded dispatch journal.
+
+- Validate journal policy and grant expiry bounds by UTC instant across caller
+  and host timezones.
+
+- Preserve admitted journal failures across Release/Close retirement, reject
+  late calls without changing retired activations, and capture coherent bounded
+  snapshot failure projections. Reject foreign Prepare bindings before waiting
+  or cancellation, retaining foreign Save isolation. Cover retirement response
+  loss, cancellation, dirty reopen and independently counted no-replay behavior.
+
+- Require native main-file OFD locking before journal ownership acquisition,
+  and verify it after a consumed SQLite schema read on preflight and every
+  physical connection before writer settings. Rejected competing opens and
+  unrelated main-file descriptor closure preserve the live owner's SQL locks;
+  processes already using POSIX SQLite locking are refused before acquisition.
+
+### Added
+
+- Document exact-generation Release response reconciliation, empty receipt BLOB
+  preservation, failed conflict status, precise DQS diagnostics and prompt Close
+  admission refusal. Describe fixed-bound FULL recovery refusal and the existing
+  explicit larger-MaxBytes reopen path with preserved evidence and no automatic
+  bound increase or capacity guarantee.
+
+- Document journal retirement admission/publication ordering, coherent volatile
+  snapshot capture, foreign-call isolation and the narrow settled-Denied
+  retirement response-loss case, distinguishing draft and final regressions
+  and graceful-close evidence from waited SIGKILL recovery.
+- Document guarded journal composition, exact policy/grant binding, failure and
+  retirement semantics, bounded eager inspection, and offline crash evidence
+  with its limits; retain the accepted lifecycle and OFD ownership contract.
+- Add an internal offline guarded dispatch journal on the owned SQLite lifecycle:
+  exact-attempt capabilities, immutable trusted policy registration, atomic
+  one-use grants, monotonic revocation, durable activation/recovery fences,
+  bounded retirement, exact receipts and contradictions, and eager inspection
+  with stable event identities. Exercise the frozen coordinator with fake
+  boundaries, bounded SQLite faults and waited SIGKILL/reopen fixtures.
+- Document journal OFD startup ordering, post-read verification and the separate
+  SQLite-managed POSIX shared-memory lock domain, with caller path/filesystem
+  responsibilities and the limits of the lifecycle regression evidence.
+- Pin the SQLite journal driver and preserve its dependency notices.
+- Add Linux journal storage Create/Open/Close/Info with exclusive inode ownership,
+  transactional authority and stable identities, read-only identity preflight,
+  verified SQLite connection settings, and finite operation and page bounds.
+  This lifecycle foundation does not yet implement guarded dispatch journaling.
+- Document journal lifecycle APIs, defaults, ownership, connection verification,
+  refusal behavior and the distinction between ordinary reopen and unsupported
+  restore; link the bounded foundation from the design contract index.
+
 ## [0.0.2] - 2026-11-14
 
 ### Added
