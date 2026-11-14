@@ -508,3 +508,23 @@ func TestNilEmptyPayloadEquality(t *testing.T) {
 		t.Fatal(s)
 	}
 }
+
+func TestGrantRejectsChangedBinding(t *testing.T) {
+	for _, change := range []struct {
+		name  string
+		apply func(*Intent)
+	}{
+		{"target", func(i *Intent) { i.Project = "other" }},
+		{"payload", func(i *Intent) { i.Payload = []byte("other") }},
+		{"epoch", func(i *Intent) { i.Epoch = "other" }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			j, b := journal(), boundary()
+			i := intent()
+			change.apply(&i)
+			if _, err := (Coordinator{j, b}).Dispatch(context.Background(), i); err == nil || b.starts != 0 || j.used["grant"] {
+				t.Fatal("changed grant binding admitted or consumed")
+			}
+		})
+	}
+}
