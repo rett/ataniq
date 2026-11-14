@@ -137,7 +137,8 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if err = freshFD1Control(a, time.Now().Unix()); err != nil {
 		return c.unknown(a, "launch-unknown", err)
 	}
-	if err = authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
+	if err = c.authenticateFD1(a, a.FD1Runtime); err != nil {
+		c.retainFD1IntegrityFailure(a)
 		return c.unknown(a, "launch-unknown", err)
 	}
 	r, _ := json.Marshal(release{1, a.ID, i.Invocation})
@@ -318,7 +319,8 @@ func (c *Campaign) collect(a *Attempt) (result error) {
 	if !complete {
 		return errors.New("collection without complete boundary proof")
 	}
-	if err := authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
+	if err := c.authenticateFD1(a, a.FD1Runtime); err != nil {
+		c.retainFD1IntegrityFailure(a)
 		return err
 	}
 	root, err := os.OpenRoot(filepath.Join(c.Path, a.ID))

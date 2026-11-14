@@ -77,6 +77,13 @@ func (c *Campaign) checkFD1Integrity(a *Attempt) {
 		return
 	}
 	if authenticateFD1Runtime(a, a.FD1Runtime) != nil {
+		c.retainFD1IntegrityFailure(a)
+	}
+}
+
+func (c *Campaign) retainFD1IntegrityFailure(a *Attempt) {
+	// Only already adopted authority can carry a sticky integrity incident.
+	if a.Config.DescriptorProfile == FD1TypedProfile && a.FD1Runtime != nil && a.Injector != nil {
 		a.FD1IntegrityFailure = fd1IntegrityFailure
 		c.Blocked = true
 	}

@@ -392,7 +392,7 @@ func (c *Campaign) unknown(a *Attempt, phase string, cause error) error {
 	c.Blocked = true
 	a.ReasonCode = "identity-or-evidence-unproved"
 	if err := c.Save(a, phase, hostReason(cause)); err != nil {
-		return err
+		return errors.Join(cause, err)
 	}
 	return cause
 }

@@ -653,3 +653,131 @@ func TestFD1CollectionFailureDoesNotInventCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestFD1ObservedAuthenticationFailureSurvivesImmediateRestoration(t *testing.T) {
+	for _, stage := range []string{"release", "collection"} {
+		for _, caseName := range []string{"fake-pipe-fd", "inventory"} {
+			t.Run(stage+"/"+caseName, func(t *testing.T) {
+				x := fakeTypedLaunch(t, "direct", caseName)
+				i, err := readInjection(filepath.Join(x.c.Path, x.a.ID, "injection.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := i.FD1Runtime
+				original, err := os.ReadFile(r.Artifact.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				incident := errors.New("observed authentication failure before restoration")
+				detected := false
+				x.c.authenticateFD1 = func(a *Attempt, runtime *FD1Runtime) error {
+					if a.Stage != stage || detected {
+						return authenticateFD1Runtime(a, runtime)
+					}
+					if !sameJSON(a.Injector, &i) || !sameJSON(a.FD1Runtime, r) || !sameJSON(a.Target, &i.Process) || a.Workload == nil {
+						t.Fatal("original authenticated authority not retained")
+					}
+					if err := rewriteFrozenFixture(r.Artifact.Path, []byte("temporary artifact change")); err != nil {
+						t.Fatal(err)
+					}
+					failure := authenticateFD1Runtime(a, runtime)
+					if failure == nil {
+						t.Fatal("artifact change did not fail authentication")
+					}
+					// Deterministically restore the very same file immediately after
+					// the failed read, before unknown's Save or collect's finalizer.
+					if err := rewriteFrozenFixture(r.Artifact.Path, original); err != nil {
+						t.Fatal(err)
+					}
+					if err := authenticateFD1Runtime(a, runtime); err != nil {
+						t.Fatal("original artifact not restored", err)
+					}
+					detected = true
+					return errors.Join(incident, failure)
+				}
+				err = x.c.run(x.a, x.h)
+				if !detected || !errors.Is(err, incident) || x.a.FD1IntegrityFailure != fd1IntegrityFailure || !x.c.Blocked || x.c.fenced {
+					t.Fatal("observed incident erased by restoration", err)
+				}
+				if x.a.Observation != nil || x.a.DescriptorReceipt != nil || x.a.DescriptorObservation != nil {
+					t.Fatal("failed authentication became case evidence")
+				}
+				if stage == "release" {
+					if x.a.Phase != "launch-unknown" || x.a.Empty || x.a.TargetExited || x.a.SliceStopped {
+						t.Fatal("release failure invented cleanup")
+					}
+					if _, err := os.Stat(filepath.Join(x.c.Path, x.a.ID, "release.json")); !os.IsNotExist(err) {
+						t.Fatal("failed authentication published release", err)
+					}
+				} else if x.a.Phase != "complete" || !x.a.Empty || !x.a.TargetExited || !x.a.SliceStopped {
+					t.Fatal("collection discarded independently proved cleanup")
+				}
+				// Cleanup must use the retained authority, without re-adopting
+				// a receipt or dispatching a new service after restart.
+				if err := os.Remove(filepath.Join(x.c.Path, x.a.ID, "injection.json")); err != nil {
+					t.Fatal(err)
+				}
+				x.calls = nil
+				reopenFD1Fixture(t, x)
+				if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || !sameJSON(x.a.Injector, &i) || !sameJSON(x.a.FD1Runtime, r) || !sameJSON(x.a.Target, &i.Process) {
+					t.Fatal("restart lost incident or original authority")
+				}
+				if err := x.c.reconcile(x.a, x.h); err != nil {
+					t.Fatal("exact original cleanup unavailable", err)
+				}
+				for _, unit := range []string{x.a.Service, x.a.Slice} {
+					stops := 0
+					for _, call := range x.calls {
+						if strings.Contains(call, " start ") || strings.Contains(call, "--service-type") || strings.Contains(call, " stop ") && !strings.HasSuffix(call, "-- "+x.a.Service) && !strings.HasSuffix(call, "-- "+x.a.Slice) {
+							t.Fatal("new dispatch or unrelated cleanup", call)
+						}
+						if strings.Contains(call, " stop -- "+unit) {
+							stops++
+						}
+					}
+					if stage == "release" && stops != 1 || stage == "collection" && stops != 0 {
+						t.Fatal("incorrect original cleanup", unit, stops)
+					}
+				}
+				reopenFD1Fixture(t, x)
+				if x.a.Phase != "complete" || !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || x.c.collect(x.a) == nil {
+					t.Fatal("cleanup/restart erased incident or accepted case")
+				}
+				if _, err := x.c.Prepare(x.a.Config); err == nil {
+					t.Fatal("new launch admitted after restored incident")
+				}
+				x.c.Close()
+				var out bytes.Buffer
+				if err := InspectHost(x.c.Path, x.a.ID, &out); err != nil || !bytes.Contains(out.Bytes(), []byte(`"fd1_integrity_failure":"`+fd1IntegrityFailure+`"`)) {
+					t.Fatal("durable incident not inspectable", err, out.String())
+				}
+				report := ReconcileHost(x.c.Path, x.a.ID)
+				if report.Outcome != "inconclusive" || !report.NewStartsBlocked || report.ReasonCode != "typed-runtime-integrity-failed" {
+					t.Fatal("restoration became successful case", report)
+				}
+			})
+		}
+	}
+}
+
+func TestFD1NeverAdoptedAuthenticationFailureIsNotTrusted(t *testing.T) {
+	x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+	i, err := readInjection(filepath.Join(x.c.Path, x.a.ID, "injection.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteFrozenFixture(i.FD1Runtime.Artifact.Path, []byte("changed before adoption")); err != nil {
+		t.Fatal(err)
+	}
+	x.c.authenticateFD1 = func(*Attempt, *FD1Runtime) error {
+		t.Fatal("unauthenticated binding reached post-adoption authentication")
+		return nil
+	}
+	if x.c.run(x.a, x.h) == nil || x.a.Injector != nil || x.a.FD1Runtime != nil || x.a.FD1IntegrityFailure != "" || !x.c.Blocked {
+		t.Fatal("never-adopted evidence became trusted authority")
+	}
+	reopenFD1Fixture(t, x)
+	if x.a.Injector != nil || x.a.FD1Runtime != nil || x.a.FD1IntegrityFailure != "" || !x.c.Blocked {
+		t.Fatal("restart adopted failed evidence")
+	}
+}

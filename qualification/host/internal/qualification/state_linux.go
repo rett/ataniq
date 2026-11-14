@@ -120,6 +120,8 @@ type Campaign struct {
 	syncDir  func(*os.File) error
 	rename   func(int, string, int, string) error
 	updateID func() (string, error)
+	// Narrow seam for post-adoption authentication/restoration race tests.
+	authenticateFD1 func(*Attempt, *FD1Runtime) error
 }
 
 func randomID() (string, error) {
@@ -135,7 +137,7 @@ func OpenCampaign(path string) (*Campaign, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID}
+	c := &Campaign{Path: path, Identity: id, dir: d, Records: map[string]*Attempt{}, syncFile: (*os.File).Sync, syncDir: (*os.File).Sync, rename: syscall.Renameat, updateID: randomID, authenticateFD1: authenticateFD1Runtime}
 	fd, err := syscall.Openat(int(d.Fd()), "controller.lock", syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0600)
 	if err != nil {
 		d.Close()
