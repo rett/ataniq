@@ -306,7 +306,7 @@ func launch(a *Attempt, path string) []string {
 				args[i] = "--property=MemoryMax=100663296"
 			}
 		}
-		args = append([]string{"--property=MemorySwapMax=0", "--property=Delegate=no"}, args...)
+		args = append([]string{"--property=MemorySwapMax=0", "--property=MemoryHigh=infinity", "--property=OOMPolicy=kill", "--property=Delegate=no"}, args...)
 	}
 	return args
 }
@@ -446,7 +446,7 @@ func validateStored(a *Attempt) error {
 	if a.Target != nil && (!validProcess(*a.Target) || a.Target.Boot != a.Boot || a.Workload == nil || a.Target.Cgroup != a.Workload.Boundary.Path) {
 		return errors.New("invalid stored target")
 	}
-	if a.Empty && !entryParentOnly(a) && (!a.TargetExited || !a.PopulatedLive || a.Target == nil || a.Injector == nil) {
+	if a.Empty && !entryParentOnly(a) && (!a.TargetExited || !a.PopulatedLive && !isR1Entry(a) || a.Target == nil || a.Injector == nil) {
 		return errors.New("invalid stored empty proof")
 	}
 	switch a.Phase {
@@ -455,7 +455,8 @@ func validateStored(a *Attempt) error {
 			return errors.New("missing parent binding")
 		}
 	case "bound", "released", "cancelling", "empty", "complete":
-		if !entryParentOnly(a) && (a.Injector == nil || a.Target == nil || a.Workload == nil) {
+		serviceStop := isR1Entry(a) && a.Phase == "cancelling" && a.EntryRuntime != nil && a.EntryRuntime.ServiceStopIntent && a.Workload != nil
+		if !entryParentOnly(a) && !serviceStop && (a.Injector == nil || a.Target == nil || a.Workload == nil) {
 			return errors.New("missing launch binding")
 		}
 	}

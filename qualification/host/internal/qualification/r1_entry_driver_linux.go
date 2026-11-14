@@ -32,7 +32,13 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 	cleanupIO := entryOperationIO(h, time.Unix(a.NotAfter, 0))
 	h = entryOperationIO(h, deadline)
 	defer func() {
-		if result == nil || a.Parent == nil || a.Phase == "complete" {
+		if result == nil {
+			return
+		}
+		// Record direct observation failures before cleanup can change progress
+		// or reason. A failed Save must not suppress the original error or stop.
+		result = errors.Join(result, c.Save(a, a.Phase, hostReason(result)))
+		if a.Parent == nil || a.Phase == "complete" {
 			return
 		}
 		// Cleanup authority survives failed observations and integrity incidents.
@@ -56,6 +62,7 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 		return err
 	}
 	a.Stage = "retained-parent-intent"
+	a.EntryRuntime.ParentStartIntent = true
 	if err := c.Save(a, "launching-slice", ""); err != nil {
 		return err
 	}
@@ -75,6 +82,7 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 		return c.unknown(a, "cleanup-unknown", errors.New("fresh entry parent not empty"))
 	}
 	a.Stage = "tool-start-intent"
+	a.EntryRuntime.ToolDispatchIntent = true
 	if err := c.Save(a, "launching-service", ""); err != nil {
 		return err
 	}
@@ -112,6 +120,11 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 		return c.unknown(a, "launch-unknown", err)
 	}
 	a.Workload, a.Injector, a.Target = u, &injection, &injection.Process
+	// Stop authority precedes admission observations; failure of any of those
+	// observations does not erase the independently verified original bindings.
+	if err := c.Save(a, "launching-service", ""); err != nil {
+		return err
+	}
 	if err := h.entryEffective(u, false); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
@@ -207,6 +220,13 @@ func (c *Campaign) runEntry(a *Attempt, h hostIO) (result error) {
 			r := a.EntryRuntime
 			r.Terminal, r.Natural, r.ExpectedExit = true, true, exitErr == nil
 			a.Empty, a.TargetExited = true, true
+			if exitErr != nil {
+				// Preserve the specific service outcome before collection can
+				// report the more general incomplete-entry verdict.
+				if err := c.Save(a, a.Phase, hostReason(exitErr)); err != nil {
+					return errors.Join(exitErr, err)
+				}
+			}
 			if err := c.stopEntryParent(a, h); err != nil {
 				return err
 			}

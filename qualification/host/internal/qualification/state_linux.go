@@ -281,7 +281,7 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	if a.Version != 1 || a.ID != id || a.Root != root || a.Campaign != c.Identity || a.Config.Campaign != c.Path || a.Config.validate() != nil || a.Profile != profileFor(a.Config) || !phaseValid(a.Phase) || a.Created <= 0 || a.NotAfter != a.Created+60 || a.Slice != "aq"+id+".slice" || a.Service != "aq"+id+".service" || len(a.Subjects) != len(selected(a.Config)) || a.Request.Validate() != nil {
 		return nil, errors.New("invalid attempt ownership or intent")
 	}
-	if a.Phase == "complete" && (!a.Empty || !a.SliceStopped || a.Parent == nil || !entryParentOnly(&a) && (!a.PopulatedLive || a.Workload == nil || a.Injector == nil || a.Target == nil || !a.TargetExited)) {
+	if a.Phase == "complete" && (!a.Empty || !a.SliceStopped || a.Parent == nil || !entryParentOnly(&a) && (!a.PopulatedLive && !isR1Entry(&a) || a.Workload == nil || a.Injector == nil || a.Target == nil || !a.TargetExited)) {
 		return nil, errors.New("invalid completion")
 	}
 	if err = validatePlan(&a, path); err != nil {
@@ -305,6 +305,14 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if recorded := c.Records[a.ID]; recorded == nil || recorded.Root != a.Root || recorded.Campaign != a.Campaign {
 		c.poison(nil)
 		return errors.New("attempt is not recorded with this identity")
+	}
+	if isR1Entry(a) && a.EntryRuntime != nil {
+		if reason != "" && a.EntryRuntime.FailureReason == "" {
+			a.EntryRuntime.FailureReason = reason
+		}
+		if reason == "" {
+			reason = a.Reason
+		}
 	}
 	next := *a
 	next.Phase = phase

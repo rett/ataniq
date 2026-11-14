@@ -1140,12 +1140,15 @@ an integrity failure. A marker retains detected integrity loss through restored
 bytes and reopening. Ambiguous publication or failed durable updates fence
 further progress. Structurally valid original cleanup authority is retained.
 
-All manager calls, subject work and service limits are checked while the wrapper
+Manager admission checks, subject work and service limits are checked while the wrapper
 is gated. The fixed controller operation deadline is 45 seconds, within the
 60-second attempt horizon with cleanup reserve. An incremental complete-frame
 reader obtains provisional readiness without waiting for output EOF. One
-monotonic observation budget retains a 250 ms margin inside the actor's unchanged
-two-second release wait. Direct proc/cgroup samples bind both distinct actors,
+monotonic observation budget measures a bounded interval from receipt of
+readiness and reserves 250 ms within that receipt-relative budget. Required
+actors and members must remain live through the final pidfd checks. The actor's
+actual remaining timeout is not inferred from receipt time. Direct proc/cgroup
+samples bind both distinct actors,
 strict actual `NSpid` projections and every observed bwrap/monitor member in the
 exact Tool branch, with live pidfds and identity revalidation around the batch.
 Unknown members/branches, lost actors, inaccessible metadata or exhausted margin
@@ -1180,6 +1183,18 @@ or reconstructs a positive live observation. Changed boot/generation, missing
 required original identity or unproved cleanup retains the start fence. An
 empty original parent without a launched Tool can be stopped with explicit
 prelaunch cleanup evidence, without fabricating actor observations.
+Parent-start and Tool-dispatch intent facts survive failed reconciliation and
+reopening independently of progress labels. Verified service-generation stop
+authority is saved before cleanup effects even when injection evidence is
+missing. Such a service stop remains partial cleanup until original process
+termination can be proved; it does not imply `TargetExited` or completion.
+The first entry failure is retained as `entry_runtime.failure_reason` alongside
+the latest nonempty cleanup reason, including after successful cleanup.
+
+Before wrapper entry, the selected parent and Tool explicitly set and read back
+`MemoryHigh=infinity` and effective `memory.high=max`. Tool also requires
+`OOMPolicy=kill` and effective `memory.oom.group=1`; no service OOM policy is
+applied to the slice. These are fixed safety guards without an OOM claim.
 
 Deterministic gates cover the positive controller transcript, prohibited
 transitions, the old empty-device startup ENOENT at the trusted spawn seam,
@@ -1196,6 +1211,9 @@ remain outside this entry profile.
   normal run/inspect/reconcile, with separate entry, expected timeout and cleanup
   evidence. Preserve historical plan hashes, FD1/hold entrypoints and pressure
   case rejection. This source change carries no executed host qualification.
+- Preserve entry cleanup authority across failed admission/reconciliation and
+  missing injection evidence, retain inconclusive reasons, bind the fixed
+  high/OOM safety settings and clarify receipt-relative observation timing.
 
 ## Separate implementation and support gates
 

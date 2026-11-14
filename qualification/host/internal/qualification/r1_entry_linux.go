@@ -40,25 +40,32 @@ type R1NullDevice struct {
 }
 
 type R1EntryRuntime struct {
-	Host          *R1EntryHost      `json:"host,omitempty"`
-	ParentOnly    bool              `json:"parent_only"`
-	WrapperIntent bool              `json:"wrapper_intent"`
-	Context       Subject           `json:"context"`
-	Binding       R1Binding         `json:"binding"`
-	Ready         *R1Evidence       `json:"ready,omitempty"`
-	Failure       *R1Evidence       `json:"failure,omitempty"`
-	Members       []Process         `json:"members,omitempty"`
-	Main          *Process          `json:"main,omitempty"`
-	Child         *Process          `json:"child,omitempty"`
-	Endpoints     *R1EntryEndpoints `json:"endpoints,omitempty"`
-	Timings       *R1EntryTimings   `json:"timings,omitempty"`
-	ReceiptNS     int64             `json:"receipt_ns"`
-	ObservationNS int64             `json:"observation_ns"`
-	MarginNS      int64             `json:"margin_ns"`
-	Terminal      bool              `json:"terminal"`
-	Natural       bool              `json:"natural"`
-	ExpectedExit  bool              `json:"expected_exit"`
-	OutputSHA256  string            `json:"output_sha256,omitempty"`
+	// Dispatch facts survive progress/error labels and confer cleanup only on
+	// restart. Neither fact permits replay of the corresponding operation.
+	ParentStartIntent  bool              `json:"parent_start_intent,omitempty"`
+	ToolDispatchIntent bool              `json:"tool_dispatch_intent,omitempty"`
+	ServiceStopIntent  bool              `json:"service_stop_intent,omitempty"`
+	ServiceStopped     bool              `json:"service_stopped,omitempty"`
+	FailureReason      string            `json:"failure_reason,omitempty"`
+	Host               *R1EntryHost      `json:"host,omitempty"`
+	ParentOnly         bool              `json:"parent_only"`
+	WrapperIntent      bool              `json:"wrapper_intent"`
+	Context            Subject           `json:"context"`
+	Binding            R1Binding         `json:"binding"`
+	Ready              *R1Evidence       `json:"ready,omitempty"`
+	Failure            *R1Evidence       `json:"failure,omitempty"`
+	Members            []Process         `json:"members,omitempty"`
+	Main               *Process          `json:"main,omitempty"`
+	Child              *Process          `json:"child,omitempty"`
+	Endpoints          *R1EntryEndpoints `json:"endpoints,omitempty"`
+	Timings            *R1EntryTimings   `json:"timings,omitempty"`
+	ReceiptNS          int64             `json:"receipt_ns"`
+	ObservationNS      int64             `json:"observation_ns"`
+	MarginNS           int64             `json:"margin_ns"`
+	Terminal           bool              `json:"terminal"`
+	Natural            bool              `json:"natural"`
+	ExpectedExit       bool              `json:"expected_exit"`
+	OutputSHA256       string            `json:"output_sha256,omitempty"`
 }
 
 type R1EntryTimings struct {
@@ -234,10 +241,19 @@ func validateEntryStored(a *Attempt) error {
 		}
 		return nil
 	}
+	if r.ToolDispatchIntent && !r.ParentStartIntent || r.ServiceStopIntent && a.Workload == nil || r.ServiceStopped && !r.ServiceStopIntent {
+		return errors.New("invalid entry cleanup intent")
+	}
+	if r.FailureReason != "" && !validText(r.FailureReason, 256) {
+		return errors.New("invalid entry failure reason")
+	}
+	if a.Empty && !r.ParentOnly && (!r.Terminal || !a.TargetExited || a.Workload == nil || a.Injector == nil || a.Target == nil) {
+		return errors.New("entry empty proof lacks original termination")
+	}
 	if a.Phase == "released" && (!r.WrapperIntent || a.Injector == nil) {
 		return errors.New("entry wrapper intent absent")
 	}
-	if r.ParentOnly && (a.Workload != nil || a.Injector != nil || a.Target != nil || r.Ready != nil || r.Main != nil || r.WrapperIntent || a.PopulatedLive || a.TargetExited || a.Parent == nil || !a.Empty) {
+	if r.ParentOnly && (r.ToolDispatchIntent || a.Workload != nil || a.Injector != nil || a.Target != nil || r.Ready != nil || r.Main != nil || r.WrapperIntent || a.PopulatedLive || a.TargetExited || a.Parent == nil || !a.Empty) {
 		return errors.New("invalid prelaunch entry cleanup")
 	}
 	if a.Parent != nil {
@@ -466,7 +482,23 @@ func expectedEntryTrace(a *Attempt, ready, failure R1Evidence) error {
 
 func entryObserved(a *Attempt) bool {
 	r := a.EntryRuntime
-	return isR1Entry(a) && a.Phase == "complete" && a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped && a.EntryIntegrityFailure == "" && r != nil && r.Host != nil && validateEntryHost(r.Host) == nil && r.Main != nil && r.Child != nil && r.Endpoints != nil && r.Ready != nil && r.Failure != nil && r.Terminal && r.Natural && r.ExpectedExit && validDigest(r.OutputSHA256) && expectedEntryTrace(a, *r.Ready, *r.Failure) == nil
+	return isR1Entry(a) && a.Phase == "complete" && a.Empty && a.TargetExited && a.PopulatedLive && a.SliceStopped && a.EntryIntegrityFailure == "" && r != nil && r.FailureReason == "" && r.Host != nil && validateEntryHost(r.Host) == nil && r.Main != nil && r.Child != nil && r.Endpoints != nil && r.Ready != nil && r.Failure != nil && r.Terminal && r.Natural && r.ExpectedExit && validDigest(r.OutputSHA256) && expectedEntryTrace(a, *r.Ready, *r.Failure) == nil
+}
+
+// Older entry records may still carry the original dispatch label. Retain only
+// unambiguous facts before reconciliation overwrites it. An already ambiguous
+// cleanup label cannot establish an absent dispatch fact.
+func retainEntryIntents(a *Attempt) {
+	r := a.EntryRuntime
+	if r == nil {
+		return
+	}
+	if a.Stage == "retained-parent-intent" || a.Phase == "launching-slice" || a.Phase == "slice-bound" || a.Phase == "launching-service" || a.Workload != nil || r.ParentOnly || r.WrapperIntent || a.Stage == "tool-start-intent" {
+		r.ParentStartIntent = true
+	}
+	if a.Stage == "tool-start-intent" || a.Phase == "launching-service" || a.Workload != nil || r.WrapperIntent {
+		r.ToolDispatchIntent = true
+	}
 }
 
 func validateEntryHost(h *R1EntryHost) error {

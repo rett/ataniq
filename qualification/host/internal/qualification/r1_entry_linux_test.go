@@ -71,13 +71,14 @@ func entryTestFixture(t *testing.T) *entryFixture {
 	x.parent.Boundary.Path = root + "/" + a.Slice
 	x.parent.Properties["ControlGroup"] = x.parent.Boundary.Path
 	x.parent.Properties["Description"] = "ataniq-entry-" + a.ID
-	for k, v := range map[string]string{"Transient": "yes", "MemoryMax": "268435456", "MemorySwapMax": "0", "TasksMax": "64", "CPUQuotaPerSecUSec": "1s"} {
+	for k, v := range map[string]string{"Transient": "yes", "MemoryMax": "268435456", "MemorySwapMax": "0", "MemoryHigh": "infinity", "TasksMax": "64", "CPUQuotaPerSecUSec": "1s"} {
 		x.parent.Properties[k] = v
 	}
 	x.service.Boundary.Path = x.parent.Boundary.Path + "/" + a.Service
 	x.service.Properties["ControlGroup"] = x.service.Boundary.Path
 	x.service.Properties["MemoryMax"], x.service.Properties["RuntimeMaxUSec"] = "100663296", "30s"
 	x.service.Properties["MemorySwapMax"], x.service.Properties["Delegate"] = "0", "no"
+	x.service.Properties["MemoryHigh"], x.service.Properties["OOMPolicy"] = "infinity", "kill"
 	x.service.Main.Cgroup = x.service.Boundary.Path
 	i := Injection{Version: 1, Attempt: a.ID, Invocation: x.service.Properties["InvocationID"], Process: *x.service.Main, Boundary: x.service.Boundary, Fixture: a.Fixture, Descriptors: expectedDescriptors(a), Profile: a.Profile, RunID: a.Config.RunID, RequestID: a.Config.RequestID, RoleID: a.Config.RoleID, DescriptorPolicy: a.DescriptorPolicy}
 	b, _ = json.Marshal(i)
@@ -392,7 +393,7 @@ func TestR1EntrySelectionAndImmutableLaunch(t *testing.T) {
 	if err := a.Config.validate(); err != nil {
 		t.Fatal(err)
 	}
-	wantParent := []string{"--user", "--timeout=5s", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", a.Slice, "fail", "7", "Description", "s", "ataniq-entry-" + a.ID, "StopWhenUnneeded", "b", "false", "MemoryMax", "t", "268435456", "MemorySwapMax", "t", "0", "TasksMax", "t", "64", "CPUQuotaPerSecUSec", "t", "1000000", "DefaultDependencies", "b", "true", "0"}
+	wantParent := []string{"--user", "--timeout=5s", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", a.Slice, "fail", "8", "Description", "s", "ataniq-entry-" + a.ID, "StopWhenUnneeded", "b", "false", "MemoryMax", "t", "268435456", "MemorySwapMax", "t", "0", "MemoryHigh", "t", "18446744073709551615", "TasksMax", "t", "64", "CPUQuotaPerSecUSec", "t", "1000000", "DefaultDependencies", "b", "true", "0"}
 	if !reflect.DeepEqual(entryParentArgs(a), wantParent) {
 		t.Fatal("fixed parent authority changed")
 	}
@@ -413,7 +414,7 @@ func TestR1EntrySelectionAndImmutableLaunch(t *testing.T) {
 	if !strings.HasSuffix(args, "-- /probe --r1-memory") || strings.Contains(args, "fixture-root") || !strings.Contains(args, "--dev-bind /dev/null /dev/null") || strings.Contains(args, "--dev /dev") {
 		t.Fatal(args)
 	}
-	for _, want := range []string{"RuntimeMaxSec=30s", "TimeoutStopSec=3s", "MemoryMax=100663296", "MemorySwapMax=0", "Delegate=no"} {
+	for _, want := range []string{"RuntimeMaxSec=30s", "TimeoutStopSec=3s", "MemoryMax=100663296", "MemorySwapMax=0", "MemoryHigh=infinity", "OOMPolicy=kill", "Delegate=no"} {
 		if !strings.Contains(strings.Join(a.Launch, " "), want) {
 			t.Fatal(want)
 		}

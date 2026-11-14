@@ -383,6 +383,8 @@ func (c *Campaign) observeEntry(a *Attempt, h hostIO, ready R1Evidence, receipt 
 		c.failEntryIntegrity(a)
 		return nil, errors.New("entry ready binding mismatch")
 	}
+	// This reserves a receipt-relative margin, not the actor's remaining wait:
+	// emission can precede receipt. Final pidfd checks still require live actors.
 	deadline := receipt.Add(R1ReleaseWait - 250*time.Millisecond)
 	start := entryNow(h)
 	if !start.Before(deadline) {

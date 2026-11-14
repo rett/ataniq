@@ -33,6 +33,7 @@ type hostIO struct {
 	entryEndpoints func(Process, Process) (R1EntryEndpoints, error)
 	entrySafety    func(*Attempt, *Unit) error
 	entryNull      func() (R1NullDevice, error)
+	entryRead      func(string, string) ([]byte, error)
 	entryTree      func(Boundary, Boundary) error
 	deadlineCall   func(string, []string, time.Time) (string, error)
 	entryUntil     time.Time
@@ -228,8 +229,8 @@ func (h hostIO) service(a *Attempt) (*Unit, error) {
 			return nil, fmt.Errorf("unverified safety property %s", key)
 		}
 	}
-	if isR1Entry(a) && (p["MemorySwapMax"] != "0" || p["Delegate"] != "no") {
-		return nil, errors.New("entry swap/delegation unverified")
+	if isR1Entry(a) && (p["MemorySwapMax"] != "0" || p["MemoryHigh"] != "infinity" || p["OOMPolicy"] != "kill" || p["Delegate"] != "no") {
+		return nil, errors.New("entry swap/high/OOM/delegation unverified")
 	}
 	if !commandMatches(a, p["ExecStart"]) {
 		return nil, errors.New("service command mismatch")

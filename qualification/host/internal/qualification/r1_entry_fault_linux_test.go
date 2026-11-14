@@ -670,7 +670,7 @@ func TestR1EntryLostParentAcknowledgementAdoptsBeforeCleanup(t *testing.T) {
 }
 
 func TestR1EntrySafetyReadbackFailureNeverReleasesWrapper(t *testing.T) {
-	for _, which := range []string{"tool-memory", "tool-swap", "tool-runtime", "tool-delegate", "parent-memory", "parent-swap", "parent-tasks", "parent-cpu", "effective", "tree"} {
+	for _, which := range []string{"tool-memory", "tool-swap", "tool-high", "tool-oom", "tool-runtime", "tool-delegate", "parent-memory", "parent-swap", "parent-high", "parent-tasks", "parent-cpu", "effective", "tree"} {
 		t.Run(which, func(t *testing.T) {
 			f := entryTestFixture(t)
 			switch which {
@@ -678,6 +678,10 @@ func TestR1EntrySafetyReadbackFailureNeverReleasesWrapper(t *testing.T) {
 				f.service.Properties["MemoryMax"] = "67108864"
 			case "tool-swap":
 				f.service.Properties["MemorySwapMax"] = "max"
+			case "tool-high":
+				f.service.Properties["MemoryHigh"] = "100663296"
+			case "tool-oom":
+				f.service.Properties["OOMPolicy"] = "continue"
 			case "tool-runtime":
 				f.service.Properties["RuntimeMaxUSec"] = "20s"
 			case "tool-delegate":
@@ -686,6 +690,8 @@ func TestR1EntrySafetyReadbackFailureNeverReleasesWrapper(t *testing.T) {
 				f.parent.Properties["MemoryMax"] = "max"
 			case "parent-swap":
 				f.parent.Properties["MemorySwapMax"] = "max"
+			case "parent-high":
+				f.parent.Properties["MemoryHigh"] = "268435456"
 			case "parent-tasks":
 				f.parent.Properties["TasksMax"] = "infinity"
 			case "parent-cpu":

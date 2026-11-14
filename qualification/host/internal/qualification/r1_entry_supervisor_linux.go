@@ -12,14 +12,14 @@ import (
 	"time"
 )
 
-const entryServiceProperties = properties + ",MemorySwapMax,Delegate,Result,ExecMainCode,ExecMainStatus"
-const entryParentProperties = parentProperties + ",Description,Transient,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
+const entryServiceProperties = properties + ",MemorySwapMax,MemoryHigh,OOMPolicy,Delegate,Result,ExecMainCode,ExecMainStatus"
+const entryParentProperties = parentProperties + ",Description,Transient,MemoryMax,MemorySwapMax,MemoryHigh,TasksMax,CPUQuotaPerSecUSec"
 
 func entryParentArgs(a *Attempt) []string {
 	// Public user-manager API; exact typed properties are immutable controller
 	// code. No unit files, drop-ins, policy updates or arbitrary bus operations.
 	return []string{"--user", "--timeout=5s", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))",
-		a.Slice, "fail", "7", "Description", "s", "ataniq-entry-" + a.ID, "StopWhenUnneeded", "b", "false", "MemoryMax", "t", "268435456", "MemorySwapMax", "t", "0", "TasksMax", "t", "64", "CPUQuotaPerSecUSec", "t", "1000000", "DefaultDependencies", "b", "true", "0"}
+		a.Slice, "fail", "8", "Description", "s", "ataniq-entry-" + a.ID, "StopWhenUnneeded", "b", "false", "MemoryMax", "t", "268435456", "MemorySwapMax", "t", "0", "MemoryHigh", "t", "18446744073709551615", "TasksMax", "t", "64", "CPUQuotaPerSecUSec", "t", "1000000", "DefaultDependencies", "b", "true", "0"}
 }
 
 func (h hostIO) startEntryParent(a *Attempt) error {
@@ -48,16 +48,21 @@ func (h hostIO) entryEffective(u *Unit, parent bool) error {
 	if h.budget != nil {
 		return h.budget(u)
 	}
-	wants := map[string]string{"memory.max": "100663296", "memory.swap.max": "0", "pids.max": "32", "cpu.max": "100000 100000"}
+	wants := map[string]string{"memory.max": "100663296", "memory.swap.max": "0", "memory.high": "max", "memory.oom.group": "1", "pids.max": "32", "cpu.max": "100000 100000"}
 	if parent {
 		wants["memory.max"], wants["pids.max"] = "268435456", "64"
+		delete(wants, "memory.oom.group") // OOMPolicy is service-only.
+	}
+	read := h.entryRead
+	if read == nil {
+		read = entryKernel
 	}
 	before, err := h.boundary(u.Boundary.Path)
 	if err != nil || before != u.Boundary {
 		return errors.New("entry budget boundary replaced")
 	}
 	for key, want := range wants {
-		b, err := entryKernel(u.Boundary.Path, key)
+		b, err := read(u.Boundary.Path, key)
 		if err != nil || strings.TrimSpace(string(b)) != want {
 			return fmt.Errorf("entry effective %s unverified", key)
 		}
@@ -74,7 +79,7 @@ func validateEntryParent(a *Attempt, u *Unit) error {
 	if u.Properties["Description"] != "ataniq-entry-"+a.ID {
 		return errors.New("entry parent description mismatch")
 	}
-	for k, want := range map[string]string{"Transient": "yes", "MemoryMax": "268435456", "MemorySwapMax": "0", "TasksMax": "64", "CPUQuotaPerSecUSec": "1s"} {
+	for k, want := range map[string]string{"Transient": "yes", "MemoryMax": "268435456", "MemorySwapMax": "0", "MemoryHigh": "infinity", "TasksMax": "64", "CPUQuotaPerSecUSec": "1s"} {
 		if u.Properties[k] != want {
 			return errors.New("entry parent safety property unverified")
 		}
@@ -252,6 +257,7 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 		return c.Save(a, "complete", a.Reason)
 	}
 	if a.EntryRuntime != nil {
+		retainEntryIntents(a)
 		a.EntryRuntime.Natural = false
 		a.EntryRuntime.ExpectedExit = false
 	}
@@ -265,7 +271,7 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 			return c.Save(a, "complete", a.Reason)
 		}
 	}
-	prelaunch := a.Workload == nil && (a.Phase == "slice-bound" || a.Phase == "launching-slice" || a.Phase == "launch-unknown" && a.Stage == "retained-parent-intent" || entryParentOnly(a))
+	prelaunch := a.Workload == nil && a.EntryRuntime != nil && a.EntryRuntime.ParentStartIntent && !a.EntryRuntime.ToolDispatchIntent
 	a.Stage = "entry-reconcile-parent"
 	parent, err := h.parent(a)
 	if err != nil {
@@ -274,7 +280,7 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 	if a.Parent == nil {
 		// A successful public StartTransientUnit with lost acknowledgement is
 		// adoptable only from the fresh intent and exact fixed parent properties.
-		if a.Phase != "launching-slice" && a.Phase != "launch-unknown" {
+		if a.EntryRuntime == nil || !a.EntryRuntime.ParentStartIntent {
 			return c.unknown(a, "cleanup-unknown", errors.New("original entry parent missing"))
 		}
 		a.Parent = parent
@@ -283,11 +289,12 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 		}
 	}
 	pop, err := h.population(parent.Boundary)
-	if err != nil {
+	populationErr := err
+	if err != nil && prelaunch {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
 	if a.Workload == nil {
-		if prelaunch && !pop && a.EntryRuntime != nil && !a.EntryRuntime.WrapperIntent {
+		if prelaunch && populationErr == nil && !pop && a.EntryRuntime != nil && !a.EntryRuntime.WrapperIntent {
 			b, err := h.ctl(a, "show", "--all", "--property="+freshProperties, "--", a.Service)
 			if err != nil {
 				return c.unknown(a, "cleanup-unknown", err)
@@ -304,26 +311,41 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 		if err != nil {
 			return c.unknown(a, "cleanup-unknown", err)
 		}
-		i, err := readInjection(filepath.Join(c.Path, a.ID, "injection.json"))
-		if err != nil || validateInjection(a, i, u) != nil {
-			return c.unknown(a, "cleanup-unknown", errors.New("original entry service identity unavailable"))
-		}
-		a.Workload, a.Injector, a.Target = u, &i, &i.Process
-		a.PopulatedLive = pop
-		// Save adoption before any cleanup effect, even after a failed observation.
+		a.Workload = u
+		// Service-generation authority is independent of the injector receipt.
+		// Save this partial adoption before any stop, even if that file is lost.
 		if err := c.Save(a, "cleanup-unknown", a.Reason); err != nil {
 			return err
 		}
 	}
-	if a.Injector == nil || a.Target == nil || !a.PopulatedLive {
-		return c.unknown(a, "cleanup-unknown", errors.New("original entry stop authority absent"))
+	var injectionErr error
+	if a.Injector == nil && a.Target == nil {
+		i, err := readInjection(filepath.Join(c.Path, a.ID, "injection.json"))
+		if err == nil {
+			err = validateInjection(a, i, a.Workload)
+		}
+		if err != nil {
+			injectionErr = errors.New("original entry injection evidence unavailable")
+		} else {
+			a.Injector, a.Target = &i, &i.Process
+			if err := c.Save(a, "cleanup-unknown", a.Reason); err != nil {
+				return err
+			}
+		}
 	}
-	if pop {
+	if pop || populationErr != nil {
 		u, err := h.service(a)
 		if err != nil || !sameUnit(u, a.Workload) {
 			return c.unknown(a, "cleanup-unknown", errors.New("entry stop generation unproved"))
 		}
-		if err := c.Save(a, "cancelling", a.Reason); err != nil {
+		a.EntryRuntime.ServiceStopIntent = true
+		// Unknown population withholds emptiness/completion, but does not
+		// invalidate this independently checked current service generation.
+		reason := a.Reason
+		if populationErr != nil {
+			reason = hostReason(populationErr)
+		}
+		if err := c.Save(a, "cancelling", reason); err != nil {
 			return err
 		}
 		if _, err := h.ctl(a, "stop", "--", a.Service); err != nil {
@@ -346,6 +368,15 @@ func (c *Campaign) reconcileEntry(a *Attempt, h hostIO) error {
 	}
 	if pop {
 		return c.unknown(a, "cleanup-unknown", errors.New("entry parent remains populated"))
+	}
+	if err := h.terminal(a); err != nil {
+		return c.unknown(a, "cleanup-unknown", err)
+	}
+	if a.EntryRuntime.ServiceStopIntent {
+		a.EntryRuntime.ServiceStopped = true
+	}
+	if a.Injector == nil || a.Target == nil {
+		return c.unknown(a, "cleanup-unknown", errors.Join(injectionErr, errors.New("original entry termination identities absent; service terminal only")))
 	}
 	originals := []Process{a.Injector.Process, *a.Target}
 	if r := a.EntryRuntime; r != nil {
