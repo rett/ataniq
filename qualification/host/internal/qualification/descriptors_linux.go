@@ -50,10 +50,23 @@ func permittedDescriptor(role string, fd int) bool {
 	return false
 }
 
+func permittedForAttempt(a *Attempt, fd int) bool {
+	if a.Config.DescriptorProfile != FD1TypedProfile {
+		return permittedDescriptor(a.Config.Role, fd)
+	}
+	if fd >= 0 && fd <= 2 {
+		return true
+	}
+	if fd == BPFFD {
+		return a.Config.Role == "candidate" || a.Config.Role == "weakened-synthetic"
+	}
+	return (a.Config.Role == "direct" || a.Config.Role == "weakened-synthetic") && (fd == FD1DirectoryFD || fd == FD1PipeFD || fd == FD1SocketFD || fd == FD1RegularFD)
+}
+
 func descriptorReceipt(a *Attempt) DescriptorReceipt {
 	r := DescriptorReceipt{Version: 1, Attempt: a.ID, Invocation: a.Injector.Invocation, Policy: a.DescriptorPolicy, PlanSHA256: a.PlanSHA256, Role: a.Config.Role, Process: a.Injector.Process, Descriptors: expectedDescriptors(a), Command: a.TargetCommand, EmptyEnvironment: true, Stage: "prepared-before-unshare", Allowed: []int{}, Denied: []int{}}
 	for _, d := range r.Descriptors {
-		if permittedDescriptor(a.Config.Role, d.FD) {
+		if permittedForAttempt(a, d.FD) {
 			r.Allowed = append(r.Allowed, d.FD)
 		} else {
 			r.Denied = append(r.Denied, d.FD)
@@ -88,6 +101,14 @@ func prepareDescriptorExec(a *Attempt) (*descriptorExec, error) {
 	if a.DescriptorPolicy != FinalDescriptorPolicy || a.Config.validate() != nil || len(a.TargetCommand) == 0 {
 		return nil, errors.New("invalid final descriptor role or target")
 	}
+	if a.Config.DescriptorProfile == FD1TypedProfile {
+		if err := authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
+			return nil, err
+		}
+		if err := verifyFD1Endpoints(a); err != nil {
+			return nil, err
+		}
+	}
 	p := &descriptorExec{command: append([]string(nil), a.TargetCommand...), environment: []string{}, diagnostic: []byte("final-fds stage=00 errno=0000\n")}
 	for _, d := range expectedDescriptors(a) {
 		var st syscall.Stat_t
@@ -97,10 +118,15 @@ func prepareDescriptorExec(a *Attempt) (*descriptorExec, error) {
 		if d.FD == 1 || d.FD == 2 {
 			wantAccess = syscall.O_WRONLY | syscall.O_APPEND
 		}
-		if syscall.Fstat(d.FD, &st) != nil || err != nil || e != 0 || flags != 0 || st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Nlink != 1 || (FileIdentity{st.Dev, st.Ino, st.Uid}) != d.Identity || int(access)&(syscall.O_ACCMODE|syscall.O_APPEND) != wantAccess {
+		kind := uint32(syscall.S_IFREG)
+		if a.Config.DescriptorProfile == FD1TypedProfile && d.FD > 2 && d.FD != BPFFD {
+			kind = fd1Kind(d.FD)
+			wantAccess = fd1ExpectedFlags(d.FD) & (syscall.O_ACCMODE | syscall.O_APPEND)
+		}
+		if syscall.Fstat(d.FD, &st) != nil || err != nil || e != 0 || flags != 0 || st.Mode&syscall.S_IFMT != kind || kind == syscall.S_IFREG && st.Nlink != 1 || (FileIdentity{st.Dev, st.Ino, st.Uid}) != d.Identity || int(access)&(syscall.O_ACCMODE|syscall.O_APPEND|0x200000) != wantAccess {
 			return nil, errors.New("final descriptor identity/access/flags mismatch")
 		}
-		p.fds = append(p.fds, terminalFD{d.FD, st, int(access), permittedDescriptor(a.Config.Role, d.FD)})
+		p.fds = append(p.fds, terminalFD{d.FD, st, int(access), permittedForAttempt(a, d.FD)})
 	}
 	for _, fd := range fakeFDs(a) {
 		if err := verifyFakeFD(fd, a.Fixture); err != nil {
@@ -135,6 +161,9 @@ func PrivateFinalDescriptors(path string) error {
 	a, err := c.read(filepath.Base(path))
 	if err != nil || a.DescriptorPolicy != FinalDescriptorPolicy || a.Phase != "released" || a.Injector == nil || a.Target == nil || time.Now().Unix() > a.NotAfter {
 		return errors.New("final descriptor intent not released")
+	}
+	if err := freshFD1Control(a, time.Now().Unix()); err != nil {
+		return err
 	}
 	b, err := readOwned(filepath.Join(path, "release.json"), 4096)
 	var r release
@@ -202,7 +231,7 @@ func (p *descriptorExec) exec() {
 		if e != 0 {
 			p.die(2, e)
 		}
-		if st.Dev != d.stat.Dev || st.Ino != d.stat.Ino || st.Uid != d.stat.Uid || st.Mode != d.stat.Mode || st.Nlink != 1 || st.Size != d.stat.Size || st.Mtim != d.stat.Mtim || st.Ctim != d.stat.Ctim {
+		if st.Dev != d.stat.Dev || st.Ino != d.stat.Ino || st.Uid != d.stat.Uid || st.Mode != d.stat.Mode || st.Nlink != d.stat.Nlink || st.Mode&syscall.S_IFMT == syscall.S_IFREG && st.Nlink != 1 || st.Size != d.stat.Size || st.Mtim != d.stat.Mtim || st.Ctim != d.stat.Ctim {
 			p.die(2, syscall.ESTALE)
 		}
 		access, _, e := syscall.RawSyscall(syscall.SYS_FCNTL, uintptr(d.fd), syscall.F_GETFL, 0)

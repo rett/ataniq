@@ -175,6 +175,10 @@ func TestDescriptorChild(t *testing.T) {
 		return
 	}
 	dir, role, scenario := args[0], args[1], args[2]
+	if strings.HasPrefix(scenario, "typed-") {
+		typedDescriptorChild(t, dir, role, strings.TrimPrefix(scenario, "typed-"))
+		return
+	}
 	a := childAttempt(t, dir, role)
 	// Preflight failures are produced using only owned regular file fixtures.
 	switch scenario {

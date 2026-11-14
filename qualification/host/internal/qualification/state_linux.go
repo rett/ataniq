@@ -102,6 +102,7 @@ type ControlBinding struct {
 	ValidatedAt   int64  `json:"validated_at"`
 	MaxAgeSeconds int64  `json:"max_age_seconds"`
 	PlanSHA256    string `json:"plan_sha256"`
+	DirectCreated *int64 `json:"direct_created,omitempty"`
 }
 
 // Campaign owns a single flock for its entire lifetime. A failed durable update

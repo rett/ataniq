@@ -135,7 +135,11 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 			return nil, errors.New("valid matching direct control required")
 		}
 		a.FixtureNonce = d.FixtureNonce
-		a.Control = &ControlBinding{d.ID, config.RunID, a.Boot, time.Now().Unix(), 300, d.PlanSHA256}
+		a.Control = &ControlBinding{Attempt: d.ID, RunID: config.RunID, Boot: a.Boot, ValidatedAt: time.Now().Unix(), MaxAgeSeconds: 300, PlanSHA256: d.PlanSHA256}
+		if config.DescriptorProfile == FD1TypedProfile {
+			created := d.Created
+			a.Control.DirectCreated = &created
+		}
 	}
 	path := filepath.Join(c.Path, a.ID)
 	a.Command = command(a, path)
@@ -362,6 +366,15 @@ func validProcess(p Process) bool {
 func validateStored(a *Attempt) error {
 	if err := validateFD1Runtime(a, a.FD1Runtime); err != nil {
 		return err
+	}
+	if a.Injector != nil && !sameJSON(a.FD1Runtime, a.Injector.FD1Runtime) {
+		return errors.New("stored typed runtime disagrees with injector")
+	}
+	if a.Config.DescriptorProfile == "" && a.Control != nil && a.Control.DirectCreated != nil {
+		return errors.New("unexpected typed control evidence")
+	}
+	if a.Config.DescriptorProfile == FD1TypedProfile && needsDirectControl(a) && (a.Control == nil || a.Control.DirectCreated == nil || *a.Control.DirectCreated <= 0 || *a.Control.DirectCreated > a.Control.ValidatedAt || a.Control.ValidatedAt-*a.Control.DirectCreated > 300) {
+		return errors.New("invalid typed control freshness binding")
 	}
 	if a.DescriptorReceipt != nil && validateDescriptorReceipt(a, *a.DescriptorReceipt) != nil {
 		return errors.New("invalid stored descriptor receipt")

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type HostReport struct {
@@ -115,6 +116,9 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if _, err = h.parent(a); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
 	}
+	if err = freshFD1Control(a, time.Now().Unix()); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
 	if err = c.Save(a, "bound", ""); err != nil {
 		return err
 	}
@@ -122,6 +126,9 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 		return err
 	}
 	a.Stage = "release"
+	if err = freshFD1Control(a, time.Now().Unix()); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
 	if err = authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
 		return c.unknown(a, "launch-unknown", err)
 	}
@@ -279,6 +286,9 @@ func validateReady(a *Attempt, f HoldFrame, p Process) error {
 func (c *Campaign) collect(a *Attempt) error {
 	if !a.Empty || !a.TargetExited || !a.PopulatedLive || !a.SliceStopped {
 		return errors.New("collection without complete boundary proof")
+	}
+	if err := authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
+		return err
 	}
 	root, err := os.OpenRoot(filepath.Join(c.Path, a.ID))
 	if err != nil {

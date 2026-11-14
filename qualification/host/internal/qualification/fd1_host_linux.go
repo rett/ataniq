@@ -40,6 +40,17 @@ func needsDirectControl(a *Attempt) bool {
 	return a.Config.Role == "candidate" && (a.Config.Case == "fake-fd" || a.Config.DescriptorProfile == FD1TypedProfile)
 }
 
+func freshFD1Control(a *Attempt, now int64) error {
+	if a.Config.DescriptorProfile != FD1TypedProfile || !needsDirectControl(a) {
+		return nil
+	}
+	c := a.Control
+	if c == nil || c.Attempt != a.Config.DirectControl || c.RunID != a.Config.RunID || c.Boot != a.Boot || c.MaxAgeSeconds != 300 || c.DirectCreated == nil || *c.DirectCreated <= 0 || c.ValidatedAt < *c.DirectCreated || now < c.ValidatedAt || now-*c.DirectCreated > 300 {
+		return errors.New("typed direct control expired before release")
+	}
+	return nil
+}
+
 func fd1LeafBytes(nonce string) []byte { return []byte("ataniq-fd1-leaf-v1 " + nonce + "\n") }
 
 func prepareFD1Static(a *Attempt, path string) error {
@@ -86,6 +97,9 @@ func validateFD1Static(a *Attempt, path string) error {
 }
 
 func verifyFD1Static(a *Attempt) error {
+	if a.Config.DescriptorProfile != FD1TypedProfile || a.FD1Static == nil {
+		return errors.New("missing fixed typed static fixture")
+	}
 	if err := validateFD1Static(a, filepath.Join(a.Config.Campaign, a.ID)); err != nil {
 		return err
 	}
@@ -143,6 +157,9 @@ func validateFD1Runtime(a *Attempt, r *FD1Runtime) error {
 		}
 		return nil
 	}
+	if a.Config.DescriptorProfile != FD1TypedProfile {
+		return errors.New("unknown runtime descriptor profile")
+	}
 	if r == nil {
 		if a.Injector != nil || a.Phase == "bound" || a.Phase == "released" || a.Phase == "complete" {
 			return errors.New("missing typed runtime binding")
@@ -151,6 +168,9 @@ func validateFD1Runtime(a *Attempt, r *FD1Runtime) error {
 	}
 	if a.Config.DescriptorProfile != FD1TypedProfile || a.FD1Static == nil || r.Bindings.Validate() != nil || !r.SourcesClosed || len(r.Endpoints) != 4 {
 		return errors.New("invalid typed runtime evidence")
+	}
+	if err := validateFD1Static(a, filepath.Join(a.Config.Campaign, a.ID)); err != nil {
+		return err
 	}
 	b, s := r.Bindings, a.FD1Static
 	if b.PlanSHA256 != a.PlanSHA256 || b.RunID != a.Config.RunID || b.RequestID != a.Config.RequestID || b.AttemptID != a.ID || b.Profile != a.Config.DescriptorProfile || b.Nonce != a.FixtureNonce ||
@@ -183,6 +203,10 @@ func authenticateFD1Runtime(a *Attempt, r *FD1Runtime) error {
 	s, data, err := subject(r.Artifact.Path, false, false, true, MaxFD1BindingBytes)
 	if err != nil || s != r.Artifact {
 		return errors.New("typed artifact subject changed")
+	}
+	fi, err := os.Lstat(r.Artifact.Path)
+	if err != nil || fi.Mode().Perm() != 0400 || identity(fi) != s.Identity {
+		return errors.New("typed artifact not frozen read-only")
 	}
 	b, err := DecodeFD1Bindings(bytes.NewReader(data))
 	if err != nil || !sameJSON(b, r.Bindings) {

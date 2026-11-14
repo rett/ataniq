@@ -13,15 +13,30 @@ import (
 // Identity matches are separate from descriptor numbers. A probe/runtime may
 // reuse a number; absence at 512 alone cannot establish capability exclusion.
 type DescriptorObservation struct {
-	Complete    bool   `json:"complete"`
-	FakeMatches []int  `json:"fake_matches"`
-	BPFMatches  []int  `json:"bpf_matches"`
-	Fake512     string `json:"fake512"`
-	BPF513      string `json:"bpf513"`
+	Complete    bool           `json:"complete"`
+	FakeMatches []int          `json:"fake_matches"`
+	BPFMatches  []int          `json:"bpf_matches"`
+	Fake512     string         `json:"fake512"`
+	BPF513      string         `json:"bpf513"`
+	Typed       []FD1Inventory `json:"typed,omitempty"`
+}
+
+type FD1Inventory struct {
+	FD      int    `json:"fd"`
+	Matches []int  `json:"matches"`
+	Slot    string `json:"slot"`
 }
 
 func observeDescriptorIdentities(a *Attempt, o Observation) DescriptorObservation {
 	r := DescriptorObservation{FakeMatches: []int{}, BPFMatches: []int{}, Fake512: "absent", BPF513: "absent"}
+	if a.Config.DescriptorProfile == FD1TypedProfile {
+		if a.FD1Runtime == nil || validateFD1Runtime(a, a.FD1Runtime) != nil {
+			return r
+		}
+		for _, e := range a.FD1Runtime.Endpoints {
+			r.Typed = append(r.Typed, FD1Inventory{FD: e.FD, Matches: []int{}, Slot: "absent"})
+		}
+	}
 	// Require one exact declared table, with no unavailable, duplicate or
 	// undeclared FD facts. Other inventory families have independent evidence.
 	facts := map[string]string{}
@@ -56,6 +71,26 @@ func observeDescriptorIdentities(a *Attempt, o Observation) DescriptorObservatio
 		}
 		fake := d.Device == a.Fixture.Identity.Device && d.Inode == a.Fixture.Identity.Inode
 		bpf := d.Device == a.Snapshots["bpf"].Identity.Device && d.Inode == a.Snapshots["bpf"].Identity.Inode
+		if a.Config.DescriptorProfile == FD1TypedProfile {
+			if bpf && d.Mode&syscall.S_IFMT != syscall.S_IFREG {
+				return r
+			}
+			for j, e := range a.FD1Runtime.Endpoints {
+				match := d.Device == e.Identity.Device && d.Inode == e.Identity.Inode
+				if match {
+					if d.Mode != e.Mode {
+						return r
+					}
+					r.Typed[j].Matches = append(r.Typed[j].Matches, d.Number)
+				}
+				if d.Number == e.FD {
+					r.Typed[j].Slot = "reused"
+					if match {
+						r.Typed[j].Slot = "synthetic-identity"
+					}
+				}
+			}
+		}
 		if fake {
 			r.FakeMatches = append(r.FakeMatches, d.Number)
 		}
@@ -85,6 +120,17 @@ func observeDescriptorIdentities(a *Attempt, o Observation) DescriptorObservatio
 }
 
 func validateDescriptorObservations(a *Attempt, o Observation) error {
+	if a.Config.DescriptorProfile == FD1TypedProfile {
+		if a.FD1Runtime == nil || validateFD1Runtime(a, a.FD1Runtime) != nil {
+			return errors.New("typed observation without runtime binding")
+		}
+		if o.Status != "observed" || o.RunID != a.Config.RunID || o.RequestID != a.Config.RequestID || o.Case != a.Request.Case {
+			return errors.New("incomplete typed observation context")
+		}
+		if a.Config.Case != "inventory" {
+			return validateFD1Operation(a, o)
+		}
+	}
 	switch a.Config.Case {
 	case "inventory":
 		r := observeDescriptorIdentities(a, o)
@@ -95,6 +141,21 @@ func validateDescriptorObservations(a *Attempt, o Observation) error {
 		// A reused 513 is retained as such and cannot count as verified closure.
 		if len(r.BPFMatches) != 0 || r.BPF513 != "absent" {
 			return errors.New("post-exec BPF consumption not observed")
+		}
+		if a.Config.DescriptorProfile == FD1TypedProfile {
+			if len(r.Typed) != 4 {
+				return errors.New("missing typed inventory identities")
+			}
+			for _, e := range r.Typed {
+				if a.Config.Role == "candidate" {
+					if len(e.Matches) != 0 || e.Slot != "absent" {
+						return errors.New("typed capability exclusion not observed")
+					}
+				} else if len(e.Matches) != 1 || e.Matches[0] != e.FD || e.Slot != "synthetic-identity" {
+					return errors.New("typed capability not exclusive at fixed slot")
+				}
+			}
+			return nil
 		}
 		switch a.Config.Role {
 		case "candidate":
@@ -131,4 +192,31 @@ func validateDescriptorObservations(a *Attempt, o Observation) error {
 		}
 	}
 	return nil
+}
+
+func validateFD1Operation(a *Attempt, o Observation) error {
+	if a.Config.Role == "candidate" {
+		if factValue(o, "stage") != "fstat" || o.Errno == nil || *o.Errno != int(syscall.EBADF) {
+			return errors.New("typed selected slot fstat EBADF not observed")
+		}
+		return nil
+	}
+	if o.Errno != nil || factValue(o, "stage") != "" || factValue(o, "identity_match") != "true" {
+		return errors.New("typed control identity recovery incomplete")
+	}
+	switch a.Request.Case {
+	case CaseFakeFD:
+		if factValue(o, "digest_match") == "true" {
+			return nil
+		}
+	case CaseFakeDirFD:
+		if factValue(o, "opened") == "true" && factValue(o, "read_success") == "true" && factValue(o, "digest_match") == "true" {
+			return nil
+		}
+	case CaseFakePipeFD, CaseFakeSocketFD:
+		if factValue(o, "read_success") == "true" && factValue(o, "frame_match") == "true" && factValue(o, "eof") == "true" {
+			return nil
+		}
+	}
+	return errors.New("typed control recovery incomplete")
 }
