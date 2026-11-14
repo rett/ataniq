@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Update the design index to describe the implemented guarded dispatch journal.
+
 - Validate journal policy and grant expiry bounds by UTC instant across caller
   and host timezones.
 
