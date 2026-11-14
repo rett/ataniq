@@ -6,6 +6,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Pin the SQLite journal driver and preserve its dependency notices.
+
 ## [0.0.2] - 2026-11-14
 
 ### Added
