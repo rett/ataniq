@@ -9,7 +9,8 @@ no pass or support field in workload or driver output.
 
 The overall design has two entrypoints: a trusted driver and a static workload
 probe sharing an internal package. `qualification/host/cmd/qualify` implements
-one concrete bubblewrap profile with a private service-side reexec injector.
+one concrete bubblewrap profile with a private service-side reexec injector
+and a dedicated final descriptor reexec in the same static driver.
 There is no runtime/provider implementation, OCI backend, daemon, policy
 generator or additional module dependency. Platform-specific code has explicit
 `linux && amd64` build constraints; other platforms are outside this tranche.
@@ -26,7 +27,11 @@ sh scripts/go-tool.sh test ./qualification/host/... ./tests/...
 ```
 
 Go test compiles the CLI and tests its framing through injected streams. It
-does not execute a live inventory or launch a sandbox. Tests use owned fake
+does not launch a sandbox. Descriptor regressions execute owned child processes,
+inspect only their own FD metadata, and use synthetic regular files. Test-only
+seccomp errno rules exercise the production terminal path without production
+fault hooks. Kernel-restricted fixtures explicitly skip and remain unqualified.
+Other tests use owned fake
 files and frozen trees, synthetic metadata and optional private Unix fixtures.
 Unavailable Unix fixtures report explicit skips. Device type rejection uses
 synthetic stat metadata; tests do not create or open host devices. No backend,
@@ -108,8 +113,9 @@ These are illustrative paths, not discovery defaults. Every path is absolute,
 canonical and distinct; subjects are outside the campaign. Symlink components,
 nonregular files, hardlinks and group/other-writable subjects are rejected.
 The driver path must name the running executable. IDs use the probe vocabulary.
-Cases are `inventory`, `fake-file`, `fake-fd` and `hold`; roles are `direct` and
-`candidate`. `reviewed_bpf:true` is the operator's explicit statement that the
+Cases are `inventory`, `fake-file`, `fake-fd` and `hold`; roles are `direct`,
+`candidate` and the restricted `weakened-synthetic` control described below.
+`reviewed_bpf:true` is the operator's explicit statement that the
 selected bounded classic BPF artifact was separately reviewed for this profile;
 length checks and hashing do not review its policy. The filter must enforce
 the reviewed syscall/nested-userns restrictions. The driver retains its digest.
@@ -178,10 +184,14 @@ change. Trusted controller commands alone receive the host manager connection.
 The finite private `private-inject` reexec is run only inside this service. It
 validates exact intent/root/subjects and opens only the owned synthetic regular
 fixture and reviewed BPF subject for intentional inheritance. RLIMIT and unused
-sparse FD checks precede modification of its own child table: synthetic FD 512,
-BPF FD 513, and stdin/stdout/stderr are separately tracked, with metadata,
-digest and CLOEXEC checks. No orchestrator FD mutation or final exec.Command
-FD remapping occurs. BPF is consumed by bubblewrap and closed for direct runs.
+sparse FD checks precede modification of its own child table: synthetic FDs
+64, 512, 768 and 1000, BPF FD 513, and stdin/stdout/stderr are separately
+tracked, with metadata, digest and CLOEXEC checks. The extra synthetic slots
+are deliberately sparse aliases of the owned fake file, not additional fixture
+types. They must fit the actual RLIMIT_NOFILE and be vacant; no slot fallback
+or limit raising occurs. No orchestrator FD mutation or final exec.Command
+FD remapping occurs. The injector preserves every injected descriptor through
+its self-reexec; it does not close fake files and attribute that to bubblewrap.
 
 Before exec the injector publishes bounded owned evidence with its actual
 INVOCATION_ID, PID/starttime, namespaces/cgroup, subject and descriptor identity.
@@ -189,10 +199,105 @@ It waits at most ten seconds for its exact owned release marker. The controller
 independently binds systemd show, injector identity, pidfd, effective guards and
 parent populated=1, persists that binding and release intent, then publishes
 the marker. It is excluded from candidate mounts and closed before exec.
-Injection and executable identities are rechecked immediately before syscall.Exec
-of the direct helper or complete bubblewrap chain, with an empty environment.
+Injection and executable identities are rechecked before syscall.Exec of the
+frozen driver as `private-final-descriptors <exact-attempt-path>`, with an empty
+environment. Both direct and candidate roles use this identical injection and
+wrapper path, still before the complete backend chain.
 Failure means no backend exec; acknowledgement loss means launch-unknown,
 without a retry. Paths remain subject to the trusted frozen-tree premise.
+
+### Final descriptor policy
+
+New Prepare always chooses `descriptor_policy:"final-fds-v1"`. The exact plan
+digest includes that version, the wrapper `command`, separate `target_command`,
+launch arguments, profile, selected/frozen subject hashes, streams and original
+control bindings. There is no caller-configurable descriptor list or bypass
+flag. The verified durable role selects this compiled policy:
+
+| Role | Preserved descriptors at target exec | Target |
+| --- | --- | --- |
+| `candidate` | Owned 0–2 and reviewed read-only BPF513 | Frozen bubblewrap, then probe |
+| `direct` | Owned 0–2 and synthetic FD512; aliases denied | Frozen static probe |
+| `weakened-synthetic` | Owned 0–2, BPF513 and all four synthetic descriptors | Same bubblewrap namespace/guard profile, then probe |
+
+`weakened-synthetic` accepts only the owned `fake-fd` and `inventory` fixtures,
+rejects a direct-control reference, and cannot qualify a candidate as its direct
+control. It deliberately exposes the fake capability to check the observation
+oracle in the same binary/profile family. It is not an ordinary execution mode.
+
+The intermediate mode requires the exact released durable intent and release
+marker, matching injection evidence, campaign/attempt roots, boot, PID/start,
+executable and namespace/cgroup identities, including the retained parent
+boundary. It revalidates frozen static self, probe, bubblewrap and BPF hashes
+and the target command. It receives no `INVOCATION_ID` environment variable:
+that binding comes from the durable injector/release record and unchanged
+process identity. Manager, bus and credential environment is never forwarded.
+
+Before the terminal section it verifies every synthetic descriptor's regular
+file identity and digest, and actual owned stdio identities and flags. Stdin
+must be the request file opened read-only; stdout/stderr must be their distinct
+owned regular files opened write-only with append. All are non-CLOEXEC.
+BPF513 must match the frozen singly linked regular subject, be read-only and
+non-CLOEXEC, match its digest through bounded Pread and have offset zero.
+Pread does not consume the shared offset. This ordinary frozen owned BPF file
+does not require memfd seals. The trusted host must exclude concurrent writable
+aliases and changes to its content, offset or status flags: table unsharing
+does not isolate open-file-description state.
+
+Arguments, the empty final environment, validation buffers and bounded evidence
+are prepared before unsharing. The mode pins its goroutine with LockOSThread,
+then issues raw Linux/amd64 syscall 436:
+`close_range(3, UINT_MAX, CLOSE_RANGE_UNSHARE|CLOSE_RANGE_CLOEXEC)`, flags `2|4`.
+On the private table it raw-revalidates identities, access modes and descriptor
+flags, including stdio and every deliberate alias, plus BPF offset zero. It
+clears CLOEXEC only for the compiled role exceptions, confirms the allowed
+flags and every deliberate denied alias's CLOEXEC, then immediately calls
+syscall.Exec once on the frozen target with the prepared empty environment.
+
+The reviewed Go/Linux syscall.Exec internally allocates argv/environment
+pointers, serializes exec against runtime thread creation and restores the
+original RLIMIT_NOFILE if Go raised it at startup. Those operations open no
+descriptors in the locked thread's private table. LockOSThread starts the Go
+template thread before unsharing; creation from a locked M uses that template.
+It does not stop existing threads. The frozen static driver and selected
+toolchain are part of this concrete premise, not a general execution framework.
+
+After the terminal block starts, any syscall, identity, flag or exec error
+exits the entire wrapper with raw exit_group, status 125. There is no unlock,
+ordinary return, proc-FD fallback, retry, callback, new file open or alternate
+launch. A fixed raw stderr diagnostic has `final-fds stage=NN errno=NNNN`;
+stages 01–08 mean close_range, identity, access, incoming flags, BPF offset,
+exception clearing, final flags and exec respectively. Unsupported/denied
+close_range blocks execution and remains unqualified.
+
+`descriptor-policy.json`, later retained as `descriptor_receipt`, records
+verified preflight and the planned role/command at `prepared-before-unshare`.
+It cannot attest that close_range or exec succeeded. Only post-exec workload
+observations establish closure facts. Hardened candidate `fake-fd` requires the
+exact FD512 fstat EBADF observation. Direct/weakened `fake-fd` require recovery
+of the expected synthetic digest. Run paired `inventory` cases as well: they
+retain every matching fake/BPF dev/inode and distinguish absent numbers from
+reused numbers in `descriptor_observation`. Candidate inventory must contain no
+fake identity anywhere; direct inventory must retain only FD512; weakened
+inventory must retain all four synthetic descriptors. Independently, BPF513
+must be absent and its identity must appear nowhere in the workload inventory,
+demonstrating bubblewrap consumption/closure rather than assuming it. Reused
+512/513 remain explicit observations and cannot satisfy these closure checks.
+Incomplete inventory remains inconclusive. Failed exclusion observations are
+retained durably after independently proved cleanup, never erased or relabeled.
+
+An absent optional policy uses the original recorded command, injection
+validator and omitted-field plan-digest encoding. Such records remain readable
+for inspect and exact cleanup, including their original failed observations;
+the new driver never launches or releases a legacy policy. New direct controls
+must bind the current policy/driver/probe/BPF/profile and matching preflight
+receipt. A legacy control cannot qualify a hardened candidate.
+
+This barrier covers inherited descriptor capabilities at the target exec only.
+Stdio remains deliberate authority. Cwd/root references, ancestor reopening,
+descriptor transfer and new descriptors opened by the trusted launcher retain
+separate gates, as does dynamic launcher dependency closure. A pre-exec flag
+receipt or a single FD512 observation is not whole-capability qualification.
 
 The concrete candidate arguments are retained verbatim: `--unshare-all`
 plus explicit `--unshare-user`, UID/GID 0 in the private mapping,
@@ -206,8 +311,9 @@ retained; requested flags alone do not prove application.
 
 For candidate `fake-fd`, include `direct_control` naming a completed direct
 `fake-fd` attempt in this campaign and run, on the same boot, at most 300 seconds
-old at selection, with matching profile/driver/probe/bwrap/BPF digests and valid
-injection/cleanup/direct digest recovery. The candidate records the control's
+old at selection, with matching current descriptor policy and
+profile/driver/probe/bwrap/BPF digests and valid injection/receipt/cleanup/direct
+digest recovery. The candidate records the control's
 plan digest, freshness/scope and a copy of its typed fresh synthetic nonce in a
 new owned file; its own FD dev/inode/digest must still match its own injection.
 Candidate EBADF is only a raw observation after these controls, never proof of
@@ -240,11 +346,22 @@ boundary-empty proof; a successful manager result alone cannot reach it.
 Deterministic checks cover acknowledgement loss, foreign invocation/cgroup/
 process identities, launchpartial, cleanupfailure, missing/collected services,
 removed cgroups, pending jobs, restart fencing/recovery, FD collisions, stale
-readiness, malformed records and sync/rename crash windows. They establish
-implementation behavior on transcripts, not actual host behavior. The separate
-coordinator retained-slice preflight is narrow host evidence, not a driver test
-or a full profile pass. Live injector/FD/hold runs, host property formats and
-launcher dependency closure remain coordinator verification gates.
+readiness, malformed records and sync/rename crash windows. Owned-child checks
+also exercise allowed descriptor roles, sparse aliases, private-table sibling
+mutation, preflight identity/access/offset failures and whole-process terminal
+failures. They establish implementation behavior, not actual backend isolation.
+
+The lead's pre-change selected bubblewrap chain actually preserved injected
+regular FD512 and the workload recovered its expected synthetic digest after
+a valid direct control. Cleanup still worked. This remains a **failed isolation
+observation** for that exact chain. Separately, direct/candidate hold, inventory,
+fixture visibility and two controller-crash reconciliation paths actually ran
+successfully; none reverses the descriptor-exclusion failure. Those are retained
+lead-run facts, not executions by a source reviewer or this implementation's
+worker. The new binary still requires independent source review and lead-run
+direct/candidate/weakened, BPF consumption, hold and crash-recovery checks against
+the actual campaign before any new selected-host conclusion. Host property
+formats and launcher dependency closure retain their separate gates.
 
 ## Explicit invocation
 
@@ -496,7 +613,7 @@ The bounded driver supplies hashed selected subjects/launch plans, separate
 direct/candidate roles, regular fake-FD reexec injection, process identities,
 durable ownership, exact reconciliation and a retained parent-empty oracle.
 These remain subject to selected-host verification. Missing future controls
-include weak synthetic controls, complete dynamic dependency closure, isolated
+include broader weak controls, complete dynamic dependency closure, isolated
 fixture networking with workload/host topology, locked-thread anonymous session
 keyring fixtures with returned-serial-only cleanup, independently attributed
 local/outer pressure events with surviving outside heartbeat, descendant
@@ -507,6 +624,16 @@ gates. Default checks perform no systemd/Podman setup, global configuration,
 key operation, pressure workload, external address or real network service.
 
 ## Source proposal and executed verification
+
+The separate descriptor-policy design reviews requested Fable
+`claude-fable-5-2` and Sonnet `sonnet`, both at medium effort. Their recorded
+observed models were `claude-fable-5-2` and `claude-sonnet-5-5` respectively.
+Both accepted the mechanism with evidence refinements; local primary-source
+review corroborated Linux close_range and the selected Go exec/thread path.
+These were source/design assessments, not implementation acceptance or host
+execution. An earlier oversized Sonnet request timed out without a completed
+review or observed model attribution. Implementation tests and lead-run host
+evidence remain separate from all of these review records.
 
 The retry source proposal was requested as Sonnet and its recorded observed
 model was `claude-sonnet-5-5`. An earlier 300-second attempt timed out without
