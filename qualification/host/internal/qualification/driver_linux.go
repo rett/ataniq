@@ -357,7 +357,20 @@ func (c *Campaign) collect(a *Attempt) error {
 			return errors.New("direct recovery not observed")
 		}
 	}
-	return c.Save(a, "complete", "")
+	if err := c.Save(a, "complete", ""); err != nil {
+		return err
+	}
+	// Cleanup saves deliberately remain available after artifact failure. They
+	// cannot by themselves authorize a successful collection result, including
+	// when integrity changes during the durable observation update.
+	c.checkFD1Integrity(a)
+	if a.FD1IntegrityFailure != "" {
+		if err := c.Save(a, "complete", a.Reason); err != nil {
+			return err
+		}
+		return errors.New(fd1IntegrityFailure)
+	}
+	return nil
 }
 
 func RunHost(config HostConfig) HostReport {
@@ -401,7 +414,11 @@ func RunHost(config HostConfig) HostReport {
 	}
 	r.Phase = a.Phase
 	r.NewStartsBlocked = c.Blocked || a.Phase != "complete"
-	if err == nil && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil) {
+	if a.FD1IntegrityFailure != "" {
+		r.ReasonCode = "typed-runtime-integrity-failed"
+		r.Reason = a.FD1IntegrityFailure
+	}
+	if err == nil && a.FD1IntegrityFailure == "" && (a.Observation != nil && a.Observation.Status == "observed" || a.Final != nil) {
 		r.Outcome = "observed"
 		r.ReasonCode = "bounded-observation"
 		r.Reason = "bounded case evidence retained; no matrix support assertion"

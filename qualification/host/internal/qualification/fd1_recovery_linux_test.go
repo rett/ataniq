@@ -353,3 +353,34 @@ func TestLegacyRecordRejectsTypedIntegrityFailure(t *testing.T) {
 		t.Fatal("historical profile accepted typed integrity evidence")
 	}
 }
+
+func TestFD1CollectionSaveCannotHideArtifactFailure(t *testing.T) {
+	for _, changeAt := range []int{1, 2} {
+		t.Run(string(rune('0'+changeAt)), func(t *testing.T) {
+			x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+			old := x.c.syncDir
+			saves := 0
+			x.c.syncDir = func(f *os.File) error {
+				if x.a.Observation != nil {
+					saves++
+					if saves == changeAt {
+						if err := rewriteFrozenFixture(x.a.FD1Runtime.Artifact.Path, []byte("changed during evidence save")); err != nil {
+							return err
+						}
+					}
+				}
+				return old(f)
+			}
+			if err := x.c.run(x.a, x.h); err == nil {
+				t.Fatal("artifact failure during collection returned success")
+			}
+			if x.a.Phase != "complete" || x.a.FD1IntegrityFailure != fd1IntegrityFailure || !x.c.Blocked || x.a.Observation == nil {
+				t.Fatal("failed collection lost cleanup, observation or integrity fence")
+			}
+			reopenFD1Fixture(t, x)
+			if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || x.a.Observation == nil {
+				t.Fatal("failed collection not durably inspectable/fenced")
+			}
+		})
+	}
+}
