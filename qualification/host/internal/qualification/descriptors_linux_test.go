@@ -319,9 +319,20 @@ func TestDescriptorTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a := &Attempt{Fixture: fake, Snapshots: map[string]Subject{"bpf": bpf}, Streams: map[string]FileIdentity{}}
+	for _, name := range []string{"request", "output", "stderr"} {
+		s, _, err := subject(filepath.Join(dir, name), false, false, true, MaxOutputBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.Streams[name] = s.Identity
+	}
 	fds, err := (kernelMetadata{}).fds()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if r := observeDescriptorIdentities(a, descriptorInventory(fds)); !r.Complete {
+		t.Fatalf("real post-exec table lacks owned stdio anchors: %+v", r)
 	}
 	for _, d := range fds {
 		isFake := d.Device == fake.Identity.Device && d.Inode == fake.Identity.Inode
@@ -447,8 +458,29 @@ func TestSparseAliasesBoundedAndRecorded(t *testing.T) {
 	}
 }
 
+func descriptorStdio(a *Attempt) []fdMetadata {
+	var fds []fdMetadata
+	for fd, name := range []string{"request", "output", "stderr"} {
+		id := a.Streams[name]
+		fds = append(fds, fdMetadata{fd, id.Device, id.Inode, syscall.S_IFREG | 0600})
+	}
+	return fds
+}
+
+func descriptorInventory(fds []fdMetadata) Observation {
+	o := Observation{Facts: []Fact{known("fds.count", strconv.Itoa(len(fds)))}}
+	for j, d := range fds {
+		o.Facts = append(o.Facts, known(fmt.Sprintf("fds.%d", j), fmt.Sprintf("fd=%d dev=%d ino=%d mode=%o", d.Number, d.Device, d.Inode, d.Mode)))
+	}
+	return o
+}
+
+func descriptorObservationAttempt() *Attempt {
+	return &Attempt{DescriptorPolicy: FinalDescriptorPolicy, Config: HostConfig{Role: "candidate", Case: "inventory"}, Fixture: Subject{Identity: FileIdentity{Device: 1, Inode: 11}}, Snapshots: map[string]Subject{"bpf": {Identity: FileIdentity{Device: 1, Inode: 22}}}, Streams: map[string]FileIdentity{"request": {Device: 1, Inode: 31}, "output": {Device: 1, Inode: 32}, "stderr": {Device: 1, Inode: 33}}}
+}
+
 func TestDescriptorInventoryIdentityObservations(t *testing.T) {
-	a := &Attempt{DescriptorPolicy: FinalDescriptorPolicy, Config: HostConfig{Role: "candidate", Case: "inventory"}, Fixture: Subject{Identity: FileIdentity{Device: 1, Inode: 11}}, Snapshots: map[string]Subject{"bpf": {Identity: FileIdentity{Device: 1, Inode: 22}}}}
+	a := descriptorObservationAttempt()
 	for _, tc := range []struct {
 		role  string
 		fds   []fdMetadata
@@ -460,10 +492,7 @@ func TestDescriptorInventoryIdentityObservations(t *testing.T) {
 		{"weakened-synthetic", []fdMetadata{{64, 1, 11, syscall.S_IFREG}, {FakeFD, 1, 11, syscall.S_IFREG}, {768, 1, 11, syscall.S_IFREG}, {1000, 1, 11, syscall.S_IFREG}}, true},
 	} {
 		a.Config.Role = tc.role
-		o := Observation{Facts: []Fact{known("fds.count", strconv.Itoa(len(tc.fds)))}}
-		for j, d := range tc.fds {
-			o.Facts = append(o.Facts, known(fmt.Sprintf("fds.%d", j), fmt.Sprintf("fd=%d dev=%d ino=%d mode=%o", d.Number, d.Device, d.Inode, d.Mode)))
-		}
+		o := descriptorInventory(append(descriptorStdio(a), tc.fds...))
 		r := observeDescriptorIdentities(a, o)
 		if !r.Complete || (validateDescriptorObservations(a, o) == nil) != tc.valid {
 			t.Fatal(tc, r)
@@ -486,6 +515,97 @@ func TestDescriptorInventoryIdentityObservations(t *testing.T) {
 	o.Facts = []Fact{known("stage", "fd-identity")}
 	if validateDescriptorObservations(a, o) == nil {
 		t.Fatal("identity mismatch accepted as closure")
+	}
+}
+
+func TestDescriptorInventoryRequiresExactTableAndStdio(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Attempt, *Observation)
+	}{
+		{"zero", func(a *Attempt, o *Observation) { *o = descriptorInventory(nil) }},
+		{"empty", func(a *Attempt, o *Observation) { o.Facts = nil }},
+		{"missing-stdin", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[0].Number = 3
+			*o = descriptorInventory(fds)
+		}},
+		{"missing-stdout", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			*o = descriptorInventory([]fdMetadata{fds[0], fds[2], {99, 1, 999, syscall.S_IFREG}})
+		}},
+		{"missing-stderr", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[2].Number = 3
+			*o = descriptorInventory(fds)
+		}},
+		{"wrong-stdin-device", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[0].Device++
+			*o = descriptorInventory(fds)
+		}},
+		{"wrong-stdout-inode", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[1].Inode++
+			*o = descriptorInventory(fds)
+		}},
+		{"wrong-stderr-type", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[2].Mode = syscall.S_IFCHR | 0600
+			*o = descriptorInventory(fds)
+		}},
+		{"swapped-stdio", func(a *Attempt, o *Observation) {
+			fds := descriptorStdio(a)
+			fds[0].Number, fds[1].Number = 1, 0
+			*o = descriptorInventory(fds)
+		}},
+		{"missing-durable-stream", func(a *Attempt, o *Observation) { delete(a.Streams, "stderr") }},
+		{"missing-row", func(a *Attempt, o *Observation) { o.Facts = o.Facts[:3] }},
+		{"count-too-small", func(a *Attempt, o *Observation) { o.Facts[0] = known("fds.count", "2") }},
+		{"count-too-large", func(a *Attempt, o *Observation) { o.Facts[0] = known("fds.count", "4") }},
+		{"count-over-cap", func(a *Attempt, o *Observation) { o.Facts[0] = known("fds.count", strconv.Itoa(MaxEntries+1)) }},
+		{"count-negative", func(a *Attempt, o *Observation) { o.Facts[0] = known("fds.count", "-1") }},
+		{"count-noncanonical", func(a *Attempt, o *Observation) { o.Facts[0] = known("fds.count", "03") }},
+		{"duplicate-count", func(a *Attempt, o *Observation) { o.Facts = append(o.Facts, o.Facts[0]) }},
+		{"duplicate-row", func(a *Attempt, o *Observation) { o.Facts = append(o.Facts, o.Facts[1]) }},
+		{"duplicate-fd", func(a *Attempt, o *Observation) {
+			fds := append(descriptorStdio(a), descriptorStdio(a)[0])
+			*o = descriptorInventory(fds)
+		}},
+		{"undeclared-row", func(a *Attempt, o *Observation) {
+			o.Facts = append(o.Facts, known("fds.3", "fd=1000 dev=1 ino=11 mode=100000"))
+		}},
+		{"out-of-range-row", func(a *Attempt, o *Observation) { o.Facts[1].Name = "fds.128" }},
+		{"negative-row-index", func(a *Attempt, o *Observation) { o.Facts[1].Name = "fds.-1" }},
+		{"noncanonical-row-index", func(a *Attempt, o *Observation) { o.Facts[1].Name = "fds.00" }},
+		{"negative-fd", func(a *Attempt, o *Observation) { o.Facts[1] = known("fds.0", "fd=-1 dev=1 ino=31 mode=100600") }},
+		{"malformed-row", func(a *Attempt, o *Observation) {
+			o.Facts[1] = known("fds.0", "fd=0 dev=1 ino=31 mode=100600 trailing")
+		}},
+		{"unknown-count", func(a *Attempt, o *Observation) { o.Facts[0] = Fact{Name: "fds.count", State: "unknown"} }},
+		{"unknown-row", func(a *Attempt, o *Observation) { o.Facts[1] = Fact{Name: "fds.0", State: "unknown"} }},
+		{"absent-row-value", func(a *Attempt, o *Observation) { o.Facts[1] = Fact{Name: "fds.0", State: "known"} }},
+		{"missing-row-state", func(a *Attempt, o *Observation) { o.Facts[1] = Fact{Name: "fds.0", State: "missing"} }},
+		{"unknown-table", func(a *Attempt, o *Observation) { o.Facts = append(o.Facts, Fact{Name: "fds", State: "unknown"}) }},
+		{"missing-table", func(a *Attempt, o *Observation) { o.Facts = append(o.Facts, Fact{Name: "fds", State: "missing"}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := descriptorObservationAttempt()
+			o := descriptorInventory(descriptorStdio(a))
+			tc.mutate(a, &o)
+			if r := observeDescriptorIdentities(a, o); r.Complete || validateDescriptorObservations(a, o) == nil {
+				t.Fatalf("incomplete or contradictory inventory accepted: %+v", r)
+			}
+		})
+	}
+	// Row order and unrelated unavailable inventory families do not change
+	// the exact FD index set or the owned stdio identity requirement.
+	a := descriptorObservationAttempt()
+	o := descriptorInventory(descriptorStdio(a))
+	o.Facts[1], o.Facts[3] = o.Facts[3], o.Facts[1]
+	o.Facts = append(o.Facts, Fact{Name: "namespace.net", State: "unknown"})
+	if r := observeDescriptorIdentities(a, o); !r.Complete || validateDescriptorObservations(a, o) != nil {
+		t.Fatalf("valid stdio-only table rejected: %+v", r)
 	}
 }
 
@@ -653,16 +773,34 @@ func currentDescriptorFixture(t *testing.T, x *hostFixture) {
 }
 
 func TestCurrentDescriptorCollectionPreservesFailedIsolation(t *testing.T) {
-	for _, leak := range []bool{false, true} {
-		t.Run(strconv.FormatBool(leak), func(t *testing.T) {
+	for _, kind := range []string{"stdio-only", "leak", "zero", "missing-stdio", "wrong-stdio", "nonregular-stdio", "count-mismatch", "unavailable-table"} {
+		t.Run(kind, func(t *testing.T) {
 			x := testHost(t)
 			x.a.Config.Role = "candidate"
 			currentDescriptorFixture(t, x)
-			facts := []Fact{known("fds.count", "0")}
-			if leak {
-				facts = []Fact{known("fds.count", "1"), known("fds.0", fmt.Sprintf("fd=1000 dev=%d ino=%d mode=%o", x.a.Fixture.Identity.Device, x.a.Fixture.Identity.Inode, syscall.S_IFREG))}
+			fds := descriptorStdio(x.a)
+			switch kind {
+			case "leak":
+				fds = append(fds, fdMetadata{1000, x.a.Fixture.Identity.Device, x.a.Fixture.Identity.Inode, syscall.S_IFREG})
+			case "zero":
+				fds = nil
+			case "missing-stdio":
+				fds = fds[1:]
+			case "wrong-stdio":
+				fds[1].Inode++
+			case "nonregular-stdio":
+				fds[2].Mode = syscall.S_IFIFO
 			}
-			o := Observation{Version: 1, RunID: x.a.Config.RunID, RequestID: x.a.Config.RequestID, Case: CaseInventory, Status: "observed", Facts: facts}
+			facts := descriptorInventory(fds).Facts
+			if kind == "count-mismatch" {
+				facts[0] = known("fds.count", "4")
+			}
+			status, reason := "observed", ""
+			if kind == "unavailable-table" {
+				facts = append(facts, Fact{Name: "fds", State: "unknown"})
+				status, reason = "inconclusive", "inventory incomplete or unavailable"
+			}
+			o := Observation{Version: 1, RunID: x.a.Config.RunID, RequestID: x.a.Config.RequestID, Case: CaseInventory, Status: status, Reason: reason, Facts: facts}
 			var output bytes.Buffer
 			if err := EncodeObservation(&output, o); err != nil {
 				t.Fatal(err)
@@ -671,8 +809,11 @@ func TestCurrentDescriptorCollectionPreservesFailedIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			err := x.c.run(x.a, x.h)
-			if (err != nil) != leak || !x.a.Empty || x.a.Phase != "complete" || x.a.DescriptorReceipt == nil || x.a.Observation == nil || x.a.DescriptorObservation == nil {
+			if (err != nil) != (kind != "stdio-only") || !x.a.Empty || x.a.Phase != "complete" || x.a.DescriptorReceipt == nil || x.a.Observation == nil || x.a.DescriptorObservation == nil {
 				t.Fatal("lifecycle or observation erased", err)
+			}
+			if x.a.DescriptorObservation.Complete != (kind == "stdio-only" || kind == "leak") {
+				t.Fatal("incorrect inventory completeness", x.a.DescriptorObservation)
 			}
 			x.c.Close()
 			c, err := OpenCampaign(x.c.Path)
@@ -681,7 +822,7 @@ func TestCurrentDescriptorCollectionPreservesFailedIsolation(t *testing.T) {
 			}
 			defer c.Close()
 			stored := c.Records[x.a.ID]
-			if stored == nil || c.Blocked || !sameJSON(stored.DescriptorObservation, x.a.DescriptorObservation) {
+			if stored == nil || c.Blocked || !sameJSON(stored.DescriptorObservation, x.a.DescriptorObservation) || !sameJSON(stored.Observation, &o) {
 				t.Fatal("failed isolation evidence not retained")
 			}
 		})
