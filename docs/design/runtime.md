@@ -94,7 +94,8 @@ until evidence-based reconciliation; an error alone cannot prove a transaction
 was absent. A proved rejection is distinct. Receipt IDs identify evidence,
 separately from intent IDs: identical evidence is idempotent, while changed
 content under one receipt ID or contradictory outcomes under different IDs
-are retained and make duplicate inspection uncertain. A different immutable
+are retained and make duplicate inspection uncertain. Evidence receipt IDs are
+scoped to the immutable attempt. A different immutable
 intent binding is a conflict and cannot alter the legitimate record. Start
 acknowledgement and completion evidence are separate. Qualification campaign
 storage is a separate mechanism and is not this journal.
@@ -112,7 +113,12 @@ or failed outcome storage requires reconciliation and a separately authorized
 attempt for a retry. A recovered prepared receipt is unresolved evidence, not
 proof that start did not happen. A failed save may leave only that receipt;
 the caller must preserve the returned uncertainty and evidence for
-reconciliation. External start cannot be atomic with the journal transaction.
+reconciliation. Synthetic error receipts are uncertainty projections carrying
+the immutable attempt and any available evidence; their absent evidence ID does
+not make them resubmittable journal evidence. A save using a cancelled caller
+context may fail even after a boundary decision. Full persistent recovery and
+cancellation-independent durable saving are future integration obligations.
+External start cannot be atomic with the journal transaction.
 The deterministic fake tests cover duplicate concurrency, target-bound grants,
 receipt contradictions, payload ownership, current checks, failures, delayed
 dispatch calls and completion of already-started work during outage. The fake
