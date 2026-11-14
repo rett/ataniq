@@ -125,6 +125,9 @@ func (e Envelope) Validate() error {
 
 // AdmissionReceipt is immutable recorded data, separate from CurrentStatus.
 // Only a future service's confirmed transaction can establish its provenance.
+// AdmittedRevision identifies the addressed mutation resource immediately after
+// confirmed admission: the conversation for enqueue, the target command for cancel.
+// Cursor is a historical admission position and may expire or require reset.
 // This value type itself asserts no commit or authorization.
 type AdmissionReceipt struct {
 	Command          CommandKey
@@ -139,9 +142,7 @@ const (
 	Queued      State = "queued"
 	Held        State = "held"
 	Cancelled   State = "cancelled"
-	Dispatching State = "dispatching"
-	Completed   State = "completed"
-	Uncertain   State = "uncertain"
+	Applied     State = "applied"
 )
 
 // CurrentStatus is a revisioned projection, never part of immutable binding.

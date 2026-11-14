@@ -171,10 +171,17 @@ full-byte equality and a bounded standard-library fuzz seed corpus.
 
 `AdmissionReceipt` records an immutable command key, content digest, admitted
 revision and cursor. `CurrentStatus` is a separate revisioned projection with
-queued, held, cancelled, dispatching, completed or uncertain state. These value
+queued, held, cancelled or applied state. These value
 types describe records; constructing one proves no storage outcome. A cursor is
 opaque data, never an authorization credential. The original receipt and full
 binding must survive subsequent status changes.
+
+`AdmittedRevision` identifies the addressed mutation resource immediately after
+confirmed admission. For `input.enqueue` it is the conversation admission revision.
+For `queue.cancel` it is the target command status revision after cancellation.
+The cancellation command has its own independently revisioned `CurrentStatus`.
+The receipt cursor is an immutable historical admission position that may expire
+or require reset. A fresh read cursor is separate from the original receipt.
 
 The future service must read authentication/enrollment, credential validity and
 relevant policy, resolve duplicate lookup under **current disclosure authority**,
@@ -237,8 +244,9 @@ schema are unchanged by this pure package.
 
 Only input/version/capability validation is executed here. Remaining codes and
 receipt/status types define service contracts, not simulated service behavior.
-Successful cancellation is represented by cancelled status; execution completion
-requires provider evidence outside this codec.
+A successful cancellation command has applied status. Its targeted enqueue has
+cancelled status. Storage uncertainty remains a domain error requiring
+reconciliation. Future execution states require their own qualified contracts.
 
 Later auth/admission acceptance must exercise two adapters sharing one enrolled
 client and store, duplicate disclosure after revision advance, changed-binding

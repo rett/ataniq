@@ -19,6 +19,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Distinguish applied cancellation commands from cancelled queued inputs and
+  specify the resource revision and historical cursor in admission receipts.
+
 - Clarify authority ownership per independent Unix-user instance and the journal
   schema v1 shipped in 0.0.3, retaining explicit future schema evolution and
   unchanged ordinary opening behavior.
