@@ -24,18 +24,19 @@ type FDRecord struct {
 }
 
 type Injection struct {
-	Version          int        `json:"version"`
-	Attempt          string     `json:"attempt"`
-	Invocation       string     `json:"invocation"`
-	Process          Process    `json:"process"`
-	Boundary         Boundary   `json:"boundary"`
-	Fixture          Subject    `json:"fixture"`
-	Descriptors      []FDRecord `json:"descriptors"`
-	Profile          string     `json:"profile"`
-	RunID            string     `json:"run_id"`
-	RequestID        string     `json:"request_id"`
-	RoleID           string     `json:"role_id"`
-	DescriptorPolicy string     `json:"descriptor_policy,omitempty"`
+	Version          int         `json:"version"`
+	Attempt          string      `json:"attempt"`
+	Invocation       string      `json:"invocation"`
+	Process          Process     `json:"process"`
+	Boundary         Boundary    `json:"boundary"`
+	Fixture          Subject     `json:"fixture"`
+	Descriptors      []FDRecord  `json:"descriptors"`
+	Profile          string      `json:"profile"`
+	RunID            string      `json:"run_id"`
+	RequestID        string      `json:"request_id"`
+	RoleID           string      `json:"role_id"`
+	DescriptorPolicy string      `json:"descriptor_policy,omitempty"`
+	FD1Runtime       *FD1Runtime `json:"fd1_runtime,omitempty"`
 }
 
 type release struct {
@@ -102,6 +103,12 @@ func readInjection(path string) (Injection, error) {
 }
 
 func validateInjection(a *Attempt, i Injection, u *Unit) error {
+	if a.Config.DescriptorProfile == FD1TypedProfile && i.FD1Runtime == nil {
+		return errors.New("missing typed injection binding")
+	}
+	if err := validateFD1Runtime(a, i.FD1Runtime); err != nil {
+		return err
+	}
 	if i.DescriptorPolicy != a.DescriptorPolicy {
 		return errors.New("injection descriptor policy mismatch")
 	}
@@ -237,7 +244,7 @@ func PrivateInject(path string) error {
 			return errors.New("descriptor role identity mismatch")
 		}
 	}
-	i := Injection{1, a.ID, inv, self, bnd, a.Fixture, descriptors, a.Profile, a.Config.RunID, a.Config.RequestID, a.Config.RoleID, a.DescriptorPolicy}
+	i := Injection{1, a.ID, inv, self, bnd, a.Fixture, descriptors, a.Profile, a.Config.RunID, a.Config.RequestID, a.Config.RoleID, a.DescriptorPolicy, nil}
 	b, err := json.Marshal(i)
 	if err != nil || len(b) > MaxOutputBytes {
 		return errors.New("injection evidence excessive")

@@ -137,7 +137,7 @@ func testHost(t *testing.T) *hostFixture {
 		}
 		a.Streams[name] = s.Identity
 	}
-	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID, a.DescriptorPolicy}
+	i := Injection{1, a.ID, sp["InvocationID"], *x.service.Main, x.service.Boundary, a.Fixture, expectedDescriptors(a), a.Profile, config.RunID, config.RequestID, config.RoleID, a.DescriptorPolicy, nil}
 	b, _ := json.Marshal(i)
 	if err = exclusiveFile(filepath.Join(p, "injection.json"), b, 0400); err != nil {
 		t.Fatal(err)

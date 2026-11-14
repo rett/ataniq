@@ -47,6 +47,8 @@ type Unit struct {
 }
 
 type Attempt struct {
+	FD1Static             *FD1Static              `json:"fd1_static,omitempty"`
+	FD1Runtime            *FD1Runtime             `json:"fd1_runtime,omitempty"`
 	DescriptorPolicy      string                  `json:"descriptor_policy,omitempty"`
 	TargetCommand         []string                `json:"target_command,omitempty"`
 	DescriptorReceipt     *DescriptorReceipt      `json:"descriptor_receipt,omitempty"`
@@ -276,6 +278,11 @@ func (c *Campaign) read(id string) (*Attempt, error) {
 	if err = validatePlan(&a, path); err != nil {
 		return nil, err
 	}
+	if a.FD1Runtime != nil {
+		if err = authenticateFD1Runtime(&a, a.FD1Runtime); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := os.Lstat(filepath.Join(path, "sync-failed")); !os.IsNotExist(err) {
 		return nil, errors.New("previous durability failure")
 	}
@@ -290,6 +297,12 @@ func (c *Campaign) Save(a *Attempt, phase, reason string) error {
 	if recorded := c.Records[a.ID]; recorded == nil || recorded.Root != a.Root || recorded.Campaign != a.Campaign {
 		c.poison(nil)
 		return errors.New("attempt is not recorded with this identity")
+	}
+	if a.Config.DescriptorProfile == FD1TypedProfile && (phase == "bound" || phase == "released") {
+		if a.Injector == nil || !sameJSON(a.FD1Runtime, a.Injector.FD1Runtime) || authenticateFD1Runtime(a, a.FD1Runtime) != nil {
+			c.poison(nil)
+			return errors.New("typed runtime not durably bindable")
+		}
 	}
 	if err := c.checkRoot(); err != nil {
 		return err

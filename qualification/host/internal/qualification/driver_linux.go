@@ -89,6 +89,9 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	if err = validateInjection(a, i, u); err != nil {
 		return c.unknown(a, "launch-unknown", err)
 	}
+	if err = authenticateFD1Runtime(a, i.FD1Runtime); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
 	a.Stage = "effective-budget"
 	if err = h.effective(u); err != nil {
 		return c.unknown(a, "cleanup-unknown", err)
@@ -100,6 +103,7 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 	}
 	defer fd.Close()
 	a.Workload = u
+	a.FD1Runtime = i.FD1Runtime
 	a.Injector = &i
 	a.Target = &i.Process
 	a.Stage = "live-parent"
@@ -118,6 +122,9 @@ func (c *Campaign) run(a *Attempt, h hostIO) error {
 		return err
 	}
 	a.Stage = "release"
+	if err = authenticateFD1Runtime(a, a.FD1Runtime); err != nil {
+		return c.unknown(a, "launch-unknown", err)
+	}
 	r, _ := json.Marshal(release{1, a.ID, i.Invocation})
 	if err = publishOwned(filepath.Join(c.Path, a.ID), "release.json", r); err != nil {
 		return c.unknown(a, "launch-unknown", err)

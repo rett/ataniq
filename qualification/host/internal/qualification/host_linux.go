@@ -19,21 +19,22 @@ import (
 // HostConfig is an explicit qualification subject selection, never discovery of
 // installed developer tools. Runtime commands require a separate CLI opt-in.
 type HostConfig struct {
-	Version       int    `json:"version"`
-	Campaign      string `json:"campaign"`
-	Driver        string `json:"driver"`
-	Probe         string `json:"probe"`
-	Bwrap         string `json:"bwrap"`
-	BPF           string `json:"bpf"`
-	Systemctl     string `json:"systemctl"`
-	SystemdRun    string `json:"systemd_run"`
-	Role          string `json:"role"`
-	RoleID        string `json:"role_id"`
-	RunID         string `json:"run_id"`
-	RequestID     string `json:"request_id"`
-	Case          string `json:"case"`
-	DirectControl string `json:"direct_control,omitempty"`
-	ReviewedBPF   bool   `json:"reviewed_bpf"`
+	Version           int    `json:"version"`
+	Campaign          string `json:"campaign"`
+	Driver            string `json:"driver"`
+	Probe             string `json:"probe"`
+	Bwrap             string `json:"bwrap"`
+	BPF               string `json:"bpf"`
+	Systemctl         string `json:"systemctl"`
+	SystemdRun        string `json:"systemd_run"`
+	Role              string `json:"role"`
+	RoleID            string `json:"role_id"`
+	RunID             string `json:"run_id"`
+	RequestID         string `json:"request_id"`
+	Case              string `json:"case"`
+	DirectControl     string `json:"direct_control,omitempty"`
+	ReviewedBPF       bool   `json:"reviewed_bpf"`
+	DescriptorProfile string `json:"descriptor_profile,omitempty"`
 }
 
 const HostProfile = "bwrap-static-probe-v1"
@@ -212,6 +213,10 @@ func decodeHostRecord(r io.Reader, a *Attempt) error {
 }
 
 func (c HostConfig) validate() error {
+	if c.DescriptorProfile != "" && c.DescriptorProfile != FD1TypedProfile {
+		return errors.New("unknown descriptor profile")
+	}
+	typed := c.DescriptorProfile == FD1TypedProfile
 	if c.Version != 1 || !validHex(c.RunID) || !validHex(c.RequestID) || !validHex(c.RoleID) || c.Role != "direct" && c.Role != "candidate" && c.Role != "weakened-synthetic" || !c.ReviewedBPF {
 		return errors.New("invalid host configuration")
 	}
@@ -230,16 +235,23 @@ func (c HostConfig) validate() error {
 	}
 	switch c.Case {
 	case "inventory", "fake-file", "fake-fd", "hold":
+	case "fake-dir-fd", "fake-pipe-fd", "fake-socket-fd":
+		if !typed {
+			return errors.New("typed descriptor case requires fd1-typed profile")
+		}
 	default:
 		return errors.New("unsupported host case")
 	}
-	if c.Role == "weakened-synthetic" && (c.Case != "fake-fd" && c.Case != "inventory" || c.DirectControl != "") {
+	if typed && (c.Case == "hold" || c.Case == "fake-file") {
+		return errors.New("unsupported typed descriptor case")
+	}
+	if c.Role == "weakened-synthetic" && (c.Case != "fake-fd" && c.Case != "inventory" && !typedFDCase(Case(c.Case)) || c.DirectControl != "") {
 		return errors.New("weakened synthetic control requires owned FD or inventory fixture")
 	}
 	if c.DirectControl != "" && !attemptID(c.DirectControl) {
 		return errors.New("invalid direct control")
 	}
-	if c.Role == "candidate" && c.Case == "fake-fd" && c.DirectControl == "" {
+	if c.Role == "candidate" && (c.Case == "fake-fd" || typed) && c.DirectControl == "" {
 		return errors.New("direct control required")
 	}
 	return nil

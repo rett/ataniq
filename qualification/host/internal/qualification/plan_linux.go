@@ -129,7 +129,7 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 			}
 		}
 	}
-	if config.Role == "candidate" && config.Case == "fake-fd" {
+	if needsDirectControl(a) {
 		d := c.Records[config.DirectControl]
 		if validateControl(a, d, time.Now().Unix()) != nil {
 			return nil, errors.New("valid matching direct control required")
@@ -177,6 +177,11 @@ func (c *Campaign) Prepare(config HostConfig) (*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.DescriptorProfile == FD1TypedProfile {
+		if err = prepareFD1Static(a, path); err != nil {
+			return nil, err
+		}
+	}
 	a.Request = hostRequest(a)
 	request, _ := json.Marshal(a.Request)
 	if err = exclusiveFile(filepath.Join(path, "request.json"), request, 0400); err != nil {
@@ -219,6 +224,12 @@ func hostRequest(a *Attempt) Request {
 		fd, reg := FakeFD, true
 		dev, ino := a.Fixture.Identity.Device, a.Fixture.Identity.Inode
 		r.Payload = &Payload{FD: &FDPayload{Name: "fake-file", FD: &fd, Regular: &reg, Device: &dev, Inode: &ino, SHA256: a.Fixture.SHA256}}
+	case "fake-dir-fd", "fake-pipe-fd", "fake-socket-fd":
+		p := &TypedFDPayload{Name: FD1BindingName, FD: typedFDSlot(r.Case), Profile: FD1TypedProfile, AttemptID: a.ID, Nonce: a.FixtureNonce}
+		if r.Case == CaseFakeDirFD && a.FD1Static != nil {
+			p.Leaf = &a.FD1Static.Challenge
+		}
+		r.Payload = &Payload{TypedFD: p}
 	}
 	return r
 }
@@ -234,6 +245,19 @@ func targetCommand(a *Attempt, path string) []string {
 	args := []string{filepath.Join(path, "probe"), "--fixture-root", filepath.Join(path, "fixtures")}
 	if a.Config.Role != "direct" {
 		args = append([]string{filepath.Join(path, "bwrap")}, BubblewrapArgs(filepath.Join(path, "probe"), filepath.Join(path, "fixtures", "fake-file"))...)
+		if a.Config.DescriptorProfile == FD1TypedProfile {
+			// Only the artifact is exposed by pathname. The capability tree never
+			// appears in bwrap's mount arguments.
+			at := len(args) - 8 // before --proc /proc and the final target tail
+			for j, arg := range args {
+				if arg == "--proc" {
+					at = j
+					break
+				}
+			}
+			extra := []string{"--ro-bind", filepath.Join(path, "fixtures", FD1BindingName), "/fixtures/" + FD1BindingName}
+			args = append(args[:at], append(extra, args[at:]...)...)
+		}
 	}
 	if a.Config.Case == "hold" {
 		args = append(args, "--private-ready-hold")
@@ -255,6 +279,9 @@ func launch(a *Attempt, path string) []string {
 }
 
 func validatePlan(a *Attempt, path string) error {
+	if err := validateFD1Static(a, path); err != nil {
+		return err
+	}
 	if a.DescriptorPolicy != "" && a.DescriptorPolicy != FinalDescriptorPolicy {
 		return errors.New("unknown descriptor policy")
 	}
@@ -312,9 +339,10 @@ func planDigest(a *Attempt) string {
 		Streams                  map[string]FileIdentity
 		Boot, FixtureNonce       string
 		Control                  *ControlBinding
-		DescriptorPolicy         string   `json:",omitempty"`
-		TargetCommand            []string `json:",omitempty"`
-	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control, a.DescriptorPolicy, a.TargetCommand})
+		DescriptorPolicy         string     `json:",omitempty"`
+		TargetCommand            []string   `json:",omitempty"`
+		FD1Static                *FD1Static `json:",omitempty"`
+	}{a.Config, a.Profile, a.Command, a.Launch, a.Cleanup, a.Subjects, a.Snapshots, a.Fixture, a.Request, a.Streams, a.Boot, a.FixtureNonce, a.Control, a.DescriptorPolicy, a.TargetCommand, a.FD1Static})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
@@ -332,6 +360,9 @@ func validProcess(p Process) bool {
 }
 
 func validateStored(a *Attempt) error {
+	if err := validateFD1Runtime(a, a.FD1Runtime); err != nil {
+		return err
+	}
 	if a.DescriptorReceipt != nil && validateDescriptorReceipt(a, *a.DescriptorReceipt) != nil {
 		return errors.New("invalid stored descriptor receipt")
 	}
@@ -340,7 +371,7 @@ func validateStored(a *Attempt) error {
 			return errors.New("invalid stored descriptor observations")
 		}
 	}
-	if a.Config.Role == "candidate" && a.Config.Case == "fake-fd" && (a.Control == nil || a.Control.Attempt != a.Config.DirectControl || a.Control.RunID != a.Config.RunID || a.Control.Boot != a.Boot || a.Control.MaxAgeSeconds != 300 || a.Control.ValidatedAt < a.Created || !bounded(a.Control.PlanSHA256, 64, 64, isHex)) {
+	if needsDirectControl(a) && (a.Control == nil || a.Control.Attempt != a.Config.DirectControl || a.Control.RunID != a.Config.RunID || a.Control.Boot != a.Boot || a.Control.MaxAgeSeconds != 300 || a.Control.ValidatedAt < a.Created || !bounded(a.Control.PlanSHA256, 64, 64, isHex)) {
 		return errors.New("missing scoped direct control")
 	}
 	if len(a.Streams) != 3 {
@@ -401,6 +432,12 @@ func factValue(o Observation, name string) string {
 }
 
 func validateControl(a, d *Attempt, now int64) error {
+	if a.Config.DescriptorProfile == FD1TypedProfile {
+		return validateFD1Control(a, d, now)
+	}
+	if d != nil && d.Config.DescriptorProfile != "" {
+		return errors.New("control profile mismatch")
+	}
 	if d != nil && (a.DescriptorPolicy != d.DescriptorPolicy || a.DescriptorPolicy != FinalDescriptorPolicy) {
 		return errors.New("control descriptor policy mismatch")
 	}
