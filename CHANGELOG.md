@@ -8,6 +8,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Keep the validated FD1 attempt directory open while inspection records an
+  integrity incident, avoiding a second acquisition before marker publication.
+
 - Clarify that host inspection can durably record an integrity incident and
   describe the separate durability-failure limitation.
 - Persist inspection-detected typed FD1 integrity incidents in the owned attempt

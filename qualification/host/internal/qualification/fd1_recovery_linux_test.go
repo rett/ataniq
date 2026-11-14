@@ -423,6 +423,85 @@ func TestFD1InspectOnlyRetainsIncident(t *testing.T) {
 	}
 }
 
+// A later ownership check is made to fail after authentication observes an
+// incident. Publication must still use the directory validated before it.
+func TestFD1CheckRetainsValidatedDirectory(t *testing.T) {
+	x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+	bindTypedFixture(t, x)
+	path := filepath.Join(x.c.Path, x.a.ID)
+	intent, err := os.ReadFile(filepath.Join(path, "intent.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInjector, originalRuntime := x.a.Injector, x.a.FD1Runtime
+	artifact, err := os.ReadFile(originalRuntime.Artifact.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	campaign := x.a.Config.Campaign
+	detected := false
+	x.c.authenticateFD1 = func(a *Attempt, r *FD1Runtime) error {
+		if err := rewriteFrozenFixture(r.Artifact.Path, []byte("temporary change")); err != nil {
+			t.Fatal(err)
+		}
+		failure := authenticateFD1Runtime(a, r)
+		if failure == nil {
+			t.Fatal("change authenticated")
+		}
+		if err := rewriteFrozenFixture(r.Artifact.Path, artifact); err != nil {
+			t.Fatal(err)
+		}
+		// Simulate a subsequent acquisition failure without exhausting descriptors.
+		a.Config.Campaign += "-invalid"
+		if d, err := x.c.fd1AttemptDir(a); err == nil {
+			d.Close()
+			t.Fatal("later acquisition succeeded")
+		}
+		detected = true
+		return failure
+	}
+	var publishedDir *os.File
+	x.c.syncDir = func(d *os.File) error {
+		publishedDir = d
+		if _, err := d.Stat(); err != nil {
+			t.Fatal("validated directory closed before publication", err)
+		}
+		return d.Sync()
+	}
+	x.c.checkFD1Integrity(x.a)
+	x.a.Config.Campaign = campaign
+	if !detected || publishedDir == nil || !x.c.Blocked || x.c.fenced || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+		t.Fatal("incident not latched")
+	}
+	if _, err := publishedDir.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatal("check retained directory ownership", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(path, "intent.json")); err != nil || !bytes.Equal(got, intent) {
+		t.Fatal("intent changed", err)
+	}
+	if !sameJSON(x.a.Injector, originalInjector) || !sameJSON(x.a.FD1Runtime, originalRuntime) {
+		t.Fatal("original authority changed")
+	}
+	reopenFD1Fixture(t, x)
+	if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || !sameJSON(x.a.Injector, originalInjector) || !sameJSON(x.a.FD1Runtime, originalRuntime) {
+		t.Fatal("reopen lost incident or authority")
+	}
+}
+
+func TestFD1RetainClosesValidatedDirectory(t *testing.T) {
+	x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+	bindTypedFixture(t, x)
+	var d *os.File
+	x.c.syncDir = func(dir *os.File) error { d = dir; return dir.Sync() }
+	x.c.retainFD1IntegrityFailure(x.a)
+	if d == nil || !x.c.Blocked || x.c.fenced {
+		t.Fatal("retain did not publish")
+	}
+	if _, err := d.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatal("retain did not close directory", err)
+	}
+}
+
 func TestFD1MarkerFailureAndOwnership(t *testing.T) {
 	for _, fault := range []string{"file-sync", "dir-sync", "identity", "path", "id", "root"} {
 		t.Run(fault, func(t *testing.T) {
