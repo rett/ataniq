@@ -96,3 +96,38 @@ func TestTypedRequestsUseExistingFixtureRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestR1ModesAreExplicitFixedAndExclusive(t *testing.T) {
+	for _, tc := range []struct {
+		args          []string
+		memory, child bool
+		code          int
+	}{
+		{[]string{"--r1-memory"}, true, false, 0},
+		{[]string{"--private-r1-child"}, false, true, 20},
+		{[]string{"--r1-memory", "--private-r1-child"}, false, false, 2},
+		{[]string{"--r1-memory", "--private-ready-hold"}, false, false, 2},
+		{[]string{"--r1-memory", "--fixture-root=/elsewhere"}, false, false, 2},
+		{[]string{"--private-r1-child", "--fixture-root="}, false, false, 2},
+		{[]string{"--private-r1-child", "--private-ready-hold=false"}, false, false, 2},
+		{[]string{"--r1-memory", "--max-bytes=1"}, false, false, 2},
+		{[]string{"--r1-memory", "--lifetime=1"}, false, false, 2},
+		{[]string{"--r1-memory", "extra"}, false, false, 2},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			var out bytes.Buffer
+			m, c := false, false
+			code := runWithActors(tc.args, strings.NewReader("immutable input"), &out, func(in io.Reader, w io.Writer) error {
+				m = true
+				b, _ := io.ReadAll(in)
+				if string(b) != "immutable input" {
+					t.Fatal("input rewritten")
+				}
+				return nil
+			}, func() int { c = true; return 20 })
+			if code != tc.code || m != tc.memory || c != tc.child {
+				t.Fatal(code, m, c)
+			}
+		})
+	}
+}
