@@ -67,8 +67,8 @@ recorded permission facts. `RequireGrant=true` requires a nonempty intent
 grant and a `Grant` with the exact same ID and entire target binding, including
 payload. Grant validity has its own bound as well. Grant-free permission must
 be explicit through a policy with RequireGrant false and no grant. Times must
-be nonzero, within years 1970–9999; stored milliseconds conservatively round
-expiry down. Policy/source/grant IDs remain opaque strings, not parsed tokens.
+be nonzero and within UTC years 1970–9999, independent of the caller or host
+timezone. Stored milliseconds conservatively round expiry down. Policy/source/grant IDs remain opaque strings, not parsed tokens.
 No later registration can refresh expiry, replace policy, undo consumption or
 revocation, or clear uncertainty for an existing intent ID.
 

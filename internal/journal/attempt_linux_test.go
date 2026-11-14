@@ -814,3 +814,34 @@ func TestReleaseInvalidatesBeforeClearingGuard(t *testing.T) {
 		t.Fatal("settled retirement changed", r)
 	}
 }
+
+func TestExpiryValidationUsesUTCInstant(t *testing.T) {
+	zones := []*time.Location{
+		time.UTC,
+		time.FixedZone("west", -9*60*60),
+		time.FixedZone("east", 14*60*60),
+	}
+	cases := []struct {
+		name    string
+		instant time.Time
+		valid   bool
+	}{
+		{"before epoch", time.Unix(-1, 0).UTC(), false},
+		{"epoch", time.Unix(0, 0).UTC(), true},
+		{"after epoch", time.Unix(1, 0).UTC(), true},
+		{"last supported second", time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), true},
+		{"after supported range", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), false},
+	}
+	for _, tc := range cases {
+		for _, zone := range zones {
+			t.Run(tc.name+"/"+zone.String(), func(t *testing.T) {
+				if got := validExpiry(tc.instant.In(zone)); got != tc.valid {
+					t.Fatalf("instant %v in %v: valid=%v, want %v", tc.instant, zone, got, tc.valid)
+				}
+			})
+		}
+	}
+	if validExpiry(time.Time{}) {
+		t.Fatal("accepted absent expiry")
+	}
+}

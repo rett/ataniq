@@ -8,6 +8,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Validate journal policy and grant expiry bounds by UTC instant across caller
+  and host timezones.
+
 - Preserve admitted journal failures across Release/Close retirement, reject
   late calls without changing retired activations, and capture coherent bounded
   snapshot failure projections. Reject foreign Prepare bindings before waiting

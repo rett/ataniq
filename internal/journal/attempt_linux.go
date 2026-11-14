@@ -218,7 +218,10 @@ func event(ctx context.Context, tx *sql.Tx, id, kind string, detail []byte) erro
 	return err
 }
 
-func validExpiry(t time.Time) bool { return !t.IsZero() && t.Year() >= 1970 && t.Year() <= 9999 }
+func validExpiry(t time.Time) bool {
+	year := t.UTC().Year()
+	return !t.IsZero() && year >= 1970 && year <= 9999
+}
 
 // Register atomically records immutable trusted policy and activates the dirty
 // guard BEFORE returning a Journal capability. Existing IDs cannot be refreshed.
