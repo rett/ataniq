@@ -348,6 +348,141 @@ func TestFD1CompletedArtifactFailurePersistsFence(t *testing.T) {
 	}
 }
 
+func TestFD1InspectOnlyRetainsIncident(t *testing.T) {
+	for _, damage := range []string{"missing", "changed", "replaced"} {
+		for _, list := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/list=%t", damage, list), func(t *testing.T) {
+				x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+				if err := x.c.run(x.a, x.h); err != nil {
+					t.Fatal(err)
+				}
+				candidate := *x.a
+				candidate.Config.Role, candidate.Config.DirectControl = "candidate", x.a.ID
+				if err := validateControl(&candidate, x.a, x.a.Created); err != nil {
+					t.Fatal(err)
+				}
+				path := x.a.FD1Runtime.Artifact.Path
+				original, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				intentPath := filepath.Join(x.c.Path, x.a.ID, "intent.json")
+				intent, err := os.ReadFile(intentPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				digest := x.a.PlanSHA256
+				if damage == "changed" {
+					err = rewriteFrozenFixture(path, []byte("changed"))
+				} else {
+					err = os.Rename(path, path+".original")
+					if err == nil && damage == "replaced" {
+						err = exclusiveFile(path, original, 0400)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				x.c.Close()
+				id := x.a.ID
+				if list {
+					id = ""
+				}
+				var out bytes.Buffer
+				if err := InspectHost(x.c.Path, id, &out); err != nil {
+					t.Fatal(err)
+				}
+				if damage == "changed" {
+					err = rewriteFrozenFixture(path, original)
+				} else {
+					if damage == "replaced" {
+						err = os.Remove(path)
+					}
+					if err == nil {
+						err = os.Rename(path+".original", path)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				reopenFD1Fixture(t, x)
+				if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure || validateControl(&candidate, x.a, x.a.Created) == nil {
+					t.Fatal("inspect-only incident lost after restoration")
+				}
+				if got, err := os.ReadFile(intentPath); err != nil || !bytes.Equal(got, intent) || x.a.PlanSHA256 != digest {
+					t.Fatal("inspection changed immutable record", err)
+				}
+				if _, err := x.c.Prepare(x.a.Config); err == nil {
+					t.Fatal("new attempt accepted")
+				}
+				if _, err := prepareDescriptorExec(x.a); err == nil {
+					t.Fatal("final wrapper accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestFD1MarkerFailureAndOwnership(t *testing.T) {
+	for _, fault := range []string{"file-sync", "dir-sync", "identity", "path", "id", "root"} {
+		t.Run(fault, func(t *testing.T) {
+			x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+			bindTypedFixture(t, x)
+			path := filepath.Join(x.c.Path, x.a.ID)
+			intent, err := os.ReadFile(filepath.Join(path, "intent.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch fault {
+			case "file-sync":
+				x.c.syncFile = func(*os.File) error { return errors.New("injected sync failure") }
+			case "dir-sync":
+				x.c.syncDir = func(*os.File) error { return errors.New("injected sync failure") }
+			case "identity":
+				x.a.Campaign.Inode++
+			case "path":
+				x.a.Config.Campaign += "-wrong"
+			case "id":
+				x.a.ID = "../invalid"
+			case "root":
+				x.a.Root.Inode++
+			}
+			x.c.retainFD1IntegrityFailure(x.a)
+			if !x.c.Blocked || !x.c.fenced || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+				t.Fatal("failure did not poison and fence")
+			}
+			if got, err := os.ReadFile(filepath.Join(path, "intent.json")); err != nil || !bytes.Equal(got, intent) {
+				t.Fatal("intent changed", err)
+			}
+			if fault == "file-sync" || fault == "dir-sync" {
+				if _, err := os.Lstat(filepath.Join(path, "sync-failed")); err != nil {
+					t.Fatal("missing poison marker", err)
+				}
+			} else if _, err := os.Lstat(filepath.Join(path, "fd1-integrity-failed")); !os.IsNotExist(err) {
+				t.Fatal("marker written for rejected ownership", err)
+			}
+		})
+	}
+}
+
+func TestFD1ExistingMarkerIsConservative(t *testing.T) {
+	x := fakeTypedLaunch(t, "direct", "fake-pipe-fd")
+	if err := x.c.run(x.a, x.h); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(x.c.Path, x.a.ID, "fd1-integrity-failed")
+	if err := os.Symlink("untouched", marker); err != nil {
+		t.Fatal(err)
+	}
+	reopenFD1Fixture(t, x)
+	if !x.c.Blocked || x.a.FD1IntegrityFailure != fd1IntegrityFailure {
+		t.Fatal("existing marker ignored")
+	}
+	if target, err := os.Readlink(marker); err != nil || target != "untouched" {
+		t.Fatal("marker changed", err)
+	}
+}
+
 func TestLegacyRecordRejectsTypedIntegrityFailure(t *testing.T) {
 	x := testHost(t)
 	x.a.FD1IntegrityFailure = fd1IntegrityFailure

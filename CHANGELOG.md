@@ -8,6 +8,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Clarify that host inspection can durably record an integrity incident and
+  describe the separate durability-failure limitation.
+- Persist inspection-detected typed FD1 integrity incidents in the owned attempt
+  directory, preserving the start fence and original cleanup authority after
+  artifact restoration and reopening.
 - Record sanitized source-pinned FD1 and no-pressure entry host observations
   in the host manual while retaining their separate historical provenance.
 - Describe the developer qualification foundation and pending production work

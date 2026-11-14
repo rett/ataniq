@@ -5,6 +5,7 @@ package qualification
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -73,12 +74,49 @@ func validateFD1Stored(a *Attempt) error {
 // Sticky evidence failure, independent of filesystem durability poisoning:
 // cleanup may still save the original authority and the failure together.
 func (c *Campaign) checkFD1Integrity(a *Attempt) {
-	if a.FD1Runtime == nil {
+	if a.Config.DescriptorProfile != FD1TypedProfile || a.FD1Runtime == nil || a.Injector == nil {
 		return
 	}
-	if authenticateFD1Runtime(a, a.FD1Runtime) != nil {
+	d, err := c.fd1AttemptDir(a)
+	if err != nil {
+		a.FD1IntegrityFailure = fd1IntegrityFailure
+		c.poison(nil)
+		return
+	}
+	// O_PATH and O_NOFOLLOW inspect the name itself, including a symlink.
+	fd, markerErr := syscall.Openat(int(d.Fd()), "fd1-integrity-failed", 0x200000|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if markerErr == nil {
+		syscall.Close(fd)
+	}
+	if markerErr != nil && !os.IsNotExist(markerErr) {
+		a.FD1IntegrityFailure = fd1IntegrityFailure
+		c.poison(d)
+		d.Close()
+		return
+	}
+	d.Close()
+	if a.FD1IntegrityFailure != "" || markerErr == nil || authenticateFD1Runtime(a, a.FD1Runtime) != nil {
 		c.retainFD1IntegrityFailure(a)
 	}
+}
+
+// The marker may only be published through the original, owned attempt root.
+func (c *Campaign) fd1AttemptDir(a *Attempt) (*os.File, error) {
+	if !attemptID(a.ID) || a.Config.Campaign != c.Path || a.Campaign != c.Identity {
+		return nil, errors.New("invalid FD1 marker ownership")
+	}
+	if err := c.checkRoot(); err != nil {
+		return nil, err
+	}
+	d, id, err := ownedDir(filepath.Join(c.Path, a.ID))
+	if err != nil {
+		return nil, err
+	}
+	if id != a.Root {
+		d.Close()
+		return nil, errors.New("FD1 attempt identity changed")
+	}
+	return d, nil
 }
 
 func (c *Campaign) retainFD1IntegrityFailure(a *Attempt) {
@@ -86,6 +124,41 @@ func (c *Campaign) retainFD1IntegrityFailure(a *Attempt) {
 	if a.Config.DescriptorProfile == FD1TypedProfile && a.FD1Runtime != nil && a.Injector != nil {
 		a.FD1IntegrityFailure = fd1IntegrityFailure
 		c.Blocked = true
+		d, err := c.fd1AttemptDir(a)
+		if err != nil {
+			c.poison(nil)
+			return
+		}
+		defer d.Close()
+		fd, err := syscall.Openat(int(d.Fd()), "fd1-integrity-failed", syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0400)
+		if os.IsExist(err) {
+			if c.syncDir(d) != nil {
+				c.poison(d)
+			}
+			return
+		}
+		if err != nil {
+			c.poison(d)
+			return
+		}
+		f := os.NewFile(uintptr(fd), "fd1-integrity-failed")
+		const payload = "typed runtime integrity failure\n"
+		n, err := f.WriteString(payload)
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		if err == nil {
+			err = c.syncFile(f)
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = c.syncDir(d)
+		}
+		if err != nil {
+			c.poison(d)
+		}
 	}
 }
 
