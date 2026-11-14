@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-11-14
+
 ### Added
 
 - Add an internal deterministic effect-dispatch coordinator with explicit
