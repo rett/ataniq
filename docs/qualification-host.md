@@ -915,6 +915,186 @@ checks do not make concurrent mutable sources safe, admit arbitrary workspaces,
 establish copied-content provenance or prevent effects of a device swapped
 by a concurrent writer. The frozen owned-tree premise is mandatory.
 
+## Opt-in fixed R1 actor protocol
+
+The probe has a separate `--r1-memory` mode for the fixed
+`r1-memory-fixed-v1` experiment. It emits raw evidence and has no qualification
+result. Ordinary probe invocation, legacy request/hold/FD1 encodings and host
+cases retain their existing behavior. `HostConfig` continues to reject `R1`,
+`r1-memory` and the profile name as host cases. This tranche supplies schemas
+and a bounded static helper, with no host launcher or runtime support claim.
+The mode cannot be combined with `--fixture-root`, `--private-ready-hold` or
+`--private-r1-child`. There are no command, control-path, size or lifetime flags.
+The private child mode is exclusively for fixed self-exec with two private
+pipes; it is not a host inherited-FD profile.
+
+The main actor expects sandbox entry already complete and one control directory
+mounted read-only at `/r1-control`. It reads only `context.json`, `release.json`
+and `finish.json`. It never writes or repairs these files, changes a mount,
+sets a resource limit, touches cgroups or launches a service. The final wrapper's
+existing entry release does not authorize memory allocation. The later exact
+`release.json` record is required before any pressure allocation.
+
+### Strict fixed records and byte hashes
+
+Every R1 input and evidence frame is at most 4096 bytes. Separate R1 types use
+the shared strict JSON rules: canonical ASCII keys, no unknown/duplicate/null
+fields, invalid UTF-8, trailing value or excessive nesting. Every required
+field must be present, including zero/false fields. IDs and challenge contain
+8–32 lowercase hexadecimal characters; hashes contain exactly 64. Version is
+always 1. There is no caller-selected bound or arbitrary dispatcher.
+
+Immutable stdin has exactly these fields, illustrated here without prescribing
+its serialization or whitespace:
+
+```json
+{"version":1,"run_id":"01234567","request_id":"89abcdef","attempt_id":"aabbccdd","profile":"r1-memory-fixed-v1","challenge":"1234abcd"}
+```
+
+The actor hashes the exact validated stdin bytes, including any whitespace.
+It never reserializes stdin for hashing or adds `plan_sha256` to it.
+`context.json` contains those six request fields plus `request_sha256`,
+`plan_sha256` and `control_directory:{"device":...,"inode":...}`. Device and
+inode must be nonzero. Context has no `context_sha256` field. Its byte hash is
+computed only after validation. The future host must freeze directory identity,
+mount target/schema and challenge in its plan, then publish context after plan
+hashing and authenticate its exact subject/hash in a late runtime receipt. This
+avoids a request/plan/context hash cycle; workload echoes cannot authenticate it.
+
+Every post-context record shares the fixed `R1Binding`: all six request fields,
+`request_sha256`, `plan_sha256` and `context_sha256`. Release adds
+`action:"release"`, `expected_stage:"ready"`, `sequence:1`. Finish adds
+`release_sha256`, `action:"finish"`, `expected_stage:"retained"`, `sequence:2`.
+All common fields and consumed byte hashes must match exactly. Mutable sequence
+numbers cannot select a command or a different experiment.
+
+Only the main writes stdout, as append-only newline-delimited frames. Each
+`R1Evidence` contains the common binding, `stage`, `sequence`, and exactly one
+payload from this table:
+
+| Stage / sequence | Payload | Required observations |
+| --- | --- | --- |
+| `ready` / 0 | `ready` | `control_directory`, `main`, `child` |
+| `pressure-start` / 1 | `pressure` | `release_sha256`, before allocation or touch |
+| `retained` / 2 | `touched` | `release_sha256`, `requested_bytes:67108864`, actual `touched_bytes`, `page_size`, `retained:true` |
+| `completion` / 3 | `completion` | `release_sha256`, `finish_sha256`, `touched_bytes`, `retained_until_finish:true`, `child`, `outcome:"completed"` |
+| `failure` / interrupted sequence | `failure` | Interrupted `stage`, fixed `error`, actual `touched_bytes`/`page_size`, `cleanup`, `child`; release/finish hashes when consumed |
+
+Failure sequences describe phases, not output frame counts: 0 covers `context`,
+`child-ready`, `ready`; 1 covers `release`, `pressure-start`, `allocate`, `touch`;
+2 covers `retained`, `finish`, `cleanup`; 3 covers `child-reap`, `completion`.
+Both encoding and decoding reject contradictions. Release failures may lack a
+release hash while waiting or rejecting a record, but `pressure-start` and later
+require the consumed release hash. No earlier phase can contain it. Finish
+failures may lack a finish hash while waiting or rejecting a record; `cleanup`
+and later require it. A finish hash requires a release hash and cannot precede
+the finish phase. Positive touched bytes require valid page size/alignment and
+cleanup other than `not-allocated`. Touch failures can report partial accounting
+at sequence 1; `retained` and later require full touch. Zero-touch allocation
+errors and failed cleanup remain valid evidence; the codec never infers cleanup
+success from accounting or phase.
+
+Actor identities contain namespace-local `pid`, `start`, and `executable` and
+`pid_namespace` device/inode objects. Main independently validates its owned
+child's handshake against proc metadata and requires the same executable/PID
+namespace and a distinct PID. These local identities do not authorize host
+termination or establish actual cgroup membership. If independent metadata
+lookup fails after a valid handshake, readiness returns no public child identity.
+The exact spawned process handle/PID stays owned for bounded cleanup; a later
+independent observation may corroborate identity, but the handshake alone cannot.
+An already ended child can still have an observed reap outcome with unknown
+identity. Neither case permits readiness or completion.
+
+Child results preserve identity when available, `token` (`none`, `finish` or
+`abort`), `termination` (`unknown`, `exited` or `signaled`) and `reap` (`unknown`
+or `reaped`). An observed normal exit has `exit_code`; a signal has `signal`.
+Unknown status never invents an exit code. `reaped` describes an already returned
+wait status for the exact owned child. Completion requires its validated identity,
+an observed exit code 0 following finish, and completed cleanup. It never
+promises a future reap. Private child exit codes distinguish finish (0), abort
+(20), lifetime (21), parent-pipe EOF (22), protocol/I/O failure (23) and unsupported
+identity metadata (24). Unsupported proc metadata is explicit failure evidence.
+
+Before context validation, failures instead use the uncorrelated
+`R1StartupFailure` frame: version 1, `kind:"r1-startup-failure"`, request/context
+`stage`, fixed `error` and directory `cleanup` (`not-opened`, `closed`, `failed`);
+rejected IDs are never echoed. Later failure labels
+distinguish deadlines, control/binding errors, early finish, child or unsupported
+metadata, I/O, allocation, touch and cleanup. `cleanup` is `not-allocated`,
+`released` or `failed`. Output failure can leave a partial last frame; earlier
+observations remain evidence, and an incomplete stream cannot establish success.
+
+### Pinned reads, phase order and bounds
+
+The actor pins the nofollow directory once, checks its visible identity against
+the pin, and retains the initial context subject and exact bytes. Fixed flat
+reads require nofollow/nonblocking open, a regular singly linked bounded file,
+before/open/post-read/visible metadata agreement, an independent cap and exact
+length. Context and consumed release/finish subjects/bytes are rechecked before
+later transitions. Directory replacement, subject replacement, content drift,
+wrong IDs/challenge/hash or any malformed record fails. Only an absent initial
+lookup of release/finish in its expected stage is a bounded wait. Lost directories
+or files that disappear after lookup are errors. Temporary names are ignored.
+An early release is stale; finish visible before retained evidence is rejected.
+
+The fixed child starts before readiness, with empty environment, no shell,
+null standard streams, no parent-death kill and two private CLOEXEC pipes
+created by the actor after sandbox entry. Only its two assigned endpoints pass
+through self-exec. It reads no host-control files and allocates no pressure
+memory. Both actors must be ready before release; there is no later child spawn.
+Only exact private finish/abort tokens cause normal protocol termination.
+EOF means parent lost and retains the child's independent lifetime; main death
+cannot immediately look like kernel-group termination. Failure cleanup may send
+abort, which is retained as intervention evidence.
+
+Go `exec` implements the child's nil standard streams by opening `/dev/null`.
+The legacy bubblewrap layout creates an empty `/dev`, so future R1 host
+integration must first qualify the exact R1-only `--dev-bind /dev/null /dev/null`
+with a trusted character-device subject (`S_IFCHR`, device number 1:3), mount
+and readback. This requires no broad `/dev` exposure. This tranche adds no
+launcher or bind. Actual no-pressure child entry in that sandbox, followed by
+memory-pressure qualification, requires later reviewed host integration.
+
+After exact release, main emits pressure-start and maps exactly 64 MiB with
+anonymous private mmap. It writes a nonzero byte at the actual OS page stride,
+counting bytes covered by successfully touched pages. There is no mlock,
+hugepage request, filesystem payload or large Go heap buffer. Partial touch and
+deadline failures retain actual accounting. The mapping stays live until exact
+finish or an explicit failure cleanup path. Successful touch/retention/completion
+is valid raw protocol evidence even under a low limit; a later host oracle must
+classify such survival as inconclusive, not reject its wire encoding.
+
+| Fixed bound | Duration |
+| --- | --- |
+| Main overall monotonic lifetime | 8 seconds |
+| Child independent lifetime | 10 seconds |
+| Readiness, including stdin/context/child handshake | At most 2 seconds |
+| Release wait | At most 2 seconds |
+| Allocation/touch/retained emission | At most 1 second |
+| Finish wait | At most 2 seconds |
+| Child termination/reap, including failure retry | At most 500 milliseconds |
+
+Every main stage additionally uses the one overall monotonic deadline. Retry
+loops have bounded waits and call/byte budgets. Raw pipe
+descriptors are cached before nonblocking setup: repeated Go `File.Fd()` calls
+can restore blocking mode. A stalled-handshake regression checks that private
+pipe reads time out and abort/reap remains observable. Deadline checks cannot forcibly
+eliminate scheduler delays or blocking regular-file/kernel syscalls. Future
+host unit guards remain necessary. A cleanup deadline or syscall failure leaves
+failed/unknown outcomes; it cannot create completion or a support decision.
+
+Tests substitute allocator, clock, control reader, process and I/O seams. They
+exercise accounting/deadline composition without mapping the 64 MiB path or
+invoking the actual main actor CLI. A bounded owned child test exercises only
+the real private handshake and reap, and reports unsupported metadata explicitly.
+Readonly mount enforcement, visibility of later atomic exclusive host publication,
+late-context authentication, publication durability, host PID/pidfd and complete
+admitted membership binding (including wrappers), policy/swap/headroom readbacks,
+kernel counters, independent retention/heartbeat/oracle evidence and host cleanup
+are unimplemented/unexecuted qualification gates. No actual pressure, resource
+operation, systemd/bubblewrap launch or runtime enforcement claim follows from
+these schema/helper tests or static builds.
+
 ## Separate implementation and support gates
 
 All full matrix cases remain unsupported: FS1–FS4, US1–US3, FD1–FD2,
