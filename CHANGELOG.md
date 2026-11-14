@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-14
+
 ### Fixed
 
 - Retain one exact grant-conflict event per immutable attempt, preserve context
