@@ -13,6 +13,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transactional authority and stable identities, read-only identity preflight,
   verified SQLite connection settings, and finite operation and page bounds.
   This lifecycle foundation does not yet implement guarded dispatch journaling.
+- Document journal lifecycle APIs, defaults, ownership, connection verification,
+  refusal behavior and the distinction between ordinary reopen and unsupported
+  restore; link the bounded foundation from the design contract index.
 
 ## [0.0.2] - 2026-11-14
 
