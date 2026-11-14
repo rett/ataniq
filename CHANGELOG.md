@@ -8,6 +8,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Preserve exact empty journal BLOB outcomes when saving Prepared observations;
+  reconcile a lost Release response only from the exact retired generation.
+  Return unknown on failed grant-conflict commits, verify the pinned DQS probe
+  diagnostic, and reject new lifetime admission promptly during Close.
+  Add actual-driver, retirement, conflict, cancellation and explicit bounded
+  capacity-recovery regressions without changing the schema or dispatch policy.
+
 - Update the design index to describe the implemented guarded dispatch journal.
 
 - Validate journal policy and grant expiry bounds by UTC instant across caller

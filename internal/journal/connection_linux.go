@@ -124,6 +124,12 @@ func configure(ctx context.Context, raw sqlite.ExecQuerierContext, o Options, re
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	// This diagnostic is qualified against the exact pinned engine above.
+	// BUSY, I/O and unrelated SQL errors are failures, not DQS readback.
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) || sqliteErr.Code() != 1 || sqliteErr.Error() != `SQL logic error: no such column: "journal_dqs_probe" - should this be a string literal in single-quotes? (1)` {
+		return fmt.Errorf("journal: DQS probe: %w", err)
+	}
 	pages, err := scalar(ctx, raw, "PRAGMA page_count")
 	if err != nil {
 		return err

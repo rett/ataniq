@@ -385,10 +385,14 @@ func TestRetirementFailureAndCancellation(t *testing.T) {
 					if r.Active != (point == "release-before") || !r.Uncertain {
 						t.Fatal("lost guard or volatile response uncertainty", r)
 					}
-					// Retry may conservatively persist response uncertainty.
+					// A retry proves committed retirement for this generation;
+					// a before-commit failure still persists uncertainty.
 					err := a.Release(context.Background())
-					if point == "release-after" && !errors.Is(err, ErrInactive) || point == "release-before" && err != nil {
+					if err != nil {
 						t.Fatal("bounded retirement retry", err)
+					}
+					if point == "release-after" {
+						wantState = dispatch.Denied
 					}
 					if err := s.Close(); err != nil {
 						t.Fatal(err)
