@@ -241,6 +241,9 @@ func TestPrivatePaths(t *testing.T) {
 // databases. It is never used against anything except a fresh test directory.
 func fixtureDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
+	if _, err := sqlite.OFDLocking(true); err != nil {
+		t.Fatal(err)
+	}
 	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=rw"}
 	db := sql.OpenDB(&fixtureConnector{dsn: u.String()})
 	db.SetMaxOpenConns(1)

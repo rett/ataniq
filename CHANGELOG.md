@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Require native main-file OFD locking before journal ownership acquisition,
+  and verify it after a consumed SQLite schema read on preflight and every
+  physical connection before writer settings. Rejected competing opens and
+  unrelated main-file descriptor closure preserve the live owner's SQL locks;
+  processes already using POSIX SQLite locking are refused before acquisition.
+
 ### Added
 
 - Pin the SQLite journal driver and preserve its dependency notices.

@@ -30,6 +30,11 @@ func private(info os.FileInfo, directory bool) bool {
 }
 
 func acquire(path string, create bool) (_ *ownership, err error) {
+	// Refuse a process already frozen in POSIX mode BEFORE opening a main-file
+	// descriptor: even closing a rejected acquisition could strip its SQL locks.
+	if err = requireOFDLocking(); err != nil {
+		return nil, err
+	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
 		return nil, errors.New("journal: expected clean absolute file path")
 	}

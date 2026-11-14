@@ -19,7 +19,7 @@ const engineSource = "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131
 // database/sql replacements. Configuration runs on the raw connection with the
 // caller's bounded context; it never recursively enters the SQL pool.
 type connector struct {
-	driver   *sqlite.Driver
+	driver   driver.Driver
 	owner    *ownership
 	options  Options
 	readOnly bool
@@ -31,6 +31,9 @@ func (c *connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
 	ctx, cancel := context.WithTimeout(ctx, c.options.OperationTimeout)
 	defer cancel()
 	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = requireOFDLocking(); err != nil {
 		return nil, err
 	}
 	if err = c.owner.check(); err != nil {
@@ -65,6 +68,18 @@ func (c *connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
 }
 
 func configure(ctx context.Context, raw sqlite.ExecQuerierContext, o Options, readOnly bool) error {
+	// Bound the first real main-schema read too. Driver.Open's DSN must not
+	// execute writer PRAGMAs before this boundary. Merely enabling OFD is not
+	// proof: the first unsupported OFD fcntl can silently fall back to POSIX.
+	if _, err := raw.ExecContext(ctx, "PRAGMA busy_timeout="+strconv.FormatInt(o.BusyTimeout.Milliseconds(), 10), nil); err != nil {
+		return err
+	}
+	if _, err := scalar(ctx, raw, "SELECT count(*) FROM main.sqlite_schema"); err != nil {
+		return err
+	}
+	if !sqlite.OFDLockingEnabled() {
+		return errors.New("journal: main-file OFD locking required after schema read")
+	}
 	// These settings are connection-local. In particular, read-only preflight
 	// never changes journal_mode or max_page_count on an unrecognized database.
 	queryOnly := "0"
@@ -72,7 +87,6 @@ func configure(ctx context.Context, raw sqlite.ExecQuerierContext, o Options, re
 		queryOnly = "1"
 	}
 	for _, statement := range []string{
-		"PRAGMA busy_timeout=" + strconv.FormatInt(o.BusyTimeout.Milliseconds(), 10),
 		"PRAGMA query_only=" + queryOnly,
 		"PRAGMA trusted_schema=OFF", "PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=FULL", "PRAGMA locking_mode=NORMAL",
@@ -131,6 +145,15 @@ func configure(ctx context.Context, raw sqlite.ExecQuerierContext, o Options, re
 		if err := expect(ctx, raw, "PRAGMA max_page_count", strconv.FormatInt(o.MaxBytes/4096, 10)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// Select the process-wide mode before SQLite or independent main-file opens.
+// Repeating true is supported after use; never switch a live process's mode.
+func requireOFDLocking() error {
+	if _, err := sqlite.OFDLocking(true); err != nil {
+		return fmt.Errorf("journal: main-file OFD locking required: %w", err)
 	}
 	return nil
 }
