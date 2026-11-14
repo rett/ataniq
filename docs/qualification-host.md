@@ -154,9 +154,70 @@ publish release. Restart reads validate the recorded artifact rather than
 reconstructing endpoints or launching another injector. Unexpected typed
 runtime fields on historical records are rejected.
 
-These static plan and release checks do not establish endpoint execution or
-live FD1 qualification. The fixed endpoint injector and final wrapper must
-also be present and independently reviewed before coordinator host execution.
+The fixed role table for this selector is:
+
+| Role | Descriptors preserved at target exec |
+| --- | --- |
+| `candidate` | 0–2 and reviewed BPF513 |
+| `direct` | 0–2, directory128, pipe256, Unix stream384 and regular512 |
+| `weakened-synthetic` | 0–2, 128/256/384/512 and reviewed BPF513 |
+
+All three roles enter the identical service-local injector and final wrapper.
+All fixed slots must be vacant and below actual RLIMIT_NOFILE; no fallback or
+limit raising occurs. The injector opens the directory read-only/no-follow,
+creates CLOEXEC nonblocking pipe and AF_UNIX/SOCK_STREAM temporaries, and writes
+one complete bounded type-specific nonce frame to each channel. Receiving
+endpoints are installed before their temporary sources close. Every producer,
+peer and temporary alias, including aliases sharing receiving status flags,
+must close successfully and be verified closed before artifact/receipt
+publication. No living peer, ancillary transport or configurable FD list is
+introduced. A short write, collision, unexpected flags or unavailable socket
+metadata aborts before release. Neither wrapper nor probe repairs flags.
+
+The final wrapper requires the exact released record, matching injection and
+the same authenticated artifact. It rereads that exact artifact and verifies
+actual endpoints, host ownership, fixed dev/inode/type, exact F_GETFL access and
+NONBLOCK, AF_UNIX/SOCK_STREAM metadata and frozen leaf content before terminal
+preparation. It never reads, seeks or Preads a channel. Typed directory link
+counts and metadata are captured after per-kind admission and checked again
+in the raw terminal loop. Regular files and stdio retain strict single-link
+checks. The close_range barrier, immediate exec, empty environment, exact
+stdio and BPF offset-zero rules remain in force.
+
+Typed candidate controls match case/profile, current chain hashes, campaign,
+run, boot, complete cleanup and successful operation or inventory proof.
+Their original creation time is retained in `control.direct_created` and
+checked against the 300-second freshness window again before release and
+wrapper execution. The pair reuses nonce/challenge bytes; each attempt binds
+its own directory, leaf, regular and channel identities. It never copies a
+previous attempt's inode identities as expectations for new objects.
+
+Candidate operations require observed fstat EBADF at the selected fixed slot.
+Directory controls require identity, open, read and digest success. Channel
+controls require identity, read, exact frame and EOF, without an inconclusive
+tail. Missing metadata, a reused slot, EAGAIN, incomplete reads or an unrelated
+denied syscall cannot establish closure. Typed inventory uses the same exact
+table parser and mandatory owned stdio anchors. It additionally matches each
+fixed object's identity and mode/type: candidates require all four intended
+slots absent and no alias anywhere; direct/weakened inventories require each
+capability exclusively at its intended slot. BPF must be absent everywhere
+after final workload exec. No unknown inventory descriptor is read. Failed
+observations remain durable after proved cleanup.
+
+Per-attempt reports remain observations. Full FD1 coverage requires independent
+review of direct/candidate/weakened operation records and all three inventory
+records; neither one successful run nor the pre-exec receipt supplies a matrix.
+No systemd/bubblewrap launch or live matrix was run for this integration.
+The worker's socket metadata admission was denied: complete typed injector/
+terminal cases explicitly skipped, leaving those controls unqualified. Separate
+owned directory/pipe terminal tests exercised real directory link counts,
+regular hardlink rejection, flag drift, EOF and unknown-alias closure. Fake
+controller transcripts and captured accepted-base encodings supply offline
+checks only. The lead must repeat owned-child tests outside that restriction,
+review source and execute the bounded live matrix separately. Dynamic backend
+dependency closure remains unresolved. The feature-wide `make test` gate
+remains the lead's checkpoint; this worker runs only targeted uncached host
+tests and static Linux/amd64 builds, without bootstrap or downloads.
 
 The commands are:
 
@@ -218,7 +279,8 @@ effective-limit shapes require selected-host verification; unsupported shapes
 remain inconclusive. There is no `--collect`, runtime drop-in or host setting
 change. Trusted controller commands alone receive the host manager connection.
 
-The finite private `private-inject` reexec is run only inside this service. It
+With no descriptor profile selected, the finite private `private-inject`
+reexec is run only inside this service. It
 validates exact intent/root/subjects and opens only the owned synthetic regular
 fixture and reviewed BPF subject for intentional inheritance. RLIMIT and unused
 sparse FD checks precede modification of its own child table: synthetic FDs
@@ -249,7 +311,8 @@ New Prepare always chooses `descriptor_policy:"final-fds-v1"`. The exact plan
 digest includes that version, the wrapper `command`, separate `target_command`,
 launch arguments, profile, selected/frozen subject hashes, streams and original
 control bindings. There is no caller-configurable descriptor list or bypass
-flag. The verified durable role selects this compiled policy:
+flag. With no descriptor profile selected, the verified durable role selects
+this compiled policy (the opt-in typed table is above):
 
 | Role | Preserved descriptors at target exec | Target |
 | --- | --- | --- |
@@ -257,7 +320,8 @@ flag. The verified durable role selects this compiled policy:
 | `direct` | Owned 0–2 and synthetic FD512; aliases denied | Frozen static probe |
 | `weakened-synthetic` | Owned 0–2, BPF513 and all four synthetic descriptors | Same bubblewrap namespace/guard profile, then probe |
 
-`weakened-synthetic` accepts only the owned `fake-fd` and `inventory` fixtures,
+Without the typed selector, `weakened-synthetic` accepts only the owned
+`fake-fd` and `inventory` fixtures,
 rejects a direct-control reference, and cannot qualify a candidate as its direct
 control. It deliberately exposes the fake capability to check the observation
 oracle in the same binary/profile family. It is not an ordinary execution mode.
@@ -270,8 +334,9 @@ and the target command. It receives no `INVOCATION_ID` environment variable:
 that binding comes from the durable injector/release record and unchanged
 process identity. Manager, bus and credential environment is never forwarded.
 
-Before the terminal section it verifies every synthetic descriptor's regular
-file identity and digest, and actual owned stdio identities and flags. Stdin
+Before the terminal section it verifies the selected synthetic descriptor
+kinds (regular aliases without the typed selector), and actual owned stdio
+identities and flags. Stdin
 must be the request file opened read-only; stdout/stderr must be their distinct
 owned regular files opened write-only with append. All are non-CLOEXEC.
 BPF513 must match the frozen singly linked regular subject, be read-only and
@@ -591,11 +656,11 @@ whole frame before any write and detects nil-error short writes.
 
 ## Fixed typed inherited observations
 
-These three raw cases establish building blocks for a later FD1 evidence
-bundle. The current host command cannot prepare or dispatch them. Host dispatch,
-inode binding and release, final descriptor policy, historical records and the
-existing regular `fake-fd` API retain their current behavior. `FD1` itself still
-returns `unsupported`. No command or flag is added.
+These three raw cases supply fixed typed operation observations. The host
+command prepares and dispatches them only with the explicit `fd1-typed`
+configuration selector described above. Historical absent-profile records and
+the regular `fake-fd` request API retain their encoding and hash meanings.
+`FD1` itself still returns `unsupported`; no command or flag is added.
 
 Each new request has exactly one `payload.typed_fd` member, mutually exclusive
 with `file`, `unix` and `fd`. A pipe request, for example, is:
@@ -628,8 +693,8 @@ ownership/lifetime and the complete synthetic fixture tree stable for the call.
 ### Frozen runtime binding artifact
 
 The artifact is trusted fixture metadata, read only through the explicit
-absolute `--fixture-root`. The future typed launcher must mount it read-only
-only for this profile, after independent trusted-side authentication. It is
+absolute `--fixture-root`. The typed host launcher mounts it read-only
+only for this profile, with trusted-side authentication before release. It is
 neither a broker nor a configuration allowlist. It cannot establish its own
 provenance. The directory capability and its leaf remain unmounted in hardened
 candidates; direct and weakened controls expose that tree through descriptor
@@ -677,7 +742,7 @@ is authenticated on the trusted side; the namespace probe matches global
 device/inode/type without comparing host UID to projected UID0. Existing
 idmapped-owner admission remains unsupported.
 
-The future service-local injector creates exact channel identities after
+The service-local injector creates exact channel identities after
 request/plan freezing, publishes the artifact and its hash/identity in its
 receipt, and waits while the controller durably binds them before release.
 The trusted side must verify `plan_sha256` against the launched plan. That hash
@@ -686,7 +751,7 @@ so including the plan hash in that request would be circular. Neither stdin
 nor an already launched plan may be rewritten or rehashed. The probe never
 learns an expected identity from its own fstat. Runtime artifact generation,
 receipt authentication, read-only mounting, wrapper revalidation and release
-integration are not implemented or executed in this probe/schema slice.
+are host integration mechanisms; they do not assert successful host execution.
 
 ### Operations and interpretation
 
@@ -711,7 +776,7 @@ and `close` distinguish validation/read/close failures from `openat` errno.
 
 Channel cases validate actual F_GETFL access and O_NONBLOCK, rejecting O_PATH
 or missing flags without repair. Socket metadata must identify AF_UNIX and
-SOCK_STREAM after identity validation. The future injector must prewrite exactly
+SOCK_STREAM after identity validation. The injector prewrites exactly
 one frame and close every writer/peer before publication and release. The probe
 only calls raw nonblocking read; it never uses Pread/Seek, a blocking wrapper,
 writes, recvmsg or ancillary parsing. It requires exact length/hash followed by
@@ -737,7 +802,8 @@ These observations concern fixed regular/directory/pipe/Unix-stream inherited
 capability coverage. Live RPC, bidirectional write protocols, Unix connect
 authorization and SCM_RIGHTS remain separate FD2/US work. No direct/candidate/
 weakened/inventory FD1 evidence bundle, launcher qualification, live sandbox
-execution or runtime-binding generation is claimed by these tests.
+execution is claimed by these tests. Runtime-binding generation is implemented;
+full socket-admitted child coverage and the live matrix remain separate gates.
 
 ## Inventory and evidence limits
 

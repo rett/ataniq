@@ -13,6 +13,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Authenticate separate runtime artifact evidence before durable binding and
   release, preserving historical absent-profile encodings and plan hashes.
   This supplies no live qualification or dynamic backend closure claim.
+- Integrate fixed directory128/pipe256/Unix-stream384/regular512 capabilities
+  through the owned injector, released final wrapper and typed observation
+  collection. Authenticate and retain runtime bindings separately from the
+  immutable plan; close every temporary alias/peer before publication, validate
+  without channel consumption and preserve strict regular-file link checks.
+  Require scoped fresh direct controls, exact typed inventories and complete
+  operation evidence. Retain failed observations and explicit socket-admission
+  test gaps; the reviewed live FD1 matrix remains a separate lead action.
 
 - Require exact descriptor inventory rows and durable owned stdio regular-file
   identities before accepting complete post-exec host qualification evidence.
@@ -64,9 +72,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `inherited-bindings.json` schema. Validate context and fixed object identities
   before content access, bound nonblocking channel reads and require exact
   synthetic frames plus EOF while preserving intermediate effects. Owned child
-  regressions cover rejection without consumption. Host dispatch, runtime
-  binding generation/release, launcher policy and live FD1 qualification remain
-  separate integration work; existing serialized request meanings are preserved.
+  regressions cover rejection without consumption. The opt-in host integration
+  is described above; live FD1 qualification remains separate and existing
+  serialized request meanings are preserved.
 - Explicit Linux/amd64 bubblewrap qualification driver with durable campaign
   ownership and restart fencing, exact service/slice reconciliation, private
   reexec fake-FD injection, finite ready/hold cancellation evidence and offline
