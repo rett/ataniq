@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-14
+
 ### Added
 
 - Add pure typed application command contracts for queued input and exact queued
