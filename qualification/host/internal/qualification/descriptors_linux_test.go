@@ -149,8 +149,10 @@ func childAttempt(t *testing.T, dir, role string) *Attempt {
 	return a
 }
 
-// Install a tiny test-only seccomp errno rule after preflight. The production
-// terminal block contains no hooks or callbacks. Rules affect only this child.
+// Install a tiny test-only seccomp errno rule after preflight. Pin the goroutine
+// before both thread-local prctl calls and keep it pinned through return until
+// this isolated child execs or exits the whole process. The production terminal
+// lock safely nests; its block contains no hooks or callbacks.
 func denyTestSyscall(t *testing.T, number uint32, arg1 *uint32, errno syscall.Errno) {
 	t.Helper()
 	filters := []syscall.SockFilter{{Code: 0x20, K: 0}, {Code: 0x15, Jt: 0, Jf: 1, K: number}, {Code: 0x06, K: 0x00050000 | uint32(errno)}, {Code: 0x06, K: 0x7fff0000}}
@@ -158,6 +160,7 @@ func denyTestSyscall(t *testing.T, number uint32, arg1 *uint32, errno syscall.Er
 		filters = []syscall.SockFilter{{Code: 0x20, K: 0}, {Code: 0x15, Jf: 3, K: number}, {Code: 0x20, K: 24}, {Code: 0x15, Jf: 1, K: *arg1}, {Code: 0x06, K: 0x00050000 | uint32(errno)}, {Code: 0x06, K: 0x7fff0000}}
 	}
 	prog := syscall.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
+	runtime.LockOSThread()
 	_, _, e := syscall.RawSyscall6(syscall.SYS_PRCTL, 38, 1, 0, 0, 0, 0)
 	if e != 0 {
 		os.Exit(77)
