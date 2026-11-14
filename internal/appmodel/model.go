@@ -139,10 +139,10 @@ type AdmissionReceipt struct {
 type State string
 
 const (
-	Queued      State = "queued"
-	Held        State = "held"
-	Cancelled   State = "cancelled"
-	Applied     State = "applied"
+	Queued    State = "queued"
+	Held      State = "held"
+	Cancelled State = "cancelled"
+	Applied   State = "applied"
 )
 
 // CurrentStatus is a revisioned projection, never part of immutable binding.
