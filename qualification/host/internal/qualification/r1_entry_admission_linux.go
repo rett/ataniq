@@ -13,7 +13,7 @@ import (
 )
 
 const entryPolicyProperties = "Id,LoadState,ActiveState,Job,InvocationID,ControlGroup,ManagedOOMSwap,ManagedOOMMemoryPressure,OOMRules"
-const entryControllerProperties = "MainPID,ExecStart,Slice,Transient,Type,Restart,RuntimeMaxUSec,TimeoutStopUSec,MemoryMax,MemorySwapMax,MemoryHigh,TasksMax,CPUQuotaPerSecUSec,OOMPolicy,Delegate"
+const entryControllerProperties = "MainPID,ExecStart,Slice,Transient,Type,Restart,RuntimeMaxUSec,TimeoutStopUSec,MemoryMax,MemorySwapMax,MemoryHigh,TasksMax,CPUQuotaPerSecUSec,OOMPolicy,Delegate,KillMode,SendSIGKILL,FinalKillSignal"
 const entryDaemonProperties = "LoadState,ActiveState,Job,InvocationID,ControlGroup,StateChangeTimestampMonotonic"
 
 // Runtime evidence only: never participates in the plan/request/context hash.
@@ -408,7 +408,7 @@ func (h hostIO) entryController(a *Attempt, root string) (entryController, error
 }
 
 func entryControllerSettings(pid int) []string {
-	return []string{strconv.Itoa(pid), "-.slice", "yes", "exec", "no", "1min 30s", "5s", "536870912", "0", "infinity", "128", "1s", "continue", "no"}
+	return []string{strconv.Itoa(pid), "-.slice", "yes", "exec", "no", "1min 30s", "5s", "536870912", "0", "infinity", "128", "1s", "continue", "no", "control-group", "yes", "9"}
 }
 
 // Direct metadata only after wrapper publication: manager commands must stay

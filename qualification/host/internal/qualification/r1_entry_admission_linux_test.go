@@ -261,6 +261,82 @@ func TestEntryControllerFixedContract(t *testing.T) {
 	}
 }
 
+func TestEntryControllerTerminationPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+	}{
+		{"KillMode", "none"},
+		{"KillMode", "process"},
+		{"KillMode", "mixed"},
+		{"SendSIGKILL", "no"},
+		{"FinalKillSignal", "15"},
+		{"FinalKillSignal", "SIGKILL"}, // Readback must use the numeric representation.
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			f := entryTestFixture(t)
+			call := f.h.call
+			f.h.call = func(tool string, args []string) (string, error) {
+				b, err := call(tool, args)
+				if args[len(args)-1] == "controller.service" {
+					lines := strings.Split(b, "\n")
+					for j, line := range lines {
+						if strings.HasPrefix(line, tc.key+"=") {
+							lines[j] = tc.key + "=" + tc.value
+						}
+					}
+					b = strings.Join(lines, "\n")
+				}
+				return b, err
+			}
+			if err := f.c.run(f.a, f.h); err == nil || f.parentStarted || entryObserved(f.a) {
+				t.Fatal("unsafe controller termination policy admitted", err)
+			}
+			assertNoEntryPressure(t, f)
+		})
+	}
+	for _, key := range []string{"KillMode", "SendSIGKILL", "FinalKillSignal"} {
+		for _, fault := range []string{"missing", "duplicate", "truncated"} {
+			t.Run(key+"/"+fault, func(t *testing.T) {
+				f := entryTestFixture(t)
+				call := f.h.call
+				f.h.call = func(tool string, args []string) (string, error) {
+					b, err := call(tool, args)
+					if args[len(args)-1] == "controller.service" {
+						lines := strings.SplitAfter(b, "\n")
+						for j, line := range lines {
+							if strings.HasPrefix(line, key+"=") {
+								switch fault {
+								case "missing":
+									lines[j] = ""
+								case "duplicate":
+									lines[j] += line
+								case "truncated":
+									lines[j] = key
+								}
+							}
+						}
+						b = strings.Join(lines, "")
+					}
+					return b, err
+				}
+				if err := f.c.run(f.a, f.h); err == nil || f.parentStarted || entryObserved(f.a) {
+					t.Fatal("unknown controller termination policy admitted", err)
+				}
+				assertNoEntryPressure(t, f)
+			})
+		}
+	}
+	t.Run("control-group-final-SIGKILL", func(t *testing.T) {
+		f := entryTestFixture(t)
+		if err := f.c.run(f.a, f.h); err != nil || !entryObserved(f.a) {
+			t.Fatal("fixed controller termination policy refused", err)
+		}
+		if got := f.a.EntryRuntime.Admission.Controller.Settings[14:]; !reflect.DeepEqual(got, []string{"control-group", "yes", "9"}) {
+			t.Fatal("termination policy missing from receipt", got)
+		}
+	})
+}
+
 func TestEntryConfiguredPolicyAdmission(t *testing.T) {
 	for _, which := range []string{"active-sibling", "controller-in-app", "ancestor-kill", "ancestor-rules", "leaf-rules", "missing-root", "private-manager", "manager-uid", "manager-pid", "reused-controller", "controller-invocation", "inode", "mapping", "pending-job", "daemon-generation", "daemon-failed", "daemon-transition", "daemon-malformed", "manager-generation", "missing-property", "duplicate-property", "truncated-property", "timeout", "controller-cap", "controller-last-policy", "parent-policy-generation", "headroom-underflow", "shared-group"} {
 		t.Run(which, func(t *testing.T) {
@@ -455,6 +531,10 @@ func TestEntryAdmissionCompatibilityAndSize(t *testing.T) {
 		func(e *entryAdmission) { e.Snapshots[1].Units = e.Snapshots[1].Units[1:] },
 		func(e *entryAdmission) { e.Snapshots[1].Units[1].Rules = "kill" },
 		func(e *entryAdmission) { e.Controller.Settings[7] = "1" },
+		func(e *entryAdmission) { e.Controller.Settings = e.Controller.Settings[:14] },
+		func(e *entryAdmission) { e.Controller.Settings[14] = "mixed" },
+		func(e *entryAdmission) { e.Controller.Settings[15] = "no" },
+		func(e *entryAdmission) { e.Controller.Settings[16] = "15" },
 	} {
 		b, _ := json.Marshal(old)
 		var copy entryAdmission
@@ -619,7 +699,7 @@ func TestEntryControllerLoss(t *testing.T) {
 }
 
 func TestEntryCleanupIgnoresRuntimeAdmission(t *testing.T) {
-	for _, kind := range []string{"old-absent", "incomplete", "unsupported-version"} {
+	for _, kind := range []string{"old-absent", "old-14-settings", "incomplete", "unsupported-version"} {
 		t.Run(kind, func(t *testing.T) {
 			f := entryTestFixture(t)
 			if err := f.c.publishEntryContext(f.a); err != nil {
@@ -642,20 +722,43 @@ func TestEntryCleanupIgnoresRuntimeAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.a.Injector, f.a.Target = &i, &i.Process
+			if kind == "old-14-settings" {
+				if err := f.h.observeEntryAdmission(f.a, true); err != nil || !entryAdmitted(f.a) {
+					t.Fatal("complete admission fixture required", err)
+				}
+				// Preserve the original version-1 encoding and its 14 settings.
+				f.a.EntryRuntime.Admission.Controller.Settings = []string{strconv.Itoa(os.Getpid()), "-.slice", "yes", "exec", "no", "1min 30s", "5s", "536870912", "0", "infinity", "128", "1s", "continue", "no"}
+			}
 			// Historical unit bindings did not carry the new policy properties.
 			for _, u := range []*Unit{f.a.Parent, f.a.Workload} {
 				for _, key := range []string{"ManagedOOMSwap", "ManagedOOMMemoryPressure", "OOMRules"} {
 					delete(u.Properties, key)
 				}
 			}
-			if err := f.c.Save(f.a, "launching-service", ""); err != nil {
+			phase := "launching-service"
+			if kind == "old-14-settings" {
+				phase = "bound"
+			}
+			if err := f.c.Save(f.a, phase, ""); err != nil {
 				t.Fatal(err)
 			}
 			reopenEntryFixture(t, f)
+			if kind == "old-14-settings" {
+				if got := f.a.EntryRuntime.Admission; got == nil || got.Version != 1 || len(got.Controller.Settings) != 14 || len(got.Snapshots) != 2 {
+					t.Fatal("historical receipt encoding lost", got)
+				}
+				if entryAdmitted(f.a) || entryObserved(f.a) || entryAction(f.a, "wrapper-entry") == nil {
+					t.Fatal("historical receipt granted new entry authority")
+				}
+			}
 			if err := f.c.reconcile(f.a, f.h); err != nil || !f.dead || !f.parentStopped || f.a.Phase != "complete" {
 				t.Fatal("runtime policy evidence blocked original cleanup", err)
 			}
 			requireEntryCleanupOnly(t, f)
+			reopenEntryFixture(t, f)
+			if f.a.Phase != "complete" || entryObserved(f.a) {
+				t.Fatal("cleanup changed on second reopen")
+			}
 		})
 	}
 }

@@ -1125,7 +1125,10 @@ transient service, a direct child of the real user-manager root. A controller in
 `app.slice` refuses this profile. The fixed controller contract is `Type=exec`,
 `Slice=-.slice`, `Restart=no`, `Delegate=no`, `OOMPolicy=continue`, 512 MiB memory,
 unlimited MemoryHigh, zero swap, 128 tasks, one CPU, a 90-second runtime and a
-5-second stop timeout. Actual kernel caps and `memory.oom.group=0` are checked.
+5-second stop timeout. It also requires `KillMode=control-group`, `SendSIGKILL=yes`
+and `FinalKillSignal=9` (SIGKILL), explicitly launched and read back so the stop
+bound covers remaining helper children. Actual kernel caps and
+`memory.oom.group=0` are checked.
 The controller cap must still leave at least 384 MiB of observed headroom after
 normal use; it does not authorize pressure allocation. The controller is separate
 from, and outside, the fresh 256 MiB workload aggregate.
@@ -1143,6 +1146,7 @@ env XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus"
   /usr/bin/systemd-run --user --unit="aq-entry-controller-$controller_id.service" \
   --slice=-.slice --service-type=exec \
   --property=RuntimeMaxSec=90s --property=TimeoutStopSec=5s \
+  --property=KillMode=control-group --property=SendSIGKILL=yes --property=FinalKillSignal=9 \
   --property=Restart=no --property=Delegate=no --property=OOMPolicy=continue \
   --property=MemoryMax=536870912 --property=MemoryHigh=infinity \
   --property=MemorySwapMax=0 --property=TasksMax=128 --property=CPUQuota=100% \
@@ -1281,6 +1285,8 @@ evidence. Old records without it still decode and retain their original cleanup
 authority; they cannot acquire a new positive result or replay authority.
 Missing, incomplete or unsupported-version admission evidence does not become a
 gate for structurally valid original cleanup records.
+Historical 14-setting controller receipts still decode and authorize original
+cleanup; new publication and success require the three termination settings too.
 After wrapper publication controller liveness uses direct metadata only, without
 new manager commands in the actor observation window. Natural timeout, nullFD,
 process/member, reap and original-generation cleanup oracles remain mandatory.
@@ -1301,6 +1307,9 @@ remain outside this entry profile.
 
 ### Changelog [Unreleased]
 
+- Require explicit controller `KillMode=control-group`, `SendSIGKILL=yes` and
+  numeric `FinalKillSignal=9` in R1 entry readback and admission receipts, and
+  document them in the normal CLI launch. Preserve historical receipt cleanup.
 - Replace the R1 entry profile's global active-oomd rejection with bounded
   configured-policy observations of the real direct-root controller and target
   ancestry, explicit real user-bus access and compatible runtime admission
