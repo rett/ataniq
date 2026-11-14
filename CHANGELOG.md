@@ -8,14 +8,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Record sanitized source-pinned FD1 and no-pressure entry host observations
+  in the host manual while retaining their separate historical provenance.
+- Describe the developer qualification foundation and pending production work
+  in the README, including the provider-specific Codex mock tests.
 - Add the opt-in `--r1-memory` probe mode with separate strict fixed R1
   request/context/control/evidence schemas, exact byte-hash binding, pinned
   read-only control reads, bounded anonymous-memory helper and private self-exec
   child protocol. Test ordering, retention, accounting, deadlines and failures
   with fake allocation and bounded child-only handshake checks. Ordinary probe,
-  hold, FD1 and host launch behavior remains unchanged; R1 host launches are
-  still rejected. No actual pressure run, host launcher or runtime qualification
-  support is claimed.
+  hold, FD1 and host launch behavior remained unchanged at that source stage.
+  Pressure R1 host launches remain unsupported. The later `r1-entry` host case
+  admits no-pressure child entry. No pressure run or runtime qualification
+  support is claimed by this source change.
 - Preserve nonblocking mode on R1 input/output and private child pipes by caching
   raw descriptors before setup. A bounded stalled-handshake regression covers
   pipe timeout and actual abort/reap without running the pressure actor.
