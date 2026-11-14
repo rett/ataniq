@@ -178,6 +178,12 @@ wrapper preparation, controls and successful collection continue to require
 current artifact authentication and no retained integrity failure. There is no
 artifact replacement, endpoint recovery or automatic fence reset.
 
+Collection rechecks artifact integrity after its durable observation updates.
+An artifact change during either evidence-save boundary retains raw observations
+and proved cleanup with the integrity failure, but returns an inconclusive result.
+An `observed` raw probe status in such a record cannot authorize a successful host
+report or direct-control reuse.
+
 The fixed role table for this selector is:
 
 | Role | Descriptors preserved at target exec |
