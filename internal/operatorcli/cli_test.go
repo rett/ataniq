@@ -3,7 +3,9 @@ package operatorcli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,12 +21,17 @@ type fake struct {
 	envelope appmodel.Envelope
 	key      appmodel.CommandKey
 	err      error
+	cursor   string
 }
 
 func (f *fake) Submit(_ context.Context, e appmodel.Envelope) (appmodel.AdmissionReceipt, error) {
 	f.calls++
 	f.envelope = e
-	return appmodel.AdmissionReceipt{Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "trusted", CommandID: e.CommandID}, AdmittedRevision: "r2", Cursor: "c1"}, f.err
+	cursor := f.cursor
+	if cursor == "" {
+		cursor = "c1"
+	}
+	return appmodel.AdmissionReceipt{Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "trusted", CommandID: e.CommandID}, AdmittedRevision: "r2", Cursor: cursor}, f.err
 }
 func (f *fake) Show(_ context.Context, k appmodel.CommandKey) (appmodel.CurrentStatus, error) {
 	f.calls++
@@ -109,7 +116,12 @@ func TestErrorsAndCancellation(t *testing.T) {
 	cancel()
 	f := new(fake)
 	var out bytes.Buffer
-	if code := Run(ctx, f, submit, strings.NewReader(command), &out); code != 1 || f.calls != 0 || !strings.Contains(out.String(), "unavailable") {
+	r := new(countReader)
+	if code := Run(ctx, f, submit, r, &out); code != 1 || f.calls != 0 || r.calls != 0 || !strings.Contains(out.String(), "unavailable") {
+		t.Fatal(code, out.String())
+	}
+	out.Reset()
+	if code := Run(ctx, f, []string{"command", "submit", "--file", "/nonexistent", "--format", "json"}, r, &out); code != 1 || f.calls != 0 || r.calls != 0 || !strings.Contains(out.String(), "unavailable") {
 		t.Fatal(code, out.String())
 	}
 	f = new(fake)
@@ -117,6 +129,61 @@ func TestErrorsAndCancellation(t *testing.T) {
 		t.Fatal(code, f.calls)
 	}
 }
+
+type countReader struct{ calls int }
+
+func (r *countReader) Read([]byte) (int, error) { r.calls++; return 0, errors.New("unexpected read") }
+
+func TestDomainErrorForms(t *testing.T) {
+	for _, code := range []appmodel.Code{appmodel.PermissionDenied, appmodel.RevisionConflict, appmodel.StorageUnknown, "secret"} {
+		var pointer error = &appmodel.DomainError{Code: code}
+		for _, err := range []error{appmodel.DomainError{Code: code}, pointer, fmt.Errorf("wrapped: %w", pointer)} {
+			f := &fake{err: err}
+			exit, out := run(f, submit, command)
+			want := string(code)
+			if code == "secret" {
+				want = "unknown"
+			}
+			if exit != 1 || f.calls != 1 || !strings.Contains(out, `"code":"`+want+`"`) || strings.Contains(out, "secret") || strings.Contains(out, "wrapped") {
+				t.Fatal(exit, out, f.calls)
+			}
+		}
+	}
+	var nilDomain *appmodel.DomainError
+	f := &fake{err: nilDomain}
+	if exit, out := run(f, submit, command); exit != 1 || !strings.Contains(out, `"code":"unknown"`) {
+		t.Fatal(exit, out)
+	}
+}
+
+func TestOpaqueCursors(t *testing.T) {
+	for _, cursor := range []string{"v1/token==", "游标", "quote\" slash\\ newline\n\x00", strings.Repeat("\x01", maxCursorBytes)} {
+		f := &fake{cursor: cursor}
+		exit, out := run(f, submit, command)
+		var got result
+		if err := json.Unmarshal([]byte(out), &got); err != nil || exit != 0 || f.calls != 1 || got.Cursor != cursor || f.envelope.CommandID != "cmd-1" {
+			t.Fatal(exit, out, err, f.calls)
+		}
+	}
+	for _, cursor := range []string{string([]byte{0xff}), strings.Repeat("s", maxCursorBytes+1)} {
+		f := &fake{cursor: cursor}
+		exit, out := run(f, submit, command)
+		if exit != 1 || f.calls != 1 || out != "{\"kind\":\"observation_error\",\"code\":\"unknown\"}\n" {
+			t.Fatal(exit, out, f.calls)
+		}
+	}
+}
+
+func TestShortWrite(t *testing.T) {
+	f := new(fake)
+	if code := Run(context.Background(), f, submit, strings.NewReader(command), shortWriter{}); code != 3 || f.calls != 1 {
+		t.Fatal(code, f.calls)
+	}
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
 
 type badWriter struct{}
 
