@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Clarify inspection marker ordering, cleanup authority and persistence limits.
+
 - Keep the validated FD1 attempt directory open while inspection records an
   integrity incident, avoiding a second acquisition before marker publication.
 

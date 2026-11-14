@@ -210,12 +210,11 @@ wrapper preparation, controls and successful collection continue to require
 current artifact authentication and no retained integrity failure. There is no
 artifact replacement, endpoint recovery or automatic fence reset.
 
-Inspection durably latches a detected incident in the validated attempt
-directory without waiting for reconciliation or an intent save. The marker
-does not grant cleanup authority; the original validated record supplies it.
-If marker publication or syncing fails, the campaign is durability-fenced and
-requires operator reconciliation. When the filesystem cannot persist any
-marker, a new crash-persistent fence cannot be guaranteed.
+Inspection records a durable marker for a detected incident in the validated
+attempt directory before reconciliation or an intent save. The original
+validated record supplies cleanup authority. If marker publication or syncing
+fails, the campaign is durability-fenced and requires operator reconciliation.
+Persistence across process exit or restart depends on storage recording a marker.
 
 Post-adoption authentication failures at release and collection entry latch the
 integrity incident and start fence immediately, before any fallback save or
@@ -312,8 +311,8 @@ qualification-qualify inspect --campaign /owned/qualification/campaign --attempt
 qualification-qualify reconcile --allow-host-operations --campaign /owned/qualification/campaign --attempt <32-hex-attempt>
 ```
 
-`inspect` locks and reads the exact campaign without contacting the manager;
-it can also durably record a detected integrity incident.
+`inspect` reads the exact campaign under the controller lock and can durably
+record detected integrity incidents using local state.
 `reconcile` is cleanup-only for the exact persisted attempt: it never releases
 an injector or launches a replacement. There is no wildcard cleanup, prune,
 manager reset, service restart or automatic name reuse. Invalid CLI/configuration
