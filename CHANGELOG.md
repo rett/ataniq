@@ -8,6 +8,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Record sanitized source-pinned FD1 and no-pressure entry host observations
+  in the host manual while retaining their separate historical provenance.
 - Describe the developer qualification foundation and pending production work
   in the README, including the provider-specific Codex mock tests.
 - Add the opt-in `--r1-memory` probe mode with separate strict fixed R1

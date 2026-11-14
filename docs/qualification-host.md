@@ -7,6 +7,29 @@ driver binds synthetic controls and lifecycle evidence; independent host
 verification and review remain necessary for any support decision. There is
 no pass or support field in workload or driver output.
 
+## Selected host evidence
+
+The lead retained fifteen synthetic FD1 role and case observations from the
+historical applied source `32291c48f19c5685202dd36f57e05238f19e98ea`, tree
+`56c9fac6ae7fe7b73577bc2dd64e4dff8ad1fd27`, integrated as `6ee7ef5`.
+The matrix covers five cases across direct, candidate and weakened-synthetic
+roles. Its SHA-256 is
+`1bbd1046c36ce4e953a7e615ec85639729d04b3e39a0cfca69a9f609c5dfa17f`.
+Historical exits were observed by the controller. The descriptor receipt is
+pre-exec and post-exec observations remain necessary to establish closure.
+
+A later successful no-pressure `r1-entry` child-entry observation used source
+`c98da9cc1087ba181536efae008ec6b253097733`, tree
+`a9723c75a2e1d0b0f80c1dce257d468cf1c6e28d`. Attempt
+`6f51ac5f0aefe516ac715ea27e8dd0d2` used kernel 7.2.15 and systemd 262.1
+and received independent raw review. The run summary SHA-256 is
+`fc1b4c901a74ec414396f9c952a8af847f3f3e978a3198bf30583fa1df0d2b26`.
+The lead gate receipt `r1-scoped-admission-lead-gates.json` has SHA-256
+`921236234e2cf57aba088a36c7850657ffebb62ebbaacde8c3ab41ae98f445c7`.
+Raw artifacts are retained externally. These observations do not establish full
+sandbox qualification. Dynamic dependency closure remains incomplete and
+pressure R1 remains unsupported.
+
 The overall design has two entrypoints: a trusted driver and a static workload
 probe sharing an internal package. `qualification/host/cmd/qualify` implements
 one concrete bubblewrap profile with a private service-side reexec injector
@@ -260,7 +283,8 @@ observations remain durable after proved cleanup.
 Per-attempt reports remain observations. Full FD1 coverage requires independent
 review of direct/candidate/weakened operation records and all three inventory
 records; neither one successful run nor the pre-exec receipt supplies a matrix.
-No systemd/bubblewrap launch or live matrix was run for this integration.
+At this integration's source stage no systemd/bubblewrap launch or live matrix
+was run by the worker.
 The worker's socket metadata admission was denied: complete typed injector/
 terminal cases explicitly skipped, leaving those controls unqualified. Separate
 owned directory/pipe terminal tests exercised real directory link counts,
@@ -1300,8 +1324,7 @@ Deterministic gates cover the positive controller transcript, prohibited
 transitions, the old empty-device startup ENOENT at the trusted spawn seam,
 selected metadata failures, split/partial output, publication/save faults,
 restart and sticky integrity restoration. Fake transcripts use no real pressure
-mapping or host services. A separately controlled no-pressure host run after
-source review must measure the real observer window and proc access. Heartbeat,
+mapping or host services. The later lead observation is recorded above. Heartbeat,
 paired 32/96 MiB pressure runs, OOM/group attribution and full sandbox support
 remain outside this entry profile.
 
