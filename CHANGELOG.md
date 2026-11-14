@@ -16,6 +16,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Document journal OFD startup ordering, post-read verification and the separate
+  SQLite-managed POSIX shared-memory lock domain, with caller path/filesystem
+  responsibilities and the limits of the lifecycle regression evidence.
 - Pin the SQLite journal driver and preserve its dependency notices.
 - Add Linux journal storage Create/Open/Close/Info with exclusive inode ownership,
   transactional authority and stable identities, read-only identity preflight,
