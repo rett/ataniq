@@ -85,7 +85,9 @@ attempt, prepares them through the application journal, and calls the start
 boundary only for a newly committed preparation. A duplicate returns its
 existing receipt; an identity or consumed-grant conflict is rejected. The
 journal must atomically consume an exact-target grant with preparation and
-retain contradictions. It must distinguish a new durable commit from a
+retain contradictions, including receipt identity and content. The coordinator
+checks returned receipt bindings and states, and copies payloads across port
+and caller boundaries. It must distinguish a new durable commit from a
 duplicate, rejection, conflict and ambiguous result. An ambiguous preparation
 requires reconciliation before a caller can submit the same attempt again;
 an error alone cannot prove a transaction was absent. Qualification campaign
@@ -99,8 +101,16 @@ cannot retain a callback or start after returning, even on cancellation.
 Completion is separate and does not hold an admission lock. Recovered prepared
 or dispatching attempts are never automatically replayed; uncertain delivery
 or failed outcome storage requires reconciliation and a separately authorized
-attempt for a retry. The deterministic fake tests cover duplicate concurrency,
-identity changes, current checks, failures and outage admission. Their evidence
+attempt for a retry. A recovered prepared receipt is unresolved evidence, not
+proof that start did not happen. A failed save may leave only that receipt;
+the caller must preserve the returned uncertainty and evidence for
+reconciliation. External start cannot be atomic with the journal transaction.
+The deterministic fake tests cover duplicate concurrency, target-bound grants,
+receipt contradictions, payload ownership, current checks, failures, delayed
+dispatch calls and completion of already-started work during outage. The fake
+boundary returns after its bounded start decision and retains no callback or
+permit; these tests do not establish guarantees for an adapter that violates
+that obligation. Their evidence
 does not qualify production policy or any provider.
 
 This package supplies no provider adapter, disk durability, host isolation,

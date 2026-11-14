@@ -16,6 +16,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Validate dispatch journal receipts and isolate payload ownership across ports.
+- Clarify unresolved dispatch evidence and the bounded boundary test scope.
 
 ## [0.0.1] - 2026-11-14
 
