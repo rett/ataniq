@@ -186,6 +186,12 @@ wrapper preparation, controls and successful collection continue to require
 current artifact authentication and no retained integrity failure. There is no
 artifact replacement, endpoint recovery or automatic fence reset.
 
+Post-adoption authentication failures at release and collection entry latch the
+integrity incident and start fence immediately, before any fallback save or
+finalizer can read the artifact again. Restoring the exact original file between
+the failed check and that later read cannot erase the observed failure. Evidence
+that never passed adoption does not become trusted cleanup authority.
+
 Every collection return checks artifact integrity and retains detected incidents,
 including failed observation validation and authentication failure on collection
 entry after completion was saved. An artifact change during either evidence-save
@@ -197,6 +203,8 @@ successful host report or direct-control reuse. Collection without complete
 boundary proof stays unresolved. A failed durable save remains an error and
 retains the existing filesystem failure fence; it cannot establish successful
 cleanup or become an ordinary readable record after restart.
+If saving an unknown transition also fails, the returned error retains both the
+original cause and the save failure; neither error establishes cleanup.
 
 The fixed role table for this selector is:
 

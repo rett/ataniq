@@ -8,6 +8,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Latch typed FD1 release/collection authentication incidents before fallback
+  saves or finalizer reads, so immediate artifact restoration cannot erase a
+  detected failure. Keep the original authenticated cleanup authority and start
+  fence across restart without trusting never-adopted evidence. Preserve both
+  the original cause and save error when an unknown transition cannot persist;
+  a failed save cannot establish cleanup. No live qualification claim is added.
 - Retain every detected typed FD1 collection integrity incident across failed
   observations, entry authentication and both completion saves, preserving raw
   evidence and original errors. Retain authenticated stop authority before
