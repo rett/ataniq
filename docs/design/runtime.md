@@ -116,8 +116,9 @@ the caller must preserve the returned uncertainty and evidence for
 reconciliation. Synthetic error receipts are uncertainty projections carrying
 the immutable attempt and any available evidence; their absent evidence ID does
 not make them resubmittable journal evidence. A save using a cancelled caller
-context may fail even after a boundary decision. Full persistent recovery and
-cancellation-independent durable saving are future integration obligations.
+context may fail even after a boundary decision. Persistent recovery must account
+for failed outcome saves.
+Cancellation-independent saving remains a future design option.
 External start cannot be atomic with the journal transaction.
 The deterministic fake tests cover duplicate concurrency, target-bound grants,
 receipt contradictions, payload ownership, current checks, failures, delayed
