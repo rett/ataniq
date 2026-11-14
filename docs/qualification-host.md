@@ -164,6 +164,14 @@ An interruption before or after the original service stop can resume cleanup
 from those durable identities; reconciliation never publishes release or starts
 a replacement.
 
+Normal launch also retains the authenticated injector, runtime, workload and
+target together before checking effective budgets or acquiring a process handle.
+A failure in those checks preserves the original stop authority. If artifact
+integrity makes a bound or released save refuse the binding, the controller saves
+that authority and the integrity failure as `cleanup-unknown`; it publishes no
+release. Cleanup after reopening uses the retained identities even when the
+artifact or original receipt file can no longer authorize adoption.
+
 If an artifact disappears, changes or is replaced after a valid durable binding,
 the structurally validated original record remains available to `inspect` and
 exact-identity cleanup. Its optional `fd1_integrity_failure` field reports
@@ -178,11 +186,17 @@ wrapper preparation, controls and successful collection continue to require
 current artifact authentication and no retained integrity failure. There is no
 artifact replacement, endpoint recovery or automatic fence reset.
 
-Collection rechecks artifact integrity after its durable observation updates.
-An artifact change during either evidence-save boundary retains raw observations
-and proved cleanup with the integrity failure, but returns an inconclusive result.
-An `observed` raw probe status in such a record cannot authorize a successful host
-report or direct-control reuse.
+Every collection return checks artifact integrity and retains detected incidents,
+including failed observation validation and authentication failure on collection
+entry after completion was saved. An artifact change during either evidence-save
+boundary retains available raw observations, the original observation error and
+proved cleanup with the integrity failure, but returns an inconclusive result.
+Restoring the original artifact before reopening cannot erase that recorded
+incident. An `observed` raw probe status in such a record cannot authorize a
+successful host report or direct-control reuse. Collection without complete
+boundary proof stays unresolved. A failed durable save remains an error and
+retains the existing filesystem failure fence; it cannot establish successful
+cleanup or become an ordinary readable record after restart.
 
 The fixed role table for this selector is:
 

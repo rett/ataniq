@@ -8,6 +8,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Retain every detected typed FD1 collection integrity incident across failed
+  observations, entry authentication and both completion saves, preserving raw
+  evidence and original errors. Retain authenticated stop authority before
+  budget/handle checks and through refused bound/released saves. Exact cleanup
+  remains available with a persistent start fence; failed durable saves retain
+  filesystem poisoning. These recovery corrections add no live matrix claim.
 - Preserve authenticated typed FD1 bindings during cleanup-only recovery of a
   lost service-start acknowledgement, including interruption during cancellation.
   Reject inconsistent typed cleanup saves. Retain original inspect/stop authority
