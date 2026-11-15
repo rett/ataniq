@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-11-14
+
 ### Added
 
 - Add a bounded Linux/amd64 native SQLite settlement qualification harness with
