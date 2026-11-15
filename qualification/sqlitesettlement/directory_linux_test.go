@@ -13,6 +13,9 @@ import (
 // Every early return deliberately leaves SQL and the inherited/alias directory
 // descriptors live until TestHelperProcess exits. In particular no defer can
 // turn a prerequisite refusal into an unrecorded checkpoint during Close.
+// The pinned raw driver registers no connection finalizer/cleanup: see
+// modernc.org/sqlite v1.62.0 conn.go:newConn (73, allocation 107) and Close
+// (1074). SQL Close therefore cannot run during receipt encoding after return.
 func runLifecycle(ctx context.Context, path string, r receipt) receipt {
 	r.Lifecycle = &lifecycleReceipt{Fresh: strings.HasPrefix(r.Mode, "directory-fresh")}
 	l := r.Lifecycle
@@ -305,7 +308,8 @@ func closedBoundary(r receipt) bool {
 		return false
 	}
 	if l.Fresh {
-		if !r.ProfileVerified || !r.CommitOK || !r.AfterRead || !fixedState(r.After) || !l.WALAbsentBefore || !boundaryComplete(l, "init-complete") || !orderedStages(r, "initialization-commit", "read-after", "bind-incarnation", "init-complete-before", "init-complete", "init-complete-after", "before-checkpoint") {
+		applied := state{Commands: 1, Events: 1, Epoch: 0, Key: commandKey, Binding: binding, Result: result, Policy: "enabled", Cause: result, EventKey: commandKey, Revision: 1}
+		if !r.ProfileVerified || !r.CommitOK || !r.AfterRead || r.After != applied || !l.WALAbsentBefore || !boundaryComplete(l, "init-complete") || !orderedStages(r, "initialization-commit", "read-after", "bind-incarnation", "init-complete-before", "init-complete", "init-complete-after", "before-checkpoint") {
 			return false
 		}
 	} else if !liveBoundary(r) || !orderedStages(r, "live-after", "before-checkpoint") {

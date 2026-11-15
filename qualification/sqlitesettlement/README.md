@@ -164,7 +164,8 @@ build constraints were checked for Linux/amd64; no external source was exported.
 | --- | --- |
 | `tx.go:45`, `:71`, `:82` | Commit watches BeginTx's context, returns the original error, checks autocommit and attempts background rollback on error; that rollback error is ignored. Rollback itself does not watch the canceled context. Successful transaction execution is not overwritten merely because context cancellation is subsequently observed. |
 | `sqlite.go:83`, `stmt.go:95` | Cancellation watcher/progress/busy handling; a general statement may report cancellation after execution. Cancellation is not proof that work never took effect. |
-| `conn.go:1074`, `:1107` | Physical Close calls `sqlite3_close_v2`, under its interrupt mutex. No raw statement handle is left live by the harness. |
+| `conn.go:73`, `:107`, `:1074`, `:1107` | Raw connection construction registers no finalizer or automatic cleanup; a module search found no `SetFinalizer` or `runtime.AddCleanup` registration. Physical Close explicitly calls `sqlite3_close_v2`, under its interrupt mutex. No raw statement handle is left live by the harness. |
+| `lib/sqlite_g_0000000000000900.go:24747`, `lib/sqlite_g_000000000003fd6b.go:12592` | OP_JournalMode changes WAL mode using a rollback-journal transaction; BtreeSetVersion writes the main header's read/write version bytes. This precedes the fixture's schema/state WAL commit. |
 | `lib/sqlite_g_000000000003fd6b.go:16024`, `:9163` | FULL enables the WAL commit sync flags; pager sends dirty pages to WAL. |
 | `lib/sqlite_g_000000000003ffff.go:9393` | Commit phase one returns early when no pages changed; dirty WAL transactions proceed to frame writing. |
 | `lib/sqlite_g_000000000003bd68.go:4356` | WAL header sync and FULL commit sync; sync failure is propagated before publishing the successful WAL-index header. |
@@ -222,8 +223,14 @@ For an **existing initialized main**, the ordered receipts are:
    accepting the **closed boundary**, recovering or restoring test paths.
 
 For **fresh main creation**, require exclusive zero-length main and absent
-sidecars, initialize the fixed schema and applied state in one commit, consume
-that state, bind descriptors and perform checked `init-complete` directory sync.
+sidecars. Configuration first performs a mode-conversion transaction using a
+rollback journal, followed by one WAL commit initializing the fixed schema and
+exact applied state at epoch 0. Consume that state, bind descriptors and perform
+checked `init-complete` directory sync. The conversion and ignored native
+directory-sync error paths are pinned-source evidence, not traced directory
+syscalls. An interrupted conversion/initialization can leave a half-initialized,
+nonempty, schema-less main; existing read/preflight checks refuse that state.
+There is no automatic completion or repair, and no conversion-crash qualification.
 This initialization stage is recorded separately; it is not a dirty-epoch live
 boundary. FULL checkpoint, physical Close and the final directory boundary are
 still required for the stronger closed result. A fresh observer must read the
@@ -237,8 +244,11 @@ and subsequent binding establish recreation without assuming unequal numbers.
 Unexpected live WAL identity change refuses the current attempt. Ordinary WAL
 salt/content reuse on the same inode is not inode replacement.
 
-The directory is acquired by bounded no-follow descriptor walking, fstat'd and
-kept pinned. The helper retains inherited fd 4 and a CLOEXEC duplicate until
+The newly created owned fixture directory is canonicalized once with
+`EvalSymlinks`, allowing normal symlinked checkout ancestors. It is then acquired
+by bounded no-follow descriptor walking, fstat'd and kept pinned; subsequent
+acquisition and identity checks retain the strict no-follow behavior.
+The helper retains inherited fd 4 and a CLOEXEC duplicate until
 process exit; explicit Sync uses the duplicate, not a pathname reopen. Before
 and after boundaries, descriptor-relative no-follow metadata and a fresh
 no-follow configured-directory walk must match original ownership. Main and
@@ -256,14 +266,22 @@ and checks target/control identity immediately before filter installation.
 | Fresh main and separate init EIO | Checked initialization plus explicit closed sequence; denied init-complete Sync keeps the failed receipt unknown. No discard/recreate policy. |
 | Existing main, two WAL incarnations | Checked pre-dirty and live boundaries, positive complete FULL counts, physical Close, checked final boundary and observed default WAL absence. WAL remaining is recorded and is never manually unlinked to manufacture deletion success. |
 | Pre-dirty, live and final directory EIO | Child TSYNC filter denies fsync/fdatasync only on the pinned alias. Target and independent pinned descriptor fsync succeed before installation; target calls return EIO afterward while the other descriptor remains allowed. The actual File.Sync boundary returns EIO. |
-| WAL-sync checkpoint denial | Existing all-sync filter installed after dirty commit/live sync; explicit checkpoint returns native 1034 before backfill, according to pinned source ordering. |
-| Main-sync checkpoint denial | Unique live main fd selector denies only its syncs. Direct EIO and unaffected WAL-sync controls precede native checkpoint error 1034. Its position after page writes/truncation is source-backed, not a trace of media writes. |
+| WAL-sync checkpoint denial | Existing all-sync filter installed after dirty commit/live sync; explicit checkpoint returns native 1034 before backfill, according to pinned source ordering. Clean physical Close leaves an observed regular nonempty WAL. |
+| Main-sync checkpoint denial | Unique live main fd selector denies only its syncs. Direct EIO and unaffected WAL-sync controls precede native checkpoint error 1034. Its position after page writes/truncation is source-backed, not a trace of media writes. Clean physical Close leaves an observed regular nonempty WAL. |
 | Reported Close error | Successful explicit checkpoint and real Close, then a labeled synthetic Close error. Closed classification refuses; immutable live completion survives. |
-| Hidden close-time checkpoint | Separate all-sync denial before Close, without explicit checkpoint, demonstrates nil Close despite the source-backed hidden-checkpoint risk. No Close sync error is demanded after a completed checkpoint. |
+| Hidden close-time checkpoint | Separate all-sync denial before Close, without explicit checkpoint, requires a clean physical-close step and an observed regular nonempty WAL afterward. The internal attempted-checkpoint explanation remains pinned-source inference, not a traced checkpoint syscall. No Close sync error is demanded after a completed checkpoint. |
 | Reader-blocked FULL | A bounded snapshot helper pins the old state before dirty commit. FULL returns busy=1 with incomplete counts; both helpers are released/waited before recovery. This concurrent-reader negative control is not the allowed writer architecture. |
 | Two process deaths | Pipe-defined SIGKILL after commit/before live directory sync, and after Close/before final sync. Actual wait precedes reopen. Missing receipts stay unknown; kernel cache remains. |
 | Main, directory and WAL replacement | One retained sibling at a deterministic seam. Sync on the original directory succeeds but identity mismatch refuses before dirty work. Disposable child exits without SQL Close/checkpoint before restoration; replacements are never initialized or synced. |
-| Classifier and acquisition controls | Individually absent/error-bearing sync/Close/checkpoint facts, malformed counts/EOF/Rows.Close, changed identities and wrong order refuse from the same accepted mode. Missing, symlink and non-directory acquisition cases are wrapper refusals, not native directory-open injection. |
+| Classifier and acquisition controls | Individually absent/error-bearing sync/Close/checkpoint facts, malformed counts/EOF/Rows.Close, changed identities/descriptors, missing live observations and wrong order refuse from the same accepted mode. Fresh controls require WAL absence before open, complete initialization boundary facts/order and the exact applied state at epoch 0. Missing, symlink and non-directory acquisition cases are wrapper refusals, not native directory-open injection; the normal fixture entrypoint also checks symlinked checkout compatibility. |
+
+Residual WAL in these three denial schedules is a selected observed layout,
+not a universal prediction after arbitrary EIO or proof that an internal
+checkpoint syscall ran. The current failed closed attempt is still refused.
+The closed classifier supports consistent selected residual layouts; the positive
+default-removal test separately requires WAL absence. Releasing the last reader
+may checkpoint on its Close before the next observer, so the reader-blocked
+schedule's subsequent recovery is observational.
 
 `Lifecycle` receipts retain ordered identity observations, device/inode/type/
 owner/mode/link metadata, directory attempts/results, checkpoint counts/EOF/
@@ -276,9 +294,13 @@ observability, not that the denied boundary left a name nondurable.
 
 Prerequisite/identity failures deliberately exit the disposable helper with
 `FailStop`, `disposable-exit-without-sql-close` and absent Close evidence. There is
-no deferred SQL Close or hidden cleanup checkpoint on that path. The parent owns
-the original main/directory, waits, then may start a separate unfiltered
-incarnation. Successful reconciliation never edits the original failed receipt.
+no deferred SQL Close or hidden cleanup checkpoint on that path. The pinned
+raw driver has no connection finalizer or automatic cleanup (source locations
+above), so losing the local Go reference does not invoke SQL Close. The parent
+owns the original main/directory through receipt encoding and child exit,
+waits, then may start a separate unfiltered
+incarnation. Original failed and recovery receipts are logged and retained
+separately by construction; recovery does not upgrade the earlier failed attempt.
 Checkpoint or Close failure invalidates only the current closed attempt; an
 already completed live prefix and immutable selected history remain separate.
 

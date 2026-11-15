@@ -5,6 +5,7 @@ package sqlitesettlement
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -70,6 +71,10 @@ func TestDirectoryClassifierIncompleteFacts(t *testing.T) {
 		{"wal-binding", func(r *receipt) { r.Lifecycle.BoundWAL.Present = false }},
 		{"directory-binding", func(r *receipt) { r.Lifecycle.BoundDirectory.Present = false }},
 		{"descriptor-binding", func(r *receipt) { r.Lifecycle.MainFD = -1 }},
+		{"equal-main-wal-descriptors", func(r *receipt) { r.Lifecycle.MainFD = r.Lifecycle.WALFD }},
+		{"changed-observed-main-fd", func(r *receipt) { r.Lifecycle.Observations[0].MainFD++ }},
+		{"changed-observed-wal-fd", func(r *receipt) { r.Lifecycle.Observations[0].WALFD++ }},
+		{"live-prefix-step-error", func(r *receipt) { r.Steps[7].Error = "synthetic commit error" }},
 		{"directory-alias-binding", func(r *receipt) { r.Lifecycle.AliasFD = 4 }},
 		{"missing-live-descriptor-observation", func(r *receipt) { r.Lifecycle.Observations[0].Live = false }},
 		{"missing-pre-identity-observation", func(r *receipt) {
@@ -130,6 +135,8 @@ func TestDirectoryClassifierIncompleteFacts(t *testing.T) {
 		{"checkpoint-zero", func(r *receipt) { r.Lifecycle.Checkpoint.Log = 0; r.Lifecycle.Checkpoint.Checkpointed = 0 }},
 		{"checkpoint-partial", func(r *receipt) { r.Lifecycle.Checkpoint.Checkpointed = 0 }},
 		{"checkpoint-order", func(r *receipt) { r.Steps[13], r.Steps[15] = r.Steps[15], r.Steps[13] }},
+		{"before-checkpoint-not-live", func(r *receipt) { r.Lifecycle.Observations[12].Live = false }},
+		{"before-close-not-live", func(r *receipt) { r.Lifecycle.Observations[14].Live = false }},
 		{"close-missing", func(r *receipt) { r.Lifecycle.CloseAttempted = false }},
 		{"close-error", func(r *receipt) { r.Lifecycle.CloseError = "synthetic error" }},
 		{"physical-close", func(r *receipt) { r.Closed = false }},
@@ -153,6 +160,115 @@ func TestDirectoryClassifierIncompleteFacts(t *testing.T) {
 	if closedBoundary(r) || !liveBoundary(r) {
 		t.Fatal("later successful sync erased checkpoint error")
 	}
+}
+
+func syntheticFreshLifecycleReceipt() receipt {
+	r := syntheticLifecycleReceipt()
+	r.Mode = "directory-fresh"
+	r.Before, r.BeforeRead = state{}, false
+	r.After = state{Commands: 1, Events: 1, Epoch: 0, Key: commandKey, Binding: binding, Result: result, Policy: "enabled", Cause: result, EventKey: commandKey, Revision: 1}
+	l := r.Lifecycle
+	l.Fresh = true
+	o := l.Observations[0]
+	r.Steps, l.Observations, l.Boundaries = nil, nil, nil
+	for _, stage := range []string{"initialization-commit", "read-after", "bind-incarnation", "init-complete-before", "init-complete", "init-complete-after", "before-checkpoint", "checkpoint-full", "before-close", "physical-close", "after-close", "final-before", "final", "final-after"} {
+		r.record(stage, nil)
+		o.Stage, o.Live = stage, stageIndex(r, "physical-close") < 0
+		l.Observations = append(l.Observations, o)
+	}
+	for _, stage := range []string{"init-complete", "final"} {
+		l.Boundaries = append(l.Boundaries, directoryBoundary{Stage: stage, Before: true, Attempted: true, Synced: true, After: true})
+	}
+	return r
+}
+
+func TestDirectoryFreshClassifierIncompleteFacts(t *testing.T) {
+	good := syntheticFreshLifecycleReceipt()
+	if !closedBoundary(good) || liveBoundary(good) {
+		t.Fatal("bad synthetic fresh positive control")
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*receipt)
+	}{
+		{"wal-absent-before", func(r *receipt) { r.Lifecycle.WALAbsentBefore = false }},
+		{"profile", func(r *receipt) { r.ProfileVerified = false }},
+		{"commit", func(r *receipt) { r.CommitOK = false }},
+		{"after-read", func(r *receipt) { r.AfterRead = false }},
+		{"absent-state", func(r *receipt) { r.After = state{Policy: "disabled"} }},
+		{"commands", func(r *receipt) { r.After.Commands = 0 }},
+		{"events", func(r *receipt) { r.After.Events = 0 }},
+		{"key", func(r *receipt) { r.After.Key = "wrong" }},
+		{"binding", func(r *receipt) { r.After.Binding = "wrong" }},
+		{"result", func(r *receipt) { r.After.Result = "wrong" }},
+		{"policy", func(r *receipt) { r.After.Policy = "disabled" }},
+		{"cause", func(r *receipt) { r.After.Cause = "wrong" }},
+		{"event-key", func(r *receipt) { r.After.EventKey = "wrong" }},
+		{"revision", func(r *receipt) { r.After.Revision = 2 }},
+		{"capacity", func(r *receipt) { r.After.CapacityRows = 1 }},
+		{"epoch", func(r *receipt) { r.After.Epoch = 1 }},
+		{"init-missing", func(r *receipt) { r.Lifecycle.Boundaries = r.Lifecycle.Boundaries[1:] }},
+		{"init-before", func(r *receipt) { r.Lifecycle.Boundaries[0].Before = false }},
+		{"init-attempted", func(r *receipt) { r.Lifecycle.Boundaries[0].Attempted = false }},
+		{"init-synced", func(r *receipt) { r.Lifecycle.Boundaries[0].Synced = false }},
+		{"init-after", func(r *receipt) { r.Lifecycle.Boundaries[0].After = false }},
+		{"init-error", func(r *receipt) { r.Lifecycle.Boundaries[0].Error = "synthetic init error" }},
+		{"init-before-observation", func(r *receipt) { r.Lifecycle.Observations[3].Live = false }},
+		{"init-after-observation", func(r *receipt) { r.Lifecycle.Observations[5].Live = false }},
+		{"bind-init-swap", func(r *receipt) { r.Steps[2], r.Steps[4] = r.Steps[4], r.Steps[2] }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := cloneReceipt(t, good)
+			tc.mutate(&r)
+			if closedBoundary(r) || liveBoundary(r) {
+				t.Fatal("incomplete fresh fact confirmed")
+			}
+		})
+	}
+	// Every adjacent fresh-prefix ordering edge matters, including entry into
+	// the common checkpoint sequence. Keep all other evidence and the mode.
+	for i := 0; i < stageIndex(good, "before-checkpoint"); i++ {
+		t.Run("order-"+good.Steps[i].Stage, func(t *testing.T) {
+			r := cloneReceipt(t, good)
+			r.Steps[i], r.Steps[i+1] = r.Steps[i+1], r.Steps[i]
+			if closedBoundary(r) || liveBoundary(r) {
+				t.Fatal("wrong fresh order confirmed")
+			}
+		})
+	}
+}
+
+func TestFixtureSymlinkedCheckoutAncestor(t *testing.T) {
+	// Exercise newFixture, the normal entrypoint used by inherited schedules.
+	// PWD makes filepath.Abs retain the logical symlinked checkout spelling.
+	dir, err := os.MkdirTemp(".", ".settlement-path-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	link := filepath.Join(dir, "checkout")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(link)
+	t.Setenv("PWD", link)
+	if cwd, err := os.Getwd(); err != nil || cwd != link {
+		t.Fatalf("symlinked checkout prerequisite: %q, %v", cwd, err)
+	}
+	f := newFixture(t)
+	canonical, err := filepath.EvalSymlinks(f.path)
+	if err != nil || f.path != canonical {
+		t.Fatalf("fixture path not canonical: %q, %v", f.path, err)
+	}
+	assertClean(t, f.run(t, "snapshot"))
 }
 
 func TestDescriptorSelectorRefusesAmbiguity(t *testing.T) {

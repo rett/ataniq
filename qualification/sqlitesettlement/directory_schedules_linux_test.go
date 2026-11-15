@@ -3,7 +3,6 @@
 package sqlitesettlement
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +59,20 @@ func requireBoundaryEIO(t *testing.T, r receipt, stage string) {
 	t.Fatal("missing actual checked directory Sync EIO", stage)
 }
 
+func requireResidualWALAfterClose(t *testing.T, r receipt) {
+	t.Helper()
+	i := stageIndex(r, "physical-close")
+	if !r.Lifecycle.CloseAttempted || !r.Closed || r.Lifecycle.CloseError != "" || i < 0 || r.Steps[i].Error != "" || r.Steps[i].SQLiteCode != 0 || !orderedStages(r, "physical-close", "after-close") {
+		t.Fatal("missing clean physical Close")
+	}
+	for _, o := range r.Lifecycle.Observations {
+		if o.Stage == "after-close" && o.OK && !o.Live && regularIdentity(o.WAL) && o.WAL.Size > 0 {
+			return
+		}
+	}
+	t.Fatal("missing observed regular nonempty WAL after Close")
+}
+
 func TestDirectoryLifecycle(t *testing.T) {
 	supported := true
 	available := func(t *testing.T, r receipt) bool {
@@ -76,6 +89,10 @@ func TestDirectoryLifecycle(t *testing.T) {
 			return
 		}
 		requireClosedBoundary(t, r)
+		want := state{Commands: 1, Events: 1, Epoch: 0, Key: commandKey, Binding: binding, Result: result, Policy: "enabled", Cause: result, EventKey: commandKey, Revision: 1}
+		if r.After != want {
+			t.Fatal("fresh initialization did not apply the exact fixed state at epoch zero")
+		}
 		observer := f.run(t, "snapshot")
 		assertClean(t, observer)
 		if observer.After != r.After {
@@ -136,9 +153,11 @@ func TestDirectoryLifecycle(t *testing.T) {
 					return
 				}
 				requireCode(t, r, "checkpoint-full", 1034)
+				requireResidualWALAfterClose(t, r)
 			case "directory-main-sync-eio":
 				requireSelectedControls(t, r, "sqlite-main")
 				requireCode(t, r, "checkpoint-full", 1034)
+				requireResidualWALAfterClose(t, r)
 			case "directory-close-error":
 				if !r.Lifecycle.Checkpoint.complete() || !r.Closed || r.Lifecycle.CloseError == "" {
 					t.Fatal("synthetic Close control")
@@ -151,14 +170,15 @@ func TestDirectoryLifecycle(t *testing.T) {
 				if !r.Closed || r.Lifecycle.Checkpoint.Attempted {
 					t.Fatal("hidden close-time checkpoint control")
 				}
+				requireResidualWALAfterClose(t, r)
 			}
 			wantLive := mode != "directory-fresh-eio" && mode != "directory-pre-eio" && mode != "directory-live-eio"
 			if liveBoundary(r) != wantLive {
 				t.Fatal("later failure rewrote live prefix, or incomplete prefix accepted")
 			}
-			failed, _ := json.Marshal(r)
-			// f.run waited the failing writer. Keep that receipt permanently;
-			// this new unfiltered incarnation is observational reconciliation.
+			// f.run waited the failing writer and logged its receipt separately.
+			// This new process provides observational reconciliation; by
+			// construction its receipt does not replace the earlier failed one.
 			recovered := f.run(t, "directory-complete")
 			if !available(t, recovered) {
 				return
@@ -166,10 +186,6 @@ func TestDirectoryLifecycle(t *testing.T) {
 			requireClosedBoundary(t, recovered)
 			if r.AfterRead && recovered.Before != r.After {
 				t.Fatal("fixed state changed during reconciliation")
-			}
-			again, _ := json.Marshal(r)
-			if string(failed) != string(again) || closedBoundary(r) {
-				t.Fatal("failed receipt overwritten")
 			}
 		})
 	}

@@ -61,6 +61,14 @@ func newUninitializedFixture(t *testing.T) *fixture {
 			}
 		}
 	})
+	// Canonicalize our newly created directory once, before the strict no-follow
+	// walk. A normal checkout may itself have symlinked ancestors.
+	canonical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = canonical
+	f.path = filepath.Join(dir, "fixture.db")
 	f.directory, err = openPinnedDirectory(dir)
 	if err != nil {
 		t.Fatal(err)
