@@ -1,6 +1,10 @@
 package appcontract
 
-import "math"
+import (
+	"math"
+
+	"ataniq/internal/appmodel"
+)
 
 // Resource identifies one of the five resources with an independent version.
 // Command observations instead use the target's status revision.
@@ -11,12 +15,17 @@ type LeadResource struct{ Project, Role string }
 type ConversationResource struct{ Project, Conversation string }
 type ClientResource struct{ Client string }
 type PermissionResource struct{ Project, Client string }
+type CommandResource struct {
+	Project string
+	Key     appmodel.CommandKey
+}
 
 func (ProjectResource) resource()      {}
 func (LeadResource) resource()         {}
 func (ConversationResource) resource() {}
 func (ClientResource) resource()       {}
 func (PermissionResource) resource()   {}
+func (CommandResource) resource()      {}
 
 // ResourceRevision computes a token from a resource's own version. For a
 // conversation that version is its admission version, not its queue state.

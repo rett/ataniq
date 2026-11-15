@@ -2,13 +2,27 @@ package appcontract
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 
 	"ataniq/internal/appmodel"
 )
 
 func TestStatusAndDetailVectors(t *testing.T) {
+	var corpus struct {
+		EventDetails map[string]struct{ Encoded struct{ Hex string } } `json:"event_details"`
+	}
+	data, err := os.ReadFile("testdata/synthetic-v2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	detailNames := []string{"enqueue", "cancel", "disposition", "empty"}
 	i := Instance{Authority: "a"}
 	var master [32]byte
 	for n := 0; n < 16; n++ {
@@ -45,7 +59,7 @@ func TestStatusAndDetailVectors(t *testing.T) {
 	}
 	queued := "96796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb1"
 	cancelled := "20a78a708a59b722cd710225fee0d79573fbd95ea0bd94cdf6cc69bed071062b"
-	for _, tc := range []struct {
+	for index, tc := range []struct {
 		d    EventDetail
 		want string
 	}{
@@ -58,6 +72,9 @@ func TestStatusAndDetailVectors(t *testing.T) {
 		sum := sha256.Sum256(b)
 		if err != nil || fmt.Sprintf("%x", sum) != tc.want {
 			t.Errorf("detail %T: %x, %v", tc.d, sum, err)
+		}
+		if hex.EncodeToString(b) != corpus.EventDetails[detailNames[index]].Encoded.Hex {
+			t.Errorf("%s: detail bytes differ", detailNames[index])
 		}
 	}
 	if _, err := EncodeEventDetail(&EmptyDetail{}); err == nil {
