@@ -158,9 +158,9 @@ UPDATE policy SET revision=revision+1,value='enabled' WHERE id=1;
 INSERT INTO event VALUES('command-1','policy-enabled:1');`
 
 type state struct {
-	Commands, Events, Epoch             int64
-	Key, Binding, Result, Policy, Cause string
-	Revision                            int64
+	Commands, Events, Epoch, CapacityRows         int64
+	Key, Binding, Result, Policy, Cause, EventKey string
+	Revision                                      int64
 }
 
 func readState(ctx context.Context, c connection) (_ state, err error) {
@@ -169,12 +169,13 @@ func readState(ctx context.Context, c connection) (_ state, err error) {
  (SELECT count(*) FROM command), (SELECT count(*) FROM event),
  (SELECT epoch FROM barrier), COALESCE((SELECT key FROM command),''),
  COALESCE((SELECT binding FROM command),''), COALESCE((SELECT result FROM command),''),
- (SELECT value FROM policy), COALESCE((SELECT cause FROM event),''), (SELECT revision FROM policy)`, nil)
+ (SELECT value FROM policy), COALESCE((SELECT cause FROM event),''), (SELECT revision FROM policy),
+ COALESCE((SELECT key FROM event),''), (SELECT count(*) FROM capacity)`, nil)
 	if err != nil {
 		return s, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
-	v := make([]driver.Value, 9)
+	v := make([]driver.Value, 11)
 	if err := rows.Next(v); err != nil {
 		return s, err
 	}
@@ -182,6 +183,7 @@ func readState(ctx context.Context, c connection) (_ state, err error) {
 		Commands: v[0].(int64), Events: v[1].(int64), Epoch: v[2].(int64),
 		Key: v[3].(string), Binding: v[4].(string), Result: v[5].(string),
 		Policy: v[6].(string), Cause: v[7].(string), Revision: v[8].(int64),
+		EventKey: v[9].(string), CapacityRows: v[10].(int64),
 	}
 	if err := rows.Next(v); err != io.EOF {
 		return s, fmt.Errorf("state cardinality: %v", err)

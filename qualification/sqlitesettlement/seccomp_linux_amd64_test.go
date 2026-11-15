@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// installSyncDenial is only called in a disposable helper. The filter applies
+// installSyncDenial is test-only and only called in a disposable helper. The filter applies
 // to every thread and survives until process exit. There is no single-thread
 // fallback and the helper must not execute another program afterwards.
 func installSyncDenial() (string, error) {

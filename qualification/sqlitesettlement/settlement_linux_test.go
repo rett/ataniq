@@ -89,14 +89,19 @@ func (f *fixture) run(t *testing.T, mode string) receipt {
 		t.Fatal(err, output.String())
 	}
 	r.Waited = true
+	f.completed(t, mode, r)
+	return r
+}
+
+func (f *fixture) completed(t *testing.T, mode string, r receipt) {
+	t.Helper()
 	logReceipt(t, r)
-	if r.Mode != mode || !r.ProfileVerified || !r.Closed {
+	if r.Mode != mode || !r.ProfileVerified || !r.Closed || !r.Waited {
 		t.Fatal("helper did not complete the physical-connection protocol")
 	}
 	if err := checkFiles(f.path); err != nil {
 		t.Fatal(err)
 	}
-	return r
 }
 
 func logReceipt(t *testing.T, r receipt) {
@@ -125,6 +130,36 @@ func requireCode(t *testing.T, r receipt, stage string, code int) {
 		}
 	}
 	t.Fatalf("missing %s SQLite code %d in %+v", stage, code, r.Steps)
+}
+
+func hasStep(r receipt, stage, message string, code int) bool {
+	for _, s := range r.Steps {
+		if s.Stage == stage && s.Error == message && s.SQLiteCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func canceledCommit(r receipt) bool {
+	return !r.CommitOK && hasStep(r, "commit", context.Canceled.Error(), 0)
+}
+
+func requireCanceledCommit(t *testing.T, r receipt) {
+	t.Helper()
+	if !canceledCommit(r) {
+		t.Fatalf("missing exact pre-Commit cancellation: %+v", r)
+	}
+}
+
+// Preserve the native receipt and its log label. Normalize only this copy so
+// refusal must rely on failed/missing evidence, not the helper's mode spelling.
+func requireEvidenceRefusal(t *testing.T, r receipt) {
+	t.Helper()
+	r.Mode = "barrier"
+	if classify(r, true, true) != "unknown" {
+		t.Fatal("failed or missing evidence confirmed after mode normalization")
+	}
 }
 
 func syncAvailable(t *testing.T, r receipt) bool {
@@ -162,15 +197,20 @@ func classify(r receipt, writerWaited, syncDependence bool) string {
 	if r.Incomplete != "" || r.Before.Epoch < 0 || r.Before.Epoch >= 1024 || r.After.Epoch != r.Before.Epoch+1 {
 		return "unknown"
 	}
+	expected := r.Before
+	expected.Epoch++
+	if expected != r.After {
+		return "unknown"
+	}
 	applied := state{
-		Commands: 1, Events: 1, Epoch: r.After.Epoch,
+		Commands: 1, Events: 1, Epoch: r.After.Epoch, CapacityRows: 0,
 		Key: commandKey, Binding: binding, Result: result,
-		Policy: "enabled", Cause: result, Revision: 1,
+		Policy: "enabled", Cause: result, EventKey: commandKey, Revision: 1,
 	}
 	if r.After == applied {
 		return "applied"
 	}
-	absent := state{Epoch: r.After.Epoch, Policy: "disabled"}
+	absent := state{Epoch: r.After.Epoch, Policy: "disabled", EventKey: "", CapacityRows: 0}
 	if r.After == absent {
 		return "absent"
 	}
@@ -193,9 +233,10 @@ func TestNativeSettlement(t *testing.T) {
 			continue
 		}
 		requireCode(t, r, "commit", 1034) // SQLITE_IOERR_FSYNC
-		if classify(r, true, true) != "unknown" {
-			t.Fatal("failed barrier confirmed a result")
+		if r.CommitOK {
+			t.Fatal("failed barrier reported commit success")
 		}
+		requireEvidenceRefusal(t, r)
 		recovered := f.run(t, "barrier")
 		assertClean(t, recovered)
 		if classify(recovered, true, true) != "absent" {
@@ -212,14 +253,17 @@ func TestNativeSettlement(t *testing.T) {
 					return
 				}
 				requireCode(t, mutated, "commit", 1034)
+				if mutated.CommitOK {
+					t.Fatal("failed mutation reported commit success")
+				}
 			} else if !mutated.CommitOK {
 				t.Fatal("normal mutation did not commit")
 			}
-			visible := f.run(t, "snapshot")
-			assertClean(t, visible)
-			if classify(visible, true, syncDependence) != "unknown" {
-				t.Fatal("visibility alone cleared the fence")
+			if mode == "mutation-lost" && !hasStep(mutated, "application-observation", "synthetic lost response AFTER successful driver Commit; not a sync fault", 0) {
+				t.Fatal("missing synthetic application-observation stage")
 			}
+			// Direct recovery after waiting for the old writer. No intervening
+			// unfiltered open/Close may checkpoint or sync the failed mutation.
 			barrier := f.run(t, "barrier")
 			assertClean(t, barrier)
 			got := classify(barrier, mutated.Waited, syncDependence)
@@ -234,13 +278,22 @@ func TestNativeSettlement(t *testing.T) {
 			}
 			// A pre-sync failure does not prescribe present versus absent. Either
 			// must have its entire exact binding/result/policy/event state intact.
-			retry := f.run(t, "retry")
-			assertClean(t, retry)
-			if retry.After != barrier.After {
-				t.Fatal("exact retry changed immutable evidence or reapplied mutation")
+			readback := f.run(t, "post-settlement-readback")
+			assertClean(t, readback)
+			if !readback.BeforeRead || !readback.AfterRead || readback.Before != barrier.After || readback.After != barrier.After {
+				t.Fatal("post-settlement readback changed fixed-fixture evidence")
 			}
 		})
 	}
+	t.Run("visibility-only", func(t *testing.T) {
+		// Separate fixture: this unfiltered snapshot Close cannot settle the
+		// failed-mutation fixture before its recovery barrier.
+		f := newFixture(t)
+		assertClean(t, f.run(t, "mutation"))
+		visible := f.run(t, "snapshot")
+		assertClean(t, visible)
+		requireEvidenceRefusal(t, visible)
+	})
 	t.Run("empty-is-not-a-barrier", func(t *testing.T) {
 		f := newFixture(t)
 		r := f.run(t, "empty-filter")
@@ -248,9 +301,11 @@ func TestNativeSettlement(t *testing.T) {
 			syncDependence = false
 			return
 		}
-		if !r.CommitOK || r.Before != r.After || classify(r, true, true) != "unknown" {
+		assertClean(t, r)
+		if !r.CommitOK || r.Before != r.After {
 			t.Fatal("empty transaction control failed")
 		}
+		requireEvidenceRefusal(t, r)
 	})
 	for _, mode := range []string{"barrier-cancel", "barrier-full"} {
 		t.Run(mode, func(t *testing.T) {
@@ -258,19 +313,12 @@ func TestNativeSettlement(t *testing.T) {
 			assertClean(t, f.run(t, "mutation"))
 			r := f.run(t, mode)
 			if mode == "barrier-full" {
-				requireCode(t, r, "write", 13) // SQLITE_FULL
+				requireCode(t, r, "write", 13)   // SQLITE_FULL
+				requireCode(t, r, "rollback", 1) // SQLite already rolled back.
 			} else {
-				found := false
-				for _, s := range r.Steps {
-					found = found || s.Stage == "commit" && s.Error == context.Canceled.Error()
-				}
-				if !found {
-					t.Fatal("missing commit cancellation")
-				}
+				requireCanceledCommit(t, r)
 			}
-			if classify(r, true, syncDependence) != "unknown" {
-				t.Fatal("failed barrier cleared fence")
-			}
+			requireEvidenceRefusal(t, r)
 			recovered := f.run(t, "barrier")
 			assertClean(t, recovered)
 			if syncDependence && classify(recovered, true, true) != "applied" {
@@ -295,12 +343,12 @@ func TestNativeSettlement(t *testing.T) {
 		if visible.After.Commands != 0 || classify(visible, false, syncDependence) != "unknown" {
 			t.Fatal("racing snapshot treated as authoritative")
 		}
+		requireEvidenceRefusal(t, visible)
 		// The harness fence admits no mutation/barrier until this writer is
 		// cancelled AND waited. Cancellation alone is not a settlement receipt.
 		settled := child.cancelWriter(t)
-		if settled.CommitOK {
-			t.Fatal("cancelled writer committed")
-		}
+		requireCanceledCommit(t, settled)
+		requireEvidenceRefusal(t, settled)
 		r := f.run(t, "barrier")
 		assertClean(t, r)
 		if syncDependence && classify(r, settled.Waited, true) != "absent" {
@@ -321,17 +369,28 @@ func TestNativeSettlement(t *testing.T) {
 			if mode == "mutation-before-death" {
 				want = "absent"
 			}
-			if syncDependence && classify(r, true, true) != want {
+			if strings.HasPrefix(mode, "barrier") {
+				wantEpoch := int64(1) // The fixture mutation warmed WAL once.
+				if mode == "barrier-after-death" {
+					wantEpoch++
+				}
+				if r.Before.Epoch != wantEpoch || r.After.Epoch != wantEpoch+1 {
+					t.Fatal("barrier death did not preserve the expected commit epoch")
+				}
+			}
+			if syncDependence && classify(r, child.waited, true) != want {
 				t.Fatal("process-death recovery mismatch")
 			}
 		})
 	}
 	if syncDependence && !t.Failed() {
-		t.Log("SUPPORTED: native pre-sync denial and dirty FULL commit sync dependence; successful settlement in tested schedules under SQLite/OS sync contract; no power-loss claim")
+		t.Log("SUPPORTED: native pre-sync denial and dirty FULL commit sync dependence; tested relational settlement under SQLite/OS sync contract; new-WAL directory persistence unqualified; no power-loss claim")
 	}
 }
 
 type pausedChild struct {
+	fixture *fixture
+	mode    string
 	cmd     *exec.Cmd
 	cancel  context.CancelFunc
 	input   io.WriteCloser
@@ -343,7 +402,7 @@ type pausedChild struct {
 func (f *fixture) pause(t *testing.T, mode string) *pausedChild {
 	t.Helper()
 	cmd, cancel := f.command(t, mode)
-	p := &pausedChild{cmd: cmd, cancel: cancel, stderr: &boundedOutput{}}
+	p := &pausedChild{fixture: f, mode: mode, cmd: cmd, cancel: cancel, stderr: &boundedOutput{}}
 	t.Cleanup(func() {
 		cancel()
 		if cmd.Process != nil && !p.waited {
@@ -371,7 +430,12 @@ func (f *fixture) pause(t *testing.T, mode string) *pausedChild {
 	}
 	logReceipt(t, r)
 	assertClean(t, r)
-	if len(r.Steps) == 0 || (r.Steps[len(r.Steps)-1].Stage != "before-commit" && r.Steps[len(r.Steps)-1].Stage != "after-commit") {
+	wantStage := "before-commit"
+	after := strings.Contains(mode, "after-death")
+	if after {
+		wantStage = "after-commit"
+	}
+	if r.Mode != mode || !r.ProfileVerified || r.Closed || r.Waited || r.CommitOK != after || len(r.Steps) == 0 || r.Steps[len(r.Steps)-1].Stage != wantStage {
 		t.Fatal("missing deterministic pause seam")
 	}
 	return p
@@ -408,16 +472,29 @@ func (p *pausedChild) cancelWriter(t *testing.T) receipt {
 	if err != nil {
 		t.Fatalf("cancelled helper: %v: %s", err, p.stderr.String())
 	}
-	r.Waited = true
-	logReceipt(t, r)
+	r.Waited = p.waited
+	p.fixture.completed(t, p.mode, r)
 	return r
 }
 
 func TestClassifierRefusesIncompleteEvidence(t *testing.T) {
+	// Classifier-only synthetic controls: no native fault or interleaving is
+	// injected by these receipts. Every negative starts in an accepted mode.
 	good := receipt{Mode: "barrier", ProfileVerified: true, CommitOK: true, Closed: true, Waited: true, BeforeRead: true, AfterRead: true,
-		After: state{Epoch: 1, Policy: "disabled"}}
+		Before: state{Policy: "disabled"}, After: state{Epoch: 1, Policy: "disabled"}}
 	if classify(good, true, true) != "absent" {
 		t.Fatal("bad classifier control")
+	}
+	for _, epoch := range []int64{-1, 1023, 1024} {
+		r := good
+		r.Before.Epoch, r.After.Epoch = epoch, epoch+1
+		want := "unknown"
+		if epoch == 1023 {
+			want = "absent"
+		}
+		if classify(r, true, true) != want {
+			t.Fatal("epoch range control failed despite stable increment", epoch)
+		}
 	}
 	for _, failure := range []string{"rollback", "physical-close", "write", "commit"} {
 		r := good
@@ -425,6 +502,29 @@ func TestClassifierRefusesIncompleteEvidence(t *testing.T) {
 		if classify(r, true, true) != "unknown" {
 			t.Fatal("error confirmed", failure)
 		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*receipt)
+	}{
+		{"epoch-unchanged", func(r *receipt) { r.After.Epoch = r.Before.Epoch }},
+		{"epoch-negative", func(r *receipt) { r.Before.Epoch = -1 }},
+		{"epoch-exhausted", func(r *receipt) { r.Before.Epoch = 1024 }},
+		{"commit", func(r *receipt) { r.CommitOK = false }},
+		{"before-read", func(r *receipt) { r.BeforeRead = false }},
+		{"after-read", func(r *receipt) { r.AfterRead = false }},
+		{"closed", func(r *receipt) { r.Closed = false }},
+		{"waited", func(r *receipt) { r.Waited = false }},
+		{"profile", func(r *receipt) { r.ProfileVerified = false }},
+		{"incomplete", func(r *receipt) { r.Incomplete = "synthetic missing capability" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := good
+			tc.change(&r)
+			if classify(r, true, true) != "unknown" {
+				t.Fatal("incomplete synthetic evidence confirmed")
+			}
+		})
 	}
 	for _, oldWaited := range []bool{false, true} {
 		if classify(good, oldWaited, false) != "unknown" {
@@ -434,30 +534,78 @@ func TestClassifierRefusesIncompleteEvidence(t *testing.T) {
 	if classify(good, false, true) != "unknown" {
 		t.Fatal("unsettled writer confirmed")
 	}
-	good.After.Commands = 1
-	if classify(good, true, true) != "unknown" {
+	partial := good
+	partial.Before.Commands, partial.After.Commands = 1, 1
+	if classify(partial, true, true) != "unknown" {
 		t.Fatal("incomplete binding confirmed")
 	}
-	good.After = state{Commands: 1, Events: 1, Epoch: 1, Key: commandKey, Binding: binding, Result: result, Policy: "enabled", Cause: result, Revision: 1}
+	absent := good
+	good.After = state{Commands: 1, Events: 1, Epoch: 1, Key: commandKey, Binding: binding, Result: result, Policy: "enabled", Cause: result, EventKey: commandKey, CapacityRows: 0, Revision: 1}
+	good.Before = good.After
+	good.Before.Epoch = 0
 	if classify(good, true, true) != "applied" {
 		t.Fatal("bad applied control")
 	}
-	for _, field := range []string{"key", "binding", "result", "event", "policy"} {
-		r := good
-		switch field {
-		case "key":
-			r.After.Key = "different-command"
-		case "binding":
-			r.After.Binding = "policy=disabled;revision=1"
-		case "result":
-			r.After.Result = "different-result"
-		case "event":
-			r.After.Events++
-		case "policy":
-			r.After.Revision++
-		}
-		if classify(r, true, true) != "unknown" {
-			t.Fatal("inconsistent immutable evidence confirmed", field)
+	for _, tc := range []struct {
+		name          string
+		before, after state
+	}{
+		{"absent-to-applied", absent.Before, good.After},
+		{"applied-to-absent", good.Before, absent.After},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := good
+			r.Before, r.After = tc.before, tc.after
+			if classify(r, true, true) != "unknown" {
+				t.Fatal("synthetic interleaving confirmed")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*state)
+	}{
+		{"command-count", func(s *state) { s.Commands++ }},
+		{"key", func(s *state) { s.Key = "different-command" }},
+		{"binding", func(s *state) { s.Binding = "policy=disabled;revision=1" }},
+		{"result", func(s *state) { s.Result = "different-result" }},
+		{"event-count", func(s *state) { s.Events++ }},
+		{"event-key", func(s *state) { s.EventKey = "different-command" }},
+		{"cause", func(s *state) { s.Cause = "different-cause" }},
+		{"policy", func(s *state) { s.Policy = "different-policy" }},
+		{"revision", func(s *state) { s.Revision++ }},
+		{"capacity", func(s *state) { s.CapacityRows++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, control := range []receipt{good, absent} {
+				r := control
+				// Keep the barrier stable so fixed-fixture equality itself is
+				// exercised, rather than rejection solely by the stability rule.
+				tc.change(&r.Before)
+				tc.change(&r.After)
+				if classify(r, true, true) != "unknown" {
+					t.Fatal("inconsistent fixed-fixture evidence confirmed")
+				}
+			}
+		})
+	}
+}
+
+func TestCanceledCommitProof(t *testing.T) {
+	// Classifier-only controls for the exact cancellation receipt.
+	good := receipt{Steps: []step{{Stage: "commit", Error: context.Canceled.Error()}}}
+	if !canceledCommit(good) {
+		t.Fatal("bad cancellation control")
+	}
+	for _, r := range []receipt{
+		{},
+		{Steps: []step{{Stage: "commit", Error: context.DeadlineExceeded.Error()}}},
+		{Steps: []step{{Stage: "write", Error: context.Canceled.Error()}}},
+		{Steps: []step{{Stage: "commit", Error: context.Canceled.Error(), SQLiteCode: 1}}},
+		{CommitOK: true, Steps: good.Steps},
+	} {
+		if canceledCommit(r) {
+			t.Fatalf("non-cancellation receipt accepted: %+v", r)
 		}
 	}
 }

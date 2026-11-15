@@ -120,7 +120,7 @@ func runHelper(mode, path string) (r receipt) {
 	if err != nil {
 		return r
 	}
-	if mode == "snapshot" || mode == "retry" {
+	if mode == "snapshot" || mode == "post-settlement-readback" {
 		r.After = r.Before
 		r.AfterRead = true
 		return r
