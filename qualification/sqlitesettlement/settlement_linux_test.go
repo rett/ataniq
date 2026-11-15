@@ -18,12 +18,22 @@ import (
 )
 
 type fixture struct {
-	path     string
-	owner    *os.File
-	identity os.FileInfo
+	path      string
+	owner     *os.File
+	directory *os.File
+	identity  os.FileInfo
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := newUninitializedFixture(t)
+	assertClean(t, f.run(t, "initialize"))
+	return f
+}
+
+// Fresh-main qualification must observe initialization itself. The established
+// newFixture entrypoint keeps its original automatically initialized behavior.
+func newUninitializedFixture(t *testing.T) *fixture {
 	t.Helper()
 	// Use the checkout filesystem, not TMPDIR's potentially memory-only mount.
 	dir, err := os.MkdirTemp(".", ".settlement-")
@@ -45,7 +55,16 @@ func newFixture(t *testing.T) *fixture {
 				t.Error(err)
 			}
 		}
+		if f.directory != nil {
+			if err := f.directory.Close(); err != nil {
+				t.Error(err)
+			}
+		}
 	})
+	f.directory, err = openPinnedDirectory(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.owner, err = os.OpenFile(f.path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +76,6 @@ func newFixture(t *testing.T) *fixture {
 	if err := unix.Flock(int(f.owner.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	assertClean(t, f.run(t, "initialize"))
 	return f
 }
 
@@ -70,7 +88,7 @@ func (f *fixture) command(t *testing.T, mode string) (*exec.Cmd, context.CancelF
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcess$")
 	cmd.Env = append(os.Environ(), "ATANIQ_SETTLEMENT_CHILD="+mode, "ATANIQ_SETTLEMENT_FIXTURE="+f.path)
-	cmd.ExtraFiles = []*os.File{f.owner}
+	cmd.ExtraFiles = []*os.File{f.owner, f.directory}
 	cmd.WaitDelay = time.Second
 	return cmd, cancel
 }
@@ -96,6 +114,15 @@ func (f *fixture) run(t *testing.T, mode string) receipt {
 func (f *fixture) completed(t *testing.T, mode string, r receipt) {
 	t.Helper()
 	logReceipt(t, r)
+	if r.Lifecycle != nil {
+		if r.Mode != mode || !r.Waited {
+			t.Fatal("lifecycle helper not waited")
+		}
+		if err := checkFiles(f.path); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if r.Mode != mode || !r.ProfileVerified || !r.Closed || !r.Waited {
 		t.Fatal("helper did not complete the physical-connection protocol")
 	}
@@ -389,6 +416,7 @@ func TestNativeSettlement(t *testing.T) {
 }
 
 type pausedChild struct {
+	receipt receipt
 	fixture *fixture
 	mode    string
 	cmd     *exec.Cmd
@@ -429,7 +457,24 @@ func (f *fixture) pause(t *testing.T, mode string) *pausedChild {
 		t.Fatalf("pause receipt: %v: %s", err, p.stderr.String())
 	}
 	logReceipt(t, r)
+	p.receipt = r
+	if r.Lifecycle != nil && r.Incomplete != "" {
+		if err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		p.waited = true
+		p.receipt.Waited = true
+		cancel()
+		return p // caller records INCOMPLETE, strict gate must fail
+	}
 	assertClean(t, r)
+	if r.Lifecycle != nil {
+		want := map[string]string{"directory-reader": "reader-pinned", "directory-reader-blocked": "before-reader", "directory-commit-death": "after-commit-before-directory", "directory-close-death": "after-close-before-directory", "directory-replace-main": "identity-seam", "directory-replace-directory": "identity-seam", "directory-replace-wal": "identity-seam"}[mode]
+		if want == "" || !r.ProfileVerified || len(r.Steps) == 0 || r.Steps[len(r.Steps)-1].Stage != want {
+			t.Fatal("missing lifecycle pause seam")
+		}
+		return p
+	}
 	wantStage := "before-commit"
 	after := strings.Contains(mode, "after-death")
 	if after {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ type receipt struct {
 	Before, After                                     state
 	BeforeRead, AfterRead                             bool
 	ProfileVerified, CommitOK, Closed, Waited         bool
+	Lifecycle                                         *lifecycleReceipt `json:",omitempty"`
 }
 
 func (r *receipt) record(stage string, err error) {
@@ -87,6 +89,9 @@ func runHelper(mode, path string) (r receipt) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if strings.HasPrefix(mode, "directory-") {
+		return runLifecycle(ctx, path, r)
+	}
 	c, err := openFixture(ctx, path)
 	r.record("open-profile", err)
 	if err != nil {
@@ -94,7 +99,7 @@ func runHelper(mode, path string) (r receipt) {
 	}
 	r.ProfileVerified = true
 	r.Engine, r.SourceID = engineVersion, engineSource
-	r.Profile = "native-default;OFD;WAL;FULL=2;fsync-default;page_size=4096;max_page_count=64;busy_timeout=100;locking=NORMAL;foreign_keys=1;trusted_schema=0;query_only=0;defensive=1;DQS=0;wal_autocheckpoint=1000"
+	r.Profile = verifiedProfile
 	defer func() {
 		err := c.Close()
 		r.record("physical-close", err)
