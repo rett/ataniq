@@ -258,6 +258,48 @@ func TestCursorAuthenticatedInvalidPlaintext(t *testing.T) {
 	}
 }
 
+func TestCursorContextValidation(t *testing.T) {
+	i := Instance{Authority: "a"}
+	valid := causesCursor{viewer: "v", project: "p", conversation: "q", authority: "a", client: "c", command: "cmd", scope: "enrollment", ack: 1, head: 2}
+	codec, err := newCursorCodec([32]byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := codec.mint(i, valid, 1, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := valid
+	changed.scope = "enqueue"
+	changedAnchor := valid
+	changedAnchor.anchor[0] = 1
+	changedHead := valid
+	changedHead.head = 3
+	changedInstance := i
+	changedInstance.StoreID[0] = 1
+	for _, q := range []struct {
+		i    Instance
+		c    cursorContext
+		tail uint64
+	}{{i, changed, 2}, {i, changedAnchor, 2}, {i, changedHead, 3}, {changedInstance, valid, 2}, {i, adminCursor{"v", "c", "cmd"}, 2}} {
+		if pos, e := codec.decode(q.i, q.c, token, 0, q.tail); e == nil || pos != 0 {
+			t.Fatal("context accepted", q)
+		}
+	}
+	var nilContext *eventsCursor
+	for _, c := range []cursorContext{nilContext, eventsCursor{"v", "p", strings.Repeat("x", 129)}, causesCursor{viewer: "v", project: "p", conversation: "q", authority: "foreign", client: "c", command: "cmd", scope: "enrollment", head: 2}, causesCursor{viewer: "v", project: "p", conversation: "q", authority: "a", client: "c", command: "cmd", scope: "invalid", head: 2}} {
+		if _, e := cursorDigest(i, c); e == nil {
+			t.Fatal("invalid context accepted")
+		}
+	}
+	if _, e := codec.mint(i, valid, 0, 0, 2); e == nil {
+		t.Fatal("position before anchor")
+	}
+	if _, e := codec.mint(i, valid, 1, 0, 3); e == nil {
+		t.Fatal("head mismatch")
+	}
+}
+
 func TestCursorReservations(t *testing.T) {
 	var n byte
 	entropy := func(e *[32]byte) error { n++; e[0] = n; return nil }

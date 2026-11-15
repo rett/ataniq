@@ -52,7 +52,18 @@ func cursorDigest(i Instance, c cursorContext) ([32]byte, error) {
 	if !validID(i.Authority) || c == nil {
 		return [32]byte{}, errInvalid
 	}
-	f, err := c.cursorFields(i)
+	var f [][]byte
+	var err error
+	switch v := c.(type) {
+	case eventsCursor:
+		f, err = v.cursorFields(i)
+	case causesCursor:
+		f, err = v.cursorFields(i)
+	case adminCursor:
+		f, err = v.cursorFields(i)
+	default:
+		return [32]byte{}, errInvalid
+	}
 	if err != nil {
 		return [32]byte{}, errInvalid
 	}
