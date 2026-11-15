@@ -163,7 +163,7 @@ build constraints were checked for Linux/amd64; no external source was exported.
 | `lib/sqlite_g_000000000003ffff.go:9393` | Commit phase one returns early when no pages changed; dirty WAL transactions proceed to frame writing. |
 | `lib/sqlite_g_000000000003bd68.go:4356` | WAL header sync and FULL commit sync; sync failure is propagated before publishing the successful WAL-index header. |
 | `lib/sqlite.go:34365` | `sqlite3OsSync` invokes native `xSync` when flags are nonzero. |
-| `lib/sqlite_g_0000000000007d00.go:19617` | `_unixSync` checks the file `_full_fsync` return and maps failure to `SQLITE_IOERR_FSYNC`. It ignores the directory `_full_fsync` return, converts directory-open failure to OK, and clears `DIRSYNC`. File-sync success therefore does not establish new-WAL directory-entry persistence. |
+| `lib/sqlite_g_0000000000007d00.go:19617` | `_unixSync` checks the file `_full_fsync` return and maps failure to `SQLITE_IOERR_FSYNC`. It ignores the directory `_full_fsync` return, converts directory-open failure to OK, and clears `DIRSYNC`. File-sync success therefore does not establish directory-entry persistence for main-file creation or WAL creation/removal. |
 | `lib/sqlite_g_000000000003fffc.go:274`, `fdatasync.go:16` | Native sync calls libc fsync by default, with a separate opt-in fdatasync switch. Neither switch nor VFS is changed here. |
 | `lib/sqlite_g_000000000003fd6b.go:22989` | Checkpoint syncs WAL before backfill, then syncs the main database before advancing completed backfill. |
 | `lib/sqlite_g_000000000003ffff.go:11335`, `:9273` | Last-close checkpoint can sync and remove WAL on success. PagerClose ignores WalClose's return and itself returns OK. A nil driver Close is not proof that those syncs succeeded. |
@@ -191,7 +191,7 @@ wait and paired sync-dependence evidence before classifying applied or absent.
 Before confirmation, the entire Before state with only its epoch incremented
 must equal After; fixed applied/absent templates must also match.
 
-**New-WAL directory-entry persistence is unqualified for production adoption.**
+**Directory-entry persistence for main-file creation and WAL creation/removal remains unqualified for production adoption.**
 The pinned native implementation ignores directory synchronization failures as
 described above. This first milestone establishes sync dependence and tested
 relational settlement only. Checked owned-directory synchronization with lifecycle
