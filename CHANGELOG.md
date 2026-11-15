@@ -6,8 +6,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.0.4] - 2026-11-14
-
 ### Added
 
 - Document journal recognition's read-only and recovery boundaries and its
@@ -17,6 +15,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ownership, preserving committed WAL state and pending recovery without writer
   SQL or journal recovery. Share the read-only preflight with ordinary Open;
   recognition grants no migration or public disclosure authority.
+
+## [0.0.4] - 2026-11-14
+
+### Added
 
 - Add pure typed application command contracts for queued input and exact queued
   cancellation, bounded strict JSON codecs, owned canonical binary bindings and
