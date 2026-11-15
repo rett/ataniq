@@ -74,6 +74,11 @@ func TestCursorVectors(t *testing.T) {
 	if len(f.Cursors) != 7 {
 		t.Fatal(len(f.Cursors))
 	}
+	for _, name := range []string{"events_queue", "causes", "admin_observation", "fixture_admin_enroll", "fixture_admin_revoke_bootstrap", "events_queue_other_epoch", "events_queue_other_nonce"} {
+		if _, ok := f.Cursors[name]; !ok {
+			t.Fatalf("missing cursor vector %q", name)
+		}
+	}
 	i := Instance{Authority: f.Shared.Authority}
 	copy(i.StoreID[:], unhex(t, f.Shared.Store))
 	copy(i.IncarnationID[:], unhex(t, f.Shared.Incarnation))

@@ -201,7 +201,7 @@ func TestCursorDecoderMalformedAndOwnership(t *testing.T) {
 	}
 }
 
-func TestCursorAuthenticatedMalformedLengths(t *testing.T) {
+func TestCursorRejectsMalformedFrameLengthsBeforeAuthentication(t *testing.T) {
 	i := Instance{Authority: "a"}
 	c := eventsCursor{"v", "p", "q"}
 	codec, _ := newCursorCodec([32]byte{1})
@@ -212,6 +212,8 @@ func TestCursorAuthenticatedMalformedLengths(t *testing.T) {
 	gcm, _ := cipher.NewGCM(block)
 	header := append([]byte{2}, epoch[:]...)
 	nonce := make([]byte, gcm.NonceSize())
+	// Exact frame length with real GCM fixes the plaintext length at 48;
+	// the post-authentication plaintext-length defence is unreachable here.
 	for _, n := range []int{0, 47, 49} {
 		plain := make([]byte, n)
 		raw := append(append(append([]byte(nil), header...), nonce...), gcm.Seal(nil, nonce, plain, cursorAAD(i, d, header))...)
@@ -316,34 +318,119 @@ func TestCursorConcurrentBoundaryAndAbandonment(t *testing.T) {
 	if counts[1] != 30 || counts[2] != 60 || len(counts) != 2 || used != 60 || epoch[0] != 2 {
 		t.Fatal(counts, used, epoch)
 	}
-	for _, scenario := range []string{"cancelled", "consumer failure"} {
-		t.Run(scenario, func(t *testing.T) {
-			a.mu.Lock()
-			before := a.used
-			a.mu.Unlock()
-			tok, e := codec.mint(i, eventsCursor{"v", "p", "q"}, 1, 1, 1)
-			if e != nil {
-				t.Fatal(e)
+}
+
+// These bounded consumers simulate abandonment; service cancellation and durable
+// receipt integration are not qualified by this test.
+func TestCursorAbandonedLastReservation(t *testing.T) {
+	consumerFailure := errors.New("consumer failed")
+	for _, tc := range []struct {
+		name    string
+		consume func(context.Context, string) error
+		want    error
+	}{
+		{"cancelled", func(ctx context.Context, token string) error {
+			if token == "" {
+				return errors.New("missing token")
+			}
+			return ctx.Err()
+		}, context.Canceled},
+		{"consumer failure", func(_ context.Context, token string) error {
+			if token == "" {
+				return errors.New("missing token")
+			}
+			return consumerFailure
+		}, consumerFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var entropy byte
+			a, err := newCursorAllocatorWithEntropy(func(out *[32]byte) error { entropy++; out[0] = entropy; return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			codec := &cursorCodec{master: [32]byte{1}, allocator: a, makeAEAD: cursorAEAD}
+			i, c := Instance{Authority: "a"}, eventsCursor{"v", "p", "q"}
+			a.used = cursorEpochLimit - 1
+			oldEpoch := a.epoch
+			token, err := codec.mint(i, c, 1, 1, 1)
+			if err != nil || a.used != cursorEpochLimit {
+				t.Fatal(err, a.used)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
-			var consumeErr error
-			if scenario == "cancelled" {
-				cancel()
-				consumeErr = ctx.Err()
-			} else {
-				consumeErr = errors.New("consumer failed")
-				cancel()
+			cancel()
+			if err := tc.consume(ctx, token); !errors.Is(err, tc.want) {
+				t.Fatal(err)
 			}
-			if consumeErr == nil || tok == "" {
-				t.Fatal("consumer did not abandon")
+			fresh, err := codec.mint(i, c, 1, 1, 1)
+			if err != nil || a.epoch == oldEpoch || a.used != 1 {
+				t.Fatal(err, a.epoch, a.used)
 			}
-			a.mu.Lock()
-			after := a.used
-			a.mu.Unlock()
-			if after != before+1 {
-				t.Fatal(before, after)
+			raw, err := base64.RawURLEncoding.DecodeString(fresh)
+			if err != nil || string(raw[1:33]) != string(a.epoch[:]) {
+				t.Fatal("fresh epoch", err)
+			}
+			if p, err := codec.decode(i, c, token, 1, 1); err != nil || p != 1 {
+				t.Fatal(p, err)
 			}
 		})
+	}
+	t.Run("construction failure", func(t *testing.T) {
+		var entropy byte
+		a, err := newCursorAllocatorWithEntropy(func(out *[32]byte) error { entropy++; out[0] = entropy; return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		codec := &cursorCodec{allocator: a, makeAEAD: func([]byte) (cipher.AEAD, error) { return nil, errors.New("construction") }}
+		i, c := Instance{Authority: "a"}, eventsCursor{"v", "p", "q"}
+		a.used = cursorEpochLimit - 1
+		oldEpoch := a.epoch
+		if token, err := codec.mint(i, c, 1, 1, 1); err == nil || token != "" || a.used != cursorEpochLimit {
+			t.Fatal(token, err, a.used)
+		}
+		codec.makeAEAD = cursorAEAD
+		token, err := codec.mint(i, c, 1, 1, 1)
+		if err != nil || a.epoch == oldEpoch || a.used != 1 {
+			t.Fatal(err, a.epoch, a.used)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil || string(raw[1:33]) != string(a.epoch[:]) {
+			t.Fatal("fresh epoch", err)
+		}
+	})
+}
+
+func TestCursorRestartDoesNotAdoptReceivedEpoch(t *testing.T) {
+	master := [32]byte{1}
+	i, c := Instance{Authority: "a"}, eventsCursor{"v", "p", "q"}
+	a, err := newCursorCodec(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := a.mint(i, c, 1, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := newCursorCodec(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch := b.allocator.epoch
+	if epoch == a.allocator.epoch || b.allocator.used != 0 {
+		t.Fatal("restart epoch or count")
+	}
+	if p, err := b.decode(i, c, token, 1, 1); err != nil || p != 1 {
+		t.Fatal(p, err)
+	}
+	if b.allocator.epoch != epoch || b.allocator.used != 0 {
+		t.Fatal("received epoch adopted")
+	}
+	fresh, err := b.mint(i, c, 1, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(fresh)
+	if err != nil || string(raw[1:33]) != string(epoch[:]) || b.allocator.epoch != epoch || b.allocator.used != 1 {
+		t.Fatal("restart mint", err)
 	}
 }
 
