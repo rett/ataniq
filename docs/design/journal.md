@@ -322,6 +322,35 @@ and all private-path and inode checks remain required.
 
 ## Read-only preflight and connection profile
 
+`Recognize(ctx, path, Options)` is a bounded trusted internal read of existing
+released v1 storage. It returns the same `Info` metadata as `Store.Info`:
+identity and schema, verified engine version/source, current logical page count
+and size (including committed WAL state), and the caller's normalized
+`MaxBytes` limit. That limit is configuration, not an observed persisted quota.
+The call acquires the existing OFD/inode ownership discipline, runs the exact
+v1 recognizer through the native `mode=ro` plus `query_only` connector, closes
+SQL, rechecks the original inode/path and releases ownership. Cleanup failures
+and cancellation return an error and zero Info. No Store, reader or ownership
+survives return. Invalid options and pre-cancelled calls touch no storage.
+
+Recognition never initializes storage, opens a writable SQL connection, applies
+writer PRAGMAs or calls journal recovery. Dirty guards, evidence, consumed grants
+and events remain unchanged for subsequent ordinary Open recovery. Semantic
+read-only access permits SQLite's empty-WAL creation, SHM reconstruction and
+read marks; those index operations are distinct from `Store.recover` changing
+guards and adding recovery events. Main database contents and committed logical
+state are preserved by the disposable qualification fixtures. Sidecar byte
+equality is not the contract. Recognition uses no immutable mode, SHM-only
+fallback, private copy or custom VFS, and observes committed WAL contents.
+
+Open shares a private recognition helper under its already-held owner, then
+continues its existing writer preflight/recovery sequence without an ownership
+gap. The helper closes its own SQL pool and leaves ownership with its caller.
+A future separately authorized migration could reuse that helper under
+continuous ownership; recognition observations themselves never grant migration
+permission. This API supplies neither public disclosure authorization nor a
+readiness, executor-quiescence or authentication claim.
+
 After requesting OFD mode and acquiring the inode lock, Open uses `mode=ro`
 and `query_only=1`
 to check application/schema identity, all exact journal table definitions,
@@ -389,7 +418,7 @@ Zero-valued bounds select these defaults:
 | `OperationTimeout` | 5 seconds | 1 millisecond–1 minute |
 | `BusyTimeout` | 250 milliseconds | Whole milliseconds, 1 millisecond–5 seconds, no greater than OperationTimeout |
 
-Earlier caller deadlines take precedence. Pre-cancelled Create/Open calls
+Earlier caller deadlines take precedence. Pre-cancelled Create/Open/Recognize calls
 touch no storage, pool waits respect the operation context, and SQLite busy
 waits are finite. Store admission and Info do not wait for the lifetime lock
 when Close is pending or active: an already cancelled/expired context returns
@@ -446,6 +475,15 @@ and overwrite refusal, exact authority bytes, schema/authority refusal without
 main-file mutation, unsafe paths and permissions, live owners and hardlinks,
 cancellation and pool waits, replacement verification, setting mismatch,
 page-limit refusal, and process death before/after metadata commit.
+
+Recognition fixtures also compare every logical schema/application row and
+main database bytes across success and authority refusal, including closed dirty
+stores, committed WAL identity/evidence and reconstructed SHM. Subsequent Open
+must retain original receipts/grants, add exactly the pending recovery event,
+and prohibit replay of the guarded attempt. Connector wrappers check native
+read-only settings, ownership through SQL closure, joined cleanup/query errors,
+late cancellation and inode/parent replacement refusal. These are synthetic
+local fixtures, not a production-state or hostile-filesystem qualification.
 
 Guarded regressions invoke the frozen Coordinator with independently counted
 fake Boundaries. They cover exact and concurrent duplicates, every binding
