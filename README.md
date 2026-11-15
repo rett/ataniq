@@ -3,14 +3,26 @@
 Ataniq is a planned orchestration service for managing projects,
 agents, tools, and local or remote sessions through extensible feature packs.
 
-The project is a developer qualification foundation for 0.0.1. It includes
-offline development checks, Codex-specific mock qualification tests and Linux
-host qualification tools. See [the Codex qualification guide](docs/qualification-codex.md)
-and [the host manual](docs/qualification-host.md) for their scope and limits.
-The production runner, durable conversations, service, clients, provisioning,
-authentication and execution adapters remain pending.
+## Maturity
+
+The 0.0.5 release is a developer foundation with offline development checks and
+internal libraries.
+
+| Area | Current status |
+| --- | --- |
+| Dispatch | Shipped internal deterministic coordinator exercised with fake boundaries. |
+| Journal | Shipped guarded persistent Linux SQLite journal and trusted read-only preflight for existing stores. See the [journal design](docs/design/journal.md). |
+| Commands | Shipped pure typed command contracts, strict JSON codecs and canonical binary bindings. See the [application contracts](docs/design/application-contracts.md). |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes are separate unreleased source. |
+
+The design intent is provider and platform neutral. Current qualification
+coverage includes Codex-specific mock tests and Linux/amd64 host observations.
+See [the Codex qualification guide](docs/qualification-codex.md) and
+[the host manual](docs/qualification-host.md) for their scope and limits.
 
 ## Architecture decisions
+
+These decisions describe the planned design.
 
 - Go for the service and CLI; TypeScript for the management UI.
 - Unified Ataniq clients with a shared command and event contract; MCP remains
@@ -20,7 +32,7 @@ authentication and execution adapters remain pending.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
 - A proposed Ataniq runner and systemd lifecycle on Linux, subject to sandbox
-  qualification; tmux is optional diagnostics, not the session authority.
+  qualification.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between
