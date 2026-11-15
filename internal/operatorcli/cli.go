@@ -99,6 +99,12 @@ func domain(err error) (string, bool) {
 	return "", false
 }
 func backendError(w io.Writer, err error) int {
+	// A joined error can contain conflicting outcomes, including uncertain delivery.
+	// Reconcile the original command instead of selecting a definitive member.
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		return failure(w, "observation_error", "unknown", 1)
+	}
 	if code, ok := domain(err); ok {
 		return failure(w, "domain_error", code, 1)
 	}

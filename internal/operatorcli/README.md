@@ -17,8 +17,10 @@ The provisional port has `Submit(ctx, Envelope) (AdmissionReceipt, error)` and
 an authoritative result code, `ErrUnavailable` only when it can prove the
 service was not invoked, and any other error for an unknown observation. A
 domain code does not by itself confirm admission or nonadmission, and
-`storage_unknown` remains uncertain. Ambiguous joined errors require a policy
-when the backend is reconciled. A pre-cancelled context is unavailable before
+`storage_unknown` remains uncertain. Joined error trees are classified as an unknown observation before domain or
+unavailable extraction. The backend must return one authoritative outcome through
+a single error chain to disclose a definitive code. This conservative rule also
+applies when joined errors repeat the same code. A pre-cancelled context is unavailable before
 invocation; cancellation after
 invocation is unknown unless the backend proves otherwise. The adapter checks
 pre-cancellation before opening or reading input, but arbitrary in-flight

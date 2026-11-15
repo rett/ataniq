@@ -188,3 +188,29 @@ func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
 type badWriter struct{}
 
 func (badWriter) Write([]byte) (int, error) { return 0, errors.New("failed") }
+
+func TestJoinedBackendOutcomesRemainUnknown(t *testing.T) {
+	uncertain := &appmodel.DomainError{Code: appmodel.StorageUnknown}
+	denied := appmodel.DomainError{Code: appmodel.PermissionDenied}
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"uncertain then denied", errors.Join(uncertain, denied)},
+		{"denied then uncertain", errors.Join(denied, uncertain)},
+		{"wrapped conflict", fmt.Errorf("private wrapper: %w", errors.Join(uncertain, denied))},
+		{"unavailable with another failure", errors.Join(ErrUnavailable, errors.New("private detail"))},
+		{"repeated domain code", errors.Join(denied, denied)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, args := range [][]string{submit, show} {
+				backend := &fake{err: tc.err}
+				exit, output := run(backend, args, command)
+				if exit != 1 || backend.calls != 1 || output != "{\"kind\":\"observation_error\",\"code\":\"unknown\"}\n" {
+					t.Fatal(exit, output, backend.calls)
+				}
+			}
+		})
+	}
+}
