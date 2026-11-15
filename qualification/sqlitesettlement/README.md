@@ -23,6 +23,8 @@ denial. Ordinary tests retain their other runnable checks and explicitly log
 `INCOMPLETE` if that capability is unavailable; their exit status alone is not
 qualification. On unsupported platforms the strict gate also fails. No fallback
 to a single filtered Go thread, different driver, or replacement VFS is allowed.
+The `SUPPORTED` summary requires every native control to complete and every
+schedule to pass, including when a later child loses the required capability.
 If a worker cannot install the filter, the lead's smallest host-context check is
 the same strict command on its already authorized Linux/amd64 qualification host;
 do not change host policy to make a worker pass.

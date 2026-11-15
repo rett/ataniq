@@ -208,6 +208,7 @@ func TestNativeSettlement(t *testing.T) {
 			mutated := f.run(t, mode)
 			if mode == "mutation-filter" {
 				if !syncAvailable(t, mutated) {
+					syncDependence = false
 					return
 				}
 				requireCode(t, mutated, "commit", 1034)
@@ -244,6 +245,7 @@ func TestNativeSettlement(t *testing.T) {
 		f := newFixture(t)
 		r := f.run(t, "empty-filter")
 		if !syncAvailable(t, r) {
+			syncDependence = false
 			return
 		}
 		if !r.CommitOK || r.Before != r.After || classify(r, true, true) != "unknown" {
@@ -324,7 +326,7 @@ func TestNativeSettlement(t *testing.T) {
 			}
 		})
 	}
-	if syncDependence {
+	if syncDependence && !t.Failed() {
 		t.Log("SUPPORTED: native pre-sync denial and dirty FULL commit sync dependence; successful settlement in tested schedules under SQLite/OS sync contract; no power-loss claim")
 	}
 }
