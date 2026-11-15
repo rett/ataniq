@@ -5,15 +5,18 @@ agents, tools, and local or remote sessions through extensible feature packs.
 
 ## Maturity
 
-The 0.0.5 release is a developer foundation with offline development checks and
-internal libraries.
+The 0.0.6 release is a developer foundation with offline development checks and
+internal libraries. It adds a bounded SQLite default-VFS settlement qualification
+harness using the modernc.org/sqlite driver. Production durability remains
+unqualified, including directory lifecycle, pooling and live admission. See the
+[settlement qualification guide](qualification/sqlitesettlement/README.md).
 
 | Area | Current status |
 | --- | --- |
 | Dispatch | Shipped internal deterministic coordinator exercised with fake boundaries. |
-| Journal | Shipped guarded persistent Linux SQLite journal and trusted read-only preflight for existing stores. See the [journal design](docs/design/journal.md). |
+| Journal | Shipped guarded persistent Linux SQLite journal and trusted read-only preflight for existing stores. Production durability remains unqualified. See the [journal design](docs/design/journal.md) and [settlement limits](qualification/sqlitesettlement/README.md). |
 | Commands | Shipped pure typed command contracts, strict JSON codecs and canonical binary bindings. See the [application contracts](docs/design/application-contracts.md). |
-| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes are separate unreleased source. |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes remain on separate development branches and are outside this release. |
 
 The design intent is provider and platform neutral. Current qualification
 coverage includes Codex-specific mock tests and Linux/amd64 host observations.
