@@ -8,6 +8,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Add a provisional `ataniq-console --demo [--theme dark|light]` terminal
+  cockpit that shows fictional, read-only fixture projects, persistent leads,
+  subagents, tasks and conversations within bounded terminal sizes. It is
+  fixture-only: without `--demo` it reports that the backend is unavailable,
+  and its control keys only explain why live controls are unavailable. Live
+  control, provider integration, use over SSH and terminal restoration after a
+  startup error remain unqualified.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
