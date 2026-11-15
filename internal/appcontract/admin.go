@@ -114,12 +114,23 @@ func credentialFields(c CredentialBinding) ([][]byte, error) {
 	return [][]byte{[]byte(c.Credential), number(c.Generation), number(c.NotBeforeMS), number(c.ExpiresMS), []byte(c.Artifact.ID), c.Artifact.ManifestDigest[:]}, nil
 }
 
-// BindAdmin produces independent canonical bytes and their digest. Equality
-// of bindings requires comparing the complete bytes, not only the digest.
-func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [32]byte, error) {
-	var empty [32]byte
+// AdminBinding owns the complete canonical representation of an operation.
+type AdminBinding struct {
+	canonical string
+	digest    [32]byte
+}
+
+func (b AdminBinding) Bytes() []byte    { return []byte(b.canonical) }
+func (b AdminBinding) Digest() [32]byte { return b.digest }
+func (b AdminBinding) Equal(other AdminBinding) bool {
+	return b.canonical != "" && other.canonical != "" && b.canonical == other.canonical
+}
+
+// BindAdmin binds a validated administration operation.
+func BindAdmin(i Instance, actor, command string, op AdminOperation) (AdminBinding, error) {
+	var empty AdminBinding
 	if !validID(i.Authority) || !validID(actor) || !validID(command) {
-		return nil, empty, errInvalid
+		return empty, errInvalid
 	}
 	var name string
 	var fields [][]byte
@@ -128,7 +139,7 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 	switch v := op.(type) {
 	case ProjectCreate:
 		if !validID(v.Project) || !textBound(v.Name, 256) {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "project.create"
 		fields = [][]byte{[]byte(v.Project), []byte(v.Name)}
@@ -136,7 +147,7 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 		allowAbsent = true
 	case LeadCreate:
 		if !validID(v.Project) || !validID(v.Role) || !textBound(v.Name, 256) {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "lead.create"
 		fields = [][]byte{[]byte(v.Project), []byte(v.Role), []byte(v.Name)}
@@ -144,7 +155,7 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 		allowAbsent = true
 	case ConversationCreate:
 		if !validID(v.Project) || !validID(v.Conversation) || !validID(v.Role) {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "conversation.create"
 		fields = [][]byte{[]byte(v.Project), []byte(v.Conversation), []byte(v.Role)}
@@ -153,16 +164,16 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 	case ClientEnroll:
 		c, err := credentialFields(v.CredentialBinding)
 		if err != nil || (v.Scope != None && v.Scope != OwnerAdministration) || v.Generation != 1 {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "client.enroll"
-		fields = append([][]byte{[]byte(v.Client), {byte(v.Scope - 1)}}, c...)
+		fields = append([][]byte{[]byte(v.Client), byteField(byte(v.Scope - 1))}, c...)
 		p = v.Expected
 		allowAbsent = true
 	case CredentialRotate:
 		c, err := credentialFields(v.CredentialBinding)
 		if err != nil {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "credential.rotate"
 		fields = append([][]byte{[]byte(v.Client)}, c...)
@@ -170,7 +181,7 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 		allowMatch = true
 	case ClientRevoke:
 		if !validID(v.Client) {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "client.revoke"
 		fields = [][]byte{[]byte(v.Client)}
@@ -178,43 +189,52 @@ func BindAdmin(i Instance, actor, command string, op AdminOperation) ([]byte, [3
 		allowMatch = true
 	case PermissionsReplace:
 		if !validID(v.Project) || !validID(v.Client) || v.Mask > 15 {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "project.permissions.replace"
-		fields = [][]byte{[]byte(v.Project), []byte(v.Client), {v.Mask}}
+		fields = [][]byte{[]byte(v.Project), []byte(v.Client), byteField(v.Mask)}
 		p = v.Expected
 		allowAbsent = true
 		allowMatch = true
 	case DispositionCommand:
+		// Callers must synchronize concurrent mutation of inputs.
+		if v.EnrollmentPrefix != nil {
+			n := *v.EnrollmentPrefix
+			v.EnrollmentPrefix = &n
+		}
+		if v.EnqueuePrefix != nil {
+			n := *v.EnqueuePrefix
+			v.EnqueuePrefix = &n
+		}
 		if !validID(v.Project) || v.Target.Authority != i.Authority || !validID(v.Target.EnrolledClientID) || !validID(string(v.Target.CommandID)) || (v.Mode != Release && v.Mode != CancelAndResolve) || !textBound(v.Reason, 1024) || (v.EnrollmentPrefix != nil && *v.EnrollmentPrefix > math.MaxInt64) || (v.EnqueuePrefix != nil && *v.EnqueuePrefix > math.MaxInt64) {
-			return nil, empty, errInvalid
+			return empty, errInvalid
 		}
 		name = "item.disposition"
 		p = v.Expected
 		allowMatch = true
 		pre, err := preconditionBytes(p, false, true)
 		if err != nil {
-			return nil, empty, err
+			return empty, err
 		}
 		fields = [][]byte{[]byte(v.Project), []byte(v.Target.Authority), []byte(v.Target.EnrolledClientID), []byte(v.Target.CommandID), pre, []byte(v.Mode), []byte(v.Reason), optionalNumber(v.EnrollmentPrefix), optionalNumber(v.EnqueuePrefix)}
 		p = nil
 	default:
-		return nil, empty, errInvalid
+		return empty, errInvalid
 	}
 	if p != nil {
 		pre, err := preconditionBytes(p, allowAbsent, allowMatch)
 		if err != nil {
-			return nil, empty, err
+			return empty, err
 		}
 		fields = append(fields, pre)
 	} else if name != "item.disposition" {
-		return nil, empty, errInvalid
+		return empty, errInvalid
 	}
 	f := append(i.fields(), []byte(actor), []byte(command), []byte(name))
 	f = append(f, fields...)
 	b := frame("ADMIN", f...)
 	if len(b) > 16<<10 {
-		return nil, empty, errInvalid
+		return empty, errInvalid
 	}
-	return b, sha256.Sum256(b), nil
+	return AdminBinding{string(b), sha256.Sum256(b)}, nil
 }

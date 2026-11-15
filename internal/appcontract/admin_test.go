@@ -55,7 +55,8 @@ func TestAdminVectors(t *testing.T) {
 		{"owner", "resolve-q", DispositionCommand{"p", target, Match{"33e6c7e7416544523991a7780643673df47d9a693c89e882b4e512c7d1adafdd"}, CancelAndResolve, "review", &one, nil}, 208, "4ca4378f1d9ae7d5db03b3dc57aa32f015068e42dafc9a98e4a3da8b9ed2d2c3"},
 		{"owner", "release-q", DispositionCommand{"p", target, Match{"ae1b3af8ec27b2ccc776c3aefc89c032534e182abbddcc9731618671db66d566"}, Release, "review", nil, &one}, 197, "650653331811b30315c791a921e8e7ef823c3b83d30303520c551074a1302a16"},
 	} {
-		b, h, err := BindAdmin(i, tc.actor, tc.command, tc.op)
+		binding, err := BindAdmin(i, tc.actor, tc.command, tc.op)
+		b, h := binding.Bytes(), binding.Digest()
 		if err != nil || len(b) != tc.length || fmt.Sprintf("%x", h) != tc.hash {
 			t.Errorf("%T: length %d, digest %x, err %v", tc.op, len(b), h, err)
 		}
@@ -64,7 +65,7 @@ func TestAdminVectors(t *testing.T) {
 		}
 	}
 	for _, op := range []AdminOperation{nil, &ProjectCreate{}, ProjectCreate{"p", "x", nil}, ClientEnroll{c, 3, Absent{}}, PermissionsReplace{"p", "c", 16, Absent{}}, ClientRevoke{"c", Absent{}}, ProjectCreate{"p", string([]byte{0xff}), Absent{}}} {
-		if _, _, err := BindAdmin(i, "owner", "x", op); err == nil {
+		if _, err := BindAdmin(i, "owner", "x", op); err == nil {
 			t.Errorf("accepted invalid %T", op)
 		}
 	}

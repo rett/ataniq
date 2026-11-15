@@ -3,6 +3,7 @@ package appcontract
 import "ataniq/internal/appmodel"
 
 // OwnerPrincipalRef names the stable principal independently of enrollments.
+// These data-only values are unvalidated until a consuming boundary checks them.
 type OwnerPrincipalRef struct {
 	Instance         Instance
 	OwnerPrincipalID string

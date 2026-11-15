@@ -55,6 +55,7 @@ func projectedState(s appmodel.State) bool {
 }
 
 // EncodeEventDetail returns bounded canonical bytes for a closed detail value.
+// Association of a detail with an event kind belongs to its consuming boundary.
 func EncodeEventDetail(d EventDetail) ([]byte, error) {
 	var client, command, revision string
 	var position uint64

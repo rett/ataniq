@@ -46,10 +46,14 @@ func (i Instance) fields() [][]byte {
 	return [][]byte{[]byte(i.Authority), i.StoreID[:], i.IncarnationID[:]}
 }
 
-func number(n uint64) []byte { return binary.BigEndian.AppendUint64(nil, n) }
+func number(n uint64) []byte  { return binary.BigEndian.AppendUint64(nil, n) }
+func byteField(n byte) []byte { return []byte{n} }
 
 // ProjectionKeys holds domain-separated keys; it grants no access to data.
-type ProjectionKeys struct{ status, resource, event, cause [32]byte }
+type ProjectionKeys struct {
+	status, resource, event, cause [32]byte
+	initialized                    bool
+}
 
 func derive(master [32]byte, label string) [32]byte {
 	h := hmac.New(sha256.New, master[:])
@@ -60,7 +64,7 @@ func derive(master [32]byte, label string) [32]byte {
 }
 
 func NewProjectionKeys(master [32]byte) ProjectionKeys {
-	return ProjectionKeys{derive(master, "status-v1"), derive(master, "resource-v1"), derive(master, "event-id-v1"), derive(master, "cause-event-id-v1")}
+	return ProjectionKeys{derive(master, "status-v1"), derive(master, "resource-v1"), derive(master, "event-id-v1"), derive(master, "cause-event-id-v1"), true}
 }
 
 type EventKind string
@@ -80,7 +84,7 @@ func mac(key [32]byte, data []byte) string {
 
 // EventID identifies a projected queue event independently of its viewer.
 func (k ProjectionKeys) EventID(i Instance, project, conversation string, sequence uint64, kind EventKind) (string, error) {
-	if !validID(i.Authority) || !validID(project) || !validID(conversation) || sequence == 0 || sequence > math.MaxInt64 {
+	if !k.initialized || !validID(i.Authority) || !validID(project) || !validID(conversation) || sequence == 0 || sequence > math.MaxInt64 {
 		return "", errInvalid
 	}
 	switch kind {
@@ -94,7 +98,7 @@ func (k ProjectionKeys) EventID(i Instance, project, conversation string, sequen
 
 // CauseEventID identifies an owner-visible loss event.
 func (k ProjectionKeys) CauseEventID(i Instance, sequence uint64) (string, error) {
-	if !validID(i.Authority) || sequence == 0 || sequence > math.MaxInt64 {
+	if !k.initialized || !validID(i.Authority) || sequence == 0 || sequence > math.MaxInt64 {
 		return "", errInvalid
 	}
 	f := append(i.fields(), number(sequence))

@@ -10,13 +10,25 @@ import (
 // Command observations instead use the target's status revision.
 type Resource interface{ resource() }
 
-type ProjectResource struct{ Project string }
-type LeadResource struct{ Project, Role string }
-type ConversationResource struct{ Project, Conversation string }
-type ClientResource struct{ Client string }
-type PermissionResource struct{ Project, Client string }
+type ProjectResource struct{ Project appmodel.ProjectRef }
+type LeadResource struct {
+	Project appmodel.ProjectRef
+	Role    string
+}
+type ConversationResource struct {
+	Project      appmodel.ProjectRef
+	Conversation appmodel.ConversationRef
+}
+type ClientResource struct {
+	Instance Instance
+	Client   string
+}
+type PermissionResource struct {
+	Project appmodel.ProjectRef
+	Client  string
+}
 type CommandResource struct {
-	Project string
+	Project appmodel.ProjectRef
 	Key     appmodel.CommandKey
 }
 
@@ -30,27 +42,60 @@ func (CommandResource) resource()      {}
 // ResourceRevision computes a token from a resource's own version. For a
 // conversation that version is its admission version, not its queue state.
 func (k ProjectionKeys) ResourceRevision(i Instance, resource Resource, version uint64) (string, error) {
-	if !validID(i.Authority) || version == 0 || version > math.MaxInt64 {
+	if !k.initialized || version == 0 || version > math.MaxInt64 {
 		return "", errInvalid
+	}
+	kind, first, second, err := resourceFields(i, resource)
+	if err != nil {
+		return "", err
+	}
+	f := append(i.fields(), []byte(kind), []byte(first), []byte(second), number(version))
+	return mac(k.resource, frame("RESOURCE", f...)), nil
+}
+
+func localProject(i Instance, p appmodel.ProjectRef) bool {
+	return p.Authority == i.Authority && validID(p.ID)
+}
+func localConversation(i Instance, c appmodel.ConversationRef) bool {
+	return c.Authority == i.Authority && validID(c.ID)
+}
+
+func resourceFields(i Instance, resource Resource) (string, string, string, error) {
+	if !validID(i.Authority) {
+		return "", "", "", errInvalid
 	}
 	var kind, first, second string
 	switch r := resource.(type) {
 	case ProjectResource:
-		kind, first = "project", r.Project
+		if !localProject(i, r.Project) {
+			return "", "", "", errInvalid
+		}
+		kind, first = "project", r.Project.ID
 	case LeadResource:
-		kind, first, second = "lead", r.Project, r.Role
+		if !localProject(i, r.Project) {
+			return "", "", "", errInvalid
+		}
+		kind, first, second = "lead", r.Project.ID, r.Role
 	case ConversationResource:
-		kind, first, second = "conversation", r.Project, r.Conversation
+		if !localProject(i, r.Project) || !localConversation(i, r.Conversation) {
+			return "", "", "", errInvalid
+		}
+		kind, first, second = "conversation", r.Project.ID, r.Conversation.ID
 	case ClientResource:
+		if r.Instance != i {
+			return "", "", "", errInvalid
+		}
 		kind, first = "client", r.Client
 	case PermissionResource:
-		kind, first, second = "permission", r.Client, r.Project
+		if !localProject(i, r.Project) {
+			return "", "", "", errInvalid
+		}
+		kind, first, second = "permission", r.Client, r.Project.ID
 	default:
-		return "", errInvalid
+		return "", "", "", errInvalid
 	}
 	if !validID(first) || ((kind == "lead" || kind == "conversation" || kind == "permission") && !validID(second)) {
-		return "", errInvalid
+		return "", "", "", errInvalid
 	}
-	f := append(i.fields(), []byte(kind), []byte(first), []byte(second), number(version))
-	return mac(k.resource, frame("RESOURCE", f...)), nil
+	return kind, first, second, nil
 }

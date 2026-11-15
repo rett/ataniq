@@ -5,9 +5,13 @@ import "ataniq/internal/appmodel"
 // ConflictView is a private observation, separate from appmodel.DomainError.
 // A value alone does not establish authority to observe or disclose it.
 type ConflictView interface{ conflictView() }
-type ConversationAdmissionConflict struct{ Project, Conversation, Revision string }
+type ConversationAdmissionConflict struct {
+	Project      appmodel.ProjectRef
+	Conversation appmodel.ConversationRef
+	Revision     string
+}
 type ExactEnqueueStatusConflict struct {
-	Project string
+	Project appmodel.ProjectRef
 	Key     appmodel.CommandKey
 	Status  appmodel.CurrentStatus
 }
@@ -28,20 +32,20 @@ func ValidateConflictView(i Instance, view ConflictView) error {
 	}
 	switch v := view.(type) {
 	case ConversationAdmissionConflict:
-		if !validID(v.Project) || !validID(v.Conversation) {
+		if !localProject(i, v.Project) || !localConversation(i, v.Conversation) {
 			return errInvalid
 		}
 		_, err := rawRevision(v.Revision)
 		return err
 	case ExactEnqueueStatusConflict:
-		if !validID(v.Project) || v.Key.Authority != i.Authority || !validID(v.Key.EnrolledClientID) || !validID(string(v.Key.CommandID)) || v.Status.Command != v.Key || !projectedState(v.Status.State) {
+		if !localProject(i, v.Project) || v.Key.Authority != i.Authority || !validID(v.Key.EnrolledClientID) || !validID(string(v.Key.CommandID)) || v.Status.Command != v.Key || !projectedState(v.Status.State) {
 			return errInvalid
 		}
 		_, err := rawRevision(string(v.Status.Revision))
 		return err
 	case AdminResourceConflict:
 		// A Command observation must use ExactEnqueueStatusConflict instead.
-		if _, err := (ProjectionKeys{}).ResourceRevision(i, v.Resource, 1); err != nil {
+		if _, _, _, err := resourceFields(i, v.Resource); err != nil {
 			return err
 		}
 		_, err := preconditionBytes(v.Observed, true, true)

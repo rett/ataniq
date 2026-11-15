@@ -34,8 +34,21 @@ type EnqueueStatus struct {
 // StatusRevision binds the base state and, for an enqueue, both loss ranges.
 // Held is a projection of queued state and is not a valid base state.
 func (k ProjectionKeys) StatusRevision(i Instance, key appmodel.CommandKey, version uint64, state appmodel.State, enqueue *EnqueueStatus) (string, error) {
-	if !validID(i.Authority) || key.Authority != i.Authority || !validID(key.EnrolledClientID) || !validID(string(key.CommandID)) || version == 0 || version > math.MaxInt64 {
+	if !k.initialized || !validID(i.Authority) || key.Authority != i.Authority || !validID(key.EnrolledClientID) || !validID(string(key.CommandID)) || version == 0 || version > math.MaxInt64 {
 		return "", errInvalid
+	}
+	// Callers must synchronize concurrent mutation of inputs.
+	if enqueue != nil {
+		copyValue := *enqueue
+		if copyValue.Enrollment.Cutoff != nil {
+			n := *copyValue.Enrollment.Cutoff
+			copyValue.Enrollment.Cutoff = &n
+		}
+		if copyValue.Enqueue.Cutoff != nil {
+			n := *copyValue.Enqueue.Cutoff
+			copyValue.Enqueue.Cutoff = &n
+		}
+		enqueue = &copyValue
 	}
 	flag := byte(0)
 	if enqueue == nil {
@@ -51,7 +64,7 @@ func (k ProjectionKeys) StatusRevision(i Instance, key appmodel.CommandKey, vers
 			return "", errInvalid
 		}
 	}
-	f := append(i.fields(), []byte(key.EnrolledClientID), []byte(key.CommandID), number(version), []byte(state), []byte{flag})
+	f := append(i.fields(), []byte(key.EnrolledClientID), []byte(key.CommandID), number(version), []byte(state), byteField(flag))
 	if enqueue != nil {
 		f = append(f, []byte(enqueue.Project))
 		for _, scope := range []struct {
