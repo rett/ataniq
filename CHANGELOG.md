@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add a bounded Linux/amd64 native SQLite settlement qualification harness with
+  child-only sync-failure injection, strict capability controls and relational
+  evidence. Production adoption requires separate directory-lifecycle qualification.
+
 ### Changed
 
 - Add a README and website claims review for every release, including hotfixes,
