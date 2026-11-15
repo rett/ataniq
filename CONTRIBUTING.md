@@ -18,8 +18,8 @@ The branching model is git-flow, as its author described it.
 
 ## Release documentation review
 
-On every release branch, review the README and any website after the version
-bump and before the release pull request. Check the version against the
+For every release, including hotfixes, review the README and any website after
+the version bump and before the release pull request. Check the version against the
 changelog and intended tag. Verify shipped and planned claims, provider and
 platform evidence, installation examples and limitations against the source
 and qualification records. Check website source before publication and deployed
