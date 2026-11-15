@@ -346,3 +346,162 @@ func TestCursorConcurrentBoundaryAndAbandonment(t *testing.T) {
 		})
 	}
 }
+
+func TestCursorRotationFailureRecovery(t *testing.T) {
+	var calls byte
+	fail := false
+	a, err := newCursorAllocatorWithEntropy(func(out *[32]byte) error {
+		calls++
+		out[0] = calls
+		if fail {
+			return errors.New("entropy unavailable")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec := &cursorCodec{master: [32]byte{1}, allocator: a, makeAEAD: cursorAEAD}
+	i, c := Instance{Authority: "a"}, eventsCursor{"v", "p", "q"}
+	a.used = cursorEpochLimit - 1
+	old, err := codec.mint(i, c, 1, 1, 1)
+	if err != nil || a.used != cursorEpochLimit {
+		t.Fatal(err, a.used)
+	}
+	oldEpoch := a.epoch
+	fail = true
+	if epoch, err := a.reserve(); err == nil || epoch != ([32]byte{}) {
+		t.Fatal(epoch, err)
+	}
+	if token, err := codec.mint(i, c, 1, 1, 1); err == nil || token != "" {
+		t.Fatal(token, err)
+	}
+	if a.epoch != oldEpoch || a.used != cursorEpochLimit || calls != 3 {
+		t.Fatal(a.epoch, a.used, calls)
+	}
+	fail = false
+	fresh, err := codec.mint(i, c, 1, 1, 1)
+	if err != nil || a.used != 1 || a.epoch == oldEpoch || calls != 4 {
+		t.Fatal(err, a.epoch, a.used, calls)
+	}
+	rawOld, err := base64.RawURLEncoding.DecodeString(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawFresh, err := base64.RawURLEncoding.DecodeString(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rawOld[1:33]) != string(oldEpoch[:]) || string(rawFresh[1:33]) != string(a.epoch[:]) {
+		t.Fatal("wrong reserved epoch")
+	}
+	if p, err := codec.decode(i, c, old, 1, 1); err != nil || p != 1 || a.used != 1 {
+		t.Fatal(p, err, a.used)
+	}
+	if _, err := codec.mint(i, c, 1, 1, 1); err != nil || a.used != 2 || calls != 4 {
+		t.Fatal(err, a.used, calls)
+	}
+}
+
+func TestCursorProductionExtremeBounds(t *testing.T) {
+	i := Instance{Authority: "a"}
+	codec, err := newCursorCodec([32]byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		c    cursorContext
+		gen  uint64
+	}{
+		{"events", eventsCursor{"v", "p", "q"}, math.MaxInt64},
+		{"admin", adminCursor{"v", "a", "c"}, 0},
+		{"causes enrollment", causesCursor{viewer: "v", project: "p", conversation: "q", authority: "a", client: "c", command: "x", scope: "enrollment", ack: math.MaxInt64, head: math.MaxInt64}, 0},
+		{"causes enqueue", causesCursor{viewer: "v", project: "p", conversation: "q", authority: "a", client: "c", command: "x", scope: "enqueue", ack: math.MaxInt64, head: math.MaxInt64}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token, err := codec.mint(i, tc.c, math.MaxInt64, tc.gen, math.MaxInt64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p, err := codec.decode(i, tc.c, token, tc.gen, math.MaxInt64); err != nil || p != math.MaxInt64 {
+				t.Fatal(p, err)
+			}
+			for _, v := range []struct{ pos, gen, tail uint64 }{
+				{math.MaxInt64 + 1, tc.gen, math.MaxInt64}, {math.MaxInt64, math.MaxInt64 + 1, math.MaxInt64},
+				{math.MaxInt64, tc.gen, math.MaxInt64 + 1}, {math.MaxInt64, tc.gen, math.MaxInt64 - 1},
+			} {
+				if tok, err := codec.mint(i, tc.c, v.pos, v.gen, v.tail); err == nil || tok != "" {
+					t.Fatal(v, tok, err)
+				}
+			}
+			for _, v := range []struct{ gen, tail uint64 }{{math.MaxInt64 + 1, math.MaxInt64}, {tc.gen, math.MaxInt64 + 1}, {tc.gen, math.MaxInt64 - 1}} {
+				if p, err := codec.decode(i, tc.c, token, v.gen, v.tail); err == nil || p != 0 {
+					t.Fatal(v, p, err)
+				}
+			}
+			wrongGen := uint64(1)
+			if tc.gen != 0 {
+				wrongGen = 0
+			}
+			if tok, err := codec.mint(i, tc.c, math.MaxInt64, wrongGen, math.MaxInt64); err == nil || tok != "" {
+				t.Fatal(tok, err)
+			}
+			if p, err := codec.decode(i, tc.c, token, wrongGen, math.MaxInt64); err == nil || p != 0 {
+				t.Fatal(p, err)
+			}
+		})
+	}
+}
+
+func TestCursorCausesZeroInterval(t *testing.T) {
+	codec, err := newCursorCodec([32]byte{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"enrollment", "enqueue"} {
+		t.Run(scope, func(t *testing.T) {
+			i := Instance{Authority: "a"}
+			c := causesCursor{viewer: "v", project: "p", conversation: "q", authority: "a", client: "c", command: "x", scope: scope}
+			token, err := codec.mint(i, c, 0, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p, err := codec.decode(i, c, token, 0, 0); err != nil || p != 0 {
+				t.Fatal(p, err)
+			}
+		})
+	}
+}
+
+func TestCursorCopiedCodecSharesReservations(t *testing.T) {
+	var calls byte
+	a, err := newCursorAllocatorWithEntropy(func(out *[32]byte) error { calls++; out[0] = calls; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := cursorCodec{master: [32]byte{1}, allocator: a, makeAEAD: cursorAEAD}
+	copyCodec := original
+	if copyCodec.allocator != original.allocator {
+		t.Fatal("allocator not shared")
+	}
+	a.used = cursorEpochLimit - 2
+	i, c := Instance{Authority: "a"}, eventsCursor{"v", "p", "q"}
+	for j, codec := range []*cursorCodec{&original, &copyCodec, &original, &copyCodec} {
+		token, err := codec.mint(i, c, 1, 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantEpoch, wantUsed := byte(1), uint64(cursorEpochLimit-1+j)
+		if j >= 2 {
+			wantEpoch, wantUsed = 2, uint64(j-1)
+		}
+		if raw[1] != wantEpoch || a.epoch[0] != wantEpoch || a.used != wantUsed || calls != wantEpoch {
+			t.Fatal(j, raw[1], a.epoch, a.used, calls)
+		}
+	}
+}

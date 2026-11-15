@@ -245,7 +245,7 @@ func TestCursorAuthenticatedInvalidPlaintext(t *testing.T) {
 	for _, p := range []struct {
 		position, generation uint64
 		wrongContext         bool
-	}{{0, 1, false}, {math.MaxUint64, 1, false}, {1, math.MaxUint64, false}, {1, 1, true}} {
+	}{{0, 1, false}, {math.MaxInt64 + 1, 1, false}, {math.MaxUint64, 1, false}, {1, math.MaxInt64 + 1, false}, {1, math.MaxUint64, false}, {1, 1, true}} {
 		plain := append(number(p.position), number(p.generation)...)
 		plain = append(plain, digest[:]...)
 		if p.wrongContext {
