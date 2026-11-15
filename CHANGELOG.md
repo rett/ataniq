@@ -10,15 +10,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Add a bounded Linux/amd64 native SQLite settlement qualification harness with
+- Add a bounded Linux/amd64 SQLite default-VFS settlement qualification harness with
   child-only sync-failure injection, strict capability controls and relational
-  evidence. Production adoption requires separate directory-lifecycle qualification.
+  evidence. Production durability remains unqualified, including directory lifecycle,
+  pooling and live admission. See the qualification guide for the full scope.
 
 ### Changed
 
-- Add a README and website claims review for every release, including hotfixes,
+- Add a review of README and any website claims for every release, including hotfixes,
   to the contributing workflow.
-- Correct the README maturity overview through 0.0.5 and clarify qualification limits.
+- Correct the README maturity overview and clarify qualification limits.
 
 ## [0.0.5] - 2026-11-14
 
