@@ -18,6 +18,7 @@ import (
 
 const engineVersion = "3.54.1"
 const engineSource = "2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76"
+const verifiedProfile = "native-default;OFD;WAL;FULL=2;fsync-default;page_size=4096;max_page_count=64;busy_timeout=100;locking=NORMAL;foreign_keys=1;trusted_schema=0;query_only=0;defensive=1;DQS=0;wal_autocheckpoint=1000"
 const binding = "policy=enabled;revision=1"
 const result = "policy-enabled:1"
 const commandKey = "command-1"
@@ -62,17 +63,24 @@ func expect(ctx context.Context, c connection, query, want string) error {
 // This repeats the qualified physical-connection boundary without importing
 // production internals or using the application's schema. No VFS is replaced.
 func openFixture(ctx context.Context, path string) (connection, error) {
+	return openOwnedFixture(ctx, path, false, false)
+}
+
+func openOwnedFixture(ctx context.Context, path string, retainedOwner, existingWAL bool) (connection, error) {
 	if _, err := sqlite.OFDLocking(true); err != nil {
 		return nil, err
 	}
-	owner := os.NewFile(3, "inherited-owner")
-	defer owner.Close()
-	pinned, err := owner.Stat()
+	if !retainedOwner {
+		defer unix.Close(3)
+	}
+	var pinned unix.Stat_t
+	err := unix.Fstat(3, &pinned)
 	if err != nil {
 		return nil, err
 	}
-	named, err := os.Lstat(path)
-	if err != nil || !os.SameFile(pinned, named) {
+	var named unix.Stat_t
+	err = unix.Lstat(path, &named)
+	if err != nil || pinned.Dev != named.Dev || pinned.Ino != named.Ino {
 		return nil, errors.New("fixture ownership identity mismatch")
 	}
 	// The parent's reference keeps the same flock held after this fd is closed.
@@ -86,7 +94,17 @@ func openFixture(ctx context.Context, path string) (connection, error) {
 		return nil, err
 	}
 	c := raw.(connection)
+	// Existing lifecycle fixtures must already be WAL databases. Do not apply
+	// the no-checkpoint-on-open argument to mode conversion or zero-page main.
+	if existingWAL {
+		if err := expect(ctx, c, "PRAGMA journal_mode", "wal"); err != nil {
+			return nil, err // lifecycle caller deliberately exits without Close
+		}
+	}
 	if err := configure(ctx, c); err != nil {
+		if retainedOwner {
+			return nil, err
+		}
 		return nil, errors.Join(err, c.Close())
 	}
 	return c, nil

@@ -14,6 +14,12 @@ import (
 // to every thread and survives until process exit. There is no single-thread
 // fallback and the helper must not execute another program afterwards.
 func installSyncDenial() (string, error) {
+	return installSelectedSyncDenial(-1)
+}
+
+// A nonnegative selector denies only that retained descriptor number. The
+// caller establishes identity and controls; this filter cannot inspect inodes.
+func installSelectedSyncDenial(fd int) (string, error) {
 	filter := []unix.SockFilter{
 		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4}, // seccomp_data.arch
 		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.AUDIT_ARCH_X86_64, Jt: 1},
@@ -25,8 +31,14 @@ func installSyncDenial() (string, error) {
 		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.SYS_FSYNC, Jt: 2},
 		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.SYS_FDATASYNC, Jt: 1},
 		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
-		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EIO)},
 	}
+	if fd >= 0 {
+		filter = append(filter,
+			unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+			unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: uint32(fd), Jt: 1},
+			unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW})
+	}
+	filter = append(filter, unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EIO)})
 	program := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

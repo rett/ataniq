@@ -1,0 +1,660 @@
+{
+  "purpose": "Proposed unpublished schema2/admin-v1/cursor-v2 arithmetic; not application or crypto qualification",
+  "shared": {
+    "authority": "a",
+    "store_id_hex": "000102030405060708090a0b0c0d0e0f",
+    "incarnation_id_hex": "101112131415161718191a1b1c1d1e1f",
+    "master_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+  },
+  "derived_keys": {
+    "status-v1": "c19caaff307f31f982187ebff5ab784bc0df8eaa73c7752d1ca500c2e13fdad5",
+    "resource-v1": "c7a7120909528747f12884d6ce4f777aef76604cc42104d609480c0edee4fe27",
+    "event-id-v1": "ddf14f73712389cfda0a89d13103a5a48f171b51ee6cd430ba4c327b6f329bc3",
+    "cause-event-id-v1": "ad1171fdd125811519c3db674a528ed490cb78ddfe894e9a2ec77aff68b4da13"
+  },
+  "scalar_fields": {
+    "u1": {
+      "unframed_hex": "0000000000000001",
+      "lp_hex": "000000080000000000000001"
+    },
+    "b1": {
+      "unframed_hex": "01",
+      "lp_hex": "0000000101"
+    },
+    "optional_none": {
+      "unframed_hex": "00",
+      "lp_hex": "0000000100"
+    },
+    "optional_1": {
+      "unframed_hex": "010000000000000001",
+      "lp_hex": "00000009010000000000000001"
+    },
+    "absent": {
+      "unframed_hex": "00",
+      "lp_hex": "0000000100"
+    },
+    "match_11": {
+      "unframed_hex": "011111111111111111111111111111111111111111111111111111111111111111",
+      "lp_hex": "00000021011111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "admin": {
+    "project_create": {
+      "input": {
+        "actor": "owner",
+        "command": "p1",
+        "operation": "project.create",
+        "project": "p",
+        "name": "P",
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "70",
+        "50",
+        "00"
+      ],
+      "canonical": {
+        "length": 107,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e65720000000270310000000e70726f6a6563742e637265617465000000017000000001500000000100",
+        "sha256": "a50a4ce80b8e7b01d7c34c6f4bcf9da92db5e58af6c3abe39d54225cd17bb53e"
+      }
+    },
+    "lead_create": {
+      "input": {
+        "actor": "owner",
+        "command": "l1",
+        "operation": "lead.create",
+        "project": "p",
+        "lead": "lead",
+        "name": "Lead",
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "70",
+        "6c656164",
+        "4c656164",
+        "00"
+      ],
+      "canonical": {
+        "length": 115,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e6572000000026c310000000b6c6561642e6372656174650000000170000000046c656164000000044c6561640000000100",
+        "sha256": "a9456b7f4ade1325e156ce2883644bcfcce227bea3f7dc75a128593aea4017f4"
+      }
+    },
+    "conversation_create": {
+      "input": {
+        "actor": "owner",
+        "command": "q1",
+        "operation": "conversation.create",
+        "project": "p",
+        "conversation": "q",
+        "lead": "lead",
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "70",
+        "71",
+        "6c656164",
+        "00"
+      ],
+      "canonical": {
+        "length": 120,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e657200000002713100000013636f6e766572736174696f6e2e63726561746500000001700000000171000000046c6561640000000100",
+        "sha256": "41fb89e4a2e57f0ee394268760bd70c70baaf44c7434208318fcf4b98d110120"
+      }
+    },
+    "client_enroll_scope_0": {
+      "input": {
+        "actor": "owner",
+        "command": "enroll-c",
+        "operation": "client.enroll",
+        "client": "c",
+        "scope": 0,
+        "credential": "k",
+        "generation": 1,
+        "not_before_ms": 0,
+        "expires_ms": 1,
+        "artifact": "art",
+        "manifest_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "63",
+        "00",
+        "6b",
+        "0000000000000001",
+        "0000000000000000",
+        "0000000000000001",
+        "617274",
+        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "00"
+      ],
+      "canonical": {
+        "length": 196,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e657200000008656e726f6c6c2d630000000d636c69656e742e656e726f6c6c00000001630000000100000000016b0000000800000000000000010000000800000000000000000000000800000000000000010000000361727400000020808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f0000000100",
+        "sha256": "694723e1c26aca3e8bb2a7cee91e6df0a0f1876d74e751e62f3322ab9886a3af"
+      }
+    },
+    "client_enroll_scope_1": {
+      "input": {
+        "actor": "owner",
+        "command": "enroll-c",
+        "operation": "client.enroll",
+        "client": "c",
+        "scope": 1,
+        "credential": "k",
+        "generation": 1,
+        "not_before_ms": 0,
+        "expires_ms": 1,
+        "artifact": "art",
+        "manifest_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "63",
+        "01",
+        "6b",
+        "0000000000000001",
+        "0000000000000000",
+        "0000000000000001",
+        "617274",
+        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "00"
+      ],
+      "canonical": {
+        "length": 196,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e657200000008656e726f6c6c2d630000000d636c69656e742e656e726f6c6c00000001630000000101000000016b0000000800000000000000010000000800000000000000000000000800000000000000010000000361727400000020808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f0000000100",
+        "sha256": "41b8580ac62301413e4d03d7f183ee2dd9725258ecdc62f514185c67467d3f59"
+      }
+    },
+    "fixture_revoke_bootstrap": {
+      "input": {
+        "actor": "c",
+        "command": "revoke-owner",
+        "operation": "client.revoke",
+        "client": "owner",
+        "expected_match": "7620356f980ecf941cddb369ed7086b8202cbbc1aa57c2cc5bd146af38d44bc5"
+      },
+      "fields_hex": [
+        "6f776e6572",
+        "017620356f980ecf941cddb369ed7086b8202cbbc1aa57c2cc5bd146af38d44bc5"
+      ],
+      "canonical": {
+        "length": 143,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f00000001630000000c7265766f6b652d6f776e65720000000d636c69656e742e7265766f6b65000000056f776e657200000021017620356f980ecf941cddb369ed7086b8202cbbc1aa57c2cc5bd146af38d44bc5",
+        "sha256": "fd18e8ad1a91dd23584963085af3f053f0660314061876d6d9c373d79dd8b663"
+      }
+    },
+    "credential_rotate": {
+      "input": {
+        "actor": "owner",
+        "command": "rotate-c",
+        "operation": "credential.rotate",
+        "client": "c",
+        "credential": "k2",
+        "generation": 2,
+        "not_before_ms": 0,
+        "expires_ms": 100,
+        "artifact": "art2",
+        "manifest_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "expected_match": "82efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745"
+      },
+      "fields_hex": [
+        "63",
+        "6b32",
+        "0000000000000002",
+        "0000000000000000",
+        "0000000000000064",
+        "61727432",
+        "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "0182efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745"
+      ],
+      "canonical": {
+        "length": 229,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e657200000008726f746174652d630000001163726564656e7469616c2e726f746174650000000163000000026b32000000080000000000000002000000080000000000000000000000080000000000000064000000046172743200000020808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f000000210182efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745",
+        "sha256": "0ddabb7d39a9a9934c760a126c37a92cb1cca7a589de10e7c170b4c910515dc0"
+      }
+    },
+    "client_revoke": {
+      "input": {
+        "actor": "owner",
+        "command": "revoke-c",
+        "operation": "client.revoke",
+        "client": "c",
+        "expected_match": "82efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745"
+      },
+      "fields_hex": [
+        "63",
+        "0182efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745"
+      ],
+      "canonical": {
+        "length": 139,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e6572000000087265766f6b652d630000000d636c69656e742e7265766f6b650000000163000000210182efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745",
+        "sha256": "381283504a51c3f10e9c954441dcbd738ef601f68c23283cec91ea1530bbbe0a"
+      }
+    },
+    "permissions_match": {
+      "input": {
+        "actor": "owner",
+        "command": "perm-c",
+        "operation": "project.permissions.replace",
+        "project": "p",
+        "client": "c",
+        "mask": 2,
+        "expected_match": "31c5a89f5a0a43fd990443026eeb185775df928ad88c0668bee026eabde57743"
+      },
+      "fields_hex": [
+        "70",
+        "63",
+        "02",
+        "0131c5a89f5a0a43fd990443026eeb185775df928ad88c0668bee026eabde57743"
+      ],
+      "canonical": {
+        "length": 161,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e6572000000067065726d2d630000001b70726f6a6563742e7065726d697373696f6e732e7265706c616365000000017000000001630000000102000000210131c5a89f5a0a43fd990443026eeb185775df928ad88c0668bee026eabde57743",
+        "sha256": "61dd1f6f3ba77702060ed6db830d99c40868925b599f69b2854fe6bbe7d5259c"
+      }
+    },
+    "permissions_absent": {
+      "input": {
+        "actor": "owner",
+        "command": "perm-c",
+        "operation": "project.permissions.replace",
+        "project": "p",
+        "client": "c",
+        "mask": 2,
+        "expected": "Absent"
+      },
+      "fields_hex": [
+        "70",
+        "63",
+        "02",
+        "00"
+      ],
+      "canonical": {
+        "length": 129,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e6572000000067065726d2d630000001b70726f6a6563742e7065726d697373696f6e732e7265706c6163650000000170000000016300000001020000000100",
+        "sha256": "fda5e1df61d3ab886356d832d5430d0ef37f69b643e82dba26b6ce57e0d098b3"
+      }
+    },
+    "disposition_cancel_resolve": {
+      "input": {
+        "actor": "owner",
+        "command": "resolve-q",
+        "operation": "item.disposition",
+        "project": "p",
+        "target_authority": "a",
+        "target_client": "c",
+        "target_command": "q",
+        "expected_match": "33e6c7e7416544523991a7780643673df47d9a693c89e882b4e512c7d1adafdd",
+        "mode": "cancel_and_resolve",
+        "reason": "review",
+        "enrollment_prefix": 1,
+        "enqueue_prefix": null
+      },
+      "fields_hex": [
+        "70",
+        "61",
+        "63",
+        "71",
+        "0133e6c7e7416544523991a7780643673df47d9a693c89e882b4e512c7d1adafdd",
+        "63616e63656c5f616e645f7265736f6c7665",
+        "726576696577",
+        "010000000000000001",
+        "00"
+      ],
+      "canonical": {
+        "length": 208,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e6572000000097265736f6c76652d71000000106974656d2e646973706f736974696f6e0000000170000000016100000001630000000171000000210133e6c7e7416544523991a7780643673df47d9a693c89e882b4e512c7d1adafdd0000001263616e63656c5f616e645f7265736f6c766500000006726576696577000000090100000000000000010000000100",
+        "sha256": "4ca4378f1d9ae7d5db03b3dc57aa32f015068e42dafc9a98e4a3da8b9ed2d2c3"
+      }
+    },
+    "disposition_release": {
+      "input": {
+        "actor": "owner",
+        "command": "release-q",
+        "operation": "item.disposition",
+        "project": "p",
+        "target_authority": "a",
+        "target_client": "c",
+        "target_command": "q",
+        "expected_match": "ae1b3af8ec27b2ccc776c3aefc89c032534e182abbddcc9731618671db66d566",
+        "mode": "release",
+        "reason": "review",
+        "enrollment_prefix": null,
+        "enqueue_prefix": 1
+      },
+      "fields_hex": [
+        "70",
+        "61",
+        "63",
+        "71",
+        "01ae1b3af8ec27b2ccc776c3aefc89c032534e182abbddcc9731618671db66d566",
+        "72656c65617365",
+        "726576696577",
+        "00",
+        "010000000000000001"
+      ],
+      "canonical": {
+        "length": 197,
+        "hex": "4154414e49512d41444d494e0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000056f776e65720000000972656c656173652d71000000106974656d2e646973706f736974696f6e00000001700000000161000000016300000001710000002101ae1b3af8ec27b2ccc776c3aefc89c032534e182abbddcc9731618671db66d5660000000772656c6561736500000006726576696577000000010000000009010000000000000001",
+        "sha256": "650653331811b30315c791a921e8e7ef823c3b83d30303520c551074a1302a16"
+      }
+    }
+  },
+  "resources": {
+    "project": {
+      "input": {
+        "kind": "project",
+        "slot1": "p",
+        "slot2": "",
+        "version": 1
+      },
+      "preimage": {
+        "length": 94,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000770726f6a656374000000017000000000000000080000000000000001",
+        "sha256": "3b1dcdc0ef9f2b2b5518d66f82b1fad15d2bf1d332ac0ef95f07861fcb9b5d62"
+      },
+      "revision": "c79395018f01b76b2515d00c3c00e5b77ccc7462dcdbddb8b3216dcec5e17700"
+    },
+    "lead": {
+      "input": {
+        "kind": "lead",
+        "slot1": "p",
+        "slot2": "lead",
+        "version": 1
+      },
+      "preimage": {
+        "length": 95,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000046c6561640000000170000000046c656164000000080000000000000001",
+        "sha256": "bf17ac9d9b7b2951dca68c25c6045d7d3a68007a7079cd332d09019367386f18"
+      },
+      "revision": "d648ec77f8654002348dd70c6fed0cf67bfc61a3b6e8c6803c74d98ef0b1e0ee"
+    },
+    "conversation": {
+      "input": {
+        "kind": "conversation",
+        "slot1": "p",
+        "slot2": "q",
+        "version": 1
+      },
+      "preimage": {
+        "length": 100,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000c636f6e766572736174696f6e00000001700000000171000000080000000000000001",
+        "sha256": "8a3e48d7a2e95c3314b5b053eff1631e7184924642c44d6684519773e98e452e"
+      },
+      "revision": "d7dec8a81cb7d644f771bbab9ccfefe07e2402351a8f7d4f20b3f5a060b6194a"
+    },
+    "client": {
+      "input": {
+        "kind": "client",
+        "slot1": "c",
+        "slot2": "",
+        "version": 1
+      },
+      "preimage": {
+        "length": 93,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f00000006636c69656e74000000016300000000000000080000000000000001",
+        "sha256": "e2553fed5107b35fd641ec260529ab8bd344abfcb24a4e82e1dd141ff38d343e"
+      },
+      "revision": "82efcc3cd3284ed6be9eda8ad7825308e86d27871b25fa418a5d632791716745"
+    },
+    "permission": {
+      "input": {
+        "kind": "permission",
+        "slot1": "c",
+        "slot2": "p",
+        "version": 1
+      },
+      "preimage": {
+        "length": 98,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000a7065726d697373696f6e00000001630000000170000000080000000000000001",
+        "sha256": "b509eaa438e7dca8c69856abe43035ab165b71ce4eced93d6d33a9442692055a"
+      },
+      "revision": "31c5a89f5a0a43fd990443026eeb185775df928ad88c0668bee026eabde57743"
+    },
+    "bootstrap_client_active": {
+      "input": {
+        "kind": "client",
+        "slot1": "owner",
+        "slot2": "",
+        "version": 1
+      },
+      "preimage": {
+        "length": 97,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f00000006636c69656e74000000056f776e657200000000000000080000000000000001",
+        "sha256": "16890ba9048959502b1925d25c318514855736e539cbc5079f9d7a8624e43f5a"
+      },
+      "revision": "7620356f980ecf941cddb369ed7086b8202cbbc1aa57c2cc5bd146af38d44bc5"
+    },
+    "bootstrap_client_revoked": {
+      "input": {
+        "kind": "client",
+        "slot1": "owner",
+        "slot2": "",
+        "version": 2
+      },
+      "preimage": {
+        "length": 97,
+        "hex": "4154414e49512d5245534f555243450001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f00000006636c69656e74000000056f776e657200000000000000080000000000000002",
+        "sha256": "66eac2a9e776aff5d6b29f2f5f2c48daf3b9d2f07441774d3f36b17a2db761a8"
+      },
+      "revision": "fbc70c63c508c90020089954fff2bc485e277a2372208eec2c313d38d68cb5d2"
+    }
+  },
+  "statuses": {
+    "queued": {
+      "input": {
+        "client": "c",
+        "command": "q",
+        "project": "p",
+        "base_version": 1,
+        "base_state": "queued",
+        "is_enqueue": true,
+        "enrollment_base": 0,
+        "enrollment_ack": 0,
+        "enqueue_base": 0,
+        "enqueue_ack": 0,
+        "upper_enrollment": 0,
+        "upper_enqueue": 0,
+        "cutoff_enrollment": null,
+        "cutoff_enqueue": null
+      },
+      "preimage": {
+        "length": 228,
+        "hex": "4154414e49512d5354415455530001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000163000000017100000008000000000000000100000006717565756564000000010100000001700000000a656e726f6c6c6d656e74000000016300000000000000080000000000000000000000080000000000000000000000080000000000000000000000010000000007656e7175657565000000016300000001700000000800000000000000000000000800000000000000000000000800000000000000000000000100",
+        "sha256": "128d2f1109b0316d0357dc3788bb664e111161eafc9d16f34886b700fc563337"
+      },
+      "revision": "96796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb1"
+    },
+    "held_enrollment": {
+      "input": {
+        "client": "c",
+        "command": "q",
+        "project": "p",
+        "base_version": 1,
+        "base_state": "queued",
+        "is_enqueue": true,
+        "enrollment_base": 0,
+        "enrollment_ack": 0,
+        "enqueue_base": 0,
+        "enqueue_ack": 0,
+        "upper_enrollment": 1,
+        "upper_enqueue": 0,
+        "cutoff_enrollment": null,
+        "cutoff_enqueue": null
+      },
+      "preimage": {
+        "length": 228,
+        "hex": "4154414e49512d5354415455530001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000163000000017100000008000000000000000100000006717565756564000000010100000001700000000a656e726f6c6c6d656e74000000016300000000000000080000000000000000000000080000000000000000000000080000000000000001000000010000000007656e7175657565000000016300000001700000000800000000000000000000000800000000000000000000000800000000000000000000000100",
+        "sha256": "41fb42d8d8d0b5fcd416cc43c082d2fdf136d84b8f55ad6780a29ed862d32067"
+      },
+      "revision": "33e6c7e7416544523991a7780643673df47d9a693c89e882b4e512c7d1adafdd"
+    },
+    "held_enqueue": {
+      "input": {
+        "client": "c",
+        "command": "q",
+        "project": "p",
+        "base_version": 1,
+        "base_state": "queued",
+        "is_enqueue": true,
+        "enrollment_base": 0,
+        "enrollment_ack": 0,
+        "enqueue_base": 0,
+        "enqueue_ack": 0,
+        "upper_enrollment": 0,
+        "upper_enqueue": 1,
+        "cutoff_enrollment": null,
+        "cutoff_enqueue": null
+      },
+      "preimage": {
+        "length": 228,
+        "hex": "4154414e49512d5354415455530001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000163000000017100000008000000000000000100000006717565756564000000010100000001700000000a656e726f6c6c6d656e74000000016300000000000000080000000000000000000000080000000000000000000000080000000000000000000000010000000007656e7175657565000000016300000001700000000800000000000000000000000800000000000000000000000800000000000000010000000100",
+        "sha256": "561a0f9924b2335110b5d3fb1fba2576589fd9f41676556dbc44182f712fa40c"
+      },
+      "revision": "ae1b3af8ec27b2ccc776c3aefc89c032534e182abbddcc9731618671db66d566"
+    },
+    "cancelled_unresolved": {
+      "input": {
+        "client": "c",
+        "command": "q",
+        "project": "p",
+        "base_version": 2,
+        "base_state": "cancelled",
+        "is_enqueue": true,
+        "enrollment_base": 0,
+        "enrollment_ack": 0,
+        "enqueue_base": 0,
+        "enqueue_ack": 0,
+        "upper_enrollment": 1,
+        "upper_enqueue": 0,
+        "cutoff_enrollment": 1,
+        "cutoff_enqueue": 0
+      },
+      "preimage": {
+        "length": 247,
+        "hex": "4154414e49512d5354415455530001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000016300000001710000000800000000000000020000000963616e63656c6c6564000000010100000001700000000a656e726f6c6c6d656e740000000163000000000000000800000000000000000000000800000000000000000000000800000000000000010000000901000000000000000100000007656e71756575650000000163000000017000000008000000000000000000000008000000000000000000000008000000000000000000000009010000000000000000",
+        "sha256": "2019f2253863f15bc81b23539274ee1eb554b10ab54fce272ee3070d8a4e29ec"
+      },
+      "revision": "20a78a708a59b722cd710225fee0d79573fbd95ea0bd94cdf6cc69bed071062b"
+    },
+    "applied": {
+      "input": {
+        "client": "c",
+        "command": "q",
+        "project": null,
+        "base_version": 1,
+        "base_state": "applied",
+        "is_enqueue": false,
+        "enrollment_base": 0,
+        "enrollment_ack": 0,
+        "enqueue_base": 0,
+        "enqueue_ack": 0,
+        "upper_enrollment": null,
+        "upper_enqueue": null,
+        "cutoff_enrollment": null,
+        "cutoff_enqueue": null
+      },
+      "preimage": {
+        "length": 98,
+        "hex": "4154414e49512d5354415455530001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f00000001630000000171000000080000000000000001000000076170706c6965640000000100",
+        "sha256": "1a32fee483545604ec9f6eb61b70e2401e28957ae0aa3246fef7fac1321edf6d"
+      },
+      "revision": "728f166f82aa52bbe70b4f30279eb557d91c0107d497eca5f5c63dda88b82d70"
+    }
+  },
+  "event_ids": {
+    "public_refresh": {
+      "input": {
+        "project": "p",
+        "conversation": "q",
+        "sequence": 7,
+        "kind": "state_refresh"
+      },
+      "preimage": {
+        "length": 101,
+        "hex": "4154414e49512d4556454e542d49440001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000017000000001710000000800000000000000070000000d73746174655f72656672657368",
+        "sha256": "a630c4a1bc7feb5385a5e2cf301edc475700bdc66d876eec8ee3a58b70cfce5e"
+      },
+      "id": "0f96dc370f2b9da36e72e1b0b5c41f07bf63efddd39c7ae7c2fe61355cb38b83"
+    },
+    "cause": {
+      "input": {
+        "sequence": 7
+      },
+      "preimage": {
+        "length": 80,
+        "hex": "4154414e49512d43415553452d4556454e542d49440001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f000000080000000000000007",
+        "sha256": "6349f43cca3aca4ad58d2f5efdd8d0125d065b88ad095ca07ceb6abf8f5f1b33"
+      },
+      "id": "a55106ccab5c5dc10d01153ce8fec8dba5c3441040b884cf34024dfa88d67705"
+    }
+  },
+  "event_details": {
+    "enqueue": {
+      "fields_hex": [
+        "63",
+        "71",
+        "0000000000000001",
+        "96796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb1",
+        "717565756564"
+      ],
+      "encoded": {
+        "length": 89,
+        "hex": "4154414e49512d4556454e542d44455441494c0001000000016300000001710000000800000000000000010000002096796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb100000006717565756564",
+        "sha256": "6fbadf887c4d1c53cadc6553d00b688521155f5b7449236d634056f1d5b3c76a"
+      }
+    },
+    "cancel": {
+      "fields_hex": [
+        "63",
+        "71",
+        "20a78a708a59b722cd710225fee0d79573fbd95ea0bd94cdf6cc69bed071062b",
+        "63616e63656c6c6564"
+      ],
+      "encoded": {
+        "length": 80,
+        "hex": "4154414e49512d4556454e542d44455441494c0001000000016300000001710000002020a78a708a59b722cd710225fee0d79573fbd95ea0bd94cdf6cc69bed071062b0000000963616e63656c6c6564",
+        "sha256": "5073854a43d94982e93d96b5517cd39fac257d34d80b292a3c40286ab4da5016"
+      }
+    },
+    "disposition": {
+      "fields_hex": [
+        "63",
+        "71",
+        "96796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb1",
+        "717565756564",
+        "756e6368616e676564"
+      ],
+      "encoded": {
+        "length": 90,
+        "hex": "4154414e49512d4556454e542d44455441494c0001000000016300000001710000002096796e2fb38daf7c81e4daa100dea9c6859c7b70152ad4dbb624e3461a652eb10000000671756575656400000009756e6368616e676564",
+        "sha256": "6f84b8dc0de41b6922775e03f70c4a4a10b72b7a55b9d9d2a74fc3beea673324"
+      }
+    },
+    "empty": {
+      "fields_hex": [],
+      "encoded": {
+        "length": 21,
+        "hex": "4154414e49512d4556454e542d44455441494c0001",
+        "sha256": "06e2cd509f9ad5b377005156eaa460390ec6dfa01a2013916a88d8c565c099a4"
+      }
+    }
+  },
+  "credential": {
+    "input": {
+      "client": "c",
+      "credential": "k",
+      "generation": 1,
+      "salt_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "secret_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f"
+    },
+    "preimage": {
+      "length": 158,
+      "hex": "4154414e49512d43524544454e5449414c0001000000016100000010000102030405060708090a0b0c0d0e0f00000010101112131415161718191a1b1c1d1e1f0000000163000000016b00000008000000000000000100000020808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f00000020606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "sha256": "e0729361b4d009184d010f6ac765d92e83609fcf23d15ad89b6cf2e819c10987"
+    },
+    "verifier": "e0729361b4d009184d010f6ac765d92e83609fcf23d15ad89b6cf2e819c10987"
+  }
+}
