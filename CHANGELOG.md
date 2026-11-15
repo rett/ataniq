@@ -6,6 +6,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Extend SQLite default-VFS qualification with checked directory synchronization,
+  explicit FULL checkpoint and close evidence, descriptor-selected native sync
+  denial, and bounded lifecycle, identity-replacement and refusal controls.
+  Production lifecycle, pooling and broader durability remain unqualified.
+
 ## [0.0.6] - 2026-11-14
 
 ### Added
