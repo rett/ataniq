@@ -8,6 +8,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Add a per-release README and website claims review to the contributing workflow.
 - Correct the README maturity overview through 0.0.5 and clarify qualification limits.
 
 ## [0.0.5] - 2026-11-14
