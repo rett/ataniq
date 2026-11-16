@@ -66,20 +66,20 @@ type result struct {
 }
 
 type gate struct {
-	current                                                         identity
-	old                                                             ledger
-	data                                                            string
-	state, mode                                                     string
-	winning                                                         request
-	pending                                                         writeID
-	history                                                         map[int]writeID
-	applied                                                         map[int]int
-	sink                                                            []sinkEntry
-	trace                                                           []observation
-	refusals, steps, zero                                           int
-	lower, invalid, lostLedger, stopped, committed, opened, revoked bool
-	grant                                                           request
-	settlement                                                      ledger
+	current                                                                         identity
+	old                                                                             ledger
+	data                                                                            string
+	state, mode                                                                     string
+	winning                                                                         request
+	pending                                                                         writeID
+	history                                                                         map[int]writeID
+	applied                                                                         map[int]int
+	sink                                                                            []sinkEntry
+	trace                                                                           []observation
+	refusals, steps, zero                                                           int
+	lower, invalid, invalidBinding, lostLedger, stopped, committed, opened, revoked bool
+	grant                                                                           request
+	settlement                                                                      ledger
 }
 
 func newGate(id identity) *gate {
@@ -283,6 +283,7 @@ func (g *gate) apply(e event) bool {
 		ok = true
 	case "binding":
 		g.current.binding = e.identity.binding
+		g.invalidBinding = true
 		g.stopped = true
 		g.state = "invalid-binding"
 		ok = true
@@ -314,7 +315,7 @@ func (g *gate) result() result {
 		outcome = "LEDGER_INCOMPLETE"
 	case g.opened:
 		outcome = "MODEL_BYTE_SWITCH_CONSISTENT"
-	case g.state == "invalid-binding":
+	case g.invalidBinding:
 		outcome = "INVALID_BINDING"
 	case g.old.u > 0:
 		outcome = "UNRESOLVED"
