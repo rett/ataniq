@@ -20,17 +20,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Record the order of work and the provisional session-hosting direction in
-  the design documents. Qualification comes first and sandbox qualification
-  precedes any Ataniq-managed lead; a provider's remote control stays an
-  optional launch profile during the transition; a Codex lead is an
-  interactive `codex` in its own session. The selected session host is a
-  native per-lead holder, a systemd unit that is the sandbox parent and owns
-  the PTY and screen, with an embedded console pane and a full-terminal zoom.
-  It is provisional and unqualified pending an attended emulator spike. tmux
-  is no longer a planned backend; if the spike fails, the fallback is a
-  private tmux server inside the holder, equally unqualified. This replaces
-  the earlier tmux for diagnostics wording. Nothing here is implemented.
+- Record the order of work in the design documents. Qualification comes first
+  and sandbox qualification precedes any Ataniq-managed lead; a provider's
+  remote control stays an optional launch profile during the transition; a
+  Codex lead is an interactive `codex` in its own session. Session hosting is
+  decided by an attended spike and documented after it. Nothing here is
+  implemented.
 - Add a design document for approvals and delegation. Only the owner's direct
   words, or a delegation-chain grant whose signatures verify back to the
   owner's root key, approve anything. Grants have scope, expiry, a use count
