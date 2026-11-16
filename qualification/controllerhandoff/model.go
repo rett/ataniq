@@ -51,6 +51,8 @@ type sinkEntry struct {
 	write writeID
 	j     int
 	bytes string
+	// at is the zero-based trace position at which these bytes reached the sink.
+	at int
 }
 type ledger struct {
 	k         int
@@ -137,13 +139,13 @@ type model struct {
 
 func newModel(id identity) *model { return &model{gate: newGate(id)} }
 
-func (s *syntheticSink) record(w writeID, data string, credit int) {
+func (s *syntheticSink) record(w writeID, data string, credit, at int) {
 	n := w.end - w.start
 	j := credit
 	if j > n {
 		j = n
 	}
-	s.entries = append(s.entries, sinkEntry{write: w, j: j, bytes: data[w.start : w.start+j]})
+	s.entries = append(s.entries, sinkEntry{write: w, j: j, bytes: data[w.start : w.start+j], at: at})
 }
 func (s *syntheticSink) validates(p proof) bool {
 	for _, entry := range s.entries {
@@ -173,7 +175,7 @@ func (m *model) step(e event) bool {
 	}
 	ok := m.gate.apply(e, valid)
 	if ok && e.kind == "issue" {
-		m.sink.record(e.write, m.gate.data, e.credit)
+		m.sink.record(e.write, m.gate.data, e.credit, len(m.gate.trace)-1)
 	}
 	return ok
 }
