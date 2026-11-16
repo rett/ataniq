@@ -6,24 +6,24 @@ authentication and session context; `--client` is only the lookup target.
 `--authority` and `--id` are also lookup references, not credentials. No flag
 authenticates a caller. On every Submit, Show and exact retry, the backend must
 revalidate authentication, current permissions, exact target scope and
-disclosure. Hidden and absent results must remain nonrevealing. The backend must treat context cancellation as
-detachment from observation, never as cancellation of durable work. There are
-no automatic retries; callers retain the exact command identity for any later
-reconciliation. These ports and outputs require reconciliation with the real
-authenticated service and read ports before merge.
+disclosure. Hidden and absent results must remain nonrevealing. The backend must
+treat context cancellation as detachment from observation, never as cancellation
+of durable work. There are no automatic retries; callers retain the exact
+command identity for any later reconciliation. These ports and outputs require
+reconciliation with the real authenticated service and read ports before merge.
 
 The provisional port has `Submit(ctx, Envelope) (AdmissionReceipt, error)` and
-`Show(ctx, CommandKey) (CurrentStatus, error)`. It returns a domain error for
-an authoritative result code, `ErrUnavailable` only when it can prove the
-service was not invoked, and any other error for an unknown observation. A
-domain code does not by itself confirm admission or nonadmission, and
-`storage_unknown` remains uncertain. Joined error trees are classified as an unknown observation before domain or
-unavailable extraction. The backend must return one authoritative outcome through
-a single error chain to disclose a definitive code. This conservative rule also
-applies when joined errors repeat the same code. A pre-cancelled context is unavailable before
-invocation; cancellation after
-invocation is unknown unless the backend proves otherwise. The adapter checks
-pre-cancellation before opening or reading input, but arbitrary in-flight
+`Show(ctx, CommandKey) (CurrentStatus, error)`. It returns a domain error for an
+authoritative result code, `ErrUnavailable` only when it can prove the service
+was not invoked, and any other error for an unknown observation. A domain code
+does not by itself confirm admission or nonadmission, and `storage_unknown`
+remains uncertain. Joined error trees are classified as an unknown observation
+before domain or unavailable extraction. The backend must return one
+authoritative outcome through a single error chain to disclose a definitive
+code. This conservative rule also applies when joined errors repeat the same
+code. A pre-cancelled context is unavailable before invocation; cancellation
+after invocation is unknown unless the backend proves otherwise. The adapter
+checks pre-cancellation before opening or reading input, but arbitrary in-flight
 Reader and Writer cancellation belongs to stream composition. Receipt values are
 not proof of real durability. The admitted revision is the mutation resource's
 revision at admission, not current status. Status states are queued, held,
