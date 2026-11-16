@@ -20,7 +20,8 @@ implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.
 
 Read [runtime](runtime.md), [client protocol](client-protocol.md),
-[security](security.md), and [work model](work-model.md) together. The existing
+[security](security.md), [roles and authority](roles-and-authority.md), and
+[work model](work-model.md) together. The existing
 [federation contract](../federation.md) supplies the inter-instance boundary;
 directional grants and authoritative homes remain independent in each direction.
 Where older milestone language differs, this baseline governs the proposed
@@ -34,7 +35,9 @@ authority for its own projects; federation exchanges authorized records, not a
 shared database or automatic failover. A project owns policy, work, grants, and
 evidence. A stable lead identity belongs to a project and may retain a resumable
 conversation.
-Only leads are persistent agents. A runtime binding identifies the provider,
+Only project leads and the supervisor are persistent agents; see
+[roles and authority](roles-and-authority.md) for role assignment, handoff and
+which system owns each record. A runtime binding identifies the provider,
 credentials, adapter and workspace boundary; an execution epoch identifies one
 incarnation of that binding. Neither a process ID nor a transport connection is
 a durable identity. A runtime may host multiple conversations only when its

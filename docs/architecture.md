@@ -33,6 +33,15 @@ Codex is the first live provider target, subject to version-specific capability
 and security evidence; qargi integration is limited to qualified public APIs.
 Unknown or disconnected state must remain explicit.
 
+## Roles and authority split
+
+Each project has exactly one assigned lead, and one supervisory lead spans
+projects. Ataniq owns processes, sessions, lifecycle, attach, messaging,
+scheduling and escalation routing; qargi owns development tasks, the dependency
+graph, member dispatch, evidence, review, merge and release gates, and
+campaigns. Each record has one authoritative system. See
+[roles and authority](design/roles-and-authority.md).
+
 ## Authentication and authority
 
 Remote MCP access uses OAuth protected-resource discovery and scoped token

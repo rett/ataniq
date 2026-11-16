@@ -20,6 +20,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Add a design document for roles and the authority split. Each project has
+  exactly one assigned lead and a single supervisor spans projects; both are
+  assignable roles separate from agent identity, provider, model and effort.
+  A role changes hands only by a verified handoff (reconcile, exclusive
+  ownership, fence the old holder) that grants no authority, and the
+  supervisor never acts on its own project's gates. Ataniq owns processes,
+  sessions, lifecycle, attach, messaging, scheduling and escalation routing,
+  qargi owns development tasks, evidence and gates, and each record has one
+  authoritative system. Specification only; nothing is implemented.
 - Record the owner-approved interface direction in the design documents: a
   terminal-first Bubble Tea console is the primary operator client, a web
   console with the same information architecture comes later, a shared typed
