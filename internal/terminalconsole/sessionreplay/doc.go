@@ -12,7 +12,10 @@
 //
 // A recording is UTF-8 text in JSON Lines form: one JSON object per line,
 // every line ended by "\n", no blank lines, no unknown fields. The first line
-// is the header, the rest are records in time order.
+// is the header, the rest are records in time order. The text is canonical:
+// keys in lower case in the order of the examples below, no repeated key, no
+// white space, no "\r". Encode writes it and Parse accepts nothing else, so
+// a recording has one text.
 //
 //	{"format":"ataniq-session-replay","version":1,"cols":100,"rows":30}
 //	{"t":0,"k":"out","d":"G1tIG1sySg=="}

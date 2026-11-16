@@ -3,6 +3,7 @@ package sessionreplay_test
 import (
 	"bytes"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -117,6 +118,27 @@ func TestParseRejects(t *testing.T) {
 		"header size too big":  strings.Replace(hdr+end, `"cols":10`, `"cols":501`, 1),
 		"records only":         end,
 	}
+	// The text must be the one Encode writes: JSON that means the same
+	// recording in another spelling is not accepted.
+	canonical := map[string]string{
+		"upper case key":       hdr + `{"T":5,"k":"end","status":0}` + "\n",
+		"mixed case key":       hdr + `{"t":5,"K":"end","Status":0}` + "\n",
+		"upper case header":    strings.Replace(hdr, `"cols"`, `"COLS"`, 1) + end,
+		"upper case format":    strings.Replace(hdr, `"format"`, `"FORMAT"`, 1) + end,
+		"repeated key":         hdr + `{"t":900,"t":5,"k":"end","status":0}` + "\n",
+		"repeated header key":  strings.Replace(hdr, `"cols":10`, `"cols":9,"cols":10`, 1) + end,
+		"CRLF":                 strings.ReplaceAll(hdr+end, "\n", "\r\n"),
+		"leading spaces":       hdr + "  " + end,
+		"space after colon":    hdr + `{"t": 5,"k":"end","status":0}` + "\n",
+		"trailing space":       hdr + `{"t":5,"k":"end","status":0} ` + "\n",
+		"null status":          hdr + `{"t":5,"k":"end","status":null}` + "\n",
+		"key order":            hdr + `{"k":"end","t":5,"status":0}` + "\n",
+		"escaped key":          hdr + `{"\u0074":5,"k":"end","status":0}` + "\n",
+		"leading spaces first": "  " + hdr + end,
+	}
+	for name, text := range canonical {
+		cases[name] = text
+	}
 	for name, text := range cases {
 		if _, err := sessionreplay.Parse([]byte(text)); err == nil {
 			t.Errorf("%s: accepted", name)
@@ -133,6 +155,28 @@ func TestParseErrorNamesTheLine(t *testing.T) {
 	_, err := sessionreplay.Parse([]byte(text))
 	if err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestParseNamesTheLineThatIsNotCanonical(t *testing.T) {
+	hdr := `{"format":"ataniq-session-replay","version":1,"cols":10,"rows":5}` + "\n"
+	_, err := sessionreplay.Parse([]byte(hdr + `{"t":1,"k":"out","d":"YQ=="}` + "\n" + `{"T":5,"k":"end","status":0}` + "\n"))
+	if err == nil || !strings.Contains(err.Error(), "line 3") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestParseRefusesNewlinesBeforeSplittingThem(t *testing.T) {
+	data := bytes.Repeat([]byte{'\n'}, sessionreplay.MaxBytes)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := sessionreplay.Parse(data)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	if used := after.TotalAlloc - before.TotalAlloc; used > 1<<20 {
+		t.Fatalf("refusing %d newlines allocated %d bytes", len(data), used)
 	}
 }
 

@@ -80,10 +80,12 @@ func Parse(data []byte) (*Recording, error) {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		return nil, errors.New("recording does not end with a newline")
 	}
-	lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
-	if len(lines) > MaxEvents+1 {
+	// Count before splitting, so that input made of newlines is refused
+	// before it makes a slice of lines.
+	if bytes.Count(data, []byte{'\n'}) > MaxEvents+1 {
 		return nil, fmt.Errorf("more than %d records", MaxEvents)
 	}
+	lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
 	var h headerLine
 	if err := strictDecode(lines[0], &h); err != nil {
 		return nil, fmt.Errorf("line 1: %w", err)
@@ -105,7 +107,29 @@ func Parse(data []byte) (*Recording, error) {
 	if err := rec.Validate(); err != nil {
 		return nil, err
 	}
+	// encoding/json ignores the case of keys, keeps the last of a repeated
+	// key and skips white space. Accept only the text Encode writes, so that
+	// one recording has one text.
+	canon, err := Encode(rec)
+	if err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(canon, data) {
+		return nil, fmt.Errorf("line %d: not in the documented form", firstDifference(canon, data))
+	}
 	return rec, nil
+}
+
+// firstDifference returns the number of the first line in which a and b
+// differ, counting from 1.
+func firstDifference(a, b []byte) int {
+	al, bl := bytes.Split(a, []byte{'\n'}), bytes.Split(b, []byte{'\n'})
+	for i := 0; i < len(al) && i < len(bl); i++ {
+		if !bytes.Equal(al[i], bl[i]) {
+			return i + 1
+		}
+	}
+	return min(len(al), len(bl))
 }
 
 func strictDecode(line []byte, v any) error {
