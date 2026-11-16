@@ -195,14 +195,14 @@ func TestDoctorModuleChecks(t *testing.T) {
 [ "$1" != mod ] || [ "$*" = "mod verify" ] || exit 12
 case "$1" in
 version) printf 'go version go`+pin+` linux/amd64\n';;
-`+tc.failing+`) printf 'diagnostic for example.test/mod\n' >&2; exit 1;;
+`+tc.failing+`) printf 'go: downloading example.test/mod v1.0.0\ndiagnostic for example.test/mod\n' >&2; exit 1;;
 list|mod) :;;
 *) exit 10;;
 esac
 `)
 		out, err := runHelper(t, dir, path, "doctor")
 		failed := tc.failing != "none"
-		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  diagnostic for example.test/mod\n") != failed {
+		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  diagnostic for example.test/mod\n") != failed || strings.Contains(out, "go: downloading") {
 			t.Fatalf("%s: %s %v", tc.failing, out, err)
 		}
 	}
