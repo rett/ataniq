@@ -20,9 +20,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `make doctor` verifies offline that every module dependency is in the module
-  cache and matches `go.sum`, and reports a missing or modified module as a
-  failure to fix with `make bootstrap`.
+- `make doctor` checks offline that every package and test loads from the
+  module cache with hashes matching `go.sum`, and that cached modules are
+  unchanged since download. It prints the Go diagnostic naming the failing
+  module. A missing or mismatched module is fixed with `make bootstrap`; a
+  modified one must first be removed from the module cache.
 
 ## [0.0.8] - 2026-11-15
 
