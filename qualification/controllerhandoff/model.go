@@ -51,6 +51,8 @@ type sinkEntry struct {
 	write writeID
 	j     int
 	bytes string
+	// proofOnly is an injected proof-source record, not physical sink bytes.
+	proofOnly bool
 	// at is the zero-based trace position at which these bytes reached the sink.
 	at int
 }
