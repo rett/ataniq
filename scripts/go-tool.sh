@@ -77,7 +77,7 @@ case "${1-}" in
           show_diag "$diag"
           printf 'fail: cached module dependencies modified; remove the named module from the module cache (its files are read-only; run chmod -R u+w on it first, or use go clean -modcache), then run make bootstrap\n'; status=1
         else
-          printf 'ok: module dependencies available and unmodified offline\n'
+          printf 'ok: module dependencies available and unmodified offline (go mod verify does not cover the directory replacements in third_party/patched; git protects those copies)\n'
         fi
       else
         printf 'fail: selected Go %s unavailable or mismatched; run make bootstrap\n' "$version"; status=1
