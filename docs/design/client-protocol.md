@@ -57,8 +57,12 @@ counts and cached artifacts so they do not reveal hidden records.
 
 ## Approvals and revocation
 
+Who may approve is defined in [approvals](approvals.md): the owner's direct
+words or an owner-rooted delegation-chain grant, never a relayed message. The
+sections below describe the command-level record of a decision.
+
 An approval identifies an immutable command, action, target revision, payload
-and execution epoch, designated approver or role, expiry and current state.
+and execution epoch, the approving owner decision or grant, expiry and current state.
 Decision submission is authorized
 against current policy and atomically resolves an outstanding approval once.
 The receipt records decision and actor; duplicate identical commands replay
@@ -66,8 +70,7 @@ their receipt, while a competing or stale decision is rejected with the
 resolved state if the caller may see it. Provider connection-bound ceremonies
 must be qualified; if a native path can bypass arbitration, that path cannot
 claim Ataniq approval enforcement. A stale provider-specific ceremony cannot
-authorize a changed action. The owner may approve their own request when the
-designated policy permits it. Other clients may observe only within scope.
+authorize a changed action. Other clients may observe only within scope.
 
 An affirmative decision grants one use under current policy. At the durable
 dispatch-prepared transition, atomically link and consume the grant with the

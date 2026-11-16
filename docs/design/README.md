@@ -20,8 +20,8 @@ implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.
 
 Read [runtime](runtime.md), [client protocol](client-protocol.md),
-[security](security.md), [roles and authority](roles-and-authority.md), and
-[work model](work-model.md) together. The existing
+[security](security.md), [roles and authority](roles-and-authority.md),
+[approvals](approvals.md), and [work model](work-model.md) together. The existing
 [federation contract](../federation.md) supplies the inter-instance boundary;
 directional grants and authoritative homes remain independent in each direction.
 Where older milestone language differs, this baseline governs the proposed
@@ -59,8 +59,9 @@ origin and authority alongside external identifiers and revisions. Projections
 may be cached, but never become a second writable authority for a record. Each
 operation checks the authenticated client, project, resource, action and current
 policy; possession of an ID is not permission. The owner enrolls separately
-scoped, revocable clients. Designated approvers or roles decide specific
-operations; connection to a conversation grants no approval authority.
+scoped, revocable clients. Only the owner's direct words or an owner-rooted delegation-chain grant
+approve an operation, as specified in [approvals](approvals.md); connection to
+a conversation grants no approval authority.
 
 ## Evidence and validation
 

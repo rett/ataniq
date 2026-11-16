@@ -22,7 +22,7 @@ qualified separation, and its approvals follow the rules below like any other.
 The supervisor acts only within gates the owner has delegated, and never on
 its own project's gates. It does not run another project's lead-only commands;
 it can send that project's lead a grant-backed approval, which the gate
-verifies (see the approvals contract).
+verifies (see [approvals](approvals.md)).
 
 ## Handoff
 

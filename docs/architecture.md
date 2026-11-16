@@ -54,6 +54,10 @@ Tool annotations and pack descriptions are not permission grants. Do not pass
 an Ataniq access token through to an upstream provider. Credential references
 are resolved under separate, scoped provider credentials.
 
+Only the owner's direct words, or a delegation-chain grant whose signatures
+verify back to the owner's root key, approve anything; see
+[approvals](design/approvals.md).
+
 Session launch, cancellation, pack installation, project adoption, and release
 are separate permissions. Ataniq must preserve qargi's verification, review,
 and release authority rather than interpreting terminal output as approval.
