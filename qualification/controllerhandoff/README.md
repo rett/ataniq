@@ -8,9 +8,9 @@ The 36 frozen rows were then executed. All 32 lawful rows (L01–L32,
 `ASSERT_PASS`) and four mutated-evidence controls (C01–C04, expected
 `ASSERT_VIOLATION`) matched every frozen expectation, including ledger, ranges,
 refusals, dispositions, checkpoints, outcome, sink bytes, assertion and violation index.
-Results bind the exact reviewed executable source. Comments in the test files
-and this README were corrected afterwards without changing executable
-statements, so their file hashes differ from the packet in comments only.
+Results bind the exact reviewed executable source. Comments in the test files and prose in this README were corrected afterwards
+without changing executable statements, so the test file hashes differ from
+the packet in comments only.
 Source changes require their own review and checks. The initial frozen-row run
 excluded the five supplemental verifier checks (`TestPartialEvidenceVerifier`).
 Those checks received separate desk review for first execution at the
