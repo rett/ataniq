@@ -20,6 +20,40 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Record the order of work in the design documents. Qualification comes first
+  and sandbox qualification precedes any Ataniq-managed lead; a provider's
+  remote control stays an optional launch profile during the transition; a
+  Codex lead is an interactive `codex` in its own session. Session hosting is
+  decided by an attended spike and documented after it. Nothing here is
+  implemented.
+- Add a design document for approvals and delegation. Only the owner's direct
+  words, or a delegation-chain grant whose signatures verify back to the
+  owner's root key, approve anything. Grants have scope, expiry, a use count
+  (single use for a sub-grant), revocation and audit; a message is never the
+  authority, though a signed grant may travel by message and the gate verifies
+  it; an owner channel is unreachable by leads; and relayed direction is never
+  an approval. Delegation grants are kept in one qargi store and are honoured
+  for qargi gates only in the first version. The designated-approver wording in
+  the design baseline and client protocol is corrected to match. Specification
+  only; nothing is implemented.
+- Add a design document for roles and the authority split. Each project has
+  exactly one assigned lead and a single supervisor spans projects; both are
+  assignable roles separate from agent identity, provider, model and effort.
+  A role changes hands only by a verified handoff (reconcile, exclusive
+  ownership, fence the old holder) that grants no authority. If any step
+  fails the outgoing holder keeps the role and an unresolvable outcome goes
+  to the owner; who verifies each step is left to the handoff contract. The
+  supervisor never acts on its own project's gates. Ataniq owns processes,
+  sessions, lifecycle, attach, messaging, scheduling and escalation routing,
+  qargi owns development tasks, evidence and gates, and each record has one
+  authoritative system. Specification only; nothing is implemented.
+- Record the owner-approved interface direction in the design documents: a
+  terminal-first Bubble Tea console is the primary operator client, a web
+  console with the same information architecture comes later, a shared typed
+  command and event contract sits under both with MCP as the agent-facing
+  surface, dark is the default theme, and unavailable or unqualified controls
+  are shown with their reason. This replaces the earlier assistant-ui web
+  console first direction. Only the fixture console is implemented.
 - `make doctor` checks offline that every package and test for the host
   platform loads from the module cache with hashes matching `go.sum`, and that cached modules are
   unchanged since download. It prints the Go diagnostic, which names the

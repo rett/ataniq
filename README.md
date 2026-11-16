@@ -45,16 +45,19 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 
 These decisions describe the planned design.
 
-- Go for the service and CLI, with native terminal access prioritized. Later
-  browser interface options remain an open design choice.
-- Unified Ataniq clients with a shared command and event contract; MCP remains
-  an agent-facing integration and federation surface.
+- Go for the service and CLI. A terminal-first Bubble Tea console is the
+  primary operator client. A web console with the same information architecture
+  comes later.
+- A shared typed command and event contract sits under both consoles and the
+  CLI; MCP is the agent-facing integration and federation surface.
+- Dark is the default theme. A control that is unavailable or unqualified is
+  shown with its reason.
 - OAuth authorization for remote MCP access and mTLS support for trusted
   service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
-- A proposed Ataniq runner and systemd lifecycle on Linux, subject to sandbox
-  qualification.
+- Session hosting is decided by an attended spike, and its design is written
+  after the spike. Sandbox qualification comes before any Ataniq-managed lead.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between

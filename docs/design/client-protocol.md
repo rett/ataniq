@@ -1,12 +1,14 @@
 # Client command and event protocol
 
-Status: proposed, not implemented. The console and CLI use one versioned
-Ataniq contract and authorization path. WebSocket is primary; HTTP commands
-plus resumable SSE are the fallback. Transport changes do not change authority,
-capabilities, command identities or durable cursor semantics. One authoritative
-provider binding is multiplexed to authorized Ataniq clients. Optional native
-coexistence requires direct, version-specific provider evidence; no second
-connection, terminal scraping or routing workaround creates support.
+Status: proposed, not implemented. The terminal console, the later web console
+and the CLI use one versioned typed Ataniq command and event contract and
+authorization path. The first client transport is an owner decision still to
+be made; WebSocket, and HTTP commands plus resumable SSE, are candidates.
+Transport changes do not change authority, capabilities, command identities or
+durable cursor semantics. One authoritative provider binding is
+multiplexed to authorized Ataniq clients. Optional native coexistence requires
+direct, version-specific provider evidence; no second connection, terminal
+scraping or routing workaround creates support.
 
 ## Commands
 
@@ -57,17 +59,22 @@ counts and cached artifacts so they do not reveal hidden records.
 
 ## Approvals and revocation
 
+Who may approve is defined in [approvals](approvals.md): the owner's direct
+words or an owner-rooted delegation-chain grant, never a relayed message. The
+sections below describe the command-level record of a decision. An owner
+decision arrives on the owner channel defined there, not on a transport a lead
+can reach.
+
 An approval identifies an immutable command, action, target revision, payload
-and execution epoch, designated approver or role, expiry and current state.
-Decision submission is authorized
-against current policy and atomically resolves an outstanding approval once.
+and execution epoch, the approving owner decision or grant, expiry and current
+state. Decision submission is authorized against current policy and atomically
+resolves an outstanding approval once.
 The receipt records decision and actor; duplicate identical commands replay
 their receipt, while a competing or stale decision is rejected with the
 resolved state if the caller may see it. Provider connection-bound ceremonies
 must be qualified; if a native path can bypass arbitration, that path cannot
 claim Ataniq approval enforcement. A stale provider-specific ceremony cannot
-authorize a changed action. The owner may approve their own request when the
-designated policy permits it. Other clients may observe only within scope.
+authorize a changed action. Other clients may observe only within scope.
 
 An affirmative decision grants one use under current policy. At the durable
 dispatch-prepared transition, atomically link and consume the grant with the
@@ -96,9 +103,11 @@ Use two enrolled clients, a deterministic journal and both transports:
    gap; duplicate event IDs are applied once.
 3. Resume an expired cursor: expect reset required, then a fresh snapshot;
    never report a successful empty replay as complete history.
-4. Race two decisions by designated and undesignated clients. Only the
-   designated decision may resolve the approval; a later decision is stale.
-   Race two eligible decisions and assert exactly one durable resolution.
+4. Race a decision backed by the owner's direct words or a verifying grant
+   against one backed by neither. Only the backed decision may resolve the
+   approval; a later decision is stale. A grant-backed decision applies only
+   once grants are honoured for that gate. Race two backed decisions and
+   assert exactly one durable resolution.
 5. Revoke a client during an active subscription. Assert subsequent protected
    events, commands and artifact reads are denied, including after reconnect.
 6. Saturate a bounded subscriber buffer. Assert explicit disconnection and
