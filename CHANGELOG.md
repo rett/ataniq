@@ -25,8 +25,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   session" in every state; nothing typed reaches a process. Tab cycles the
   panes and Enter on the session focuses it. In session focus every key goes
   to the session, `q` and Ctrl+C included, except the return key (Ctrl+\ by
-  default, read from the byte 0x1c and from `CSI 92;5u`; without the kitty
-  keyboard protocol Ctrl+4 sends the same byte and returns too) and F12, which zooms the pane to the window in
+  default, read from the byte 0x1c and from `CSI 92;5u`; set with
+  `--return-key ctrl+KEY`; without the kitty keyboard protocol Ctrl+4 sends the
+  same byte and returns too) and F12, which zooms the pane to the window in
   either focus. Ctrl+Enter is never bound. A recording that ends shows its last
   screen, dimmed, under a banner with the exit status or "unknown", saying that
   the terminal stream ended, not necessarily the agent; any key returns to the
@@ -34,8 +35,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   attach, send, interrupt, detach), all unavailable, each with its reason. The
   console asks the outer terminal for mode 2027 at start, also over SSH, and
   asks for mouse reporting and focus events only in session focus and only
-  when the session asked. Still unqualified: use over SSH, a live session and
-  any live control.
+  when the session asked. `--recording NAME` picks a fixture recording and
+  `--linger DURATION` (default 30s) keeps the session open after its last
+  output so the keys can be tried. Still unqualified: use over SSH, a live
+  session and any live control.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
