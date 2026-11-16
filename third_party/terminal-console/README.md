@@ -23,8 +23,9 @@ directories map to these module versions:
 - `terminfo`: github.com/xo/terminfo v1.0.0
 - `x-sync`: golang.org/x/sync v0.24.0
 
-The console's terminal emulator, github.com/charmbracelet/x/vt v0.1.0, is
-carried in patched form in `third_party/patched/x-vt`, with its own notice.
+github.com/charmbracelet/x/vt v0.1.0, the terminal emulator the console's
+session pane is built on, is carried in patched form in
+`third_party/patched/x-vt`, with its own notice.
 
 The console also links golang.org/x/sys v0.49.0, whose notices are already
 preserved in `third_party/modernc-sqlite/x-sys`.

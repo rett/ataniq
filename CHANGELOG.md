@@ -24,12 +24,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `charmbracelet/x/vt` v0.1.0 and `charmbracelet/x/ansi` v0.11.9 under
   `third_party/patched`, selected by `replace` lines in `go.mod`. The patches
   keep a grapheme cluster whole when it arrives in two writes, and keep a
-  UTF-8 character such as U+2733 from ending a window title early; the
-  terminal emulator `x/vt` is a new dependency. Each copy has a `NOTICE.md`; it
-  is dropped once an upstream release contains the fixes. `go mod verify` does
-  not cover directory replacements, so the doctor says so and git protects the
-  copies, and `make test` now also runs their own tests (`make test-patched`
-  runs only those; it covers x/vt and x/ansi with its parser, kitty and iterm2
+  UTF-8 character such as U+2733 from ending a window title early; `x/vt`,
+  the terminal emulator the console's session pane is built on, is a new
+  dependency. Each copy has a `NOTICE.md`; it is dropped once an upstream
+  release contains the fixes. `go mod verify` does not cover directory
+  replacements, so the doctor says so and git protects the copies, and
+  `make test` now also runs their own tests (`make test-patched` runs only
+  those; it covers x/vt and x/ansi with its parser, kitty and iterm2
   subpackages, not the sixel subpackage, which needs an uncached module).
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's

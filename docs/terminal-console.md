@@ -44,14 +44,14 @@ If doctor reports a modified module, or a checksum mismatch that restoring
 `go.sum` does not fix, run `chmod -R u+w` on the named module directory in the
 module cache, remove it and run `make bootstrap`.
 
-The terminal emulator inside the console is `github.com/charmbracelet/x/vt`
-v0.1.0. It and `github.com/charmbracelet/x/ansi` v0.11.9, which Bubble Tea and
-ultraviolet also use, are carried in this repository as patched copies in
-`third_party/patched/x-vt` and `third_party/patched/x-ansi`, and `go.mod`
-replaces both modules with those directories. The patches keep a grapheme
-cluster (a ZWJ emoji family, for example) whole when it arrives in two writes,
-and keep a UTF-8 character such as U+2733 inside a window title or other
-string sequence from ending it early. Each directory has a `NOTICE.md` with the
+`github.com/charmbracelet/x/vt` v0.1.0 is the terminal emulator the console's
+session pane is built on. It and `github.com/charmbracelet/x/ansi` v0.11.9,
+which Bubble Tea and ultraviolet also use, are carried in this repository as
+patched copies in `third_party/patched/x-vt` and `third_party/patched/x-ansi`,
+and `go.mod` replaces both modules with those directories. The patches keep a
+grapheme cluster (a ZWJ emoji family, for example) whole when it arrives in two
+writes, and keep a UTF-8 character such as U+2733 inside a window title or
+other string sequence from ending it early. Each directory has a `NOTICE.md` with the
 upstream version, the patches and the condition for removing it: drop the copy
 and its `replace` line once an upstream release contains the fixes.
 
