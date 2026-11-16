@@ -1,0 +1,7 @@
+{"format":"ataniq-session-replay","version":1,"cols":100,"rows":30}
+{"t":0,"k":"out","d":"G1syShtbSHJlc2l6ZSB0ZXN0DQpzaXplIGJlZm9yZSB0aGUgcmVzaXplDQo="}
+{"t":300,"k":"resize","cols":80,"rows":24}
+{"t":340,"k":"out","d":"G1syShtbSHNpemUgYWZ0ZXIgdGhlIHJlc2l6ZQ0K"}
+{"t":700,"k":"resize","cols":120,"rows":40}
+{"t":740,"k":"out","d":"c2l6ZSBhZnRlciB0aGUgc2Vjb25kIHJlc2l6ZQ0K"}
+{"t":1000,"k":"end","status":0}
