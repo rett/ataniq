@@ -31,8 +31,10 @@ func TestMalformedBackendRepliesAreUnknown(t *testing.T) {
 		"other command id": func(r *appmodel.AdmissionReceipt) { r.Command.CommandID = "cmd-2" },
 		"invalid key":      func(r *appmodel.AdmissionReceipt) { r.Command.EnrolledClientID = "" },
 		"invalid revision": func(r *appmodel.AdmissionReceipt) { r.AdmittedRevision = "r 2" },
-		"long revision":    func(r *appmodel.AdmissionReceipt) { r.AdmittedRevision = appmodel.Revision(strings.Repeat("r", appmodel.MaxIDBytes+1)) },
-		"empty cursor":     func(r *appmodel.AdmissionReceipt) { r.Cursor = "" },
+		"long revision": func(r *appmodel.AdmissionReceipt) {
+			r.AdmittedRevision = appmodel.Revision(strings.Repeat("r", appmodel.MaxIDBytes+1))
+		},
+		"empty cursor": func(r *appmodel.AdmissionReceipt) { r.Cursor = "" },
 	} {
 		r := good
 		mutate(&r)
@@ -48,9 +50,9 @@ func TestMalformedBackendRepliesAreUnknown(t *testing.T) {
 
 	k := appmodel.CommandKey{Authority: "a", EnrolledClientID: "other", CommandID: "cmd-1"}
 	for name, s := range map[string]appmodel.CurrentStatus{
-		"other client":  {Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "x", CommandID: "cmd-1"}, Revision: "r3", State: appmodel.Held},
+		"other client":   {Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "x", CommandID: "cmd-1"}, Revision: "r3", State: appmodel.Held},
 		"empty revision": {Command: k, State: appmodel.Held},
-		"unknown state": {Command: k, Revision: "r3", State: "running"},
+		"unknown state":  {Command: k, Revision: "r3", State: "running"},
 	} {
 		f := &replyFake{status: s}
 		if exit, out := run2(f, show, ""); exit != 1 || f.calls != 1 || out != unknownLine {
