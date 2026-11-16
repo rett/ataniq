@@ -31,6 +31,35 @@ func TestEncodeIsTheDocumentedText(t *testing.T) {
 	}
 }
 
+func TestEndWithoutStatusIsUnknown(t *testing.T) {
+	const text = `{"format":"ataniq-session-replay","version":1,"cols":10,"rows":5}
+{"t":1,"k":"out","d":"YQ=="}
+{"t":5,"k":"end"}
+`
+	rec, err := sessionreplay.Parse([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := rec.Events[len(rec.Events)-1]
+	if end.Kind != sessionreplay.KindEnd || end.StatusKnown || end.Status != 0 {
+		t.Fatalf("end %+v", end)
+	}
+	enc, err := sessionreplay.Encode(rec)
+	if err != nil || string(enc) != text {
+		t.Fatalf("encoded %q (%v)", enc, err)
+	}
+	// A known status of zero is not the same as an unknown one.
+	rec.Events[len(rec.Events)-1].StatusKnown = true
+	enc, err = sessionreplay.Encode(rec)
+	if err != nil || !strings.Contains(string(enc), `{"t":5,"k":"end","status":0}`) {
+		t.Fatalf("encoded %q (%v)", enc, err)
+	}
+	back, err := sessionreplay.Parse(enc)
+	if err != nil || !back.Events[len(back.Events)-1].StatusKnown {
+		t.Fatalf("round trip: %+v (%v)", back, err)
+	}
+}
+
 func TestParseRoundTrip(t *testing.T) {
 	enc, err := sessionreplay.Encode(sample())
 	if err != nil {
@@ -79,7 +108,7 @@ func TestParseRejects(t *testing.T) {
 		"empty data":           hdr + `{"t":1,"k":"out","d":""}` + "\n" + end,
 		"resize without rows":  hdr + `{"t":1,"k":"resize","cols":4}` + "\n" + end,
 		"resize too large":     hdr + `{"t":1,"k":"resize","cols":501,"rows":4}` + "\n" + end,
-		"end without status":   hdr + `{"t":1,"k":"end"}` + "\n",
+		"end with size":        hdr + `{"t":1,"k":"end","cols":4,"rows":4}` + "\n",
 		"end with data":        hdr + `{"t":1,"k":"end","status":0,"d":"YQ=="}` + "\n",
 		"status too large":     hdr + `{"t":1,"k":"end","status":256}` + "\n",
 		"no end":               hdr + `{"t":1,"k":"out","d":"YQ=="}` + "\n",

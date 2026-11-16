@@ -284,17 +284,27 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 		}
 	}
 
-	// A normal end and a non-zero end; every recording ends once.
+	// A normal end, a non-zero end and an end with no known status; every
+	// recording ends once.
 	status := map[string]int{}
+	known := map[string]bool{}
 	for name, r := range fx {
 		last := r.Events[len(r.Events)-1]
 		if last.Kind != sessionreplay.KindEnd {
 			t.Errorf("%s: last record is %v", name, last.Kind)
 		}
-		status[name] = last.Status
+		status[name], known[name] = last.Status, last.StatusKnown
 	}
-	if status["exit-zero.jsonl"] != 0 || status["exit-nonzero.jsonl"] == 0 {
-		t.Errorf("end statuses %v", status)
+	if status["exit-zero.jsonl"] != 0 || !known["exit-zero.jsonl"] ||
+		status["exit-nonzero.jsonl"] == 0 || !known["exit-nonzero.jsonl"] {
+		t.Errorf("end statuses %v, known %v", status, known)
+	}
+	if known["exit-unknown.jsonl"] || status["exit-unknown.jsonl"] != 0 {
+		t.Errorf("exit-unknown: status %d, known %v", status["exit-unknown.jsonl"], known["exit-unknown.jsonl"])
+	}
+	unknown, _ := sessionreplay.FixtureBytes("exit-unknown.jsonl")
+	if !bytes.HasSuffix(unknown, []byte("\"k\":\"end\"}\n")) {
+		t.Errorf("exit-unknown: the end record is not a bare end: %q", unknown)
 	}
 }
 
@@ -389,7 +399,7 @@ var (
 	dotted     = regexp.MustCompile(`[A-Za-z0-9-]\.[A-Za-z0-9-]`)
 	windowsAbs = regexp.MustCompile(`[A-Za-z]:[\\/]`)
 	oscBody    = regexp.MustCompile(`^(0|2|10|11|12);`)
-	recordLine = regexp.MustCompile(`^\{"t":\d+,"k":"(out","d":"[A-Za-z0-9+/]+=*"|resize","cols":\d+,"rows":\d+|end","status":\d+)\}$`)
+	recordLine = regexp.MustCompile(`^\{"t":\d+,"k":"(out","d":"[A-Za-z0-9+/]+=*"|resize","cols":\d+,"rows":\d+|end"(,"status":\d+)?)\}$`)
 	privatePfx = []string{"/home/", "/users/", "/root", "/tmp", "/var", "/etc", "/mnt", "/opt", "/usr"}
 )
 

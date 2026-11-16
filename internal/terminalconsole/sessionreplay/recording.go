@@ -48,14 +48,17 @@ func (k Kind) String() string {
 
 // Event is one record of a recording. At is the time since the start of the
 // session, in whole milliseconds. Data is set for KindOutput, Cols and Rows
-// for KindResize and Status for KindEnd; the other fields stay zero.
+// for KindResize and Status and StatusKnown for KindEnd; the other fields stay
+// zero. A KindEnd with StatusKnown false is a session that ended with no known
+// exit status, and its Status is zero.
 type Event struct {
-	At     time.Duration
-	Kind   Kind
-	Data   []byte
-	Cols   int
-	Rows   int
-	Status int
+	At          time.Duration
+	Kind        Kind
+	Data        []byte
+	Cols        int
+	Rows        int
+	Status      int
+	StatusKnown bool
 }
 
 // Recording is a whole session: the starting terminal size and the events in
@@ -118,17 +121,20 @@ func (e Event) validate() error {
 		if len(e.Data) == 0 || len(e.Data) > MaxChunk {
 			return fmt.Errorf("output chunk of %d bytes outside 1 to %d", len(e.Data), MaxChunk)
 		}
-		if e.Cols != 0 || e.Rows != 0 || e.Status != 0 {
+		if e.Cols != 0 || e.Rows != 0 || e.Status != 0 || e.StatusKnown {
 			return errors.New("output record with resize or status fields")
 		}
 	case KindResize:
 		if err := checkSize(e.Cols, e.Rows); err != nil {
 			return err
 		}
-		if len(e.Data) != 0 || e.Status != 0 {
+		if len(e.Data) != 0 || e.Status != 0 || e.StatusKnown {
 			return errors.New("resize record with data or status")
 		}
 	case KindEnd:
+		if !e.StatusKnown && e.Status != 0 {
+			return fmt.Errorf("exit status %d without StatusKnown", e.Status)
+		}
 		if e.Status < 0 || e.Status > 255 {
 			return fmt.Errorf("exit status %d outside 0 to 255", e.Status)
 		}

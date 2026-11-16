@@ -3,10 +3,10 @@
 //
 // It is the replay half of the provisional fixture console: a recording holds
 // the bytes a session wrote to its terminal, with the time of each write, an
-// optional resize and the end of the session with its exit status. The package
-// has no terminal emulator and no clock of its own. The caller owns both: it
-// feeds the chunks the player returns to its emulator, and it advances the
-// player with a time value, as the cockpit does with tea.Tick.
+// optional resize and the end of the session with its exit status, when known.
+// The package has no terminal emulator and no clock of its own. The caller owns
+// both: it feeds the chunks the player returns to its emulator, and it
+// advances the player with a time value, as the cockpit does with tea.Tick.
 //
 // # Recording format
 //
@@ -26,8 +26,10 @@
 //     padding. A chunk is not text: it may end inside an escape sequence or
 //     inside a UTF-8 sequence, and the next chunk continues it.
 //   - "resize": "cols" and "rows" are the new terminal size.
-//   - "end": "status" is the exit status of the session, 0 to 255. It is the
-//     last record and there is exactly one.
+//   - "end": "status" is the exit status of the session, 0 to 255. It is
+//     optional: a record without "status" means the session ended with no
+//     known exit status. An end record is the last record and there is
+//     exactly one.
 //
 // A recording is output only. It has no record for input, notes or anything
 // else, and a parser rejects what it does not know. Times never decrease;

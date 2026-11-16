@@ -17,7 +17,7 @@ func timed() *sessionreplay.Recording {
 		{At: 100 * ms, Kind: sessionreplay.KindResize, Cols: 40, Rows: 10},
 		{At: 100 * ms, Kind: sessionreplay.KindOutput, Data: []byte("two")},
 		{At: 350 * ms, Kind: sessionreplay.KindOutput, Data: []byte("three")},
-		{At: 500 * ms, Kind: sessionreplay.KindEnd, Status: 7},
+		{At: 500 * ms, Kind: sessionreplay.KindEnd, Status: 7, StatusKnown: true},
 	}}
 }
 
@@ -90,7 +90,7 @@ func TestAdvanceOneBigJump(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 	last := evs[len(evs)-1]
-	if last.Kind != sessionreplay.KindEnd || last.Status != 7 {
+	if last.Kind != sessionreplay.KindEnd || last.Status != 7 || !last.StatusKnown {
 		t.Fatalf("last %+v", last)
 	}
 	if evs[2].Cols != 40 || evs[2].Rows != 10 {

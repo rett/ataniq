@@ -79,6 +79,8 @@ const (
 	textStepOne     = "step 1 ok"
 	textStepTwo     = "step 2 failed"
 	textStatus      = "exit status 3"
+	textUnknown     = "unknown status test"
+	textLostStatus  = "no exit status was kept"
 )
 
 var known = []string{
@@ -92,6 +94,7 @@ var known = []string{
 	textResize, textBefore, textAfter, textAfterTwo,
 	textColour, textRed, textGreen, textBoldUnder, text256, textTrue, textFinished,
 	textFailure, textStepOne, textStepTwo, textStatus,
+	textUnknown, textLostStatus,
 }
 
 // KnownText returns every text and OSC body the generator can put in a
@@ -129,8 +132,15 @@ func (s *script) resize(ms, cols, rows int) {
 	s.rec.Events = append(s.rec.Events, sessionreplay.Event{At: at(ms), Kind: sessionreplay.KindResize, Cols: cols, Rows: rows})
 }
 
+// end adds the end record with a known exit status.
 func (s *script) end(ms, status int) *sessionreplay.Recording {
-	s.rec.Events = append(s.rec.Events, sessionreplay.Event{At: at(ms), Kind: sessionreplay.KindEnd, Status: status})
+	s.rec.Events = append(s.rec.Events, sessionreplay.Event{At: at(ms), Kind: sessionreplay.KindEnd, Status: status, StatusKnown: true})
+	return &s.rec
+}
+
+// endUnknown adds the end record of a session with no known exit status.
+func (s *script) endUnknown(ms int) *sessionreplay.Recording {
+	s.rec.Events = append(s.rec.Events, sessionreplay.Event{At: at(ms), Kind: sessionreplay.KindEnd})
 	return &s.rec
 }
 
@@ -149,6 +159,7 @@ func Files() ([]File, error) {
 		"resize.jsonl":       resize(),
 		"exit-zero.jsonl":    exitZero(),
 		"exit-nonzero.jsonl": exitNonzero(),
+		"exit-unknown.jsonl": exitUnknown(),
 	}
 	names := make([]string, 0, len(recs))
 	for n := range recs {
@@ -290,4 +301,12 @@ func exitNonzero() *sessionreplay.Recording {
 	s.out(120, "\x1b[31m"+textStepTwo+"\x1b[0m\r\n")
 	s.out(180, textStatus+"\r\n")
 	return s.end(400, 3)
+}
+
+func exitUnknown() *sessionreplay.Recording {
+	s := newScript(80, 24)
+	s.out(0, clear+textUnknown+"\r\n")
+	s.out(60, textStepOne+"\r\n")
+	s.out(120, textLostStatus+"\r\n")
+	return s.endUnknown(300)
 }

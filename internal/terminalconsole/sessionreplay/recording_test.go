@@ -13,7 +13,7 @@ func sample() *sessionreplay.Recording {
 		{At: 0, Kind: sessionreplay.KindOutput, Data: []byte("a")},
 		{At: 250 * time.Millisecond, Kind: sessionreplay.KindResize, Cols: 80, Rows: 24},
 		{At: 250 * time.Millisecond, Kind: sessionreplay.KindOutput, Data: []byte("\x1b[")},
-		{At: 900 * time.Millisecond, Kind: sessionreplay.KindEnd, Status: 3},
+		{At: 900 * time.Millisecond, Kind: sessionreplay.KindEnd, Status: 3, StatusKnown: true},
 	}}
 }
 
@@ -45,6 +45,9 @@ func TestValidateRejects(t *testing.T) {
 		"resize with data":    func(r *sessionreplay.Recording) { r.Events[1].Data = []byte("x") },
 		"status over 255":     func(r *sessionreplay.Recording) { r.Events[3].Status = 256 },
 		"negative status":     func(r *sessionreplay.Recording) { r.Events[3].Status = -1 },
+		"status not known":    func(r *sessionreplay.Recording) { r.Events[3].StatusKnown = false },
+		"output status known": func(r *sessionreplay.Recording) { r.Events[0].StatusKnown = true },
+		"resize status known": func(r *sessionreplay.Recording) { r.Events[1].StatusKnown = true },
 		"end with data":       func(r *sessionreplay.Recording) { r.Events[3].Data = []byte("x") },
 		"unknown kind":        func(r *sessionreplay.Recording) { r.Events[0].Kind = 0 },
 	}

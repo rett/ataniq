@@ -56,8 +56,10 @@ func Encode(r *Recording) ([]byte, error) {
 			c, rw := e.Cols, e.Rows
 			rec.Cols, rec.Rows = &c, &rw
 		case KindEnd:
-			s := e.Status
-			rec.Status = &s
+			if e.StatusKnown {
+				s := e.Status
+				rec.Status = &s
+			}
 		}
 		if err := line(rec); err != nil {
 			return nil, err
@@ -146,10 +148,13 @@ func parseRecord(line []byte) (Event, error) {
 		}
 		e.Kind, e.Cols, e.Rows = KindResize, *r.Cols, *r.Rows
 	case "end":
-		if r.Status == nil || r.D != nil || r.Cols != nil || r.Rows != nil {
-			return Event{}, errors.New(`an "end" record has "status" and nothing else`)
+		if r.D != nil || r.Cols != nil || r.Rows != nil {
+			return Event{}, errors.New(`an "end" record has at most "status"`)
 		}
-		e.Kind, e.Status = KindEnd, *r.Status
+		e.Kind = KindEnd
+		if r.Status != nil {
+			e.Status, e.StatusKnown = *r.Status, true
+		}
 	default:
 		return Event{}, fmt.Errorf("unknown kind %q", r.K)
 	}
