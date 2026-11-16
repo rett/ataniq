@@ -9,8 +9,9 @@
 // test keeps it that way.
 // The bytes it is given are untrusted, so its size and everything it keeps
 // are bounded, and nothing the session writes reaches the outer terminal
-// except as cells: the pane draws cells, never escape sequences, and drops
-// hyperlinks from them.
+// except as cells: the pane draws cells, never escape sequences, drops
+// hyperlinks from them and draws no cell content longer than
+// [MaxCellBytes].
 //
 // The pane is push-only. The caller writes output with [Pane.Write], sets the
 // size with [Pane.Resize] and reports the end of the session with [Pane.End].
