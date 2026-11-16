@@ -39,7 +39,11 @@ live control remain unqualified.
 The console uses the Go module `charm.land/bubbletea/v2` v2.1.1 and its
 transitive module dependencies. `make bootstrap` downloads them and
 `make doctor` checks offline that they load for the host platform from the
-module cache with
-hashes matching `go.sum` and are unchanged since download. Their
+module cache with hashes matching `go.sum` and are unchanged since download.
+If doctor reports a modified module, or a checksum mismatch that restoring
+`go.sum` does not fix, run `chmod -R u+w` on the named module directory in the
+module cache, remove it and run `make bootstrap`.
+
+The modules'
 [upstream license notices](../third_party/terminal-console/README.md) are kept
 with the source.
