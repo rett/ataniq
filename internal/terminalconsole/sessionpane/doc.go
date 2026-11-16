@@ -16,6 +16,8 @@
 // size with [Pane.Resize] and reports the end of the session with [Pane.End].
 // The pane has no stream of its own and knows nothing of where the bytes come
 // from: in the fixture console a replay player feeds it, later a holder will.
+// Input going the other way (keys, paste, mouse) leaves through an
+// [InputSink] that the caller supplies.
 //
 // # Replies
 //

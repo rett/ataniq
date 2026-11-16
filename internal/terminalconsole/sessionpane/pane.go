@@ -23,8 +23,8 @@ const (
 // works: the emulator's writer waits until the whole answer has been read.
 const replyBuffer = 4096
 
-// Options configures a pane. The zero value is a fixture pane: replies are
-// discarded.
+// Options configures a pane. The zero value is a fixture pane: replies and
+// input are discarded.
 type Options struct {
 	// Replies receives each chunk of the emulator's answers to the session's
 	// queries, as a copy the receiver may keep. It is called on the pane's
@@ -42,6 +42,10 @@ type Options struct {
 	// nil colour is reported as the matching NeutralColours entry.
 	Colours Colours
 
+	// Input receives the keys, paste and mouse events meant for the session.
+	// Nil discards them.
+	Input InputSink
+
 	// Clock returns the current time, for the synchronized output time
 	// limit. Nil means time.Now; tests inject their own.
 	Clock func() time.Time
@@ -54,6 +58,7 @@ type Pane struct {
 	// callbacks it makes, which run inside emu.Write and emu.Resize.
 	emu   *vt.Emulator
 	clock func() time.Time
+	input InputSink
 
 	cols, rows int
 	graphemes  bool
@@ -84,10 +89,14 @@ func New(cols, rows int, o Options) *Pane {
 		rows:      rows,
 		graphemes: o.GraphemeWidths,
 		clock:     o.Clock,
+		input:     o.Input,
 		drained:   make(chan struct{}),
 	}
 	if p.clock == nil {
 		p.clock = time.Now
+	}
+	if p.input == nil {
+		p.input = Discard{}
 	}
 	// The pane keeps no scrollback; one line is the smallest x/vt accepts.
 	p.emu.SetScrollbackSize(1)
