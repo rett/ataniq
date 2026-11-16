@@ -272,6 +272,50 @@ func TestSyncFrameRepeatedSetKeepsTheFrameAndTheLimit(t *testing.T) {
 	}
 }
 
+// TestSyncFrameModeReport checks the answer to DECRQM for mode 2026: reset
+// before the first set, so that a session that asks first will use it, then
+// set or reset as the session left it. Other modes are still answered by
+// x/vt.
+func TestSyncFrameModeReport(t *testing.T) {
+	const query = "\x1b[?2026$p"
+	var r replies
+	p := newPane(t, 20, 3, sessionpane.Options{Replies: r.add, Clock: newClock().Now})
+	for _, c := range []struct{ write, want string }{
+		{"", "\x1b[?2026;2$y"},
+		{"\x1b[?2026h", "\x1b[?2026;1$y"},
+		{"\x1b[?2026h", "\x1b[?2026;1$y"},
+		{"\x1b[?2026l", "\x1b[?2026;2$y"},
+		{"\x1b[?2026h\x1bc", "\x1b[?2026;2$y"},
+		{"\x1b[?1049;2026h", "\x1b[?2026;1$y"},
+		{"\x1b[?2026;1049l", "\x1b[?2026;2$y"},
+	} {
+		r.reset()
+		p.Write([]byte(c.write + query + "\x1b[6n"))
+		r.await(t, "R")
+		if got := r.String(); got != c.want+"\x1b[1;1R" {
+			t.Fatalf("after %q: replies %q, want %q", c.write, got, c.want)
+		}
+	}
+	// Split anywhere, the query is answered once.
+	q := []byte("\x1b[?2026h" + query)
+	for k := 0; k <= len(q); k++ {
+		r.reset()
+		p.Write(q[:k])
+		p.Write(q[k:])
+		p.Write([]byte("\x1b[?2026l\x1b[6n"))
+		r.await(t, "R")
+		if got := r.String(); got != "\x1b[?2026;1$y\x1b[1;1R" {
+			t.Fatalf("split at %d: replies %q", k, got)
+		}
+	}
+	r.reset()
+	p.Write([]byte("\x1b[?2004$p\x1b[?1000h\x1b[?1000$p\x1b[2026$p\x1b[?9999$p\x1b[6n"))
+	r.await(t, "R")
+	if got, want := r.String(), "\x1b[?2004;2$y\x1b[?1000;1$y\x1b[2026;0$y\x1b[?9999;0$y\x1b[1;1R"; got != want {
+		t.Fatalf("other modes: replies %q, want %q", got, want)
+	}
+}
+
 func TestSyncFrameFullResetEndsIt(t *testing.T) {
 	p := newPane(t, 20, 3, sessionpane.Options{Clock: newClock().Now})
 	p.Write([]byte("before\x1b[?2026h\rduring\x1bcafter"))

@@ -23,7 +23,9 @@
 // # Replies
 //
 // A session can query its terminal (device attributes, colours, cursor
-// position, modes). The emulator writes its answers to a pipe, which one
+// position, modes). The pane answers the query for synchronized output
+// (mode 2026), which it follows itself; the emulator answers the rest. The
+// answers go to a pipe, which one
 // goroutine owned by the pane drains from [New] to [Pane.Close]. The answers
 // are discarded unless [Options.Replies] is set, so in the fixture console no
 // reply goes anywhere; a holder can later set it to send them to the session.

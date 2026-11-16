@@ -74,9 +74,10 @@ type Pane struct {
 	statusKnown bool
 	closed      bool
 
-	// pipe is the writing end of the emulator's reply pipe. Closing it ends
-	// the drain goroutine, which then closes drained.
-	pipe    io.Closer
+	// pipe is the writing end of the emulator's reply pipe, where the pane's
+	// own handlers write their answers too, under mu. Closing it ends the
+	// drain goroutine, which then closes drained.
+	pipe    io.WriteCloser
 	drained chan struct{}
 }
 
@@ -103,16 +104,16 @@ func New(cols, rows int, o Options) *Pane {
 	// for the main screen. The patched x/vt keeps none for the alternate
 	// screen.
 	p.emu.SetScrollbackSize(1)
-	p.install()
-	p.setColours(o.Colours)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read
 	// checks on the drain goroutine without a lock.
-	pipe, ok := p.emu.InputPipe().(io.Closer)
+	pipe, ok := p.emu.InputPipe().(io.WriteCloser)
 	if !ok {
 		panic("sessionpane: the emulator's reply pipe cannot be closed")
 	}
 	p.pipe = pipe
+	p.install()
+	p.setColours(o.Colours)
 	go drain(p.emu, o.Replies, p.drained)
 	return p
 }
