@@ -191,6 +191,8 @@ func TestDoctorModuleChecks(t *testing.T) {
 		{"mod", "fail: cached module dependencies modified"},
 	} {
 		path := fakePath(t, `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] && [ "$GOSUMDB" = off ] || exit 8
+[ "$1" != list ] || [ "$*" = "list -deps -test ./..." ] || exit 11
+[ "$1" != mod ] || [ "$*" = "mod verify" ] || exit 12
 case "$1" in
 version) printf 'go version go`+pin+` linux/amd64\n';;
 `+tc.failing+`) printf 'diagnostic for example.test/mod\n' >&2; exit 1;;
@@ -200,7 +202,7 @@ esac
 `)
 		out, err := runHelper(t, dir, path, "doctor")
 		failed := tc.failing != "none"
-		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "diagnostic for example.test/mod") != failed {
+		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  diagnostic for example.test/mod\n") != failed {
 			t.Fatalf("%s: %s %v", tc.failing, out, err)
 		}
 	}
