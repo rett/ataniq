@@ -31,7 +31,7 @@ func (f *fake) Submit(_ context.Context, e appmodel.Envelope) (appmodel.Admissio
 	if cursor == "" {
 		cursor = "c1"
 	}
-	return appmodel.AdmissionReceipt{Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "trusted", CommandID: e.CommandID}, AdmittedRevision: "r2", Cursor: cursor}, f.err
+	return appmodel.AdmissionReceipt{Command: appmodel.CommandKey{Authority: "a", EnrolledClientID: "trusted", CommandID: e.CommandID}, Digest: [32]byte{1}, AdmittedRevision: "r2", Cursor: cursor}, f.err
 }
 func (f *fake) Show(_ context.Context, k appmodel.CommandKey) (appmodel.CurrentStatus, error) {
 	f.calls++

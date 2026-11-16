@@ -35,6 +35,7 @@ func TestMalformedBackendRepliesAreUnknown(t *testing.T) {
 			r.AdmittedRevision = appmodel.Revision(strings.Repeat("r", appmodel.MaxIDBytes+1))
 		},
 		"empty cursor": func(r *appmodel.AdmissionReceipt) { r.Cursor = "" },
+		"zero digest":  func(r *appmodel.AdmissionReceipt) { r.Digest = [32]byte{} },
 	} {
 		r := good
 		mutate(&r)

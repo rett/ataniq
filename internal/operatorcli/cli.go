@@ -185,7 +185,7 @@ func Run(ctx context.Context, backend Backend, args []string, in io.Reader, out 
 		if err != nil {
 			return backendError(out, err)
 		}
-		if !validKey(r.Command) || r.Command.CommandID != e.CommandID || !validID(string(r.AdmittedRevision)) || len(r.Cursor) == 0 || len(r.Cursor) > maxCursorBytes || !utf8.ValidString(r.Cursor) {
+		if !validKey(r.Command) || r.Command.CommandID != e.CommandID || r.Digest == ([32]byte{}) || !validID(string(r.AdmittedRevision)) || len(r.Cursor) == 0 || len(r.Cursor) > maxCursorBytes || !utf8.ValidString(r.Cursor) {
 			return failure(out, "observation_error", "unknown", 1)
 		}
 		return emit(out, result{Kind: "receipt", Command: wireKey(r.Command), Digest: hex.EncodeToString(r.Digest[:]), AdmittedRevision: r.AdmittedRevision, Cursor: r.Cursor}, 0)
