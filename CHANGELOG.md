@@ -55,13 +55,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are shown with their reason. This replaces the earlier assistant-ui web
   console first direction. Only the fixture console is implemented.
 - `make doctor` checks offline that every package and test for the host
-  platform loads from the module cache with hashes matching `go.sum`, and that cached modules are
-  unchanged since download. It prints the Go diagnostic, which names the
-  failing module when the failure is in a module, and leaves out Go's
-  `go: downloading` lines, which are misleading offline. A missing module is fixed
-  with `make bootstrap`; a checksum mismatch by restoring `go.sum` or removing
-  the named module from the module cache; a modified module must first be
-  removed from the module cache.
+  platform loads from the module cache with hashes matching `go.sum`, and that
+  cached modules are unchanged since download. It prints the Go diagnostic,
+  which names the failing module when the failure is in a module, and leaves
+  out Go's `go: downloading` lines, which are misleading offline. A missing
+  module is fixed with `make bootstrap`. For a checksum mismatch, restore
+  `go.sum`, or run `chmod -R u+w` on the named module directory in the module
+  cache, remove it and run `make bootstrap`. A modified module is handled the
+  same way: its files are read-only, so run `chmod -R u+w` on it first, remove
+  it, then run `make bootstrap`. Any other load error is in the package named
+  in the diagnostic and is fixed there.
 
 ## [0.0.8] - 2026-11-15
 
