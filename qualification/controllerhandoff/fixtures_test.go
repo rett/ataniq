@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// Frozen analytical expectations: these tests must not be executed before
-// independent review of this exact source and completion of the verifier.
+// Frozen analytical expectations, independently reviewed and checked by the
+// bounded synthetic run. Results apply to the reviewed executable source.
 type frozenRange struct{ start, end int }
 type frozenWant struct {
 	old                      ledger

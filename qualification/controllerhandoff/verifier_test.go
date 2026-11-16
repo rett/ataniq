@@ -2,8 +2,9 @@ package controllerhandoff
 
 import "testing"
 
-// These are small evidence checks, not the frozen scenario fixtures. They are
-// source-only until the exact-source review permits execution.
+// These supplemental checks use hand-built verifier evidence; they are not
+// the frozen scenario fixtures. Separate desk review precedes their first
+// execution at the whole-feature offline checkpoint.
 func TestPartialEvidenceVerifier(t *testing.T) {
 	id := identity{binding: "synthetic", controller: "a", context: "c", gi: 1, generation: 1, azg: 1}
 	r := request{id: "r", identity: id, successor: "b", mode: "hold"}
