@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ataniq/internal/terminalconsole/sessionreplay"
 	"ataniq/internal/terminalconsole/sessionreplay/fixturegen"
@@ -148,11 +149,11 @@ func endsMidSequence(cs []string) bool {
 	return false
 }
 
-// cutsCodePoint reports whether a chunk ends inside the UTF-8 bytes of a code
-// point that the next chunk finishes.
-func cutsCodePoint(a, b string) bool {
+// cutRune reports whether a chunk ends inside the UTF-8 bytes of a code point
+// that the next chunk finishes, and returns that code point.
+func cutRune(a, b string) (rune, bool) {
 	if a == "" || b == "" || b[0]&0xc0 != 0x80 {
-		return false
+		return 0, false
 	}
 	for n := 1; n <= 3 && n <= len(a); n++ {
 		c := a[len(a)-n]
@@ -168,10 +169,52 @@ func cutsCodePoint(a, b string) bool {
 		case c&0xe0 == 0xc0:
 			need = 2
 		}
-		return n < need
+		if n >= need || len(b) < need-n {
+			return 0, false
+		}
+		r, size := utf8.DecodeRuneInString(a[len(a)-n:] + b[:need-n])
+		return r, size == need && r != utf8.RuneError
+	}
+	return 0, false
+}
+
+// cutRunes returns the code points that a chunk boundary of the recording
+// cuts, in order.
+func cutRunes(rec *sessionreplay.Recording) []rune {
+	var rs []rune
+	cs := chunks(rec)
+	for i := 0; i+1 < len(cs); i++ {
+		if r, ok := cutRune(cs[i], cs[i+1]); ok {
+			rs = append(rs, r)
+		}
+	}
+	return rs
+}
+
+func hasRune(rs []rune, want func(rune) bool) bool {
+	for _, r := range rs {
+		if want(r) {
+			return true
+		}
 	}
 	return false
 }
+
+// continuesClose reports whether chunk c finishes a mode-set sequence that
+// the output before it left cut, as "26l" finishes "\x1b[?20".
+func continuesClose(before, c string) bool {
+	const off = "\x1b[?2026l"
+	for n := 1; n < len(off); n++ {
+		if strings.HasSuffix(before, off[:n]) && strings.HasPrefix(c, off[n:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// heldLimit is how long the console waits for the end of a synchronized frame.
+// The fixture holds one open for longer.
+const heldLimit = 150 * time.Millisecond
 
 // The fixtures exist to exercise these things; a change to the generator that
 // loses one fails here.
@@ -189,24 +232,29 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 	if count(rec, "\U0001F468"+zwj+"\U0001F469"+zwj+"\U0001F467"+zwj+"\U0001F466") != 1 {
 		t.Error("zwj: no family sequence")
 	}
-	var afterZWJ, beforeZWJ, insideCodePoint bool
+	var afterZWJ, beforeZWJ bool
 	cs := chunks(rec)
 	for i := 0; i+1 < len(cs); i++ {
 		afterZWJ = afterZWJ || strings.HasSuffix(cs[i], zwj)
 		beforeZWJ = beforeZWJ || strings.HasPrefix(cs[i+1], zwj)
-		insideCodePoint = insideCodePoint || cutsCodePoint(cs[i], cs[i+1])
 	}
-	if !afterZWJ || !beforeZWJ || !insideCodePoint {
-		t.Errorf("zwj: split after %v, before %v, inside a code point %v", afterZWJ, beforeZWJ, insideCodePoint)
+	cut := cutRunes(rec)
+	insideZWJ := hasRune(cut, func(r rune) bool { return r == 0x200d })
+	insideEmoji := hasRune(cut, func(r rune) bool { return r >= 0x1f000 })
+	if !afterZWJ || !beforeZWJ || !insideEmoji || !insideZWJ {
+		t.Errorf("zwj: split after %v, before %v, inside an emoji %v, inside a ZWJ %v",
+			afterZWJ, beforeZWJ, insideEmoji, insideZWJ)
 	}
 
-	// OSC 0 and 2 titles with the two marks, with both terminators, and one
-	// title split across chunks.
+	// OSC 0 and 2 titles with the two marks, each mark with both terminators,
+	// and titles split across chunks, between the bytes of the marks as well.
 	rec = fx["title.jsonl"]
 	s := string(stream(rec))
 	for _, w := range []string{
 		"\x1b]0;\u2733 synthetic task" + bel,
+		"\x1b]2;\u2733 synthetic star" + st,
 		"\x1b]2;\u2705 synthetic task done" + st,
+		"\x1b]0;\u2705 synthetic check" + bel,
 		"\x1b]2;\u2733 \u2705 both marks" + st,
 	} {
 		if !strings.Contains(s, w) {
@@ -215,6 +263,10 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 	}
 	if !endsMidSequence(chunks(rec)) {
 		t.Error("title: no title split across chunks")
+	}
+	cut = cutRunes(rec)
+	if !hasRune(cut, func(r rune) bool { return r == 0x2733 }) || !hasRune(cut, func(r rune) bool { return r == 0x2705 }) {
+		t.Errorf("title: code points cut inside a mark: %U, want U+2733 and U+2705", cut)
 	}
 
 	// Mode sets: each is set and reset, and some are cut at a chunk boundary.
@@ -228,25 +280,46 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 		t.Error("modes: no chunk ends inside a sequence")
 	}
 
-	// Synchronized frames: balanced, a chunk boundary inside a frame, the
-	// mode sequence itself cut, and whole several-frame chunks.
+	// Synchronized frames: balanced, chunk boundaries between pieces of frame
+	// content in several frames (the cut inside the closing sequence does not
+	// count), the mode sequence itself cut, whole several-frame chunks, and a
+	// frame held open longer than heldLimit.
 	rec = fx["sync-frames.jsonl"]
-	if on, off := count(rec, "\x1b[?2026h"), count(rec, "\x1b[?2026l"); on != off || on < 8 {
+	const (
+		syncOn  = "\x1b[?2026h"
+		syncOff = "\x1b[?2026l"
+	)
+	if on, off := count(rec, syncOn), count(rec, syncOff); on != off || on < 8 {
 		t.Errorf("sync: %d begins, %d ends", on, off)
 	}
-	var inFrame, multi bool
-	open := false
-	for _, c := range chunks(rec) {
-		if open {
-			inFrame = true
+	var multi bool
+	var held, openedAt time.Duration
+	cutFrames := map[int]bool{}
+	var seen string
+	for _, e := range rec.Events {
+		if e.Kind != sessionreplay.KindOutput {
+			continue
 		}
-		if strings.Count(c, "\x1b[?2026h") >= 2 && strings.Count(c, "\x1b[?2026l") >= 2 {
+		c := string(e.Data)
+		was := strings.LastIndex(seen, syncOn) > strings.LastIndex(seen, syncOff)
+		if was && !continuesClose(seen, c) {
+			cutFrames[strings.Count(seen, syncOn)] = true
+		}
+		if strings.Count(c, syncOn) >= 2 && strings.Count(c, syncOff) >= 2 {
 			multi = true
 		}
-		open = strings.LastIndex(c, "\x1b[?2026h") > strings.LastIndex(c, "\x1b[?2026l")
+		seen += c
+		now := strings.LastIndex(seen, syncOn) > strings.LastIndex(seen, syncOff)
+		if now && strings.Contains(c, syncOn) {
+			openedAt = e.At
+		}
+		if was && !now && e.At-openedAt > held {
+			held = e.At - openedAt
+		}
 	}
-	if !inFrame || !multi || !endsMidSequence(chunks(rec)) {
-		t.Errorf("sync: chunk inside a frame %v, multi-frame chunk %v", inFrame, multi)
+	if len(cutFrames) < 3 || !multi || !endsMidSequence(chunks(rec)) || held <= heldLimit {
+		t.Errorf("sync: frames with a boundary in their content %d (want 3), multi-frame chunk %v, longest hold %v (want over %v)",
+			len(cutFrames), multi, held, heldLimit)
 	}
 
 	// Colour queries with both terminators, device attribute queries, and a
@@ -259,6 +332,15 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 	}
 	if !endsMidSequence(chunks(rec)) {
 		t.Error("queries: no query split across chunks")
+	}
+
+	// An OSC 52 clipboard write, with a made-up body.
+	rec = fx["clipboard.jsonl"]
+	if count(rec, "\x1b]"+osc52Body+bel) != 1 {
+		t.Errorf("clipboard: no OSC 52 write of %q", osc52Body)
+	}
+	if b, err := base64.StdEncoding.Strict().DecodeString(strings.TrimPrefix(osc52Body, "52;c;")); err != nil || string(b) != "synthetic clipboard text" {
+		t.Errorf("clipboard: the body decodes to %q (%v)", b, err)
 	}
 
 	// A resize to another size, with output after it.
@@ -400,6 +482,10 @@ var (
 	windowsAbs = regexp.MustCompile(`[A-Za-z]:[\\/]`)
 	oscBody    = regexp.MustCompile(`^(0|2|10|11|12);`)
 	recordLine = regexp.MustCompile(`^\{"t":\d+,"k":"(out","d":"[A-Za-z0-9+/]+=*"|resize","cols":\d+,"rows":\d+|end"(,"status":\d+)?)\}$`)
+	// osc52Body is the one OSC 52 write the fixtures hold: the base64 of a
+	// made-up text. The privacy check lets this body and no other past its
+	// shape rules.
+	osc52Body  = "52;c;c3ludGhldGljIGNsaXBib2FyZCB0ZXh0"
 	privatePfx = []string{"/home/", "/users/", "/root", "/tmp", "/var", "/etc", "/mnt", "/opt", "/usr"}
 )
 
@@ -474,6 +560,9 @@ func TestFixturesHoldNoPathsOrHosts(t *testing.T) {
 			}
 		}
 		for _, s := range osc {
+			if s == osc52Body {
+				continue
+			}
 			// An OSC body is a number, a semicolon and a title or "?".
 			if !oscBody.MatchString(s) {
 				t.Errorf("%s: OSC %q is not a title or colour query", name, s)

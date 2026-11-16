@@ -44,6 +44,8 @@ const (
 	oscTitleDone    = "2;✅ synthetic task done"
 	oscTitleSplit   = "0;✳ split title"
 	oscTitleBoth    = "2;✳ ✅ both marks"
+	oscTitleCheck   = "0;✅ synthetic check"
+	oscTitleStar    = "2;✳ synthetic star"
 	textMode        = "mode test"
 	textModeOn      = "modes enabled"
 	textModeOff     = "modes restored"
@@ -54,6 +56,8 @@ const (
 	textFrameTwoB   = "frame two, line b"
 	textFrameThreeA = "frame three, line a"
 	textFrameThreeB = "frame three, line b"
+	textHeldA       = "held frame, line a"
+	textHeldB       = "held frame, line b"
 	textMultiOne    = "multi frame 1"
 	textMultiTwo    = "multi frame 2"
 	textMultiThree  = "multi frame 3"
@@ -79,6 +83,9 @@ const (
 	textStepOne     = "step 1 ok"
 	textStepTwo     = "step 2 failed"
 	textStatus      = "exit status 3"
+	textClipboard   = "clipboard test"
+	textClipboardOK = "clipboard write is blocked"
+	oscClipboard    = "52;c;c3ludGhldGljIGNsaXBib2FyZCB0ZXh0" // base64 of "synthetic clipboard text"
 	textUnknown     = "unknown status test"
 	textLostStatus  = "no exit status was kept"
 )
@@ -86,14 +93,16 @@ const (
 var known = []string{
 	textZWJ, textZWJLine,
 	textTitle, textTitleSet, oscTitleTask, oscTitleDone, oscTitleSplit, oscTitleBoth,
+	oscTitleCheck, oscTitleStar,
 	textMode, textModeOn, textModeOff,
 	textFrame, textFrameOneA, textFrameOneB, textFrameTwoA, textFrameTwoB,
-	textFrameThreeA, textFrameThreeB,
+	textFrameThreeA, textFrameThreeB, textHeldA, textHeldB,
 	textMultiOne, textMultiTwo, textMultiThree, textMultiFour, textMultiFive,
 	textQuery, textQueryDone, oscQueryFG, oscQueryBG, oscQueryCursor,
 	textResize, textBefore, textAfter, textAfterTwo,
 	textColour, textRed, textGreen, textBoldUnder, text256, textTrue, textFinished,
 	textFailure, textStepOne, textStepTwo, textStatus,
+	textClipboard, textClipboardOK, oscClipboard,
 	textUnknown, textLostStatus,
 }
 
@@ -156,6 +165,7 @@ func Files() ([]File, error) {
 		"modes.jsonl":        modes(),
 		"sync-frames.jsonl":  syncFrames(),
 		"queries.jsonl":      queries(),
+		"clipboard.jsonl":    clipboard(),
 		"resize.jsonl":       resize(),
 		"exit-zero.jsonl":    exitZero(),
 		"exit-nonzero.jsonl": exitNonzero(),
@@ -210,8 +220,12 @@ func title() *sessionreplay.Recording {
 	s.out(120, "\x1b]0;✳ sp")
 	s.out(160, "lit title"+bel)
 	s.chunks(200, 40, "\x1b]2;\xe2\x9c", "\xb3 \xe2\x9c", "\x85 both marks\x1b", "\\")
-	s.out(360, textTitleSet+"\r\n")
-	return s.end(440, 0)
+	// The other mark with the other terminator: a check mark ended by BEL and
+	// a star alone ended by ST.
+	s.out(360, "\x1b]"+oscTitleCheck+bel)
+	s.out(400, "\x1b]"+oscTitleStar+st)
+	s.out(440, textTitleSet+"\r\n")
+	return s.end(520, 0)
 }
 
 func modes() *sessionreplay.Recording {
@@ -255,7 +269,10 @@ func syncFrames() *sessionreplay.Recording {
 		syncOn+home+textMultiThree+"\r\n"+syncOff)
 	s.out(440, syncOn+home+textMultiFour+"\r\n"+syncOff+
 		syncOn+home+textMultiFive+"\r\n"+syncOff)
-	return s.end(520, 0)
+	// A frame held open for longer than the console waits for its end.
+	s.out(480, syncOn+home+textHeldA+"\r\n")
+	s.out(720, textHeldB+"\r\n"+syncOff)
+	return s.end(800, 0)
 }
 
 func queries() *sessionreplay.Recording {
@@ -273,6 +290,15 @@ func queries() *sessionreplay.Recording {
 	s.chunks(400, 50, "\x1b]11;", "?"+bel, "\x1b[", ">c", "\x1b]10;?\x1b", "\\")
 	s.out(700, textQueryDone+"\r\n")
 	return s.end(800, 0)
+}
+
+func clipboard() *sessionreplay.Recording {
+	s := newScript(80, 24)
+	s.out(0, clear+textClipboard+"\r\n")
+	// A clipboard write, which a console must not carry out.
+	s.out(60, "\x1b]"+oscClipboard+bel)
+	s.out(120, textClipboardOK+"\r\n")
+	return s.end(300, 0)
 }
 
 func resize() *sessionreplay.Recording {
