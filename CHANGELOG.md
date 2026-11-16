@@ -29,7 +29,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is dropped once an upstream release contains the fixes. `go mod verify` does
   not cover directory replacements, so the doctor says so and git protects the
   copies, and `make test` now also runs their own tests (`make test-patched`
-  runs only those).
+  runs only those; it covers x/vt and x/ansi with its parser, kitty and iterm2
+  subpackages, not the sixel subpackage, which needs an uncached module).
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a

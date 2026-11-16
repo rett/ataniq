@@ -59,8 +59,9 @@ and its `replace` line once an upstream release contains the fixes.
 Git protects the copies instead: they are reviewed source, and changing them is
 a change like any other. Their own tests run with `make test` (or
 `make test-patched`), from the main module so that they use its dependency set;
-the x/ansi sixel package is left out because it needs a module that is not
-cached and is not used. The input tests of the console also run against the
+the packages run are x/vt, x/ansi and its `parser`, `kitty` and `iterm2`
+subpackages, and the x/ansi `sixel` package is left out because it needs a
+module that is not cached. The input tests of the console also run against the
 patched x/ansi, because it decodes the console's keyboard, paste and mouse
 input.
 

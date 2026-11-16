@@ -131,7 +131,8 @@ func TestPatchedModuleNotices(t *testing.T) {
 }
 
 // make test runs the patched modules' own tests, by package name, from the
-// main module; the sixel package, which needs an uncached module, is left out.
+// main module: x/vt, x/ansi and its parser, kitty and iterm2 subpackages. The
+// sixel package, which needs an uncached module, is left out.
 func TestMakeTestRunsPatchedModuleTests(t *testing.T) {
 	dir := fakePath(t, "exit 99\n")
 	for _, target := range []string{"test", "test-patched"} {
@@ -142,7 +143,7 @@ func TestMakeTestRunsPatchedModuleTests(t *testing.T) {
 		if err != nil {
 			t.Fatalf("make -n %s: %s %v", target, out, err)
 		}
-		want := "sh scripts/go-tool.sh test github.com/charmbracelet/x/vt github.com/charmbracelet/x/ansi github.com/charmbracelet/x/ansi/parser\n"
+		want := "sh scripts/go-tool.sh test github.com/charmbracelet/x/vt github.com/charmbracelet/x/ansi github.com/charmbracelet/x/ansi/parser github.com/charmbracelet/x/ansi/kitty github.com/charmbracelet/x/ansi/iterm2\n"
 		if !strings.Contains(string(out), want) || strings.Contains(string(out), "sixel") {
 			t.Errorf("make -n %s lacks %q:\n%s", target, want, out)
 		}
