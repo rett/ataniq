@@ -9,7 +9,7 @@ client, security and work-model boundaries and supersedes older assumptions.
 Ataniq owns job identities, durable state, project-scoped permissions,
 idempotency, admission limits, event cursors, and restart reconciliation.
 A session, an agent conversation, and a job attempt are distinct identities.
-A live tmux session is not evidence that an agent completed its task.
+A live terminal session is not evidence that an agent completed its task.
 
 Agents may use MCP tools and resources. The terminal console, the later web
 console and the CLI invoke the same typed Ataniq command and event contract and
@@ -27,8 +27,13 @@ boundaries. The core must not load arbitrary executable packs in-process.
 Provider-specific capabilities use namespaced, validated extensions.
 Declared support and independently observed support are recorded separately.
 
-The proposed execution backend is an Ataniq runner supervised by systemd on
-Linux, contingent on security qualification. tmux may serve diagnostics.
+The proposed execution backend is a native per-lead holder, a systemd unit
+that is also the sandbox parent, contingent on security qualification and
+provisional pending an attended emulator spike; tmux is not a planned backend.
+See [session hosting](design/runtime.md#session-hosting-provisional).
+Sandbox qualification comes before any Ataniq-managed lead. A provider's remote
+control stays an optional launch profile during the transition, and a Codex
+lead is an interactive `codex` in its own session.
 Codex is the first live provider target, subject to version-specific capability
 and security evidence; qargi integration is limited to qualified public APIs.
 Unknown or disconnected state must remain explicit.
@@ -75,6 +80,7 @@ revocation, recovery, and implementation acceptance criteria.
 ## First milestones
 
 1. Establish the Go toolchain, development gates, and canonical pack contracts.
+   Qualification, including the sandbox, comes before any managed lead.
 2. Test MCP transport, OAuth discovery, token validation, and project isolation
    using fake identity and execution backends.
 3. Add durable jobs, idempotent launch, event pagination, cancellation, and
