@@ -197,7 +197,7 @@ func TestDoctorModuleChecks(t *testing.T) {
 	dir, pin := fixture(t)
 	for _, tc := range []struct{ failing, want string }{
 		{"none", "ok: module dependencies available and unmodified offline"},
-		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the package named above"},
+		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the failing package"},
 		{"mod", "fail: cached module dependencies modified"},
 	} {
 		path := fakePath(t, `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] && [ "$GOSUMDB" = off ] || exit 8

@@ -72,7 +72,7 @@ case "${1-}" in
         # The Go diagnostic is shown, indented, so the module is named.
         if ! diag=$("$selected" list -deps -test ./... 2>&1 >/dev/null); then
           show_diag "$diag"
-          printf 'fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the package named above\n'; status=1
+          printf 'fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the failing package\n'; status=1
         elif ! diag=$("$selected" mod verify 2>&1); then
           show_diag "$diag"
           printf 'fail: cached module dependencies modified; remove the named module from the module cache (its files are read-only; run chmod -R u+w on it first, or use go clean -modcache), then run make bootstrap\n'; status=1
