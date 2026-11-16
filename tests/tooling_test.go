@@ -187,20 +187,22 @@ func TestDoctorModuleChecks(t *testing.T) {
 	dir, pin := fixture(t)
 	for _, tc := range []struct{ failing, want string }{
 		{"none", "ok: module dependencies available and unmodified offline"},
-		{"list", "fail: module dependencies missing or not matching go.sum; run make bootstrap"},
+		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum or remove the named module from the module cache"},
 		{"mod", "fail: cached module dependencies modified"},
 	} {
 		path := fakePath(t, `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] && [ "$GOSUMDB" = off ] || exit 8
+[ "$1" != list ] || [ "$*" = "list -deps -test ./..." ] || exit 11
+[ "$1" != mod ] || [ "$*" = "mod verify" ] || exit 12
 case "$1" in
 version) printf 'go version go`+pin+` linux/amd64\n';;
-`+tc.failing+`) printf 'diagnostic for example.test/mod\n' >&2; exit 1;;
+`+tc.failing+`) printf 'go: downloading example.test/mod v1.0.0\ndiagnostic for example.test/mod\n' >&2; exit 1;;
 list|mod) :;;
 *) exit 10;;
 esac
 `)
 		out, err := runHelper(t, dir, path, "doctor")
 		failed := tc.failing != "none"
-		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "diagnostic for example.test/mod") != failed {
+		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  diagnostic for example.test/mod\n") != failed || strings.Contains(out, "go: downloading") {
 			t.Fatalf("%s: %s %v", tc.failing, out, err)
 		}
 	}

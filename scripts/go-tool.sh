@@ -36,7 +36,9 @@ select_offline() {
   return 1
 }
 show_diag() {
-  printf '%s\n' "$1" | while IFS= read -r line; do printf '  %s\n' "$line"; done
+  # Downloading is impossible offline, so Go's progress lines only mislead.
+  printf '%s\n' "$1" | grep -v '^go: downloading ' |
+    while IFS= read -r line; do printf '  %s\n' "$line"; done || :
 }
 case "${1-}" in
   doctor)
@@ -58,7 +60,7 @@ case "${1-}" in
         # The Go diagnostic is shown, indented, so the module is named.
         if ! diag=$("$selected" list -deps -test ./... 2>&1 >/dev/null); then
           show_diag "$diag"
-          printf 'fail: module dependencies missing or not matching go.sum; run make bootstrap\n'; status=1
+          printf 'fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum or remove the named module from the module cache\n'; status=1
         elif ! diag=$("$selected" mod verify 2>&1); then
           show_diag "$diag"
           printf 'fail: cached module dependencies modified; remove the named module from the module cache (its files are read-only; run chmod -R u+w on it first, or use go clean -modcache), then run make bootstrap\n'; status=1
