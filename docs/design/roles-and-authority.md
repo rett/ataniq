@@ -33,10 +33,10 @@ A role changes hands only by a verified handoff, in this order:
 2. Establish exclusive ownership for the successor.
 3. Fence the old holder, so it can no longer act under the role.
 
-The outgoing holder and the owner's record of the assignment verify the
-handoff. If a step fails before exclusive ownership has passed to the
-successor, the outgoing holder keeps the role. If a step fails after it has
-passed, the successor releases it and the outgoing holder resumes. A handoff
+If any step fails, the outgoing holder keeps the role; an outcome that cannot
+be resolved goes to the owner. Who verifies each step, and how a failure after
+exclusive ownership has passed is undone, are settled in the handoff contract,
+which is designed before any managed lead and is not decided here. A handoff
 grants no authority: the successor receives the role, not the predecessor's
 approvals, grants or plan tokens, and each gate is decided on its own evidence.
 Fencing follows the execution-boundary rule in [runtime](runtime.md): without
