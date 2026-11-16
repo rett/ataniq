@@ -32,12 +32,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   diagnostics wording. Nothing here is implemented.
 - Add a design document for approvals and delegation. Only the owner's direct
   words, or a delegation-chain grant whose signatures verify back to the
-  owner's root key, approve anything. Grants have scope, expiry, single use,
-  revocation and audit; a message is never the authority, though a signed
-  grant may travel by message and the gate verifies it; an owner channel is
-  unreachable by leads; and relayed direction is never an approval. The
-  designated-approver wording in the design baseline and client protocol is
-  corrected to match. Specification only; nothing is implemented.
+  owner's root key, approve anything. Grants have scope, expiry, a use count
+  (single use for a sub-grant), revocation and audit; a message is never the
+  authority, though a signed grant may travel by message and the gate verifies
+  it; an owner channel is unreachable by leads; and relayed direction is never
+  an approval. The designated-approver wording in the design baseline and
+  client protocol is corrected to match. Specification only; nothing is implemented.
 - Add a design document for roles and the authority split. Each project has
   exactly one assigned lead and a single supervisor spans projects; both are
   assignable roles separate from agent identity, provider, model and effort.

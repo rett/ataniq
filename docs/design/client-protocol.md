@@ -59,7 +59,9 @@ counts and cached artifacts so they do not reveal hidden records.
 
 Who may approve is defined in [approvals](approvals.md): the owner's direct
 words or an owner-rooted delegation-chain grant, never a relayed message. The
-sections below describe the command-level record of a decision.
+sections below describe the command-level record of a decision. An owner
+decision arrives on the owner channel defined there, not on a transport a lead
+can reach.
 
 An approval identifies an immutable command, action, target revision, payload
 and execution epoch, the approving owner decision or grant, expiry and current state.
@@ -99,9 +101,10 @@ Use two enrolled clients, a deterministic journal and both transports:
    gap; duplicate event IDs are applied once.
 3. Resume an expired cursor: expect reset required, then a fresh snapshot;
    never report a successful empty replay as complete history.
-4. Race two decisions by designated and undesignated clients. Only the
-   designated decision may resolve the approval; a later decision is stale.
-   Race two eligible decisions and assert exactly one durable resolution.
+4. Race a decision backed by the owner's direct words or a verifying grant
+   against one backed by neither. Only the backed decision may resolve the
+   approval; a later decision is stale. Race two backed decisions and assert
+   exactly one durable resolution.
 5. Revoke a client during an active subscription. Assert subsequent protected
    events, commands and artifact reads are denied, including after reconnect.
 6. Saturate a bounded subscriber buffer. Assert explicit disconnection and

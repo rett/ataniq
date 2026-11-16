@@ -50,9 +50,10 @@ attempt belongs to a lead and parent work/turn and has its own identity,
 limits, status and evidence; it is not a persistent public agent. Task,
 product, evaluation, approval and artifact identities are distinct: an attempt
 produces a particular product, an evaluator assesses that product against
-versioned criteria, an authorized approver decides a particular operation, and
-artifacts carry content and provenance. A completed process, successful tool,
-positive evaluation, accepted product and approved release are different facts.
+versioned criteria, the owner, or an owner-rooted grant, decides a particular
+operation, and artifacts carry content and provenance. A completed process,
+successful tool, positive evaluation, accepted product and approved release are
+different facts.
 
 IDs are stable, opaque and scoped by their issuing authority. Records retain
 origin and authority alongside external identifiers and revisions. Projections
