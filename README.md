@@ -56,10 +56,8 @@ These decisions describe the planned design.
   service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
-- A proposed native per-lead holder, a systemd unit that is also the sandbox
-  parent and keeps the screen for the console, on Linux. It is subject to
-  sandbox qualification, which comes before any Ataniq-managed lead, and is
-  provisional pending an attended emulator spike. tmux is not a planned backend.
+- Session hosting is decided by an attended spike, and its design is written
+  after the spike. Sandbox qualification comes before any Ataniq-managed lead.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between

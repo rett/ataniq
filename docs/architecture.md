@@ -27,13 +27,10 @@ boundaries. The core must not load arbitrary executable packs in-process.
 Provider-specific capabilities use namespaced, validated extensions.
 Declared support and independently observed support are recorded separately.
 
-The proposed execution backend is a native per-lead holder, a systemd unit
-that is also the sandbox parent, contingent on security qualification and
-provisional pending an attended emulator spike; tmux is not a planned backend.
-See [session hosting](design/runtime.md#session-hosting-provisional).
-Sandbox qualification comes before any Ataniq-managed lead. A provider's remote
-control stays an optional launch profile during the transition, and a Codex
-lead is an interactive `codex` in its own session.
+Session hosting is decided by an attended spike, and its design is written
+after the spike. Sandbox qualification comes before any Ataniq-managed lead. A
+provider's remote control stays an optional launch profile during the
+transition, and a Codex lead is an interactive `codex` in its own session.
 Codex is the first live provider target, subject to version-specific capability
 and security evidence; qargi integration is limited to qualified public APIs.
 Unknown or disconnected state must remain explicit.
@@ -80,7 +77,7 @@ revocation, recovery, and implementation acceptance criteria.
 ## First milestones
 
 This list predates the terminal-first direction and does not order the
-terminal console or the session holder; the
+terminal console or session hosting; the
 [design contract baseline](design/README.md) governs where they differ.
 
 1. Establish the Go toolchain, development gates, and canonical pack contracts.
