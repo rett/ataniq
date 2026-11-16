@@ -3,11 +3,49 @@
 Status: proposed; the internal dispatch coordinator described below is
 source-only infrastructure. No runtime qualification is claimed.
 Ataniq owns durable identity, intent, readiness, bootstrap and reconciliation.
-The proposed Linux backend uses a detachable Ataniq runner supervised by a
-systemd user transient service, with cgroup v2; systemd provides lifecycle
-machinery, not the security qualification in [security](security.md). tmux may
-be offered for diagnostics, but is neither the authority nor proof of health.
+The proposed Linux backend uses a detachable Ataniq runner, provisionally the
+per-lead holder described in [session hosting](#session-hosting-provisional)
+and pending its spike, supervised by a systemd user transient service, with
+cgroup v2; systemd provides lifecycle machinery, not the security
+qualification in [security](security.md). tmux is not a planned backend, and
+neither a terminal nor a screen is the authority or proof of health.
 Other platforms may run clients; execution requires a qualified backend.
+
+## Order of work
+
+Qualification comes first. Sandbox qualification comes before any
+Ataniq-managed lead, and a lead is not managed by Ataniq until it runs inside a
+qualified sandbox. Until then existing leads stay under their current session
+manager. A provider's own remote-control feature stays an optional launch
+profile during the transition. A Codex lead is an interactive `codex` in its
+own session. Provider versions are pinned for managed leads and requalified
+after an upgrade.
+
+## Session hosting (provisional)
+
+Status: provisional and pending an attended emulator spike. The spike's verdict
+is not yet known; this direction is not qualified and may change with it.
+
+The selected direction is a native per-lead holder process: a systemd unit
+that is also the sandbox parent. The holder owns the lead's PTY and keeps the
+screen with a terminal emulator, so the console can attach, detach and
+reconnect without losing the session. The console shows an embedded pane of
+that screen and a full-terminal zoom. Controller and observer attachment,
+scrollback, console restart and holder crash behavior each need their own
+qualification. Input the holder itself injects is a separate, fenced input
+type, not terminal input. How the lifecycle contract below (readiness,
+queueing, steering and delivery evidence) applies to an interactive lead in a
+held terminal is not yet designed; it is settled with the holder and message
+contracts, and nothing here decides it.
+
+tmux is not a planned backend. The spike exercises real provider clients
+through the emulator outside the sandbox and inside the existing bubblewrap
+profile with a PTY, including resize, message injection into an idle and a
+busy agent, and coexistence with a provider's desktop-owned daemon. The owner
+approves the pass criteria beforehand and declares the result. If the spike
+fails, the fallback keeps the holder and replaces only its emulator with a
+private tmux server inside the holder. That fallback is equally unqualified,
+and tmux is not otherwise a backend.
 
 ## Lifecycle
 

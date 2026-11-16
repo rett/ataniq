@@ -27,7 +27,8 @@ views, with navigation between related records. Its inventory includes:
 - Campaign and backlog boards with dependencies, ownership and status.
 - Attempt timelines with decisions, delivery, failures and uncertainty.
 - Product and evidence lineage through attempts, evaluations and artifacts.
-- An inbox of decisions available to the designated approver or role.
+- An inbox of decisions awaiting the owner or a delegated grant, per
+  [approvals](approvals.md).
 - Provider, model and qualified capabilities, observed or estimated usage, and
   budget limits with their actual enforcement status.
 
@@ -41,9 +42,10 @@ Permission changes follow the projection reset rules in
 An immutable product identifies its exact content or revision and producing
 attempt. Evaluation identifies product, criteria revision, evaluator and
 version, result and evidence; a new iteration creates a new attempt and product.
-Acceptance and release decisions belong to their designated authority, not to
-an agent's completion text. Retain failure, uncertainty and rejected evidence
-alongside success, subject to project retention and sharing policy.
+Acceptance and release decisions belong to the owner, or to an owner-rooted
+grant, not to an agent's completion text. Retain failure, uncertainty and
+rejected evidence alongside success, subject to project retention and sharing
+policy.
 
 ## Profiles and adapters
 
@@ -78,8 +80,8 @@ rationale, dependencies, requested acceptance and authorized inputs. Receiving
 a request does not authorize execution. The target project owns prioritization,
 implementation and acceptance; its lead may accept and schedule within the
 grant, local scope and enforceable budget, and escalates exceptions to the
-designated authority. Acceptance links the request to target work and records
-policy and revisions. Changes to material terms require renewed admission.
+owner. Acceptance links the request to target work and records policy and
+revisions. Changes to material terms require renewed admission.
 
 Status, dependencies and returned evidence remain linked with source and target
 provenance. Share only permitted data; a digest or metadata does not grant read
