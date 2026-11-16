@@ -72,7 +72,7 @@ See [the design contract baseline](docs/design/README.md) and
 
 Development follows qargi's feature, review, and verification workflow.
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
-Install Git, Make, a POSIX shell and a Go bootstrap driver with toolchain
+Install Git, Make, a POSIX shell, grep and a Go bootstrap driver with toolchain
 selection support (Go 1.21 or newer). The driver selects the developer Go
 version pinned in `.go-version`; see [Go toolchains](https://go.dev/doc/toolchain).
 Review `make -n bootstrap` and `scripts/go-tool.sh` before running `make bootstrap`.
