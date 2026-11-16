@@ -33,8 +33,8 @@ to be validated.
 Each independent Unix-user instance has one authoritative local database and
 authority for its own projects; federation exchanges authorized records, not a
 shared database or automatic failover. A project owns policy, work, grants, and
-evidence. A stable lead identity belongs to a project and may retain a resumable
-conversation.
+evidence. A project's lead role has a stable identity, separate from the agent
+that currently holds it, and may retain a resumable conversation.
 Only project leads and the supervisor are persistent agents; see
 [roles and authority](roles-and-authority.md) for role assignment, handoff and
 which system owns each record. A runtime binding identifies the provider,

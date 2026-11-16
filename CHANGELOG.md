@@ -37,8 +37,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (single use for a sub-grant), revocation and audit; a message is never the
   authority, though a signed grant may travel by message and the gate verifies
   it; an owner channel is unreachable by leads; and relayed direction is never
-  an approval. The designated-approver wording in the design baseline and
-  client protocol is corrected to match. Specification only; nothing is implemented.
+  an approval. Delegation grants are kept in one qargi store and are honoured
+  for qargi gates only in the first version. The designated-approver wording in
+  the design baseline and client protocol is corrected to match. Specification
+  only; nothing is implemented.
 - Add a design document for roles and the authority split. Each project has
   exactly one assigned lead and a single supervisor spans projects; both are
   assignable roles separate from agent identity, provider, model and effort.

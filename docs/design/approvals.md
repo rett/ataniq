@@ -38,6 +38,14 @@ work. The gate, not the receiving lead's own judgement, verifies the chain,
 the identity it was issued to, expiry, revocation and replay, and records a
 single-use grant as used before the command acts.
 
+Delegation grants are kept in one store, in qargi's signed and audited
+records, and the first version honours them for qargi gates only. The word
+"grant" has other meanings in these documents; they are distinct from the
+delegation grant here: the one-use decision grant consumed with command state
+in [client protocol](client-protocol.md), the exact-target grant in dispatch
+in [runtime](runtime.md), and directional federation grants in
+[work model](work-model.md).
+
 ## Messages are not authority
 
 A message is never the authority. A signed grant may travel by message,
