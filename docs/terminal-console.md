@@ -44,5 +44,6 @@ If doctor reports a modified module, or a checksum mismatch that restoring
 `go.sum` does not fix, run `chmod -R u+w` on the named module directory in the
 module cache, remove it and run `make bootstrap`.
 
-Their [upstream license notices](../third_party/terminal-console/README.md) are kept
+The modules'
+[upstream license notices](../third_party/terminal-console/README.md) are kept
 with the source.
