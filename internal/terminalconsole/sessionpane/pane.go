@@ -100,9 +100,9 @@ func New(cols, rows int, o Options) *Pane {
 	if p.input == nil {
 		p.input = Discard{}
 	}
-	// The pane keeps no scrollback; one line is the smallest x/vt accepts
-	// for the main screen. The patched x/vt keeps none for the alternate
-	// screen.
+	// The pane shows no scrollback, so the main screen keeps one line, the
+	// smallest x/vt accepts. SetScrollbackSize reaches the main screen
+	// only; the patched x/vt gives the alternate screen no scrollback.
 	p.emu.SetScrollbackSize(1)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read

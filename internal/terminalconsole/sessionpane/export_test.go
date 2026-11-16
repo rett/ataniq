@@ -15,3 +15,11 @@ func ScreenText(p *Pane) string {
 
 // CleanTitle is cleanTitle, for tests.
 func CleanTitle(b []byte) string { return cleanTitle(b) }
+
+// ScrollbackLen returns how many lines the emulator's main screen keeps in
+// its scrollback.
+func ScrollbackLen(p *Pane) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.emu.ScrollbackLen()
+}
