@@ -49,6 +49,12 @@ case "${1-}" in
     if command -v go >/dev/null 2>&1; then
       if select_offline; then
         printf 'ok: %s\n' "$actual"
+        # Every module in the build list must be in the module cache and match go.sum.
+        if "$selected" mod verify >/dev/null 2>&1; then
+          printf 'ok: module dependencies verified offline\n'
+        else
+          printf 'fail: module dependencies missing or modified; run make bootstrap\n'; status=1
+        fi
       else
         printf 'fail: selected Go %s unavailable or mismatched; run make bootstrap\n' "$version"; status=1
       fi
