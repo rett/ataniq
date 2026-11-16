@@ -15,11 +15,35 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and its control keys only explain why live controls are unavailable. Live
   control, provider integration, use over SSH and terminal restoration after a
   startup error remain unqualified.
+- Turn `ataniq-console --demo` into a fixture cockpit. A window of 100x30 or
+  more shows three panes (projects and leads with a context block; a session
+  block, an embedded session terminal and a focus bar; evidence and approvals
+  with the attachment contract, the pending gate and the lead's binding), a
+  timeline and a key bar, on the alternate screen. Below that size it keeps the
+  single-column pages. The terminal pane replays a synthetic recording through
+  the embedded emulator and is labelled "fixture recording, not a live
+  session" in every state; nothing typed reaches a process. Tab cycles the
+  panes and Enter on the session focuses it. In session focus every key goes
+  to the session, `q` and Ctrl+C included, except the return key (Ctrl+\ by
+  default, read from the byte 0x1c and from `CSI 92;5u`; without the kitty
+  keyboard protocol Ctrl+4 sends the same byte and returns too) and F12, which zooms the pane to the window in
+  either focus. Ctrl+Enter is never bound. A recording that ends shows its last
+  screen, dimmed, under a banner with the exit status or "unknown", saying that
+  the terminal stream ended, not necessarily the agent; any key returns to the
+  console, and `r` replays it. Ctrl+K lists the controls (approve, deny, full
+  attach, send, interrupt, detach), all unavailable, each with its reason. The
+  console asks the outer terminal for mode 2027 at start, also over SSH, and
+  asks for mouse reporting and focus events only in session focus and only
+  when the session asked. Still unqualified: use over SSH, a live session and
+  any live control.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
 ### Changed
 
+- The fixture console's `s` and `i` keys no longer exist: the unavailable
+  controls are listed under Ctrl+K, and `a` still says why full attach is
+  unavailable. In the single-column pages Ctrl+K lists them too.
 - The terminal console's toolkit now uses patched, in-tree copies of
   `charmbracelet/x/vt` v0.1.0 and `charmbracelet/x/ansi` v0.11.9 under
   `third_party/patched`, selected by `replace` lines in `go.mod`. The patches
