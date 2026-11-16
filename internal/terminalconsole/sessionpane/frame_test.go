@@ -242,6 +242,36 @@ func TestSyncFrameResetAndResize(t *testing.T) {
 	}
 }
 
+// TestSyncFrameRepeatedSetKeepsTheFrameAndTheLimit sets mode 2026 again
+// while a frame is open. That is no new frame: the pane keeps showing the
+// frame from the first set, and the time limit still counts from it, so a
+// session that repeats the set cannot hold a half-drawn screen back forever.
+func TestSyncFrameRepeatedSetKeepsTheFrameAndTheLimit(t *testing.T) {
+	c := newClock()
+	start := c.Now()
+	p := newPane(t, 10, 1, sessionpane.Options{Clock: c.Now})
+	p.Write([]byte("A\x1b[?2026h\rB"))
+	c.advance(100 * time.Millisecond)
+	p.Write([]byte("\x1b[?2026h\rC"))
+	if got := row(draw(p), 0); got != "A" {
+		t.Fatalf("after the second set: %q, want the first frame", got)
+	}
+	if d, ok := p.HoldDeadline(); !ok || !d.Equal(start.Add(sessionpane.MaxFrameHold)) {
+		t.Fatalf("HoldDeadline() = %v, %v; want the first set's", d, ok)
+	}
+	c.advance(sessionpane.MaxFrameHold - 100*time.Millisecond - time.Millisecond)
+	if got := row(draw(p), 0); got != "A" {
+		t.Fatalf("at 149 ms: %q", got)
+	}
+	c.advance(time.Millisecond)
+	if got := row(draw(p), 0); got != "C" {
+		t.Fatalf("at 150 ms: %q, want the screen as it is", got)
+	}
+	if _, ok := p.HoldDeadline(); ok {
+		t.Fatal("a deadline after the time limit")
+	}
+}
+
 func TestSyncFrameFullResetEndsIt(t *testing.T) {
 	p := newPane(t, 20, 3, sessionpane.Options{Clock: newClock().Now})
 	p.Write([]byte("before\x1b[?2026h\rduring\x1bcafter"))
