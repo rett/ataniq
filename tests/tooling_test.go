@@ -96,7 +96,7 @@ func TestToolchainResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "calls")
-	selected := "#!/bin/sh\n" + guard + "printf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|test|build) :;; *) exit 3;; esac\n"
+	selected := "#!/bin/sh\n" + guard + "printf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|list|test|build) :;; *) exit 3;; esac\n"
 	if err := os.WriteFile(filepath.Join(selectedRoot, "bin", "go"), []byte(selected), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +178,33 @@ func TestToolchainResolution(t *testing.T) {
 	}
 	if out, err := runHelper(t, dir, fakePath(t, ""), "doctor"); err == nil || !strings.Contains(out, "missing: go") {
 		t.Fatalf("missing driver: %s %v", out, err)
+	}
+}
+
+// Doctor must run both module checks offline and report each failure with the
+// diagnostic of the failing Go command.
+func TestDoctorModuleChecks(t *testing.T) {
+	dir, pin := fixture(t)
+	for _, tc := range []struct{ failing, want string }{
+		{"none", "ok: module dependencies available and unmodified offline"},
+		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum or remove the named module from the module cache"},
+		{"mod", "fail: cached module dependencies modified"},
+	} {
+		path := fakePath(t, `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] && [ "$GOSUMDB" = off ] || exit 8
+[ "$1" != list ] || [ "$*" = "list -deps -test ./..." ] || exit 11
+[ "$1" != mod ] || [ "$*" = "mod verify" ] || exit 12
+case "$1" in
+version) printf 'go version go`+pin+` linux/amd64\n';;
+`+tc.failing+`) printf 'go: downloading example.test/mod v1.0.0\ndiagnostic for example.test/mod\n' >&2; exit 1;;
+list|mod) :;;
+*) exit 10;;
+esac
+`)
+		out, err := runHelper(t, dir, path, "doctor")
+		failed := tc.failing != "none"
+		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  diagnostic for example.test/mod\n") != failed || strings.Contains(out, "go: downloading") {
+			t.Fatalf("%s: %s %v", tc.failing, out, err)
+		}
 	}
 }
 
