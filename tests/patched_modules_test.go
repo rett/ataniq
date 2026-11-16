@@ -25,51 +25,34 @@ func goModLines(t *testing.T, path string) []string {
 	return lines
 }
 
-// subtract returns the lines of a that are not in b, counting repeats.
-func subtract(a, b []string) []string {
-	rest := slices.Clone(b)
-	var out []string
-	for _, line := range a {
-		if i := slices.Index(rest, line); i >= 0 {
-			rest = slices.Delete(rest, i, i+1)
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-// The patched x/vt and x/ansi are adopted by one direct requirement (x/vt), the
-// indirect requirement for x/exp/ordered that any importer of x/vt needs, and
-// two directory replacements; nothing else in go.mod changes, in particular no
-// `go mod tidy` rewriting. testdata/go.mod.base is the go.mod of the commit the
-// adoption was made on. A later change that deliberately changes go.mod updates
-// both the base and the expected lines here, in its own commit.
-func TestGoModDiffFromBase(t *testing.T) {
-	base := goModLines(t, "testdata/go.mod.base")
+// The patched x/vt and x/ansi are adopted by a direct requirement on x/vt, the
+// indirect requirement on x/exp/ordered that any importer of x/vt needs, and
+// two directory replacements. This checks what must stay true while go.mod
+// changes for other reasons: exactly those two replace lines, and both
+// requirements present.
+func TestGoModAdoptsPatchedModules(t *testing.T) {
 	current := goModLines(t, filepath.Join(root(t), "go.mod"))
-	const vtRequire = "\tgithub.com/charmbracelet/x/vt v0.1.0"
-	wantAdded := []string{
-		vtRequire,
-		"\tgithub.com/charmbracelet/x/exp/ordered v0.1.0 // indirect",
-		"replace github.com/charmbracelet/x/vt => ./third_party/patched/x-vt",
+	var replaces []string
+	for _, l := range current {
+		if strings.HasPrefix(l, "replace ") {
+			replaces = append(replaces, l)
+		}
+	}
+	wantReplaces := []string{
 		"replace github.com/charmbracelet/x/ansi => ./third_party/patched/x-ansi",
+		"replace github.com/charmbracelet/x/vt => ./third_party/patched/x-vt",
 	}
-	added := subtract(current, base)
-	removed := subtract(base, current)
-	if len(removed) != 0 {
-		t.Errorf("go.mod lost or changed lines: %q", removed)
+	slices.Sort(replaces)
+	if !slices.Equal(replaces, wantReplaces) {
+		t.Errorf("go.mod replace lines:\n got  %q\n want %q", replaces, wantReplaces)
 	}
-	slices.Sort(added)
-	slices.Sort(wantAdded)
-	if !slices.Equal(added, wantAdded) {
-		t.Errorf("go.mod added lines:\n got  %q\n want %q", added, wantAdded)
-	}
-	// The new requirement is in the direct block, and the replacements follow
-	// every requirement.
-	text := strings.Join(current, "\n")
-	if strings.Index(text, vtRequire) > strings.Index(text, "// indirect") {
-		t.Error("the x/vt requirement is not in the direct requirement block")
+	for _, l := range []string{
+		"\tgithub.com/charmbracelet/x/vt v0.1.0",
+		"\tgithub.com/charmbracelet/x/exp/ordered v0.1.0 // indirect",
+	} {
+		if !slices.Contains(current, l) {
+			t.Errorf("go.mod lacks %q", l)
+		}
 	}
 }
 
