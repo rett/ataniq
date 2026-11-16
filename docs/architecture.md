@@ -79,6 +79,10 @@ revocation, recovery, and implementation acceptance criteria.
 
 ## First milestones
 
+This list predates the terminal-first direction and does not order the
+terminal console or the session holder; the
+[design contract baseline](design/README.md) governs where they differ.
+
 1. Establish the Go toolchain, development gates, and canonical pack contracts.
    Qualification, including the sandbox, comes before any managed lead.
 2. Test MCP transport, OAuth discovery, token validation, and project isolation

@@ -6,9 +6,9 @@ Ataniq owns durable identity, intent, readiness, bootstrap and reconciliation.
 The proposed Linux backend uses a detachable Ataniq runner, provisionally the
 per-lead holder described in [session hosting](#session-hosting-provisional)
 and pending its spike, supervised by a systemd user transient service, with
-cgroup v2; systemd provides lifecycle machinery, not the security qualification in [security](security.md). tmux is
-not a planned backend, and neither a terminal nor a screen is the authority or
-proof of health.
+cgroup v2; systemd provides lifecycle machinery, not the security
+qualification in [security](security.md). tmux is not a planned backend, and
+neither a terminal nor a screen is the authority or proof of health.
 Other platforms may run clients; execution requires a qualified backend.
 
 ## Order of work

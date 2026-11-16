@@ -1,12 +1,13 @@
 # Client command and event protocol
 
 Status: proposed, not implemented. The terminal console, the later web console
-and the CLI use one versioned typed Ataniq command and event contract and authorization path. WebSocket is primary; HTTP commands
-plus resumable SSE are the fallback. Transport changes do not change authority,
-capabilities, command identities or durable cursor semantics. One authoritative
-provider binding is multiplexed to authorized Ataniq clients. Optional native
-coexistence requires direct, version-specific provider evidence; no second
-connection, terminal scraping or routing workaround creates support.
+and the CLI use one versioned typed Ataniq command and event contract and
+authorization path. WebSocket is primary; HTTP commands plus resumable SSE are
+the fallback. Transport changes do not change authority, capabilities, command
+identities or durable cursor semantics. One authoritative provider binding is
+multiplexed to authorized Ataniq clients. Optional native coexistence requires
+direct, version-specific provider evidence; no second connection, terminal
+scraping or routing workaround creates support.
 
 ## Commands
 
@@ -64,9 +65,9 @@ decision arrives on the owner channel defined there, not on a transport a lead
 can reach.
 
 An approval identifies an immutable command, action, target revision, payload
-and execution epoch, the approving owner decision or grant, expiry and current state.
-Decision submission is authorized
-against current policy and atomically resolves an outstanding approval once.
+and execution epoch, the approving owner decision or grant, expiry and current
+state. Decision submission is authorized against current policy and atomically
+resolves an outstanding approval once.
 The receipt records decision and actor; duplicate identical commands replay
 their receipt, while a competing or stale decision is rejected with the
 resolved state if the caller may see it. Provider connection-bound ceremonies

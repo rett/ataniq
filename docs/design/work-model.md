@@ -27,7 +27,8 @@ views, with navigation between related records. Its inventory includes:
 - Campaign and backlog boards with dependencies, ownership and status.
 - Attempt timelines with decisions, delivery, failures and uncertainty.
 - Product and evidence lineage through attempts, evaluations and artifacts.
-- An inbox of decisions awaiting the owner or a delegated grant, per [approvals](approvals.md).
+- An inbox of decisions awaiting the owner or a delegated grant, per
+  [approvals](approvals.md).
 - Provider, model and qualified capabilities, observed or estimated usage, and
   budget limits with their actual enforcement status.
 

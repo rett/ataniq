@@ -2,12 +2,13 @@
 
 The terminal-first Bubble Tea console is the planned primary operator client; a
 web console with the same information architecture comes later. Both sit on the
-shared typed command and event contract. Today the console is a provisional, read-only Bubble Tea fixture viewer. It has no
-production backend and does not send instructions, steer, approve, or interrupt
-leads. The persistent leads, subagents, tasks, and conversations shown in demo
-mode are fictional. No provider or durable command and receipt integration is
-implemented, and the command opens no network listener. Without `--demo` the
-command reports that the backend is unavailable.
+shared typed command and event contract. Today the console is a provisional,
+read-only Bubble Tea fixture viewer. It has no production backend and does not
+send instructions, steer, approve, or interrupt leads. The persistent leads,
+subagents, tasks, and conversations shown in demo mode are fictional. No
+provider or durable command and receipt integration is implemented, and the
+command opens no network listener. Without `--demo` the command reports that the
+backend is unavailable.
 
 In a local terminal, run `make doctor`, then build with the selected offline
 toolchain and start the explicit fixture:
