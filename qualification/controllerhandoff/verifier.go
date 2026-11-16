@@ -145,6 +145,9 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 		if e.kind == "attachment" || (invalid && e.kind == "proof") {
 			return v
 		}
+		if opened && e.kind != "accept" && e.kind != "issue" && e.kind != "result" && e.kind != "projection" {
+			return v
+		}
 		before := l
 		priorState := state
 		ok := false
