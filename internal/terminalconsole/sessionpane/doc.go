@@ -7,10 +7,17 @@
 // The pane has no file, process or network access: its own code opens
 // nothing, starts no process and reads no environment, and an import guard
 // test keeps it that way.
-// The bytes it is given are untrusted, so its size and everything it keeps
-// are bounded, and nothing the session writes reaches the outer terminal
-// except as cells: the pane draws cells, never escape sequences, and drops
-// hyperlinks from them.
+// The bytes it is given are untrusted, so the pane bounds what it keeps of
+// them: the screen is at most [MaxCols] by [MaxRows], the main screen keeps
+// one line of scrollback and the alternate screen none (the patched x/vt
+// gives it none), a frame held for synchronized output is one copy of the
+// screen, and the title is at most [MaxTitle] bytes. Two things the
+// emulator keeps are not bounded yet: one cell keeps a grapheme cluster
+// whole however long the session makes it, and every mode number the
+// session sets is recorded.
+// Nothing the session writes reaches the outer terminal except as cells:
+// the pane draws cells, never escape sequences, drops hyperlinks from them
+// and draws no cell content longer than [MaxCellBytes].
 //
 // The pane is push-only. The caller writes output with [Pane.Write], sets the
 // size with [Pane.Resize] and reports the end of the session with [Pane.End].
@@ -22,7 +29,9 @@
 // # Replies
 //
 // A session can query its terminal (device attributes, colours, cursor
-// position, modes). The emulator writes its answers to a pipe, which one
+// position, modes). The pane answers the query for synchronized output
+// (mode 2026), which it follows itself; the emulator answers the rest. The
+// answers go to a pipe, which one
 // goroutine owned by the pane drains from [New] to [Pane.Close]. The answers
 // are discarded unless [Options.Replies] is set, so in the fixture console no
 // reply goes anywhere; a holder can later set it to send them to the session.

@@ -3,6 +3,7 @@ package sessionpane
 import (
 	"bytes"
 	"image/color"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -92,6 +93,23 @@ func (p *Pane) install() {
 	p.emu.RegisterEscHandler('c', func() bool {
 		p.setSync(false)
 		return false
+	})
+	// x/vt does not know mode 2026 and reports it as not recognised until
+	// the first set, so a session that asks before using synchronized
+	// output (as Bubble Tea does) would never use it. The pane follows the
+	// mode itself, so it answers DECRQM for 2026 from its own state: set or
+	// reset, never not recognised. Any other mode is left to x/vt. The
+	// answer goes into the reply pipe, as x/vt's own answers do.
+	p.emu.RegisterCsiHandler(ansi.Command('?', '$', 'p'), func(params ansi.Params) bool {
+		if n, _, ok := params.Param(0, 0); !ok || n != int(ansi.ModeSynchronizedOutput) {
+			return false
+		}
+		setting := ansi.ModeReset
+		if p.syncOut.on {
+			setting = ansi.ModeSet
+		}
+		_, _ = io.WriteString(p.pipe, ansi.ReportMode(ansi.ModeSynchronizedOutput, setting))
+		return true
 	})
 	// The icon name is not shown anywhere.
 	p.emu.RegisterOscHandler(1, func([]byte) bool { return true })

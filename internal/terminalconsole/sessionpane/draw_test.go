@@ -140,6 +140,60 @@ func TestLegacyWidthPlaceholderKeepsTheStyle(t *testing.T) {
 	}
 }
 
+// TestBoundsDrawCellContent piles thousands of combining marks onto one
+// character: the emulator keeps them in one cell, and the pane draws that
+// cell as a placeholder of its width, in its style, in both width modes.
+func TestBoundsDrawCellContent(t *testing.T) {
+	const acute = "\u0301" // COMBINING ACUTE ACCENT, two bytes
+	kiss := "\U0001F469\U0001F3FD\u200d\u2764\ufe0f\u200d\U0001F48B\u200d\U0001F468\U0001F3FF"
+	if len(kiss) != 35 {
+		t.Fatalf("kiss is %d bytes", len(kiss))
+	}
+	for _, graphemes := range []bool{false, true} {
+		p := newPane(t, 10, 3, sessionpane.Options{GraphemeWidths: graphemes})
+		// Row 0: far over the limit, written in pieces as a stream would.
+		p.Write([]byte("\x1b[1;31me"))
+		for i := 0; i < 4; i++ {
+			p.Write([]byte(strings.Repeat(acute, 1000)))
+		}
+		p.Write([]byte("x\x1b[m\r\n"))
+		// Row 1: one byte over and at the limit. Row 2: a long real cluster.
+		over := "e" + strings.Repeat(acute, sessionpane.MaxCellBytes/2)
+		at := "e" + strings.Repeat(acute, sessionpane.MaxCellBytes/2-1)
+		p.Write([]byte(over + "y" + at + "z\r\n漢" + strings.Repeat(acute, 100) + "w"))
+		if graphemes {
+			p.Write([]byte(kiss))
+		}
+
+		buf := draw(p)
+		c := buf.CellAt(0, 0)
+		if c.Content != "?" || c.Width != 1 || c.Style.Attrs&uv.AttrBold == 0 || c.Style.Fg == nil {
+			t.Fatalf("grapheme widths %v: long cell drawn as %d bytes, width %d, style %+v", graphemes, len(c.Content), c.Width, c.Style)
+		}
+		want := []string{"?x", "?y" + at + "z", "？w"}
+		if graphemes {
+			want[2] += kiss
+		}
+		for y, w := range want {
+			if got := row(buf, y); got != w {
+				t.Errorf("grapheme widths %v: row %d %q, want %q", graphemes, y, got, w)
+			}
+		}
+		for y := 0; y < buf.Height(); y++ {
+			for x := 0; x < buf.Width(); x++ {
+				if n := len(buf.CellAt(x, y).Content); n > sessionpane.MaxCellBytes {
+					t.Fatalf("grapheme widths %v: cell %d,%d drawn with %d bytes", graphemes, x, y, n)
+				}
+			}
+		}
+		method := ansi.WcWidth
+		if graphemes {
+			method = ansi.GraphemeWidth
+		}
+		checkGeometry(t, buf, method)
+	}
+}
+
 func TestBoundsDrawOnlyInsideTheArea(t *testing.T) {
 	p := newPane(t, 6, 2, sessionpane.Options{GraphemeWidths: true})
 	p.Write([]byte("abcd漢\r\n123456"))

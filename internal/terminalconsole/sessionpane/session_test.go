@@ -219,6 +219,38 @@ func TestColourRepliesNeutralWhenUnknown(t *testing.T) {
 	}
 }
 
+// TestColourRepliesNeutralIsThePanesOwn checks that an unknown colour is
+// reported as the pane's NeutralColours entry, not as whatever x/vt falls
+// back to: the neutral colours are swapped for ones x/vt never uses, and
+// SetColours with unknown colours goes back to them after known ones.
+func TestColourRepliesNeutralIsThePanesOwn(t *testing.T) {
+	saved := sessionpane.NeutralColours
+	t.Cleanup(func() { sessionpane.NeutralColours = saved })
+	sessionpane.NeutralColours = sessionpane.Colours{
+		Foreground: rgb(0x10, 0x20, 0x30),
+		Background: rgb(0x40, 0x50, 0x60),
+		Cursor:     rgb(0x70, 0x80, 0x90),
+	}
+	var r replies
+	p := newPane(t, 80, 24, sessionpane.Options{Replies: r.add, Colours: sessionpane.Colours{Foreground: rgb(1, 2, 3)}})
+	query := []byte("\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07\x1b[6n")
+	p.Write(query)
+	r.await(t, "R")
+	want := "\x1b]10;rgb:0101/0202/0303\x07\x1b]11;rgb:4040/5050/6060\x07\x1b]12;rgb:7070/8080/9090\x07\x1b[1;1R"
+	if got := r.String(); got != want {
+		t.Fatalf("replies %q, want %q", got, want)
+	}
+
+	r.reset()
+	p.SetColours(sessionpane.Colours{})
+	p.Write(query)
+	r.await(t, "R")
+	want = "\x1b]10;rgb:1010/2020/3030\x07\x1b]11;rgb:4040/5050/6060\x07\x1b]12;rgb:7070/8080/9090\x07\x1b[1;1R"
+	if got := r.String(); got != want {
+		t.Fatalf("replies after SetColours with unknown colours %q, want %q", got, want)
+	}
+}
+
 func TestColourRepliesFromTheOuterTerminal(t *testing.T) {
 	var r replies
 	p := newPane(t, 80, 24, sessionpane.Options{Replies: r.add, Colours: sessionpane.Colours{

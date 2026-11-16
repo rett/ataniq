@@ -1,6 +1,7 @@
 package sessionpane_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -56,7 +57,8 @@ func encode(rec *sessionreplay.Recording) []byte {
 }
 
 // seeds returns the fuzz seed corpus: every fixture of the replay package,
-// and a few inputs written by hand.
+// and a few inputs written by hand, one of them a cell that grows past
+// MaxCellBytes over several writes.
 func seeds(t testing.TB) [][]byte {
 	t.Helper()
 	var out [][]byte
@@ -86,6 +88,7 @@ func seeds(t testing.TB) [][]byte {
 		cat([]byte{20, 5}, w("\x1b]52;c;aGk=\x07\x1b]8;;x\x1b\\l\x1b[?1003;1006h"), []byte{opEnd | 4 | 3<<3}, w("ignored")),
 		cat([]byte{2, 1}, w(family+"⚠️漢\x1bc\x1b[?2048h"), []byte{opResize | 0x80, 250, 200}),
 		cat([]byte{0, 0}, w("\x1b]2;"+string(make([]byte, 600))+"\x07\x1bP\x1b[?2026l")),
+		cat([]byte{8, 2}, w("\x1b[7me"+strings.Repeat("\u0301", 120)+"漢"+strings.Repeat("\u0301", 40))),
 	)
 	return out
 }
@@ -170,6 +173,9 @@ func check(t *testing.T, p *sessionpane.Pane, graphemes bool) {
 				x++
 				continue
 			}
+			if len(cell.Content) > sessionpane.MaxCellBytes {
+				t.Fatalf("cell %d,%d holds %d bytes", x, y, len(cell.Content))
+			}
 			if cell.Link.URL != "" || cell.Link.Params != "" {
 				t.Fatalf("cell %d,%d keeps a link", x, y)
 			}
@@ -197,7 +203,7 @@ func FuzzWriteResize(f *testing.F) {
 // the test name pattern of this package selects them too.
 func TestBoundsFuzzCorpus(t *testing.T) {
 	s := seeds(t)
-	if len(s) < len(sessionreplay.FixtureNames())+5 {
+	if len(s) < len(sessionreplay.FixtureNames())+6 {
 		t.Fatalf("%d seeds", len(s))
 	}
 	for _, data := range s {

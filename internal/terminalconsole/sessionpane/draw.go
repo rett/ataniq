@@ -15,6 +15,16 @@ const (
 	widePlaceholder   = "？"
 )
 
+// MaxCellBytes is the most bytes of content the pane draws in one cell. A
+// cell holding more is drawn as a placeholder of its width, keeping its
+// style. A grapheme cluster has no length limit, so a session can pile
+// combining marks onto one character until a single cell holds megabytes;
+// the limit keeps that from reaching the caller's buffer and the outer
+// terminal. 64 bytes is almost twice the longest emoji sequence Unicode
+// recommends (a kiss with two skin tones, 35 bytes), so no real text is
+// replaced. The emulator itself still keeps the whole cluster.
+const MaxCellBytes = 64
+
 // cellSource is what Draw reads cells from: the emulator, or a held frame.
 type cellSource interface {
 	CellAt(x, y int) *uv.Cell
@@ -40,7 +50,8 @@ type Canvas interface {
 // a cell whose content the outer terminal would measure at another width
 // than the pane does, such as a ZWJ sequence or an emoji with a variation
 // selector, is drawn as a placeholder of the cell's width, so that the
-// columns after it stay where the pane put them.
+// columns after it stay where the pane put them. So is, in either mode, a
+// cell whose content is longer than MaxCellBytes.
 func (p *Pane) Draw(dst Canvas, area uv.Rectangle) {
 	area = area.Intersect(dst.Bounds())
 	if area.Empty() {
@@ -90,10 +101,13 @@ func (p *Pane) present(c *uv.Cell) uv.Cell {
 }
 
 // drawable reports whether content can be drawn as it is in a cell of the
-// given width: it holds no control character and, unless the outer terminal
-// measures grapheme clusters, the outer terminal's per-character (wcwidth)
-// measure agrees with the width.
+// given width: it is at most MaxCellBytes long, it holds no control
+// character and, unless the outer terminal measures grapheme clusters, the
+// outer terminal's per-character (wcwidth) measure agrees with the width.
 func drawable(content string, width int, graphemes bool) bool {
+	if len(content) > MaxCellBytes {
+		return false
+	}
 	if len(content) == 1 && content[0] >= 0x20 && content[0] < 0x7f {
 		return width == 1
 	}
