@@ -14,7 +14,7 @@ unqualified: grant events ignore payload identity; settlement is not bound to
 the full grant tuple; results after multiple switches and the default outcome
 are not generally guarded; INCOMPLETE is not a model outcome; state labels can
 be stale; controller attachment currency is not modeled; proofs can mutate
-following TRACE_INVALID; restart-lost retains excess state; request and
+following TRACE_INVALID; request and
 capture budgets have limitations; and issues do not identify delivery kind.
 The verifier does not establish correctness outside the supported slice.
 
@@ -25,5 +25,14 @@ this source. Six old-return holds, live input, credentials, durable admission,
 integration/release gates and real references remain outside this qualification.
 
 After completion of independent review, the intended execution command is
-`sh scripts/go-tool.sh test ./qualification/controllerhandoff`. It has not been
+`sh scripts/go-tool.sh test -count=1 -run '^TestFrozenControllerHandoff$' ./qualification/controllerhandoff`. It has not been
 run in this source-only phase.
+
+The verifier supports at most three request events per generation as a conservative
+finite input subset. This is not a concurrency budget: the model has one pending
+winner and immediate losers, and more than three simultaneous requests remain
+unrepresented and unqualified. Unsupported inputs yield ASSERT_INCOMPLETE.
+The binding labels syn-beta-1 and syn-beta-2 stand for contract sink labels
+syn-sink-1 and syn-sink-2 respectively. L23 retains only a contested boolean;
+it does not establish the contract's contested range [2,6). V11 has no event
+representing a forbidden claim and therefore is not a negative test of one.

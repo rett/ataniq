@@ -226,6 +226,9 @@ func (g *gate) refuse() {
 	}
 }
 func (g *gate) settle() {
+	if g.lostLedger {
+		return
+	}
 	if g.state != "fenced" || g.old.w != 0 || g.old.u != 0 {
 		return
 	}
@@ -240,6 +243,9 @@ func (g *gate) settle() {
 }
 func (g *gate) terminateWrite() {
 	g.stopped = true
+	if g.lostLedger {
+		return
+	}
 	if g.old.w > 0 {
 		g.old.u = g.old.w
 		g.old.d = g.old.q

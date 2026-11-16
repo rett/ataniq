@@ -7,6 +7,22 @@ type evidenceVerdict struct {
 	namespace, native, framing, semantic string
 }
 
+// evidenceSize independently checks every retained variable-length field.
+func evidenceSize(e event) (int, bool) {
+	size := 0
+	add := func(s string, limit int) bool { size += len(s); return len(s) <= limit }
+	ident := func(i identity) bool {
+		return add(i.binding, maxLabel) && add(i.controller, maxLabel) && add(i.context, maxLabel)
+	}
+	var req func(request) bool
+	req = func(r request) bool {
+		return add(r.id, maxLabel) && ident(r.identity) && add(r.successor, maxLabel) && add(r.mode, maxLabel)
+	}
+	write := func(w writeID) bool { return ident(w.identity) && req(w.request) }
+	ok := add(e.kind, maxLabel) && ident(e.identity) && req(e.request) && write(e.write) && add(e.proof.origin, maxLabel) && write(e.proof.write) && add(e.bytes, maxChunk) && add(e.attachment.name, maxLabel)
+	return size, ok
+}
+
 // inspectEvidence derives a shadow ledger from initial identity and raw events.
 // It is deliberately limited to the one-switch, bounded synthetic slice.
 func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, res result, truncated bool) evidenceVerdict {
@@ -19,6 +35,16 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 	}
 	if truncated || res.incomplete || len(trace) > maxEvents || len(sink) > maxEvents || initial.binding == "" || initial.controller == "" || initial.context == "" || initial.gi <= 0 || initial.generation != 1 || initial.azg <= 0 {
 		return v
+	}
+	if len(initial.binding) > maxLabel || len(initial.controller) > maxLabel || len(initial.context) > maxLabel {
+		return v
+	}
+	// Sink evidence is independently bounded, including labels embedded in writes.
+	for _, entry := range sink {
+		_, bounded := evidenceSize(event{write: entry.write, bytes: entry.bytes})
+		if !bounded || len(entry.sink) > maxLabel {
+			return v
+		}
 	}
 	cur := initial
 	l := ledger{known: true}
@@ -36,12 +62,16 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 	data := ""
 	total := 0
 	steps, zero, refusals := 0, 0, 0
+	requests, diagnostics := 0, 0
 	lower, stopped, revoked, invalidBinding, lostLedger, invalid, committed, opened := false, false, false, false, false, false, false, false
 	gone := map[string]bool{}
 	physical := map[string]string{}
 	used := map[int]bool{}
 	sinkPos := 0
 	settle := func() {
+		if lostLedger {
+			return
+		}
 		if state == "fenced" && l.w == 0 && l.u == 0 {
 			if mode == "hold" {
 				l.q = 0
@@ -55,6 +85,9 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 	}
 	terminate := func() {
 		stopped = true
+		if lostLedger {
+			return
+		}
 		if l.w > 0 {
 			l.u = l.w
 			l.d = l.q
@@ -94,6 +127,17 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 	}
 	for at, o := range trace {
 		e := o.event
+		size, bounded := evidenceSize(e)
+		if !bounded || size > maxDiagnostics-diagnostics {
+			return v
+		}
+		diagnostics += size
+		if e.kind == "request" {
+			requests++
+			if requests > 3 {
+				return v
+			}
+		}
 		// Grant payloads and attachment changes are outside the reviewed slice.
 		if (e.kind == "commit" || e.kind == "open" || e.kind == "revoke" || e.kind == "restart-preserved" || e.kind == "restart-lost" || e.kind == "disposition") && (e.identity != (identity{}) || e.request != (request{})) {
 			return v
@@ -268,6 +312,7 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 			expected.controller = grant.successor
 			if committed && !invalid && !invalidBinding && !lostLedger && !revoked && state == "closed" && cur == expected && attachmentCurrent() {
 				opened = true
+				requests = 0
 				historical = l
 				hasHistorical = true
 				l = ledger{known: true}
@@ -386,6 +431,9 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 		if o.ledger != l {
 			return bad("V3", at)
 		}
+		if !l.known && (l.k != 0 || l.w != 0 || l.q != 0 || l.u != 0 || l.d != 0) {
+			return bad("V12", at)
+		}
 		if l.known && !l.contested {
 			if l.k < 0 || l.f < 0 || l.w < 0 || l.q < 0 || l.u < 0 || l.d < 0 || (l.u == 0 && l.d == 0 && l.f+l.w+l.q != l.k) || ((l.u != 0 || l.d != 0) && (l.w != 0 || l.q != 0 || l.f+l.u+l.d != l.k)) {
 				return bad("V3", at)
@@ -462,7 +510,7 @@ func inspectEvidence(initial identity, trace []observation, sink []sinkEntry, re
 		}
 	}
 	// Unsupported terminal contexts do not confer a broad correctness claim.
-	if !invalid && !lostLedger && !invalidBinding && !opened && l.u == 0 && (l.w != 0 || l.q != 0 || state == "closed" || (state == "settled" && winner.id != "")) {
+	if !invalid && !lostLedger && !invalidBinding && !opened && l.u == 0 && (!stopped || l.w != 0 || l.q != 0 || state == "closed" || (state == "settled" && winner.id != "")) {
 		return v
 	}
 	v.assertion = "ASSERT_PASS"

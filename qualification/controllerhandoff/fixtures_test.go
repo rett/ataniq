@@ -164,6 +164,48 @@ func fixtureRows() []frozenFixture {
 	return rows
 }
 
+// Frozen dispositions are transcribed from the contract: A accepted, R refused.
+// Injection of proof-source evidence is not a gate event and has no position here.
+var frozenDispositions = map[string]string{
+	"L01": "AAA" + "AARAAAAAAA", "L02": "AAA" + "AAAAAAA",
+	"L03": "AAA" + "AAAAAAAA", "L04": "AAA" + "AAAAAARAAAA",
+	"L05": "AAA" + "AAAARAR", "L06": "AAA" + "AAAARAR", "L07": "AAA" + "AAAARAAA",
+	"L08": "AAA" + "AAAAARAR", "L09": "AAA" + "AAAAARAR", "L10": "AAA" + "AAAAARAR",
+	"L11": "AAA" + "AAAARAAA", "L12": "AAA" + "AAAARAAA", "L13": "AAA" + "AAAARAAA",
+	"L14": "AAA" + "AAAAARAAA", "L15": "AAA" + "AAAAARAAA", "L16": "AAA" + "AAAAARAAA",
+	"L17": "AAA" + "AAAA" + "AAAAAAAA" + "R", "L18": "AAA" + "AAAAAAAA" + "R",
+	"L19": "AAA" + "AAAAA" + "AAAA", "L20": "AAA" + "AAAAA" + "RR",
+	"L21": "AAA" + "AAAAA" + "RR", "L22": "AAA" + "AAAAA" + "RR",
+	"L23": "AAA" + "AAAAA" + "AAR", "L24": "AAA" + "AAARAR",
+	"L25": "AAA" + "AAAAARRAR", "L26": "AAA" + "AAAAARRAR",
+	"L27": "AAA" + "AAAAARR", "L28": "AAA" + "AAAARAR",
+	"L29": "AAA" + "AAAAA" + "ARR", "L30": "AAA" + "AAAAARR",
+	"L31": "AAA" + "AAARAAAA", "L32": "AAA" + "AARAAAAAAA" + "R",
+	"C01": "AAA" + "AARAAAAAAA", "C02": "AAA" + "AARAAAAAAA",
+	"C03": "AAA" + "AAAAA" + "RA", "C04": "AAA" + "AAAAA",
+}
+
+type frozenCheckpoint struct {
+	at   int
+	want ledger
+}
+
+// Indices refer to gate observations, excluding L23's proof-source injection.
+var frozenCheckpoints = map[string][]frozenCheckpoint{
+	"L03": {{6, ledger{k: 6, f: 5, q: 1, known: true}}},
+	"L04": {{6, ledger{k: 6, f: 2, q: 4, known: true}}, {8, ledger{k: 6, f: 2, u: 4, known: true}}},
+	"L05": {{6, ledger{k: 6, f: 2, u: 4, known: true}}}, "L06": {{6, ledger{k: 6, f: 2, u: 4, known: true}}}, "L07": {{6, ledger{k: 6, f: 2, u: 4, known: true}}},
+	"L08": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}}, "L09": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}}, "L10": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}},
+	"L11": {{6, ledger{k: 6, f: 2, u: 4, known: true}}}, "L12": {{6, ledger{k: 6, f: 2, u: 4, known: true}}}, "L13": {{6, ledger{k: 6, f: 2, u: 4, known: true}}},
+	"L14": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}}, "L15": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}}, "L16": {{7, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}},
+	"L17": {{6, ledger{k: 8, f: 2, w: 4, q: 2, known: true}}},
+	"L23": {{8, ledger{k: 8, f: 4, d: 4, known: true}}},
+	"L24": {{5, ledger{k: 6, f: 2, w: 4, known: true}}},
+	"L28": {{6, ledger{k: 8, f: 2, u: 4, d: 2, known: true}}},
+	"L30": {{6, ledger{k: 6, f: 2, u: 4, known: true}}},
+}
+var frozenViolationIndex = map[string]int{"C01": 7, "C02": 7, "C03": 10, "C04": 8}
+
 // Controls modify observations after the lawful base has run. Their ledger,
 // refusal and outcome expectations refer to the trusted pre-violation state.
 func mutateFixtureEvidence(kind string, r *result) {
@@ -237,6 +279,27 @@ func TestFrozenControllerHandoff(t *testing.T) {
 					t.Errorf("ranges U=%+v D=%+v; want U=%+v D=%+v", u, d, row.want.u, row.want.d)
 				}
 			}
+			wantVector, exists := frozenDispositions[row.name]
+			if !exists || len(wantVector) != len(got.trace) {
+				t.Errorf("dispositions length=%d want %q", len(got.trace), wantVector)
+			} else {
+				for i, observation := range got.trace {
+					if observation.accepted != (wantVector[i] == 'A') {
+						t.Errorf("event %d accepted=%t want %c", i, observation.accepted, wantVector[i])
+					}
+				}
+			}
+			for _, checkpoint := range frozenCheckpoints[row.name] {
+				if checkpoint.at >= len(got.trace) || got.trace[checkpoint.at].ledger != checkpoint.want {
+					t.Errorf("checkpoint %d does not match %+v", checkpoint.at, checkpoint.want)
+				}
+			}
+			if row.name == "L25" {
+				second, present := got.sinkBytes["syn-beta-2"]
+				if !got.goneSinks["syn-beta-1"] || got.sinkBytes["syn-beta-1"] != "abcd" || !present || second != "" {
+					t.Error("L25 sink evidence changed")
+				}
+			}
 			mutateFixtureEvidence(row.control, &got)
 			var sink strings.Builder
 			for _, s := range got.sink {
@@ -248,6 +311,13 @@ func TestFrozenControllerHandoff(t *testing.T) {
 				t.Errorf("sink=%q want %q", sink.String(), row.want.sink)
 			}
 			v := inspectEvidence(fixtureID, got.trace, got.sink, got, got.incomplete)
+			wantIndex := -1
+			if index, ok := frozenViolationIndex[row.name]; ok {
+				wantIndex = index
+			}
+			if v.event != wantIndex {
+				t.Errorf("violation index=%d want %d", v.event, wantIndex)
+			}
 			if v.assertion != row.want.assertion {
 				t.Errorf("assertion=%s want %s", v.assertion, row.want.assertion)
 			}
