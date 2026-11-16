@@ -6,6 +6,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-15
+
+### Added
+
+- Add a finite synthetic controller-handoff ledger, proof and generation model,
+  independent evidence verifier and 36 frozen rows, including four
+  mutated-evidence controls, plus five supplemental verifier checks.
+  Real controller authority, receiving-gate exclusivity, native attachment,
+  credential mediation and durable native admission remain unqualified.
+
+### Changed
+
+- Update README maturity and qualification scope to match this release.
+
 ## [0.0.7] - 2026-11-15
 
 ### Added

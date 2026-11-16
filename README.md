@@ -5,14 +5,19 @@ agents, tools, and local or remote sessions through extensible feature packs.
 
 ## Maturity
 
-The 0.0.7 release is a developer foundation with offline development checks and
-internal libraries. It adds private application contracts and an encrypted
-cursor codec with a bounded per-codec epoch reservation allocator. It also extends
-the Linux/amd64 SQLite default-VFS qualification harness with directory
-synchronization, checkpoint, close and failure schedules. These are internal
-components and bounded qualification tests. SQLite qualification requires the
-strict gate on a capable host. Production storage lifecycle remains unqualified. Pooling and
-authenticated live admission remain pending implementation. See the
+The 0.0.8 release is a developer foundation with offline development checks and
+internal libraries. It adds a finite synthetic controller-handoff model and
+independent evidence verifier. Its 32 lawful rows and four mutated-evidence
+controls matched the frozen expectations. Five supplemental verifier checks
+also passed. These results cover bounded model consistency and detection of the four frozen
+mutated-evidence controls only. Real controller authority, exclusive receiving routes and native
+attachment remain unqualified.
+
+Earlier releases provide private application contracts, an encrypted cursor
+codec with a bounded per-codec epoch reservation allocator, and Linux/amd64
+SQLite default-VFS qualification. SQLite qualification requires the strict gate
+on a capable host. Production storage lifecycle remains unqualified. Pooling
+and authenticated live admission remain pending implementation. See the
 [settlement qualification guide](qualification/sqlitesettlement/README.md).
 
 | Area | Current status |
@@ -21,6 +26,7 @@ authenticated live admission remain pending implementation. See the
 | Journal | Shipped guarded persistent Linux SQLite journal and trusted read-only preflight for existing stores. Production durability remains unqualified. See the [journal design](docs/design/journal.md) and [settlement limits](qualification/sqlitesettlement/README.md). |
 | Commands | Shipped public typed command contracts, strict JSON codecs and canonical binary bindings. Private internal administration, resource, status and conflict contracts add bounded canonical arithmetic. Public v1 contracts and vectors are retained. See the [application contracts](docs/design/application-contracts.md) and [private contract source](internal/appcontract/admin.go). |
 | Cursors | Internal v2 encrypted cursor codec with strict canonical decoding and a bounded epoch reservation allocator per codec. Tests cover rotation, concurrent reservations, failed-mint consumption and fresh construction without received-epoch adoption. See the [cursor source](internal/appcontract/cursor.go). |
+| Controller qualification | Finite synthetic ledger, proof and generation checks with an independent verifier. Broader model behavior and real authority, gate and provider composition remain unqualified. See the [controller qualification scope](qualification/controllerhandoff/README.md). |
 | Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes remain on separate development branches and are outside this release. |
 
 Cursor service composition must provide caller authentication and authorization,
@@ -31,7 +37,7 @@ or RNG-state cloning requires fresh-entropy restart before minting.
 
 The design intent is provider and platform neutral. Current provider-specific
 coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
-qualification fixtures.
+qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
 
