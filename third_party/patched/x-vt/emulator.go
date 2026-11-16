@@ -84,6 +84,9 @@ func NewEmulator(w, h int) *Emulator {
 	t := new(Emulator)
 	t.scrs[0] = *NewScreen(w, h)
 	t.scrs[1] = *NewScreen(w, h)
+	// The alternate screen keeps no scrollback, as in real terminals.
+	// SetScrollbackSize changes the main screen only, so it stays none.
+	t.scrs[1].SetScrollback(nil)
 	t.scr = &t.scrs[0]
 	t.scrs[0].cb = &t.cb
 	t.scrs[1].cb = &t.cb
@@ -461,9 +464,8 @@ func (e *Emulator) logf(format string, v ...any) {
 	}
 }
 
-// Scrollback returns the scrollback buffer for the main screen.
-// Returns nil if the terminal is in alternate screen mode, as the alternate
-// screen typically doesn't use scrollback.
+// Scrollback returns the scrollback buffer for the main screen, whichever
+// screen is active. The alternate screen keeps no scrollback.
 func (e *Emulator) Scrollback() *Scrollback {
 	// Return main screen's scrollback only
 	return e.scrs[0].Scrollback()
@@ -489,7 +491,8 @@ func (e *Emulator) ScrollbackCellAt(x, y int) *uv.Cell {
 	return sb.CellAt(x, y)
 }
 
-// SetScrollbackSize sets the maximum number of lines in the scrollback buffer.
+// SetScrollbackSize sets the maximum number of lines in the main screen's
+// scrollback buffer.
 func (e *Emulator) SetScrollbackSize(maxLines int) {
 	e.scrs[0].SetScrollbackSize(maxLines)
 }

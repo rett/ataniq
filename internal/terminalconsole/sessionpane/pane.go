@@ -99,7 +99,9 @@ func New(cols, rows int, o Options) *Pane {
 	if p.input == nil {
 		p.input = Discard{}
 	}
-	// The pane keeps no scrollback; one line is the smallest x/vt accepts.
+	// The pane keeps no scrollback; one line is the smallest x/vt accepts
+	// for the main screen. The patched x/vt keeps none for the alternate
+	// screen.
 	p.emu.SetScrollbackSize(1)
 	p.install()
 	p.setColours(o.Colours)

@@ -80,7 +80,7 @@ func TestPatchedModuleNotices(t *testing.T) {
 		dir, module, version string
 		patches              []string
 	}{
-		{"x-vt", "github.com/charmbracelet/x/vt", "v0.1.0", []string{"keep a grapheme cluster open across writes", "add OpenCluster"}},
+		{"x-vt", "github.com/charmbracelet/x/vt", "v0.1.0", []string{"keep a grapheme cluster open across writes", "add OpenCluster", "keep no scrollback for the alternate screen"}},
 		{"x-ansi", "github.com/charmbracelet/x/ansi", "v0.11.9", []string{"do not end string data on a 0x9C byte inside a UTF-8 character", "do not end decoded string data on a 0x9C byte inside a UTF-8 character"}},
 	} {
 		dir := filepath.Join(root(t), "third_party", "patched", tc.dir)

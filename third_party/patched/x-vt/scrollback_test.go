@@ -1,6 +1,9 @@
 package vt
 
 import (
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -163,4 +166,105 @@ func TestScrollback(t *testing.T) {
 			t.Errorf("expected empty scrollback after ED 3, got %d", e.ScrollbackLen())
 		}
 	})
+}
+
+// numberedLines returns n lines "<prefix><i>", each ended by CR LF.
+func numberedLines(prefix string, n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "%s%d\r\n", prefix, i)
+	}
+	return b.String()
+}
+
+// The alternate screen keeps no scrollback, as in real terminals. It used to
+// get the default of 10000 lines, which nothing could read or limit, so a
+// full-screen program that scrolled a lot grew the emulator without bound.
+// Scrollback and ScrollbackLen report the main screen's scrollback whichever
+// screen is active.
+func TestAltScreenKeepsNoScrollback(t *testing.T) {
+	noAltScrollback := func(t *testing.T, e *Emulator, when string) {
+		t.Helper()
+		if sb := e.scrs[1].Scrollback(); sb.Len() != 0 || sb.MaxLines() != 0 {
+			t.Errorf("%s: the alternate screen's scrollback holds %d lines of %d, want 0 of 0", when, sb.Len(), sb.MaxLines())
+		}
+	}
+	e := NewEmulator(20, 5)
+	noAltScrollback(t, e, "new emulator")
+	e.WriteString(numberedLines("main ", 10))
+	mainLen := e.ScrollbackLen()
+	if mainLen == 0 {
+		t.Fatal("the main screen kept no scrollback")
+	}
+	for _, mode := range []string{"1049", "1047"} {
+		e.WriteString("\x1b[?" + mode + "h")
+		if !e.IsAltScreen() {
+			t.Fatalf("mode %s: not on the alternate screen", mode)
+		}
+		e.WriteString(numberedLines("alt ", 1000))
+		noAltScrollback(t, e, "mode "+mode+" after scrolling")
+		// ED 2 saves the screen to scrollback on the main screen.
+		e.WriteString("\x1b[2J")
+		noAltScrollback(t, e, "mode "+mode+" after ED 2")
+		// A scroll region whose top is not the first line.
+		e.WriteString("\x1b[2;4r\x1b[4;1H" + numberedLines("region ", 20) + "\x1b[r")
+		noAltScrollback(t, e, "mode "+mode+" after scrolling a region")
+		e.Resize(30, 8)
+		e.SetScrollbackSize(50)
+		e.WriteString(numberedLines("resized ", 100))
+		noAltScrollback(t, e, "mode "+mode+" after a resize")
+		if got := e.ScrollbackLen(); got != mainLen {
+			t.Errorf("mode %s: ScrollbackLen on the alternate screen is %d, want the main screen's %d", mode, got, mainLen)
+		}
+		if e.Scrollback() != e.scrs[0].Scrollback() {
+			t.Errorf("mode %s: Scrollback on the alternate screen is not the main screen's", mode)
+		}
+		e.WriteString("\x1b[?" + mode + "l")
+		if e.IsAltScreen() {
+			t.Fatalf("mode %s: still on the alternate screen", mode)
+		}
+		if got := e.ScrollbackLen(); got != mainLen {
+			t.Errorf("mode %s: the main screen's scrollback is %d lines after the alternate screen, want %d", mode, got, mainLen)
+		}
+		e.Resize(20, 5)
+	}
+	e.WriteString("\x1bc") // RIS
+	e.WriteString("\x1b[?1049h" + numberedLines("after reset ", 100))
+	noAltScrollback(t, e, "after a full reset")
+}
+
+// The main screen still keeps the lines that scroll off it, up to the size
+// SetScrollbackSize sets, and keeps them across a visit to the alternate
+// screen.
+func TestMainScreenScrollbackObeysSize(t *testing.T) {
+	e := NewEmulator(10, 3)
+	e.WriteString(numberedLines("l", 20))
+	// l18, l19 and the cursor's empty line are on the screen.
+	if got := e.ScrollbackLen(); got != 18 {
+		t.Fatalf("scrollback holds %d lines, want 18", got)
+	}
+	if got := e.Scrollback().MaxLines(); got != DefaultScrollbackSize {
+		t.Errorf("scrollback size is %d, want the default %d", got, DefaultScrollbackSize)
+	}
+	e.SetScrollbackSize(5)
+	if got := e.Scrollback().MaxLines(); got != 5 {
+		t.Errorf("scrollback size is %d after SetScrollbackSize(5)", got)
+	}
+	check := func(when string, want ...string) {
+		t.Helper()
+		var got []string
+		for _, l := range e.Scrollback().Lines() {
+			got = append(got, l.String())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: scrollback is %q, want %q", when, got, want)
+		}
+	}
+	check("after SetScrollbackSize(5)", "l13", "l14", "l15", "l16", "l17")
+	e.WriteString(numberedLines("m", 4))
+	check("after more lines", "l17", "l18", "l19", "m0", "m1")
+	e.WriteString("\x1b[?1049h" + numberedLines("alt ", 50) + "\x1b[?1049l")
+	check("after the alternate screen", "l17", "l18", "l19", "m0", "m1")
+	e.SetScrollbackSize(2)
+	check("after SetScrollbackSize(2)", "m0", "m1")
 }
