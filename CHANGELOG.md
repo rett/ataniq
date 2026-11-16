@@ -20,8 +20,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `make doctor` checks offline that every package and test loads from the
-  module cache with hashes matching `go.sum`, and that cached modules are
+- `make doctor` checks offline that every package and test for the host
+  platform loads from the module cache with hashes matching `go.sum`, and that cached modules are
   unchanged since download. It prints the Go diagnostic, which names the
   failing module when the failure is in a module, and leaves out Go's
   `go: downloading` lines, which are misleading offline. A missing module is fixed
