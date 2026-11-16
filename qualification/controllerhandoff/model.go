@@ -9,7 +9,6 @@ const (
 	maxLabel       = 512
 	maxDiagnostics = 64 << 10
 	maxGenerations = 4
-	maxRequests    = 3
 	stepCap        = 8
 	zeroCap        = 3
 )
@@ -22,6 +21,14 @@ type identity struct {
 	generation int
 	azg        int
 }
+
+// attachment is synthetic oracle state, independent of controller assignment.
+type attachment struct {
+	name       string
+	generation int
+	authorized bool
+}
+
 type request struct {
 	id        string
 	identity  identity
@@ -56,13 +63,14 @@ type ledger struct {
 	contested bool
 }
 type event struct {
-	kind     string
-	identity identity
-	request  request
-	write    writeID
-	proof    proof
-	bytes    string
-	credit   int
+	kind       string
+	identity   identity
+	request    request
+	write      writeID
+	proof      proof
+	bytes      string
+	credit     int
+	attachment attachment
 }
 type observation struct {
 	event    event
@@ -85,35 +93,38 @@ type result struct {
 
 // gate retains only observations delivered to it, never the sink's private log.
 type gate struct {
-	current        identity
-	old            ledger
-	historical     ledger
-	hasHistorical  bool
-	data           string
-	state          string
-	mode           string
-	winning        request
-	pending        writeID
-	history        map[int]writeID
-	applied        map[int]int
-	trace          []observation
-	refusals       int
-	steps          int
-	zero           int
-	totalBytes     int
-	generations    int
-	requests       map[request]bool
-	lower          bool
-	incomplete     bool
-	invalid        bool
-	invalidBinding bool
-	lostLedger     bool
-	stopped        bool
-	committed      bool
-	opened         bool
-	revoked        bool
-	grant          request
-	settlement     ledger
+	current               identity
+	old                   ledger
+	historical            []ledger
+	historicalGenerations []int
+	data                  string
+	state                 string
+	mode                  string
+	winning               request
+	pending               writeID
+	history               map[int]writeID
+	applied               map[int]int
+	trace                 []observation
+	refusals              int
+	steps                 int
+	zero                  int
+	totalBytes            int
+	generations           int
+	attachments           map[string]attachment
+	winningAttachment     attachment
+	previousWinners       []request
+	diagnosticBytes       int
+	lower                 bool
+	incomplete            bool
+	invalid               bool
+	invalidBinding        bool
+	lostLedger            bool
+	stopped               bool
+	committed             bool
+	opened                bool
+	revoked               bool
+	grant                 request
+	settlement            ledger
 }
 
 // syntheticSink retains raw, independently observable outcomes. The gate sees
@@ -173,7 +184,7 @@ func (m *model) result() result {
 }
 
 func newGate(id identity) *gate {
-	return &gate{current: id, old: ledger{known: true}, state: "steady", generations: 1, requests: make(map[request]bool), history: make(map[int]writeID), applied: make(map[int]int)}
+	return &gate{current: id, old: ledger{known: true}, state: "steady", generations: 1, incomplete: !validCurrentIdentity(id), attachments: map[string]attachment{"a1": {name: "a1", generation: 1, authorized: true}, "b1": {name: "b1", generation: 1, authorized: true}}, history: make(map[int]writeID), applied: make(map[int]int)}
 }
 func (g *gate) refuse() {
 	if g.refusals < maxRefusals {
@@ -220,14 +231,35 @@ func (g *gate) fence(mode string) { g.mode = mode; g.state = "fenced"; g.settle(
 func validIdentity(i identity) bool {
 	return len(i.binding) <= maxLabel && len(i.controller) <= maxLabel && len(i.context) <= maxLabel
 }
+func validCurrentIdentity(i identity) bool {
+	return validIdentity(i) && i.binding != "" && i.controller != "" && i.context != "" && i.gi > 0 && i.generation > 0 && i.azg > 0
+}
+
 func validRequest(r request) bool {
 	return len(r.id) <= maxLabel && len(r.successor) <= maxLabel && len(r.mode) <= maxLabel && validIdentity(r.identity)
 }
 func validEvent(e event) bool {
-	return len(e.kind) <= maxLabel && len(e.bytes) <= maxChunk && len(e.proof.origin) <= maxLabel &&
+	return len(e.kind) <= maxLabel && len(e.bytes) <= maxChunk && len(e.proof.origin) <= maxLabel && len(e.attachment.name) <= maxLabel &&
 		validIdentity(e.identity) && validRequest(e.request) && validIdentity(e.write.identity) &&
 		validRequest(e.write.request) && validIdentity(e.proof.write.identity) && validRequest(e.proof.write.request)
 }
+
+// diagnosticSize counts all variable-length fields retained in an observation.
+// Each field is individually bounded before this sum is evaluated.
+func diagnosticSize(e event) int {
+	identitySize := func(i identity) int { return len(i.binding) + len(i.controller) + len(i.context) }
+	requestSize := func(r request) int { return len(r.id) + identitySize(r.identity) + len(r.successor) + len(r.mode) }
+	writeSize := func(w writeID) int { return identitySize(w.identity) + requestSize(w.request) }
+	return len(e.kind) + identitySize(e.identity) + requestSize(e.request) + writeSize(e.write) + len(e.proof.origin) + writeSize(e.proof.write) + len(e.bytes) + len(e.attachment.name)
+}
+
+func (g *gate) attachmentCurrent() bool {
+	a, exists := g.attachments[g.winning.successor]
+	return exists && a.authorized && a.generation > 0 && a == g.winningAttachment
+}
+
+const maxInt = int(^uint(0) >> 1)
+
 func (g *gate) apply(e event, validated bool) bool {
 	if g.incomplete {
 		return false
@@ -242,6 +274,13 @@ func (g *gate) apply(e event, validated bool) bool {
 		g.incomplete = true
 		return false
 	}
+	size := diagnosticSize(e)
+	if size > maxDiagnostics-g.diagnosticBytes {
+		g.stopped = true
+		g.incomplete = true
+		return false
+	}
+	g.diagnosticBytes += size
 	ok := false
 	switch e.kind {
 	case "accept":
@@ -261,20 +300,22 @@ func (g *gate) apply(e event, validated bool) bool {
 		}
 	case "request":
 		r := e.request
-		if !g.requests[r] {
-			if len(g.requests) >= maxRequests {
-				g.stopped = true
-				g.incomplete = true
+		staleID := false
+		for _, previous := range g.previousWinners {
+			if previous.id == r.id {
+				staleID = true
 				break
 			}
-			g.requests[r] = true
 		}
-		if g.winning.id != "" && r == g.winning && r.identity == g.current && !g.revoked && !g.invalidBinding && !g.invalid && !g.lostLedger {
+		if staleID {
+			g.refuse()
+		} else if g.winning.id != "" && r == g.winning && r.identity == g.current && !g.revoked && !g.invalidBinding && !g.invalid && !g.lostLedger {
 			ok = true
 		} else if g.winning.id != "" || g.state != "steady" || g.stopped || r.id == "" || len(r.id) > maxLabel || r.identity != g.current || (r.mode != "hold" && r.mode != "drain") || r.successor == "" {
 			g.refuse()
 		} else {
 			g.winning = r
+			g.winningAttachment = g.attachments[r.successor]
 			g.fence(r.mode)
 			ok = true
 		}
@@ -342,9 +383,14 @@ func (g *gate) apply(e event, validated bool) bool {
 			if old != p.j {
 				g.invalid = true
 				g.stopped = true
-				if g.hasHistorical && p.write.identity.generation != g.current.generation {
-					g.historical.contested = true
-				} else {
+				found := false
+				for i, generation := range g.historicalGenerations {
+					if generation == p.write.identity.generation {
+						g.historical[i].contested = true
+						found = true
+					}
+				}
+				if !found {
 					g.old.contested = true
 				}
 				g.state = "trace-invalid"
@@ -367,12 +413,12 @@ func (g *gate) apply(e event, validated bool) bool {
 			g.refuse()
 		}
 	case "commit":
-		if g.generations >= maxGenerations {
-			g.stopped = true
-			g.incomplete = true
-			break
-		}
-		if !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.generations < maxGenerations && g.state == "settled" && g.winning.id != "" && g.winning.identity == g.current && g.old.w == 0 && g.old.q == 0 && g.old.u == 0 {
+		if !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.state == "settled" && g.winning.id != "" && g.winning.identity == g.current && g.attachmentCurrent() && g.old.w == 0 && g.old.q == 0 && g.old.u == 0 {
+			if g.generations >= maxGenerations || g.current.generation == maxInt {
+				g.stopped = true
+				g.incomplete = true
+				break
+			}
 			g.grant = g.winning
 			g.settlement = g.old
 			g.current.generation++
@@ -385,14 +431,13 @@ func (g *gate) apply(e event, validated bool) bool {
 			g.refuse()
 		}
 	case "open":
-		if g.committed && !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.state == "closed" && g.current.binding == g.grant.identity.binding && g.current.gi == g.grant.identity.gi && g.current.azg == g.grant.identity.azg && g.current.context == g.grant.identity.context && g.current.generation == g.grant.identity.generation+1 && g.current.controller == g.grant.successor && g.old == g.settlement {
+		if g.committed && !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.state == "closed" && g.current.binding == g.grant.identity.binding && g.current.gi == g.grant.identity.gi && g.current.azg == g.grant.identity.azg && g.current.context == g.grant.identity.context && g.current.generation == g.grant.identity.generation+1 && g.current.controller == g.grant.successor && g.attachmentCurrent() && g.old == g.settlement {
 			g.opened = true
-			if !g.hasHistorical {
-				g.historical = g.old
-				g.hasHistorical = true
-			}
+			g.historical = append(g.historical, g.old)
+			g.historicalGenerations = append(g.historicalGenerations, g.grant.identity.generation)
 			g.old = ledger{known: true}
 			g.data = ""
+			g.previousWinners = append(g.previousWinners, g.winning)
 			g.winning = request{}
 			g.pending = writeID{}
 			g.mode = ""
@@ -404,7 +449,26 @@ func (g *gate) apply(e event, validated bool) bool {
 		} else {
 			g.refuse()
 		}
+	case "attachment":
+		a := e.attachment
+		if a.name == "" || a.generation <= 0 {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
+		previous, exists := g.attachments[a.name]
+		if !exists || a.generation <= previous.generation {
+			g.refuse()
+			break
+		}
+		g.attachments[a.name] = a
+		ok = true
 	case "revoke":
+		if g.current.azg == maxInt {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
 		g.current.azg++
 		g.revoked = true
 		g.stopped = true
@@ -419,10 +483,20 @@ func (g *gate) apply(e event, validated bool) bool {
 		g.state = "invalid-binding"
 		ok = true
 	case "restart-preserved":
+		if g.current.gi == maxInt {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
 		g.current.gi++
 		g.stopped = true
 		ok = true
 	case "restart-lost":
+		if g.current.gi == maxInt {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
 		g.current.gi++
 		g.stopped = true
 		g.lostLedger = true
@@ -432,6 +506,8 @@ func (g *gate) apply(e event, validated bool) bool {
 	case "disposition":
 		ok = true
 	case "projection":
+		g.refuse()
+	default:
 		g.refuse()
 	}
 	g.trace = append(g.trace, observation{e, ok, g.old})
@@ -456,8 +532,8 @@ func (g *gate) result() result {
 		outcome = "DRAIN_INCOMPLETE"
 	}
 	old := g.old
-	if g.hasHistorical {
-		old = g.historical
+	if len(g.historical) > 0 {
+		old = g.historical[0]
 	}
 	return result{old: old, trace: append([]observation(nil), g.trace...), refusals: g.refusals, refusalsLowerBound: g.lower, outcome: outcome, namespace: "synthetic", native: "UNAVAILABLE", framing: "NOT_ESTABLISHED", semantic: "NOT_ESTABLISHED", incomplete: g.incomplete}
 }
