@@ -22,9 +22,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `make doctor` checks offline that every package and test loads from the
   module cache with hashes matching `go.sum`, and that cached modules are
-  unchanged since download. It prints the Go diagnostic naming the failing
-  module. A missing or mismatched module is fixed with `make bootstrap`; a
-  modified one must first be removed from the module cache.
+  unchanged since download. It prints the Go diagnostic, which names the
+  failing module when the failure is in a module. A missing module is fixed
+  with `make bootstrap`; a checksum mismatch by restoring `go.sum` or removing
+  the named module from the module cache; a modified module must first be
+  removed from the module cache.
 
 ## [0.0.8] - 2026-11-15
 
