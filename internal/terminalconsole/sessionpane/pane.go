@@ -31,6 +31,10 @@ type Options struct {
 	// and must not call the pane: the emulator cannot answer the next query
 	// until it returns. Nil discards every reply.
 	Replies func(p []byte)
+
+	// Colours are the colours reported to the session's colour queries. A
+	// nil colour is reported as the matching NeutralColours entry.
+	Colours Colours
 }
 
 // Pane is an embedded session pane. Its methods are safe for concurrent use.
@@ -41,6 +45,10 @@ type Pane struct {
 	emu *vt.Emulator
 
 	cols, rows int
+
+	dec       decModes
+	title     string
+	clipboard int
 
 	ended       bool
 	status      int
@@ -65,6 +73,8 @@ func New(cols, rows int, o Options) *Pane {
 	}
 	// The pane keeps no scrollback; one line is the smallest x/vt accepts.
 	p.emu.SetScrollbackSize(1)
+	p.install()
+	p.setColours(o.Colours)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read
 	// checks on the drain goroutine without a lock.

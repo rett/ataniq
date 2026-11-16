@@ -12,3 +12,6 @@ func ScreenText(p *Pane) string {
 	defer p.mu.Unlock()
 	return strings.TrimRight(p.emu.String(), "\n")
 }
+
+// CleanTitle is cleanTitle, for tests.
+func CleanTitle(b []byte) string { return cleanTitle(b) }
