@@ -10,7 +10,10 @@ disclosure. Hidden and absent results must remain nonrevealing. The backend must
 treat context cancellation as detachment from observation, never as cancellation
 of durable work. There are no automatic retries; callers retain the exact
 command identity for any later reconciliation. These ports and outputs require
-reconciliation with the real authenticated service and read ports before merge.
+reconciliation with the real authenticated service and read ports before any
+executable or transport uses them. In particular the port cannot yet return an
+authorized conflict observation (the current revision) or the current status of
+an exact duplicate.
 
 The provisional port has `Submit(ctx, Envelope) (AdmissionReceipt, error)` and
 `Show(ctx, CommandKey) (CurrentStatus, error)`. It returns a domain error for an
@@ -37,7 +40,8 @@ reconciliation record or the original receipt.
 `command submit --file PATH --format json` reads at most appmodel.MaxWireBytes;
 `-` reads stdin. `command show --authority A --client C --id ID --format json`
 looks up that exact key. Flags are required once, as separate arguments. `help`,
-`--help`, and `completion bash|zsh|fish` emit static text without a backend.
+`--help`, and `completion bash|zsh|fish` emit static text without a backend;
+completions cover top-level words only.
 
 Machine output is one JSON object followed by LF. Success is `kind: receipt`
 with `command` (`authority`, `client_id`, `id`), lowercase hex `digest`,
