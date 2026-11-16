@@ -80,8 +80,9 @@ rationale, dependencies, requested acceptance and authorized inputs. Receiving
 a request does not authorize execution. The target project owns prioritization,
 implementation and acceptance; its lead may accept and schedule within the
 grant, local scope and enforceable budget, and escalates exceptions to the
-owner. Acceptance links the request to target work and records policy and
-revisions. Changes to material terms require renewed admission.
+target project's owner. Acceptance links the request to target work and
+records policy and revisions. Changes to material terms require renewed
+admission.
 
 Status, dependencies and returned evidence remain linked with source and target
 provenance. Share only permitted data; a digest or metadata does not grant read

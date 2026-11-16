@@ -2,9 +2,10 @@
 
 Status: proposed, not implemented. The terminal console, the later web console
 and the CLI use one versioned typed Ataniq command and event contract and
-authorization path. WebSocket is primary; HTTP commands plus resumable SSE are
-the fallback. Transport changes do not change authority, capabilities, command
-identities or durable cursor semantics. One authoritative provider binding is
+authorization path. The first client transport is an owner decision still to
+be made; WebSocket, and HTTP commands plus resumable SSE, are candidates.
+Transport changes do not change authority, capabilities, command identities or
+durable cursor semantics. One authoritative provider binding is
 multiplexed to authorized Ataniq clients. Optional native coexistence requires
 direct, version-specific provider evidence; no second connection, terminal
 scraping or routing workaround creates support.
@@ -104,8 +105,9 @@ Use two enrolled clients, a deterministic journal and both transports:
    never report a successful empty replay as complete history.
 4. Race a decision backed by the owner's direct words or a verifying grant
    against one backed by neither. Only the backed decision may resolve the
-   approval; a later decision is stale. Race two backed decisions and assert
-   exactly one durable resolution.
+   approval; a later decision is stale. A grant-backed decision applies only
+   once grants are honoured for that gate. Race two backed decisions and
+   assert exactly one durable resolution.
 5. Revoke a client during an active subscription. Assert subsequent protected
    events, commands and artifact reads are denied, including after reconnect.
 6. Saturate a bounded subscriber buffer. Assert explicit disconnection and
