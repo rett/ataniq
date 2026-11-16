@@ -35,6 +35,9 @@ select_offline() {
   fi
   return 1
 }
+show_diag() {
+  printf '%s\n' "$1" | while IFS= read -r line; do printf '  %s\n' "$line"; done
+}
 case "${1-}" in
   doctor)
     status=0
@@ -49,11 +52,18 @@ case "${1-}" in
     if command -v go >/dev/null 2>&1; then
       if select_offline; then
         printf 'ok: %s\n' "$actual"
-        # Every module in the build list must be in the module cache and match go.sum.
-        if "$selected" mod verify >/dev/null 2>&1; then
-          printf 'ok: module dependencies verified offline\n'
+        # Every package and test of this module must load offline: each module
+        # they need is in the module cache and its hash matches go.sum.
+        # A cached module must also be unchanged since it was downloaded.
+        # The Go diagnostic is shown, indented, so the module is named.
+        if ! diag=$("$selected" list -deps -test ./... 2>&1 >/dev/null); then
+          show_diag "$diag"
+          printf 'fail: module dependencies missing or not matching go.sum; run make bootstrap\n'; status=1
+        elif ! diag=$("$selected" mod verify 2>&1); then
+          show_diag "$diag"
+          printf 'fail: cached module dependencies modified; remove the named module from the module cache (its files are read-only; run chmod -R u+w on it first, or use go clean -modcache), then run make bootstrap\n'; status=1
         else
-          printf 'fail: module dependencies missing or modified; run make bootstrap\n'; status=1
+          printf 'ok: module dependencies available and unmodified offline\n'
         fi
       else
         printf 'fail: selected Go %s unavailable or mismatched; run make bootstrap\n' "$version"; status=1
