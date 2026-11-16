@@ -47,7 +47,8 @@ type Options struct {
 	Input InputSink
 
 	// Clock returns the current time, for the synchronized output time
-	// limit. Nil means time.Now; tests inject their own.
+	// limit. Nil means time.Now; tests inject their own. It is called under
+	// the pane's lock and must not call the pane.
 	Clock func() time.Time
 }
 
