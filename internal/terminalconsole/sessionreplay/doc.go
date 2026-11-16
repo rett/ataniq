@@ -36,4 +36,15 @@
 // Recordings are untrusted input. The limits are MaxCols and MaxRows for a
 // terminal size, MaxChunk for one chunk, MaxEvents for the records, MaxAt for
 // a time and MaxBytes for the whole file.
+//
+// # Fixtures
+//
+// The package embeds synthetic recordings from testdata, made by the
+// deterministic generator in package fixturegen and written by the program in
+// cmd/genfixtures. Their text is made up and fixed in the generator. After a
+// change to the generator, regenerate them from the package directory:
+//
+//	go generate ./...
+//
+// A test fails when the embedded files differ from the generator's output.
 package sessionreplay

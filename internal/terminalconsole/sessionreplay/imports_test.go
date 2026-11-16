@@ -11,10 +11,13 @@ import (
 )
 
 // Each directory lists the imports its non-test files must not have. The
-// player and the format are pure: no processes, network, system calls, files,
-// unsafe, terminal emulator or pane. A test file may use os.
+// format, the player and the generator are pure: no processes, network,
+// system calls, files, unsafe, terminal emulator or pane. Only the generator's
+// command may use os, to write files. A test file may use os.
 var denied = map[string]func(path string) bool{
-	".": func(p string) bool { return deniedPure(p) || p == "os" },
+	".":               func(p string) bool { return deniedPure(p) || p == "os" },
+	"fixturegen":      func(p string) bool { return deniedPure(p) || p == "os" },
+	"cmd/genfixtures": deniedPure,
 }
 
 func deniedPure(p string) bool {
