@@ -33,3 +33,15 @@ func TestFlagDiagnosticsDoNotEchoControlSequences(t *testing.T) {
 		t.Fatal(err.String())
 	}
 }
+
+func TestInvalidFlagPrintsUsageOnce(t *testing.T) {
+	for _, args := range [][]string{{"--unknown"}, {"--theme", "blue"}, {"--demo", "extra"}} {
+		var out, err bytes.Buffer
+		if code := run(args, &out, &err); code != 2 {
+			t.Fatalf("%v: %d", args, code)
+		}
+		if n := strings.Count(err.String(), "Usage:"); n != 1 {
+			t.Fatalf("%v: usage printed %d times: %s", args, n, err.String())
+		}
+	}
+}
