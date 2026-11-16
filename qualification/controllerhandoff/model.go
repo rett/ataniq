@@ -2,28 +2,38 @@
 package controllerhandoff
 
 const (
-	maxStream   = 16 << 10
-	maxChunk    = 4096
-	maxEvents   = 2048
-	maxRefusals = 64
-	maxLabel    = 512
-	stepCap     = 8
-	zeroCap     = 3
+	maxStream      = 16 << 10
+	maxChunk       = 4096
+	maxEvents      = 2048
+	maxRefusals    = 64
+	maxLabel       = 512
+	maxDiagnostics = 64 << 10
+	maxGenerations = 4
+	maxRequests    = 3
+	stepCap        = 8
+	zeroCap        = 3
 )
 
 type identity struct {
-	binding, controller, context string
-	gi, generation, azg          int
+	binding    string
+	controller string
+	context    string
+	gi         int
+	generation int
+	azg        int
 }
 type request struct {
-	id              string
-	identity        identity
-	successor, mode string
+	id        string
+	identity  identity
+	successor string
+	mode      string
 }
 type writeID struct {
-	identity       identity
-	request        request // zero value when no request existed at issuance
-	id, start, end int
+	identity identity
+	request  request // zero value when no request existed at issuance
+	id       int
+	start    int
+	end      int
 }
 type proof struct {
 	origin string
@@ -36,9 +46,14 @@ type sinkEntry struct {
 	bytes string
 }
 type ledger struct {
-	k, f, w, q, u, d int
-	known            bool
-	contested        bool
+	k         int
+	f         int
+	w         int
+	q         int
+	u         int
+	d         int
+	known     bool
+	contested bool
 }
 type event struct {
 	kind     string
@@ -55,35 +70,110 @@ type observation struct {
 	ledger   ledger
 }
 type result struct {
-	old                                  ledger
-	sink                                 []sinkEntry
-	trace                                []observation
-	refusals                             int
-	refusalsLowerBound                   bool
-	outcome                              string
-	namespace, native, framing, semantic string
-	incomplete                           bool
+	old                ledger
+	sink               []sinkEntry
+	trace              []observation
+	refusals           int
+	refusalsLowerBound bool
+	outcome            string
+	namespace          string
+	native             string
+	framing            string
+	semantic           string
+	incomplete         bool
 }
 
+// gate retains only observations delivered to it, never the sink's private log.
 type gate struct {
-	current                                                                         identity
-	old                                                                             ledger
-	data                                                                            string
-	state, mode                                                                     string
-	winning                                                                         request
-	pending                                                                         writeID
-	history                                                                         map[int]writeID
-	applied                                                                         map[int]int
-	sink                                                                            []sinkEntry
-	trace                                                                           []observation
-	refusals, steps, zero                                                           int
-	lower, invalid, invalidBinding, lostLedger, stopped, committed, opened, revoked bool
-	grant                                                                           request
-	settlement                                                                      ledger
+	current        identity
+	old            ledger
+	historical     ledger
+	hasHistorical  bool
+	data           string
+	state          string
+	mode           string
+	winning        request
+	pending        writeID
+	history        map[int]writeID
+	applied        map[int]int
+	trace          []observation
+	refusals       int
+	steps          int
+	zero           int
+	totalBytes     int
+	generations    int
+	requests       map[request]bool
+	lower          bool
+	incomplete     bool
+	invalid        bool
+	invalidBinding bool
+	lostLedger     bool
+	stopped        bool
+	committed      bool
+	opened         bool
+	revoked        bool
+	grant          request
+	settlement     ledger
+}
+
+// syntheticSink retains raw, independently observable outcomes. The gate sees
+// only a delivered result or the proof source's validation at an event boundary.
+type syntheticSink struct{ entries []sinkEntry }
+type model struct {
+	gate *gate
+	sink syntheticSink
+}
+
+func newModel(id identity) *model { return &model{gate: newGate(id)} }
+
+func (s *syntheticSink) record(w writeID, data string, credit int) {
+	n := w.end - w.start
+	j := credit
+	if j > n {
+		j = n
+	}
+	s.entries = append(s.entries, sinkEntry{write: w, j: j, bytes: data[w.start : w.start+j]})
+}
+func (s *syntheticSink) validates(p proof) bool {
+	for _, entry := range s.entries {
+		if entry.write == p.write && entry.j == p.j {
+			return true
+		}
+	}
+	return false
+}
+func (s *syntheticSink) delivered(w writeID, credit int) bool {
+	for _, entry := range s.entries {
+		if entry.write == w && entry.j == credit {
+			return true
+		}
+	}
+	return false
+}
+
+// step is the synthetic event boundary. Issuance guards do not query sink truth.
+func (m *model) step(e event) bool {
+	valid := false
+	if e.kind == "result" {
+		valid = m.sink.delivered(e.write, e.credit)
+	}
+	if e.kind == "proof" {
+		valid = m.sink.validates(e.proof)
+	}
+	ok := m.gate.apply(e, valid)
+	if ok && e.kind == "issue" {
+		m.sink.record(e.write, m.gate.data, e.credit)
+	}
+	return ok
+}
+func (m *model) result() result {
+	r := m.gate.result()
+	r.sink = append([]sinkEntry(nil), m.sink.entries...)
+	return r
 }
 
 func newGate(id identity) *gate {
-	return &gate{current: id, old: ledger{known: true}, state: "steady", history: make(map[int]writeID), applied: make(map[int]int)}
+	return &gate{current: id, old: ledger{known: true}, state: "steady", generations: 1, requests: make(map[request]bool), history: make(map[int]writeID), applied: make(map[int]int)}
 }
 func (g *gate) refuse() {
 	if g.refusals < maxRefusals {
@@ -127,15 +217,41 @@ func (g *gate) cap() {
 	}
 }
 func (g *gate) fence(mode string) { g.mode = mode; g.state = "fenced"; g.settle() }
-func (g *gate) apply(e event) bool {
+func validIdentity(i identity) bool {
+	return len(i.binding) <= maxLabel && len(i.controller) <= maxLabel && len(i.context) <= maxLabel
+}
+func validRequest(r request) bool {
+	return len(r.id) <= maxLabel && len(r.successor) <= maxLabel && len(r.mode) <= maxLabel && validIdentity(r.identity)
+}
+func validEvent(e event) bool {
+	return len(e.kind) <= maxLabel && len(e.bytes) <= maxChunk && len(e.proof.origin) <= maxLabel &&
+		validIdentity(e.identity) && validRequest(e.request) && validIdentity(e.write.identity) &&
+		validRequest(e.write.request) && validIdentity(e.proof.write.identity) && validRequest(e.proof.write.request)
+}
+func (g *gate) apply(e event, validated bool) bool {
+	if g.incomplete {
+		return false
+	}
 	if len(g.trace) >= maxEvents {
 		g.stopped = true
+		g.incomplete = true
+		return false
+	}
+	if !validEvent(e) {
+		g.stopped = true
+		g.incomplete = true
 		return false
 	}
 	ok := false
 	switch e.kind {
 	case "accept":
-		if g.state == "steady" && !g.stopped && e.identity == g.current && len(e.bytes) > 0 && len(e.bytes) <= maxChunk && len(g.data)+len(e.bytes) <= maxStream {
+		if len(e.bytes) > maxStream-g.totalBytes {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
+		if g.state == "steady" && !g.stopped && e.identity == g.current && len(e.bytes) > 0 && len(e.bytes) <= maxChunk && len(e.bytes) <= maxStream-g.totalBytes {
+			g.totalBytes += len(e.bytes)
 			g.data += e.bytes
 			g.old.k += len(e.bytes)
 			g.old.q += len(e.bytes)
@@ -145,7 +261,15 @@ func (g *gate) apply(e event) bool {
 		}
 	case "request":
 		r := e.request
-		if g.winning.id != "" && r == g.winning {
+		if !g.requests[r] {
+			if len(g.requests) >= maxRequests {
+				g.stopped = true
+				g.incomplete = true
+				break
+			}
+			g.requests[r] = true
+		}
+		if g.winning.id != "" && r == g.winning && r.identity == g.current && !g.revoked && !g.invalidBinding && !g.invalid && !g.lostLedger {
 			ok = true
 		} else if g.winning.id != "" || g.state != "steady" || g.stopped || r.id == "" || len(r.id) > maxLabel || r.identity != g.current || (r.mode != "hold" && r.mode != "drain") || r.successor == "" {
 			g.refuse()
@@ -157,30 +281,19 @@ func (g *gate) apply(e event) bool {
 	case "issue":
 		w := e.write
 		_, exists := g.history[w.id]
-		if !g.stopped && !g.invalid && !g.lostLedger && (g.state == "steady" || (g.state == "fenced" && g.mode == "drain")) && w.identity == g.current && w.request == g.winning && w.id > 0 && !exists && g.old.w == 0 && w.start == g.old.f && w.end > w.start && w.end-w.start <= maxChunk && w.end <= g.old.f+g.old.q && e.credit >= 0 {
+		if !g.stopped && !g.invalid && !g.lostLedger && (g.state == "steady" || (g.state == "fenced" && g.mode == "drain")) && w.identity == g.current && w.request == g.winning && w.id > 0 && !exists && g.old.w == 0 && w.start == g.old.f && w.end > w.start && w.start >= 0 && w.end <= len(g.data) && w.end-w.start <= maxChunk && w.end-w.start == minChunk(g.old.q) && e.credit >= 0 {
 			g.old.w = w.end - w.start
 			g.old.q -= g.old.w
 			g.pending = w
 			g.history[w.id] = w
-			j := e.credit
-			if j > g.old.w {
-				j = g.old.w
-			}
-			g.sink = append(g.sink, sinkEntry{w, j, g.data[w.start : w.start+j]})
 			ok = true
 		} else {
 			g.refuse()
 		}
 	case "result":
 		if g.old.w > 0 && e.write == g.pending {
-			j := -1
-			for _, s := range g.sink {
-				if s.write == e.write {
-					j = s.j
-					break
-				}
-			}
-			if j >= 0 && e.credit == j {
+			j := e.credit
+			if validated && j >= 0 && j <= g.old.w {
 				g.applied[e.write.id] = j
 				g.old.f += j
 				g.old.w = 0
@@ -223,19 +336,17 @@ func (g *gate) apply(e event) bool {
 	case "proof":
 		p := e.proof
 		h, exists := g.history[p.write.id]
-		truth := false
-		for _, s := range g.sink {
-			if s.write == p.write && s.j == p.j {
-				truth = true
-			}
-		}
-		if p.origin != "PS" || !exists || h != p.write || p.j < 0 || p.j > p.write.end-p.write.start || !truth {
+		if p.origin != "PS" || !exists || h != p.write || p.j < 0 || p.j > p.write.end-p.write.start || !validated {
 			g.refuse()
 		} else if old, exists := g.applied[p.write.id]; exists {
 			if old != p.j {
 				g.invalid = true
 				g.stopped = true
-				g.old.contested = true
+				if g.hasHistorical && p.write.identity.generation != g.current.generation {
+					g.historical.contested = true
+				} else {
+					g.old.contested = true
+				}
 				g.state = "trace-invalid"
 			}
 			ok = true
@@ -245,8 +356,10 @@ func (g *gate) apply(e event) bool {
 			g.old.u = 0
 			g.old.d = g.old.k - g.old.f
 			if g.mode == "hold" || (g.mode == "drain" && g.old.f == g.old.k) {
-				g.state = "settled"
-			} else {
+				if !g.invalidBinding && !g.revoked && g.current == p.write.identity {
+					g.state = "settled"
+				}
+			} else if !g.invalidBinding && g.current == p.write.identity {
 				g.state = "drain-incomplete"
 			}
 			ok = true
@@ -254,10 +367,16 @@ func (g *gate) apply(e event) bool {
 			g.refuse()
 		}
 	case "commit":
-		if !g.invalid && !g.lostLedger && !g.revoked && g.state == "settled" && g.winning.id != "" && g.winning.identity == g.current && g.old.w == 0 && g.old.q == 0 && g.old.u == 0 {
+		if g.generations >= maxGenerations {
+			g.stopped = true
+			g.incomplete = true
+			break
+		}
+		if !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.generations < maxGenerations && g.state == "settled" && g.winning.id != "" && g.winning.identity == g.current && g.old.w == 0 && g.old.q == 0 && g.old.u == 0 {
 			g.grant = g.winning
 			g.settlement = g.old
 			g.current.generation++
+			g.generations++
 			g.current.controller = g.winning.successor
 			g.committed = true
 			g.state = "closed"
@@ -266,9 +385,21 @@ func (g *gate) apply(e event) bool {
 			g.refuse()
 		}
 	case "open":
-		if g.committed && !g.invalid && !g.lostLedger && !g.revoked && g.state == "closed" && g.current.binding == g.grant.identity.binding && g.current.gi == g.grant.identity.gi && g.current.azg == g.grant.identity.azg && g.current.context == g.grant.identity.context && g.current.generation == g.grant.identity.generation+1 && g.current.controller == g.grant.successor && g.old == g.settlement {
+		if g.committed && !g.incomplete && !g.invalid && !g.invalidBinding && !g.lostLedger && !g.revoked && g.state == "closed" && g.current.binding == g.grant.identity.binding && g.current.gi == g.grant.identity.gi && g.current.azg == g.grant.identity.azg && g.current.context == g.grant.identity.context && g.current.generation == g.grant.identity.generation+1 && g.current.controller == g.grant.successor && g.old == g.settlement {
 			g.opened = true
-			g.state = "open"
+			if !g.hasHistorical {
+				g.historical = g.old
+				g.hasHistorical = true
+			}
+			g.old = ledger{known: true}
+			g.data = ""
+			g.winning = request{}
+			g.pending = writeID{}
+			g.mode = ""
+			g.steps, g.zero = 0, 0
+			g.stopped = false
+			g.committed = false
+			g.state = "steady"
 			ok = true
 		} else {
 			g.refuse()
@@ -309,18 +440,31 @@ func (g *gate) apply(e event) bool {
 func (g *gate) result() result {
 	outcome := "MODEL_ACCOUNTED_NO_SUCCESSOR"
 	switch {
+	case g.incomplete:
+		outcome = "INCOMPLETE"
 	case g.invalid:
 		outcome = "TRACE_INVALID"
 	case g.lostLedger:
 		outcome = "LEDGER_INCOMPLETE"
-	case g.opened:
-		outcome = "MODEL_BYTE_SWITCH_CONSISTENT"
 	case g.invalidBinding:
 		outcome = "INVALID_BINDING"
+	case g.opened:
+		outcome = "MODEL_BYTE_SWITCH_CONSISTENT"
 	case g.old.u > 0:
 		outcome = "UNRESOLVED"
 	case g.state == "drain-incomplete" && g.winning.id != "":
 		outcome = "DRAIN_INCOMPLETE"
 	}
-	return result{old: g.old, sink: append([]sinkEntry(nil), g.sink...), trace: append([]observation(nil), g.trace...), refusals: g.refusals, refusalsLowerBound: g.lower, outcome: outcome, namespace: "synthetic", native: "UNAVAILABLE", framing: "NOT_ESTABLISHED", semantic: "NOT_ESTABLISHED", incomplete: len(g.trace) >= maxEvents}
+	old := g.old
+	if g.hasHistorical {
+		old = g.historical
+	}
+	return result{old: old, trace: append([]observation(nil), g.trace...), refusals: g.refusals, refusalsLowerBound: g.lower, outcome: outcome, namespace: "synthetic", native: "UNAVAILABLE", framing: "NOT_ESTABLISHED", semantic: "NOT_ESTABLISHED", incomplete: g.incomplete}
+}
+
+func minChunk(q int) int {
+	if q > maxChunk {
+		return maxChunk
+	}
+	return q
 }

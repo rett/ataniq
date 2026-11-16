@@ -8,9 +8,9 @@ review and the remaining implementation work are complete.
 The source-free analytical input freezes 32 positive rows L01–L32 and four
 controls C01–C04. This partial source does not yet contain those fixtures or
 an independent evidence verifier, and consequently covers none of those rows
-as executable assertions. In particular, successor-generation input and sink
-handling, all frozen budgets, and several authority and restart transitions
-still require implementation and review. The source should not be relied on as
+as executable assertions. The model source now includes successor-generation input and a separate
+synthetic sink, but needs independent review and completion of the verifier
+and fixtures before any coverage can be claimed. The source should not be relied on as
 a complete implementation of the contract. The broader historical and native
 cases remain deferred and unexecuted.
 
