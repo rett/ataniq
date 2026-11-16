@@ -27,8 +27,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   interactive `codex` in its own session. The selected session host is a
   native per-lead holder, a systemd unit that is the sandbox parent and owns
   the PTY and screen, with an embedded console pane and a full-terminal zoom.
-  It is provisional and unqualified pending an attended emulator spike, and
-  tmux is no longer a planned backend. This replaces the earlier tmux for
+  It is provisional and unqualified pending an attended emulator spike. tmux
+  is no longer a planned backend; if the spike fails, the fallback is a
+  private tmux server inside the holder, equally unqualified. This replaces the earlier tmux for
   diagnostics wording. Nothing here is implemented.
 - Add a design document for approvals and delegation. Only the owner's direct
   words, or a delegation-chain grant whose signatures verify back to the
