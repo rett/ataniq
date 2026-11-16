@@ -6,6 +6,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
+  dependencies, and preserve their dependency notices.
+
 ### Changed
 
 - `make doctor` verifies offline that every module dependency is in the module
