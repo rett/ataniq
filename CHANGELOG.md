@@ -65,7 +65,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and run `make bootstrap`. A modified module is handled the same way: its
   files are read-only, so run `chmod -R u+w` on it first, remove it, then run
   `make bootstrap`. Any other load error is in the package named in the
-  diagnostic and is fixed there.
+  diagnostic and is fixed there. It also checks that `grep` is installed,
+  which the Go helper uses, and prints `missing: grep` when it is not.
 
 ## [0.0.8] - 2026-11-15
 

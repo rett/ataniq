@@ -5,9 +5,16 @@ export CDPATH
 cd "$(dirname "$0")/.."
 version=$(cat .go-version)
 # Accept only a released Go 1.x patch version, with a toolchain-aware minor.
-if ! printf '%s\n' "$version" | grep -Eq '^1\.(2[1-9]|[3-9][0-9]|[1-9][0-9]{2,})\.(0|[1-9][0-9]*)$' ||
-   [ "$(printf '%s\n' "$version" | wc -l)" -ne 1 ]; then
-  echo 'error: invalid Go toolchain pin' >&2
+# Without grep the pin cannot be checked: doctor reports that and stops before
+# it runs Go; every other action refuses to continue.
+if command -v grep >/dev/null 2>&1; then
+  if ! printf '%s\n' "$version" | grep -Eq '^1\.(2[1-9]|[3-9][0-9]|[1-9][0-9]{2,})\.(0|[1-9][0-9]*)$' ||
+     [ "$(printf '%s\n' "$version" | wc -l)" -ne 1 ]; then
+    echo 'error: invalid Go toolchain pin' >&2
+    exit 1
+  fi
+elif [ "${1-}" != doctor ]; then
+  echo 'missing: grep' >&2
   exit 1
 fi
 export GOENV=off GOWORK=off GOFLAGS= GO111MODULE=on
@@ -48,7 +55,7 @@ show_diag() {
 case "${1-}" in
   doctor)
     status=0
-    for tool in git make sh go; do
+    for tool in git make sh grep go; do
       if command -v "$tool" >/dev/null 2>&1; then
         printf 'ok: %s available\n' "$tool"
       else
@@ -56,7 +63,7 @@ case "${1-}" in
         status=1
       fi
     done
-    if command -v go >/dev/null 2>&1; then
+    if command -v go >/dev/null 2>&1 && command -v grep >/dev/null 2>&1; then
       if select_offline; then
         printf 'ok: %s\n' "$actual"
         # Every package and test of this module must load offline: each module

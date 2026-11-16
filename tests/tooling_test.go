@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,8 +20,17 @@ func root(t *testing.T) string {
 
 func fakePath(t *testing.T, goScript string) string {
 	t.Helper()
+	return fakePathWithout(t, goScript)
+}
+
+// fakePathWithout is fakePath without the named tools.
+func fakePathWithout(t *testing.T, goScript string, omit ...string) string {
+	t.Helper()
 	dir := t.TempDir()
 	for _, name := range []string{"git", "make", "sh", "dirname", "cat", "grep", "wc"} {
+		if slices.Contains(omit, name) {
+			continue
+		}
 		path, err := exec.LookPath(name)
 		if err != nil {
 			t.Fatal(err)
@@ -226,6 +236,29 @@ esac
 		if err == nil || !strings.Contains(out, "\n  (no diagnostic from go)\nfail: packages or module dependencies do not load offline") || strings.Contains(out, "go: downloading") || strings.Contains(out, "\n  \n") {
 			t.Fatalf("%s: %s %v", tc.name, out, err)
 		}
+	}
+}
+
+// Doctor reports a missing grep on its own line and does not run Go; the other
+// actions refuse to continue.
+func TestDoctorMissingGrep(t *testing.T) {
+	dir, pin := fixture(t)
+	path := fakePathWithout(t, "printf x > invoked\nprintf 'go version go"+pin+" linux/amd64\\n'\n", "grep")
+	out, err := runHelper(t, dir, path, "doctor")
+	if err == nil || !strings.Contains(out, "\nmissing: grep\n") || !strings.Contains(out, "ok: go available\n") || strings.Contains(out, "invalid Go toolchain pin") || strings.Contains(out, "ok: go version") {
+		t.Fatalf("doctor without grep: %s %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "invoked")); err == nil {
+		t.Fatal("doctor ran Go without grep")
+	}
+	for _, action := range []string{"bootstrap", "test"} {
+		out, err := runHelper(t, dir, path, action)
+		if err == nil || !strings.Contains(out, "missing: grep") || strings.Contains(out, "invalid Go toolchain pin") {
+			t.Fatalf("%s without grep: %s %v", action, out, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "invoked")); err == nil {
+		t.Fatal("an action ran Go without grep")
 	}
 }
 
