@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 type sample struct{ p Projection }
@@ -37,7 +39,7 @@ func TestSelectionAndNoticeBoundaries(t *testing.T) {
 			}
 			key(m, 'j')
 		}
-		if cmd := key(m, 's'); cmd != nil {
+		if cmd := key(m, 'a'); cmd != nil {
 			t.Fatal("control returned command")
 		}
 		if h >= 3 && !strings.Contains(content(m), "fixture controls disabled") {
@@ -79,11 +81,30 @@ func TestCleanBoundedUTF8(t *testing.T) {
 
 func TestExtremeResizeAfterScroll(t *testing.T) {
 	m := New(Fixture{}, "dark")
-	for _, page := range []string{"projects", "leads", "tasks", "conversation", "help"} {
+	t.Cleanup(m.Close)
+	for _, page := range []string{"projects", "leads", "tasks", "conversation", "help", "actions"} {
+		// The pages show below the cockpit's size.
 		m.page, m.scroll = page, 3
-		size(m, math.MaxInt, math.MaxInt)
+		size(m, 99, math.MaxInt)
 		if len(m.View().Content) > 100000 {
 			t.Fatal("unbounded view")
+		}
+		size(m, 99, 99)
+		size(m, math.MaxInt, math.MaxInt)
+		size(m, 99, math.MaxInt)
+		if len(m.View().Content) > 100000 {
+			t.Fatal("unbounded view")
+		}
+	}
+	// The cockpit draws at most its canvas, whatever the window.
+	size(m, math.MaxInt, math.MaxInt)
+	lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+	if len(lines) > maxCanvasRows {
+		t.Fatalf("%d rows", len(lines))
+	}
+	for _, l := range lines {
+		if ansi.StringWidth(l) > maxCanvasCols {
+			t.Fatalf("%d columns", ansi.StringWidth(l))
 		}
 	}
 }
