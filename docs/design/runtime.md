@@ -3,11 +3,23 @@
 Status: proposed; the internal dispatch coordinator described below is
 source-only infrastructure. No runtime qualification is claimed.
 Ataniq owns durable identity, intent, readiness, bootstrap and reconciliation.
-The proposed Linux backend uses a detachable Ataniq runner supervised by a
+The proposed Linux backend uses a detachable Ataniq runner, supervised by a
 systemd user transient service, with cgroup v2; systemd provides lifecycle
-machinery, not the security qualification in [security](security.md). tmux may
-be offered for diagnostics, but is neither the authority nor proof of health.
+machinery, not the security qualification in [security](security.md). How leads
+are hosted is being decided by an attended spike, and the session-hosting
+section is written after it. Neither a terminal nor a screen is the authority
+or proof of health.
 Other platforms may run clients; execution requires a qualified backend.
+
+## Order of work
+
+Qualification comes first. Sandbox qualification comes before any
+Ataniq-managed lead, and a lead is not managed by Ataniq until it runs inside a
+qualified sandbox. Until then existing leads stay under their current session
+manager. A provider's own remote-control feature stays an optional launch
+profile during the transition. A Codex lead is an interactive `codex` in its
+own session. Provider versions are pinned for managed leads and requalified
+after an upgrade.
 
 ## Lifecycle
 
