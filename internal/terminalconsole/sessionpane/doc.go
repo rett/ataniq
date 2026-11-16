@@ -4,17 +4,18 @@
 //
 // # Boundary
 //
-// The pane has no file, process or network access. It reads no environment,
-// opens nothing and starts no process; an import guard test enforces this.
+// The pane has no file, process or network access: its own code opens
+// nothing, starts no process and reads no environment, and an import guard
+// test keeps it that way.
 // The bytes it is given are untrusted, so its size and everything it keeps
-// are bounded.
+// are bounded, and nothing the session writes reaches the outer terminal
+// except as cells: the pane draws cells, never escape sequences, and drops
+// hyperlinks from them.
 //
 // The pane is push-only. The caller writes output with [Pane.Write], sets the
 // size with [Pane.Resize] and reports the end of the session with [Pane.End].
 // The pane has no stream of its own and knows nothing of where the bytes come
 // from: in the fixture console a replay player feeds it, later a holder will.
-// Input going the other way (keys, paste, mouse) leaves through an
-// [InputSink] that the caller supplies.
 //
 // # Replies
 //

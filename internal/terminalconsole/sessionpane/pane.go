@@ -32,6 +32,11 @@ type Options struct {
 	// until it returns. Nil discards every reply.
 	Replies func(p []byte)
 
+	// GraphemeWidths tells the pane that the outer terminal measures grapheme
+	// clusters (mode 2027); see Pane.Draw. It can be changed later with
+	// Pane.SetGraphemeWidths.
+	GraphemeWidths bool
+
 	// Colours are the colours reported to the session's colour queries. A
 	// nil colour is reported as the matching NeutralColours entry.
 	Colours Colours
@@ -45,6 +50,7 @@ type Pane struct {
 	emu *vt.Emulator
 
 	cols, rows int
+	graphemes  bool
 
 	dec       decModes
 	title     string
@@ -66,10 +72,11 @@ type Pane struct {
 func New(cols, rows int, o Options) *Pane {
 	cols, rows = clamp(cols, rows)
 	p := &Pane{
-		emu:     vt.NewEmulator(cols, rows),
-		cols:    cols,
-		rows:    rows,
-		drained: make(chan struct{}),
+		emu:       vt.NewEmulator(cols, rows),
+		cols:      cols,
+		rows:      rows,
+		graphemes: o.GraphemeWidths,
+		drained:   make(chan struct{}),
 	}
 	// The pane keeps no scrollback; one line is the smallest x/vt accepts.
 	p.emu.SetScrollbackSize(1)
