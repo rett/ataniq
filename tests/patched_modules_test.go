@@ -39,7 +39,8 @@ func subtract(a, b []string) []string {
 	return out
 }
 
-// The patched x/vt and x/ansi are adopted by exactly one new requirement and
+// The patched x/vt and x/ansi are adopted by one direct requirement (x/vt), the
+// indirect requirement for x/exp/ordered that any importer of x/vt needs, and
 // two directory replacements; nothing else in go.mod changes, in particular no
 // `go mod tidy` rewriting. testdata/go.mod.base is the go.mod of the commit the
 // adoption was made on. A later change that deliberately changes go.mod updates
@@ -47,8 +48,10 @@ func subtract(a, b []string) []string {
 func TestGoModDiffFromBase(t *testing.T) {
 	base := goModLines(t, "testdata/go.mod.base")
 	current := goModLines(t, filepath.Join(root(t), "go.mod"))
+	const vtRequire = "\tgithub.com/charmbracelet/x/vt v0.1.0"
 	wantAdded := []string{
-		"\tgithub.com/charmbracelet/x/vt v0.1.0",
+		vtRequire,
+		"\tgithub.com/charmbracelet/x/exp/ordered v0.1.0 // indirect",
 		"replace github.com/charmbracelet/x/vt => ./third_party/patched/x-vt",
 		"replace github.com/charmbracelet/x/ansi => ./third_party/patched/x-ansi",
 	}
@@ -65,7 +68,7 @@ func TestGoModDiffFromBase(t *testing.T) {
 	// The new requirement is in the direct block, and the replacements follow
 	// every requirement.
 	text := strings.Join(current, "\n")
-	if strings.Index(text, wantAdded[0]) > strings.Index(text, "// indirect") {
+	if strings.Index(text, vtRequire) > strings.Index(text, "// indirect") {
 		t.Error("the x/vt requirement is not in the direct requirement block")
 	}
 }
