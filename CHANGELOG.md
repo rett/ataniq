@@ -6,6 +6,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Add a provisional `ataniq-console --demo [--theme dark|light]` terminal
+  cockpit that shows fictional, read-only fixture projects, persistent leads,
+  subagents, tasks and conversations within bounded terminal sizes. It is
+  fixture-only: without `--demo` it reports that the backend is unavailable,
+  and its control keys only explain why live controls are unavailable. Live
+  control, provider integration, use over SSH and terminal restoration after a
+  startup error remain unqualified.
+- Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
+  dependencies, and preserve their dependency notices.
+
+### Changed
+
+- `make doctor` verifies offline that every module dependency is in the module
+  cache and matches `go.sum`, and reports a missing or modified module as a
+  failure to fix with `make bootstrap`.
+
 ## [0.0.8] - 2026-11-15
 
 ### Added
