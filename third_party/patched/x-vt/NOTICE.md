@@ -15,7 +15,8 @@ Patches, applied in this order to the files of the module as released:
    Reports the open cluster and its cell so that a copy of the screen can
    continue it.
 
-The patches are not part of any upstream release of the module.
+The patches were not part of v0.1.0 (the version copied); later releases were
+not checked when this copy was made.
 
 Removal: drop this directory, the `replace` line and the matching test wiring
 once an upstream release of the module contains both fixes, and require that
