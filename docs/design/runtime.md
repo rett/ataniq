@@ -41,10 +41,11 @@ contracts, and nothing here decides it.
 tmux is not a planned backend. The spike exercises real provider clients
 through the emulator outside the sandbox and inside the existing bubblewrap
 profile with a PTY, including resize, message injection into an idle and a
-busy agent, and coexistence with a provider's desktop-owned daemon. The owner
-approves the pass criteria beforehand and declares the result. If the spike
-fails, the fallback keeps the holder and replaces only its emulator with a
-private tmux server inside the holder. That fallback is equally unqualified,
+busy agent, whether a lead in a holder can still be reached by the provider's
+remote control, and coexistence with a provider's desktop-owned daemon. The
+owner approves the pass criteria beforehand and declares the result. If the
+spike fails, the fallback keeps the holder and replaces only its emulator with
+a private tmux server inside the holder. That fallback is equally unqualified,
 and tmux is not otherwise a backend.
 
 ## Lifecycle

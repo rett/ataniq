@@ -45,7 +45,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   exactly one assigned lead and a single supervisor spans projects; both are
   assignable roles separate from agent identity, provider, model and effort.
   A role changes hands only by a verified handoff (reconcile, exclusive
-  ownership, fence the old holder) that grants no authority, and the
+  ownership, fence the old holder) that grants no authority. If any step
+  fails the outgoing holder keeps the role and an unresolvable outcome goes
+  to the owner; who verifies each step is left to the handoff contract. The
   supervisor never acts on its own project's gates. Ataniq owns processes,
   sessions, lifecycle, attach, messaging, scheduling and escalation routing,
   qargi owns development tasks, evidence and gates, and each record has one
