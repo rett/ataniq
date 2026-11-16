@@ -40,7 +40,7 @@ func TestFixturesRegenerateByteIdentically(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(got, f.Data) {
-			t.Errorf("%s differs from the generator output; run go generate ./... in the package directory", f.Name)
+			t.Errorf("%s differs from the generator output; regenerate it as doc.go describes", f.Name)
 		}
 		// The files on disk are the embedded ones.
 		disk, err := os.ReadFile(filepath.Join("testdata", f.Name))

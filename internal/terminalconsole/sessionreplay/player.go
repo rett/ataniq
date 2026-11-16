@@ -52,5 +52,8 @@ func (p *Player) Next() (at time.Duration, ok bool) {
 // Done reports whether every event, the end included, has been returned.
 func (p *Player) Done() bool { return p.next >= len(p.rec.Events) }
 
-// Reset returns the player to the start of the recording.
+// Reset returns the player to the start of the recording. It does not touch
+// the caller's state, which the caller must bring back to the start as well:
+// it restarts its elapsed time from zero, and it restores the terminal size
+// that Size reports, because the resize events already returned changed it.
 func (p *Player) Reset() { p.next = 0 }

@@ -1,8 +1,9 @@
 // Command genfixtures writes the synthetic session recordings to a directory.
-// It is the only code of the package that touches files. Run it with
-// go generate in the package directory, or:
+// It is the only code of the package that touches files. Build it with the
+// selected toolchain and run it from the repository root; the package
+// documentation gives the commands:
 //
-//	genfixtures -out internal/terminalconsole/sessionreplay/testdata
+//	build/genfixtures -out internal/terminalconsole/sessionreplay/testdata
 package main
 
 import (

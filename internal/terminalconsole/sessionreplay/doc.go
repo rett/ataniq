@@ -47,9 +47,13 @@
 // The package embeds synthetic recordings from testdata, made by the
 // deterministic generator in package fixturegen and written by the program in
 // cmd/genfixtures. Their text is made up and fixed in the generator. After a
-// change to the generator, regenerate them from the package directory:
+// change to the generator, regenerate them from the repository root with the
+// selected toolchain. The first command builds the generator through the
+// project's Go wrapper, so that the pinned toolchain builds it, into the
+// ignored build directory; the second runs it:
 //
-//	go generate ./...
+//	sh scripts/go-tool.sh build -o build/genfixtures ./internal/terminalconsole/sessionreplay/cmd/genfixtures
+//	build/genfixtures -out internal/terminalconsole/sessionreplay/testdata
 //
 // A test fails when the embedded files differ from the generator's output.
 package sessionreplay

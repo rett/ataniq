@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-//go:generate go run ./cmd/genfixtures -out testdata
-
 // The README keeps the directory embeddable before the generator has run.
 //
 //go:embed testdata
