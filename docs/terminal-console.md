@@ -61,9 +61,15 @@ a change like any other. Their own tests run with `make test` (or
 `make test-patched`), from the main module so that they use its dependency set;
 the packages run are x/vt, x/ansi and its `parser`, `kitty` and `iterm2`
 subpackages, and the x/ansi `sixel` package is left out because it needs a
-module that is not cached. The input tests of the console also run against the
-patched x/ansi, because it decodes the console's keyboard, paste and mouse
-input.
+module that is not cached.
+
+The console's input tests (keyboard, paste and mouse) run with the patched
+x/ansi linked in. On Unix, ultraviolet scans input itself, so these tests check
+that the console's input still decodes with the patched module; they do not
+exercise the patch. A known limit remains: ultraviolet's own input decoder
+still ends an OSC reply at a 0x9C byte, so an input reply that contains a
+character such as U+2733 would be cut there, and the x/ansi patches do not
+change that. The console never requests replies that could contain one.
 
 The modules'
 [upstream license notices](../third_party/terminal-console/README.md) are kept
