@@ -48,6 +48,7 @@ type proof struct {
 	j      int
 }
 type sinkEntry struct {
+	sink  string
 	write writeID
 	j     int
 	bytes string
@@ -93,6 +94,8 @@ type result struct {
 	framing            string
 	semantic           string
 	incomplete         bool
+	goneSinks          map[string]bool
+	sinkBytes          map[string]string
 }
 
 // gate retains only observations delivered to it, never the sink's private log.
@@ -133,7 +136,10 @@ type gate struct {
 
 // syntheticSink retains raw, independently observable outcomes. The gate sees
 // only a delivered result or the proof source's validation at an event boundary.
-type syntheticSink struct{ entries []sinkEntry }
+type syntheticSink struct {
+	entries []sinkEntry
+	gone    map[string]bool
+}
 type model struct {
 	gate *gate
 	sink syntheticSink
@@ -147,7 +153,7 @@ func (s *syntheticSink) record(w writeID, data string, credit, at int) {
 	if j > n {
 		j = n
 	}
-	s.entries = append(s.entries, sinkEntry{write: w, j: j, bytes: data[w.start : w.start+j], at: at})
+	s.entries = append(s.entries, sinkEntry{sink: w.identity.binding, write: w, j: j, bytes: data[w.start : w.start+j], at: at})
 }
 func (s *syntheticSink) validates(p proof) bool {
 	for _, entry := range s.entries {
@@ -159,7 +165,7 @@ func (s *syntheticSink) validates(p proof) bool {
 }
 func (s *syntheticSink) delivered(w writeID, credit int) bool {
 	for _, entry := range s.entries {
-		if entry.write == w && entry.j == credit {
+		if !entry.proofOnly && entry.write == w && entry.j == credit {
 			return true
 		}
 	}
@@ -175,7 +181,14 @@ func (m *model) step(e event) bool {
 	if e.kind == "proof" {
 		valid = m.sink.validates(e.proof)
 	}
+	oldBinding := m.gate.current.binding
 	ok := m.gate.apply(e, valid)
+	if ok && e.kind == "binding" {
+		if m.sink.gone == nil {
+			m.sink.gone = make(map[string]bool)
+		}
+		m.sink.gone[oldBinding] = true
+	}
 	if ok && e.kind == "issue" {
 		m.sink.record(e.write, m.gate.data, e.credit, len(m.gate.trace)-1)
 	}
@@ -184,6 +197,18 @@ func (m *model) step(e event) bool {
 func (m *model) result() result {
 	r := m.gate.result()
 	r.sink = append([]sinkEntry(nil), m.sink.entries...)
+	r.goneSinks = m.sink.gone
+	r.sinkBytes = make(map[string]string)
+	for _, entry := range m.sink.entries {
+		if !entry.proofOnly {
+			r.sinkBytes[entry.sink] += entry.bytes
+		}
+	}
+	if len(m.sink.gone) > 0 {
+		if _, exists := r.sinkBytes[m.gate.current.binding]; !exists {
+			r.sinkBytes[m.gate.current.binding] = ""
+		}
+	}
 	return r
 }
 
@@ -539,7 +564,7 @@ func (g *gate) result() result {
 	if len(g.historical) > 0 {
 		old = g.historical[0]
 	}
-	return result{old: old, trace: append([]observation(nil), g.trace...), refusals: g.refusals, refusalsLowerBound: g.lower, outcome: outcome, namespace: "synthetic", native: "UNAVAILABLE", framing: "NOT_ESTABLISHED", semantic: "NOT_ESTABLISHED", incomplete: g.incomplete}
+	return result{old: old, trace: append([]observation(nil), g.trace...), refusals: g.refusals, refusalsLowerBound: g.lower, outcome: outcome, namespace: "synthetic", native: "UNAVAILABLE (unqualified)", framing: "NOT_ESTABLISHED", semantic: "NOT_ESTABLISHED", incomplete: g.incomplete}
 }
 
 func minChunk(q int) int {

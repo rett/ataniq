@@ -1,6 +1,7 @@
 package controllerhandoff
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -175,31 +176,52 @@ func mutateFixtureEvidence(kind string, r *result) {
 			bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		}
 		// The extra bytes arrive immediately after I2's delivered result.
-		extra := sinkEntry{write: fixtureWrite(99, 6, 6+len(bytes), fixtureID, request{}), j: len(bytes), bytes: bytes, at: 7}
+		extra := sinkEntry{sink: fixtureID.binding, write: fixtureWrite(99, 6, 6+len(bytes), fixtureID, request{}), j: len(bytes), bytes: bytes, at: 7}
 		r.sink = append(r.sink[:2], append([]sinkEntry{extra}, r.sink[2:]...)...)
 	case "residue":
 		w := fixtureWrite(3, 4, 8, fixtureID, fixtureRequest("drain"))
 		at := len(r.trace)
 		l := ledger{k: 8, f: 4, w: 4, known: true}
 		r.trace = append(r.trace, observation{event: fixtureIssue(w, 4), accepted: true, ledger: l}, observation{event: fixtureResult(w, 4), accepted: true, ledger: ledger{k: 8, f: 8, known: true}}, observation{event: fixtureSimple("commit"), accepted: true, ledger: ledger{k: 8, f: 8, known: true}}, observation{event: fixtureSimple("open"), accepted: true, ledger: ledger{known: true}})
-		r.sink = append(r.sink, sinkEntry{write: w, j: 4, bytes: "efgh", at: at})
+		r.sink = append(r.sink, sinkEntry{sink: w.identity.binding, write: w, j: 4, bytes: "efgh", at: at})
 	case "commit":
 		at := len(r.trace)
 		old := ledger{k: 8, f: 2, u: 4, d: 2, known: true}
 		w := fixtureWrite(3, 0, 2, id2, request{})
 		r.trace = append(r.trace, observation{event: fixtureSimple("commit"), accepted: true, ledger: old}, observation{event: fixtureSimple("open"), accepted: true, ledger: ledger{known: true}}, observation{event: fixtureAccept(id2, "01"), accepted: true, ledger: ledger{k: 2, q: 2, known: true}}, observation{event: fixtureIssue(w, 2), accepted: true, ledger: ledger{k: 2, w: 2, known: true}}, observation{event: fixtureResult(w, 2), accepted: true, ledger: ledger{k: 2, f: 2, known: true}})
-		r.sink = append(r.sink, sinkEntry{write: w, j: 2, bytes: "01", at: at + 3})
+		r.sink = append(r.sink, sinkEntry{sink: w.identity.binding, write: w, j: 2, bytes: "01", at: at + 3})
 	}
 }
 
 func TestFrozenControllerHandoff(t *testing.T) {
-	for _, row := range fixtureRows() {
+	rows := fixtureRows()
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		if seen[row.name] {
+			t.Errorf("duplicate fixture ID %s", row.name)
+		}
+		seen[row.name] = true
+	}
+	if len(rows) != 36 || len(seen) != 36 {
+		t.Errorf("fixture count: rows=%d unique=%d, want 36", len(rows), len(seen))
+	}
+	for i := 1; i <= 32; i++ {
+		if !seen[fmt.Sprintf("L%02d", i)] {
+			t.Errorf("missing L%02d", i)
+		}
+	}
+	for i := 1; i <= 4; i++ {
+		if !seen[fmt.Sprintf("C%02d", i)] {
+			t.Errorf("missing C%02d", i)
+		}
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			m := newModel(fixtureID)
 			for _, e := range row.events {
 				if e.kind == "inject-proof" {
 					// L23 adds a second trusted outcome, not a physical write.
-					m.sink.entries = append(m.sink.entries, sinkEntry{write: e.write, j: e.credit, proofOnly: true, at: len(m.gate.trace)})
+					m.sink.entries = append(m.sink.entries, sinkEntry{sink: e.write.identity.binding, write: e.write, j: e.credit, proofOnly: true, at: len(m.gate.trace)})
 					continue
 				}
 				m.step(e)
@@ -225,11 +247,11 @@ func TestFrozenControllerHandoff(t *testing.T) {
 			if sink.String() != row.want.sink {
 				t.Errorf("sink=%q want %q", sink.String(), row.want.sink)
 			}
-			v := inspectEvidence(got.trace, got.sink, got.incomplete)
+			v := inspectEvidence(fixtureID, got.trace, got.sink, got, got.incomplete)
 			if v.assertion != row.want.assertion {
 				t.Errorf("assertion=%s want %s", v.assertion, row.want.assertion)
 			}
-			if got.namespace != "synthetic" || got.native != "UNAVAILABLE" || got.framing != "NOT_ESTABLISHED" || got.semantic != "NOT_ESTABLISHED" || v.namespace != "synthetic" || v.native != "UNAVAILABLE" || v.framing != "NOT_ESTABLISHED" || v.semantic != "NOT_ESTABLISHED" {
+			if got.namespace != "synthetic" || got.native != "UNAVAILABLE (unqualified)" || got.framing != "NOT_ESTABLISHED" || got.semantic != "NOT_ESTABLISHED" || v.namespace != "synthetic" || v.native != "UNAVAILABLE (unqualified)" || v.framing != "NOT_ESTABLISHED" || v.semantic != "NOT_ESTABLISHED" {
 				t.Error("qualification fields changed")
 			}
 		})
