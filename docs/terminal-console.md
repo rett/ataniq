@@ -50,8 +50,10 @@ which Bubble Tea and ultraviolet also use, are carried in this repository as
 patched copies in `third_party/patched/x-vt` and `third_party/patched/x-ansi`,
 and `go.mod` replaces both modules with those directories. The patches keep a
 grapheme cluster (a ZWJ emoji family, for example) whole when it arrives in two
-writes, and keep a UTF-8 character such as U+2733 inside a window title or
-other string sequence from ending it early. Each directory has a `NOTICE.md` with the
+writes, keep a UTF-8 character such as U+2733 inside a window title or
+other string sequence from ending it early, and keep no scrollback for the
+alternate screen, so a full-screen program that scrolls a lot does not grow
+the emulator's memory without bound. Each directory has a `NOTICE.md` with the
 upstream version, the patches and the condition for removing it: drop the copy
 and its `replace` line once an upstream release contains the fixes.
 
