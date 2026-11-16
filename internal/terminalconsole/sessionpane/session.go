@@ -87,6 +87,12 @@ func (p *Pane) install() {
 			return true
 		})
 	}
+	// A full reset resets mode 2026 too, but x/vt reports only the modes it
+	// knows. Returning false lets x/vt's own handler do the reset.
+	p.emu.RegisterEscHandler('c', func() bool {
+		p.setSync(false)
+		return false
+	})
 	// The icon name is not shown anywhere.
 	p.emu.RegisterOscHandler(1, func([]byte) bool { return true })
 	// Clipboard access is never passed on: a write or a query is counted and
@@ -119,6 +125,8 @@ func (p *Pane) setMode(m ansi.Mode, on bool) {
 		p.dec.focus = on
 	case ansi.ModeBracketedPaste:
 		p.dec.paste = on
+	case ansi.ModeSynchronizedOutput:
+		p.setSync(on)
 	}
 }
 

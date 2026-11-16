@@ -112,8 +112,13 @@ func placeholder(width int) string {
 	return strings.Repeat(narrowPlaceholder, max(width, 1))
 }
 
-// source returns what Draw shows, under p.mu.
+// source returns what Draw shows, under p.mu: the held frame while the
+// session is in a synchronized update, else the screen.
 func (p *Pane) source() (cellSource, int, int) {
+	if p.holding(p.clock()) {
+		f := &p.syncOut.frame
+		return f, f.cols, f.rows
+	}
 	return p.emu, p.cols, p.rows
 }
 
@@ -127,12 +132,16 @@ func (p *Pane) SetGraphemeWidths(on bool) {
 }
 
 // Cursor returns the cursor's position in pane cells, and whether the cursor
-// should be shown: not when the session hid it, nor once it has ended. The
+// should be shown: not when the session hid it, nor once it has ended. While
+// a frame is held it is the cursor of that frame. The
 // caller adds the offset of the area it drew the pane in, and hides a cursor
 // that falls outside that area.
 func (p *Pane) Cursor() (pos uv.Position, visible bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	pos = p.emu.CursorPosition()
-	return pos, !p.ended && !p.emu.CursorHidden()
+	if p.holding(p.clock()) {
+		f := &p.syncOut.frame
+		return f.cursor, !p.ended && !f.hidden
+	}
+	return p.emu.CursorPosition(), !p.ended && !p.emu.CursorHidden()
 }

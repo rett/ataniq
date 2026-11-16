@@ -3,6 +3,7 @@ package sessionpane
 import (
 	"io"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/x/vt"
 )
@@ -40,6 +41,10 @@ type Options struct {
 	// Colours are the colours reported to the session's colour queries. A
 	// nil colour is reported as the matching NeutralColours entry.
 	Colours Colours
+
+	// Clock returns the current time, for the synchronized output time
+	// limit. Nil means time.Now; tests inject their own.
+	Clock func() time.Time
 }
 
 // Pane is an embedded session pane. Its methods are safe for concurrent use.
@@ -47,12 +52,14 @@ type Pane struct {
 	mu sync.Mutex
 	// emu is the unsafe emulator: every use is under mu, including the
 	// callbacks it makes, which run inside emu.Write and emu.Resize.
-	emu *vt.Emulator
+	emu   *vt.Emulator
+	clock func() time.Time
 
 	cols, rows int
 	graphemes  bool
 
 	dec       decModes
+	syncOut   syncState
 	title     string
 	clipboard int
 
@@ -76,7 +83,11 @@ func New(cols, rows int, o Options) *Pane {
 		cols:      cols,
 		rows:      rows,
 		graphemes: o.GraphemeWidths,
+		clock:     o.Clock,
 		drained:   make(chan struct{}),
+	}
+	if p.clock == nil {
+		p.clock = time.Now
 	}
 	// The pane keeps no scrollback; one line is the smallest x/vt accepts.
 	p.emu.SetScrollbackSize(1)
@@ -123,11 +134,12 @@ func (p *Pane) Write(b []byte) {
 	if p.ended || p.closed || len(b) == 0 {
 		return
 	}
-	_, _ = p.emu.Write(b)
+	p.write(b)
 }
 
-// Resize sets the pane's size, clamped to the limits. After End or Close it
-// does nothing, so an ended session keeps its last screen as it was.
+// Resize sets the pane's size, clamped to the limits. A frame held for
+// synchronized output no longer fits and is dropped. After End or Close
+// Resize does nothing, so an ended session keeps its last screen as it was.
 func (p *Pane) Resize(cols, rows int) {
 	cols, rows = clamp(cols, rows)
 	p.mu.Lock()
@@ -137,10 +149,12 @@ func (p *Pane) Resize(cols, rows int) {
 	}
 	p.emu.Resize(cols, rows)
 	p.cols, p.rows = cols, rows
+	p.syncOut.held = false
 }
 
 // End records that the session's output has ended, with its exit status when
-// known is true. Later writes are ignored. Only the first call counts.
+// known is true. Later writes are ignored. Only the first call counts. A
+// frame held for synchronized output at that moment stays the last screen.
 func (p *Pane) End(status int, known bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -148,6 +162,11 @@ func (p *Pane) End(status int, known bool) {
 		return
 	}
 	p.ended = true
+	if p.holding(p.clock()) {
+		p.syncOut.kept = true
+	} else {
+		p.syncOut.held = false
+	}
 	if known {
 		p.status, p.statusKnown = status, true
 	}
