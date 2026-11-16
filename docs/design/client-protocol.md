@@ -1,7 +1,7 @@
 # Client command and event protocol
 
-Status: proposed, not implemented. The console and CLI use one versioned
-Ataniq contract and authorization path. WebSocket is primary; HTTP commands
+Status: proposed, not implemented. The terminal console, the later web console
+and the CLI use one versioned typed Ataniq command and event contract and authorization path. WebSocket is primary; HTTP commands
 plus resumable SSE are the fallback. Transport changes do not change authority,
 capabilities, command identities or durable cursor semantics. One authoritative
 provider binding is multiplexed to authorized Ataniq clients. Optional native

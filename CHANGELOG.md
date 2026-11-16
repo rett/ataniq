@@ -20,6 +20,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Record the owner-approved interface direction in the design documents: a
+  terminal-first Bubble Tea console is the primary operator client, a web
+  console with the same information architecture comes later, a shared typed
+  command and event contract sits under both with MCP as the agent-facing
+  surface, dark is the default theme, and unavailable or unqualified controls
+  are shown with their reason. This replaces the earlier assistant-ui web
+  console first direction. Only the fixture console is implemented.
 - `make doctor` checks offline that every package and test for the host
   platform loads from the module cache with hashes matching `go.sum`, and that cached modules are
   unchanged since download. It prints the Go diagnostic, which names the

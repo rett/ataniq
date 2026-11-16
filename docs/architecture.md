@@ -11,8 +11,12 @@ idempotency, admission limits, event cursors, and restart reconciliation.
 A session, an agent conversation, and a job attempt are distinct identities.
 A live tmux session is not evidence that an agent completed its task.
 
-Agents may use MCP tools and resources. The UI and CLI invoke the same Ataniq
-command and event contract and authorization rules. Provider APIs use adapters.
+Agents may use MCP tools and resources. The terminal console, the later web
+console and the CLI invoke the same typed Ataniq command and event contract and
+authorization rules. The terminal-first Bubble Tea console is the primary
+operator client; the web console follows with the same information
+architecture. Dark is the default theme, and unavailable or unqualified controls
+are shown with their reason. Provider APIs use adapters.
 MCP transport sessions must not become durable job identities or authorization
 credentials.
 
@@ -65,11 +69,12 @@ revocation, recovery, and implementation acceptance criteria.
 4. Qualify a runner boundary with private-socket tests and precise job targets.
 5. Add Codex and qargi integrations as independently reviewed adapters.
 6. Implement federation in the staged slices defined by its contract.
-7. Add the management UI and project-local outcome measurement and experiments.
+7. Add the web console and project-local outcome measurement and experiments.
 
 Persistence and the internal adapter wire protocol remain design decisions.
-Go core/CLI and TypeScript UI were selected after independent Fable review;
-no benchmark or SDK interoperability result is claimed yet.
+The Go core and CLI were selected after independent review; the terminal
+console comes first and the web console later. No benchmark or SDK
+interoperability result is claimed yet.
 
 ## References
 

@@ -3,9 +3,13 @@
 Status: proposed contracts and acceptance specifications; no runtime or provider
 has been qualified. These documents specify observable behavior for subsequent
 implementation, not existing commands or passing tests. The Go core and CLI,
-TypeScript operations console built on assistant-ui, and MIT license are the
-selected direction. Unified Ataniq clients are primary; native compatibility is
-optional and requires direct provider support and evidence for each version.
+and MIT license are the selected direction. The primary operator client is a
+terminal-first Bubble Tea console; a web console with the same information
+architecture comes later. Both and the CLI sit on one shared typed command and
+event contract, and MCP is the agent-facing integration surface. Dark is the
+default theme, and a control that is unavailable or unqualified is shown with
+its reason. Native compatibility is optional and requires direct provider
+support and evidence for each version.
 
 The [guarded dispatch journal](journal.md) documents the implemented internal
 offline Linux journal, its durable attempt guards, retained receipt evidence,
