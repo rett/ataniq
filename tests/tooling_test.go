@@ -208,6 +208,27 @@ esac
 	}
 }
 
+// A failing Go command that prints nothing, or only download progress, must not
+// leave a blank line above the fail line.
+func TestDoctorEmptyDiagnostic(t *testing.T) {
+	dir, pin := fixture(t)
+	for _, tc := range []struct{ name, printed string }{
+		{"silent", ":"},
+		{"downloading only", "printf 'go: downloading example.test/mod v1.0.0\\n' >&2"},
+	} {
+		path := fakePath(t, `case "$1" in
+version) printf 'go version go`+pin+` linux/amd64\n';;
+list) `+tc.printed+`; exit 1;;
+*) exit 10;;
+esac
+`)
+		out, err := runHelper(t, dir, path, "doctor")
+		if err == nil || !strings.Contains(out, "\n  (no diagnostic from go)\nfail: packages or module dependencies do not load offline") || strings.Contains(out, "go: downloading") || strings.Contains(out, "\n  \n") {
+			t.Fatalf("%s: %s %v", tc.name, out, err)
+		}
+	}
+}
+
 func TestBootstrapPreview(t *testing.T) {
 	dir := fakePath(t, "exit 99\n")
 	cmd := exec.Command(filepath.Join(dir, "make"), "-n", "bootstrap")

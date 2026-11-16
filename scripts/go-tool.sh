@@ -37,7 +37,12 @@ select_offline() {
 }
 show_diag() {
   # Downloading is impossible offline, so Go's progress lines only mislead.
-  printf '%s\n' "$1" | grep -v '^go: downloading ' |
+  shown=$(printf '%s\n' "$1" | grep -v '^go: downloading ' || :)
+  if [ -z "$shown" ]; then
+    printf '  (no diagnostic from go)\n'
+    return 0
+  fi
+  printf '%s\n' "$shown" |
     while IFS= read -r line; do printf '  %s\n' "$line"; done || :
 }
 case "${1-}" in

@@ -58,13 +58,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   platform loads from the module cache with hashes matching `go.sum`, and that
   cached modules are unchanged since download. It prints the Go diagnostic,
   which names the failing module when the failure is in a module, and leaves
-  out Go's `go: downloading` lines, which are misleading offline. A missing
-  module is fixed with `make bootstrap`. For a checksum mismatch, restore
-  `go.sum`, or run `chmod -R u+w` on the named module directory in the module
-  cache, remove it and run `make bootstrap`. A modified module is handled the
-  same way: its files are read-only, so run `chmod -R u+w` on it first, remove
-  it, then run `make bootstrap`. Any other load error is in the package named
-  in the diagnostic and is fixed there.
+  out Go's `go: downloading` lines, which are misleading offline; when nothing
+  is left it prints `(no diagnostic from go)`. A missing module is fixed with
+  `make bootstrap`. For a checksum mismatch, restore `go.sum`, or run
+  `chmod -R u+w` on the named module directory in the module cache, remove it
+  and run `make bootstrap`. A modified module is handled the same way: its
+  files are read-only, so run `chmod -R u+w` on it first, remove it, then run
+  `make bootstrap`. Any other load error is in the package named in the
+  diagnostic and is fixed there.
 
 ## [0.0.8] - 2026-11-15
 
