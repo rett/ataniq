@@ -11,8 +11,10 @@ import (
 )
 
 // decodeInput feeds input to the reader Bubble Tea uses for terminal input
-// (ultraviolet's TerminalReader, which decodes with the x/ansi module that
-// go.mod replaces with the patched copy) and returns the events it produced.
+// (ultraviolet's TerminalReader) and returns the events it produced. On Unix
+// the reader scans input itself with x/ansi's constants; the tests that use it
+// check that the console's input still decodes with the patched x/ansi linked
+// in, not that they exercise the patch.
 func decodeInput(t *testing.T, input string) []uv.Event {
 	t.Helper()
 	reader := uv.NewTerminalReader(strings.NewReader(input), "xterm-256color")

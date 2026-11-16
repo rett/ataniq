@@ -2,9 +2,10 @@
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
-# from the main module, which gives them its dependency set. The x/ansi sixel
-# package is not listed: it needs a module that is not cached and not used.
-PATCHED_PACKAGES = github.com/charmbracelet/x/vt github.com/charmbracelet/x/ansi github.com/charmbracelet/x/ansi/parser
+# from the main module, which gives them its dependency set. The packages run
+# are x/vt, x/ansi and its parser, kitty and iterm2 subpackages. The x/ansi
+# sixel package is not listed: it needs a module that is not cached.
+PATCHED_PACKAGES = github.com/charmbracelet/x/vt github.com/charmbracelet/x/ansi github.com/charmbracelet/x/ansi/parser github.com/charmbracelet/x/ansi/kitty github.com/charmbracelet/x/ansi/iterm2
 
 bootstrap:
 	@sh scripts/go-tool.sh bootstrap

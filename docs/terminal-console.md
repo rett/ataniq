@@ -44,14 +44,14 @@ If doctor reports a modified module, or a checksum mismatch that restoring
 `go.sum` does not fix, run `chmod -R u+w` on the named module directory in the
 module cache, remove it and run `make bootstrap`.
 
-The terminal emulator inside the console is `github.com/charmbracelet/x/vt`
-v0.1.0. It and `github.com/charmbracelet/x/ansi` v0.11.9, which Bubble Tea and
-ultraviolet also use, are carried in this repository as patched copies in
-`third_party/patched/x-vt` and `third_party/patched/x-ansi`, and `go.mod`
-replaces both modules with those directories. The patches keep a grapheme
-cluster (a ZWJ emoji family, for example) whole when it arrives in two writes,
-and keep a UTF-8 character such as U+2733 inside a window title or other
-string sequence from ending it early. Each directory has a `NOTICE.md` with the
+`github.com/charmbracelet/x/vt` v0.1.0 is the terminal emulator the console's
+session pane is built on. It and `github.com/charmbracelet/x/ansi` v0.11.9,
+which Bubble Tea and ultraviolet also use, are carried in this repository as
+patched copies in `third_party/patched/x-vt` and `third_party/patched/x-ansi`,
+and `go.mod` replaces both modules with those directories. The patches keep a
+grapheme cluster (a ZWJ emoji family, for example) whole when it arrives in two
+writes, and keep a UTF-8 character such as U+2733 inside a window title or
+other string sequence from ending it early. Each directory has a `NOTICE.md` with the
 upstream version, the patches and the condition for removing it: drop the copy
 and its `replace` line once an upstream release contains the fixes.
 
@@ -59,10 +59,17 @@ and its `replace` line once an upstream release contains the fixes.
 Git protects the copies instead: they are reviewed source, and changing them is
 a change like any other. Their own tests run with `make test` (or
 `make test-patched`), from the main module so that they use its dependency set;
-the x/ansi sixel package is left out because it needs a module that is not
-cached and is not used. The input tests of the console also run against the
-patched x/ansi, because it decodes the console's keyboard, paste and mouse
-input.
+the packages run are x/vt, x/ansi and its `parser`, `kitty` and `iterm2`
+subpackages, and the x/ansi `sixel` package is left out because it needs a
+module that is not cached.
+
+The console's input tests (keyboard, paste and mouse) run with the patched
+x/ansi linked in. On Unix, ultraviolet scans input itself, so these tests check
+that the console's input still decodes with the patched module; they do not
+exercise the patch. A known limit remains: ultraviolet's own input decoder
+still ends an OSC reply at a 0x9C byte, so an input reply that contains a
+character such as U+2733 would be cut there, and the x/ansi patches do not
+change that. The console never requests replies that could contain one.
 
 The modules'
 [upstream license notices](../third_party/terminal-console/README.md) are kept
