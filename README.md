@@ -3,24 +3,58 @@
 Ataniq is a planned orchestration service for managing projects,
 agents, tools, and local or remote sessions through extensible feature packs.
 
-The project is a developer qualification foundation for 0.0.1. It includes
-offline development checks, Codex-specific mock qualification tests and Linux
-host qualification tools. See [the Codex qualification guide](docs/qualification-codex.md)
-and [the host manual](docs/qualification-host.md) for their scope and limits.
-The production runner, durable conversations, service, clients, provisioning,
-authentication and execution adapters remain pending.
+## Maturity
+
+The 0.0.8 release is a developer foundation with offline development checks and
+internal libraries. It adds a finite synthetic controller-handoff model and
+independent evidence verifier. Its 32 lawful rows and four mutated-evidence
+controls matched the frozen expectations. Five supplemental verifier checks
+also passed. These results cover bounded model consistency and detection of the four frozen
+mutated-evidence controls only. Real controller authority, exclusive receiving routes and native
+attachment remain unqualified.
+
+Earlier releases provide private application contracts, an encrypted cursor
+codec with a bounded per-codec epoch reservation allocator, and Linux/amd64
+SQLite default-VFS qualification. SQLite qualification requires the strict gate
+on a capable host. Production storage lifecycle remains unqualified. Pooling
+and authenticated live admission remain pending implementation. See the
+[settlement qualification guide](qualification/sqlitesettlement/README.md).
+
+| Area | Current status |
+| --- | --- |
+| Dispatch | Shipped internal deterministic coordinator exercised with fake boundaries. |
+| Journal | Shipped guarded persistent Linux SQLite journal and trusted read-only preflight for existing stores. Production durability remains unqualified. See the [journal design](docs/design/journal.md) and [settlement limits](qualification/sqlitesettlement/README.md). |
+| Commands | Shipped public typed command contracts, strict JSON codecs and canonical binary bindings. Private internal administration, resource, status and conflict contracts add bounded canonical arithmetic. Public v1 contracts and vectors are retained. See the [application contracts](docs/design/application-contracts.md) and [private contract source](internal/appcontract/admin.go). |
+| Cursors | Internal v2 encrypted cursor codec with strict canonical decoding and a bounded epoch reservation allocator per codec. Tests cover rotation, concurrent reservations, failed-mint consumption and fresh construction without received-epoch adoption. See the [cursor source](internal/appcontract/cursor.go). |
+| Controller qualification | Finite synthetic ledger, proof and generation checks with an independent verifier. Broader model behavior and real authority, gate and provider composition remain unqualified. See the [controller qualification scope](qualification/controllerhandoff/README.md). |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes remain on separate development branches and are outside this release. |
+
+Cursor service composition must provide caller authentication and authorization,
+key provisioning and nonzero key/identity validation, one codec per composition,
+service error mapping, durable receipt integration and live delivery. These remain
+pending. Cryptographic assurance and conformance remain unqualified. Memory, VM
+or RNG-state cloning requires fresh-entropy restart before minting.
+
+The design intent is provider and platform neutral. Current provider-specific
+coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
+qualification fixtures. Live Claude and Codex attachment remain unqualified.
+See [the Codex qualification guide](docs/qualification-codex.md) and
+[the host manual](docs/qualification-host.md) for their scope and limits.
 
 ## Architecture decisions
 
-- Go for the service and CLI; TypeScript for the management UI.
+These decisions describe the planned design.
+
+- Go for the service and CLI, with native terminal access prioritized. Later
+  browser interface options remain an open design choice.
 - Unified Ataniq clients with a shared command and event contract; MCP remains
   an agent-facing integration and federation surface.
 - OAuth authorization for remote MCP access and mTLS support for trusted
-  service and worker connections. Authorization remains project-scoped.
+  service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
 - A proposed Ataniq runner and systemd lifecycle on Linux, subject to sandbox
-  qualification; tmux is optional diagnostics, not the session authority.
+  qualification.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between

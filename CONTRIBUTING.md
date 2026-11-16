@@ -16,6 +16,16 @@ The branching model is git-flow, as its author described it.
 - While working on a task, run the targeted check that covers your change.
 - When a feature is complete, run the whole suite once on it before it is merged into `develop`: `make test`.
 
+## Release documentation review
+
+For every release, including hotfixes, review the README and any website after
+the version bump and before the release pull request. Check the version against the
+changelog and intended tag. Verify shipped and planned claims, provider and
+platform evidence, installation examples and limitations against the source
+and qualification records. Check website source before publication and deployed
+content afterward when a website exists. Follow applicable sharing permissions
+when using outside review. Preserve independent review of the release.
+
 ## Changes
 
 - Every user-visible change gets a changelog entry under `[Unreleased]`, in the same commit as the change.

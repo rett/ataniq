@@ -113,9 +113,7 @@ func openWithFault(ctx context.Context, path string, options Options, create boo
 	if !create {
 		// No persistent writer PRAGMA is executed until this read-only preflight
 		// accepts the complete schema and identity under the inode lock.
-		preflight := pool(&connector{driver: d, owner: owner, options: o, readOnly: true})
-		_, checkErr := readIdentity(ctx, preflight, o.Authority)
-		err = errors.Join(checkErr, preflight.Close())
+		_, err = recognizeOwned(ctx, owner, o, d)
 		if err != nil {
 			return nil, fmt.Errorf("journal: preflight: %w", err)
 		}
@@ -156,15 +154,19 @@ func (s *Store) Info(ctx context.Context) (Info, error) {
 		return Info{}, err
 	}
 	defer s.mu.RUnlock()
-	i, err := readIdentity(ctx, s.db, s.options.Authority)
+	return readInfo(ctx, s.db, s.options)
+}
+
+func readInfo(ctx context.Context, db *sql.DB, o Options) (Info, error) {
+	i, err := readIdentity(ctx, db, o.Authority)
 	if err != nil {
 		return Info{}, err
 	}
-	err = s.db.QueryRowContext(ctx, "SELECT (SELECT page_count FROM pragma_page_count), (SELECT page_size FROM pragma_page_size)").Scan(&i.PageCount, &i.PageSize)
+	err = db.QueryRowContext(ctx, "SELECT (SELECT page_count FROM pragma_page_count), (SELECT page_size FROM pragma_page_size)").Scan(&i.PageCount, &i.PageSize)
 	if err != nil {
 		return Info{}, err
 	}
-	i.MaxBytes = s.options.MaxBytes
+	i.MaxBytes = o.MaxBytes
 	i.SQLiteVersion, i.SQLiteSourceID = engineVersion, engineSource
 	return i, nil
 }

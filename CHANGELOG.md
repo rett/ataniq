@@ -6,6 +6,73 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-15
+
+### Added
+
+- Add a finite synthetic controller-handoff ledger, proof and generation model,
+  independent evidence verifier and 36 frozen rows, including four
+  mutated-evidence controls, plus five supplemental verifier checks.
+  Real controller authority, receiving-gate exclusivity, native attachment,
+  credential mediation and durable native admission remain unqualified.
+
+### Changed
+
+- Update README maturity and qualification scope to match this release.
+
+## [0.0.7] - 2026-11-15
+
+### Added
+
+- Add private internal administration, resource, status and conflict contracts,
+  bounded canonical bindings and projection helpers, preserving the public v1
+  command contract and vectors.
+- Add a private v2 encrypted cursor codec with canonical bounded decoding,
+  bounded per-codec epoch reservations, rotation, failed-mint and fresh-construction tests.
+  Authentication, service authorization and durable receipt integration remain
+  pending.
+- Extend SQLite default-VFS qualification with checked directory synchronization,
+  explicit FULL checkpoint and close checks, descriptor-selected sync denial on
+  the harness's pinned directory alias and SQLite's live main descriptor, and
+  bounded lifecycle, identity-replacement and refusal controls. The directory
+  denial target is the harness-owned alias. Directory-entry persistence for main-file creation and WAL creation/removal, production
+  lifecycle, pooling, power-loss behavior and broader durability remain unqualified.
+
+### Changed
+
+- Update the README to describe the internal contracts, cursor codec and bounded
+  SQLite lifecycle checks in this release, with production limits and native
+  terminal priority retained.
+
+## [0.0.6] - 2026-11-14
+
+### Added
+
+- Add a bounded Linux/amd64 SQLite default-VFS settlement qualification harness with
+  child-only sync-failure injection, strict capability controls and relational
+  evidence. Production durability remains unqualified, including directory lifecycle,
+  pooling and live admission. See the qualification guide for the full scope.
+
+### Changed
+
+- Add a review of README and any website claims for every release, including hotfixes,
+  to the contributing workflow.
+- Correct the README maturity overview and clarify qualification limits.
+
+## [0.0.5] - 2026-11-14
+
+### Added
+
+- Document journal recognition's read-only and recovery boundaries and its
+  synthetic qualification fixtures.
+
+- Add bounded trusted internal journal v1 recognition under existing-store
+  ownership, preserving committed WAL state and pending recovery without writer
+  SQL or journal recovery. Share the read-only preflight with ordinary Open;
+  recognition grants no migration or public disclosure authority.
+
+## [0.0.4] - 2026-11-14
+
 ### Added
 
 - Add pure typed application command contracts for queued input and exact queued
