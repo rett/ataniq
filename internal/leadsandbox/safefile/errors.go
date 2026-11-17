@@ -12,17 +12,19 @@ import (
 var (
 	// ErrSymlink: a component of the path is a symbolic link (or a magic
 	// link), a link that points inside the folder or nowhere included. For
-	// the last component: ReadFile, ReadFileInfo, AppendFile and ReadDirNames
-	// return it; WriteFileExclusive returns it, wrapping the errno of the
-	// create (so it also matches fs.ErrExist); MkdirAll returns it, as its
-	// walk opens every component; Lstat does not, it reports the link (see
-	// [Info.IsSymlink]). For a parent component every method returns it.
+	// the last component: ReadFile, ReadFileInfo, AppendFile, ReadDirNames
+	// and SubRoot return it; WriteFileExclusive returns it, wrapping the
+	// errno of the create (so it also matches fs.ErrExist); MkdirAll returns
+	// it, as its walk opens every component; Lstat does not, it reports the
+	// link (see [Info.IsSymlink]). For a parent component every method
+	// returns it.
 	ErrSymlink = errors.New("a component of the path is a symbolic link")
 	// ErrNotRegular: the entry is a FIFO, device, socket or folder where a
 	// regular file is required. A device is refused here only when its open
 	// succeeded and fstat saw it; see the package documentation.
 	ErrNotRegular = errors.New("not a regular file")
-	// ErrNotDirectory: a component that must be a folder is not one.
+	// ErrNotDirectory: a component that must be a folder is not one, the
+	// entry SubRoot was asked to open included.
 	ErrNotDirectory = errors.New("a component that must be a folder is not one")
 	// ErrTooLarge: a file is larger than the cap, a file grew past the cap
 	// while it was read, or a folder holds more entries than the cap.
@@ -52,7 +54,7 @@ const maxErrPath = 200
 // the sentinel errors above, possibly joined with the system's errno, or the
 // errno itself.
 type Error struct {
-	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open", "sync", "rename"
+	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open", "sync", "rename", "subroot", "close"
 	Path string // the path as the caller gave it
 	Err  error
 }

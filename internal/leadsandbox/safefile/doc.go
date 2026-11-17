@@ -1,14 +1,16 @@
 // Package safefile is the owner-side way to touch a folder that a lead can
 // write: every access starts from a folder handle ([Root]) the caller opened
-// once on a path it owns and trusts, and goes through openat2 with
-// RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS. Nothing
+// once on a path it owns and trusts, or opened beneath such a handle
+// ([Root.SubRoot]), and goes through openat2 with RESOLVE_BENEATH,
+// RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS. Nothing
 // here opens, stats or creates anything by path after the handle exists, and
 // nothing follows a link a lead planted: a link is refused with [ErrSymlink]
 // even when it points back inside the folder or nowhere. A link
 // in a parent component is refused by every method. A link as the last
 // component is refused by [Root.ReadFile], [Root.ReadFileInfo],
-// [Root.AppendFile], [Root.ReadDirNames] and [Root.MkdirAll]; by
-// [Root.WriteFileExclusive], which refuses to create anything there and
+// [Root.AppendFile], [Root.ReadDirNames], [Root.MkdirAll] and
+// [Root.SubRoot]; by [Root.WriteFileExclusive], which refuses to create
+// anything there and
 // reports [ErrSymlink] (the error also matches fs.ErrExist); and it is
 // reported, not refused, by [Root.Lstat], so a caller can see it. This is the
 // symlink-safe access of section 3.6 of the lead-hosting design, the code
@@ -27,6 +29,21 @@
 // rename: one single name to another in the handle's own folder, with
 // RENAME_NOREPLACE, so it never replaces and looks nothing up. There is
 // deliberately no replacing rename, no remove and no truncate.
+//
+// # A folder opened beneath the handle
+//
+// [Root.SubRoot] opens a folder below the handle as a new [Root], in one
+// lookup from the handle, and checks on the descriptor it got that it is a
+// folder. It is for a caller that looks at a folder and then works in it. A
+// [Root.Lstat] followed by [OpenRoot] on the folder's name is two lookups,
+// and a lead that can write the parent can change what the name holds
+// between them, so what was checked is not provably what is opened. With a
+// sub-root the folder is looked up once and every later call is beneath that
+// descriptor: renaming the folder, or putting a link at its name, changes
+// nothing for the sub-root. Each call of SubRoot is a fresh walk from the
+// handle, and nothing an earlier call found is reused. A sub-root has its own
+// descriptor and is closed on its own; every method works on it as on a Root
+// from OpenRoot, beneath its own folder.
 //
 // # Rules every call follows
 //
@@ -80,6 +97,15 @@
 // with [ErrEscapes] wrapping EXDEV, and is never read across. The handle's own
 // folder may itself be a mount root.
 //
+// [Root.SubRoot] keeps this rule and relaxes nothing: a folder that is a
+// mount point, or lies beyond one, is not opened as a sub-root, so a sub-root
+// is always on the mount of the Root it came from. What is mounted on a path
+// below the handle is another file system's folder and not an entry of the
+// folder the caller opened; walking into it would make "beneath the handle"
+// mean less than it says. A caller that means a mount's root opens it by name
+// with [OpenRoot], on a path whose parents no lead can change, and it is then
+// a Root like any other.
+//
 // # When openat2 is not usable
 //
 // [OpenRoot] probes openat2 once, on the new handle and with the flags every
@@ -87,7 +113,9 @@
 // lacks it, a seccomp filter denies it with EPERM, which cannot be told apart
 // from a permission failure and is not guessed at, or the flags are refused),
 // so a start learns it before it has done other work. A call that later gets
-// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too. There is
+// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too, a call
+// of [Root.SubRoot] and a call on a sub-root included: a sub-root is not
+// probed again, it calls openat2 as the Root it came from does. There is
 // no fallback to a path-based open. The package's tests need a working
 // openat2 and fail, not skip, where there is none.
 //
