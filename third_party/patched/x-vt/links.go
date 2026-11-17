@@ -23,7 +23,10 @@ import (
 // code this package does not own, so the table does not follow them one by
 // one. It is exact in a different way: when it is full and a link that is not
 // in it arrives, the table is recounted from the cells, which drops every link
-// that no cell references any more. A recount costs one pass over the cells.
+// that no cell references any more. A recount costs one pass over the cells,
+// which looks a link up in the table only where it differs from the link of
+// the cell before: a run of cells under one link, which share one copy of it,
+// costs the comparison of two pointers and not the hashing of 2.3 KiB.
 // To keep the time bounded, a recount is made only when the table is full and
 // at least one recount interval of refused cells has passed since the last
 // one, so a session printing one new link per cell on a full table costs at
@@ -37,8 +40,9 @@ type linkTable struct {
 	set map[uv.Link]uv.Link
 	// wait is the number of refusals that must pass before the next recount.
 	wait int
-	// recounts is the number of recounts made, for tests.
-	recounts int
+	// recounts is the number of recounts made, and hashed the number of
+	// links they looked up in the table, for tests.
+	recounts, hashed int
 }
 
 // recountCost is the most cells scanned by recounts for each cell that was
@@ -83,12 +87,15 @@ func (s *Screen) recountLinks() {
 		t.set = make(map[uv.Link]uv.Link, 16)
 	}
 	clear(t.set)
+	var prev uv.Link
 	for _, line := range s.buf.Lines {
 		for i := range line {
 			link := line[i].Link
-			if link.URL == "" {
+			if link.URL == "" || link == prev {
 				continue
 			}
+			prev = link
+			t.hashed++
 			if _, ok := t.set[link]; !ok {
 				t.set[link] = link
 			}

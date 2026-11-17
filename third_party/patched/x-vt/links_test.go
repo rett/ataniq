@@ -290,6 +290,46 @@ func TestWorstCaseScreenMaxLengthLinks(t *testing.T) {
 	runtime.KeepAlive(e)
 }
 
+// A recount of a screen whose cells hold 256 long links in long runs looks up
+// 256 links, not one for each cell: a cell under the same link as the cell
+// before is skipped by comparing the links, which share their strings.
+func TestLinkRecountSkipsRunsOfOneLink(t *testing.T) {
+	const cols, rows = 500, 200
+	const cells = cols * rows
+	e := NewEmulator(cols, rows)
+	_, url := maxLink()
+	const run = cells / MaxLiveLinks
+	// 256 runs of one link each, 390 cells long.
+	for i := 0; i < MaxLiveLinks; i++ {
+		e.handleOsc(8, []byte(fmt.Sprintf("8;;%s%06d", url[:len(url)-6], i)))
+		for j := 0; j < run; j++ {
+			e.handlePrint('x')
+		}
+	}
+	e.flushGrapheme()
+	if got := len(liveLinks(e.scr)); got != MaxLiveLinks {
+		t.Fatalf("%d live links, want %d", got, MaxLiveLinks)
+	}
+	// Every further cell is refused, and a recount is made each interval.
+	before := e.scr.links
+	const refused = 10 * run
+	for i := 0; i < refused; i++ {
+		if i%run == 0 {
+			e.handleOsc(8, []byte(fmt.Sprintf("8;;%s%06d", url[:len(url)-6], 1000+i)))
+		}
+		e.handlePrint('y')
+	}
+	e.flushGrapheme()
+	recounts, hashed := e.scr.links.recounts-before.recounts, e.scr.links.hashed-before.hashed
+	t.Logf("%d recounts looked up %d links", recounts, hashed)
+	if recounts < 3 {
+		t.Fatalf("%d recounts: the test does not scan", recounts)
+	}
+	if hashed > recounts*MaxLiveLinks {
+		t.Errorf("%d recounts looked up %d links, want at most %d each", recounts, hashed, MaxLiveLinks)
+	}
+}
+
 // Scanning for live links is bounded by the screen: a session that prints a
 // new link on every cell of a full table pays one pass over the cells for
 // every recount interval of cells, not one for each cell.

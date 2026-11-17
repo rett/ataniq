@@ -80,6 +80,13 @@ Patches, applied in this order to the files of the module as released:
    next one waits for as many refused cells as the screen's cells divided by
    256, so a session that prints a new link on every cell of a full table
    costs at most 256 cells scanned per cell printed, whatever the screen.
+   A scanned cell costs a comparison with the cell before it, and a lookup
+   (the hash of the link, up to 2.3 KiB) only where its link differs from
+   the one before, so a run of cells under one link, which share their copy,
+   costs one lookup. The worst case, a screen whose neighbouring cells
+   hold different links, still hashes up to 2.3 KiB per scanned cell, so a
+   scanned cell costs more with long links than with short ones; the time
+   stays linear in the cells printed.
    A slot that frees up (overwrite, erase, scroll, delete, resize) is
    therefore available after at most that many refusals; a clear of the whole
    screen empties the table at once. A recount counts every link in a cell,
