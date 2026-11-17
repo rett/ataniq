@@ -74,6 +74,10 @@ type deps struct {
 	// settings (timings, the cgroup switch). They are for tests.
 	tweakSession func(*session.Config)
 	tweakServe   func(*serve.Config)
+	// beforeRoleLock is called just before the role lock is taken, once the
+	// start-up checks have passed. It is for tests, which hold two holders
+	// there to make them take the lock together.
+	beforeRoleLock func()
 }
 
 func realDeps() deps {
@@ -171,13 +175,26 @@ func run(args []string, d deps) int {
 		return refuse("cannot read this process's start time: %v", err)
 	}
 
-	// A second holder for a role that is held changes nothing of the first's:
-	// look at the lock before anything is written. session.Start takes it for
-	// good below.
-	if roleLockHeld(cfg.roleLock) {
+	// The role lock is taken once, here, before anything is opened or written,
+	// and kept until the holder ends: a second holder for a held role is
+	// refused having changed nothing, and two that start together cannot both
+	// write the state file (the lead-hosting design, section 1.6). The lock
+	// belongs to session.Start from the call on.
+	if d.beforeRoleLock != nil {
+		d.beforeRoleLock()
+	}
+	lock, err := session.TakeRoleLock(cfg.roleLock)
+	if errors.Is(err, session.ErrRoleLocked) {
 		out.line("refused: the role is already held by another holder (%q is locked)", cfg.roleLock)
 		return exitLocked
+	} else if err != nil {
+		return refuse("cannot take the role lock: %v", err)
 	}
+	defer func() {
+		if lock != nil {
+			lock.Close()
+		}
+	}()
 
 	// From here on SIGTERM and SIGINT end the agent, and SIGHUP changes
 	// nothing: the holder outlives its starter's terminal.
@@ -203,11 +220,13 @@ func run(args []string, d deps) int {
 	scfg := session.Config{
 		Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10),
 		Argv: cfg.argv, Env: cfg.env, Dir: cfg.tree, Cols: cfg.cols, Rows: cfg.rows,
-		RoleLock: cfg.roleLock, StateDir: cfg.stateDir, Log: log,
+		RoleLock: cfg.roleLock, HeldRoleLock: lock, StateDir: cfg.stateDir, Log: log,
 	}
 	if d.tweakSession != nil {
 		d.tweakSession(&scfg)
 	}
+	// Start owns the lock now, whether it succeeds or not.
+	lock = nil
 	sess, err := session.Start(scfg)
 	if err != nil {
 		if errors.Is(err, session.ErrRoleLocked) {

@@ -155,21 +155,3 @@ func checkPrivateDir(path string) error {
 	}
 	return nil
 }
-
-// roleLockHeld reports whether another process holds the exclusive lock on the
-// role lock file. It takes the lock and lets it go at once: it only looks, so a
-// holder that is refused has changed nothing in the state folder. The
-// authoritative lock is session.Start's; this check keeps a second holder from
-// writing the first one's state file before that lock refuses it.
-func roleLockHeld(path string) bool {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return false // session.Start reports it
-	}
-	defer unix.Close(fd)
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return errors.Is(err, unix.EWOULDBLOCK)
-	}
-	_ = unix.Flock(fd, unix.LOCK_UN)
-	return false
-}
