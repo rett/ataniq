@@ -282,6 +282,7 @@ func holdRecN(seq uint64, id string, reason Reason, held uint64) Record {
 	return Record{
 		Seq: seq, At: t0, Type: RecordHold, ID: id, Target: "lead:a", Reason: reason,
 		Held: held, Piece: pieceDigest("test piece", id, strconv.FormatUint(held, 10)),
+		Detail: "late-evidence: test piece " + strconv.FormatUint(held, 10),
 	}
 }
 
@@ -380,7 +381,7 @@ func TestRestoreRefusesHoldAndReleaseRecordsTheMachineWouldNotWrite(t *testing.T
 	wantRestoreError(t, "second hold for the same command", with(hold(nil), h2), n+2)
 	// A hold about a delivered command, a refused one, a withdrawn one.
 	dm, dj := lateTest(t)
-	if _, err := dm.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op"}, at(45*time.Second)); err != nil {
+	if _, err := dm.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op", SeenLate: seenNotes(t, dm, "m1")}, at(45*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	dn := uint64(len(dj.recs))
@@ -553,7 +554,7 @@ func holdsScenario(t *testing.T, m *Machine) {
 	}
 	// A late result for an uncertain command: a note only.
 	mustFence(t, m, "m1", WrittenPasteAndEnter, OutcomeSubmitted, at(41*time.Second))
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1"}, at(45*time.Second)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1", SeenLate: seenNotes(t, m, "m1")}, at(45*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// Evidence for the resent command: hold, then note.
@@ -584,7 +585,7 @@ func holdsScenario(t *testing.T, m *Machine) {
 	}
 	mustFence(t, m, "m2", WrittenPaste, OutcomeNotSubmitted, at(57*time.Second))
 	// m2 uncertain, held: drop it and late evidence for it is a second hold.
-	if _, err := m.Resolve(Resolution{ID: "m2", Decision: DecisionDrop, Operator: "op"}, at(58*time.Second)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m2", Decision: DecisionDrop, Operator: "op", SeenLate: seenNotes(t, m, "m2")}, at(58*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ConfirmDelivery("m2", "file:20", at(59*time.Second)); err != nil {
@@ -604,7 +605,7 @@ func holdsScenario(t *testing.T, m *Machine) {
 	if err := m.ConfirmDelivery("m3", "file:30", at(64*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Resolve(Resolution{ID: "m3", Decision: DecisionResend, Operator: "op", NewID: "r3"}, at(65*time.Second)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m3", Decision: DecisionResend, Operator: "op", NewID: "r3", SeenLate: seenNotes(t, m, "m3")}, at(65*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// Dispatch is refused while held; release, dispatch r3, evidence again while

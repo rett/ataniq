@@ -33,15 +33,17 @@
 // or as "not delivered, drop", or for an uncertain command whose resend is
 // half written. Then the queue of its target is held. A hold is a property of
 // the queue, journaled as its own record (RecordHold: the target, the command
-// the information is about, a reason code and the time) before the note, and
-// it changes no command. While a queue is held BeginDispatch refuses it as
-// queue-held, naming that command, whatever state any replacement is in (queued,
-// dispatching, ended) and whatever a running fence later reports. A replacement
+// the information is about, a reason code, a rendering of the call and the
+// time) before the note, and it changes no command. While a queue is held
+// BeginDispatch refuses it as queue-held, naming that command, whatever state
+// any replacement is in (queued, dispatching, ended) and whatever a running
+// fence later reports. A replacement
 // that is already dispatching is not interrupted; if its fence wrote nothing it
 // returns to queued and the hold keeps it there. The hold is set even when the
 // note itself cannot be stored, because the note list is full or the note
 // repeats an earlier one; late information for a command the queue is already
-// held for does not hold it again, it advances the counter below. Only an operator ends a hold, with ReleaseHold.
+// held for does not hold it again, it advances the counter below. Only an
+// operator ends a hold, with ReleaseHold.
 // The operator decides about an uncertain command with Resolve, as before, and
 // withdraws a queued command that must not be sent with Withdraw (allowed only
 // in a held queue). No timer, Tick or Restore ends a hold, and Restore rebuilds
@@ -57,17 +59,34 @@
 //
 // A release covers what the operator has seen. Each piece of late information
 // for a command the hold is about (a second piece about a command the queue is
-// held for as well, and a piece whose note is skipped, refused as late-notes-full
-// or not written because the evidence was bad) is journaled as a hold record
-// that advances a counter of the target, shown as TargetView.HeldSeq. The one
-// call that writes nothing is a repeat, byte for byte, of the last piece of a
-// queue that is held. The counter is never reset, not by a release either.
-// ReleaseHold takes the value the operator saw and is refused as hold-changed
-// when information arrived since; the release record carries that value, and
-// Restore refuses a hold record that does not advance the counter by one and a
-// release that does not carry the current value. Late information for an
-// uncertain command with no resend pending is a note only and is not counted:
-// that command freezes the queue, and Resolve shows its notes.
+// held for as well, and a piece whose note is skipped, refused as
+// late-notes-full or not written because the evidence was bad) is journaled as
+// a hold record that advances a counter of the target, shown as
+// TargetView.HeldSeq. The hold record also carries a bounded, safe rendering of
+// the call (the evidence text, or what the fence wrote, its outcome and its
+// readings, cut to the detail bound), and the view shows the last eight pieces
+// of the hold as TargetView.HeldPieces: the counter value, the command, the
+// time and the rendering of each. So a piece whose note was refused is still
+// shown, and a release covers what the operator has seen when the daemon shows
+// HeldPieces up to HeldSeq. The one call that writes nothing is a repeat, byte
+// for byte, of the last piece of a queue that is held. The counter is never
+// reset, not by a release either (the pieces end with the hold). ReleaseHold
+// takes the value the operator saw and is refused as hold-changed when
+// information arrived since; the release record carries that value. Restore
+// rebuilds the counter and the pieces, and refuses a hold record that does not
+// advance the counter by one, repeats the last piece, has no valid digest or
+// no bounded, safe rendering, and a release that does not carry the current
+// counter. Late information for an uncertain command with no resend pending
+// is a note only and is not counted: that command freezes the queue, and its
+// notes are shown with it.
+//
+// A decision covers the notes the operator has seen. Resolve takes
+// Resolution.SeenLate, the number of late notes the operator was shown
+// (len(CommandView.Late)), and refuses with notes-changed when the command has
+// another number now; it applies to every decision about an uncertain command,
+// and to the repeat that finishes a half-written resend. Nothing about it is
+// journaled: the refusal changes nothing, and a resolution record is valid
+// whatever the operator had read, so Restore needs no new field.
 //
 // What the hold does not do. Tick does not refuse the head of a held queue by
 // the queue time limit: the head was not tried, so "not idle" would be a false
@@ -107,6 +126,13 @@
 //     take the delivery of the resend for late evidence of the original and
 //     hold the queue after every resend; and a lead can print a line that looks
 //     like a header for a dropped id in its own output, which is not a user turn.
+//   - The daemon passes each piece of late information once. Alternating
+//     repeats (A, B, A, B) each advance the counter and so keep a release from
+//     going through, because only a repeat of the last piece is suppressed. It
+//     shows the operator HeldPieces and the late notes of the commands the hold
+//     is about (Machine.Command, also for a command that has ended), and passes
+//     back HeldSeq to ReleaseHold and the number of notes it showed to Resolve
+//     (Resolution.SeenLate).
 //   - The daemon repeats a late call (RecordFence or ConfirmDelivery for a
 //     decided command) that returned a journal error. The hold is written
 //     before the note: if the hold failed nothing changed, and if the note

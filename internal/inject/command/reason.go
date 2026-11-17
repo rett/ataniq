@@ -26,7 +26,8 @@ const (
 	// ReasonBadCharacter: the body has a character that is neither a newline
 	// nor printable.
 	ReasonBadCharacter Reason = "bad-character"
-	// ReasonForgedHeader: a body line starts with the header marker.
+	// ReasonForgedHeader: the body contains the header marker anywhere, in its
+	// folded form (see CheckBody), not only at the start of a line.
 	ReasonForgedHeader Reason = "forged-header"
 	// ReasonTooLong: the whole text is over the size cap.
 	ReasonTooLong Reason = "text-too-long"
@@ -137,4 +138,8 @@ const (
 	ReasonBadEvidence   Reason = "bad-evidence"
 	ReasonBadOperator   Reason = "bad-operator"
 	ReasonBadDecision   Reason = "bad-decision"
+	// ReasonNotesChanged: Resolve named a number of late notes that is not the
+	// command's current number: late information arrived after the operator
+	// looked.
+	ReasonNotesChanged Reason = "notes-changed"
 )

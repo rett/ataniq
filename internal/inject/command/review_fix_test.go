@@ -549,6 +549,10 @@ func lateTest(t *testing.T) (*Machine, *fakeJournal) {
 	return m, j
 }
 
+// seenNotes is the number of late notes the operator reads on command id: the
+// SeenLate of a decision about it.
+func seenNotes(t *testing.T, m *Machine, id string) int { return len(lateNotes(t, m, id)) }
+
 func lateNotes(t *testing.T, m *Machine, id string) []LateNote {
 	t.Helper()
 	c, ok := m.Command(id)
@@ -650,7 +654,7 @@ func TestLateRecordsNeverLeaveUncertainOrUnfreezeTheQueue(t *testing.T) {
 	}
 	wantState(t, m, "m1", StateUncertain)
 	// Only an operator decision ends it, and it unfreezes the queue.
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "a", Note: "late evidence read"}, at(2*time.Hour)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "a", Note: "late evidence read", SeenLate: seenNotes(t, m, "m1")}, at(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	wantState(t, m, "m1", StateDelivered)

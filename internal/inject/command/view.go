@@ -20,8 +20,9 @@ type CommandView struct {
 	Evidence     string
 	Operator     string
 	// Late are the late fence results and late delivery evidence of a command
-	// that was uncertain, or that an operator resolved as "send again" or "drop", in the
-	// order they were journaled. They are for the operator who decides; they
+	// that was uncertain, or that an operator resolved as "send again" or
+	// "drop", in the order they were journaled. Resolution.SeenLate is their
+	// number as the operator saw it. They are for the operator who decides; they
 	// never end the uncertain state. They stay with the command after it ends.
 	Late []LateNote
 	// Admitted is when the command was admitted; Updated when it last moved.
@@ -50,6 +51,21 @@ type LateNote struct {
 	Evidence     string
 }
 
+// HeldPiece is one piece of late information about a command a hold is about,
+// as the hold record kept it: it is shown whether or not its note could be
+// stored.
+type HeldPiece struct {
+	// Held is the hold counter this piece set.
+	Held uint64
+	// ID is the command the piece is about, and At the time of the call.
+	ID string
+	At time.Time
+	// Detail is a bounded, safe rendering of the call: "late-evidence: " and the
+	// evidence, or "late-fence-result: " and what the fence wrote, its outcome
+	// and its readings.
+	Detail string
+}
+
 // TargetView is a read-only copy of one target's queue.
 type TargetView struct {
 	Target string
@@ -71,16 +87,26 @@ type TargetView struct {
 	// queue may be empty. A queue can be both frozen and held.
 	//
 	// HeldSeq is the hold counter, 0 when the queue is not held: it goes up by
-	// one for every piece of late information about a command the hold is about
-	// (also one whose note is skipped or refused), except a call that repeats the
-	// last one byte for byte. ReleaseHold takes the value the operator saw and is
-	// refused (ReasonHoldChanged) when it is not the current one.
+	// one for every piece of late information about a command that calls for a
+	// hold (resolved as sent again or dropped, or uncertain with its resend half
+	// written; also a piece whose note is skipped or refused), except a call
+	// that repeats the last one byte for byte. ReleaseHold takes the value the
+	// operator saw and is refused (ReasonHoldChanged) when it is not the current
+	// one.
+	//
+	// HeldPieces are the last pieces of late information of this hold, oldest
+	// first and at most eight, each with its counter value, its command, its
+	// time and a rendering of the call. A piece is shown even when its note was
+	// refused (a full note list, bad evidence), so an operator who shows
+	// HeldPieces up to HeldSeq has seen what a release covers. Older pieces are
+	// in the journal. A release ends them with the hold.
 	Held       bool
 	HeldFor    string
 	HeldReason Reason
 	HeldSince  time.Time
 	HeldAlso   []string
 	HeldSeq    uint64
+	HeldPieces []HeldPiece
 	// BlockedNotified is true during a blocked spell: the owner was already
 	// told that the lead is waiting for an approval.
 	BlockedNotified bool
@@ -112,6 +138,7 @@ func (m *Machine) View() View {
 			if len(h.about) > 1 {
 				tv.HeldAlso = append([]string(nil), h.about[1:]...)
 			}
+			tv.HeldPieces = append([]HeldPiece(nil), h.pieces...)
 		}
 		v.Targets = append(v.Targets, tv)
 	}

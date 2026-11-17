@@ -340,7 +340,7 @@ func TestLateEvidenceDuringAHalfWrittenResendHoldsTheQueue(t *testing.T) {
 	// The operator can only finish the resend; Resolve refuses anything else.
 	_, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op"}, at(52*time.Second))
 	wantRefusal(t, err, ReasonWrongState)
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1"}, at(53*time.Second)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1", SeenLate: seenNotes(t, m, "m1")}, at(53*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	wantState(t, m, "m1", StateResolved)
@@ -374,7 +374,7 @@ func TestAHalfWrittenResendInAHeldQueueCanBeWithdrawn(t *testing.T) {
 	wantState(t, m, "r1", StateResolved)
 	// The original is uncertain with nothing pending: the evidence says it
 	// arrived, and the operator says so.
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op"}, at(52*time.Second)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op", SeenLate: seenNotes(t, m, "m1")}, at(52*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	wantHeld(t, m, "m1", at(53*time.Second))
@@ -399,7 +399,7 @@ func TestLateEvidenceWithTheNoteCapFullStillHoldsTheQueue(t *testing.T) {
 			t.Fatalf("an uncertain command with no resend wrote %+v", r)
 		}
 	}
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1"}, at(time.Minute)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionResend, Operator: "op", NewID: "r1", SeenLate: seenNotes(t, m, "m1")}, at(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	n := len(j.recs)
@@ -639,7 +639,7 @@ func TestARepeatedLateNoteIsSkippedAndTheCapHasItsOwnReason(t *testing.T) {
 		t.Error("a skipped or refused note was journaled")
 	}
 	// An ended command keeps its notes for the audit.
-	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op"}, at(2*time.Minute)); err != nil {
+	if _, err := m.Resolve(Resolution{ID: "m1", Decision: DecisionDelivered, Operator: "op", SeenLate: seenNotes(t, m, "m1")}, at(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if got := lateNotes(t, m, "m1"); len(got) != maxLateNotes {

@@ -31,6 +31,10 @@ type Resolution struct {
 	NewID string
 	// Note is optional free text for the log.
 	Note string
+	// SeenLate is the number of late notes the operator was shown for the
+	// command (len(CommandView.Late)). The decision is refused when more, or
+	// fewer, are there now, so that it never covers a note nobody read.
+	SeenLate int
 }
 
 // Resolved is the effect of Resolve.
@@ -64,9 +68,16 @@ type Resolved struct {
 // nothing but the still uncertain old one, so the queue stays frozen; calling
 // Resolve again with the same arguments writes only the second record.
 //
+// A decision covers the late notes the operator saw: res.SeenLate is the number
+// of them (len(CommandView.Late), or the same from Machine.Command), and the
+// call is refused (ReasonNotesChanged) when the command has another number now.
+// The operator reads the command again and decides again. A repeat that
+// finishes a half-written resend names the current number too, so late
+// information that arrived in between is seen first.
+//
 // It refuses with a *Refusal, and journals nothing, when the command is not
-// uncertain, the decision or operator is bad, or the new id is bad, used, or
-// makes the text too long.
+// uncertain, the decision or operator is bad, the number of late notes seen is
+// not the current one, or the new id is bad, used, or makes the text too long.
 func (m *Machine) Resolve(res Resolution, now time.Time) (Resolved, error) {
 	c := m.cmds[res.ID]
 	switch {
@@ -81,6 +92,11 @@ func (m *Machine) Resolve(res Resolution, now time.Time) (Resolved, error) {
 	// the same resend may go on, or the message would be sent twice.
 	if p := m.pendingResend(c); p != nil && (res.Decision != DecisionResend || res.NewID != p.id) {
 		return Resolved{}, refusal(ReasonWrongState, c.id, "command %q was already sent again as %q; repeat that resolution to finish it", c.id, p.id)
+	}
+	// The operator decides about the notes they saw. This holds for every
+	// decision, and for the repeat that finishes a half-written resend.
+	if len(c.late) != res.SeenLate {
+		return Resolved{}, refusal(ReasonNotesChanged, c.id, "command %q has %d late notes, the decision saw %d: late information arrived since", c.id, len(c.late), res.SeenLate)
 	}
 	r := base(c, now)
 	r.From = StateUncertain
