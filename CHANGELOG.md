@@ -14,9 +14,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   subagents, tasks and conversations, and without `--demo` it reports that the
   backend is unavailable. Dark is the default theme. Nothing typed reaches a
   process, and every control (approve, deny, full attach, send, interrupt,
-  detach) is unavailable and listed with its reason under Ctrl+K. Live control,
-  provider integration, use over SSH and terminal restoration after a startup
-  error remain unqualified.
+  detach) is unavailable and listed with its reason under Ctrl+K; `a` says why
+  full attach is unavailable. Live control, provider integration, use over SSH
+  and terminal restoration after a startup error remain unqualified.
 - Show the console as a cockpit in a window of 100x30 or more, on the alternate
   screen: three panes (projects and leads with a context block; a session
   block, an embedded session terminal and a focus bar; evidence and approvals
@@ -27,11 +27,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Tab cycles the panes and Enter on the session focuses it. In session focus
   every key goes to the session, `q` and Ctrl+C included, except the return
   key (Ctrl+\ by default, set with `--return-key ctrl+KEY`) and F12, which
-  zooms the pane to the window in either focus. The return key is read from
-  the byte 0x1c and from `CSI 92;5u`, also with CapsLock, NumLock or
-  ScrollLock on; without the kitty keyboard protocol Ctrl+4 sends the same
-  byte and returns too. Ctrl+Enter is never bound. A recording that ends shows
-  its last screen, dimmed, under a banner with the exit status or "unknown",
+  zooms the pane to the window in either focus. Both work with CapsLock,
+  NumLock or ScrollLock on. The return key is read from the byte 0x1c and from
+  `CSI 92;5u`; without the kitty keyboard protocol Ctrl+4 sends the same byte
+  and returns too. Ctrl+Enter is never bound. A recording that ends shows its
+  last screen, dimmed, under a banner with the exit status or "unknown",
   saying that the terminal stream ended, not necessarily the agent; in session
   focus any key but F12 returns to the console, and in console focus `r`
   replays the recording. `--recording NAME` picks a fixture recording and
