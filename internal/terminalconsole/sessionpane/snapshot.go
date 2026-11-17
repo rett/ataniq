@@ -39,13 +39,17 @@ import (
 // only the API, not output, can make. On an error dst is returned as it was.
 // The pane is not changed. It works after End and Close too.
 func (p *Pane) AppendSnapshot(dst []byte) ([]byte, error) {
+	return p.appendSnapshot(dst, MaxSnapshotBytes)
+}
+
+func (p *Pane) appendSnapshot(dst []byte, limit int) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.emu.Quiescent() {
 		return dst, ErrNotQuiescent
 	}
 	st := p.emu.State()
-	e := &encoder{b: dst, start: len(dst)}
+	e := &encoder{b: dst, start: len(dst), limit: limit}
 	if err := e.encodeState(&st, p.title); err != nil {
 		return dst, err
 	}

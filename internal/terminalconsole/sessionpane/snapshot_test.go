@@ -885,58 +885,6 @@ func TestWorstCaseScreenSnapshot(t *testing.T) {
 	}
 }
 
-// What does not fit the limit is an error, and leaves dst alone: both screens
-// of 63-byte clusters of different styles under 256 links.
-func TestSnapshotOverTheLimitFails(t *testing.T) {
-	const cols, rows = sessionpane.MaxCols, sessionpane.MaxRows
-	links := make([]uv.Link, vt.MaxLiveLinks)
-	for i := range links {
-		url := fmt.Sprintf("http://x.example/%03d/", i)
-		links[i] = uv.Link{URL: url + strings.Repeat("u", vt.MaxLinkURL-len(url)), Params: strings.Repeat("p", vt.MaxLinkParams)}
-	}
-	st := vt.NewEmulator(cols, rows).State()
-	for s := range st.Screens {
-		sc := &st.Screens[s]
-		sc.Links = slicesSorted(links)
-		for i := range sc.Cells {
-			content := "a" + strings.Repeat("\u0301", 30)
-			sc.Cells[i] = uv.Cell{
-				Content: content + string(rune(0x300+i%112)),
-				Width:   1,
-				Style:   uv.Style{Fg: color.RGBA{R: byte(i), G: byte(i >> 8), B: byte(i>>16) + byte(2*s), A: 255}},
-				Link:    sc.Links[i*vt.MaxLiveLinks/len(sc.Cells)],
-			}
-		}
-	}
-	p := newPane(t, cols, rows, sessionpane.Options{})
-	if err := sessionpane.SetEmulatorState(p, st); err != nil {
-		t.Fatal(err)
-	}
-	prefix := []byte("prefix")
-	got, err := p.AppendSnapshot(prefix)
-	if !errors.Is(err, sessionpane.ErrSnapshotTooLarge) {
-		t.Fatalf("AppendSnapshot = %d bytes, %v; want ErrSnapshotTooLarge", len(got), err)
-	}
-	if !bytes.Equal(got, prefix) {
-		t.Errorf("dst changed to %d bytes", len(got))
-	}
-
-	// The same screens with one style fit.
-	for s := range st.Screens {
-		for i := range st.Screens[s].Cells {
-			st.Screens[s].Cells[i].Style = uv.Style{}
-		}
-	}
-	if err := sessionpane.SetEmulatorState(p, st); err != nil {
-		t.Fatal(err)
-	}
-	snap, err := p.AppendSnapshot(nil)
-	if err != nil {
-		t.Fatalf("with one style: %v", err)
-	}
-	t.Logf("both screens of different 63-byte clusters, one style: %d bytes; with a style per cell: over %d", len(snap), sessionpane.MaxSnapshotBytes)
-}
-
 func slicesSorted(links []uv.Link) []uv.Link {
 	out := append([]uv.Link(nil), links...)
 	for i := 1; i < len(out); i++ {

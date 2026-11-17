@@ -117,3 +117,9 @@ func EmulatorState(p *Pane) vt.State {
 	defer p.mu.Unlock()
 	return p.emu.State()
 }
+
+// AppendSnapshotLimit is AppendSnapshot with another limit than
+// MaxSnapshotBytes, for the test of the error and of the worst case.
+func AppendSnapshotLimit(p *Pane, dst []byte, limit int) ([]byte, error) {
+	return p.appendSnapshot(dst, limit)
+}

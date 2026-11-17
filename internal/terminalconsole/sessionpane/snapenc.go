@@ -62,9 +62,19 @@ import (
 const snapshotVersion = 1
 
 // MaxSnapshotBytes is the most bytes a snapshot has, and the most Restore
-// reads: 16 MiB minus 8 bytes, so that a frame carrying it, with its header,
-// stays within 16 MiB.
-const MaxSnapshotBytes = 16<<20 - 8
+// reads. It is a computed bound and not a round number: the largest snapshot
+// the format has for a pane of MaxCols by MaxRows (both screens, a cluster of
+// 64 bytes in every cell, a style of its own for every cell and every pen,
+// 256 links of the longest URL and parameters on each screen, every other
+// field at its largest) is 18 991 628 bytes, 18.11 MiB, so AppendSnapshot
+// never fails for size on a state that output can make. The cap is the next
+// whole MiB above that, 19 MiB, less the 8 bytes of position that a Snapshot
+// frame carries before the snapshot, so that the frame is 19 MiB exactly
+// (wire.MaxSnapshotPayload). The lead-hosting design's 16 MiB counted one
+// screen; the second screen of the same size is what makes the bound larger.
+// A test computes the bound field by field, builds the state that has every
+// field at its largest, and checks the cap against both.
+const MaxSnapshotBytes = 19<<20 - 8
 
 // Errors of the snapshot functions; test with errors.Is.
 var (
@@ -72,8 +82,9 @@ var (
 	// string or a UTF-8 character is half received.
 	ErrNotQuiescent = errors.New("sessionpane: pane is not quiescent")
 	// ErrSnapshotTooLarge is returned by AppendSnapshot when the snapshot
-	// would be over MaxSnapshotBytes (a screen of 63-byte clusters of
-	// different styles on both screens can be).
+	// would be over MaxSnapshotBytes. No state that output can make is: the
+	// cap is the bound of the format for the largest pane, so the error is
+	// a guard for a state that only the API could make.
 	ErrSnapshotTooLarge = errors.New("sessionpane: snapshot over the size limit")
 	// ErrUnsupportedState is returned by AppendSnapshot for a state the
 	// session's output cannot make, which the format cannot carry: a cell
@@ -154,6 +165,9 @@ func normLink(l uv.Link) uv.Link {
 type encoder struct {
 	b     []byte
 	start int
+	// limit is the most bytes the snapshot may have: MaxSnapshotBytes, a
+	// smaller number in a test of the error.
+	limit int
 }
 
 func (e *encoder) u8(v byte)      { e.b = append(e.b, v) }
@@ -162,7 +176,7 @@ func (e *encoder) uv(v uint64)    { e.b = appendUvarint(e.b, v) }
 func (e *encoder) int(v int)      { e.b = appendUvarint(e.b, uint64(v)) }
 func (e *encoder) str(s string)   { e.int(len(s)); e.b = append(e.b, s...) }
 func (e *encoder) size() int      { return len(e.b) - e.start }
-func (e *encoder) tooLarge() bool { return e.size() > MaxSnapshotBytes }
+func (e *encoder) tooLarge() bool { return e.size() > e.limit }
 func b2u(v bool) byte {
 	if v {
 		return 1
