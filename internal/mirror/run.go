@@ -54,6 +54,34 @@ func (l Limits) check() error {
 	return nil
 }
 
+// Option changes how [Create] or [Open] makes a [Mirror].
+type Option func(*options)
+
+type options struct{ limits Limits }
+
+// UseLimits gives the mirror the limits l, for the git runs of [Create] and
+// [Open] themselves and for the mirror they return. Without it the defaults
+// apply, among them the 60 second limit of each git run. A negative field
+// makes Create and Open fail before they touch anything.
+func UseLimits(l Limits) Option {
+	return func(o *options) { o.limits = l }
+}
+
+// applyOptions returns the limits that the options set, or the error for
+// limits that are not valid.
+func applyOptions(opts []Option) (Limits, error) {
+	var o options
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	if err := o.limits.check(); err != nil {
+		return Limits{}, err
+	}
+	return o.limits, nil
+}
+
 // gitExit is the error of a git run that ended with a non-zero status. It
 // carries the status and no output of git, which may name lead refs.
 type gitExit struct {

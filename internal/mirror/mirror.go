@@ -109,9 +109,14 @@ func projectOf(path string) (string, error) {
 // the source and the marker file "ataniq-mirror", which holds the format
 // version and the project name taken from the folder name. When anything
 // fails, the folder is removed again. On success the result is the same as
-// [Open] returns.
-func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
+// [Open] returns. The options can set the limits of the git runs: see
+// [UseLimits].
+func Create(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mirror, error) {
 	project, err := projectOf(path)
+	if err != nil {
+		return nil, err
+	}
+	lim, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +141,7 @@ func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		return nil, fmt.Errorf("mirror: %w", err)
 	}
-	m, err := populate(ctx, git, path, project)
+	m, err := populate(ctx, git, path, project, lim)
 	if err != nil {
 		// The folder is new and ours, and the parent is the owner's.
 		_ = os.RemoveAll(path)
@@ -146,11 +151,10 @@ func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 }
 
 // populate fills the new, empty folder and returns the checked mirror.
-func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirror, error) {
+func populate(ctx context.Context, git gitenv.Git, path, project string, lim Limits) (*Mirror, error) {
 	if err := os.Chmod(path, 0o700); err != nil {
 		return nil, fmt.Errorf("mirror: %w", err)
 	}
-	var lim Limits
 	if _, err := runGit(ctx, git, gitenv.Cmd{
 		Dir:  path,
 		Args: []string{"init", "--bare", "--quiet", "--template="},
@@ -187,7 +191,7 @@ func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirro
 	if werr != nil {
 		return nil, fmt.Errorf("mirror: %w", werr)
 	}
-	return Open(ctx, git, path)
+	return Open(ctx, git, path, UseLimits(lim))
 }
 
 // Open checks the mirror at path and returns it. It refuses, with an error
@@ -211,9 +215,15 @@ func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirro
 // The mirror is Ataniq's own, so this is a consistency check that catches a
 // mirror somebody edited by hand. All file checks use safefs and follow no
 // symlink. The config is read once through safefs and parsed by git from that
-// copy; git does not read the repository before the config is accepted.
-func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
+// copy; git does not read the repository before the config is accepted. The
+// options can set the limits of the mirror and of the git runs of Open: see
+// [UseLimits].
+func Open(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mirror, error) {
 	project, err := projectOf(path)
+	if err != nil {
+		return nil, err
+	}
+	lim, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +249,6 @@ func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	if err != nil {
 		return nil, notMirror("the config file cannot be read")
 	}
-	var lim Limits
 	// The listing needs no repository: --git-dir names a path that is not
 	// one, so that git does not read the folder's own config.
 	listing, err := runGit(ctx, git, gitenv.Cmd{
@@ -270,7 +279,7 @@ func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	if strings.TrimSpace(string(out)) != "true" {
 		return nil, notMirror("the repository is not bare")
 	}
-	return &Mirror{git: git, path: path}, nil
+	return &Mirror{git: git, path: path, limits: lim}, nil
 }
 
 // checkFolder runs the checks that need only the folder handle. It returns a

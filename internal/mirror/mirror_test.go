@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/exchange/boundedexec"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/exchange/safefs"
 )
@@ -559,6 +560,99 @@ func TestWithLimits(t *testing.T) {
 	}
 	if _, err := m.WithLimits(Limits{MaxRefs: -1}); err == nil {
 		t.Error("a negative ref cap was accepted")
+	}
+}
+
+func TestCreateAndOpenTakeLimits(t *testing.T) {
+	g := needGit(t)
+	ctx := context.Background()
+	lim := Limits{Timeout: 3 * time.Second, MaxRefs: 7}
+
+	state := t.TempDir()
+	path, err := Path(state, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Create(ctx, g, path, UseLimits(lim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != lim.Timeout || got.MaxRefs != lim.MaxRefs {
+		t.Errorf("Create: limits = %+v, want %+v", got, lim)
+	}
+	m, err = Open(ctx, g, path, UseLimits(lim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != lim.Timeout || got.MaxRefs != lim.MaxRefs {
+		t.Errorf("Open: limits = %+v, want %+v", got, lim)
+	}
+	// Without options the defaults stand, and a nil option is ignored.
+	m, err = Open(ctx, g, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != DefaultTimeout || got.MaxRefs != DefaultMaxRefs {
+		t.Errorf("Open without limits: %+v", got)
+	}
+
+	// Negative limits are refused before anything is made or run.
+	bad := UseLimits(Limits{Timeout: -time.Second})
+	other, err := Path(state, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(ctx, g, other, bad); err == nil {
+		t.Error("Create accepted a negative limit")
+	}
+	if _, err := os.Lstat(other); err == nil {
+		t.Error("Create with a bad limit made a folder")
+	}
+	if _, err := Open(ctx, g, path, bad); err == nil {
+		t.Error("Open accepted a negative limit")
+	}
+	if _, err := Open(ctx, g, path, UseLimits(Limits{MaxRefs: -1})); err == nil {
+		t.Error("Open accepted a negative ref cap")
+	}
+}
+
+func TestCreateAndOpenGitRunsUseTheLimit(t *testing.T) {
+	g := needGit(t)
+	ctx := context.Background()
+	slow := fakeGit(t, "exec sleep 30")
+	short := UseLimits(Limits{Timeout: 200 * time.Millisecond})
+
+	// Create: the first git run is "init", which the slow git never ends.
+	state := t.TempDir()
+	if err := os.Mkdir(filepath.Join(state, "mirrors"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path(state, "proj")
+	start := time.Now()
+	if _, err := Create(ctx, slow, path, short); !errors.Is(err, boundedexec.ErrTimeout) {
+		t.Errorf("Create with a slow git: err = %v, want ErrTimeout", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the limit did not stop git in Create")
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Error("a failed Create left its folder")
+	}
+
+	// Open: the config listing is the first git run.
+	m, err := Create(ctx, g, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if _, err := Open(ctx, slow, m.Path(), short); !errors.Is(err, boundedexec.ErrTimeout) {
+		t.Errorf("Open with a slow git: err = %v, want ErrTimeout", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the limit did not stop git in Open")
 	}
 }
 
