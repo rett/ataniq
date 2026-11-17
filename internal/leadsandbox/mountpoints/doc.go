@@ -32,6 +32,10 @@
 //     tree, home and config folder are 0700 folders of the caller's user. A
 //     tree whose .git names alternates (objects of another repository) is
 //     refused. The file .git/config is not parsed.
+//   - [CheckBindSources] opens every bind source of a plan from the root of the
+//     file system with openat2 (no symbolic link, no magic link, on any
+//     component) and refuses a source that has a link anywhere on its path,
+//     naming it. It is the last check before a launch.
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each host bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
@@ -91,18 +95,22 @@
 //  1. Call [CheckOwnClone] when the tree is made. Then call [Prepare], only
 //     before the lead's first run, with the statement that no lead has run.
 //     Prepare does not run [CheckOwnClone] itself. At every start after that
-//     call [Check] and [ResolveSources], not [Prepare].
-//  2. Run [Check] and [ResolveSources] only after the previous unit has gone
-//     and its control group is empty, and right before the launch, with
-//     nothing between them and the launch that runs a lead process. Nested
+//     call [Check], [ResolveSources] and [CheckBindSources], not [Prepare].
+//  2. Run [Check], [ResolveSources] and [CheckBindSources] only after the
+//     previous unit has gone and its control group is empty, and right before
+//     the launch, with nothing between them and the launch that runs a lead
+//     process: [Check] first, then [ResolveSources], then [CheckBindSources]
+//     on the sources it gives (the last step before the launch). Nested
 //     sandboxes are allowed for now, so the sandbox's own process tree does
 //     not show that no lead process remains; only an empty control group
 //     does. A check made while a lead process remains says nothing.
 //  3. Pass the resolved real paths ([ResolvedSource].Real, or the source after
-//     checking that Real equals Source) to the plan. bubblewrap resolves a
-//     source by its path when it binds, so a source that is checked and a
-//     different one that is bound is a check that did not happen. The probe's
-//     assertions from inside the sandbox stay the final check.
+//     checking that Real equals Source) to the plan, and the same paths, the
+//     plan's sources, to [CheckBindSources]. bubblewrap resolves a source by
+//     its path when it binds, so a source that is checked and a different one
+//     that is bound is a check that did not happen. A source with a link on
+//     its path is refused, so the real path is what a plan must carry. The
+//     probe's assertions from inside the sandbox stay the final check.
 //  4. Know the limits of the records folder. It lies outside the state root,
 //     so the lookup from the state root does not reach it: only its last
 //     component is opened without following a symbolic link, nothing above it
