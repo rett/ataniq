@@ -200,13 +200,15 @@ func run(args []string, d deps) int {
 		}
 		return refuse("dev.tty.legacy_tiocsti cannot be read as 0 or 1, so the TIOCSTI ioctl cannot be shown to be off")
 	}
-	for _, f := range []struct{ what, path string }{{"the state folder", cfg.stateDir}, {"the runtime folder", cfg.runtimeDir}} {
+	// A refusal names the flag, never the path it was given: the path is the
+	// caller's own, and the journal that takes stderr has no need of it.
+	for _, f := range []struct{ flag, path string }{{"--state-dir", cfg.stateDir}, {"--runtime-dir", cfg.runtimeDir}} {
 		if err := checkPrivateDir(f.path); err != nil {
-			return refuse("%s %q %v (it must be a real directory of this user with mode 0700)", f.what, f.path, err)
+			return refuse("%s %v (it must be a real directory of this user with mode 0700)", f.flag, err)
 		}
 	}
 	if fi, err := os.Stat(cfg.tree); err != nil || !fi.IsDir() {
-		return refuse("the work tree %q is not a directory", cfg.tree)
+		return refuse("--tree is not a directory")
 	}
 	ticks, err := selfStartTicks()
 	if err != nil {
@@ -229,10 +231,15 @@ func run(args []string, d deps) int {
 	}
 	lock, err := session.TakeRoleLock(cfg.roleLock)
 	if errors.Is(err, session.ErrRoleLocked) {
-		out.line("refused: the role is already held by another holder (%q is locked)", cfg.roleLock)
+		out.line("refused: the role is already held by another holder (--role-lock is locked)")
 		return exitLocked
 	} else if err != nil {
-		return refuse("cannot take the role lock: %v", err)
+		// The error names the path; its cause (an errno) does not.
+		reason := "it is not a regular file of this user"
+		if cause := errors.Unwrap(err); cause != nil {
+			reason = cause.Error()
+		}
+		return refuse("--role-lock cannot be taken as the role lock: %s", reason)
 	}
 	defer func() {
 		if lock != nil {
@@ -286,7 +293,7 @@ func run(args []string, d deps) int {
 	sess, err := session.Start(scfg)
 	if err != nil {
 		if errors.Is(err, session.ErrRoleLocked) {
-			out.line("refused: the role is already held by another holder (%q is locked)", cfg.roleLock)
+			out.line("refused: the role is already held by another holder (--role-lock is locked)")
 			return exitLocked
 		}
 		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "start-failed"})
