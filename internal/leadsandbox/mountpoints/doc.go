@@ -16,7 +16,7 @@
 //   - [List] turns the bind table of the profile (package profile: the
 //     LeadWritable flag, Within, HostMountPoint) into the mount points that
 //     lie in a lead-writable host folder: the host path, the folder it lies in
-//     (home, config folder, tree or records), the relative path, folder or
+//     (home, config folder, tree or Qargi records), the relative path, folder or
 //     file, and whether it is a tree placeholder outside .git.
 //   - [Prepare] makes them, once, before the first run. It makes a missing
 //     folder or empty file through a [safefile.Root] of the folder the mount
@@ -155,7 +155,7 @@
 //     plan. The probe's assertions from inside the sandbox stay the final
 //     check.
 //  4. Know the limits of the records folder. The profile requires it to be
-//     [profile.Layout.Records], <state>/leads/<role>/records, so the lookup
+//     [profile.Layout.QargiRecords], <state>/leads/<role>/qargi, so the lookup
 //     from the state root without links covers every component of its path.
 //     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
 //     the home and the config folder only): the holder must make the folder

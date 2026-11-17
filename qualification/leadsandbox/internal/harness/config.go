@@ -143,7 +143,7 @@ type Sources struct {
 
 	// QargiRecordsInside is where the lead's working Qargi records appear
 	// inside; absent means there are none. The host folder is not a key: it is
-	// the layout's own, <state root>/leads/<role>/records (rule G1: a folder
+	// the layout's own, <state root>/leads/<role>/qargi (rule G1: a folder
 	// the lead writes at any other place could be, or lie above, a source of
 	// another lead). It must exist, as a real folder of mode 0700 owned by the
 	// caller, like the lead's home.
@@ -435,7 +435,7 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		return profile.Inputs{}, configErr("owner_user", "is given for the %q identity only", profile.IdentityOwner)
 	}
 	if c.Sources.QargiRecordsInside != "" {
-		in.QargiRecords = c.layout().Records()
+		in.QargiRecords = c.layout().QargiRecords()
 	}
 	if s := c.Sources.Seccomp; s != nil {
 		in.SeccompFile, in.SeccompSHA256 = s.File, s.SHA256

@@ -51,7 +51,7 @@ func checkHost(c *Config) (*hostFacts, error) {
 		// package looks every folder of the lead up from the state root
 		// without following a link; its mode and owner are not checked there,
 		// so the harness does, and also refuses a link anywhere in its path.
-		if err := ownedPrivateDir("records folder (sources.qargi_records_inside)", c.layout().Records(), true); err != nil {
+		if err := ownedPrivateDir("records folder (sources.qargi_records_inside)", c.layout().QargiRecords(), true); err != nil {
 			return nil, err
 		}
 	}

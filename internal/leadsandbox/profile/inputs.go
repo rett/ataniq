@@ -100,7 +100,7 @@ type Inputs struct {
 
 	// QargiRecords is the lead's working Qargi records (optional): the host
 	// folder and the inside path it is bound at, read-write. When present the
-	// host folder must be Layout.Records, <state>/leads/<role>/records: below
+	// host folder must be Layout.QargiRecords, <state>/leads/<role>/qargi: below
 	// the lead's own state folder, so that every rule about another lead's
 	// state covers it (a folder the lead writes at any other place could be,
 	// or lie above, a source that another lead's sandbox binds). The inside
@@ -330,8 +330,8 @@ func (in Inputs) checkRecords() error {
 	// above it. A records folder at any other place could be, or lie above, a
 	// read-only source of another lead (its agent, its probe, its spec), and
 	// the lead that writes it could plant a link there.
-	if want := in.Layout().Records(); in.QargiRecords != want {
-		return refuse("Qargi records folder", "must be %s (Layout.Records): a folder the lead writes anywhere else could be, or lie above, a source another lead's sandbox binds (rule G1)", want)
+	if want := in.Layout().QargiRecords(); in.QargiRecords != want {
+		return refuse("Qargi records folder", "must be %s (Layout.QargiRecords): a folder the lead writes anywhere else could be, or lie above, a source another lead's sandbox binds (rule G1)", want)
 	}
 	// The digest is independent of the project and of the host: it replaces
 	// the project only in the rows it builds itself, so a caller-given path

@@ -12,12 +12,13 @@ import (
 // RootKind names the lead-writable host folder a mount point lies in.
 type RootKind string
 
-// The folders a lead can write.
+// The folders a lead can write. RootQargi is the folder of the lead's working
+// Qargi records, <state>/leads/<role>/qargi.
 const (
-	RootHome    RootKind = "home"
-	RootConfig  RootKind = "config"
-	RootTree    RootKind = "tree"
-	RootRecords RootKind = "records"
+	RootHome   RootKind = "home"
+	RootConfig RootKind = "config"
+	RootTree   RootKind = "tree"
+	RootQargi  RootKind = "qargi"
 )
 
 // Point is one bind target that lies in a lead-writable host folder.
@@ -103,7 +104,7 @@ func rootOf(t []profile.Bind, inside string) (dir string, kind RootKind, ok bool
 		case profile.RoleTree:
 			return b.Source, RootTree, true
 		case profile.RoleRecords:
-			return b.Source, RootRecords, true
+			return b.Source, RootQargi, true
 		}
 	}
 	return "", "", false

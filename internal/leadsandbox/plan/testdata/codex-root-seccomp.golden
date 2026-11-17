@@ -66,7 +66,7 @@
 --ro-bind /opt/ataniq/placeholders/envrc /work/demo/.envrc
 --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
 --ro-bind /opt/ataniq/qargi /ataniq/qargi
---bind /state/leads/arc-lead/records /home/lead/.qargi
+--bind /state/leads/arc-lead/qargi /home/lead/.qargi
 --ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
 --ro-bind /opt/ataniq/projection/demo /ataniq/projection
 --chdir /work/demo
@@ -129,7 +129,7 @@ ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
 ro-bind /work/demo/.envrc /opt/ataniq/placeholders/envrc
 ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
 ro-bind /ataniq/qargi /opt/ataniq/qargi
-rw-bind /home/lead/.qargi /state/leads/arc-lead/records
+rw-bind /home/lead/.qargi /state/leads/arc-lead/qargi
 ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
 ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files

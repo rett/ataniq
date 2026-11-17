@@ -215,7 +215,7 @@ func TestLayout(t *testing.T) {
 	if GitMetaConfig != "config" || GitMetaHooks != "hooks" || GitMetaInfo != "info" {
 		t.Error("the entries of the git metadata folder changed")
 	}
-	if got := l.Records(); got != "/srv/state/leads/arc-lead/records" {
+	if got := l.QargiRecords(); got != "/srv/state/leads/arc-lead/qargi" {
 		t.Errorf("Records = %q", got)
 	}
 	if got := l.Mirror(); got != "/srv/state/mirrors/ataniq.git" {

@@ -245,13 +245,13 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 		}, "not a real path"},
 		{"records folder is a link", func(f *harnesstest.Fixture) {
 			f.Mkdir(f.Owned+"/records-real", 0o700)
-			if err := os.Symlink(f.Owned+"/records-real", f.Layout().Records()); err != nil {
+			if err := os.Symlink(f.Owned+"/records-real", f.Layout().QargiRecords()); err != nil {
 				t.Fatal(err)
 			}
 			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 		}, "not a folder"},
 		{"records folder below a link", func(f *harnesstest.Fixture) {
-			f.Mkdir(f.Owned+"/lead-real/records", 0o700)
+			f.Mkdir(f.Owned+"/lead-real/qargi", 0o700)
 			if err := os.RemoveAll(f.Layout().LeadDir()); err != nil {
 				t.Fatal(err)
 			}
@@ -261,7 +261,7 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 		}, "not a real path"},
 		{"records folder too open", func(f *harnesstest.Fixture) {
-			f.Mkdir(f.Layout().Records(), 0o755)
+			f.Mkdir(f.Layout().QargiRecords(), 0o755)
 			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 		}, "must be 0700"},
 		{"records folder is missing", func(f *harnesstest.Fixture) {

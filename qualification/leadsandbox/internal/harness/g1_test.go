@@ -722,11 +722,11 @@ func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
 func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	f.Mkdir(f.Base+"/elsewhere", 0o700)
-	for _, value := range []string{f.Base + "/elsewhere", f.Layout().Records(), ""} {
+	for _, value := range []string{f.Base + "/elsewhere", f.Layout().QargiRecords(), ""} {
 		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records"] = value }), `sources has the unknown key "qargi_records"`)
 	}
 
-	f.Mkdir(f.Layout().Records(), 0o700)
+	f.Mkdir(f.Layout().QargiRecords(), 0o700)
 	f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 	approved(f)
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
@@ -738,8 +738,8 @@ func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	for _, m := range r.out.Plan.Mounts {
 		if m.Inside == "/ataniq/records" {
 			found = true
-			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().Records() {
-				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().Records())
+			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().QargiRecords() {
+				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().QargiRecords())
 			}
 		}
 	}
