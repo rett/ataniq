@@ -79,8 +79,10 @@ different ref from the upstream `refs/heads/develop`. Lead tags are not
 carried: a lead can never replace an upstream tag.
 
 The records folder and the work folder of `verify` are not in the state root.
-You give them as options. They must exist, be absolute, be real folders with
-mode 0700, and not be the state root or inside it.
+You give them as options. They must exist, be absolute, be real folders that
+you own with mode 0700, and not be the state root or inside it. For `verify`,
+the records folder and the work folder must also not be the same folder or lie
+inside each other, with symbolic links resolved.
 
 ## The fetch, step by step
 
@@ -128,8 +130,8 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
    every delete, then every create and update. Two are needed because a lead's
    rename of a branch across a `/` (`a/b` to `a`) cannot be done in one. A
    failure of the second puts back what the first deleted. From this step on
-   the fetch is not cancelled by its time limit, so that refs are not left
-   half moved.
+   the fetch is not cancelled by its time limit, nor by an interrupt,
+   terminate or hang-up signal, so that refs are not left half moved.
 9. **Prove that other namespaces did not change.** The mirror's refs are listed
    again. The move names only the lead's namespace, so it cannot write
    anything else. A ref outside it that holds a tip this fetch staged can only
@@ -140,7 +142,8 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
 10. **Clean up.** The staging repository is deleted, also after an error or a
     panic, and the mirror is measured again.
 
-The command prints the three sizes, the duration, each ref update and any
+The command prints the four sizes (the lead's object store, the mirror
+before, what the fetch added and the mirror after), the duration, each ref update and any
 note from step 9. Lead text in it is escaped (see
 [How lead text is shown](#how-lead-text-is-shown)).
 
@@ -164,17 +167,20 @@ command prints the report and exits with status 1.
 
 ### The git environment
 
-Every git run on content a lead wrote goes through the `gitenv` package. The
+Every git run by the owner on content a lead wrote goes through the `gitenv`
+package. The
 environment is complete and nothing is inherited from the calling process. The
 git executable is an absolute path and `$PATH` is never searched. No system or
 global configuration is read, no attributes outside the repository and no
 credentials. Hooks, file system monitors, pagers, editors, askpass programs,
 credential helpers, external diff programs and submodule recursion are off.
 Every transport is refused except the one the call names, which is `file`.
-Object checking (fsck) is on for transfers. Before the subcommand, git accepts
-only options written `--name=value` or from a short list of options with no
-value, and options that name a program to run are refused, except the one
-`--upload-pack` that the fetch builds itself. The package does not make git
+Object checking (fsck) is on for transfers. No option is accepted before the
+subcommand. After it, up to `--end-of-options`, every option must be written
+`--name=value` or be one of a short list of flags that take no value. Options
+that name a program to run are refused in every form, abbreviated too; the one
+upload-pack command of the fetch is set by the package itself, not as an
+option the caller writes. The package does not make git
 safe in a repository an attacker controls, and does not confine the process.
 Owner-side code runs git only on bare repositories that Ataniq made, with an
 explicit `--git-dir`. The package comment of `internal/exchange/gitenv` has
@@ -189,8 +195,10 @@ the details.
 - **A move that fails** leaves no ref changed. The objects it brought stay in
   the mirror with no ref that reaches them. They are harmless. The owner's
   garbage collection removes them, and nothing here runs it.
-- **A crash** of the owner process (a kill, a power loss) is another matter.
-  The namespace is changed in two git runs, and nothing makes them one step. A
+- **A crash** of the owner process is another matter. A terminate or hang-up
+  signal is not a crash: the command cancels like a time-out, so before step 8
+  it leaves the mirror as it was. A kill that cannot be caught or a power loss
+  is a crash. The namespace is changed in two git runs, and nothing makes them one step. A
   crash between the two leaves the lead's namespace half changed. The next
   fetch takes the namespace as it finds it and brings it to the lead's
   branches as they are then. It does not repair or notice the half-done state,
@@ -322,8 +330,9 @@ The command accepts this file as a template. That shows only that it parses.
 ## The intake, step by step
 
 The steps are `review`, `verify` and `integrate`. `ataniq-intake help` and
-`ataniq-intake help SUBCOMMAND` print the exact flags of each; this guide does
-not repeat them. Every subcommand takes `--state` and `--project`.
+`ataniq-intake help SUBCOMMAND` print the exact flags and exit statuses of
+each; this guide does not repeat them. Every subcommand takes `--state` and
+`--project`.
 
 ### review
 
@@ -340,6 +349,10 @@ It prints:
   the digest;
 - the commits between the base and the tip, newest first;
 - the changed paths of the net change, with status and modes;
+- with the optional `--records DIR`, the verification records of the project
+  for this tip, newest first, each with its outcome, its plan digest and its
+  **gates** (name and command), before the sign-off; or a line that says that
+  none is recorded. The newest record decides, as for `integrate`;
 - the section **Needs your sign-off**: each path that needs its own sign-off,
   with the kind of each flag, its reason and the exact `--accept-path`
   argument to type.
@@ -355,7 +368,7 @@ A path can carry several flags. These are the kinds:
 | `symlink` | The entry is, or was, a symbolic link. A link can make a checkout reach an execution-config path through another name. |
 | `submodule` | The entry is, or was, a submodule. A submodule fetches and runs other code. |
 | `aliased` | A symbolic link whose own path is execution config stands for a folder, and this path lies in that folder. A link that points out of the repository, at an absolute path, or through too long a chain of links, is flagged on its own path. |
-| `history-only` | The path is execution config, a link or a submodule, or lies in a folder that a link stands for, in the change of some commit of the branch, but is not in the net change. It was added and removed again inside the branch. It still enters upstream history, so it needs a sign-off too. |
+| `history-only` | The path is execution config, a link or a submodule, or lies in a folder that a link stands for, in the change of some commit of the branch, and the net change does not show it: it was added and removed again, or changed and changed back, or it was a link or a submodule in a commit and is neither at the tip. It still enters upstream history, so it needs a sign-off too. |
 
 ### verify
 
@@ -365,7 +378,8 @@ ends the run.
 
 - **Where.** In the verification sandbox of your template, never as you and
   never in your checkout. The command makes two new folders in `--work`, a
-  scratch folder and a home folder, and removes both afterwards. The sandbox
+  scratch folder and a home folder, and removes both afterwards, also when an interrupt, terminate or hang-up signal
+  stops the run. The sandbox
   makes a scratch clone from the mirror, fetches the tip into it (no tags, no
   hardlinks, no alternates), checks that it is exactly the reviewed tip,
   checks it out detached and runs each gate from the root of the tree. The
@@ -382,13 +396,15 @@ ends the run.
 - **The records.** The result is written to the records folder as a JSON file
   named `<UTC time>-verification-<id>.json`. It holds the project, the lead ref,
   the tip, the gates, the digest of the plan, the outcome and the hash and
-  length of the output. The raw output is written beside it with the suffix
-  `.out`. Nothing ever overwrites or deletes a record. The command prints the
+  length of the output. The raw output, if there was any, is written beside it
+  with the suffix `.out`. Nothing ever overwrites or deletes a record. The command prints the
   outcome and the last 40 lines of the output, escaped. A failed run is
   recorded too: the newest record decides, so a later failure withdraws an
   earlier pass.
 
-The exit status is 0 only for a pass.
+The exit status is 0 only for a pass. A pass whose record was stored but could
+not be synced to disk is still a pass: the command exits 0 and warns on
+standard error.
 
 ### integrate
 
@@ -399,15 +415,18 @@ typing arguments:
   the review you saw.
 - `--accept-change`, which accepts the change as a whole.
 - one `--accept-path` for each path under "Needs your sign-off", as printed.
-- the same `--path-rule` list you gave to `review`. A different list changes
-  which paths are flagged, and so the digest, and `integrate` refuses.
+- the same `--path-rule` list you gave to `review`. The digest covers the
+  flags, not the list: a list that flags a different set of paths changes the
+  digest, and `integrate` refuses; a rule that flags nothing in this change
+  goes unnoticed.
 
 The command then does these things, in this order, and stops at the first that
 fails:
 
 1. It reviews again, with the refs as they are now. A tip that does not
    contain the upstream branch, or a missing upstream branch, stops here. The
-   command never creates a branch.
+   command never creates a branch. A lead branch that is already at the
+   upstream branch is refused: there is nothing to integrate.
 2. The fresh review's tip and digest must be the ones you signed. If either
    moved, it refuses and names the old and new commit ids.
 3. The sign-off must be complete: the change accepted, every flagged path
@@ -415,8 +434,11 @@ fails:
    wrong at once, with the exact arguments to add or to remove.
 4. The newest verification record for this project and this tip must be a
    clean pass. A pass whose output was cut, or that was stopped, is not clean.
-   The command does not compare the record's gates with anything. It prints
-   the gates that were run, so read them.
+   Any pass for this tip counts, whatever gates it ran: the command does not
+   compare the record's gates with anything. `review --records` shows the
+   gates of the records before you sign off, and `integrate` prints the gates
+   of the pass it used after the move. Read them; the command cannot judge
+   them.
 5. The upstream branch moves to the tip with one compare-and-swap of
    `git update-ref` in the mirror, expecting the branch to be at the base the
    review saw. It is fast-forward only. The command never deletes a ref, never
@@ -426,6 +448,15 @@ fails:
 
 If the branch moved and the record cannot be written, the command says so and
 prints the record: keep that output.
+
+If the update of the branch ends unclearly (a time-out, a signal or a kill of
+git), the command reads the branch again. When it finds the branch at the tip,
+it writes the record, prints it and exits 0 with a warning; do not run it
+again. A record that was written but could not be synced to disk is the same:
+exit 0 with a warning. When the command cannot read the branch, it says that
+the outcome is unknown and exits with status 3, and the branch may have moved
+without an intake record (see the limits below). `ataniq-intake help` lists
+the exit statuses.
 
 State plainly what this does and does not do:
 
@@ -537,7 +568,8 @@ into elements.
 Matching ignores ASCII case: only `A` to `Z` fold. `makefile` matches the rule
 `Makefile`. An element is also tried without its trailing dots and spaces, so
 `.claude.` matches `.claude`. Other folding, such as Unicode normalisation and
-other file system short names, is not done.
+other file system short names, is not done, except that the element `git~1`
+also matches as `.git`.
 
 A symbolic link is matched by its own name only. A link named `cfg` that points
 at `.claude` does not match a rule. That is why the review flags symbolic links
@@ -603,10 +635,12 @@ Ref updates (unverified lead data):
   created refs/leads/coder/heads/feature 30205c7864875913553896f203f0900b33718534
 ```
 
-Review it:
+Review it. With `--records` the review also says what verification the tip
+has; here there is none yet:
 
 ```text
-$ ataniq-intake review --state /srv/ataniq-state --project myproject --role coder --branch feature --target develop
+$ ataniq-intake review --state /srv/ataniq-state --project myproject --role coder --branch feature --target develop \
+    --records /srv/ataniq-records
 Review of a lead branch against an upstream branch
 Branches (unverified lead data):
   lead branch: coder/feature
@@ -619,6 +653,7 @@ Commits, newest first (unverified lead data):
 Changed paths: status, old mode, new mode, path (unverified lead data):
   M  100644  100644  Makefile
   A  000000  100644  docs/notes.md
+Verification: no verification recorded for this tip
 Needs your sign-off (unverified lead data):
   path: Makefile
     exec-config: build entry point
@@ -679,10 +714,24 @@ New: 30205c7864875913553896f203f0900b33718534
 Record: intake of 2026-11-17T15:39:21Z, 1 commits, 2 changed paths, 1 signed paths
 Review digest: ea76d76545258473b87fe4c472a8a6dbc3a8b5b714e901f98800c13ef4cacbbe
 Verification: a pass of 2026-11-17T15:39:21Z, plan digest 505d2fcf..., output sha256 a0c1fbd3...
+Gates that the pass stands for (your records, shown escaped):
+  gate check: test -f docs/notes.md && make
 Signed paths (unverified lead data):
   Makefile
 Your working checkout was not touched. It gets the commits with its own fetch from the mirror at /srv/ataniq-state/mirrors/myproject.git.
 ```
+
+Reviewing again with `--records` now shows the pass and its gate:
+
+```text
+Verification of this tip (your records, shown escaped):
+  pass of 2026-11-17T15:39:20Z, plan digest 505d2fcf..., the newest, which decides
+    gate check: test -f docs/notes.md && make
+```
+
+A second `integrate` with the same arguments moves nothing and exits with
+status 1: "nothing to integrate: the lead branch coder/feature is at the
+upstream branch develop already".
 
 In the `integrate` lines above, `30205c78...` and the other shortened values
 stand for the full ids and digests, which the command requires in full. Your
@@ -702,7 +751,13 @@ intake record.
   the mirror, such as another lead's, because the mirror is readable by every
   lead and a check would protect nothing. Commit authorship is lead text.
 - **A pass is evidence, not proof.** The record of a pass is not compared with
-  your project's gates. Read the gates that `integrate` prints.
+  your project's gates. `review --records` shows the gates before the sign-off
+  and `integrate` prints them after the move. Read them yourself.
+- **After "outcome unknown", the branch may have moved without a record.** When
+  `integrate` says the outcome of the update is unknown (exit status 3), look
+  at the upstream branch with `ataniq-intake branches`. If it is at the tip,
+  the change is in and no intake record was written: keep the output of the
+  command, because running `integrate` again only says "nothing to integrate".
 - **Intermediate commits enter history.** A fast-forward brings every commit of
   the branch, not only the net change. That is why `history-only` exists.
 - **No project registry.** The execution-config additions are options you must
