@@ -4,7 +4,7 @@ This guide describes the fenced message injection library, under
 `internal/inject`. It is for a contributor who will build the holder or the
 daemon, and for the owner, who must know what is established and what is not.
 
-The library is provisional and unqualified. It is built from recorded sessions
+The library is provisional and unqualified. It is built from recorded screens
 of one version of each agent. No live qualification of this code has been run.
 
 ## What this is
@@ -38,8 +38,7 @@ passes the fence result to the command machine as plain values.
 
 ## The rules
 
-These are the nine rules of the design, in our words, with the place that
-enforces each.
+These are the nine rules, with the place that enforces each.
 
 1. **The daemon is the only injector.** A supervisor or a lead asks the daemon;
    it never reaches a holder. This library does not enforce it, because the
@@ -95,10 +94,10 @@ refused.
 
 "Tested" here means two things, and no more:
 
-- The recognisers were built from recorded sessions of these versions, and
+- The recognisers were built from recorded screens of these versions, and
   every recorded screen is replayed in the tests with the reading expected for
   it.
-- Two attended checks (the Q13 runs) showed that both agents kept an open
+- Two attended runs showed that both agents kept an open
   approval dialog unchanged when a paste arrived with no Enter. The claude
   dialog was a file write, and the codex dialog was a command to run. One run
   for each agent.
@@ -152,7 +151,8 @@ The screen reading then has `StateHidden` true, and the state comes from the
 report: it is `idle` only with an `idle` or `done` report, and otherwise
 `unknown`. That `idle` sets `Classification.ReportOnly`: it rests on the report
 alone and does not rule out a background task. Only the fence's check after
-its own paste may accept it. Every other consumer (a status, a notice, the
+its own paste may accept it, and then only with a pasted-text marker that was
+not there before the paste. Every other consumer (a status, a notice, the
 check before a paste) must treat `ReportOnly` as not idle.
 
 ### codex 0.169
@@ -165,7 +165,8 @@ check before a paste) must treat `ReportOnly` as not idle.
 
 When the report says idle and the title or the screen says otherwise, the
 state is `unknown`, not the other signal's state (a report of `idle` with
-`Action Required` in the title is `unknown`). A `working` report gives
+`Action Required` in the title is `unknown`, and so is one with no composer, or
+with the cursor outside it). A `working` report gives
 `working` once the screen is a known one on the alternate screen.
 
 ### Unknown screens
@@ -206,7 +207,7 @@ state, and the classifier never treats it as one.
 ### The query reply
 
 claude asks first whether the terminal supports OSC 7501, by sending the query
-`ESC ] 7501 ; ?` and then a DA1 query (`ESC [ c`) as a sentinel. In the Q13
+`ESC ] 7501 ; ?` and then a DA1 query (`ESC [ c`) as a sentinel. In the attended
 runs claude 2.1.325 reported once the reply to the query reached it before the
 reply to DA1. The holder must answer:
 
@@ -225,7 +226,9 @@ The reply is also a write to the agent, and the agent decides when a query
 comes. So it must travel the same serialised input path as every other write,
 under the lock order described in
 [The holder-facing interface](#the-holder-facing-interface). A reply must
-never fall between a paste and its Enter, or inside the paste.
+never fall inside the paste or between the second reading and the Enter. A
+reply that the `Settle` after the paste causes does land between the paste and
+the Enter, and that is allowed.
 
 ## The screen recognisers
 
@@ -290,8 +293,8 @@ The fixtures are recorded screens, scrubbed, in
 `internal/inject/screen/testdata/<runtime>-<version>/`. Each is a pair: a
 `<name>.txt` with the screen text and a `<name>.json` with the size, the
 cursor, the alternate-screen flag, the title, the faint spans, a description,
-where it was recorded, and the expected reading (`want`). They come from the
-recorded sessions of the attended runs. `internal/inject/osc7501/testdata` and
+where it was recorded, and the expected reading (`want`). They come from
+attended runs of the agents. `internal/inject/osc7501/testdata` and
 `internal/inject/title/testdata` hold the recorded report payloads and titles in
 the same way. A home path in a fixture must be the placeholder user's, and a test
 fails on any other.
@@ -320,6 +323,12 @@ become idle, never retries, never writes anything to clean up, and never
 sleeps. Every wait is a `Settle` call of the holder, and the only clock it has
 is the deadline it was given.
 
+`Options.Deadline` is required. The daemon always sets it, shorter than
+`command.Limits.FenceTimeout`. A zero value is refused with the outcome `not
+idle`, the detail "no deadline given" and nothing written. That check comes
+after the table, so an untested version is still reported as `untested
+version`.
+
 The steps, in order:
 
 1. **The text rule.** Valid UTF-8; printable characters and newlines only; 1 to
@@ -329,38 +338,49 @@ The steps, in order:
    Otherwise `untested version`, and no lock is taken.
 3. **Lock and settle.** With the input lock held, `Settle` with no minimum, a
    50 ms quiet and at most 1 s. If it does not drain, the outcome is `not idle`.
+   Every maximum is cut to the time left before the deadline. When less than the
+   minimum or the quiet is left, the fence does not settle: `not idle` before
+   the paste (nothing written), `not submitted` after it. So a large `Timing`
+   value cannot hold the lock, and the writer's keys, past the deadline.
 4. **The first check**, in one `Frozen` call. All of these must hold:
    - the session has not ended;
    - the parser is at ground, no synchronized-output frame (mode 2026) is
      open, and bracketed paste is on;
    - the classification is `idle`; a `blocked` classification, from the report
      or from a dialog on the screen, gives the outcome `blocked` instead of
-     `not idle` (the Q13 veto);
+     `not idle`;
    - the composer is empty with the cursor in it, with no pasted-text marker,
-     and the screen does not hide the state (so an idle that rests on the
-     report alone is not accepted here);
+     and the screen does not hide the state; an idle that rests on the report
+     alone (`ReportOnly`) is refused here;
    - the writer has typed nothing for 2 s, and the screen has not changed for
      300 ms;
-   - the context is alive and the deadline has not passed. The clock is read
-     last, directly before the write.
+   - the context is alive and the deadline has not passed, and, read last,
+     directly before the write, `View.Pending` is false (output is waiting
+     that the emulator has not applied, so the screen just read is not the
+     agent's screen).
 
    If all hold, the paste is written inside this same call, as one write:
    `ESC [ 200 ~`, the text with each newline as a carriage return, `ESC [ 201 ~`.
-5. **Settle after the paste.** At least 150 ms, 50 ms quiet, at most 1 s. If it
-   does not drain, the outcome is `not submitted`.
+5. **Settle after the paste.** At least 150 ms, 50 ms quiet, at most 1 s (cut as
+   in step 3). If it does not drain, the outcome is `not submitted`.
 6. **The second check**, in one `Frozen` call. The session has not ended; the
    parser is at ground with no frame open and bracketed paste still on; the
    classification is `idle` again; the composer is on screen with the cursor
    in it; the composer holds the header, or shows the pasted-text marker where
-   there was none before the paste; and the deadline has not passed. If all
-   hold, a carriage return is written, as its own write, inside this same call.
-   Otherwise nothing is written, the outcome is `not submitted`, and the paste
-   stays where it is.
+   there was none before the paste; an idle that rests on the report alone is
+   accepted only with that new marker; and the deadline has not passed and,
+   read last, `View.Pending` is false. If all hold, a carriage return is
+   written, as its own write, inside this same call. Otherwise nothing is
+   written, the outcome is `not submitted`, and the paste stays where it is.
 7. **Release.** The lock is released, and the holder delivers the writer's
    held input.
 
-The timing values are those of `inject.DefaultTiming()`. A zero `Timing` means
-these values:
+Each function the fence gives the holder (the lock function and the two
+`Frozen` functions) is run at most once. A holder that runs one a second time
+gets nothing more written, and the result is `died` with `Written` `unknown`,
+whatever the first run concluded.
+
+The timing values are those of `inject.DefaultTiming()`:
 
 | Value | Default |
 | --- | --- |
@@ -370,8 +390,13 @@ these values:
 | First settle, longest | 1 s |
 | Settle after the paste | at least 150 ms, at most 1 s |
 
-The design gives no maximum for the first settle. The 1 s is this package's
-choice.
+Each `Timing` field defaults on its own: a zero field takes its default and the
+others keep their values. The three quiet values and the minimum after the
+paste have a floor at the values above, and a smaller one is raised to it. The
+two maxima may be lower, since a lower maximum only makes a `Settle` give up
+sooner; a maximum is not below the quiet that ends its `Settle`, and the
+maximum after the paste is not below its minimum. The 1 s maximum for the first
+settle is this package's choice.
 
 What the fence never does: it never writes a key into a dialog, never writes
 anything but the paste and one Enter, never writes the Enter without a second
@@ -386,11 +411,13 @@ were written while the screen showed an idle composer that held the header.
 Only the agent's conversation file can show that the agent took the message.
 
 A `Result` carries `Written`, `Outcome`, `State`, both readings (`Before` and
-`After`) and a short `Detail`. `Result.Readings()` renders one bounded line of
-fixed words and short tokens. It never holds the message, the owner's draft or
-a line the agent drew. The daemon maps a `Result` to the command machine's
-`FenceResult` in a few lines. The spellings match, and a test fails if they
-drift:
+`After`) and a short `Detail`. A `Reading` carries the classification, the
+signals, `ReportOnly`, the parser state, the quiet times, the report, the
+screen reading and the conditions that failed. `Result.Readings()` renders one
+bounded line of fixed words and short tokens. It never holds the message, the
+owner's draft or a line the agent drew. The daemon maps a `Result` to the
+command machine's `FenceResult` in a few lines. The spellings match, and a test
+fails if they drift:
 
 ```go
 res := inject.Deliver(ctx, session, inject.Message{Text: d.Text, Header: d.Header}, opts)
@@ -402,8 +429,7 @@ update, err := machine.RecordFence(d.ID, command.FenceResult{
 ```
 
 Here `d` is the `command.Dispatch` that `BeginDispatch` returned before the
-fence ran. The daemon gives `Options.Deadline` a value shorter than the command
-machine's fence timeout (`Limits.FenceTimeout`, 30 s by default).
+fence ran.
 
 ## The holder-facing interface
 
@@ -420,17 +446,19 @@ the author of a holder.
   that causes, and waits until `quiet` has passed with no new output, for at
   least `min` and at most `max`. It returns `drained` false when `max` ended the
   wait with output still arriving. An error from the context ending must wrap
-  `ctx.Err()`. `Frozen(fn)` runs `fn` once, on the calling goroutine, with no
-  output applied to the emulator while it runs, and passes it a `View` and a
-  `write` function. `write` is one write call to the PTY master and is valid
-  only inside `fn`; the paste is one call and the Enter another. An error from
-  `write` means the bytes may or may not have reached the agent.
-- **`View`**: the state at one instant, with no waiting and no reading of the
-  PTY. `Snapshot()` is the screen, with `Faint` filled. `Report()` is the
-  `osc7501.Status`, with `Stale` set when it applies. `Term()` is a `TermState`.
-  `OwnerQuiet()` is the time since the writer last typed, counted from when a
-  key was typed even if it was held. `ScreenQuiet()` is the time since the
-  screen last changed. `Ended()` says the agent's process has ended.
+  `ctx.Err()`. `Frozen(deadline, fn)` runs `fn` once, on the calling goroutine,
+  with no output applied to the emulator while it runs, and passes it a `View`
+  and a `write` function. `deadline` is the fence's `Options.Deadline`. `write`
+  is one write call to the PTY master and is valid only inside `fn`; the paste
+  is one call and the Enter another. An error from `write` means the bytes may
+  or may not have reached the agent.
+- **`View`**: the state at one instant. `Snapshot()` is the screen, with `Faint`
+  filled. `Report()` is the `osc7501.Status`, with `Stale` set when it applies.
+  `Term()` is a `TermState`. `OwnerQuiet()` is the time since the writer last
+  typed, counted from when a key was typed even if it was held. `ScreenQuiet()`
+  is the time since the screen last changed. `Ended()` says the agent's process
+  has ended. `Pending()` says whether output of the agent is waiting that the
+  emulator has not applied (see below).
 - **`TermState`**: `ParserGround` (the parser is between sequences, not in the
   middle of an escape sequence, a string or a partly received character),
   `FrameOpen` (a synchronized-output frame is open) and `BracketedPaste` (the
@@ -448,12 +476,42 @@ The rules the holder must keep:
   cursor position and colour queries) travel the same serialised path as every
   other write. `Settle` writes the replies that the output it applied caused,
   before it returns and in the order the emulator made them (the OSC 7501 reply
-  before the DA1 reply). `Frozen` applies no output, so it makes no reply, and
-  none can fall between the paste and the Enter. No goroutine that carries
-  replies may wait for the lock while `Settle` waits for it. A holder that gives
-  replies their own goroutine and a bypass around the lock breaks the rule.
+  before the DA1 reply). `Frozen` applies no output, so it makes no reply:
+  nothing falls inside the paste, and nothing between the second reading and
+  the Enter. The `Settle` after the paste does apply output, so the replies it
+  causes land between the paste and the Enter. No goroutine that carries
+  replies may wait for the lock while `Settle` waits for it. A holder that
+  gives replies their own goroutine and a bypass around the lock breaks the
+  rule.
 - **`Frozen`.** `fn` is called at most once; two calls to `View` inside it see
-  the same state; the screen cannot move between the check and the write.
+  the same state, except `Pending`; the screen cannot move between the check and
+  the write. While `fn` runs the holder keeps reading the PTY output into a
+  buffer it does not apply, and applies it after `fn` returns. Otherwise an
+  agent that is blocked writing its own output would stop reading its input,
+  and the paste, which can be larger than the tty's input buffer, could not be
+  written.
+- **`Pending`.** It is true while output is waiting for the holder that the
+  emulator has not applied: bytes queued on the PTY master (the holder asks the
+  kernel how many, without reading them), and bytes the holder's reader has
+  received into the buffer, counted from the moment its read returns. It is
+  asked fresh at each call and is never cached, not taken when `Frozen` starts
+  and not remembered from an earlier call. The fence reads it last, directly
+  before each write, and writes nothing while it is true. It covers output
+  already queued to the holder when it is read. It does not cover output the
+  agent has written that the kernel has not yet handed to the line discipline,
+  or that the holder's reader has taken and not yet counted; see
+  [Limits](#limits-and-what-is-not-established).
+- **The write bound.** `write` must return an error once a bound no later than
+  the `deadline` given to `Frozen` has passed without the bytes being written,
+  and `Frozen` must not outlast the deadline waiting for a write. The fence
+  reports that error as `died` with `Written` `unknown`.
+- **A write that timed out.** A write that times out in the middle of a paste
+  can leave an open bracketed paste in the agent's input (`ESC [ 200 ~` and part
+  of the text, with no `ESC [ 201 ~`). The holder must not complete it, retry
+  it or write a paste end by itself. The operator's decision covers it. The
+  writer's held input is still delivered after the lock and may land inside that
+  open paste, where an Enter becomes a newline and not a submit, which is why
+  the operator must look at the session.
 - **`Faint`.** Fill it on every snapshot.
 
 ## Durable commands
@@ -477,6 +535,8 @@ A message becomes a command that moves through these states:
 | dispatching | delivered | `ConfirmDelivery` with evidence, after Enter. | `confirmed` |
 | dispatching | uncertain | The paste was written and Enter was not; or the fence died or what was written is unknown; or the result contradicts itself; or no fence result in `FenceTimeout`; or no evidence in `ConfirmTimeout` after Enter. | `not-submitted`, `holder-or-agent-died`, `inconsistent-result`, `no-fence-result`, `submitted-not-confirmed` |
 | uncertain | uncertain | A late fence result or late evidence, kept as a note. | `late-fence-result`, `late-evidence` |
+| resolved | resolved | A late fence result or late evidence for a command resolved as `operator-drop` or `operator-resend`, kept as a note. The queue is held first. | `late-fence-result`, `late-evidence` |
+| queued | resolved | `Withdraw`: an operator ends a queued command of a held queue without sending it. | `operator-withdrawn` |
 | uncertain | delivered | An operator decides it was delivered. | `operator-delivered` |
 | uncertain | resolved | An operator decides it was not delivered, and drops it or sends it again. | `operator-drop`, `operator-resend` |
 
@@ -489,9 +549,11 @@ The journal is the truth: `command.Restore(limits, journal, records, now)`
 rebuilds the machine from it, and refuses a journal that does not follow the
 state machine.
 
-**FIFO and the freeze.** The queue of each target is first in, first out, and
-only the head may dispatch. An `uncertain` command freezes that target's queue:
-`BeginDispatch` refuses it until an operator decides.
+**FIFO, the freeze and the hold.** The queue of each target is first in, first
+out, and only the head may dispatch. An `uncertain` command freezes that
+target's queue: `BeginDispatch` refuses it (`queue-frozen`) until an operator
+decides. A queue can also be held (the queue hold, below), and
+`BeginDispatch` refuses that first, as `queue-held`.
 
 **What makes a command uncertain.** `uncertain` means nobody knows whether the
 message reached the agent. The reasons:
@@ -501,10 +563,11 @@ message reached the agent. The reasons:
   `Restore` found the command `dispatching`. Even a death with nothing written
   is uncertain.
 - `inconsistent-result`: the fence result contradicted itself.
-- `no-fence-result`: no fence result came within `FenceTimeout` (30 s) of the
-  dispatching record. Nobody saw anything die. The fence may still be running.
+- `no-fence-result`: no fence result came within `FenceTimeout` of the
+  dispatching record (`Tick` makes it). Nobody saw anything die. The fence may
+  still be running, or its result may be lost. What was written is unknown.
 - `submitted-not-confirmed`: Enter was written and no evidence came within
-  `ConfirmTimeout` (30 s).
+  `ConfirmTimeout`.
 
 **Operator resolution.** Only an operator decision leaves `uncertain`.
 `Machine.Resolve` takes one of three decisions, with the operator's name:
@@ -526,14 +589,97 @@ never resends.
 
 **Late notes.** A fence result or delivery evidence that arrives after the
 command became `uncertain` (after a `FenceTimeout`, say) is journaled as a note
-on the command, and `View` shows it to the operator. At most eight are kept. It
-never ends the `uncertain` state.
+on the command, and `View` shows it to the operator (`CommandView.Late`). A note
+never ends the `uncertain` state and never unfreezes the queue. The rules for
+every late note:
+
+- A note equal to one the command already has (same reason, detail, evidence
+  kind and evidence) is skipped, with no error. It is a safety net, not a way to
+  poll: the daemon passes each piece of evidence once.
+- At most eight notes are kept for a command. A different note after that is
+  refused as `late-notes-full`.
+- Notes stay with the command after it ends, for the audit, so an ended command
+  can keep a few kilobytes.
+- A fence result or evidence for a command that is delivered, refused or
+  withdrawn is refused as `wrong-state`, and is not journaled.
+
+**The queue hold.** Late information can also arrive about a command that an
+operator already decided was not delivered, or is deciding: a late fence result
+or late evidence for a command resolved as `operator-drop` or `operator-resend`,
+or for an uncertain command whose resend is half written (its replacement is
+queued and the resolution that completes the resend is not yet journaled). Then
+the queue of that target is held. The hold is a property of the queue, not of a
+command. It is journaled as its own record, `queue-hold`, before the note, with
+one of three reasons (`late-after-drop`, `late-after-resend`,
+`late-during-resend`), and it changes no command. An uncertain command with no
+resend pending already freezes the queue, so late information for it is a note
+and no hold.
+
+While a queue is held, `BeginDispatch` refuses it as `queue-held` and names the
+command, whatever state any replacement is in. The hold is set even when the
+call is then refused: for evidence that is bad (`bad-evidence`), or when the
+note list is full (`late-notes-full`), or when the note repeats an earlier one.
+Each piece of late information about a command the hold is about advances a
+counter (`Held` in the record, `TargetView.HeldSeq` in the view), except a
+repeat, byte for byte, of the last piece. A hold record carries a digest of the
+late call (`Piece`) for that. The counter is never reset, not by a release
+either.
+
+The operator ends a hold, and only the operator:
+
+- `ReleaseHold(target, operator, seen, now)` takes the `HeldSeq` the operator
+  saw, and is refused as `hold-changed` when newer late information arrived
+  since. The release record (`queue-release`) carries that value. It does
+  nothing else: it decides nothing about an uncertain command (`Resolve` does),
+  and it ends the hold for every command it was about. Late information that
+  arrives again after a release holds the queue again.
+- `Withdraw(id, operator, now)` ends a queued command of a held queue without
+  sending it: it becomes `resolved` as `operator-withdrawn`. A dispatching
+  command is not interrupted, and `Withdraw` does not end the hold.
+
+The view shows, per target, `Held`, `HeldFor` (the first command), `HeldAlso`
+(the others), `HeldReason`, `HeldSince` and `HeldSeq`. A queue can be both frozen
+and held, and a held queue may be empty.
+
+What a hold does not do. It does not recall a replacement whose fence is already
+running: that replacement may still be written, and the hold only keeps the next
+dispatch back. If that fence wrote nothing, the command returns to `queued` and
+the hold keeps it there. `Tick` does not refuse a held head as not idle, because
+the head was not tried, so a held queue never drains by time. A hold stops every
+sender's messages to that target, not only the sender of the commands it is
+about, and the queue can fill to its caps until an operator acts. It does not
+promise to stop the queue for late information that contradicts a decision of
+`delivered` (see [Limits](#limits-and-what-is-not-established)).
 
 **Restore.** After it replays the records, `Restore` writes two kinds of record.
 A command found `dispatching`, with or without Enter recorded, becomes
 `uncertain` (`holder-or-agent-died`) and is never sent again by itself. A
 command found `accepted` is queued. It rebuilds the rate windows from the
-journal.
+journal. It rebuilds holds from their records and never writes or ends one:
+only a release does. It refuses a journal that holds a record the live machine
+could not have written: a hold that does not advance the counter by one, a hold
+for an unknown command or a command that calls for none, a release that does
+not carry the current counter or has no operator, a withdrawal from a queue that
+is not held, a dispatch while the queue is held, and a note for a decided
+command with no hold behind it.
+
+**What the daemon must do.** The machine is told only what the daemon tells it.
+
+- The daemon repeats a late call (`RecordFence` or `ConfirmDelivery` for a
+  decided command) that returned a journal error. The hold is written before
+  the note: if the hold failed, nothing changed; if the note failed, the hold
+  stands and the repeat writes the note only.
+- Before it dispatches an operator's resend, the daemon looks in the agent's
+  conversation file for the ids of the whole resend chain (the command that was
+  sent again and the commands that replaced it in turn), and does not dispatch
+  when one is found. Evidence the daemon has not read is not known to the
+  machine.
+- The daemon matches late evidence only by the header id of a user turn in the
+  conversation file. A resend has the same body as its original under a new
+  header, so matching by body, or anywhere in the file, would take the delivery
+  of the resend for late evidence of the original and hold the queue after every
+  resend. A lead can also print a line that looks like a header for a dropped
+  id, which is not a user turn.
 
 **Blocked notice.** A result of `blocked` returns the command to the queue and
 gives the daemon the notice "this lead is waiting for an approval", once for a
@@ -573,20 +719,28 @@ something besides spaces and newlines (`empty-body`). The whole text, header
 included, must be at most 4096 bytes (`text-too-long`).
 
 **The marker rule.** A body is refused (`forged-header`) when its fold contains
-`ataniqmsg`. The fold lower-cases the body, drops the characters that render as
-nothing (the default-ignorable ones, such as the Hangul fillers), maps fullwidth
-forms and mathematical letters and digits to ASCII, and keeps only letters and
-digits. So `ataniq-msg`, `ATANIQ MSG`, `[ataniq_msg`, a marker split by a
-combining mark or a line break, and a marker in fullwidth letters are all
-refused. This is wider than "a line that starts with `[ataniq-msg`": it refuses
-the marker anywhere in the body. The rule is about the body only.
+`ataniqmsg`. The fold reads the body rune by rune. It drops the runes that
+render as nothing (the default-ignorable ones, such as the Hangul fillers), maps
+fullwidth forms (U+FF01 to U+FF5E) and the mathematical letters and digits of
+U+1D400 to U+1D6A3 and U+1D7CE to U+1D7FF to ASCII, and keeps only letters and
+digits, in lower case. So `ataniq-msg`, `ATANIQ MSG`, `[ataniq_msg`, a marker
+split by a combining mark, a filler or a line break, and a marker in fullwidth
+or mathematical letters are all refused. This is wider than "a line that starts
+with `[ataniq-msg`": it refuses the marker anywhere in the body. The rule is
+about the body only; the id and kind of a header are checked by the name
+grammar.
 
-The known limit: look-alike letters of other scripts are not folded. Cyrillic
-and Greek look-alikes, the dotless i, modifier letters and small capitals pass.
-A body that spells the marker with them is admitted, so a body can still show a
-line that looks like a header to a human or to a model. Closing that needs a
-decision, for example a fixed prefix on every body line. It is an open question
-for the owner.
+The known limit: a rune that only looks like a Latin letter is not folded.
+These pass: letters of other scripts (Cyrillic and Greek look-alikes), Latin
+letters that are not ASCII (the dotless i, IPA letters such as U+0251 and
+U+0261, modifier letters, small capitals), a precomposed letter with a mark
+(while the same letter with a combining mark is refused), the script, fraktur
+and double-struck letters that Unicode places in Letterlike Symbols (U+210A,
+U+2110 to U+2133, U+2139), and enclosed letters (circled, parenthesized), which
+are not letters and are dropped. A body that spells the marker with them is
+admitted, so a body can still show a line that looks like a header to a human or
+to a model. Closing that needs a decision, for example a fixed prefix on every
+body line. It is an open question for the owner.
 
 **The caps.**
 
@@ -605,11 +759,12 @@ which is a project lead or the supervisor.
 **Values to configure.** `command.DefaultLimits()` gives the caps above, the
 30 s confirmation time (`ConfirmTimeout`) and the 30 s fence timeout
 (`FenceTimeout`). It leaves `QueueTimeLimit` at zero. The queue time limit is
-how long a queued head may wait for an idle lead before it is refused as not
-idle. The design gives no number, so there is no default, and `command.New`
-fails until the caller sets it. `FenceTimeout` must be longer than the fence's
-worst case (both settles, the wait for the input lock, and the call to the
-holder), and the fence deadline must be shorter than it.
+how long after admission a queued head may wait for an idle lead before it is
+refused as not idle. It has no default, and `command.New` fails until the caller
+sets it. `FenceTimeout` must be longer than the fence's worst case (both
+settles, the wait for the input lock, and the call to the holder), and
+`Options.Deadline` must be shorter than it, so that a command that a `Tick`
+made `uncertain` has no fence still writing.
 
 ## Outcomes
 
@@ -622,9 +777,9 @@ What was written, how the fence ended, and what the command becomes:
 | The text rule fails | nothing | `refused text` | `refused`, `text-refused`. |
 | The state is `blocked` | nothing | `blocked` | Back to `queued`, `blocked`, with the notice for the owner once per blocked spell. |
 | The check after the paste fails | paste | `not submitted` | `uncertain`, `not-submitted`. Nothing is sent to clean up. |
-| Enter was written | paste and Enter | `submitted` | Stays `dispatching` with Enter recorded. With evidence from the agent's conversation file, `delivered`. With none in 30 s, `uncertain`, `submitted-not-confirmed`. |
+| Enter was written | paste and Enter | `submitted` | Stays `dispatching` with Enter recorded. With evidence from the agent's conversation file, `delivered`. With none in `ConfirmTimeout`, `uncertain`, `submitted-not-confirmed`. |
 | The holder or the agent died during the fence | nothing or unknown | `died` | `uncertain`, `holder-or-agent-died`. |
-| No fence result in 30 s | unknown | none | `uncertain`, `no-fence-result`. |
+| No fence result in `FenceTimeout` | unknown | none | `uncertain`, `no-fence-result`. A result that comes later is kept as a note. |
 | The daemon restarts with the command `dispatching` | unknown | none | `uncertain`, `holder-or-agent-died`. No resend by itself. |
 | A result that contradicts itself | | any | `uncertain`, `inconsistent-result`. |
 
@@ -639,8 +794,13 @@ bluntly as we can state them.
 - **The window cannot be closed.** The agent can open a dialog on its own
   between the last check and the Enter, for example when a background task
   finishes. Then the Enter answers that dialog with its default. The window is
-  the time of one write. Treating a background task as not idle narrows it.
-  Nothing closes it.
+  the time of one write. Treating a background task as not idle narrows it, and
+  so does `Pending`. Nothing closes it.
+- **The window that `Pending` leaves.** `Pending` sees output already queued to
+  the holder when it is read. It does not see output the agent has written that
+  the kernel has not yet handed to the line discipline, or that the holder's
+  reader has taken and not yet counted. A dialog drawn in that output is not
+  seen before the Enter.
 - **Dialogs ignore a paste on one observation.** That a paste into an open
   dialog does nothing rests on one recorded observation per agent, in one
   version: a claude file-write dialog and a codex command dialog. codex binds
@@ -668,19 +828,41 @@ bluntly as we can state them.
 - **Blanks typed and the cursor moved home.** A composer of blanks that the
   owner typed, with the cursor then moved back to the first column, shows the
   same as an empty composer and reads as empty.
+- **No recording shows a multi-line paste in a composer.** No recording shows a
+  multi-line paste displayed in either composer, in the form the fence writes (a
+  header, a carriage return and a body inside one bracketed paste). What the
+  fake session does there is an assumption: that claude collapses a paste over
+  1000 bytes or over 10 lines into a marker, and shows a short multi-line paste
+  inline. If it is wrong, the fence fails safe with `not submitted`, but then
+  case I-1 (below) does not hold live. It needs a live check with a real
+  multi-line message for each runtime.
 - **Header-only check.** The check after the paste looks for the header, or
-  the runtime's pasted-text marker where there was none before. It does not
-  check the whole body.
+  the runtime's pasted-text marker where there was none before. It proves that
+  the header is in the composer, not that the body arrived whole: a truncated or
+  partly echoed paste with the header intact passes.
+- **The marker path ties nothing to this message.** When the check passes on
+  the pasted-text marker, nothing ties the marker to this message: the marker's
+  count of lines or characters is not compared with the text.
 - **A claude idle that rests on the report.** Under the collapsed-paste footer
   the screen shows neither the working hint nor the shell count, so the check
-  after a paste accepts `idle` from the report alone and cannot rule out a
-  background task.
+  after a paste accepts `idle` from the report alone, and only with a marker
+  that was not there before the paste. It cannot rule out a background task.
 - **Journal growth.** Refused submissions are journaled without a bound, and
   ended commands stay in memory with no compaction. The daemon must rate-limit
   before `Submit` and trim.
 - **The queue time limit and a blocked lead.** Today a head that waits longer
-  than `QueueTimeLimit` is refused as not idle even when the lead was blocked
-  all that time. Whether it should be is an open question for the owner.
+  than `QueueTimeLimit` is refused as not idle, with the last reason `blocked`
+  in its detail, even when the lead was blocked all that time. Whether the limit
+  should end a command whose lead stays blocked is an open question for the
+  owner.
+- **The queue time limit has no default.** No value is given, so `command.New`
+  fails until the caller sets one.
+- **A late result that contradicts `delivered`.** A late result that contradicts
+  an operator's decision of `delivered` (for example a fence result "nothing
+  written" for a command resolved as `operator-delivered`) is refused as
+  `wrong-state` and is not journaled. The message may never have reached the
+  lead, and the audit loses the result. Whether it should be kept as a note and
+  also hold the queue is an open question for the owner.
 - **No live qualification.** No run of this code against a live agent has been
   made. Every test uses recorded screens and a fake session.
 
@@ -690,16 +872,16 @@ bluntly as we can state them.
   timeout that must agree, the queue time limit, and the owner's decisions.
 - The holder and its PTY and emulator, which implement `Session`, `Locked` and
   `View`.
-- Delivery confirmation from the agent's conversation file. Before dispatching
-  an operator's resend, the daemon must look in that file for the ids of the
-  whole resend chain, and not dispatch when one is found. That is not built.
+- Delivery confirmation from the agent's conversation file, and the rules for
+  the daemon that go with it (see [Durable commands](#durable-commands)). None
+  of it is built.
 - The control socket operation that carries an injection.
 - The notices to the owner, including "this lead is waiting for an approval".
 - The sandbox.
 
 ### What must be checked live before use
 
-These cases of the design must be run against live agents, for each agent and
+These cases must be run against live agents, for each agent and
 version, before any lead is injected:
 
 - **I-1.** Inject at an idle composer, three times for each agent. Each
