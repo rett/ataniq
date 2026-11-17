@@ -131,8 +131,21 @@ Patches, applied in this order to the files of the module as released:
    stop or a character indexed past a smaller screen. The bottom and right
    margins are now cut to the screen's last line and column, and a region
    that starts below the last line (or beyond the last column) is ignored, as
-   an empty one was. A region of one line on the last line, which the tests of
-   the released module use, still works. A resize moves the cursor of both
+   an empty one was. The margins are first tested as they were sent: a top
+   margin that is not above the bottom margin (`CSI 5;5 r`) is ignored, as it
+   was. Then the bottom margin is cut, and a region the cut leaves with one
+   line is set, and the cursor goes home: on a screen of five lines `CSI 5;99 r`
+   and `CSI 5;6 r` set a scroll region of the last line alone (and, with
+   `CSI ? 69 h`, `CSI 10;99 s` on ten columns one of the last column). The
+   tests of the released module use such a region (`CSI 2;3 r` on a screen of
+   two lines), so it stays. **This differs from xterm**, which cuts the bottom
+   margin first and then ignores a region whose bottom is not below its top,
+   so it ignores these sequences (reasoned from xterm's rule for DECSTBM, not
+   run against xterm); it is also not consistent inside this emulator, which
+   ignores `CSI 5;5 r`. No operation can index past the buffer with such a
+   region, and a test pins the behaviour, so that a change to it, if xterm's
+   rule is wanted (the cut before the test, and the four tests of the released
+   module that rely on the present one changed), is a decision. A resize moves the cursor of both
    screens and both saved cursors into the new size. Nothing changes for a
    sequence that did not index past the buffer, except that the cursor and
    the region it leaves are inside the screen.
