@@ -11,7 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
+
+	"ataniq/internal/pidfd"
 )
 
 func kernelRead(path string, cap int64) ([]byte, error) {
@@ -27,33 +28,9 @@ func kernelRead(path string, cap int64) ([]byte, error) {
 	return b, nil
 }
 
-func bootID() (string, error) {
-	b, err := kernelRead("/proc/sys/kernel/random/boot_id", 64)
-	if err != nil {
-		return "", err
-	}
-	s := strings.TrimSpace(string(b))
-	if !validBoot(s) {
-		return "", errors.New("missing boot identity")
-	}
-	return s, nil
-}
+func bootID() (string, error) { return pidfd.BootID() }
 
-func validBoot(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i, r := range s {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if r != '-' {
-				return false
-			}
-		} else if !isHex(r) {
-			return false
-		}
-	}
-	return true
-}
+func validBoot(s string) bool { return pidfd.ValidBoot(s) }
 
 func process(pid int) (Process, error) {
 	if pid < 1 {
@@ -70,19 +47,16 @@ func process(pid int) (Process, error) {
 	if err != nil {
 		return p, err
 	}
-	s := string(b)
-	end := strings.LastIndex(s, ") ")
-	if end < 0 {
+	st, err := pidfd.ParseStat(string(b))
+	switch {
+	case errors.Is(err, pidfd.ErrStatFormat):
 		return p, errors.New("invalid process stat")
-	}
-	fields := strings.Fields(s[end+2:])
-	if len(fields) < 20 || fields[0] == "Z" || fields[0] == "X" {
+	case errors.Is(err, pidfd.ErrStatShort) || st.Gone():
 		return p, errors.New("process not living")
-	}
-	p.Start, err = strconv.ParseUint(fields[19], 10, 64)
-	if err != nil || p.Start == 0 {
+	case err != nil:
 		return p, errors.New("invalid process starttime")
 	}
+	p.Start = st.Start
 	fi, err := os.Stat(base + "/exe")
 	if err != nil {
 		return p, err
@@ -132,12 +106,8 @@ func process(pid int) (Process, error) {
 	if err != nil {
 		return p, err
 	}
-	end = strings.LastIndex(string(b), ") ")
-	if end < 0 {
-		return p, errors.New("changed process")
-	}
-	fields = strings.Fields(string(b)[end+2:])
-	if len(fields) < 20 || fields[19] != strconv.FormatUint(p.Start, 10) || fields[0] == "Z" || fields[0] == "X" {
+	st, err = pidfd.ParseStat(string(b))
+	if err != nil || st.Start != p.Start || st.Gone() {
 		return p, errors.New("changed process")
 	}
 	return p, nil
@@ -186,11 +156,10 @@ func readOnlyMount(line string) bool {
 // A pidfd is retained across cancellation. Starttime alone is not an exit handle.
 // This slice returns unsupported/inconclusive on kernels denying pidfd_open.
 func processHandle(p Process) (*os.File, error) {
-	fd, _, errno := syscall.Syscall(434, uintptr(p.PID), 0, 0) // pidfd_open, linux/amd64
-	if errno != 0 {
-		return nil, errno
+	f, err := pidfd.Open(p.PID)
+	if err != nil {
+		return nil, err
 	}
-	f := os.NewFile(fd, "owned-target-pidfd")
 	actual, err := process(p.PID)
 	if err != nil || !sameProcess(p, actual) {
 		f.Close()
@@ -199,58 +168,15 @@ func processHandle(p Process) (*os.File, error) {
 	return f, nil
 }
 
-func exited(fd *os.File) (bool, error) {
-	poll := struct {
-		FD      int32
-		Events  int16
-		Revents int16
-	}{int32(fd.Fd()), 1, 0}
-	_, _, errno := syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&poll)), 1, 0)
-	if errno != 0 {
-		return false, errno
-	}
-	return pidfdEvents(poll.Revents)
-}
-
-func pidfdEvents(events int16) (bool, error) {
-	if events & ^int16(1|16) != 0 {
-		return false, errors.New("unexpected pidfd poll result")
-	}
-	return events&(1|16) != 0, nil
-}
+func exited(fd *os.File) (bool, error) { return pidfd.Exited(fd) }
 
 // Recovery has no surviving pidfd. Only same-boot PID/starttime evidence may
 // establish that the original process ended. An executable change is exec,
 // not PID reuse. Permission failures never mean absence.
-func processEnded(p Process) (bool, error) {
-	boot, err := bootID()
-	if err != nil || boot != p.Boot {
-		return false, errors.New("unsupported: recovery boot identity differs")
-	}
-	b, err := kernelRead(fmt.Sprintf("/proc/%d/stat", p.PID), 8192)
-	if os.IsNotExist(err) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return originalEnded(p.Start, string(b))
-}
+func processEnded(p Process) (bool, error) { return pidfd.Ended(p.Boot, p.PID, p.Start) }
 
 func originalEnded(start uint64, stat string) (bool, error) {
-	end := strings.LastIndex(stat, ") ")
-	if end < 0 {
-		return false, errors.New("invalid recovery process stat")
-	}
-	f := strings.Fields(stat[end+2:])
-	if len(f) < 20 {
-		return false, errors.New("short recovery process stat")
-	}
-	n, err := strconv.ParseUint(f[19], 10, 64)
-	if err != nil || n == 0 {
-		return false, errors.New("invalid recovery starttime")
-	}
-	return n != start || f[0] == "Z" || f[0] == "X", nil
+	return pidfd.OriginalEnded(start, stat)
 }
 
 func boundary(path string) (Boundary, error) {

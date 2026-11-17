@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"ataniq/internal/pidfd"
 )
 
 const entryPolicyProperties = "Id,LoadState,ActiveState,Job,InvocationID,ControlGroup,ManagedOOMSwap,ManagedOOMMemoryPressure,OOMRules"
@@ -97,18 +99,16 @@ func entryKernelIdentity(pid int) (entryIdentity, error) {
 	if err != nil {
 		return p, err
 	}
-	end := strings.LastIndex(string(stat), ") ")
-	if end < 0 {
+	st, err := pidfd.ParseStat(string(stat))
+	switch {
+	case errors.Is(err, pidfd.ErrStatFormat):
 		return p, errors.New("invalid entry kernel stat")
-	}
-	f := strings.Fields(string(stat)[end+2:])
-	if len(f) < 20 || f[0] == "Z" || f[0] == "X" {
+	case errors.Is(err, pidfd.ErrStatShort) || st.Gone():
 		return p, errors.New("entry identity not live")
-	}
-	p.Start, err = strconv.ParseUint(f[19], 10, 64)
-	if err != nil || p.Start == 0 {
+	case err != nil:
 		return p, errors.New("invalid entry start")
 	}
+	p.Start = st.Start
 	b, err := kernelRead(base+"/cgroup", 4096)
 	if err != nil {
 		return p, err

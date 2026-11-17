@@ -776,16 +776,6 @@ func TestMountStateRejectsAmbiguity(t *testing.T) {
 	}
 }
 
-func TestPidfdTerminalEvents(t *testing.T) {
-	for _, v := range []int16{0, 1, 16, 17, 8, 32, 9, 33} {
-		dead, err := pidfdEvents(v)
-		bad := v&^int16(17) != 0
-		if (err != nil) != bad || !bad && dead != (v != 0) {
-			t.Fatalf("poll events %d: %v %v", v, dead, err)
-		}
-	}
-}
-
 func TestRecoveryUsesStarttimeNotExecutable(t *testing.T) {
 	for _, tc := range []struct {
 		state string
