@@ -76,6 +76,54 @@ func (r *rig) epochFile() string {
 	return string(b)
 }
 
+// TestStartUnitModeKeepsDollarSignsInTheVector checks that $VAR and ${VAR} in
+// the agent's argv and in an --env value reach the systemd-run vector
+// unchanged, and that the vector tells the service manager not to expand them.
+func TestStartUnitModeKeepsDollarSignsInTheVector(t *testing.T) {
+	r := newRig(t, "demo")
+	a, _, errout := r.e.newApp(r.fl)
+	agent := []string{"sh", "-c", "echo $HOME ${X} $$"}
+	code := a.run(append([]string{"start", "demo", "--env", "P=$HOME/x", "--env", "Q=${X}", "--holder", r.e.holderFile(t), "--"}, agent...))
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr %q", code, errout.String())
+	}
+	runs := r.fl.runList()
+	if len(runs) != 1 {
+		t.Fatalf("runs %q", runs)
+	}
+	argv := runs[0]
+	expand, dash := -1, -1
+	for i, s := range argv {
+		if s == "--expand-environment=no" {
+			expand = i
+		}
+		if s == "--" && dash < 0 {
+			dash = i
+		}
+	}
+	if expand < 0 || dash < 0 || expand > dash {
+		t.Errorf("--expand-environment=no is not before --: %q", argv)
+	}
+	if tail := argv[len(argv)-len(agent):]; !reflect.DeepEqual(tail, agent) {
+		t.Errorf("agent argv %q, want %q", tail, agent)
+	}
+	var envs []string
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--env" {
+			envs = append(envs, argv[i+1])
+		}
+	}
+	for _, want := range []string{"P=$HOME/x", "Q=${X}"} {
+		found := false
+		for _, e := range envs {
+			found = found || e == want
+		}
+		if !found {
+			t.Errorf("--env %q missing from %q", want, envs)
+		}
+	}
+}
+
 func TestStartUnitMode(t *testing.T) {
 	r := newRig(t, "demo")
 	holder := r.e.holderFile(t)
@@ -95,6 +143,7 @@ func TestStartUnitMode(t *testing.T) {
 	home := r.l.home
 	want := []string{
 		"systemd-run", "--user", "--unit=ataniq-scratch-demo", "--collect", "--quiet",
+		"--expand-environment=no",
 		"-p", "KillMode=control-group", "-p", "Restart=no", "-p", "TimeoutStopSec=2",
 		"-p", "NoNewPrivileges=yes", "-p", "CollectMode=inactive-or-failed",
 		"--", holder,
@@ -192,7 +241,16 @@ func TestStartUsesTheHolderNextToTheExecutable(t *testing.T) {
 	if code := a.run([]string{"start", "demo", "--", "agent"}); code != exitOK {
 		t.Fatalf("exit %d %q", code, errout.String())
 	}
-	if got := r.fl.runList()[0][16]; got != holder {
+	// The holder is the word after the first "--" of the systemd-run vector.
+	vec := r.fl.runList()[0]
+	got := ""
+	for i, s := range vec {
+		if s == "--" {
+			got = vec[i+1]
+			break
+		}
+	}
+	if got != holder {
 		t.Errorf("holder %q, want %q", got, holder)
 	}
 }

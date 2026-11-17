@@ -38,7 +38,8 @@ start    Start a holder for a scratch agent that runs ARGV. The agent's
          environment is only TERM, HOME (a disposable home), PATH, LANG and each
          --env; nothing else is inherited. --env values appear in the holder's
          command line: put no secret in them. By default the holder runs in a
-         transient systemd user unit; --direct runs it as a child of this
+         transient systemd user unit (this needs systemd 254 or newer; the unit
+         never expands $VAR in an argument); --direct runs it as a child of this
          command in the foreground until it exits, and the process-tree proof is
          then the weaker one. --holder PATH names the holder binary (default:
          ataniq-holder next to this command). --cols and --rows set the first

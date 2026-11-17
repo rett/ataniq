@@ -115,9 +115,17 @@ func holderArgs(l layout, epoch uint64, intent string, cols, rows int, env, agen
 // systemdRunArgv is the command that runs the holder in a transient systemd
 // user unit (the lead-hosting design, section 1.1). It sets no other
 // hardening property: the design marks those for qualification.
+//
+// --expand-environment=no is not hardening. Without it the service manager
+// expands $VAR and ${VAR} in every word after "--" from the user manager's
+// environment (and turns $$ into $): in the holder's options, in each --env
+// value and in the agent's argv. That would hand the caller's real HOME and
+// session variables to the agent and rewrite the user's argv, and --direct
+// does neither. The option needs systemd 254 or newer.
 func systemdRunArgv(name, holder string, hArgs []string) []string {
 	argv := []string{
 		"systemd-run", "--user", "--unit=" + unitName(name), "--collect", "--quiet",
+		"--expand-environment=no",
 		"-p", "KillMode=control-group",
 		"-p", "Restart=no",
 		"-p", "TimeoutStopSec=2",
