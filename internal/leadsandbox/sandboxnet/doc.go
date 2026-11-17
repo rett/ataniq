@@ -12,6 +12,19 @@
 // with no port forwarding, and the host's non-loopback addresses and the LAN
 // stay reachable (see [PastaArgs]).
 //
+// Two limits of the resolv.conf derivation are stated here and not detected:
+//
+//   - A nameserver that is one of the host's own addresses (for example a
+//     resolver listening on the host's LAN address) is accepted. Inside the
+//     namespace that pasta configures the address belongs to the namespace, so
+//     it is local there and the queries go nowhere. This package does not
+//     know the host's addresses, so it cannot tell.
+//   - Deriving from the upstream list, and dropping loopback servers, bypasses
+//     the policy of the host's own resolver: DNS over TLS, split DNS (per-link
+//     routing domains such as a VPN) and filtering. Names may go to the listed
+//     servers in clear, and names meant for an internal server may go to a
+//     public one.
+//
 // This package is a proposal and is unqualified. It says what is generated and
 // checked, not that the resulting sandbox is safe or supported; qualification
 // is a separate, opt-in step.

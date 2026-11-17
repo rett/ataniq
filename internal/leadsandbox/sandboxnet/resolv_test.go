@@ -2,6 +2,7 @@ package sandboxnet
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/netip"
 	"strings"
@@ -111,7 +112,7 @@ func TestStubUpstreamUnusable(t *testing.T) {
 }
 
 func TestPlainFile(t *testing.T) {
-	host := "# corp\n; other\n\nnameserver 192.0.2.7\r\nnameserver 192.0.2.8\nsearch corp.example. lab.example\noptions ndots:2 timeout:3\noptions rotate ndots:2\ndomain ignored.example\nsortlist 10.0.0.0\n"
+	host := "# corp\n; other\n\ndomain ignored.example\nnameserver 192.0.2.7\r\nnameserver 192.0.2.8\nsearch corp.example. lab.example\noptions ndots:2 timeout:3\noptions rotate ndots:2\nsortlist 10.0.0.0\n"
 	// An upstream file that exists is not used for a host file that is not the stub.
 	res, err := Derive(Input{HostContent: []byte(host), HostRealPath: "/etc/resolv.conf", UpstreamPresent: true, UpstreamContent: []byte(upstreamFile)})
 	if err != nil {
@@ -125,7 +126,7 @@ func TestPlainFile(t *testing.T) {
 	if string(res.Content) != want {
 		t.Errorf("content\n%s\nwant\n%s", res.Content, want)
 	}
-	notesContain(t, res, "2 line(s) with other keywords ignored")
+	notesContain(t, res, "1 line(s) with other keywords ignored")
 }
 
 func TestHostIsUpstreamFileLinkIsPlain(t *testing.T) {
@@ -141,7 +142,6 @@ func TestLoopbackOnlyRefused(t *testing.T) {
 		"nameserver 127.0.0.1\n",
 		"nameserver 127.1.2.3\nnameserver ::1\n",
 		"nameserver ::ffff:127.0.0.1\n",
-		"nameserver 127.0.0.1\nnameserver 127.0.0.1\n", // duplicate counts once
 	} {
 		res, err := Derive(Input{HostContent: []byte(host), HostRealPath: "/etc/resolv.conf"})
 		reason := refusalReason(t, err)
@@ -154,6 +154,21 @@ func TestLoopbackOnlyRefused(t *testing.T) {
 	mustContain(t, refusalReason(t, err), "(3 dropped)")
 	if res.DroppedLoopback != 3 {
 		t.Errorf("dropped %d", res.DroppedLoopback)
+	}
+}
+
+func TestDuplicateLoopbackCountsOnce(t *testing.T) {
+	// The same server in two spellings is one server.
+	for _, host := range []string{
+		"nameserver 127.0.0.1\nnameserver 127.0.0.1\n",
+		"nameserver ::1\nnameserver 0:0:0:0:0:0:0:1\n",
+		"nameserver 127.0.0.1\nnameserver ::ffff:127.0.0.1\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "(1 dropped)")
+		if res.DroppedLoopback != 1 {
+			t.Errorf("%q: a duplicate counted %d times", host, res.DroppedLoopback)
+		}
 	}
 }
 
@@ -218,10 +233,17 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 		{"nameserver", "exactly one address"},
 		{"nameserver 0.0.0.0", "unspecified"},
 		{"nameserver ::", "unspecified"},
+		{"nameserver ::127.0.0.1", "embeds IPv4"},
+		{"nameserver ::1.2.3.4", "embeds IPv4"},
+		{"nameserver ::0102:0304", "embeds IPv4"},
+		{"nameserver ::ffff:0:127.0.0.1", "embeds IPv4"},
+		{"nameserver ::ffff:0:0:0", "embeds IPv4"},
+		{"nameserver 0.1.2.3", "0.0.0.0/8"},
+		{"nameserver 0.255.255.255", "0.0.0.0/8"},
+		{"nameserver ::ffff:0.1.2.3", "0.0.0.0/8"},
 		{"nameserver 224.0.0.1", "multicast"},
 		{"nameserver ff02::1", "multicast"},
 		{"nameserver 255.255.255.255", "multicast or broadcast"},
-		{"nameserver 192.0.2.1;evil", "malformed address"},
 		{"nameserver 192.0.2.1\x01", "control or non-ASCII"},
 		{"nameserver \xc3\xa9", "control or non-ASCII"},
 	} {
@@ -241,6 +263,104 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 			t.Errorf("%q: passed on: %s", tc.line, res.Content)
 		}
 		notesContain(t, res, tc.note)
+	}
+}
+
+func TestHostResolverLineRules(t *testing.T) {
+	for _, tc := range []struct {
+		name, host string
+		want       []string
+	}{
+		{"trailing hash comment", "nameserver 192.0.2.1 # primary\n", []string{"192.0.2.1"}},
+		{"trailing semicolon comment", "nameserver 192.0.2.1;primary\n", []string{"192.0.2.1"}},
+		{"comment glued to the address", "nameserver 192.0.2.1#x\nnameserver\t192.0.2.2\t;y\n", []string{"192.0.2.1", "192.0.2.2"}},
+		{"leading space is ignored", " nameserver 192.0.2.1\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+		{"leading tab is ignored", "\tnameserver 192.0.2.1\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+		{"indented comment is not counted", "  # c\n \t\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+	} {
+		res, err := Derive(Input{HostContent: []byte(tc.host)})
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if !equalAddrs(res.Nameservers, addrs(t, tc.want...)) || res.Rejected != 0 {
+			t.Errorf("%s: %v rejected %d", tc.name, res.Nameservers, res.Rejected)
+		}
+		if strings.Count(string(res.Content), "#") != 1 { // the generated header only
+			t.Errorf("%s: comment passed on: %s", tc.name, res.Content)
+		}
+	}
+
+	res, err := Derive(Input{HostContent: []byte(" nameserver 192.0.2.1\n\tnameserver 192.0.2.3\n  # c\nnameserver 192.0.2.2\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notesContain(t, res, "2 line(s) starting with a blank ignored")
+
+	// A comment never lets a loopback address through, in either form.
+	for _, host := range []string{
+		"nameserver 127.0.0.1 # local\n",
+		"nameserver 127.0.0.1;x\n",
+		"nameserver ::1#x\n",
+		"nameserver ::ffff:127.0.0.1 ; x\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "only loopback")
+		if res.DroppedLoopback != 1 || res.Content != nil {
+			t.Errorf("%q: %+v", host, res)
+		}
+	}
+	// A comment cannot hide a second address, and an address cannot hide in one.
+	for _, host := range []string{
+		"nameserver 192.0.2.1 192.0.2.2 # two\n",
+		"nameserver # 192.0.2.1\n",
+		"nameserver ;192.0.2.1\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host + "nameserver 192.0.2.9\n")})
+		if err != nil {
+			t.Errorf("%q: %v", host, err)
+			continue
+		}
+		if res.Rejected != 1 || !equalAddrs(res.Nameservers, addrs(t, "192.0.2.9")) {
+			t.Errorf("%q: %+v", host, res)
+		}
+		notesContain(t, res, "exactly one address")
+	}
+	// A comment is not honoured on other lines: the text stays in the token,
+	// which is then malformed.
+	res, err = Derive(Input{HostContent: []byte("nameserver 192.0.2.1\nsearch a.test # c\n")})
+	if err != nil || res.Rejected != 1 || len(res.Search) != 0 {
+		t.Errorf("%+v %v", res, err)
+	}
+}
+
+func TestNonRoutedFormsAreNotAccepted(t *testing.T) {
+	// A file whose only servers are in these ranges is refused, with the
+	// bad lines counted and none of them passed on.
+	for _, host := range []string{
+		"nameserver ::127.0.0.1\n",
+		"nameserver ::ffff:0:127.0.0.1\n",
+		"nameserver 0.1.2.3\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "no usable nameserver")
+		if res.Rejected != 1 || res.DroppedLoopback != 0 || res.Content != nil {
+			t.Errorf("%q: %+v", host, res)
+		}
+	}
+	// Addresses just outside the ranges stay usable.
+	res, err := Derive(Input{HostContent: []byte("nameserver 1.0.0.1\nnameserver ::1:0:0\nnameserver ::ffff:1:0:0:0\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Nameservers) != 3 || res.Rejected != 0 {
+		t.Errorf("%+v", res)
+	}
+	// ::1 is still loopback and still counted as such.
+	res, err = Derive(Input{HostContent: []byte("nameserver ::1\nnameserver ::127.0.0.1\n")})
+	mustContain(t, refusalReason(t, err), "only loopback", "(1 dropped)")
+	if res.DroppedLoopback != 1 || res.Rejected != 1 {
+		t.Errorf("%+v", res)
 	}
 }
 
@@ -285,6 +405,48 @@ func TestSearchAndOptionsValidation(t *testing.T) {
 		}
 		if tc.kept == "" && res.Rejected == 0 {
 			t.Errorf("%q: not counted as rejected", tc.line)
+		}
+	}
+}
+
+func TestDomainAndSearchAreAlternatives(t *testing.T) {
+	ns := "nameserver 192.0.2.1\n"
+	head := "# Generated by ataniq for the lead sandbox from the host resolv.conf.\nnameserver 192.0.2.1\n"
+	for _, tc := range []struct {
+		name, lines, kept string
+		rejected          int
+		note              string
+	}{
+		{"domain alone", "domain corp.example", "search corp.example\n", 0, ""},
+		{"domain after search", "search a.test b.test\ndomain c.test", "search c.test\n", 0, ""},
+		{"search after domain", "domain c.test\nsearch a.test b.test", "search a.test b.test\n", 0, ""},
+		{"bad search after good one", "search a.test\nsearch bad$", "search a.test\n", 1, "the earlier search or domain list is kept"},
+		{"bad domain after good search", "search a.test\ndomain bad$", "search a.test\n", 1, "the earlier search or domain list is kept"},
+		{"two names on a domain line", "domain a.test b.test", "", 1, "exactly one name"},
+		{"two names after a good line", "domain a.test\ndomain b.test c.test", "search a.test\n", 1, "the earlier search or domain list is kept"},
+		{"empty domain line", "domain", "", 1, "exactly one name"},
+		{"bad line first, none kept", "domain bad$", "", 1, "malformed search domain"},
+	} {
+		res, err := Derive(Input{HostContent: []byte(ns + tc.lines + "\n")})
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if got := string(res.Content); got != head+tc.kept {
+			t.Errorf("%s: content %q want %q", tc.name, got, head+tc.kept)
+		}
+		if res.Rejected != tc.rejected {
+			t.Errorf("%s: rejected %d", tc.name, res.Rejected)
+		}
+		if tc.note != "" {
+			notesContain(t, res, tc.note)
+		}
+	}
+	// A bad line with no earlier list does not claim one is kept.
+	res, _ := Derive(Input{HostContent: []byte(ns + "search bad$\n")})
+	for _, n := range res.Notes {
+		if strings.Contains(n, "is kept") {
+			t.Errorf("note %q", n)
 		}
 	}
 }
@@ -374,6 +536,7 @@ func TestNotesAreBounded(t *testing.T) {
 	if len(res.Notes) > MaxNotes {
 		t.Errorf("%d notes", len(res.Notes))
 	}
+	notesContain(t, res, "further note(s) not shown")
 	for _, n := range res.Notes {
 		if len(n) > 200 {
 			t.Errorf("note of %d bytes", len(n))
@@ -382,6 +545,51 @@ func TestNotesAreBounded(t *testing.T) {
 	if res.Rejected != 100 {
 		t.Errorf("rejected %d", res.Rejected)
 	}
+}
+
+func TestNotesAreBoundedOnTheStubPath(t *testing.T) {
+	// Many bad lines in the upstream file must not crowd out the why line, the
+	// loopback summary or the nameserver-cap summary, and the bound holds.
+	var b strings.Builder
+	b.WriteString("nameserver 192.0.2.1\nnameserver 127.0.0.1\n")
+	for i := 0; i < 60; i++ {
+		b.WriteString("nameserver bad\n")
+	}
+	b.WriteString("nameserver 192.0.2.2\nnameserver 192.0.2.3\nnameserver 192.0.2.4\n")
+	b.WriteString(strings.Repeat("foo bar\n", 3))
+	res, err := Derive(Input{HostContent: []byte(stubFile), HostRealPath: SystemdStubPath, UpstreamPresent: true, UpstreamContent: []byte(b.String())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Notes) > MaxNotes {
+		t.Errorf("%d notes", len(res.Notes))
+	}
+	if !strings.Contains(res.Notes[0], "stub") {
+		t.Errorf("first note %q", res.Notes[0])
+	}
+	notesContain(t, res, "1 loopback nameserver(s) dropped")
+	notesContain(t, res, "1 nameserver(s) beyond the first 3 ignored")
+	notesContain(t, res, "3 line(s) with other keywords ignored")
+	// 60 bad lines, of which the per-line room holds MaxNotes-reservedNotes.
+	notesContain(t, res, fmt.Sprintf("%d further note(s) not shown", 60-(MaxNotes-reservedNotes)))
+	if res.Rejected != 60 {
+		t.Errorf("rejected %d", res.Rejected)
+	}
+}
+
+func TestNotesAreBoundedOnARefusal(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("nameserver 127.0.0.1\n")
+	for i := 0; i < 100; i++ {
+		b.WriteString("nameserver bad\n")
+	}
+	res, err := Derive(Input{HostContent: []byte(b.String())})
+	mustContain(t, refusalReason(t, err), "only loopback")
+	if len(res.Notes) > MaxNotes {
+		t.Errorf("%d notes", len(res.Notes))
+	}
+	notesContain(t, res, "1 loopback nameserver(s) dropped")
+	notesContain(t, res, "further note(s) not shown")
 }
 
 func TestRefusalMatchesSentinel(t *testing.T) {

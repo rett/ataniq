@@ -44,17 +44,26 @@ const (
 	// MaxNameservers that remain are kept.
 	MaxNameservers = 3
 
-	// MaxSearchDomains and MaxSearchBytes are the resolver's limits on the
-	// search list: at most six domains in at most 256 bytes.
+	// MaxSearchDomains and MaxSearchBytes bound the search list: at most six
+	// domains in at most 256 bytes. They are bounds chosen here, after the
+	// historical resolver limits (MAXDNSRCH and its 256 bytes), which current
+	// resolvers no longer apply.
 	MaxSearchDomains = 6
 	MaxSearchBytes   = 256
 
 	// MaxOptions is how many distinct option tokens are kept.
 	MaxOptions = 16
 
-	// MaxNotes is how many notes a result carries. Further notes are
-	// replaced by one line saying so.
+	// MaxNotes is the most notes a result carries. Per-line notes stop
+	// short of it by reservedNotes, so the summary notes always fit; notes
+	// that did not fit are counted in one final line.
 	MaxNotes = 32
+
+	// reservedNotes is the room kept for notes that are not about one line:
+	// the "derived from" line, the indented-line and other-keyword
+	// summaries, the loopback and nameserver-cap summaries, and the
+	// overflow line.
+	reservedNotes = 6
 
 	// maxQuoted bounds how much of an untrusted token a note repeats.
 	maxQuoted = 48
@@ -159,6 +168,20 @@ func Derive(in Input) (Result, error) {
 
 var stubAddr = netip.MustParseAddr(StubNameserver)
 
+// Address ranges that are never a usable nameserver. None of them reaches a
+// host loopback service, but none is routed to a resolver either, so a file
+// whose only servers are in them must be refused, not started with DNS that
+// cannot work.
+var (
+	// v4compat is the deprecated IPv4-compatible range (::127.0.0.1 and so
+	// on); "::" and "::1" in it are handled before and apart.
+	v4compat = netip.MustParsePrefix("::/96")
+	// siit is the IPv4-translated range (::ffff:0:127.0.0.1 and so on).
+	siit = netip.MustParsePrefix("::ffff:0:0:0/96")
+	// thisNet4 is the IPv4 "this network" block.
+	thisNet4 = netip.MustParsePrefix("0.0.0.0/8")
+)
+
 func refusal(format string, args ...any) error {
 	return &Refusal{Reason: fmt.Sprintf(format, args...)}
 }
@@ -170,13 +193,24 @@ type parsed struct {
 	options  []string
 	rejected int
 	notes    []string
+	dropped  int // per-line notes that did not fit
 	other    int // lines with a keyword that is not kept
+	indented int // lines the host resolver ignores for a leading blank
 }
 
+// note keeps a per-line note while there is room beyond the reserve, and
+// counts it otherwise.
 func (p *parsed) note(format string, args ...any) {
-	if len(p.notes) < MaxNotes {
+	if len(p.notes) < MaxNotes-reservedNotes {
 		p.notes = append(p.notes, fmt.Sprintf(format, args...))
+		return
 	}
+	p.dropped++
+}
+
+// summary keeps a note about the file as a whole, in the reserved room.
+func (p *parsed) summary(format string, args ...any) {
+	p.notes = append(p.notes, fmt.Sprintf(format, args...))
 }
 
 // quote repeats an untrusted token in a note, escaped and truncated.
@@ -218,23 +252,50 @@ func parse(content []byte) (parsed, error) {
 			p.note("line %d dropped: contains a control or non-ASCII byte", n)
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0][0] == '#' || fields[0][0] == ';' {
+		// As the host resolver reads a file, a keyword counts only at the
+		// start of a line; a line that begins with a blank is ignored.
+		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if t := strings.TrimLeft(line, " \t"); t != "" && t[0] != '#' && t[0] != ';' {
+				p.indented++
+			}
+			continue
+		}
+		fields := strings.Fields(line)
 		switch fields[0] {
 		case "nameserver":
-			p.nameserver(n, fields[1:])
+			// As the resolver does, the address ends at the first '#' or
+			// ';': what follows is a comment. What is left is validated
+			// like any other address, so a loopback one is still dropped.
+			rest := strings.TrimPrefix(line, "nameserver")
+			if i := strings.IndexAny(rest, "#;"); i >= 0 {
+				rest = rest[:i]
+			}
+			p.nameserver(n, strings.Fields(rest))
 		case "search":
-			p.searchLine(n, fields[1:])
+			p.searchLine(n, "search", fields[1:])
+		case "domain":
+			// As on the host, domain and search are alternatives and the
+			// last well-formed one wins; domain takes one name.
+			if len(fields) != 2 {
+				p.rejected++
+				p.note("line %d dropped: a domain line takes exactly one name%s", n, p.searchKept())
+				continue
+			}
+			p.searchLine(n, "domain", fields[1:])
 		case "options":
 			p.optionsLine(n, fields[1:])
 		default:
 			p.other++
 		}
 	}
+	if p.indented > 0 {
+		p.summary("%d line(s) starting with a blank ignored, as the host resolver does", p.indented)
+	}
 	if p.other > 0 {
-		p.note("%d line(s) with other keywords ignored", p.other)
+		p.summary("%d line(s) with other keywords ignored", p.other)
 	}
 	return p, nil
 }
@@ -281,6 +342,14 @@ func (p *parsed) nameserver(n int, args []string) {
 		p.rejected++
 		p.note("line %d dropped: link-local IPv6 address %s needs a scope", n, quote(tok))
 		return
+	case a.Is6() && !a.IsLoopback() && (v4compat.Contains(a) || siit.Contains(a)):
+		p.rejected++
+		p.note("line %d dropped: address %s embeds IPv4 in a form that is not routed", n, quote(tok))
+		return
+	case a.Is4() && thisNet4.Contains(a):
+		p.rejected++
+		p.note("line %d dropped: address %s is in 0.0.0.0/8, which is not routed", n, quote(tok))
+		return
 	}
 	for _, have := range p.servers {
 		if have == a {
@@ -290,10 +359,19 @@ func (p *parsed) nameserver(n int, args []string) {
 	p.servers = append(p.servers, a)
 }
 
-func (p *parsed) searchLine(n int, args []string) {
+// searchKept says, for a note about a dropped search or domain line, that an
+// earlier well-formed one is still in force.
+func (p *parsed) searchKept() string {
+	if len(p.search) == 0 {
+		return ""
+	}
+	return "; the earlier search or domain list is kept"
+}
+
+func (p *parsed) searchLine(n int, keyword string, args []string) {
 	if len(args) == 0 {
 		p.rejected++
-		p.note("line %d dropped: empty search list", n)
+		p.note("line %d dropped: empty %s list%s", n, keyword, p.searchKept())
 		return
 	}
 	var kept []string
@@ -301,17 +379,17 @@ func (p *parsed) searchLine(n int, args []string) {
 	for _, d := range args {
 		if !validDomain(d) {
 			p.rejected++
-			p.note("line %d dropped: malformed search domain %s", n, quote(d))
+			p.note("line %d dropped: malformed search domain %s%s", n, quote(d), p.searchKept())
 			return
 		}
 		if len(kept) >= MaxSearchDomains || size+len(d)+1 > MaxSearchBytes {
-			p.note("line %d: search list cut at %d domain(s), as the resolver does", n, len(kept))
+			p.note("line %d: search list cut at %d domain(s)", n, len(kept))
 			break
 		}
 		kept = append(kept, d)
 		size += len(d) + 1
 	}
-	// As the resolver does, the last search line wins.
+	// As the resolver does, the last well-formed search or domain line wins.
 	p.search = kept
 }
 
@@ -399,11 +477,11 @@ func validOption(o string) bool {
 // build turns a parsed file into the result, dropping loopback servers and
 // refusing when none is left.
 func build(src Source, p parsed, why string) (Result, error) {
+	// The notes of the parse leave room for the notes added here: at most the
+	// why line, the loopback and cap summaries and the overflow line.
 	res := Result{Source: src, Rejected: p.rejected, Notes: p.notes}
 	addNote := func(format string, args ...any) {
-		if len(res.Notes) < MaxNotes {
-			res.Notes = append(res.Notes, fmt.Sprintf(format, args...))
-		}
+		res.Notes = append(res.Notes, fmt.Sprintf(format, args...))
 	}
 	if why != "" {
 		res.Notes = append([]string{why}, res.Notes...)
@@ -420,15 +498,18 @@ func build(src Source, p parsed, why string) (Result, error) {
 	if res.DroppedLoopback > 0 {
 		addNote("%d loopback nameserver(s) dropped", res.DroppedLoopback)
 	}
+	if len(usable) > MaxNameservers {
+		addNote("%d nameserver(s) beyond the first %d ignored, as the resolver does", len(usable)-MaxNameservers, MaxNameservers)
+		usable = usable[:MaxNameservers]
+	}
+	if p.dropped > 0 {
+		addNote("%d further note(s) not shown", p.dropped)
+	}
 	if len(usable) == 0 {
 		if res.DroppedLoopback == 0 {
 			return res, &Refusal{Reason: fmt.Sprintf("the %s has no usable nameserver", src)}
 		}
 		return res, &Refusal{Reason: fmt.Sprintf("the %s has only loopback nameservers (%d dropped); there is no route from the sandbox to a host loopback service", src, res.DroppedLoopback)}
-	}
-	if len(usable) > MaxNameservers {
-		addNote("%d nameserver(s) beyond the first %d ignored, as the resolver does", len(usable)-MaxNameservers, MaxNameservers)
-		usable = usable[:MaxNameservers]
 	}
 	res.Nameservers = usable
 	res.Search = p.search
