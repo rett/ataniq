@@ -1,0 +1,384 @@
+//go:build linux
+
+// Package ptyhost owns the pseudo-terminal of one hosted agent (the
+// lead-hosting design, section 1.2): it opens the pair, starts the agent as a
+// session leader with the slave as its controlling terminal, and keeps the
+// master. The holder is the only process that holds the master; nothing here
+// hands the descriptor out.
+//
+// The package uses only golang.org/x/sys/unix and the standard library, and
+// only on Linux. No shell is involved: the child is executed directly from
+// Config.Argv with exactly Config.Env.
+//
+// # Streams and lifetime
+//
+// Three facts are kept apart (the lead-hosting design, section 1.4):
+//
+//   - the terminal stream ended: Read returns io.EOF (the kernel reports EIO
+//     on the master once the last holder of the slave has closed it);
+//   - the TUI, the direct child, exited: Wait returns its Exit;
+//   - the agent's process tree is gone: TreeGone, with a proof string that
+//     names the method.
+//
+// A grandchild that keeps the slave open keeps the stream open after the
+// child exited, and a child can close the stream while it still runs.
+//
+// # Tree proof
+//
+// When the process runs in a control group of its own, the tree is gone when
+// that group holds only this process (proof starts with "cgroup"). "Of its
+// own" is judged once, in Start, before the child is created: the group's
+// cgroup.procs lists only this process. Otherwise the fallback is that no
+// process is left in the child's session (proof starts with "session"). That
+// is weaker: a descendant that started its own session escapes it, and
+// callers should label it so. Zombies do not count as present in the session
+// scan (they run nothing, and a process that adopts orphans reaps them on its
+// own schedule).
+//
+// # Signalling and pid reuse
+//
+// The direct child is reaped only after it has been observed to exit (waitid
+// with WNOWAIT, then wait4), and every signal to its process group is sent
+// under the same mutex that guards the reap, so a pid is never signalled
+// after it was reaped. Session members other than the leader are signalled
+// through a pidfd after their session id was read again. After the leader was
+// reaped the session id is reserved by the kernel only while the session has
+// members: the scan taken at the moment the leader exits (before it is reaped)
+// latches the "session is empty" fact, and the latch is never undone, so a
+// later process that happens to get the same number and call setsid is not
+// taken for a member. The one remaining window is a session that empties
+// completely between two scans after the leader was reaped; it makes the
+// scan conservative (it can only report "not gone"), never wrongly "gone".
+package ptyhost
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const (
+	// ReadBufferSize is the size of the buffer the caller reads the master
+	// with. Read never returns more than this in one call, even for a larger
+	// buffer.
+	ReadBufferSize = 64 << 10
+
+	// Terminal size limits, inclusive. Start and Resize refuse a size outside
+	// them; the caller clamps before it asks.
+	MinCols = 2
+	MaxCols = 500
+	MinRows = 1
+	MaxRows = 200
+
+	// DefaultWriteTimeout bounds one Write when Config.WriteTimeout is zero.
+	DefaultWriteTimeout = 5 * time.Second
+
+	// DefaultProcScanLimit bounds how many /proc entries one scan reads when
+	// Config.ProcScanLimit is zero.
+	DefaultProcScanLimit = 1 << 17
+
+	maxStatBytes   = 4 << 10
+	maxProcsBytes  = 1 << 20
+	maxCgroupBytes = 64 << 10
+)
+
+// Config describes the child and the injectable paths.
+type Config struct {
+	// Argv is the child's command line. Argv[0] must contain a slash (an
+	// absolute path, or one relative to Dir): no PATH search is made, and the
+	// caller's own environment plays no part.
+	Argv []string
+	// Env is exactly the child's environment, nothing inherited. A nil Env is
+	// an empty environment.
+	Env []string
+	// Dir is the child's working directory; empty keeps the caller's.
+	Dir string
+	// Cols and Rows are the initial terminal size, within MinCols..MaxCols
+	// by MinRows..MaxRows.
+	Cols, Rows int
+
+	// WriteTimeout bounds one Write (see Host.Write); zero means
+	// DefaultWriteTimeout.
+	WriteTimeout time.Duration
+
+	// ProcRoot is the proc filesystem root, default "/proc". It is read for
+	// the control group of this process, for the session scan and for the
+	// session kill; tests give a fake tree.
+	ProcRoot string
+	// CgroupRoot is the cgroup v2 mount, default "/sys/fs/cgroup".
+	CgroupRoot string
+	// NoCgroup skips the control group method, so the tree proof is always
+	// the session fallback.
+	NoCgroup bool
+	// ProcScanLimit bounds the entries one /proc scan reads; zero means
+	// DefaultProcScanLimit. A scan that hits it proves nothing, and counts.
+	ProcScanLimit int
+}
+
+// Exit is how the direct child ended.
+type Exit struct {
+	Pid int
+	// How is "exit" (Code is the status), "signal" (Signal is set) or
+	// "unknown" (the child could not be waited for; Err says why).
+	How      string
+	Code     int // exit status; -1 unless How is "exit"
+	Signal   syscall.Signal
+	CoreDump bool
+	Err      error
+}
+
+// String describes the exit in one line.
+func (e Exit) String() string {
+	switch e.How {
+	case "exit":
+		return fmt.Sprintf("exited with status %d", e.Code)
+	case "signal":
+		s := fmt.Sprintf("killed by signal %d (%s)", int(e.Signal), e.Signal)
+		if e.CoreDump {
+			s += ", core dumped"
+		}
+		return s
+	}
+	return fmt.Sprintf("unknown (%v)", e.Err)
+}
+
+// Counters are the caps and failures the host counted instead of hiding.
+type Counters struct {
+	// ScanTruncated counts /proc scans that hit the entry limit.
+	ScanTruncated uint64
+	// ScanErrors counts /proc entries that could not be read or parsed (an
+	// entry that vanished during the scan is not an error).
+	ScanErrors uint64
+}
+
+// Host is one running child on a pseudo-terminal.
+type Host struct {
+	cfg      Config
+	master   *os.File
+	pid      int
+	writeTmo time.Duration
+	procRoot string
+	scanMax  int
+
+	wmu sync.Mutex // serialises Write (deadline and write together)
+
+	// cgroupProcs is the cgroup.procs path judged "of its own" at Start, or
+	// empty; cgroupNote says why the group was not used.
+	cgroupProcs string
+	cgroupNote  string
+
+	mu     sync.Mutex // guards reaped and the signalling of the process group
+	reaped bool
+	exit   Exit
+	done   chan struct{}
+
+	sessionEmpty atomic.Bool // latched: the session had no live member
+
+	scanTruncated atomic.Uint64
+	scanErrors    atomic.Uint64
+
+	closeOnce sync.Once
+}
+
+// Start opens a pseudo-terminal pair, sets its size and starts cfg.Argv as a
+// session leader with the slave as controlling terminal and as stdin, stdout
+// and stderr. The slave is closed in the caller; the master is close-on-exec
+// and never inherited.
+func Start(cfg Config) (*Host, error) {
+	if len(cfg.Argv) == 0 || !strings.Contains(cfg.Argv[0], "/") {
+		return nil, errors.New("ptyhost: Argv[0] must be a path (no PATH search is made)")
+	}
+	if err := checkSize(cfg.Cols, cfg.Rows); err != nil {
+		return nil, err
+	}
+	h := &Host{
+		cfg:      cfg,
+		writeTmo: cfg.WriteTimeout,
+		procRoot: cfg.ProcRoot,
+		scanMax:  cfg.ProcScanLimit,
+		done:     make(chan struct{}),
+	}
+	if h.writeTmo <= 0 {
+		h.writeTmo = DefaultWriteTimeout
+	}
+	if h.procRoot == "" {
+		h.procRoot = "/proc"
+	}
+	if h.scanMax <= 0 {
+		h.scanMax = DefaultProcScanLimit
+	}
+	if cfg.NoCgroup {
+		h.cgroupNote = "control group method disabled"
+	} else {
+		root := cfg.CgroupRoot
+		if root == "" {
+			root = "/sys/fs/cgroup"
+		}
+		h.cgroupProcs, h.cgroupNote = privateCgroup(h.procRoot, root, os.Getpid())
+	}
+
+	masterFd, slaveFd, err := openPair()
+	if err != nil {
+		return nil, err
+	}
+	if err := setWinsize(masterFd, cfg.Cols, cfg.Rows); err != nil {
+		_ = unix.Close(masterFd)
+		_ = unix.Close(slaveFd)
+		return nil, fmt.Errorf("ptyhost: set size: %w", err)
+	}
+	env := cfg.Env
+	if env == nil {
+		env = []string{}
+	}
+	// The slave is the child's descriptors 0, 1 and 2, and Setctty makes
+	// descriptor 0 its controlling terminal after Setsid. Every other
+	// descriptor of ours is close-on-exec (the master and the slave were
+	// opened so); descriptors a caller opened without it are the caller's.
+	pid, err := syscall.ForkExec(cfg.Argv[0], cfg.Argv, &syscall.ProcAttr{
+		Dir:   cfg.Dir,
+		Env:   env,
+		Files: []uintptr{uintptr(slaveFd), uintptr(slaveFd), uintptr(slaveFd)},
+		Sys:   &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0},
+	})
+	_ = unix.Close(slaveFd)
+	if err != nil {
+		_ = unix.Close(masterFd)
+		return nil, fmt.Errorf("ptyhost: start %q: %w", cfg.Argv[0], err)
+	}
+	h.pid = pid
+	// The master is non-blocking so that the runtime poller serves it: a
+	// Close unblocks a Read and a write deadline works.
+	h.master = os.NewFile(uintptr(masterFd), "ptmx")
+	go h.reap()
+	return h, nil
+}
+
+func checkSize(cols, rows int) error {
+	if cols < MinCols || cols > MaxCols || rows < MinRows || rows > MaxRows {
+		return fmt.Errorf("ptyhost: size %dx%d outside %d..%d by %d..%d", cols, rows, MinCols, MaxCols, MinRows, MaxRows)
+	}
+	return nil
+}
+
+// openPair opens /dev/ptmx, unlocks the slave and opens it. The slave name
+// comes from TIOCGPTN. Neither descriptor is a controlling terminal of the
+// caller (O_NOCTTY) and both are close-on-exec; the master is non-blocking.
+func openPair() (master, slave int, err error) {
+	master, err = unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return -1, -1, fmt.Errorf("ptyhost: open /dev/ptmx: %w", err)
+	}
+	fail := func(what string, e error) (int, int, error) {
+		_ = unix.Close(master)
+		return -1, -1, fmt.Errorf("ptyhost: %s: %w", what, e)
+	}
+	if err := unix.IoctlSetPointerInt(master, unix.TIOCSPTLCK, 0); err != nil {
+		return fail("unlock pty", err)
+	}
+	n, err := unix.IoctlGetInt(master, unix.TIOCGPTN)
+	if err != nil {
+		return fail("pty number", err)
+	}
+	slave, err = unix.Open(fmt.Sprintf("/dev/pts/%d", n), unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fail("open pty slave", err)
+	}
+	return master, slave, nil
+}
+
+func setWinsize(fd, cols, rows int) error {
+	return unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, &unix.Winsize{Col: uint16(cols), Row: uint16(rows)})
+}
+
+// ctl runs f with the master's descriptor kept valid against Close.
+func (h *Host) ctl(f func(fd int) error) error {
+	rc, err := h.master.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ferr error
+	if err := rc.Control(func(fd uintptr) { ferr = f(int(fd)) }); err != nil {
+		return err
+	}
+	return ferr
+}
+
+// Pid returns the direct child's process id. It is for display and records:
+// do not signal it, because it may be reaped and reused; use Stop.
+func (h *Host) Pid() int { return h.pid }
+
+// Read reads terminal output from the master, at most ReadBufferSize bytes
+// at a time. EIO, which the kernel reports once the slave side has closed
+// and the output was drained, is the normal end of the terminal stream and
+// is returned as io.EOF. After Close it returns an error wrapping
+// os.ErrClosed.
+func (h *Host) Read(p []byte) (int, error) {
+	if len(p) > ReadBufferSize {
+		p = p[:ReadBufferSize]
+	}
+	n, err := h.master.Read(p)
+	if err != nil && errors.Is(err, syscall.EIO) {
+		err = io.EOF
+	}
+	return n, err
+}
+
+// Write writes all of p to the terminal input, or returns an error. It does
+// not block forever when the child does not read: the master is
+// non-blocking and one Write has a deadline (Config.WriteTimeout, default
+// DefaultWriteTimeout) for the whole of p. On a timeout the error wraps
+// os.ErrDeadlineExceeded and n is how many bytes were accepted before it; a
+// caller must treat the input as broken at that point (a prefix was
+// delivered). Writes are serialised, but the caller still holds its input
+// lock around Write so that the bytes of two sources do not interleave.
+func (h *Host) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	h.wmu.Lock()
+	defer h.wmu.Unlock()
+	if err := h.master.SetWriteDeadline(time.Now().Add(h.writeTmo)); err != nil {
+		return 0, fmt.Errorf("ptyhost: write: %w", err)
+	}
+	n, err := h.master.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("ptyhost: write: %d of %d bytes accepted: %w", n, len(p), err)
+	}
+	return n, nil
+}
+
+// Resize sets the terminal size; the child gets SIGWINCH. A size outside
+// MinCols..MaxCols by MinRows..MaxRows is refused.
+func (h *Host) Resize(cols, rows int) error {
+	if err := checkSize(cols, rows); err != nil {
+		return err
+	}
+	if err := h.ctl(func(fd int) error { return setWinsize(fd, cols, rows) }); err != nil {
+		return fmt.Errorf("ptyhost: resize: %w", err)
+	}
+	return nil
+}
+
+// Close closes the master. The kernel then hangs up the terminal (SIGHUP to
+// the session leader's foreground group, and EOF-like errors for any reader
+// of the slave). It is safe to call more than once. After the child is
+// reaped and Close has returned, the host holds no goroutine and no
+// descriptor.
+func (h *Host) Close() error {
+	var err error
+	h.closeOnce.Do(func() { err = h.master.Close() })
+	return err
+}
+
+// Counters returns the counted caps and failures.
+func (h *Host) Counters() Counters {
+	return Counters{ScanTruncated: h.scanTruncated.Load(), ScanErrors: h.scanErrors.Load()}
+}
