@@ -141,7 +141,7 @@ func (k *fakeKernel) BootID() (string, error) {
 // show renders canned "systemctl show --all" output in the order systemctl
 // uses, which differs from the order of the request.
 func show(kv map[string]string) string {
-	order := []string{"Id", "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup", "MainPID", "Description", "Transient"}
+	order := []string{"Id", "LoadState", "ActiveState", "SubState", "InvocationID", "ControlGroup", "MainPID", "Description", "Transient", "BindsTo"}
 	var b strings.Builder
 	for _, k := range order {
 		if v, ok := kv[k]; ok {
@@ -158,7 +158,7 @@ func loadedProps() map[string]string {
 	return map[string]string{
 		"Id": unitName, "LoadState": "loaded", "ActiveState": "active", "SubState": "running",
 		"InvocationID": inv1, "ControlGroup": cgUnit, "MainPID": "321",
-		"Description": goodDesc(), "Transient": "yes",
+		"Description": goodDesc(), "Transient": "yes", "BindsTo": "",
 	}
 }
 
@@ -166,7 +166,7 @@ func notFoundProps() map[string]string {
 	return map[string]string{
 		"Id": unitName, "LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead",
 		"InvocationID": "", "ControlGroup": "", "MainPID": "0",
-		"Description": unitName, "Transient": "no",
+		"Description": unitName, "Transient": "no", "BindsTo": "",
 	}
 }
 

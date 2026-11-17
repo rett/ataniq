@@ -13,10 +13,14 @@
 // knows), the description of [leadunit.Spec.Description], the working
 // directory, the explicit environment and the command as ExecStartEx with the
 // "no-env-expand" flag, so that systemd does not expand "$VAR" in the
-// arguments. A reply that names a job is success, and Start then inspects the
+// arguments. A spec with a Parent adds BindsTo, PartOf and After for it
+// ([leadunit.BoundProperties]), each as a list of that one unit name ("as"),
+// right after the fixed ones; a unit with no Parent gets none of them. A reply
+// that names a job is success, and Start then inspects the
 // unit once; the job completes later, so that state can be partial (see
 // [Manager.Start]). Inspect is one "systemctl --user show --all" with a fixed
-// property list. Signal checks the invocation, then runs "systemctl --user
+// property list, which includes BindsTo: State.Parent is that unit when the
+// list names exactly one service unit, and empty in any other case. Signal checks the invocation, then runs "systemctl --user
 // kill --kill-whom=all". Empty proves a control group empty from the control
 // group file system and the manager, in the cases listed at [Manager.Empty].
 //
@@ -49,8 +53,10 @@
 // from the documentation and from the existing qualification host code, not
 // from a run (that includes the "--" that ends busctl's options before the
 // verb, so that no argument of the command is read as an option: whether
-// busctl accepts it as written is for the qualification run to show); tests
-// check them against canned output. The process of the unit
+// busctl accepts it as written is for the qualification run to show; and what
+// the three bound properties do, in particular what a start does when the
+// parent is not active, and that BindsTo is printed as one space-separated
+// list); tests check them against canned output. The process of the unit
 // gets, besides the explicit environment, what systemd adds (the environment
 // block of the user manager, HOME, LOGNAME, USER, SHELL, INVOCATION_ID and
 // the like); the explicit entries win on the same name. Signal checks the

@@ -23,7 +23,7 @@ func TestInspectLoadedUnit(t *testing.T) {
 		Description: goodDesc(), Epoch: 3, Intent: "intent-7", Ours: true,
 	})
 	mustEqual(t, r.run.recorded(), [][]string{{"systemctl", "--user", "show", "--all", "--property=" + showProperties, "--", unitName}})
-	if want := "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Description,Transient"; showProperties != want {
+	if want := "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Description,Transient,BindsTo"; showProperties != want {
 		t.Fatalf("property list %q", showProperties)
 	}
 }
@@ -166,6 +166,58 @@ func TestInspectForeignUnitIsNotOurs(t *testing.T) {
 		if st.Ours || st.Epoch != 0 || st.Intent != "" || !st.Loaded || st.InvocationID != inv1 {
 			t.Errorf("%s: %+v", name, st)
 		}
+	}
+}
+
+// BindsTo is read back as the parent when it is exactly one service unit name,
+// and as no parent in every other case.
+func TestInspectReadsTheParentFromBindsTo(t *testing.T) {
+	const parent = "ataniq-lead-parent.service"
+	cases := []struct {
+		name  string
+		kv    map[string]string
+		want  string
+		ours  bool
+		loads bool
+	}{
+		{"none", loadedProps(), "", true, true},
+		{"one", with(loadedProps(), "BindsTo", parent), parent, true, true},
+		{"one, not a transient unit", with(loadedProps(), "BindsTo", parent, "Transient", "no"), parent, false, true},
+		{"two", with(loadedProps(), "BindsTo", parent+" other.service"), "", true, true},
+		{"not a service", with(loadedProps(), "BindsTo", "dev-sda.device"), "", true, true},
+		{"a dash first", with(loadedProps(), "BindsTo", "-x.service"), "", true, true},
+		{"padded", with(loadedProps(), "BindsTo", " "+parent), "", true, true},
+		{"not loaded", with(notFoundProps(), "BindsTo", parent), "", false, false},
+	}
+	for _, c := range cases {
+		r := newRig(t)
+		r.setUnit(c.kv)
+		st, err := r.m.Inspect(context.Background(), unitName)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if st.Parent != c.want || st.Ours != c.ours || st.Loaded != c.loads {
+			t.Errorf("%s: parent %q ours %v loaded %v", c.name, st.Parent, st.Ours, st.Loaded)
+		}
+	}
+}
+
+func TestInspectAsksForBindsTo(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.m.Inspect(context.Background(), unitName); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.run.recorded()[0]; !contains(got, "--property="+showProperties) || !strings.HasSuffix(showProperties, ",BindsTo") {
+		t.Fatalf("%q", got)
+	}
+	// An answer without the property is refused: the parser requires every
+	// property of the request.
+	r = newRig(t)
+	kv := loadedProps()
+	delete(kv, "BindsTo")
+	r.setUnit(kv)
+	if _, err := r.m.Inspect(context.Background(), unitName); err == nil {
+		t.Fatal("an answer without BindsTo was accepted")
 	}
 }
 
