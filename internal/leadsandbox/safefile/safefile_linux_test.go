@@ -877,6 +877,167 @@ func TestClosedRoot(t *testing.T) {
 	}
 }
 
+// Every openat2 call, whichever method makes it and on whichever path
+// (success, failure, the lookups behind a refusal), carries the resolve flags
+// and close-on-exec.
+func TestEveryOpenCarriesFlags(t *testing.T) {
+	r, dir, outside := newRoot(t)
+	write(t, filepath.Join(dir, "f"), "x")
+	write(t, filepath.Join(dir, "d/g"), "x")
+	symlink(t, outside, filepath.Join(dir, "l"))
+	var bad []string
+	n := 0
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		n++
+		if how.Flags&unix.O_CLOEXEC == 0 || how.Resolve != resolveFlags {
+			bad = append(bad, p)
+		}
+		return unix.Openat2(dirfd, p, how)
+	}
+	r.ReadFile("f", 10)
+	r.ReadFile("missing", 10)
+	r.ReadFileInfo("f", 10, RefuseHardLinks())
+	r.Lstat("f")
+	r.Lstat("l")
+	r.MkdirAll("m/n", 0o755)
+	r.MkdirAll("d", 0o755)
+	r.WriteFileExclusive("m/n/w", nil, 0o600)
+	r.WriteFileExclusive("l", nil, 0o600)
+	r.AppendFile("f", []byte("y"))
+	r.ReadDirNames("d", 10)
+	if n < 12 || len(bad) != 0 {
+		t.Fatalf("%d calls seen; without the flags: %v", n, bad)
+	}
+	if resolveFlags&unix.RESOLVE_BENEATH == 0 || resolveFlags&unix.RESOLVE_NO_SYMLINKS == 0 || resolveFlags&unix.RESOLVE_NO_MAGICLINKS == 0 {
+		t.Fatalf("resolveFlags %#x lacks BENEATH, NO_SYMLINKS or NO_MAGICLINKS", uint64(resolveFlags))
+	}
+}
+
+// A FIFO a lead holds open for reading opens for append; the type check on
+// the descriptor refuses it and nothing is written.
+func TestAppendFIFOWithReader(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	p := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := unix.Open(p, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(rd)
+	if err := r.AppendFile("fifo", []byte("x")); !errors.Is(err, ErrNotRegular) {
+		t.Fatalf("AppendFile on a FIFO with a reader: %v, want ErrNotRegular", err)
+	}
+	if n, _ := unix.Read(rd, make([]byte, 1)); n > 0 {
+		t.Fatal("data was written to the FIFO")
+	}
+}
+
+// A file over the cap is refused from its size, before any byte is read: the
+// message names the size, where the read-time check names growth.
+func TestReadFileSizeCheckBeforeRead(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	f, err := os.Create(filepath.Join(dir, "big"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 20); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	_, err = r.ReadFile("big", 10)
+	if !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), "1048576 bytes") {
+		t.Fatalf("ReadFile over the cap: %v, want ErrTooLarge naming the size", err)
+	}
+}
+
+// Close does not wait behind a call that is stuck: it returns, later calls
+// are refused, and the descriptor is released when the stuck call ends.
+func TestCloseDoesNotWaitForStuckCall(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	write(t, filepath.Join(dir, "f"), "data")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		close(entered)
+		<-release
+		return unix.Openat2(dirfd, p, how)
+	}
+	fd := r.fd
+	type result struct {
+		data []byte
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		data, err := r.ReadFile("f", 10)
+		res <- result{data, err}
+	}()
+	<-entered
+	closed := make(chan error, 1)
+	go func() { closed <- r.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close with a call in progress: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("Close waited behind a stuck call")
+	}
+	if _, err := r.ReadFile("f", 10); !errors.Is(err, ErrClosed) {
+		t.Errorf("call after Close: %v, want ErrClosed", err)
+	}
+	if err := r.Close(); !errors.Is(err, ErrClosed) {
+		t.Errorf("second Close: %v, want ErrClosed", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+		t.Errorf("descriptor released while a call still uses it: %v", err)
+	}
+	close(release)
+	got := <-res
+	if got.err != nil || string(got.data) != "data" {
+		t.Errorf("the call in progress: %q, %v", got.data, got.err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
+		t.Errorf("descriptor still open after the last call ended: %v", err)
+	}
+}
+
+// A zero Root is not a handle: every call and Close refuse it with ErrClosed,
+// and nothing panics or touches descriptor 0.
+func TestZeroRoot(t *testing.T) {
+	var r Root
+	if _, err := r.ReadFile("f", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadFile: %v", err)
+	}
+	if _, err := r.ReadFileInfo("f", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadFileInfo: %v", err)
+	}
+	if _, err := r.Lstat("f"); !errors.Is(err, ErrClosed) {
+		t.Errorf("Lstat: %v", err)
+	}
+	if err := r.MkdirAll("d", 0o755); !errors.Is(err, ErrClosed) {
+		t.Errorf("MkdirAll: %v", err)
+	}
+	if err := r.WriteFileExclusive("f", nil, 0o600); !errors.Is(err, ErrClosed) {
+		t.Errorf("WriteFileExclusive: %v", err)
+	}
+	if err := r.AppendFile("f", nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("AppendFile: %v", err)
+	}
+	if _, err := r.ReadDirNames(".", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadDirNames: %v", err)
+	}
+	if err := r.Close(); !errors.Is(err, ErrClosed) {
+		t.Errorf("Close: %v", err)
+	}
+	if _, err := unix.FcntlInt(0, unix.F_GETFD, 0); err != nil {
+		t.Errorf("descriptor 0 was closed: %v", err)
+	}
+}
+
 func TestErrorText(t *testing.T) {
 	r, dir, _ := newRoot(t)
 	symlink(t, "f", filepath.Join(dir, "l"))

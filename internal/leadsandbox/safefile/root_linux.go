@@ -27,12 +27,16 @@ type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 type mkdiratFunc func(dirfd int, path string, mode uint32) error
 
 // Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot].
-// All access goes through it. A Root is safe for concurrent use; Close waits
-// for calls in progress. The caller closes it.
+// All access goes through it, and only a Root from OpenRoot works: the zero
+// value refuses every call (and Close) with [ErrClosed]. A Root is safe for
+// concurrent use. The caller closes it; Close does not wait for calls in
+// progress (see [Root.Close]).
 type Root struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	fd      int
+	opened  bool // set by OpenRoot; false for the zero value
 	closed  bool
+	active  int // calls in progress; the descriptor stays open until they end
 	openat2 openat2Func
 	mkdirat mkdiratFunc
 }
@@ -66,31 +70,50 @@ func OpenRoot(dir string) (*Root, error) {
 		}
 		return nil, &Error{Op: "open", Path: dir, Err: err}
 	}
-	return &Root{fd: fd, openat2: unix.Openat2, mkdirat: unix.Mkdirat}, nil
+	return &Root{fd: fd, opened: true, openat2: unix.Openat2, mkdirat: unix.Mkdirat}, nil
 }
 
-// Close releases the handle. A second Close returns [ErrClosed].
+// Close releases the handle and does not wait for a call in progress, so a
+// call that is stuck cannot hold Close (and its caller) with it. Every call
+// that starts after Close returns [ErrClosed]; a call already running
+// finishes with the descriptor it has, and the descriptor is closed when the
+// last of them ends (at once when none is running). A second Close, and
+// Close on a zero Root, return [ErrClosed]. The error of the underlying
+// close is returned only when the descriptor is closed by this call.
 func (r *Root) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if !r.opened || r.closed {
 		return &Error{Op: "close", Path: "", Err: ErrClosed}
 	}
 	r.closed = true
-	return unix.Close(r.fd)
-}
-
-// begin takes the read lock when the handle is open.
-func (r *Root) begin(op, rel string) error {
-	r.mu.RLock()
-	if r.closed {
-		r.mu.RUnlock()
-		return &Error{Op: op, Path: rel, Err: ErrClosed}
+	if r.active == 0 {
+		return unix.Close(r.fd)
 	}
 	return nil
 }
 
-func (r *Root) end() { r.mu.RUnlock() }
+// begin registers a call when the handle is open.
+func (r *Root) begin(op, rel string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.opened || r.closed {
+		return &Error{Op: op, Path: rel, Err: ErrClosed}
+	}
+	r.active++
+	return nil
+}
+
+// end unregisters a call; the last call out of a closed handle closes the
+// descriptor.
+func (r *Root) end() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active--
+	if r.closed && r.active == 0 {
+		unix.Close(r.fd)
+	}
+}
 
 // refuse joins a sentinel with the errno behind it, so both match errors.Is.
 func refuse(sentinel error, errno error) error {
