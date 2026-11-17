@@ -885,42 +885,21 @@ func TestParseStat(t *testing.T) {
 // background colour and the device attributes, and sees what the agent read.
 func TestQueryRecordsTheReplyTheAgentRead(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "reply")
-	argv, env := fakeagent.Command("query osc11,da1 " + file + "; say DONE")
-	h, err := Start(Config{Argv: argv, Env: env, Cols: 80, Rows: 24, NoCgroup: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer h.Close()
-	defer h.Stop(0)
-
-	var seen []byte
-	buf := make([]byte, ReadBufferSize)
-	want := "\x1b]11;?\x1b\\\x1b[c"
-	for !bytes.Contains(seen, []byte(want)) {
-		n, err := h.Read(buf)
-		seen = append(seen, buf[:n]...)
-		if err != nil {
-			t.Fatalf("stream ended (%v) before the queries: %q", err, seen)
-		}
-	}
+	h, tl := start(t, "query osc11,da1 "+file+"; say DONE")
+	tl.waitFor(t, "\x1b]11;?\x1b\\\x1b[c")
 	reply := "\x1b]11;rgb:1111/2222/3333\x1b\\\x1b[?62;22c"
 	if _, err := h.Write([]byte(reply)); err != nil {
 		t.Fatal(err)
 	}
-	for !bytes.Contains(seen, []byte("DONE")) {
-		n, err := h.Read(buf)
-		seen = append(seen, buf[:n]...)
-		if err != nil {
-			break
-		}
-	}
-	if e := h.Wait(); e.How != "exit" || e.Code != 0 {
+	tl.waitFor(t, "DONE")
+	if e := waitExit(t, h); e.How != "exit" || e.Code != 0 {
 		t.Fatalf("exit %v", e)
 	}
 	if got, err := os.ReadFile(file); err != nil || string(got) != reply {
 		t.Errorf("the agent recorded %q, %v, want %q", got, err, reply)
 	}
-	if bytes.Contains(seen, []byte("rgb:1111")) {
+	tl.waitEOF(t) // everything the agent wrote has been read
+	if seen := tl.bytes(); bytes.Contains(seen, []byte("rgb:1111")) {
 		t.Errorf("the reply was echoed back to the terminal: %q", seen)
 	}
 }
