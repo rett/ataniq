@@ -206,13 +206,16 @@ Three fetches run, in this order, on one mirror:
 ### Case `planted`
 
 A fresh clone under `<state_root>/cases/planted`, fetched through the template
-once as it is, then with a plant, then once more after the plants are taken
-away. The owner-side check of the clone refuses the three plants before the
+once as it is, then one fetch for each plant, then once more with a new clone
+made as the first one was. Each plant is made in a new clone before anything
+serves it, and that clone is put in the place of the lead's clone; a clone that
+the template has served is moved away whole and the harness writes nothing into
+it. The owner-side check of the clone refuses the three plants before the
 planner is asked, so these facts show `serve_requests` of 0.
 
 | Fact | What runs |
 | --- | --- |
-| `planted.control-before`, `planted.control-after` | A fetch of the clone as made. |
+| `planted.control-before`, `planted.control-after` | A fetch of a clone as made: the first clone, and a new one made the same way after the plants. |
 | `planted.alternates` | A fetch with `.git/objects/info/alternates` present. |
 | `planted.git-symlink` | A fetch with `.git` replaced by a symlink to the real folder. |
 | `planted.tree-symlink` | A fetch with `leads/<role>/tree` replaced by a symlink to the real folder. |
