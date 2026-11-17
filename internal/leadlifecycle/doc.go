@@ -17,7 +17,9 @@
 // call the manager's Start once. It never retries a Start and never waits for
 // readiness. A start that succeeds records the outcome launched; the shown
 // state stays starting. The shown state ready is never set by this package: it
-// needs observations of the holder that this package does not have.
+// needs observations of the holder that this package does not have (the one
+// exception is ClearStalled, below, which gives back a ready that an observer
+// had set).
 //
 // Stop sets the desired state to stopped, asks the delivery side to quiesce
 // through [Quiesce], settles a pending launch intent as far as it can, sends
@@ -65,6 +67,20 @@
 // coordinator stops only that coordinator. Because the units are bound, a
 // coordinator may be stopping already when it is signalled; the manager's
 // not-loaded and invocation-changed answers lead to the proof as for a lead.
+// MarkStalled records that a coordinator has stopped making progress, an
+// observation that a detector outside this package supplies; the method is the
+// whole interface. ClearStalled returns the coordinator to its live state when
+// the same instance is still running (the unit inspected has the recorded
+// epoch, intent and invocation, and is running), and shows it unknown
+// otherwise. The live state is the one it was stalled from (ready or
+// degraded; starting, which only a launch can show, comes back as degraded),
+// as MarkStalled recorded it in the reason; this package shows ready only by
+// giving back what an observer had set. A stalled coordinator is never replaced
+// by Reconcile or by Start: it is stopped (Stop, with proof, which is what
+// [leadregistry.Registry.CoordinatorStopped] asks for the instance) and then
+// started again as instance n+1. After a daemon restart Reconcile keeps a
+// stalled coordinator stalled while its unit is live and ours.
+//
 // A coordinator has no seat, no approval and is no
 // handoff target: nothing here gives it authority.
 //
