@@ -53,10 +53,18 @@ Patches, applied in this order to the files of the module as released:
    `Counters().LinksOverLength` rises. The length of the whole string is
    checked before it is split, so a refused link allocates nothing.
 7. `vt: allow at most 256 distinct live links per screen` (`links.go`,
-   `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Every printed cell
-   copies the pen's link, so a screen's memory follows its distinct links.
-   Each screen (main and alternate) has a table of the links its cells may
-   reference, at most `MaxLiveLinks` (256) entries and so about 0.6 MiB. Text
+   `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Each screen (main
+   and alternate) has a table of the links its cells may reference, at most
+   `MaxLiveLinks` (256) entries and so about 0.6 MiB. Each OSC 8 makes new
+   strings for the pen, so the table keeps one copy of every admitted link
+   and gives each cell that copy (`admitLink` returns it): a link sent again
+   before every character is still one copy, not one per cell (a 500 x 200
+   screen of such cells holds about 22 MiB, its cells, where a copy per cell
+   would hold about 240 MiB). Cells that are moved by scroll, insert, delete,
+   resize or the change of screen copy the cell value and share the strings.
+   Erasing and filling use blank cells that carry no link. A cell that an API
+   call such as `SetCell` made keeps the link it was given, which the table
+   does not intern. Text
    printed under a link that is not in a full table is drawn without the link
    and `Counters().LinksOverLimit` counts the cell. Design: the cells are
    changed by code this module does not own (the `ultraviolet` buffer, in
@@ -71,8 +79,8 @@ Patches, applied in this order to the files of the module as released:
    therefore available after at most that many refusals; a clear of the whole
    screen empties the table at once. A recount counts every link in a cell,
    also one that an API call such as `SetCell` put there, which the table
-   does not refuse. Scrollback is not counted: it keeps the links of the lines it holds, and its size is the
-   caller's (the session pane keeps one line on the main screen and none on
+   does not refuse. Scrollback is not counted: it keeps the links of the
+   lines it holds, and its size is the caller's (the session pane keeps one line on the main screen and none on
    the alternate).
 8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
    `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).

@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unsafe"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -244,4 +245,103 @@ func TestLinkRecountsAreRateLimited(t *testing.T) {
 	if live := len(liveLinks(e.scr)); live > MaxLiveLinks {
 		t.Errorf("%d live links", live)
 	}
+}
+
+// heapCeilingResent is the most the heap may grow for the test below.
+const heapCeilingResent = 48 << 20
+
+// maxLink is a link at both caps, which is the most a cell can reference.
+func maxLink() (params, url string) {
+	return "id=" + strings.Repeat("p", MaxLinkParams-len("id=")),
+		"http://x/" + strings.Repeat("u", MaxLinkURL-len("http://x/"))
+}
+
+// A link that is sent again is one link: the cells printed under it share the
+// table's copy of its strings, and do not each keep the copy the pen made for
+// the OSC 8 that opened it.
+func TestResentLinkIsOneCopy(t *testing.T) {
+	e := NewEmulator(20, 4)
+	params, url := maxLink()
+	for i := 0; i < 30; i++ {
+		e.WriteString(link(params, url) + "x")
+	}
+	// A scroll, an insert and a delete move cells, and none of them copies
+	// the strings.
+	e.WriteString("\x1b[2;1H\x1b[2L\x1b[3;1H\x1b[M\x1b[1;1H\x1b[3@")
+	e.Resize(7, 6)
+	e.WriteString("\x1b[?1049h\x1b[?1049l")
+	var first *byte
+	n := 0
+	for _, line := range e.scr.buf.Lines {
+		for _, c := range line {
+			if c.Link.URL == "" {
+				continue
+			}
+			if c.Link.URL != url || c.Link.Params != params {
+				t.Fatalf("a cell holds link %q;%q", c.Link.Params, c.Link.URL)
+			}
+			p := unsafe.StringData(c.Link.URL)
+			if first == nil {
+				first = p
+			}
+			if p != first {
+				t.Fatalf("cell %d holds its own copy of the URL", n)
+			}
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no cell has a link")
+	}
+	if got := len(e.scr.links.set); got != 1 {
+		t.Errorf("table holds %d links, want 1", got)
+	}
+	// A cell printed after the table was recounted shares a copy too.
+	e.WriteString("\x1b[2J")
+	e.WriteString(link(params, url) + "y")
+	if got := e.scr.links.set[uv.Link{URL: url, Params: params}]; unsafe.StringData(got.URL) != unsafe.StringData(e.CellAt(0, 0).Link.URL) {
+		t.Errorf("the cell does not hold the table's copy")
+	}
+}
+
+// Sending one maximum-length link again before every character of a screen is
+// one distinct link, and the screen must not hold a copy of it per cell: that
+// is 100 000 x 2.3 KiB, 230 MiB, on a 500 x 200 screen. The text is written
+// a row at a time so that the input is not held in memory.
+func TestResentMaxLengthLinkOnEveryCell(t *testing.T) {
+	const cols, rows = 500, 200
+	params, url := maxLink()
+	var b strings.Builder
+	for x := 0; x < cols; x++ {
+		b.WriteString(link(params, url))
+		b.WriteByte('x')
+	}
+	row := []byte(b.String())
+	b.Reset()
+
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	e := NewEmulator(cols, rows)
+	for y := 0; y < rows; y++ {
+		e.Write(row)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	runtime.KeepAlive(row)
+	grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc)
+	t.Logf("heap grew %d MiB, %d live links", grown>>20, len(liveLinks(e.scr)))
+
+	if got := len(liveLinks(e.scr)); got != 1 {
+		t.Errorf("%d live links, want 1", got)
+	}
+	if c := e.Counters(); c.LinksOverLimit != 0 || c.LinksOverLength != 0 {
+		t.Errorf("counters %+v", c)
+	}
+	// The cells themselves are about 20 MiB (the review measured 22). A copy
+	// of the link in every cell would be 241 MiB.
+	if grown > heapCeilingResent {
+		t.Errorf("heap grew %d MiB, want at most %d MiB: cells keep their own copies of a re-sent link", grown>>20, heapCeilingResent>>20)
+	}
+	runtime.KeepAlive(e)
 }
