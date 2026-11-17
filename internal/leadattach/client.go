@@ -42,7 +42,8 @@ type Client struct {
 	wantCols, wantRows int
 
 	st terminalconsole.LiveStatus
-	// modes is the full mode set the holder reported; st.Modes is derived.
+	// modes is the full mode set the holder reported, for the mouse encoding;
+	// st.Modes is derived. Keys are encoded for the pane's own modes.
 	modes ModeSet
 	// role is the role the holder granted, caps its limits.
 	role wire.Role
@@ -336,7 +337,7 @@ func (c *Client) sleep(d time.Duration) bool {
 	}
 }
 
-// run is the client's goroutine: it asks for a ticket, connects, and serves
+// run is the client's goroutine: it connects, asks for a ticket, and serves
 // the connection until it ends, then does it again unless the session ended,
 // the holder speaks another version or the client was closed.
 func (c *Client) run() {
@@ -345,22 +346,26 @@ func (c *Client) run() {
 		resync bool
 		// fails counts consecutive protocol errors and resyncs counts
 		// consecutive client-side resyncs; both go back to zero only when a
-		// Check matched on a connection, not when a snapshot was applied: a
-		// holder whose checks never match would otherwise be asked for a
-		// snapshot in a tight loop.
+		// Check past the snapshot's position matched on a connection, not
+		// when a snapshot was applied, and not on the Check the holder sends
+		// right after each snapshot: a holder whose output the replica does
+		// not follow would otherwise be asked for a snapshot in a tight
+		// loop.
 		fails, resyncs int
 		wait           time.Duration
+		// missed is set when a ticket was asked for and there was none, and
+		// cleared when one was had.
+		missed bool
 	)
 	for {
 		if wait > 0 && !c.sleep(wait) {
 			return
 		}
 		wait = 0
-		ticket, ok := c.nextTicket(resync)
-		if !ok {
-			return
-		}
-		c.setConnecting(resync)
+		// Dial first, then read the ticket: a ticket is single use and the
+		// source empties it when it gives it, so a ticket taken before a
+		// dial that fails would be lost. With no ticket the connection is
+		// closed again and the next try is after a TicketPoll.
 		nc, err := c.dial()
 		if err != nil {
 			if c.ctx.Err() != nil {
@@ -370,10 +375,37 @@ func (c *Client) run() {
 			resync, wait = false, TicketPoll
 			continue
 		}
+		ticket, err := c.askTicket()
+		if err != nil {
+			_ = nc.Close()
+			if c.ctx.Err() != nil {
+				return
+			}
+			// A client that is resyncing keeps that state through the
+			// first ask.
+			if !(resync && !missed) {
+				c.setWaiting(err)
+			}
+			missed = true
+			wait = TicketPoll
+			continue
+		}
+		missed = false
+		c.setConnecting(resync)
 		out := c.attach(nc, ticket, resync)
 		resync = false
 		if out.checked {
 			fails, resyncs = 0, 0
+		}
+		if out.kind != outClosed && out.kind != outStop {
+			if ended, _, _ := c.pane.Ended(); ended {
+				// The holder said the stream ended (a State frame) and the
+				// connection broke or the holder broke the protocol before
+				// the Exit: there is nothing to attach to again, whatever
+				// ended the connection.
+				c.setDisconnected("session ended")
+				return
+			}
 		}
 		switch out.kind {
 		case outClosed:
@@ -395,42 +427,23 @@ func (c *Client) run() {
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))
 		default:
-			if ended, _, _ := c.pane.Ended(); ended {
-				// The holder said the stream ended (a State frame) and the
-				// connection broke before its Exit: there is nothing to
-				// attach to again.
-				c.setDisconnected("session ended")
-				return
-			}
 			c.setDisconnected(out.reason)
 			wait = TicketPoll
 		}
 	}
 }
 
-// nextTicket asks the source until it has a ticket, every TicketPoll. A
-// client that is resyncing keeps that state through the first ask.
-func (c *Client) nextTicket(resync bool) (string, bool) {
-	first := true
-	for {
-		if c.ctx.Err() != nil {
-			return "", false
+// askTicket asks the source once, and returns an error when it has no ticket
+// (ErrNoTicket, or why it has none) or gave a malformed one.
+func (c *Client) askTicket() (string, error) {
+	t, err := c.cfg.Tickets()
+	if err == nil {
+		if wire.CheckTicket(t) == nil {
+			return t, nil
 		}
-		t, err := c.cfg.Tickets()
-		if err == nil {
-			if wire.CheckTicket(t) == nil {
-				return t, true
-			}
-			err = errors.New("the ticket source gave a malformed ticket")
-		}
-		if !(resync && first) {
-			c.setWaiting(err)
-		}
-		first = false
-		if !c.sleep(TicketPoll) {
-			return "", false
-		}
+		err = errors.New("the ticket source gave a malformed ticket")
 	}
+	return "", err
 }
 
 func (c *Client) dial() (net.Conn, error) {

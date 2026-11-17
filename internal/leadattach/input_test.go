@@ -42,7 +42,7 @@ func (hc *hconn) input(n int) string {
 	return b.String()
 }
 
-func TestWriterKeysArriveAsInputFramesForTheHoldersModes(t *testing.T) {
+func TestWriterKeysArriveAsInputFramesForTheModesOfThePane(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})
 	hc := e.attach(wire.RoleWriter)
@@ -53,7 +53,7 @@ func TestWriterKeysArriveAsInputFramesForTheHoldersModes(t *testing.T) {
 		t.Errorf("without modes: %q", got)
 	}
 
-	hc.modes([]int{1}, nil) // application cursor keys
+	hc.write("\x1b[?1h") // application cursor keys
 	e.barrier(hc)
 	e.sink.Key(key(uv.KeyUp, 0, ""))
 	e.sink.Key(key(uv.KeyHome, 0, ""))
@@ -61,14 +61,14 @@ func TestWriterKeysArriveAsInputFramesForTheHoldersModes(t *testing.T) {
 		t.Errorf("application cursor keys: %q", got)
 	}
 
-	hc.modes([]int{1, 66}, nil)
+	hc.write("\x1b[?66h") // and the application keypad
 	e.barrier(hc)
 	e.sink.Key(key(uv.KeyKp5, 0, ""))
 	if got := hc.input(3); got != "\x1bOu" {
 		t.Errorf("application keypad: %q", got)
 	}
 
-	hc.modes(nil, nil)
+	hc.write("\x1b[?1l\x1b[?66l")
 	e.barrier(hc)
 	e.sink.Key(key(uv.KeyUp, 0, ""))
 	e.sink.Key(key('z', ctrl, ""))
@@ -77,6 +77,42 @@ func TestWriterKeysArriveAsInputFramesForTheHoldersModes(t *testing.T) {
 	}
 	if st := e.c.Status(); st.RefusedInput != 0 {
 		t.Errorf("refused input %d", st.RefusedInput)
+	}
+}
+
+// The holder sends its Modes frame right after the Output that changed the
+// modes, so the client's pane shows them first: a key typed between the two
+// is encoded for the screen the user sees. And a Modes frame alone does not
+// change the encoding: it is for the mouse and the status.
+func TestAKeyBetweenTheOutputAndItsModesFrameIsEncodedForTheScreen(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	hc := e.attach(wire.RoleWriter)
+
+	hc.write("\x1b[?1h")
+	e.barrier(hc) // the Output is applied, its Modes frame is not yet sent
+	if m := e.c.Status().Modes; m.Mouse != 0 {
+		t.Fatalf("modes %+v", m)
+	}
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	if got := hc.input(3); got != "\x1bOA" {
+		t.Errorf("before the Modes frame: %q", got)
+	}
+
+	hc.modes([]int{1, 1000}, nil)
+	e.until("the modes", func(st terminalconsole.LiveStatus) bool { return st.Modes.Mouse != 0 })
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	if got := hc.input(3); got != "\x1bOA" {
+		t.Errorf("after the Modes frame: %q", got)
+	}
+
+	// A Modes frame the screen does not bear out does not change the keys.
+	hc.write("\x1b[?1l")
+	hc.modes([]int{1}, nil)
+	e.barrier(hc)
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	if got := hc.input(3); got != "\x1b[A" {
+		t.Errorf("the pane has the mode off: %q", got)
 	}
 }
 
@@ -457,6 +493,7 @@ func TestNoInputBeforeTheFirstSnapshot(t *testing.T) {
 	hc := e.h.accept()
 	hc.welcome(wire.RoleWriter)
 	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	hc.pane.Write([]byte("\x1b[?1h")) // the holder's screen has DECCKM; the snapshot will say so
 	hc.modes([]int{1}, nil)
 	e.barrier(hc)
 	e.sink.Key(key(uv.KeyUp, 0, ""))
@@ -499,6 +536,25 @@ func TestASizeAskedWhileConnectingIsSentAfterTheFirstSnapshot(t *testing.T) {
 	if got := hc.input(1); got != "a" {
 		t.Errorf("after a size that is already the holder's: %q", got)
 	}
+}
+
+func TestASizeAskedWhileTheHolderResyncsIsSentWithTheNextSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	hc := e.attach(wire.RoleWriter)
+	hc.notice(wire.ReasonResync, "a new snapshot follows")
+	e.untilConn(terminalconsole.LiveResyncing)
+	e.c.Resize(100, 30) // resyncing: remembered, nothing is sent yet
+	e.barrier(hc)
+	hc.snapshot() // the holder's size is still 80x24
+	f := hc.next()
+	if f.typ != wire.TypeResize {
+		t.Fatalf("got a %s frame, want resize", wire.TypeName(f.typ))
+	}
+	if sz := enc2(t)(wire.DecodeResize(f.payload)); sz != (wire.Size{Columns: 100, Rows: 30}) {
+		t.Errorf("resize %+v", sz)
+	}
+	e.untilConn(terminalconsole.LiveAttached)
 }
 
 func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {

@@ -1,8 +1,13 @@
 package leadattach_test
 
 import (
+	"context"
 	"encoding/binary"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -369,6 +374,30 @@ func TestAStateThatSaysTheStreamEndedEndsThePane(t *testing.T) {
 	}
 }
 
+func TestAProtocolErrorAfterTheStreamEndedEndsTheClient(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer})
+	hc := e.attach(wire.RoleViewer)
+	hc.send(wire.TypeState, enc(t)(wire.EncodeState(wire.State{
+		Facts: wire.Facts{StreamEnded: wire.FactYes, TUIExited: wire.FactYes, TreeGone: wire.FactNo}, Idle: "idle",
+	})))
+	e.until("the pane ended", func(terminalconsole.LiveStatus) bool { ended, _, _ := e.pane.Ended(); return ended })
+
+	// A frame of an unknown type: a protocol error, which would back off and
+	// ask for tickets for ever for a session whose pane has ended.
+	hc.nc.Write([]byte{'X', 0, 0, 0, 1, 0})
+	st := e.until("disconnected", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveDisconnected })
+	if st.Reason != "session ended" {
+		t.Errorf("reason %q", st.Reason)
+	}
+	calls := e.tickets.callCount()
+	e.tickets.give(1)
+	e.h.noConnection(60 * time.Millisecond)
+	if e.tickets.callCount() != calls {
+		t.Error("the client asked for a ticket after the session ended")
+	}
+}
+
 func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})
@@ -622,6 +651,72 @@ func TestAWelcomeOfAnotherVersionStops(t *testing.T) {
 	e.h.noConnection(60 * time.Millisecond)
 }
 
+// The ticket file is read only once the connection is made: with the socket
+// not there yet, the dial fails and the ticket stays in the file for the try
+// that connects.
+func TestATicketIsNotSpentByADialThatFails(t *testing.T) {
+	leakCheck(t)
+	dir, err := os.MkdirTemp("", "la")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock, file := filepath.Join(dir, "a.sock"), filepath.Join(dir, "ticket")
+	ticket, err := wire.NewTicket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(ticket+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dials atomic.Int64
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
+		c.Socket, c.Tickets = sock, leadattach.FileTickets(file)
+		c.Dial = func(ctx context.Context, path string) (net.Conn, error) {
+			dials.Add(1)
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		}
+	}})
+	e.start()
+	e.until("a few failed dials", func(st terminalconsole.LiveStatus) bool {
+		return dials.Load() >= 3 && strings.Contains(st.Reason, "cannot connect")
+	})
+	if got, err := os.ReadFile(file); err != nil || strings.TrimSpace(string(got)) != ticket {
+		t.Fatalf("the ticket file after the failed dials: %q, %v", got, err)
+	}
+
+	// The socket appears: the next try connects and sends that ticket.
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	conn := make(chan net.Conn, 1)
+	go func() {
+		if nc, err := ln.Accept(); err == nil {
+			conn <- nc
+		}
+	}()
+	select {
+	case nc := <-conn:
+		defer nc.Close()
+		f, err := wire.NewReader(nc, wire.ToHolder).Next()
+		if err != nil || f.Type != wire.TypeHello {
+			t.Fatalf("first frame %v, %v", f.Type, err)
+		}
+		hello, err := wire.DecodeHello(f.Payload)
+		if err != nil || hello.Ticket != ticket {
+			t.Errorf("hello ticket %q, %v; want the one from the file", hello.Ticket, err)
+		}
+	case <-time.After(wait):
+		t.Fatal("the client did not connect")
+	}
+	if got, _ := os.ReadFile(file); len(got) != 0 {
+		t.Errorf("the ticket file still holds %q after the ticket was used", got)
+	}
+}
+
 func TestDialFailureShowsAndRetries(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 1, noStart: true})
@@ -841,7 +936,8 @@ func (hc *hconn) mismatch() {
 }
 
 // reattach welcomes the connection the client made next, with a snapshot of
-// the holder's screen, and waits for the client to be attached.
+// the holder's screen and, as the real holder does, a Check at the snapshot's
+// position, and waits for the client to be attached.
 func (e *env) reattach() *hconn { return e.reattachAs(wire.RoleViewer) }
 
 func (e *env) reattachAs(role wire.Role) *hconn {
@@ -849,6 +945,7 @@ func (e *env) reattachAs(role wire.Role) *hconn {
 	hc := e.h.accept()
 	hc.welcome(role)
 	hc.snapshot()
+	hc.check()
 	e.untilConn(terminalconsole.LiveAttached)
 	return hc
 }
@@ -922,7 +1019,9 @@ func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
 		t.Fatalf("waits %v, want %v", w, want)
 	}
 
-	// A snapshot alone does not end the back-off, a matching Check does.
+	// A snapshot alone does not end the back-off, nor does the matching Check
+	// that follows it (reattach sent one each time); a matching Check past
+	// the snapshot's position does.
 	hc.write("ok")
 	hc.check()
 	e.until("the check", func(terminalconsole.LiveStatus) bool { return e.pane.Digest() == hc.pane.Digest() })

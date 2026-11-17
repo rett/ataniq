@@ -186,9 +186,10 @@ func (h *realHolder) waitRX(want string) {
 func TestTheClientAgainstTheRealHolderService(t *testing.T) {
 	leakCheck(t)
 	// DECCKM (1) and a mouse mode are set before the agent reads. The holder
-	// reports the modes in a Modes frame at a quiet point, after the output
-	// that set them, so the test waits for the mouse mode in the status
-	// before it types.
+	// sends a Modes frame right after the Output that changed the modes, not
+	// at a quiet point, so the status can show the new screen a moment before
+	// it shows the new modes. Keys are encoded for the client's own pane,
+	// which follows the Output, so the test types as soon as READY shows.
 	h := newRealHolder(t, "raw; mode 1 mouse1000; say READY; echo; wait")
 	pane := sessionpane.New(80, 24, sessionpane.Options{})
 	t.Cleanup(pane.Close)
@@ -229,13 +230,13 @@ func TestTheClientAgainstTheRealHolderService(t *testing.T) {
 	}
 
 	st := until("attached with the agent's screen", func(st terminalconsole.LiveStatus) bool {
-		return st.Conn == terminalconsole.LiveAttached && st.Modes.Mouse != 0 && strings.Contains(paneText(pane), "READY")
+		return st.Conn == terminalconsole.LiveAttached && strings.Contains(paneText(pane), "READY")
 	})
 	if st.Role != terminalconsole.LiveWriter || st.Lead != "proj-lead" || st.Runtime != "fake" || st.Epoch != realEpoch {
 		t.Errorf("status %+v", st)
 	}
 
-	// Keys reach the agent encoded for the modes of the holder: Up is SS3 A
+	// Keys reach the agent encoded for the modes of the screen: Up is SS3 A
 	// under DECCKM.
 	sink.Key(uv.KeyPressEvent{Code: 'a', Text: "a"})
 	sink.Key(uv.KeyPressEvent{Code: uv.KeyUp})

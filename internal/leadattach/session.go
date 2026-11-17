@@ -135,8 +135,9 @@ type outcome struct {
 	reason string
 	// snapshot is true when a snapshot was applied on the connection.
 	snapshot bool
-	// checked is true when a Check of the holder matched the screen on the
-	// connection: the replica followed the holder at least once.
+	// checked is true when a Check of the holder past the snapshot's
+	// position matched the screen on the connection: the replica followed
+	// the holder's output at least once.
 	checked bool
 }
 
@@ -150,6 +151,7 @@ type session struct {
 	welcomed  bool
 	havePos   bool
 	pos       uint64
+	snapPos   uint64 // the position of the last snapshot applied
 	snaps     int
 	checked   bool
 	modesSeen bool
@@ -371,6 +373,7 @@ func (s *session) snapshot(payload []byte) *outcome {
 		return protocolError("the holder sent a snapshot the pane refused")
 	}
 	s.pos, s.havePos = pos, true
+	s.snapPos = pos
 	s.snaps++
 	cols, rows := c.pane.Size()
 	var fallback ModeSet
@@ -390,12 +393,16 @@ func (s *session) snapshot(payload []byte) *outcome {
 		if !s.modesSeen {
 			c.modes, c.st.Modes = fallback, fallback.Modes()
 		}
-		if c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting {
+		became := c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting
+		if became {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveAttached, ""
 		}
-		// A size asked for while connecting was not in the Hello, or the
-		// holder kept another one: as the writer, ask for it now.
-		if s.snaps == 1 && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
+		// A size asked for while connecting or resyncing (the cockpit takes
+		// both as up, and asks once) was not in the Hello, or the holder
+		// kept another one: as the writer, ask for it whenever a snapshot
+		// moves the state to attached, the holder's own resync on this
+		// connection included.
+		if became && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
 			resize = &wire.Size{Columns: c.wantCols, Rows: c.wantRows}
 		}
 	})
@@ -525,7 +532,13 @@ func (s *session) check(payload []byte) *outcome {
 		return nil
 	}
 	if wire.DigestHex(c.pane.Digest()) == ck.Digest {
-		s.checked = true
+		// The holder sends a Check at once after each snapshot, and it
+		// matches the screen just restored: it proves nothing about
+		// following the holder's output. Only a Check past the snapshot's
+		// position does, because output was applied and then verified.
+		if ck.Position > s.snapPos {
+			s.checked = true
+		}
 		return nil
 	}
 	c.mutate(func() {
