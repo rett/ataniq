@@ -1,0 +1,25 @@
+{
+ "source": "row3/claude-i6/screens/dump-i6-exit-typed-holder",
+ "description": "owner typed /exit",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 7,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "✳ Approval test file creation",
+ "faint": [
+  {
+   "row": 11,
+   "from": 5,
+   "to": 8
+  }
+ ],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "/exit",
+  "cursor_in_composer": true,
+  "mode": "manual"
+ }
+}

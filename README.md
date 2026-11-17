@@ -27,7 +27,7 @@ and authenticated live admission remain pending implementation. See the
 | Commands | Shipped public typed command contracts, strict JSON codecs and canonical binary bindings. Private internal administration, resource, status and conflict contracts add bounded canonical arithmetic. Public v1 contracts and vectors are retained. See the [application contracts](docs/design/application-contracts.md) and [private contract source](internal/appcontract/admin.go). |
 | Cursors | Internal v2 encrypted cursor codec with strict canonical decoding and a bounded epoch reservation allocator per codec. Tests cover rotation, concurrent reservations, failed-mint consumption and fresh construction without received-epoch adoption. See the [cursor source](internal/appcontract/cursor.go). |
 | Controller qualification | Finite synthetic ledger, proof and generation checks with an independent verifier. Broader model behavior and real authority, gate and provider composition remain unqualified. See the [controller qualification scope](qualification/controllerhandoff/README.md). |
-| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. A fixture-only terminal console (`ataniq-console --demo`) shows fictional, read-only data with no live control or provider integration, and is outside this release. The CLI prototype remains on a separate development branch. |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. A fixture-only terminal console (`ataniq-console --demo`) shows fictional, read-only data with no live control or provider integration. It ships in this release as a provisional fixture console; it is not a qualification. The CLI prototype remains on a separate development branch. |
 
 Cursor service composition must provide caller authentication and authorization,
 key provisioning and nonzero key/identity validation, one codec per composition,
@@ -40,6 +40,10 @@ coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
 qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
+A provisional scratch-only lead holder and its attach path are described in
+[the lead holder guide](docs/lead-holder.md).
+The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
+for the sandbox of a managed lead; nothing uses it yet.
 
 ## Architecture decisions
 
@@ -56,8 +60,11 @@ These decisions describe the planned design.
   service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
-- Session hosting is decided by an attended spike, and its design is written
-  after the spike. Sandbox qualification comes before any Ataniq-managed lead.
+- Session hosting follows the amendments in [runtime](docs/design/runtime.md#lifecycle)
+  and the [client protocol](docs/design/client-protocol.md#terminal-data-plane);
+  the holder and attach path built so far are provisional, scratch-only and
+  described in [the lead holder guide](docs/lead-holder.md). Sandbox
+  qualification comes before any Ataniq-managed lead.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between

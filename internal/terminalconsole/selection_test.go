@@ -256,7 +256,7 @@ func TestSelectionStartsOnlyInThePane(t *testing.T) {
 // combining marks until its text is over 1 MiB: the release copies nothing
 // and says why.
 func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
-	r := selRig(t, 140, 45, Options{}, "")
+	r := selRig(t, overCapW, overCapH, Options{}, "")
 	cluster := r.fillOverCap()
 	r.dragAll(true)
 	if r.m.notice != copyRefused || !strings.Contains(r.view(), copyRefused) {
@@ -273,11 +273,22 @@ func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 // it, not maxCopy, so that a change of the constant fails them.
 const mib = 1 << 20
 
+// overCapW and overCapH are the size of a window whose session pane has room
+// for over 1 MiB of text. The emulator keeps at most 64 bytes of a cluster
+// per cell, so the pane needs more than 1 MiB / 64 B = 16384 cells, in
+// every layout the tests use.
+const overCapW, overCapH = 520, 210
+
+// overCapCluster is a base letter and 31 combining acute accents: 63 bytes,
+// the most a cell keeps (sessionpane keeps at most 64 bytes of a cluster).
+var overCapCluster = "a" + strings.Repeat("\u0301", 31)
+
 // fillOverCap fills the session pane with clusters of combining marks until
-// its text is over 1 MiB, and returns the cluster.
+// its text is over 1 MiB, and returns the cluster. The pane must be as big
+// as an overCapW x overCapH window gives it.
 func (r *rig) fillOverCap() string {
 	r.t.Helper()
-	cluster := "a" + strings.Repeat("́", 700)
+	cluster := overCapCluster
 	r.fillClusters(cluster, mib/len(cluster)+1)
 	return cluster
 }
@@ -294,9 +305,9 @@ func (r *rig) fillClusters(cluster string, n int) {
 // TestSelectionJustUnderTheCapIsCopied fills the pane with as many clusters
 // as fit in 1 MiB with the row newlines: all of it is copied.
 func TestSelectionJustUnderTheCapIsCopied(t *testing.T) {
-	r := selRig(t, 140, 45, Options{}, "")
+	r := selRig(t, overCapW, overCapH, Options{}, "")
 	_, rows := r.paneSize()
-	cluster := "a" + strings.Repeat("́", 700)
+	cluster := overCapCluster
 	n := (mib - rows) / len(cluster)
 	r.fillClusters(cluster, n)
 	r.dragAll(false)
@@ -324,7 +335,7 @@ func (r *rig) dragAll(refused bool) {
 // fixture label there, with the keys when the line has room for them.
 func TestZoomShowsTheRefusal(t *testing.T) {
 	header := func(r *rig) string { return r.rows()[0] }
-	r := selRig(t, 140, 45, Options{}, "")
+	r := selRig(t, overCapW, overCapH, Options{}, "")
 	r.focusSession()
 	r.key(zoomPress)
 	r.fillOverCap()
@@ -338,11 +349,19 @@ func TestZoomShowsTheRefusal(t *testing.T) {
 	if h := header(r); !strings.HasPrefix(h, "SESSION FOCUS") {
 		t.Fatalf("after a press: header %q", h)
 	}
-	// Too narrow for the keys too: the notice and the fixture label.
-	r = selRig(t, 100, 30, Options{}, "")
+	// Too narrow for the keys too: the notice and the fixture label. A
+	// 100 x 30 pane cannot hold over 1 MiB of text under the emulator's
+	// caps, so the selection is refused in a window that can, which is then
+	// made 100 x 30: the refusal is the real one and the notice outlives the
+	// resize.
+	r = selRig(t, overCapW, overCapH, Options{}, "")
 	r.key(zoomPress)
 	r.fillOverCap()
 	r.dragAll(true)
+	r.size(100, 30)
+	if r.m.notice != copyRefused {
+		t.Fatalf("a resize left the notice %q", r.m.notice)
+	}
 	if h := header(r); !strings.HasPrefix(h, copyRefused+" · "+fixtureLabel) {
 		t.Fatalf("console focus, 100 columns: header %q", h)
 	}

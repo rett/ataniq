@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-17
+
 ### Added
 
 - Add `ataniq-console`, a provisional terminal console built on Bubble Tea.
@@ -73,42 +75,43 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
-- Add `ataniq-intake`, a provisional owner command for the reviewed intake of
-  a managed lead's work through the exchange mirror, a bare repository in the
-  state folder that is the only way out of a lead. `init` creates the mirror,
-  `fetch` brings a lead's branches into it, `branches` lists them, `review`
-  shows the change and lists under "Needs your sign-off" each path that needs
-  its own approval, with its flag kind (and, with `--records`, the gates of
-  the verification records of the tip). The kinds are `exec-config` (a path in
-  the execution-config set), `symlink`, `submodule`, `aliased` (a changed path
-  in a folder that a symbolic link with an execution-config name stands for)
-  and `history-only` (a path of one of those kinds in some commit of the
-  branch that the net change does not show, such as one added and removed
-  again; it still enters the history). `verify` runs
-  gates in a sandbox and stores the result in the records folder, and
-  `integrate` moves an upstream branch to a reviewed, verified tip,
-  fast-forward only. The sign-off is typed as arguments (`--accept-change`,
-  and one `--accept-path` for each flagged path); the command never asks a
-  question. Everything a lead wrote is shown escaped and labelled "unverified
-  lead data". The same `--path-rule` list must be given to `review` and to
-  `integrate`. The command does not touch a working checkout, which gets the
-  commits by its own fetch from the mirror. No sandbox is shipped or
-  qualified: `fetch` and `verify` run the commands of a template file that the
-  owner writes, and refuse without a usable one. A verification pass is
-  evidence, not proof, and after the sign-off the code runs as the owner like
-  any merged code. See [the lead intake guide](docs/lead-intake.md).
-- Add `qualify-mirror`, an opt-in harness that records what a real sandbox
-  template does with a hostile lead clone: the fetch into the exchange mirror
-  and the review of a lead branch, and, if the template has a verification
-  section, two gates that probe it. It is run by hand with a config and a new
-  output file, is not part of `make test` and is not built by any Makefile
-  target. It works in a scratch state root and writes one JSON report of facts
-  with no pass, supported or qualified field: a person reads the facts and
-  decides. It qualifies no sandbox by itself. See
-  [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+- Record each change's changelog entry as a fragment file in `changelog.d`,
+  named `<section>-<slug>.md` (section: added, changed, deprecated, removed,
+  fixed or security), in the same commit as the change, so parallel features no
+  longer collide on `CHANGELOG.md`. `scripts/changelog-fold.sh` (`make
+  changelog-fold`) folds the fragments under their headings in the Keep a
+  Changelog order, each section's fragments sorted by name, and removes them;
+  `--into VERSION` folds into the dated `## [VERSION]` section that `qargi
+  release start VERSION` makes, and refuses when it does not exist, while
+  without it the fold writes to `[Unreleased]`. It refuses an unknown section
+  or a malformed fragment (including one with Windows line ends) without
+  changing anything, replaces `CHANGELOG.md` in one rename so an interrupted
+  run leaves it intact, is safe to repeat, and `--dry-run` writes nothing.
+  `make changelog-check` fails while any fragment is left. The release flow is
+  `qargi release start VERSION`, then `make changelog-fold ARGS='--into
+  VERSION'` as the first fix commit on the release branch, then `make
+  changelog-check`, then `qargi release push`; a hotfix does the same before
+  its pull request, and CI runs the check on both and on manual runs of those
+  branches. Entries already in `CHANGELOG.md` stay where they are.
 
 ### Changed
 
+- Add the feature coordinator to the design documents. A coordinator is an
+  ephemeral delegate of a project lead for exactly one feature: it holds no
+  seat or lead assignment epoch, is never a handoff target and never approves.
+  Its questions go to its lead; the owner may watch it and type into it as its
+  single writer, with the lead notified and its powers unchanged. It may
+  prepare, verify, apply and merge runs into its own feature, sync it and clean
+  any run of its feature; the lead runs the whole-suite verify, and start and
+  finish of a feature, push, release, hotfix, prune and adoption of other
+  actors' runs stay with the lead, and approval with the owner. Its label only
+  narrows what it may do and is never identity; identity comes only from a
+  bound file Ataniq writes. A lead quiesces its coordinators before a handoff,
+  and a stalled coordinator is confirmed stopped before its runs are adopted.
+  The approvals document states that no approval, plan token or grant passes to
+  or through a coordinator, that a lead's feature delegation to one is neither a
+  grant nor an approval, and that the owner typing into one is not an approval.
+  Specification only; nothing is implemented.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a

@@ -1,0 +1,115 @@
+// Package profile is the lead sandbox profile as data. It is a proposal that
+// awaits qualification and an owner decision; nothing here says the sandbox is
+// qualified, safe or supported.
+//
+// The package describes what a sandboxed lead would see and what it would not:
+// the two runtimes (claude and codex), the fixed inside paths, the host layout
+// of one lead under a state root, the bind table of the lead-hosting design
+// (section 3.3) as ordered data, the environment allowlist (section 3.4) with
+// its values, the never-mounted check, and a digest of what defines the
+// profile independent of the host and the lead.
+//
+// It is pure. It performs no I/O, makes no system call, reads no environment
+// variable and imports only the standard library and the network package of
+// this feature (sandboxnet), whose PastaArgs is a constant list. Every host
+// path is a string the caller gives; the checks on those strings are
+// lexical, so the caller resolves symbolic links before it hands a path over,
+// and the checks cannot see what a path will be at run time. Other packages of
+// the feature turn this data into a launch plan, create the mount points, and
+// check the result.
+//
+// It does not build a bubblewrap or pasta command line, it never starts a
+// process, and it does not create, read or verify any file: the digests of the
+// seccomp file and of the managed-settings file are taken as given and are not
+// compared with the files.
+//
+// # No bind source the lead can write (rule G1)
+//
+// bubblewrap resolves a bind source on the host, outside every sandbox, and
+// follows a symbolic link in it. A source that lies in a folder the lead can
+// write could therefore be replaced by a link that brings a folder of the
+// owner into the sandbox. So the profile holds one rule: no row of the bind
+// table has a source in or below a host folder the lead can write (the home,
+// the config folder, the tree, the records folder: the sources of the
+// read-write rows). A folder the lead writes is bound whole from an
+// Ataniq-owned parent, or its content is copied in. [ValidateTable] refuses a
+// table that breaks the rule, and so does [Inputs.Validate].
+//
+// The rule moved three rows. The tree's .git/config, .git/hooks and .git/info
+// are still bound read-only at their places inside, over the tree, but their
+// sources are no longer the tree's own files: they are the entries config
+// (a file), hooks and info (folders) of an Ataniq-owned folder, [Inputs.GitMeta],
+// with the source role [RoleGitMeta]. The folder is required and must be
+// [Layout.GitMeta], <state>/leads/<role>/gitmeta: beside the lead's folders, below
+// the state root, and covered by the rules about another lead's state. Another
+// package fills it before the lead's first run (the
+// mountpoints package: a copy of the clone's config and of the regular files
+// of .git/info, and an empty hooks folder).
+//
+// What this changes for the lead: the copies of config and info are read-only
+// binds of files the lead cannot write, so the lead cannot change the files
+// that are bound; a hook of the clone is not there, so a managed lead's tree
+// has no hooks; and a change to the clone's git configuration is made by
+// Ataniq, outside, in the copy (the lead-hosting design, section 3.3, leaves
+// open whether the flow verbs need to write git configuration; qualification
+// case S5 settles it). It does not say which configuration the lead's git
+// reads: a git inside the sandbox can still be pointed at configuration the
+// lead writes (through its environment, or through a .git it rebuilds in the
+// tree), which lies inside the lead's own authority; the mountpoints package
+// refuses a clone config that has an include or includeIf section when it
+// makes the copy. The copy is never read as configuration by a tool outside
+// the sandbox. The flag [Bind.LeadWritable]
+// is kept for the targets: the mount points of these three rows still lie in
+// the tree, and Ataniq still makes them there before the first run.
+//
+// # What the digest covers
+//
+// Digest is the SHA-256 of a canonical, versioned encoding of:
+//
+//   - the profile Version, the runtime and its pinned version, and the
+//     identity mode;
+//   - the bubblewrap flag set;
+//   - the bind table: every row's kind, inside path, source role, link target,
+//     folder flag, lead-writable flag, holder, and whether the row is applied
+//     only if the host has it (Bind.Optional), with the project replaced by a
+//     token and a host path by its source role; the extra placeholders in the
+//     order of their targets;
+//   - every environment name, and the value of every variable whose value the
+//     profile defines: the fixed values, PATH, SHELL, the config variable, the
+//     git and Go variables and every extra variable;
+//   - the SHA-256 of the seccomp file (or "none"), as the caller gives it;
+//   - the SHA-256 of the managed-settings file, as the caller gives it;
+//   - the argument vector of sandboxnet.PastaArgs, the network boundary.
+//
+// # What the digest does not cover
+//
+//   - Host paths: the state root, every source of a bind, and the path of the
+//     seccomp file and of the managed-settings file on the host. A source is
+//     covered by its role only, so the digest does not say what the file or
+//     folder at a source holds, except for the two files whose SHA-256 the
+//     caller gives.
+//   - The role and the project, and the owner's ids and login name.
+//   - The values the host terminal or the lead gives: TERM, COLORTERM, LANG
+//     and TZ, the lead identity (QARGI_LEAD), and USER and LOGNAME in owner
+//     mode. Their names are covered.
+//   - The content of the lead skills folder and of the instruction file, and
+//     of the other folders and files bound from the host (the agent and Qargi
+//     installs, the probe, the spec, the assignment and projection), the
+//     content of the git identity file GIT_CONFIG_GLOBAL names (it can set
+//     hooks and helpers that run), the derived resolv.conf, and the Qargi
+//     records.
+//   - What the package does not know: the real state of the host, and what the
+//     resulting sandbox allows. The network argument vector is covered, not
+//     what the network then reaches.
+//
+// So a digest names a profile, not a host: it is the key a qualification
+// record is kept under, and the record says what was checked.
+//
+// The names a profile may add to the environment are checked against a list
+// of refused names, name endings and name starts (see CheckEnvName). The list
+// is a starting point for the owner to review and extend: it does not claim
+// to name every credential or loader override.
+//
+// Per the owner decision R17, nested sandboxes are allowed for now: the flag
+// set never contains the options that disable user namespaces.
+package profile

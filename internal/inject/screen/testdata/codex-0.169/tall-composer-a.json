@@ -1,0 +1,30 @@
+{
+ "source": "row2/cfg4-B-codex/screens/dump-f-paste-holder",
+ "description": "codex 0.169 composer 21 rows tall after a paste: prompt row, 19 continuation rows and the pasted-content marker",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 30,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "Return specified text exactly | work",
+ "faint": [
+  {
+   "row": 0,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 10,
+   "from": 0,
+   "to": 120
+  }
+ ],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "pasted single line paste line 1\npaste line 2\npaste line 3\npaste line 4\npaste line 5\npaste line 6\npaste line 7\npaste line 8\npaste line 9\npaste line 10\npaste line 11\npaste line 12\npaste line 13\npaste line 14\npaste line 15\npaste line 16\npaste line 17\npaste line 18\npaste line 19\npaste line 20\n [Pasted Content 5000 chars]",
+  "cursor_in_composer": true,
+  "pasted_marker": true
+ }
+}

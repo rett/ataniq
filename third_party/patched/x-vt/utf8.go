@@ -27,8 +27,8 @@ func (e *Emulator) handlePrint(r rune) {
 	// A Write that ended inside a cluster drew it as it stood. If this
 	// character continues that cluster, take the cluster back and redraw it
 	// in the same place once it is complete.
-	if e.open.ok {
-		e.reopenCluster(r)
+	if e.open.ok && e.reopenCluster(r) {
+		return
 	}
 
 	// No ASCII character can extend the cluster before it: none of them is
@@ -46,12 +46,83 @@ func (e *Emulator) handlePrint(r rune) {
 		if len(e.grapheme) == 1 && printableASCII(rune(e.grapheme[0])) {
 			e.handleGrapheme(string(e.grapheme[0]), 1)
 			e.grapheme = utf8.AppendRune(e.grapheme[:0], r)
+			e.capped = false
 			return
 		}
 		e.flushGrapheme()
 	}
 
-	e.grapheme = utf8.AppendRune(e.grapheme, r)
+	e.appendGrapheme(r)
+}
+
+// appendGrapheme adds r to the grapheme buffer, which never holds more than
+// [MaxClusterBytes] bytes. The buffer collects text until a character that
+// cannot extend it arrives, so it holds several clusters when a run has no
+// ASCII in it, and one long one when a run is made of combining marks. A rune
+// that does not fit settles the buffer first, and so does every rune once a
+// rune has been dropped from the last cluster.
+func (e *Emulator) appendGrapheme(r rune) {
+	var enc [utf8.UTFMax]byte
+	n := utf8.EncodeRune(enc[:], r)
+	if e.capped || len(e.grapheme)+n > MaxClusterBytes {
+		e.settleGrapheme(enc[:n])
+		return
+	}
+	e.grapheme = append(e.grapheme, enc[:n]...)
+}
+
+// settleGrapheme makes room in a full grapheme buffer for the rune whose
+// bytes are enc. If the buffer is one cluster and the rune extends it, the
+// rune is dropped and its bytes are counted: a cluster keeps its first
+// [MaxClusterBytes] bytes, cut at a rune boundary. The first rune dropped
+// caps the cluster, and a capped cluster drops every rune that extends it, so
+// that a shorter mark after a longer one that did not fit is not kept: a cell
+// holds a prefix of what was sent. Otherwise it draws every
+// cluster of the buffer except the last, which is the only one the rune can
+// extend; if the rune starts a new cluster, the last one is drawn too and the
+// rune starts the buffer. The work is bounded by the size of the buffer,
+// whatever the input.
+func (e *Emulator) settleGrapheme(enc []byte) {
+	e.open.ok = false
+	if e.extendsCluster(e.grapheme, enc) {
+		e.counters.ClusterBytesDropped += uint64(len(enc))
+		e.capped = true
+		return
+	}
+
+	graphemes := e.grapheme
+	for len(graphemes) > 0 {
+		cluster, width := ansi.FirstGraphemeCluster(graphemes, ansi.GraphemeWidth)
+		if len(cluster) == 0 || len(cluster) == len(graphemes) {
+			break
+		}
+		e.handleGrapheme(string(cluster), width)
+		graphemes = graphemes[len(cluster):]
+	}
+	e.grapheme = append(e.grapheme[:0], graphemes...)
+
+	if e.extendsCluster(e.grapheme, enc) {
+		if len(e.grapheme)+len(enc) <= MaxClusterBytes {
+			e.grapheme = append(e.grapheme, enc...)
+		} else {
+			e.counters.ClusterBytesDropped += uint64(len(enc))
+			e.capped = true
+		}
+		return
+	}
+	e.drawGrapheme(false)
+	e.grapheme = append(e.grapheme, enc...)
+}
+
+// extendsCluster reports whether the rune with the bytes enc extends text,
+// which is one cluster or several, so that the whole of text and the rune form
+// one cluster. It costs the length of text, which is at most
+// [MaxClusterBytes].
+func (e *Emulator) extendsCluster(text, enc []byte) bool {
+	joined := append(append(e.scratch[:0], text...), enc...)
+	// The method only decides the width reported, not where the cluster ends.
+	first, _ := ansi.FirstGraphemeCluster(joined, ansi.WcWidth)
+	return len(first) == len(joined)
 }
 
 // openCluster is the last cluster a Write drew when it ended, with what is
@@ -65,6 +136,9 @@ type openCluster struct {
 	curX, curY int
 	phantom    bool
 	single     int
+	// capped is set when a rune was dropped from the cluster: it does not
+	// grow again.
+	capped bool
 }
 
 // reopenCluster puts the open cluster back into the grapheme buffer and the
@@ -73,25 +147,37 @@ type openCluster struct {
 // read can end anywhere: after a ZWJ, before a variation selector or a skin
 // tone modifier, between two regional indicators. Without this, the halves
 // are committed as two clusters.
-func (e *Emulator) reopenCluster(r rune) {
+//
+// A cluster that has reached [MaxClusterBytes], or that r would take past it,
+// or from which a rune was dropped before, is not reopened and not grown: r
+// is dropped and counted, and the cluster stays open and capped, so that the
+// marks that follow are dropped too. It reports whether it dropped r.
+func (e *Emulator) reopenCluster(r rune) (dropped bool) {
 	o := &e.open
 	o.ok = false
 	// No ASCII character continues a cluster (see printableASCII).
 	if printableASCII(r) || len(e.grapheme) > 0 {
-		return
+		return false
 	}
 	if !e.openStillValid() {
-		return
+		return false
 	}
-	joined := utf8.AppendRune(o.content, r)
-	o.content = joined[:len(o.content)]
-	if cluster, _ := ansi.FirstGraphemeCluster(joined, ansi.GraphemeWidth); len(cluster) <= len(o.content) {
-		return
+	var enc [utf8.UTFMax]byte
+	n := utf8.EncodeRune(enc[:], r)
+	if !e.extendsCluster(o.content, enc[:n]) {
+		return false
+	}
+	if o.capped || len(o.content)+n > MaxClusterBytes {
+		e.counters.ClusterBytesDropped += uint64(n)
+		o.capped = true
+		o.ok = true
+		return true
 	}
 	e.scr.setCursor(o.x, o.y, false)
 	e.atPhantom = false
 	e.gsingle = o.single
 	e.grapheme = append(e.grapheme[:0], o.content...)
+	return false
 }
 
 // openStillValid reports whether the open cluster is still where it was drawn.
@@ -159,9 +245,11 @@ func (e *Emulator) drawGrapheme(keepOpen bool) {
 			o.curX, o.curY = e.scr.CursorPosition()
 			o.phantom = e.atPhantom
 			o.single = single
+			o.capped = e.capped
 		}
 	}
 	e.grapheme = e.grapheme[:0] // Reset the grapheme buffer.
+	e.capped = false
 }
 
 // handleGrapheme handles UTF-8 graphemes. It returns the cell it drew in.
@@ -172,6 +260,16 @@ func (e *Emulator) handleGrapheme(content string, width int) (int, int) {
 		Width:   width,
 		Style:   e.scr.cursorPen(),
 		Link:    e.scr.cursorLink(),
+	}
+	// A cell under a link that would be one too many for the screen is drawn
+	// without it. A cell under another is given the screen's copy of the link,
+	// so that cells do not each keep the pen's copy.
+	if cell.Link.URL != "" {
+		l, ok := e.scr.admitLink(cell.Link)
+		if !ok {
+			e.counters.LinksOverLimit++
+		}
+		cell.Link = l
 	}
 
 	x, y := e.scr.CursorPosition()
