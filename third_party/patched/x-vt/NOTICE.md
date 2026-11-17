@@ -36,10 +36,11 @@ Patches, applied in this order to the files of the module as released:
    reached the cap, or that has lost a rune, is neither reopened nor grown by
    the next write: the mark is dropped and counted, and the cluster stays the
    open one and capped. (`OpenCluster` reports the cluster's text only, so a
-   copy of the screen that continues it does not know that it is capped.) A run of marks
-   past the cap costs one segmentation of at most 68 bytes per rune: linear
-   time, no allocation. This patch also adds the `Counters` struct and the
-   `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
+   copy of the screen that continues it does not know that it is capped.) A
+   run of marks past the cap costs one segmentation of at most 68 bytes per
+   rune: linear time, no allocation. This patch also adds the `Counters`
+   struct and the `Counters` accessor on `Emulator` and `SafeEmulator` that
+   the later caps use.
 5. `vt: record only a fixed table of modes` (`mode.go`, `csi_mode.go`,
    `limits.go`, `mode_test.go`). The emulator kept every mode number a session
    set in a map, so a session could grow it without bound (100 000 distinct
@@ -98,8 +99,8 @@ Patches, applied in this order to the files of the module as released:
    screen empties the table at once. A recount counts every link in a cell,
    also one that an API call such as `SetCell` put there, which the table
    does not refuse. Scrollback is not counted: it keeps the links of the
-   lines it holds, and its size is the caller's (the session pane keeps one line on the main screen and none on
-   the alternate).
+   lines it holds, and its size is the caller's (the session pane keeps one
+   line on the main screen and none on the alternate).
 8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
    `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).
    The parser's data buffer was 4 MiB, so one string could make the handlers
@@ -117,7 +118,8 @@ Patches, applied in this order to the files of the module as released:
    outside the 256-link table. Zero is now accepted and keeps nothing: the
    lines held are released, and lines that scroll off the top, an erase of
    the screen and a resize add none. A negative number is ignored, as zero
-   was. A size above zero works as before.
+   was, except that a screen without a scrollback buffer still gets one of the
+   default size. A size above zero works as before.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
