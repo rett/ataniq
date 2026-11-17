@@ -449,6 +449,16 @@ func (s *Screen) blankLines(lines []uv.Line, c *uv.Cell) {
 	}
 }
 
+// fillLine sets every cell of line y to a copy of c, which is one cell wide:
+// no wide cell of the line is left half over.
+func (s *Screen) fillLine(y int, c *uv.Cell) {
+	line := s.buf.Lines[y]
+	for i := range line {
+		line[i] = *c
+	}
+	s.buf.TouchLine(0, y, len(line))
+}
+
 // touchArea marks all lines in the given area as touched.
 func (s *Screen) touchArea(area uv.Rectangle) {
 	for y := area.Min.Y; y < area.Max.Y; y++ {

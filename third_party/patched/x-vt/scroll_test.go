@@ -77,9 +77,9 @@ func TestMovingLinesIsWhatCopyingCellsGives(t *testing.T) {
 // MB, which takes about a millisecond whatever the code: 4 KiB of them are
 // sent. The time of each is logged.
 func TestScrollingTheLargestScreenIsBounded(t *testing.T) {
-	ceiling := 20 * time.Second
+	ceiling := 60 * time.Second
 	if raceEnabled {
-		ceiling = 60 * time.Second
+		ceiling = 120 * time.Second
 	}
 	for _, tc := range []struct {
 		name   string

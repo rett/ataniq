@@ -171,19 +171,52 @@ Patches, applied in this order to the files of the module as released:
    screens and its cursors, with whether the state carries it, so that a field
    added by a later version of the module is decided on.
 12. `vt: bound the sequences that loop by a parameter` (`csi_cursor.go`,
-   `csi_screen.go`, `limits.go`, `loops_test.go`). A parameter is a number of
-   up to two billion, and four sequences looped that many times: `CSI n I`
-   and `CSI n Z` (tab forward and backward) went on after the last tab stop,
-   `CSI n X` (erase characters) filled past the right edge, and `CSI n b`
-   (repeat the last character) printed it n times. A single sequence of
-   eight bytes kept the process busy for minutes (a count of 100 million took
-   40 seconds), and the pane's lock with it. The two tab loops now stop where
-   the cursor cannot move on, and the erase is cut at the right edge: both
-   give the result they gave. A repeat is cut to the number of cells of the
-   screen and `Counters().RepeatsCut` counts the sequences that were cut; the
-   screen then holds what a repeat of exactly that many gives, which is not
-   what a terminal that printed two billion characters would show (the
-   cursor column and the last line depend on the count).
+   `csi_screen.go`, `screen.go`, `limits.go`, `loops_test.go`). A parameter is
+   a number of up to two billion, and four sequences looped that many times:
+   `CSI n I` and `CSI n Z` (tab forward and backward) went on after the last
+   tab stop, `CSI n X` (erase characters) filled past the right edge, and
+   `CSI n b` (repeat the last character) printed it n times. A single sequence
+   of eight bytes kept the process busy for minutes (a count of 100 million
+   took 40 seconds), and the pane's lock with it. The two tab loops now stop
+   where the cursor cannot move on, and the erase is cut at the right edge:
+   both give the result they gave.
+
+   A repeat is the character typed n times. A count of up to two lines and two
+   characters (twice the width, and two) is still printed one character at a
+   time. A larger one is done a line at a time where that gives exactly the
+   state the prints would (`repeatInBulk`): the cursor's line is printed to
+   its end, every further line is a wrap and a full line (the lines above the
+   bottom of the region are filled one by one; the lines that scroll are
+   replaced, as many as the region has lines, by lines full of the character,
+   and the rest would only scroll those, so they are skipped), and the
+   remainder of less than a line is printed; with autowrap off the draws
+   after the last column are draws in the last column again and are cut. The
+   state is every field of `State` (the cells, the cursor, the pending wrap,
+   the open cluster, the link table), and a test compares it with the
+   character typed n times on small screens in every state the property
+   streams reach, for counts up to eight screens. What is not the same: a
+   callback sees fewer moves of the cursor, the counters of the caps
+   (`LinksOverLimit`, `ClusterBytesDropped`) count the prints that were done,
+   and the count of the first version of this patch, which cut a repeat to the
+   cells of the screen and so changed the result for every count over them
+   (the cursor column and the last line depend on the count), is gone.
+   The bulk needs a printable ASCII character (it is, for a repeat after
+   output), no hyperlink on the pen (a refused link counts down the table's
+   wait on every print), no scrollback (the lines that scroll off would have to
+   be kept), and with autowrap on a cursor inside a scroll region as wide as the
+   screen. In any other state a count over two lines and two characters is cut
+   to it: the screen then holds what a repeat of exactly that many gives, which
+   is not what a terminal that printed two billion characters would show. That
+   is the documented difference, and `Counters().RepeatsCut` counts every
+   repeat that was not printed one character at a time, bulk or cut. The
+   cost of a repeat is a few screens whatever the count: on a screen of 500 by
+   200 cells, 64 KiB of the longest repeat take about a second (5041
+   repeats at the bottom, 4096 with the cursor sent to the top each time),
+   where the first version took 17 ms for the first, 0.25 s for each one
+   after it (patch 13 makes the scroll cheap), and about half an hour for
+   64 KiB. A repeat is the dearest sequence per byte that there was; after this
+   patch and 13 the dearest are the ones that write every cell of the screen
+   (erase the display, scroll by the screen), a millisecond each.
 13. `vt: move the lines of a scroll region as wide as the screen`
    (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
    an index, a reverse index, insert line, delete line, scroll up and scroll

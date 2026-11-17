@@ -22,7 +22,8 @@ type Counters struct {
 	// that were longer than 64 KiB and lost their end.
 	StringsTruncated uint64
 	// RepeatsCut is the number of REP sequences (CSI n b) whose count was
-	// over the number of cells of the screen and was cut to it.
+	// over two lines and two characters, and so was done a line at a time or
+	// cut to that count.
 	RepeatsCut uint64
 
 	// The last two are the pane's own.
