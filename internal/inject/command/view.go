@@ -20,7 +20,7 @@ type CommandView struct {
 	Evidence     string
 	Operator     string
 	// Late are the late fence results and late delivery evidence of a command
-	// that was uncertain, or that an operator resolved as "send again", in the
+	// that was uncertain, or that an operator resolved as "send again" or "drop", in the
 	// order they were journaled. They are for the operator who decides; they
 	// never end the uncertain state. They stay with the command after it ends.
 	Late []LateNote
@@ -34,7 +34,7 @@ type CommandView struct {
 }
 
 // LateNote is a late fence result or late delivery evidence, kept on a command
-// that was already uncertain, or already resolved as sent again, when it
+// that was already uncertain, or already resolved as sent again or dropped, when it
 // arrived.
 type LateNote struct {
 	// Seq and At are the sequence number and the time of the record.
@@ -54,14 +54,26 @@ type LateNote struct {
 type TargetView struct {
 	Target string
 	// Commands are the commands still in the queue, head first: accepted,
-	// queued, dispatching and uncertain ones.
+	// queued, dispatching and uncertain ones. A target is listed when it has
+	// commands or a hold.
 	Commands []CommandView
 	// QueuedBytes is the bytes of text the queue holds.
 	QueuedBytes int
-	// Frozen is true when an uncertain command holds the queue, and FrozenBy
+	// Frozen is true when an uncertain command freezes the queue, and FrozenBy
 	// names it.
 	Frozen   bool
 	FrozenBy string
+	// Held is true when the queue is held: late information arrived about a
+	// command that an operator decided was not delivered, or is deciding, and
+	// BeginDispatch refuses until an operator calls ReleaseHold. HeldFor is the
+	// command the hold was first set for, HeldReason why, and HeldSince when;
+	// HeldAlso lists the other commands the hold is about, in order. A held
+	// queue may be empty. A queue can be both frozen and held.
+	Held       bool
+	HeldFor    string
+	HeldReason Reason
+	HeldSince  time.Time
+	HeldAlso   []string
 	// BlockedNotified is true during a blocked spell: the owner was already
 	// told that the lead is waiting for an approval.
 	BlockedNotified bool
@@ -86,6 +98,12 @@ func (m *Machine) View() View {
 		}
 		if f := frozenBy(q); f != nil {
 			tv.Frozen, tv.FrozenBy = true, f.id
+		}
+		if h := m.holds[key]; h != nil {
+			tv.Held, tv.HeldFor, tv.HeldReason, tv.HeldSince = true, h.about[0], h.reason, h.since
+			if len(h.about) > 1 {
+				tv.HeldAlso = append([]string(nil), h.about[1:]...)
+			}
 		}
 		v.Targets = append(v.Targets, tv)
 	}
@@ -115,12 +133,17 @@ func (c *command) view() CommandView {
 	return v
 }
 
-// targetKeys returns the rendered names of the targets that have a queue,
-// sorted.
+// targetKeys returns the rendered names of the targets that have a queue or a
+// hold, sorted.
 func (m *Machine) targetKeys() []string {
-	keys := make([]string, 0, len(m.queues))
+	keys := make([]string, 0, len(m.queues)+len(m.holds))
 	for k := range m.queues {
 		keys = append(keys, k)
+	}
+	for k := range m.holds {
+		if _, ok := m.queues[k]; !ok {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
 	return keys

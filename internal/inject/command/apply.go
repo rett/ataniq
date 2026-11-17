@@ -27,6 +27,15 @@ func in(r Reason, set ...Reason) bool {
 // machine's current state. It is used for every record, live and restored,
 // and changes nothing.
 func (m *Machine) check(r Record) error {
+	switch r.Type {
+	case "":
+	case RecordHold:
+		return m.checkHold(r)
+	case RecordRelease:
+		return m.checkRelease(r)
+	default:
+		return fmt.Errorf("unknown record type %q", r.Type)
+	}
 	switch {
 	case r.From == "" && r.To == StateRefused:
 		if !admissionReasons[r.Reason] {
@@ -94,6 +103,9 @@ func (m *Machine) check(r Record) error {
 		if f := frozenBy(q); f != nil {
 			return fmt.Errorf("queue is frozen by command %q", f.id)
 		}
+		if h := m.holds[r.Target]; h != nil {
+			return fmt.Errorf("queue is held for command %q", h.about[0])
+		}
 		if r.Reason != "" {
 			return errors.New("dispatching has no reason")
 		}
@@ -141,24 +153,28 @@ func (m *Machine) check(r Record) error {
 		default:
 			return fmt.Errorf("uncertain with reason %q", r.Reason)
 		}
-	case r.From == StateQueued && r.To == StateUncertain:
-		// The replacement of a command that late evidence arrived for: the
-		// only way a queued command becomes uncertain.
-		if c.freezeFor == "" || r.Reason != ReasonOriginalEvidenceArrived {
-			return errors.New("queued to uncertain only for late evidence of a command this one replaces")
+	case r.From == StateQueued && r.To == StateResolved:
+		// An operator withdraws a queued command of a held queue.
+		if r.Reason != ReasonOperatorWithdrawn || !validOperator(r.Operator) || r.EvidenceKind != EvidenceOwnerDecision || r.Evidence != withdrawnEvidence || r.Replacement != "" {
+			return errors.New("an operator withdraws a command with a named operator and an owner decision")
 		}
-		if r.Operator != "" || r.Replacement != "" || r.EvidenceKind != "" || r.Evidence != "" {
-			return errors.New("queued to uncertain names no operator, replacement or evidence")
+		if m.holds[r.Target] == nil {
+			return errors.New("a command is withdrawn only from a held queue")
 		}
 	case r.From == r.To && (r.From == StateUncertain || r.From == StateResolved):
 		// An annotation: a late fence result or late evidence, on an uncertain
-		// command or on one an operator resolved as "send again". It changes no
-		// state, so it never unfreezes a queue.
-		if r.From == StateResolved && c.reason != ReasonOperatorResend {
-			return fmt.Errorf("a late annotation for resolved command %q, which was not sent again", c.id)
+		// command or on one an operator resolved as "send again" or "drop". It
+		// changes no state, so it never unfreezes a queue.
+		if !c.takesLate() {
+			return fmt.Errorf("a late annotation for command %q, which is %s and was not decided as sent again or dropped", c.id, c.state)
 		}
 		if r.Operator != "" || r.Replacement != "" {
 			return errors.New("a late annotation names no operator and no replacement")
+		}
+		// The hold is journaled before the note, so a note for a decided
+		// command always finds its queue held for that command.
+		if m.holdReasonFor(c) != "" && !m.holds[r.Target].has(c.id) {
+			return fmt.Errorf("a late annotation for command %q needs the queue of %s to be held for it", c.id, r.Target)
 		}
 		if len(c.late) >= maxLateNotes {
 			return fmt.Errorf("command %q already has %d late annotations", c.id, len(c.late))
@@ -265,6 +281,50 @@ func (m *Machine) checkNew(r Record) error {
 	return nil
 }
 
+// checkHold checks a hold record: late information about a command an
+// operator decided was not delivered, or is deciding, and the queue not yet
+// held for that command. A record the live machine could not have written is
+// an error.
+func (m *Machine) checkHold(r Record) error {
+	if r.From != "" || r.To != "" || r.Sender != "" || r.Kind != "" || r.Text != "" || r.Of != "" || r.Replacement != "" ||
+		r.Operator != "" || r.EvidenceKind != "" || r.Evidence != "" {
+		return errors.New("a hold record names only the target, the command, the reason and the time")
+	}
+	c := m.cmds[r.ID]
+	if c == nil {
+		return fmt.Errorf("a hold about unknown command %q", safeField(r.ID, 70))
+	}
+	if r.Target != c.target.String() {
+		return fmt.Errorf("a hold names a different target than command %q", c.id)
+	}
+	want := m.holdReasonFor(c)
+	if want == "" {
+		return fmt.Errorf("a hold about command %q, which is %s and is neither uncertain with a resend pending nor resolved as sent again or dropped", c.id, c.state)
+	}
+	if r.Reason != want {
+		return fmt.Errorf("a hold about command %q has reason %q, want %q", c.id, r.Reason, want)
+	}
+	if m.holds[r.Target].has(c.id) {
+		return fmt.Errorf("the queue of %s is already held for command %q", r.Target, c.id)
+	}
+	return nil
+}
+
+// checkRelease checks a release record: an operator ends the hold of a queue
+// that is held.
+func (m *Machine) checkRelease(r Record) error {
+	if r.From != "" || r.To != "" || r.ID != "" || r.Sender != "" || r.Kind != "" || r.Text != "" || r.Of != "" || r.Replacement != "" {
+		return errors.New("a release record names only the target and the operator")
+	}
+	if r.Reason != ReasonHoldReleased || r.EvidenceKind != EvidenceOwnerDecision || r.Evidence != releaseEvidence || !validOperator(r.Operator) {
+		return errors.New("an operator releases a hold with a named operator and an owner decision")
+	}
+	if m.holds[r.Target] == nil {
+		return fmt.Errorf("a release of the queue of %q, which is not held", safeField(r.Target, 70))
+	}
+	return nil
+}
+
 // validOperator reports whether an operator name is non-empty, bounded and
 // made of printable characters.
 func validOperator(s string) bool {
@@ -274,6 +334,18 @@ func validOperator(s string) bool {
 // apply changes the state as the record says. The record must have passed
 // check.
 func (m *Machine) apply(r Record) {
+	switch r.Type {
+	case RecordHold:
+		if h := m.holds[r.Target]; h != nil {
+			h.about = append(h.about, r.ID)
+		} else {
+			m.holds[r.Target] = &hold{about: []string{r.ID}, reason: r.Reason, since: r.At}
+		}
+		return
+	case RecordRelease:
+		delete(m.holds, r.Target)
+		return
+	}
 	switch {
 	case r.From == "" && r.To == StateRefused:
 		return
@@ -308,24 +380,16 @@ func (m *Machine) apply(r Record) {
 	c := m.cmds[r.ID]
 	if r.From == r.To && (r.From == StateUncertain || r.From == StateResolved) {
 		// An annotation keeps the state, the last reason, the evidence and the
-		// update time of the command; it is only added to the notes. For a
-		// command that was sent again, the newest replacement, if it is still
-		// queued, is due to become uncertain.
+		// update time of the command; it is only added to the notes.
 		c.late = append(c.late, LateNote{
 			Seq: r.Seq, At: r.At, Reason: r.Reason, Detail: r.Detail,
 			EvidenceKind: r.EvidenceKind, Evidence: r.Evidence,
 		})
-		if r.From == StateResolved {
-			if n := m.newestReplacement(c); n != nil && n.state == StateQueued && n.freezeFor == "" {
-				n.freezeFor = c.id
-			}
-		}
 		return
 	}
 	key := c.target.String()
 	c.state = r.To
 	c.updated = r.At
-	c.freezeFor = ""
 	if r.Reason != "" {
 		c.reason, c.detail = r.Reason, r.Detail
 	}

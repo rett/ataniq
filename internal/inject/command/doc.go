@@ -25,16 +25,39 @@
 // uncertain, and freezes its queue, until an operator records a decision with
 // Resolve. A fence result or delivery evidence that arrives after a command
 // became uncertain (for example after FenceTimeout) is kept as an annotation
-// that the view shows to the operator; it never ends the uncertain state. The
-// same evidence for a command an operator already resolved as "not delivered,
-// send again" is kept as an annotation on it too and is not refused. When the
-// newest replacement along the resend chain is still queued, it becomes
-// uncertain (original-evidence-arrived) and holds its queue until an operator
-// decides about it, so that nothing is sent twice while evidence that the
-// first send arrived is in hand; when the replacement is already dispatching
-// or has ended, only the annotation is written. A note equal to one the command
-// already has is skipped, and at most eight notes are kept (late-notes-full
-// after that). The daemon passes each piece of evidence once.
+// that the view shows to the operator; it never ends the uncertain state.
+//
+// A hold. Late information can also arrive about a command that an operator
+// already decided was not delivered, or is deciding: a late fence result or
+// late delivery evidence for a command resolved as "not delivered, send again"
+// or as "not delivered, drop", or for an uncertain command whose resend is
+// half written. Then the queue of its target is held. A hold is a property of
+// the queue, journaled as its own record (RecordHold: the target, the command
+// the information is about, a reason code and the time) before the note, and
+// it changes no command. While a queue is held BeginDispatch refuses it as
+// queue-held, naming that command, whatever state any replacement is in (queued,
+// dispatching, ended) and whatever a running fence later reports. A replacement
+// that is already dispatching is not interrupted; if its fence wrote nothing it
+// returns to queued and the hold keeps it there. The hold is set even when the
+// note itself cannot be stored, because the note list is full or the note
+// repeats an earlier one; setting a hold for a command the queue is already
+// held for writes nothing. Only an operator ends a hold, with ReleaseHold. The
+// operator decides about an uncertain command with Resolve, as before, and
+// withdraws a queued command that must not be sent with Withdraw (allowed only
+// in a held queue). No timer, Tick or Restore ends a hold, and Restore rebuilds
+// holds from the journal and refuses a hold, release or withdrawal that the
+// live machine could not have written. The view shows, per target, whether it
+// is held, for which command, since when and why; a queue can be both frozen
+// and held. After a release, the same evidence arriving again holds the queue
+// again. A note equal to one the command already has is skipped, and at most
+// eight notes are kept (late-notes-full after that); the hold is decided before
+// both. The daemon passes each piece of evidence once.
+//
+// What is promised. Ataniq never sends by itself what an operator has not
+// decided, and it stops the queue when information arrives that contradicts an
+// operator's decision. It cannot recall a replacement whose fence is already
+// running: that replacement may still be written, and the hold only keeps the
+// next dispatch back.
 //
 // Ended commands (delivered, refused, resolved) stay in memory, without their
 // text, so that a command id is never used twice; trimming that history is the
@@ -50,9 +73,12 @@
 //   - Before dispatching a resend, the daemon looks in the conversation file
 //     for the ids of the whole resend chain (the command that was sent again,
 //     and the commands that replaced it in turn) and does not dispatch when
-//     one is found. The machine freezes a queued replacement only for evidence
-//     it is told about; evidence the daemon has not read yet is not known to
-//     it.
+//     one is found. The machine holds a queue only for evidence it is told
+//     about; evidence the daemon has not read yet is not known to it.
+//   - The daemon repeats a late call (RecordFence or ConfirmDelivery for a
+//     decided command) that returned a journal error. The hold is written
+//     before the note: if the hold failed nothing changed, and if the note
+//     failed the hold stands and the repeat writes the note only.
 //   - Refused submissions are journaled without a bound: a sender that submits
 //     refused messages in a loop writes a record for each, so the daemon must
 //     rate-limit requests before Submit.

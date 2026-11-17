@@ -81,12 +81,6 @@ const (
 	// already uncertain. It annotates the command and changes nothing else:
 	// only an operator ends uncertain.
 	ReasonLateEvidence Reason = "late-evidence"
-	// ReasonOriginalEvidenceArrived: a fence result or delivery evidence
-	// arrived for a command that an operator had already resolved as "not
-	// delivered, send again", while its replacement was still queued. The
-	// replacement becomes uncertain, so that nothing is sent a second time
-	// before an operator has looked at the evidence.
-	ReasonOriginalEvidenceArrived Reason = "original-evidence-arrived"
 	// ReasonInconsistentResult: the fence result contradicted itself.
 	ReasonInconsistentResult Reason = "inconsistent-result"
 	// ReasonOperatorDelivered: an operator decided the command was delivered.
@@ -97,12 +91,37 @@ const (
 	// ReasonOperatorResend: an operator decided it was not delivered and to
 	// send it again as a new command.
 	ReasonOperatorResend Reason = "operator-resend"
+	// ReasonOperatorWithdrawn: an operator withdrew a queued command from a held
+	// queue; it was never sent and is not sent now.
+	ReasonOperatorWithdrawn Reason = "operator-withdrawn"
+)
+
+// Reasons of a queue hold (RecordHold). Each says what the late information
+// arrived about, and each is set only for a command in the state it names.
+const (
+	// ReasonHoldAfterResend: a late fence result or late delivery evidence
+	// arrived for a command an operator resolved as "not delivered, send again".
+	ReasonHoldAfterResend Reason = "late-after-resend"
+	// ReasonHoldAfterDrop: the same, for a command an operator resolved as "not
+	// delivered, drop".
+	ReasonHoldAfterDrop Reason = "late-after-drop"
+	// ReasonHoldDuringResend: the same, for an uncertain command whose resend is
+	// half written: its replacement is queued and the resolution that completes
+	// the resend is not yet journaled.
+	ReasonHoldDuringResend Reason = "late-during-resend"
+	// ReasonHoldReleased: the reason of a release record. An operator ended the
+	// hold.
+	ReasonHoldReleased Reason = "hold-released"
 )
 
 // Reasons that refuse a call without changing any command. They are never
 // journaled.
 const (
-	ReasonQueueFrozen        Reason = "queue-frozen"
+	ReasonQueueFrozen Reason = "queue-frozen"
+	// ReasonQueueHeld: BeginDispatch for a target whose queue is held.
+	ReasonQueueHeld Reason = "queue-held"
+	// ReasonNotHeld: ReleaseHold or Withdraw for a queue that is not held.
+	ReasonNotHeld            Reason = "queue-not-held"
 	ReasonQueueEmpty         Reason = "queue-empty"
 	ReasonAlreadyDispatching Reason = "already-dispatching"
 	ReasonHeadNotQueued      Reason = "head-not-queued"

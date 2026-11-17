@@ -116,6 +116,8 @@ func TestRestoreRefusesAResolutionThatLeavesAResendQueued(t *testing.T) {
 // body of m1 arrives at most once: it arrives once for each operator decision
 // that it was delivered (of m1 or of a command sent again from it), and once
 // for each time the restored machine dispatches it, and the sum is at most 1.
+// And once a hold record, or a note for a command an operator resolved, has
+// been accepted, no command is dispatched before a release record follows it.
 // It returns how many sequences it tried and how many Restore accepted.
 func walkSequences(t *testing.T, base []Record, pool []func(seq uint64) Record, depth int) (sequences, accepted int) {
 	t.Helper()
@@ -127,7 +129,24 @@ func walkSequences(t *testing.T, base []Record, pool []func(seq uint64) Record, 
 			m, err := Restore(testLimits(), &fakeJournal{}, rs, at(time.Hour))
 			if err == nil {
 				accepted++
-				got := drain(t, m, "hello m1")
+				// Late information accepted, and then a dispatch with no operator
+				// call between: the machine must have refused the journal.
+				pending := false
+				for i, r := range rs {
+					switch {
+					case r.Type == RecordHold, r.Type == "" && r.From == r.To && r.From == StateResolved:
+						pending = true
+					case r.Type == RecordRelease:
+						pending = false
+					case r.Type == "" && r.From == StateQueued && r.To == StateDispatching && pending:
+						t.Fatalf("restore accepted a dispatch of %s (record %d) after late information and no release: %+v", r.ID, i+1, rs[n:])
+					}
+				}
+				sent := drain(t, m, "hello m1")
+				if pending && sent > 0 {
+					t.Fatalf("the restored machine dispatched the body %d times with late information and no release: %+v", sent, rs[n:])
+				}
+				got := sent
 				for _, c := range m.cmds {
 					if c.state == StateDelivered && c.reason == ReasonOperatorDelivered {
 						got++ // the operator said it already arrived
@@ -166,6 +185,15 @@ func TestNoRestoredSequenceDispatchesABodyTwice(t *testing.T) {
 		func(s uint64) Record { return pasteOnlyRec(s, "r1") },
 		func(s uint64) Record { return resendRec(s, "r3", "r1") },
 		func(s uint64) Record { return resolveRecOf(s, "r1", DecisionResend, "r3") },
+		// Late information, the operator's release and withdrawal.
+		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldAfterResend) },
+		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldDuringResend) },
+		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateResolved)) },
+		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateUncertain)) },
+		func(s uint64) Record { return releaseRec(s, "a") },
+		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r1")) },
+		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r2")) },
+		func(s uint64) Record { return dispatchRec(s, "r2") },
 	}
 	sequences, accepted := walkSequences(t, j.recs, pool, 4)
 	if accepted == 0 || accepted == sequences {
@@ -193,11 +221,25 @@ func TestNoRestoredSequenceDispatchesABodyTwice(t *testing.T) {
 		func(s uint64) Record { return pasteOnlyRec(s, "r3") },
 		func(s uint64) Record { return resendRec(s, "r5", "r3") },
 		func(s uint64) Record { return resolveRecOf(s, "r3", DecisionResend, "r5") },
+		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldAfterResend) },
+		func(s uint64) Record { return holdRec(s, "r1", ReasonHoldDuringResend) },
+		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateResolved)) },
+		func(s uint64) Record { return asSupervisor(noteRec(s, "r1", StateUncertain)) },
+		func(s uint64) Record { return releaseRec(s, "a") },
+		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r3")) },
+		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r4")) },
+		func(s uint64) Record { return dispatchRec(s, "r4") },
 	}
 	sequences, accepted = walkSequences(t, chain, chainPool, 4)
 	if accepted == 0 || accepted == sequences {
 		t.Fatalf("chain: %d of %d sequences accepted; the test does not distinguish", accepted, sequences)
 	}
+}
+
+// asSupervisor makes a record of a command that the supervisor sent.
+func asSupervisor(r Record) Record {
+	r.Sender = "supervisor"
+	return r
 }
 
 // drain dispatches and delivers everything the machine will send to lead a and
