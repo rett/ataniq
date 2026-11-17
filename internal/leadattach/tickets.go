@@ -44,6 +44,32 @@ func FileTickets(path string) func() (string, error) {
 	return func() (string, error) { return readTicketFile(path, uid) }
 }
 
+// FileTicketSource returns the two functions of a ticket file, for
+// Config.Tickets and Config.TicketReady: the same source as FileTickets, and
+// a presence check that does not take the ticket. The check is true when the
+// file at path exists, is a regular file (a symbolic link is not followed and
+// is not one) of the user with mode 0600, and is not empty. It does not open
+// the file, reads nothing of its content and empties nothing, so that
+// asking it as often as the client polls costs no ticket; a file that the
+// source would refuse, or that holds no ticket at the time of the read, is a
+// ticket that is not there as far as the check goes, and the reason for a
+// refusal is not shown while the check says no.
+func FileTicketSource(path string) (tickets func() (string, error), ready func() bool) {
+	uid := os.Geteuid()
+	return FileTickets(path), func() bool { return ticketFilePresent(path, uid) }
+}
+
+// ticketFilePresent is the check of FileTicketSource: one lstat.
+func ticketFilePresent(path string, uid int) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == uid &&
+		fi.Mode().Perm() == 0o600 && fi.Mode()&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) == 0
+}
+
 // ticketOpenFlags open the ticket file without side effects, whatever is at
 // the path: no controlling terminal is acquired if it is a terminal device
 // (O_NOCTTY), no wait for a peer if it is a named pipe (O_NONBLOCK), no

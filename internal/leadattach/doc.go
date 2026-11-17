@@ -7,23 +7,32 @@
 //
 // # Use
 //
+//	tickets, ready := leadattach.FileTicketSource(file)
 //	c := leadattach.New(leadattach.Config{
-//		Socket:  path,                          // the holder's attach.sock
-//		Mode:    leadattach.ModeWriter,         // or ModeViewer
-//		Name:    "console",                     // shown when the writer changes
-//		Tickets: leadattach.FileTickets(file),  // a fresh single-use ticket, or ErrNoTicket
+//		Socket:      path,                      // the holder's attach.sock
+//		Mode:        leadattach.ModeWriter,     // or ModeViewer
+//		Name:        "console",                 // shown when the writer changes
+//		Tickets:     tickets,                   // a fresh single-use ticket, or ErrNoTicket
+//		TicketReady: ready,                     // is there one? takes nothing; nil: always dial
 //	})
 //	// hand c to the cockpit as its Options.Live; the cockpit calls Start.
 //
 // # States
 //
-// Start never blocks. A goroutine dials the holder's socket and then asks
-// Config.Tickets for a ticket, at once and then every [TicketPoll] (500 ms):
-// the ticket is read after the dial, because the source empties a ticket when
-// it gives it and a ticket taken before a dial that fails would be lost. With
-// no ticket the connection is closed again and the status shows "waiting for a
-// ticket"; a dial that fails shows "cannot connect" and is tried again after
-// the same wait. With a ticket the client sends the Hello (the handshake
+// Start never blocks. A goroutine asks Config.TicketReady whether there is a
+// ticket, at once and then every [TicketPoll] (500 ms), and makes no
+// connection while it says no: the status shows "waiting for a ticket" and the
+// holder sees nothing (a connection that closes with no Hello would be counted
+// and logged there as a refused handshake). Only when it says yes, or when
+// there is no check (it is nil), the goroutine dials the holder's socket and
+// then asks Config.Tickets for the ticket: the ticket is read after the dial,
+// because the source empties a ticket when it gives it and a ticket taken
+// before a dial that fails would be lost. With no ticket after all (another
+// reader took it) the connection is closed again and the status shows
+// "waiting for a ticket"; a dial that fails shows "cannot connect" and is
+// tried again after the same wait. [FileTicketSource] gives the pair for a
+// ticket file; its check is one lstat and takes nothing, and a file that it
+// does not accept (a wrong mode, say) shows as no ticket, with no reason. With a ticket the client sends the Hello (the handshake
 // deadline starts then) and reads the Welcome. The state is attached only once
 // the first snapshot of the connection is applied: until then it is
 // connecting, and input is dropped and counted, because the pane still shows

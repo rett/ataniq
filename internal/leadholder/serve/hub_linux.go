@@ -61,7 +61,7 @@ type client struct {
 	conn *net.UnixConn
 	name string
 	pid  int
-	cmd  string
+	cmd  string        // set before the client is claimed, and never changed
 	done chan struct{} // closed when the sender returned
 
 	// Guarded by Server.mu.

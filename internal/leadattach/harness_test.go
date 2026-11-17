@@ -38,8 +38,11 @@ type holder struct {
 	pipes bool
 	mu    sync.Mutex
 	all   []*hconn
-	panes []*sessionpane.Pane
-	done  bool // closeAll ran: no pane is made after it
+	// accepts counts every connection the holder took, with or without a
+	// Hello: a connection the client closes for want of a ticket counts.
+	accepts atomic.Int64
+	panes   []*sessionpane.Pane
+	done    bool // closeAll ran: no pane is made after it
 }
 
 func newHolder(t *testing.T) *holder {
@@ -107,6 +110,7 @@ func (h *holder) dial(ctx context.Context, path string) (net.Conn, error) {
 }
 
 func (h *holder) adopt(nc net.Conn) {
+	h.accepts.Add(1)
 	hc := &hconn{t: h.t, nc: nc, frames: make(chan hframe, 256)}
 	h.mu.Lock()
 	h.all = append(h.all, hc)

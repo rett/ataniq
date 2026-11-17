@@ -206,3 +206,108 @@ func TestFileTicketsOneReaderAtATime(t *testing.T) {
 		t.Errorf("after the lock: %q, %v", got, err)
 	}
 }
+
+func TestFileTicketSourceReadyIsAPresenceCheck(t *testing.T) {
+	tk := newTicket(t)
+	for _, c := range []struct {
+		name  string
+		setup func(dir, path string)
+		want  bool
+	}{
+		{"absent", func(_, _ string) {}, false},
+		{"empty", func(_, p string) { writeTicketFile(t, p, "", 0o600) }, false},
+		{"a ticket", func(_, p string) { writeTicketFile(t, p, tk, 0o600) }, true},
+		{"a ticket and a newline", func(_, p string) { writeTicketFile(t, p, tk+"\n", 0o600) }, true},
+		{"junk (the source spends it)", func(_, p string) { writeTicketFile(t, p, "junk", 0o600) }, true},
+		{"mode 0644", func(_, p string) { writeTicketFile(t, p, tk, 0o644) }, false},
+		{"mode 0400", func(_, p string) { writeTicketFile(t, p, tk, 0o400) }, false},
+		{"mode 0700", func(_, p string) { writeTicketFile(t, p, tk, 0o700) }, false},
+		{"set-group-id", func(_, p string) { writeTicketFile(t, p, tk, 0o600|os.ModeSetgid) }, false},
+		{"a symbolic link to a good file", func(d, p string) {
+			real := filepath.Join(d, "real")
+			writeTicketFile(t, real, tk, 0o600)
+			if err := os.Symlink(real, p); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a dangling symbolic link", func(d, p string) {
+			if err := os.Symlink(filepath.Join(d, "nowhere"), p); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a directory", func(_, p string) {
+			if err := os.Mkdir(p, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a named pipe", func(_, p string) {
+			if err := mkfifo(p); err != nil {
+				t.Skip("no mkfifo")
+			}
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir, path := ticketDir(t)
+			c.setup(dir, path)
+			_, ready := FileTicketSource(path)
+			// Asked again and again, it says the same and changes nothing.
+			for i := 0; i < 3; i++ {
+				if got := ready(); got != c.want {
+					t.Fatalf("ready is %v, want %v", got, c.want)
+				}
+			}
+			if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+				if b, _ := os.ReadFile(path); len(b) == 0 {
+					t.Errorf("the check emptied the file")
+				}
+			}
+		})
+	}
+}
+
+func TestFileTicketSourceReadyDoesNotTakeTheTicket(t *testing.T) {
+	_, path := ticketDir(t)
+	tickets, ready := FileTicketSource(path)
+	if ready() {
+		t.Fatal("ready for an absent file")
+	}
+	tk := newTicket(t)
+	writeTicketFile(t, path, tk+"\n", 0o600)
+	for i := 0; i < 5; i++ {
+		if !ready() {
+			t.Fatal("not ready for a file that holds a ticket")
+		}
+	}
+	// The ticket is there for the one read, and then it is gone.
+	if got, err := tickets(); err != nil || got != tk {
+		t.Fatalf("ticket %q, %v", got, err)
+	}
+	if ready() {
+		t.Error("ready after the ticket was taken")
+	}
+	// A reader that holds the lock does not make the check say no: the
+	// source then finds no ticket, and the client closes the connection.
+	writeTicketFile(t, path, newTicket(t), 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := flockNB(f); err != nil {
+		t.Fatal(err)
+	}
+	if !ready() {
+		t.Error("the check is affected by the lock of another reader")
+	}
+}
+
+func TestFileTicketSourceReadyRefusesAnotherOwner(t *testing.T) {
+	_, path := ticketDir(t)
+	writeTicketFile(t, path, newTicket(t), 0o600)
+	if ticketFilePresent(path, os.Geteuid()+1) {
+		t.Error("ready for a file of another owner")
+	}
+	if !ticketFilePresent(path, os.Geteuid()) {
+		t.Error("not ready for a file of the user")
+	}
+}
