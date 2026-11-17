@@ -447,3 +447,135 @@ func TestWakeNeverRunsUnderTheStatusLock(t *testing.T) {
 		t.Error("no wake")
 	}
 }
+
+func TestNoInputBeforeTheFirstSnapshot(t *testing.T) {
+	// The Welcome comes first and the snapshot only at a quiet point: until it
+	// is applied the pane shows another screen and the modes are not known,
+	// so a key is dropped and counted, never sent.
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.h.accept()
+	hc.welcome(wire.RoleWriter)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	hc.modes([]int{1}, nil)
+	e.barrier(hc)
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	e.sink.Paste("text")
+	e.sink.Mouse(uv.MouseClickEvent{X: 1, Y: 1, Button: uv.MouseLeft})
+	st := e.c.Status()
+	if st.Conn != terminalconsole.LiveConnecting || st.RefusedInput != 3 {
+		t.Errorf("before the snapshot: state %v, refused %d, want connecting and 3", st.Conn, st.RefusedInput)
+	}
+
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	if got := hc.input(3); got != "\x1bOA" { // the first frame the holder reads is this key
+		t.Errorf("after the snapshot: %q", got)
+	}
+}
+
+func TestASizeAskedWhileConnectingIsSentAfterTheFirstSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.h.accept() // the Hello carried 80x24
+	hc.welcome(wire.RoleWriter)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	e.c.Resize(100, 30) // connecting: remembered, nothing to send to yet
+	e.barrier(hc)
+	hc.snapshot() // the holder's size is still 80x24
+	f := hc.next()
+	if f.typ != wire.TypeResize {
+		t.Fatalf("got a %s frame, want resize", wire.TypeName(f.typ))
+	}
+	if sz := enc2(t)(wire.DecodeResize(f.payload)); sz != (wire.Size{Columns: 100, Rows: 30}) {
+		t.Errorf("resize %+v", sz)
+	}
+
+	// The same size as the holder's: nothing is sent. A viewer sends nothing.
+	hc.size(100, 30)
+	e.until("the size", func(st terminalconsole.LiveStatus) bool { return st.Cols == 100 })
+	e.sink.Key(keyA)
+	if got := hc.input(1); got != "a" {
+		t.Errorf("after a size that is already the holder's: %q", got)
+	}
+}
+
+func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 1})
+	hc := e.h.accept()
+	hc.welcome(wire.RoleViewer)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	e.c.Resize(100, 30)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	e.c.Close()
+	if types := hc.closed(); string(types) != string(wire.TypeDetach) {
+		t.Errorf("frames from a viewer: %q, want only a detach", types)
+	}
+}
+
+func TestAHolderResyncNoticeStopsInputUntilTheNextSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	hc := e.attach(wire.RoleWriter)
+	e.sink.Key(keyA)
+	if got := hc.input(1); got != "a" {
+		t.Fatalf("before the notice: %q", got)
+	}
+
+	hc.notice(wire.ReasonResync, "a new snapshot follows")
+	st := e.untilConn(terminalconsole.LiveResyncing)
+	if st.Reason == "" {
+		t.Error("no reason while resyncing")
+	}
+	e.sink.Key(keyA)
+	e.sink.Paste("x")
+	e.sink.Mouse(uv.MouseClickEvent{X: 1, Y: 1, Button: uv.MouseLeft})
+	if st := e.c.Status(); st.RefusedInput != 3 {
+		t.Errorf("refused input %d, want 3", st.RefusedInput)
+	}
+	if ns := e.c.Notices(); len(ns) != 1 || ns[0].Code != "resync" {
+		t.Errorf("notices %+v", ns)
+	}
+
+	hc.snapshot()
+	st = e.until("attached again", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveAttached })
+	if st.Resyncs != 1 || st.Reason != "" {
+		t.Errorf("resyncs %d, reason %q", st.Resyncs, st.Reason)
+	}
+	e.sink.Key(key('b', 0, "b"))
+	if got := hc.input(1); got != "b" {
+		t.Errorf("after the snapshot: %q", got)
+	}
+}
+
+func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, pipe: true, tickets: 1})
+	hc := e.attach(wire.RoleWriter)
+	hc.pause()
+
+	// The holder reads the first frame and then stops: the second waits in
+	// the sender's blocked write, and the rest in the queue, where the three
+	// keys share a frame.
+	e.sink.Paste("first")
+	e.sink.Paste("second")
+	e.sink.Key(keyA)
+	e.sink.Key(keyA)
+	e.sink.Key(keyA)
+	e.sink.Paste("last")
+	if n := counter(e.c.Status(), "client-input-dropped"); n != 0 {
+		t.Fatalf("%d dropped before the connection was given up", n)
+	}
+
+	// A check mismatch gives the connection up. Whatever was queued would
+	// reach a different screen, so it is not sent, and it is counted by what
+	// the user typed: one second paste, three keys, one last paste.
+	hc.corrupt("A", "B")
+	hc.check()
+	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-dropped") == 5 })
+	hc.resume()
+	hc.closed()
+}

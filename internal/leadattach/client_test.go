@@ -36,7 +36,14 @@ func TestHandshakeAndWelcomeReachTheStatus(t *testing.T) {
 	}
 
 	hc.welcome(wire.RoleWriter)
-	st := e.untilConn(terminalconsole.LiveAttached)
+	// The Welcome fills the status, but the client is attached only once the
+	// first snapshot is applied.
+	st := e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	if st.Conn != terminalconsole.LiveConnecting {
+		t.Errorf("state after the welcome alone: %v", st.Conn)
+	}
+	hc.snapshot()
+	st = e.untilConn(terminalconsole.LiveAttached)
 	if st.Role != terminalconsole.LiveWriter || st.Lead != "lead-one" || st.Epoch != 3 || st.Runtime != "claude" || st.Version != "1.2.3" {
 		t.Errorf("status after welcome: %+v", st)
 	}
@@ -74,6 +81,7 @@ func TestWaitingForATicketPollsEveryHalfSecond(t *testing.T) {
 	e.tickets.give(1)
 	hc := e.h.accept()
 	hc.welcome(wire.RoleWriter)
+	hc.snapshot()
 	e.untilConn(terminalconsole.LiveAttached)
 }
 
@@ -329,18 +337,56 @@ func TestStateFrameSetsTheFactsWithoutEndingThePane(t *testing.T) {
 	e.sameScreen(hc)
 }
 
-func TestRoleChangeAndWriterNotice(t *testing.T) {
+func TestAStateThatSaysTheStreamEndedEndsThePane(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer})
+	hc := e.attach(wire.RoleViewer)
+	status := 7
+	hc.send(wire.TypeState, enc(t)(wire.EncodeState(wire.State{
+		Facts:      wire.Facts{StreamEnded: wire.FactYes, TUIExited: wire.FactYes, TreeGone: wire.FactNo},
+		ExitStatus: &status, Idle: "idle",
+	})))
+	e.until("the pane ended", func(terminalconsole.LiveStatus) bool { ended, _, _ := e.pane.Ended(); return ended })
+	if _, got, known := e.pane.Ended(); got != 7 || !known {
+		t.Errorf("pane status %d known %v, want 7 true", got, known)
+	}
+	if st := e.c.Status(); st.End.Stream != terminalconsole.FactYes || st.End.ExitStatus != 7 {
+		t.Errorf("end %+v", st.End)
+	}
+
+	// The connection breaks before the Exit: the client does not go on asking
+	// for tickets for a session that ended.
+	hc.nc.Close()
+	st := e.until("disconnected", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveDisconnected })
+	if st.Reason != "session ended" {
+		t.Errorf("reason %q", st.Reason)
+	}
+	calls := e.tickets.callCount()
+	e.tickets.give(1)
+	e.h.noConnection(60 * time.Millisecond)
+	if e.tickets.callCount() != calls {
+		t.Error("the client asked for a ticket after the session ended")
+	}
+}
+
+func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})
 	hc := e.attach(wire.RoleWriter)
-	hc.roleFrame(wire.RoleWriter, "test console") // the first frame is the state, not a change
-	e.until("role frame", func(terminalconsole.LiveStatus) bool { return true })
+	hc.roleFrame(wire.RoleWriter, "test console")
 	hc.roleFrame(wire.RoleViewer, "other console")
 	st := e.until("viewer", func(st terminalconsole.LiveStatus) bool { return st.Role == terminalconsole.LiveViewer })
 	if st.Conn != terminalconsole.LiveAttached {
 		t.Errorf("state %v", st.Conn)
 	}
-	ns := e.c.Notices()
+	if ns := e.c.Notices(); len(ns) != 0 {
+		t.Fatalf("a Role frame made notices: %+v", ns)
+	}
+
+	// The holder follows a Role frame with one Notice: one notice for the
+	// writer change, naming the new writer from the Role frame.
+	hc.notice(wire.ReasonWriterChanged, "the writer is now other console")
+	ns := e.notices(1)
 	if len(ns) != 1 || ns[0].Code != terminalconsole.NoticeWriterChanged || ns[0].Client != "other console" {
 		t.Fatalf("notices %+v", ns)
 	}
@@ -348,10 +394,50 @@ func TestRoleChangeAndWriterNotice(t *testing.T) {
 		t.Errorf("notices are kept after being taken: %+v", again)
 	}
 
+	// A release is the same: the Role frame is silent, the holder's Notice
+	// is the one notice, with its own text.
 	hc.roleFrame(wire.RoleViewer, "")
+	hc.notice(wire.ReasonWriterReleased, "the writer was released")
+	hc.notice(wire.Reason("barrier"), "")
+	ns = e.notices(2)
+	if len(ns) != 2 || ns[0].Code != "writer-released" || ns[0].Text != "the writer was released" || ns[1].Code != "barrier" {
+		t.Errorf("notices after a release: %+v", ns)
+	}
+}
+
+func TestInputBrokenNoticeIsShownOnce(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.attach(wire.RoleWriter)
+	hc.notice(wire.Reason("input-broken"), "the write to the agent failed: broken pipe")
+	ns := e.notices(1)
+	want := terminalconsole.LiveNotice{Code: "input-broken", Text: "the agent's input is broken: nothing more can be typed"}
+	if len(ns) != 1 || ns[0] != want {
+		t.Fatalf("notices %+v, want %+v", ns, want)
+	}
+
+	// Again, even after the cockpit took the first: not twice. A marker
+	// notice shows the second was applied.
+	hc.notice(wire.Reason("input-broken"), "again")
+	hc.notice(wire.Reason("marker"), "")
 	ns = e.notices(1)
-	if ns[0].Code != terminalconsole.NoticeWriterChanged || ns[0].Client != "" || ns[0].Text == "" {
-		t.Errorf("notice for no writer: %+v", ns)
+	if len(ns) != 1 || ns[0].Code != "marker" {
+		t.Errorf("notices after a second input-broken: %+v", ns)
+	}
+
+	// A new connection of the same client does not say it again either.
+	hc.corrupt("A", "B")
+	hc.check()
+	hc.closed()
+	e.tickets.give(1)
+	hc2 := e.reattachAs(wire.RoleWriter)
+	hc2.notice(wire.Reason("input-broken"), "")
+	hc2.notice(wire.Reason("marker"), "")
+	ns = e.notices(2)
+	for _, n := range ns {
+		if n.Code == "input-broken" {
+			t.Errorf("input-broken said again: %+v", ns)
+		}
 	}
 }
 
@@ -516,6 +602,7 @@ func TestRefusals(t *testing.T) {
 			e.tickets.give(1)
 			hc2 := e.h.accept()
 			hc2.welcome(wire.RoleWriter)
+			hc2.snapshot()
 			e.untilConn(terminalconsole.LiveAttached)
 		})
 	}
@@ -560,6 +647,7 @@ func TestHostileHolders(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name  string
+		early bool            // send after the Welcome alone, before any snapshot
 		after func(hc *hconn) // sent after the Welcome
 		raw   func(hc *hconn) // raw bytes, instead of a Welcome
 		want  string
@@ -576,7 +664,7 @@ func TestHostileHolders(t *testing.T) {
 		{name: "a bad snapshot", after: func(hc *hconn) {
 			hc.send(wire.TypeSnapshot, enc(hc.t)(wire.EncodeSnapshot(0, []byte("not a snapshot"))))
 		}, want: "snapshot the pane refused"},
-		{name: "output before a snapshot", after: func(hc *hconn) {
+		{name: "output before a snapshot", early: true, after: func(hc *hconn) {
 			hc.send(wire.TypeOutput, enc(hc.t)(wire.EncodeOutput(0, []byte("x"))))
 		}, want: "before a snapshot"},
 		{name: "a short Output", after: func(hc *hconn) { hc.nc.Write(append(header(wire.TypeOutput, 3), 1, 2, 3)) }, want: "too short"},
@@ -597,7 +685,12 @@ func TestHostileHolders(t *testing.T) {
 				c.raw(hc)
 			} else if c.after != nil {
 				hc.welcome(wire.RoleWriter)
-				e.untilConn(terminalconsole.LiveAttached)
+				if c.early {
+					e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+				} else {
+					hc.snapshot()
+					e.untilConn(terminalconsole.LiveAttached)
+				}
 				c.after(hc)
 			} else {
 				return
@@ -612,6 +705,7 @@ func TestHostileHolders(t *testing.T) {
 			e.tickets.give(1)
 			hc2 := e.h.accept()
 			hc2.welcome(wire.RoleWriter)
+			hc2.snapshot()
 			e.untilConn(terminalconsole.LiveAttached)
 		})
 	}
@@ -734,5 +828,114 @@ func TestWakeIsCalledAfterChangesAndNeverUnderTheStatusLock(t *testing.T) {
 	case <-done:
 	case <-time.After(wait):
 		t.Fatal("deadlock")
+	}
+}
+
+// mismatch makes the holder send a Check the client's screen does not match,
+// and waits until the client has given the connection up.
+func (hc *hconn) mismatch() {
+	hc.t.Helper()
+	hc.corrupt("A", "B")
+	hc.check()
+	hc.closed()
+}
+
+// reattach welcomes the connection the client made next, with a snapshot of
+// the holder's screen, and waits for the client to be attached.
+func (e *env) reattach() *hconn { return e.reattachAs(wire.RoleViewer) }
+
+func (e *env) reattachAs(role wire.Role) *hconn {
+	e.t.Helper()
+	hc := e.h.accept()
+	hc.welcome(role)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	return hc
+}
+
+// heldClock holds every wait longer than a ticket poll until the test
+// releases it, and records it like the scaled clock does.
+type heldClock struct {
+	base   *scaledClock
+	timers chan chan time.Time
+}
+
+type heldTimer struct{ ch chan time.Time }
+
+func (h heldTimer) C() <-chan time.Time { return h.ch }
+func (h heldTimer) Stop() bool          { return true }
+
+func (c *heldClock) NewTimer(d time.Duration) leadattach.Timer {
+	if d <= leadattach.TicketPoll {
+		return c.base.NewTimer(d)
+	}
+	c.base.mu.Lock()
+	c.base.durs = append(c.base.durs, d)
+	c.base.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	c.timers <- ch
+	return heldTimer{ch}
+}
+
+func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
+	leakCheck(t)
+	var held *heldClock
+	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 8, mutate: func(c *leadattach.Config) {
+		held = &heldClock{base: c.Clock.(*scaledClock), timers: make(chan chan time.Time, 8)}
+		c.Clock = held
+	}})
+	// release lets the held wait of the client go, once it has begun.
+	release := func() {
+		t.Helper()
+		select {
+		case ch := <-held.timers:
+			ch <- time.Now()
+		case <-time.After(wait):
+			t.Fatal("the client did not wait")
+		}
+	}
+	hc := e.reattach()
+	waits := func() []time.Duration { return e.clock.asked() } // tickets are ready: only backoff waits are asked
+
+	// The first mismatch is followed at once.
+	hc.mismatch()
+	hc = e.reattach()
+	if w := waits(); len(w) != 0 {
+		t.Fatalf("waited %v after the first resync", w)
+	}
+	// From the second, the wait doubles, and the reason says so.
+	hc.mismatch()
+	st := e.until("the wait", func(st terminalconsole.LiveStatus) bool {
+		return st.Conn == terminalconsole.LiveResyncing && strings.Contains(st.Reason, "trying again in 1s")
+	})
+	if !strings.HasPrefix(st.Reason, "check mismatch") {
+		t.Errorf("reason %q", st.Reason)
+	}
+	e.h.noConnection(30 * time.Millisecond) // held: no connection meanwhile
+	release()
+	hc = e.reattach()
+	hc.mismatch()
+	release()
+	hc = e.reattach()
+	want := []time.Duration{2 * leadattach.TicketPoll, 4 * leadattach.TicketPoll}
+	if w := waits(); len(w) != 2 || w[0] != want[0] || w[1] != want[1] {
+		t.Fatalf("waits %v, want %v", w, want)
+	}
+
+	// A snapshot alone does not end the back-off, a matching Check does.
+	hc.write("ok")
+	hc.check()
+	e.until("the check", func(terminalconsole.LiveStatus) bool { return e.pane.Digest() == hc.pane.Digest() })
+	e.barrier(hc)
+	hc.mismatch() // the first resync again: no wait
+	hc = e.reattach()
+	if w := waits(); len(w) != 2 {
+		t.Errorf("waits %v: a mismatch after a matching check was waited for", w)
+	}
+	hc.mismatch()
+	release()
+	e.reattach()
+	if w := waits(); len(w) != 3 || w[2] != 2*leadattach.TicketPoll {
+		t.Errorf("waits %v, want the back-off to start again at 1s", w)
 	}
 }

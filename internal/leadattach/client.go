@@ -55,7 +55,10 @@ type Client struct {
 	holderCounters []terminalconsole.LiveCounter
 	lastScreen     string
 	notices        []terminalconsole.LiveNotice
-	cnt            counters
+	// inputBrokenShown is set once the notice that the agent's input is
+	// broken was made: it is said once for the life of the client.
+	inputBrokenShown bool
+	cnt              counters
 }
 
 // counters are the client's own counters, shown with the holder's.
@@ -275,6 +278,16 @@ func (c *Client) setConnecting(resync bool) {
 	})
 }
 
+// setResyncWait says in the reason that the next connection of a repeated
+// resync is made after d. The state stays resyncing.
+func (c *Client) setResyncWait(d time.Duration) {
+	c.mutate(func() {
+		if c.st.Conn == terminalconsole.LiveResyncing {
+			c.st.Reason += "; trying again in " + d.String()
+		}
+	})
+}
+
 // setDisconnected records why a connection ended.
 func (c *Client) setDisconnected(reason string) {
 	c.mutate(func() {
@@ -330,8 +343,13 @@ func (c *Client) run() {
 	defer c.wg.Done()
 	var (
 		resync bool
-		fails  int
-		wait   time.Duration
+		// fails counts consecutive protocol errors and resyncs counts
+		// consecutive client-side resyncs; both go back to zero only when a
+		// Check matched on a connection, not when a snapshot was applied: a
+		// holder whose checks never match would otherwise be asked for a
+		// snapshot in a tight loop.
+		fails, resyncs int
+		wait           time.Duration
 	)
 	for {
 		if wait > 0 && !c.sleep(wait) {
@@ -354,8 +372,8 @@ func (c *Client) run() {
 		}
 		out := c.attach(nc, ticket, resync)
 		resync = false
-		if out.snapshot {
-			fails = 0
+		if out.checked {
+			fails, resyncs = 0, 0
 		}
 		switch out.kind {
 		case outClosed:
@@ -365,11 +383,25 @@ func (c *Client) run() {
 			return
 		case outResync:
 			resync = true
+			resyncs++
+			if resyncs > 1 {
+				// The first resync is at once; from the second the wait
+				// doubles, so a mismatch that repeats is not a hot loop.
+				wait = TicketPoll * time.Duration(min(1<<min(resyncs-1, 6), maxBackoffPolls))
+				c.setResyncWait(wait)
+			}
 		case outProtocol:
 			fails++
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))
 		default:
+			if ended, _, _ := c.pane.Ended(); ended {
+				// The holder said the stream ended (a State frame) and the
+				// connection broke before its Exit: there is nothing to
+				// attach to again.
+				c.setDisconnected("session ended")
+				return
+			}
 			c.setDisconnected(out.reason)
 			wait = TicketPoll
 		}

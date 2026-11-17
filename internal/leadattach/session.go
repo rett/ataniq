@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ataniq/internal/leadholder/wire"
@@ -22,6 +23,10 @@ type conn struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	sendDone chan struct{}
+
+	// lost counts the pushes of frames the sender took from the queue and
+	// did not write: the connection was given up under them.
+	lost atomic.Int64
 
 	mu       sync.Mutex
 	cause    string
@@ -57,9 +62,10 @@ func (cn *conn) interrupt() {
 }
 
 // finish stops the sender, sends a Detach when asked and the sender is
-// healthy, and closes the connection.
-func (cn *conn) finish(detach bool) {
-	cn.q.close()
+// healthy, and closes the connection. It returns how many pushes of input
+// were queued and never written.
+func (cn *conn) finish(detach bool) (dropped int) {
+	dropped = cn.q.close()
 	cn.stopOnce.Do(func() { close(cn.stop) })
 	// A sender stuck in a write to a holder that does not read must let go.
 	_ = cn.nc.SetWriteDeadline(time.Now().Add(detachTimeout))
@@ -69,6 +75,7 @@ func (cn *conn) finish(detach bool) {
 		_ = wire.Write(cn.nc, wire.ToHolder, wire.TypeDetach, nil)
 	}
 	_ = cn.nc.Close()
+	return dropped + int(cn.lost.Load())
 }
 
 // sendLoop writes the queued frames to the holder, in order, until the
@@ -88,11 +95,13 @@ func (c *Client) sendLoop(cn *conn) {
 			}
 			select {
 			case <-cn.stop:
+				cn.lost.Add(int64(f.n))
 				return
 			default:
 			}
 			_ = cn.nc.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
 			if err := wire.Write(cn.nc, wire.ToHolder, f.typ, f.payload); err != nil {
+				cn.lost.Add(int64(f.n))
 				if c.ctx.Err() == nil {
 					cn.fail("could not send to the holder: "+netReason(err), true)
 				}
@@ -126,6 +135,9 @@ type outcome struct {
 	reason string
 	// snapshot is true when a snapshot was applied on the connection.
 	snapshot bool
+	// checked is true when a Check of the holder matched the screen on the
+	// connection: the replica followed the holder at least once.
+	checked bool
 }
 
 // session is the state of one connection, used by the client's goroutine
@@ -139,8 +151,8 @@ type session struct {
 	havePos   bool
 	pos       uint64
 	snaps     int
+	checked   bool
 	modesSeen bool
-	roleSeen  bool
 	writer    string
 	hint      string
 }
@@ -168,8 +180,15 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 		if !started {
 			close(cn.sendDone)
 		}
-		cn.finish(out.kind == outClosed || out.kind == outResync)
+		if n := cn.finish(out.kind == outClosed || out.kind == outResync); n > 0 {
+			// Input that was queued and never written is not sent later, to
+			// a different screen; it is counted.
+			c.mu.Lock()
+			c.cnt.inputDropped += uint64(n)
+			c.mu.Unlock()
+		}
 		out.snapshot = s.snaps > 0
+		out.checked = s.checked
 	}()
 
 	payload, err := wire.EncodeHello(hello)
@@ -317,10 +336,10 @@ func (s *session) handshake(f wire.Frame) *outcome {
 		c.st.Runtime, c.st.Version = w.Runtime, w.RuntimeVersion
 		c.st.Role = terminalconsole.LiveRole(w.Role)
 		c.role, c.caps = w.Role, w.Caps
-		if !s.resync {
-			c.st.Conn = terminalconsole.LiveAttached
-			c.st.Reason = ""
-		}
+		// The state stays connecting (or resyncing) until the first
+		// snapshot of the connection is applied: until then the pane shows
+		// another screen and the modes are not the holder's, so input
+		// would go to a screen the user cannot see.
 		if want := wire.Role(c.cfg.Mode); want != w.Role {
 			c.addNoticeLocked(terminalconsole.LiveNotice{Code: "role-granted", Text: "Asked to attach as " + string(want) + "; the holder granted " + string(w.Role) + "."})
 		}
@@ -359,6 +378,7 @@ func (s *session) snapshot(payload []byte) *outcome {
 		set := c.pane.ModeSet()
 		fallback = ModeSet{DEC: set.DEC, ANSI: set.ANSI}
 	}
+	var resize *wire.Size
 	c.mutate(func() {
 		c.cnt.snapshots++
 		if s.snaps > 1 {
@@ -370,10 +390,18 @@ func (s *session) snapshot(payload []byte) *outcome {
 		if !s.modesSeen {
 			c.modes, c.st.Modes = fallback, fallback.Modes()
 		}
-		if c.st.Conn == terminalconsole.LiveResyncing {
+		if c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveAttached, ""
 		}
+		// A size asked for while connecting was not in the Hello, or the
+		// holder kept another one: as the writer, ask for it now.
+		if s.snaps == 1 && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
+			resize = &wire.Size{Columns: c.wantCols, Rows: c.wantRows}
+		}
 	})
+	if resize != nil {
+		s.cn.q.setResize(*resize)
+	}
 	return nil
 }
 
@@ -452,6 +480,16 @@ func (s *session) state(payload []byte) *outcome {
 	if err != nil {
 		return protocolError("the holder sent a bad state frame")
 	}
+	// A State that says the terminal stream ended ends the pane, as the Exit
+	// that follows it would: if the connection drops between the two, the
+	// pane must not stay live with nothing to feed it.
+	if st.Facts.StreamEnded == wire.FactYes {
+		status, known := 0, st.ExitStatus != nil
+		if known {
+			status = *st.ExitStatus
+		}
+		c.pane.End(status, known)
+	}
 	c.mutate(func() {
 		c.st.End = endFacts(st.Facts, st.ExitStatus)
 		c.st.Idle, c.st.Title = st.Idle, st.Title
@@ -465,18 +503,13 @@ func (s *session) roleFrame(payload []byte) *outcome {
 	if err != nil {
 		return protocolError("the holder sent a bad role frame")
 	}
-	changed := s.roleSeen && ri.WriterName != s.writer
-	s.roleSeen, s.writer = true, ri.WriterName
+	// The Role frame only updates the status and the name a later Notice
+	// uses: the holder says every writer change once in a Notice of its
+	// own, and the cockpit must not show it twice.
+	s.writer = ri.WriterName
 	c.mutate(func() {
 		c.role = ri.Role
 		c.st.Role = terminalconsole.LiveRole(ri.Role)
-		if changed {
-			n := terminalconsole.LiveNotice{Code: terminalconsole.NoticeWriterChanged, Client: ri.WriterName}
-			if ri.WriterName == "" {
-				n.Text = "The writer was released: there is no writer now."
-			}
-			c.addNoticeLocked(n)
-		}
 	})
 	return nil
 }
@@ -492,6 +525,7 @@ func (s *session) check(payload []byte) *outcome {
 		return nil
 	}
 	if wire.DigestHex(c.pane.Digest()) == ck.Digest {
+		s.checked = true
 		return nil
 	}
 	c.mutate(func() {
@@ -503,6 +537,14 @@ func (s *session) check(payload []byte) *outcome {
 	return &outcome{kind: outResync}
 }
 
+// reasonInputBroken is the reason token of the Notice the holder sends when
+// the agent's input is broken (the write to it failed for good). The wire
+// package has no constant for it yet.
+const reasonInputBroken wire.Reason = "input-broken"
+
+// inputBrokenText is what the cockpit says of it.
+const inputBrokenText = "the agent's input is broken: nothing more can be typed"
+
 func (s *session) notice(payload []byte) *outcome {
 	c := s.c
 	n, err := wire.DecodeNotice(payload)
@@ -511,7 +553,7 @@ func (s *session) notice(payload []byte) *outcome {
 	}
 	text := shorten(n.Text, wire.MaxNoticeText)
 	out := terminalconsole.LiveNotice{Code: string(n.Reason), Text: text}
-	refused := false
+	refused, resyncing, once := false, false, false
 	switch n.Reason {
 	case wire.ReasonKeyHeldSuspend, wire.ReasonKeyHeldSignal:
 		out.Code = terminalconsole.NoticeHeldKey
@@ -520,6 +562,16 @@ func (s *session) notice(payload []byte) *outcome {
 	case wire.ReasonWriterChanged:
 		// The cockpit's own text names the writer.
 		out.Code, out.Text, out.Client = terminalconsole.NoticeWriterChanged, "", s.writer
+	case reasonInputBroken:
+		// The agent's input is broken for good: the cockpit says so once,
+		// in its own words, whatever text the holder gave.
+		out.Text = inputBrokenText
+		once = true
+	case wire.ReasonResync:
+		// The holder dropped output this client could not take and sends a
+		// new snapshot on this connection: the screen is behind until it
+		// is applied, so input is not sent meanwhile.
+		resyncing = true
 	case wire.ReasonTooSlow:
 		out.Code = terminalconsole.NoticeTooSlow
 		s.hint = "too slow"
@@ -529,6 +581,15 @@ func (s *session) notice(payload []byte) *outcome {
 	c.mutate(func() {
 		if refused {
 			c.st.RefusedInput++
+		}
+		if once {
+			if c.inputBrokenShown {
+				return
+			}
+			c.inputBrokenShown = true
+		}
+		if resyncing && c.st.Conn == terminalconsole.LiveAttached {
+			c.st.Conn, c.st.Reason = terminalconsole.LiveResyncing, "the holder is sending a new snapshot"
 		}
 		c.addNoticeLocked(out)
 	})

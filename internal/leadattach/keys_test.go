@@ -160,8 +160,19 @@ func TestEncodeKey(t *testing.T) {
 		{"f11", key(uv.KeyF11, 0, ""), none, leadattach.KeyOptions{}, "\x1b[23~"},
 		{"f12", key(uv.KeyF12, 0, ""), none, leadattach.KeyOptions{}, "\x1b[24~"},
 		{"ctrl+f5", key(uv.KeyF5, ctrl, ""), none, leadattach.KeyOptions{}, "\x1b[15;5~"},
-		{"f13", key(uv.KeyF13, 0, ""), none, leadattach.KeyOptions{}, "\x1b[25~"},
-		{"f20", key(uv.KeyF20, 0, ""), none, leadattach.KeyOptions{}, "\x1b[34~"},
+		// F13 to F20 are the forms of Shift+F1 to Shift+F8, as xterm sends them.
+		{"f13", key(uv.KeyF13, 0, ""), none, leadattach.KeyOptions{}, "\x1b[1;2P"},
+		{"f14", key(uv.KeyF14, 0, ""), none, leadattach.KeyOptions{}, "\x1b[1;2Q"},
+		{"f15", key(uv.KeyF15, 0, ""), none, leadattach.KeyOptions{}, "\x1b[1;2R"},
+		{"f16", key(uv.KeyF16, 0, ""), none, leadattach.KeyOptions{}, "\x1b[1;2S"},
+		{"f17", key(uv.KeyF17, 0, ""), none, leadattach.KeyOptions{}, "\x1b[15;2~"},
+		{"f18", key(uv.KeyF18, 0, ""), none, leadattach.KeyOptions{}, "\x1b[17;2~"},
+		{"f19", key(uv.KeyF19, 0, ""), none, leadattach.KeyOptions{}, "\x1b[18;2~"},
+		{"f20", key(uv.KeyF20, 0, ""), none, leadattach.KeyOptions{}, "\x1b[19;2~"},
+		{"ctrl+f13 adds to the shift", key(uv.KeyF13, ctrl, ""), none, leadattach.KeyOptions{}, "\x1b[1;6P"},
+		{"alt+f20 adds to the shift", key(uv.KeyF20, alt, ""), none, leadattach.KeyOptions{}, "\x1b[19;4~"},
+		{"shift+f13 is f13", key(uv.KeyF13, shift, ""), none, leadattach.KeyOptions{}, "\x1b[1;2P"},
+		{"f13, application cursor keys", key(uv.KeyF13, 0, ""), appCursor, leadattach.KeyOptions{}, "\x1b[1;2P"},
 		{"f21 has no encoding", key(uv.KeyF21, 0, ""), none, leadattach.KeyOptions{}, ""},
 
 		// The keypad.

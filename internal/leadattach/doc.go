@@ -20,18 +20,29 @@
 // Start never blocks. A goroutine asks Config.Tickets for a ticket, at once
 // and then every [TicketPoll] (500 ms), and shows "waiting for a ticket" in
 // the status; with a ticket it dials (connecting), sends the Hello and reads
-// the Welcome. The state is attached from the Welcome. A refusal before the
+// the Welcome. The state is attached only once the first snapshot of the
+// connection is applied: until then it is connecting, and input is dropped and
+// counted, because the pane still shows another screen and the modes are not
+// the holder's yet. A refusal before the
 // Welcome becomes the reason of the disconnect: refused-ticket and refused-busy
 // send the client back to waiting for a ticket, refused-version (and a Welcome
 // of another protocol version) stops it. A lost connection goes back to
 // waiting for a ticket, and so does one the holder broke the protocol on, after
 // a wait that doubles with each such connection (up to 30 s). The Exit frame
 // ends the pane and the client: disconnected, "session ended", no reattach.
+// So does a State frame whose stream-ended fact is yes when the connection is
+// lost before the Exit.
 //
 // A check mismatch or a gap in the output positions makes the client close the
 // connection, with a Detach, and attach again with a new ticket: the state is
 // resyncing until the new snapshot is applied. The mismatch and the resync are
-// counted.
+// counted. The first resync is followed at once; from the second the wait
+// doubles (up to 30 s) and the reason says so, so that a holder whose checks
+// never match is not asked for a snapshot in a tight loop. The count goes back
+// to zero only when a Check matched on a connection. A resync Notice from the
+// holder, which drops output this client could not take and sends a new
+// snapshot on the same connection, also makes the state resyncing until that
+// snapshot is applied.
 //
 // # What the client feeds
 //
@@ -43,7 +54,10 @@
 // LiveStatus.Modes: the cockpit decides what to ask of the outer terminal from
 // that and not from the pane. Until a Modes frame comes on a connection, the
 // modes of its first snapshot stand in. State fills the end facts, the idle
-// word and the title without ending the pane.
+// word and the title, and ends the pane only when it says the stream ended.
+// The Role frame only updates the role; the holder's Notice is the one notice
+// of a writer change. The Notice with the reason input-broken (the agent's
+// input is broken for good) is shown once, in a text of this client's own.
 //
 // The pane's Options.Replies must stay nil in live mode: the holder alone
 // answers the session's queries, and a replica's answers would reach the
@@ -57,8 +71,8 @@
 // is not attached as the writer, and viewer-input-refused notices from the
 // holder). LiveStatus.Counters lists the client's own, all named client-*
 // (snapshots, position-gaps, checks-skipped for a Check at another position,
-// input-dropped for a full queue, keys-unencodable, pastes-refused,
-// notices-dropped), then the holder's from its Exit in name order. The
+// input-dropped for a full queue and for input queued when a connection was
+// given up, keys-unencodable, pastes-refused, notices-dropped), then the holder's from its Exit in name order. The
 // holder's State frame carries no counters.
 //
 // # Input
@@ -71,7 +85,9 @@
 // whole (the holder wraps it for the session's paste mode), or is refused with
 // a notice when it is over the 64 KiB a frame holds, because several frames
 // would be several pastes. Resize sends the newest size only, as a Resize
-// frame, and not the size the holder already has.
+// frame, and not the size the holder already has. A size asked for while
+// connecting is sent as the writer when the first snapshot is applied, if it
+// differs from the holder's.
 //
 // Sending never blocks the cockpit: frames wait in a queue of at most 256, a
 // run of keys shares frames of up to 64 KiB, and what does not fit is dropped,

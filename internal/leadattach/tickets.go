@@ -44,8 +44,15 @@ func FileTickets(path string) func() (string, error) {
 	return func() (string, error) { return readTicketFile(path, uid) }
 }
 
+// ticketOpenFlags open the ticket file without side effects, whatever is at
+// the path: no controlling terminal is acquired if it is a terminal device
+// (O_NOCTTY), no wait for a peer if it is a named pipe (O_NONBLOCK), no
+// symbolic link is followed (O_NOFOLLOW), and the descriptor does not reach a
+// child process (O_CLOEXEC).
+const ticketOpenFlags = os.O_RDWR | unix.O_NOCTTY | unix.O_NONBLOCK | unix.O_NOFOLLOW | unix.O_CLOEXEC
+
 func readTicketFile(path string, uid int) (string, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, ticketOpenFlags, 0)
 	if err != nil {
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
