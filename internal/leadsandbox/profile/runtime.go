@@ -1,5 +1,10 @@
 package profile
 
+// The per-runtime configuration of this package (the names below, the
+// per-runtime inside paths in inside.go and the managed-settings path in
+// inputs.go) is existing configuration that is to move into provider packs
+// (owner decision PQ1, after 0.0.10). Add no new runtime-specific branch here.
+
 // Runtime is the agent runtime of an epoch.
 type Runtime string
 

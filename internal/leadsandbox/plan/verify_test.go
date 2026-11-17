@@ -161,7 +161,47 @@ func TestVerifyMutations(t *testing.T) {
 		{"folder below a never-mounted path", ProbNever, false, func(t *testing.T, p *Plan) {
 			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/home/owner/.claude/projects", "/x")
 		}},
+		// The rules about other state under the state root.
+		{"the holder folder mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/leads/arc-lead/holder", "/x")
+		}},
+		{"another role's mailbox as the mailbox", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/mailbox/arc-lead")+1] = "/state/mailbox/other-lead"
+		}},
+		{"the lead's own mailbox as another row", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/mailbox/arc-lead"
+		}},
+		{"the lead's own mailbox as a mount that is no row", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/mailbox/arc-lead", "/x")
+		}},
+		{"a folder of the lead's own mailbox", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/mailbox/arc-lead")+1] = "/state/mailbox/arc-lead/a-message"
+		}},
+		{"another project's published folder as the coordinator row", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/pub/demo")+1] = "/state/pub/other"
+		}},
+		{"the project's own published folder as another row", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/assignment/demo")+1] = "/state/pub/demo"
+		}},
+		{"a coordinator's tree mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/coords/demo/a-feature/tree", "/x")
+		}},
+		{"a coordinator's home as the mail folder", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/mail")+1] = "/state/coords/demo/a-feature/home"
+		}},
+		{"the coordinators' login mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/coord-login/demo/claude"
+		}},
 		// Rule G1: no source in or below a folder the lead can write.
+		{"a read-only source in the requests folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/requests/qargi"
+		}},
+		{"a read-only source in the records folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/qargi/install"
+		}},
+		{"a read-only source in the mail folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/mailbox/arc-lead")+1] = "/state/leads/arc-lead/mail/a-feature"
+		}},
 		{"git config bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")+1] = "/state/leads/arc-lead/tree/.git/config"
 		}},

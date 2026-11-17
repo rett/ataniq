@@ -30,10 +30,11 @@
 // write could therefore be replaced by a link that brings a folder of the
 // owner into the sandbox. So the profile holds one rule: no row of the bind
 // table has a source in or below a host folder the lead can write (the home,
-// the config folder, the tree, the records folder: the sources of the
-// read-write rows). A folder the lead writes is bound whole from an
-// Ataniq-owned parent, or its content is copied in. [ValidateTable] refuses a
-// table that breaks the rule, and so does [Inputs.Validate].
+// the config folder, the tree, the records folder, the requests folder and the
+// mail folder: the sources of the read-write rows). A folder the lead writes
+// is bound whole from an Ataniq-owned parent, or its content is copied in.
+// [ValidateTable] refuses a table that breaks the rule, and so does
+// [Inputs.Validate].
 //
 // The rule moved three rows. The tree's .git/config, .git/hooks and .git/info
 // are still bound read-only at their places inside, over the tree, but their
@@ -61,6 +62,66 @@
 // the sandbox. The flag [Bind.LeadWritable]
 // is kept for the targets: the mount points of these three rows still lie in
 // the tree, and Ataniq still makes them there before the first run.
+//
+// # The records, requests, mailbox, mail and coordinator rows
+//
+// Every table has the row of the lead's working Qargi records: read-write,
+// from [Layout.QargiRecords], <state>/leads/<role>/qargi, at the inside path
+// the caller gives ([Inputs.QargiRecordsInside], required: Qargi's layout
+// names it, and the package knows no default). The host folder is the
+// layout's and no input.
+//
+// Every table also has four rows whose sources are the layout's, not the
+// caller's (the lead-hosting design, revision 4, section 3.3):
+//
+//   - [RequestsInside], /ataniq/requests, read-write, from [Layout.Requests],
+//     <state>/leads/<role>/requests. In this version it is only a bound
+//     folder: nothing in Ataniq reads it;
+//   - [MailboxInside], /ataniq/mailbox, read-only, from [Layout.Mailbox],
+//     <state>/mailbox/<role>, which is Ataniq's;
+//   - [MailInside], /ataniq/mail, read-write, from [Layout.Mail],
+//     <state>/leads/<role>/mail, with one subfolder per feature;
+//   - [CoordInside], /coord, read-only, from [Layout.Published],
+//     <state>/pub/<project>, which holds only <feature>/qargi, <feature>/out
+//     and <feature>/archive of the project's coordinators.
+//
+// A bind cannot be added to a running sandbox, so the four folders are fixed
+// at the lead's start: the rows are in the table and in the digest for both
+// runtimes, whether or not the lead has coordinators. The package says where
+// the folders lie and how they are bound, and nothing about what is in them.
+//
+// # The git identity is bound as a folder
+//
+// GIT_CONFIG_GLOBAL names [GitIdentityInside], /ataniq/git/config. The row
+// that brings it in binds the Ataniq-owned folder that holds the file,
+// [Inputs.GitIdentityDir], read-only at [GitIdentityDirInside], and the file
+// has the fixed name [GitIdentityFileName] in it. A bind of a single file is a
+// bind of the file that was there when the sandbox started: when the holder
+// replaces the file by writing a new one and renaming it into place, the
+// sandbox keeps the old one. A bind of the folder shows the new file. The
+// whole folder is readable inside, so it holds the identity file alone.
+//
+// The managed-settings file and the instruction file stay binds of a single
+// file: the design names only the identity as a folder, and the instruction
+// file lies over a place inside the config folder, which is itself bound. The
+// consequence is the one above: a managed-settings or instruction file that
+// Ataniq replaces while the lead runs is seen at the lead's next start, not
+// before.
+//
+// # Other state under the state root
+//
+// The profile knows the state root, so it refuses, whatever the caller lists
+// as never-mounted, a bind source that lies in or above: another lead's state;
+// the lead's own holder folder ([Layout.Holder]); another project's mirror;
+// another role's mailbox; another project's published folder; and any
+// coordinator's tree, home or login ([Layout.CoordsDir],
+// [Layout.CoordLoginDir]). The lead's own mailbox and the project's own
+// published folder are each the source of exactly one row: a source may be
+// that folder only as that row, and no source may lie inside it.
+// [StateFolders.Reason] holds these rules, [Inputs.Validate] applies them to
+// every row, and [Inputs.CheckSource] applies them to a path that is no row
+// of the table. They are lexical, like every check here: the mountpoints
+// package runs them again on real paths.
 //
 // # What the digest covers
 //

@@ -68,6 +68,45 @@ func TestListRefusesInvalidInputsAndPatternPaths(t *testing.T) {
 
 func err2[T any](_ T, err error) error { return err }
 
+// Every lead has the records row, at the inside path the caller gives. In the
+// home its mount point lies in a folder the lead writes, so it is listed, made
+// by Prepare and checked like the others. The records, requests and mail
+// folders themselves hold no mount point.
+func TestRecordsMountPointInTheHome(t *testing.T) {
+	for _, rt := range profile.Runtimes() {
+		t.Run(string(rt), func(t *testing.T) {
+			f := newFixture(t, rt)
+			for _, p := range f.list() {
+				if p.Inside == "/ataniq/records" {
+					t.Errorf("the records outside the home have a mount point: %+v", p)
+				}
+			}
+			f.in.QargiRecordsInside = "/home/lead/.qargi"
+			var got []Point
+			for _, p := range f.list() {
+				if p.Root == RootQargi || p.Root == RootRequests || p.Root == RootMail {
+					t.Errorf("a mount point in the %s folder: %+v", p.Root, p)
+				}
+				if p.Inside == "/home/lead/.qargi" {
+					got = append(got, p)
+				}
+			}
+			want := Point{Inside: "/home/lead/.qargi", HostPath: f.home + "/.qargi", Root: RootHome, RootDir: f.home, Rel: ".qargi", Dir: true}
+			if len(got) != 1 || got[0] != want {
+				t.Fatalf("the records mount points are %+v, want %+v", got, want)
+			}
+			wantProblem(t, f.check(), ErrMissing, f.home+"/.qargi")
+			f.prepare()
+			if fi, err := os.Lstat(f.home + "/.qargi"); err != nil || !fi.IsDir() {
+				t.Errorf("the mount point of the records was not made: %v", err)
+			}
+			if rep := f.check(); !rep.OK() {
+				t.Fatalf("check after prepare: %v", rep.Err())
+			}
+		})
+	}
+}
+
 func TestPrepareThenCheckClean(t *testing.T) {
 	for _, rt := range profile.Runtimes() {
 		t.Run(string(rt), func(t *testing.T) {

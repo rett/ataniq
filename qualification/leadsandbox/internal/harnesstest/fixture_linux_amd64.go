@@ -52,9 +52,13 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 		Role: "qual-lead", Project: "qualproj", Runtime: rt, Resolv: "nameserver 192.0.2.53\n", Sysctl: "0\n"}
 	l := profile.Layout{StateRoot: f.State, Role: f.Role, Project: f.Project}
 	cfgDir, _ := l.ConfigDir(rt)
-	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree()} {
+	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree(), l.QargiRecords(), l.Requests(), l.Mail()} {
 		f.Mkdir(d, 0o700)
 	}
+	// The lead's mailbox and the folder the project's coordinators publish
+	// under: Ataniq's, bound read-only, outside the lead's own folder.
+	f.Mkdir(l.Mailbox(), 0o700)
+	f.Mkdir(l.Published(), 0o700)
 	f.Mkdir(l.MirrorsDir(), 0o700)
 	f.Mkdir(l.Mirror(), 0o700)
 	f.FakeClone()
@@ -90,8 +94,10 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 			AgentInstall: own("agent", true), ManagedSettings: managed, ManagedSettingsSHA256: hex.EncodeToString(sum[:]),
 			ManagedMarker: "qargi-guard",
 			LeadSkills:    own("skills", true), InstructionFile: own("instructions/"+rt.InstructionFileName(), false),
-			GitIdentityFile: own("git/config", false), QargiInstall: own("qargi", true),
-			AssignmentDir: own("assignment", true), ProjectionDir: own("projection", true),
+			GitIdentityDir: filepath.Dir(own("git/"+profile.GitIdentityFileName, false)), QargiInstall: own("qargi", true),
+			// Outside the home, so the records add no mount point to make.
+			QargiRecordsInside: "/ataniq/records",
+			AssignmentDir:      own("assignment", true), ProjectionDir: own("projection", true),
 		},
 		NeverMounted:     []string{f.Base + "/owner/work", f.Base + "/owner/.claude", f.Base + "/owner/.codex", f.Base + "/owner/.ssh"},
 		ProviderHost:     "api.example.test",

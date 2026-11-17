@@ -716,18 +716,18 @@ func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G2"} }), "not an automated case")
 }
 
-// The lead's working Qargi records, when the configuration names an inside
-// path for them, are the layout's own folder (rule G1 across leads): the
-// configuration has no key for the host folder.
+// The lead's working Qargi records are bound for every lead, from the layout's
+// own folder (rule G1 across leads): the configuration has no key for the host
+// folder, and it must name the inside path, for which nothing knows a default.
 func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	f.Mkdir(f.Base+"/elsewhere", 0o700)
-	for _, value := range []string{f.Base + "/elsewhere", f.Layout().Records(), ""} {
+	for _, value := range []string{f.Base + "/elsewhere", f.Layout().QargiRecords(), ""} {
 		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records"] = value }), `sources has the unknown key "qargi_records"`)
 	}
+	refused(t, f, mutate(t, f, func(m map[string]any) { delete(sub(m, "sources"), "qargi_records_inside") }), "Qargi records inside path")
+	refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records_inside"] = "" }), "Qargi records inside path")
 
-	f.Mkdir(f.Layout().Records(), 0o700)
-	f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 	approved(f)
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
 	mustNoErr(t, r)
@@ -738,13 +738,137 @@ func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	for _, m := range r.out.Plan.Mounts {
 		if m.Inside == "/ataniq/records" {
 			found = true
-			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().Records() {
-				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().Records())
+			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().QargiRecords() {
+				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().QargiRecords())
 			}
 		}
 	}
 	if !found {
 		t.Error("the records are not bound")
+	}
+}
+
+// The git identity is named by its folder, and the plan binds the folder: a
+// bind of the single file would keep the old file when the file is replaced by
+// rename. The former key for the file is no key.
+func TestGitIdentityIsConfiguredAndBoundAsAFolder(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	refused(t, f, mutate(t, f, func(m map[string]any) {
+		sub(m, "sources")["git_identity_file"] = f.Config.Sources.GitIdentityDir + "/config"
+	}), `sources has the unknown key "git_identity_file"`)
+	refused(t, f, mutate(t, f, func(m map[string]any) { delete(sub(m, "sources"), "git_identity_dir") }), "git identity folder")
+
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var found bool
+	for _, m := range r.out.Plan.Mounts {
+		if strings.HasPrefix(m.Inside, profile.GitIdentityDirInside+"/") {
+			t.Errorf("a path below the identity folder is mounted on its own: %+v", m)
+		}
+		if m.Inside == profile.GitIdentityDirInside {
+			found = true
+			if m.Kind != string(profile.KindRoBind) || m.Source != f.Config.Sources.GitIdentityDir {
+				t.Errorf("the identity is bound as %+v, want a read-only bind of the folder %s", m, f.Config.Sources.GitIdentityDir)
+			}
+		}
+	}
+	if !found {
+		t.Error("the identity folder is not bound")
+	}
+	// The variable names the file in the folder: the operands of --setenv.
+	var global string
+	for i, a := range r.out.Plan.Argv {
+		if a == "--setenv" && i+2 < len(r.out.Plan.Argv) && r.out.Plan.Argv[i+1] == "GIT_CONFIG_GLOBAL" {
+			global = r.out.Plan.Argv[i+2]
+		}
+	}
+	if global != profile.GitIdentityInside {
+		t.Errorf("GIT_CONFIG_GLOBAL = %q, want %s", global, profile.GitIdentityInside)
+	}
+}
+
+// The requests, mailbox, mail and published folders are the layout's own and
+// are bound for every lead: the configuration has no key for them, the plan
+// binds them, and a run without one of them ends before a launch.
+func TestTheFourLayoutFoldersAreBoundAndRequired(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	for _, key := range []string{"requests", "mailbox", "mail", "coord", "published"} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")[key] = f.Base + "/elsewhere" }), `sources has the unknown key "`+key+`"`)
+	}
+	l := f.Layout()
+	want := map[string]struct{ kind, source string }{
+		"/ataniq/requests": {string(profile.KindRwBind), l.Requests()},
+		"/ataniq/mailbox":  {string(profile.KindRoBind), l.Mailbox()},
+		"/ataniq/mail":     {string(profile.KindRwBind), l.Mail()},
+		"/coord":           {string(profile.KindRoBind), l.Published()},
+	}
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	found := 0
+	for _, m := range r.out.Plan.Mounts {
+		if w, ok := want[m.Inside]; ok {
+			found++
+			if m.Kind != w.kind || m.Source != w.source {
+				t.Errorf("%s is bound as %+v, want a %s from %s", m.Inside, m, w.kind, w.source)
+			}
+		}
+	}
+	if found != len(want) {
+		t.Errorf("the plan binds %d of the %d folders", found, len(want))
+	}
+
+	// A folder the lead writes is looked at with the lead's other folders (the
+	// own-clone step); a folder Ataniq owns is a source, looked at by the
+	// resolution.
+	for _, c := range []struct {
+		name string
+		dir  func(profile.Layout) string
+		step string
+	}{
+		{"requests", profile.Layout.Requests, harness.StepOwnClone},
+		{"mail", profile.Layout.Mail, harness.StepOwnClone},
+		{"mailbox", profile.Layout.Mailbox, harness.StepResolve},
+		{"published", profile.Layout.Published, harness.StepResolve},
+	} {
+		t.Run(c.name+" missing", func(t *testing.T) {
+			f := harnesstest.New(t, profile.Codex)
+			approved(f)
+			dir := c.dir(f.Layout())
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+			r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+			mustNoErr(t, r)
+			wantStep(t, r.out, c.step, harness.StepFailed)
+			if e := step(t, r.out, c.step).Error; !strings.Contains(e, dir) {
+				t.Errorf("the step %s does not name %s: %s", c.step, dir, e)
+			}
+			if r.fake.Launches() != 0 {
+				t.Error("launched")
+			}
+		})
+	}
+	// A requests or mail folder that others can enter is refused like the home.
+	for _, dir := range []func(profile.Layout) string{profile.Layout.Requests, profile.Layout.Mail} {
+		f := harnesstest.New(t, profile.Claude)
+		approved(f)
+		if err := os.Chmod(dir(f.Layout()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+		mustNoErr(t, r)
+		wantStep(t, r.out, harness.StepOwnClone, harness.StepFailed)
+		if e := step(t, r.out, harness.StepOwnClone).Error; !strings.Contains(e, dir(f.Layout())) || !strings.Contains(e, "0700") {
+			t.Errorf("own-clone: %s", e)
+		}
 	}
 }
 

@@ -54,13 +54,18 @@
 --bind /state/leads/arc-lead/config/claude /home/lead/.claude
 --ro-bind /opt/ataniq/skills/arc-lead /home/lead/.claude/skills
 --ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md
---ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
+--ro-bind /opt/ataniq/git/arc-lead /ataniq/git
 --bind /state/leads/arc-lead/tree /work/demo
 --ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
 --ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
 --ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
 --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
 --ro-bind /opt/ataniq/qargi /ataniq/qargi
+--bind /state/leads/arc-lead/qargi /home/lead/.qargi
+--bind /state/leads/arc-lead/requests /ataniq/requests
+--ro-bind /state/mailbox/arc-lead /ataniq/mailbox
+--bind /state/leads/arc-lead/mail /ataniq/mail
+--ro-bind /state/pub/demo /coord
 --ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
 --ro-bind /opt/ataniq/projection/demo /ataniq/projection
 --chdir /work/demo
@@ -112,19 +117,24 @@ rw-bind /home/lead /state/leads/arc-lead/home
 rw-bind /home/lead/.claude /state/leads/arc-lead/config/claude
 ro-bind /home/lead/.claude/skills /opt/ataniq/skills/arc-lead
 ro-bind /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead/CLAUDE.md
-ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+ro-bind /ataniq/git /opt/ataniq/git/arc-lead
 rw-bind /work/demo /state/leads/arc-lead/tree
 ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
 ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
 ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
 ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
 ro-bind /ataniq/qargi /opt/ataniq/qargi
+rw-bind /home/lead/.qargi /state/leads/arc-lead/qargi
+rw-bind /ataniq/requests /state/leads/arc-lead/requests
+ro-bind /ataniq/mailbox /state/mailbox/arc-lead
+rw-bind /ataniq/mail /state/leads/arc-lead/mail
+ro-bind /coord /state/pub/demo
 ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
 ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-f7128872ebcd1aae1c78a216e80e62ef43a3bb559781b456b8ad82c8e7006b2b
+2cd0df4fb5cb55e28954e3a07173ad49a627489a363aea4d5860c1f39ba3858f
 # workdir
 /work/demo
 # set-controlling-terminal

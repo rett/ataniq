@@ -53,7 +53,7 @@ func TestGolden(t *testing.T) {
 		}},
 		{"codex-root-seccomp", func(t *testing.T) *Plan {
 			in := withSeccomp(fixture(profile.Codex))
-			in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
+			in.QargiRecordsInside = "/ataniq/records" // the other goldens have the records in the home
 			in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
 			return mustBuild(t, in, options(in, allPresent(t, in)))
 		}},
@@ -415,7 +415,6 @@ func TestMounts(t *testing.T) {
 	// With the records folder and a placeholder the lead-writable rows follow
 	// the table, not a fixed list.
 	in = fixture(profile.Codex)
-	in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
 	in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
 	p := mustBuild(t, in, options(in, nil))
 	for _, m := range p.Mounts {
@@ -514,10 +513,15 @@ func TestRefusals(t *testing.T) {
 		{"report path in the lead's tree", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/tree/.git/report" }, "report path", "can write"},
 		{"report path in the lead's config", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/config/claude/report" }, "report path", "can write"},
 		{"report path is a writable folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/home" }, "report path", "can write"},
-		{"report path in the records folder", func(in *profile.Inputs, o *Options) {
-			in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
-			o.ReportPath = "/state/leads/arc-lead/records/report"
-		}, "report path", "can write"},
+		{"report path in the records folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/qargi/report" }, "report path", "can write"},
+		{"report path in the requests folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/requests/report" }, "report path", "can write"},
+		{"report path in the mail folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/mail/a-feature/report" }, "report path", "can write"},
+		{"report path in the lead's own mailbox", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/mailbox/arc-lead/report" }, "report path", "source of the bind at /ataniq/mailbox"},
+		{"report path in another role's mailbox", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/mailbox/other-lead/report" }, "report path", "state folder /state/mailbox"},
+		{"report path in the project's published folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/pub/demo/a-feature/out/report" }, "report path", "source of the bind at /coord"},
+		{"report path in another project's published folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/pub/other/report" }, "report path", "state folder /state/pub"},
+		{"report path in a coordinator's home", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/coords/demo/a-feature/home/report" }, "report path", "state folder /state/coords"},
+		{"report path in the coordinators' login", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/coord-login/demo/claude/report" }, "report path", "state folder /state/coord-login"},
 		{"report path never mounted", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.ssh/report" }, "report path", "never-mounted"},
 		{"report path is a never-mounted file", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.claude.json" }, "report path", "never-mounted"},
 		{"report path in the other runtime's folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/config/codex/report" }, "report path", "never-mounted"},
@@ -816,6 +820,10 @@ func TestCheckSourcesNotWritableOnATable(t *testing.T) {
 		"a row from the home":     {"/ataniq/qargi", "/state/leads/arc-lead/home/q"},
 		"a row from the config":   {"/ataniq/projection", "/state/leads/arc-lead/config/claude/p"},
 		"a row that is a folder":  {"/ataniq/assignment", "/state/leads/arc-lead/tree"},
+		"a row from the requests": {"/ataniq/agent", "/state/leads/arc-lead/requests/agent"},
+		"a row from the mail":     {"/coord", "/state/leads/arc-lead/mail/a-feature"},
+		"a row from the records":  {"/ataniq/qargi", "/state/leads/arc-lead/qargi/bin"},
+		"the mailbox from mail":   {"/ataniq/mailbox", "/state/leads/arc-lead/mail"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			table := append([]profile.Bind(nil), good...)
@@ -836,7 +844,6 @@ func TestCheckSourcesNotWritableOnATable(t *testing.T) {
 func TestNoMountOfEitherRuntimeIsLeadWritable(t *testing.T) {
 	for _, rt := range profile.Runtimes() {
 		in := fixture(rt)
-		in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
 		in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
 		p := mustBuild(t, in, options(in, allPresent(t, in)))
 		var rw []string

@@ -171,6 +171,12 @@ func TestInsidePaths(t *testing.T) {
 		{"assignment", AssignmentInside, "/ataniq/assignment"},
 		{"projection", ProjectionInside, "/ataniq/projection"},
 		{"git identity", GitIdentityInside, "/ataniq/git/config"},
+		{"git identity folder", GitIdentityDirInside, "/ataniq/git"},
+		{"git identity file name", GitIdentityFileName, "config"},
+		{"requests", RequestsInside, "/ataniq/requests"},
+		{"mailbox", MailboxInside, "/ataniq/mailbox"},
+		{"mail", MailInside, "/ataniq/mail"},
+		{"coordinators", CoordInside, "/coord"},
 		{"tmp", TmpInside, "/tmp"},
 		{"claude managed", ManagedSettingsDefaultInside(Claude), "/etc/claude-code/managed-settings.json"},
 		{"codex managed", ManagedSettingsDefaultInside(Codex), ""},
@@ -215,11 +221,23 @@ func TestLayout(t *testing.T) {
 	if GitMetaConfig != "config" || GitMetaHooks != "hooks" || GitMetaInfo != "info" {
 		t.Error("the entries of the git metadata folder changed")
 	}
-	if got := l.Records(); got != "/srv/state/leads/arc-lead/records" {
+	if got := l.QargiRecords(); got != "/srv/state/leads/arc-lead/qargi" {
 		t.Errorf("Records = %q", got)
 	}
 	if got := l.Mirror(); got != "/srv/state/mirrors/ataniq.git" {
 		t.Errorf("Mirror = %q", got)
+	}
+	for name, p := range map[string][2]string{
+		"Requests":     {l.Requests(), "/srv/state/leads/arc-lead/requests"},
+		"Mail":         {l.Mail(), "/srv/state/leads/arc-lead/mail"},
+		"MailboxesDir": {l.MailboxesDir(), "/srv/state/mailbox"},
+		"Mailbox":      {l.Mailbox(), "/srv/state/mailbox/arc-lead"},
+		"PublishedDir": {l.PublishedDir(), "/srv/state/pub"},
+		"Published":    {l.Published(), "/srv/state/pub/ataniq"},
+	} {
+		if p[0] != p[1] {
+			t.Errorf("%s = %q, want %q", name, p[0], p[1])
+		}
 	}
 	for rt, want := range map[Runtime]string{
 		Claude: "/srv/state/leads/arc-lead/config/claude",

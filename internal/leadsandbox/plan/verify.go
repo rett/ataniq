@@ -482,8 +482,15 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 		seen[m.inside] = true
 
 		if m.source != "" {
-			if err := in.CheckSource(m.source); err != nil {
-				v.add(ProbNever, "the source of %s is a never-mounted path, lies in or around one, lies in or above another lead's state or another project's mirror folder, or is not a clean absolute path", label)
+			// The lead's own mailbox and the project's own published folder
+			// are sources of their own rows only: the role is the one of the
+			// row at this inside path, and none for a mount outside the table.
+			role := profile.RoleNone
+			if inTable {
+				role = e.row.SourceRole
+			}
+			if err := in.CheckRowSource(m.source, role); err != nil {
+				v.add(ProbNever, "the source of %s is a never-mounted path, lies in or around one, lies where the rules about other state refuse it (another lead's state, the holder folder, another project's mirror or published folder, another role's mailbox, a coordinator's tree, home or login, or the lead's own mailbox or published folder as another row), or is not a clean absolute path", label)
 			}
 		}
 		if otherInside != "" && (m.inside == otherInside || strings.HasPrefix(m.inside, otherInside+"/")) {

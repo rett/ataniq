@@ -95,9 +95,13 @@ func (r Resolution) HostSources() map[string]string {
 // does not exist is resolved by its longest existing prefix. A resolved path
 // that cannot be used (relative, not clean, too long, a control character) is
 // a problem, never dropped. The profile's state checks run again on the real
-// paths too: a source that resolves into or above another lead's state, or
-// another project's mirror folder, is refused (the folders are resolved the
-// same way). It also refuses:
+// paths too: a source that resolves into or above another lead's state, the
+// lead's holder folder, another project's mirror folder, another role's
+// mailbox, another project's published folder, or a coordinator's tree, home
+// or login is refused, and so is one that resolves into the lead's own mailbox
+// or the project's own published folder and is not the row that binds exactly
+// that folder (the folders are resolved the same way; the rules are
+// profile.StateFolders.Reason). It also refuses:
 //
 //   - a source that is missing, unless its row is optional;
 //   - for every row that is not a row of the host (profile.RoleHost), a source
@@ -161,25 +165,25 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 		}
 	}
 	// The state folders the profile knows, on their real paths: a source in
-	// another lead's state or in another project's mirror is refused whatever
-	// the link that leads there.
-	l := in.Layout()
-	var st struct{ leads, lead, mirrors, mirror string }
+	// another lead's state, in the lead's holder folder, in another project's
+	// mirror, in another role's mailbox, in another project's published folder
+	// or in a coordinator's tree, home or login is refused whatever the link
+	// that leads there (profile.StateFolders.Reason). A folder that does not
+	// exist is resolved by its longest existing prefix.
+	st := in.Layout().StateFolders()
 	stateOK := true
-	for _, d := range []struct {
-		dst  *string
-		path string
-	}{{&st.leads, path.Join(l.StateRoot, "leads")}, {&st.lead, l.LeadDir()}, {&st.mirrors, l.MirrorsDir()}, {&st.mirror, l.Mirror()}} {
-		r, err := realOf(resolve, readlink, d.path)
+	for _, dst := range st.Paths() {
+		lexical := *dst
+		r, err := realOf(resolve, readlink, lexical)
 		if err == nil {
 			err = profile.CheckPath("resolved path", r)
 		}
 		if err != nil {
-			res.add(problem(ErrUnreadable, d.path, "the state folder cannot be resolved: %v", err))
+			res.add(problem(ErrUnreadable, lexical, "the state folder cannot be resolved: %v", err))
 			stateOK = false
 			continue
 		}
-		*d.dst = r
+		*dst = r
 	}
 	realPaths := make([]string, len(t))
 	for i, b := range t {
@@ -213,11 +217,8 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 			res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s: %s", b.Inside, r, reason(cerr)).at(b.Inside))
 		}
 		if stateOK {
-			if related(r, st.leads) && r != st.lead && !strings.HasPrefix(r, st.lead+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another lead's state", b.Inside, r).at(b.Inside))
-			}
-			if related(r, st.mirrors) && r != st.mirror && !strings.HasPrefix(r, st.mirror+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r).at(b.Inside))
+			if why := st.Reason(r, b.SourceRole); why != "" {
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, which %s", b.Inside, r, why).at(b.Inside))
 			}
 		}
 	}

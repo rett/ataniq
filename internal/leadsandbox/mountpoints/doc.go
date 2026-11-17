@@ -16,8 +16,10 @@
 //   - [List] turns the bind table of the profile (package profile: the
 //     LeadWritable flag, Within, HostMountPoint) into the mount points that
 //     lie in a lead-writable host folder: the host path, the folder it lies in
-//     (home, config folder, tree or records), the relative path, folder or
-//     file, and whether it is a tree placeholder outside .git.
+//     (home, config folder, tree or Qargi records), the relative path, folder or
+//     file, and whether it is a tree placeholder outside .git. The requests
+//     and the mail folder are lead-writable too, but no row of the table has a
+//     target inside them, so they hold no mount point.
 //   - [Prepare] makes them, once, before the first run. It makes a missing
 //     folder or empty file through a [safefile.Root] of the folder the mount
 //     point lies in, keeps an existing entry of the right type, and refuses a
@@ -29,9 +31,10 @@
 //     nothing, and returns every problem it finds, typed and bounded.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
 //     worktree, submodule or folder below another repository, and that the
-//     tree, home and config folder are 0700 folders of the caller's user. A
-//     tree whose .git names alternates (objects of another repository) is
-//     refused. The file .git/config is not parsed.
+//     tree, home, config folder, records folder, requests folder and mail
+//     folder are 0700 folders of the caller's user. A tree whose .git names
+//     alternates (objects of another repository) is refused. The file
+//     .git/config is not parsed.
 //   - [CheckBindSources] takes the rows [ResolveSources] gave and opens, for
 //     each, the path bubblewrap will bind from the root of the file system with
 //     openat2 (no symbolic link, no magic link, on any component), refusing a
@@ -42,8 +45,10 @@
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
-//     the profile's never-mounted, other-runtime, other-lead and
-//     other-project checks again on the real paths, so that a link cannot
+//     the profile's never-mounted and other-runtime checks and its rules
+//     about other state (another lead, the holder folder, another project's
+//     mirror and published folder, another role's mailbox, the coordinators'
+//     trees, homes and logins) again on the real paths, so that a link cannot
 //     hide a never-mounted folder. It refuses, for every row that is not a row
 //     of the host, a source whose real path differs from its lexical one (a
 //     link anywhere on it): a source Ataniq supplies must be given as its real
@@ -154,12 +159,16 @@
 //     the holder can compare it with the source of the matching mount of the
 //     plan. The probe's assertions from inside the sandbox stay the final
 //     check.
-//  4. Know the limits of the records folder. The profile requires it to be
-//     [profile.Layout.Records], <state>/leads/<role>/records, so the lookup
-//     from the state root without links covers every component of its path.
-//     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
-//     the home and the config folder only): the holder must make the folder
-//     with mode 0700 and check it, as it does for the other folders.
+//  4. Make the folders the lead writes, and know what is looked at. Every
+//     lead has the records folder, [profile.Layout.QargiRecords],
+//     <state>/leads/<role>/qargi, the requests folder and the mail folder, all
+//     below the state root, so the lookup from the state root without links
+//     covers every component of their paths. The holder makes them with mode
+//     0700; [CheckOwnClone] checks their mode and owner with the tree, the
+//     home and the config folder. The mailbox and the published folder, which
+//     are bound read-only, are sources like any other: [ResolveSources] and
+//     [CheckBindSources] look at their paths, and nothing here looks at their
+//     mode, owner or content.
 //  5. Use one state root for every lead on the host. Rule G1 holds across
 //     leads only then: the rules about another lead's state know the state
 //     root of their own inputs and no other, so a lead whose inputs name a
