@@ -363,3 +363,58 @@ func TestTemplatePathPlaceholdersAreWholeElements(t *testing.T) {
 		t.Errorf("prefix %q, want %q", vp.Prefix, want)
 	}
 }
+
+func TestParseTemplateIsStrictAboutKeys(t *testing.T) {
+	const (
+		sv = `"upload_pack":["/sb"],"repository":"/r","measure":["/du"]`
+		vf = `"prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h"`
+	)
+	// The same templates written with exact, single keys are accepted.
+	for name, in := range map[string]string{
+		"serve":  `{"version":1,"serve":{` + sv + `}}`,
+		"verify": `{"version":1,"verify":{` + vf + `}}`,
+		"escape": `{"version":1}`,
+	} {
+		if _, err := ParseTemplate([]byte(in)); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
+	}
+	for name, in := range map[string]string{
+		"upper version":        `{"VERSION":1}`,
+		"title version":        `{"Version":1}`,
+		"upper serve":          `{"version":1,"Serve":{` + sv + `}}`,
+		"upper verify":         `{"version":1,"VERIFY":{` + vf + `}}`,
+		"mixed serve field":    `{"version":1,"serve":{"Upload_Pack":["/sb"],"repository":"/r","measure":["/du"]}}`,
+		"upper serve field":    `{"version":1,"serve":{"upload_pack":["/sb"],"REPOSITORY":"/r","measure":["/du"]}}`,
+		"upper measure env":    `{"version":1,"serve":{` + sv + `,"Measure_Env":["A=b"]}}`,
+		"upper verify field":   `{"version":1,"verify":{"Prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h"}}`,
+		"upper verify home":    `{"version":1,"verify":{"prefix":["/sb"],"mirror":"/m","scratch":"/s","HOME":"/h"}}`,
+		"upper env":            `{"version":1,"verify":{` + vf + `,"ENV":["A=b"]}}`,
+		"duplicate version":    `{"version":1,"version":1}`,
+		"duplicate serve":      `{"version":1,"serve":{` + sv + `},"serve":null}`,
+		"duplicate serve null": `{"version":1,"serve":null,"serve":{` + sv + `}}`,
+		"duplicate verify":     `{"version":1,"verify":{` + vf + `},"verify":{` + vf + `}}`,
+		"duplicate in serve":   `{"version":1,"serve":{` + sv + `,"repository":"/r"}}`,
+		"duplicate in verify":  `{"version":1,"verify":{` + vf + `,"home":"/h"}}`,
+		"duplicate escaped":    `{"version":1,"version":1}`,
+		"duplicate list key":   `{"version":1,"serve":{` + sv + `,"measure_env":["A=b"],"measure_env":[]}}`,
+		"case twin":            `{"version":1,"Version":1}`,
+		"duplicate in value":   `{"version":{"a":1,"a":2}}`,
+	} {
+		if tm, err := ParseTemplate([]byte(in)); err == nil {
+			t.Errorf("%s: accepted (%v)", name, tm)
+		}
+	}
+	// A duplicate key in the first object is refused whatever follows it.
+	if _, err := ParseTemplate([]byte(`{"version":1,"serve":null,"serve":null}`)); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("duplicate serve: %v", err)
+	}
+	if _, err := ParseTemplate([]byte(`{"VERSION":1}`)); err == nil || !strings.Contains(err.Error(), "VERSION") {
+		t.Errorf("wrong case: %v", err)
+	}
+	// A key error does not hide as a plain syntax error: a truncated file is
+	// still refused.
+	if _, err := ParseTemplate([]byte(`{"version":1,"serve":{`)); err == nil {
+		t.Error("truncated file accepted")
+	}
+}

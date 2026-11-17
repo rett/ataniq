@@ -130,7 +130,8 @@ var (
 )
 
 // ParseTemplate reads a template file. It refuses a file over
-// [MaxTemplateBytes], unknown fields, a version other than
+// [MaxTemplateBytes], unknown fields, a field name that differs in case from
+// the documented one, a field written twice in one object, a version other than
 // [TemplateVersion], trailing data, an empty argv, an argv whose first
 // element is not an absolute path, a NUL byte, a placeholder the section
 // does not have, and any other brace. It checks that the template builds
@@ -138,6 +139,9 @@ var (
 func ParseTemplate(data []byte) (*Template, error) {
 	if len(data) > MaxTemplateBytes {
 		return nil, fmt.Errorf("sandbox template: larger than %d bytes", MaxTemplateBytes)
+	}
+	if err := checkKeys(data); err != nil {
+		return nil, fmt.Errorf("sandbox template: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -397,4 +401,83 @@ func renderList(ws []word, vals map[string]string) []string {
 		out[i] = w.render(vals)
 	}
 	return out
+}
+
+// keys is the set of field names an object may have, with the keys of the
+// objects below them. A nil entry is a value that is not an object.
+type keys map[string]keys
+
+var templateKeys = keys{
+	"version": nil,
+	"serve":   {"upload_pack": nil, "repository": nil, "measure": nil, "measure_env": nil},
+	"verify":  {"prefix": nil, "env": nil, "mirror": nil, "scratch": nil, "home": nil},
+}
+
+// checkKeys walks the first JSON value of data and refuses an object key that
+// is not exactly a documented field name, and a key repeated in one object.
+// The decoder of encoding/json matches names without regard to case and lets
+// a repeated key win, which would let a silently dropped section change what
+// the file means. A value that the walk cannot read is left to the decoder.
+func checkKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	err := walkKeys(dec, templateKeys)
+	if err != nil && !isSyntax(err) {
+		return err
+	}
+	return nil
+}
+
+// A key error from walkKeys is a plain error. A malformed value is one of
+// these, and the decoder reports it with a better message.
+type syntaxError struct{ error }
+
+func isSyntax(err error) bool {
+	var s syntaxError
+	return errors.As(err, &s)
+}
+
+func walkKeys(dec *json.Decoder, allowed keys) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return syntaxError{err}
+	}
+	d, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch d {
+	case '[':
+		for dec.More() {
+			if err := walkKeys(dec, nil); err != nil {
+				return err
+			}
+		}
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return syntaxError{err}
+			}
+			key, _ := kt.(string)
+			if seen[key] {
+				return fmt.Errorf("field %q is written twice", key)
+			}
+			seen[key] = true
+			var sub keys
+			if allowed != nil {
+				var known bool
+				if sub, known = allowed[key]; !known {
+					return fmt.Errorf("unknown field %q", key)
+				}
+			}
+			if err := walkKeys(dec, sub); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return syntaxError{err}
+	}
+	return nil
 }
