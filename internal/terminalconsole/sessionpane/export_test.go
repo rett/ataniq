@@ -18,7 +18,10 @@ func ScreenText(p *Pane) string {
 }
 
 // CleanTitle is cleanTitle, for tests.
-func CleanTitle(b []byte) string { return cleanTitle(b) }
+func CleanTitle(b []byte) string {
+	s, _ := cleanTitle(b)
+	return s
+}
 
 // ScrollbackLen returns how many lines the emulator's main screen keeps in
 // its scrollback.

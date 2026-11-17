@@ -8,10 +8,11 @@
 // nothing, starts no process and reads no environment, and an import guard
 // test keeps it that way.
 // The bytes it is given are untrusted, so the pane bounds what it keeps of
-// them: the screen is at most [MaxCols] by [MaxRows], the main screen keeps
-// one line of scrollback and the alternate screen none (the patched x/vt
-// gives it none), a frame held for synchronized output is one copy of the
-// screen, and the title is at most [MaxTitle] bytes. The patched x/vt bounds
+// them: the screen is at most [MaxCols] by [MaxRows], neither screen keeps
+// any scrollback (the patched x/vt keeps none on the alternate screen and
+// SetScrollbackSize(0) none on the main one), a frame held for synchronized
+// output is one copy of the screen, and the title is at most [MaxTitle]
+// bytes. The patched x/vt bounds
 // the rest: a cell keeps at most 64 bytes of a grapheme cluster, only a fixed
 // table of known modes is recorded, a hyperlink whose URL is over 2 KiB or
 // whose parameters are over 256 bytes is dropped, a screen keeps at most 256

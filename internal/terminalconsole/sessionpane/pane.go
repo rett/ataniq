@@ -68,6 +68,8 @@ type Pane struct {
 	syncOut   syncState
 	title     string
 	clipboard int
+	// titlesCut counts the titles that lost characters to the length cap.
+	titlesCut uint64
 
 	ended       bool
 	status      int
@@ -100,10 +102,10 @@ func New(cols, rows int, o Options) *Pane {
 	if p.input == nil {
 		p.input = Discard{}
 	}
-	// The pane shows no scrollback, so the main screen keeps one line, the
-	// smallest x/vt accepts. SetScrollbackSize reaches the main screen
-	// only; the patched x/vt gives the alternate screen no scrollback.
-	p.emu.SetScrollbackSize(1)
+	// The pane keeps no scrollback: a client gets the visible screen only.
+	// SetScrollbackSize reaches the main screen only, and the patched x/vt
+	// gives the alternate screen none.
+	p.emu.SetScrollbackSize(0)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read
 	// checks on the drain goroutine without a lock.

@@ -99,8 +99,8 @@ Patches, applied in this order to the files of the module as released:
    screen empties the table at once. A recount counts every link in a cell,
    also one that an API call such as `SetCell` put there, which the table
    does not refuse. Scrollback is not counted: it keeps the links of the
-   lines it holds, and its size is the caller's (the session pane keeps one
-   line on the main screen and none on the alternate).
+   lines it holds, and its size is the caller's (the session pane keeps none
+   on either screen).
 8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
    `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).
    The parser's data buffer was 4 MiB, so one string could make the handlers
