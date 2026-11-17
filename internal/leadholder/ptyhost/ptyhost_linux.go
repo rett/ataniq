@@ -26,14 +26,18 @@
 // # Tree proof
 //
 // When the process runs in a control group of its own, the tree is gone when
-// that group holds only this process (proof starts with "cgroup"). "Of its
-// own" is judged once, in Start, before the child is created: the group's
-// cgroup.procs lists only this process. Otherwise the fallback is that no
-// process is left in the child's session (proof starts with "session"). That
-// is weaker: a descendant that started its own session escapes it, and
-// callers should label it so. Zombies do not count as present in the session
-// scan (they run nothing, and a process that adopts orphans reaps them on its
-// own schedule).
+// that group and every group below it hold only this process (proof starts
+// with "cgroup"). A process in a child group is not listed in its parent's
+// cgroup.procs, so the walk reads the cgroup.procs of every descendant group,
+// breadth first and bounded (Config.CgroupWalkLimit); a walk that hits its
+// bound, or cannot read a group, proves nothing and is counted. "Of its own"
+// is judged once, in Start, before the child is created: the group's
+// cgroup.procs lists only this process and the group has no child group.
+// Otherwise the fallback is that no process is left in the child's session
+// (proof starts with "session"). That is weaker: a descendant that started
+// its own session escapes it, and callers should label it so. Zombies do not
+// count as present in the session scan (they run nothing, and a process that
+// adopts orphans reaps them on its own schedule).
 //
 // # Signalling and pid reuse
 //
@@ -121,6 +125,10 @@ type Config struct {
 	// ProcScanLimit bounds the entries one /proc scan reads; zero means
 	// DefaultProcScanLimit. A scan that hits it proves nothing, and counts.
 	ProcScanLimit int
+	// CgroupWalkLimit bounds how many control groups one walk of the
+	// holder's group and the groups below it reads; zero means
+	// DefaultCgroupWalkLimit. A walk that hits it proves nothing, and counts.
+	CgroupWalkLimit int
 }
 
 // Exit is how the direct child ended.
@@ -157,6 +165,12 @@ type Counters struct {
 	// ScanErrors counts /proc entries that could not be read or parsed (an
 	// entry that vanished during the scan is not an error).
 	ScanErrors uint64
+	// CgroupTruncated counts walks of the control group tree that hit the
+	// group or process limit.
+	CgroupTruncated uint64
+	// CgroupErrors counts control groups that could not be read during a
+	// walk (one that vanished is not an error).
+	CgroupErrors uint64
 }
 
 // Host is one running child on a pseudo-terminal.
@@ -167,6 +181,7 @@ type Host struct {
 	writeTmo time.Duration
 	procRoot string
 	scanMax  int
+	walkMax  int
 
 	wmu sync.Mutex // serialises Write (deadline and write together)
 
@@ -184,6 +199,9 @@ type Host struct {
 
 	scanTruncated atomic.Uint64
 	scanErrors    atomic.Uint64
+
+	cgroupTruncated atomic.Uint64
+	cgroupErrors    atomic.Uint64
 
 	closeOnce sync.Once
 }
@@ -204,6 +222,7 @@ func Start(cfg Config) (*Host, error) {
 		writeTmo: cfg.WriteTimeout,
 		procRoot: cfg.ProcRoot,
 		scanMax:  cfg.ProcScanLimit,
+		walkMax:  cfg.CgroupWalkLimit,
 		done:     make(chan struct{}),
 	}
 	if h.writeTmo <= 0 {
@@ -215,6 +234,9 @@ func Start(cfg Config) (*Host, error) {
 	if h.scanMax <= 0 {
 		h.scanMax = DefaultProcScanLimit
 	}
+	if h.walkMax <= 0 {
+		h.walkMax = DefaultCgroupWalkLimit
+	}
 	if cfg.NoCgroup {
 		h.cgroupNote = "control group method disabled"
 	} else {
@@ -222,7 +244,7 @@ func Start(cfg Config) (*Host, error) {
 		if root == "" {
 			root = "/sys/fs/cgroup"
 		}
-		h.cgroupProcs, h.cgroupNote = privateCgroup(h.procRoot, root, os.Getpid())
+		h.cgroupProcs, h.cgroupNote = privateCgroup(h.procRoot, root, os.Getpid(), h.walkMax)
 	}
 
 	masterFd, slaveFd, err := openPair()
@@ -380,5 +402,10 @@ func (h *Host) Close() error {
 
 // Counters returns the counted caps and failures.
 func (h *Host) Counters() Counters {
-	return Counters{ScanTruncated: h.scanTruncated.Load(), ScanErrors: h.scanErrors.Load()}
+	return Counters{
+		ScanTruncated:   h.scanTruncated.Load(),
+		ScanErrors:      h.scanErrors.Load(),
+		CgroupTruncated: h.cgroupTruncated.Load(),
+		CgroupErrors:    h.cgroupErrors.Load(),
+	}
 }

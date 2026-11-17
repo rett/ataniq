@@ -3,7 +3,6 @@
 package ptyhost
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -126,17 +125,36 @@ func (h *Host) TreeGone() (gone bool, proof string) {
 	return h.sessionGone()
 }
 
+// scanCgroup walks the holder's group and the groups below it, and counts a
+// walk that hit its bound and every group it could not read.
+func (h *Host) scanCgroup() cgroupScan {
+	s := walkCgroup(filepath.Dir(h.cgroupProcs), h.walkMax, os.Getpid(), nil)
+	if s.truncated {
+		h.cgroupTruncated.Add(1)
+	}
+	if s.errs > 0 {
+		h.cgroupErrors.Add(uint64(s.errs))
+	}
+	return s
+}
+
+// cgroupGone judges the holder's group and every group below it: the tree is
+// gone only when no process but the holder is listed in any of them. A walk
+// that hit its bound or could not read a group proves nothing.
 func (h *Host) cgroupGone() (bool, string) {
-	other, selfSeen, err := othersInProcs(h.cgroupProcs, os.Getpid())
+	s := h.scanCgroup()
 	switch {
-	case err != nil:
-		return false, fmt.Sprintf("cgroup %s: cannot read the group: %v", h.cgroupProcs, err)
-	case other != 0:
-		return false, fmt.Sprintf("cgroup %s: process %d besides the holder is still in the group", h.cgroupProcs, other)
-	case !selfSeen:
+	case len(s.members) > 0:
+		m := s.members[0]
+		return false, fmt.Sprintf("cgroup %s: process %d besides the holder is still listed in %s", h.cgroupProcs, m.pid, m.procs)
+	case s.err != nil:
+		return false, fmt.Sprintf("cgroup %s: cannot read the group or a sub-group (%d unreadable): %v", h.cgroupProcs, s.errs, s.err)
+	case s.truncated:
+		return false, fmt.Sprintf("cgroup %s: the walk of the sub-groups stopped at its limit (%d groups, %d read), nothing proven", h.cgroupProcs, h.walkMax, s.groups)
+	case !s.selfSeen:
 		return false, fmt.Sprintf("cgroup %s: the holder is not listed in its own group", h.cgroupProcs)
 	}
-	return true, fmt.Sprintf("cgroup %s: only the holder remains in the group", h.cgroupProcs)
+	return true, fmt.Sprintf("cgroup %s: only the holder remains in the group and its %d group(s)", h.cgroupProcs, s.groups)
 }
 
 func (h *Host) sessionGone() (bool, string) {
@@ -387,69 +405,6 @@ func (h *Host) scanSession() (members []member, truncated bool, nerr int, err er
 		h.scanErrors.Add(uint64(nerr))
 	}
 	return members, truncated, nerr, err
-}
-
-// privateCgroup decides, before the child exists, whether this process runs
-// in a cgroup v2 group of its own: the group named in procRoot/self/cgroup
-// lists only self in its cgroup.procs. It returns the cgroup.procs path, or
-// an empty path and the reason the group is not used.
-func privateCgroup(procRoot, cgroupRoot string, self int) (procs, note string) {
-	b, err := readBounded(filepath.Join(procRoot, "self", "cgroup"), maxCgroupBytes)
-	if err != nil {
-		return "", "no control group information: " + err.Error()
-	}
-	path := ""
-	sc := bufio.NewScanner(bytes.NewReader(b))
-	for sc.Scan() {
-		if rest, ok := strings.CutPrefix(sc.Text(), "0::"); ok {
-			path = rest
-			break
-		}
-	}
-	if path == "" {
-		return "", "no cgroup v2 entry (0::) in the control group file"
-	}
-	if strings.HasSuffix(path, " (deleted)") || !strings.HasPrefix(path, "/") {
-		return "", "unusable control group path"
-	}
-	procs = filepath.Join(cgroupRoot, filepath.Clean(path), "cgroup.procs")
-	other, selfSeen, err := othersInProcs(procs, self)
-	switch {
-	case err != nil:
-		return "", "control group not readable: " + err.Error()
-	case other != 0:
-		return "", "control group is shared with other processes"
-	case !selfSeen:
-		return "", "holder not listed in its control group"
-	}
-	return procs, ""
-}
-
-// othersInProcs reads a cgroup.procs file, bounded, and returns the first pid
-// other than self (zero when none) and whether self is listed.
-func othersInProcs(path string, self int) (other int, selfSeen bool, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, false, err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(io.LimitReader(f, maxProcsBytes))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		pid, perr := strconv.Atoi(line)
-		if perr != nil {
-			return 0, false, fmt.Errorf("unexpected line in cgroup.procs: %q", truncate(line, 32))
-		}
-		if pid == self {
-			selfSeen = true
-			continue
-		}
-		return pid, selfSeen, nil
-	}
-	return 0, selfSeen, sc.Err()
 }
 
 func truncate(s string, n int) string {

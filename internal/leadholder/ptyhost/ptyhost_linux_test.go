@@ -725,6 +725,169 @@ func TestTreeGoneWithAFakeControlGroup(t *testing.T) {
 	writeFile(t, procsFile, self+"\n") // so that the cleanup's Stop sees a gone tree
 }
 
+// groupHost starts an agent that exits at once in a fake control group that
+// lists only the test process, waits for the exit, and returns the host and
+// the group directory. The group is restored to that state before the
+// cleanup's Stop, which would otherwise wait for a tree that is not gone.
+func groupHost(t *testing.T, mod func(*Config)) (*Host, string) {
+	t.Helper()
+	self := strconv.Itoa(os.Getpid())
+	procRoot, cgroupRoot, procsFile := fakeCgroup(t, self+"\n")
+	h, _ := start(t, "exit 0", opts{mod: func(c *Config) {
+		c.NoCgroup, c.ProcRoot, c.CgroupRoot = false, procRoot, cgroupRoot
+		if mod != nil {
+			mod(c)
+		}
+	}})
+	if h.TreeMethod() != "cgroup" {
+		t.Fatalf("method %q, want cgroup (note %q)", h.TreeMethod(), h.cgroupNote)
+	}
+	dir := filepath.Dir(procsFile)
+	t.Cleanup(func() {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.IsDir() {
+				os.RemoveAll(filepath.Join(dir, e.Name()))
+			}
+		}
+		writeFile(t, procsFile, self+"\n")
+	})
+	waitExit(t, h)
+	return h, dir
+}
+
+// subGroup makes the group dir/rel, and every group between, with an empty
+// cgroup.procs, and puts content in the last one's.
+func subGroup(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	cur := dir
+	for _, part := range strings.Split(rel, "/") {
+		cur = filepath.Join(cur, part)
+		if _, err := os.Stat(filepath.Join(cur, "cgroup.procs")); err != nil {
+			writeFile(t, filepath.Join(cur, "cgroup.procs"), "")
+		}
+	}
+	writeFile(t, filepath.Join(cur, "cgroup.procs"), content)
+}
+
+// A process that moved into a child group is not listed in the parent's
+// cgroup.procs: the proof has to read every group below (the review of the
+// package, finding F1).
+func TestTreeGoneSeesProcessesInDescendantGroups(t *testing.T) {
+	h, dir := groupHost(t, nil)
+	if gone, proof := h.TreeGone(); !gone || !strings.HasPrefix(proof, "cgroup") {
+		t.Fatalf("TreeGone = %v, %q: want gone", gone, proof)
+	}
+	for _, rel := range []string{"escape", "a/b/c/d"} {
+		subGroup(t, dir, rel, "4194000\n")
+		gone, proof := h.TreeGone()
+		if gone || !strings.HasPrefix(proof, "cgroup") || !strings.Contains(proof, "4194000") || !strings.Contains(proof, filepath.Join(rel, "cgroup.procs")) {
+			t.Errorf("a process in %s: TreeGone = %v, %q, want not gone naming the pid and the group", rel, gone, proof)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, strings.SplitN(rel, "/", 2)[0])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Empty child groups hold nothing.
+	subGroup(t, dir, "x/y", "\n")
+	gone, proof := h.TreeGone()
+	if !gone || !strings.HasPrefix(proof, "cgroup") || !strings.Contains(proof, "3 group(s)") {
+		t.Errorf("empty sub-groups: TreeGone = %v, %q, want gone over 3 groups", gone, proof)
+	}
+	// The holder itself in a child group is not a process of the tree.
+	writeFile(t, filepath.Join(dir, "x", "cgroup.procs"), strconv.Itoa(os.Getpid())+"\n")
+	if gone, proof := h.TreeGone(); !gone {
+		t.Errorf("the holder in a sub-group: TreeGone = false, %q", proof)
+	}
+	if c := h.Counters(); c.CgroupErrors != 0 || c.CgroupTruncated != 0 {
+		t.Errorf("counters %+v, want no errors and no truncation", c)
+	}
+}
+
+func TestTreeGoneProvesNothingWhenAGroupCannotBeRead(t *testing.T) {
+	h, dir := groupHost(t, nil)
+	for i, bad := range []func(){
+		func() { writeFile(t, filepath.Join(dir, "k", "cgroup.procs"), "not a pid\n") },
+		func() { // the file is a directory: unreadable
+			if err := os.MkdirAll(filepath.Join(dir, "k", "cgroup.procs"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		func() {
+			writeFile(t, filepath.Join(dir, "k", "cgroup.procs"), strings.Repeat("1\n", maxProcsBytes/2+1))
+		},
+	} {
+		os.RemoveAll(filepath.Join(dir, "k"))
+		bad()
+		before := h.Counters()
+		gone, proof := h.TreeGone()
+		if gone || !strings.HasPrefix(proof, "cgroup") {
+			t.Errorf("case %d: TreeGone = %v, %q: an unreadable group proved the tree gone", i, gone, proof)
+		}
+		after := h.Counters()
+		if after.CgroupErrors+after.CgroupTruncated == before.CgroupErrors+before.CgroupTruncated {
+			t.Errorf("case %d: the failure was not counted: %+v -> %+v", i, before, after)
+		}
+	}
+	// A group that vanished during the walk (a directory with no cgroup.procs
+	// any more) was empty.
+	os.RemoveAll(filepath.Join(dir, "k"))
+	if err := os.MkdirAll(filepath.Join(dir, "gone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if gone, proof := h.TreeGone(); !gone {
+		t.Errorf("a vanished group blocked the proof: %q", proof)
+	}
+}
+
+func TestCgroupWalkIsBoundedAndCounted(t *testing.T) {
+	h, dir := groupHost(t, func(c *Config) { c.CgroupWalkLimit = 6 })
+	for i := 0; i < 20; i++ {
+		subGroup(t, dir, "g"+strconv.Itoa(i), "")
+	}
+	gone, proof := h.TreeGone()
+	if gone || !strings.Contains(proof, "limit") {
+		t.Errorf("a truncated walk proved the tree gone: %v, %q", gone, proof)
+	}
+	if got := h.Counters().CgroupTruncated; got != 1 {
+		t.Errorf("CgroupTruncated = %d, want 1", got)
+	}
+	// A deep chain is bounded by the same limit.
+	subGroup(t, dir, "chain/n/n/n/n/n/n/n/n/n/n", "")
+	if gone, _ := h.TreeGone(); gone {
+		t.Error("a truncated walk of a deep tree proved the tree gone")
+	}
+	if got := h.Counters().CgroupTruncated; got != 2 {
+		t.Errorf("CgroupTruncated = %d, want 2", got)
+	}
+	h.walkMax = 1000
+	if gone, proof := h.TreeGone(); !gone {
+		t.Errorf("with room for every group: TreeGone = false, %q", proof)
+	}
+}
+
+func TestWalkCgroupCountsGroupsAndIgnores(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cgroup.procs"), "10\n11\n")
+	writeFile(t, filepath.Join(root, "a", "cgroup.procs"), "12\n")
+	subGroup(t, root, "b/c", "13\n")
+	if err := os.Symlink(root, filepath.Join(root, "link")); err != nil { // not followed
+		t.Fatal(err)
+	}
+	s := walkCgroup(root, 100, 10, func(pid int) bool { return pid == 13 })
+	var got []int
+	for _, m := range s.members {
+		got = append(got, m.pid)
+	}
+	if !s.selfSeen || s.groups != 4 || !s.complete() || !reflect.DeepEqual(got, []int{11, 12}) {
+		t.Errorf("walk = %+v (pids %v), want self seen, 4 groups, members 11 and 12", s, got)
+	}
+	// The top group must be readable.
+	if s := walkCgroup(filepath.Join(root, "missing"), 100, 10, nil); s.complete() || s.err == nil {
+		t.Errorf("walk of a missing top group = %+v, want an error", s)
+	}
+}
+
 func TestSharedOrMissingControlGroupFallsBackToTheSession(t *testing.T) {
 	self := strconv.Itoa(os.Getpid())
 	fall := func(t *testing.T, procRoot, cgroupRoot, wantNote string) {
@@ -758,6 +921,11 @@ func TestSharedOrMissingControlGroupFallsBackToTheSession(t *testing.T) {
 		p, c, _ := fakeCgroup(t, self+"\n")
 		writeFile(t, filepath.Join(p, "self", "cgroup"), "12:cpu:/x\n1:name=systemd:/x\n")
 		fall(t, p, c, "no cgroup v2")
+	})
+	t.Run("child group", func(t *testing.T) {
+		p, c, f := fakeCgroup(t, self+"\n")
+		writeFile(t, filepath.Join(filepath.Dir(f), "kid", "cgroup.procs"), "")
+		fall(t, p, c, "child groups")
 	})
 	t.Run("group missing", func(t *testing.T) {
 		p, c, f := fakeCgroup(t, self+"\n")
