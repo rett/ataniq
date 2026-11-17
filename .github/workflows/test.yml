@@ -32,5 +32,5 @@ jobs:
       - run: make doctor
       - run: make test
       - name: changelog fragments are folded
-        if: startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/')
+        if: startsWith(github.head_ref || github.ref_name, 'release/') || startsWith(github.head_ref || github.ref_name, 'hotfix/')
         run: make changelog-check
