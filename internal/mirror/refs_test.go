@@ -125,6 +125,15 @@ func TestLeadBranchesAndRoles(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(roles, []string{"coder", "other"}) {
 		t.Errorf("Roles = %v, %v", roles, err)
 	}
+	// A role that is another role followed by a dash sorts after it, though
+	// its refs sort before the refs of the shorter role.
+	f.updateRef(t, "refs/leads/a/heads/x", f.first)
+	f.updateRef(t, "refs/leads/a-b/heads/x", f.first)
+	f.updateRef(t, "refs/leads/a-b/heads/y", f.first)
+	roles, err = f.m.Roles(ctx)
+	if err != nil || !reflect.DeepEqual(roles, []string{"a", "a-b", "coder", "other"}) {
+		t.Errorf("Roles = %v, %v; want [a a-b coder other]", roles, err)
+	}
 	_, empty := newMirror(t)
 	if roles, err := empty.Roles(ctx); err != nil || len(roles) != 0 {
 		t.Errorf("Roles of an empty mirror = %v, %v", roles, err)

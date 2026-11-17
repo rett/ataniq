@@ -164,14 +164,17 @@ func (m *Mirror) Roles(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The refs come sorted by full name, in which the role is followed by a
+	// slash. A role that continues with a dash ("a-b") sorts before the role
+	// ("a") because a dash sorts before a slash, so the roles are sorted
+	// again here, by themselves.
 	var roles []string
 	for _, r := range refs {
 		role, _, _ := SplitLeadRef(r.Name)
-		if len(roles) == 0 || roles[len(roles)-1] != role {
-			roles = append(roles, role)
-		}
+		roles = append(roles, role)
 	}
-	return roles, nil
+	slices.Sort(roles)
+	return slices.Compact(roles), nil
 }
 
 // Resolve returns the ref with exactly this full name: refs/heads/<branch>,
