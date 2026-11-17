@@ -246,3 +246,11 @@ func (se *SafeEmulator) IsAltScreen() bool {
 	defer se.mu.RUnlock()
 	return se.Emulator.IsAltScreen()
 }
+
+// Counters returns the counters of the caps that were hit in a
+// concurrency-safe manner.
+func (se *SafeEmulator) Counters() Counters {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.Counters()
+}

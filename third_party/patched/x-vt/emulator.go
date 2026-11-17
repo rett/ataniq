@@ -3,6 +3,7 @@ package vt
 import (
 	"image/color"
 	"io"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/screen"
@@ -45,9 +46,14 @@ type Emulator struct {
 	// runes, so the segmenter can read the buffer without a conversion on
 	// every character.
 	grapheme []byte
+	// scratch holds the cluster and a rune when they are tested for joining.
+	scratch [MaxClusterBytes + utf8.UTFMax]byte
 	// The last cluster a Write drew when it ended. The next Write may still
 	// extend it, because a cluster can be split across writes anywhere.
 	open openCluster
+
+	// counters counts the times a cap of limits.go was hit.
+	counters Counters
 
 	// The ANSI parser to use.
 	parser *ansi.Parser
@@ -93,6 +99,7 @@ func NewEmulator(w, h int) *Emulator {
 	t.parser = ansi.NewParser()
 	t.parser.SetParamsSize(parser.MaxParamsSize)
 	t.parser.SetDataSize(1024 * 1024 * 4) // 4MB data buffer
+	t.grapheme = make([]byte, 0, MaxClusterBytes+utf8.UTFMax)
 	t.parser.SetHandler(ansi.Handler{
 		Print:     t.handlePrint,
 		Execute:   t.handleControl,

@@ -11,10 +11,10 @@
 // them: the screen is at most [MaxCols] by [MaxRows], the main screen keeps
 // one line of scrollback and the alternate screen none (the patched x/vt
 // gives it none), a frame held for synchronized output is one copy of the
-// screen, and the title is at most [MaxTitle] bytes. Two things the
-// emulator keeps are not bounded yet: one cell keeps a grapheme cluster
-// whole however long the session makes it, and every mode number the
-// session sets is recorded.
+// screen, and the title is at most [MaxTitle] bytes. A cell keeps at most
+// 64 bytes of a grapheme cluster (the patched x/vt drops and counts the
+// rest). One thing the emulator keeps is not bounded yet: every mode number
+// the session sets is recorded.
 // Nothing the session writes reaches the outer terminal except as cells:
 // the pane draws cells, never escape sequences, drops hyperlinks from them
 // and draws no cell content longer than [MaxCellBytes]. [Pane.Text] returns

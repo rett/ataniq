@@ -1,9 +1,11 @@
 package vt
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // A combining mark belongs to the character before it, however that character
@@ -205,5 +207,217 @@ func TestOpenClusterCopy(t *testing.T) {
 	orig.WriteString("\U0001F44B\x1b[m")
 	if _, _, ok := orig.OpenCluster(); ok {
 		t.Errorf("a sequence after the cluster closes it")
+	}
+}
+
+// allocated runs f and returns the bytes it allocated, which the garbage
+// collector cannot change.
+func allocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A cell keeps at most MaxClusterBytes of a cluster, cut at a rune boundary,
+// and the rest is counted, whether the cluster arrives in one write, in one
+// byte per write, or in writes that end between the marks.
+func TestClusterKeepsAtMostMaxBytes(t *testing.T) {
+	const marks = 100 // U+0301 is two bytes
+	input := "e" + strings.Repeat("\u0301", marks)
+	// The base is one byte and each mark two: 31 marks make 63 bytes, and the
+	// 32nd would make 65.
+	wantKept := "e" + strings.Repeat("\u0301", (MaxClusterBytes-1)/2)
+	wantDropped := uint64(len(input) - len(wantKept))
+
+	for _, tc := range []struct {
+		name  string
+		parts func() []string
+	}{
+		{"one write", func() []string { return []string{input} }},
+		{"byte per write", func() []string {
+			var p []string
+			for i := 0; i < len(input); i++ {
+				p = append(p, input[i:i+1])
+			}
+			return p
+		}},
+		{"rune per write", func() []string {
+			var p []string
+			for _, r := range input {
+				p = append(p, string(r))
+			}
+			return p
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := newTestTerminal(t, 10, 1)
+			for _, p := range tc.parts() {
+				term.WriteString(p)
+			}
+			cell := term.CellAt(0, 0)
+			if cell == nil || cell.Content != wantKept {
+				t.Fatalf("cell 0: %q, want %d bytes %q", cell.Content, len(wantKept), wantKept)
+			}
+			if !utf8.ValidString(cell.Content) || len(cell.Content) > MaxClusterBytes {
+				t.Errorf("cell 0 holds %d bytes, valid=%v", len(cell.Content), utf8.ValidString(cell.Content))
+			}
+			if next := term.CellAt(1, 0); next == nil || next.Content != " " {
+				t.Errorf("cell 1: %v, want blank: a dropped mark must not start a cell", next)
+			}
+			if got := term.Counters().ClusterBytesDropped; got != wantDropped {
+				t.Errorf("ClusterBytesDropped = %d, want %d", got, wantDropped)
+			}
+		})
+	}
+}
+
+// A cluster at the cap is not reopened by the next write and does not grow:
+// the mark is dropped and counted, the cursor stays, and the cluster is still
+// the open one, so a following mark is dropped as well.
+func TestClusterAtCapIsNotReopenedOrGrown(t *testing.T) {
+	term := newTestTerminal(t, 10, 1)
+	term.WriteString("e" + strings.Repeat("\u0301", 31)) // 63 bytes
+	term.WriteString("\u0301")                           // would be 65
+	pos, cluster, ok := term.OpenCluster()
+	if !ok || pos.X != 0 || len(cluster) != 63 {
+		t.Fatalf("OpenCluster after the cap: %v %d bytes %v", pos, len(cluster), ok)
+	}
+	if x, _ := term.scr.CursorPosition(); x != 1 {
+		t.Errorf("cursor x = %d, want 1", x)
+	}
+	if got := term.Counters().ClusterBytesDropped; got != 2 {
+		t.Errorf("ClusterBytesDropped = %d, want 2", got)
+	}
+	term.WriteString("\u0301\u0301")
+	if got := term.Counters().ClusterBytesDropped; got != 6 {
+		t.Errorf("ClusterBytesDropped = %d, want 6", got)
+	}
+	// A character that starts a cluster is drawn beside it as usual.
+	term.WriteString("\u00e9")
+	if c := term.CellAt(1, 0); c == nil || c.Content != "\u00e9" {
+		t.Errorf("cell 1: %v, want the new character", c)
+	}
+	if len(term.CellAt(0, 0).Content) != 63 {
+		t.Errorf("cell 0 grew to %d bytes", len(term.CellAt(0, 0).Content))
+	}
+}
+
+// Clusters under the cap still join across writes, up to the cap exactly.
+func TestClusterUnderCapJoinsAcrossWrites(t *testing.T) {
+	// 64 bytes: the base and 21 three-byte marks.
+	full := "a" + strings.Repeat("\u20dd", 21)
+	if len(full) != MaxClusterBytes {
+		t.Fatalf("test input is %d bytes", len(full))
+	}
+	term := newTestTerminal(t, 10, 1)
+	term.WriteString(full[:30])
+	term.WriteString(full[30:])
+	if c := term.CellAt(0, 0); c == nil || c.Content != full {
+		t.Errorf("cell 0: %q, want the %d-byte cluster", c.Content, len(full))
+	}
+	if got := term.Counters().ClusterBytesDropped; got != 0 {
+		t.Errorf("ClusterBytesDropped = %d, want 0", got)
+	}
+	term.WriteString("\u20dd")
+	if got := term.Counters().ClusterBytesDropped; got != 3 {
+		t.Errorf("ClusterBytesDropped = %d, want 3", got)
+	}
+}
+
+// Text with no ASCII in it fills the grapheme buffer with many clusters; the
+// cap is on one cluster and must not cut such text.
+func TestNonASCIIRunIsNotCutByTheClusterCap(t *testing.T) {
+	const n = 1000
+	text := strings.Repeat("\u4e16", n) // wide characters, three bytes each
+	term := newTestTerminal(t, 2*n, 1)
+	term.WriteString(text)
+	for i := 0; i < n; i++ {
+		if c := term.CellAt(2*i, 0); c == nil || c.Content != "\u4e16" {
+			t.Fatalf("cell %d: %v", 2*i, c)
+		}
+	}
+	if got := term.Counters(); got != (Counters{}) {
+		t.Errorf("counters = %+v, want none", got)
+	}
+	// The same text in one-rune writes, and mixed with accents.
+	term = newTestTerminal(t, 2*n, 1)
+	for _, r := range text {
+		term.WriteString(string(r))
+	}
+	if c := term.CellAt(2*(n-1), 0); c == nil || c.Content != "\u4e16" {
+		t.Errorf("last cell: %v", c)
+	}
+	mixed := strings.Repeat("\u00e9\u4e16\u0301", 200)
+	term = newTestTerminal(t, 800, 1)
+	term.WriteString(mixed)
+	if c := term.CellAt(1, 0); c == nil || c.Content != "\u4e16\u0301" {
+		t.Errorf("cell 1: %v", c)
+	}
+	if got := term.Counters(); got != (Counters{}) {
+		t.Errorf("counters = %+v, want none", got)
+	}
+}
+
+// Design case H1: a 1 MiB run of combining marks uses bounded memory and
+// linear time, the cell keeps MaxClusterBytes at most, and the counter rises
+// by what was dropped.
+func TestMegabyteOfCombiningMarks(t *testing.T) {
+	marks := []byte("a" + strings.Repeat("\u0301", (1<<20)/2))
+	for _, tc := range []struct {
+		name  string
+		input []byte
+		write func(*Emulator, []byte)
+	}{
+		{"one write", marks, func(e *Emulator, b []byte) { e.Write(b) }},
+		// Writes that end between marks reopen the cluster each time.
+		{"4 KiB writes", marks[:1<<17-1], func(e *Emulator, b []byte) {
+			for i := 0; i < len(b); i += 4096 {
+				e.Write(b[i:min(i+4096, len(b))])
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := NewEmulator(80, 24)
+			var elapsed time.Duration
+			alloc := allocated(func() {
+				start := time.Now()
+				tc.write(term, tc.input)
+				elapsed = time.Since(start)
+			})
+			t.Logf("%d bytes: %v, %d bytes allocated", len(tc.input), elapsed, alloc)
+			// The run costs a few kilobytes at most; the ceiling is far above
+			// that and far below a buffer that keeps the run (the size of the
+			// input and its regrowth).
+			if alloc > 64<<10 {
+				t.Errorf("allocated %d bytes for %d bytes of marks", alloc, len(tc.input))
+			}
+			if elapsed > 20*time.Second {
+				t.Errorf("took %v", elapsed)
+			}
+			if c := cap(term.grapheme); c > 2*(MaxClusterBytes+utf8.UTFMax) {
+				t.Errorf("grapheme buffer capacity %d", c)
+			}
+			if c := cap(term.open.content); c > 2*(MaxClusterBytes+utf8.UTFMax) {
+				t.Errorf("open cluster capacity %d", c)
+			}
+			cell := term.CellAt(0, 0)
+			if cell == nil || len(cell.Content) > MaxClusterBytes || !utf8.ValidString(cell.Content) {
+				t.Fatalf("cell 0: %q", cell.Content)
+			}
+			if got, want := term.Counters().ClusterBytesDropped, uint64(len(tc.input)-len(cell.Content)); got != want {
+				t.Errorf("ClusterBytesDropped = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+// The counters are read through SafeEmulator under its lock.
+func TestSafeEmulatorCounters(t *testing.T) {
+	se := NewSafeEmulator(10, 1)
+	se.Write([]byte("e" + strings.Repeat("\u0301", 40)))
+	if got := se.Counters().ClusterBytesDropped; got != 80-62 {
+		t.Errorf("ClusterBytesDropped = %d, want %d", got, 80-62)
 	}
 }

@@ -1,7 +1,7 @@
 # Patched github.com/charmbracelet/x/vt
 
 This directory is a copy of the module `github.com/charmbracelet/x/vt` at
-version v0.1.0 with three patches applied. The module is MIT licensed; its
+version v0.1.0 with patches applied. The module is MIT licensed; its
 upstream `LICENSE` file is kept here unchanged. The root `go.mod` replaces the
 module with this directory.
 
@@ -21,11 +21,25 @@ Patches, applied in this order to the files of the module as released:
    lot grew the emulator by hundreds of megabytes. The alternate screen now
    keeps no scrollback, as in real terminals; `Scrollback` and
    `ScrollbackLen` still report the main screen's scrollback.
+4. `vt: keep at most 64 bytes of a grapheme cluster` (`limits.go`, `utf8.go`,
+   `emulator.go`, `safe_emulator.go`, `utf8_test.go`). The patched code kept a
+   cluster whole however long, so a megabyte of combining marks made one cell
+   of a megabyte. A cell now keeps the first `MaxClusterBytes` (64) bytes of a
+   cluster, cut at a rune boundary; the rest is dropped and added to
+   `Counters().ClusterBytesDropped`, and the grapheme buffer never grows past
+   64 bytes. When the buffer fills, the clusters before the last are drawn and
+   the next rune is tested against the last one only, so text without ASCII
+   (which fills the buffer with many clusters) is not cut. A cluster that has
+   reached the cap is neither reopened nor grown by the next write: the mark
+   is dropped and counted, and the cluster stays the open one. A run of marks
+   past the cap costs one segmentation of at most 68 bytes per rune: linear
+   time, no allocation. This patch also adds the `Counters` struct and the
+   `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
 
 Removal: drop this directory, the `replace` line and the matching test wiring
-once an upstream release of the module contains all three changes, and
+once an upstream release of the module contains all the changes, and
 require that
 release instead.
