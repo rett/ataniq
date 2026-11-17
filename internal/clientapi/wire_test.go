@@ -13,7 +13,7 @@ func TestDecodeRequestRefusesARepeatedKey(t *testing.T) {
 		"same key twice":   {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"hello"}`, false},
 		"last differs":     {`{"protocol":"ataniq.client/1","request_id":"a","op":"approve","op":"hello"}`, false},
 		"first differs":    {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"approve"}`, false},
-		"escaped spelling": {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"hello"}`, false},
+		"escaped spelling": {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","\u006fp":"hello"}`, false},
 		"unknown key":      {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","z":1,"z":2}`, false},
 		"case differs":     {`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","Op":"x"}`, true},
 	} {

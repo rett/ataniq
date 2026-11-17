@@ -244,21 +244,64 @@ type LaunchIntent struct {
 	Outcome string `json:"outcome"`
 }
 
-// LeadStatus is one lead in the status result.
+// The kinds of an entry in the status result.
+const (
+	// KindLead is a project's lead.
+	KindLead = "lead"
+	// KindSupervisor is the supervisor.
+	KindSupervisor = "supervisor"
+	// KindCoordinator is a feature's coordinator. It is a record, not a lead:
+	// it has no seat, gives no approval and is no handoff target.
+	KindCoordinator = "coordinator"
+)
+
+// The shown states an entry of the status result can have. Every kind uses
+// the same vocabulary, and StateStalled is the one a lead and the supervisor
+// do not show. The server does not check State against this list; it tells a
+// client what to expect.
+const (
+	// StateDesired: wanted, and nothing launched yet.
+	StateDesired = "desired"
+	// StateStarting: a launch is under way.
+	StateStarting = "starting"
+	// StateReady: the entry is up.
+	StateReady = "ready"
+	// StateDegraded: the entry is up but not fully well.
+	StateDegraded = "degraded"
+	// StateStalled: a coordinator that is not making progress. It is replaced
+	// only after it is proven stopped.
+	StateStalled = "stalled"
+	// StateStopping: a stop is under way.
+	StateStopping = "stopping"
+	// StateStopped: proven stopped.
+	StateStopped = "stopped"
+	// StateEnded: ended, proven.
+	StateEnded = "ended"
+	// StateUnknown: the state is not proven.
+	StateUnknown = "unknown"
+)
+
+// LeadStatus is one entry in the status result: a lead, the supervisor or a
+// coordinator, told apart by Kind. The fields Feature, Parent, ParentEpoch,
+// Instance and Identity belong to a coordinator; they are omitted from the
+// wire (not null, not empty) for a lead and the supervisor, and a client
+// reads an absent one as unset.
 type LeadStatus struct {
-	// Role is the canonical role string, "<project>/lead" or "supervisor".
+	// Role is the canonical role string: "<project>/lead", "supervisor" or,
+	// for a coordinator, "<project>/coord/<feature>".
 	Role string `json:"role"`
-	// Kind is the role kind.
+	// Kind is the role kind: "lead", "supervisor" or "coordinator".
 	Kind string `json:"kind"`
 	// Project is the project, empty for the supervisor.
 	Project string `json:"project"`
-	// Manager is the manager of the lead's unit.
+	// Manager is the manager of the entry's unit.
 	Manager string `json:"manager"`
-	// Epoch is the lead's current epoch.
+	// Epoch is the entry's current epoch. For a coordinator it is the
+	// instance number.
 	Epoch uint64 `json:"epoch"`
 	// Desired is the desired state.
 	Desired string `json:"desired"`
-	// State is the shown state.
+	// State is the shown state: one of the State constants.
 	State string `json:"state"`
 	// ReasonCode is the machine-readable reason of the state.
 	ReasonCode string `json:"reason_code"`
@@ -266,21 +309,42 @@ type LeadStatus struct {
 	ReasonDetail string `json:"reason_detail"`
 	// EvidenceKind is the kind of evidence behind the state.
 	EvidenceKind string `json:"evidence_kind"`
-	// Since is when the lead entered the state.
+	// Since is when the entry entered the state.
 	Since time.Time `json:"since"`
-	// Requested is the requested profile.
+	// Requested is the requested profile. For a coordinator Provider is the
+	// launch runtime and Model the launch model.
 	Requested RequestedProfile `json:"requested"`
 	// Observed is the observed profile.
 	Observed ObservedProfile `json:"observed"`
 	// LaunchIntent is the last launch intent; null when none was journaled.
 	LaunchIntent *LaunchIntent `json:"launch_intent"`
+	// Feature is a coordinator's feature. Omitted for a lead and the
+	// supervisor.
+	Feature string `json:"feature,omitempty"`
+	// Parent is the role string of a coordinator's parent lead. Omitted for a
+	// lead and the supervisor.
+	Parent string `json:"parent,omitempty"`
+	// ParentEpoch is the parent lead's epoch at the coordinator's launch. A
+	// pointer so that an epoch of 0 is still told from an absent one. Omitted
+	// for a lead and the supervisor.
+	ParentEpoch *uint64 `json:"parent_epoch,omitempty"`
+	// Instance is a coordinator's instance number, which is also its epoch. A
+	// pointer for the same reason. Omitted for a lead and the supervisor.
+	Instance *uint64 `json:"instance,omitempty"`
+	// Identity is a coordinator's identity string,
+	// "<project>-lead@e<parent epoch>:coord:<feature>:<instance>". It is an
+	// identifier only: a client compares it whole and never uses it as a path
+	// or ref component, nor matches a prefix of it. Omitted for a lead and
+	// the supervisor.
+	Identity string `json:"identity,omitempty"`
 }
 
 // StatusResult is the result of the status operation.
 type StatusResult struct {
 	// Daemon is the daemon block.
 	Daemon DaemonStatus `json:"daemon"`
-	// Leads are the leads the registry holds.
+	// Leads are the entries the registry holds: leads, the supervisor and
+	// coordinators, told apart by their Kind.
 	Leads []LeadStatus `json:"leads"`
 }
 
