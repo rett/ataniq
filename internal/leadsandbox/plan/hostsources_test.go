@@ -47,11 +47,6 @@ func TestHostRowsAreBoundFromTheRealPathsTheCallerResolved(t *testing.T) {
 				t.Errorf("%s: --ro-bind %s is bound at %s, want %s", rt, want, p.Bwrap[i+2], inside)
 			}
 		}
-		for _, a := range p.Bwrap {
-			if a == "/usr" {
-				continue // the inside path of the /usr row is an operand of its own
-			}
-		}
 		if probs := Verify(p, in, o); len(probs) != 0 {
 			t.Errorf("%s: %v", rt, probs)
 		}
