@@ -74,9 +74,11 @@
 // A check that cannot be made (a file that cannot be read, a mount table that
 // does not parse, a dial that failed for a reason that does not show the
 // address unreachable) is reported as not-checked, with the reason. [Failed]
-// treats it as a failure, unless the spec lists the assertion as optional. A
-// failed result is a failure whatever the spec says. A result that is missing
-// is a failure.
+// treats it as a failure, unless the spec lists the assertion as optional. Only
+// assertion 4 (the provider host resolves, [OptionalAssertion]) may be listed,
+// and only its own result counts: [Spec.Validate] refuses any other number,
+// and the outside half of an assertion is never excused. A failed result is a
+// failure whatever the spec says. A result that is missing is a failure.
 //
 // # Untrusted text
 //

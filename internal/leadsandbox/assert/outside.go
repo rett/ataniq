@@ -210,8 +210,8 @@ type OutsideInput struct {
 	Version string // the pinned runtime version
 	Now     time.Time
 	// Binds is the plan's bind table, for the outside half of assertion 1.
-	// HolderPaths are the paths of the holder's sockets and state; they are
-	// normally the spec's.
+	// HolderPaths are the paths of the holder's sockets and state; when
+	// empty, the spec's are used.
 	Binds       []profile.Bind
 	HolderPaths []string
 
@@ -225,6 +225,9 @@ type OutsideInput struct {
 // half of 1, the outside half of 5, then 9 and 10. The holder adds them to the
 // probe's report with Report.With and judges the whole with FailedAll.
 func RunOutside(in OutsideInput) []Result {
+	if len(in.HolderPaths) == 0 {
+		in.HolderPaths = in.Spec.HolderPaths
+	}
 	return []Result{
 		CheckHolderBinds(in.Binds, in.HolderPaths),
 		CheckTIOCSTIOutside(in.Sys, in.Spec.SeccompExpected),

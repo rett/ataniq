@@ -2,6 +2,7 @@ package assert
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -260,7 +261,12 @@ func (c *checker) loopback() Result {
 // 4. A provider host name resolves.
 func (c *checker) provider() Result {
 	addrs, err := c.sys.LookupHost(c.spec.ProviderHost, c.spec.ResolveTimeout())
+	var ne net.Error
 	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout():
+		// No answer is not an answer: the question was not asked. This is the
+		// result the spec's optional list can excuse.
+		return result(4, StatusNotChecked, "%q: the lookup got no answer: %v", c.spec.ProviderHost, err)
 	case err != nil:
 		return result(4, StatusFailed, "%q does not resolve: %v", c.spec.ProviderHost, err)
 	case len(addrs) == 0:

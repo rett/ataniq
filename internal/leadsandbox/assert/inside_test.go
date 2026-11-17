@@ -331,19 +331,34 @@ func TestNotCheckedFailsUnlessOptional(t *testing.T) {
 	if !Failed(rep, s) {
 		t.Fatal("not-checked results did not fail the report")
 	}
-	s.Optional = notChecked[:len(notChecked)-1]
-	if !Failed(rep, s) {
-		t.Fatal("one assertion still not-checked and not optional, but the report passed")
-	}
+	// A spec that lists the others as optional is refused, and a refused spec
+	// allows nothing (see TestSpecValidate for the refusal).
 	s.Optional = notChecked
+	if Failed(rep, s) != true {
+		t.Fatalf("the optional list of a boundary fact excused it: %v", Problems(rep, s, RequireInside))
+	}
+
+	// Assertion 4 can be optional: a lookup that gets no answer is not-checked.
+	s = testSpec(profile.Claude)
+	f = goodSystem(s)
+	f.lookupErr = timeoutErr{}
+	rep = RunInside(s, f)
+	want(t, rep, 4, StatusNotChecked, "got no answer")
+	if !Failed(rep, s) {
+		t.Fatal("an unanswered lookup passed although it was not optional")
+	}
+	s.Optional = []int{4}
 	if Failed(rep, s) {
-		t.Fatalf("every not-checked assertion is optional: %v", Problems(rep, s, RequireInside))
+		t.Fatalf("assertion 4 is optional and not-checked: %v", Problems(rep, s, RequireInside))
 	}
 	// A failed result is a failure even when optional.
-	rep.Results[notChecked[0]-1].Status = StatusFailed
+	rep.Results[3].Status = StatusFailed
 	if !Failed(rep, s) {
 		t.Fatal("a failed optional assertion passed")
 	}
+	// A lookup that answers no is failed, not not-checked.
+	f.lookupErr = errors.New("no such host")
+	want(t, RunInside(s, f), 4, StatusFailed, "does not resolve")
 }
 
 func TestReadOnlyNeedsBothMountAndAccess(t *testing.T) {

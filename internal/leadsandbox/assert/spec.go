@@ -26,7 +26,7 @@ const (
 	MaxEnvEntries      = 128
 	MaxPathEntries     = 64
 	MaxMountSubstrings = 64
-	MaxOptional        = NumAssertions
+	MaxOptional        = 1
 	MaxPathBytes       = 4096
 	MaxEnvNameBytes    = 64
 	MaxEnvValueBytes   = 4096
@@ -42,6 +42,10 @@ const (
 	DefaultConnectMS = 1000
 	DefaultResolveMS = 5000
 )
+
+// OptionalAssertion is the only assertion a spec may list as optional: the
+// provider host name resolves (assertion 4).
+const OptionalAssertion = 4
 
 // EnvEntry is one variable of the expected environment.
 type EnvEntry struct {
@@ -105,8 +109,12 @@ type Spec struct {
 	ManagedSettings string `json:"managed_settings"`
 	ManagedMarker   string `json:"managed_marker,omitempty"`
 
-	// Optional lists assertions (1 to 8) whose not-checked result does not
-	// fail the start. A failed result always does.
+	// Optional lists assertions whose not-checked result does not fail the
+	// start. Only assertion 4 (OptionalAssertion, the provider host
+	// resolves) may be listed: every other assertion is a boundary fact or
+	// the environment, and a start that passes with it not checked is not a
+	// start the assertions describe. A failed result always fails the start,
+	// and the outside halves are never optional.
 	Optional []int `json:"optional,omitempty"`
 
 	// ConnectTimeoutMS and ResolveTimeoutMS limit a dial and a name
@@ -205,7 +213,7 @@ func EncodeSpec(s Spec) ([]byte, error) {
 
 // Validate refuses a spec the probe cannot use: a wrong version, an invalid
 // runtime or digest, an empty list that would make an assertion vacuous, an
-// entry or list over its bound, a relative or unclean path, a control
+// entry or list over its bound, an optional assertion other than 4, a relative or unclean path, a control
 // character, an address that is not loopback, a host name that is an address,
 // an other-runtime folder that is not the profile's, git paths that are not
 // the tree's three, and a claude spec without a marker or with another
@@ -465,16 +473,10 @@ func (s Spec) checkLimits() error {
 	if len(s.Optional) > MaxOptional {
 		return refuse("optional", "more than %d entries", MaxOptional)
 	}
-	seen := map[int]bool{}
 	for _, n := range s.Optional {
-		a, ok := ByNumber(n)
-		if !ok || !a.HasInside() {
-			return refuse("optional", "%d is not an assertion with an inside half (1 to 8)", n)
+		if n != OptionalAssertion {
+			return refuse("optional", "%d cannot be optional: only assertion %d (%s) may be", n, OptionalAssertion, idOf(OptionalAssertion))
 		}
-		if seen[n] {
-			return refuse("optional", "%d is listed twice", n)
-		}
-		seen[n] = true
 	}
 	for _, t := range []struct {
 		field string

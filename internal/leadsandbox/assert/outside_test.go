@@ -268,3 +268,40 @@ func TestStopRuleData(t *testing.T) {
 		t.Error("stop rule times")
 	}
 }
+
+// HolderPaths of the input default to the spec's: leaving them out must not
+// turn the outside half of assertion 1 into not-checked, or hide a leak.
+func TestRunOutsideDefaultsHolderPaths(t *testing.T) {
+	s := testSpec(profile.Claude)
+	in := OutsideInput{
+		Spec: s, Role: "arc-lead", User: "someone", Version: "2.1.0", Now: t0,
+		Binds: []profile.Bind{{Kind: profile.KindRoBind, Inside: "/leak", Source: s.HolderPaths[2]}},
+		Sys:   goodSystem(s), Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
+	}
+	out := RunOutside(in)
+	if out[0].ID != IDHolderHidden+OutsideSuffix || out[0].Status != StatusFailed {
+		t.Errorf("a bind of a holder path with no HolderPaths given: %+v", out[0])
+	}
+	in.Binds = nil
+	if out := RunOutside(in); out[0].Status != StatusOK {
+		t.Errorf("no binds: %+v", out[0])
+	}
+}
+
+// An outside half is never excused by the spec's optional list: the list may
+// name assertion 4 only, and a not-checked outside result of 1 or 5 still
+// fails the start (the spec that lists 1 is refused as a whole).
+func TestOptionalNeverExcusesAnOutsideHalf(t *testing.T) {
+	s := testSpec(profile.Claude)
+	rep := insideReport(s).With(
+		CheckHolderBinds(nil, nil), // not-checked: no holder path
+		CheckTIOCSTIOutside(nil, false),
+		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
+	)
+	for _, optional := range [][]int{nil, {4}, {1}, {1, 5}} {
+		s.Optional = optional
+		if !FailedAll(rep, s) {
+			t.Errorf("optional %v: a not-checked outside half passed: %v", optional, Problems(rep, s, RequireAll))
+		}
+	}
+}

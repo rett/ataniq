@@ -366,7 +366,9 @@ func Problems(r Report, s Spec, req Require) []string {
 		case StatusFailed:
 			out = append(out, fmt.Sprintf("assertion %d (%s): failed: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 		case StatusNotChecked:
-			if !optional[res.Number] {
+			// Only the inside half of an assertion can be optional: the
+			// outside half of 1 or 5 is the holder's own check.
+			if !(optional[res.Number] && res.ID == idOf(res.Number)) {
 				out = append(out, fmt.Sprintf("assertion %d (%s): not checked: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 			}
 		default:
