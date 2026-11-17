@@ -270,7 +270,9 @@ type Log struct {
 // Open opens or creates events.jsonl in dir. The folder must exist, be owned
 // by the caller and have mode 0700, and must not be a symlink; the file is
 // created with mode 0600, must be a regular file of the caller, and must not
-// be a symlink. Otherwise Open returns an error wrapping ErrUnsafe.
+// be a symlink. The rotated name, if present, must be a regular file of the
+// caller too (not a folder, a symlink or a special file), or rotation could
+// never replace it. Otherwise Open returns an error wrapping ErrUnsafe.
 func Open(dir string, o Options) (*Log, error) {
 	max := o.MaxBytes
 	if max == 0 {
@@ -287,6 +289,10 @@ func Open(dir string, o Options) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkRotated(dfd); err != nil {
+		unix.Close(dfd)
+		return nil, err
+	}
 	f, err := openFile(dfd, FileName, true)
 	if err != nil {
 		unix.Close(dfd)
@@ -299,6 +305,26 @@ func Open(dir string, o Options) (*Log, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// checkRotated refuses an events.jsonl.1 that rotation could not replace or
+// that is not the caller's: anything but an absent name or a regular file of
+// the caller. Without this a folder at that name stops every rotation, and
+// the log fails at the cap and not at Open.
+func checkRotated(dfd int) error {
+	var st unix.Stat_t
+	err := unix.Fstatat(dfd, RotatedName, &st, unix.AT_SYMLINK_NOFOLLOW)
+	switch {
+	case err == unix.ENOENT:
+		return nil
+	case err != nil:
+		return fmt.Errorf("eventlog: stat %s: %w", RotatedName, err)
+	case st.Mode&unix.S_IFMT != unix.S_IFREG:
+		return fmt.Errorf("%w: %s is not a regular file", ErrUnsafe, RotatedName)
+	case int(st.Uid) != os.Geteuid():
+		return fmt.Errorf("%w: %s belongs to another user", ErrUnsafe, RotatedName)
+	}
+	return nil
 }
 
 // adopt makes f the current file and reads its size and whether it ends in a

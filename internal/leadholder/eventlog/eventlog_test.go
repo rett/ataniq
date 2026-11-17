@@ -194,6 +194,50 @@ func TestOpenRefusals(t *testing.T) {
 			t.Fatal("Open blocked on a fifo")
 		}
 	})
+	t.Run("rotated name is not a regular file", func(t *testing.T) {
+		mk := map[string]func(t *testing.T, p string){
+			"folder": func(t *testing.T, p string) {
+				if err := os.Mkdir(p, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				os.WriteFile(filepath.Join(p, "keep"), []byte("x"), 0o600)
+			},
+			"symlink": func(t *testing.T, p string) {
+				target := filepath.Join(t.TempDir(), "target")
+				os.WriteFile(target, nil, 0o600)
+				if err := os.Symlink(target, p); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"dangling symlink": func(t *testing.T, p string) {
+				if err := os.Symlink(filepath.Join(t.TempDir(), "absent"), p); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"fifo": func(t *testing.T, p string) {
+				if err := syscall.Mkfifo(p, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		}
+		for name, f := range mk {
+			dir := newDir(t)
+			f(t, filepath.Join(dir, RotatedName))
+			if _, err := Open(dir, Options{}); !errors.Is(err, ErrUnsafe) {
+				t.Errorf("%s: got %v, want ErrUnsafe", name, err)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, FileName)); err == nil {
+				t.Errorf("%s: a log file was created", name)
+			}
+		}
+	})
+	t.Run("rotated name is absent or a regular file", func(t *testing.T) {
+		dir := newDir(t)
+		openLog(t, dir, Options{}).Close() // absent
+		os.WriteFile(filepath.Join(dir, RotatedName), []byte("old\n"), 0o600)
+		l := openLog(t, dir, Options{}) // a regular file of the caller
+		mustAppend(t, l, KindHolder, EventStart, Fields{})
+	})
 	t.Run("max bytes", func(t *testing.T) {
 		for _, n := range []int64{-1, 1, MinMaxBytes - 1, MaxMaxBytes + 1} {
 			if _, err := Open(newDir(t), Options{MaxBytes: n}); err == nil {
