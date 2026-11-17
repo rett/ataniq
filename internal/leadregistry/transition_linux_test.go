@@ -6,27 +6,56 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ataniq/internal/leadrole"
 )
 
 // The transition table of doc.go, one letter per cell: Y is admitted, P is
 // admitted with a proof and while no launch intent is pending, N is refused
 // with ErrStateTransition. Columns are the target states in tableTargets
-// order. This is written out separately from the code on purpose.
-var tableTargets = []State{StateDesired, StateReady, StateDegraded, StateStopping, StateStopped, StateEnded, StateUnknown}
+// order. This is written out separately from the code on purpose. A lead has
+// no stalled row, and its stalled column is refused everywhere; the stalled
+// column of a coordinator is admitted from starting, ready and degraded.
+var tableTargets = []State{StateDesired, StateReady, StateDegraded, StateStalled, StateStopping, StateStopped, StateEnded, StateUnknown}
 
-var transitionTable = []struct {
+type tableRow struct {
 	from  State
 	cells string // one letter per tableTargets entry
+}
+
+var leadTable = []tableRow{
+	//                 desired ready degraded stalled stopping stopped ended unknown
+	{StateDesired /*  */, "YYYNYPPY"},
+	{StateStarting /* */, "NYYNYPPY"},
+	{StateReady /*    */, "NYYNYPPY"},
+	{StateDegraded /* */, "NYYNYPPY"},
+	{StateStopping /* */, "NYYNYPPY"},
+	{StateStopped /*  */, "YYYNYPPY"},
+	{StateEnded /*    */, "YYYNYPPY"},
+	{StateUnknown /*  */, "NNNNNPPY"},
+}
+
+var coordinatorTable = []tableRow{
+	//                 desired ready degraded stalled stopping stopped ended unknown
+	{StateDesired /*  */, "YYYNYPPY"},
+	{StateStarting /* */, "NYYYYPPY"},
+	{StateReady /*    */, "NYYYYPPY"},
+	{StateDegraded /* */, "NYYYYPPY"},
+	{StateStalled /*  */, "NYYNYPPY"},
+	{StateStopping /* */, "NYYNYPPY"},
+	{StateStopped /*  */, "YYYNYPPY"},
+	{StateEnded /*    */, "YYYNYPPY"},
+	{StateUnknown /*  */, "NNNNNPPY"},
+}
+
+// tableKinds are the two kinds of role the table is tried for.
+var tableKinds = []struct {
+	name string
+	role func(testing.TB) leadrole.Role
+	rows []tableRow
 }{
-	//                 desired ready degraded stopping stopped ended unknown
-	{StateDesired /*  */, "YYYYPPY"},
-	{StateStarting /* */, "NYYYPPY"},
-	{StateReady /*    */, "NYYYPPY"},
-	{StateDegraded /* */, "NYYYPPY"},
-	{StateStopping /* */, "NYYYPPY"},
-	{StateStopped /*  */, "YYYYPPY"},
-	{StateEnded /*    */, "YYYYPPY"},
-	{StateUnknown /*  */, "NNNNPPY"},
+	{"lead", func(t testing.TB) leadrole.Role { return lead(t, "proj") }, leadTable},
+	{"coordinator", func(t testing.TB) leadrole.Role { return coord(t, "proj", "feat") }, coordinatorTable},
 }
 
 // intentCases are the launch-intent conditions a role can be in.
@@ -43,16 +72,25 @@ var intentCases = []struct {
 	{"abandoned", true, OutcomeAbandoned},
 }
 
-// reach builds a registry with one ataniq role in the given intent condition
+// reach builds a registry with one ataniq lead in the given intent condition
 // and shown state. It reports false when the combination cannot exist: a
 // state set after a launch can be starting only until the first change, and
 // with a pending intent no state that needs stopped, ended or desired exists.
 func reach(t *testing.T, name string, launch bool, outcome Outcome, state State) (*Registry, string, bool) {
 	t.Helper()
+	return reachRole(t, lead(t, "proj"), name, launch, outcome, state)
+}
+
+// reachRole is reach for any role. A coordinator is defined under a lead that
+// is launched and ready, as a launch of it needs.
+func reachRole(t *testing.T, role leadrole.Role, name string, launch bool, outcome Outcome, state State) (*Registry, string, bool) {
+	t.Helper()
 	ok := okf(t)
 	dir := regDir(t)
 	r := openReg(t, dir)
-	role := lead(t, "proj")
+	if role.Kind() == leadrole.KindCoordinator {
+		liveLead(t, r, role.Parent())
+	}
 	ok(r.Define(role, ManagerAtaniq, goodProfile()))
 	var epoch uint64
 	pending := false
@@ -79,6 +117,11 @@ func reach(t *testing.T, name string, launch bool, outcome Outcome, state State)
 		}
 	case StateReady, StateDegraded, StateStopping, StateUnknown:
 		ok(r.SetState(role, setState(state, epoch)))
+	case StateStalled:
+		if !launch || role.Kind() != leadrole.KindCoordinator {
+			return nil, "", false
+		}
+		ok(r.SetState(role, setState(state, epoch)))
 	case StateStopped, StateEnded:
 		if pending {
 			return nil, "", false
@@ -94,78 +137,80 @@ func reach(t *testing.T, name string, launch bool, outcome Outcome, state State)
 	return r, dir, true
 }
 
-// TestTransitionTable tries every cell of the table, in every launch-intent
-// condition a role can be in: allowed cells change the shown state and
-// refused cells write nothing.
+// TestTransitionTable tries every cell of the table, for a lead and for a
+// coordinator, in every launch-intent condition a role can be in: allowed
+// cells change the shown state and refused cells write nothing.
 func TestTransitionTable(t *testing.T) {
-	role := lead(t, "proj")
-	cells := 0
-	for _, ic := range intentCases {
-		for _, row := range transitionTable {
-			if len(row.cells) != len(tableTargets) {
-				t.Fatalf("row %s has %d cells", row.from, len(row.cells))
-			}
-			for i, to := range tableTargets {
-				r, dir, reachable := reach(t, ic.name, ic.launch, ic.outcome, row.from)
-				if !reachable {
-					continue
+	for _, kind := range tableKinds {
+		role := kind.role(t)
+		cells := 0
+		for _, ic := range intentCases {
+			for _, row := range kind.rows {
+				if len(row.cells) != len(tableTargets) {
+					t.Fatalf("%s: row %s has %d cells", kind.name, row.from, len(row.cells))
 				}
-				cells++
-				before, _ := r.Get(role)
-				size := journalSize(t, dir)
-				rev, _ := r.Revision()
-				c := StateChange{Epoch: before.Epoch, State: to, Evidence: EvidenceObservation, Reason: Reason{Code: "table"}}
-				if to == StateStopped || to == StateEnded {
-					c.Proof = "unit not loaded and control group empty"
-				}
-				got, err := r.SetState(role, c)
-				cell := ic.name + ": " + string(row.from) + " -> " + string(to)
-				pending := ic.launch && ic.outcome == ""
-				switch row.cells[i] {
-				case 'Y':
-					if err != nil {
-						t.Errorf("%s: refused: %v", cell, err)
+				for i, to := range tableTargets {
+					r, dir, reachable := reachRole(t, role, ic.name, ic.launch, ic.outcome, row.from)
+					if !reachable {
 						continue
 					}
-				case 'P':
-					if pending {
-						if !errors.Is(err, ErrOutcomePending) || !errors.Is(err, ErrStateTransition) {
-							t.Errorf("%s: err = %v, want ErrOutcomePending", cell, err)
+					cells++
+					before, _ := r.Get(role)
+					size := journalSize(t, dir)
+					rev, _ := r.Revision()
+					c := StateChange{Epoch: before.Epoch, State: to, Evidence: EvidenceObservation, Reason: Reason{Code: "table"}}
+					if to == StateStopped || to == StateEnded {
+						c.Proof = "unit not loaded and control group empty"
+					}
+					got, err := r.SetState(role, c)
+					cell := kind.name + ", " + ic.name + ": " + string(row.from) + " -> " + string(to)
+					pending := ic.launch && ic.outcome == ""
+					switch row.cells[i] {
+					case 'Y':
+						if err != nil {
+							t.Errorf("%s: refused: %v", cell, err)
+							continue
 						}
-					} else if err != nil {
-						t.Errorf("%s: refused: %v", cell, err)
+					case 'P':
+						if pending {
+							if !errors.Is(err, ErrOutcomePending) || !errors.Is(err, ErrStateTransition) {
+								t.Errorf("%s: err = %v, want ErrOutcomePending", cell, err)
+							}
+						} else if err != nil {
+							t.Errorf("%s: refused: %v", cell, err)
+							continue
+						}
+					case 'N':
+						if !errors.Is(err, ErrStateTransition) || errors.Is(err, ErrOutcomePending) || errors.Is(err, ErrInvalid) {
+							t.Errorf("%s: err = %v, want ErrStateTransition", cell, err)
+						}
+					default:
+						t.Fatalf("bad table letter %q", row.cells[i])
+					}
+					after, _ := r.Get(role)
+					if err == nil {
+						if got.Shown.State != to || after.Shown.State != to {
+							t.Errorf("%s: shown state is %s", cell, after.Shown.State)
+						}
 						continue
 					}
-				case 'N':
-					if !errors.Is(err, ErrStateTransition) || errors.Is(err, ErrOutcomePending) || errors.Is(err, ErrInvalid) {
-						t.Errorf("%s: err = %v, want ErrStateTransition", cell, err)
+					if journalSize(t, dir) != size {
+						t.Errorf("%s: a refused change wrote to the journal", cell)
 					}
-				default:
-					t.Fatalf("bad table letter %q", row.cells[i])
-				}
-				after, _ := r.Get(role)
-				if err == nil {
-					if got.Shown.State != to || after.Shown.State != to {
-						t.Errorf("%s: shown state is %s", cell, after.Shown.State)
+					if rv, _ := r.Revision(); rv != rev {
+						t.Errorf("%s: a refused change moved the revision", cell)
 					}
-					continue
-				}
-				if journalSize(t, dir) != size {
-					t.Errorf("%s: a refused change wrote to the journal", cell)
-				}
-				if rv, _ := r.Revision(); rv != rev {
-					t.Errorf("%s: a refused change moved the revision", cell)
-				}
-				if after.Shown != before.Shown {
-					t.Errorf("%s: a refused change changed the shown state", cell)
+					if after.Shown != before.Shown {
+						t.Errorf("%s: a refused change changed the shown state", cell)
+					}
 				}
 			}
 		}
-	}
-	// 8 states x 7 targets in the 4 conditions that need no restriction on
-	// the states, less the combinations that cannot exist.
-	if cells < 200 {
-		t.Fatalf("only %d cells were tried", cells)
+		// Every state of the rows x 8 targets in the conditions that need no
+		// restriction on the states, less the combinations that cannot exist.
+		if cells < 200 {
+			t.Fatalf("%s: only %d cells were tried", kind.name, cells)
+		}
 	}
 }
 

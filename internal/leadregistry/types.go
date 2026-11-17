@@ -59,6 +59,19 @@ var (
 	ErrLaunchManager error = refusal("role is not run by ataniq")
 	// ErrLaunchPending is a launch refusal: a launch intent is still pending.
 	ErrLaunchPending error = refusal("a launch intent is pending")
+	// ErrLaunchNoParent is a launch refusal: the parent lead of a coordinator
+	// is not defined.
+	ErrLaunchNoParent error = refusal("the parent lead of the coordinator is not defined")
+	// ErrLaunchParentManager is a launch refusal: the parent lead of a
+	// coordinator is not run by ataniq.
+	ErrLaunchParentManager error = refusal("the parent lead of the coordinator is not run by ataniq")
+	// ErrLaunchParentState is a launch refusal: the parent lead of a
+	// coordinator is not shown starting, ready or degraded.
+	ErrLaunchParentState error = refusal("the parent lead of the coordinator is not shown starting, ready or degraded")
+	// ErrLaunchCoordinator is a launch refusal: a coordinator of the lead,
+	// recorded under an earlier epoch of the lead, is not stopped, ended or
+	// desired (never launched), so it is not proven stopped.
+	ErrLaunchCoordinator error = refusal("a coordinator of the lead recorded under an earlier epoch is not proven stopped")
 	// ErrIntentMismatch means the intent id is not the role's current intent.
 	ErrIntentMismatch = errors.New("leadregistry: not the current launch intent")
 	// ErrIntentResolved means the launch intent already has an outcome.
@@ -179,6 +192,11 @@ const (
 	StateReady State = "ready"
 	// StateDegraded means the role runs but is impaired.
 	StateDegraded State = "degraded"
+	// StateStalled means a coordinator that was starting, ready or degraded
+	// has stopped making progress. It is a state of coordinators only; no
+	// launch is admitted from it, and it is left through a stop proven with
+	// evidence (stopped or ended), unknown, or back to a live state.
+	StateStalled State = "stalled"
 	// StateStopping means a stop is under way.
 	StateStopping State = "stopping"
 	// StateStopped means the role is stopped, with proof.
@@ -191,7 +209,7 @@ const (
 
 func (s State) validate() error {
 	switch s {
-	case StateDesired, StateStarting, StateReady, StateDegraded,
+	case StateDesired, StateStarting, StateReady, StateDegraded, StateStalled,
 		StateStopping, StateStopped, StateEnded, StateUnknown:
 		return nil
 	}
@@ -282,6 +300,51 @@ type Requested struct {
 	PermissionMode string `json:"permission_mode"`
 	// AccessMode is the requested access mode.
 	AccessMode string `json:"access_mode"`
+}
+
+// Defaults of the launch profile of a coordinator, used by Define for the
+// runtime and the model when the caller leaves them empty.
+const (
+	// DefaultCoordinatorProvider is the runtime of a coordinator by default.
+	DefaultCoordinatorProvider = ProviderClaude
+	// DefaultCoordinatorModel is the model of a coordinator by default.
+	DefaultCoordinatorModel = "fable"
+)
+
+// withCoordinatorDefaults returns r with an empty provider and an empty model
+// replaced by the defaults of a coordinator.
+func (r Requested) withCoordinatorDefaults() Requested {
+	if r.Provider == "" {
+		r.Provider = DefaultCoordinatorProvider
+	}
+	if r.Model == "" {
+		r.Model = DefaultCoordinatorModel
+	}
+	return r
+}
+
+// validateFor checks the profile for the kind of role: a lead needs every
+// field; a coordinator needs the provider and the model, and the other fields
+// are optional.
+func (r Requested) validateFor(role leadrole.Role) error {
+	if role.Kind() != leadrole.KindCoordinator {
+		return r.validate()
+	}
+	if r.Provider != ProviderClaude && r.Provider != ProviderCodex {
+		return invalid("provider %q", string(r.Provider))
+	}
+	for _, f := range []struct {
+		name, v  string
+		required bool
+	}{
+		{"version", r.Version, false}, {"model", r.Model, true}, {"effort", r.Effort, false},
+		{"permission mode", r.PermissionMode, false}, {"access mode", r.AccessMode, false},
+	} {
+		if err := validText("requested "+f.name, f.v, MaxFieldBytes, f.required); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r Requested) validate() error {
@@ -489,6 +552,14 @@ type Intent struct {
 	Outcome Outcome
 	// OutcomeAt is when the outcome was recorded; zero while pending.
 	OutcomeAt time.Time
+	// ParentEpoch is the epoch of the parent lead at launch, for the intent
+	// of a coordinator; 0 for every other role.
+	ParentEpoch uint64
+	// Identity is the identity of the coordinator instance this launch
+	// starts, "<project>-lead@e<parent epoch>:coord:<feature>:<n>" (see
+	// leadrole.Role.Identity); empty for every other role. It is an
+	// identifier only.
+	Identity string
 }
 
 // Entry is everything the registry holds for one role. Entries returned by
@@ -502,7 +573,8 @@ type Entry struct {
 	Requested Requested
 	// Observed is the launch profile as observed in the current epoch.
 	Observed Observed
-	// Epoch is the current epoch: 0 means never launched.
+	// Epoch is the current epoch: 0 means never launched. For a coordinator
+	// it is the instance number n.
 	Epoch uint64
 	// Desired is the desired state.
 	Desired Desired

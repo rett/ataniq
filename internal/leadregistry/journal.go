@@ -64,6 +64,9 @@ type beginPayload struct {
 	Epoch         uint64 `json:"epoch"`
 	UnitName      string `json:"unit"`
 	ProfileDigest string `json:"profile_digest"`
+	// ParentEpoch and Identity are set for a coordinator and only then.
+	ParentEpoch uint64 `json:"parent_epoch,omitempty"`
+	Identity    string `json:"identity,omitempty"`
 }
 
 type outcomePayload struct {
@@ -96,6 +99,19 @@ type observedPayload struct {
 // payload is the typed payload of a journal record.
 type payload interface{ validate() error }
 
+// roleChecker is implemented by a payload that must be checked against the
+// role of its record as well.
+type roleChecker interface {
+	checkRole(role leadrole.Role) error
+}
+
+func checkRole(p payload, role leadrole.Role) error {
+	if c, ok := p.(roleChecker); ok {
+		return c.checkRole(role)
+	}
+	return nil
+}
+
 func (h *headerPayload) validate() error {
 	if h.Format != formatName {
 		return fmt.Errorf("not a lead registry (format %q)", h.Format)
@@ -106,11 +122,11 @@ func (h *headerPayload) validate() error {
 	return nil
 }
 
-func (d *definePayload) validate() error {
-	if err := d.Manager.validate(); err != nil {
-		return err
-	}
-	return d.Requested.validate()
+func (d *definePayload) validate() error { return d.Manager.validate() }
+
+// checkRole checks the profile for the kind of role.
+func (d *definePayload) checkRole(role leadrole.Role) error {
+	return d.Requested.validateFor(role)
 }
 
 func (d *desiredPayload) validate() error { return d.Desired.validate() }
@@ -274,6 +290,9 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	if env.Kind == kindHeader && !rec.role.IsZero() {
 		return record{}, zero, fmt.Errorf("header names a role")
 	}
+	if err := checkRole(p, rec.role); err != nil {
+		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)
+	}
 	rec.payload = p
 	return rec, got, nil
 }
@@ -303,6 +322,24 @@ func (b *beginPayload) validate() error {
 	}
 	if b.Epoch == 0 {
 		return invalid("launch epoch 0")
+	}
+	return nil
+}
+
+// checkRole checks that a coordinator's intent carries its parent's epoch and
+// its identity, and that every other role's carries neither.
+func (b *beginPayload) checkRole(role leadrole.Role) error {
+	if role.Kind() != leadrole.KindCoordinator {
+		if b.ParentEpoch != 0 || b.Identity != "" {
+			return invalid("a parent epoch or an identity in the launch of a role that is not a coordinator")
+		}
+		return nil
+	}
+	if b.ParentEpoch == 0 {
+		return invalid("coordinator launch without a parent epoch")
+	}
+	if want := role.Identity(b.ParentEpoch, b.Epoch); b.Identity != want {
+		return invalid("coordinator launch identity %q is not %q", b.Identity, want)
 	}
 	return nil
 }

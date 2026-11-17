@@ -166,6 +166,7 @@ func craft(t *testing.T, lines [][]byte, n int, seq uint64, kind string, role le
 var otherErrors = []error{
 	ErrInvalid, ErrNoRole, ErrTooManyRoles, ErrTooLarge, ErrStaleEpoch, ErrEpochExhausted,
 	ErrLaunchRefused, ErrLaunchState, ErrLaunchManager, ErrLaunchPending, ErrIntentMismatch, ErrIntentResolved,
+	ErrLaunchNoParent, ErrLaunchParentManager, ErrLaunchParentState, ErrLaunchCoordinator,
 	ErrProofRequired, ErrStateTransition, ErrOutcomePending, ErrDecisionRequired,
 	ErrLocked, ErrInsecure, ErrClosed, ErrBroken,
 }

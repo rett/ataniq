@@ -300,7 +300,7 @@ func (r *Registry) replayLine(n int, line []byte) error {
 	}
 	if rec.kind != kindHeader {
 		cur, ok := r.roles[rec.role]
-		next, err := reduce(cur, ok, len(r.roles), rec)
+		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
 			return &CorruptError{Line: n, Reason: err.Error()}
 		}
@@ -363,6 +363,9 @@ func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry,
 	if err := body.validate(); err != nil {
 		return Entry{}, err
 	}
+	if err := checkRole(body, role); err != nil {
+		return Entry{}, err
+	}
 	seq := r.seq + 1
 	line, sum, err := encodeLine(r.prev, seq, r.now(), kind, role, body)
 	if err != nil {
@@ -373,7 +376,7 @@ func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry,
 		return Entry{}, fmt.Errorf("leadregistry: internal: record does not read back: %w", err)
 	}
 	cur, ok := r.roles[role]
-	next, err := reduce(cur, ok, len(r.roles), rec)
+	next, err := reduce(cur, ok, r.roles, rec)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -406,9 +409,17 @@ func (r *Registry) existing(role leadrole.Role) (Entry, error) {
 // existing one. A new role starts with epoch 0, desired stopped, and shown
 // state stopped with reason code "defined". An update leaves the epoch, the
 // desired state, the shown state, the intent and the evidence alone.
+//
+// For a coordinator the runtime (Provider) and the model of requested are
+// DefaultCoordinatorProvider and DefaultCoordinatorModel when empty, and the
+// version, effort, permission mode and access mode are optional; the profile
+// is journaled with the defaults filled in.
 func (r *Registry) Define(role leadrole.Role, manager Manager, requested Requested) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if role.Kind() == leadrole.KindCoordinator {
+		requested = requested.withCoordinatorDefaults()
+	}
 	return r.mutate(kindDefine, role, &definePayload{Manager: manager, Requested: requested})
 }
 
@@ -427,6 +438,15 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // manager is ataniq, and ErrLaunchState unless the shown state is desired,
 // stopped or ended; ErrEpochExhausted when the epoch cannot grow. The epoch
 // is consumed even if the launch later fails: an epoch is never reused.
+//
+// A coordinator is admitted only under its parent lead: the parent lead of
+// the project must be defined, run by ataniq and shown starting, ready or
+// degraded, else the launch is refused with ErrLaunchNoParent,
+// ErrLaunchParentManager or ErrLaunchParentState. The intent then records the
+// parent's epoch (Intent.ParentEpoch) and the identity of the instance
+// (Intent.Identity); the instance number is the coordinator's epoch. A lead is
+// refused with ErrLaunchCoordinator while a coordinator of it that was
+// launched under one of its earlier epochs is not stopped, ended or desired.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -440,6 +460,15 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	if e.Epoch == ^uint64(0) {
 		return Intent{}, ErrEpochExhausted
 	}
+	if err := launchGate(e, r.roles); err != nil {
+		return Intent{}, err
+	}
+	var parentEpoch uint64
+	var identity string
+	if role.Kind() == leadrole.KindCoordinator {
+		parentEpoch = r.roles[role.Parent()].Epoch
+		identity = role.Identity(parentEpoch, e.Epoch+1)
+	}
 	var id [16]byte
 	if _, err := io.ReadFull(r.rand, id[:]); err != nil {
 		return Intent{}, fmt.Errorf("leadregistry: random intent id: %w", err)
@@ -449,6 +478,8 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 		Epoch:         e.Epoch + 1,
 		UnitName:      role.UnitName(),
 		ProfileDigest: e.Requested.Digest(),
+		ParentEpoch:   parentEpoch,
+		Identity:      identity,
 	})
 	if err != nil {
 		return Intent{}, err
@@ -487,9 +518,11 @@ type StateChange struct {
 // for stopped or ended without a proof text, and with ErrStateTransition for
 // a change the table refuses: desired from any state but desired, stopped or
 // ended; ready, degraded or stopping from unknown; stopped or ended with
-// owner-decision evidence from unknown (use ResolveUnknown); and, as
-// ErrOutcomePending, stopped or ended while the launch intent is pending.
-// unknown is accepted for the current epoch from every state.
+// owner-decision evidence from unknown (use ResolveUnknown); stalled for a
+// role that is not a coordinator and for a coordinator that is not starting,
+// ready or degraded; and, as ErrOutcomePending, stopped or ended while the
+// launch intent is pending. unknown is accepted for the current epoch from
+// every state.
 func (r *Registry) SetState(role leadrole.Role, c StateChange) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -564,6 +597,60 @@ func (r *Registry) List() ([]Entry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Role.String() < out[j].Role.String() })
 	return out, nil
+}
+
+// Coordinators returns deep copies of the coordinators of a lead, sorted by
+// the canonical role string. lead must be a project lead role; a lead with no
+// coordinator gives an empty list.
+func (r *Registry) Coordinators(lead leadrole.Role) ([]Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrClosed
+	}
+	if lead.Kind() != leadrole.KindLead {
+		return nil, invalid("%q is not a project lead", lead)
+	}
+	var out []Entry
+	for role, e := range r.roles {
+		if role.Kind() == leadrole.KindCoordinator && role.Parent() == lead {
+			out = append(out, e.clone())
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Role.String() < out[j].Role.String() })
+	return out, nil
+}
+
+// CoordinatorStopped reports whether instance n of a coordinator is proven
+// stopped: true when the coordinator is at instance n and shown stopped or
+// ended with proof, or when a later instance exists (a later instance is
+// launched only from a proven stop). It is false for an instance that was
+// never launched. role must be a coordinator and n at least 1; ErrNoRole when
+// the coordinator is not defined. The registry stores the proof text as given
+// and does not check it.
+func (r *Registry) CoordinatorStopped(role leadrole.Role, n uint64) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false, ErrClosed
+	}
+	if role.Kind() != leadrole.KindCoordinator {
+		return false, invalid("%q is not a coordinator", role)
+	}
+	if n == 0 {
+		return false, invalid("instance numbers start at 1")
+	}
+	e, err := r.existing(role)
+	if err != nil {
+		return false, err
+	}
+	switch {
+	case e.Epoch > n:
+		return true, nil
+	case e.Epoch < n:
+		return false, nil
+	}
+	return (e.Shown.State == StateStopped || e.Shown.State == StateEnded) && e.Shown.Proof != "", nil
 }
 
 // Revision returns the sequence number of the last journal line: 0 for a

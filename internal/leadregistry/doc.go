@@ -1,5 +1,6 @@
 // Package leadregistry is the lead daemon's durable record of every lead
-// role: which manager runs it, the launch profile that was requested and the
+// role (a project lead, the supervisor, or the coordinator of one feature of a
+// project): which manager runs it, the launch profile that was requested and the
 // profile that was observed, the epoch, the desired and shown states, the
 // current launch intent and the unit evidence of the current epoch.
 //
@@ -20,15 +21,40 @@
 // abandoned, launched or adopted) and a stopped or ended with proof after
 // launched or adopted is fine. N is refused with ErrStateTransition.
 //
-//	from \ to   desired ready degraded stopping stopped ended unknown
-//	desired        Y      Y      Y        Y        P       P     Y
-//	starting       N      Y      Y        Y        P       P     Y
-//	ready          N      Y      Y        Y        P       P     Y
-//	degraded       N      Y      Y        Y        P       P     Y
-//	stopping       N      Y      Y        Y        P       P     Y
-//	stopped        Y      Y      Y        Y        P       P     Y
-//	ended          Y      Y      Y        Y        P       P     Y
-//	unknown        N      N      N        N        P       P     Y
+//	from \ to   desired ready degraded stalled stopping stopped ended unknown
+//	desired        Y      Y      Y        N       Y        P       P     Y
+//	starting       N      Y      Y        C       Y        P       P     Y
+//	ready          N      Y      Y        C       Y        P       P     Y
+//	degraded       N      Y      Y        C       Y        P       P     Y
+//	stalled        N      Y      Y        N       Y        P       P     Y
+//	stopping       N      Y      Y        N       Y        P       P     Y
+//	stopped        Y      Y      Y        N       Y        P       P     Y
+//	ended          Y      Y      Y        N       Y        P       P     Y
+//	unknown        N      N      N        N       N        P       P     Y
+//
+// C is Y for a coordinator and N for every other role. The stalled row exists
+// for coordinators only: stalled is the state of a coordinator that was
+// starting, ready or degraded and has stopped making progress. It is entered
+// only from those three states, and left to ready, degraded, stopping,
+// unknown, or stopped or ended with proof; no launch is admitted from it, so a
+// stalled coordinator is proven stopped before its next instance starts.
+//
+// Coordinators. A coordinator is a role of its own, "<project>/coord/<feature>",
+// with the epoch of a role counting its instances: instance n is epoch n, it
+// grows by one for every launch and is never reused, whether the launch failed
+// or not, and not after a reopen. Define takes its runtime and model (claude
+// and fable when empty); its other profile fields are optional. BeginLaunch
+// admits a coordinator only when, in addition to the gate of every role, the
+// parent lead (the lead of its project) is defined, run by ataniq and shown
+// starting, ready or degraded; the intent then records the parent's epoch and
+// the identity "<project>-lead@e<parent epoch>:coord:<feature>:<n>". The other
+// direction: BeginLaunch of a lead is refused with ErrLaunchCoordinator while a
+// coordinator of it, recorded under an earlier epoch of the lead, is not
+// stopped, ended or desired (never launched). CoordinatorStopped says whether
+// an instance is proven stopped, and Coordinators lists those of a lead. The
+// registry gives a coordinator no authority and does not stop one when its
+// parent's epoch ends; it only keeps the record and refuses the launches
+// above.
 //
 // starting is never set by SetState; BeginLaunch sets it. So desired is
 // accepted only from desired, stopped or ended and cannot make a live or
