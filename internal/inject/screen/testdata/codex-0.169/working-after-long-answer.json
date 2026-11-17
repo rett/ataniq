@@ -1,0 +1,51 @@
+{
+ "source": "row3/codex/screens/dump-i2q5-3-holder",
+ "description": "agent working below a long answer",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 2,
+ "cursor_y": 32,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "⠙ Acknowledge tagged messages | work",
+ "faint": [
+  {
+   "row": 0,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 22,
+   "from": 0,
+   "to": 120
+  },
+  {
+   "row": 25,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 28,
+   "from": 10,
+   "to": 16
+  },
+  {
+   "row": 28,
+   "from": 19,
+   "to": 33
+  },
+  {
+   "row": 32,
+   "from": 2,
+   "to": 26
+  }
+ ],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_empty": true,
+  "cursor_in_composer": true,
+  "working": true,
+  "placeholder": true
+ }
+}

@@ -1,0 +1,67 @@
+{
+ "source": "q13/t2-codex/screens/fenced-003-after-holder",
+ "description": "approval dialog after the fence pasted into it",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 119,
+ "cursor_y": 35,
+ "cursor_hidden": true,
+ "alt_screen": true,
+ "title": "[ . ] Action Required | Handle ataniq acknowledgments | work",
+ "faint": [
+  {
+   "row": 2,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 4,
+   "from": 0,
+   "to": 120
+  },
+  {
+   "row": 7,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 10,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 12,
+   "from": 0,
+   "to": 120
+  },
+  {
+   "row": 15,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 35,
+   "from": 2,
+   "to": 8
+  },
+  {
+   "row": 35,
+   "from": 13,
+   "to": 28
+  },
+  {
+   "row": 35,
+   "from": 31,
+   "to": 120
+  }
+ ],
+ "want": {
+  "known": true,
+  "dialog": true,
+  "dialog_marks": [
+   "Would you like to",
+   "› N.",
+   "Press enter to confirm"
+  ]
+ }
+}
