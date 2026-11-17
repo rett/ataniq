@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -57,13 +58,18 @@ func (e *Error) Error() string {
 }
 
 // Client is one connection to the daemon. It is safe for concurrent use; calls
-// take turns on the connection.
+// take turns on the connection. Close may be called at any time, also while a
+// call is in flight.
 type Client struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	br     *bufio.Reader
-	seq    uint64
-	closed bool
+	mu   sync.Mutex // held by a call for its whole exchange
+	conn net.Conn
+	br   *bufio.Reader
+	seq  uint64
+
+	// closed is set when the connection is closed, by Close or by a failure;
+	// closeOnce closes the connection exactly once, without c.mu.
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
 
 // Dial connects to the socket at path.
@@ -76,15 +82,21 @@ func Dial(ctx context.Context, path string) (*Client, error) {
 	return &Client{conn: conn, br: bufio.NewReaderSize(conn, 4096)}, nil
 }
 
-// Close closes the connection.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	return c.conn.Close()
+// Close closes the connection. It does not wait for a call in flight: it
+// closes the connection under that call, which then returns [ErrClosed]. The
+// first Close returns the error of closing the connection; later ones return
+// nil.
+func (c *Client) Close() error { return c.closeConn() }
+
+// closeConn closes the connection once, without taking c.mu, and returns the
+// error of the first close to its first caller.
+func (c *Client) closeConn() error {
+	var err error
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		err = c.conn.Close()
+	})
+	return err
 }
 
 // Hello asks for the server's protocols, limits and operations.
@@ -108,7 +120,7 @@ func (c *Client) Status(ctx context.Context) (StatusResult, error) {
 func (c *Client) call(ctx context.Context, op string, result any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
@@ -123,10 +135,14 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 	defer stop()
 
 	fail := func(err error) error {
-		c.closed = true
-		c.conn.Close()
+		// A Close from another goroutine ended the call.
+		wasClosed := c.closed.Load()
+		c.closeConn()
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
+		}
+		if wasClosed {
+			return ErrClosed
 		}
 		// The connection's deadline is the context's and can fire a moment
 		// before the context reports it.
@@ -196,8 +212,7 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 	switch e.Code {
 	case CodeUnauthorized, CodeBusy, CodeTooLarge:
 		// The server closes the connection after these.
-		c.closed = true
-		c.conn.Close()
+		c.closeConn()
 	}
 	return e
 }

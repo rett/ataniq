@@ -585,3 +585,50 @@ func TestClientHonoursContext(t *testing.T) {
 		t.Fatalf("after a failed call: %v", err)
 	}
 }
+
+func TestClientCloseInterruptsACallInFlight(t *testing.T) {
+	block := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	h := &stubHandler{onStatus: func(ctx context.Context) {
+		entered <- struct{}{}
+		<-block
+	}}
+	ts := startServer(t, h, Options{})
+	defer close(block)
+	c, err := Dial(context.Background(), ts.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The call has no deadline and the handler never answers.
+	callErr := make(chan error, 1)
+	go func() {
+		_, err := c.Status(context.Background())
+		callErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler was not reached")
+	}
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- c.Close() }()
+	select {
+	case err := <-closeErr:
+		if err != nil {
+			t.Fatalf("Close = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close is blocked by the call in flight")
+	}
+	select {
+	case err := <-callErr:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("the call returned %v, want ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not return after Close")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close = %v", err)
+	}
+}
