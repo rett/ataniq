@@ -99,8 +99,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runtime folder lock, closes the registry, releases the runtime folder lock
   and releases the daemon lock last;
   when the server does not end in that time it exits with code 19, says what is
-  left and closes and releases nothing under it, the locks included. It never
-  stops a lead or any unit. The reconcile reads the
+  left and closes the listener; the registry and both locks are left to the end
+  of the process. It never stops a lead or any unit. The reconcile reads the
   units and may write the registry's journal, the states stopped, ended or
   unknown with their proof or reason and the outcomes adopted or abandoned of
   launch intents, and, once it has acted on every role of a registry whose

@@ -690,8 +690,9 @@ func TestSocketLockHeldElsewhereLeavesTheSocketAlone(t *testing.T) {
 }
 
 // TestCrashedDaemonLeftoversDoNotBlock: a daemon that was killed leaves its
-// socket and both lock files, the second with a pid in it; the next daemon
-// starts, removes the socket and takes the locks.
+// socket and the socket lock file with its pid in it; the next daemon starts,
+// removes the socket and takes the lock. A killed holder of the daemon lock is
+// covered by the leadlock tests.
 func TestCrashedDaemonLeftoversDoNotBlock(t *testing.T) {
 	e := newEnv(t)
 	if err := os.Mkdir(e.runtime, 0o700); err != nil {
