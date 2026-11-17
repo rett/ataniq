@@ -26,6 +26,18 @@ func testCanary(t *testing.T) *Canary {
 	return c
 }
 
+// waitHits waits, without a sleep, until the canary has counted n connections.
+func waitHits(t *testing.T, c *Canary, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for c.Hits() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("the canary counted %d connections, want %d", c.Hits(), n)
+		}
+		runtime.Gosched()
+	}
+}
+
 func hit(t *testing.T, network, addr string) {
 	t.Helper()
 	c, err := net.DialTimeout(network, addr, 10*time.Second)
@@ -163,6 +175,9 @@ func TestCheckCanary(t *testing.T) {
 	if r := (&checker{spec: s, sys: HostSystem{}}).loopback(); r.Status != StatusFailed {
 		t.Errorf("the probe against an open canary: %+v", r)
 	}
+	// The probe's dial returns when the kernel has completed the connection,
+	// which is before the canary has accepted and counted it.
+	waitHits(t, c4, 2)
 	if r := CheckCanary(c4); r.Status != StatusFailed {
 		t.Errorf("the holder against a reached canary: %+v", r)
 	}
