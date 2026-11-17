@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -134,20 +135,27 @@ func TestReadFileLimit(t *testing.T) {
 }
 
 func TestReadFileLimitIsDecidedByReading(t *testing.T) {
-	// A file that grows after the open must still hit the cap: the check
-	// reads, and does not trust a size taken earlier.
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "f"), "ab")
-	r := openRoot(t, dir)
-	f, err := r.Open("f")
+	// A file in /proc reports size 0 but has content, so a check on the
+	// reported size passes it. Only reading finds that it is too large.
+	// /proc/self is a symlink, which OpenRoot refuses: use the pid.
+	r, err := OpenRoot("/proc/" + strconv.Itoa(os.Getpid()))
 	if err != nil {
-		t.Fatal(err)
+		t.Skip("no /proc:", err)
 	}
-	defer f.Close()
-	write(t, filepath.Join(dir, "f"), strings.Repeat("x", 1000))
-	got, err := r.ReadFile("f", 10)
+	defer r.Close()
+	fi, err := r.Lstat("status")
+	if err != nil {
+		t.Skip("no status file:", err)
+	}
+	if fi.Size() != 0 {
+		t.Skipf("status reports size %d, not 0", fi.Size())
+	}
+	got, err := r.ReadFile("status", 16)
 	if !errors.Is(err, ErrLimit) {
 		t.Fatalf("got %d bytes, %v", len(got), err)
+	}
+	if got, err = r.ReadFile("status", 1<<20); err != nil || len(got) <= 16 {
+		t.Fatalf("large cap: %d bytes, %v", len(got), err)
 	}
 }
 
