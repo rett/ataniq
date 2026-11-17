@@ -182,6 +182,16 @@ func LeadPrefix(role string) (string, error) {
 // the lead's namespace: +refs/heads/*:refs/leads/<role>/heads/*. The plus
 // sign lets a rebased branch replace the old one; that is safe because the
 // namespace belongs to the one lead.
+//
+// git accepts branch names that this package refuses: names that are not
+// UTF-8, names longer than 255 bytes (git allows that across several path
+// elements) and names that [ValidBranch] adds rules for. So the wildcard must
+// never reach the mirror itself: one such branch would make [Mirror.Roles] and
+// [Mirror.LeadBranches] fail for every lead. [Mirror.Fetch] uses the refspec
+// only into a staging repository, lists what arrived there and refuses the
+// whole fetch, with the mirror unchanged, when any ref name fails the checks
+// of this package or is not a commit. So the mirror never holds a lead ref
+// that the listings refuse.
 func LeadRefspec(role string) (string, error) {
 	prefix, err := LeadPrefix(role)
 	if err != nil {

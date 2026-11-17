@@ -6,9 +6,9 @@
 // A managed lead works in its own clone inside a sandbox. Owner-side code
 // never runs git in that clone and never trusts what is in it. Ataniq keeps
 // one bare repository for each project, the exchange mirror, at
-// <state>/mirrors/<project>.git. The lead's branches are fetched into it
-// (a later part of this package). The mirror is bound read-only into the
-// lead's sandbox, so the lead can read it and cannot write it.
+// <state>/mirrors/<project>.git. The lead's branches are fetched into it.
+// The mirror is bound read-only into the lead's sandbox, so the lead can read
+// it and cannot write it.
 //
 // # Two namespaces
 //
@@ -18,18 +18,49 @@
 // named develop and the upstream branch develop are two different refs:
 // refs/leads/<role>/heads/develop and refs/heads/develop.
 //
-// # What this part does
+// # What it does
 //
 //   - Names and paths: [ValidName], [ValidBranch], [Path], [LeadTree],
 //     [UpstreamRef], [LeadRef], [LeadPrefix], [LeadRefspec], [SplitLeadRef].
 //     The ref name rules are written in Go, without starting git, and are
 //     tested against git check-ref-format.
 //   - [Create] makes the repository with fixed settings and a marker file.
-//     [Open] checks that the folder is still what Create made.
+//     [Open] checks that the folder is still what Create made. Both take
+//     options, for the limits: [UseLimits].
 //   - Reading: [Mirror.Upstream], [Mirror.LeadBranches], [Mirror.Roles],
 //     [Mirror.Resolve] and [Mirror.Size]. A listing is capped; more refs than
 //     the cap is an error, never a cut list. [Mirror.Resolve] takes exact full
 //     ref names and does no search.
+//   - Fetching: [Mirror.Fetch] brings a lead's branches from its clone into
+//     the lead's namespace of the mirror.
+//
+// # The fetch
+//
+// The lead's clone is at <state>/leads/<role>/tree and the lead writes all of
+// it, ".git" included. Owner-side code never runs git in it. A fetch from a
+// local path starts git-upload-pack in the source, which has a large attack
+// surface and reads the source's configuration. So the serving half runs in
+// a sandbox, with no network and the clone read-only, named with git's
+// --upload-pack option, and only the receiving half runs as the owner. The
+// sandbox is reached through a [sandboxplan.Planner]; a fetch without one does
+// not exist, and there is no fallback that runs unsandboxed.
+//
+// The fetch goes in two moves. The receiving half fetches into a staging
+// repository, a fresh bare repository beside the mirror that has the mirror's
+// objects as its only alternate. What arrived is checked there: sizes, the
+// number of refs, the names and types of the refs, and that the repository is
+// still what this package made. Only then do the branches move from the
+// staging repository into the mirror, and the refs outside the lead's
+// namespace are compared with the snapshot taken before. The fetch takes the
+// lead's branches only (+refs/heads/*:refs/leads/<role>/heads/*) and no tag,
+// so a lead's develop or tag can never replace an upstream one. Two fetches
+// into one mirror cannot overlap: a lock file beside the mirror makes the
+// second one return [ErrBusy].
+//
+// The limits are in [Limits]: a time limit, a size cap for the lead's object
+// store as measured in the sandbox, for what one fetch adds, for the whole
+// mirror and for the number of files, and a cap on the lead's branches. The
+// size of the mirror after the move is a check and not a quota.
 //
 // # How it is safe
 //
@@ -46,12 +77,17 @@
 // Ref names come from a lead. This package returns them raw and never
 // prints, logs or interprets them. A caller that shows a name must escape it
 // with the leadtext package first. Error messages from this package carry no
-// output of git and no ref name.
+// output of git and no ref name, with one exception: the text of
+// [ErrUpstreamChanged] names the refs that differ, at most ten, quoted with
+// strconv.QuoteToASCII, so that it holds only printable ASCII. The report of
+// a fetch ([RefUpdate]) holds raw ref names.
 //
 // # What it does not do
 //
-// It does not fetch from a lead's clone, does not decide which branches are
-// taken in, does not write upstream refs, does not delete or prune, and does
-// not run garbage collection. Code for systems other than Linux is a stub
-// whose calls return an "unsupported" error.
+// It does not sandbox anything itself (the planner and its caller do), does
+// not decide which of a lead's branches are taken in beyond the name and type
+// rules, does not write upstream refs, does not run garbage collection, and
+// prunes only the refs of the lead whose branches it fetches. Code for
+// systems other than Linux is a stub whose calls return an "unsupported"
+// error.
 package mirror
