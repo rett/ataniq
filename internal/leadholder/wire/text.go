@@ -8,6 +8,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -15,6 +16,9 @@ import (
 const (
 	// MaxClientName is the longest client name in a Hello and a Role.
 	MaxClientName = 64
+	// MaxWriterCommand is the longest command line of the writer in a Role
+	// frame.
+	MaxWriterCommand = 512
 	// MaxNoticeText is the longest text of a Notice and of a refusal.
 	MaxNoticeText = 256
 	// MaxTitle is the longest title in a State frame.
@@ -27,6 +31,8 @@ const (
 	MaxRuntime = 64
 	// MaxToken is the longest code, signal or counter name.
 	MaxToken = 64
+	// MaxCommandID is the longest command id of a control request.
+	MaxCommandID = 64
 	// MaxModes is the most mode numbers in each list of a Modes frame.
 	MaxModes = 64
 	// MaxSignals is the most idle signals in a State frame.
@@ -53,8 +59,22 @@ func isControl(r rune) bool {
 	return r < 0x20 || (r >= 0x7f && r < 0xa0)
 }
 
+// forbidden reports a rune that a text field may not hold: a control
+// character (a newline is let through when keepNewline is set), a Unicode
+// format character (category Cf, which includes the bidirectional controls,
+// the zero-width characters and the byte order mark) or a line or paragraph
+// separator (U+2028, U+2029). A name or a title is shown beside other text in
+// every attached pane, and these characters reorder, hide or break it.
+func forbidden(r rune, keepNewline bool) bool {
+	if r == '\n' && keepNewline {
+		return false
+	}
+	return isControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Zl, unicode.Zp)
+}
+
 // checkText checks one text field: valid UTF-8, between min and max bytes and
-// without control characters (a newline only when keepNewline is set).
+// without control, format or line-separator characters (a newline is allowed
+// only when keepNewline is set).
 func checkText(field, s string, min, max int, keepNewline bool) error {
 	if len(s) < min || len(s) > max {
 		return invalidf("%s is %d bytes, want %d to %d", field, len(s), min, max)
@@ -63,8 +83,8 @@ func checkText(field, s string, min, max int, keepNewline bool) error {
 		return invalidf("%s is not valid UTF-8", field)
 	}
 	for _, r := range s {
-		if isControl(r) && !(keepNewline && r == '\n') {
-			return invalidf("%s has a control character", field)
+		if forbidden(r, keepNewline) {
+			return invalidf("%s has a control, format or line-separator character (U+%04X)", field, r)
 		}
 	}
 	return nil
@@ -106,9 +126,10 @@ func checkDimension(field string, n int) error {
 	return nil
 }
 
-// Sanitize makes s fit a text field: each invalid byte and control character
-// (a newline only when keepNewline is set) becomes U+FFFD and the result is cut
-// at a character boundary to at most max bytes. A holder uses it on text that
+// Sanitize makes s fit a text field: each invalid byte, control character
+// (a newline only when keepNewline is set), format character and line or
+// paragraph separator becomes U+FFFD and the result is cut at a character
+// boundary to at most max bytes. A holder uses it on text that
 // came from the session (a title, the last screen) before it puts it in a
 // frame.
 func Sanitize(s string, max int, keepNewline bool) string {
@@ -122,7 +143,7 @@ func Sanitize(s string, max int, keepNewline bool) string {
 			b.WriteRune(utf8.RuneError)
 			continue
 		}
-		if isControl(r) && !(keepNewline && r == '\n') {
+		if forbidden(r, keepNewline) {
 			r = utf8.RuneError
 		}
 		if b.Len()+utf8.RuneLen(r) > max {
@@ -144,8 +165,14 @@ const maxDepth = 6
 // decodeMessage decodes a payload strictly into the struct that p points to
 // and validates it.
 func decodeMessage(p message, data []byte) error {
+	if !utf8.Valid(data) {
+		return invalidf("payload is not valid UTF-8")
+	}
 	end, err := scanObject(data)
 	if err != nil {
+		return err
+	}
+	if err := checkSurrogates(data[:end]); err != nil {
 		return err
 	}
 	for _, c := range data[end:] {
@@ -236,6 +263,72 @@ func scanObject(data []byte) (int, error) {
 	}
 }
 
+// hex4 returns the value of the four hexadecimal digits that start b.
+func hex4(b []byte) (rune, bool) {
+	if len(b) < 4 {
+		return 0, false
+	}
+	var r rune
+	for _, c := range b[:4] {
+		switch {
+		case c >= '0' && c <= '9':
+			c -= '0'
+		case c >= 'a' && c <= 'f':
+			c = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			c = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		r = r<<4 | rune(c)
+	}
+	return r, true
+}
+
+// checkSurrogates refuses a \uD800 to \uDFFF escape in a JSON string that is
+// not half of a pair. encoding/json turns such an escape into U+FFFD without
+// an error, which would let a payload say what its own encoder never writes.
+// It reads the raw bytes of an object that scanObject has accepted, so every
+// quote it finds is a real string delimiter.
+func checkSurrogates(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if !inString {
+			inString = c == '"'
+			continue
+		}
+		switch c {
+		case '"':
+			inString = false
+		case '\\':
+			i++
+			if i >= len(data) || data[i] != 'u' {
+				continue
+			}
+			r, ok := hex4(data[i+1:])
+			if !ok {
+				continue
+			}
+			i += 4
+			switch {
+			case r >= 0xd800 && r < 0xdc00:
+				// A high half must be followed by a low half.
+				if i+6 < len(data) && data[i+1] == '\\' && data[i+2] == 'u' {
+					if low, ok := hex4(data[i+3:]); ok && low >= 0xdc00 && low < 0xe000 {
+						i += 6
+						continue
+					}
+				}
+				return invalidf("a string has a lone surrogate escape")
+			case r >= 0xdc00 && r < 0xe000:
+				return invalidf("a string has a lone surrogate escape")
+			}
+		}
+	}
+	return nil
+}
+
 // jsonFields maps the JSON name of each field of a struct type to its type.
 func jsonFields(t reflect.Type) map[string]reflect.Type {
 	m := make(map[string]reflect.Type, t.NumField())
@@ -253,6 +346,25 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 	return m
 }
 
+// requiredFields lists the JSON names of the fields of a struct type that
+// carry the tag wire:"required": a payload that lacks one (or has it null) is
+// refused, so that a missing field is never read as its zero value.
+func requiredFields(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Tag.Get("wire") != "required" || !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" {
+			name = f.Name
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 // checkKeys walks a decoded JSON tree beside the type it was decoded into and
 // refuses a key that is not the exact, case-sensitive JSON name of a field
 // (encoding/json would accept a different case).
@@ -267,6 +379,11 @@ func checkKeys(path string, t reflect.Type, node any) error {
 			return nil
 		}
 		fields := jsonFields(t)
+		for _, name := range requiredFields(t) {
+			if v, ok := obj[name]; !ok || v == nil {
+				return invalidf("missing required field %q%s", name, atPath(path))
+			}
+		}
 		for k, v := range obj {
 			ft, ok := fields[k]
 			if !ok {

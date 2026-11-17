@@ -114,11 +114,18 @@ func (c Colors) validate() error {
 }
 
 // Hello is the first frame of a client. The holder accepts it only with a
-// ticket that it was given for this role and epoch; a Version other than
-// [ProtocolVersion] decodes, so that the holder can refuse it with a Notice.
+// ticket that it was given for this role and epoch and a Version equal to
+// [ProtocolVersion].
+//
+// A Version other than ours decodes when the rest of the payload has the
+// fields of this package's Hello, but a later version may well add a field,
+// and the strict decoder refuses a payload with a field it does not know.
+// The holder therefore never judges the version by [DecodeHello] alone: when
+// that fails, or returns another version, it asks [HelloVersion] and, for a
+// version that is not [ProtocolVersion], refuses with [ReasonRefusedVersion].
 type Hello struct {
-	Version int    `json:"version"`
-	Ticket  string `json:"ticket"`
+	Version int    `json:"version" wire:"required"`
+	Ticket  string `json:"ticket" wire:"required"`
 	Name    string `json:"name"`
 	Columns int    `json:"columns"`
 	Rows    int    `json:"rows"`
@@ -211,12 +218,23 @@ func (c Caps) validate() error {
 	return nil
 }
 
-// Welcome answers an accepted Hello.
+// checkEpoch refuses epoch 0. Epochs are numbered from 1, so that a request
+// or a frame that lacks one, and decodes as zero, can never match a holder's
+// epoch.
+func checkEpoch(n uint64) error {
+	if n == 0 {
+		return invalidf("epoch is 0, want 1 or more")
+	}
+	return nil
+}
+
+// Welcome answers an accepted Hello. A client that cannot decode it asks
+// [WelcomeVersion] whether the holder is newer.
 type Welcome struct {
-	Version        int    `json:"version"`
+	Version        int    `json:"version" wire:"required"`
 	Role           Role   `json:"role"`
 	Lead           string `json:"lead"`
-	Epoch          uint64 `json:"epoch"`
+	Epoch          uint64 `json:"epoch" wire:"required"`
 	Runtime        string `json:"runtime"`
 	RuntimeVersion string `json:"runtime_version"`
 	Caps           Caps   `json:"caps"`
@@ -225,6 +243,9 @@ type Welcome struct {
 func (w *Welcome) validate() error {
 	if w.Version < 1 || w.Version > MaxDimension {
 		return invalidf("version is %d", w.Version)
+	}
+	if err := checkEpoch(w.Epoch); err != nil {
+		return err
 	}
 	if err := w.Role.check("role"); err != nil {
 		return err
@@ -397,20 +418,28 @@ func DecodeState(payload []byte) (State, error) {
 }
 
 // RoleInfo is the payload of a Role frame: who the writer is now (a client
-// name and the pid of its process; both empty or zero when there is none) and
-// the role of the client that receives the frame.
+// name, the pid of its process and its command line, as the client gave them;
+// all empty or zero when there is no writer) and the role of the client that
+// receives the frame. The change of writer is shown as a notice in every
+// attached pane with this record, so the command line is text like any other:
+// at most [MaxWriterCommand] bytes, one line, and made fit with [Sanitize] by
+// whoever puts the process's own arguments in it.
 type RoleInfo struct {
-	WriterName string `json:"writer_name"`
-	WriterPID  int    `json:"writer_pid"`
-	Role       Role   `json:"role"`
+	WriterName    string `json:"writer_name" wire:"required"`
+	WriterPID     int    `json:"writer_pid" wire:"required"`
+	WriterCommand string `json:"writer_command" wire:"required"`
+	Role          Role   `json:"role"`
 }
 
 func (r *RoleInfo) validate() error {
 	if err := checkText("writer_name", r.WriterName, 0, MaxClientName, false); err != nil {
 		return err
 	}
-	if r.WriterPID < 0 || (r.WriterName == "" && r.WriterPID != 0) {
-		return invalidf("writer_pid is %d with writer name %q", r.WriterPID, r.WriterName)
+	if err := checkText("writer_command", r.WriterCommand, 0, MaxWriterCommand, false); err != nil {
+		return err
+	}
+	if r.WriterPID < 0 || (r.WriterName == "" && (r.WriterPID != 0 || r.WriterCommand != "")) {
+		return invalidf("writer_pid is %d and writer_command is %d bytes with writer name %q", r.WriterPID, len(r.WriterCommand), r.WriterName)
 	}
 	return r.Role.check("role")
 }
@@ -433,8 +462,8 @@ const DigestLen = 2 * sha256.Size
 // and title; the pane defines the bytes), as 64 lower-case hexadecimal
 // characters.
 type Check struct {
-	Position uint64 `json:"position"`
-	Digest   string `json:"digest"`
+	Position uint64 `json:"position" wire:"required"`
+	Digest   string `json:"digest" wire:"required"`
 }
 
 func (c *Check) validate() error { return checkHex("digest", c.Digest, DigestLen) }

@@ -2,6 +2,7 @@ package wire_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -38,7 +39,7 @@ func wrapCodec[T any](name string, typ byte, sample T, enc func(T) ([]byte, erro
 }
 
 var sampleStatus = wire.Status{
-	Lead: "project/lead", Epoch: 7, Runtime: "claude",
+	Lead: "project/lead", Epoch: 7, Runtime: "claude", Idle: wire.IdleUnknown, Title: "claude \u2014 work",
 	Size: wire.Size{Columns: 120, Rows: 40}, Caps: wire.DefaultCaps(),
 	WriterPresent: true, ViewerPresent: false,
 	Counters: map[string]uint64{"osc52_dropped": 3, "link_dropped": 0},
@@ -61,7 +62,7 @@ var codecs = []codec{
 		Facts: sampleFacts, ExitStatus: intp(3), Idle: wire.IdleUnknown,
 		IdleSignals: []string{"spinner-visible", "prompt-visible"}, Title: "claude — work",
 	}, wire.EncodeState, wire.DecodeState),
-	wrapCodec("role", wire.TypeRole, wire.RoleInfo{WriterName: "console", WriterPID: 4242, Role: wire.RoleViewer}, wire.EncodeRole, wire.DecodeRole),
+	wrapCodec("role", wire.TypeRole, wire.RoleInfo{WriterName: "console", WriterPID: 4242, WriterCommand: "ataniq attach --lead project/lead", Role: wire.RoleViewer}, wire.EncodeRole, wire.DecodeRole),
 	wrapCodec("check", wire.TypeCheck, wire.Check{Position: 1 << 40, Digest: strings.Repeat("ab", 32)}, wire.EncodeCheck, wire.DecodeCheck),
 	wrapCodec("notice", wire.TypeNotice, wire.Notice{Reason: wire.ReasonTooSlow, Text: "you were too slow"}, wire.EncodeNotice, wire.DecodeNotice),
 	wrapCodec("exit", wire.TypeExit, wire.Exit{
@@ -69,8 +70,10 @@ var codecs = []codec{
 		Counters:   map[string]uint64{"cluster_cut": 18446744073709551615, "a": 1},
 		LastScreen: "line one\nline <two> & \"three\"\n",
 	}, wire.EncodeExit, wire.DecodeExit),
-	wrapCodec("request", wire.TypeRequest, wire.Request{Op: wire.OpTicket, Epoch: 9, Role: wire.RoleWriter}, wire.EncodeRequest, wire.DecodeRequest),
-	wrapCodec("response ticket", wire.TypeResponse, wire.Response{OK: true, Ticket: ticket64}, wire.EncodeResponse, wire.DecodeResponse),
+	wrapCodec("request", wire.TypeRequest, wire.Request{Op: wire.OpTicket, Epoch: 9, Role: wire.RoleWriter, Ticket: ticket64, CommandID: "cmd-0042"}, wire.EncodeRequest, wire.DecodeRequest),
+	wrapCodec("request status", wire.TypeRequest, wire.Request{Op: wire.OpStatus, Epoch: 1}, wire.EncodeRequest, wire.DecodeRequest),
+	wrapCodec("response ok", wire.TypeResponse, wire.Response{OK: true}, wire.EncodeResponse, wire.DecodeResponse),
+	wrapCodec("response busy", wire.TypeResponse, wire.Response{Code: wire.CodeBusy, Text: "a writer is attached"}, wire.EncodeResponse, wire.DecodeResponse),
 	wrapCodec("response status", wire.TypeResponse, wire.Response{OK: true, Status: &sampleStatus}, wire.EncodeResponse, wire.DecodeResponse),
 	wrapCodec("response refusal", wire.TypeResponse, wire.Response{Code: wire.CodeDisabled, Text: "inject is disabled"}, wire.EncodeResponse, wire.DecodeResponse),
 }
@@ -98,7 +101,7 @@ func TestRoundTripEveryPayload(t *testing.T) {
 			}
 			// It also goes through a frame of its own type.
 			var buf bytes.Buffer
-			if err := wire.Write(&buf, c.typ, p); err != nil {
+			if err := wire.Write(&buf, dirOf(c.typ), c.typ, p); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -115,7 +118,7 @@ func TestRoundTripValuesCompare(t *testing.T) {
 	p, _ = wire.EncodeResponse(wire.Response{OK: true, Status: &sampleStatus})
 	r, err := wire.DecodeResponse(p)
 	if err != nil || r.Status == nil || r.Status.Epoch != 7 || r.Status.Counters["osc52_dropped"] != 3 ||
-		!r.Status.WriterPresent || r.Status.Size.Rows != 40 || r.Status.Caps != wire.DefaultCaps() {
+		!r.Status.WriterPresent || r.Status.Size.Rows != 40 || r.Status.Idle != wire.IdleUnknown || r.Status.Title != "claude \u2014 work" || r.Status.Caps != wire.DefaultCaps() {
 		t.Fatalf("%+v %v", r, err)
 	}
 	p, _ = wire.EncodeModes(wire.Modes{})
@@ -169,7 +172,6 @@ func TestStrictDecoding(t *testing.T) {
 		"negative":         `{"columns":80,"rows":-1}`,
 		"too big":          `{"columns":80,"rows":65536}`,
 		"missing":          `{"columns":80}`,
-		"deep":             `{"columns":80,"rows":24,"x":` + strings.Repeat(`[`, 100) + strings.Repeat(`]`, 100) + `}`,
 		"NUL":              "{\"columns\":80,\"rows\":24}\x00",
 	} {
 		if _, err := wire.DecodeSize([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
@@ -346,11 +348,18 @@ func TestFieldRules(t *testing.T) {
 
 	// Role.
 	for name, r := range map[string]wire.RoleInfo{
-		"no role":         {},
-		"role owner":      {Role: "owner"},
-		"pid without who": {WriterPID: 5, Role: wire.RoleViewer},
-		"negative pid":    {WriterName: "c", WriterPID: -1, Role: wire.RoleViewer},
-		"long name":       {WriterName: strings.Repeat("c", 65), WriterPID: 1, Role: wire.RoleViewer},
+		"no role":                 {},
+		"role owner":              {Role: "owner"},
+		"pid without who":         {WriterPID: 5, Role: wire.RoleViewer},
+		"negative pid":            {WriterName: "c", WriterPID: -1, Role: wire.RoleViewer},
+		"long name":               {WriterName: strings.Repeat("c", 65), WriterPID: 1, Role: wire.RoleViewer},
+		"command without who":     {WriterCommand: "ataniq attach", Role: wire.RoleViewer},
+		"513 byte command":        {WriterName: "c", WriterPID: 1, WriterCommand: strings.Repeat("c", 513), Role: wire.RoleViewer},
+		"command of 257 two-byte": {WriterName: "c", WriterPID: 1, WriterCommand: strings.Repeat("\u00e9", 257), Role: wire.RoleViewer},
+		"command with ESC":        {WriterName: "c", WriterPID: 1, WriterCommand: "a\x1b[2Jb", Role: wire.RoleViewer},
+		"command with newline":    {WriterName: "c", WriterPID: 1, WriterCommand: "a\nb", Role: wire.RoleViewer},
+		"command with RTL":        {WriterName: "c", WriterPID: 1, WriterCommand: "a\u202eb", Role: wire.RoleViewer},
+		"command not UTF-8":       {WriterName: "c", WriterPID: 1, WriterCommand: "a\xffb", Role: wire.RoleViewer},
 	} {
 		if _, err := wire.EncodeRole(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("role %s: err = %v", name, err)
@@ -358,6 +367,27 @@ func TestFieldRules(t *testing.T) {
 	}
 	if _, err := wire.EncodeRole(wire.RoleInfo{Role: wire.RoleViewer}); err != nil {
 		t.Errorf("no writer: %v", err)
+	}
+	// A command line of exactly 512 bytes is the longest, and an empty one is
+	// allowed for a writer that gave none.
+	for _, cmd := range []string{"", strings.Repeat("c", 512), strings.Repeat("\u00e9", 256)} {
+		p, err := wire.EncodeRole(wire.RoleInfo{WriterName: "c", WriterPID: 1, WriterCommand: cmd, Role: wire.RoleWriter})
+		if err != nil {
+			t.Errorf("command of %d bytes: %v", len(cmd), err)
+			continue
+		}
+		if got, err := wire.DecodeRole(p); err != nil || got.WriterCommand != cmd {
+			t.Errorf("command of %d bytes: %v", len(cmd), err)
+		}
+	}
+	// What Sanitize makes of a hostile command line is accepted.
+	hostile := "evil \x1b]52;c;AAAA\a \u202e\u2028 \xff" + strings.Repeat("x", 600)
+	clean := wire.Sanitize(hostile, wire.MaxWriterCommand, false)
+	if len(clean) > wire.MaxWriterCommand {
+		t.Errorf("sanitized command is %d bytes", len(clean))
+	}
+	if _, err := wire.EncodeRole(wire.RoleInfo{WriterName: "c", WriterPID: 1, WriterCommand: clean, Role: wire.RoleWriter}); err != nil {
+		t.Errorf("sanitized command: %v", err)
 	}
 
 	// Welcome.
@@ -414,22 +444,23 @@ func TestFieldRules(t *testing.T) {
 
 func TestExitRules(t *testing.T) {
 	e := wire.Exit{Facts: sampleFacts}
-	// The largest last screen, made of the characters that JSON expands most,
-	// still fits in a frame.
-	for _, ch := range []string{"\n", `"`, `\`, " ", "x"} {
+	// The largest last screen, made of the characters that JSON expands most
+	// (a newline, a quote and a backslash take two bytes each), still fits in
+	// a frame.
+	for _, ch := range []string{"\n", `"`, `\`, " ", "x"} {
 		e.LastScreen = strings.Repeat(ch, wire.MaxLastScreen/len(ch))
 		p, err := wire.EncodeExit(e)
 		if err != nil {
-			if ch == " " || ch == `"` || ch == `\` {
-				// not an error of the cap: U+2028 is not a control character here
-				t.Fatalf("%q: %v", ch, err)
-			}
 			t.Fatalf("%q: %v", ch, err)
 		}
 		if len(p) > wire.MaxHolderPayload {
 			t.Fatalf("%q: payload of %d bytes", ch, len(p))
 		}
-		if _, err := wire.DecodeExit(p); err != nil {
+		if expands := ch == "\n" || ch == `"` || ch == `\`; expands != (len(p) > 2*wire.MaxLastScreen) {
+			t.Fatalf("%q: payload of %d bytes for a screen of %d", ch, len(p), wire.MaxLastScreen)
+		}
+		got, err := wire.DecodeExit(p)
+		if err != nil || got.LastScreen != e.LastScreen {
 			t.Fatalf("%q: %v", ch, err)
 		}
 	}
@@ -472,38 +503,65 @@ func TestExitRules(t *testing.T) {
 	}
 }
 
+// withStatus returns a copy of the sample status with f applied.
+func withStatus(f func(*wire.Status)) *wire.Status {
+	s := sampleStatus
+	f(&s)
+	return &s
+}
+
 func TestControlRules(t *testing.T) {
 	for _, op := range []wire.Operation{wire.OpStatus, wire.OpStop, wire.OpReleaseWriter, wire.OpInject} {
 		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1}); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
+		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, CommandID: "c1"}); err != nil {
+			t.Errorf("%s with a command id: %v", op, err)
+		}
 		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, Role: wire.RoleWriter}); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("%s with a role: %v", op, err)
 		}
+		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, Ticket: ticket64}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%s with a ticket: %v", op, err)
+		}
+	}
+	for _, role := range []wire.Role{wire.RoleWriter, wire.RoleViewer} {
+		if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpTicket, Epoch: 1, Role: role, Ticket: ticket64}); err != nil {
+			t.Errorf("ticket for a %s: %v", role, err)
+		}
 	}
 	for name, r := range map[string]wire.Request{
-		"no op":              {Epoch: 1},
-		"unknown op":         {Op: "restart", Epoch: 1},
-		"ticket without":     {Op: wire.OpTicket, Epoch: 1},
-		"ticket bad role":    {Op: wire.OpTicket, Epoch: 1, Role: "root"},
-		"capitalised op":     {Op: "Status", Epoch: 1},
-		"op with whitespace": {Op: "stop ", Epoch: 1},
+		"no op":               {Epoch: 1},
+		"unknown op":          {Op: "restart", Epoch: 1},
+		"ticket without role": {Op: wire.OpTicket, Epoch: 1, Ticket: ticket64},
+		"ticket bad role":     {Op: wire.OpTicket, Epoch: 1, Role: "root", Ticket: ticket64},
+		"ticket without one":  {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter},
+		"ticket short":        {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: ticket64[:63]},
+		"ticket long":         {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: ticket64 + "0"},
+		"ticket upper case":   {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: strings.ToUpper(ticket64)},
+		"ticket not hex":      {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: strings.Repeat("z", 64)},
+		"capitalised op":      {Op: "Status", Epoch: 1},
+		"op with whitespace":  {Op: "stop ", Epoch: 1},
+		"epoch zero":          {Op: wire.OpStop},
 	} {
 		if _, err := wire.EncodeRequest(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 	for name, r := range map[string]wire.Response{
-		"ok with code":        {OK: true, Code: "x"},
-		"ok with text":        {OK: true, Text: "x"},
-		"ok bad ticket":       {OK: true, Ticket: "abc"},
-		"ticket and status":   {OK: true, Ticket: ticket64, Status: &sampleStatus},
-		"refusal no code":     {Text: "x"},
-		"refusal with ticket": {Code: "x", Ticket: ticket64},
-		"refusal with status": {Code: "x", Status: &sampleStatus},
-		"refusal long text":   {Code: "x", Text: strings.Repeat("t", 257)},
-		"refusal bad code":    {Code: "Not OK"},
-		"bad status":          {OK: true, Status: &wire.Status{}},
+		"ok with code":           {OK: true, Code: "x"},
+		"ok with text":           {OK: true, Text: "x"},
+		"refusal no code":        {Text: "x"},
+		"refusal with status":    {Code: "x", Status: &sampleStatus},
+		"refusal long text":      {Code: "x", Text: strings.Repeat("t", 257)},
+		"refusal bad code":       {Code: "Not OK"},
+		"bad status":             {OK: true, Status: &wire.Status{}},
+		"status no idle":         {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = "" })},
+		"status idle capital":    {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = "Unknown" })},
+		"status long idle":       {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = strings.Repeat("i", 65) })},
+		"status long title":      {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = strings.Repeat("t", 257) })},
+		"status title ESC":       {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "a\x1b]0;x\a" })},
+		"status title not UTF-8": {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "a\xffb" })},
 	} {
 		if _, err := wire.EncodeResponse(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("response %s: err = %v", name, err)
@@ -511,6 +569,10 @@ func TestControlRules(t *testing.T) {
 	}
 	if _, err := wire.EncodeResponse(wire.Response{OK: true}); err != nil {
 		t.Errorf("a bare ok: %v", err)
+	}
+	// An empty title is fine: the lead may not have set one.
+	if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "" })}); err != nil {
+		t.Errorf("empty title: %v", err)
 	}
 	st := sampleStatus
 	st.Counters = nil
@@ -551,6 +613,475 @@ func TestSanitize(t *testing.T) {
 		}
 		if _, err := wire.EncodeNotice(wire.Notice{Reason: wire.ReasonResync, Text: wire.Sanitize(c.in, 256, false)}); err != nil {
 			t.Errorf("sanitized %q is refused: %v", c.in, err)
+		}
+	}
+}
+
+// textFields lists every text field of the structured payloads: the codec
+// that carries it and the sample value to put bad text in place of.
+var textFields = []struct {
+	codec string
+	old   string
+}{
+	{"hello", `"name":"console"`},
+	{"welcome", `"lead":"project/lead"`},
+	{"welcome", `"runtime":"codex"`},
+	{"welcome", `"runtime_version":"1.2.3"`},
+	{"state", `"title":"claude — work"`},
+	{"role", `"writer_name":"console"`},
+	{"role", `"writer_command":"ataniq attach --lead project/lead"`},
+	{"notice", `"text":"you were too slow"`},
+	{"exit", `"last_screen":"line one\nline <two> & \"three\"\n"`},
+	{"response status", `"lead":"project/lead"`},
+	{"response status", `"runtime":"claude"`},
+	{"response status", `"title":"claude — work"`},
+	{"response refusal", `"text":"inject is disabled"`},
+}
+
+func codecNamed(t *testing.T, name string) codec {
+	t.Helper()
+	for _, c := range codecs {
+		if c.name == name {
+			return c
+		}
+	}
+	t.Fatalf("no codec %q", name)
+	return codec{}
+}
+
+// A peer's payload is checked as strictly as an encoder's: encoding/json
+// would turn an invalid byte or a lone surrogate escape into U+FFFD without
+// an error, so the decoder has to look at the raw bytes.
+func TestDecodeRefusesInvalidText(t *testing.T) {
+	for _, f := range textFields {
+		c := codecNamed(t, f.codec)
+		good, err := c.encode(c.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _, _ := strings.Cut(f.old, ":")
+		for name, val := range map[string]string{
+			"invalid byte":          "a\xffb",
+			"truncated sequence":    "a\xe2\x82",
+			"encoded surrogate":     "a\xed\xa0\x80b", // CESU-8 of U+D800
+			"lone high escape":      `a\ud800b`,
+			"lone low escape":       `a\udc00b`,
+			"high then ordinary":    `a\ud800Ab`,
+			"high then high":        `a\ud800𐀀`,
+			"low then high":         `a\udc00\ud800`,
+			"high at the end":       `a\ud800`,
+			"upper-case lone high":  `a\uD800b`,
+			"lone high before text": `\ud83dx`,
+		} {
+			bad := repl(t, good, f.old, key+`:"`+val+`"`)
+			if _, err := c.decode(bad); !errors.Is(err, wire.ErrInvalid) {
+				t.Errorf("%s %s %s: err = %v, want ErrInvalid", f.codec, key, name, err)
+			}
+		}
+	}
+}
+
+// What the decoder must keep accepting: a real pair, an escaped U+FFFD and
+// the escaped quote and backslash that precede a u.
+func TestDecodeAcceptsValidEscapes(t *testing.T) {
+	hello := func(name string) string {
+		return `{"version":1,"ticket":"` + ticket64 + `","name":"` + name + `","columns":80,"rows":24,"colors":{}}`
+	}
+	for name, c := range map[string]struct{ in, want string }{
+		"pair":            {`a😀b`, "a\U0001F600b"},
+		"upper-case pair": {`😀`, "\U0001F600"},
+		"replacement":     {`a�b`, "a�b"},
+		"raw replacement": {"a�b", "a�b"},
+		"backslash u":     {`a\\ud800`, `a\ud800`},
+		"quote then u":    {`a\"\\ud800`, `a"\ud800`},
+		"two pairs":       {`😀😁`, "\U0001F600\U0001F601"},
+		"BMP escape":      {`é`, "é"},
+	} {
+		got, err := wire.DecodeHello([]byte(hello(c.in)))
+		if err != nil || got.Name != c.want {
+			t.Errorf("%s: name %q, err %v; want %q", name, got.Name, err, c.want)
+		}
+	}
+	// A surrogate escape in a key is as bad as one in a value.
+	bad := `{"version":1,"ticket":"` + ticket64 + `","na\ud800me":"x","columns":80,"rows":24,"colors":{}}`
+	if _, err := wire.DecodeHello([]byte(bad)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("surrogate in a key: %v", err)
+	}
+	// Invalid UTF-8 outside a string is refused too.
+	if _, err := wire.DecodeSize([]byte("{\"columns\":80,\"rows\":24}\xff")); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("invalid byte after the object: %v", err)
+	}
+}
+
+// depthRefused reports whether decoding a Modes payload with a list nested n
+// levels deep stops at the depth limit. The list is a field that the struct
+// has, so only the depth rule can give this error: without it, the same
+// payload fails on the type of the number.
+func depthRefused(n int) (bool, error) {
+	p := `{"dec":` + strings.Repeat(`[`, n) + `1` + strings.Repeat(`]`, n) + `,"ansi":[]}`
+	_, err := wire.DecodeModes([]byte(p))
+	return err != nil && strings.Contains(err.Error(), "nested deeper"), err
+}
+
+func TestDepthLimit(t *testing.T) {
+	// The object is level one; six levels are allowed.
+	if refused, err := depthRefused(1); refused || err != nil {
+		t.Errorf("one list: refused for depth %v, err %v", refused, err)
+	}
+	for _, n := range []int{2, 5} {
+		if refused, err := depthRefused(n); refused || !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%d nested lists: refused for depth %v, err %v (want a type error)", n, refused, err)
+		}
+	}
+	for _, n := range []int{6, 7, 100, 20000} {
+		if refused, err := depthRefused(n); !refused || !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%d nested lists: refused for depth %v, err %v", n, refused, err)
+		}
+	}
+	// Nesting under an unknown key is refused as an unknown key, whatever its
+	// depth: this is the case the old test used, which did not reach the rule.
+	deep := `{"columns":80,"rows":24,"x":` + strings.Repeat(`[`, 100) + strings.Repeat(`]`, 100) + `}`
+	if _, err := wire.DecodeSize([]byte(deep)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("deep unknown field: %v", err)
+	}
+	// Objects count as levels as well.
+	p := `{"colors":` + strings.Repeat(`{"cursor":`, 7) + `"#000000"` + strings.Repeat(`}`, 7) + `}`
+	if _, err := wire.DecodeHello([]byte(p)); err == nil || !strings.Contains(err.Error(), "nested deeper") {
+		t.Errorf("nested objects: %v", err)
+	}
+}
+
+// formatChars are characters that a text field refuses though they are valid
+// UTF-8 and not control characters: the Unicode format category (Cf) and the
+// line and paragraph separators.
+var formatChars = map[string]string{
+	"right-to-left override": "\u202e",
+	"left-to-right embed":    "\u202a",
+	"pop directional":        "\u202c",
+	"right-to-left isolate":  "\u2067",
+	"pop isolate":            "\u2069",
+	"left-to-right mark":     "\u200e",
+	"arabic letter mark":     "\u061c",
+	"zero width space":       "\u200b",
+	"zero width joiner":      "\u200d",
+	"word joiner":            "\u2060",
+	"soft hyphen":            "\u00ad",
+	"byte order mark":        "\ufeff",
+	"arabic number sign":     "\u0600",
+	"tag letter":             "\U000e0041",
+	"line separator":         "\u2028",
+	"paragraph separator":    "\u2029",
+}
+
+// okChars are characters near those that stay allowed.
+var okChars = map[string]string{
+	"no-break space":      "\u00a0",
+	"em space":            "\u2003",
+	"replacement":         "\ufffd",
+	"accented":            "é",
+	"cjk":                 "字",
+	"emoji":               "\U0001F600",
+	"combining accent":    "e\u0301",
+	"variation selector":  "\ufe0f",
+	"private use":         "\ue000",
+	"ideographic space":   "\u3000",
+	"right single quote":  "’",
+	"horizontal ellipsis": "…",
+}
+
+func TestFormatCharactersRefusedOnDecode(t *testing.T) {
+	for _, f := range textFields {
+		c := codecNamed(t, f.codec)
+		good, err := c.encode(c.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _, _ := strings.Cut(f.old, ":")
+		for name, ch := range formatChars {
+			// Once as the raw character and once as a \u escape (a character
+			// outside the BMP as a pair).
+			var esc strings.Builder
+			for _, r := range ch {
+				if r >= 0x10000 {
+					r -= 0x10000
+					fmt.Fprintf(&esc, `\u%04x\u%04x`, 0xd800+(r>>10), 0xdc00+(r&0x3ff))
+				} else {
+					fmt.Fprintf(&esc, `\u%04x`, r)
+				}
+			}
+			for form, val := range map[string]string{"raw": ch, "escaped": esc.String()} {
+				bad := repl(t, good, f.old, key+`:"a`+val+`b"`)
+				if _, err := c.decode(bad); !errors.Is(err, wire.ErrInvalid) {
+					t.Errorf("%s %s %s (%s): err = %v, want ErrInvalid", f.codec, key, name, form, err)
+				}
+			}
+		}
+		for name, ch := range okChars {
+			ok := repl(t, good, f.old, key+`:"a`+ch+`b"`)
+			if _, err := c.decode(ok); err != nil {
+				t.Errorf("%s %s %s: %v", f.codec, key, name, err)
+			}
+		}
+	}
+}
+
+func TestFormatCharactersRefusedOnEncode(t *testing.T) {
+	for name, ch := range formatChars {
+		text := "a" + ch + "b"
+		if _, err := wire.EncodeHello(wire.Hello{Version: 1, Ticket: ticket64, Name: text, Columns: 80, Rows: 24}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("hello name with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeNotice(wire.Notice{Reason: wire.ReasonResync, Text: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("notice text with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeState(wire.State{Facts: sampleFacts, Idle: wire.IdleUnknown, Title: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("title with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeRole(wire.RoleInfo{WriterName: text, WriterPID: 1, Role: wire.RoleViewer}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("writer name with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeExit(wire.Exit{Facts: sampleFacts, LastScreen: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("last screen with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeResponse(wire.Response{Code: "x", Text: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("refusal text with %s: %v", name, err)
+		}
+		st := sampleStatus
+		st.Lead = text
+		if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: &st}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("status lead with %s: %v", name, err)
+		}
+		// Sanitize makes it fit, and the result is accepted.
+		clean := wire.Sanitize(text, 64, false)
+		if clean != "a\ufffdb" {
+			t.Errorf("Sanitize(%s) = %q", name, clean)
+		}
+		if _, err := wire.EncodeNotice(wire.Notice{Reason: wire.ReasonResync, Text: clean}); err != nil {
+			t.Errorf("sanitized %s: %v", name, err)
+		}
+		if got := wire.Sanitize("x\n"+ch, 64, true); got != "x\n\ufffd" {
+			t.Errorf("Sanitize with newlines kept, %s = %q", name, got)
+		}
+	}
+	for name, ch := range okChars {
+		text := "a" + ch + "b"
+		if _, err := wire.EncodeHello(wire.Hello{Version: 1, Ticket: ticket64, Name: text, Columns: 80, Rows: 24}); err != nil {
+			t.Errorf("hello name with %s: %v", name, err)
+		}
+		if got := wire.Sanitize(text, 64, false); got != text {
+			t.Errorf("Sanitize changed %s: %q", name, got)
+		}
+	}
+}
+
+// edit applies f to the object that holds the last key of path in a sample
+// payload (the earlier parts are object keys) and returns the new payload.
+func edit(t *testing.T, p []byte, f func(obj map[string]any, key string), path ...string) []byte {
+	t.Helper()
+	var tree map[string]any
+	if err := json.Unmarshal(p, &tree); err != nil {
+		t.Fatal(err)
+	}
+	obj := tree
+	for _, k := range path[:len(path)-1] {
+		obj = obj[k].(map[string]any)
+	}
+	last := path[len(path)-1]
+	if _, ok := obj[last]; !ok {
+		t.Fatalf("%s lacks %s", p, last)
+	}
+	f(obj, last)
+	out, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func without(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { delete(o, k) }, path...)
+}
+
+func nulled(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { o[k] = nil }, path...)
+}
+
+func zeroed(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { o[k] = float64(0) }, path...)
+}
+
+// A field that a payload must carry is refused when it is missing or null:
+// it is never read as its zero value.
+func TestRequiredFields(t *testing.T) {
+	for _, c := range []struct {
+		codec string
+		path  []string
+	}{
+		{"hello", []string{"version"}},
+		{"hello", []string{"ticket"}},
+		{"welcome", []string{"version"}},
+		{"welcome", []string{"epoch"}},
+		{"role", []string{"writer_name"}},
+		{"role", []string{"writer_pid"}},
+		{"role", []string{"writer_command"}},
+		{"check", []string{"position"}},
+		{"check", []string{"digest"}},
+		{"request", []string{"op"}},
+		{"request", []string{"epoch"}},
+		{"response status", []string{"status", "epoch"}},
+		{"response status", []string{"status", "writer_present"}},
+		{"response status", []string{"status", "viewer_present"}},
+		{"response status", []string{"status", "idle"}},
+		{"response status", []string{"status", "title"}},
+	} {
+		cd := codecNamed(t, c.codec)
+		good, err := cd.encode(cd.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := c.codec + " " + strings.Join(c.path, ".")
+		missing := without(t, good, c.path...)
+		if _, err := cd.decode(missing); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "missing required field") {
+			t.Errorf("%s missing: err = %v", name, err)
+		}
+		null := nulled(t, good, c.path...)
+		if _, err := cd.decode(null); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "missing required field") {
+			t.Errorf("%s null: err = %v", name, err)
+		}
+	}
+	// The cases that motivated the rule, written out.
+	if r, err := wire.DecodeRequest([]byte(`{"op":"stop"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a request without an epoch decoded as %+v", r)
+	}
+	if c, err := wire.DecodeCheck([]byte(`{"digest":"` + strings.Repeat("0", 64) + `"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a check without a position decoded as %+v", c)
+	}
+	if c, err := wire.DecodeCheck([]byte(`{"position":0,"digest":"` + strings.Repeat("0", 64) + `"}`)); err != nil || c.Position != 0 {
+		t.Errorf("a check at position 0: %+v, %v", c, err)
+	}
+	// An optional field may be left out: Hello colours, an exit status.
+	if _, err := wire.DecodeHello([]byte(`{"version":1,"ticket":"` + ticket64 + `","name":"n","columns":80,"rows":24}`)); err != nil {
+		t.Errorf("hello without colours: %v", err)
+	}
+}
+
+// Epochs are numbered from 1: zero is refused wherever an epoch is carried.
+func TestEpochZeroIsInvalid(t *testing.T) {
+	if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop}); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("request with epoch 0: %v", err)
+	}
+	w := wire.Welcome{Version: 1, Role: wire.RoleViewer, Lead: "l", Runtime: "claude", Caps: wire.DefaultCaps()}
+	if _, err := wire.EncodeWelcome(w); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("welcome with epoch 0: %v", err)
+	}
+	st := sampleStatus
+	st.Epoch = 0
+	if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: &st}); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("status with epoch 0: %v", err)
+	}
+	// Written as a peer would send it, the key present and the value zero.
+	for _, c := range []struct {
+		codec string
+		path  []string
+	}{{"request", []string{"epoch"}}, {"welcome", []string{"epoch"}}, {"response status", []string{"status", "epoch"}}} {
+		cd := codecNamed(t, c.codec)
+		good, _ := cd.encode(cd.sample)
+		zero := zeroed(t, good, c.path...)
+		if _, err := cd.decode(zero); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "epoch is 0") {
+			t.Errorf("%s epoch 0: err = %v", c.codec, err)
+		}
+	}
+	// Epoch 1 is the first valid one, and the largest value round-trips.
+	for _, n := range []uint64{1, 1<<64 - 1} {
+		p, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := wire.DecodeRequest(p); err != nil || got.Epoch != n {
+			t.Errorf("epoch %d: %+v, %v", n, got, err)
+		}
+	}
+}
+
+func TestCommandID(t *testing.T) {
+	for _, id := range []string{"a", "cmd-0042", "01HZX3Y4ABCDEFGHJKMNPQRSTV", "5f0a2c3e-1b2d-4e5f-8a9b-0c1d2e3f4a5b", "daemon:17.3_x", strings.Repeat("c", 64)} {
+		p, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2, CommandID: id})
+		if err != nil {
+			t.Errorf("%q: %v", id, err)
+			continue
+		}
+		if got, err := wire.DecodeRequest(p); err != nil || got.CommandID != id {
+			t.Errorf("%q: %+v, %v", id, got, err)
+		}
+	}
+	for name, id := range map[string]string{
+		"65 bytes":  strings.Repeat("c", 65),
+		"space":     "a b",
+		"newline":   "a\nb",
+		"slash":     "a/b",
+		"quote":     `a"b`,
+		"ESC":       "a\x1b",
+		"non-ASCII": "é",
+		"RTL":       "a\u202eb",
+	} {
+		if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2, CommandID: id}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("encode %s: %v", name, err)
+		}
+	}
+	// What a peer sends is checked the same way, and an id may be left out.
+	for name, p := range map[string]string{
+		"decode 65 bytes":     `{"op":"stop","epoch":1,"command_id":"` + strings.Repeat("c", 65) + `"}`,
+		"decode with a space": `{"op":"stop","epoch":1,"command_id":"a b"}`,
+		"decode escaped ESC":  `{"op":"stop","epoch":1,"command_id":"a\u001b"}`,
+		"decode a number":     `{"op":"stop","epoch":1,"command_id":5}`,
+	} {
+		if _, err := wire.DecodeRequest([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	p, _ := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2})
+	if strings.Contains(string(p), "command_id") {
+		t.Errorf("an empty id is written: %s", p)
+	}
+	if r, err := wire.DecodeRequest([]byte(`{"op":"stop","epoch":2}`)); err != nil || r.CommandID != "" {
+		t.Errorf("no id: %+v, %v", r, err)
+	}
+}
+
+// The caller mints the ticket: a ticket request carries it, and no response
+// does.
+func TestTicketRequestAndResponse(t *testing.T) {
+	ticket, err := wire.NewTicket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := wire.EncodeRequest(wire.Request{Op: wire.OpTicket, Epoch: 3, Role: wire.RoleViewer, Ticket: ticket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"op":"ticket","epoch":3,"role":"viewer","ticket":"` + ticket + `"}`; string(p) != want {
+		t.Errorf("request %s, want %s", p, want)
+	}
+	r, err := wire.DecodeRequest(p)
+	if err != nil || r.Ticket != ticket || r.Role != wire.RoleViewer {
+		t.Errorf("%+v, %v", r, err)
+	}
+	// A response with a ticket in it is an unknown field now.
+	if _, err := wire.DecodeResponse([]byte(`{"ok":true,"ticket":"` + ticket + `"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a response with a ticket: %v", err)
+	}
+	// The answers: ok, or busy with a writer present.
+	for _, resp := range []wire.Response{
+		{OK: true},
+		{Code: wire.CodeBusy, Text: "a writer ticket is issued only while there is no writer"},
+		{Code: wire.CodeWrongEpoch, Text: "epoch 2 is not 3"},
+	} {
+		p, err := wire.EncodeResponse(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := wire.DecodeResponse(p); err != nil || !reflect.DeepEqual(got, resp) {
+			t.Errorf("%+v: %+v, %v", resp, got, err)
 		}
 	}
 }

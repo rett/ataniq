@@ -39,7 +39,7 @@ func TestOutputAndSnapshotHelpers(t *testing.T) {
 					}
 					// It passes through a frame of its own type.
 					var buf bytes.Buffer
-					if err := wire.Write(&buf, c.typ, p); err != nil {
+					if err := wire.Write(&buf, dirOf(c.typ), c.typ, p); err != nil {
 						t.Fatal(err)
 					}
 					f, err := wire.NewReader(&buf, wire.ToClient).Next()
@@ -53,7 +53,7 @@ func TestOutputAndSnapshotHelpers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("data at the cap: %v", err)
 			}
-			if err := wire.Write(io.Discard, c.typ, p); err != nil {
+			if err := wire.Write(io.Discard, dirOf(c.typ), c.typ, p); err != nil {
 				t.Fatalf("frame at the cap: %v", err)
 			}
 			if _, err := c.encode(5, make([]byte, c.max+1)); !errors.Is(err, wire.ErrTooLarge) {
@@ -115,7 +115,7 @@ func TestPaste(t *testing.T) {
 func TestInputIsRawBytes(t *testing.T) {
 	raw := []byte{0x1b, '[', 'A', 0xff, 0x00, 0x80}
 	var buf bytes.Buffer
-	if err := wire.Write(&buf, wire.TypeInput, raw); err != nil {
+	if err := wire.Write(&buf, wire.ToHolder, wire.TypeInput, raw); err != nil {
 		t.Fatal(err)
 	}
 	f, err := wire.NewReader(&buf, wire.ToHolder).Next()

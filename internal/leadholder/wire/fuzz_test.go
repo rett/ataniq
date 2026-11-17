@@ -15,7 +15,7 @@ import (
 func FuzzReader(f *testing.F) {
 	for _, ft := range frameTypes {
 		var buf bytes.Buffer
-		_ = wire.Write(&buf, ft.typ, bytes.Repeat([]byte{'{', '}'}, 5))
+		_ = wire.Write(&buf, dirOf(ft.typ), ft.typ, bytes.Repeat([]byte{'{', '}'}, 5))
 		f.Add(buf.Bytes())
 		f.Add(hdr(ft.typ, uint32(ft.max)+1))
 		f.Add(hdr(ft.typ, 0xffffffff))
@@ -27,8 +27,8 @@ func FuzzReader(f *testing.F) {
 	for _, c := range codecs {
 		p, _ := c.encode(c.sample)
 		var buf bytes.Buffer
-		_ = wire.Write(&buf, c.typ, p)
-		_ = wire.Write(&buf, wire.TypeDetach, nil)
+		_ = wire.Write(&buf, dirOf(c.typ), c.typ, p)
+		_ = wire.Write(&buf, wire.ToHolder, wire.TypeDetach, nil)
 		f.Add(buf.Bytes())
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -94,6 +94,7 @@ func FuzzDecoders(f *testing.F) {
 		`{"ok":false,"code":"disabled","text":"x"}`, "{\"name\":\"\\u001b\"}",
 		`{"facts":{"stream_ended":"yes","tui_exited":"no","tree_gone":"unknown"},"idle":"unknown","idle_signals":null,"title":""}`,
 		`{"facts":{"stream_ended":"yes","tui_exited":"no","tree_gone":"unknown"},"counters":{"a":1},"last_screen":"x\n"}`,
+		`{"name":"\ud800"}`, `{"name":"\ud83d\ude00"}`, "{\"name\":\"\xff\"}",
 		"\xff\xfe", `{"a":` + string(bytes.Repeat([]byte("["), 50)),
 	} {
 		f.Add([]byte(s))
@@ -187,6 +188,43 @@ func FuzzSanitize(f *testing.F) {
 		}
 		if again := wire.Sanitize(out, max, false); again != out {
 			t.Fatalf("not idempotent: %q then %q", out, again)
+		}
+	})
+}
+
+// FuzzVersion checks that the lenient version helpers never panic, only ever
+// report a version in range, and agree with the strict decoders on what they
+// both accept.
+func FuzzVersion(f *testing.F) {
+	for _, s := range []string{
+		``, `{}`, `{"version":1}`, `{"version":2,"x":[1,{"y":2}]}`, `{"version":1,"version":1}`,
+		`{"version":"1"}`, `{"x":` + string(bytes.Repeat([]byte("["), 200)),
+	} {
+		f.Add([]byte(s))
+	}
+	for _, c := range codecs {
+		if c.name == "hello" || c.name == "welcome" {
+			p, _ := c.encode(c.sample)
+			f.Add(p)
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if v, ok := wire.HelloVersion(data); ok && (v < 1 || v > wire.MaxDimension) {
+			t.Fatalf("hello version %d", v)
+		}
+		v, ok := wire.WelcomeVersion(data)
+		if ok && (v < 1 || v > wire.MaxDimension) {
+			t.Fatalf("welcome version %d", v)
+		}
+		if w, err := wire.DecodeWelcome(data); err == nil {
+			if !ok || v != w.Version {
+				t.Fatalf("decoded version %d, helper %d %v for %q", w.Version, v, ok, data)
+			}
+		}
+		if h, err := wire.DecodeHello(data); err == nil {
+			if hv, hok := wire.HelloVersion(data); !hok || hv != h.Version {
+				t.Fatalf("decoded version %d, helper %d %v for %q", h.Version, hv, hok, data)
+			}
 		}
 	})
 }

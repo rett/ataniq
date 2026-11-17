@@ -95,7 +95,7 @@ func TestRoundTripEveryTypeAtItsCap(t *testing.T) {
 			}
 			payload := bytes.Repeat([]byte{'x'}, n)
 			var buf bytes.Buffer
-			if err := wire.Write(&buf, ft.typ, payload); err != nil {
+			if err := wire.Write(&buf, dirOf(ft.typ), ft.typ, payload); err != nil {
 				t.Fatalf("%s %d: Write: %v", ft.name, n, err)
 			}
 			if buf.Len() != wire.HeaderLen+n {
@@ -174,7 +174,7 @@ func TestReaderRefusesFromTheHeader(t *testing.T) {
 
 func TestReaderStopsAfterAnError(t *testing.T) {
 	var good bytes.Buffer
-	if err := wire.Write(&good, wire.TypeInput, []byte("a")); err != nil {
+	if err := wire.Write(&good, wire.ToHolder, wire.TypeInput, []byte("a")); err != nil {
 		t.Fatal(err)
 	}
 	stream := append(hdr('X', 0), good.Bytes()...)
@@ -198,7 +198,7 @@ func TestReaderStopsAfterAnError(t *testing.T) {
 func TestReaderShortReads(t *testing.T) {
 	var buf bytes.Buffer
 	for _, p := range []string{"one", "", "three"} {
-		if err := wire.Write(&buf, wire.TypeInput, []byte(p)); err != nil {
+		if err := wire.Write(&buf, wire.ToHolder, wire.TypeInput, []byte(p)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestZeroLengthPayloads(t *testing.T) {
 			t.Errorf("%s %d: %v, want %v", wire.TypeName(c.typ), c.n, err, c.want)
 		}
 		// Write agrees with the reader.
-		werr := wire.Write(io.Discard, c.typ, make([]byte, c.n))
+		werr := wire.Write(io.Discard, dirOf(c.typ), c.typ, make([]byte, c.n))
 		if (werr == nil) != (c.want == nil) {
 			t.Errorf("Write %s %d: %v", wire.TypeName(c.typ), c.n, werr)
 		}
@@ -340,22 +340,22 @@ func TestLargeSnapshotAtTheCap(t *testing.T) {
 	payload[7] = 1
 	payload[len(payload)-1] = 9
 	var buf bytes.Buffer
-	if err := wire.Write(&buf, wire.TypeSnapshot, payload); err != nil {
+	if err := wire.Write(&buf, wire.ToClient, wire.TypeSnapshot, payload); err != nil {
 		t.Fatal(err)
 	}
 	f, err := wire.NewReader(&buf, wire.ToClient).Next()
 	if err != nil || !bytes.Equal(f.Payload, payload) {
 		t.Fatalf("Next: %v", err)
 	}
-	if err := wire.Write(io.Discard, wire.TypeSnapshot, make([]byte, wire.MaxSnapshotPayload+1)); !errors.Is(err, wire.ErrTooLarge) {
+	if err := wire.Write(io.Discard, wire.ToClient, wire.TypeSnapshot, make([]byte, wire.MaxSnapshotPayload+1)); !errors.Is(err, wire.ErrTooLarge) {
 		t.Fatalf("one byte over: %v", err)
 	}
 }
 
 func TestPayloadIsNotReused(t *testing.T) {
 	var buf bytes.Buffer
-	_ = wire.Write(&buf, wire.TypeInput, []byte("first"))
-	_ = wire.Write(&buf, wire.TypeInput, []byte("other"))
+	_ = wire.Write(&buf, wire.ToHolder, wire.TypeInput, []byte("first"))
+	_ = wire.Write(&buf, wire.ToHolder, wire.TypeInput, []byte("other"))
 	rd := wire.NewReader(&buf, wire.ToHolder)
 	a, _ := rd.Next()
 	b, _ := rd.Next()
@@ -374,21 +374,21 @@ func (r *recorder) Write(p []byte) (int, error) {
 
 func TestWriteCalls(t *testing.T) {
 	var r recorder
-	if err := wire.Write(&r, wire.TypeInput, bytes.Repeat([]byte{1}, 1000)); err != nil {
+	if err := wire.Write(&r, wire.ToHolder, wire.TypeInput, bytes.Repeat([]byte{1}, 1000)); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.calls) != 1 || r.calls[0] != 1005 {
 		t.Fatalf("small frame: calls %v, want one of 1005", r.calls)
 	}
 	r = recorder{}
-	if err := wire.Write(&r, wire.TypeDetach, nil); err != nil {
+	if err := wire.Write(&r, wire.ToHolder, wire.TypeDetach, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.calls) != 1 || r.calls[0] != 5 {
 		t.Fatalf("empty frame: calls %v", r.calls)
 	}
 	r = recorder{}
-	if err := wire.Write(&r, wire.TypeOutput, make([]byte, 200<<10)); err != nil {
+	if err := wire.Write(&r, wire.ToClient, wire.TypeOutput, make([]byte, 200<<10)); err != nil {
 		t.Fatal(err)
 	}
 	if len(r.calls) != 2 || r.calls[0] != 5 || r.calls[1] != 200<<10 {
@@ -398,26 +398,26 @@ func TestWriteCalls(t *testing.T) {
 
 func TestWriteRefusals(t *testing.T) {
 	var r recorder
-	if err := wire.Write(&r, 'X', nil); !errors.Is(err, wire.ErrUnknownType) {
+	if err := wire.Write(&r, wire.ToHolder, 'X', nil); !errors.Is(err, wire.ErrUnknownType) {
 		t.Errorf("unknown type: %v", err)
 	}
-	if err := wire.Write(&r, wire.TypeInput, make([]byte, wire.MaxClientPayload+1)); !errors.Is(err, wire.ErrTooLarge) {
+	if err := wire.Write(&r, wire.ToHolder, wire.TypeInput, make([]byte, wire.MaxClientPayload+1)); !errors.Is(err, wire.ErrTooLarge) {
 		t.Errorf("over the cap: %v", err)
 	}
-	if err := wire.Write(&r, wire.TypeDetach, []byte{1}); !errors.Is(err, wire.ErrTooLarge) {
+	if err := wire.Write(&r, wire.ToHolder, wire.TypeDetach, []byte{1}); !errors.Is(err, wire.ErrTooLarge) {
 		t.Errorf("detach with a payload: %v", err)
 	}
-	if err := wire.Write(&r, wire.TypeNotice, nil); !errors.Is(err, wire.ErrTooSmall) {
+	if err := wire.Write(&r, wire.ToClient, wire.TypeNotice, nil); !errors.Is(err, wire.ErrTooSmall) {
 		t.Errorf("empty notice: %v", err)
 	}
 	if len(r.calls) != 0 {
 		t.Errorf("a refused frame wrote %v", r.calls)
 	}
-	if err := wire.Write(shortWriter{}, wire.TypeInput, []byte("abc")); !errors.Is(err, io.ErrShortWrite) {
+	if err := wire.Write(shortWriter{}, wire.ToHolder, wire.TypeInput, []byte("abc")); !errors.Is(err, io.ErrShortWrite) {
 		t.Errorf("short write: %v", err)
 	}
 	boom := errors.New("boom")
-	if err := wire.Write(errWriter{boom}, wire.TypeInput, []byte("abc")); !errors.Is(err, boom) {
+	if err := wire.Write(errWriter{boom}, wire.ToHolder, wire.TypeInput, []byte("abc")); !errors.Is(err, boom) {
 		t.Errorf("write error: %v", err)
 	}
 }
@@ -432,7 +432,7 @@ func (w errWriter) Write(p []byte) (int, error) { return 0, w.err }
 
 func TestWriterSerialisesFrames(t *testing.T) {
 	var buf bytes.Buffer // not safe for concurrent use: the Writer must serialise
-	w := wire.NewWriter(&buf)
+	w := wire.NewWriter(&buf, wire.ToClient)
 	const writers, each = 8, 50
 	var wg sync.WaitGroup
 	for g := 0; g < writers; g++ {
@@ -477,7 +477,7 @@ func TestWriterSerialisesFrames(t *testing.T) {
 
 func TestWriterRefusalDoesNotBreakItButAWriteErrorDoes(t *testing.T) {
 	var buf bytes.Buffer
-	w := wire.NewWriter(&buf)
+	w := wire.NewWriter(&buf, wire.ToHolder)
 	if err := w.WriteFrame('X', nil); !errors.Is(err, wire.ErrUnknownType) {
 		t.Fatal(err)
 	}
@@ -485,11 +485,139 @@ func TestWriterRefusalDoesNotBreakItButAWriteErrorDoes(t *testing.T) {
 		t.Fatalf("after a refusal: %v", err)
 	}
 	boom := errors.New("boom")
-	bw := wire.NewWriter(errWriter{boom})
+	bw := wire.NewWriter(errWriter{boom}, wire.ToHolder)
 	if err := bw.WriteFrame(wire.TypeInput, []byte("a")); !errors.Is(err, boom) {
 		t.Fatal(err)
 	}
 	if err := bw.WriteFrame(wire.TypeInput, []byte("a")); !errors.Is(err, boom) {
 		t.Fatalf("after a write error: %v", err)
+	}
+}
+
+// A payload is kept in a buffer of exactly its size: a Snapshot of 16 MiB is
+// not held in 20 MiB, and reading it does not allocate many times its size.
+func TestPayloadCapacityIsExact(t *testing.T) {
+	for _, n := range []int{8, 100, 64 << 10, 64<<10 + 1, 128 << 10, 200000, 1<<20 + 7, wire.MaxSnapshotPayload} {
+		var f wire.Frame
+		spent := allocated(func() {
+			src := io.MultiReader(bytes.NewReader(hdr(wire.TypeSnapshot, uint32(n))), zeros(n))
+			var err error
+			if f, err = wire.NewReader(src, wire.ToClient).Next(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if len(f.Payload) != n || cap(f.Payload) != n {
+			t.Errorf("%d bytes: len %d cap %d", n, len(f.Payload), cap(f.Payload))
+		}
+		// The buffers of the doubling add up to under 3n (n itself and, at
+		// worst, the 2n before it), with slack for the test's own small
+		// allocations. The old growth step allocated about 6n.
+		if limit := uint64(3*n + 128<<10); spent > limit {
+			t.Errorf("%d bytes: allocated %d, limit %d", n, spent, limit)
+		}
+	}
+	// A payload that stops part-way costs at most four times what arrived.
+	for _, got := range []int{10, 64 << 10, 64<<10 + 1, 1 << 20} {
+		spent := allocated(func() {
+			src := io.MultiReader(bytes.NewReader(hdr(wire.TypeSnapshot, wire.MaxSnapshotPayload)), zeros(got))
+			if _, err := wire.NewReader(src, wire.ToClient).Next(); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatal(err)
+			}
+		})
+		if limit := uint64(4*got + 192<<10); spent > limit {
+			t.Errorf("%d bytes of a declared 16 MiB: allocated %d, limit %d", got, spent, limit)
+		}
+	}
+}
+
+// dirOf is the direction of a frame type, for tests that write one.
+func dirOf(typ byte) wire.Direction {
+	for _, ft := range frameTypes {
+		if ft.typ == typ {
+			return ft.dir
+		}
+	}
+	return wire.ToHolder
+}
+
+// A writer and a reader of one direction agree on what a frame is: Write
+// refuses every frame type that the Reader of that direction refuses, before
+// it writes a byte.
+func TestWriteChecksTheDirection(t *testing.T) {
+	for _, ft := range frameTypes {
+		for _, dir := range directions {
+			payload := make([]byte, ft.min)
+			var buf bytes.Buffer
+			err := wire.Write(&buf, dir, ft.typ, payload)
+			if dir == ft.dir {
+				if err != nil {
+					t.Errorf("%s on %s: %v", ft.name, dir, err)
+				}
+				continue
+			}
+			if !errors.Is(err, wire.ErrUnknownType) || buf.Len() != 0 {
+				t.Errorf("%s on %s: err = %v, %d bytes written", ft.name, dir, err, buf.Len())
+			}
+			// And the Reader of that direction refuses the same frame.
+			hdrAndPayload := append(hdr(ft.typ, uint32(len(payload))), payload...)
+			if _, rerr := wire.NewReader(bytes.NewReader(hdrAndPayload), dir).Next(); !errors.Is(rerr, wire.ErrUnknownType) {
+				t.Errorf("%s on %s: reader err = %v", ft.name, dir, rerr)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := wire.Write(&buf, wire.Direction(0), wire.TypeInput, nil); !errors.Is(err, wire.ErrDirection) {
+		t.Errorf("unknown direction: %v", err)
+	}
+	if err := wire.Write(&buf, wire.Direction(9), wire.TypeInput, nil); !errors.Is(err, wire.ErrDirection) || buf.Len() != 0 {
+		t.Errorf("direction 9: %v", err)
+	}
+}
+
+func TestWriterChecksTheDirection(t *testing.T) {
+	var buf bytes.Buffer
+	// A holder's writer to a client cannot write a Hello, a Request or a
+	// Response.
+	w := wire.NewWriter(&buf, wire.ToClient)
+	for _, typ := range []byte{wire.TypeHello, wire.TypeInput, wire.TypeDetach, wire.TypeRequest, wire.TypeResponse, 'X'} {
+		if err := w.WriteFrame(typ, nil); !errors.Is(err, wire.ErrUnknownType) {
+			t.Errorf("type %q: %v", typ, err)
+		}
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("%d bytes written by refused frames", buf.Len())
+	}
+	// A refusal does not break the writer.
+	if err := w.WriteFrame(wire.TypeOutput, []byte("12345678x")); err != nil {
+		t.Fatalf("after refusals: %v", err)
+	}
+	if f, err := wire.NewReader(&buf, wire.ToClient).Next(); err != nil || f.Type != wire.TypeOutput {
+		t.Fatalf("%v %v", f, err)
+	}
+	// A client's writer cannot write what only the holder sends.
+	cw := wire.NewWriter(&buf, wire.ToHolder)
+	if err := cw.WriteFrame(wire.TypeWelcome, []byte("{}")); !errors.Is(err, wire.ErrUnknownType) {
+		t.Errorf("welcome from a client: %v", err)
+	}
+	if err := cw.WriteFrame(wire.TypeDetach, nil); err != nil {
+		t.Errorf("detach from a client: %v", err)
+	}
+	// A control writer has the control frames of its side.
+	if err := wire.NewWriter(io.Discard, wire.ControlRequests).WriteFrame(wire.TypeResponse, []byte("{}")); !errors.Is(err, wire.ErrUnknownType) {
+		t.Errorf("response on the request side: %v", err)
+	}
+	if err := wire.NewWriter(io.Discard, wire.ControlResponses).WriteFrame(wire.TypeResponse, []byte("{}")); err != nil {
+		t.Errorf("response on the response side: %v", err)
+	}
+	// An unknown direction fails every write, as it does for a Reader.
+	bad := wire.NewWriter(&buf, wire.Direction(0))
+	n := buf.Len()
+	for i := 0; i < 2; i++ {
+		if err := bad.WriteFrame(wire.TypeInput, []byte("a")); !errors.Is(err, wire.ErrDirection) {
+			t.Errorf("unknown direction: %v", err)
+		}
+	}
+	if buf.Len() != n {
+		t.Error("a writer of an unknown direction wrote")
 	}
 }
