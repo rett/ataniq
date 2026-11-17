@@ -271,8 +271,9 @@ then returns to console focus, and `q` leaves the console.
 
 A holder has at most one writer and one read-only viewer. A third client is
 refused. The ticket decides the place: a writer ticket is issued only while
-there is no writer, and there is no takeover. A client that holds the writer
-place keeps it until it detaches or the holder's operator removes it with
+there is no writer and no other ticket for that place is waiting to be used,
+and there is no takeover. A client that holds the writer place keeps it until
+it detaches or the holder's operator removes it with
 `ataniq-scratch release-writer NAME`; a console cannot take it from another.
 
 `--viewer` says the console wants the read-only place; it does not choose it.
@@ -296,9 +297,10 @@ its limits, 20 by 5 at least and 500 by 200 at most.
 
 As the writer, in session focus every key goes to the session, as in the
 fixture console: `q` and Ctrl+C included, except the return key and F12. The
-console encodes each key in the legacy terminal form, never an enhanced form,
-following the application cursor, keypad and Enter modes that the session set.
-A paste goes to the session whole, and the holder wraps it for bracketed paste
+console encodes each key in the legacy terminal form, never an enhanced form
+(except Shift+Enter with `--shift-enter csi-u`), following the application
+cursor, keypad and Enter modes that the session set. A paste goes to the holder in one piece. The holder takes out of it the held
+keys named below and any paste-end sequence, and wraps it for bracketed paste
 if the session turned that on. The console asks the outer terminal to bracket a
 paste only when the session did. A paste longer than 64 KiB is refused with a
 notice, because it would arrive as several pastes. The mouse reaches the session
@@ -341,11 +343,20 @@ no ticket.
 A ticket the holder refuses (used, expired, for another epoch or place) or a
 place that is taken sends the console back to waiting for a ticket, with the
 holder's reason. Writing a fresh ticket to the file attaches it. A connection
-that is lost does the same. A ticket is spent when the console reads it, also
-when the connection then fails, for example because the holder is not running
-or DIR is wrong: the console shows disconnected with the reason, tries again
-every half second and needs a fresh ticket for each try. A holder that speaks another protocol version
+that is lost does the same. A ticket the console has read is spent, because
+the file is emptied as it is read; it is not read again. When a connection
+fails, for example because the holder is not running or DIR is wrong, the
+console shows disconnected with the reason and tries again every half second.
+Whether the file still holds the ticket then depends on where the connection
+failed, so when the console says it is waiting for a ticket, write a fresh one.
+A holder that speaks another protocol version
 stops the console: it shows disconnected and does not retry.
+
+The holder refuses to issue a ticket for a place while another ticket for the
+same place is waiting to be used, which it is for up to 30 seconds. So when a
+ticket was issued and not used (the console was not started, or could not
+connect), `ataniq-scratch ticket NAME` answers `busy` until that ticket has been
+used or has expired.
 
 After a connection the holder sends a snapshot of the screen, and every few
 seconds a check of the screen's cells, cursor, modes and title. The console
@@ -363,11 +374,15 @@ sees a clean detach. The terminal is restored as in the fixture mode.
 ### Try it
 
 `ataniq-scratch` starts a holder for a scratch agent and stands in for the
-daemon: it issues the tickets. Build both commands and the holder binary that
-`ataniq-scratch start` runs (see `ataniq-scratch --help`), then:
+daemon: it issues the tickets. Build the three commands (the holder is the one
+that `ataniq-scratch start` runs, and it looks for it next to itself), then:
 
 ```sh
-./build/ataniq-scratch start demo -- AGENT ARG...
+mkdir -p build
+sh scripts/go-tool.sh build -o build/ataniq-holder ./cmd/ataniq-holder
+sh scripts/go-tool.sh build -o build/ataniq-scratch ./cmd/ataniq-scratch
+sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
+./build/ataniq-scratch start demo -- "$(command -v AGENT)" ARG...
 ./build/ataniq-scratch ticket demo
 ./build/ataniq-console --attach "$XDG_RUNTIME_DIR/ataniq/scratch/demo" \
     --ticket-file "$XDG_RUNTIME_DIR/ataniq/scratch/demo/ticket"
@@ -375,11 +390,17 @@ daemon: it issues the tickets. Build both commands and the holder binary that
 ```
 
 `start` runs AGENT, a scratch agent of your choice, in a holder, with an
-environment of its own. `ticket` writes a writer ticket to the ticket file and
-prints the file's path; add `--viewer` for a viewer ticket. Run the console in
-a second terminal. Leave it with the return key and `q`. To attach again, run
-`ataniq-scratch ticket demo` again: the old ticket is spent. `stop` ends the
-holder.
+environment of its own. The program must be an absolute path, because the
+holder does no `PATH` search; `command -v` gives one for a program on your
+`PATH`. By default `start` returns once the holder is running. `ticket` writes
+a writer ticket to the ticket file and prints the file's path; add `--viewer`
+for a viewer ticket. Leave the console with the return key and `q`. To attach
+again, run `ataniq-scratch ticket demo` again: the old ticket is spent. `stop`
+ends the holder. With `ataniq-scratch start --direct` the holder is a child of
+`start`, which stays in the foreground, so run the other commands in another
+terminal. The holder refuses to start in some cases, such as a kernel that
+allows `TIOCSTI`, and the steps, the files and what is not built are in
+[the lead holder guide](lead-holder.md).
 
 ## Fixture recordings
 

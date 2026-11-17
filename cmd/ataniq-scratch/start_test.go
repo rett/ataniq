@@ -83,7 +83,7 @@ func (r *rig) epochFile() string {
 func TestStartUnitModeKeepsDollarSignsInTheVector(t *testing.T) {
 	r := newRig(t, "demo")
 	a, _, errout := r.e.newApp(r.fl)
-	agent := []string{"sh", "-c", "echo $HOME ${X} $$"}
+	agent := []string{"/bin/sh", "-c", "echo $HOME ${X} $$"}
 	code := a.run(append([]string{"start", "demo", "--env", "P=$HOME/x", "--env", "Q=${X}", "--holder", r.e.holderFile(t), "--"}, agent...))
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr %q", code, errout.String())
@@ -133,7 +133,7 @@ func TestStartUnitMode(t *testing.T) {
 	os.MkdirAll(r.l.runtime, 0o700)
 	os.WriteFile(r.l.ticketFile, []byte("old"), 0o600)
 
-	code := a.run([]string{"start", "demo", "--cols", "120", "--rows", "40", "--env", "FOO=bar baz", "--holder", holder, "--", "agent", "--flag", "x"})
+	code := a.run([]string{"start", "demo", "--cols", "120", "--rows", "40", "--env", "FOO=bar baz", "--holder", holder, "--", "/bin/agent", "--flag", "x"})
 	if code != exitOK {
 		t.Fatalf("exit %d, stderr %q", code, errout.String())
 	}
@@ -155,7 +155,7 @@ func TestStartUnitMode(t *testing.T) {
 		"--cols", "120", "--rows", "40",
 		"--env", "TERM=xterm-256color", "--env", "HOME=" + home, "--env", "PATH=/usr/local/bin:/usr/bin:/bin",
 		"--env", "LANG=de_DE.UTF-8", "--env", "FOO=bar baz",
-		"--", "agent", "--flag", "x",
+		"--", "/bin/agent", "--flag", "x",
 	}
 	if !reflect.DeepEqual(runs[0], want) {
 		t.Errorf("systemd-run argv:\n got %q\nwant %q", runs[0], want)
@@ -199,7 +199,7 @@ func TestStartUnitMode(t *testing.T) {
 
 	// The next start has the next epoch and a fresh launch intent.
 	a2, out2, errout2 := r.e.newApp(r.fl)
-	if code := a2.run([]string{"start", "demo", "--holder", holder, "--", "agent"}); code != exitOK {
+	if code := a2.run([]string{"start", "demo", "--holder", holder, "--", "/bin/agent"}); code != exitOK {
 		t.Fatalf("second start: exit %d, stderr %q", code, errout2.String())
 	}
 	runs = r.fl.runList()
@@ -219,7 +219,7 @@ func TestStartLangFromTheCaller(t *testing.T) {
 		r := newRig(t, "demo")
 		r.e.vars["LANG"] = tc.lang
 		a, _, errout := r.e.newApp(r.fl)
-		if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitOK {
+		if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitOK {
 			t.Fatalf("exit %d %q", code, errout.String())
 		}
 		argv := r.fl.runList()[0]
@@ -239,7 +239,7 @@ func TestStartUsesTheHolderNextToTheExecutable(t *testing.T) {
 	r := newRig(t, "demo")
 	holder := r.e.holderFile(t) // root/ataniq-holder; the app's executable is root/ataniq-scratch
 	a, _, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--", "agent"}); code != exitOK {
+	if code := a.run([]string{"start", "demo", "--", "/bin/agent"}); code != exitOK {
 		t.Fatalf("exit %d %q", code, errout.String())
 	}
 	// The holder is the word after the first "--" of the systemd-run vector.
@@ -269,7 +269,7 @@ func TestStartRefusesAHolderThatIsNotUsable(t *testing.T) {
 		"default gone": nil, // no ataniq-holder next to the executable
 	} {
 		a, _, errout := r.e.newApp(r.fl)
-		argv := append(append([]string{"start", "demo"}, args...), "--", "agent")
+		argv := append(append([]string{"start", "demo"}, args...), "--", "/bin/agent")
 		if code := a.run(argv); code != exitFail {
 			t.Errorf("%s: exit %d", name, code)
 		}
@@ -301,7 +301,7 @@ func TestRuntimeErrorsNeverPrintTheHolderArgument(t *testing.T) {
 			setup()
 		}
 		a, _, errout := r.e.newApp(r.fl)
-		if code := a.run(append([]string{"start", "demo"}, append(args, "--", "agent")...)); code != exitFail {
+		if code := a.run(append([]string{"start", "demo"}, append(args, "--", "/bin/agent")...)); code != exitFail {
 			t.Errorf("%s: exit %d, stderr %q", what, code, errout.String())
 		}
 		if strings.Contains(errout.String(), marker) || strings.Contains(errout.String(), "\x1b") {
@@ -331,7 +331,7 @@ func TestStartSystemdRunFailureGivesTheEpochBack(t *testing.T) {
 		return inner(argv)
 	}
 	a, out, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--holder", holder, "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--holder", holder, "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "ataniq-scratch-demo") || strings.Contains(out.String(), "started") {
@@ -342,7 +342,7 @@ func TestStartSystemdRunFailureGivesTheEpochBack(t *testing.T) {
 	}
 	fail = false
 	a2, _, errout2 := r.e.newApp(r.fl)
-	if code := a2.run([]string{"start", "demo", "--holder", holder, "--", "agent"}); code != exitOK {
+	if code := a2.run([]string{"start", "demo", "--holder", holder, "--", "/bin/agent"}); code != exitOK {
 		t.Fatalf("exit %d %q", code, errout2.String())
 	}
 	if got := argAfter(r.fl.runList()[1], "--epoch"); got != "1" {
@@ -354,7 +354,7 @@ func TestStartSystemdRunThatCannotRun(t *testing.T) {
 	r := newRig(t, "demo")
 	r.fl.runFn = func([]string) (int, error) { return -1, os.ErrNotExist }
 	a, _, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail || !strings.Contains(errout.String(), "systemd-run") {
+	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail || !strings.Contains(errout.String(), "systemd-run") {
 		t.Errorf("exit %d stderr %q", code, errout.String())
 	}
 	if r.epochFile() != "" {
@@ -368,7 +368,7 @@ func TestStartHolderThatNeverAnswersInUnitMode(t *testing.T) {
 	a, _, errout := r.e.newApp(r.fl)
 	a.lim.startWait = 100 * time.Millisecond
 	begin := time.Now()
-	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if time.Since(begin) < 90*time.Millisecond {
@@ -395,7 +395,7 @@ func TestStartHolderThatRefuses(t *testing.T) {
 		return 0, nil
 	}
 	a, out, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "wrong-epoch") || strings.Contains(out.String(), "started") {
@@ -415,7 +415,7 @@ func TestConcurrentStartsNeverReuseAnEpoch(t *testing.T) {
 			defer wg.Done()
 			a, _, _ := r.e.newApp(r.fl)
 			a.lim.lockWait = 20 * time.Second
-			codes[i] = a.run([]string{"start", "demo", "--holder", holder, "--", "agent"})
+			codes[i] = a.run([]string{"start", "demo", "--holder", holder, "--", "/bin/agent"})
 		}()
 	}
 	wg.Wait()
@@ -478,7 +478,7 @@ func TestStartDirectRunsInTheForeground(t *testing.T) {
 		a, out, errout := r.e.newApp(r.fl)
 		done := make(chan int, 1)
 		go func() {
-			done <- a.run([]string{"start", "demo", "--direct", "--env", "A=1", "--holder", holder, "--", "agent"})
+			done <- a.run([]string{"start", "demo", "--direct", "--env", "A=1", "--holder", holder, "--", "/bin/agent"})
 		}()
 		waitFor(t, "the start output", func() bool { return strings.Contains(out.String(), "weaker") })
 		select {
@@ -513,7 +513,7 @@ func TestStartDirectHolderEndsBeforeItAnswers(t *testing.T) {
 	r, ch := directRig(t, false, 3)
 	ch.finish()
 	a, _, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "exit status 3") {
@@ -528,7 +528,7 @@ func TestStartDirectHolderThatStaysSilentIsEnded(t *testing.T) {
 	r, ch := directRig(t, false, -1)
 	a, _, errout := r.e.newApp(r.fl)
 	a.lim.startWait = 80 * time.Millisecond
-	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if len(ch.signaled) == 0 || ch.signaled[0] != syscall.SIGTERM {
@@ -543,7 +543,7 @@ func TestStartDirectCannotStartTheHolder(t *testing.T) {
 	r := newRig(t, "demo")
 	r.fl.startFn = func(argv, env []string) (child, error) { return nil, os.ErrPermission }
 	a, _, errout := r.e.newApp(r.fl)
-	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "cannot start the holder") || r.epochFile() != "" {
@@ -571,7 +571,7 @@ func TestDirectWithTheTestBinaryAsHolder(t *testing.T) {
 	a, out, errout := e.newApp(fl)
 	done := make(chan int, 1)
 	go func() {
-		done <- a.run([]string{"start", "dh", "--direct", "--cols", "90", "--env", "ONE=1", "--holder", self, "--", "myagent", "-x"})
+		done <- a.run([]string{"start", "dh", "--direct", "--cols", "90", "--env", "ONE=1", "--holder", self, "--", "/bin/myagent", "-x"})
 	}()
 	waitFor(t, "the start output", func() bool { return strings.Contains(out.String(), "weaker") })
 
@@ -628,7 +628,7 @@ func TestDirectWithTheTestBinaryAsHolder(t *testing.T) {
 	if argAfter(rec.Args, "--role") != "scratch/dh" || argAfter(rec.Args, "--cols") != "90" || argAfter(rec.Args, "--daemon-lock") != l.daemonLock {
 		t.Errorf("holder args %q", rec.Args)
 	}
-	if tail := rec.Args[len(rec.Args)-3:]; !reflect.DeepEqual(tail, []string{"--", "myagent", "-x"}) {
+	if tail := rec.Args[len(rec.Args)-3:]; !reflect.DeepEqual(tail, []string{"--", "/bin/myagent", "-x"}) {
 		t.Errorf("agent argv %q", tail)
 	}
 	if !reflect.DeepEqual(rec.Env, []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LANG=de_DE.UTF-8"}) {
@@ -654,7 +654,7 @@ func TestDirectWithAHolderThatExitsAtOnce(t *testing.T) {
 	self, _ := os.Executable()
 	fl := &fakeLauncher{realStart: true}
 	a, _, errout := e.newApp(fl)
-	if code := a.run([]string{"start", "dx", "--direct", "--holder", self, "--", "exit3"}); code != exitFail {
+	if code := a.run([]string{"start", "dx", "--direct", "--holder", self, "--", "/mode/exit3"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "exit status 3") {
@@ -671,7 +671,7 @@ func TestDirectWithASilentHolderIsEnded(t *testing.T) {
 	fl := &fakeLauncher{realStart: true}
 	a, _, errout := e.newApp(fl)
 	a.lim.startWait = 300 * time.Millisecond
-	if code := a.run([]string{"start", "ds", "--direct", "--holder", self, "--", "silent"}); code != exitFail {
+	if code := a.run([]string{"start", "ds", "--direct", "--holder", self, "--", "/mode/silent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(errout.String(), "did not answer") {
@@ -718,7 +718,7 @@ func interruptedStart(t *testing.T, r *rig, ch child) (code int, errout string) 
 	sigs <- syscall.SIGINT
 	stopped := false
 	a.signals = func() (<-chan os.Signal, func()) { return sigs, func() { stopped = true } }
-	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"})
+	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"})
 	if !stopped {
 		t.Error("the signal subscription was not stopped")
 	}
@@ -785,12 +785,11 @@ func TestStartDirectInterruptedAfterSigkillSaysTheAgentMayOutliveIt(t *testing.T
 	}
 }
 
-// stubbornStart runs a --direct start with a holder that ignores every signal
-// and either answers with a refusal (wrong epoch) or stays silent.
-func stubbornStart(t *testing.T, refuse bool) (r *rig, ch *stubbornChild, code int, errout string) {
+// holderStart runs a --direct start with the holder ch, which either answers
+// with a refusal (wrong epoch) or stays silent.
+func holderStart(t *testing.T, ch child, refuse bool) (r *rig, code int, errout string) {
 	t.Helper()
 	r = newRig(t, "demo")
-	ch = &stubbornChild{}
 	r.fl.startFn = func(argv, env []string) (child, error) {
 		if refuse {
 			h, err := startFakeHolder(r.l.controlSock, r.l.daemonLock, "scratch/demo", 99)
@@ -806,8 +805,17 @@ func stubbornStart(t *testing.T, refuse bool) (r *rig, ch *stubbornChild, code i
 	a, _, eb := r.e.newApp(r.fl)
 	a.lim.termWait = 50 * time.Millisecond
 	a.lim.startWait = 100 * time.Millisecond
-	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"})
-	return r, ch, code, eb.String()
+	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"})
+	return r, code, eb.String()
+}
+
+// stubbornStart runs a --direct start with a holder that ignores every signal
+// and either answers with a refusal (wrong epoch) or stays silent.
+func stubbornStart(t *testing.T, refuse bool) (r *rig, ch *stubbornChild, code int, errout string) {
+	t.Helper()
+	ch = &stubbornChild{}
+	r, code, errout = holderStart(t, ch, refuse)
+	return r, ch, code, errout
 }
 
 func TestStartDirectRefusedWithAHolderThatWillNotEndKeepsTheEpoch(t *testing.T) {
@@ -826,6 +834,30 @@ func TestStartDirectRefusedWithAHolderThatWillNotEndKeepsTheEpoch(t *testing.T) 
 	}
 	if r.epochFile() != "1\n" {
 		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
+	}
+}
+
+func TestStartDirectRefusedAfterSigkillSaysTheHolderNeededIt(t *testing.T) {
+	ch := &killOnlyChild{newFakeChild(-1)}
+	r, code, errout := holderStart(t, ch, true)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "wrong-epoch") || !strings.Contains(errout, "another holder may be running") {
+		t.Errorf("stderr %q", errout)
+	}
+	// The note is about the holder this command started, not the other one.
+	if !strings.Contains(errout, "the holder needed SIGKILL, so its agent may outlive it") {
+		t.Errorf("stderr %q does not say the holder needed SIGKILL", errout)
+	}
+	if strings.Contains(errout, "not seen to end") || strings.Contains(errout, "may still be running") {
+		t.Errorf("stderr %q says the holder was not seen to end", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[0] != syscall.SIGTERM || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "" {
+		t.Errorf("epoch kept after the holder ended: %q", r.epochFile())
 	}
 }
 
@@ -855,7 +887,7 @@ func TestStartDirectTimeoutAfterSigkillSaysTheAgentMayOutliveIt(t *testing.T) {
 	a, _, eb := r.e.newApp(r.fl)
 	a.lim.termWait = 50 * time.Millisecond
 	a.lim.startWait = 100 * time.Millisecond
-	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "/bin/agent"}); code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
 	if e := eb.String(); !strings.Contains(e, "it was ended") || !strings.Contains(e, "agent may outlive it") {

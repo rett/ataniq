@@ -259,8 +259,8 @@ Patches, applied in this order to the files of the module as released:
    same for a region narrower than the screen.
 14. `vt: mark the lines a sequence blanks and write them later` (`blank.go`,
    `screen.go`, `handlers.go`, `csi_screen.go`, `csi_cursor.go`, `emulator.go`,
-   `links.go`, `state.go`, `erase_test.go`, `timing_test.go`, `scroll_test.go`,
-   `loops_test.go`). A cell of the
+   `links.go`, `state.go`, `state_test.go`, `erase_test.go`, `timing_test.go`,
+   `scroll_test.go`, `loops_test.go`). A cell of the
    buffer is 112 bytes, so a line of 500 cells is 56 KB and a screen of 500 by
    200 cells 11 MB, and writing all of it takes about a millisecond whatever
    the code. Erase in display (all three forms), erase in line, erase
@@ -359,14 +359,31 @@ Patches, applied in this order to the files of the module as released:
      after). The tests compare it with the buffer's functions in every region,
      wide characters at the edges of the region included.
    - Any other count and region is moved by the buffer's functions, as it was.
-     This stays slow: a scroll of more than a tenth of the lines, or margins that cut
-     off more than an eighth of the line (100 to 400 of 500 columns), moves up
-     to 11 MB for each sequence, which takes 0.4 to 1.7 ms. 64 KiB of `ESC[S`
-     with margins 100 and 400 take 9 s; 64 KiB of `ESC[40S` with margins 2
-     and 499, 22 s. Nothing but a buffer that moves the lines of a region
-     narrower than the screen without moving their cells would bound this.
-     The pane feeds the emulator in slices of 4 KiB, so that no draw waits
-     for more than a slice of it (about 0.6 s of this).
+     This stays slow: a scroll of more than a tenth of the lines, or margins
+     that cut off more than an eighth of the line, moves up to 11 MB for each
+     sequence, which takes 0.4 to 2 ms. Measured on the largest screen (500 by
+     200, full of text, a machine with a load of about 4 on 8 cores), 64 KiB of:
+
+     | sequence | 64 KiB | worst 4 KiB slice |
+     | --- | --- | --- |
+     | line feeds at the bottom line of a region with margins 30 and 470 (one byte for each scroll) | 60 s | 4.1 s |
+     | `ESC[30S`, margins 2 and 499 | 18 s | 1.3 s |
+     | `ESC[40S`, margins 2 and 499 | 22 s | not measured |
+     | `ESC[150S`, margins 1 and 499 | 14 s | not measured |
+     | `ESC[100S`, margins 2 and 499 | 13 s | not measured |
+     | `ESC[S`, margins 100 and 400 | 9.5 s | not measured |
+     | `ESC[S` and `ESC[T`, margins 1 and 250 | 8.2 s and 7.3 s | not measured |
+
+     A line feed is the cheapest input there is (one byte), and a program that
+     sets left and right margins (mode 69) and then prints at the bottom of the
+     region produces it. Nothing but a buffer that moves the lines of a region
+     narrower than the screen without moving their cells would bound this. The
+     pane feeds the emulator in slices of 4 KiB, so that no draw waits for more
+     than a slice of it: about 4 s for the line feeds above and 0.5 to 1.4 s for
+     the others (their 64 KiB time over 16). The holder feeds its emulator in slices of 4 KiB as
+     well, and releases its output lock between two of them, so that an attach
+     or a resize waits for one slice and not for the whole chunk (up to 64 KiB
+     of a read), but the session's output still takes the time above.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

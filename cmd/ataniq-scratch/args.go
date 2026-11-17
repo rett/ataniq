@@ -31,6 +31,9 @@ const (
 	maxEnvKey   = 64
 	maxEnvValue = 4096
 
+	// maxAgentPath is the longest program path the holder accepts.
+	maxAgentPath = 4096
+
 	// maxNameLen is the longest NAME, which also keeps the unit name and the
 	// socket path short.
 	maxNameLen = 31
@@ -134,6 +137,12 @@ func parseStart(args []string, getenv func(string) string) (startConfig, error) 
 	if !found || len(after) == 0 {
 		return cfg, usageError("start expects -- and the agent command")
 	}
+	// The holder does no PATH search and refuses a program that is not an
+	// absolute path of plain text; in unit mode that refusal would show only as
+	// a timeout, so it is refused here.
+	if !absPlain(after[0]) {
+		return cfg, usageError("the agent command must start with an absolute path of plain text (the holder does no PATH search)")
+	}
 	caps := wire.DefaultCaps()
 	if cfg.cols < caps.MinColumns || cfg.cols > caps.MaxColumns || cfg.rows < caps.MinRows || cfg.rows > caps.MaxRows {
 		return cfg, usageError("--cols and --rows must be within the holder's screen limits (20 by 5 to 500 by 200)")
@@ -158,6 +167,20 @@ func parseStart(args []string, getenv func(string) string) (startConfig, error) 
 	}
 	cfg.argv = after
 	return cfg, nil
+}
+
+// absPlain reports an absolute path of plain text, within the holder's length
+// bound (4096 bytes), as the holder requires of the agent's program.
+func absPlain(s string) bool {
+	if !strings.HasPrefix(s, "/") || len(s) > maxAgentPath || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkEnvPair checks KEY=VALUE and returns the key.

@@ -76,8 +76,27 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 `build/`, or name the holder with `--holder /absolute/path`. `build/` is
 ignored by git.
 
+The holder refuses to start, with exit status 2 and a line on its standard
+error, among other cases in these three, each checked before the agent starts:
+
+- `/proc/sys/dev/tty/legacy_tiocsti` is not 0, or cannot be read. The sysctl
+  does not exist before Linux 6.2, and the `TIOCSTI` ioctl is then always
+  available, which the holder takes as a failed check. Where it exists and is 1,
+  set it to 0 first (`sysctl dev.tty.legacy_tiocsti=0`, as root). With
+  it on, a process on a terminal can push input into that terminal.
+- It was started with SIGHUP, SIGINT, SIGQUIT, SIGPIPE or SIGTERM ignored,
+  because the agent would inherit that. Start it with the default signal
+  handling.
+- Its state folder or runtime folder is not a real folder of your user with
+  mode 0700 (a link is refused too).
+
+In unit mode `start` then reports only that the holder did not answer, and the
+reason is in the journal of the unit (`journalctl --user -u
+ataniq-scratch-NAME`); with `--direct` the holder's line is on your terminal.
+
 Start a scratch agent. NAME is 1 to 31 characters of `a-z`, `0-9` and `-`, and
-the program must be an absolute path, because the holder does no `PATH` search:
+the program must be an absolute path, because the holder does no `PATH` search
+(`start` refuses any other with exit status 2):
 
 ```sh
 ./build/ataniq-scratch start demo -- "$(command -v bash)" --norc --noprofile
@@ -94,7 +113,10 @@ folder and the state folder, then returns. Mint a ticket and attach:
 
 `ticket` registers a single-use ticket with the holder, writes it to the ticket
 file (mode 0600) and prints the file's path. It never prints the ticket. The
-ticket is valid for 30 seconds and for one attach. The console polls the ticket
+ticket is valid for 30 seconds and for one attach. The holder keeps one ticket
+for a place at a time: while a ticket for a place has not been used and
+has not expired, `ticket` is refused with `busy`, so after a ticket nobody used,
+run it again only when the 30 seconds are over. The console polls the ticket
 file every half second while it has no ticket, so the order of the two commands
 does not matter, but the second must follow within the 30 seconds. The attach
 folder is the runtime folder that `start` printed.
@@ -196,7 +218,7 @@ The state folder, `$XDG_STATE_HOME/ataniq/scratch/demo/` (`~/.local/state` when
 
 | File | Mode | What |
 | --- | --- | --- |
-| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts. |
+| `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment) and `scratch: true`. |
 | `events.jsonl` | 0600 | The event log. At 4 MiB it is renamed to `events.jsonl.1` (replacing an older one) and a new file starts, so the two together stay under 8 MiB. |
 | `final.json` | 0600 | The final record, written when the session is over. |
 | `epoch` | 0600 | The epoch of the last start, a counter. |
@@ -215,7 +237,8 @@ All bytes to the agent pass through one input lock, from three sources: the
 writer, the holder's own terminal replies, and (later) an injection.
 
 - One writer and one read-only viewer, nothing else. A writer ticket is issued
-  only while there is no writer, and there is no takeover. `release-writer`
+  only while there is no writer and no other writer ticket is waiting to be used
+  (a ticket waits up to 30 seconds), and there is no takeover. `release-writer`
   removes the writer: it becomes the viewer if there is none, and is otherwise
   closed. The cockpit shows a notice, and the event log records the change.
 - Input, paste and resize from the viewer are refused with a notice and counted
@@ -229,9 +252,11 @@ writer, the holder's own terminal replies, and (later) an injection.
   an ordinary byte and is forwarded. A held key is counted
   (`held_keys_suspend`, `held_keys_signal`) and logged by kind and count, never
   as the byte.
-- Paste: the console sends the text whole; the holder removes every paste-end
-  sequence from it and wraps it in paste markers when the agent has turned on
-  bracketed paste (mode 2004). When the agent has not, the text is written as it is.
+- Paste: the console sends the text in one piece; the holder takes the held
+  keys out of it as it does for typed input (Ctrl+Z, and in cooked mode the
+  signal bytes), removes every paste-end sequence from it and wraps it in paste
+  markers when the agent has turned on bracketed paste (mode 2004). When the
+  agent has not, the text is written as it is, less what was taken out.
 - Terminal replies (device attributes, cursor position, mode queries, colours)
   come from the holder's emulator only. The attach client discards its own
   replies, so a console never types answers into the session. The colour queries
@@ -264,7 +289,7 @@ keeps. A cap that is hit is counted, not silent.
 | Repeat (`CSI n b`) | a count over two lines and two characters is done in bulk or cut | `repeats_cut` |
 | One PTY read | 64 KiB; a longer burst is several chunks | none |
 | Terminal replies waiting for the input lock | 64 KiB | `reply_dropped_chunks`, `reply_dropped_bytes` |
-| Connections | one writer and one viewer; at most 4 connections waiting for their Hello, 4 tickets waiting for their Hello, 8 control requests at once | `attach_refused_busy`, `attach_refused_handshake_full`, `control_refused_other` |
+| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (any control request that is refused, a ticket refused with `busy` and the 8-request cap included) |
 | Send buffer | 1 MiB of output for each client, plus one queued snapshot outside it | `resyncs`, `too_slow_disconnects`, `stalled_disconnects` |
 | Frame payload | 64 KiB from a client, 1 MiB from the holder, 64 KiB on the control socket | `bad_frames`; the connection is closed |
 | Snapshot frame | 19 MiB | the snapshot is not taken (`snapshot_errors`) |
@@ -273,12 +298,15 @@ keeps. A cap that is hit is counted, not silent.
 | Event log | 4 MiB a file, one rotation; 16 KiB an event; a queue of 512 events | `events_dropped`, `event_log_errors` |
 
 The snapshot frame is 19 MiB where the design said 16 MiB. The design counted
-one screen: a 500 by 200 screen with a 64-byte cluster in every cell is about 9
-MiB, and 256 links add about 0.6 MiB. A snapshot carries both screens, the main
-and the alternate, and the largest the format can hold for the largest pane is
-18 991 628 bytes (18.11 MiB). The cap is the next whole MiB, 19 MiB, and the
-frame is that cap with its 8-byte position in front. A test of the session pane
-checks that the two constants agree.
+one screen. A snapshot carries both screens, the main and the alternate, and the
+largest the format can hold for the largest pane (a cluster of 64 bytes and a
+style of its own in every cell, 256 links of the longest size on each screen) is
+18 991 628 bytes (18.11 MiB). That bound is stated in
+`internal/terminalconsole/sessionpane/snapenc.go`, and a test in that package
+computes it field by field, builds the largest state and checks it. The frame's payload is capped at
+the next whole MiB, 19 MiB, which holds the 8-byte position and a snapshot of up
+to 19 MiB less 8 bytes; the same test checks that the pane's constant and the
+frame's agree.
 
 A hit cap shows in two places. While the holder runs, `ataniq-scratch status`
 lists the counters. When the session is over, the final record's `counters`
@@ -286,6 +314,28 @@ object holds the same numbers (and so does the `exit` event). The session's own
 counters and the pane's are always listed, with zeros. The attach service's
 counters (`attach_refused_*`, `resyncs`, `bad_frames` and the like) are listed
 only after their first hit.
+
+### What is still slow
+
+The holder bounds how much it keeps, and not every way an agent's output can
+make the emulator spend time. The whole-screen clears, the full reset, the
+alternate-screen switches and the scrolls of a whole region cost the lines they
+change and not every cell of the screen. Output that scrolls a region with left
+and right margins set (mode 69) is still slow: on the largest screen (500 by
+200) a line feed at the bottom of such a region takes about 1 ms, so 64 KiB of
+line feeds, which is 64 KiB of PTY read, can take about a minute, and a slice
+of 4 KiB about 4 s. Other scrolls in a margin region take 7 to 22 s for 64 KiB.
+The figures and the cases are in the NOTICE of the patched emulator,
+`third_party/patched/x-vt/NOTICE.md` (patch 15). A program that sets those
+margins is rare, and nothing bounds this yet.
+
+The holder feeds the output to the emulator in slices of at most 4 KiB and
+releases its output lock between two slices. An attach, a snapshot or a resize
+therefore waits for one slice, not for the whole chunk of up to 64 KiB. A slice
+that holds the lock for longer than 250 ms is counted in `slow_output_slices`,
+so that a stall is not silent. The reading of the agent's output, and with it
+the position of the Output frames, still advances only as fast as the emulator
+takes the slices.
 
 ## Evidence
 

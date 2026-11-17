@@ -77,6 +77,14 @@ func startHolder(t *testing.T, script string) *holder {
 			t.Fatal(err)
 		}
 	}
+	// Checked before anything is started, so a long TMPDIR fails here with its
+	// reason, not in serve.New. The folder comes from os.MkdirTemp and not
+	// t.TempDir because its name is short, which a socket path needs.
+	for _, sock := range []string{attachSocketName, serve.ControlSocket} {
+		if n := len(filepath.Join(h.dir, sock)); n > maxSocketPath {
+			t.Fatalf("the test's socket path %s is %d bytes, over %d: set TMPDIR to a shorter folder", sock, n, maxSocketPath)
+		}
+	}
 	log, err := eventlog.Open(h.logDir, eventlog.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -117,9 +125,6 @@ func startHolder(t *testing.T, script string) *holder {
 	}
 	t.Cleanup(func() { h.srv.Close() })
 	go h.srv.Serve()
-	if n := len(filepath.Join(h.dir, attachSocketName)); n > maxSocketPath {
-		t.Fatalf("the test's socket path is %d bytes", n)
-	}
 	return h
 }
 
@@ -459,9 +464,15 @@ func TestAttachViewerShowsTheScreenAndSendsNothing(t *testing.T) {
 		t.Fatalf("the viewer's focus bar does not say its keys are not sent:\n%s", v)
 	}
 
-	// The viewer types and pastes first. The writer's keys then arrive after
-	// anything of the viewer's that was sent, so that the agent has echoed
-	// only the writer's by the time the writer's are seen.
+	// The viewer types and pastes first, then the writer types. The two
+	// consoles use separate connections that the holder serves on their own
+	// goroutines, so the order in which the holder sees the two is not
+	// guaranteed. Whatever the order, the holder refuses a viewer's frame (so
+	// the agent cannot echo the viewer's keys) and counts it, so that a client
+	// that sends as a viewer shows in viewer_input_refused. Whether the
+	// client sends at all is proved by
+	// TestAttachViewerFlagWithAWriterTicketSendsNothing, where the holder
+	// does not refuse the frames.
 	viewer.typ("v")
 	viewer.send(tea.PasteMsg{Content: "pv"})
 	writer.typ("w")
@@ -471,6 +482,14 @@ func TestAttachViewerShowsTheScreenAndSendsNothing(t *testing.T) {
 	viewer.waitReceived(hexOf("w"))
 	if got := viewer.received(); got != hexOf("w") {
 		t.Fatalf("the viewer's screen shows %s", got)
+	}
+	// The holder has refused no frame of the viewer: the client sent none.
+	st := h.request(wire.Request{Op: wire.OpStatus, Epoch: holderEpoch})
+	if !st.OK || st.Status == nil {
+		t.Fatalf("status: %+v", st)
+	}
+	if n := st.Status.Counters["viewer_input_refused"]; n != 0 {
+		t.Fatalf("viewer_input_refused is %d: the viewer client sent input", n)
 	}
 }
 
