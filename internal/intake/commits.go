@@ -34,10 +34,12 @@ func (r *runner) commits(ctx context.Context, base, tip string, lim Limits) ([]C
 		return nil, nil
 	}
 	sink := newCapture(n*commitFields, maxCommitField, "commits")
-	// An empty --encoding keeps the message bytes as they are stored, with
-	// no conversion to UTF-8.
+	// git converts the text of a commit that names another encoding to
+	// UTF-8; text that is not valid in its encoding, and text with no
+	// encoding header, stays as it is stored. --encoding makes the target
+	// the same whatever the repository's configuration says.
 	_, err = r.git(ctx, []string{
-		"log", "-z", commitFormat, "--encoding=",
+		"log", "-z", commitFormat, "--encoding=UTF-8",
 		"--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature",
 		"--end-of-options", base + ".." + tip,
 	}, nil, capFor(int64(n)*commitFields*maxCommitField), sink)
