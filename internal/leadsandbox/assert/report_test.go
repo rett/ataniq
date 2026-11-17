@@ -352,6 +352,31 @@ func insideReport(s Spec) Report {
 	return r
 }
 
+// The outside half of an assertion is never excused by the spec's optional
+// list: a not-checked result that carries the number of the optional assertion
+// and the ID of an outside half is still a problem. The table cannot make such a
+// result (Validate allows only assertion 4, which has no outside half), so the
+// test builds it by hand.
+func TestProblemsOptionalExcusesOnlyTheInsideHalf(t *testing.T) {
+	s := testSpec("claude")
+	s.Optional = []int{OptionalAssertion}
+	rep := insideReport(s).With(Result{OptionalAssertion, IDHolderHidden + OutsideSuffix, StatusNotChecked, "x"})
+	p := Problems(rep, s, RequireInside)
+	if len(p) != 1 || !strings.Contains(p[0], IDHolderHidden+OutsideSuffix) || !strings.Contains(p[0], "not checked") {
+		t.Errorf("a not-checked result with an outside ID: %v", p)
+	}
+	// The inside result of the same number is excused.
+	rep = insideReport(s)
+	for i := range rep.Results {
+		if rep.Results[i].Number == OptionalAssertion {
+			rep.Results[i].Status = StatusNotChecked
+		}
+	}
+	if p := Problems(rep, s, RequireInside); len(p) != 0 {
+		t.Errorf("the inside result of the optional assertion: %v", p)
+	}
+}
+
 func TestProblems(t *testing.T) {
 	s := testSpec("claude")
 	rep := insideReport(s)
