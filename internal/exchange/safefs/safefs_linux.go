@@ -137,9 +137,9 @@ func mapErrno(err error) error {
 // it does not block on a FIFO. The file is then checked with fstat: anything
 // but a regular file is closed and refused with [ErrNotRegular]. The returned
 // file is in blocking mode: O_NONBLOCK is cleared once the file is known to be
-// regular. A socket, or
-// a device with no driver, cannot be opened at all: the kernel fails with ENXIO
-// or ENODEV, and the error then matches [ErrNotRegular] and the errno.
+// regular. A socket, or a device with no driver, cannot be opened at all: the
+// kernel fails with ENXIO or ENODEV, and the error then matches
+// [ErrNotRegular] and the errno.
 //
 // rel must be relative with no ".." element, else [ErrEscape].
 func (r *Root) Open(rel string) (*os.File, error) {
