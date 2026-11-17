@@ -223,13 +223,11 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	if in.SeccompEnabled() {
 		e.opt("--seccomp", strconv.Itoa(opt.SeccompFD))
 	}
-	var left []string
 	for _, b := range binds {
 		if b.Kind == profile.KindRemountRO {
 			continue // last, after --chdir
 		}
 		if b.Optional && !opt.HostPresent[b.Inside] {
-			left = append(left, optionalNote(b))
 			continue
 		}
 		e.bind(b)
@@ -251,7 +249,7 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		Files:   files,
 		Digest:  digest,
 		WorkDir: workDir,
-		Notes:   notes(in, opt, left),
+		Notes:   notes(in, opt, leftOut(binds, opt)),
 	}
 	p.Argv = join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
 	if n := argvBytes(p.Argv); n > MaxArgvBytes {
@@ -260,7 +258,7 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	if bad := forbiddenIn(p.Argv); bad != "" {
 		return nil, refuse("command line", "holds the forbidden option %s", bad)
 	}
-	if probs := Verify(p, in); len(probs) > 0 {
+	if probs := Verify(p, in, opt); len(probs) > 0 {
 		return nil, refuse("plan", "fails its own check (%d problems, first: %s)", len(probs), probs[0])
 	}
 	return p, nil
@@ -442,6 +440,17 @@ func forbiddenIn(argv []string) string {
 		}
 	}
 	return ""
+}
+
+// leftOut is the note of each optional row the options say the host lacks.
+func leftOut(binds []profile.Bind, opt Options) []string {
+	var left []string
+	for _, b := range binds {
+		if b.Optional && !opt.HostPresent[b.Inside] {
+			left = append(left, optionalNote(b))
+		}
+	}
+	return left
 }
 
 func optionalNote(b profile.Bind) string {

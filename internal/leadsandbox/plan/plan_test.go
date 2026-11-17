@@ -97,8 +97,9 @@ func TestEveryPlanVerifiesAndHasNoForbiddenFlag(t *testing.T) {
 					in = withSeccomp(in)
 				}
 				for _, present := range []map[string]bool{allPresent(t, in), nil} {
-					p := mustBuild(t, in, options(in, present))
-					if probs := Verify(p, in); len(probs) > 0 {
+					o := options(in, present)
+					p := mustBuild(t, in, o)
+					if probs := Verify(p, in, o); len(probs) > 0 {
 						t.Errorf("%s owner=%v seccomp=%v: %v", rt, owner, sec, probs)
 					}
 					for _, a := range p.Argv {
@@ -115,7 +116,7 @@ func TestEveryPlanVerifiesAndHasNoForbiddenFlag(t *testing.T) {
 }
 
 func TestPartsAndOrder(t *testing.T) {
-	p, in := basePlan(t)
+	p, in, _ := basePlan(t)
 	if got := join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner); !equal(got, p.Argv) {
 		t.Fatalf("Argv is not Pasta, PassFDs, Bwrap and Inner joined")
 	}
@@ -466,13 +467,13 @@ func TestInvalidInputsAreTheProfilesRefusal(t *testing.T) {
 }
 
 func TestVerifyReportsInvalidInputs(t *testing.T) {
-	p, in := basePlan(t)
+	p, in, o := basePlan(t)
 	in.Role = ""
-	probs := Verify(p, in)
+	probs := Verify(p, in, o)
 	if len(probs) != 1 || probs[0].Kind != ProbInputs {
 		t.Errorf("problems = %v", probs)
 	}
-	if got := Verify(nil, fixture(profile.Claude)); len(got) != 1 || got[0].Kind != ProbShape {
+	if got := Verify(nil, fixture(profile.Claude), Options{}); len(got) != 1 || got[0].Kind != ProbShape {
 		t.Errorf("nil plan: %v", got)
 	}
 }

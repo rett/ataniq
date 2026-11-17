@@ -103,10 +103,11 @@ func mustBuild(t *testing.T, in profile.Inputs, o Options) *Plan {
 
 // basePlan is a plan for claude, root mode, no seccomp, every optional row
 // present.
-func basePlan(t *testing.T) (*Plan, profile.Inputs) {
+func basePlan(t *testing.T) (*Plan, profile.Inputs, Options) {
 	t.Helper()
 	in := fixture(profile.Claude)
-	return mustBuild(t, in, options(in, allPresent(t, in))), in
+	o := options(in, allPresent(t, in))
+	return mustBuild(t, in, o), in, o
 }
 
 func clonePlan(p *Plan) *Plan {

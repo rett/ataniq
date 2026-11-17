@@ -74,14 +74,20 @@
 // [profile.ForbiddenFlags] appears anywhere, and runs [Verify] on its own
 // result.
 //
-// [Verify] is the check the holder runs before every start. It is written
+// [Verify] takes the plan, the profile inputs and the [Options] the holder
+// uses now, and is the check the holder runs before every start. It is written
 // apart from the code that builds the arguments: it parses the bubblewrap
-// arguments back into flags, environment and mounts and compares them with the
-// profile (flag set, allowlist, bind table, never-mounted paths, the other
-// runtime's config folder, pasta arguments, seccomp descriptor). A parse that
-// agrees with the profile says the argument list is the one the profile
-// describes; it does not say what bubblewrap, pasta or the kernel will do with
-// it. The mutation tests of this package show which changes it catches.
+// arguments back into flags, environment and mounts, and compares every part
+// of the plan with what the inputs and the options give: both executables, the
+// pasta arguments, the pass-through step, the list of descriptors with their
+// numbers and paths, the bubblewrap arguments (flag set, allowlist, bind
+// table, never-mounted paths, the other runtime's config folder, the working
+// folder), exactly which optional rows are present, the probe command line
+// with the agent argv, the digest, the terminal flag and the exact set of
+// notes. A plan that agrees with the inputs and the options says the text of
+// the plan is the one they describe; it does not say what bubblewrap, pasta or
+// the kernel will do with it. The mutation tests of this package show which
+// changes it catches.
 //
 // # What it does not do
 //
