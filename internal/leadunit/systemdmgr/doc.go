@@ -14,7 +14,8 @@
 // directory, the explicit environment and the command as ExecStartEx with the
 // "no-env-expand" flag, so that systemd does not expand "$VAR" in the
 // arguments. A reply that names a job is success, and Start then inspects the
-// unit once. Inspect is one "systemctl --user show --all" with a fixed
+// unit once; the job completes later, so that state can be partial (see
+// [Manager.Start]). Inspect is one "systemctl --user show --all" with a fixed
 // property list. Signal checks the invocation, then runs "systemctl --user
 // kill --kill-whom=all". Empty proves a control group empty from the control
 // group file system and the manager, in the cases listed at [Manager.Empty].
