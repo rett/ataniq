@@ -49,10 +49,14 @@
 // depends on it, and the launch intent is journaled before the first unit
 // call.
 //
-// One limit: that flag is lost when the daemon dies before its first
-// Reconcile has marked every role registry-recovered, because the registry
-// reports a cut only to the Open that made it, so the next daemon reconciles
-// the roles not yet marked as if no cut had happened.
+// The flag is a convenience of one process. What outlives a crash is the
+// registry's own record: once Reconcile has acted on a cut of the journal for
+// every role it journals the acknowledgement of the cut
+// ([leadregistry.Registry.AcknowledgeRecovery], with a note saying what was
+// done), so that a later daemon does not show healthy roles unknown again. A
+// daemon that dies between acting and acknowledging, or that could not act on
+// every role because the manager did not answer, leaves the cut
+// unacknowledged, and the next daemon treats it again, conservatively.
 //
 // # Where the registry's rules win
 //

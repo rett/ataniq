@@ -147,6 +147,7 @@ type Controller struct {
 	mu        sync.Mutex
 	locks     map[leadrole.Role]chan struct{}
 	recovered bool
+	ackDue    bool
 }
 
 // New returns a Controller. It fails when a required option is missing or a
