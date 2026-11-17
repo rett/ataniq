@@ -256,18 +256,34 @@ tip, it holds `verification.not-run`.
   one run, on one host, with one template file (named by its digest), one git
   and one Go version. A different template, kernel, git or run can give other
   facts.
-- A canary that does not exist shows that no write reached that path by the
-  commands the harness planted. It does not show that a hook or a configured
-  command was started and then blocked, or never started. `git-upload-pack`
-  does not run these hooks or these configured commands in ordinary use, and
-  the harness does not claim that it does. The planted files only give an
-  escape a place to show itself. A template that does not bind the canary
-  folder makes the write fail for a plain reason, and that is the intended
-  reading: nothing reached the host.
+- The S16 canaries show that owner-side git ran nothing from the clone: no
+  hook and no configured command of the clone was started by the fetch. They
+  show nothing about the sandbox. A serving command that runs only
+  `git-upload-pack` gives the same S16 canary facts with a sandbox and without
+  one, because `git-upload-pack` does not run these hooks or these configured
+  commands in ordinary use. The harness does not claim otherwise. A canary
+  that does not exist does not show that a hook or a command was started and
+  then blocked, or never started.
+- What the harness holds as controls: `s16-fetch.control` is the control of the
+  S16 canaries. It runs plain `git status` in a second clone, made the same
+  way and planted the same way, in the fixture folder with its own canary
+  folder, with no sandbox. The canaries it lists in `present` are the ones that
+  fire when git runs in a clone on this host, so a reader can tell that the
+  fixture was armed. Without a fired canary in the control, an absent canary in
+  `s16-fetch.canaries` means little. The package's tests also run `git status`
+  and `git commit` in a planted clone and require the canaries, and require the
+  canary of the verification gate to be written when there is no sandbox. The
+  control of the verification canary is in the tests only; the report holds no
+  control for it.
+- What does show something about the sandbox: the verification canary
+  (`verification.canary-gate`, with `canary_exists_on_host`), the environment
+  facts (`verification.environment-gate`), and the review of the template file
+  itself, which a person does by reading what each section binds, hides and
+  sets.
 - A canary that exists is a real finding: something wrote outside the places
-  the template gave. With the fake planner (no sandbox) the verification gate
-  does write its canary; that is the control that shows the check can see a
-  write.
+  the template gave. A template that does not bind the canary folder makes a
+  write fail for a plain reason, and that is the intended reading of the
+  verification canary: nothing reached the host.
 - `canary-write-failed` in the output of the canary gate is the sandbox's own
   statement. The fact `canary_exists_on_host` is the harness's check.
 - `identical` upstream refs show that the refs `refs/heads/*` and
