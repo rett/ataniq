@@ -81,6 +81,12 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 	}
 	hello, err := wire.DecodeHello(f.Payload)
 	if err != nil {
+		// A ticket that was presented is used up whatever else is wrong with
+		// the Hello (a name too long, a colour, a size, a field this decoder
+		// does not know): it must not be presentable a second time.
+		if tk, ok := presentedTicket(f.Payload); ok {
+			_, _ = s.takeTicket(tk)
+		}
 		switch v, ok := wire.HelloVersion(f.Payload); {
 		case ok && v != wire.ProtocolVersion:
 			s.refuse(conn, wire.ReasonRefusedVersion, "this holder speaks another protocol version", cntRefusedVersion, "attach-version", cred.PID)
@@ -162,6 +168,19 @@ func (s *Server) applyWriterHello(c *client, hello wire.Hello) {
 	s.sess.SetColours(helloColours(hello.Colors))
 	_, _, _ = s.sess.Resize(hello.Columns, hello.Rows)
 	s.syncAfterResize()
+}
+
+// presentedTicket reads the ticket of a Hello payload that the strict decoder
+// refused, as far as it can be told: it reports false when the payload has no
+// ticket or one that is not well formed.
+func presentedTicket(payload []byte) (string, bool) {
+	var probe struct {
+		Ticket *string `json:"ticket"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil || probe.Ticket == nil || wire.CheckTicket(*probe.Ticket) != nil {
+		return "", false
+	}
+	return *probe.Ticket, true
 }
 
 // ticketProblem reports whether a Hello payload that the strict decoder

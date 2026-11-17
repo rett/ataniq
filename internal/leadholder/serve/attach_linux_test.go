@@ -147,6 +147,38 @@ func TestTicketRefusals(t *testing.T) {
 	}
 }
 
+// A Hello that the strict decoder refuses but that carries a well-formed ticket
+// uses the ticket up: the same ticket in a correct Hello is refused as unknown.
+func TestTicketConsumedByAMalformedHello(t *testing.T) {
+	e := newEnv(t, "raw; say READY; echo; wait")
+	waitScreen(t, e.sess, "READY")
+	for _, tc := range []struct{ name, body string }{
+		{"a name over the cap", `"version":1,"name":"` + strings.Repeat("n", 65) + `","columns":80,"rows":24`},
+		{"a size out of range", `"version":1,"name":"x","columns":100000,"rows":24`},
+		{"a bad colour", `"version":1,"name":"x","columns":80,"rows":24,"colors":{"foreground":"red"}`},
+		{"a field this decoder does not know", `"version":1,"name":"x","columns":80,"rows":24,"future":true`},
+		{"a newer version", `"version":2,"name":"x","columns":80,"rows":24,"future":true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := e.newTicket(wire.RoleViewer)
+			conn := e.dialAttach()
+			c := e.newClient(conn)
+			raw := []byte(`{"ticket":"` + tk + `",` + tc.body + `}`)
+			if _, err := conn.Write(rawFrame(wire.TypeHello, uint32(len(raw)), raw)); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.waitEnd(); err == nil {
+				t.Error("no end")
+			}
+			// The ticket is gone: a correct Hello with it finds none.
+			late := e.attachWithNoWait(tk)
+			late.waitNotice(wire.ReasonRefusedTicket)
+			late.waitEnd()
+			e.waitEvent("the ticket is unknown", named("refusal", "attach-ticket-unknown"))
+		})
+	}
+}
+
 // A ticket is consumed by its first use even when the attach does not complete:
 // here the viewer's place was taken after the ticket was registered.
 func TestTicketConsumedWhenSlotBusy(t *testing.T) {
