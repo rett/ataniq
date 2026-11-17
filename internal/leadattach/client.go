@@ -337,7 +337,7 @@ func (c *Client) sleep(d time.Duration) bool {
 	}
 }
 
-// run is the client's goroutine: it asks for a ticket, connects, and serves
+// run is the client's goroutine: it connects, asks for a ticket, and serves
 // the connection until it ends, then does it again unless the session ended,
 // the holder speaks another version or the client was closed.
 func (c *Client) run() {
@@ -353,17 +353,19 @@ func (c *Client) run() {
 		// loop.
 		fails, resyncs int
 		wait           time.Duration
+		// missed is set when a ticket was asked for and there was none, and
+		// cleared when one was had.
+		missed bool
 	)
 	for {
 		if wait > 0 && !c.sleep(wait) {
 			return
 		}
 		wait = 0
-		ticket, ok := c.nextTicket(resync)
-		if !ok {
-			return
-		}
-		c.setConnecting(resync)
+		// Dial first, then read the ticket: a ticket is single use and the
+		// source empties it when it gives it, so a ticket taken before a
+		// dial that fails would be lost. With no ticket the connection is
+		// closed again and the next try is after a TicketPoll.
 		nc, err := c.dial()
 		if err != nil {
 			if c.ctx.Err() != nil {
@@ -373,6 +375,23 @@ func (c *Client) run() {
 			resync, wait = false, TicketPoll
 			continue
 		}
+		ticket, err := c.askTicket()
+		if err != nil {
+			_ = nc.Close()
+			if c.ctx.Err() != nil {
+				return
+			}
+			// A client that is resyncing keeps that state through the
+			// first ask.
+			if !(resync && !missed) {
+				c.setWaiting(err)
+			}
+			missed = true
+			wait = TicketPoll
+			continue
+		}
+		missed = false
+		c.setConnecting(resync)
 		out := c.attach(nc, ticket, resync)
 		resync = false
 		if out.checked {
@@ -414,29 +433,17 @@ func (c *Client) run() {
 	}
 }
 
-// nextTicket asks the source until it has a ticket, every TicketPoll. A
-// client that is resyncing keeps that state through the first ask.
-func (c *Client) nextTicket(resync bool) (string, bool) {
-	first := true
-	for {
-		if c.ctx.Err() != nil {
-			return "", false
+// askTicket asks the source once, and returns an error when it has no ticket
+// (ErrNoTicket, or why it has none) or gave a malformed one.
+func (c *Client) askTicket() (string, error) {
+	t, err := c.cfg.Tickets()
+	if err == nil {
+		if wire.CheckTicket(t) == nil {
+			return t, nil
 		}
-		t, err := c.cfg.Tickets()
-		if err == nil {
-			if wire.CheckTicket(t) == nil {
-				return t, true
-			}
-			err = errors.New("the ticket source gave a malformed ticket")
-		}
-		if !(resync && first) {
-			c.setWaiting(err)
-		}
-		first = false
-		if !c.sleep(TicketPoll) {
-			return "", false
-		}
+		err = errors.New("the ticket source gave a malformed ticket")
 	}
+	return "", err
 }
 
 func (c *Client) dial() (net.Conn, error) {

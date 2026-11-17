@@ -1,8 +1,13 @@
 package leadattach_test
 
 import (
+	"context"
 	"encoding/binary"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -644,6 +649,72 @@ func TestAWelcomeOfAnotherVersionStops(t *testing.T) {
 	}
 	e.tickets.give(1)
 	e.h.noConnection(60 * time.Millisecond)
+}
+
+// The ticket file is read only once the connection is made: with the socket
+// not there yet, the dial fails and the ticket stays in the file for the try
+// that connects.
+func TestATicketIsNotSpentByADialThatFails(t *testing.T) {
+	leakCheck(t)
+	dir, err := os.MkdirTemp("", "la")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock, file := filepath.Join(dir, "a.sock"), filepath.Join(dir, "ticket")
+	ticket, err := wire.NewTicket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(ticket+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dials atomic.Int64
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
+		c.Socket, c.Tickets = sock, leadattach.FileTickets(file)
+		c.Dial = func(ctx context.Context, path string) (net.Conn, error) {
+			dials.Add(1)
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		}
+	}})
+	e.start()
+	e.until("a few failed dials", func(st terminalconsole.LiveStatus) bool {
+		return dials.Load() >= 3 && strings.Contains(st.Reason, "cannot connect")
+	})
+	if got, err := os.ReadFile(file); err != nil || strings.TrimSpace(string(got)) != ticket {
+		t.Fatalf("the ticket file after the failed dials: %q, %v", got, err)
+	}
+
+	// The socket appears: the next try connects and sends that ticket.
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	conn := make(chan net.Conn, 1)
+	go func() {
+		if nc, err := ln.Accept(); err == nil {
+			conn <- nc
+		}
+	}()
+	select {
+	case nc := <-conn:
+		defer nc.Close()
+		f, err := wire.NewReader(nc, wire.ToHolder).Next()
+		if err != nil || f.Type != wire.TypeHello {
+			t.Fatalf("first frame %v, %v", f.Type, err)
+		}
+		hello, err := wire.DecodeHello(f.Payload)
+		if err != nil || hello.Ticket != ticket {
+			t.Errorf("hello ticket %q, %v; want the one from the file", hello.Ticket, err)
+		}
+	case <-time.After(wait):
+		t.Fatal("the client did not connect")
+	}
+	if got, _ := os.ReadFile(file); len(got) != 0 {
+		t.Errorf("the ticket file still holds %q after the ticket was used", got)
+	}
 }
 
 func TestDialFailureShowsAndRetries(t *testing.T) {

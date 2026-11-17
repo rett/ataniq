@@ -38,6 +38,8 @@ type holder struct {
 	pipes bool
 	mu    sync.Mutex
 	all   []*hconn
+	panes []*sessionpane.Pane
+	done  bool // closeAll ran: no pane is made after it
 }
 
 func newHolder(t *testing.T) *holder {
@@ -53,16 +55,14 @@ func newHolder(t *testing.T) *holder {
 		t.Fatal(err)
 	}
 	h.ln = ln
+	accepting := make(chan struct{})
 	t.Cleanup(func() {
 		ln.Close()
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		for _, c := range h.all {
-			c.resume()
-			c.nc.Close()
-		}
+		<-accepting
+		h.closeAll()
 	})
 	go func() {
+		defer close(accepting)
 		for {
 			nc, err := ln.Accept()
 			if err != nil {
@@ -78,15 +78,22 @@ func newHolder(t *testing.T) *holder {
 func newPipeHolder(t *testing.T) *holder {
 	t.Helper()
 	h := &holder{t: t, path: "pipe", conns: make(chan *hconn, 16), pipes: true}
-	t.Cleanup(func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		for _, c := range h.all {
-			c.resume()
-			c.nc.Close()
-		}
-	})
+	t.Cleanup(h.closeAll)
 	return h
+}
+
+// closeAll closes every connection and pane the holder made.
+func (h *holder) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.done = true
+	for _, c := range h.all {
+		c.resume()
+		c.nc.Close()
+	}
+	for _, p := range h.panes {
+		p.Close()
+	}
 }
 
 func (h *holder) dial(ctx context.Context, path string) (net.Conn, error) {
@@ -100,13 +107,26 @@ func (h *holder) dial(ctx context.Context, path string) (net.Conn, error) {
 }
 
 func (h *holder) adopt(nc net.Conn) {
-	hc := &hconn{t: h.t, nc: nc, pane: sessionpane.New(80, 24, sessionpane.Options{}), frames: make(chan hframe, 256)}
-	h.t.Cleanup(hc.pane.Close)
+	hc := &hconn{t: h.t, nc: nc, frames: make(chan hframe, 256)}
 	h.mu.Lock()
 	h.all = append(h.all, hc)
 	h.mu.Unlock()
+	// A connection is published only when its first frame has come: the
+	// client dials before it asks for a ticket, and a connection it closes
+	// for want of one has no Hello and is not a connection of the test. The
+	// pane is made then, and closed with the holder.
+	hc.publish = func() {
+		h.mu.Lock()
+		if h.done {
+			h.mu.Unlock()
+			return
+		}
+		hc.pane = sessionpane.New(80, 24, sessionpane.Options{})
+		h.panes = append(h.panes, hc.pane)
+		h.mu.Unlock()
+		h.conns <- hc
+	}
 	go hc.readLoop()
-	h.conns <- hc
 }
 
 // accept returns the next connection the client made, with its Hello read.
@@ -154,6 +174,8 @@ type hconn struct {
 	hello  wire.Hello
 	pos    uint64
 	frames chan hframe
+	// publish hands the connection to accept, once, with its first frame.
+	publish func()
 }
 
 // pause makes the holder stop reading after the frame it is reading; a client
@@ -171,6 +193,7 @@ func (hc *hconn) resume() {
 
 func (hc *hconn) readLoop() {
 	rd := wire.NewReader(hc.nc, wire.ToHolder)
+	first := true
 	for {
 		if p := hc.gate.Load(); p != nil {
 			<-*p
@@ -181,6 +204,10 @@ func (hc *hconn) readLoop() {
 			return
 		}
 		hc.frames <- hframe{typ: f.Type, payload: f.Payload}
+		if first {
+			first = false
+			hc.publish()
+		}
 	}
 }
 

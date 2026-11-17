@@ -17,13 +17,17 @@
 //
 // # States
 //
-// Start never blocks. A goroutine asks Config.Tickets for a ticket, at once
-// and then every [TicketPoll] (500 ms), and shows "waiting for a ticket" in
-// the status; with a ticket it dials (connecting), sends the Hello and reads
-// the Welcome. The state is attached only once the first snapshot of the
-// connection is applied: until then it is connecting, and input is dropped and
-// counted, because the pane still shows another screen and the modes are not
-// the holder's yet. A refusal before the
+// Start never blocks. A goroutine dials the holder's socket and then asks
+// Config.Tickets for a ticket, at once and then every [TicketPoll] (500 ms):
+// the ticket is read after the dial, because the source empties a ticket when
+// it gives it and a ticket taken before a dial that fails would be lost. With
+// no ticket the connection is closed again and the status shows "waiting for a
+// ticket"; a dial that fails shows "cannot connect" and is tried again after
+// the same wait. With a ticket the client sends the Hello (the handshake
+// deadline starts then) and reads the Welcome. The state is attached only once
+// the first snapshot of the connection is applied: until then it is
+// connecting, and input is dropped and counted, because the pane still shows
+// another screen and the modes are not the holder's yet. A refusal before the
 // Welcome becomes the reason of the disconnect: refused-ticket and refused-busy
 // send the client back to waiting for a ticket, refused-version (and a Welcome
 // of another protocol version) stops it. A lost connection goes back to

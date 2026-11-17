@@ -63,9 +63,11 @@ type Config struct {
 	Name string
 	// Tickets returns a fresh single-use ticket, or an error meaning that
 	// there is none yet (ErrNoTicket, or any other error, which the status
-	// shows as the reason). It is called on the client's own goroutine, once
-	// to start and then every 500 ms while it waits. FileTickets is the one
-	// the console uses.
+	// shows as the reason). It is called on the client's own goroutine, and
+	// only once the socket is connected, so that a ticket is never taken
+	// for a dial that fails: once to start and then every 500 ms while it
+	// waits (the connection is closed meanwhile). FileTickets is the one the
+	// console uses.
 	Tickets func() (string, error)
 	// Dial connects to Socket. Nil dials the unix socket.
 	Dial DialFunc
