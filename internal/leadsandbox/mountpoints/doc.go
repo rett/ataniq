@@ -68,10 +68,13 @@
 //
 // [Prepare] fills the folder once, before the lead's first run. It builds it
 // in a temporary sibling in the lead's state folder (<state>/leads/<role>/
-// gitmeta.tmp), exclusively with mode 0700 (its files 0600), syncs each file
-// and each folder, and then moves it into its place with renameat2 and
-// RENAME_NOREPLACE, so the place never holds a folder that is only partly
-// written and nothing is ever replaced:
+// gitmeta.tmp), with mode 0700 (its files 0600, each created exclusively),
+// syncs each file and each folder, and then moves it into its place with
+// renameat2 and RENAME_NOREPLACE, so the place never holds a folder that is
+// only partly written and nothing is ever replaced. The sibling is made with
+// MkdirAll, which keeps a folder that exists: a leftover sibling is refused
+// before, and a second [Prepare] that races the first is stopped by the
+// exclusive creation of the files:
 //
 //   - config is a copy of the clone's .git/config, read through the tree's
 //     handle: a regular file of at most 1 MiB, not hard-linked, and without an
