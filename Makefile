@@ -33,8 +33,7 @@ qualification-host-build: doctor
 # the changelog is dated (ARGS='--into VERSION' folds into the dated section;
 # without it the fold writes to [Unreleased]), and again after a fix that adds
 # a fragment, and the release checks that none are left. ARGS=--dry-run
-# previews the fold. Neither target needs the Go
-# toolchain.
+# previews the fold. Neither target needs the Go toolchain.
 changelog-fold:
 	@sh scripts/changelog-fold.sh $(ARGS)
 

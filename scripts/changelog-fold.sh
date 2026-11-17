@@ -20,10 +20,10 @@
 # writing CHANGELOG.md and removing the fragments can be repeated. A fragment
 # that only starts like an existing entry is folded. Nothing is changed unless
 # every fragment is valid. CHANGELOG.md is replaced by one rename of a
-# temporary file made beside it (created exclusively with noclobber, so an
-# existing file or symbolic link of that name is never written through; the
-# rename is atomic and the file mode is kept), so an interrupted run leaves it
-# intact. --dry-run only reports what would happen: it writes no file at all.
+# temporary file made beside it (a name that exists in any form, a file, a
+# symbolic link, a FIFO or a device, is refused and left alone, never written
+# through or removed; the rename is atomic and the file mode is kept), so an
+# interrupted run leaves it intact. --dry-run only reports what would happen: it writes no file at all.
 #
 # --into VERSION folds into the section "## [VERSION] - DATE" instead, the
 # release section that "qargi release start VERSION" makes when it dates the
@@ -363,19 +363,33 @@ fi
 
 # A signal ends the script (the handler must exit, or the run would go on after
 # the temporary file is removed); the EXIT trap removes the temporary file.
+#
+# The name is recorded in tmp only after the file was made here and is a
+# regular file, so the EXIT trap never removes an object that was already
+# there. While the file is made the signal traps only set a flag, which is
+# acted on once the name is recorded, so a signal cannot end the run between
+# the create and the record. A name that exists in any form (a file, a
+# symbolic link even a dangling one, a FIFO, a device) is refused and left
+# alone: noclobber alone does not refuse a FIFO, a device or a link to one, so
+# the name is checked first and noclobber makes the create exclusive for the
+# rest.
 tmp=
 trap '[ -z "$tmp" ] || rm -f "$tmp"' EXIT
+sig=
+trap 'sig=129' HUP
+trap 'sig=130' INT
+trap 'sig=143' TERM
+new=$changelog.fold.$$
+if [ ! -e "$new" ] && [ ! -L "$new" ] &&
+	( set -C; : >"$new" ) 2>/dev/null &&
+	[ -f "$new" ] && [ ! -L "$new" ]; then
+	tmp=$new
+fi
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-# The name is recorded before the file is made, so a signal that arrives just
-# after the create still removes it; a refusal clears it again, so a file that
-# was already there is never removed. Noclobber makes the redirection an
-# exclusive create: it fails when the name exists, even as a dangling symbolic
-# link.
-tmp=$changelog.fold.$$
-( set -C; : >"$tmp" ) 2>/dev/null || {
-	tmp=
+[ -z "$sig" ] || exit "$sig"
+[ -n "$tmp" ] || {
 	echo "error: cannot create a temporary file beside CHANGELOG.md" >&2
 	exit 1
 }
@@ -475,6 +489,7 @@ flush_before() {
 } >"$tmp"
 
 mv -f "$tmp" "$changelog"
+tmp=
 for name in $valid; do
 	rm -f -- "$fragdir/$name"
 done
