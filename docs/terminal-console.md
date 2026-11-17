@@ -3,12 +3,13 @@
 The terminal-first Bubble Tea console is the planned primary operator client; a
 web console with the same information architecture comes later. Both sit on the
 shared typed command and event contract. Today the console is a provisional,
-read-only Bubble Tea fixture viewer. It has no production backend and does not
-send instructions, steer, approve, or interrupt leads. The persistent leads,
-subagents, tasks, and conversations shown in demo mode are fictional. No
-provider or durable command and receipt integration is implemented, and the
-command opens no network listener. Without `--demo` the command reports that the
-backend is unavailable.
+read-only fixture cockpit. Everything it shows is fictional fixture data. The
+terminal pane replays a recording. It is not a live session. The console has no
+production backend. It does not send instructions, steer, approve or interrupt
+leads, and nothing you type reaches a process. It integrates no provider and no
+durable command and receipt path, and it opens no network listener. Without
+`--demo` the command reports that the backend is unavailable and exits with
+status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
 toolchain and start the explicit fixture:
@@ -19,20 +20,211 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 ./build/ataniq-console --demo
 ```
 
-Dark appearance is the default; use `--theme light` or `--theme dark` explicitly.
-Use arrows or j/k to select, Enter to open, t for project tasks, Escape to go
-back, ? for help, and q or Ctrl-C to quit. In longer views arrows scroll.
-The s, a, and i keys explain why live controls are unavailable.
+Dark appearance is the default. Use `--theme light` or `--theme dark` to
+choose one. The console draws on the alternate screen.
+
+## Layout
+
+A window of at least 100 columns by 30 rows shows the three-pane cockpit.
+A smaller window shows single-column pages instead (see
+[Small windows](#small-windows)).
+
+The cockpit has these parts:
+
+- The header names the demo and carries the label "fixture recording, not a
+  live session".
+- The left pane lists projects, leads and their delegates, with a Context block
+  under it. Delegates are shown but cannot be selected.
+- The centre pane has a Session block (project, lead, provider, host, session
+  id, attachment, window title and the number of blocked clipboard requests),
+  the session terminal, and a focus bar. The focus bar always shows the
+  current focus and the return key.
+- The right pane, Evidence & approvals, shows the attachment contract, the
+  pending gate and the binding of the lead and its delegates. The gate is data.
+  No approval is possible.
+- The timeline runs along the bottom and the key bar under it.
+
+The session terminal frame carries the fixture label in every state. In zoom
+the header carries it.
+
+The console draws at most 512 columns by 256 rows. In a larger window it draws
+in the top left corner and leaves the rest blank. The session terminal is at
+most 500 columns by 200 rows. The pane follows a window resize after the size
+has stayed the same for a short pause (120 ms). It follows a zoom at once. The
+replay continues at the new size.
+
+### Small windows
+
+Below 100x30 the console shows single-column pages: projects, leads, a lead's
+conversation, project tasks, help and the action list. Use arrows or j/k to
+select, Enter to open, t for project tasks, Escape to go back, ? for help,
+Ctrl+K for the action list and q or Ctrl+C to quit. In longer views the arrows
+scroll. The a key explains why full attach is unavailable. These pages have no
+session terminal, no zoom and no replay key.
+
 The demo identity takes priority at height one. At height two the selected
-project or lead takes the remaining line; at greater heights a control notice
-also has a reserved line. Narrow widths truncate each line. Display text is
+project or lead takes the remaining line on the projects and leads pages, and
+a notice takes it on the other pages. At greater heights a control notice also
+has a reserved line. Narrow widths truncate each line. Display text is
 limited to 4096 inspected bytes and 512 emitted bytes per field.
+
+If you shrink the window below the minimum while the session has focus, focus
+returns to the console.
+
+## Keys
+
+The cockpit has two focus states: console focus and session focus. The focus
+bar and the key bar show which one is active.
+
+### Console focus
+
+| Key | Action |
+| --- | --- |
+| Tab, Shift+Tab | Move to the next or previous pane. |
+| Up, Down, j, k | Move in the tree, or scroll the evidence pane or the timeline. |
+| Enter | Select the project or lead in the tree. On the session terminal, focus the session. |
+| ? | Show help. |
+| Ctrl+K | Show the action list. |
+| a | Explain why full attach is unavailable. |
+| r | Replay the recording from its start, in a new pane. |
+| F12 | Zoom the session terminal to the whole window, or leave zoom. |
+| Esc | Close help or the action list. |
+| q, Ctrl+C | Quit. |
+
+In help and the action list, the arrows or j/k scroll, and Esc, Enter, ? and
+Ctrl+K close them. The q and Ctrl+C keys still quit.
+
+### Session focus
+
+Press Enter on the session terminal to focus it. In session focus every key
+goes to the session terminal, with two exceptions: the return key and F12.
+That includes q and Ctrl+C. They never quit the console from here. Paste goes
+to the session. The mouse goes to the session only when the session asked for
+mouse reporting. The console asks the outer terminal for mouse reporting and
+focus events only in session focus, and only when the session asked for them,
+so selecting text works elsewhere. In this fixture console the session's input
+sink discards all of it.
+
+The return key leaves session focus. The default is Ctrl+\. The console reads
+it from both of its encodings: the byte 0x1c and the kitty keyboard form
+`CSI 92;5u`. Without the kitty keyboard protocol, a terminal sends the same
+byte 0x1c for Ctrl+4. Then Ctrl+4 also returns. In the kitty form Ctrl+4 is
+`CSI 52;5u` and does not return. Ctrl+Enter is never bound.
+
+F12 toggles zoom in either focus state. In zoom the session terminal fills the
+window under a one-line header. The header names the focus and the key that
+leaves zoom, F12. Tab and the move keys do nothing while zoomed. Enter focuses
+the session, and `r` replays the recording. Zoom draws no help, action list or
+notice.
+
+### The action list
+
+Ctrl+K lists the controls the cockpit knows of. Every one is unavailable, and
+the list gives each one's reason. The fixture lists these:
+
+| Control | Key | Reason |
+| --- | --- | --- |
+| Approve pending gate | Ctrl+K | No grant is honoured until the owner channel is qualified. |
+| Deny pending gate | Ctrl+K | No grant is honoured until the owner channel is qualified. |
+| Full attach | a | Full attach needs a qualified holder and an exclusive input owner. Unqualified: the console has no live backend. |
+| Send to lead | Ctrl+K | Sending needs a qualified command and receipt path. Unqualified: the console has no live backend. |
+| Interrupt lead | Ctrl+K | Interrupting needs a qualified command and receipt path. Unqualified: the console has no live backend. |
+| Detach | Ctrl+K | Detach and recovery are not qualified. |
+
+The `s` and `i` keys of the earlier fixture viewer no longer exist. There is
+no search key.
+
+## Flags
+
+`ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]`
+
+- `--demo` starts the fixture cockpit. Without it the command reports that the
+  backend is unavailable.
+- `--theme dark|light` chooses the appearance. The default is dark.
+- `--return-key ctrl+KEY` sets the return key. The default is `ctrl+\`. The
+  value is `ctrl+` and one letter, `ctrl+\` or `ctrl+]`. The console refuses
+  ctrl+c, ctrl+h, ctrl+i, ctrl+j, ctrl+k, ctrl+m and ctrl+z, which the
+  terminal or the console already uses.
+- `--recording NAME` picks the fixture recording to replay, by its full file
+  name, such as `title.jsonl`. The default is `title.jsonl`. Run
+  `ataniq-console --help` to see the names.
+- `--linger DURATION` keeps the session open after the recording's last output,
+  so that you can try the focus and zoom keys. Use a Go duration such as
+  `30s`. The default is 30s, the largest value is 1h, and 0 ends the session
+  as recorded.
+
+A bad flag value prints a diagnostic and the usage line and exits with
+status 2.
+
+## Fixture recordings
+
+The session terminal replays a synthetic recording through an embedded
+terminal emulator. A committed, deterministic generator wrote the recordings.
+They are not captures of a real agent. They hold no private names or paths.
+The recordings exercise the pane's behaviour: a window title, modes, colour
+queries, clipboard requests, frames for synchronized output, a grapheme
+cluster split across two writes, a resize record and the three kinds of exit
+(status 0, a non-zero status and an unknown status). Their names are
+`clipboard.jsonl`, `exit-nonzero.jsonl`, `exit-unknown.jsonl`,
+`exit-zero.jsonl`, `modes.jsonl`, `queries.jsonl`, `resize.jsonl`,
+`sync-frames.jsonl`, `title.jsonl` and `zwj-split.jsonl`.
+
+Everything on screen is fixture data. The recording looks like a running
+session, which is why the header, the session frame and the help all say
+"fixture recording, not a live session". Output from a recording never reaches
+the outer terminal except as drawn cells. The pane swallows clipboard requests
+and counts them, and the Session block shows the count. A recording's own
+resize records are ignored: the layout sets the pane's size.
+
+### When a session ends
+
+When the replay reaches the recording's end record and the linger time has
+passed, the stream ends. The pane keeps its last screen, dimmed, under a banner. The banner says "TERMINAL
+STREAM ENDED" and gives the exit status, or "unknown" when the recording has
+none. It says that the terminal stream ended, not necessarily the agent. A
+Codex terminal can exit while its daemon keeps running.
+
+In session focus, any key returns to console focus, except F12, which still
+zooms. In console focus, `r` replays the recording.
+
+An ended pane is not resized. If you zoom it, leave zoom or resize the window,
+the old screen keeps its old size, cut or padded under the banner.
+
+## Width of emoji, and SSH
+
+Terminals disagree on how wide some emoji are. A ZWJ family or an emoji with a
+variation selector is one example. The console asks the outer terminal for mode
+2027 (Unicode core) when it starts. It asks even when `SSH_TTY` is set, because
+Bubble Tea usually skips its own query over SSH. It does not turn on
+synchronized output (mode 2026) for this.
+
+If the terminal reports mode 2027 as set, reset or permanently set, the pane
+draws grapheme clusters as they are. If it gives no such report, the pane
+draws a placeholder of the same cell width instead of a cluster that the
+terminal might measure differently: `?`, or the full-width `？` for a wide
+cell. The columns after it then stay where the pane put them. The cockpit's
+own text follows the same rule. A cell holding more than 64 bytes also becomes
+a placeholder, in either mode.
+
+Use over SSH is not qualified. <!-- owner: confirm wording -->
 
 ## Qualification
 
-Normal quit was checked in a local Linux pseudo-terminal with the dark and
-light themes. Use over SSH, terminal restoration after a startup error, and any
-live control remain unqualified.
+Nothing in the console is qualified. <!-- owner: confirm wording -->
+It hosts no live session: it only replays fixture recordings. <!-- owner: confirm wording -->
+It has no live backend, and every control is unavailable. <!-- owner: confirm wording -->
+Use over SSH, terminal restoration after a startup error and any live control
+are not qualified. <!-- owner: confirm wording -->
+The automated tests check keys, layout, the replay and the input handling.
+They are not a qualification of the console in a real terminal. <!-- owner: confirm wording -->
+An attended check in a real terminal, directly and over SSH, at two window
+sizes with zoom and the return key, is still to be done. <!-- owner: confirm wording -->
+
+The pane does not track the kitty keyboard flags a session may set. The
+console sets no keyboard enhancement of its own. Bubble Tea always asks the
+outer terminal for basic key disambiguation, which is how the kitty form of the
+return key can arrive. The snapshot is taken once at start. There is no
+refresh.
 
 ## Dependencies
 
