@@ -160,6 +160,83 @@ func TestEnvIsExactlyTheDocumentedSet(t *testing.T) {
 	}
 }
 
+// goldenSettings is the literal -c list for a command with no transport. A
+// change to settings() has to change this list on purpose.
+var goldenSettings = []string{
+	"core.hooksPath=/dev/null",
+	"core.fsmonitor=false",
+	"core.untrackedCache=false",
+	"core.pager=cat",
+	"core.attributesFile=/dev/null",
+	"core.excludesFile=/dev/null",
+	"core.sshCommand=false",
+	"core.askPass=",
+	"core.editor=:",
+	"core.alternateRefsCommand=",
+	"core.protectNTFS=true",
+	"core.protectHFS=true",
+	"credential.helper=",
+	"protocol.allow=never",
+	"protocol.version=2",
+	"transfer.fsckObjects=true",
+	"fetch.fsckObjects=true",
+	"receive.fsckObjects=true",
+	"fetch.recurseSubmodules=false",
+	"submodule.recurse=false",
+	"fetch.writeCommitGraph=false",
+	"gc.auto=0",
+	"maintenance.auto=false",
+	"safe.bareRepository=explicit",
+	"advice.detachedHead=false",
+	"log.showSignature=false",
+	"log.mailmap=false",
+	"mailmap.blob=",
+	"mailmap.file=",
+	"gpg.program=false",
+	"gpg.x509.program=false",
+	"gpg.ssh.program=false",
+}
+
+// TestSettingsAreExactlyTheDocumentedSet is the golden list of the -c
+// settings, and checks that Argv passes exactly that list, in that order.
+func TestSettingsAreExactlyTheDocumentedSet(t *testing.T) {
+	if got := settings(nil); !reflect.DeepEqual(got, goldenSettings) {
+		t.Errorf("settings(nil)\n got  %q\n want %q", got, goldenSettings)
+	}
+	// One allowed protocol goes after "protocol.allow=never" and before
+	// "protocol.version=2".
+	at := slices.Index(goldenSettings, "protocol.allow=never") + 1
+	withFile := slices.Concat(goldenSettings[:at], []string{"protocol.file.allow=always"}, goldenSettings[at:])
+	if got := settings([]string{"file"}); !reflect.DeepEqual(got, withFile) {
+		t.Errorf("settings(file)\n got  %q\n want %q", got, withFile)
+	}
+	g := Git{Path: "/usr/bin/git"}
+	for _, tc := range []struct {
+		name  string
+		cmd   Cmd
+		wantC []string
+	}{
+		{"no protocol", Cmd{GitDir: "/srv/r.git", Args: []string{"for-each-ref"}}, goldenSettings},
+		{"file", Cmd{GitDir: "/srv/r.git", Args: []string{"for-each-ref"}, Protocols: []string{"file"}}, withFile},
+	} {
+		argv, err := g.Argv(tc.cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		i := 1
+		for ; argv[i] == "-c"; i += 2 {
+			got = append(got, argv[i+1])
+		}
+		if !reflect.DeepEqual(got, tc.wantC) {
+			t.Errorf("%s: -c list in Argv\n got  %q\n want %q", tc.name, got, tc.wantC)
+		}
+		if want := []string{"--git-dir=/srv/r.git", "for-each-ref"}; !reflect.DeepEqual(argv[i:], want) {
+			t.Errorf("%s: after the settings %q, want %q", tc.name, argv[i:], want)
+		}
+	}
+}
+
 // TestEnvInheritsNothing sets variables in the test process that git would
 // act on, and shows none of them reaches the environment.
 func TestEnvInheritsNothing(t *testing.T) {

@@ -216,6 +216,9 @@ func TestSettingsAreKeysOfThisGit(t *testing.T) {
 		if strings.HasPrefix(key, "protocol.") && strings.HasSuffix(key, ".allow") && key != "protocol.allow" {
 			listed = "protocol.<name>.allow"
 		}
+		if strings.HasPrefix(key, "gpg.") && strings.HasSuffix(key, ".program") && key != "gpg.program" {
+			listed = "gpg.<format>.program"
+		}
 		if !known[listed] {
 			t.Errorf("git does not know the key %q", key)
 		}
@@ -718,5 +721,112 @@ func TestDiscoveryStaysInTheWorkingFolder(t *testing.T) {
 	plain := fixtureEnv(t)
 	if out, err := run([]string{g.Path, "rev-parse", "--git-dir"}, plain, repo, ""); err != nil {
 		t.Fatalf("control: plain git does not use the bare repository: %v\n%s", err, out)
+	}
+}
+
+// TestMailmapFromTheMirrorIsNotRead puts a .mailmap in the tree of the
+// branch that HEAD of the bare mirror names. Plain git reads it from there
+// and prints the identity the lead chose for %aN, %aE and the default log
+// format. The commands of this package print the identity in the commit.
+//
+// Proves: a lead-written .mailmap cannot change the author or committer
+// that owner-side log output shows. The control shows git does read it.
+// Cannot prove: that no other lead-written file is read as configuration.
+func TestMailmapFromTheMirrorIsNotRead(t *testing.T) {
+	g := needGit(t)
+	src := source(t, g)
+	env := fixtureEnv(t)
+	mailmap := "Somebody Else <boss@example.invalid> <fixture@example.invalid>\n"
+	if err := os.WriteFile(filepath.Join(src, ".mailmap"), []byte(mailmap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture(t, g, env, src, "add", ".mailmap")
+	fixture(t, g, env, src, "commit", "-q", "-m", "mailmap")
+	mirror := bare(t, g)
+	if out, err := fetchAll(g, mirror, src, "file"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if got := fixture(t, g, env, "", "--git-dir="+mirror, "symbolic-ref", "HEAD"); got != "refs/heads/main" {
+		t.Fatalf("HEAD of the mirror is %q, not main", got)
+	}
+
+	const format = "--format=%an <%ae> / %aN <%aE> / %cN <%cE>"
+	const plain = "Fixture <fixture@example.invalid>"
+	const mapped = "Somebody Else <boss@example.invalid>"
+	control := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1", format)
+	if want := plain + " / " + mapped + " / " + mapped; control != want {
+		t.Fatalf("control failed: plain git printed %q, want %q, so the test could not show anything", control, want)
+	}
+	if out := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1"); !strings.Contains(out, "Author: "+mapped) {
+		t.Fatalf("control failed: plain git log did not map the author:\n%s", out)
+	}
+
+	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1", format}})
+	if want := plain + " / " + plain + " / " + plain; got != want {
+		t.Errorf("log format printed %q, want %q", got, want)
+	}
+	out := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1"}})
+	if !strings.Contains(out, "Author: Fixture <fixture@example.invalid>") || strings.Contains(out, "Somebody Else") {
+		t.Errorf("default log output used the lead's .mailmap:\n%s", out)
+	}
+}
+
+// TestSignaturePrograms puts commits with a signature of each format into a
+// repository, and points the program setting of that format at a canary.
+// git picks the program from the format of the signature itself, so a lead
+// commit with an x509 or ssh signature must not start a program either.
+//
+// Proves: no signature program starts when a command of this package shows
+// the signature status of a commit. The control shows each canary does run
+// with plain git, so the setting names are the right ones.
+// Cannot prove: that a signature check is safe in general; it is switched
+// off, not made harmless.
+func TestSignaturePrograms(t *testing.T) {
+	g := needGit(t)
+	for _, tc := range []struct {
+		name   string
+		armor  string
+		key    string
+		extras []string
+	}{
+		{"openpgp", "-----BEGIN PGP SIGNATURE-----", "gpg.program", nil},
+		{"x509", "-----BEGIN SIGNED MESSAGE-----", "gpg.x509.program", nil},
+		{"ssh", "-----BEGIN SSH SIGNATURE-----", "gpg.ssh.program", []string{"gpg.ssh.allowedSignersFile"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script, mark := canary(t)
+			repo := bare(t, g)
+			env := fixtureEnv(t, "GIT_DIR="+repo)
+			fixture(t, g, env, "", "config", tc.key, script)
+			for _, extra := range tc.extras {
+				// The file need not exist; git only needs the setting.
+				fixture(t, g, env, "", "config", extra, filepath.Join(t.TempDir(), "signers"))
+			}
+			tree := fixtureIn(t, g, env, "", "", "mktree")
+			commit := "tree " + tree + "\n" +
+				"author Fixture <fixture@example.invalid> 1767225600 +0000\n" +
+				"committer Fixture <fixture@example.invalid> 1767225600 +0000\n" +
+				"gpgsig " + tc.armor + "\n" +
+				" AAAA\n" +
+				" -----END SIGNATURE-----\n" +
+				"\nsigned\n"
+			id := fixtureIn(t, g, env, "", commit, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+			fixture(t, g, env, "", "update-ref", "refs/heads/main", id)
+
+			run([]string{g.Path, "--git-dir=" + repo, "log", "-1", "--show-signature", "--format=%G? %GS"}, env, "", "")
+			mustFire(t, mark, tc.key+" in the repository config")
+
+			for _, args := range [][]string{
+				{"log", "-1", "--show-signature", "--format=%G? %GS %GK"},
+				{"log", "-1", "--format=%G?"},
+				{"for-each-ref", "--format=%(contents:signature)", "refs/heads/"},
+				{"show", "--show-signature", "-s", id},
+			} {
+				// A bad or unknown signature may exit non-zero or not;
+				// the canary is what matters.
+				owned(g, Cmd{GitDir: repo, Args: args})
+				mustNotFire(t, mark, "git "+strings.Join(args, " "))
+			}
+		})
 	}
 }
