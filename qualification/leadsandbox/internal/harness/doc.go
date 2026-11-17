@@ -11,13 +11,17 @@
 // order and records each with its start, end, status and error text:
 // validation of the configuration and of the executables, the folder of the
 // attempt, the version of each tool, the own-clone check, the preparation of
-// the mount points (only when the configuration says no lead has run), the
-// mount-point check, the resolv.conf derivation, the resolution of every
+// the mount points and of Ataniq's copy of the tree's git files (the git
+// metadata folder, profile.Inputs.GitMeta; only when the configuration says no
+// lead has run), the mount-point check, the resolv.conf derivation, the resolution of every
 // source to its real path, the report channel (a FIFO in a folder of the attempt
 // that holds nothing else, whose reader is opened first), the canary, the plan
 // ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
 // owner and holder paths and their ancestors, which assertion 1 needs), a
-// second check right before the launch, the launch through a [Launcher], the
+// second check right before the launch, the check of every bind source of the
+// plan without following a symbolic link (rule G1, a step of its own after the
+// second resolution; a problem refuses the launch), the launch through a
+// [Launcher], the
 // probe's report line (one line, read with [assert.ReadProbeReport], taken as
 // the start without waiting for end-of-file), the wait for exit, the outside
 // checks, the stop of anything left (SIGTERM, wait, SIGKILL, with the

@@ -37,6 +37,7 @@ const (
 	StepVerify        = "verify-plan"
 	StepSpec          = "write-spec"
 	StepRecheck       = "recheck"
+	StepBindSources   = "check-bind-sources"
 	StepLaunch        = "launch"
 	StepReadReport    = "read-report"
 	StepWaitExit      = "wait-exit"
@@ -51,8 +52,8 @@ const (
 // recorded as skipped, in its place.
 var stepOrder = []string{
 	StepValidate, StepAttempt, StepVersions, StepOwnClone, StepPrepare, StepCheck, StepResolv, StepResolve,
-	StepChannel, StepCanary, StepBuild, StepVerify, StepSpec, StepRecheck, StepLaunch, StepReadReport,
-	StepWaitExit, StepOutside, StepStop, StepTrailing, StepCleanup, StepWriteEvidence,
+	StepChannel, StepCanary, StepBuild, StepVerify, StepSpec, StepRecheck, StepBindSources, StepLaunch,
+	StepReadReport, StepWaitExit, StepOutside, StepStop, StepTrailing, StepCleanup, StepWriteEvidence,
 }
 
 // StepRecord is one step with its start, end, status and error text.

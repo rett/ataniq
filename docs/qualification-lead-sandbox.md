@@ -29,7 +29,9 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    not wait for the output of a process the tool left behind longer than a
    second after the tool has ended; such a case is recorded in the step);
 4. checks that the lead's tree is its own full clone, makes the mount points
-   when the configuration says no lead has run, and checks them;
+   and Ataniq's copy of the tree's git files (the git metadata folder, see
+   [rule G1](#rule-g1-and-git-inside-the-sandbox)) when the configuration says
+   no lead has run, and checks them;
 5. derives the sandbox's `resolv.conf` from the host and writes it into a folder
    of its own;
 6. resolves every bind source to its real path and puts the real paths into the
@@ -40,7 +42,10 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 8. builds the plan and checks it with the plan package's own verifier, collects
    the identities (device and inode) of the owner's and the holder's paths and
    of their ancestors, and writes the probe spec with them;
-9. checks the mount points and sources again, right before the launch;
+9. checks the mount points and sources again, right before the launch, and
+   then, as a step of its own (`check-bind-sources`), opens every bind source of
+   the plan from the root of the file system without following a symbolic link;
+   a link on any component of a source refuses the launch, naming it;
 10. launches pasta, bubblewrap, the probe and a scratch command through a
     launcher (a session and process group of its own, with a pseudo-terminal as
     its standard streams and no controlling terminal, as a holder under a unit
@@ -122,6 +127,11 @@ caller's environment or home.
   leads/<role>/tree
   mirrors/<project>.git
   ```
+
+  The run makes one more folder, `leads/<role>/gitmeta` (or the folder the
+  configuration names in `sources.git_meta`), when the configuration says no
+  lead has run. Do not make it by hand: its parent must exist and be the
+  caller's, and the folder itself must not exist before the first run.
 
   The tree is a full clone (a `.git` folder, not a worktree, with no
   alternates), not below another repository. Create it with an ordinary
@@ -212,7 +222,7 @@ managed-settings file with it and refuses a difference.
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
 | `identity`, `owner_user` | `root` (the default) or `owner`, which needs the owner's login name; `owner_user` is given for `owner` only. |
-| `sources` | Every host source of the profile (see above). `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
+| `sources` | Every host source of the profile (see above). `git_meta` is optional: the Ataniq-owned folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info` (default `<state root>/leads/<role>/gitmeta`). It is checked like the other sources: the profile refuses a folder that is, lies in or lies above the lead's home, config folder, tree or records folder, or on a never-mounted path, and it must not overlap the campaign folder. Its parent folder must exist. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
 | `never_mounted` | Host paths no bind source may equal, lie below or lie above. At least one. |
 | `scratch_command` | The command run inside, as an absolute argv. Absent: `/bin/sh -c 'echo ataniq-leadsandbox-scratch-marker'`. |
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
@@ -234,8 +244,11 @@ build/qualification-leadsandbox --config /owned/qualification/lead.json
 Without `--run` the command validates the configuration, looks at the host,
 makes an attempt folder, runs the read-only checks, derives and writes the
 resolv.conf, resolves the sources, builds the plan, verifies it, prints it with
-its profile digest, and starts nothing: no process, no listener, no FIFO, and no
-write into the scratch folders (the mount points are not made). It writes
+its profile digest, and starts nothing: no process, no listener, no FIFO, no
+check of the bind sources without following links (that is a step of the run),
+and no write into the scratch folders (the mount points and the git metadata
+folder are not made; when the configuration states that no lead has run, the
+sources in the folder do not exist yet, and a note in `summary.json` says so). It writes
 `plan.json` and `summary.json` into the attempt folder, and the harness's own
 `bound` folder. When the configuration states that no lead has run, the dry run
 skips the mount-point check, because the run itself would make them. The
@@ -296,6 +309,37 @@ No file has a field that says the profile passed, is qualified or is supported,
 and a test checks that no key of the evidence contains such a word. A result is
 `ok`, `failed` or `not-checked`, with a detail. A `not-checked` result is not an
 `ok` one: it says the check could not be made, and why.
+
+## Rule G1 and git inside the sandbox
+
+Rule G1: no bind source has a component that a sandbox can write, and every bind
+source is checked, before a start, without following a symbolic link.
+bubblewrap resolves a bind source on the host, outside every sandbox, and
+follows a link there, so a link that a lead planted in a folder it writes would
+bring a file or folder of the owner into the next start. The tree's
+`.git/config`, `.git/hooks` and `.git/info` are bound read-only over the tree, so
+their sources are not the tree's own files: they are the entries of the git
+metadata folder, which lies outside the lead's home, config folder and tree, and
+which the lead cannot write. The run fills it once, before the lead's first run
+(the configuration states `no_lead_has_run`): `config` is a copy of the clone's
+`.git/config`, `hooks` is empty, and `info` holds a copy of the clone's
+`.git/info` with one anchored line in `exclude` for each tree placeholder. The
+mount points in the tree stay and are checked as before; they are only targets.
+A later start does not fill the folder again: it checks it, resolves the
+sources, and opens each source, last of all, with `check-bind-sources`. A row of
+the host whose own name is a link (`/etc/localtime` often is) is checked by its
+real path, because the plan cannot name another and no lead writes the host's
+folders. The check says what the path was at that moment: a lead that could write above a source could change it
+afterwards, which is why every source and everything above it must be the
+caller's.
+
+What changes for git inside the sandbox: it reads Ataniq's copy of `config` and
+`info`, which it cannot change (they are read-only binds of files the lead cannot
+write), and the hooks folder is empty, so no hook runs. A change to the clone's
+git configuration is made outside, in the copy, not by the lead. The lead can
+still rename `.git` in its tree and build another: the binds keep their targets
+in the old one, the start-up check of the mount points refuses a link at them,
+and the rule that no owner-side tool uses a lead's tree is not enforced here.
 
 ## Cases
 
@@ -379,6 +423,7 @@ removes nothing else.
 To remove an attempt, delete its folder by hand after the coordinator has taken
 what is needed from it. The mount points that `Prepare` made in the scratch
 state folders (skills folder, instruction file placeholder, `.git/hooks` if the
-clone had none, and the lines it added to `.git/info/exclude`) stay: use a fresh
+clone had none) and the git metadata folder with its copy of the clone's git
+files stay: use a fresh
 scratch state root for the next first run. Remove the scratch state root, the
 campaign folder and the subjects when the qualification is finished.
