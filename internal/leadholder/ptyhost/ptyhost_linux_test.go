@@ -695,11 +695,18 @@ func staysRunning(t *testing.T, pid int, d time.Duration) bool {
 	}
 	defer unix.Close(fd)
 	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	n, err := unix.Poll(fds, int(d.Milliseconds()))
-	if err != nil {
-		t.Fatalf("poll: %v", err)
+	end := time.Now().Add(d)
+	for {
+		// The runtime's preemption signals interrupt a blocking poll.
+		n, err := unix.Poll(fds, int(max(time.Until(end), 0).Milliseconds()))
+		switch {
+		case err == unix.EINTR:
+			continue
+		case err != nil:
+			t.Fatalf("poll: %v", err)
+		}
+		return n == 0
 	}
-	return n == 0
 }
 
 // pidFromFile waits for a file with a pid in it and returns the pid; the
