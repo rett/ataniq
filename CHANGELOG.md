@@ -85,7 +85,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read the spec, write the report, get the terminal or execute the agent is
   exit 98. `ataniq-probe pass-fds [--read FD=PATH]... [--write FD=PATH]... --
   COMMAND ARGV...` runs on the host between pasta and bubblewrap, because pasta
-  closes the descriptors it inherits: it opens up to 8 files (read-only
+  closes the descriptors it inherits: it takes descriptor numbers in decimal
+  digits without a leading zero, opens up to 8 files (read-only
   regular files, or write-only appending regular files and FIFOs, never
   created or truncated, links not followed), places each at exactly its
   number, makes every other descriptor above 2 close-on-exec and executes the

@@ -15,7 +15,8 @@
 //
 // The probe runs inside the sandbox, as the program the launch plan starts
 // last. PATH and AGENT are absolute paths and N is a descriptor from 3 to
-// 1023; the options come in either order and each once. In order, the probe:
+// 1023, in decimal digits with no leading zero; the options come in either
+// order and each once. In order, the probe:
 //
 //  1. Marks descriptor N close-on-exec, before anything else, so that no later
 //     step and no exec can leak it. A descriptor that is not open is exit 98.
@@ -59,7 +60,8 @@
 //
 // The launch plan puts this step on the host between pasta and bubblewrap,
 // because pasta closes every descriptor it inherits before it starts its
-// command. FD is 3 to 1023, each at most once, PATH and COMMAND are absolute
+// command. FD is 3 to 1023 (decimal digits, no leading zero), each at most
+// once, PATH and COMMAND are absolute
 // paths, and at most 8 files are given. A --read file is opened read-only and
 // must be a regular file. A --write file is opened write-only, appending,
 // never created and never truncated, and must be a regular file or a FIFO. All
