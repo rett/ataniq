@@ -36,7 +36,10 @@ flags nothing changes nothing.
 
 Text from a lead is shown escaped, on indented lines, under a heading that
 says "unverified lead data". A line that starts in the first column is the
-command's own.
+command's own. There is one exception: the patch that review --diff prints. It
+follows its own heading, is not indented, and is written through the same
+escaping, but it keeps tabs. Every line of it starts with a diff marker or is
+diff content, so no line of it can pass for a heading of the command.
 
 Sandbox: fetch and verify run commands from a template file that you wrote
 (--sandbox FILE). The command ships no sandbox and does not check that the
@@ -125,7 +128,9 @@ that needs its own sign-off, with its kind, its reason and the exact
                       covers the paths that the rules flag, so a list that
                       flags other paths is refused there. A rule that flags
                       nothing changes nothing.
-  --diff              also print the sanitised patch of the change
+  --diff              also print the sanitised patch of the change, after its
+                      own heading, not indented and with tabs kept (the one
+                      exception to the indented lead text)
 
 Names and paths are printed escaped, and the command unescapes what you type
 for --branch, --target and --accept-path, so that a name with odd bytes can be

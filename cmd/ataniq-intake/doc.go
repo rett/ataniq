@@ -14,7 +14,10 @@
 // Everything a lead wrote is hostile. Every line of output that holds lead
 // text is escaped with the leadtext package, sits on an indented line, and is
 // under a heading that carries leadtext.Label. A line that starts in the first
-// column is the command's own.
+// column is the command's own. The one exception is the patch that review
+// --diff prints: it follows its own heading, is written unindented through the
+// lead-text writer, which keeps its tabs, and every line of it starts with a
+// diff marker or is diff content, so none can pass for a heading.
 //
 // The command only parses its arguments and calls the packages of the
 // exchange, the mirror and the intake. It starts no process and opens no
