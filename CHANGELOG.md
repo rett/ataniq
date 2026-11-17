@@ -17,6 +17,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   detach) is unavailable and listed with its reason under Ctrl+K; `a` says why
   full attach is unavailable. Live control, provider integration, use over SSH
   and terminal restoration after a startup error remain unqualified.
+- `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
+  scratch session from a holder in the cockpit: one writer, one read-only
+  viewer, no takeover. It is provisional and unqualified, and for a scratch
+  agent only.
 - Show the console as a cockpit in a window of 100x30 or more, on the alternate
   screen: three panes (projects and leads with a context block; a session
   block, an embedded session terminal and a focus bar; evidence and approvals

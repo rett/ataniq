@@ -2,14 +2,16 @@
 
 The terminal-first Bubble Tea console is the planned primary operator client; a
 web console with the same information architecture comes later. Both sit on the
-shared typed command and event contract. Today the console is a provisional,
-read-only fixture cockpit. Everything it shows is fictional fixture data. The
-terminal pane replays a recording. It is not a live session. The console has no
-production backend. It does not send instructions, steer, approve or interrupt
-leads, and nothing you type reaches a process. It integrates no provider and no
-durable command and receipt path, and it opens no network listener. Without
-`--demo` the command reports that the backend is unavailable and exits with
-status 1.
+shared typed command and event contract. Today the console is a provisional
+cockpit with two modes. With `--demo` it is a read-only fixture: everything it
+shows is fictional fixture data, the terminal pane replays a recording, it is
+not a live session, and nothing you type reaches a process. With `--attach` it
+shows a live scratch session that a holder keeps, for a scratch agent only (see
+[Attaching to a holder](#attaching-to-a-holder)). Neither mode is a production
+backend. The console does not send instructions, steer, approve or interrupt
+leads. It integrates no provider and no durable command and receipt path, and
+it opens no network listener. Without `--demo` and without `--attach` the
+command reports that the backend is unavailable and exits with status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
 toolchain and start the explicit fixture:
@@ -105,7 +107,8 @@ console makes no selection. Otherwise the mouse selects text in the session
 terminal (see [Selecting and copying](#selecting-and-copying)). The console
 asks the outer terminal for focus events only in session focus, and only when
 the session asked for them. In this fixture console the session's input sink
-discards all of it.
+discards all of it. With `--attach` the input goes to the holder instead (see
+[Keys and what is held back](#keys-and-what-is-held-back)).
 
 The return key leaves session focus. The default is Ctrl+\. The console reads
 it from both of its encodings: the byte 0x1c and the kitty keyboard form
@@ -191,10 +194,29 @@ no search key.
 
 ## Flags
 
-`ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]`
+```
+ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]
+ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]
+```
 
-- `--demo` starts the fixture cockpit. Without it the command reports that the
-  backend is unavailable.
+- `--demo` starts the fixture cockpit. Without it and without `--attach` the
+  command reports that the backend is unavailable.
+- `--attach DIR` shows a live scratch session instead. DIR is the holder's
+  runtime folder, the one that holds `attach.sock`. It needs `--ticket-file`,
+  and `--demo`, `--recording` and `--linger` cannot be used with it. See
+  [Attaching to a holder](#attaching-to-a-holder).
+- `--ticket-file FILE` names a file, mode 0600, from which the console reads a
+  single-use attach ticket each time it needs one. `ataniq-scratch ticket NAME`
+  writes it.
+- `--viewer` asks for the read-only place. The ticket decides which place the
+  holder grants: see [Writer and viewer](#writer-and-viewer).
+- `--shift-enter esc-cr|lf|csi-u|backslash-cr` chooses what Shift+Enter sends
+  to the session. The default is `esc-cr`, which is what Alt+Enter sends.
+  Agents differ in the key they take for a new line, and a terminal without an
+  enhanced keyboard protocol cannot tell Shift+Enter from Enter, so the choice
+  is yours: `lf` sends a line feed (Ctrl+J), `csi-u` sends the enhanced form
+  `CSI 13;2u`, which only an agent that reads it understands, and
+  `backslash-cr` sends a backslash and Enter, the line continuation.
 - `--theme dark|light` chooses the appearance. The default is dark.
 - `--return-key ctrl+KEY` sets the return key. The default is `ctrl+\`. The
   value is `ctrl+` and one letter, `ctrl+\` or `ctrl+]`. The console refuses
@@ -207,8 +229,157 @@ no search key.
   that you can try the focus and zoom keys. Use a Go duration such as `30s`. The
   default is 30s, the largest value is 1h, and 0 ends the session as recorded.
 
-A bad flag value prints a diagnostic and the usage line and exits with
-status 2.
+`--viewer` and `--shift-enter` without `--attach` are a usage error. A bad flag
+value prints a diagnostic and the usage and exits with status 2. The
+diagnostic never repeats the text of an argument. The path of the socket, DIR
+and `/attach.sock`, must fit a unix socket address, which holds at most 107
+bytes: a longer one is refused with its length.
+
+## Attaching to a holder
+
+`--attach` is provisional and unqualified, and it is for a scratch agent only:
+an agent with no project, no lead role and a disposable home, such as
+`ataniq-scratch` starts. Do not attach a real lead. Nothing about it has been
+checked by hand in a real terminal, and no real agent has been run through it.
+It has been tested against a fake agent, in process.
+
+With `--attach` the console shows the screen that a holder keeps for a session
+and sends your keys to it. A holder is the process that owns the session's
+terminal and keeps it running whether or not a console is attached. The console
+connects to the holder's `attach.sock` through the attach client, which is the
+only part of the console that opens a socket: it makes one connection to a unix
+socket and listens on nothing. The client names itself `ataniq-console` to the
+holder. There is no daemon and no project data in this mode: the left pane,
+the Context block and the timeline say so, and every control is unavailable.
+The header and the session frame carry a label in place of the fixture's, such
+as `live scratch session · lead NAME · writer · epoch 7`, and the Session block
+and the evidence pane show the role, the holder's runtime and version, the
+holder's screen size, the connection, the holder's counters and the notices.
+
+The connection shows as one of: connecting, attached, resyncing, waiting for a
+ticket, or disconnected, with the reason when there is one. Over the session
+pane a banner says WAITING FOR A TICKET, DISCONNECTED or CONNECTING, and
+`SESSION ENDED` when the session is over; the last screen stays, dimmed, under
+a banner. The end banner gives the three facts as the holder reports them, as
+separate lines: whether the terminal stream ended, whether the TUI exited (and
+with what status) and whether the agent's process tree is gone. The stream can
+end while the process tree lives on, so none implies another. Nothing is
+replayed, and `r` does not restart a live session. In session focus any key
+then returns to console focus, and `q` leaves the console.
+
+### Writer and viewer
+
+A holder has at most one writer and one read-only viewer. A third client is
+refused. The ticket decides the place: a writer ticket is issued only while
+there is no writer, and there is no takeover. A client that holds the writer
+place keeps it until it detaches or the holder's operator removes it with
+`ataniq-scratch release-writer NAME`; a console cannot take it from another.
+
+`--viewer` says the console wants the read-only place; it does not choose it.
+If the ticket is for the writer, the holder grants the writer place anyway, the
+console shows a notice that it asked for a viewer and was granted the writer,
+and, because it asked to read only, it sends no input and its keys and paste
+are dropped and counted. If the ticket is for the viewer and the console was
+not given `--viewer`, the console is a viewer all the same, with the same kind
+of notice, and says so in the focus bar: keys typed in session focus are not
+sent, and the reason is given. A viewer shows the screen as the holder keeps
+it, at the holder's size, cut or padded at the top left corner of the session
+pane. It sends no key, no paste and no size. The holder would refuse them and
+count them as refused input if it got them.
+
+Only the writer sets the size of the session's screen. When the writer's pane
+changes size, after the same pause as for the fixture, or at once for zoom, the
+console asks the holder for that size, and the holder decides: it clamps it to
+its limits, 20 by 5 at least and 500 by 200 at most.
+
+### Keys and what is held back
+
+As the writer, in session focus every key goes to the session, as in the
+fixture console: `q` and Ctrl+C included, except the return key and F12. The
+console encodes each key in the legacy terminal form, never an enhanced form,
+following the application cursor, keypad and Enter modes that the session set.
+A paste goes to the session whole, and the holder wraps it for bracketed paste
+if the session turned that on. The console asks the outer terminal to bracket a
+paste only when the session did. A paste longer than 64 KiB is refused with a
+notice, because it would arrive as several pastes. The mouse reaches the session
+only when it asked for it; otherwise it selects text in the console as in the
+fixture. Focus events are not forwarded.
+
+The holder holds some keys back, and the console shows a notice when it does:
+
+- Ctrl+Z is never forwarded. A suspended agent has no one to resume it.
+- While the session's terminal has signals on, which a shell-like or cooked
+  mode program has and a full-screen program in raw mode does not, the
+  holder also holds back the bytes the terminal turns into signals: the
+  interrupt, quit and suspend keys, usually Ctrl+C, Ctrl+\ and Ctrl+Z. Ctrl+C
+  therefore does not interrupt such a program from here. In raw mode, where
+  most agents run, Ctrl+C passes through.
+
+The return key, Ctrl+\ by default, is the console's and never reaches the
+session in session focus.
+
+A client gets the visible screen only: there is no scrollback, and a console
+that attaches late shows the screen as it is, not what scrolled away. What you
+select and copy is that screen. The session's own requests to the clipboard
+(OSC 52) are dropped and counted, as in the fixture.
+
+### Tickets
+
+An attach ticket is a random string of 64 hexadecimal characters, issued for
+one place and one epoch (one run of the holder), single use and valid for 30
+seconds. The console reads one from the ticket file each time it needs one, at
+once and then every half second, and shows "waiting for a ticket" until there
+is one. The file must be a regular file, not a link, owned by you and with mode
+exactly 0600; otherwise the console refuses it and the status says why, naming
+no path. The console empties the file as it reads it, whatever it holds: a
+ticket is spent by being read, and a file with something else in it does not
+stop the console. The writer of the file replaces it (a new 0600 file renamed
+over the old), so a reader that still holds the old file empties only that one.
+A second console that reads at the same moment finds the file locked and sees
+no ticket.
+
+A ticket the holder refuses (used, expired, for another epoch or place) or a
+place that is taken sends the console back to waiting for a ticket, with the
+holder's reason. Writing a fresh ticket to the file attaches it. A connection
+that is lost does the same. A ticket is spent when the console reads it, also
+when the connection then fails, for example because the holder is not running
+or DIR is wrong: the console shows disconnected with the reason, tries again
+every half second and needs a fresh ticket for each try. A holder that speaks another protocol version
+stops the console: it shows disconnected and does not retry.
+
+After a connection the holder sends a snapshot of the screen, and every few
+seconds a check of the screen's cells, cursor, modes and title. The console
+compares it with its own copy. When they differ, or a gap shows in the output,
+the console counts the mismatch, closes the connection with a detach and
+attaches again to get a new snapshot. A reattach needs a fresh ticket, so with
+a ticket file that someone writes by hand the console shows resyncing and then
+waits for a ticket until a new one is written. The counts are in the Session
+block and the evidence pane as check mismatches and resyncs.
+
+When the console exits, by `q` in console focus or when you leave after the
+session ended, it closes the client, which sends a detach so that the holder
+sees a clean detach. The terminal is restored as in the fixture mode.
+
+### Try it
+
+`ataniq-scratch` starts a holder for a scratch agent and stands in for the
+daemon: it issues the tickets. Build both commands and the holder binary that
+`ataniq-scratch start` runs (see `ataniq-scratch --help`), then:
+
+```sh
+./build/ataniq-scratch start demo -- AGENT ARG...
+./build/ataniq-scratch ticket demo
+./build/ataniq-console --attach "$XDG_RUNTIME_DIR/ataniq/scratch/demo" \
+    --ticket-file "$XDG_RUNTIME_DIR/ataniq/scratch/demo/ticket"
+./build/ataniq-scratch stop demo
+```
+
+`start` runs AGENT, a scratch agent of your choice, in a holder, with an
+environment of its own. `ticket` writes a writer ticket to the ticket file and
+prints the file's path; add `--viewer` for a viewer ticket. Run the console in
+a second terminal. Leave it with the return key and `q`. To attach again, run
+`ataniq-scratch ticket demo` again: the old ticket is spent. `stop` ends the
+holder.
 
 ## Fixture recordings
 
@@ -277,10 +448,13 @@ Use over SSH is not qualified. The SSH use checked by hand so far is
 
 ## Qualification
 
-Nothing in the console is qualified. It hosts no live session: it only replays
-fixture recordings. It has no live backend, and every control is unavailable.
-Use over SSH, terminal restoration after a startup error and any live control
-are not qualified. The automated tests check keys, layout, the replay and the
+Nothing in the console is qualified. The fixture console hosts no live
+session: it only replays fixture recordings, and every control is
+unavailable. `--attach` shows a live scratch session, but it is provisional
+and unqualified too: its tests run a fake agent in process, and no real agent
+has been attached through it, in a real terminal or over SSH. Use over SSH,
+terminal restoration after a startup error and any live control are not
+qualified. The automated tests check keys, layout, the replay and the
 input handling. They do not qualify the console in a real terminal.
 
 One person made an attended check, on 2026-11-16, in one terminal (Ghostty),
@@ -310,6 +484,13 @@ return key can arrive. The snapshot is taken once at start. There is no
 refresh.
 
 ## Dependencies
+
+The console's session pane and cockpit draw from the console package, which
+opens no socket and runs no process. The command links one other package of
+this repository, the attach client, which is the one package that opens a
+socket: a connection to the holder's unix socket, and no listener. A test
+keeps the command from importing a network, process or terminal-device
+package itself.
 
 The console uses the Go module `charm.land/bubbletea/v2` v2.1.1 and its
 transitive module dependencies. `make bootstrap` downloads them and
