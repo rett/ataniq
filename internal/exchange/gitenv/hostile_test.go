@@ -720,3 +720,50 @@ func TestDiscoveryStaysInTheWorkingFolder(t *testing.T) {
 		t.Fatalf("control: plain git does not use the bare repository: %v\n%s", err, out)
 	}
 }
+
+// TestMailmapFromTheMirrorIsNotRead puts a .mailmap in the tree of the
+// branch that HEAD of the bare mirror names. Plain git reads it from there
+// and prints the identity the lead chose for %aN, %aE and the default log
+// format. The commands of this package print the identity in the commit.
+//
+// Proves: a lead-written .mailmap cannot change the author or committer
+// that owner-side log output shows. The control shows git does read it.
+// Cannot prove: that no other lead-written file is read as configuration.
+func TestMailmapFromTheMirrorIsNotRead(t *testing.T) {
+	g := needGit(t)
+	src := source(t, g)
+	env := fixtureEnv(t)
+	mailmap := "Somebody Else <boss@example.invalid> <fixture@example.invalid>\n"
+	if err := os.WriteFile(filepath.Join(src, ".mailmap"), []byte(mailmap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture(t, g, env, src, "add", ".mailmap")
+	fixture(t, g, env, src, "commit", "-q", "-m", "mailmap")
+	mirror := bare(t, g)
+	if out, err := fetchAll(g, mirror, src, "file"); err != nil {
+		t.Fatalf("fetch: %v\n%s", err, out)
+	}
+	if got := fixture(t, g, env, "", "--git-dir="+mirror, "symbolic-ref", "HEAD"); got != "refs/heads/main" {
+		t.Fatalf("HEAD of the mirror is %q, not main", got)
+	}
+
+	const format = "--format=%an <%ae> / %aN <%aE> / %cN <%cE>"
+	const plain = "Fixture <fixture@example.invalid>"
+	const mapped = "Somebody Else <boss@example.invalid>"
+	control := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1", format)
+	if want := plain + " / " + mapped + " / " + mapped; control != want {
+		t.Fatalf("control failed: plain git printed %q, want %q, so the test could not show anything", control, want)
+	}
+	if out := fixture(t, g, env, "", "--git-dir="+mirror, "log", "-1"); !strings.Contains(out, "Author: "+mapped) {
+		t.Fatalf("control failed: plain git log did not map the author:\n%s", out)
+	}
+
+	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1", format}})
+	if want := plain + " / " + plain + " / " + plain; got != want {
+		t.Errorf("log format printed %q, want %q", got, want)
+	}
+	out := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1"}})
+	if !strings.Contains(out, "Author: Fixture <fixture@example.invalid>") || strings.Contains(out, "Somebody Else") {
+		t.Errorf("default log output used the lead's .mailmap:\n%s", out)
+	}
+}

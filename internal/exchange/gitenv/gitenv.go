@@ -322,6 +322,11 @@ func settings(protocols []string) []string {
 		"safe.bareRepository=explicit",
 		"advice.detachedHead=false",
 		"log.showSignature=false",
+		// A bare repository reads HEAD:.mailmap by default, which is lead
+		// content, and %aN, %aE and the default log format would print it.
+		"log.mailmap=false",
+		"mailmap.blob=",
+		"mailmap.file=",
 		"gpg.program=false",
 	)
 }

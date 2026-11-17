@@ -189,6 +189,9 @@ var goldenSettings = []string{
 	"safe.bareRepository=explicit",
 	"advice.detachedHead=false",
 	"log.showSignature=false",
+	"log.mailmap=false",
+	"mailmap.blob=",
+	"mailmap.file=",
 	"gpg.program=false",
 }
 
