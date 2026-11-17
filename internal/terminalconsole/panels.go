@@ -72,12 +72,27 @@ func (m *Model) drawHeader(p *painter, l layout) {
 	}
 }
 
+// drawZoom draws the zoomed session terminal under a one-line header: the
+// focus, its keys and the fixture label. Zoom has no key bar, so a notice
+// goes first in the header. The fixture label always stays; the keys stay
+// when the line has room for them too.
 func (m *Model) drawZoom(p *painter, l layout) {
-	top := m.focusName() + " · return " + m.opts.ReturnKey.String() + " · F12 leaves zoom · " + fixtureLabel
+	keys := m.focusName() + " · return " + m.opts.ReturnKey.String() + " · F12 leaves zoom"
 	if m.focus == consoleFocus {
-		top = m.focusName() + " · Enter focuses the session · F12 leaves zoom · " + fixtureLabel
+		keys = m.focusName() + " · Enter focuses the session · F12 leaves zoom"
 	}
-	p.text(0, 0, l.header.Dx(), top, p.style(lnHead))
+	label := " · " + fixtureLabel
+	w := l.header.Dx()
+	if m.notice == "" {
+		p.text(0, 0, w, keys+label, p.style(lnHead))
+	} else {
+		x := p.text(0, 0, w-ansi.StringWidth(label), m.notice, p.style(lnWarn))
+		rest := label
+		if withKeys := " · " + keys + label; x+ansi.StringWidth(withKeys) <= w {
+			rest = withKeys
+		}
+		p.text(x, 0, w-x, rest, p.style(lnHead))
+	}
 	m.drawPane(p, l.inner)
 }
 

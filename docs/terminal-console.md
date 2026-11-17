@@ -116,8 +116,10 @@ byte 0x1c for Ctrl+4. Then Ctrl+4 also returns. In the kitty form Ctrl+4 is
 F12 toggles zoom in either focus state. In zoom the session terminal fills the
 window under a one-line header. The header names the focus and the key that
 leaves zoom, F12. Tab and the move keys do nothing while zoomed. Enter focuses
-the session, and `r` replays the recording. Zoom draws no help, action list or
-notice.
+the session, and `r` replays the recording. Zoom draws no help or action list.
+A notice, such as a refused paste or a selection that was not copied, comes
+first in the header. The header always keeps the fixture label, and keeps the
+keys when the line has room for them too.
 
 ### Selecting and copying
 
@@ -142,9 +144,9 @@ holds, also where it draws a placeholder (see
 [Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
 bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
 the placeholder. A selection of more than 1 MiB of text is not copied at all,
-and the key bar says so until the next press. A terminal that does not
-accept OSC 52 writes, or has them turned off, copies nothing, and the console
-cannot tell.
+and the key bar, or the header in zoom, says so until the next press. A
+terminal that does not accept OSC 52 writes, or has them turned off, copies
+nothing, and the console cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
 drag copies nothing, and the wheel does nothing. A press anywhere clears the

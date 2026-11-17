@@ -220,20 +220,8 @@ func TestSelectionStartsOnlyInThePane(t *testing.T) {
 // and says why.
 func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, "")
-	cols, rows := r.paneSize()
-	cluster := "a" + strings.Repeat("́", 700)
-	cells := maxCopy/len(cluster) + 1
-	if cells > cols*rows {
-		t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, cells)
-	}
-	var b strings.Builder
-	for i := 0; i < cells; i++ {
-		b.WriteString(cluster)
-	}
-	r.m.rep.pane.Write([]byte(b.String()))
-	if msg := r.dragPane(0, 0, cols-1, rows-1); msg != nil {
-		t.Fatalf("copied %d bytes", len(msg.(tea.RawMsg).Msg.(string)))
-	}
+	cluster := r.fillOverCap()
+	r.dragAll(true)
 	if r.m.notice != copyRefused || !strings.Contains(r.view(), copyRefused) {
 		t.Fatalf("notice %q", r.m.notice)
 	}
@@ -241,6 +229,74 @@ func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	wantCopy(t, r.dragPane(0, 0, 1, 0), cluster+cluster)
 	if r.m.notice != "" || strings.Contains(r.view(), copyRefused) {
 		t.Fatalf("after a copy the notice is %q", r.m.notice)
+	}
+}
+
+// fillOverCap fills the session pane with clusters of combining marks until
+// its text is over maxCopy, and returns the cluster.
+func (r *rig) fillOverCap() string {
+	r.t.Helper()
+	cols, rows := r.paneSize()
+	cluster := "a" + strings.Repeat("́", 700)
+	cells := maxCopy/len(cluster) + 1
+	if cells > cols*rows {
+		r.t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, cells)
+	}
+	var b strings.Builder
+	for i := 0; i < cells; i++ {
+		b.WriteString(cluster)
+	}
+	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + b.String()))
+	return cluster
+}
+
+// dragAll selects the whole pane and fails the test unless that copied
+// nothing, when refused is true, or copied something.
+func (r *rig) dragAll(refused bool) {
+	r.t.Helper()
+	cols, rows := r.paneSize()
+	msg := r.dragPane(0, 0, cols-1, rows-1)
+	if refused && msg != nil {
+		r.t.Fatalf("copied %d bytes", len(msg.(tea.RawMsg).Msg.(string)))
+	}
+	if !refused && msg == nil {
+		r.t.Fatal("copied nothing")
+	}
+}
+
+// TestZoomShowsTheRefusal checks that zoom, which has no key bar, shows the
+// notice of a selection that was not copied in its header, and keeps the
+// fixture label there, with the keys when the line has room for them.
+func TestZoomShowsTheRefusal(t *testing.T) {
+	header := func(r *rig) string { return r.rows()[0] }
+	r := selRig(t, 140, 45, Options{}, "")
+	r.focusSession()
+	r.key(zoomPress)
+	r.fillOverCap()
+	r.dragAll(true)
+	h := header(r)
+	if !strings.HasPrefix(h, copyRefused) || !strings.Contains(h, "return Ctrl+\\") || !strings.HasSuffix(strings.TrimRight(h, " "), fixtureLabel) {
+		t.Fatalf("session focus, 140 columns: header %q", h)
+	}
+	// A press removes the notice and brings back the usual header.
+	r.mouse(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	if h := header(r); !strings.HasPrefix(h, "SESSION FOCUS") {
+		t.Fatalf("after a press: header %q", h)
+	}
+	// Too narrow for the keys too: the notice and the fixture label.
+	r = selRig(t, 100, 30, Options{}, "")
+	r.key(zoomPress)
+	r.fillOverCap()
+	r.dragAll(true)
+	if h := header(r); !strings.HasPrefix(h, copyRefused+" · "+fixtureLabel) {
+		t.Fatalf("console focus, 100 columns: header %q", h)
+	}
+	// A notice too long for the line is cut, and the label stays whole.
+	r.key(zoomPress)
+	r.key(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	r.key(zoomPress)
+	if h := strings.TrimRight(header(r), " "); !strings.HasPrefix(h, "Unavailable: ") || !strings.HasSuffix(h, "… · "+fixtureLabel) {
+		t.Fatalf("a long notice: header %q", h)
 	}
 }
 
