@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -130,7 +131,7 @@ func TestEscapeEveryRune(t *testing.T) {
 		in := string(r)
 		got := Escape(in)
 		checkSafeLine(t, got)
-		if got == in && r >= 0x80 && !safeRune(r) {
+		if got == in && dangerousRune(r) {
 			t.Fatalf("U+%04X passed unescaped", r)
 		}
 		back, err := Unescape(got)
@@ -138,6 +139,18 @@ func TestEscapeEveryRune(t *testing.T) {
 			t.Fatalf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
 		}
 	}
+}
+
+// dangerousRune is the oracle of the safety tests. It decides from Unicode
+// categories and properties and does not call the code under test. A rune
+// below 0x80 is never dangerous here: the byte checks cover it.
+func dangerousRune(r rune) bool {
+	if r < 0x80 {
+		return false
+	}
+	return !unicode.IsPrint(r) ||
+		unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp,
+			unicode.Bidi_Control, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
 }
 
 // checkSafeLine fails if s could do harm on a terminal or break a line.
@@ -152,7 +165,7 @@ func checkSafeLine(t *testing.T, s string) {
 		}
 	}
 	for _, r := range s {
-		if r >= 0x80 && !safeRune(r) {
+		if dangerousRune(r) {
 			t.Fatalf("output holds dangerous rune U+%04X: %q", r, s)
 		}
 	}
@@ -382,7 +395,7 @@ func TestWriterOutputIsSafe(t *testing.T) {
 			}
 		}
 		for _, r := range out {
-			if r >= 0x80 && !safeRune(r) {
+			if dangerousRune(r) {
 				t.Fatalf("output for %q holds dangerous rune U+%04X", in, r)
 			}
 		}
