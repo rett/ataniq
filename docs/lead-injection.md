@@ -710,6 +710,16 @@ with an invalid digest, and a hold that repeats the last piece of a held queue.
 
 **What the daemon must do.** The machine is told only what the daemon tells it.
 
+- `Resolve`, `ReleaseHold` and `Withdraw` record an owner decision. The machine
+  checks only the form of the operator's name. The daemon calls them only for a
+  decision that came through the owner channel, outside every sandbox, and
+  never for a request of a lead, a supervisor or a message.
+- The conversation file is in a folder the lead can write. The daemon reads it
+  only under the bind rule for such folders (no path the sandbox can write is
+  opened by name; the walk refuses links, wrong file types and sizes over the
+  cap, at each read). What it reads is a provider report: a lead can write any
+  turn into its own file, so the evidence gates that lead's queue and nothing
+  else.
 - The daemon passes each piece of late information once. A daemon that polls
   and passes the pieces A, B, A, B advances the counter on every call, and each
   call refuses a release made in between as `hold-changed`.

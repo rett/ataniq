@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -236,7 +237,17 @@ func TestFixtureCoverage(t *testing.T) {
 	}
 }
 
-// TestFixturesAreScrubbed keeps home paths and the like out of testdata.
+// uuidPattern matches a session id; the fixtures may hold only the two
+// placeholders.
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+var placeholderIDs = map[string]bool{
+	"00000000-0000-4000-8000-000000000001": true,
+	"00000000-0000-7000-8000-000000000002": true,
+}
+
+// TestFixturesAreScrubbed keeps home paths, session ids and the like out of
+// testdata.
 func TestFixturesAreScrubbed(t *testing.T) {
 	err := filepath.WalkDir("testdata", func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -245,6 +256,11 @@ func TestFixturesAreScrubbed(t *testing.T) {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			return err
+		}
+		for _, id := range uuidPattern.FindAllString(string(raw), -1) {
+			if !placeholderIDs[id] {
+				t.Errorf("%s: an id that is not a placeholder: %s", p, id)
+			}
 		}
 		home := "/ho" + "me/"
 		for _, line := range strings.Split(string(raw), "\n") {
