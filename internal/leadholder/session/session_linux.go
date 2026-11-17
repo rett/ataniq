@@ -9,11 +9,17 @@
 //
 // # Output
 //
-// One goroutine reads the PTY in chunks of at most 64 KiB. For each chunk,
-// under the output lock, it feeds the pane, advances the position (the count
-// of PTY bytes fed since start) and calls the subscriber. The subscriber
+// One goroutine reads the PTY in chunks of at most 64 KiB and feeds each chunk
+// in slices of at most [OutputSlice] bytes. For each slice, under its own hold
+// of the output lock, it feeds the pane, calls the subscriber and advances the
+// position (the count of PTY bytes fed since start). The lock is released
+// between the slices of one chunk, so that a snapshot, a digest or a resize
+// waits for one slice and not for a whole chunk: some output (a whole-screen
+// clear, a full reset) costs the emulator seconds per 64 KiB on the largest
+// screen. A slice that holds the lock for longer than [SlowSlice] is counted in
+// "slow_output_slices", so that the stall is not silent. The subscriber
 // contract is: return at once and never block, never call the session (the
-// output lock is held). The attach service copies the chunk into its own
+// output lock is held). The attach service copies the slice into its own
 // bounded buffers. With no subscriber the session keeps reading, answering the
 // agent's queries and updating the emulator (design 1.4). [Session.Screen] runs
 // a function under the same lock, so that a snapshot and its position agree.
@@ -90,6 +96,12 @@ const (
 	// for the input lock. A reply that does not fit is dropped whole and
 	// counted.
 	ReplyQueueBytes = 64 << 10
+	// OutputSlice is the most PTY bytes fed to the emulator, and handed to
+	// the subscriber, under one hold of the output lock.
+	OutputSlice = 4 << 10
+	// SlowSlice is how long one hold of the output lock for a slice may last
+	// before it is counted in "slow_output_slices".
+	SlowSlice = 250 * time.Millisecond
 	// DefaultStreamWait is how long, after the TUI exited, the session waits
 	// for the terminal stream to end.
 	DefaultStreamWait = 2 * time.Second
@@ -167,6 +179,9 @@ type Config struct {
 	// CgroupRoot, NoCgroup, ProcScanLimit, CgroupWalkLimit). Its Argv, Env,
 	// Dir, Cols and Rows are ignored: the fields above are used.
 	PTY ptyhost.Config
+
+	// slowSlice replaces SlowSlice (tests).
+	slowSlice time.Duration
 }
 
 // Session is one hosted terminal session. Its methods are safe for
@@ -188,6 +203,11 @@ type Session struct {
 	sub     func(pos uint64, chunk []byte)
 	subID   uint64
 	nextSub uint64
+
+	// betweenSlices is a test hook, set before any output flows: it is
+	// called with the slice's index after each slice of a chunk, with the
+	// output lock released.
+	betweenSlices func(i int)
 
 	// imu is the input lock (design 1.2).
 	imu       sync.Mutex
@@ -240,6 +260,7 @@ type counters struct {
 	termiosErrors      atomic.Uint64
 	readErrors         atomic.Uint64
 	logErrors          atomic.Uint64
+	slowOutputSlices   atomic.Uint64
 
 	mu    sync.Mutex
 	extra map[string]uint64
@@ -266,6 +287,9 @@ func Start(cfg Config) (*Session, error) {
 	}
 	if cfg.StopGrace <= 0 {
 		cfg.StopGrace = DefaultStopGrace
+	}
+	if cfg.slowSlice <= 0 {
+		cfg.slowSlice = SlowSlice
 	}
 	cols, rows := clampSize(cfg.Cols, cfg.Rows)
 	cfg.Cols, cfg.Rows = cols, rows
@@ -375,16 +399,36 @@ func (s *Session) readLoop() {
 	}
 }
 
-// deliver feeds one chunk under the output lock: the pane, then the
-// subscriber, then the position.
+// deliver feeds one chunk in slices of at most OutputSlice bytes, each under
+// its own hold of the output lock: the pane, then the subscriber, then the
+// position. A snapshot, a subscription or a resize runs between two slices, and
+// sees the position of the bytes fed so far, so the no-gap property of
+// SubscribeScreen holds at every slice boundary.
 func (s *Session) deliver(chunk []byte) {
+	for i := 0; len(chunk) > 0; i++ {
+		n := min(len(chunk), OutputSlice)
+		s.deliverSlice(chunk[:n])
+		chunk = chunk[n:]
+		if s.betweenSlices != nil {
+			s.betweenSlices(i)
+		}
+	}
+}
+
+// deliverSlice is one hold of the output lock. A hold longer than the
+// threshold is counted.
+func (s *Session) deliverSlice(slice []byte) {
 	s.omu.Lock()
 	defer s.omu.Unlock()
-	s.pane.Write(chunk)
+	t0 := time.Now()
+	s.pane.Write(slice)
 	if s.sub != nil {
-		s.sub(s.pos, chunk)
+		s.sub(s.pos, slice)
 	}
-	s.pos += uint64(len(chunk))
+	s.pos += uint64(len(slice))
+	if time.Since(t0) > s.cfg.slowSlice {
+		s.cnt.slowOutputSlices.Add(1)
+	}
 }
 
 // Screen runs fn under the output lock with the pane and the position (the
@@ -397,9 +441,10 @@ func (s *Session) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
 	fn(s.pane, s.pos)
 }
 
-// Subscribe sets the subscriber: fn is called for each chunk, under the output
-// lock, with the position before the chunk. The chunk is only valid during the
-// call. fn must return at once, never block and never call the session. At
+// Subscribe sets the subscriber: fn is called for each slice of the output (at
+// most OutputSlice bytes, so a chunk of the PTY read arrives in several calls),
+// under the output lock, with the position before the slice. The slice is only
+// valid during the call. fn must return at once, never block and never call the session. At
 // most one subscriber: a second Subscribe fails with ErrSubscribed until the
 // first is unsubscribed. The returned function unsubscribes (it may be called
 // more than once, and never from fn); when it has returned fn is not running
@@ -409,7 +454,7 @@ func (s *Session) Subscribe(fn func(pos uint64, chunk []byte)) (unsubscribe func
 }
 
 // SubscribeScreen runs snap like Screen and, in the same hold of the output
-// lock, sets the subscriber, so that the first chunk fn sees starts at the
+// lock, sets the subscriber, so that the first slice fn sees starts at the
 // position snap saw: the attach service takes a snapshot and follows the stream
 // without a gap. snap may be nil. If the subscriber cannot be set, snap does
 // not run.
@@ -531,6 +576,7 @@ var reservedCounters = map[string]bool{
 	"input_broken":           true,
 	"termios_errors":         true,
 	"read_errors":            true,
+	"slow_output_slices":     true,
 	"log_errors":             true,
 	"clipboard_blocked":      true,
 	"output_bytes":           true,
@@ -605,6 +651,7 @@ func (s *Session) Counters() map[string]uint64 {
 	}
 	out["termios_errors"] = c.termiosErrors.Load()
 	out["read_errors"] = c.readErrors.Load()
+	out["slow_output_slices"] = c.slowOutputSlices.Load()
 	out["log_errors"] = c.logErrors.Load()
 	out["clipboard_blocked"] = uint64(s.pane.ClipboardBlocked())
 	s.omu.Lock()

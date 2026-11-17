@@ -389,3 +389,187 @@ func TestStartClampsTheInitialSize(t *testing.T) {
 		t.Errorf("pane %dx%d", c, r)
 	}
 }
+
+// The output reaches the pane and the subscriber in slices of at most
+// OutputSlice bytes, each under its own hold of the lock, with the position
+// advancing by exactly the bytes of each slice.
+func TestAChunkIsFedInSlices(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("raw; wait")
+	payload := fakeagent.FloodBytes(4, 3*OutputSlice+17)
+	var c capture
+	unsub, err := s.Subscribe(c.fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+	s.deliver(payload)
+	if got := position(s); got != uint64(len(payload)) {
+		t.Fatalf("position %d, want %d", got, len(payload))
+	}
+	want := []int{OutputSlice, OutputSlice, OutputSlice, 17}
+	if len(c.chunks) != len(want) {
+		t.Fatalf("%d slices, want %d", len(c.chunks), len(want))
+	}
+	next := uint64(0)
+	for i, ch := range c.chunks {
+		if len(ch) != want[i] || c.poss[i] != next {
+			t.Errorf("slice %d: %d bytes at %d, want %d at %d", i, len(ch), c.poss[i], want[i], next)
+		}
+		next += uint64(len(ch))
+	}
+	if string(c.all()) != string(payload) {
+		t.Error("the slices are not the chunk")
+	}
+}
+
+// While one big chunk is fed, snapshots are taken between its slices (the
+// test hook runs with the lock released): each one equals a reference emulator
+// fed the stream up to its position, and a subscription made in the middle of
+// the chunk follows without a gap.
+func TestSnapshotsAndSubscriptionRunBetweenTheSlicesOfOneChunk(t *testing.T) {
+	const slices = 24
+	const total = slices * OutputSlice
+	e := newEnv(t)
+	s := e.start("raw; wait")
+	payload := fakeagent.FloodBytes(6, total)
+	type snap struct {
+		pos  uint64
+		text string
+		cur  uv.Position
+	}
+	var snaps []snap
+	var subSnap snap
+	var c capture
+	var unsub func()
+	s.betweenSlices = func(i int) {
+		take := func(p *sessionpane.Pane, pos uint64) snap {
+			sn := snap{pos: pos, text: paneText(p)}
+			sn.cur, _ = p.Cursor()
+			return sn
+		}
+		switch {
+		case i == 11:
+			var err error
+			unsub, err = s.SubscribeScreen(func(p *sessionpane.Pane, pos uint64) { subSnap = take(p, pos) }, c.fn)
+			if err != nil {
+				t.Error(err)
+			}
+		case i%4 == 1:
+			s.Screen(func(p *sessionpane.Pane, pos uint64) { snaps = append(snaps, take(p, pos)) })
+		}
+	}
+	s.deliver(payload)
+	if unsub == nil {
+		t.Fatal("no subscription was made in the middle of the chunk")
+	}
+	unsub()
+	if got := position(s); got != total {
+		t.Fatalf("position %d, want %d", got, total)
+	}
+	check := func(sn snap) {
+		if sn.pos == 0 || sn.pos >= total || sn.pos%OutputSlice != 0 {
+			t.Errorf("a snapshot at position %d: not at a slice boundary inside the chunk", sn.pos)
+		}
+		ref := sessionpane.New(100, 30, sessionpane.Options{})
+		defer ref.Close()
+		ref.Write(payload[:sn.pos])
+		cur, _ := ref.Cursor()
+		if paneText(ref) != sn.text || cur != sn.cur {
+			t.Errorf("the snapshot at position %d differs from a reference fed that many bytes", sn.pos)
+		}
+	}
+	if len(snaps) < 5 {
+		t.Fatalf("%d snapshots", len(snaps))
+	}
+	for _, sn := range snaps {
+		check(sn)
+	}
+	check(subSnap)
+	// No gap: the subscriber's first slice starts where its snapshot was
+	// taken, and what it saw is the rest of the stream.
+	if subSnap.pos != 12*OutputSlice || len(c.poss) == 0 || c.poss[0] != subSnap.pos {
+		t.Fatalf("subscription snapshot at %d, first slice after it at %v", subSnap.pos, c.poss[:min(1, len(c.poss))])
+	}
+	if string(c.all()) != string(payload[subSnap.pos:]) {
+		t.Error("the slices after the subscription are not the rest of the stream")
+	}
+}
+
+// A resize does not wait for the end of a big chunk, only for the slice being
+// fed; the pane and the position agree with it.
+func TestResizeRunsBetweenTheSlicesOfOneChunk(t *testing.T) {
+	const total = 20 * OutputSlice
+	e := newEnv(t)
+	s := e.start("raw; wait")
+	var posAfter uint64
+	resized := false
+	s.betweenSlices = func(i int) {
+		if i != 4 {
+			return
+		}
+		if c, r, err := s.Resize(80, 24); err != nil || c != 80 || r != 24 {
+			t.Errorf("Resize = %d, %d, %v", c, r, err)
+		}
+		resized = true
+		posAfter = position(s)
+	}
+	s.deliver(fakeagent.FloodBytes(8, total))
+	if !resized || posAfter != 5*OutputSlice {
+		t.Errorf("resized %v at position %d, want after the fifth slice (%d)", resized, posAfter, 5*OutputSlice)
+	}
+	if c, r := s.Size(); c != 80 || r != 24 {
+		t.Errorf("size %d x %d", c, r)
+	}
+	if got := position(s); got != total {
+		t.Errorf("position %d, want %d", got, total)
+	}
+}
+
+// A hold of the lock longer than the threshold is counted, and a normal one
+// is not.
+func TestSlowOutputSlicesAreCounted(t *testing.T) {
+	t.Run("every slice over the threshold", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.start("raw; wait", func(c *Config) { c.slowSlice = time.Nanosecond })
+		before := s.Counters()["slow_output_slices"]
+		s.deliver(fakeagent.FloodBytes(1, 5*OutputSlice+1))
+		if got := s.Counters()["slow_output_slices"] - before; got != 6 {
+			t.Errorf("slow_output_slices grew by %d, want 6 (one per slice)", got)
+		}
+	})
+	t.Run("none under the threshold", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.start("raw; wait", func(c *Config) { c.slowSlice = time.Hour })
+		s.deliver(fakeagent.FloodBytes(1, 5*OutputSlice+1))
+		if got := s.Counters()["slow_output_slices"]; got != 0 {
+			t.Errorf("slow_output_slices = %d", got)
+		}
+	})
+	t.Run("a slow subscriber with the default threshold", func(t *testing.T) {
+		e := newEnv(t)
+		s := e.start("raw; wait")
+		var calls int
+		unsub, err := s.Subscribe(func(uint64, []byte) {
+			if calls++; calls == 2 {
+				time.Sleep(SlowSlice + 50*time.Millisecond)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unsub()
+		s.deliver(fakeagent.FloodBytes(1, 3*OutputSlice))
+		if got := s.Counters()["slow_output_slices"]; got != 1 {
+			t.Errorf("slow_output_slices = %d, want 1", got)
+		}
+	})
+	e := newEnv(t)
+	s := e.start("raw; wait")
+	if _, ok := s.Counters()["slow_output_slices"]; !ok {
+		t.Error("the counter is missing")
+	}
+	if err := s.AddCount("slow_output_slices", 1); !errors.Is(err, ErrReservedCounter) {
+		t.Errorf("AddCount of the session's own counter: %v", err)
+	}
+}
