@@ -258,3 +258,74 @@ func TestValidName(t *testing.T) {
 		}
 	}
 }
+
+func TestServeRequestValidate(t *testing.T) {
+	ok := ServeRequest{Role: "lead-1", Project: "proj", Tree: "/srv/leads/lead-1/tree"}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid request refused: %v", err)
+	}
+	for name, mod := range map[string]func(*ServeRequest){
+		"empty role":    func(r *ServeRequest) { r.Role = "" },
+		"upper role":    func(r *ServeRequest) { r.Role = "Lead" },
+		"role slash":    func(r *ServeRequest) { r.Role = "a/b" },
+		"empty project": func(r *ServeRequest) { r.Project = "" },
+		"project dots":  func(r *ServeRequest) { r.Project = ".." },
+		"empty tree":    func(r *ServeRequest) { r.Tree = "" },
+		"relative tree": func(r *ServeRequest) { r.Tree = "t" },
+		"root tree":     func(r *ServeRequest) { r.Tree = "/" },
+		"unclean tree":  func(r *ServeRequest) { r.Tree = "/t/../u" },
+		"dot dot tree":  func(r *ServeRequest) { r.Tree = "/t/.." },
+		"tree slash":    func(r *ServeRequest) { r.Tree = "/t/" },
+		"tree newline":  func(r *ServeRequest) { r.Tree = "/t\nx" },
+		"tree nul":      func(r *ServeRequest) { r.Tree = "/t\x00x" },
+		"tree brace":    func(r *ServeRequest) { r.Tree = "/t/{role}" },
+		"tree close":    func(r *ServeRequest) { r.Tree = "/t}" },
+	} {
+		r := ok
+		mod(&r)
+		if err := r.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestVerifyRequestValidate(t *testing.T) {
+	ok := VerifyRequest{Project: "proj", Mirror: "/var/mirror/proj.git", Scratch: "/var/tmp/s", Home: "/var/tmp/h"}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid request refused: %v", err)
+	}
+	// Names that only share a prefix are not nested.
+	near := VerifyRequest{Project: "p", Mirror: "/a/m", Scratch: "/a/s", Home: "/a/sx"}
+	if err := near.Validate(); err != nil {
+		t.Fatalf("sibling folders refused: %v", err)
+	}
+	for name, mod := range map[string]func(*VerifyRequest){
+		"empty project":   func(r *VerifyRequest) { r.Project = "" },
+		"bad project":     func(r *VerifyRequest) { r.Project = "P" },
+		"empty mirror":    func(r *VerifyRequest) { r.Mirror = "" },
+		"relative mirror": func(r *VerifyRequest) { r.Mirror = "m" },
+		"root mirror":     func(r *VerifyRequest) { r.Mirror = "/" },
+		"root scratch":    func(r *VerifyRequest) { r.Scratch = "/" },
+		"root home":       func(r *VerifyRequest) { r.Home = "/" },
+		"unclean scratch": func(r *VerifyRequest) { r.Scratch = "/s//x" },
+		"scratch slash":   func(r *VerifyRequest) { r.Scratch = "/var/tmp/s/" },
+		"scratch newline": func(r *VerifyRequest) { r.Scratch = "/s\n" },
+		"home nul":        func(r *VerifyRequest) { r.Home = "/h\x00" },
+		"home brace":      func(r *VerifyRequest) { r.Home = "/h/{project}" },
+		"mirror dot":      func(r *VerifyRequest) { r.Mirror = "/m/." },
+		"same scratch":    func(r *VerifyRequest) { r.Scratch = r.Mirror },
+		"same home":       func(r *VerifyRequest) { r.Home = r.Scratch },
+		"home is mirror":  func(r *VerifyRequest) { r.Home = r.Mirror },
+		"home in scratch": func(r *VerifyRequest) { r.Home = r.Scratch + "/h" },
+		"scratch in home": func(r *VerifyRequest) { r.Scratch = r.Home + "/s" },
+		"scratch in mir":  func(r *VerifyRequest) { r.Scratch = r.Mirror + "/s" },
+		"mirror in home":  func(r *VerifyRequest) { r.Mirror = r.Home + "/deep/m" },
+		"mirror in scr":   func(r *VerifyRequest) { r.Mirror = r.Scratch + "/m" },
+	} {
+		r := ok
+		mod(&r)
+		if err := r.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

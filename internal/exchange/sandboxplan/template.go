@@ -66,9 +66,12 @@ const TemplateVersion = 1
 // Either section may be absent. The matching method then returns
 // [ErrNotConfigured].
 //
-// A value is checked before it is put in. A role or a project must pass
-// [ValidName]. A path must be absolute and clean and hold no NUL byte,
-// newline or brace.
+// A request is checked before a value is put in, with
+// [ServeRequest.Validate] and [VerifyRequest.Validate]. A role or a project
+// must pass [ValidName]. A path must be absolute and clean, hold no NUL byte,
+// newline or brace, and not be the root of the file system. The verify
+// roots must not be the same folder or lie inside each other. The checks read
+// no file: the caller's precondition on each request type is its own to meet.
 type Template struct {
 	serve  *serveTemplate
 	verify *verifyTemplate
@@ -247,14 +250,8 @@ func (t *Template) Serve(r ServeRequest) (ServePlan, error) {
 	if t == nil || t.serve == nil {
 		return ServePlan{}, fmt.Errorf("%w for serve", ErrNotConfigured)
 	}
-	if !ValidName(r.Role) {
-		return ServePlan{}, errors.New("serve: role is not a valid name")
-	}
-	if !ValidName(r.Project) {
-		return ServePlan{}, errors.New("serve: project is not a valid name")
-	}
-	if err := validPath(r.Tree); err != nil {
-		return ServePlan{}, fmt.Errorf("serve: tree: %w", err)
+	if err := r.Validate(); err != nil {
+		return ServePlan{}, fmt.Errorf("serve: %w", err)
 	}
 	p, err := t.serve.plan(map[string]string{"role": r.Role, "project": r.Project, "tree": r.Tree})
 	if err != nil {
@@ -269,15 +266,8 @@ func (t *Template) Verify(r VerifyRequest) (VerifyPlan, error) {
 	if t == nil || t.verify == nil {
 		return VerifyPlan{}, fmt.Errorf("%w for verify", ErrNotConfigured)
 	}
-	if !ValidName(r.Project) {
-		return VerifyPlan{}, errors.New("verify: project is not a valid name")
-	}
-	for _, f := range []struct{ name, path string }{
-		{"mirror", r.Mirror}, {"scratch", r.Scratch}, {"home", r.Home},
-	} {
-		if err := validPath(f.path); err != nil {
-			return VerifyPlan{}, fmt.Errorf("verify: %s: %w", f.name, err)
-		}
+	if err := r.Validate(); err != nil {
+		return VerifyPlan{}, fmt.Errorf("verify: %w", err)
 	}
 	p, err := t.verify.plan(map[string]string{
 		"project": r.Project, "mirror": r.Mirror, "scratch": r.Scratch, "home": r.Home,

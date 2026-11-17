@@ -291,6 +291,7 @@ func TestTemplateRefusesBadValues(t *testing.T) {
 		"tree open brace": func(r *ServeRequest) { r.Tree = "/t/{x" },
 		"tree brace pair": func(r *ServeRequest) { r.Tree = "/t/{role}" },
 		"tree close":      func(r *ServeRequest) { r.Tree = "/t}" },
+		"root tree":       func(r *ServeRequest) { r.Tree = "/" },
 	} {
 		r := okServe
 		mod(&r)
@@ -314,6 +315,9 @@ func TestTemplateRefusesBadValues(t *testing.T) {
 		"home nul":        func(r *VerifyRequest) { r.Home = "/h\x00" },
 		"home brace":      func(r *VerifyRequest) { r.Home = "/h/{project}" },
 		"mirror dot":      func(r *VerifyRequest) { r.Mirror = "/m/." },
+		"root mirror":     func(r *VerifyRequest) { r.Mirror = "/" },
+		"home in scratch": func(r *VerifyRequest) { r.Home = r.Scratch + "/h" },
+		"same scratch":    func(r *VerifyRequest) { r.Scratch = r.Mirror },
 	} {
 		r := okVerify
 		mod(&r)
