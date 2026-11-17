@@ -812,3 +812,18 @@ func TestSpecHoldsTheInsideEnvironment(t *testing.T) {
 		t.Errorf("the spec holds %d variables, the plan %d", len(got), len(want))
 	}
 }
+
+// With no way to ask, standard input is taken not to be a terminal.
+func TestNoTerminalQuestionMeansNoTerminal(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	fake := newFake(okProbe(assert.StatusOK, 0, 0))
+	r := executeWith(t, f, fake, true, func(o *harness.Options) { o.StdinIsTerminal = nil })
+	var gate *harness.GateError
+	if !errors.As(r.err, &gate) || !strings.Contains(gate.Reason, "terminal") {
+		t.Fatalf("error %v, want a gate error naming the terminal", r.err)
+	}
+	if r.out != nil || fake.Calls() != 0 || len(f.Names(f.Campaign)) != 0 {
+		t.Errorf("the refused run did something: %v, %d calls", r.out, fake.Calls())
+	}
+}

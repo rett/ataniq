@@ -84,12 +84,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) i
 		return exitUsage
 	}
 	report(stdout, out)
+	// A gate error comes with no outcome, so an error here is the evidence.
 	if err != nil {
-		var gate *harness.GateError
-		if errors.As(err, &gate) {
-			fmt.Fprintf(stderr, "qualify: %v\n", err)
-			return exitUsage
-		}
 		fmt.Fprintf(stderr, "qualify: evidence: %v\n", err)
 		return exitEvidence
 	}
