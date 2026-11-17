@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -62,13 +63,41 @@ func openFolder(dir string, root *safefs.Root) (folder, error) {
 
 func (f folder) close() error { return unix.Close(f.fd) }
 
+// lockWait is how long lock waits for another writer of the folder.
+const lockWait = 30 * time.Second
+
+// lock takes an exclusive flock on the folder's descriptor, which excludes
+// every other descriptor of the folder (another Store, another process). The
+// lock is released by unlock, or when the descriptor is closed or the process
+// ends. It waits at most lockWait.
+func (f folder) lock() error {
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := unix.Flock(f.fd, unix.LOCK_EX|unix.LOCK_NB)
+		switch {
+		case err == nil:
+			return nil
+		case err != unix.EINTR && err != unix.EWOULDBLOCK:
+			return err
+		}
+		if time.Now().After(deadline) {
+			return errors.New("another writer holds the folder lock")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// unlock releases the lock of lock.
+func (f folder) unlock() { unix.Flock(f.fd, unix.LOCK_UN) }
+
 // create writes data to a new file called name in the folder. The data goes
 // to a temporary name first (created exclusively, mode 0600, no symlink
 // followed), is synced, and gets its name without replacing anything that is
 // there: renameat2 with RENAME_NOREPLACE, or link and unlink where the
 // filesystem has no renameat2. The folder is synced afterwards. On an error
 // the temporary file, which this call made, is removed; a file called name is
-// never touched.
+// never touched. When only the sync of the folder fails, the file has its
+// name and is there, and the error matches [ErrNotSynced].
 func (f folder) create(name string, data []byte) (err error) {
 	var rnd [8]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
@@ -120,8 +149,15 @@ func (f folder) create(name string, data []byte) (err error) {
 	default:
 		return err
 	}
-	return unix.Fsync(f.fd)
+	if err := syncFolder(f.fd); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrNotSynced, name, err)
+	}
+	return nil
 }
+
+// syncFolder syncs the folder's descriptor. Tests replace it to make the sync
+// fail.
+var syncFolder = func(fd int) error { return unix.Fsync(fd) }
 
 func writeAll(fd int, data []byte) error {
 	for len(data) > 0 {

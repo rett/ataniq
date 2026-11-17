@@ -27,12 +27,13 @@
 //     the repository, at an absolute path, or through too long a chain of
 //     symlinks, is flagged on its own path.
 //   - history-only: a path that is execution config, a symlink or a
-//     submodule, or that lies in a folder an aliasing symlink stands for, in
-//     the change of some commit of the branch, but that is not in the net
-//     change. It was added and removed again (or changed and changed back)
-//     inside the branch. It enters upstream history, so it needs a sign-off
-//     too. For a merge commit only the paths that differ from every parent
-//     count: a path that equals one parent was brought in by that parent.
+//     submodule, or that lies in a folder an aliasing symlink (of the base or
+//     of the tip) stands for, in the change of some commit of the branch,
+//     but that is not in the net change. It was added and removed again (or
+//     changed and changed back) inside the branch. It enters upstream
+//     history, so it needs a sign-off too. For a merge commit only the paths
+//     that differ from every parent count: a path that equals one parent was
+//     brought in by that parent.
 //
 // The flags are collected in [Review.Flagged], one for each kind and path.
 // [Review.Digest] is a hash over what the owner is asked to sign off, so a
@@ -95,7 +96,20 @@
 //
 // A file is written to a temporary name, synced, and given its name without
 // replacing anything that is there; this package never overwrites or deletes a
-// record. Records are read through safefs: regular files only, at most 1 MiB,
+// record. The order of the names is the order of the records, and it does not
+// depend on a clock: a write holds an exclusive lock on the folder (shared by
+// every Store on it, in any process), reads the newest record name in the
+// folder, and names the new record later than it when the writer's clock is
+// not later. Names can therefore run ahead of the clock after a step of it.
+// The folder is synced after the rename. If only that sync fails, the record
+// is there under its name; the write counts as done, and the call returns the
+// record with an error that matches [ErrNotSynced], to be shown as a warning.
+// The folder holds at most 100000 names of any kind (a verification with
+// output uses two); with more, every read and write fails with [ErrStore] and
+// [Integrate] stops before it moves a branch. Nothing here deletes or rotates
+// records, so the owner moves old ones away before that.
+//
+// Records are read through safefs: regular files only, at most 1 MiB,
 // no symlink followed, no block on a FIFO. A file whose name is not a record's
 // name is ignored. A file with a record's name that cannot be read, or that
 // does not decode strictly (an unknown field, a wrong version, a missing
@@ -139,7 +153,13 @@
 // After the sign-off the code runs as the owner, as any merged code does. The
 // review at intake is the boundary: what the owner signs is what enters
 // the history. A verification pass is evidence, not proof (see package
-// verify). This package cannot tell who typed the sign-off. The lead cannot
+// verify). Any passing record for the project and the tip counts, whatever
+// gates it ran: this package does not compare the record's plan (gates) with
+// the project's current gates or the record's lead ref with the review's. The
+// gates that were run are in the [IntakeRecord] that [Integrate] returns, in
+// its Verification field. The command that calls [Integrate] must show them
+// to the owner before the sign-off (with the review output) and after it (with
+// the result). This package cannot tell who typed the sign-off. The lead cannot
 // run it, because the mirror is read-only in its sandbox and the records
 // folder is not mounted there; that is a property of the sandbox plan and of
 // the command that calls this package, not something this package checks.
@@ -147,11 +167,12 @@
 // # What it does not do
 //
 // It does not run the gates (package verify does), build a sandbox, decide
-// who signs, or touch a working checkout. The alias
-// check resolves a symlink's target by its text, against the symlinks of the
-// tip's own tree: it follows a symlink that the target passes through, and one
-// that is its last element, but at most 8 symlinks in all. A longer chain or
-// a loop is not followed; it is flagged on the symlink itself, when that
+// who signs, or touch a working checkout. The alias check resolves a
+// symlink's target by its text, against the symlinks of the same tree: the
+// tip's tree for the net change, and the base's tree as well as the tip's for
+// the history pass. It follows a symlink that the target passes through, and
+// one that is its last element, but at most 8 symlinks in all. A longer
+// chain or a loop is not followed; it is flagged on the symlink itself, when that
 // symlink is changed. It does not check the content of a file, only the path
 // and the kind of each entry. Matching of paths is the job of the
 // execconfig package, with the limits its comment lists.

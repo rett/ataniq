@@ -423,3 +423,40 @@ func TestAliasChangedAndRevertedThroughAChain(t *testing.T) {
 	s.finish()
 	flagFor(t, s.inspect().Flagged, FlagHistory, "other/z.json")
 }
+
+// TestAliasOfTheBaseThatTheBranchRemoves: the base has a link that stands for
+// a folder. The branch puts a hook in the folder, takes it out again, and
+// then removes or retargets the link. The commit with the hook enters
+// history while the link still points at the folder, so the history pass
+// flags it by the base's aliases too, though the tip has no such link.
+func TestAliasOfTheBaseThatTheBranchRemoves(t *testing.T) {
+	for name, end := range map[string]func(s *scene){
+		"removed":    func(s *scene) { s.remove(".claude") },
+		"retargeted": func(s *scene) { s.symlink(".claude", "other") },
+		"kept":       func(s *scene) { s.put("src/x.go", "package main\n// x\n") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := aliasScene(t)
+			s.symlink(".claude", "cfg")
+			s.commit("link in upstream\n")
+			s.publish(upstreamRef, s.cur)
+			s.put("cfg/settings.json", `{"hooks":1}`+"\n")
+			s.commit("hook\n")
+			s.put("cfg/settings.json", "{}\n")
+			s.commit("revert\n")
+			end(s)
+			s.commit("the link goes\n")
+			s.finish()
+			r := s.inspect()
+			f := flagFor(t, r.Flagged, FlagHistory, "cfg/settings.json")
+			if !strings.Contains(f.Reason, ".claude") || !strings.Contains(f.Reason, "cfg") || f.Pattern == "" {
+				t.Errorf("flag: %+v", f)
+			}
+			// The link is in the base and, when kept, in the tip as well,
+			// and it is not named twice.
+			if n := strings.Count(f.Reason, "reached through the symlink"); n != 1 {
+				t.Errorf("the symlink is named %d times: %s", n, f.Reason)
+			}
+		})
+	}
+}

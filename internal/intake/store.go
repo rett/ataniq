@@ -21,7 +21,15 @@ import (
 const (
 	// maxRecordBytes is the largest record file that is read.
 	maxRecordBytes = 1 << 20
-	// maxStoreEntries is the most names read from the records folder.
+	// maxStoreEntries is the most names read from the records folder, of
+	// every kind (a record, its ".out" file, or any other). A verification
+	// with output uses two names, an intake record one. When the folder has
+	// more, every listing fails with [ErrStore], so every read and every
+	// write fails, and [Integrate] fails before it moves a branch: it fails
+	// closed. This package never deletes a record and never rotates the
+	// folder, so the owner (the command that opens the Store) must move old
+	// records to another folder, or open a new folder, before this happens,
+	// after about 50000 verifications with output.
 	maxStoreEntries = 100000
 	// nameTimeFormat is the time in a file name: fixed width, UTC, so that
 	// names sort by time.
@@ -34,6 +42,15 @@ var recordName = regexp.MustCompile(`^(\d{8}T\d{6}\.\d{9}Z)-(verification|intake
 // ErrStore means that the records folder or a record in it cannot be used. A
 // message names the file of a record and never a lead's text.
 var ErrStore = errors.New("intake: records store")
+
+// ErrNotSynced is matched by the error of a write that is complete except
+// that the folder could not be synced afterwards. The record is written: it
+// is in the folder under its name and it can be read. Only its durability
+// across a crash of the machine is not certain. [Store.PutVerification] and
+// [Integrate] return the record together with such an error, and a caller
+// shows it as a warning; it is not a failure of the write, and the write must
+// not be repeated.
+var ErrNotSynced = errors.New("intake: the record was written but the folder could not be synced")
 
 // Store is the owner's records folder: one JSON file for each record.
 //
@@ -50,12 +67,20 @@ var ErrStore = errors.New("intake: records store")
 // record's name is ignored. A file with a record's name that cannot be read or
 // decoded is an error that names it, and no later step goes on without it:
 // a record that cannot be read could be the failure that withdraws a pass.
+//
+// The order of the names is the order of the records, and the newest
+// verification record for a tip decides. It does not depend on a clock: a
+// write takes an exclusive lock on the folder (shared by every Store on it,
+// in any process), reads the newest record name in the folder, and gives the
+// new record a time later than it when the writer's clock is not. Names can
+// run ahead of the clock after a step of it. A record's own time field is the
+// writer's clock and is not used for the order.
 type Store struct {
 	root *safefs.Root
 	dir  folder
 
-	mu   sync.Mutex
-	last time.Time // the newest name time handed out
+	mu   sync.Mutex // held for the whole of a write, with the folder lock
+	last time.Time  // the newest name time handed out
 	// now is the clock of the names of verification records.
 	now func() time.Time
 }
@@ -85,33 +110,74 @@ func (s *Store) Close() error {
 	return errors.Join(s.root.Close(), s.dir.close())
 }
 
-// nameTime returns t in UTC, moved forward by a nanosecond when needed so that
-// every name of this Store is later than the one before it: the order of
-// names is the order of records.
-func (s *Store) nameTime(t time.Time) time.Time {
+// lock takes the lock of the folder for one write: the mutex of this Store
+// and an exclusive lock on the folder that other Stores, in this process or
+// another, also take. The names of a write are chosen and written under it,
+// so that no write can choose a name earlier than a record that is already
+// there. The returned function releases both.
+func (s *Store) lock() (unlock func(), err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.dir.lock(); err != nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: lock the folder: %w", ErrStore, err)
+	}
+	return func() {
+		s.dir.unlock()
+		s.mu.Unlock()
+	}, nil
+}
+
+// nameTime returns t in UTC, moved forward by a nanosecond when needed so that
+// it is later than every name time that this Store handed out and later than
+// the newest record name in the folder, whatever the clock says: the order of
+// names is the order of records. A clock that stepped back, or a writer whose
+// clock is behind, therefore gives names that run ahead of the clock. The
+// caller holds the lock.
+func (s *Store) nameTime(t time.Time) (time.Time, error) {
 	t = t.UTC().Truncate(time.Nanosecond)
 	if !t.After(s.last) {
 		t = s.last.Add(time.Nanosecond)
 	}
+	files, err := s.recordFiles()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if n := len(files); n > 0 {
+		newest, err := time.Parse(nameTimeFormat, recordName.FindStringSubmatch(files[n-1].name)[1])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("%w: record %s has no valid time in its name", ErrStore, files[n-1].name)
+		}
+		if !t.After(newest) {
+			t = newest.Add(time.Nanosecond)
+		}
+	}
 	s.last = t
-	return t
+	return t, nil
 }
 
 // newBase returns the part of a file name that the record file and its
-// output file share: time, kind and a random part.
+// output file share: time, kind and a random part. The caller holds the
+// lock.
 func (s *Store) newBase(t time.Time, kind string) (string, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("%w: no random bytes: %w", ErrStore, err)
 	}
-	return s.nameTime(t).Format(nameTimeFormat) + "-" + kind + "-" + hex.EncodeToString(b[:]), nil
+	nt, err := s.nameTime(t)
+	if err != nil {
+		return "", err
+	}
+	return nt.Format(nameTimeFormat) + "-" + kind + "-" + hex.EncodeToString(b[:]), nil
 }
 
-// put writes data under a new name, exclusively and synced.
+// put writes data under a new name, exclusively and synced. When only the
+// sync of the folder fails, the file is there: the error then matches
+// [ErrNotSynced] and does not match [ErrStore].
 func (s *Store) put(name string, data []byte) error {
 	if err := s.dir.create(name, data); err != nil {
+		if errors.Is(err, ErrNotSynced) {
+			return err
+		}
 		return fmt.Errorf("%w: write %s: %w", ErrStore, name, err)
 	}
 	return nil
@@ -128,6 +194,10 @@ func (s *Store) put(name string, data []byte) error {
 // never reads it back and never parses it; a person who looks at it shows it
 // only through leadtext. It is written first, so that a record never names an
 // output that is missing. A run with no output has no such file.
+//
+// When the files are written but the folder could not be synced, the record
+// is returned together with an error that matches [ErrNotSynced]: a warning,
+// the record is there.
 //
 // PutVerification records what it is given, also a failure. Whether a record
 // allows an integration is decided by [Integrate].
@@ -156,19 +226,31 @@ func (s *Store) PutVerification(project string, res verify.Result, gates []verif
 	if err != nil {
 		return VerificationRecord{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return VerificationRecord{}, err
+	}
+	defer unlock()
 	base, err := s.newBase(s.now(), "verification")
 	if err != nil {
 		return VerificationRecord{}, err
 	}
+	var warn error
 	if len(res.Output) > 0 {
 		if err := s.put(base+".out", res.Output); err != nil {
-			return VerificationRecord{}, err
+			if !errors.Is(err, ErrNotSynced) {
+				return VerificationRecord{}, err
+			}
+			warn = err
 		}
 	}
 	if err := s.put(base+".json", append(data, '\n')); err != nil {
-		return VerificationRecord{}, err
+		if !errors.Is(err, ErrNotSynced) {
+			return VerificationRecord{}, err
+		}
+		warn = errors.Join(warn, err)
 	}
-	return rec, nil
+	return rec, warn
 }
 
 // putIntake stores an intake record. The name takes its time from the record.
@@ -180,6 +262,11 @@ func (s *Store) putIntake(rec IntakeRecord) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrStore, err)
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	base, err := s.newBase(rec.Time, "intake")
 	if err != nil {
 		return err

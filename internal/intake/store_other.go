@@ -17,3 +17,5 @@ func openFolder(string, *safefs.Root) (folder, error) { return folder{}, errStor
 func (folder) close() error                           { return errStoreUnsupported }
 func (folder) create(string, []byte) error            { return errStoreUnsupported }
 func (folder) names(int) ([]string, error)            { return nil, errStoreUnsupported }
+func (folder) lock() error                            { return errStoreUnsupported }
+func (folder) unlock()                                {}

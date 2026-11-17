@@ -248,7 +248,16 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	if err != nil {
 		return nil, err
 	}
-	hist, err := r.historyFlags(ctx, req.Rules, aliases, rev.Commits, rev.Changes, lim)
+	// The commits of the branch run from the base's tree to the tip's, and a
+	// symlink that the branch removed or retargeted stood for its folder in
+	// the commits before that. So the history pass uses the aliases of both
+	// trees. The base's aliases flag no change of their own: the paths that
+	// the net change touches are flagged by the tip's aliases above.
+	baseAliases, err := r.aliasFlags(ctx, req.Rules, base, nil, lim)
+	if err != nil {
+		return nil, err
+	}
+	hist, err := r.historyFlags(ctx, req.Rules, aliases.union(baseAliases), rev.Commits, rev.Changes, lim)
 	if err != nil {
 		return nil, err
 	}
