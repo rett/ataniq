@@ -154,6 +154,23 @@ func TestParseForms(t *testing.T) {
 	}
 }
 
+func TestParseBidiMarks(t *testing.T) {
+	// LRM, RLM and ALM can reorder displayed text; so can the embedding,
+	// override and isolate controls and the line and paragraph separators.
+	for _, r := range []rune{0x200e, 0x200f, 0x061c, 0x202a, 0x202e, 0x2066, 0x2069, 0x2028, 0x2029} {
+		text := "a" + string(r) + "b"
+		for _, key := range []string{"msg", "title"} {
+			got, err := Parse([]byte("state=idle:" + key + "=" + base64.StdEncoding.EncodeToString([]byte(text))))
+			if err != nil {
+				t.Fatalf("U+%04X in %s: %v", r, key, err)
+			}
+			if got.Msg+got.Title != "a\uFFFDb" {
+				t.Errorf("U+%04X in %s: kept as %q, want it replaced", r, key, got.Msg+got.Title)
+			}
+		}
+	}
+}
+
 func TestParseHostile(t *testing.T) {
 	many := make([]string, 10000)
 	for i := range many {

@@ -10,8 +10,9 @@ import (
 	"unicode/utf8"
 )
 
-// QueryReply is the reply to the support query: ESC ] 7501 ; ? ESC \. An agent
-// that sent the query takes any reply whose data starts with "?" as the answer.
+// QueryReply is the reply to the support query: ESC ] 7501 ; ? ESC \. The Q13
+// recordings show claude 2.1.325 turning its reports on after this exact reply,
+// written before the reply to its DA1 query.
 const QueryReply = "\x1b]7501;?\x1b\\"
 
 // Limits applied by Parse. They are fixed, not configuration.
@@ -103,6 +104,14 @@ func IsQuery(payload []byte) bool {
 // the agent at once, so they are queued ahead of the reply the emulator makes
 // to the DA1 that follows. A reply written later, from another goroutine
 // after the emulator's write returns, can lose that race.
+//
+// For the holder: the agent chooses when a query arrives, so this write can
+// fall between a paste and its Enter. The reply must travel the holder's one
+// serialised input path, with the same lock order as every other write to the
+// agent, so that it can never split a paste. The handler that writes it must
+// not block on a reader that waits for the input lock: an io.Pipe write waits
+// until its reader drains it, so a reader that waits for the lock the paste
+// holds would block the handler for good.
 func Reply(payload []byte) ([]byte, bool) {
 	if !IsQuery(payload) {
 		return nil, false
@@ -115,7 +124,7 @@ func Reply(payload []byte) ([]byte, bool) {
 // most MaxFields fields separated by ":", each key=value, with no key twice.
 // state is required and must be one of the six states. msg and title are
 // standard base64 of valid UTF-8; the decoded text has control characters (and
-// the line separators and bidirectional overrides that can disguise text)
+// the line separators and bidirectional controls that can disguise text)
 // replaced by U+FFFD and is cut to MaxText bytes at a character boundary. app
 // and kind are kept only as tokens of letters, digits, "-" and "_" up to
 // MaxToken bytes. Other keys are ignored and counted in Report.Unknown.
@@ -239,8 +248,8 @@ func decodeText(v string) (string, error) {
 
 // unsafeRune reports a rune that must not reach a screen from agent text:
 // control characters, the line and paragraph separators and the
-// bidirectional embedding, override and isolate controls.
+// bidirectional controls (marks, embeddings, overrides and isolates).
 func unsafeRune(r rune) bool {
 	return unicode.IsControl(r) || r == 0x2028 || r == 0x2029 ||
-		(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
+		unicode.Is(unicode.Bidi_Control, r)
 }

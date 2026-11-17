@@ -64,6 +64,46 @@ func TestTracker(t *testing.T) {
 	}
 }
 
+func TestTrackerStatus(t *testing.T) {
+	var tr Tracker
+	t0 := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+
+	if st := tr.Status(); st != (Status{}) {
+		t.Fatalf("a new tracker has Status %+v", st)
+	}
+
+	// Unreadable payloads and no valid report ever: stale, nothing to show.
+	tr.Observe([]byte("state=sleeping"), t0)
+	if st := tr.Status(); st.Has || !st.Stale || st.Report != (Report{}) {
+		t.Fatalf("Status after only an invalid payload = %+v", st)
+	}
+
+	// Equal times must not hide the order: the idle report, then an
+	// unreadable one at the same instant.
+	tr.Observe([]byte("state=idle:app=codex"), t0.Add(time.Second))
+	if st := tr.Status(); !st.Has || st.Stale || st.Report.State != StateIdle || !st.At.Equal(t0.Add(time.Second)) {
+		t.Fatalf("Status after a valid report = %+v", st)
+	}
+	tr.Observe([]byte("state=sleeping"), t0.Add(time.Second))
+	st := tr.Status()
+	if !st.Has || !st.Stale || st.Report.State != StateIdle || st.Report.App != "codex" || !st.At.Equal(t0.Add(time.Second)) {
+		t.Fatalf("Status after an invalid payload at the same instant = %+v", st)
+	}
+
+	// A query and repeated reads do not change Stale.
+	tr.Observe([]byte("?"), t0.Add(2*time.Second))
+	tr.Status()
+	if !tr.Status().Stale {
+		t.Fatal("a query or a Status call cleared Stale")
+	}
+
+	// A following valid report clears it.
+	tr.Observe([]byte("state=working:app=codex"), t0.Add(time.Second))
+	if st := tr.Status(); !st.Has || st.Stale || st.Report.State != StateWorking {
+		t.Fatalf("Status after a following valid report = %+v", st)
+	}
+}
+
 func TestEventString(t *testing.T) {
 	for e, want := range map[Event]string{EventQuery: "query", EventReport: "report", EventInvalid: "invalid", Event(99): "invalid"} {
 		if e.String() != want {

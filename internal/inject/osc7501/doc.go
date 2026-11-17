@@ -9,7 +9,7 @@
 // refuses what it cannot read exactly and never guesses.
 //
 // The package is pure. It does no I/O, starts no goroutine, reads no clock
-// (times are passed in) and holds no state beyond the Tracker's counters. The
+// (times are passed in) and holds no state beyond the Tracker's. The
 // caller owns the emulator that parses the escape sequences, the agent's
 // input and the decision of what a report means.
 //
@@ -17,4 +17,8 @@
 // emulator's handler, it does not find sequences in a byte stream. It does
 // not decide whether an agent is idle (a report is one signal among others),
 // does not write to any agent and does not persist anything.
+//
+// The package is provisional and unqualified: it is built from recorded
+// sessions of one version per runtime (claude 2.1.325, codex 0.169), with no
+// live qualification yet.
 package osc7501
