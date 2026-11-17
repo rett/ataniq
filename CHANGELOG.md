@@ -73,6 +73,41 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
+- Add `ataniqd`, a provisional and unqualified daemon skeleton. It is
+  read-only: it starts, stops and manages no unit and defines no lead, and no
+  flag changes that. `ataniqd run [--state-dir DIR] [--runtime-dir DIR]` (state
+  defaults to `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq`;
+  runtime to `$XDG_RUNTIME_DIR/ataniq`, with no default and no fallback to a
+  shared folder when `XDG_RUNTIME_DIR` is unset) refuses to run as root,
+  creates the state folder with mode 0700 and refuses one that is not the
+  caller's or is open to group or others, takes `daemon.lock` there (a second
+  daemon exits with its own code and names the lock as held, with the pid in
+  the file shown as a hint, not as proof), opens the registry journal in
+  `registry/` (a corrupt one stops the daemon and nothing is repaired),
+  reconciles once, removes a stale socket only once it holds the lock, and
+  serves `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. At
+  shutdown it stops accepting, waits for the connections for a bounded time,
+  closes the registry and releases the lock last; it never stops a lead or
+  any unit. The reconcile reads the units and starts and signals nothing; when
+  systemd cannot be asked, the daemon still serves the roles as the registry
+  has them, with the reconcile shown as not completed, which is also how an
+  unacknowledged recovery of the registry shows, as the protocol has no field
+  for the reason. Reconcile runs at start only, not on a timer. Each start-up
+  step that fails has its own exit code (10 to 18) and one line on standard
+  error. The socket is mode 0600 in a 0700 folder, and a peer is accepted only
+  when its user id equals the daemon's, which does not tell one process of that
+  user from another. `ataniqd status [--socket PATH] [--json]` prints one line
+  per role (role, kind, state, reason, epoch, desired, manager, and for a
+  coordinator its parent and instance) and one for the daemon, or the status
+  result as JSON; every string from the socket is escaped, so a hostile one
+  cannot act on the terminal. It exits 0 when the daemon answered, 20 when no
+  daemon answers, 21 when it refuses the user and 22 for an answer that is not
+  valid. The requested and the observed profile stay apart, and a field that was
+  not observed is shown as not observed. `ataniqd version` prints the version,
+  `0.0.0-dev` unless set with a linker flag, because the `VERSION` file cannot
+  be embedded from the command's folder. Leads, coordinators, the holder, the
+  sandbox and the console are not part of it, and nothing in it has run against
+  systemd.
 
 ### Changed
 
