@@ -1186,6 +1186,76 @@ func TestLiveSelectionAndCopyKeepWorking(t *testing.T) {
 	}
 }
 
+// TestLiveASourceMayReplaceTheWholePaneAtAnyTime covers a source that
+// resizes the pane and rewrites all its content at once, as a snapshot does:
+// no selection survives, no cursor is left from the old screen, and nothing
+// of the old screen is drawn.
+func TestLiveASourceMayReplaceTheWholePaneAtAnyTime(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	l := r.m.layout()
+	r.focus()
+	f.emit("\x1b[2J\x1b[H" + selText)
+	r.pump()
+	r.dragPane(0, 0, 4, 0)
+	if !r.m.sel.shown() {
+		t.Fatal("no selection to lose")
+	}
+	if c := r.m.View().Cursor; c == nil || c.X != l.inner.Min.X+9 || c.Y != l.inner.Min.Y+2 {
+		t.Fatalf("cursor of the old screen: %+v", c)
+	}
+
+	// A smaller pane, reset and rewritten, with the cursor somewhere else.
+	f.start.Pane.Resize(30, 10)
+	f.emit("\x1bc\x1b[2J\x1b[Hnew screen\x1b[6;8H")
+	r.pump()
+	if r.m.sel.shown() {
+		t.Fatal("the selection survived a rewritten pane")
+	}
+	v := r.view()
+	if !strings.Contains(v, "new screen") || strings.Contains(v, "hello world") || strings.Contains(v, "second row") {
+		t.Fatalf("old content shown:\n%s", v)
+	}
+	if c := r.m.View().Cursor; c == nil || c.X != l.inner.Min.X+7 || c.Y != l.inner.Min.Y+5 {
+		t.Fatalf("cursor %+v, want the new one at %d,%d", c, l.inner.Min.X+7, l.inner.Min.Y+5)
+	}
+	if r.selected(r.drawnPane(), 0, 0) {
+		t.Fatal("a cell of the new screen is drawn selected")
+	}
+	// A new selection works on the new screen.
+	wantCopy(t, r.dragPane(0, 0, 2, 0), "new")
+
+	// A pane wider than the area, its cursor beyond it: the cursor is not
+	// drawn, and the window's cursor does not point into the border.
+	f.start.Pane.Resize(200, 80)
+	f.emit("\x1b[2J\x1b[Hbig\x1b[60;150H")
+	r.pump()
+	if c := r.m.View().Cursor; c != nil {
+		t.Fatalf("cursor outside the area: %+v", c)
+	}
+	if v := r.view(); !strings.Contains(v, "big") || strings.Contains(v, "new screen") {
+		t.Fatalf("rewritten screen:\n%s", v)
+	}
+
+	// A change while the button is down: the release copies nothing from
+	// the screen that is gone.
+	f.start.Pane.Resize(40, 12)
+	f.emit("\x1bc\x1b[2J\x1b[Hfirst screen")
+	r.pump()
+	wx, wy := r.win(0, 0)
+	r.mouse(tea.MouseClickMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	f.start.Pane.Resize(30, 10)
+	f.emit("\x1bc\x1b[2J\x1b[Hsecond screen")
+	r.pump()
+	r.mouse(tea.MouseMotionMsg{X: wx + 4, Y: wy, Button: tea.MouseLeft})
+	if msg := r.mouse(tea.MouseReleaseMsg{X: wx + 4, Y: wy, Button: tea.MouseLeft}); msg != nil {
+		t.Fatalf("the release of a drag over a replaced screen gave %#v", msg)
+	}
+	if r.m.sel.shown() {
+		t.Fatal("a selection over a replaced screen")
+	}
+}
+
 func TestLiveSmallWindowShowsOneHonestPage(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 80, 24, f, Options{})
