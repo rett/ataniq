@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -84,6 +85,37 @@ func TestOpenCreatesPrivateFile(t *testing.T) {
 	}
 	if ev[1].Seq != 1 {
 		t.Fatalf("sequence restarts with a process: got %d", ev[1].Seq)
+	}
+}
+
+func TestSequenceRestartsAndStartEventCarriesTheRunStart(t *testing.T) {
+	dir := newDir(t)
+	clock := &fakeClock{t: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)}
+	for run, epoch := range []string{"e1", "e2"} {
+		l := openLog(t, dir, Options{Clock: clock.now})
+		mustAppend(t, l, KindHolder, EventStart, Fields{Epoch: epoch})
+		mustAppend(t, l, KindHolder, EventExit, Fields{})
+		if err := l.Close(); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+	}
+	ev := readAll(t, dir)
+	if len(ev) != 4 {
+		t.Fatalf("%d events", len(ev))
+	}
+	seqs := []uint64{ev[0].Seq, ev[1].Seq, ev[2].Seq, ev[3].Seq}
+	if !reflect.DeepEqual(seqs, []uint64{1, 2, 1, 2}) {
+		t.Fatalf("sequence %v", seqs)
+	}
+	// Each run starts with a start event that has the time and the epoch,
+	// which is how a restart is told from a gap.
+	for _, i := range []int{0, 2} {
+		if ev[i].Event != EventStart || ev[i].Time.IsZero() || ev[i].Epoch == "" {
+			t.Errorf("event %d: %+v", i, ev[i])
+		}
+	}
+	if !ev[2].Time.After(ev[0].Time) {
+		t.Errorf("second start %v is not after the first %v", ev[2].Time, ev[0].Time)
 	}
 }
 
@@ -193,6 +225,50 @@ func TestOpenRefusals(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("Open blocked on a fifo")
 		}
+	})
+	t.Run("rotated name is not a regular file", func(t *testing.T) {
+		mk := map[string]func(t *testing.T, p string){
+			"folder": func(t *testing.T, p string) {
+				if err := os.Mkdir(p, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				os.WriteFile(filepath.Join(p, "keep"), []byte("x"), 0o600)
+			},
+			"symlink": func(t *testing.T, p string) {
+				target := filepath.Join(t.TempDir(), "target")
+				os.WriteFile(target, nil, 0o600)
+				if err := os.Symlink(target, p); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"dangling symlink": func(t *testing.T, p string) {
+				if err := os.Symlink(filepath.Join(t.TempDir(), "absent"), p); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"fifo": func(t *testing.T, p string) {
+				if err := syscall.Mkfifo(p, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		}
+		for name, f := range mk {
+			dir := newDir(t)
+			f(t, filepath.Join(dir, RotatedName))
+			if _, err := Open(dir, Options{}); !errors.Is(err, ErrUnsafe) {
+				t.Errorf("%s: got %v, want ErrUnsafe", name, err)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, FileName)); err == nil {
+				t.Errorf("%s: a log file was created", name)
+			}
+		}
+	})
+	t.Run("rotated name is absent or a regular file", func(t *testing.T) {
+		dir := newDir(t)
+		openLog(t, dir, Options{}).Close() // absent
+		os.WriteFile(filepath.Join(dir, RotatedName), []byte("old\n"), 0o600)
+		l := openLog(t, dir, Options{}) // a regular file of the caller
+		mustAppend(t, l, KindHolder, EventStart, Fields{})
 	})
 	t.Run("max bytes", func(t *testing.T) {
 		for _, n := range []int64{-1, 1, MinMaxBytes - 1, MaxMaxBytes + 1} {
@@ -387,19 +463,56 @@ func TestRotationReplacesOlderFile(t *testing.T) {
 	}
 }
 
-func TestFileOverTheCapAtOpenIsRotatedFirst(t *testing.T) {
+func TestFileOverTheCapAtOpenIsRotatedAtOpen(t *testing.T) {
 	dir := newDir(t)
 	line := `{"time":"2026-01-01T00:00:00Z","seq":1,"kind":"holder","event":"start"}` + "\n"
 	big := strings.Repeat(line, 3*MinMaxBytes/len(line))
 	os.WriteFile(filepath.Join(dir, FileName), []byte(big), 0o600)
+	os.WriteFile(filepath.Join(dir, RotatedName), []byte("older\n"), 0o600)
 	l := openLog(t, dir, Options{MaxBytes: MinMaxBytes})
-	mustAppend(t, l, KindHolder, EventExit, Fields{})
+	// Before any Append: the old file is the rotated one, whole, and the
+	// current file is new and empty.
 	if b, _ := os.ReadFile(filepath.Join(dir, RotatedName)); string(b) != big {
-		t.Fatal("the old file was not rotated whole")
+		t.Fatal("the old file was not rotated whole at Open")
 	}
-	st, _ := os.Stat(filepath.Join(dir, FileName))
-	if st.Size() > MinMaxBytes {
+	if st, err := os.Stat(filepath.Join(dir, FileName)); err != nil || st.Size() != 0 || st.Mode().Perm() != 0o600 {
+		t.Fatalf("current file after Open: %v %v", st, err)
+	}
+	if s := l.Stats(); s.Rotations != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+	mustAppend(t, l, KindHolder, EventExit, Fields{})
+	if st, _ := os.Stat(filepath.Join(dir, FileName)); st.Size() == 0 || st.Size() > MinMaxBytes {
 		t.Fatalf("file is %d bytes", st.Size())
+	}
+	// The rotated file is not cut. The next rotation replaces it, and the
+	// total is under twice the cap again.
+	for i := 0; i < 2*MinMaxBytes/len(line); i++ {
+		mustAppend(t, l, KindHolder, EventResize, Fields{Cols: i})
+	}
+	var total int64
+	for _, n := range []string{FileName, RotatedName} {
+		st, err := os.Stat(filepath.Join(dir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += st.Size()
+	}
+	if total > 2*MinMaxBytes {
+		t.Fatalf("total %d bytes, over twice the cap", total)
+	}
+}
+
+func TestFileAtTheCapAtOpenIsNotRotated(t *testing.T) {
+	dir := newDir(t)
+	os.WriteFile(filepath.Join(dir, FileName), nil, 0o600)
+	os.Truncate(filepath.Join(dir, FileName), MinMaxBytes) // exactly the cap
+	l := openLog(t, dir, Options{MaxBytes: MinMaxBytes})
+	if s := l.Stats(); s.Rotations != 0 {
+		t.Fatalf("stats %+v", s)
+	}
+	if _, err := os.Stat(filepath.Join(dir, RotatedName)); err == nil {
+		t.Fatal("rotated at the cap")
 	}
 }
 
@@ -479,8 +592,13 @@ func worst() Fields {
 		Role: ctl(MaxRole), Epoch: ctl(MaxEpoch), ClientName: ctl(MaxClientName),
 		ClientPID: 1<<62 - 1, ClientCommand: ctl(MaxCommandLine), Cols: 1<<62 - 1, Rows: 1<<62 - 1,
 		Reason: ctl(MaxReason), State: ctl(MaxState), Digest: ctl(MaxDigest),
+		MessageID: ctl(MaxMessageID), Sender: ctl(MaxSender), Outcome: ctl(MaxOutcome),
+		CommandID:  ctl(MaxCommandID),
 		ExitStatus: &exit, StreamEnded: &yes, TUIExited: &yes, TreeGone: &yes,
 		Counters: map[string]uint64{},
+	}
+	for i := 0; i < 2*MaxGuardCodes; i++ {
+		f.Guard = append(f.Guard, ctl(MaxGuardCode))
 	}
 	for i := 0; i < 2*MaxCounters; i++ {
 		f.Counters[fmt.Sprintf("%02d%s", i, strings.Repeat("n", MaxCounterName))] = 1<<64 - 1
@@ -615,6 +733,95 @@ func TestCountersBounded(t *testing.T) {
 	e = readAll(t, dir)[1]
 	if e.Cols != 0 || e.Rows != 0 || e.ClientPID != 0 {
 		t.Fatalf("%+v", e)
+	}
+}
+
+func TestInjectionRecordAndCommandID(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	in := Fields{
+		MessageID: "msg:01J8ZK3-ab", Sender: "proj/lead", Outcome: "accepted",
+		Guard: []string{"idle=yes", "prompt=ready", "queue=0"}, CommandID: "cmd-0001", Digest: "sha256:ab12",
+	}
+	mustAppend(t, l, KindAtaniqObservation, EventInject, in)
+	in.Guard[0] = "changed"
+	e := readAll(t, dir)[0]
+	want := []string{"idle=yes", "prompt=ready", "queue=0"}
+	if e.MessageID != "msg:01J8ZK3-ab" || e.Sender != "proj/lead" || e.Outcome != "accepted" ||
+		e.CommandID != "cmd-0001" || !reflect.DeepEqual(e.Guard, want) {
+		t.Fatalf("%+v", e)
+	}
+	if s := l.Stats(); s != (Stats{Written: 1}) {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestInjectionRecordFieldsAreCodes(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	spoken := "hunter2 typed by the owner\n\x1b[31m"
+	long := func(n int) string { return strings.Repeat("a", n+10) }
+	mustAppend(t, l, KindAtaniqObservation, EventInject, Fields{
+		MessageID: long(MaxMessageID), Sender: long(MaxSender), Outcome: long(MaxOutcome),
+		CommandID: long(MaxCommandID), Guard: []string{spoken, long(MaxGuardCode)},
+	})
+	e := readAll(t, dir)[0]
+	for name, c := range map[string]struct {
+		got string
+		max int
+	}{
+		"MessageID": {e.MessageID, MaxMessageID}, "Sender": {e.Sender, MaxSender},
+		"Outcome": {e.Outcome, MaxOutcome}, "CommandID": {e.CommandID, MaxCommandID},
+		"Guard[1]": {e.Guard[1], MaxGuardCode},
+	} {
+		if len(c.got) != c.max {
+			t.Errorf("%s has %d bytes, want %d", name, len(c.got), c.max)
+		}
+	}
+	if strings.ContainsAny(e.Guard[0], " \n\x1b[") || len(e.Guard[0]) != len(spoken) {
+		t.Fatalf("text kept in a code: %q", e.Guard[0])
+	}
+	if s := l.Stats(); s.Truncated != 5 || s.Sanitized != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestGuardListIsBoundedAndCounted(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	var g []string
+	for i := 0; i < MaxGuardCodes+5; i++ {
+		g = append(g, fmt.Sprintf("g%02d", i))
+	}
+	mustAppend(t, l, KindHolder, EventInject, Fields{Guard: g})
+	e := readAll(t, dir)[0]
+	if len(e.Guard) != MaxGuardCodes || e.Guard[0] != "g00" || e.Guard[MaxGuardCodes-1] != fmt.Sprintf("g%02d", MaxGuardCodes-1) {
+		t.Fatalf("%v", e.Guard)
+	}
+	if s := l.Stats(); s.GuardDropped != 5 {
+		t.Fatalf("stats %+v", s)
+	}
+	if len(g) != MaxGuardCodes+5 {
+		t.Fatal("the caller's slice was changed")
+	}
+}
+
+func TestCounterNamesThatCollideKeepTheFirst(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	p := strings.Repeat("p", MaxCounterName)
+	mustAppend(t, l, KindHolder, EventCounters, Fields{Counters: map[string]uint64{
+		"a b": 1<<64 - 1, "a_b": 5, // both are "a_b" once sanitised
+		p + "x": 7, p + "y": 9, // both are cut to the same 64 bytes
+		"other": 3,
+	}})
+	e := readAll(t, dir)[0]
+	want := map[string]uint64{"a_b": 1<<64 - 1, p: 7, "other": 3}
+	if !reflect.DeepEqual(e.Counters, want) {
+		t.Fatalf("counters %v, want %v", e.Counters, want)
+	}
+	if s := l.Stats(); s.CountersDropped != 2 {
+		t.Fatalf("stats %+v", s)
 	}
 }
 
@@ -774,10 +981,93 @@ func TestReadBounds(t *testing.T) {
 	})
 }
 
+// failAfter yields data and then fails with err instead of the end of data.
+type failAfter struct {
+	data []byte
+	err  error
+}
+
+func (r *failAfter) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestScanEventsKeepsAReadError(t *testing.T) {
+	boom := errors.New("boom")
+	good := `{"time":"2026-01-01T00:00:00Z","seq":1,"kind":"holder","event":"start"}` + "\n"
+	cases := map[string]struct {
+		data    string
+		skipped int
+		events  int
+	}{
+		"after an over-long line":      {good + strings.Repeat("x", 3*MaxEventBytes), 1, 1},
+		"after a line and its newline": {good, 0, 1},
+		"in the middle of a line":      {good + `{"time":`, 1, 1},
+	}
+	for name, c := range cases {
+		var ev []Event
+		sk, err := scanEvents(&failAfter{data: []byte(c.data), err: boom}, &ev)
+		if !errors.Is(err, boom) || sk != c.skipped || len(ev) != c.events {
+			t.Errorf("%s: skipped %d, %d events, error %v", name, sk, len(ev), err)
+		}
+	}
+	// The end of the data is not an error.
+	var ev []Event
+	sk, err := scanEvents(&failAfter{data: []byte(good + strings.Repeat("x", 3*MaxEventBytes)), err: io.EOF}, &ev)
+	if err != nil || sk != 1 || len(ev) != 1 {
+		t.Errorf("EOF after an over-long line: skipped %d, %d events, error %v", sk, len(ev), err)
+	}
+}
+
+func TestReadOpensReadOnly(t *testing.T) {
+	dir := newDir(t)
+	openLog(t, dir, Options{}).Close()
+	dfd, err := openDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(dfd)
+	f, err := openFile(dfd, FileName, openRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fl, err := fcntlFlags(f)
+	if err != nil {
+		t.Skip("no F_GETFL")
+	}
+	if fl&syscall.O_ACCMODE != syscall.O_RDONLY || fl&syscall.O_APPEND != 0 {
+		t.Errorf("flags %o: not read-only", fl)
+	}
+	if _, err := f.Write([]byte("x")); err == nil {
+		t.Error("write to a file opened for Read")
+	}
+	if fl&syscall.O_NONBLOCK != 0 {
+		t.Errorf("O_NONBLOCK left set: %o", fl)
+	}
+}
+
+func fcntlFlags(f *os.File) (int, error) {
+	r, _, e := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFL, 0)
+	if e != 0 {
+		return 0, e
+	}
+	return int(r), nil
+}
+
 // --- Design case H14: no keystroke and no output text can be logged. ---
 
 // bannedWords are fragments of a field name that would carry input or output.
 var bannedWords = []string{"text", "input", "output", "key", "byte", "screen", "data", "payload", "content", "paste", "stdin", "stdout", "frame", "line", "raw", "body", "message", "msg"}
+
+// nameIsReviewed lists string fields whose name has a banned word in it and
+// that a reviewer has accepted: MessageID is an identifier (a code of at most
+// MaxMessageID bytes), not message text.
+var nameIsReviewed = map[string]bool{"MessageID": true}
 
 // checkType returns the problems with typ and every type reachable from it.
 func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []string {
@@ -789,7 +1079,10 @@ func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []stri
 		if typ.Elem().Kind() == reflect.Uint8 {
 			return append(bad, path+": byte slice or array")
 		}
-		return append(bad, path+": slice or array (not in the field set)")
+		if typ.Kind() == reflect.Slice && typ.Elem().Kind() == reflect.String {
+			return nil // a list of codes (Fields.Guard); the frozen list names it
+		}
+		return append(bad, path+": slice or array of something but strings")
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128, reflect.Float32, reflect.Float64:
 		return append(bad, path+": "+typ.Kind().String())
 	case reflect.Pointer:
@@ -811,6 +1104,9 @@ func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []stri
 				continue
 			}
 			names := []string{strings.ToLower(f.Name), strings.ToLower(f.Tag.Get("json"))}
+			if nameIsReviewed[f.Name] && f.Type.Kind() == reflect.String {
+				names = nil
+			}
 			for _, n := range names {
 				for _, w := range bannedWords {
 					if strings.Contains(n, w) {
@@ -849,13 +1145,15 @@ func TestH14TheCheckCatchesWhatItShouldCatch(t *testing.T) {
 		"json tag": struct {
 			Role string `json:"key_pressed"`
 		}{},
-		"any":        struct{ Extra any }{},
-		"any map":    struct{ Extra map[string]any }{},
-		"nested":     struct{ Inner struct{ Data []byte } }{},
-		"pointer":    struct{ P *struct{ Bytes []byte } }{},
-		"string map": struct{ M map[string][]byte }{},
-		"slice":      struct{ L []string }{},
-		"unexported": struct{ hidden string }{},
+		"any":             struct{ Extra any }{},
+		"any map":         struct{ Extra map[string]any }{},
+		"nested":          struct{ Inner struct{ Data []byte } }{},
+		"pointer":         struct{ P *struct{ Bytes []byte } }{},
+		"string map":      struct{ M map[string][]byte }{},
+		"slice":           struct{ L []int }{},
+		"string array":    struct{ L [3]string }{},
+		"slice of slices": struct{ L [][]string }{},
+		"unexported":      struct{ hidden string }{},
 	}
 	for name, v := range cases {
 		typ := reflect.TypeOf(v)
@@ -892,17 +1190,126 @@ func TestH14AppendTakesNoFreeFormValue(t *testing.T) {
 	}
 }
 
-func TestH14TypedInputDoesNotReachTheFile(t *testing.T) {
-	// A session with typing: the holder logs the attach, resizes and an
-	// injection, but nothing it logs has a place for the typed bytes.
-	dir := newDir(t)
-	l := openLog(t, dir, Options{})
-	secret := "hunter2-typed-by-the-owner"
-	mustAppend(t, l, KindHolder, EventAttach, Fields{ClientName: "console", ClientPID: 42})
-	mustAppend(t, l, KindHolder, EventResize, Fields{Cols: 100, Rows: 30})
-	mustAppend(t, l, KindAtaniqObservation, EventInject, Fields{Digest: "sha256:abc123", Reason: "accepted"})
-	raw, _ := os.ReadFile(filepath.Join(dir, FileName))
-	if bytes.Contains(raw, []byte(secret)) {
-		t.Fatal("typed text in the log")
+// frozenField is one reviewed field: its name, its type and its JSON tag.
+type frozenField struct{ name, typ, tag string }
+
+// reviewedEvent and reviewedFields are the whole field set of the log line,
+// reviewed for design case H14. A field added to Event or Fields fails
+// TestH14FieldSetIsReviewed until it is added here on purpose, by a reviewer
+// who has checked that it takes no input bytes and no screen text. The order
+// is the order of the struct.
+var reviewedEvent = []frozenField{
+	{"Time", "time.Time", `json:"time"`},
+	{"Seq", "uint64", `json:"seq"`},
+	{"Kind", "eventlog.Kind", `json:"kind"`},
+	{"Event", "eventlog.EventName", `json:"event"`},
+	{"Fields", "eventlog.Fields", ``},
+}
+
+var reviewedFields = []frozenField{
+	{"Role", "string", `json:"role,omitempty"`},
+	{"Epoch", "string", `json:"epoch,omitempty"`},
+	{"ClientName", "string", `json:"client,omitempty"`},
+	{"ClientPID", "int", `json:"client_pid,omitempty"`},
+	{"ClientCommand", "string", `json:"client_cmd,omitempty"`},
+	{"Cols", "int", `json:"cols,omitempty"`},
+	{"Rows", "int", `json:"rows,omitempty"`},
+	{"Reason", "string", `json:"reason,omitempty"`},
+	{"State", "string", `json:"state,omitempty"`},
+	{"Counters", "map[string]uint64", `json:"counters,omitempty"`},
+	{"Digest", "string", `json:"digest,omitempty"`},
+	{"MessageID", "string", `json:"message_id,omitempty"`},
+	{"Sender", "string", `json:"sender,omitempty"`},
+	{"Outcome", "string", `json:"outcome,omitempty"`},
+	{"Guard", "[]string", `json:"guard,omitempty"`},
+	{"CommandID", "string", `json:"command_id,omitempty"`},
+	{"ExitStatus", "*int", `json:"exit_status,omitempty"`},
+	{"StreamEnded", "*bool", `json:"stream_ended,omitempty"`},
+	{"TUIExited", "*bool", `json:"tui_exited,omitempty"`},
+	{"TreeGone", "*bool", `json:"tree_gone,omitempty"`},
+}
+
+// diffFields returns every difference between the exported fields of typ and
+// the reviewed list: a field that is not listed, a listed field that is gone
+// and a changed type or tag.
+func diffFields(typ reflect.Type, want []frozenField) []string {
+	var bad []string
+	have := map[string]frozenField{}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		have[f.Name] = frozenField{f.Name, f.Type.String(), string(f.Tag)}
+	}
+	listed := map[string]bool{}
+	for _, w := range want {
+		listed[w.name] = true
+		h, ok := have[w.name]
+		switch {
+		case !ok:
+			bad = append(bad, fmt.Sprintf("%s: reviewed field %s is gone", typ.Name(), w.name))
+		case h != w:
+			bad = append(bad, fmt.Sprintf("%s.%s is %s %s, reviewed as %s %s", typ.Name(), w.name, h.typ, h.tag, w.typ, w.tag))
+		}
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		if n := typ.Field(i).Name; !listed[n] {
+			bad = append(bad, fmt.Sprintf("%s.%s %s is not in the reviewed set", typ.Name(), n, typ.Field(i).Type))
+		}
+	}
+	if typ.NumField() != len(want) && len(bad) == 0 {
+		bad = append(bad, fmt.Sprintf("%s has %d fields, %d reviewed", typ.Name(), typ.NumField(), len(want)))
+	}
+	return bad
+}
+
+func TestH14FieldSetIsReviewed(t *testing.T) {
+	for _, c := range []struct {
+		typ  reflect.Type
+		want []frozenField
+	}{
+		{reflect.TypeOf(Event{}), reviewedEvent},
+		{reflect.TypeOf(Fields{}), reviewedFields},
+	} {
+		for _, p := range diffFields(c.typ, c.want) {
+			t.Error(p)
+		}
+	}
+}
+
+func TestH14TheFrozenListCanFail(t *testing.T) {
+	want := []frozenField{
+		{"Role", "string", `json:"role"`},
+		{"Pid", "int", `json:"pid"`},
+	}
+	cases := map[string]any{
+		"same": struct {
+			Role string `json:"role"`
+			Pid  int    `json:"pid"`
+		}{},
+		"a new field with a harmless name": struct {
+			Role   string `json:"role"`
+			Pid    int    `json:"pid"`
+			Detail string `json:"detail"`
+		}{},
+		"a changed type": struct {
+			Role string `json:"role"`
+			Pid  int64  `json:"pid"`
+		}{},
+		"a changed tag": struct {
+			Role string `json:"role"`
+			Pid  int    `json:"process"`
+		}{},
+		"a removed field": struct {
+			Role string `json:"role"`
+		}{},
+		"a renamed field": struct {
+			Role string `json:"role"`
+			PID  int    `json:"pid"`
+		}{},
+	}
+	for name, v := range cases {
+		bad := diffFields(reflect.TypeOf(v), want)
+		if (name == "same") != (len(bad) == 0) {
+			t.Errorf("%s: problems %v", name, bad)
+		}
 	}
 }

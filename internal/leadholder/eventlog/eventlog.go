@@ -11,9 +11,29 @@
 // [Fields] is a struct of small typed values. It has no field that takes input
 // bytes or screen text, no []byte, no free map[string]any and no interface.
 // Every string is capped, and a code-like string (reason, state, digest,
-// counter name) is also restricted to a small character set. A test reflects
-// over the exported types so that a later change adding such a field fails
-// there (design case H14).
+// counter name, message identity, sender, outcome, guard reading, command
+// identity) is also restricted to a small character set. The injection record
+// of design 1.7 has its own typed fields: MessageID, Sender, Outcome, Guard
+// (a short list of codes) and Digest; CommandID names the control command that
+// caused an event.
+//
+// Two checks in the tests keep it that way (design case H14). One freezes the
+// exported fields of [Event] and [Fields], by name, type and JSON tag, against
+// a list a reviewer has read: any new field fails there until the list is
+// changed on purpose. The other rejects, by type and by name, a field that
+// could carry bytes, a slice of bytes, an interface or a word like "text".
+// Neither can tell what a caller puts into a string field, so the free-text
+// fields are named here.
+//
+// # Free text
+//
+// Four fields take any text, capped and made valid UTF-8, but not restricted
+// to a character set. ClientName and ClientCommand come from the peer's
+// process (the client's name and its command line). Role and Epoch come from
+// the holder's own configuration. The caller must take them only from those
+// sources: never from the terminal, the session's output or anything typed.
+// Every other string is a code. The package cannot check where a value came
+// from; the frozen field set above is what stops a new text field.
 //
 // # Files and bounds
 //
@@ -21,7 +41,12 @@
 // caller and have mode 0700. When the next event would take the file past
 // [Options.MaxBytes] (default 4 MiB) the file is renamed to events.jsonl.1,
 // replacing an older one, and a new file is started. So the file is never
-// larger than the cap and the total kept is at most twice the cap. One event
+// larger than the cap and, once the first rotation has happened, the total kept
+// is at most twice the cap. A file that is over the cap when Open runs (the
+// cap was lowered, or an older writer made it) is renamed to events.jsonl.1
+// whole at Open, before anything is written: the current file starts empty
+// and under the cap, but the rotated file keeps its size, over the cap, until
+// the next rotation replaces it. Nothing is cut or deleted to make room. One event
 // is never split across the two files, and an event over [MaxEventBytes]
 // encoded is refused and counted, not written. Every cap that is hit is
 // counted in [Stats].
@@ -39,8 +64,19 @@
 // A write error is returned and counted, and the log keeps working when the
 // disk recovers. If a failed write left part of a line in the file, the next
 // event first writes a newline so the fragment cannot join the next record;
-// [Read] skips such a fragment and reports it. The sequence number is taken
-// before the write, so a lost event leaves a gap that shows in the file.
+// [Read] skips such a fragment and reports it.
+//
+// # Sequence numbers
+//
+// The sequence number is taken before the write, so an event lost inside one
+// run of the holder leaves a gap that shows in the file. The sequence starts
+// at 1 with each Open, that is with each process: it does not continue from
+// the file. Across a restart the numbers go 1..n and then 1 again, so a gap
+// cannot be seen there, and a restart shows as a seq that goes back to 1. The
+// holder's first event of a run is "start"; its Time, which every event has
+// in UTC, is the wall-clock start of the process, so the start has no field of
+// its own. Fields.Epoch, which the holder sets on that event, tells the runs
+// apart where the clock is not enough.
 //
 // The package has one writer per folder: two processes appending to the same
 // folder are not coordinated (the holder's role lock gives the exclusivity).
@@ -92,6 +128,14 @@ const (
 	MaxDigest      = 128
 	MaxCounters    = 64
 	MaxCounterName = 64
+	// The injection record (design 1.7) and the command identity. They are
+	// codes, not text.
+	MaxMessageID  = 96
+	MaxSender     = 96
+	MaxOutcome    = 32
+	MaxGuardCodes = 8  // entries in Fields.Guard
+	MaxGuardCode  = 32 // bytes in one entry
+	MaxCommandID  = 64
 )
 
 // Kind says what sort of statement an event is. The design records a provider
@@ -167,7 +211,18 @@ type Fields struct {
 	State         string            `json:"state,omitempty"`  // state name
 	Counters      map[string]uint64 `json:"counters,omitempty"`
 	Digest        string            `json:"digest,omitempty"` // digest of something, never the thing
-	ExitStatus    *int              `json:"exit_status,omitempty"`
+	// The record of an injection, design 1.7: the identity of the message
+	// in the lead's conversation, who sent it, what the guards read and
+	// what came of it. Each is a code, never the message text; the digest
+	// above stands for the text.
+	MessageID string   `json:"message_id,omitempty"`
+	Sender    string   `json:"sender,omitempty"`
+	Outcome   string   `json:"outcome,omitempty"`
+	Guard     []string `json:"guard,omitempty"` // guard readings, at most MaxGuardCodes codes
+	// CommandID is the identity of the control command that caused the
+	// event, a token of at most MaxCommandID bytes.
+	CommandID  string `json:"command_id,omitempty"`
+	ExitStatus *int   `json:"exit_status,omitempty"`
 	// The three facts of design 1.4, each set only when known.
 	StreamEnded *bool `json:"stream_ended,omitempty"`
 	TUIExited   *bool `json:"tui_exited,omitempty"`
@@ -202,7 +257,8 @@ type Stats struct {
 	Invalid         uint64 // events refused for an unknown kind or name
 	Truncated       uint64 // string fields cut to their cap
 	Sanitized       uint64 // code-like strings with characters replaced
-	CountersDropped uint64 // counter entries dropped over MaxCounters
+	CountersDropped uint64 // counter entries dropped over MaxCounters or for a name that became an earlier one
+	GuardDropped    uint64 // guard readings dropped over MaxGuardCodes
 }
 
 type sink interface {
@@ -230,7 +286,9 @@ type Log struct {
 // Open opens or creates events.jsonl in dir. The folder must exist, be owned
 // by the caller and have mode 0700, and must not be a symlink; the file is
 // created with mode 0600, must be a regular file of the caller, and must not
-// be a symlink. Otherwise Open returns an error wrapping ErrUnsafe.
+// be a symlink. The rotated name, if present, must be a regular file of the
+// caller too (not a folder, a symlink or a special file), or rotation could
+// never replace it. Otherwise Open returns an error wrapping ErrUnsafe.
 func Open(dir string, o Options) (*Log, error) {
 	max := o.MaxBytes
 	if max == 0 {
@@ -247,7 +305,11 @@ func Open(dir string, o Options) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := openFile(dfd, FileName, true)
+	if err := checkRotated(dfd); err != nil {
+		unix.Close(dfd)
+		return nil, err
+	}
+	f, err := openFile(dfd, FileName, openCreate)
 	if err != nil {
 		unix.Close(dfd)
 		return nil, err
@@ -258,7 +320,33 @@ func Open(dir string, o Options) (*Log, error) {
 		unix.Close(dfd)
 		return nil, err
 	}
+	if l.size > l.max {
+		if err := l.rotate(); err != nil {
+			l.closeFiles()
+			return nil, err
+		}
+	}
 	return l, nil
+}
+
+// checkRotated refuses an events.jsonl.1 that rotation could not replace or
+// that is not the caller's: anything but an absent name or a regular file of
+// the caller. Without this a folder at that name stops every rotation, and
+// the log fails at the cap and not at Open.
+func checkRotated(dfd int) error {
+	var st unix.Stat_t
+	err := unix.Fstatat(dfd, RotatedName, &st, unix.AT_SYMLINK_NOFOLLOW)
+	switch {
+	case err == unix.ENOENT:
+		return nil
+	case err != nil:
+		return fmt.Errorf("eventlog: stat %s: %w", RotatedName, err)
+	case st.Mode&unix.S_IFMT != unix.S_IFREG:
+		return fmt.Errorf("%w: %s is not a regular file", ErrUnsafe, RotatedName)
+	case int(st.Uid) != os.Geteuid():
+		return fmt.Errorf("%w: %s belongs to another user", ErrUnsafe, RotatedName)
+	}
+	return nil
 }
 
 // adopt makes f the current file and reads its size and whether it ends in a
@@ -321,7 +409,7 @@ func (l *Log) Append(kind Kind, name EventName, f Fields) error {
 		return fmt.Errorf("%w: event of %d bytes, cap %d", ErrTooLarge, n, l.maxEvent)
 	}
 	if l.f == nil { // a failed rotation left no file
-		f, err := openFile(l.dfd, FileName, true)
+		f, err := openFile(l.dfd, FileName, openCreate)
 		if err == nil {
 			err = l.adopt(f)
 			if err != nil {
@@ -374,12 +462,12 @@ func (l *Log) rotate() error {
 	l.f = nil
 	if err := unix.Renameat(l.dfd, FileName, l.dfd, RotatedName); err != nil {
 		// Reopen the unrotated file so the log keeps working.
-		if f, e := openFile(l.dfd, FileName, false); e == nil {
+		if f, e := openFile(l.dfd, FileName, openAppend); e == nil {
 			l.f = f
 		}
 		return fmt.Errorf("eventlog: rotate: %w", err)
 	}
-	f, err := openFile(l.dfd, FileName, true)
+	f, err := openFile(l.dfd, FileName, openCreate)
 	if err != nil {
 		return fmt.Errorf("eventlog: rotate: %w", err)
 	}
@@ -436,6 +524,19 @@ func (l *Log) bound(f Fields) Fields {
 	f.Reason = l.code(f.Reason, MaxReason)
 	f.State = l.code(f.State, MaxState)
 	f.Digest = l.code(f.Digest, MaxDigest)
+	f.MessageID = l.code(f.MessageID, MaxMessageID)
+	f.Sender = l.code(f.Sender, MaxSender)
+	f.Outcome = l.code(f.Outcome, MaxOutcome)
+	f.CommandID = l.code(f.CommandID, MaxCommandID)
+	if len(f.Guard) > 0 {
+		n := min(len(f.Guard), MaxGuardCodes)
+		g := make([]string, n)
+		for i := range g {
+			g[i] = l.code(f.Guard[i], MaxGuardCode)
+		}
+		l.stats.GuardDropped += uint64(len(f.Guard) - n)
+		f.Guard = g
+	}
 	if f.ClientPID < 0 {
 		f.ClientPID = 0
 	}
@@ -458,7 +559,13 @@ func (l *Log) bound(f Fields) Fields {
 				continue
 			}
 			ck := l.code(k, MaxCounterName)
-			out[ck] += f.Counters[k]
+			if _, dup := out[ck]; dup {
+				// Two names became one key. Summing could wrap and hide
+				// both: keep the first in sorted order and count the other.
+				l.stats.CountersDropped++
+				continue
+			}
+			out[ck] = f.Counters[k]
 		}
 		f.Counters = out
 	}
@@ -547,12 +654,26 @@ func openDir(dir string) (int, error) {
 	return fd, nil
 }
 
-// openFile opens name in the folder for appending, never through a symlink
-// and never blocking on a special file. With create it makes the file with
-// mode 0600 when it is absent. The result is a regular file of the caller
-// with mode 0600.
-func openFile(dfd int, name string, create bool) (*os.File, error) {
-	const base = unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+// How openFile opens a file: for reading only, for appending, or for
+// appending and creating it when absent.
+type openMode int
+
+const (
+	openRead openMode = iota
+	openAppend
+	openCreate
+)
+
+// openFile opens name in the folder, never through a symlink and never
+// blocking on a special file. In openCreate mode it makes the file with mode
+// 0600 when it is absent. The result is a regular file of the caller with
+// mode 0600, open read-only for openRead and for appending otherwise.
+func openFile(dfd int, name string, mode openMode) (*os.File, error) {
+	base := unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	if mode == openRead {
+		base = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	}
+	create := mode == openCreate
 	var fd int
 	var err error
 	created := false
@@ -618,8 +739,15 @@ const MaxReadBytes = MaxMaxBytes
 // caller; a missing file is empty. Lines that are not events (a torn line, an
 // over-long line) are skipped and reported in the error, which wraps
 // ErrCorrupt; a file larger than MaxReadBytes is read up to that size and the
-// error wraps ErrTooLarge. The events are valid whenever they are returned,
-// even with an error.
+// error wraps ErrTooLarge. A read error is returned as it is, with the events
+// read before it. The files are opened read-only, so Read works on a folder
+// that cannot be written.
+//
+// Read is for tests and the status command. It decodes each line and checks
+// that it has a sequence number, a kind and a name, but it does not check the
+// kind or the name against the known ones and it does not cap the fields
+// again: a line another writer put in the file comes back as it is, so a
+// caller that shows it must treat its strings as untrusted.
 func Read(dir string) ([]Event, error) {
 	dfd, err := openDir(dir)
 	if err != nil {
@@ -630,7 +758,7 @@ func Read(dir string) ([]Event, error) {
 	var skipped int
 	var tooLarge bool
 	for _, name := range []string{RotatedName, FileName} {
-		f, err := openFile(dfd, name, false)
+		f, err := openFile(dfd, name, openRead)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) {
 				continue
@@ -642,7 +770,7 @@ func Read(dir string) ([]Event, error) {
 		skipped += sk
 		tooLarge = tooLarge || big
 		if err != nil {
-			return events, err
+			return events, fmt.Errorf("eventlog: read %s: %w", name, err)
 		}
 	}
 	var errs []error
@@ -661,7 +789,15 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 		return 0, false, err
 	}
 	tooLarge = st.Size() > MaxReadBytes
-	r := bufio.NewReaderSize(io.LimitReader(f, MaxReadBytes), 2*MaxEventBytes)
+	skipped, err = scanEvents(io.LimitReader(f, MaxReadBytes), events)
+	return skipped, tooLarge, err
+}
+
+// scanEvents appends the events of the lines of rd to events and counts the
+// lines it skipped. A read error other than the end of the data is returned,
+// also after an over-long line.
+func scanEvents(rd io.Reader, events *[]Event) (skipped int, err error) {
+	r := bufio.NewReaderSize(rd, 2*MaxEventBytes)
 	for {
 		line, rerr := r.ReadSlice('\n')
 		if rerr == bufio.ErrBufferFull {
@@ -670,6 +806,9 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 				_, rerr = r.ReadSlice('\n')
 			}
 			if rerr != nil {
+				if rerr != io.EOF {
+					err = rerr
+				}
 				break
 			}
 			continue
@@ -695,5 +834,5 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 			break
 		}
 	}
-	return skipped, tooLarge, err
+	return skipped, err
 }
