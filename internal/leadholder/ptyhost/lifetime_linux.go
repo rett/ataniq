@@ -65,6 +65,11 @@ func (h *Host) TreeMethod() string {
 // method the control group walk and the session scan must both be empty. A tree is never
 // gone while the direct child is not yet reaped. gone false with a proof
 // that says why is also the answer when the check itself failed.
+//
+// Once the direct child's zombie was let go before the session was proven
+// empty (Close came first, or the wait for the child failed), the session id
+// is no longer reserved, and neither method proves the tree gone any more:
+// with the cgroup method too, because it needs the session scan.
 func (h *Host) TreeGone() (gone bool, proof string) {
 	if !h.hasExited() {
 		return false, h.TreeMethod() + ": the direct child has not exited"
