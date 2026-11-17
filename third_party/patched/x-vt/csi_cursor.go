@@ -12,7 +12,9 @@ func (e *Emulator) nextTab(n int) {
 	scroll := e.scr.ScrollRegion()
 	for range n {
 		ts := e.tabstops.Next(x)
-		if ts < x {
+		// No further tab stop: the other repeats would stay here too, and
+		// a count of two billion made this loop for minutes.
+		if ts <= x {
 			break
 		}
 		x = ts
@@ -41,7 +43,8 @@ func (e *Emulator) prevTab(n int) {
 
 	for range n {
 		ts := e.tabstops.Prev(x)
-		if ts > x {
+		// As in nextTab, stop where the cursor can go no further.
+		if ts >= x {
 			break
 		}
 		x = ts
@@ -103,6 +106,14 @@ func (e *Emulator) carriageReturn() {
 func (e *Emulator) repeatPreviousCharacter(n int) {
 	if e.lastChar == 0 {
 		return
+	}
+	// A count is a parameter of up to two billion, and the character takes
+	// the time of a print each. More than the cells of the screen only wraps
+	// and scrolls over what the first screenful drew, so the repeat is cut
+	// there, and counted.
+	if cells := e.Width() * e.Height(); n > cells {
+		e.counters.RepeatsCut++
+		n = cells
 	}
 	for range n {
 		e.handlePrint(e.lastChar)

@@ -51,6 +51,9 @@ type Counters struct {
 	// that were longer than [MaxStringBytes] and lost their end, counted when
 	// the first byte was dropped.
 	StringsTruncated uint64
+	// RepeatsCut is the number of REP sequences (CSI n b) whose count was
+	// over the number of cells of the screen and was cut to it.
+	RepeatsCut uint64
 }
 
 // Counters returns the counters of the caps that were hit.

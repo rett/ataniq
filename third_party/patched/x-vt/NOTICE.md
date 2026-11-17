@@ -161,6 +161,20 @@ Patches, applied in this order to the files of the module as released:
    that follows; an inventory test lists every field of the emulator, its
    screens and its cursors, with whether the state carries it, so that a field
    added by a later version of the module is decided on.
+12. `vt: bound the sequences that loop by a parameter` (`csi_cursor.go`,
+   `csi_screen.go`, `limits.go`, `loops_test.go`). A parameter is a number of
+   up to two billion, and four sequences looped that many times: `CSI n I`
+   and `CSI n Z` (tab forward and backward) went on after the last tab stop,
+   `CSI n X` (erase characters) filled past the right edge, and `CSI n b`
+   (repeat the last character) printed it n times. A single sequence of
+   eight bytes kept the process busy for minutes (a count of 100 million took
+   40 seconds), and the pane's lock with it. The two tab loops now stop where
+   the cursor cannot move on, and the erase is cut at the right edge: both
+   give the result they gave. A repeat is cut to the number of cells of the
+   screen and `Counters().RepeatsCut` counts the sequences that were cut; the
+   screen then holds what a repeat of exactly that many gives, which is not
+   what a terminal that printed two billion characters would show (the
+   cursor column and the last line depend on the count).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
