@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -47,6 +48,17 @@ func TestExecLauncherHelper(t *testing.T) {
 	case "wait":
 		fmt.Println("waiting")
 		select {}
+	case "leader-with-child":
+		// The first process starts a member of its own group that waits, and
+		// ends: what is left is a group with a dead leader.
+		child := exec.Command(os.Args[0], "-test.run=^TestExecLauncherHelper$")
+		child.Env = []string{helperEnv + "=wait"}
+		if err := child.Start(); err != nil {
+			fmt.Println("start:", err)
+			os.Exit(98)
+		}
+		fmt.Printf("child=%d\n", child.Process.Pid)
+		os.Exit(0)
 	}
 	os.Exit(99)
 }
@@ -196,5 +208,86 @@ func TestExecLauncherToolVersions(t *testing.T) {
 	v = ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: "relative", Pasta: dir + "/missing"})
 	if len(v.Errors) != 2 {
 		t.Errorf("errors: %v", v.Errors)
+	}
+}
+
+// procState is the state letter of a process in /proc, or "" when there is no
+// such process.
+func procState(t *testing.T, pid int) string {
+	t.Helper()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return ""
+	}
+	i := strings.LastIndexByte(string(data), ')')
+	f := strings.Fields(string(data[i+1:]))
+	if len(f) == 0 {
+		t.Fatalf("stat of %d: %q", pid, data)
+	}
+	return f[0]
+}
+
+// The first process stays unreaped until Close, so its id (the group's) cannot
+// be reused while the stop rule signals the group; and a group whose leader
+// has ended is not empty while another member lives.
+func TestExecLauncherKeepsTheLeaderUnreapedUntilTheGroupIsKnownEmpty(t *testing.T) {
+	p := launchHelper(t, "leader-with-child")
+	select {
+	case <-p.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the helper did not exit")
+	}
+	var child int
+	if _, err := fmt.Sscanf(string(p.Terminal().Data), "child=%d", &child); err != nil {
+		t.Fatalf("terminal output %q: %v", p.Terminal().Data, err)
+	}
+	if e := p.Exit(); e.Code != 0 || e.Signal != "" || e.Err != "" {
+		t.Fatalf("exit %+v", e)
+	}
+	// The leader has ended and is still there, as a zombie that holds the id.
+	if st := procState(t, p.PID()); st != "Z" {
+		t.Fatalf("the leader's state is %q, want a zombie (Z): it was reaped", st)
+	}
+	// The member of its group is alive, so the group is not empty, whatever
+	// kill(2) says about the zombie.
+	if there, err := p.Signal(0); !there || err != nil {
+		t.Fatalf("Signal(0) = %v, %v with a live member", there, err)
+	}
+	ev := stopProcess(p, 5*time.Second, 5*time.Second, 5*time.Millisecond)
+	if ev.State != StopByTerm || len(ev.Signals) != 1 {
+		t.Fatalf("stop %+v", ev)
+	}
+	// The member is gone, and the leader is still unreaped.
+	if st := procState(t, p.PID()); st != "Z" {
+		t.Errorf("the leader's state is %q after the stop, want Z", st)
+	}
+	if there, err := p.Signal(0); there || err != nil {
+		t.Errorf("Signal(0) = %v, %v after the member ended", there, err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if st := procState(t, p.PID()); st != "" {
+		t.Errorf("the leader's state is %q after Close, want it reaped", st)
+	}
+	// Nothing is sent once the id may be someone else's.
+	for _, sig := range []syscall.Signal{0, syscall.SIGTERM, syscall.SIGKILL} {
+		if there, err := p.Signal(sig); there || err != nil {
+			t.Errorf("Signal(%d) = %v, %v after Close", sig, there, err)
+		}
+	}
+}
+
+// With no other member, the stop of a group whose leader has already ended
+// finds nothing left and sends nothing.
+func TestExecLauncherStopOfAFinishedGroupSendsNothing(t *testing.T) {
+	p := launchHelper(t, "report")
+	<-p.Done()
+	ev := stopProcess(p, time.Second, time.Second, time.Millisecond)
+	if ev.State != StopNothingLeft || len(ev.Signals) != 0 {
+		t.Errorf("stop %+v", ev)
+	}
+	if e := p.Exit(); e.Code != 7 {
+		t.Errorf("exit %+v", e)
 	}
 }

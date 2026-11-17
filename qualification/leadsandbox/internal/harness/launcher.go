@@ -88,11 +88,17 @@ type Process interface {
 	// Exit is how it ended; valid after Done is closed.
 	Exit() Exit
 	// Signal sends a signal to the process group. delivered is false when no
-	// process is left in the group; sig 0 only asks.
+	// process is left in the group; sig 0 only asks. A first process that
+	// has ended but has not been reaped is not counted as left, and keeps its
+	// process id from reuse until Close, so the group id is never another
+	// process's while Signal sends to it. After Close nothing is sent.
 	Signal(sig syscall.Signal) (delivered bool, err error)
 	// Terminal is a snapshot of the captured output. After Done it waits a
 	// bounded time for the last of the output.
 	Terminal() TerminalOutput
-	// Close releases the pseudo-terminal. It is safe to call twice.
+	// Close releases the pseudo-terminal and the first process, which is
+	// reaped (at once when it has ended). The caller closes after the stop
+	// rule has found the group empty or has given up on it. It is safe to
+	// call twice.
 	Close() error
 }

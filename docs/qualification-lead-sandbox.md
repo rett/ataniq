@@ -355,7 +355,10 @@ not start, record that too: it is a fact about this host, and the plan's R17 not
 
 A run closes the canary, removes the report FIFO and its folder, releases the pseudo-terminal
 and stops the process group (SIGTERM, wait, SIGKILL, wait, with the stop-rule
-constants). A group still there after that is recorded as `unknown`; look for
+constants). The first process is kept unreaped until the stop has found the group
+empty, so that its process group id cannot be given to another process while
+the stop signals it; members that are zombies do not count as left. A group still
+there after that is recorded as `unknown`; look for
 leftover processes with the ordinary host tools before the next attempt, and
 do not start another attempt on a campaign while one may still run. The harness
 removes nothing else.
