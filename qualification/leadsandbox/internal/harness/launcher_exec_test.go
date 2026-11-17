@@ -381,3 +381,40 @@ func TestExecLauncherStopOfAFinishedGroupSendsNothing(t *testing.T) {
 		t.Errorf("exit %+v", e)
 	}
 }
+
+// TestExitOfInfoReadsTheStatusFromARealWaitid pins the offset of si_status
+// (siStatusAt) against the kernel: a child that exits with a known code, and
+// one that is ended by a known signal, are waited for with waitid and decoded
+// by exitOfInfo. It starts /bin/sh, with no pseudo-terminal, no namespace and
+// no sandbox tool.
+func TestExitOfInfoReadsTheStatusFromARealWaitid(t *testing.T) {
+	for _, tc := range []struct {
+		script string
+		want   Exit
+	}{
+		{"exit 5", Exit{Code: 5}},
+		{"exit 0", Exit{Code: 0}},
+		{"exit 201", Exit{Code: 201}},
+		{"kill -TERM $$", Exit{Code: -1, Signal: "SIGTERM"}},
+		{"kill -KILL $$", Exit{Code: -1, Signal: "SIGKILL"}},
+	} {
+		t.Run(tc.script, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", tc.script)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			var info unix.Siginfo
+			var err error
+			for {
+				err = unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED, nil)
+				if err != unix.EINTR {
+					break
+				}
+			}
+			if got := exitOfInfo(&info, err); got != tc.want {
+				t.Errorf("exitOfInfo = %+v, want %+v", got, tc.want)
+			}
+			_ = cmd.Wait() // already reaped by waitid: only releases the process record
+		})
+	}
+}

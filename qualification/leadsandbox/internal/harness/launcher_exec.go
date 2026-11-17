@@ -143,10 +143,37 @@ func (p *execProcess) read() {
 
 // The codes of si_code that waitid gives for a child that has ended.
 const (
-	cldExited  = 1
-	cldKilled  = 2
-	cldDumped  = 3
-	siStatusAt = 24 // offset of si_status in siginfo_t on linux/amd64
+	cldExited = 1
+	cldKilled = 2
+	cldDumped = 3
+)
+
+// siStatusAt is the offset of si_status in the siginfo_t that waitid fills for
+// a child (the SIGCHLD form): the three int32 fields si_signo, si_errno and
+// si_code, four bytes of padding that put the union at 16 on a 64-bit target,
+// then si_pid and si_uid (4 bytes each), then si_status. x/sys/unix gives no
+// accessor for it, so exitOfInfo reads it through unsafe.
+//
+// The value is the layout of linux/amd64 and of nothing else, and this file is
+// constrained to linux && amd64 for that reason. The guards below make a build
+// for another target, or a siginfo_t that is not the one assumed, fail to
+// compile instead of reading the wrong bytes: widening the constraint means
+// finding the offset of the new target and extending the guards.
+const siStatusAt = 24
+
+// Compile-time guards for siStatusAt. A constant index out of range is a
+// compile error, so each line holds only when its two numbers are equal.
+var (
+	// A 64-bit target: the padding after si_code and the union at 16 hold.
+	_ = [1]struct{}{}[unsafe.Sizeof(uintptr(0))-8]
+	// unix.Siginfo is the 128 bytes of siginfo_t, and si_code is where the
+	// header says (offset 8).
+	_ = [1]struct{}{}[unsafe.Sizeof(unix.Siginfo{})-128]
+	_ = [1]struct{}{}[unsafe.Offsetof(unix.Siginfo{}.Code)-8]
+	// The status is the third int32 of the union, and lies inside the
+	// structure (a negative array length does not compile).
+	_ = [1]struct{}{}[siStatusAt-(16+2*4)]
+	_ [unsafe.Sizeof(unix.Siginfo{}) - (siStatusAt + 4)]struct{}
 )
 
 // wait waits for the first process to end without reaping it, records how it
