@@ -16,6 +16,7 @@ func flaggedScene(t *testing.T) *scene {
 	s.symlink(".codex", "cfg")
 	s.commit("link in upstream\n")
 	s.publish(upstreamRef, s.cur)
+	s.base = s.cur
 	s.put("Makefile", "all:\n")
 	s.put("cfg/settings.json", `{"hooks":1}`+"\n")
 	s.symlink("docs/link", "../x")

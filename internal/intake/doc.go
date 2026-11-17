@@ -45,9 +45,10 @@
 // boundedexec with a time limit that covers the whole call and with output
 // caps taken from [Limits]. Every ref is resolved once, by its exact full
 // name, and every later command gets object ids and never a ref name, so a
-// ref that moves during the review cannot mix two states. The package
-// writes nothing to the repository, checks nothing out, and opens no file of
-// the repository except through git. The repository must be a bare
+// ref that moves during the review cannot mix two states. [Inspect] and
+// [Diff] write nothing to the repository. [Integrate] writes one ref, the
+// target branch, and nothing else. The package checks nothing out, and opens
+// no file of the repository except through git. The repository must be a bare
 // repository that Ataniq made, never a lead's clone.
 //
 // This package does not import the mirror package. It takes a repository and
@@ -108,9 +109,45 @@
 // with the suffix ".out", never read back and never parsed by this package; a
 // person who looks at it shows it through leadtext.
 //
+// # Integration
+//
+// [Integrate] is the last step. It inspects again (a fresh [Inspect], which
+// reads the refs as they are now), and goes on only when the fresh review's
+// tip and digest are the ones the owner signed ([ErrMoved] otherwise, naming
+// the old and the new ids), the sign-off passes [Review.CheckSignOff], and the
+// newest verification record in the store for this project and tip is a clean
+// pass ([ErrNotVerified] otherwise, so a later failed run withdraws an
+// earlier pass; a pass whose output was cut, or that was stopped, is not
+// clean). Then it moves the upstream branch to the tip with one
+// compare-and-swap, git update-ref in a transaction on standard input that
+// expects the target to be at the base the review saw, and writes an
+// [IntakeRecord]. The move is fast-forward only: Inspect has refused a tip
+// that does not contain the target. It never creates a branch (a missing
+// target is [ErrNoRef]), never deletes, never forces, and writes no ref but
+// the one target, which must be a branch under refs/heads/. The mirror's HEAD,
+// tags and refs/leads/ are never targets. No reflog message is written; the
+// intake record is the record. If the branch moved and the record cannot be
+// written, the error is a [RecordError] that says so and carries the record.
+//
+// The integration moves a branch in the bare mirror only. This package runs
+// no checkout, merge, pull, reset, worktree or push, and the mirror has no
+// index and no work tree. The owner's working checkout is not touched: it gets
+// the new commits later, by the owner's own fetch from the mirror.
+//
+// # What a sign-off is, and is not
+//
+// After the sign-off the code runs as the owner, as any merged code does. The
+// review at intake is the boundary: what the owner signs is what enters
+// the history. A verification pass is evidence, not proof (see package
+// verify). This package cannot tell who typed the sign-off. The lead cannot
+// run it, because the mirror is read-only in its sandbox and the records
+// folder is not mounted there; that is a property of the sandbox plan and of
+// the command that calls this package, not something this package checks.
+//
 // # What it does not do
 //
-// It does not write refs or merge (yet). The alias
+// It does not run the gates (package verify does), build a sandbox, decide
+// who signs, or touch a working checkout. The alias
 // check resolves a symlink's target by its text, against the symlinks of the
 // tip's own tree: it follows a symlink that the target passes through, and one
 // that is its last element, but at most 8 symlinks in all. A longer chain or
