@@ -2,16 +2,18 @@
 
 package mountpoints
 
-import (
-	"ataniq/internal/leadsandbox/profile"
-)
+import "ataniq/internal/leadsandbox/profile"
 
 // Check is the read-only check of every start. Each mount point must exist
-// and have the right type, no component of its path may be a symbolic link,
-// and each tree placeholder must be listed in .git/info/exclude. It returns
-// every problem it finds, not only the first, up to [MaxProblems]. It creates
-// and repairs nothing. The error is set only when the inputs are refused (a
-// *Problem of kind ErrInvalid).
+// and have the right type, and no component of its path may be a symbolic
+// link. The git metadata folder (profile.Inputs.GitMeta), the source of the
+// three read-only .git binds, must exist with its three entries (config a
+// regular file, hooks and info folders), no link on its path or among them, and
+// the modes Prepare gave them (0700 for folders, 0600 for the file), and its
+// info/exclude must list each tree placeholder as one anchored line. It
+// returns every problem it finds, not only the first, up to [MaxProblems]. It
+// creates and repairs nothing. The error is set only when the inputs are
+// refused (a *Problem of kind ErrInvalid).
 func Check(in profile.Inputs) (Report, error) {
 	pts, err := List(in)
 	if err != nil {
@@ -35,36 +37,6 @@ func Check(in profile.Inputs) (Report, error) {
 			rep.add(problem(ErrMissing, p.HostPath, "the mount point does not exist"))
 		}
 	}
-	checkExclude(rs, in.Layout().Tree(), pts, &rep)
+	checkGitMeta(rs, in, placeholdersOf(pts), &rep)
 	return rep, nil
-}
-
-// checkExclude checks that every tree placeholder is listed.
-func checkExclude(rs *rootSet, treeDir string, pts []Point, rep *Report) {
-	var ph []Point
-	for _, p := range pts {
-		if p.Placeholder {
-			ph = append(ph, p)
-		}
-	}
-	if len(ph) == 0 {
-		return
-	}
-	tree, _ := rs.get(treeDir)
-	if tree == nil {
-		return // the folder is already reported
-	}
-	data, exists, prob := readExclude(tree, treeDir)
-	if prob != nil {
-		rep.add(prob)
-		return
-	}
-	for _, p := range ph {
-		switch {
-		case !exists:
-			rep.add(problem(ErrNotExcluded, p.HostPath, "%s does not exist", excludeRel))
-		case !listedIn(data, p.Rel):
-			rep.add(problem(ErrNotExcluded, p.HostPath, "%s has no line %s", excludeRel, excludeLine(p.Rel)))
-		}
-	}
 }

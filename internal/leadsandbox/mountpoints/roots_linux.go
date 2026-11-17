@@ -142,16 +142,3 @@ func describe(info safefile.Info) string {
 	}
 	return "a " + info.Type().String() + " entry"
 }
-
-// readExclude reads .git/info/exclude of the tree, bounded. A missing file is
-// not a problem: exists is false.
-func readExclude(tree *safefile.Root, treeDir string) (data []byte, exists bool, prob *Problem) {
-	data, err := tree.ReadFile(excludeRel, maxExclude, safefile.RefuseHardLinks())
-	if err != nil {
-		if isNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, false, fromErr(treeDir+"/"+excludeRel, err)
-	}
-	return data, true, nil
-}

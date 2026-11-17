@@ -158,7 +158,19 @@ func (f *fixture) check() Report {
 	return rep
 }
 
+// exclude is the exclude file in Ataniq's copy, the one git inside the sandbox
+// reads.
 func (f *fixture) exclude() string {
+	f.t.Helper()
+	b, err := os.ReadFile(f.gitMeta + "/info/exclude")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return string(b)
+}
+
+// cloneExclude is the clone's own exclude file.
+func (f *fixture) cloneExclude() string {
 	f.t.Helper()
 	b, err := os.ReadFile(f.tree + "/.git/info/exclude")
 	if err != nil {
@@ -166,6 +178,9 @@ func (f *fixture) exclude() string {
 	}
 	return string(b)
 }
+
+// metaExclude is the path of the exclude file of Ataniq's copy.
+func (f *fixture) metaExclude() string { return f.gitMeta + "/info/exclude" }
 
 // listing describes every entry under dir (without following links): type,
 // permission bits, and the content of a regular file or the target of a link.
