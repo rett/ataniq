@@ -56,7 +56,7 @@ func entryTestFixture(t *testing.T) *entryFixture {
 	d.Close()
 	r := R1Request{1, a.Config.RunID, a.Config.RequestID, a.ID, R1Profile, a.FixtureNonce}
 	b, _ := json.Marshal(r)
-	null := R1NullDevice{FileIdentity{7, 900, 0}, syscall.S_IFCHR | 0666, 0, 259}
+	null := R1NullDevice{FileIdentity{Device: 7, Inode: 900, UID: 0}, syscall.S_IFCHR | 0666, 0, 259}
 	a.EntryStatic = &R1EntryStatic{R1EntryProfile, r, b, syntheticDigest(b), id, null, map[string]ELFMetadata{"systemctl": {}, "systemd-run": {}, "busctl": {}}}
 	if err := os.WriteFile(filepath.Join(path, "request.json"), b, 0400); err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func entryTestFixture(t *testing.T) *entryFixture {
 		}
 		f.endpoints.ChildStdio = append(f.endpoints.ChildStdio, R1EntryFD{fd, null.Identity, null.Mode, null.Rdev, flags, 10})
 	}
-	pipe := FileIdentity{12, 345, uint32(os.Getuid())}
+	pipe := FileIdentity{Device: 12, Inode: 345, UID: uint32(os.Getuid())}
 	f.endpoints.ChildToken = R1EntryFD{4, pipe, syscall.S_IFIFO | 0600, 0, syscall.O_RDONLY | syscall.O_NONBLOCK, 20}
 	f.endpoints.ParentToken = R1EntryFD{7, pipe, syscall.S_IFIFO | 0600, 0, syscall.O_WRONLY | syscall.O_NONBLOCK, 20}
 	f.endpoints.MainOutput = R1EntryFD{1, a.Streams["output"], syscall.S_IFREG | 0600, 0, syscall.O_WRONLY | syscall.O_APPEND, 30}
@@ -137,7 +137,7 @@ func entryTestFixture(t *testing.T) *entryFixture {
 		return nil
 	}
 	x.h.entrySafety = func(a *Attempt, _ *Unit) error {
-		a.EntryRuntime.Host = &R1EntryHost{Kernel: "fixed-test-kernel", Client: "systemd fixed-test-version", Manager: "fixed-test-manager", AvailableKB: 1 << 20, Ancestors: []R1EntryAncestor{{Boundary: Boundary{root, FileIdentity{Device: 7, Inode: 9}}, Max: "max", Current: 64 << 20}}}
+		a.EntryRuntime.Host = &R1EntryHost{Kernel: "fixed-test-kernel", Client: "systemd fixed-test-version", Manager: "fixed-test-manager", AvailableKB: 1 << 20, Ancestors: []R1EntryAncestor{{Boundary: Boundary{Path: root, Identity: FileIdentity{Device: 7, Inode: 9}}, Max: "max", Current: 64 << 20}}}
 		return f.preflightErr
 	}
 	x.h.entryMembers = func(want Boundary) ([]Process, error) {

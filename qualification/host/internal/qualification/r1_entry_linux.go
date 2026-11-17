@@ -134,7 +134,7 @@ func entryNull() (R1NullDevice, error) {
 	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
 		return R1NullDevice{}, err
 	}
-	n := R1NullDevice{FileIdentity{st.Dev, st.Ino, st.Uid}, st.Mode, st.Gid, st.Rdev}
+	n := R1NullDevice{FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}, st.Mode, st.Gid, st.Rdev}
 	if !validEntryNull(n) {
 		return n, errors.New("exact trusted null device required")
 	}

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ataniq/internal/systemd"
 )
 
 const entryServiceProperties = properties + ",MemorySwapMax,MemoryHigh,OOMPolicy,Delegate,Result,ExecMainCode,ExecMainStatus"
@@ -33,13 +35,11 @@ func (h hostIO) startEntryParent(a *Attempt) error {
 	}
 	// Acknowledgement identifies only delivery. Ownership still requires exact
 	// unit generation/cgroup and direct effective limits before Tool dispatch.
-	f := strings.Fields(result)
-	if len(f) != 2 || f[0] != "o" || !strings.HasPrefix(f[1], `"/org/freedesktop/systemd1/job/`) || !strings.HasSuffix(f[1], `"`) {
+	if _, err := systemd.ParseJobReply(result); err != nil {
+		if errors.Is(err, systemd.ErrJobNumber) {
+			return errors.New("invalid parent job identity")
+		}
 		return errors.New("parent start acknowledgement unknown")
-	}
-	n := strings.TrimSuffix(strings.TrimPrefix(f[1], `"/org/freedesktop/systemd1/job/`), `"`)
-	if _, err := strconv.ParseUint(n, 10, 64); err != nil {
-		return errors.New("invalid parent job identity")
 	}
 	return nil
 }

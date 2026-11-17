@@ -40,6 +40,9 @@ coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
 qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
+`ataniqd` is a provisional, unqualified, read-only daemon skeleton with the
+packages a later managed-lead daemon will use; it starts, stops and manages no
+lead. See [the lead daemon guide](docs/lead-daemon.md).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
