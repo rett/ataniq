@@ -128,7 +128,10 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 //     parent-epoch-ended and the proof; with its unit still loaded (the
 //     manager has not finished stopping a bound unit) it is shown unknown with
 //     the reason orphan-coordinator, and Reconcile signals nothing: an explicit
-//     Stop ends it, or a later Reconcile finds it gone. After a reboot the
+//     Stop ends it, or a later Reconcile finds it gone. A parent that cannot
+//     be read from the registry is not a live parent: the coordinator is
+//     reported unchanged (reason parent-unreadable) and Reconcile returns the
+//     error. After a reboot the
 //     coordinator is stopped with the reason host-rebooted, as a lead is. A
 //     stalled coordinator whose unit is live and ours stays stalled.
 //
@@ -341,7 +344,13 @@ func (c *Controller) reconcileResolved(ctx context.Context, e leadregistry.Entry
 	}
 	orphan := ""
 	if !resting && e.Role.Kind() == leadrole.KindCoordinator {
-		orphan = c.parentEnded(e)
+		var perr error
+		if orphan, perr = c.parentEnded(e); perr != nil {
+			// Cannot tell whether the parent still runs the epoch: neither
+			// adopted as under a live parent nor ended as under a dead one.
+			detail := "the parent lead could not be read, so the coordinator was left as recorded: " + perr.Error()
+			return e, note{ActionUnchanged, codeParentUnreadable, detail}, fmt.Errorf("leadlifecycle: reconcile %s: %w", e.Role, perr)
+		}
 	}
 	if st.Loaded {
 		var n note
@@ -413,24 +422,27 @@ func (c *Controller) reconcileResolved(ctx context.Context, e leadregistry.Entry
 // coordinator recorded. The parent has ended when its epoch is no longer the
 // one the coordinator's launch recorded, or when it is not shown starting,
 // ready or degraded. The registry is read as it is now: leads are settled
-// before coordinators in one Reconcile.
-func (c *Controller) parentEnded(e leadregistry.Entry) string {
+// before coordinators in one Reconcile. A failure to read the parent from the
+// registry (other than the parent not being defined, which is an answer) is an
+// error and not an answer: the caller cannot tell, and must not take it for a
+// parent that is live.
+func (c *Controller) parentEnded(e leadregistry.Entry) (string, error) {
 	if e.Intent == nil {
-		return ""
+		return "", nil
 	}
 	pr := e.Role.Parent()
 	p, err := c.reg.Get(pr)
 	switch {
 	case errors.Is(err, leadregistry.ErrNoRole):
-		return fmt.Sprintf("the parent lead %s is not defined", pr)
+		return fmt.Sprintf("the parent lead %s is not defined", pr), nil
 	case err != nil:
-		return ""
+		return "", fmt.Errorf("the parent lead %s could not be read: %w", pr, err)
 	case p.Epoch != e.Intent.ParentEpoch:
-		return fmt.Sprintf("the parent lead %s is at epoch %d, not the epoch %d the coordinator recorded", pr, p.Epoch, e.Intent.ParentEpoch)
+		return fmt.Sprintf("the parent lead %s is at epoch %d, not the epoch %d the coordinator recorded", pr, p.Epoch, e.Intent.ParentEpoch), nil
 	}
 	switch p.Shown.State {
 	case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
-		return ""
+		return "", nil
 	}
-	return fmt.Sprintf("the parent lead %s epoch %d is shown %s", pr, p.Epoch, p.Shown.State)
+	return fmt.Sprintf("the parent lead %s epoch %d is shown %s", pr, p.Epoch, p.Shown.State), nil
 }

@@ -85,7 +85,9 @@ func (c *Controller) MarkStalled(ctx context.Context, role leadrole.Role, reason
 // and is not returned to a live state. It is shown unknown (reason
 // orphan-coordinator), the error wraps ErrParentNotLive, and the unit is not
 // looked at: Reconcile proves it absent, or reports it still loaded, and an
-// explicit Stop ends it.
+// explicit Stop ends it. When the parent cannot be read from the registry the
+// parent is neither live nor ended as far as is known: nothing is changed and
+// the error says so.
 func (c *Controller) ClearStalled(ctx context.Context, role leadrole.Role) (leadregistry.Entry, error) {
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
@@ -103,7 +105,12 @@ func (c *Controller) ClearStalled(ctx context.Context, role leadrole.Role) (lead
 	// ended, or is not live, it is not returned to a live state, whatever its
 	// unit is doing. Reconcile judges the same fact in the same way, and is
 	// what proves the unit absent or reports it still loaded.
-	if orphan := c.parentEnded(e); orphan != "" {
+	orphan, perr := c.parentEnded(e)
+	if perr != nil {
+		// Cannot tell: nothing is changed, and the stall is not cleared.
+		return e, fmt.Errorf("leadlifecycle: clear stalled %s: %w", role, perr)
+	}
+	if orphan != "" {
 		out := fmt.Errorf("%w: %s", ErrParentNotLive, orphan)
 		e, serr := c.setUnknown(e, codeOrphanCoordinator, orphan+"; the stall is not cleared, and Reconcile or an explicit Stop ends the coordinator")
 		if serr != nil {

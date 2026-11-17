@@ -82,6 +82,7 @@ type audit struct {
 	afterSignal  func(st leadunit.State, sig syscall.Signal)
 	beforeStart  func(spec leadunit.Spec)
 	afterStart   func(spec leadunit.Spec)
+	afterInspect func(unit string)
 }
 
 func newAudit(inner leadunit.Manager, plan *crashPlan) *audit {
@@ -128,6 +129,9 @@ func (a *audit) Inspect(ctx context.Context, unit string) (leadunit.State, error
 		}
 		a.lastBoot[unit] = st.BootID
 		a.mu.Unlock()
+	}
+	if a.afterInspect != nil {
+		a.afterInspect(unit)
 	}
 	return st, err
 }

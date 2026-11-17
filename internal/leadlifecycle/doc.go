@@ -96,7 +96,11 @@
 // ended with its parent: with its unit proven absent it is ended (reason
 // parent-epoch-ended, with the proof); with the unit still loaded it is
 // reported orphan-coordinator and shown unknown, because Reconcile never
-// signals, and an explicit Stop ends it. After a reboot it is stopped, as a
+// signals, and an explicit Stop ends it. A parent that cannot be read from the
+// registry (an error, not a parent that is not defined) is "cannot tell", not
+// "live": the coordinator is reported unchanged (reason parent-unreadable),
+// neither adopted nor ended, and Reconcile returns the registry's error.
+// After a reboot it is stopped, as a
 // lead is, and nothing is started. The lines of the report carry the kind of
 // the role and, for a coordinator, its feature and parent.
 //
@@ -161,7 +165,11 @@
 //     unknown for a cut of the journal only the intent is closed, and the role
 //     stays unknown.) An intent with no boot identity (one journaled by a
 //     registry caller that gave none) or with no boot identity from the
-//     manager is settled by the window only.
+//     manager is settled by the window only. The boot identity is read by the
+//     replacement-rule Inspect, before the intent is journaled and before the
+//     unit call; that is sound because one daemon process cannot outlive a
+//     reboot, so the boot cannot change between the read and the call within
+//     one process.
 //
 // # Coordinators
 //

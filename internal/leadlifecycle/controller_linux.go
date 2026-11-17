@@ -65,7 +65,9 @@ var (
 	// lead is not defined, not run by ataniq, or not shown starting, ready or
 	// degraded. It is wrapped together with the registry's refusal
 	// (leadregistry.ErrLaunchNoParent, ErrLaunchParentManager or
-	// ErrLaunchParentState), and nothing is changed.
+	// ErrLaunchParentState), and nothing is changed. ClearStalled returns it
+	// too, for a coordinator whose parent has ended (and then shows the
+	// coordinator unknown).
 	ErrParentNotLive = errors.New("leadlifecycle: the parent lead of the coordinator is not live")
 	// ErrCoordinatorNotStopped means a lead is not started because a
 	// coordinator of it is not proven stopped. It is wrapped together with

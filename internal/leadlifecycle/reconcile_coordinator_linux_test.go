@@ -1,6 +1,7 @@
 package leadlifecycle
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -237,13 +238,13 @@ func TestReconcileCoordinatorsAreJudgedLikeLeadsOtherwise(t *testing.T) {
 func TestParentEndedByEpoch(t *testing.T) {
 	r, lead, coord := coordRig(t)
 	e := r.mustStart(coord)
-	if why := r.ctl.parentEnded(e); why != "" {
+	if why, err := r.ctl.parentEnded(e); err != nil || why != "" {
 		t.Fatalf("parent ended: %s", why)
 	}
 	_, err := r.stop(lead)
 	noErr(t, err)
 	r.mustStart(lead) // epoch 2
-	why := r.ctl.parentEnded(e)
+	why, _ := r.ctl.parentEnded(e)
 	if !strings.Contains(why, "epoch 2") || !strings.Contains(why, "epoch 1") {
 		t.Fatalf("parent ended: %q", why)
 	}
@@ -251,7 +252,65 @@ func TestParentEndedByEpoch(t *testing.T) {
 	r2, lead2, coord2 := coordRig(t)
 	e2 := r2.mustStart(coord2)
 	r2.setShown(lead2, leadregistry.StateStopping)
-	if why := r2.ctl.parentEnded(e2); !strings.Contains(why, "stopping") {
+	if why, _ := r2.ctl.parentEnded(e2); !strings.Contains(why, "stopping") {
 		t.Fatalf("parent ended: %q", why)
+	}
+}
+
+// A failure to read the parent from the registry is "cannot tell", never "the
+// parent is live": a running coordinator is not adopted on it, and the role
+// is reported, left as recorded, and the pass fails with the registry's error.
+func TestReconcileCoordinatorWhoseParentCannotBeRead(t *testing.T) {
+	r, _, coord := coordRig(t)
+	r.mustStart(coord)
+	before := r.get(coord)
+
+	// The registry fails between the controller's read of the coordinator and
+	// its read of the parent: the manager's answer is the moment.
+	r.aud.afterInspect = func(unit string) {
+		if unit == unitOf(coord) {
+			noErr(t, r.reg.Close())
+		}
+	}
+	var rep Report
+	var err error
+	r.drive(func() { rep, err = r.ctl.Reconcile(context.Background()) })
+	isErr(t, err, leadregistry.ErrClosed)
+	rr, ok := rep.Find(coord)
+	if !ok {
+		t.Fatalf("the coordinator is not in the report: %+v", rep)
+	}
+	if rr.Action != ActionUnchanged || rr.Reason != "parent-unreadable" || rr.After != before.Shown.State {
+		t.Fatalf("report %+v", rr)
+	}
+	if rr.Action == ActionAdopted {
+		t.Fatalf("a coordinator was adopted under a parent that could not be read: %+v", rr)
+	}
+	// The record is as it was, and the next daemon reads it again.
+	r.aud.afterInspect = nil
+	r.open()
+	if got := r.get(coord); got.Shown != before.Shown || got.Epoch != before.Epoch {
+		t.Fatalf("entry %+v, was %+v", got, before)
+	}
+	r.noSignals()
+	r.auditClean()
+}
+
+func TestParentEndedWithAnUnreadableRegistry(t *testing.T) {
+	r, _, coord := coordRig(t)
+	e := r.mustStart(coord)
+	noErr(t, r.reg.Close())
+	why, err := r.ctl.parentEnded(e)
+	isErr(t, err, leadregistry.ErrClosed)
+	if why != "" {
+		t.Fatalf("an answer %q with the error", why)
+	}
+	// A parent that is not defined is an answer.
+	e.Role, _ = leadrole.Coordinator("beta", "feat")
+	r.open()
+	why, err = r.ctl.parentEnded(e)
+	noErr(t, err)
+	if !strings.Contains(why, "not defined") {
+		t.Fatalf("answer %q", why)
 	}
 }
