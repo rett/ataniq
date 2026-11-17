@@ -55,7 +55,10 @@
 //     mode. Their names are covered.
 //   - The content of the lead skills folder and of the instruction file, and
 //     of the other folders and files bound from the host (the agent and Qargi
-//     installs, the probe, the spec, the assignment and projection).
+//     installs, the probe, the spec, the assignment and projection), the
+//     content of the git identity file GIT_CONFIG_GLOBAL names (it can set
+//     hooks and helpers that run), the derived resolv.conf, and the Qargi
+//     records.
 //   - What the package does not know: the real state of the host, and what the
 //     resulting sandbox allows. The network argument vector is covered, not
 //     what the network then reaches.
