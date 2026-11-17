@@ -4,6 +4,11 @@ This is the manual of `qualification/leadmirror`, an opt-in harness that
 records what a real sandbox template does with a hostile lead clone. It
 looks at two things: the fetch of a lead's branches into the exchange mirror
 (design case S16) and the intake review of a lead branch (design case S19).
+The fetch and the intake themselves are described in
+[the lead intake guide](lead-intake.md). The harness for the sandbox proposal
+of a lead is a different one, with its own manual,
+[the lead sandbox qualification harness](qualification-lead-sandbox.md): that
+one launches a generated plan, and this one runs a template that you write.
 
 The harness records facts. It does not qualify a sandbox, and nothing here does
 by itself. No field of its report says pass, supported or qualified. A person
@@ -55,10 +60,13 @@ The command refuses to run, with exit status 2 and nothing created, when:
   folder and of the state root's parent folder before it compares, so a link
   into the state root is refused too.
 
-If the run is interrupted (SIGINT) after it has started, the command writes the
-report it has made so far, then says that the run did not finish and exits with
+If the run is interrupted after it has started, by an interrupt (SIGINT), a
+terminate (SIGTERM) or a hang-up (SIGHUP) signal, the command writes the report
+it has made so far, then says that the run did not finish and exits with
 status 1. The report then holds the facts of the cases that ran, and the case
-that was running may hold fewer facts than a finished run.
+that was running may hold fewer facts than a finished run. An interrupt or a
+hang-up that was ignored when the command started (under `nohup`, for example)
+does not interrupt the run.
 
 ## The config
 
@@ -101,6 +109,11 @@ following.
   the clone **read-only** and **no network**. Git starts this command through
   `sh` with the environment of the harness, so the argv must clear the
   environment itself (for example `bwrap --clearenv`).
+- `repository` is the clone's path inside the sandbox, and a path that does not
+  exist on the host. The owner-side git of the fetch looks at that path on the
+  host first: a git bundle file there is read by that git itself, and
+  `upload_pack` is never started (see
+  [the sandbox template](lead-intake.md#the-sandbox-template)).
 - `measure` prints the size of the clone's object store, and runs in the same
   kind of sandbox.
 - The sandbox gives `git-upload-pack` what it needs to run and nothing else.
