@@ -12,11 +12,12 @@ import (
 // pane shows the screen as it is, as a terminal would.
 const MaxFrameHold = 150 * time.Millisecond
 
-// The literal forms of setting and resetting mode 2026. Write splits its
-// input after each set, and looks for a reset in what is left, to learn
-// whether a frame that opens in a chunk also closes in it (see Write). Other
-// forms, such as a set combined with other modes, are still followed through
-// the mode callbacks; they only miss that shortcut.
+// The literal forms of setting and resetting mode 2026. write splits the
+// slice of output it is given after each set, and looks for a reset in what
+// is left of the slice, to learn whether a frame that opens in the slice also
+// closes in it (see feed). Other forms, such as a set combined with other
+// modes, are still followed through the mode callbacks; they only miss that
+// shortcut.
 var (
 	syncSet   = []byte("\x1b[?2026h")
 	syncReset = []byte("\x1b[?2026l")
@@ -50,8 +51,8 @@ type syncState struct {
 	// kept is true when the session ended while a frame was held: the frame
 	// is then its last screen, shown with no time limit.
 	kept bool
-	// closesLater is true while Write feeds a part of its input that is
-	// followed, in the same input, by a reset of the mode.
+	// closesLater is true while write feeds a part of its slice that is
+	// followed, in the same slice, by a reset of the mode.
 	closesLater bool
 }
 
@@ -103,9 +104,16 @@ func (p *Pane) holding(now time.Time) bool {
 	return s.on && s.held && (s.kept || now.Sub(s.at) < MaxFrameHold)
 }
 
-// write feeds b to the emulator in parts, each ending after a literal set of
-// mode 2026, and tells the callback whether a literal reset follows the part
-// in b. Such a reset is a reset unless the parser swallows its ESC, which
+// write feeds b, one slice of the output Write was given (at most writeSlice
+// bytes, under one hold of the lock), to the emulator in parts, each ending
+// after a literal set of mode 2026, and tells the callback whether a literal
+// reset follows the part in b. A frame that opens and closes inside the slice
+// is never shown, and its screen is not copied. A frame that is open at the
+// end of the slice, whether or not the next slice closes it, is held: the
+// lock is free between two slices, and a reader that comes in then must see
+// the last complete frame, as it sees it while the frame is open in a
+// chunk that ends there, and not the half of the next one that is on the
+// screen. Such a reset is a reset unless the parser swallows its ESC, which
 // only malformed input makes it do (an ESC inside a UTF-8 character or just
 // after a DCS introducer). Then the frame stays open with no copy, and the
 // pane shows the screen as it is, as it does after MaxFrameHold.

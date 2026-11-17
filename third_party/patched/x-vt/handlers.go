@@ -549,11 +549,11 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 		case 0: // Erase screen below (from after cursor position)
 			rect1 := uv.Rect(x, y, width, 1)            // cursor to end of line
 			rect2 := uv.Rect(0, y+1, width, height-y-1) // next line onwards
-			e.scr.FillArea(e.scr.blankCell(), rect1)
-			e.scr.FillArea(e.scr.blankCell(), rect2)
+			e.scr.eraseArea(rect1)
+			e.scr.eraseArea(rect2)
 		case 1: // Erase screen above (including cursor)
 			rect := uv.Rect(0, 0, width, y+1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		case 2: // erase screen
 			// Save screen content to scrollback before clearing
 			e.scr.ClearWithScrollback()
@@ -583,10 +583,10 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 			e.eraseCharacter(w - x)
 		case 1: // Erase from start of line to cursor
 			rect := uv.Rect(0, y, x+1, 1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		case 2: // Erase entire line
 			rect := uv.Rect(0, y, w, 1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		default:
 			return false
 		}

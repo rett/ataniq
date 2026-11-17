@@ -237,6 +237,7 @@ func (s *Screen) state() ScreenState {
 		Scroll:   s.scroll,
 		LinkWait: s.links.wait,
 	}
+	s.flushAll()
 	for _, line := range s.buf.Lines {
 		st.Cells = append(st.Cells, line...)
 	}

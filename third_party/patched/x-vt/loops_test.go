@@ -189,20 +189,19 @@ func TestRepeatCutCounter(t *testing.T) {
 	}
 }
 
-// 64 KiB of the longest repeat on the largest screen (500 by 200) does not
-// keep the emulator, and the pane's lock with it, for more than a few
-// seconds, whatever state the cursor and the pen are in: at the top and at the
-// bottom of a full screen, after a line feed, with autowrap off, in a scroll
-// region, under a link (cut to two lines), with a margin (the same). The time of
-// each is logged. The repeat of the first version was cut to the cells of the
-// screen: one of them took 17 ms and 100 of them with the cursor at the bottom
-// 25 s, so 64 KiB of them would have taken half an hour. The cases that are
-// not the first send 8 KiB.
+// The longest repeat on the largest screen (500 by 200) does not keep the
+// emulator, and the pane's lock with it, for more than about twenty times what
+// the same number of bytes of line feeds take (see timing_test.go), whatever
+// state the cursor and the pen are in: at the top and at the bottom of a full
+// screen, after a line feed, with autowrap off, in a scroll region, under a
+// link (cut to two lines), with a margin (the same). The repeat of the first
+// version was cut to the cells of the screen: one of them took 17 ms and 100
+// of them with the cursor at the bottom 25 s, so 64 KiB of them would have
+// taken half an hour. The lines a repeat fills are marked and not written
+// (patch 14), so that the bulk costs the lines. The cases that are not the
+// first send 8 KiB.
 func TestRepeatsOnTheLargestScreenAreBounded(t *testing.T) {
-	ceiling := 60 * time.Second
-	if raceEnabled {
-		ceiling = 120 * time.Second
-	}
+	kib := lineFeedKiB(t)
 	const rep = "\x1b[2147483646b"
 	for _, tc := range []struct {
 		name   string
@@ -235,18 +234,7 @@ func TestRepeatsOnTheLargestScreenAreBounded(t *testing.T) {
 			e.SetScrollbackSize(0)
 			e.Write([]byte(tc.setup))
 			input := []byte(strings.Repeat(tc.unit, max(1, budget/len(tc.unit))))
-			start := time.Now()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				e.Write(input)
-			}()
-			select {
-			case <-done:
-			case <-time.After(ceiling):
-				t.Fatalf("%d bytes of %q did not return in %v", len(input), tc.unit, ceiling)
-			}
-			t.Logf("%d bytes (%d sequences): %v", len(input), len(input)/len(tc.unit), time.Since(start))
+			checkRelative(t, writeBounded(t, e, input), len(input), kib)
 		})
 	}
 }

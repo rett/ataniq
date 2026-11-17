@@ -830,6 +830,9 @@ var inventory = map[string]map[string]string{
 		"scroll":     "carried: ScreenState.Scroll",
 		"scrollback": "not carried: the caller's size; emptied by SetState",
 		"links":      "carried: ScreenState.Links and LinkWait (recounts and hashed are statistics)",
+		"marks":      "not carried: what is known of the cells of a line, written out before State reads them",
+		"stale":      "not carried: the lines not written, none when State reads",
+		"lastFill":   "not carried: the cell the last erase marked its lines with",
 	},
 	"Cursor": {
 		"Pen":      "carried",

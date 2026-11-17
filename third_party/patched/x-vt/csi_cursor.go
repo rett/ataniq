@@ -188,12 +188,13 @@ func (e *Emulator) repeatInBulk(n int) bool {
 	}
 	lines, tail := d/w, d%w
 	if lines > 0 {
-		cell := e.repeatedCell()
+		rc := e.repeatedCell()
+		cell := scr.fillCell(&rc)
 		_, y := scr.CursorPosition()
 		for lines > 0 && y < region.Max.Y-1 {
 			e.index()
 			_, y = scr.CursorPosition()
-			scr.fillLine(y, &cell)
+			scr.fillLine(y, cell)
 			scr.setCursor(w-1, y, false)
 			e.atPhantom = true
 			lines--
@@ -204,12 +205,12 @@ func (e *Emulator) repeatInBulk(n int) bool {
 			size := region.Dy()
 			if s := min(lines, size); s == size {
 				for yy := region.Min.Y; yy < region.Max.Y; yy++ {
-					scr.fillLine(yy, &cell)
+					scr.fillLine(yy, cell)
 				}
 			} else {
 				scr.ScrollUp(s)
 				for yy := region.Max.Y - s; yy < region.Max.Y; yy++ {
-					scr.fillLine(yy, &cell)
+					scr.fillLine(yy, cell)
 				}
 			}
 			scr.setCursor(w-1, region.Max.Y-1, false)

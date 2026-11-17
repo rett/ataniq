@@ -5,7 +5,6 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Insert and delete of lines in a region as wide as the screen move the lines
@@ -75,59 +74,47 @@ func TestMovingLinesIsWhatCopyingCellsGives(t *testing.T) {
 // The ways of scrolling the largest screen (500 by 200 cells) cost the lines
 // of the region and not their cells: the cells of every line were copied
 // before, 11 MB and 1.1 ms for each line feed at the bottom, and 64 KiB of
-// line feeds took over a minute. Now 64 KiB of line feeds take half a second,
-// and of any of the others (16 KiB are sent) a fraction of that. The sequences that clear the whole region (a scroll by the
-// screen, a count over the lines left) write every cell of the screen, 11
-// MB, which takes about a millisecond whatever the code: 2 KiB of them are
-// sent. The time of each is logged.
+// line feeds took over a minute. A scroll that blanks the whole region (a
+// scroll by the screen, a count over the lines left) wrote every cell, which
+// took a millisecond whatever the code, and the lines are marked now and not
+// written (patch 14). Each takes at most about twenty times what line feeds
+// take, byte for byte (see timing_test.go).
 func TestScrollingTheLargestScreenIsBounded(t *testing.T) {
-	ceiling := 60 * time.Second
-	if raceEnabled {
-		ceiling = 120 * time.Second
-	}
+	kib := lineFeedKiB(t)
 	for _, tc := range []struct {
-		name   string
-		unit   string
-		budget int
-		race   bool // also under the race detector
+		name  string
+		setup string
+		unit  string
 	}{
-		{"line feed", "\n", 64 << 10, true},
-		{"index", "\x1bD", 16 << 10, false},
-		{"reverse index", "\x1bM", 16 << 10, false},
-		{"insert line", "\x1b[L", 16 << 10, false},
-		{"delete line", "\x1b[M", 16 << 10, false},
-		{"scroll up", "\x1b[S", 16 << 10, false},
-		{"scroll down", "\x1b[T", 16 << 10, false},
-		{"scroll up by the screen", "\x1b[200S", 2 << 10, true},
-		{"delete more lines than there are", "\x1b[2147483646M", 2 << 10, false},
-		{"insert more lines than there are", "\x1b[2147483646L", 2 << 10, false},
+		{"line feed", "", "\n"},
+		{"index", "", "\x1bD"},
+		{"reverse index", "", "\x1bM"},
+		{"insert line", "", "\x1b[L"},
+		{"delete line", "", "\x1b[M"},
+		{"scroll up", "", "\x1b[S"},
+		{"scroll down", "", "\x1b[T"},
+		{"scroll up by the screen", "", "\x1b[200S"},
+		{"scroll down by the screen", "", "\x1b[200T"},
+		{"scroll by the screen with a background", "\x1b[44m", "\x1b[200S"},
+		{"scroll by the screen with a background that changes", "", "\x1b[41m\x1b[200S\x1b[42m\x1b[200T"},
+		{"scroll up by the screen in a region", "\x1b[2;199r", "\x1b[200S"},
+		{"scroll down by the screen in a region", "\x1b[2;199r", "\x1b[200T"},
+		{"scroll up by the screen in a region with margins", "\x1b[?69h\x1b[2;499s", "\x1b[200S"},
+		{"scroll down by the screen in a region with margins", "\x1b[?69h\x1b[2;499s", "\x1b[200T"},
+		{"margins and scroll", "", "\x1b[?69h\x1b[2;499s\x1b[200S"},
+		{"delete more lines than there are", "", "\x1b[2147483646M"},
+		{"insert more lines than there are", "", "\x1b[2147483646L"},
+		{"delete more lines than there are in a region with margins", "\x1b[?69h\x1b[2;499s", "\x1b[2147483646M"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			budget := tc.budget
+			budget := 16 << 10
 			if raceEnabled {
-				// The race detector is slow: three of the ways, each a
-				// thirty-second of the bytes.
-				if !tc.race {
-					t.Skip("not under the race detector")
-				}
-				budget /= 32
+				budget /= 8 // the race detector is slow
 			}
-			e := NewEmulator(500, 200)
-			e.SetScrollbackSize(0)
-			e.Write([]byte(strings.Repeat("x", 500*200) + "\x1b[1;1H"))
+			e := timingScreen()
+			e.Write([]byte(tc.setup))
 			input := []byte(strings.Repeat(tc.unit, budget/len(tc.unit)))
-			start := time.Now()
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				e.Write(input)
-			}()
-			select {
-			case <-done:
-			case <-time.After(ceiling):
-				t.Fatalf("%d bytes did not return in %v", len(input), ceiling)
-			}
-			t.Logf("%d bytes (%d sequences): %v", len(input), len(input)/len(tc.unit), time.Since(start))
+			checkRelative(t, writeBounded(t, e, input), len(input), kib)
 		})
 	}
 }

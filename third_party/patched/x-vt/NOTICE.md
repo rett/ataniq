@@ -228,11 +228,11 @@ Patches, applied in this order to the files of the module as released:
    bytes) took 4.8 s of CPU on a busy machine (a load of 15 on 8 cores). The
    first version took 17 ms for the first repeat of that size and 0.25 s for
    each one after it with the cursor at the bottom (25 s for 1000 bytes), so
-   64 KiB of them would have taken half an hour. Like the sequences that clear
-   the screen (erase display, scroll by the screen; patch 13), a repeat is
-   bounded by the time it takes to write every cell, and 64 KiB of them take
-   several seconds on the largest screen. A buffer that did not store every
-   blank cell would take less; this patch does not change the buffer.
+   64 KiB of them would have taken half an hour. A repeat is bounded by the
+   time it takes to write every cell it fills, which is a millisecond on the
+   largest screen whatever the code: 64 KiB of the longest repeat took 3.2 s
+   on the machine of the table of patch 14. Since patch 14 the lines a repeat
+   fills are marked and not written, and the same 64 KiB take 0.4 s.
 13. `vt: move the lines of a scroll region as wide as the screen`
    (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
    an index, a reverse index, insert line, delete line, scroll up and scroll
@@ -245,13 +245,128 @@ Patches, applied in this order to the files of the module as released:
    costs the lines and the blanked cells (64 KiB of line feeds take 0.45 s). The
    result is the buffer's: the same cells, the same blank cell (the pen's
    background), the lines saved to the scrollback before, and every line of the
-   region marked as touched, as the buffer's own functions do. A region
-   narrower than the screen still uses the buffer's functions. A test compares
-   the two on screens the property streams make, with every region, cursor,
-   count and pen. What stays: a scroll that blanks the whole region
-   (scroll by the screen, a count over the lines left) writes every cell of
-   it, which takes about a millisecond on the largest screen whatever the
-   code, so 64 KiB of those take several seconds.
+   region marked as touched (the buffer's own functions also marked the n
+   lines above, or below, the region, which do not change; nothing in this
+   repository reads the marks). A region narrower than the screen still uses
+   the buffer's functions. A test compares the two on screens the property
+   streams make, with every region, cursor, count and pen. What this patch
+   left: a scroll that blanks the whole region (scroll by the screen, a count
+   over the lines left) wrote every cell of it, about a millisecond on the
+   largest screen whatever the code, so that 64 KiB of those took 6 to 7 s;
+   the erase of the display took 23 to 33 s and the full reset (RIS, two bytes
+   that clear both screens) 54 s, and were not named here. Patch 14 marks the
+   lines those sequences blank and does not write them, and patch 15 does the
+   same for a region narrower than the screen.
+14. `vt: mark the lines a sequence blanks and write them later` (`blank.go`,
+   `screen.go`, `handlers.go`, `csi_screen.go`, `csi_cursor.go`, `emulator.go`,
+   `links.go`, `state.go`, `erase_test.go`, `timing_test.go`, `scroll_test.go`,
+   `loops_test.go`). A cell of the
+   buffer is 112 bytes, so a line of 500 cells is 56 KB and a screen of 500 by
+   200 cells 11 MB, and writing all of it takes about a millisecond whatever
+   the code. Erase in display (all three forms), erase in line, erase
+   characters, the full reset (RIS, which clears both screens), the switch of
+   the alternate screen and a scroll that blanks the whole region wrote every
+   cell, through the buffer's `SetCell` one cell at a time (2 to 3 ms), and
+   64 KiB of them kept the emulator, and the pane's lock with it, for 6 to 54
+   seconds (the full reset the longest, two bytes that clear two screens).
+   A program that clears the screen in a loop is enough. Measured on the
+   largest screen (500 by 200, no scrollback, the screen full of text, a
+   machine with a load of about 4 on 8 cores), 64 KiB of each sequence,
+   before and after; the figures before are those of 2 KiB times 32:
+
+   | sequence | before | after |
+   | --- | --- | --- |
+   | `ESC c` | 54 s | 0.36 s |
+   | `ESC[2J` | 33 s | 0.03 s |
+   | `ESC[J` | 29 s | 0.04 s |
+   | `ESC[3J` | 23 s | 0.03 s |
+   | `ESC[H ESC[2J ESC[3J` (the clear of curses) | 26 s | 0.02 s |
+   | `ESC[44m ESC[2J` | 18 s | 0.015 s |
+   | the same with the background changing between two clears | 15 s | 0.015 s |
+   | a line of text, then `ESC[H ESC[2J` | 10 s | 0.025 s |
+   | `ESC[?1049h ESC[?1049l` | 5.9 s | 0.03 s |
+   | `ESC[200T` and `ESC[200S` | 7.3 s and 6.8 s | 0.03 s and 0.045 s |
+   | `x ESC[2147483646b` (patch 12) | 3.2 s | 0.4 s |
+   | line feeds, for comparison | 0.31 s | 0.17 s |
+
+   A line now has a mark: the cell that every one of its cells holds. A mark
+   is written (the cells are that cell, which is all the mark says) or stale
+   (the cells are not written yet, and the line is that cell all the same).
+   Those sequences set the mark of the lines they blank, to the blank cell
+   with the pen's background that they used, and write nothing; a line that
+   already holds that cell is left as it is, so a loop that clears the screen
+   costs the lines that changed since the last clear, and a blank screen
+   costs nothing. A scroll of the region (line feed at the bottom, index,
+   reverse index, insert line, delete line, scroll up and down) moves the marks
+   with the lines, and its new lines are marked; a repeat of the last
+   character (patch 12) marks the lines it fills. A stale line is written when
+   something reads or changes it, and the lines that are still stale are
+   written when `Write` returns: no reader, which may be several under
+   `SafeEmulator`'s read lock, ever finds a stale line, and no read changes
+   anything. A change of some cells of a line (`SetCell`, insert and delete of
+   characters, a fill of part of a line) writes the line and drops its mark;
+   a resize and `SetState` start with no marks. What a sequence costs is
+   the lines it changes (about 5 us a line to write), not the cells of the
+   screen. The result is the same, field by field: the cells, with the pen's background in the blank ones; the cursor; both
+   screens; the link tables (an erase of the whole screen empties the table as
+   before; the recount of the links skips a line marked blank, which has no
+   link); the lines that go to the scrollback (a scrollback that keeps nothing
+   is not given the lines, nor read); and the lines marked as touched. The
+   test of the patch compares every one of these sequences with the code it
+   replaced, kept in the test file, on the screens the property streams make,
+   with every region, cursor, count and pen, on both screens and with three
+   sizes of scrollback, and checks after every write that what each mark says
+   is what its line holds; a second test runs the streams with the marks
+   dropped before every sequence and compares the states. One thing a caller
+   must not do: write a cell through the pointer `CellAt` returns, which is
+   the way to read it; `SetCell` is the way to change it. Nothing in the module
+   does, and `State` and `SetState` do not carry the marks (the inventory test
+   lists them).
+   The timing tests (`timing_test.go`, `scroll_test.go`, `loops_test.go`)
+   replace the ceilings of a minute, which the old code passed for the
+   sequences that were not the worst: each sequence above and each way of
+   scrolling is written to the largest screen in 16 KiB (8 KiB for most
+   repeats), and the test fails when that takes more than 20 times as long as
+   the same number of bytes of line feeds, measured in the same run. The old
+   code took 80 times as long for erase display and 150 times for the full
+   reset, and fails them.
+15. `vt: erase the region of a scroll that is narrower than the screen`
+   (`blank.go`, `screen.go`, `links.go`, `erase_test.go`).
+   Insert line, delete line, scroll up and scroll down in a region as wide as
+   the screen blank their lines by mark (patch 14), and a count of the lines
+   left in the region or more is the erase of the region, which costs the
+   lines. A region narrower than the screen (left and right margins, mode 69)
+   still moved and filled cells one at a time through the buffer's functions,
+   and `ESC[?69h ESC[2;499s` and then `ESC[200S` over and over took 4.3
+   seconds per 64 KiB (the same with a count of one line, 20 s). Now:
+   - A count of the lines left in the region or more is the erase of the area
+     of the region from the cursor's line down, the buffer's fill of it (a
+     wide cell cut by an edge of the region is repaired as before, and the
+     cells outside the region that the repair writes are written), and the
+     lines it covers get a mark that says only that the cells of the region
+     are blank (a part of a line: the same erase again does nothing, which
+     costs the lines it checks: 64 KiB of such sequences take 0.013 s).
+     The lines of the region and the lines n above (or below) them are marked
+     as touched, as the buffer's functions did.
+   - A count of at most a tenth of the lines left, in a region that leaves at
+     most an eighth as many cells of a line outside it as inside it (margins
+     that cut off the edges), moves the lines of the region, as patch 13
+     does, and puts the cells outside it back where they were; the lines that
+     come in keep their own cells for the fill, since the repair of a wide cell
+     goes by what the cell was, one cell after another, and can write outside
+     the region. A scroll of one line in the margins 2 and 499 of the largest
+     screen took 1 ms and takes 50 us (64 KiB of `ESC[S`: 20 s before, 1.0 s
+     after). The tests compare it with the buffer's functions in every region,
+     wide characters at the edges of the region included.
+   - Any other count and region is moved by the buffer's functions, as it was.
+     This stays slow: a scroll of more than a tenth of the lines, or margins that cut
+     off more than an eighth of the line (100 to 400 of 500 columns), moves up
+     to 11 MB for each sequence, which takes 0.4 to 1.7 ms. 64 KiB of `ESC[S`
+     with margins 100 and 400 take 9 s; 64 KiB of `ESC[40S` with margins 2
+     and 499, 22 s. Nothing but a buffer that moves the lines of a region
+     narrower than the screen without moving their cells would bound this.
+     The pane feeds the emulator in slices of 4 KiB, so that no draw waits
+     for more than a slice of it (about 0.6 s of this).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
