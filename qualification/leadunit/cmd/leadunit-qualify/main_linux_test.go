@@ -1,0 +1,274 @@
+//go:build linux
+
+package main
+
+import (
+	"bytes"
+	"errors"
+	"flag"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// helperEnv makes the test binary act as the harness itself, so that the
+// child helper can be run as a separate process. Nothing here talks to
+// systemd, and no test starts a unit.
+const helperEnv = "LEADUNIT_QUALIFY_TEST_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(helperEnv) == "1" {
+		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	}
+	os.Exit(m.Run())
+}
+
+func TestParseArgs(t *testing.T) {
+	good := []struct {
+		args []string
+		want options
+	}{
+		{nil, options{}},
+		{[]string{"--state-dir", "/var/q"}, options{stateDir: "/var/q"}},
+		{[]string{"--run", "--state-dir", "/var/q"}, options{run: true, stateDir: "/var/q"}},
+		{[]string{"--state-dir=/var/q", "--run=true"}, options{run: true, stateDir: "/var/q"}},
+	}
+	for _, c := range good {
+		got, err := parseArgs(c.args)
+		if err != nil || got != c.want {
+			t.Errorf("%q: %+v %v", c.args, got, err)
+		}
+	}
+	bad := [][]string{
+		{"--run"},
+		{"--run", "--state-dir", ""},
+		{"--state-dir", "relative"},
+		{"--state-dir", "/var/q/"},
+		{"--state-dir", "/var/../q"},
+		{"--nope"},
+		{"extra"},
+		{"--run", "--state-dir", "/var/q", "extra"},
+		{"child"}, // only run() routes the child subcommand
+	}
+	for _, args := range bad {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("%q accepted", args)
+		}
+	}
+	if _, err := parseArgs([]string{"-h"}); !errors.Is(err, flag.ErrHelp) {
+		t.Errorf("-h: %v", err)
+	}
+}
+
+func TestDryRunPrintsThePlanAndTouchesNothing(t *testing.T) {
+	for _, args := range [][]string{nil, {"--state-dir", "/var/q"}} {
+		var out, errb bytes.Buffer
+		if code := run(args, &out, &errb); code != exitOK {
+			t.Fatalf("%q: exit %d: %s", args, code, errb.String())
+		}
+		if errb.Len() != 0 {
+			t.Fatalf("stderr: %s", errb.String())
+		}
+		text := out.String()
+		for _, want := range []string{
+			"dry run. Nothing is started and systemd is not touched.",
+			"ataniq-qualify-<random>.service",
+			"child --ignore-term",
+			"a second start with the same name is refused",
+			"SIGTERM to the child, which ignores it, leaves the control group populated",
+			"wait 2 s, send SIGKILL",
+			"Empty becomes true and the unit is not loaded",
+			"always clean up",
+			"Not attempted: a lost start reply.",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%q: dry run lacks %q", args, want)
+			}
+		}
+		if len(args) > 0 && !strings.Contains(text, "--state-dir /var/q") {
+			t.Errorf("the state folder is not named:\n%s", text)
+		}
+	}
+}
+
+func TestDryRunIsIdenticalForTheSameArguments(t *testing.T) {
+	var a, b bytes.Buffer
+	run(nil, &a, new(bytes.Buffer))
+	run(nil, &b, new(bytes.Buffer))
+	if a.String() != b.String() || a.Len() == 0 {
+		t.Fatal("the dry run is not deterministic")
+	}
+}
+
+func TestRunUsageErrors(t *testing.T) {
+	for _, args := range [][]string{{"--run"}, {"--bogus"}, {"extra"}, {"--state-dir", "rel"}} {
+		var out, errb bytes.Buffer
+		if code := run(args, &out, &errb); code != exitUsage {
+			t.Errorf("%q: exit %d", args, code)
+		}
+		if out.Len() != 0 || !strings.Contains(errb.String(), "usage: leadunit-qualify") {
+			t.Errorf("%q: stdout %q stderr %q", args, out.String(), errb.String())
+		}
+	}
+	var out bytes.Buffer
+	if code := run([]string{"-h"}, &out, new(bytes.Buffer)); code != exitOK || !strings.Contains(out.String(), "usage:") {
+		t.Errorf("-h: %d %q", code, out.String())
+	}
+}
+
+// --run with a state folder that is not acceptable stops before any manager
+// is built, so this test cannot reach systemd.
+func TestRunRefusesAnUnacceptableStateFolder(t *testing.T) {
+	root := t.TempDir()
+	open := filepath.Join(root, "open")
+	if err := os.Mkdir(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, dir := range map[string]string{"missing": filepath.Join(root, "none"), "open": open, "file": file, "symlink": link} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"--run", "--state-dir", dir}, &out, &errb); code != exitUsage || out.Len() != 0 {
+			t.Errorf("%s: exit %d stdout %q stderr %q", name, code, out.String(), errb.String())
+		}
+	}
+}
+
+func TestCheckStateDirAcceptsAPrivateFolder(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStateDir(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseChild(t *testing.T) {
+	o, err := parseChild([]string{"--ignore-term", "--ready-file", "/x/ready", "--max-life", "3s"})
+	if err != nil || !o.ignoreTerm || o.readyFile != "/x/ready" || o.maxLife != 3*time.Second {
+		t.Fatalf("%+v %v", o, err)
+	}
+	o, err = parseChild(nil)
+	if err != nil || o.ignoreTerm || o.maxLife != defaultMaxLife {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, args := range [][]string{{"--max-life", "0s"}, {"--max-life", "2h"}, {"--max-life", "x"}, {"extra"}, {"--bogus"}} {
+		if _, err := parseChild(args); err == nil {
+			t.Errorf("%q accepted", args)
+		}
+	}
+}
+
+// helper starts the test binary as "leadunit-qualify child ...".
+func helper(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], append([]string{"child"}, args...)...)
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	return cmd
+}
+
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && strings.HasSuffix(string(b), "\n") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the child never wrote its ready file")
+}
+
+// startHelper starts the child, waits for its ready file and returns a
+// channel that closes with its wait status.
+func startHelper(t *testing.T, args ...string) (*exec.Cmd, <-chan *os.ProcessState) {
+	t.Helper()
+	ready := filepath.Join(t.TempDir(), "ready")
+	cmd := helper(t, append(args, "--ready-file", ready)...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	done := make(chan *os.ProcessState, 1)
+	go func() {
+		st, _ := cmd.Process.Wait()
+		done <- st
+	}()
+	waitFile(t, ready)
+	return cmd, done
+}
+
+func TestChildIgnoringTermSurvivesItAndDiesOfKill(t *testing.T) {
+	cmd, done := startHelper(t, "--ignore-term")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case st := <-done:
+		t.Fatalf("the child ended after SIGTERM: %v", st)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case st := <-done:
+		ws, ok := st.Sys().(syscall.WaitStatus)
+		if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+			t.Fatalf("status %v", st)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child survived SIGKILL")
+	}
+}
+
+func TestChildWithoutIgnoreTermDiesOfTerm(t *testing.T) {
+	cmd, done := startHelper(t)
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case st := <-done:
+		ws, ok := st.Sys().(syscall.WaitStatus)
+		if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+			t.Fatalf("status %v", st)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child ignored SIGTERM without being asked to")
+	}
+}
+
+func TestChildEndsByItselfAtItsMaximumLife(t *testing.T) {
+	cmd := helper(t, "--ignore-term", "--max-life", "200ms")
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChildFailsOnAnExistingReadyFileAndOnBadArguments(t *testing.T) {
+	ready := filepath.Join(t.TempDir(), "ready")
+	if err := os.WriteFile(ready, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var errb bytes.Buffer
+	if code := runChild([]string{"--ready-file", ready, "--max-life", "10ms"}, &errb); code != exitRuntime {
+		t.Fatalf("exit %d", code)
+	}
+	if code := runChild([]string{"--bogus"}, &errb); code != exitUsage {
+		t.Fatalf("exit %d", code)
+	}
+}
