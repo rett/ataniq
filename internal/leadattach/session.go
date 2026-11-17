@@ -126,6 +126,9 @@ type outcome struct {
 	reason string
 	// snapshot is true when a snapshot was applied on the connection.
 	snapshot bool
+	// checked is true when a Check of the holder matched the screen on the
+	// connection: the replica followed the holder at least once.
+	checked bool
 }
 
 // session is the state of one connection, used by the client's goroutine
@@ -139,6 +142,7 @@ type session struct {
 	havePos   bool
 	pos       uint64
 	snaps     int
+	checked   bool
 	modesSeen bool
 	roleSeen  bool
 	writer    string
@@ -170,6 +174,7 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 		}
 		cn.finish(out.kind == outClosed || out.kind == outResync)
 		out.snapshot = s.snaps > 0
+		out.checked = s.checked
 	}()
 
 	payload, err := wire.EncodeHello(hello)
@@ -492,6 +497,7 @@ func (s *session) check(payload []byte) *outcome {
 		return nil
 	}
 	if wire.DigestHex(c.pane.Digest()) == ck.Digest {
+		s.checked = true
 		return nil
 	}
 	c.mutate(func() {

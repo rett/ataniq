@@ -93,8 +93,8 @@ const (
 	dialTimeout      = 5 * time.Second
 	detachTimeout    = 200 * time.Millisecond
 
-	// maxBackoffPolls bounds the wait after consecutive protocol errors: the
-	// poll interval times 2^n, at most this many polls.
+	// maxBackoffPolls bounds the wait after consecutive protocol errors or
+	// resyncs: the poll interval times 2^n, at most this many polls.
 	maxBackoffPolls = 60
 
 	// maxQueued is how many frames wait to be sent; more are dropped and

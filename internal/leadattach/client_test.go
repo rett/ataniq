@@ -752,3 +752,110 @@ func TestWakeIsCalledAfterChangesAndNeverUnderTheStatusLock(t *testing.T) {
 		t.Fatal("deadlock")
 	}
 }
+
+// mismatch makes the holder send a Check the client's screen does not match,
+// and waits until the client has given the connection up.
+func (hc *hconn) mismatch() {
+	hc.t.Helper()
+	hc.corrupt("A", "B")
+	hc.check()
+	hc.closed()
+}
+
+// reattach welcomes the connection the client made next, with a snapshot of
+// the holder's screen, and waits for the client to be attached.
+func (e *env) reattach() *hconn {
+	e.t.Helper()
+	hc := e.h.accept()
+	hc.welcome(wire.RoleViewer)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	return hc
+}
+
+// heldClock holds every wait longer than a ticket poll until the test
+// releases it, and records it like the scaled clock does.
+type heldClock struct {
+	base   *scaledClock
+	timers chan chan time.Time
+}
+
+type heldTimer struct{ ch chan time.Time }
+
+func (h heldTimer) C() <-chan time.Time { return h.ch }
+func (h heldTimer) Stop() bool          { return true }
+
+func (c *heldClock) NewTimer(d time.Duration) leadattach.Timer {
+	if d <= leadattach.TicketPoll {
+		return c.base.NewTimer(d)
+	}
+	c.base.mu.Lock()
+	c.base.durs = append(c.base.durs, d)
+	c.base.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	c.timers <- ch
+	return heldTimer{ch}
+}
+
+func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
+	leakCheck(t)
+	var held *heldClock
+	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 8, mutate: func(c *leadattach.Config) {
+		held = &heldClock{base: c.Clock.(*scaledClock), timers: make(chan chan time.Time, 8)}
+		c.Clock = held
+	}})
+	// release lets the held wait of the client go, once it has begun.
+	release := func() {
+		t.Helper()
+		select {
+		case ch := <-held.timers:
+			ch <- time.Now()
+		case <-time.After(wait):
+			t.Fatal("the client did not wait")
+		}
+	}
+	hc := e.reattach()
+	waits := func() []time.Duration { return e.clock.asked() } // tickets are ready: only backoff waits are asked
+
+	// The first mismatch is followed at once.
+	hc.mismatch()
+	hc = e.reattach()
+	if w := waits(); len(w) != 0 {
+		t.Fatalf("waited %v after the first resync", w)
+	}
+	// From the second, the wait doubles, and the reason says so.
+	hc.mismatch()
+	st := e.until("the wait", func(st terminalconsole.LiveStatus) bool {
+		return st.Conn == terminalconsole.LiveResyncing && strings.Contains(st.Reason, "trying again in 1s")
+	})
+	if !strings.HasPrefix(st.Reason, "check mismatch") {
+		t.Errorf("reason %q", st.Reason)
+	}
+	e.h.noConnection(30 * time.Millisecond) // held: no connection meanwhile
+	release()
+	hc = e.reattach()
+	hc.mismatch()
+	release()
+	hc = e.reattach()
+	want := []time.Duration{2 * leadattach.TicketPoll, 4 * leadattach.TicketPoll}
+	if w := waits(); len(w) != 2 || w[0] != want[0] || w[1] != want[1] {
+		t.Fatalf("waits %v, want %v", w, want)
+	}
+
+	// A snapshot alone does not end the back-off, a matching Check does.
+	hc.write("ok")
+	hc.check()
+	e.until("the check", func(terminalconsole.LiveStatus) bool { return e.pane.Digest() == hc.pane.Digest() })
+	e.barrier(hc)
+	hc.mismatch() // the first resync again: no wait
+	hc = e.reattach()
+	if w := waits(); len(w) != 2 {
+		t.Errorf("waits %v: a mismatch after a matching check was waited for", w)
+	}
+	hc.mismatch()
+	release()
+	e.reattach()
+	if w := waits(); len(w) != 3 || w[2] != 2*leadattach.TicketPoll {
+		t.Errorf("waits %v, want the back-off to start again at 1s", w)
+	}
+}
