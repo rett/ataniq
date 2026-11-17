@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 	"testing"
@@ -26,18 +27,25 @@ func TestStopContextEndsOnEveryStopSignal(t *testing.T) {
 		if !ok {
 			t.Fatalf("signal %v is not a syscall.Signal", sig)
 		}
+		// A backstop, so that a missing handler fails this test by name
+		// and does not kill the test binary.
+		backstop := make(chan os.Signal, 1)
+		signal.Notify(backstop, sig)
 		ctx, stop := stopContext()
 		if err := syscall.Kill(os.Getpid(), s); err != nil {
 			stop()
+			signal.Stop(backstop)
 			t.Fatal(err)
 		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(10 * time.Second):
 			stop()
+			signal.Stop(backstop)
 			t.Fatalf("the context did not end on %v", sig)
 		}
 		stop()
+		signal.Stop(backstop)
 	}
 }
 
