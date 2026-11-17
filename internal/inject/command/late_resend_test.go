@@ -136,13 +136,20 @@ func TestLateInformationAfterAResendHoldsTheQueueBeforeItWritesTheNote(t *testin
 			}
 			wantTicksLeaveItAlone(t, m, at(time.Minute))
 			wantHeld(t, m, "m1", at(2*time.Hour))
-			// A second, different note while held writes the note only.
+			if h.Held != 1 || seqA(m) != 1 {
+				t.Errorf("counter %d, view %d", h.Held, seqA(m))
+			}
+			// A second, different piece while held is more information: a hold
+			// record that advances the counter, then the note.
 			n = len(j.recs)
 			if err := m.ConfirmDelivery("m1", "file:11", at(3*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
-			if len(j.recs) != n+1 || j.recs[n].Type != "" || j.recs[n].From != StateResolved {
+			if len(j.recs) != n+2 || j.recs[n].Type != RecordHold || j.recs[n].Held != 2 || j.recs[n+1].Type != "" || j.recs[n+1].From != StateResolved {
 				t.Errorf("records %+v", j.recs[n:])
+			}
+			if seqA(m) != 2 {
+				t.Errorf("counter %d", seqA(m))
 			}
 		})
 	}
@@ -224,8 +231,9 @@ func TestLateInformationAfterTheReplacementEnded(t *testing.T) {
 			if _, err := m.RecordFence("m1", FenceResult{Written: WrittenPaste, Outcome: OutcomeNotSubmitted}, at(2*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
-			// One hold, then the two notes.
-			if len(j.recs) != n+3 || j.recs[n].Type != RecordHold || j.recs[n+1].From != StateResolved || j.recs[n+2].From != StateResolved {
+			// A hold record and a note for each of the two pieces.
+			if len(j.recs) != n+4 || j.recs[n].Type != RecordHold || j.recs[n+1].From != StateResolved ||
+				j.recs[n+2].Type != RecordHold || j.recs[n+3].From != StateResolved {
 				t.Fatalf("records %+v", j.recs[n:])
 			}
 			wantState(t, m, "r1", drive.to)
@@ -272,7 +280,7 @@ func TestLateInformationAlongAResendChainHoldsOneQueueForEveryCommand(t *testing
 	}
 	wantHeld(t, m, "m1", at(4*time.Minute))
 	// One release ends the hold for both, and the queue goes on.
-	if err := m.ReleaseHold(leadA, "op", at(5*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if v := leadView(t, m); v.Held || v.HeldAlso != nil {
@@ -303,7 +311,7 @@ func TestLateInformationForADroppedCommandHoldsTheQueueBehindIt(t *testing.T) {
 			wantHeld(t, m, "m1", at(time.Minute))
 			wantTicksLeaveItAlone(t, m, at(time.Minute))
 			// The release lets m2 go.
-			if err := m.ReleaseHold(leadA, "op", at(2*time.Hour)); err != nil {
+			if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(2*time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			if d := mustBegin(t, m, leadA, at(2*time.Hour)); d.ID != "m2" {
@@ -370,7 +378,7 @@ func TestAHalfWrittenResendInAHeldQueueCanBeWithdrawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantHeld(t, m, "m1", at(53*time.Second))
-	if err := m.ReleaseHold(leadA, "op", at(54*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(54*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if d := mustBegin(t, m, leadA, at(55*time.Second)); d.ID != "m2" {
@@ -403,12 +411,17 @@ func TestLateEvidenceWithTheNoteCapFullStillHoldsTheQueue(t *testing.T) {
 	if got := len(lateNotes(t, m, "m1")); got != maxLateNotes {
 		t.Errorf("%d notes", got)
 	}
-	// The same call again writes nothing more, and a fence result does the same.
+	// A fence result is a new piece: the hold is not written again, but the
+	// counter advances, and the note is refused. So is the evidence once more,
+	// which is no longer the last piece.
 	_, err := m.RecordFence("m1", FenceResult{Written: WrittenNothing, Outcome: OutcomeNotIdle}, at(72*time.Second))
 	wantRefusal(t, err, ReasonLateNotesFull)
 	wantRefusal(t, m.ConfirmDelivery("m1", "file:99", at(73*time.Second)), ReasonLateNotesFull)
-	if len(j.recs) != n+1 {
-		t.Errorf("%d records after repeats", len(j.recs)-n)
+	if len(j.recs) != n+3 || j.recs[n+1].Type != RecordHold || j.recs[n+2].Type != RecordHold {
+		t.Errorf("%d records after repeats: %+v", len(j.recs)-n, j.recs[n:])
+	}
+	if got := seenOf(m, leadA); got != 3 {
+		t.Errorf("counter %d", got)
 	}
 	wantState(t, m, "r1", StateQueued)
 }
@@ -425,7 +438,7 @@ func TestARepeatedNoteAfterAReleaseHoldsTheQueueAgain(t *testing.T) {
 	if err := m.ConfirmDelivery("m1", "file:10", at(51*time.Second)); err != nil || len(j.recs) != n {
 		t.Fatalf("a repeat while held: %v, %d records", err, len(j.recs)-n)
 	}
-	if err := m.ReleaseHold(leadA, "op", at(52*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(52*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	n = len(j.recs)

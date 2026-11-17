@@ -69,11 +69,18 @@ type TargetView struct {
 	// command the hold was first set for, HeldReason why, and HeldSince when;
 	// HeldAlso lists the other commands the hold is about, in order. A held
 	// queue may be empty. A queue can be both frozen and held.
+	//
+	// HeldSeq is the hold counter, 0 when the queue is not held: it goes up by
+	// one for every piece of late information about a command the hold is about
+	// (also one whose note is skipped or refused), except a call that repeats the
+	// last one byte for byte. ReleaseHold takes the value the operator saw and is
+	// refused (ReasonHoldChanged) when it is not the current one.
 	Held       bool
 	HeldFor    string
 	HeldReason Reason
 	HeldSince  time.Time
 	HeldAlso   []string
+	HeldSeq    uint64
 	// BlockedNotified is true during a blocked spell: the owner was already
 	// told that the lead is waiting for an approval.
 	BlockedNotified bool
@@ -81,7 +88,8 @@ type TargetView struct {
 
 // View is a read-only copy of the queues, for the daemon to show.
 type View struct {
-	// Targets lists the targets that have commands in their queue, by name.
+	// Targets lists the targets that have commands in their queue or a hold, by
+	// name.
 	Targets []TargetView
 }
 
@@ -100,7 +108,7 @@ func (m *Machine) View() View {
 			tv.Frozen, tv.FrozenBy = true, f.id
 		}
 		if h := m.holds[key]; h != nil {
-			tv.Held, tv.HeldFor, tv.HeldReason, tv.HeldSince = true, h.about[0], h.reason, h.since
+			tv.Held, tv.HeldFor, tv.HeldReason, tv.HeldSince, tv.HeldSeq = true, h.about[0], h.reason, h.since, m.heldSeq[key]
 			if len(h.about) > 1 {
 				tv.HeldAlso = append([]string(nil), h.about[1:]...)
 			}

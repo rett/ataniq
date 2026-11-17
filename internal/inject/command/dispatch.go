@@ -157,8 +157,8 @@ func (m *Machine) BeginDispatch(target Target, now time.Time) (Dispatch, error) 
 // all late paths share (repeats, the cap, ended commands).
 //
 // Otherwise it refuses with ReasonWrongState unless the command is dispatching
-// and Enter has not been recorded. On a journal error nothing changed: the daemon retries
-// RecordFence with the same result, and never calls BeginDispatch again for
+// and Enter has not been recorded. On a journal error nothing changed: the
+// daemon retries RecordFence with the same result, and never calls BeginDispatch again for
 // the command, which stays dispatching and is refused as already dispatching.
 func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceUpdate, error) {
 	c := m.cmds[id]
@@ -218,7 +218,8 @@ func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceU
 	return up, nil
 }
 
-// lateFence journals a fence result that arrived for an uncertain command.
+// lateFence journals a fence result that arrived for an uncertain command, or
+// for one an operator resolved as sent again or dropped.
 func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUpdate, error) {
 	written := res.Written
 	if !knownWritten(string(written)) {
@@ -228,7 +229,8 @@ func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUp
 	r.Reason = ReasonLateFenceResult
 	r.Detail = safeField("outcome: "+safeField(string(res.Outcome), 40)+"; "+res.Readings, maxDetailBytes)
 	r.EvidenceKind, r.Evidence = EvidenceObservation, string(written)
-	if err := m.late(c, r, now); err != nil {
+	piece := pieceDigest("late-fence-result", c.id, string(res.Written), string(res.Outcome), res.Readings)
+	if err := m.late(c, r, piece, now); err != nil {
 		return FenceUpdate{}, err
 	}
 	return FenceUpdate{ID: c.id, Target: c.target, State: c.state, Reason: c.reason}, nil
@@ -265,13 +267,19 @@ func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUp
 // information for an uncertain command with no resend pending is a note only:
 // that command already freezes the queue.
 //
-// The hold is decided before the rules below, so neither a repeated note nor a
-// full note list suppresses it. If the queue is already held for that command
-// the hold is not written again. If the hold record fails to append, nothing
-// changed and the error is returned: the daemon repeats the call. If the note
-// then fails to append, the hold stands and the error is returned: repeating
-// the call writes the note only. After a release, the same evidence for the same
-// command holds the queue again.
+// Every such call is a piece of late information and is decided before the
+// rules below, whatever else is wrong with it: evidence that is refused as bad
+// (ReasonBadEvidence) holds the queue first and is refused after, and neither a
+// repeated note nor a full note list suppresses it. The hold record is written
+// each time, not only for the first piece: it advances the target's hold
+// counter (TargetView.HeldSeq), which ReleaseHold must name, so that a release
+// never covers a piece the operator has not seen. The one call that writes no
+// hold record is a repeat, byte for byte, of the last piece of a queue that is
+// still held. If the hold record fails to append, nothing changed and the error
+// is returned: the daemon repeats the call. If the note then fails to append,
+// the hold stands and the error is returned: repeating the call writes the note
+// only. After a release, the same evidence for the same command holds the queue
+// again.
 //
 // The rules for every late note, on an uncertain or on a decided command:
 //
@@ -299,13 +307,19 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 	case c == nil:
 		return refusal(ReasonNoCommand, id, "no command %q", safeField(id, 70))
 	case c.takesLate():
+		piece := pieceDigest("late-evidence", c.id, evidence)
 		if bad != nil {
+			// Unusable evidence is still late information: the hold comes
+			// first, then the refusal.
+			if err := m.holdIfDecided(c, piece, now); err != nil {
+				return err
+			}
 			return bad
 		}
 		r := base(c, now)
 		r.Reason = ReasonLateEvidence
 		r.EvidenceKind, r.Evidence = EvidenceProviderReport, safeField(evidence, maxEvidenceBytes)
-		return m.late(c, r, now)
+		return m.late(c, r, piece, now)
 	case c.state != StateDispatching:
 		return refusal(ReasonWrongState, id, "command %q is %s, not dispatching", id, c.state)
 	case !c.hasEnter:
@@ -338,8 +352,8 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 //
 // Tick never dispatches and never resends, and it never moves an uncertain
 // command or ends a hold. A queue that is held keeps its queued head: the head
-// is not tried, so it is not refused as not idle. It stops at the first journal error and returns it with the records
-// written so far.
+// is not tried, so it is not refused as not idle. It stops at the first journal
+// error and returns it with the records written so far.
 func (m *Machine) Tick(now time.Time) ([]Record, error) {
 	var done []Record
 	step := func(r Record) error {
@@ -413,15 +427,13 @@ func (c *command) hasNote(r Record) bool {
 }
 
 // late journals the late note r (its reason, detail and evidence are set) for
-// c, which is uncertain or was resolved as sent again or dropped. First it holds
-// the queue when c calls for it and the queue is not held for c already; then
+// c, which is uncertain or was resolved as sent again or dropped; piece is the
+// digest of the call. First it records the information with holdIfDecided; then
 // it skips a note that c already has, and refuses a different one when c holds
 // the most it keeps. See ConfirmDelivery for the rules.
-func (m *Machine) late(c *command, r Record, now time.Time) error {
-	if reason := m.holdReasonFor(c); reason != "" && !m.holds[c.target.String()].has(c.id) {
-		if err := m.commit(holdRecord(c, reason, now)); err != nil {
-			return err
-		}
+func (m *Machine) late(c *command, r Record, piece string, now time.Time) error {
+	if err := m.holdIfDecided(c, piece, now); err != nil {
+		return err
 	}
 	r.From, r.To = c.state, c.state
 	if c.hasNote(r) {

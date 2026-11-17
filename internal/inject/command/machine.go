@@ -12,7 +12,7 @@ const (
 	maxDetailBytes   = 1024 // a detail or a fence reading
 	maxEvidenceBytes = 512  // a piece of evidence
 	maxOperatorBytes = 128  // an operator name
-	maxLateNotes     = 8    // late annotations kept for one uncertain command
+	maxLateNotes     = 8    // late annotations kept for one command, ended or not
 )
 
 // command is the machine's memory of one command. A command that has ended
@@ -50,6 +50,7 @@ type hold struct {
 	about  []string
 	reason Reason // of the first record
 	since  time.Time
+	last   string // piece digest of the newest hold record
 }
 
 // has reports whether the hold is already about the command. It is safe on
@@ -75,7 +76,7 @@ func (h *hold) has(id string) bool {
 // leaves the state as it was. Two methods write more than one record and say
 // so: Submit (accepted, then queued), Resolve with a resend, and the late calls
 // RecordFence and ConfirmDelivery for a command that an operator decided about
-// (the hold of the queue, then the note).
+// (the hold record of the queue, then the note).
 type Machine struct {
 	limits  Limits
 	journal Journal
@@ -84,6 +85,7 @@ type Machine struct {
 	cmds    map[string]*command
 	queues  map[string][]*command // by rendered target, first in first out
 	holds   map[string]*hold      // by rendered target; only a held queue has one
+	heldSeq map[string]uint64     // by rendered target; the hold counter, kept after a release
 	rates   map[string][]time.Time
 	blocked map[string]bool // a blocked spell has been announced for the target
 }
@@ -104,6 +106,7 @@ func New(limits Limits, journal Journal) (*Machine, error) {
 		cmds:    map[string]*command{},
 		queues:  map[string][]*command{},
 		holds:   map[string]*hold{},
+		heldSeq: map[string]uint64{},
 		rates:   map[string][]time.Time{},
 		blocked: map[string]bool{},
 	}, nil

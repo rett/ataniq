@@ -42,7 +42,7 @@ func scenario() []step {
 		add("resolve "+r.ID+" "+string(r.Decision), func(m *Machine, now time.Time) error { _, err := m.Resolve(r, now); return err })
 	}
 	release := func(target Target, operator string) {
-		add("release "+target.String(), func(m *Machine, now time.Time) error { return m.ReleaseHold(target, operator, now) })
+		add("release "+target.String(), func(m *Machine, now time.Time) error { return m.ReleaseHold(target, operator, seenOf(m, target), now) })
 	}
 	withdraw := func(id string) {
 		add("withdraw "+id, func(m *Machine, now time.Time) error { return m.Withdraw(id, "bob", now) })
@@ -80,6 +80,7 @@ func scenario() []step {
 	resolve(Resolution{ID: "m5", Decision: DecisionDrop, Operator: "alice"})
 	submit("m9", Daemon(), leadB)
 	fence("m5", WrittenPasteAndEnter, OutcomeSubmitted) // late result for the dropped m5: held
+	confirm("m5")                                       // a second piece for the held queue: the counter advances
 	withdraw("m9")
 	release(leadB, "bob")
 	submit("m6", Daemon(), leadA)

@@ -177,3 +177,17 @@ func ids(m *Machine, target Target) []string {
 	}
 	return out
 }
+
+// seenOf is the hold counter an operator sees for the target: HeldSeq of its
+// view, 0 when it is not held.
+func seenOf(m *Machine, target Target) uint64 {
+	for _, tv := range m.View().Targets {
+		if tv.Target == target.String() {
+			return tv.HeldSeq
+		}
+	}
+	return 0
+}
+
+// seqA is the hold counter of lead a.
+func seqA(m *Machine) uint64 { return seenOf(m, leadA) }

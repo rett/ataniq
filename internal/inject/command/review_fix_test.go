@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,10 @@ func TestRestoreRefusesAResolutionThatLeavesAResendQueued(t *testing.T) {
 // for each time the restored machine dispatches it, and the sum is at most 1.
 // And once a hold record, or a note for a command an operator resolved, has
 // been accepted, no command is dispatched before a release record follows it.
+// The pool's hold and release records get the counter that follows the
+// records before them (see withCounter), except the ones that carry staleHeld,
+// which get a counter that is wrong; Restore must accept no sequence with one,
+// and every release it accepts carries the counter that was current.
 // It returns how many sequences it tried and how many Restore accepted.
 func walkSequences(t *testing.T, base []Record, pool []func(seq uint64) Record, depth int) (sequences, accepted int) {
 	t.Helper()
@@ -132,7 +137,19 @@ func walkSequences(t *testing.T, base []Record, pool []func(seq uint64) Record, 
 				// Late information accepted, and then a dispatch with no operator
 				// call between: the machine must have refused the journal.
 				pending := false
+				counter := uint64(0)
 				for i, r := range rs {
+					switch r.Type {
+					case RecordHold:
+						counter++
+						if r.Held != counter {
+							t.Fatalf("restore accepted a hold that sets the counter to %d, want %d: %+v", r.Held, counter, rs[n:])
+						}
+					case RecordRelease:
+						if r.Held != counter {
+							t.Fatalf("restore accepted a release that saw the counter at %d, it was at %d: %+v", r.Held, counter, rs[n:])
+						}
+					}
 					switch {
 					case r.Type == RecordHold, r.Type == "" && r.From == r.To && r.From == StateResolved:
 						pending = true
@@ -161,7 +178,7 @@ func walkSequences(t *testing.T, base []Record, pool []func(seq uint64) Record, 
 			return
 		}
 		for _, mk := range pool {
-			walk(append(clone(rs), mk(uint64(len(rs))+1)), d+1)
+			walk(append(clone(rs), withCounter(rs, mk(uint64(len(rs))+1))), d+1)
 		}
 	}
 	walk(clone(base), 0)
@@ -188,9 +205,11 @@ func TestNoRestoredSequenceDispatchesABodyTwice(t *testing.T) {
 		// Late information, the operator's release and withdrawal.
 		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldAfterResend) },
 		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldDuringResend) },
+		func(s uint64) Record { return holdRecN(s, "m1", ReasonHoldAfterResend, staleHeld) },
 		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateResolved)) },
 		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateUncertain)) },
 		func(s uint64) Record { return releaseRec(s, "a") },
+		func(s uint64) Record { return releaseRecN(s, "a", staleHeld) },
 		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r1")) },
 		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r2")) },
 		func(s uint64) Record { return dispatchRec(s, "r2") },
@@ -223,9 +242,11 @@ func TestNoRestoredSequenceDispatchesABodyTwice(t *testing.T) {
 		func(s uint64) Record { return resolveRecOf(s, "r3", DecisionResend, "r5") },
 		func(s uint64) Record { return holdRec(s, "m1", ReasonHoldAfterResend) },
 		func(s uint64) Record { return holdRec(s, "r1", ReasonHoldDuringResend) },
+		func(s uint64) Record { return holdRecN(s, "r1", ReasonHoldDuringResend, staleHeld) },
 		func(s uint64) Record { return asSupervisor(noteRec(s, "m1", StateResolved)) },
 		func(s uint64) Record { return asSupervisor(noteRec(s, "r1", StateUncertain)) },
 		func(s uint64) Record { return releaseRec(s, "a") },
+		func(s uint64) Record { return releaseRecN(s, "a", staleHeld) },
 		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r3")) },
 		func(s uint64) Record { return asSupervisor(withdrawRec(s, "r4")) },
 		func(s uint64) Record { return dispatchRec(s, "r4") },
@@ -234,6 +255,36 @@ func TestNoRestoredSequenceDispatchesABodyTwice(t *testing.T) {
 	if accepted == 0 || accepted == sequences {
 		t.Fatalf("chain: %d of %d sequences accepted; the test does not distinguish", accepted, sequences)
 	}
+}
+
+// staleHeld marks a hold or release record of a walk pool whose counter is to
+// be wrong.
+const staleHeld = 1 << 40
+
+// withCounter gives a hold record of a walk the counter that follows the hold
+// records before it and a piece of its own, and a release record the current
+// counter. A record marked staleHeld gets a counter that is not the right one.
+func withCounter(before []Record, r Record) Record {
+	holds := uint64(0)
+	for _, x := range before {
+		if x.Type == RecordHold {
+			holds++
+		}
+	}
+	stale := r.Held == staleHeld
+	switch r.Type {
+	case RecordHold:
+		r.Held, r.Piece = holds+1, pieceDigest("walk", strconv.Itoa(len(before)))
+		if stale {
+			r.Held += 6
+		}
+	case RecordRelease:
+		r.Held = holds
+		if stale {
+			r.Held += 6
+		}
+	}
+	return r
 }
 
 // asSupervisor makes a record of a command that the supervisor sent.

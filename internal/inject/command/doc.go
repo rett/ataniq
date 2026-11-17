@@ -40,9 +40,9 @@
 // that is already dispatching is not interrupted; if its fence wrote nothing it
 // returns to queued and the hold keeps it there. The hold is set even when the
 // note itself cannot be stored, because the note list is full or the note
-// repeats an earlier one; setting a hold for a command the queue is already
-// held for writes nothing. Only an operator ends a hold, with ReleaseHold. The
-// operator decides about an uncertain command with Resolve, as before, and
+// repeats an earlier one; late information for a command the queue is already
+// held for does not hold it again, it advances the counter below. Only an operator ends a hold, with ReleaseHold.
+// The operator decides about an uncertain command with Resolve, as before, and
 // withdraws a queued command that must not be sent with Withdraw (allowed only
 // in a held queue). No timer, Tick or Restore ends a hold, and Restore rebuilds
 // holds from the journal and refuses a hold, release or withdrawal that the
@@ -51,13 +51,39 @@
 // and held. After a release, the same evidence arriving again holds the queue
 // again. A note equal to one the command already has is skipped, and at most
 // eight notes are kept (late-notes-full after that); the hold is decided before
-// both. The daemon passes each piece of evidence once.
+// both, and before the bounds on the evidence, so evidence refused as bad
+// (bad-evidence) holds the queue too. The daemon passes each piece of evidence
+// once.
+//
+// A release covers what the operator has seen. Each piece of late information
+// for a command the hold is about (a second piece about a command the queue is
+// held for as well, and a piece whose note is skipped, refused as late-notes-full
+// or not written because the evidence was bad) is journaled as a hold record
+// that advances a counter of the target, shown as TargetView.HeldSeq. The one
+// call that writes nothing is a repeat, byte for byte, of the last piece of a
+// queue that is held. The counter is never reset, not by a release either.
+// ReleaseHold takes the value the operator saw and is refused as hold-changed
+// when information arrived since; the release record carries that value, and
+// Restore refuses a hold record that does not advance the counter by one and a
+// release that does not carry the current value. Late information for an
+// uncertain command with no resend pending is a note only and is not counted:
+// that command freezes the queue, and Resolve shows its notes.
+//
+// What the hold does not do. Tick does not refuse the head of a held queue by
+// the queue time limit: the head was not tried, so "not idle" would be a false
+// reason, and a held queue never drains by time. One release ends the hold for
+// every command it is about. A hold stops every sender's messages to that
+// target, not only the sender of the commands it is about, and the queue can
+// fill to its cap (admission refuses queue-full) until an operator acts.
 //
 // What is promised. Ataniq never sends by itself what an operator has not
-// decided, and it stops the queue when information arrives that contradicts an
-// operator's decision. It cannot recall a replacement whose fence is already
-// running: that replacement may still be written, and the hold only keeps the
-// next dispatch back.
+// decided, and it stops the queue when late information arrives about a command
+// an operator decided was not delivered (dropped or sent again), or is
+// deciding (an uncertain command with its resend half written). It cannot
+// recall a replacement whose fence is already running: that replacement may
+// still be written, and the hold only keeps the next dispatch back. It does not
+// promise to stop the queue for late information that contradicts a decision of
+// delivered; see below.
 //
 // Ended commands (delivered, refused, resolved) stay in memory, without their
 // text, so that a command id is never used twice; trimming that history is the
@@ -75,6 +101,12 @@
 //     and the commands that replaced it in turn) and does not dispatch when
 //     one is found. The machine holds a queue only for evidence it is told
 //     about; evidence the daemon has not read yet is not known to it.
+//   - The daemon matches late evidence only by the header id of a user turn in
+//     the conversation file. A resend carries the same body as its original
+//     under a new header, so matching by body, or anywhere in the file, would
+//     take the delivery of the resend for late evidence of the original and
+//     hold the queue after every resend; and a lead can print a line that looks
+//     like a header for a dropped id in its own output, which is not a user turn.
 //   - The daemon repeats a late call (RecordFence or ConfirmDelivery for a
 //     decided command) that returned a journal error. The hold is written
 //     before the note: if the hold failed nothing changed, and if the note
@@ -85,6 +117,12 @@
 //   - Ended commands (delivered, refused, resolved) are kept in memory for the
 //     life of the Machine and Restore replays the whole journal; there is no
 //     compaction.
+//   - A late result that contradicts an operator's decision of delivered, for
+//     example a fence result "nothing written" for a command resolved as
+//     operator-delivered, is refused as wrong-state and not journaled today. The
+//     message may never have reached the lead, and the audit loses the result.
+//     Whether it should be kept as a note and also hold the queue is an open
+//     question for the owner.
 //   - Whether the queue time limit should also end a command whose lead stays
 //     blocked is an open question for the owner. Today it does: a head that
 //     waits longer than QueueTimeLimit is refused as not idle, with the last

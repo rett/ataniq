@@ -110,6 +110,15 @@ type Record struct {
 	// Replacement is, on the resolution of an uncertain command sent again,
 	// the id of the new command.
 	Replacement string `json:"replacement,omitempty"`
+	// Held is the target's hold counter. On a hold record it is the value the
+	// record sets: one more than the last hold record of the target, counted
+	// over the whole journal and never reset by a release. On a release record
+	// it is the value the operator saw, which must be the current one.
+	Held uint64 `json:"held,omitempty"`
+	// Piece is, on a hold record, the digest of the late call that caused it
+	// (see pieceDigest), so that a call that repeats the last one byte for byte
+	// is told from a new piece of information.
+	Piece string `json:"piece,omitempty"`
 	// Text is the whole text to deliver, header included. It is only on the
 	// record that creates a command.
 	Text string `json:"text,omitempty"`

@@ -29,6 +29,9 @@ func in(r Reason, set ...Reason) bool {
 func (m *Machine) check(r Record) error {
 	switch r.Type {
 	case "":
+		if r.Held != 0 || r.Piece != "" {
+			return errors.New("only a hold or a release record carries a hold counter or a piece")
+		}
 	case RecordHold:
 		return m.checkHold(r)
 	case RecordRelease:
@@ -281,14 +284,15 @@ func (m *Machine) checkNew(r Record) error {
 	return nil
 }
 
-// checkHold checks a hold record: late information about a command an
-// operator decided was not delivered, or is deciding, and the queue not yet
-// held for that command. A record the live machine could not have written is
+// checkHold checks a hold record: a piece of late information about a command
+// an operator decided was not delivered, or is deciding. It sets the target's
+// hold counter to one more than it was, and is not a repeat of the newest piece
+// of a queue that is held. A record the live machine could not have written is
 // an error.
 func (m *Machine) checkHold(r Record) error {
 	if r.From != "" || r.To != "" || r.Sender != "" || r.Kind != "" || r.Text != "" || r.Of != "" || r.Replacement != "" ||
 		r.Operator != "" || r.EvidenceKind != "" || r.Evidence != "" {
-		return errors.New("a hold record names only the target, the command, the reason and the time")
+		return errors.New("a hold record names only the target, the command, the reason, the counter, the piece and the time")
 	}
 	c := m.cmds[r.ID]
 	if c == nil {
@@ -304,14 +308,20 @@ func (m *Machine) checkHold(r Record) error {
 	if r.Reason != want {
 		return fmt.Errorf("a hold about command %q has reason %q, want %q", c.id, r.Reason, want)
 	}
-	if m.holds[r.Target].has(c.id) {
-		return fmt.Errorf("the queue of %s is already held for command %q", r.Target, c.id)
+	if want := m.heldSeq[r.Target] + 1; r.Held != want {
+		return fmt.Errorf("a hold of %s sets the counter to %d, want %d", r.Target, r.Held, want)
+	}
+	if !validPiece(r.Piece) {
+		return errors.New("a hold record carries the digest of the late call")
+	}
+	if h := m.holds[r.Target]; h != nil && h.last == r.Piece {
+		return fmt.Errorf("a hold of %s repeats the last piece of late information, which the machine does not journal", r.Target)
 	}
 	return nil
 }
 
 // checkRelease checks a release record: an operator ends the hold of a queue
-// that is held.
+// that is held, having seen its current counter.
 func (m *Machine) checkRelease(r Record) error {
 	if r.From != "" || r.To != "" || r.ID != "" || r.Sender != "" || r.Kind != "" || r.Text != "" || r.Of != "" || r.Replacement != "" {
 		return errors.New("a release record names only the target and the operator")
@@ -321,6 +331,9 @@ func (m *Machine) checkRelease(r Record) error {
 	}
 	if m.holds[r.Target] == nil {
 		return fmt.Errorf("a release of the queue of %q, which is not held", safeField(r.Target, 70))
+	}
+	if r.Held != m.heldSeq[r.Target] {
+		return fmt.Errorf("a release of the queue of %q saw the hold counter at %d, it is at %d", safeField(r.Target, 70), r.Held, m.heldSeq[r.Target])
 	}
 	return nil
 }
@@ -336,11 +349,16 @@ func validOperator(s string) bool {
 func (m *Machine) apply(r Record) {
 	switch r.Type {
 	case RecordHold:
-		if h := m.holds[r.Target]; h != nil {
-			h.about = append(h.about, r.ID)
-		} else {
-			m.holds[r.Target] = &hold{about: []string{r.ID}, reason: r.Reason, since: r.At}
+		h := m.holds[r.Target]
+		if h == nil {
+			h = &hold{reason: r.Reason, since: r.At}
+			m.holds[r.Target] = h
 		}
+		if !h.has(r.ID) {
+			h.about = append(h.about, r.ID)
+		}
+		h.last = r.Piece
+		m.heldSeq[r.Target] = r.Held
 		return
 	case RecordRelease:
 		delete(m.holds, r.Target)

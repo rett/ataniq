@@ -120,6 +120,9 @@ const (
 	ReasonQueueFrozen Reason = "queue-frozen"
 	// ReasonQueueHeld: BeginDispatch for a target whose queue is held.
 	ReasonQueueHeld Reason = "queue-held"
+	// ReasonHoldChanged: ReleaseHold named a hold counter that is not the
+	// current one: late information arrived after the operator looked.
+	ReasonHoldChanged Reason = "hold-changed"
 	// ReasonNotHeld: ReleaseHold or Withdraw for a queue that is not held.
 	ReasonNotHeld            Reason = "queue-not-held"
 	ReasonQueueEmpty         Reason = "queue-empty"

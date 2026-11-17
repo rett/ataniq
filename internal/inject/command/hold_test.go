@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestReleaseHoldEndsTheHoldAndNothingElse(t *testing.T) {
 	m, j := heldTest(t)
 	before := snap(m)
 	n := len(j.recs)
-	if err := m.ReleaseHold(leadA, "alice", at(2*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if len(j.recs) != n+1 {
@@ -63,7 +64,7 @@ func TestReleaseHoldRefusals(t *testing.T) {
 		"control":  "a\x1bb",
 		"too long": strings.Repeat("x", maxOperatorBytes+1),
 	} {
-		if err := m.ReleaseHold(leadA, op, at(time.Minute)); err == nil {
+		if err := m.ReleaseHold(leadA, op, seenOf(m, leadA), at(time.Minute)); err == nil {
 			t.Errorf("%s operator: no refusal", name)
 		} else {
 			wantRefusal(t, err, ReasonBadOperator)
@@ -74,25 +75,25 @@ func TestReleaseHoldRefusals(t *testing.T) {
 	}
 	sameSnap(t, "a refused release", before, snap(m))
 	// A queue that is not held, a target that has no queue, the zero target.
-	wantRefusal(t, m.ReleaseHold(leadB, "alice", at(time.Minute)), ReasonNotHeld)
-	wantRefusal(t, m.ReleaseHold(Target{}, "alice", at(time.Minute)), ReasonNotHeld)
-	if err := m.ReleaseHold(leadA, "alice", at(time.Minute)); err != nil {
+	wantRefusal(t, m.ReleaseHold(leadB, "alice", seenOf(m, leadB), at(time.Minute)), ReasonNotHeld)
+	wantRefusal(t, m.ReleaseHold(Target{}, "alice", 0, at(time.Minute)), ReasonNotHeld)
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	wantRefusal(t, m.ReleaseHold(leadA, "alice", at(2*time.Minute)), ReasonNotHeld)
+	wantRefusal(t, m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(2*time.Minute)), ReasonNotHeld)
 }
 
 func TestReleaseHoldOnAJournalFailureChangesNothing(t *testing.T) {
 	m, j := heldTest(t)
 	before, n := snap(m), len(j.recs)
 	j.failNext = true
-	wantJournalError(t, m.ReleaseHold(leadA, "alice", at(time.Minute)))
+	wantJournalError(t, m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(time.Minute)))
 	sameSnap(t, "a failed release", before, snap(m))
 	if len(j.recs) != n {
 		t.Error("a failed append left a record")
 	}
 	wantHeld(t, m, "m1", at(2*time.Minute))
-	if err := m.ReleaseHold(leadA, "alice", at(3*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if len(j.recs) != n+1 {
@@ -130,7 +131,7 @@ func TestNothingButAReleaseEndsAHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantHeld(t, m, "m1", at(2*time.Hour))
-	if err := m.ReleaseHold(leadA, "alice", at(3*time.Hour)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if d := mustBegin(t, m, leadA, at(3*time.Hour)); d.ID != "m2" {
@@ -204,7 +205,7 @@ func TestWithdrawRefusals(t *testing.T) {
 	}
 	sameSnap(t, "refused withdrawals", before, snap(m))
 	// A dispatching command is not interrupted: release, dispatch, hold again.
-	if err := m.ReleaseHold(leadA, "alice", at(4*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	mustBegin(t, m, leadA, at(5*time.Minute))
@@ -214,7 +215,7 @@ func TestWithdrawRefusals(t *testing.T) {
 	wantState(t, m, "r1", StateDispatching)
 	wantRefusal(t, m.Withdraw("r1", "alice", at(7*time.Minute)), ReasonWrongState)
 	// A queue that was released takes no withdrawal either.
-	if err := m.ReleaseHold(leadA, "alice", at(8*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(8*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	wantRefusal(t, m.Withdraw("m2", "alice", at(9*time.Minute)), ReasonNotHeld)
@@ -241,7 +242,7 @@ func TestAHeldQueueHeadIsNotRefusedAsNotIdle(t *testing.T) {
 	m, _ := heldTest(t)
 	wantTicksLeaveItAlone(t, m, at(3*time.Hour))
 	wantState(t, m, "r1", StateQueued)
-	if err := m.ReleaseHold(leadA, "alice", at(4*time.Hour)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(4*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	wantState(t, m, "r1", StateQueued)
@@ -258,7 +259,7 @@ func TestAReplacementRequeuedUnderAHoldDispatchesAfterTheRelease(t *testing.T) {
 	mustFence(t, m, "r1", WrittenNothing, OutcomeNotIdle, at(52*time.Second))
 	wantState(t, m, "r1", StateQueued)
 	wantHeld(t, m, "m1", at(53*time.Second))
-	if err := m.ReleaseHold(leadA, "alice", at(54*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(54*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if d := mustBegin(t, m, leadA, at(55*time.Second)); d.ID != "r1" {
@@ -273,14 +274,25 @@ func cmdRec(seq uint64, id string, from, to State, reason Reason) Record {
 	return Record{Seq: seq, At: t0, ID: id, Target: "lead:a", Sender: "ataniq", Kind: "note", From: from, To: to, Reason: reason}
 }
 
-func holdRec(seq uint64, id string, reason Reason) Record {
-	return Record{Seq: seq, At: t0, Type: RecordHold, ID: id, Target: "lead:a", Reason: reason}
+// holdRec is the hold record of the first piece of late information in a
+// journal with no hold yet: the counter it sets is 1. holdRecN sets another.
+func holdRec(seq uint64, id string, reason Reason) Record { return holdRecN(seq, id, reason, 1) }
+
+func holdRecN(seq uint64, id string, reason Reason, held uint64) Record {
+	return Record{
+		Seq: seq, At: t0, Type: RecordHold, ID: id, Target: "lead:a", Reason: reason,
+		Held: held, Piece: pieceDigest("test piece", id, strconv.FormatUint(held, 10)),
+	}
 }
 
-func releaseRec(seq uint64, operator string) Record {
+// releaseRec is the release of a hold whose counter is 1; releaseRecN sets the
+// counter the operator saw.
+func releaseRec(seq uint64, operator string) Record { return releaseRecN(seq, operator, 1) }
+
+func releaseRecN(seq uint64, operator string, seen uint64) Record {
 	return Record{
 		Seq: seq, At: t0, Type: RecordRelease, Target: "lead:a", Reason: ReasonHoldReleased,
-		EvidenceKind: EvidenceOwnerDecision, Evidence: releaseEvidence, Operator: operator,
+		EvidenceKind: EvidenceOwnerDecision, Evidence: releaseEvidence, Operator: operator, Held: seen,
 	}
 }
 
@@ -306,7 +318,7 @@ func TestRestoreAcceptsWhatTheLiveMachineWritesForAHold(t *testing.T) {
 		t.Fatalf("the live journal: %v", err)
 	}
 	// A longer life: release, dispatch, hold again, withdraw, release.
-	if err := m.ReleaseHold(leadA, "alice", at(2*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ConfirmDelivery("m1", "file:10", at(3*time.Minute)); err != nil {
@@ -315,7 +327,7 @@ func TestRestoreAcceptsWhatTheLiveMachineWritesForAHold(t *testing.T) {
 	if err := m.Withdraw("r1", "alice", at(4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ReleaseHold(leadA, "alice", at(5*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	r, err := Restore(testLimits(), &fakeJournal{}, j.recs, at(time.Hour))
@@ -421,7 +433,7 @@ func TestRestoreRefusesHoldAndReleaseRecordsTheMachineWouldNotWrite(t *testing.T
 	r2 := releaseRec(n+3, "op")
 	wantRestoreError(t, "release of a released hold", with(hold(nil), releaseRec(n+2, "op"), r2), n+3)
 	// After a release the same command may hold the queue again.
-	again := holdRec(n+3, "m1", ReasonHoldAfterResend)
+	again := holdRecN(n+3, "m1", ReasonHoldAfterResend, 2)
 	if _, err := Restore(testLimits(), &fakeJournal{}, with(hold(nil), releaseRec(n+2, "op"), again), at(time.Hour)); err != nil {
 		t.Fatalf("a hold after a release: %v", err)
 	}
@@ -553,10 +565,16 @@ func holdsScenario(t *testing.T, m *Machine) {
 		t.Fatal(err)
 	}
 	mustFence(t, m, "m1", WrittenNothing, OutcomeNotIdle, at(52*time.Second))
+	// Bad evidence is a piece too, and so is the first evidence again, whose
+	// note is skipped.
+	wantRefusal(t, m.ConfirmDelivery("m1", " ", at(52*time.Second+300*time.Millisecond)), ReasonBadEvidence)
+	if err := m.ConfirmDelivery("m1", "file:10", at(52*time.Second+600*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.Withdraw("r1", "op", at(53*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ReleaseHold(leadA, "op", at(54*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(54*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// m2 is dispatched while the evidence for m1 arrives again: held again.
@@ -572,7 +590,7 @@ func holdsScenario(t *testing.T, m *Machine) {
 	if err := m.ConfirmDelivery("m2", "file:20", at(59*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ReleaseHold(leadA, "op", at(60*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(60*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// m3 goes; a half-written resend of it; evidence during it; then finish it.
@@ -591,13 +609,13 @@ func holdsScenario(t *testing.T, m *Machine) {
 	}
 	// Dispatch is refused while held; release, dispatch r3, evidence again while
 	// r3 is dispatching, and its fence says not idle.
-	if err := m.ReleaseHold(leadA, "op", at(66*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(66*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	mustBegin(t, m, leadA, at(67*time.Second))
 	mustFence(t, m, "m3", WrittenNothing, OutcomeBlocked, at(68*time.Second)) // late, for m3: hold
 	mustFence(t, m, "r3", WrittenNothing, OutcomeNotIdle, at(69*time.Second))
-	if err := m.ReleaseHold(leadA, "op", at(70*time.Second)); err != nil {
+	if err := m.ReleaseHold(leadA, "op", seenOf(m, leadA), at(70*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	mustBegin(t, m, leadA, at(71*time.Second))
@@ -628,7 +646,17 @@ func TestRestoreFromEveryPrefixOfAHoldJournalMatchesTheLiveMachine(t *testing.T)
 	sj.m = m
 	holdsScenario(t, m)
 	sj.snaps[len(sj.recs)] = snap(m)
-	holds, releases, withdraws := 0, 0, 0
+	holds, releases, withdraws, topSeq := 0, 0, 0, uint64(0)
+	for _, s := range sj.snaps {
+		for _, tv := range s.View.Targets {
+			if tv.HeldSeq > topSeq {
+				topSeq = tv.HeldSeq
+			}
+		}
+	}
+	if topSeq < 4 {
+		t.Fatalf("the scenario reaches the counter %d", topSeq)
+	}
 	for _, r := range sj.recs {
 		switch {
 		case r.Type == RecordHold:
@@ -667,6 +695,19 @@ func TestRestoreFromEveryPrefixOfAHoldJournalMatchesTheLiveMachine(t *testing.T)
 		if len(r.holds) != len(live.View.heldTargets()) {
 			t.Errorf("prefix %d: %d holds restored, %d live", k, len(r.holds), len(live.View.heldTargets()))
 		}
+		// The restored counter is the live one: a release that saw less is
+		// refused, and one that saw it is accepted.
+		if seen := seenOf(r, leadA); seen != 0 {
+			if want := live.View.heldSeqOf(leadA.String()); seen != want {
+				t.Errorf("prefix %d: counter %d restored, %d live", k, seen, want)
+			}
+			if err := r.ReleaseHold(leadA, "op", seen-1, at(25*time.Hour)); err == nil {
+				t.Errorf("prefix %d: a release that saw the counter %d was accepted at %d", k, seen-1, seen)
+			}
+			if err := r.ReleaseHold(leadA, "op", seen, at(25*time.Hour)); err != nil {
+				t.Errorf("prefix %d: a release that saw the counter %d: %v", k, seen, err)
+			}
+		}
 	}
 	if compared < len(sj.recs)/2 {
 		t.Errorf("compared %d of %d prefixes", compared, len(sj.recs)+1)
@@ -682,6 +723,16 @@ func (v View) heldTargets() []string {
 		}
 	}
 	return out
+}
+
+// heldSeqOf is the counter of a target in a view, 0 when it is not held.
+func (v View) heldSeqOf(target string) uint64 {
+	for _, tv := range v.Targets {
+		if tv.Target == target {
+			return tv.HeldSeq
+		}
+	}
+	return 0
 }
 
 // roundTrip encodes the records as JSON and decodes them again.
@@ -705,7 +756,7 @@ func roundTrip(t *testing.T, rs []Record) []Record {
 
 func TestRestoredHoldJournalFromJSON(t *testing.T) {
 	m, j := heldTest(t)
-	if err := m.ReleaseHold(leadA, "alice", at(2*time.Minute)); err != nil {
+	if err := m.ReleaseHold(leadA, "alice", seenOf(m, leadA), at(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ConfirmDelivery("m1", "file:77", at(3*time.Minute)); err != nil {
@@ -718,8 +769,11 @@ func TestRestoredHoldJournalFromJSON(t *testing.T) {
 	}
 	sameSnap(t, "restore from JSON", snap(m), snap(r))
 	for _, rec := range decoded {
-		if rec.Type == RecordHold && rec.ID != "m1" {
+		if rec.Type == RecordHold && (rec.ID != "m1" || rec.Held == 0 || !validPiece(rec.Piece)) {
 			t.Errorf("hold %+v", rec)
+		}
+		if rec.Type == RecordRelease && rec.Held != 1 {
+			t.Errorf("release %+v", rec)
 		}
 	}
 }
