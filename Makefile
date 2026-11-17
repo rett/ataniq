@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build
+.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -27,3 +27,13 @@ qualification-host-build: doctor
 	@mkdir -p build
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-probe ./qualification/host/cmd/probe
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-qualify ./qualification/host/cmd/qualify
+
+# Changelog fragments: changelog.d/<section>-<slug>.md are folded into
+# CHANGELOG.md in the release branch's first commit, and the release checks
+# that none are left. ARGS=--dry-run previews the fold. Neither target needs
+# the Go toolchain.
+changelog-fold:
+	@sh scripts/changelog-fold.sh $(ARGS)
+
+changelog-check:
+	@sh scripts/changelog-fold.sh --check
