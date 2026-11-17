@@ -37,6 +37,27 @@ const (
 
 const maxEnvNameLen = 64
 
+// maxLeadIdentityLen is the longest QARGI_LEAD value.
+const maxLeadIdentityLen = 64
+
+// validLeadIdentity reports whether s has the shape of a role name ([a-z0-9]
+// then [a-z0-9-]) and is at most 64 bytes.
+func validLeadIdentity(s string) bool {
+	if s == "" || len(s) > maxLeadIdentityLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Values of the fixed variables, in the lead's home.
 const (
 	GoCacheInside    = HomeInside + "/.cache/go-build"
@@ -69,10 +90,28 @@ var baseNames = []string{
 	EnvQargiLead,
 }
 
+// forbiddenSuffixes are name endings that mark a credential (compared in
+// upper case).
+var forbiddenSuffixes = []string{"_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY"}
+
+// forbiddenPrefixes are name beginnings a profile may not add (compared in
+// upper case): the loader's, git's configuration injection and the cloud
+// credentials of AWS.
+var forbiddenPrefixes = []string{"LD_", "GIT_CONFIG_", "AWS_"}
+
+// allowedPrefixed are names that start with a forbidden prefix and are
+// allowlisted. GIT_CONFIG_GLOBAL is a name the profile defines itself, so it
+// is refused as an extra on other grounds.
+var allowedPrefixed = map[string]bool{EnvGitConfig: true}
+
 // CheckEnvName refuses a name a profile may not add: a name that is not a
-// plain identifier, SSH_AUTH_SOCK, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
-// ANTHROPIC_API_KEY, OPENAI_API_KEY, and any name that ends _API_KEY or
-// _TOKEN (in any letter case).
+// plain identifier (at most 64 bytes); SSH_AUTH_SOCK, DBUS_SESSION_BUS_ADDRESS,
+// XDG_RUNTIME_DIR, ANTHROPIC_API_KEY and OPENAI_API_KEY; any name that ends
+// _API_KEY, _TOKEN, _SECRET, _PASSWORD or _KEY; and any name that starts LD_,
+// GIT_CONFIG_ (other than GIT_CONFIG_GLOBAL) or AWS_. Names are compared in
+// upper case. The list is a starting point for the owner to review and
+// extend, not a complete list of what a credential or a loader override can be
+// called.
 func CheckEnvName(name string) error {
 	field := "environment name " + quoteName(name)
 	if name == "" || len(name) > maxEnvNameLen {
@@ -89,11 +128,20 @@ func CheckEnvName(name string) error {
 		}
 	}
 	up := strings.ToUpper(name)
-	switch {
-	case forbiddenEnv[up]:
+	if forbiddenEnv[up] {
 		return refuse(field, "a profile may not add it (no agent socket, session bus or provider key)")
-	case strings.HasSuffix(up, "_API_KEY"), strings.HasSuffix(up, "_TOKEN"):
-		return refuse(field, "a profile may not add a name that ends _API_KEY or _TOKEN")
+	}
+	for _, suffix := range forbiddenSuffixes {
+		if strings.HasSuffix(up, suffix) {
+			return refuse(field, "a profile may not add a name that ends %s (it looks like a credential)", strings.Join(forbiddenSuffixes, ", "))
+		}
+	}
+	if !allowedPrefixed[up] {
+		for _, prefix := range forbiddenPrefixes {
+			if strings.HasPrefix(up, prefix) {
+				return refuse(field, "a profile may not add a name that starts with %s (loader, git configuration or cloud credentials)", strings.Join(forbiddenPrefixes, ", "))
+			}
+		}
 	}
 	return nil
 }
@@ -110,9 +158,12 @@ func (in Inputs) checkEnv() error {
 	if in.Term == "" {
 		return refuse("TERM", "is required: the host terminal gives it")
 	}
+	if in.LeadIdentity != "" && !validLeadIdentity(in.LeadIdentity) {
+		return refuse("lead identity", "must be 1 to %d characters of [a-z0-9-], not starting with '-'", maxLeadIdentityLen)
+	}
 	for _, v := range []struct{ field, val string }{
 		{"TERM", in.Term}, {"COLORTERM", in.ColorTerm}, {"LANG", in.Lang},
-		{"TZ", in.TZ}, {"lead identity", in.LeadIdentity},
+		{"TZ", in.TZ},
 	} {
 		if err := CheckValue(v.field, v.val); err != nil {
 			return err

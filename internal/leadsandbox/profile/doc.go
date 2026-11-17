@@ -20,6 +20,11 @@
 // process, and it does not create, read or verify any file: a seccomp file's
 // digest is taken as given and is not compared with the file.
 //
+// The names a profile may add to the environment are checked against a list
+// of refused names, name endings and name starts (see CheckEnvName). The list
+// is a starting point for the owner to review and extend: it does not claim
+// to name every credential or loader override.
+//
 // Per the owner decision R17, nested sandboxes are allowed for now: the flag
 // set never contains the options that disable user namespaces.
 package profile

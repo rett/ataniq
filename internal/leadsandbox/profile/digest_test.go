@@ -35,7 +35,7 @@ func otherHost(rt Runtime) Inputs {
 	in.ResolvConf = "/run/ataniq/resolv.conf"
 	in.NeverMounted = []string{"/home/someone/checkout", "/home/someone/.ssh"}
 	in.Term, in.ColorTerm, in.Lang, in.TZ = "screen", "", "en_US.UTF-8", "Asia/Tokyo"
-	in.LeadIdentity = "another-project/lead"
+	in.LeadIdentity = "another-project-lead"
 	in.Shell = "/bin/sh"
 	in.Path = "/usr/bin:/bin"
 	return in
@@ -93,7 +93,7 @@ func TestDigestIsIndependentOfHostAndLead(t *testing.T) {
 		{"COLORTERM unset", func(in *Inputs) { in.ColorTerm = "" }},
 		{"LANG", func(in *Inputs) { in.Lang = "de_DE.UTF-8" }},
 		{"TZ", func(in *Inputs) { in.TZ = "" }},
-		{"lead identity", func(in *Inputs) { in.LeadIdentity = "x/lead" }},
+		{"lead identity", func(in *Inputs) { in.LeadIdentity = "x-lead" }},
 		{"extra placeholder source", func(in *Inputs) {
 			in.ExtraPlaceholders = []Placeholder{{Rel: ".a", Source: "/s/1"}}
 		}},

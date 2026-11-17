@@ -83,12 +83,12 @@ func TestEnvironmentInputs(t *testing.T) {
 
 	in = fixture(Codex)
 	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
-	in.Path, in.Shell, in.LeadIdentity = "/usr/bin:/bin", "/bin/sh", "ataniq/lead"
+	in.Path, in.Shell, in.LeadIdentity = "/usr/bin:/bin", "/bin/sh", "ataniq-lead"
 	in.TZ = "Europe/Berlin"
 	got = envMap(t, in)
 	for k, v := range map[string]string{
 		"USER": "owner", "LOGNAME": "owner", "PATH": "/usr/bin:/bin", "SHELL": "/bin/sh",
-		"QARGI_LEAD": "ataniq/lead", "TZ": "Europe/Berlin",
+		"QARGI_LEAD": "ataniq-lead", "TZ": "Europe/Berlin",
 	} {
 		if got[k] != v {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
@@ -161,6 +161,23 @@ func TestExtraEnvironmentRefusals(t *testing.T) {
 		{"lower-case socket", []EnvVar{{"ssh_auth_sock", "x"}}, "may not add it"},
 		{"other key", []EnvVar{{"GEMINI_API_KEY", "k"}}, "_API_KEY"},
 		{"lower-case key", []EnvVar{{"my_api_key", "k"}}, "_API_KEY"},
+		{"secret", []EnvVar{{"DB_SECRET", "s"}}, "_SECRET"},
+		{"lower-case secret", []EnvVar{{"client_secret", "s"}}, "_SECRET"},
+		{"password", []EnvVar{{"DB_PASSWORD", "p"}}, "_PASSWORD"},
+		{"mixed-case password", []EnvVar{{"Db_Password", "p"}}, "_PASSWORD"},
+		{"key", []EnvVar{{"SIGNING_KEY", "k"}}, "_KEY"},
+		{"short key", []EnvVar{{"X_KEY", "k"}}, "_KEY"},
+		{"key id of a cloud", []EnvVar{{"AWS_ACCESS_KEY_ID", "k"}}, "AWS_"},
+		{"loader preload", []EnvVar{{"LD_PRELOAD", "/x.so"}}, "LD_"},
+		{"loader library path", []EnvVar{{"ld_library_path", "/x"}}, "LD_"},
+		{"git configuration parameters", []EnvVar{{"GIT_CONFIG_PARAMETERS", "'a.b=c'"}}, "GIT_CONFIG_"},
+		{"git configuration count", []EnvVar{{"GIT_CONFIG_COUNT", "1"}}, "GIT_CONFIG_"},
+		{"git configuration key", []EnvVar{{"GIT_CONFIG_KEY_0", "a.b"}}, "GIT_CONFIG_"},
+		{"git system configuration", []EnvVar{{"git_config_system", "/x"}}, "GIT_CONFIG_"},
+		{"git global configuration", []EnvVar{{"GIT_CONFIG_GLOBAL", "/x"}}, "defines it already"},
+		{"aws region", []EnvVar{{"AWS_REGION", "x"}}, "AWS_"},
+		{"aws secret", []EnvVar{{"AWS_SECRET_ACCESS_KEY", "x"}}, "_KEY"},
+		{"aws profile", []EnvVar{{"aws_profile", "x"}}, "AWS_"},
 		{"token", []EnvVar{{"GITHUB_TOKEN", "t"}}, "_TOKEN"},
 		{"mixed-case token", []EnvVar{{"Npm_Token", "t"}}, "_TOKEN"},
 		{"auth token", []EnvVar{{"ANTHROPIC_AUTH_TOKEN", "t"}}, "_TOKEN"},
@@ -221,6 +238,15 @@ func TestEnvironmentInputRefusals(t *testing.T) {
 		{"long TZ", func(in *Inputs) { in.TZ = strings.Repeat("x", 300) }, "TZ"},
 		{"TZ with a carriage return", func(in *Inputs) { in.TZ = "UTC\r" }, "TZ"},
 		{"lead identity with a newline", func(in *Inputs) { in.LeadIdentity = "a\nb" }, "lead identity"},
+		{"lead identity with a slash", func(in *Inputs) { in.LeadIdentity = "ataniq/lead" }, "lead identity"},
+		{"lead identity with dots", func(in *Inputs) { in.LeadIdentity = "../../x" }, "lead identity"},
+		{"lead identity with a shell expansion", func(in *Inputs) { in.LeadIdentity = "x$(id)" }, "lead identity"},
+		{"lead identity with a space and a pair", func(in *Inputs) { in.LeadIdentity = "x y=z" }, "lead identity"},
+		{"lead identity with a semicolon", func(in *Inputs) { in.LeadIdentity = "x;y" }, "lead identity"},
+		{"lead identity with capitals", func(in *Inputs) { in.LeadIdentity = "Lead" }, "lead identity"},
+		{"lead identity with an underscore", func(in *Inputs) { in.LeadIdentity = "arc_lead" }, "lead identity"},
+		{"lead identity starting with a dash", func(in *Inputs) { in.LeadIdentity = "-lead" }, "lead identity"},
+		{"lead identity longer than 64 bytes", func(in *Inputs) { in.LeadIdentity = strings.Repeat("a", 65) }, "lead identity"},
 		{"relative PATH element", func(in *Inputs) { in.Path = "/usr/bin:bin" }, "PATH element"},
 		{"empty PATH element", func(in *Inputs) { in.Path = "/usr/bin::/bin" }, "PATH element"},
 		{"unclean PATH element", func(in *Inputs) { in.Path = "/usr/bin/../x" }, "PATH element"},
@@ -241,13 +267,35 @@ func TestEnvironmentInputRefusals(t *testing.T) {
 	}
 }
 
+func TestLeadIdentityShape(t *testing.T) {
+	for _, id := range []string{"a", "arc-lead", "0", "a-", strings.Repeat("a", 64), "a--b"} {
+		in := fixture(Claude)
+		in.LeadIdentity = id
+		if err := in.Validate(); err != nil {
+			t.Errorf("%q: %v", id, err)
+		} else if got := in.LeadIdentityValue(); got != id {
+			t.Errorf("LeadIdentityValue = %q, want %q", got, id)
+		}
+	}
+	// Empty means the role.
+	if got := fixture(Claude).LeadIdentityValue(); got != "arc-lead" {
+		t.Errorf("default = %q", got)
+	}
+}
+
 func TestCheckEnvName(t *testing.T) {
 	for _, n := range []string{"PATH", "A", "_A", "a1", "GOFLAGS", "MY_TOKENS", "API_KEYS", "TOKEN", "_TOKEN_X"} {
 		if err := CheckEnvName(n); err != nil {
 			t.Errorf("CheckEnvName(%q) = %v", n, err)
 		}
 	}
-	for _, n := range []string{"X_TOKEN", "_TOKEN", "_API_KEY", "x_api_key"} {
+	// Names that merely look close are fine.
+	for _, n := range []string{"KEY", "SECRET", "PASSWORDS", "KEY_X", "LD", "LDFLAGS", "GIT_CONFIG", "GIT_CONFIGX", "AWSX", "GIT_CONFIG_GLOBAL"} {
+		if err := CheckEnvName(n); err != nil {
+			t.Errorf("CheckEnvName(%q) = %v", n, err)
+		}
+	}
+	for _, n := range []string{"X_TOKEN", "_TOKEN", "_API_KEY", "x_api_key", "X_SECRET", "_SECRET", "x_password", "_KEY", "X_KEY", "LD_X", "ld_", "GIT_CONFIG_X", "git_config_", "AWS_X", "aws_"} {
 		if err := CheckEnvName(n); err == nil {
 			t.Errorf("CheckEnvName(%q) = nil", n)
 		}
