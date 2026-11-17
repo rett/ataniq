@@ -54,6 +54,14 @@
 //
 // # What it does not do
 //
+// [Root.MkdirAll] walks one folder at a time, so each step is beneath the
+// folder before it and not beneath the handle. It checks at the end that the
+// path, opened again from the handle, is the folder the walk ended on, and
+// refuses with [ErrEscapes] when a folder on the path moved while the call
+// ran. Folders it made after such a move stay where the moved folder went,
+// outside the handle, in a place the lead could already write; it cannot
+// undo that.
+//
 // It does not protect against the folder behind the handle being changed by
 // someone with owner rights, and it trusts the path given to [OpenRoot]: only
 // the last component is checked (O_NOFOLLOW), so the caller must pass a path

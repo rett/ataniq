@@ -509,6 +509,70 @@ func TestMkdirAllThroughPlantedSymlink(t *testing.T) {
 	}
 }
 
+// afterOpenat2Call makes r run fn once, right after its n-th openat2 call
+// returns (n counts from 1), which stands in for a lead acting between two
+// steps of the owner's call.
+func afterOpenat2Call(r *Root, n int, fn func()) {
+	calls := 0
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		fd, err := unix.Openat2(dirfd, p, how)
+		calls++
+		if calls == n {
+			fn()
+		}
+		return fd, err
+	}
+}
+
+// A folder renamed out of the root while MkdirAll walks carries the rest of
+// the walk with it: the call must say so and not report success.
+func TestMkdirAllFolderMovedDuringWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replace bool // the lead puts a folder with the same names back
+	}{
+		{"moved away", false},
+		{"moved away and replaced", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, dir, outside := newRoot(t)
+			if err := os.Mkdir(filepath.Join(dir, "a"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			afterOpenat2Call(r, 1, func() {
+				if err := os.Rename(filepath.Join(dir, "a"), filepath.Join(outside, "a")); err != nil {
+					t.Error(err)
+				}
+				if tc.replace {
+					if err := os.MkdirAll(filepath.Join(dir, "a/b/c"), 0o755); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			err := r.MkdirAll("a/b/c", 0o755)
+			if !errors.Is(err, ErrEscapes) {
+				t.Fatalf("MkdirAll after a folder moved: %v, want ErrEscapes", err)
+			}
+			// What the doc admits: the folders made after the move are left
+			// where the moved folder went.
+			if _, err := os.Stat(filepath.Join(outside, "a/b/c")); err != nil {
+				t.Errorf("expected the walk to have continued in the moved folder: %v", err)
+			}
+		})
+	}
+}
+
+// Without a move the end check passes, also for a path that already exists.
+func TestMkdirAllEndCheckAcceptsStablePath(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	write(t, filepath.Join(dir, "x/y/f"), "")
+	for _, rel := range []string{"x", "x/y", "x/y/z", "p/q"} {
+		if err := r.MkdirAll(rel, 0o755); err != nil {
+			t.Errorf("MkdirAll(%q): %v", rel, err)
+		}
+	}
+}
+
 func TestWriteFileExclusive(t *testing.T) {
 	r, dir, outside := newRoot(t)
 	if err := r.MkdirAll("d", 0o755); err != nil {

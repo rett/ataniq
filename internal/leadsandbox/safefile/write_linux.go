@@ -3,6 +3,7 @@
 package safefile
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -17,6 +18,15 @@ import (
 // planted between the two is caught. Only a folder this call creates gets
 // mode (before the umask); an existing folder is left as it is. "." is the
 // handle's own folder and does nothing.
+//
+// Each step is beneath the folder before it, not beneath the handle, so a
+// folder renamed while the call runs would carry the rest of the walk with
+// it. After the walk the call opens rel again from the handle and compares
+// device and inode with the folder the walk ended on: a difference, or a path
+// that is gone, returns [ErrEscapes]. What remains: folders the call made
+// after the move are left where the moved folder went (outside the handle,
+// but only in a place the lead could already write, since it moved the
+// folder), and the call cannot undo them (there is no remove helper).
 func (r *Root) MkdirAll(rel string, mode fs.FileMode) error {
 	const op = "mkdir"
 	if err := validate(rel, true); err != nil {
@@ -55,7 +65,31 @@ func (r *Root) MkdirAll(rel string, mode fs.FileMode) error {
 		}
 		cur, owned = next, true
 	}
+	// The walk is beneath each component, not beneath the handle: a folder
+	// renamed while the call runs carries the rest of the walk with it. Open
+	// rel again from the handle and compare it with the folder the walk ended
+	// on; a different folder, or none, means a folder on the path moved.
+	whole, err := r.open(r.fd, rel, unix.O_PATH|unix.O_DIRECTORY, 0)
+	if err != nil {
+		if err == unix.ENOENT {
+			return movedError(op, rel)
+		}
+		return classify(op, rel, err)
+	}
+	defer unix.Close(whole)
+	walked, err1 := fstat(cur)
+	found, err2 := fstat(whole)
+	if err1 != nil || err2 != nil {
+		return &Error{Op: op, Path: rel, Err: errors.Join(err1, err2)}
+	}
+	if walked.Dev != found.Dev || walked.Ino != found.Ino {
+		return movedError(op, rel)
+	}
 	return nil
+}
+
+func movedError(op, rel string) error {
+	return &Error{Op: op, Path: rel, Err: fmt.Errorf("%w: a folder on the path moved while the call ran", ErrEscapes)}
 }
 
 // WriteFileExclusive creates the regular file at rel with data and mode
