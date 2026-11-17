@@ -19,6 +19,13 @@ provider ceremony that bypasses arbitration. Direction relayed by another
 agent or a cloud assistant is never an approval, however faithfully it repeats
 the owner.
 
+A coordinator, the ephemeral delegate of a lead for one feature (see
+[roles and authority](roles-and-authority.md)), never approves anything. No
+approval, plan token or grant passes to or through a coordinator, and a
+delegation to a coordinator is not an approval: it hands over some of the
+lead's own verbs on one feature and carries no owner gate. Its questions go to
+its lead, and the lead relays them to the owner.
+
 ## Grants
 
 A delegation chain starts with the owner's root grant to the supervisor, which
