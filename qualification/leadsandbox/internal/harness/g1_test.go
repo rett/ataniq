@@ -748,6 +748,49 @@ func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	}
 }
 
+// The git identity is named by its folder, and the plan binds the folder: a
+// bind of the single file would keep the old file when the file is replaced by
+// rename. The former key for the file is no key.
+func TestGitIdentityIsConfiguredAndBoundAsAFolder(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	refused(t, f, mutate(t, f, func(m map[string]any) {
+		sub(m, "sources")["git_identity_file"] = f.Config.Sources.GitIdentityDir + "/config"
+	}), `sources has the unknown key "git_identity_file"`)
+	refused(t, f, mutate(t, f, func(m map[string]any) { delete(sub(m, "sources"), "git_identity_dir") }), "git identity folder")
+
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var found bool
+	for _, m := range r.out.Plan.Mounts {
+		if strings.HasPrefix(m.Inside, profile.GitIdentityDirInside+"/") {
+			t.Errorf("a path below the identity folder is mounted on its own: %+v", m)
+		}
+		if m.Inside == profile.GitIdentityDirInside {
+			found = true
+			if m.Kind != string(profile.KindRoBind) || m.Source != f.Config.Sources.GitIdentityDir {
+				t.Errorf("the identity is bound as %+v, want a read-only bind of the folder %s", m, f.Config.Sources.GitIdentityDir)
+			}
+		}
+	}
+	if !found {
+		t.Error("the identity folder is not bound")
+	}
+	// The variable names the file in the folder: the operands of --setenv.
+	var global string
+	for i, a := range r.out.Plan.Argv {
+		if a == "--setenv" && i+2 < len(r.out.Plan.Argv) && r.out.Plan.Argv[i+1] == "GIT_CONFIG_GLOBAL" {
+			global = r.out.Plan.Argv[i+2]
+		}
+	}
+	if global != profile.GitIdentityInside {
+		t.Errorf("GIT_CONFIG_GLOBAL = %q, want %s", global, profile.GitIdentityInside)
+	}
+}
+
 // The requests, mailbox, mail and published folders are the layout's own and
 // are bound for every lead: the configuration has no key for them, the plan
 // binds them, and a run without one of them ends before a launch.

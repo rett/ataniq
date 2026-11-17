@@ -171,6 +171,8 @@ func TestInsidePaths(t *testing.T) {
 		{"assignment", AssignmentInside, "/ataniq/assignment"},
 		{"projection", ProjectionInside, "/ataniq/projection"},
 		{"git identity", GitIdentityInside, "/ataniq/git/config"},
+		{"git identity folder", GitIdentityDirInside, "/ataniq/git"},
+		{"git identity file name", GitIdentityFileName, "config"},
 		{"requests", RequestsInside, "/ataniq/requests"},
 		{"mailbox", MailboxInside, "/ataniq/mailbox"},
 		{"mail", MailInside, "/ataniq/mail"},

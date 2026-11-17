@@ -26,7 +26,7 @@ func fixture(rt profile.Runtime) profile.Inputs {
 		ManagedSettingsSHA256: strings.Repeat("c1", 32),
 		LeadSkills:            "/opt/ataniq/skills/arc-lead",
 		InstructionFile:       "/opt/ataniq/instructions/arc-lead/" + rt.InstructionFileName(),
-		GitIdentityFile:       "/opt/ataniq/git/arc-lead/config",
+		GitIdentityDir:        "/opt/ataniq/git/arc-lead",
 		GitMeta:               "/state/leads/arc-lead/gitmeta",
 		QargiInstall:          "/opt/ataniq/qargi",
 		AssignmentDir:         "/opt/ataniq/assignment/demo",

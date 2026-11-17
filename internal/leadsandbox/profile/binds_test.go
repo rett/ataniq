@@ -35,7 +35,7 @@ var goldenRows = []string{
 	"rw-bind /home/lead/CFG src=config writable-in=/home/lead",
 	"ro-bind /home/lead/CFG/skills src=skills writable-in=/home/lead/CFG",
 	"ro-bind /home/lead/CFG/INSTR src=instructions writable-in=/home/lead/CFG",
-	"ro-bind /ataniq/git/config src=git-identity",
+	"ro-bind /ataniq/git src=git-identity",
 	"rw-bind /work/ataniq src=tree",
 	"ro-bind /work/ataniq/.git/config src=git-meta writable-in=/work/ataniq",
 	"ro-bind /work/ataniq/.git/hooks src=git-meta writable-in=/work/ataniq",
@@ -105,7 +105,7 @@ func TestBindTableSourcesAndAccess(t *testing.T) {
 		{"/home/lead/.claude", "/srv/state/leads/arc-lead/config/claude", KindRwBind, true},
 		{"/home/lead/.claude/skills", in.LeadSkills, KindRoBind, true},
 		{"/home/lead/.claude/CLAUDE.md", in.InstructionFile, KindRoBind, false},
-		{"/ataniq/git/config", in.GitIdentityFile, KindRoBind, false},
+		{"/ataniq/git", in.GitIdentityDir, KindRoBind, true},
 		{"/work/ataniq", "/srv/state/leads/arc-lead/tree", KindRwBind, true},
 		{"/work/ataniq/.git/config", "/srv/state/leads/arc-lead/gitmeta/config", KindRoBind, false},
 		{"/work/ataniq/.git/hooks", "/srv/state/leads/arc-lead/gitmeta/hooks", KindRoBind, true},
@@ -560,5 +560,58 @@ func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
 	c[index("/ataniq/qargi")].Source = "/srv/state/leads"
 	if err := ValidateTable(c); err != nil {
 		t.Errorf("a source above a writable folder: %v", err)
+	}
+}
+
+// The git identity is bound as the folder that holds the file, and
+// GIT_CONFIG_GLOBAL names the file in it: a bind of the single file would keep
+// the old file when the holder replaces it by rename. The managed-settings file
+// and the instruction file stay binds of a single file.
+func TestGitIdentityIsBoundAsAFolder(t *testing.T) {
+	if GitIdentityInside != GitIdentityDirInside+"/"+GitIdentityFileName {
+		t.Errorf("GitIdentityInside = %q, not %q in %q", GitIdentityInside, GitIdentityFileName, GitIdentityDirInside)
+	}
+	for _, rt := range Runtimes() {
+		in := fixture(rt)
+		byInside := map[string]Bind{}
+		n := 0
+		for _, b := range mustBinds(t, in) {
+			byInside[b.Inside] = b
+			if b.SourceRole == RoleGitIdentity {
+				n++
+			}
+		}
+		want := Bind{Kind: KindRoBind, Inside: "/ataniq/git", Source: in.GitIdentityDir, SourceRole: RoleGitIdentity, IsDir: true}
+		if got := byInside[GitIdentityDirInside]; got != want || n != 1 {
+			t.Errorf("%s: the identity row is %+v (%d rows with the role), want %+v", rt, got, n, want)
+		}
+		if b, ok := byInside[GitIdentityInside]; ok {
+			t.Errorf("%s: the identity file is bound on its own: %+v", rt, b)
+		}
+		env, err := in.Environment()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var global string
+		for _, e := range env {
+			if e.Name == EnvGitConfig {
+				global = e.Value
+			}
+		}
+		if global != "/ataniq/git/config" || !below(global, byInside[GitIdentityDirInside].Inside) {
+			t.Errorf("%s: GIT_CONFIG_GLOBAL = %q, want the file config in the folder bound at /ataniq/git", rt, global)
+		}
+		// The two other Ataniq-owned files are binds of a single file.
+		for _, inside := range []string{in.ManagedInside(), InstructionInside(rt)} {
+			if b, ok := byInside[inside]; !ok || b.IsDir || b.Kind != KindRoBind {
+				t.Errorf("%s: %s = %+v (present %v), want a read-only bind of a file", rt, inside, b, ok)
+			}
+		}
+	}
+	// The folder is a source like any other: not in a folder the lead writes.
+	in := fixture(Claude)
+	in.GitIdentityDir = "/srv/state/leads/arc-lead/home/.config/git"
+	if err := in.Validate(); err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Errorf("an identity folder in the lead's home: %v", err)
 	}
 }

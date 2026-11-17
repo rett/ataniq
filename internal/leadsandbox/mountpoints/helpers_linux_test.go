@@ -72,7 +72,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 		ManagedSettingsSHA256: strings.Repeat("c1", 32),
 		LeadSkills:            own("skills", true),
 		InstructionFile:       own("instructions/"+rt.InstructionFileName(), false),
-		GitIdentityFile:       own("git/config", false),
+		GitIdentityDir:        filepath.Dir(own("git/config", false)),
 		GitMeta:               l.GitMeta(),
 		QargiInstall:          own("qargi", true),
 		AssignmentDir:         own("assignment", true),

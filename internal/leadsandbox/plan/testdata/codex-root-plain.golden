@@ -57,7 +57,7 @@
 --bind /state/leads/arc-lead/config/codex /home/lead/.codex
 --ro-bind /opt/ataniq/skills/arc-lead /home/lead/.codex/skills
 --ro-bind /opt/ataniq/instructions/arc-lead/AGENTS.md /home/lead/.codex/AGENTS.md
---ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
+--ro-bind /opt/ataniq/git/arc-lead /ataniq/git
 --bind /state/leads/arc-lead/tree /work/demo
 --ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
 --ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
@@ -122,7 +122,7 @@ rw-bind /home/lead /state/leads/arc-lead/home
 rw-bind /home/lead/.codex /state/leads/arc-lead/config/codex
 ro-bind /home/lead/.codex/skills /opt/ataniq/skills/arc-lead
 ro-bind /home/lead/.codex/AGENTS.md /opt/ataniq/instructions/arc-lead/AGENTS.md
-ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+ro-bind /ataniq/git /opt/ataniq/git/arc-lead
 rw-bind /work/demo /state/leads/arc-lead/tree
 ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
 ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
@@ -138,7 +138,7 @@ ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-995e770f5409fe6efeddb0a82cc3891fa0d65f1a575e6dd0f7b4d10dc2aac687
+d14656fb5c5be4ed3f0fbbf31a0d5f3a268dcefb13cd61d1545f6aa5212c217e
 # workdir
 /work/demo/internal
 # set-controlling-terminal

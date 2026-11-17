@@ -84,6 +84,24 @@
 // runtimes, whether or not the lead has coordinators. The package says where
 // the folders lie and how they are bound, and nothing about what is in them.
 //
+// # The git identity is bound as a folder
+//
+// GIT_CONFIG_GLOBAL names [GitIdentityInside], /ataniq/git/config. The row
+// that brings it in binds the Ataniq-owned folder that holds the file,
+// [Inputs.GitIdentityDir], read-only at [GitIdentityDirInside], and the file
+// has the fixed name [GitIdentityFileName] in it. A bind of a single file is a
+// bind of the file that was there when the sandbox started: when the holder
+// replaces the file by writing a new one and renaming it into place, the
+// sandbox keeps the old one. A bind of the folder shows the new file. The
+// whole folder is readable inside, so it holds the identity file alone.
+//
+// The managed-settings file and the instruction file stay binds of a single
+// file: the design names only the identity as a folder, and the instruction
+// file lies over a place inside the config folder, which is itself bound. The
+// consequence is the one above: a managed-settings or instruction file that
+// Ataniq replaces while the lead runs is seen at the lead's next start, not
+// before.
+//
 // # Other state under the state root
 //
 // The profile knows the state root, so it refuses, whatever the caller lists

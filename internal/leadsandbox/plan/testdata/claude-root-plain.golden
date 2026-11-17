@@ -57,7 +57,7 @@
 --bind /state/leads/arc-lead/config/claude /home/lead/.claude
 --ro-bind /opt/ataniq/skills/arc-lead /home/lead/.claude/skills
 --ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md
---ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
+--ro-bind /opt/ataniq/git/arc-lead /ataniq/git
 --bind /state/leads/arc-lead/tree /work/demo
 --ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
 --ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
@@ -122,7 +122,7 @@ rw-bind /home/lead /state/leads/arc-lead/home
 rw-bind /home/lead/.claude /state/leads/arc-lead/config/claude
 ro-bind /home/lead/.claude/skills /opt/ataniq/skills/arc-lead
 ro-bind /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead/CLAUDE.md
-ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+ro-bind /ataniq/git /opt/ataniq/git/arc-lead
 rw-bind /work/demo /state/leads/arc-lead/tree
 ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
 ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
@@ -138,7 +138,7 @@ ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-5fd72b23223004e780acfd7957c2585f222e7e1df6030c5039661b806b7bed48
+2a18e7478c57d5894d07a94804fffd613dba4e9b264f7f65f8454a64acfeff28
 # workdir
 /work/demo
 # set-controlling-terminal

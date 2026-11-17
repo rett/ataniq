@@ -238,6 +238,18 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 		}, "not a regular file"},
 		{"executable is missing", func(f *harnesstest.Fixture) { os.Remove(f.Config.Executables.Bwrap) }, "cannot open"},
 		{"managed settings changed", func(f *harnesstest.Fixture) { f.Write(f.Config.Sources.ManagedSettings, "changed", 0o644) }, "SHA-256"},
+		{"git identity file missing from its folder", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+		}, "git/config: no such file or directory (it must exist)"},
+		{"git identity file is a link", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+			os.Symlink(f.Config.Sources.ManagedSettings, f.Config.Sources.GitIdentityDir+"/config")
+		}, "git/config is not a regular file"},
+		{"git identity file is a folder", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+			os.Mkdir(f.Config.Sources.GitIdentityDir+"/config", 0o755)
+		}, "git/config is not a regular file"},
+		{"git identity folder is missing", func(f *harnesstest.Fixture) { os.RemoveAll(f.Config.Sources.GitIdentityDir) }, "sources.git_identity_dir"},
 		{"state root is a link", func(f *harnesstest.Fixture) {
 			link := f.Base + "/state-link"
 			os.Symlink(f.State, link)

@@ -146,7 +146,10 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 		rw(ConfigInside(rt), cfg, RoleConfig),
 		ro(SkillsInside(rt), in.LeadSkills, RoleSkills, true),
 		ro(InstructionInside(rt), in.InstructionFile, RoleInstructions, false),
-		ro(GitIdentityInside, in.GitIdentityFile, RoleGitIdentity, false),
+		// The git identity is bound as its folder, not as the file: a bind
+		// of a single file keeps the file it was made from when the holder
+		// replaces the file by rename.
+		ro(GitIdentityDirInside, in.GitIdentityDir, RoleGitIdentity, true),
 		rw(treeInside, l.Tree(), RoleTree),
 	)
 	// The three protected git paths keep their targets in the tree, but their

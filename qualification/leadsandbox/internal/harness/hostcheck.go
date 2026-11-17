@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/sys/unix"
+
+	"ataniq/internal/leadsandbox/profile"
 )
 
 // Bounds on the files the harness hashes.
@@ -35,9 +37,9 @@ type hostFacts struct {
 // checkHost looks at the host for what the configuration names, before
 // anything is created: the campaign folder (a 0700 folder of the caller), the
 // state root and the campaign as real paths, the optional records folder, the
-// three executables (regular, not group- or other-writable, hashed from the
-// open descriptor), the seccomp file and its digest, and the digest of the
-// managed-settings file. The state folders of the lead are checked by the
+// git identity file in its folder, the three executables (regular, not group-
+// or other-writable, hashed from the open descriptor), the seccomp file and
+// its digest, and the digest of the managed-settings file. The state folders of the lead are checked by the
 // mountpoints package; nothing here reads a lead-writable folder.
 func checkHost(c *Config) (*hostFacts, error) {
 	if err := ownedPrivateDir("campaign", c.Campaign, true); err != nil {
@@ -54,6 +56,12 @@ func checkHost(c *Config) (*hostFacts, error) {
 		if err := ownedPrivateDir("records folder (sources.qargi_records_inside)", c.layout().QargiRecords(), true); err != nil {
 			return nil, err
 		}
+	}
+	// The git identity is bound as its folder, so the resolution of the
+	// sources looks at the folder only: the file GIT_CONFIG_GLOBAL names must
+	// be in it, as a regular file.
+	if err := regularFile("sources.git_identity_dir", filepath.Join(c.Sources.GitIdentityDir, profile.GitIdentityFileName)); err != nil {
+		return nil, err
 	}
 	var f hostFacts
 	for _, e := range []struct{ name, p string }{
@@ -101,6 +109,19 @@ func ownedPrivateDir(field, p string, real bool) error {
 	}
 	if real {
 		return realDir(field, p)
+	}
+	return nil
+}
+
+// regularFile checks that a path names a regular file, without following a
+// final symbolic link.
+func regularFile(field, p string) error {
+	var st unix.Stat_t
+	if err := unix.Lstat(p, &st); err != nil {
+		return configErr(field, "cannot look at the file %s: %v (it must exist)", p, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return configErr(field, "%s is not a regular file (a symbolic link is refused)", p)
 	}
 	return nil
 }

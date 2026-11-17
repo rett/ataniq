@@ -20,7 +20,8 @@ import (
 //	   git metadata folder (source role git-meta, not tree-git): no source of
 //	   the table lies in a folder the lead can write
 //	4  the layout of the lead-hosting design, revision 4: every table has the
-//	   rows /ataniq/requests, /ataniq/mailbox, /ataniq/mail and /coord
+//	   rows /ataniq/requests, /ataniq/mailbox, /ataniq/mail and /coord, and
+//	   the git identity is bound as its folder, at /ataniq/git
 const Version = 4
 
 const (

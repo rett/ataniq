@@ -143,8 +143,12 @@ type Sources struct {
 
 	LeadSkills      string `json:"lead_skills"`
 	InstructionFile string `json:"instruction_file"`
-	GitIdentityFile string `json:"git_identity_file"`
-	QargiInstall    string `json:"qargi_install"`
+	// GitIdentityDir is the folder that holds the git identity file, which
+	// has the fixed name "config" (profile.GitIdentityFileName) and must
+	// exist. The whole folder is bound read-only, so it holds that file and
+	// nothing else.
+	GitIdentityDir string `json:"git_identity_dir"`
+	QargiInstall   string `json:"qargi_install"`
 
 	// QargiRecordsInside is where the lead's working Qargi records appear
 	// inside; absent means there are none. The host folder is not a key: it is
@@ -399,7 +403,7 @@ func (c *Config) checkCampaign(in profile.Inputs) error {
 	for name, p := range map[string]string{
 		"sources.agent_install": c.Sources.AgentInstall, "sources.managed_settings": c.Sources.ManagedSettings,
 		"sources.lead_skills": c.Sources.LeadSkills, "sources.instruction_file": c.Sources.InstructionFile,
-		"sources.git_identity_file": c.Sources.GitIdentityFile, "sources.qargi_install": c.Sources.QargiInstall,
+		"sources.git_identity_dir": c.Sources.GitIdentityDir, "sources.qargi_install": c.Sources.QargiInstall,
 		"sources.assignment_dir": c.Sources.AssignmentDir,
 		"sources.projection_dir": c.Sources.ProjectionDir, "executables.probe": c.Executables.Probe,
 	} {
@@ -426,7 +430,7 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		ManagedSettings: c.Sources.ManagedSettings, ManagedSettingsInside: c.Sources.ManagedSettingsInside,
 		ManagedSettingsSHA256: c.Sources.ManagedSettingsSHA256,
 		LeadSkills:            c.Sources.LeadSkills, InstructionFile: c.Sources.InstructionFile,
-		GitIdentityFile: c.Sources.GitIdentityFile, QargiInstall: c.Sources.QargiInstall,
+		GitIdentityDir: c.Sources.GitIdentityDir, QargiInstall: c.Sources.QargiInstall,
 		QargiRecordsInside: c.Sources.QargiRecordsInside,
 		AssignmentDir:      c.Sources.AssignmentDir, ProjectionDir: c.Sources.ProjectionDir,
 		ResolvConf:   resolv,

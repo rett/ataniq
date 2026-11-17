@@ -31,7 +31,7 @@ func otherHost(rt Runtime) Inputs {
 	in.ManagedSettings = "/run/ataniq/managed.json"
 	in.LeadSkills = "/opt/ataniq/skills"
 	in.InstructionFile = "/opt/ataniq/instructions.md"
-	in.GitIdentityFile = "/run/ataniq/gitconfig"
+	in.GitIdentityDir = "/run/ataniq/git"
 	in.QargiInstall = "/opt/qargi"
 	in.AssignmentDir = "/run/ataniq/assignment"
 	in.ProjectionDir = "/run/ataniq/projection"
@@ -54,13 +54,14 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "5fd72b23223004e780acfd7957c2585f222e7e1df6030c5039661b806b7bed48"
-	goldenCodex  = "995e770f5409fe6efeddb0a82cc3891fa0d65f1a575e6dd0f7b4d10dc2aac687"
+	goldenClaude = "2a18e7478c57d5894d07a94804fffd613dba4e9b264f7f65f8454a64acfeff28"
+	goldenCodex  = "d14656fb5c5be4ed3f0fbbf31a0d5f3a268dcefb13cd61d1545f6aa5212c217e"
 )
 
 func TestVersionIsFour(t *testing.T) {
 	// The layout of the lead-hosting design, revision 4: the requests,
-	// mailbox, mail and coordinator rows are in every table.
+	// mailbox, mail and coordinator rows are in every table, and the git
+	// identity is bound as its folder.
 	if Version != 4 {
 		t.Errorf("Version = %d, want 4", Version)
 	}

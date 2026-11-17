@@ -79,9 +79,14 @@ type Inputs struct {
 	LeadSkills      string
 	InstructionFile string
 
-	// GitIdentityFile is bound at GitIdentityInside and named by
-	// GIT_CONFIG_GLOBAL.
-	GitIdentityFile string
+	// GitIdentityDir is the Ataniq-owned folder that holds the git identity
+	// file, GitIdentityFileName ("config"), which the holder writes. The
+	// folder is bound read-only at GitIdentityDirInside and GIT_CONFIG_GLOBAL
+	// names the file in it, GitIdentityInside. The folder is bound, not the
+	// file, because a bind of a single file keeps the file it was made from
+	// when the holder replaces the file by rename. Everything in the folder
+	// is readable inside, so it holds the identity file and nothing else.
+	GitIdentityDir string
 
 	// GitMeta is the Ataniq-owned folder of the tree's protected git files:
 	// config (a file), hooks and info (folders). The tree's .git/config,
@@ -206,7 +211,7 @@ func (in Inputs) check() error {
 		{"managed-settings file", in.ManagedSettings},
 		{"lead skills folder", in.LeadSkills},
 		{"instruction file", in.InstructionFile},
-		{"git identity file", in.GitIdentityFile},
+		{"git identity folder", in.GitIdentityDir},
 		{"git metadata folder", in.GitMeta},
 		{"Qargi install", in.QargiInstall},
 		{"assignment folder", in.AssignmentDir},

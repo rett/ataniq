@@ -94,7 +94,7 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 			AgentInstall: own("agent", true), ManagedSettings: managed, ManagedSettingsSHA256: hex.EncodeToString(sum[:]),
 			ManagedMarker: "qargi-guard",
 			LeadSkills:    own("skills", true), InstructionFile: own("instructions/"+rt.InstructionFileName(), false),
-			GitIdentityFile: own("git/config", false), QargiInstall: own("qargi", true),
+			GitIdentityDir: filepath.Dir(own("git/"+profile.GitIdentityFileName, false)), QargiInstall: own("qargi", true),
 			AssignmentDir: own("assignment", true), ProjectionDir: own("projection", true),
 		},
 		NeverMounted:     []string{f.Base + "/owner/work", f.Base + "/owner/.claude", f.Base + "/owner/.codex", f.Base + "/owner/.ssh"},

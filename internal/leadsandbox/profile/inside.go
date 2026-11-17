@@ -3,28 +3,38 @@ package profile
 // Inside paths: the same for every epoch and both runtimes, because providers
 // key their state by path (the lead-hosting design, section 3.3).
 const (
-	HomeInside        = "/home/lead"
-	WorkRootInside    = "/work"
-	ProbeInside       = "/ataniq/probe"
-	SpecDirInside     = "/ataniq/spec"
-	SpecFileName      = "spec.json"
-	AgentInside       = "/ataniq/agent"
-	QargiInside       = "/ataniq/qargi"
-	MirrorRootInside  = "/ataniq/mirror"
-	AssignmentInside  = "/ataniq/assignment"
-	ProjectionInside  = "/ataniq/projection"
-	GitIdentityInside = "/ataniq/git/config"
-	RequestsInside    = "/ataniq/requests"
-	MailboxInside     = "/ataniq/mailbox"
-	MailInside        = "/ataniq/mail"
-	CoordInside       = "/coord"
-	TmpInside         = "/tmp"
-	ResolvConfInside  = "/etc/resolv.conf"
+	HomeInside       = "/home/lead"
+	WorkRootInside   = "/work"
+	ProbeInside      = "/ataniq/probe"
+	SpecDirInside    = "/ataniq/spec"
+	SpecFileName     = "spec.json"
+	AgentInside      = "/ataniq/agent"
+	QargiInside      = "/ataniq/qargi"
+	MirrorRootInside = "/ataniq/mirror"
+	AssignmentInside = "/ataniq/assignment"
+	ProjectionInside = "/ataniq/projection"
+	RequestsInside   = "/ataniq/requests"
+	MailboxInside    = "/ataniq/mailbox"
+	MailInside       = "/ataniq/mail"
+	CoordInside      = "/coord"
+	TmpInside        = "/tmp"
+	ResolvConfInside = "/etc/resolv.conf"
+
+	// GitIdentityDirInside is where the folder that holds the git identity
+	// file is bound, and GitIdentityFileName the fixed name of the file in
+	// it. The folder is bound, not the file: see the package documentation.
+	GitIdentityDirInside = "/ataniq/git"
+	GitIdentityFileName  = "config"
 
 	// ClaudeManagedInside is the managed-settings path of claude. The
 	// lead-hosting design names no path for codex.
 	ClaudeManagedInside = "/etc/claude-code/managed-settings.json"
 )
+
+// GitIdentityInside is the git identity file inside, which GIT_CONFIG_GLOBAL
+// names: the file GitIdentityFileName in the folder bound at
+// GitIdentityDirInside.
+const GitIdentityInside = GitIdentityDirInside + "/" + GitIdentityFileName
 
 // SpecFileInside is the probe spec file inside.
 const SpecFileInside = SpecDirInside + "/" + SpecFileName
