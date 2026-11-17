@@ -30,9 +30,9 @@ var (
 	// the folder.
 	ErrEscapes = errors.New("path escapes the folder")
 	// ErrUnsupported: openat2 is not available (ENOSYS), or a filter denied
-	// it (EPERM, which is not told apart from a permission failure). No
-	// path-based fallback is tried.
-	ErrUnsupported = errors.New("openat2 is unavailable (not implemented, or denied with EPERM: not told apart)")
+	// it (EPERM, which is not told apart from a permission failure), or
+	// [OpenRoot]'s probe of it failed. No path-based fallback is tried.
+	ErrUnsupported = errors.New("openat2 is unavailable (not implemented, denied with EPERM: not told apart, or not working)")
 	// ErrHardLink: a regular file has more than one hard link and the call
 	// does not accept that.
 	ErrHardLink = errors.New("regular file has more than one hard link")

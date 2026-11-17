@@ -46,7 +46,19 @@ type Root struct {
 // O_NOFOLLOW: path must be one the caller owns and trusts, with parents no
 // lead can change. A symbolic link at the path is refused with [ErrSymlink]
 // and a non-folder with [ErrNotDirectory].
+//
+// It then probes openat2 once, on the handle, with the flags every later call
+// uses. When the call does not work (the kernel lacks it, a filter denies it,
+// or the flags are not accepted) OpenRoot returns [ErrUnsupported] wrapping
+// the errno, so a start fails before any work is done. There is no fallback to
+// a path-based open.
 func OpenRoot(dir string) (*Root, error) {
+	return openRoot(dir, unix.Openat2)
+}
+
+// openRoot is OpenRoot with the openat2 call given, so a test can stand in
+// for a kernel without it.
+func openRoot(dir string, call openat2Func) (*Root, error) {
 	if dir == "" || strings.IndexByte(dir, 0) >= 0 {
 		return nil, &Error{Op: "open", Path: dir, Err: ErrInvalidArgument}
 	}
@@ -70,7 +82,14 @@ func OpenRoot(dir string) (*Root, error) {
 		}
 		return nil, &Error{Op: "open", Path: dir, Err: err}
 	}
-	return &Root{fd: fd, opened: true, openat2: unix.Openat2, mkdirat: unix.Mkdirat}, nil
+	r := &Root{fd: fd, opened: true, openat2: call, mkdirat: unix.Mkdirat}
+	probe, err := r.open(fd, ".", unix.O_PATH|unix.O_DIRECTORY, 0)
+	if err != nil {
+		unix.Close(fd)
+		return nil, &Error{Op: "open", Path: dir, Err: refuse(ErrUnsupported, err)}
+	}
+	unix.Close(probe)
+	return r, nil
 }
 
 // Close releases the handle and does not wait for a call in progress, so a

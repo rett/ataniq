@@ -40,7 +40,7 @@
 // # Hard links
 //
 // A regular file whose link count is above one is reported ([Info.Nlink],
-// [FileResult.HardLinked]), and [RefuseHardLinks] makes [Root.ReadFile]
+// [Info.HardLinked], reached from [FileResult.Info]), and [RefuseHardLinks] makes [Root.ReadFile]
 // refuse it with [ErrHardLink]. The reason: a lead can hard-link a file it
 // can read into a folder it writes, where it then looks like the lead's own
 // file; it cannot link one it cannot read. With the kernel's protected
@@ -52,10 +52,14 @@
 //
 // # When openat2 is not usable
 //
-// If the kernel lacks openat2 (ENOSYS), or a seccomp filter denies it (the
-// call fails with EPERM, which cannot be told apart from a permission
-// failure, so it is not guessed at), the call is refused with
-// [ErrUnsupported]. There is no fallback to a path-based open.
+// [OpenRoot] probes openat2 once, on the new handle and with the flags every
+// call uses, and fails with [ErrUnsupported] when it does not work (the kernel
+// lacks it, a seccomp filter denies it with EPERM, which cannot be told apart
+// from a permission failure and is not guessed at, or the flags are refused),
+// so a start learns it before it has done other work. A call that later gets
+// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too. There is
+// no fallback to a path-based open. The package's tests need a working
+// openat2 and fail, not skip, where there is none.
 //
 // # What it does not do
 //

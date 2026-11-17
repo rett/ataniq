@@ -33,19 +33,13 @@ func newRoot(t *testing.T) (r *Root, dir, outside string) {
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// OpenRoot probes openat2. Where it does not work the tests fail, loudly:
+	// a green run on such a system would cover nothing.
 	r, err := OpenRoot(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("these tests need a working openat2 (OpenRoot: %v)", err)
 	}
 	t.Cleanup(func() { r.Close() })
-	// Skip, loudly, where the kernel or a filter has no openat2: the
-	// package refuses there and there is nothing to test against.
-	if err := os.WriteFile(filepath.Join(dir, ".probe"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.ReadFile(".probe", 1); errors.Is(err, ErrUnsupported) {
-		t.Skipf("openat2 unavailable here: %v", err)
-	}
 	return r, dir, outside
 }
 
@@ -351,14 +345,14 @@ func TestHardLinks(t *testing.T) {
 	r, dir, outside := newRoot(t)
 	write(t, filepath.Join(dir, "one"), "data")
 	res, err := r.ReadFileInfo("one", 100)
-	if err != nil || res.HardLinked || res.Info.Nlink != 1 || string(res.Data) != "data" {
+	if err != nil || res.Info.HardLinked() || res.Info.Nlink != 1 || string(res.Data) != "data" {
 		t.Fatalf("single link: %+v, %v", res, err)
 	}
 	if err := os.Link(filepath.Join(dir, "one"), filepath.Join(dir, "two")); err != nil {
 		t.Skipf("hard links not available here: %v", err)
 	}
 	res, err = r.ReadFileInfo("two", 100)
-	if err != nil || !res.HardLinked || res.Info.Nlink != 2 || string(res.Data) != "data" {
+	if err != nil || !res.Info.HardLinked() || res.Info.Nlink != 2 || string(res.Data) != "data" {
 		t.Fatalf("two links reported: %+v, %v", res, err)
 	}
 	if got, err := r.ReadFile("two", 100); err != nil || string(got) != "data" {
@@ -750,7 +744,7 @@ func TestReadDirNames(t *testing.T) {
 	if got, err := r.ReadDirNames("empty", 0); err != nil || got == nil || len(got) != 0 {
 		t.Fatalf("empty folder: %#v, %v", got, err)
 	}
-	if got, err := r.ReadDirNames(".", 100); err != nil || !reflect.DeepEqual(got, []string{".probe", "d", "empty"}) {
+	if got, err := r.ReadDirNames(".", 100); err != nil || !reflect.DeepEqual(got, []string{"d", "empty"}) {
 		t.Fatalf("root: %v, %v", got, err)
 	}
 	if _, err := r.ReadDirNames("d/a", 10); !errors.Is(err, ErrNotDirectory) {
@@ -855,6 +849,49 @@ func TestOpenRoot(t *testing.T) {
 			t.Errorf("OpenRoot(%q): %v, want %v", rel, err, want)
 		}
 	}
+}
+
+// OpenRoot probes openat2 once and refuses with ErrUnsupported when it does
+// not work, closing what it opened.
+func TestOpenRootProbe(t *testing.T) {
+	base := t.TempDir()
+	countFDs := func() int {
+		ents, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ents)
+	}
+	before := countFDs()
+	for _, errno := range []unix.Errno{unix.ENOSYS, unix.EPERM, unix.EINVAL, unix.E2BIG} {
+		calls := 0
+		r, err := openRoot(base, func(int, string, *unix.OpenHow) (int, error) {
+			calls++
+			return -1, errno
+		})
+		if r != nil || !errors.Is(err, ErrUnsupported) || !errors.Is(err, errno) {
+			t.Errorf("openat2 failing with %v: %v, %v; want ErrUnsupported wrapping it", errno, r, err)
+		}
+		if calls != 1 {
+			t.Errorf("the probe made %d calls, want 1", calls)
+		}
+	}
+	if after := countFDs(); after != before {
+		t.Errorf("descriptors: %d before, %d after failed OpenRoot calls", before, after)
+	}
+	// A working openat2 passes the probe once and the handle is usable.
+	calls := 0
+	r, err := openRoot(base, func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		calls++
+		if p != "." || how.Resolve != resolveFlags {
+			t.Errorf("probe on %q with resolve %#x", p, how.Resolve)
+		}
+		return unix.Openat2(dirfd, p, how)
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("openRoot: %v after %d calls", err, calls)
+	}
+	r.Close()
 }
 
 func TestClosedRoot(t *testing.T) {
