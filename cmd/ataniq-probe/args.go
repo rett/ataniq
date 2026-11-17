@@ -72,7 +72,7 @@ type insideArgs struct {
 //	--spec PATH --report-fd N -- AGENT ARGV...
 //
 // strictly. Each option is required once, in either order. The spec path is
-// absolute, N is 3 to 1023 (decimal digits only), the agent argument vector is
+// absolute, N is 3 to 1023 (decimal digits only, no leading zero), the agent argument vector is
 // not empty and its first element is an absolute path. An unknown option, a
 // missing value, a missing "--" and anything else is a *usageError.
 func parseInside(args []string) (insideArgs, error) {
@@ -146,9 +146,9 @@ func checkProgram(what string, argv []string) error {
 func absolute(p string) bool { return strings.HasPrefix(p, "/") }
 
 // parseFD reads a descriptor number: decimal digits only (no sign, no space,
-// no leading "+"), 3 to 1023.
+// no leading "+", no leading zero), 3 to 1023.
 func parseFD(s string) (int, error) {
-	if s == "" || len(s) > 4 {
+	if s == "" || len(s) > 4 || (len(s) > 1 && s[0] == '0') {
 		return 0, fmt.Errorf("is not a descriptor number from %d to %d", minFD, maxFD)
 	}
 	for i := 0; i < len(s); i++ {

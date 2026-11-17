@@ -41,7 +41,8 @@ func (h *insideHarness) run(specPath string, reportFD int) (code int, stderr str
 			return 0
 		},
 	}
-	code = runInside([]string{"--spec", specPath, "--report-fd", fmt.Sprint(reportFD), "--", "/bin/agent", "-x"}, &buf, d)
+	// The agent must be an executable regular file: runInside looks.
+	code = runInside([]string{"--spec", specPath, "--report-fd", fmt.Sprint(reportFD), "--", testExe(h.t), "-x"}, &buf, d)
 	return code, buf.String()
 }
 
@@ -88,7 +89,7 @@ func TestRunInsidePassLaunchesTheAgentAsIs(t *testing.T) {
 	if code != 0 || stderr != "" || h.launchN != 1 {
 		t.Fatalf("code %d launched %d stderr %q", code, h.launchN, stderr)
 	}
-	if strings.Join(h.agent, " ") != "/bin/agent -x" || strings.Join(h.env, ",") != "A=1,B=2" {
+	if strings.Join(h.agent, " ") != testExe(t)+" -x" || strings.Join(h.env, ",") != "A=1,B=2" {
 		t.Errorf("agent %q env %q", h.agent, h.env)
 	}
 	if fl, _ := unix.FcntlInt(uintptr(w), unix.F_GETFD, 0); fl&unix.FD_CLOEXEC == 0 {

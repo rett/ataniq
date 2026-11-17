@@ -42,18 +42,29 @@ func hostInsideDeps() insideDeps {
 }
 
 // runInside is the inside mode. In order: parse the command line; mark the
-// report descriptor close-on-exec; read the spec; run the inside checks; write
-// the report line, in full; decide from the report; give the agent its
-// session; close the other descriptors; execute the agent. It never issues
-// TIOCSTI, never creates or writes a file, and never changes the environment.
+// report descriptor close-on-exec; check that the agent is an executable
+// regular file; read the spec; run the inside checks; write the report line,
+// in full; decide from the report; give the agent its session; close the other
+// descriptors; execute the agent. It never issues TIOCSTI, never creates or writes a file, and never adds, removes or changes
+// an environment variable (what it passes on is os.Environ, see doc.go).
 func runInside(args []string, stderr io.Writer, d insideDeps) int {
 	a, err := parseInside(args)
 	if err != nil {
 		return fail(stderr, exitSetup, "usage: %v", err)
 	}
+	// A descriptor of the runtime's poller is no report channel: a write to it
+	// would not reach the holder, and the runtime reads it too.
+	if runtimeOwned(a.ReportFD) {
+		return fail(stderr, exitSetup, "cannot use the report descriptor %d: it is one of the Go runtime's own (a standard stream was non-blocking when the program started)", a.ReportFD)
+	}
 	// First, so that no later step, and no exec, can leak the descriptor.
 	if err := setCloexec(a.ReportFD); err != nil {
 		return fail(stderr, exitSetup, "cannot use the report descriptor %d: %v", a.ReportFD, err)
+	}
+	// Before the checks run, so that the common cause of a failed exec after
+	// a good report is found while no report has been written.
+	if err := checkAgent(a.Agent[0]); err != nil {
+		return fail(stderr, exitSetup, "cannot use the agent %s: %v", quote(a.Agent[0]), err)
 	}
 	spec, err := readSpec(a.Spec)
 	if err != nil {
@@ -91,6 +102,25 @@ func afterReport(rep assert.Report, spec assert.Spec, stderr io.Writer) int {
 		say(stderr, "  %s", p)
 	}
 	return exitFailed
+}
+
+// checkAgent says the agent path is a regular file (a link is followed) that
+// the process may execute: faccessat with X_OK, with the effective ids as
+// execve uses them. It does not make the execve certain to work: a file that is
+// not a program, or one that is replaced after the check, still fails later,
+// after the report.
+func checkAgent(path string) error {
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		return err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errors.New("it is not a regular file")
+	}
+	if err := unix.Faccessat(unix.AT_FDCWD, path, unix.X_OK, unix.AT_EACCESS); err != nil {
+		return fmt.Errorf("it is not executable: %w", err)
+	}
+	return nil
 }
 
 // readSpec reads the spec file: opened without following a link at the last

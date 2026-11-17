@@ -58,6 +58,7 @@ func TestParseInside(t *testing.T) {
 		{"fd spaced", []string{"--spec", "/s", "--report-fd", " 3", "--", "/a"}, "not a descriptor number"},
 		{"fd hex", []string{"--spec", "/s", "--report-fd", "0x5", "--", "/a"}, "not a descriptor number"},
 		{"fd empty", []string{"--spec", "/s", "--report-fd", "", "--", "/a"}, "not a descriptor number"},
+		{"fd leading zero", []string{"--spec", "/s", "--report-fd", "03", "--", "/a"}, "not a descriptor number"},
 		{"fd long", []string{"--spec", "/s", "--report-fd", "00003", "--", "/a"}, "not a descriptor number"},
 		{"fd huge", []string{"--spec", "/s", "--report-fd", "99999999999999999999", "--", "/a"}, "not a descriptor number"},
 	}
@@ -121,6 +122,8 @@ func TestParsePassFDs(t *testing.T) {
 		{"fd 2", []string{"--read", "2=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
 		{"fd 1024", []string{"--write", "1024=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
 		{"fd not a number", []string{"--read", "x=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
+		{"fd leading zero", []string{"--read", "04=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
+		{"fd zero zero", []string{"--write", "000=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
 		{"relative path", []string{"--read", "4=f", "--", "/bin/true"}, "path must be absolute"},
 		{"empty path", []string{"--read", "4=", "--", "/bin/true"}, "path must be absolute"},
 		{"same fd twice", []string{"--read", "4=/f", "--write", "4=/g", "--", "/bin/true"}, "descriptor 4 is given twice"},

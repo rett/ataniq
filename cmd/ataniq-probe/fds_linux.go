@@ -48,6 +48,28 @@ func setCloexec(fd int) error {
 	return err
 }
 
+// runtimeOwned says the descriptor is an eventpoll or an eventfd, which is what
+// the Go runtime's poller holds. When descriptor 0, 1 or 2 is non-blocking as
+// the program starts, the os package registers it with the poller before main
+// runs, and the poller takes the lowest free numbers (3 and 4 once the caller
+// has closed everything else). A file placed over one of them, or a report
+// written to it, would be seen by the runtime too: it throws when it waits on
+// a regular file, and it writes eight bytes to the file it finds at its
+// wake-up descriptor. A descriptor that is not open, or that cannot be read
+// from /proc, is not the runtime's.
+func runtimeOwned(fd int) bool {
+	buf := make([]byte, 64)
+	n, err := unix.Readlink("/proc/self/fd/"+strconv.Itoa(fd), buf)
+	if err != nil || n >= len(buf) {
+		return false
+	}
+	switch string(buf[:n]) {
+	case "anon_inode:[eventpoll]", "anon_inode:[eventfd]":
+		return true
+	}
+	return false
+}
+
 // gaps returns the ranges [first, last] of descriptor numbers from 3 up that
 // the kept descriptors leave: a kept number below 3 or twice is ignored.
 func gaps(keep []int) [][2]uint {
