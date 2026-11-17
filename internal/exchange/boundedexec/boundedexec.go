@@ -1,14 +1,17 @@
 package boundedexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // DefaultWatchInterval is how often Watch is called when Cmd.WatchInterval is
@@ -90,19 +93,36 @@ var (
 // ExitError is returned when the command ends with a non-zero status. Exit is
 // -1 when a signal that the package did not send ended it.
 type ExitError struct {
-	Exit   int
+	Exit int
+	// Stderr is the raw standard error, up to Cmd.MaxStderr bytes. It is
+	// untrusted text: the command, and anything that wrote to it, chose every
+	// byte, including newlines, terminal escapes and invalid UTF-8. Do not
+	// print it or log it as it is.
 	Stderr []byte
 }
 
-// Error describes the exit and the start of its standard error.
+// Error describes the exit and the start of its standard error. The standard
+// error is cut to its first 200 bytes (on a rune boundary) and shown quoted
+// with strconv.QuoteToASCII, so the text has no newline, no control byte and
+// nothing but printable ASCII from the command.
 func (e *ExitError) Error() string {
 	const show = 200
-	msg := strings.TrimSpace(string(e.Stderr))
-	if len(msg) > show {
-		msg = msg[:show] + "..."
-	}
-	if msg == "" {
+	raw := bytes.TrimSpace(e.Stderr)
+	if len(raw) == 0 {
 		return fmt.Sprintf("boundedexec: command exited with status %d", e.Exit)
+	}
+	cut := len(raw) > show
+	if cut {
+		n := show
+		// Step back to the start of a rune, but no further than one rune.
+		for i := 0; i < utf8.UTFMax-1 && n > 0 && !utf8.RuneStart(raw[n]); i++ {
+			n--
+		}
+		raw = raw[:n]
+	}
+	msg := strconv.QuoteToASCII(string(raw))
+	if cut {
+		msg += "..."
 	}
 	return fmt.Sprintf("boundedexec: command exited with status %d: %s", e.Exit, msg)
 }

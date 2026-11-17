@@ -1,6 +1,7 @@
 package boundedexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -68,12 +69,13 @@ func TestValidCmdPasses(t *testing.T) {
 
 func TestErrorTexts(t *testing.T) {
 	e := &ExitError{Exit: 2, Stderr: []byte("  bad thing\n")}
-	if got, want := e.Error(), "boundedexec: command exited with status 2: bad thing"; got != want {
+	if got, want := e.Error(), `boundedexec: command exited with status 2: "bad thing"`; got != want {
 		t.Errorf("ExitError = %q, want %q", got, want)
 	}
 	e = &ExitError{Exit: 2, Stderr: []byte(strings.Repeat("x", 500))}
-	if got := e.Error(); len(got) > 300 || !strings.HasSuffix(got, "...") {
-		t.Errorf("long stderr not cut: %d bytes", len(got))
+	got := e.Error()
+	if want := `boundedexec: command exited with status 2: "` + strings.Repeat("x", 200) + `"...`; got != want {
+		t.Errorf("long stderr = %q, want it cut at 200 bytes", got)
 	}
 	if got := (&ExitError{Exit: 1}).Error(); strings.Contains(got, ":  ") || strings.HasSuffix(got, ": ") {
 		t.Errorf("empty stderr text = %q", got)
@@ -82,5 +84,43 @@ func TestErrorTexts(t *testing.T) {
 	w := &WatchError{Err: inner}
 	if !errors.Is(w, inner) || !strings.Contains(w.Error(), "inner") {
 		t.Errorf("WatchError does not unwrap: %v", w)
+	}
+}
+
+func TestExitErrorTextIsQuoted(t *testing.T) {
+	// Stderr is written by untrusted code: it must not forge a log line or
+	// drive the terminal through the error text.
+	raw := "x\n\x1b[2Jlevel=info msg=\"intake accepted\"\r\x00\x7f"
+	e := &ExitError{Exit: 1, Stderr: []byte(raw)}
+	got := e.Error()
+	for _, bad := range []string{"\n", "\r", "\x1b", "\x00", "\x7f"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("Error() holds the byte %q: %q", bad, got)
+		}
+	}
+	for i := 0; i < len(got); i++ {
+		if got[i] < 0x20 || got[i] >= 0x7f {
+			t.Errorf("Error() holds the non-printable byte %#x: %q", got[i], got)
+		}
+	}
+	if string(e.Stderr) != raw {
+		t.Error("Stderr was changed; it must stay raw")
+	}
+}
+
+func TestExitErrorCutKeepsRunesWhole(t *testing.T) {
+	// "x" and 150 two-byte runes: byte 200 is the second byte of a rune.
+	raw := "x" + strings.Repeat("\u00e9", 150)
+	got := (&ExitError{Exit: 1, Stderr: []byte(raw)}).Error()
+	if strings.Contains(got, `\x`) {
+		t.Errorf("the cut split a rune: %q", got)
+	}
+	if !strings.HasSuffix(got, `\u00e9"...`) {
+		t.Errorf("unexpected tail: %q", got)
+	}
+	// Broken UTF-8 is escaped and the cut still ends the text with "...".
+	got = (&ExitError{Exit: 1, Stderr: bytes.Repeat([]byte{0xff}, 300)}).Error()
+	if !strings.HasSuffix(got, `\xff"...`) {
+		t.Errorf("broken UTF-8 text: %q", got)
 	}
 }
