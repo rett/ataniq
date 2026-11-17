@@ -106,8 +106,13 @@ caller's environment or home.
 - **Campaign folder**, for example `/owned/qualification/campaign`: mode 0700,
   owned by the caller, a real path, empty or holding earlier attempts. Evidence
   goes here and nowhere else. Do not put credentials or unrelated state in it.
-  It must not be listed as never-mounted and must not lie in or contain the state
-  root or any source, because two bind sources of the harness lie below it.
+  It must not be, lie below or contain a never-mounted path, and must not lie in
+  or contain the state root, any source folder or file of the profile (the agent
+  install, managed settings, skills, instruction file, git identity, Qargi
+  install and records, assignment and projection) or the probe, because two
+  bind sources of the harness lie below it. Put it outside every never-mounted
+  folder rather than shortening the never-mounted list: a configuration that
+  lists a whole home folder as never-mounted cannot keep its campaign inside it.
 - **State root**, for example `/owned/qualification/state`: a real path holding
   the lead's layout, all folders mode 0700:
 
@@ -279,7 +284,7 @@ the terminal output. Do not copy it into a repository.
 | `spec.json` | The probe's spec, as written for it (also bound read-only inside, in `bound/spec`). |
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
-| `terminal.log` | The first 1 MiB of what the process wrote to the pseudo-terminal; the rest is counted in `summary.json`. It may hold escape sequences: read it with `cat -v`. |
+| `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
 | `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
@@ -296,8 +301,13 @@ and a test checks that no key of the evidence contains such a word. A result is
 
 The design (section 7.3) lists the sandbox cases. The harness records facts for
 the automated ones; the others are attended, and the coordinator makes and
-records them by hand, inside a sandbox launched by this harness (with a scratch
-command that waits, for example a shell) or by the holder's own qualification.
+records them by hand. The harness passes no input to the sandbox: it only reads
+the pseudo-terminal, so a scratch command that waits for the keyboard (a shell,
+for example) cannot be driven from it and is stopped at the time limit. Run an
+attended case either as a non-interactive scratch command (a command in
+`scratch_command` that does the steps and prints what happened; it runs inside
+the sandbox, so its program and files must be reachable there, in the lead's
+tree for example; its output goes to `terminal.log` as display only), or in the holder's own qualification.
 
 ### Automated cases
 
