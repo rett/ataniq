@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"net"
 	"os"
@@ -52,14 +53,16 @@ func testSpec(t *testing.T) assert.Spec {
 		HolderPaths:     []string{"/run/example/holder.sock", "/var/lib/example/holder"},
 		MountSubstrings: []string{"/run/example", "/home/owner"},
 		OwnerPaths:      []string{"/home/owner/.claude", "/home/owner/.ssh"},
-		OtherConfigDir:  profile.ConfigInside(rt.Other()),
-		LoopbackTCP:     addr,
-		AbstractSocket:  fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
-		ProviderHost:    "localhost",
-		Tree:            "/work/ataniq",
-		GitReadOnly:     []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
-		ManagedSettings: profile.ClaudeManagedInside,
-		ManagedMarker:   "example-guard-hook",
+		// The identity check cannot be made without a forbidden identity.
+		ForbiddenIdentities: []assert.FileIdentity{{Device: 7, Inode: 70}},
+		OtherConfigDir:      profile.ConfigInside(rt.Other()),
+		LoopbackTCP:         addr,
+		AbstractSocket:      fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
+		ProviderHost:        "localhost",
+		Tree:                "/work/ataniq",
+		GitReadOnly:         []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
+		ManagedSettings:     profile.ClaudeManagedInside,
+		ManagedMarker:       "example-guard-hook",
 
 		ConnectTimeoutMS: 100,
 		ResolveTimeoutMS: 100,
@@ -152,6 +155,13 @@ func (f *fakeSystem) MountID(p string) (int, error) {
 		return id, nil
 	}
 	return 0, fmt.Errorf("statx %s: %w", p, assert.ErrNoMountID)
+}
+
+// Identity gives every path an identity of its own, none of them forbidden.
+func (f *fakeSystem) Identity(p string) (assert.FileIdentity, error) {
+	h := fnv.New64a()
+	h.Write([]byte(p))
+	return assert.FileIdentity{Device: 4242, Inode: h.Sum64() | 1<<40}, nil
 }
 func (f *fakeSystem) DirEmpty(string) (bool, error) { return true, nil }
 func (f *fakeSystem) Writable(string) (bool, error) { return false, nil }
