@@ -1,6 +1,7 @@
 package gitenv
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,11 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"config", []string{"--file", "/dev/stdin", "--list", "-z"}},
 		{"config", []string{"--file=/dev/stdin", "--list", "-z"}},
 		{"for-each-ref", []string{"--count=5", "--format=%(refname)", "refs/heads/-x"}},
+		// A flag that takes a value in one subcommand is valueless in others.
+		{"log", []string{"-m", "--end-of-options", "HEAD"}},
+		{"diff-tree", []string{"-r", "-m", "--end-of-options", "HEAD"}},
+		{"rev-list", []string{"--count", "--end-of-options", "HEAD"}},
+		{"update-ref", []string{"--no-deref", "--stdin", "-z"}},
 		{"rev-parse", []string{"--verify", "-", "x"}},
 		// After the end of the options git reads no options.
 		{"fetch", []string{"--end-of-options", "-o", "--depth", "1", "--upload-pack=x"}},
@@ -95,6 +101,67 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 	if _, err := g.Argv(Cmd{GitDir: ok, Protocols: []string{"file"}, UploadPack: []string{"/usr/bin/wrap"},
 		Args: []string{"fetch", "-o", "--", "--upload-pack=/abs/evil.sh", "/abs/src"}}); err == nil {
 		t.Error("the probe was accepted with UploadPack set")
+	}
+}
+
+// TestValuelessFlagsThatTakeAValueSomewhere covers the flags of [valueIn]:
+// where git gives them a value, the bare flag is refused (it would take the
+// end-of-options marker as its value and git would then read the next
+// argument as an option), and the "=" form is the way to write it.
+func TestValuelessFlagsThatTakeAValueSomewhere(t *testing.T) {
+	g := Git{Path: "/usr/bin/git"}
+	ok := "/srv/r.git"
+	refused := []struct {
+		sub  string
+		args []string
+	}{
+		// The review's probes.
+		{"update-ref", []string{"-m", "--end-of-options", "-d", "refs/heads/main"}},
+		{"update-ref", []string{"-m", "--", "-d", "refs/heads/main"}},
+		{"symbolic-ref", []string{"-m", "--end-of-options", "--short", "HEAD"}},
+		{"symbolic-ref", []string{"-m", "--", "--short", "HEAD"}},
+		// Without a marker, and among other flags.
+		{"update-ref", []string{"-m", "why", "refs/heads/x", "HEAD"}},
+		{"update-ref", []string{"--no-deref", "-m", "--end-of-options", "refs/heads/x", "HEAD"}},
+		{"for-each-ref", []string{"--count", "--end-of-options", "refs/"}},
+		{"for-each-ref", []string{"--count", "1", "refs/"}},
+	}
+	for _, tc := range refused {
+		argv, err := g.Argv(Cmd{GitDir: ok, Args: append([]string{tc.sub}, tc.args...)})
+		if err == nil {
+			t.Errorf("%s %q: Argv accepted %q", tc.sub, tc.args, argv)
+			continue
+		}
+		if !strings.Contains(err.Error(), "takes a value in") {
+			t.Errorf("%s %q: error %q does not say that the flag takes a value here", tc.sub, tc.args, err)
+		}
+	}
+	// The forms that hold their value are accepted.
+	for _, tc := range []struct {
+		sub  string
+		args []string
+	}{
+		{"for-each-ref", []string{"--count=1", "--end-of-options", "refs/"}},
+		{"update-ref", []string{"--stdin", "-z"}},
+	} {
+		if _, err := g.Argv(Cmd{GitDir: ok, Args: append([]string{tc.sub}, tc.args...)}); err != nil {
+			t.Errorf("%s %q: %v", tc.sub, tc.args, err)
+		}
+	}
+}
+
+// TestValueInNamesRealEntries keeps [valueIn] consistent with the other
+// tables, so a typo does not switch a refusal off.
+func TestValueInNamesRealEntries(t *testing.T) {
+	for flag, subs := range valueIn {
+		if !slices.Contains(valuelessFlags, flag) {
+			t.Errorf("valueIn names %q, which is not in valuelessFlags", flag)
+		}
+		for _, sub := range subs {
+			if !slices.Contains(subcommands, sub) {
+				t.Errorf("valueIn names %q for %q, which is not an allowed subcommand", flag, sub)
+			}
+		}
 	}
 }
 
