@@ -27,7 +27,7 @@ const (
 	pollEvery    = 200 * time.Millisecond
 	emptyBound   = 5 * time.Second  // for the group to empty after SIGKILL
 	readyBound   = 10 * time.Second // for the child to say it ignores SIGTERM
-	cleanupBound = 15 * time.Second
+	cleanupBound = 20 * time.Second
 )
 
 // The result of one check.
@@ -74,6 +74,7 @@ type qualifier struct {
 
 	suffix    string
 	unit      string
+	intent    string
 	readyPath string
 	mayExist  bool
 	first     leadunit.State // what Start returned: it can be partial
@@ -150,6 +151,7 @@ func (q *qualifier) qualify(ctx context.Context) report {
 	q.unit = "ataniq-qualify-" + suffix + ".service"
 	q.readyPath = filepath.Join(q.stateDir, "ready-"+suffix)
 	intent := "q-" + suffix
+	q.intent = intent
 	rep.Unit, rep.Intent = q.unit, intent
 	spec := q.spec(intent)
 
@@ -364,31 +366,58 @@ func (q *qualifier) poll(ctx context.Context, bound time.Duration, f func() (boo
 	}
 }
 
-// cleanup always runs, on a context that outlives a cancelled run: it
-// SIGKILLs this run's unit if it is loaded and proves its control group
-// empty, or says it could not.
+// ours reports whether st is a unit that this run started: transient, with
+// this run's epoch and intent in its description.
+func (q *qualifier) ours(st leadunit.State) bool {
+	return st.Ours && st.Epoch == 1 && st.Intent == q.intent
+}
+
+// cleanup always runs, on a context that outlives a cancelled run. It never
+// signals a unit whose description is not this run's own intent, signals the
+// unit it owns once its invocation is known, says what it did and did not do,
+// and proves the control group empty or says it could not.
 func (q *qualifier) cleanup(ctx context.Context) check {
 	if !q.mayExist {
 		return check{"cleanup", resultPass, "nothing was started"}
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupBound)
 	defer cancel()
-	cur, err := q.mgr.Inspect(cctx, q.unit)
-	if err != nil {
-		return check{"cleanup", resultFail, fmt.Sprintf("could not inspect %s, so it is not proven empty: %v", q.unit, err)}
+	// A run that stopped right after Start can find the unit loaded with no
+	// invocation yet, which Signal refuses: wait, bounded, for it to be set.
+	var cur leadunit.State
+	ok, err := q.poll(cctx, emptyBound, func() (bool, error) {
+		var ierr error
+		cur, ierr = q.mgr.Inspect(cctx, q.unit)
+		if ierr != nil {
+			return false, ierr
+		}
+		return !cur.Loaded || !q.ours(cur) || cur.InvocationID != "", nil
+	})
+	if !ok {
+		if err != nil {
+			return check{"cleanup", resultFail, fmt.Sprintf("could not inspect %s, so it is not proven empty: %v", q.unit, err)}
+		}
+		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: %s is loaded with no invocation id after %s, so it is not proven empty and ends by itself at the child's maximum life", q.unit, emptyBound)}
+	}
+	if cur.Loaded && !q.ours(cur) {
+		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: a unit named %s is loaded but its description %q is not this run's intent %q, so it was left alone and is not proven empty", q.unit, cur.Description, q.intent)}
 	}
 	prove := cur
-	note := "the unit was already gone"
+	note := "the unit was already gone, nothing was sent"
 	if !cur.Loaded && q.started.ControlGroup != "" {
 		prove = q.started
 	}
 	if cur.Loaded {
-		note = "SIGKILL sent"
-		if err := q.mgr.Signal(cctx, cur, syscall.SIGKILL); err != nil && !errors.Is(err, leadunit.ErrNotLoaded) && !errors.Is(err, leadunit.ErrInvocationChanged) {
-			note = "SIGKILL failed (" + err.Error() + ")"
+		switch serr := q.mgr.Signal(cctx, cur, syscall.SIGKILL); {
+		case serr == nil:
+			note = "SIGKILL sent"
+		case errors.Is(serr, leadunit.ErrNotLoaded):
+			note = "SIGKILL not sent: the unit was gone before the signal"
+		default:
+			note = "SIGKILL not sent (" + serr.Error() + ")"
 		}
 	}
-	ok, err := q.poll(cctx, cleanupBound-time.Second, func() (bool, error) { return q.mgr.Empty(cctx, prove) })
+	ok, err = q.poll(cctx, cleanupBound-emptyBound-time.Second, func() (bool, error) { return q.mgr.Empty(cctx, prove) })
 	if !ok {
 		return check{"cleanup", resultFail, fmt.Sprintf("%s; the control group of %s could not be proven empty (last error: %v)", note, q.unit, err)}
 	}

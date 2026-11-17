@@ -13,7 +13,11 @@
 // populated; after 2 s SIGKILL empties it; Empty is then true and the unit is
 // not loaded. It prints one JSON report with a line per check and an overall
 // verdict, and exits non-zero when any check fails. It always cleans up its
-// own unit (SIGKILL), and reports when it could not prove the group empty.
+// own unit and says what it did: it sends SIGKILL only to a unit whose
+// description is this run's own epoch and intent (a unit of that name with
+// another description is left alone and reported), waits for the unit's
+// invocation id before it signals, reports "not sent" when nothing was sent,
+// and reports when it could not prove the group empty.
 //
 // What it does not prove. A passing run says that these checks held once, on
 // this host, for this unit, at this systemd version; it is not a

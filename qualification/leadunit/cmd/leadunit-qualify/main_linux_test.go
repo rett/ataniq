@@ -87,6 +87,7 @@ func TestDryRunPrintsThePlanAndTouchesNothing(t *testing.T) {
 			"ataniq-qualify-<random>.service",
 			"child --ignore-term",
 			"a second start with the same name is refused",
+			"never a unit whose description is not this run's",
 			"SIGTERM to the child, which ignores it, leaves the control group populated",
 			"wait 2 s, send SIGKILL",
 			"Empty becomes true and the unit is not loaded",

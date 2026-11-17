@@ -121,7 +121,8 @@ With --run --state-dir %s it would:
   6. check: Inspect matches the start
   7. check: SIGTERM to the child, which ignores it, leaves the control group populated
   8. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
-  9. always clean up: SIGKILL its own unit and report if the group could not be proven empty
+  9. always clean up: SIGKILL its own unit (never a unit whose description is not this run's
+     intent) and report what was and was not sent and whether the group was proven empty
  10. print one JSON report with a line per check and a verdict; exit non-zero on any failure
 Not attempted: a lost start reply.
 `, dir, dir, dir, dir)
