@@ -196,6 +196,9 @@ func TestVerifyMutations(t *testing.T) {
 		{"a read-only source in the requests folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/requests/qargi"
 		}},
+		{"a read-only source in the records folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/qargi/install"
+		}},
 		{"a read-only source in the mail folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--ro-bind", "/state/mailbox/arc-lead")+1] = "/state/leads/arc-lead/mail/a-feature"
 		}},

@@ -103,14 +103,14 @@ type Inputs struct {
 	// QargiInstall is the Qargi install, bound at QargiInside.
 	QargiInstall string
 
-	// QargiRecords is the lead's working Qargi records (optional): the host
-	// folder and the inside path it is bound at, read-write. When present the
-	// host folder must be Layout.QargiRecords, <state>/leads/<role>/qargi: below
-	// the lead's own state folder, so that every rule about another lead's
-	// state covers it (a folder the lead writes at any other place could be,
-	// or lie above, a source that another lead's sandbox binds). The inside
-	// path is the caller's, under the rules below.
-	QargiRecords       string
+	// QargiRecordsInside is the inside path the lead's working Qargi records
+	// are bound at, read-write: the path Qargi's layout names. It is
+	// required, and the caller gives it, under the rules of checkRecords. The
+	// host folder is not an input: it is Layout.QargiRecords,
+	// <state>/leads/<role>/qargi, below the lead's own state folder, so that
+	// every rule about another lead's state covers it (a folder the lead
+	// writes at any other place could be, or lie above, a source that another
+	// lead's sandbox binds).
 	QargiRecordsInside string
 
 	// AssignmentDir and ProjectionDir are written outside the sandbox and
@@ -320,23 +320,13 @@ func (in Inputs) checkManaged() error {
 	return nil
 }
 
+// checkRecords checks the inside path of the Qargi records, which every lead
+// has and the caller names. The host folder is the layout's own and no input
+// (rule G1 holds across leads only if every folder a lead writes lies in that
+// lead's own state: the other leads' checks refuse a source in or above it).
 func (in Inputs) checkRecords() error {
-	if in.QargiRecords == "" && in.QargiRecordsInside == "" {
-		return nil
-	}
-	if err := CheckPath("Qargi records folder", in.QargiRecords); err != nil {
-		return err
-	}
 	if err := CheckPath("Qargi records inside path", in.QargiRecordsInside); err != nil {
 		return err
-	}
-	// Rule G1 holds across leads only if every folder a lead writes lies in
-	// that lead's own state: the other leads' checks refuse a source in or
-	// above it. A records folder at any other place could be, or lie above, a
-	// read-only source of another lead (its agent, its probe, its spec), and
-	// the lead that writes it could plant a link there.
-	if want := in.Layout().QargiRecords(); in.QargiRecords != want {
-		return refuse("Qargi records folder", "must be %s (Layout.QargiRecords): a folder the lead writes anywhere else could be, or lie above, a source another lead's sandbox binds (rule G1)", want)
 	}
 	// The digest is independent of the project and of the host: it replaces
 	// the project only in the rows it builds itself, so a caller-given path

@@ -41,7 +41,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 	f.home, f.tree = l.Home(), l.Tree()
 	f.gitMeta = l.GitMeta()
 	f.cfg, _ = l.ConfigDir(rt)
-	for _, d := range []string{f.home, f.cfg, f.tree, l.Requests(), l.Mail(), l.Mailbox(), l.Published()} {
+	for _, d := range []string{f.home, f.cfg, f.tree, l.QargiRecords(), l.Requests(), l.Mail(), l.Mailbox(), l.Published()} {
 		f.mkdir(d, 0o700)
 	}
 	f.mkdir(f.out, 0o755)
@@ -75,6 +75,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 		GitIdentityDir:        filepath.Dir(own("git/config", false)),
 		GitMeta:               l.GitMeta(),
 		QargiInstall:          own("qargi", true),
+		QargiRecordsInside:    "/ataniq/records", // outside the home: no mount point of its own
 		AssignmentDir:         own("assignment", true),
 		ProjectionDir:         own("projection", true),
 		ResolvConf:            own("resolv.conf", false),
@@ -97,6 +98,16 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 
 // layout is the host layout of the fixture's lead.
 func (f *fixture) layout() profile.Layout { return f.in.Layout() }
+
+// list is List for the fixture's inputs.
+func (f *fixture) list() []Point {
+	f.t.Helper()
+	pts, err := List(f.in)
+	if err != nil {
+		f.t.Fatalf("List: %v", err)
+	}
+	return pts
+}
 
 func (f *fixture) mkdir(p string, mode os.FileMode) {
 	f.t.Helper()

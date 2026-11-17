@@ -42,6 +42,7 @@ var goldenRows = []string{
 	"ro-bind /work/ataniq/.git/info src=git-meta writable-in=/work/ataniq",
 	"ro-bind /ataniq/mirror/ataniq.git src=mirror",
 	"ro-bind /ataniq/qargi src=qargi",
+	"rw-bind /home/lead/.qargi src=qargi-records writable-in=/home/lead",
 	"rw-bind /ataniq/requests src=requests",
 	"ro-bind /ataniq/mailbox src=mailbox",
 	"rw-bind /ataniq/mail src=mail",
@@ -112,6 +113,7 @@ func TestBindTableSourcesAndAccess(t *testing.T) {
 		{"/work/ataniq/.git/info", "/srv/state/leads/arc-lead/gitmeta/info", KindRoBind, true},
 		{"/ataniq/mirror/ataniq.git", "/srv/state/mirrors/ataniq.git", KindRoBind, true},
 		{"/ataniq/qargi", in.QargiInstall, KindRoBind, true},
+		{"/home/lead/.qargi", "/srv/state/leads/arc-lead/qargi", KindRwBind, true},
 		{"/ataniq/requests", "/srv/state/leads/arc-lead/requests", KindRwBind, true},
 		{"/ataniq/mailbox", "/srv/state/mailbox/arc-lead", KindRoBind, true},
 		{"/ataniq/mail", "/srv/state/leads/arc-lead/mail", KindRwBind, true},
@@ -161,8 +163,6 @@ func TestLeadWritableFlags(t *testing.T) {
 		{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 		{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 	}
-	in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
-	in.QargiRecordsInside = "/home/lead/.qargi"
 	table := mustBinds(t, in)
 	flagged := map[string]string{}
 	for _, b := range table {
@@ -209,15 +209,20 @@ func TestLeadWritableFlags(t *testing.T) {
 	}
 }
 
-func TestOptionalRecordsOutsideTheHome(t *testing.T) {
+// The records are bound at the inside path the caller gives: outside the home
+// the row has no mount point in a folder the lead writes.
+func TestRecordsOutsideTheHome(t *testing.T) {
 	in := fixture(Codex)
-	in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
 	in.QargiRecordsInside = "/ataniq/records"
 	table := mustBinds(t, in)
 	for _, b := range table {
+		if b.Inside == "/home/lead/.qargi" {
+			t.Errorf("the fixture's inside path is still bound: %+v", b)
+		}
 		if b.Inside == "/ataniq/records" {
-			if b.Kind != KindRwBind || b.LeadWritable || b.SourceRole != RoleRecords {
-				t.Errorf("records row = %+v", b)
+			want := Bind{Kind: KindRwBind, Inside: "/ataniq/records", Source: "/srv/state/leads/arc-lead/qargi", SourceRole: RoleRecords, IsDir: true}
+			if b != want {
+				t.Errorf("records row = %+v, want %+v", b, want)
 			}
 			return
 		}
@@ -384,8 +389,6 @@ func TestReadOnlyOverBindsFollowTheirReadWriteParent(t *testing.T) {
 	for _, rt := range Runtimes() {
 		in := fixture(rt)
 		in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/srv/owned/p/envrc"}}
-		in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
-		in.QargiRecordsInside = "/home/lead/.qargi"
 		table := mustBinds(t, in)
 		pos := map[string]int{}
 		for i, b := range table {
@@ -446,8 +449,7 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 			{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 			{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 		}
-		in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
-		in.QargiRecordsInside = "/home/lead/.qargi"
+		in.QargiRecordsInside = "/ataniq/records"
 		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": in} {
 			table := mustBinds(t, in)
 			var writable []Bind
@@ -456,10 +458,10 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 					writable = append(writable, b)
 				}
 			}
-			// The home, the config folder, the tree, the requests and the
-			// mail folder; with the records, six.
-			if want := map[string]int{"plain": 5, "full": 6}[name]; len(writable) != want {
-				t.Fatalf("%s %s: %d read-write rows, want %d", rt, name, len(writable), want)
+			// The home, the config folder, the tree, the records, the
+			// requests and the mail folder.
+			if len(writable) != 6 {
+				t.Fatalf("%s %s: %d read-write rows, want 6", rt, name, len(writable))
 			}
 			for _, b := range table {
 				if b.Source == "" {
@@ -514,9 +516,7 @@ func TestGitRowsTakeTheirSourcesFromTheGitMetaFolder(t *testing.T) {
 }
 
 func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
-	withRecords := fixture(Claude)
-	withRecords.QargiRecords, withRecords.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
-	good := mustBinds(t, withRecords)
+	good := mustBinds(t, fixture(Claude))
 	index := func(inside string) int {
 		for i, b := range good {
 			if b.Inside == inside {

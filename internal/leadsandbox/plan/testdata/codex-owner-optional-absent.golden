@@ -58,6 +58,7 @@
 --ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
 --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
 --ro-bind /opt/ataniq/qargi /ataniq/qargi
+--bind /state/leads/arc-lead/qargi /home/lead/.qargi
 --bind /state/leads/arc-lead/requests /ataniq/requests
 --ro-bind /state/mailbox/arc-lead /ataniq/mailbox
 --bind /state/leads/arc-lead/mail /ataniq/mail
@@ -117,6 +118,7 @@ ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
 ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
 ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
 ro-bind /ataniq/qargi /opt/ataniq/qargi
+rw-bind /home/lead/.qargi /state/leads/arc-lead/qargi
 rw-bind /ataniq/requests /state/leads/arc-lead/requests
 ro-bind /ataniq/mailbox /state/mailbox/arc-lead
 rw-bind /ataniq/mail /state/leads/arc-lead/mail
@@ -126,7 +128,7 @@ ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-afeecef2591c6754d006e1307010090bdb7c79d76dcbd352a69719f5f04b2cdc
+a6b450e102cb7dc22af8d9c51ee740e26f85e5829c4b42c38b86d74951959bab
 # workdir
 /home/lead
 # set-controlling-terminal

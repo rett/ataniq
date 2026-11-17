@@ -54,14 +54,14 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "2a18e7478c57d5894d07a94804fffd613dba4e9b264f7f65f8454a64acfeff28"
-	goldenCodex  = "d14656fb5c5be4ed3f0fbbf31a0d5f3a268dcefb13cd61d1545f6aa5212c217e"
+	goldenClaude = "2cd0df4fb5cb55e28954e3a07173ad49a627489a363aea4d5860c1f39ba3858f"
+	goldenCodex  = "d303f0857fe4d836ba2e55d9933986f602b6f64f3cf2eec2a11e04181b5f443a"
 )
 
 func TestVersionIsFour(t *testing.T) {
 	// The layout of the lead-hosting design, revision 4: the requests,
-	// mailbox, mail and coordinator rows are in every table, and the git
-	// identity is bound as its folder.
+	// mailbox, mail and coordinator rows and the records row are in every
+	// table, and the git identity is bound as its folder.
 	if Version != 4 {
 		t.Errorf("Version = %d, want 4", Version)
 	}
@@ -149,9 +149,8 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 		{"a seccomp file", withSeccomp(strings.Repeat("a", 64))},
 		{"an extra placeholder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc"}} }},
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
-		{"the Qargi records", func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
-		}},
+		{"the inside path of the Qargi records", func(in *Inputs) { in.QargiRecordsInside = "/ataniq/records" }},
+		{"another inside path of the Qargi records", func(in *Inputs) { in.QargiRecordsInside = "/home/lead/.local/qargi" }},
 		{"an environment name", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}} }},
 		{"the managed-settings digest", func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("d", 64) }},
 		{"PATH", func(in *Inputs) { in.Path = "/home/lead/.local/bin:/usr/bin" }},
@@ -353,13 +352,43 @@ func TestDefinitionHoldsNoHostPath(t *testing.T) {
 
 func TestDigestWithRecordsIsIndependentOfTheProject(t *testing.T) {
 	for _, rt := range Runtimes() {
-		a, b := fixture(rt), fixture(rt)
-		for _, in := range []*Inputs{&a, &b} {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
+		for _, inside := range []string{"/home/lead/.qargi", "/ataniq/records"} {
+			a, b := fixture(rt), fixture(rt)
+			a.QargiRecordsInside, b.QargiRecordsInside = inside, inside
+			b.Project = "another-project"
+			if mustDigest(t, a) != mustDigest(t, b) {
+				t.Errorf("%s: two projects, two digests, with the records at %s", rt, inside)
+			}
 		}
-		b.Project = "another-project"
-		if mustDigest(t, a) != mustDigest(t, b) {
-			t.Errorf("%s: two projects, two digests, with records", rt)
+	}
+}
+
+// Every lead has the records row: it is in the table and in the digest for both
+// runtimes, from the layout's folder, at the inside path the caller gives.
+func TestTheRecordsRowIsInEveryTableAndDigest(t *testing.T) {
+	for _, rt := range Runtimes() {
+		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": fullInputs(rt)} {
+			def := in.definition()
+			n, at := 0, -1
+			for i, b := range def.Binds {
+				if b.SourceRole == RoleRecords {
+					n++
+					at = i
+				}
+			}
+			if n != 1 || def.Binds[at].Inside != in.QargiRecordsInside || def.Binds[at].Kind != KindRwBind {
+				t.Fatalf("%s %s: %d records rows in the definition", rt, name, n)
+			}
+			for _, b := range mustBinds(t, in) {
+				if b.SourceRole == RoleRecords && b.Source != "/srv/state/leads/arc-lead/qargi" {
+					t.Errorf("%s %s: the records row comes from %s", rt, name, b.Source)
+				}
+			}
+			base := def.digest()
+			def.Binds = append(def.Binds[:at:at], def.Binds[at+1:]...)
+			if def.digest() == base {
+				t.Errorf("%s %s: the digest is the same without the records row", rt, name)
+			}
 		}
 	}
 }
@@ -489,14 +518,14 @@ func TestDigestIsIndependentOfThePlaceholderOrder(t *testing.T) {
 	}
 }
 
-// fullInputs are the fixture with every optional input given: the owner
-// identity, a seccomp file, the Qargi records, extra placeholders and an
-// extra variable.
+// fullInputs are the fixture with every optional input given (the owner
+// identity, a seccomp file, extra placeholders and an extra variable) and the
+// Qargi records at another inside path, outside the home.
 func fullInputs(rt Runtime) Inputs {
 	in := fixture(rt)
 	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
 	in.SeccompFile, in.SeccompSHA256 = "/srv/owned/seccomp/reviewed.bpf", strings.Repeat("ab", 32)
-	in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
+	in.QargiRecordsInside = "/ataniq/records"
 	in.ExtraPlaceholders = []Placeholder{
 		{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 		{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},

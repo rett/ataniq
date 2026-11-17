@@ -36,11 +36,12 @@ type hostFacts struct {
 
 // checkHost looks at the host for what the configuration names, before
 // anything is created: the campaign folder (a 0700 folder of the caller), the
-// state root and the campaign as real paths, the optional records folder, the
-// git identity file in its folder, the three executables (regular, not group-
-// or other-writable, hashed from the open descriptor), the seccomp file and
-// its digest, and the digest of the managed-settings file. The state folders of the lead are checked by the
-// mountpoints package; nothing here reads a lead-writable folder.
+// state root and the campaign as real paths, the records folder, the git
+// identity file in its folder, the three executables (regular, not group- or
+// other-writable, hashed from the open descriptor), the seccomp file and its
+// digest, and the digest of the managed-settings file. The state folders of
+// the lead are checked by the mountpoints package; nothing here reads a
+// lead-writable folder.
 func checkHost(c *Config) (*hostFacts, error) {
 	if err := ownedPrivateDir("campaign", c.Campaign, true); err != nil {
 		return nil, err
@@ -48,14 +49,12 @@ func checkHost(c *Config) (*hostFacts, error) {
 	if err := realDir("state root", c.State.Root); err != nil {
 		return nil, err
 	}
-	if c.Sources.QargiRecordsInside != "" {
-		// The records folder lies below the state root, and the mountpoints
-		// package looks every folder of the lead up from the state root
-		// without following a link; its mode and owner are not checked there,
-		// so the harness does, and also refuses a link anywhere in its path.
-		if err := ownedPrivateDir("records folder (sources.qargi_records_inside)", c.layout().QargiRecords(), true); err != nil {
-			return nil, err
-		}
+	// The records folder, which every lead has, lies below the state root. The
+	// mountpoints package looks at it with the lead's other folders (the
+	// own-clone step); the harness looks first, before anything is created, and
+	// refuses a link anywhere in its path.
+	if err := ownedPrivateDir("records folder (sources.qargi_records_inside)", c.layout().QargiRecords(), true); err != nil {
+		return nil, err
 	}
 	// The git identity is bound as its folder, so the resolution of the
 	// sources looks at the folder only: the file GIT_CONFIG_GLOBAL names must

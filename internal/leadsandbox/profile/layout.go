@@ -24,8 +24,8 @@ const DirMode = 0o700
 // holder, the holder's own state. home, the config folder of the runtime,
 // tree, qargi, requests and mail are bound read-write, each as a whole, so the
 // lead writes them. gitmeta is Ataniq's copy of the tree's protected git files
-// (see GitMeta); qargi is the lead's working Qargi records, when the inputs
-// name them (see QargiRecords). The mailbox and the published folder lie
+// (see GitMeta); qargi is the lead's working Qargi records (see
+// QargiRecords). The mailbox and the published folder lie
 // outside the lead's folder and are bound read-only. The coordinators' trees
 // and homes (CoordsDir) and their shared login (CoordLoginDir) lie under the
 // same state root and are never bound into a lead's sandbox. Every folder has
@@ -98,10 +98,11 @@ const (
 func (l Layout) GitMeta() string { return path.Join(l.LeadDir(), "gitmeta") }
 
 // QargiRecords is the host folder of the lead's working Qargi records:
-// <state>/leads/<role>/qargi. It is the one folder the lead writes that is not
-// the home, the config folder or the tree, and it lies in the lead's own state
-// folder like them, so that the profile's rules about another lead's state
-// cover it. Inputs.QargiRecords, when present, must be this path.
+// <state>/leads/<role>/qargi. Every lead has it, bound read-write at the
+// inside path the inputs give (Inputs.QargiRecordsInside). It lies in the
+// lead's own state folder like the other folders the lead writes, so that the
+// profile's rules about another lead's state cover it. It is no input: a
+// caller cannot name another folder.
 func (l Layout) QargiRecords() string { return path.Join(l.LeadDir(), "qargi") }
 
 // Requests is the host folder bound read-write at RequestsInside:

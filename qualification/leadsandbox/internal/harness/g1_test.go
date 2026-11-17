@@ -716,18 +716,18 @@ func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G2"} }), "not an automated case")
 }
 
-// The lead's working Qargi records, when the configuration names an inside
-// path for them, are the layout's own folder (rule G1 across leads): the
-// configuration has no key for the host folder.
+// The lead's working Qargi records are bound for every lead, from the layout's
+// own folder (rule G1 across leads): the configuration has no key for the host
+// folder, and it must name the inside path, for which nothing knows a default.
 func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	f.Mkdir(f.Base+"/elsewhere", 0o700)
 	for _, value := range []string{f.Base + "/elsewhere", f.Layout().QargiRecords(), ""} {
 		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records"] = value }), `sources has the unknown key "qargi_records"`)
 	}
+	refused(t, f, mutate(t, f, func(m map[string]any) { delete(sub(m, "sources"), "qargi_records_inside") }), "Qargi records inside path")
+	refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records_inside"] = "" }), "Qargi records inside path")
 
-	f.Mkdir(f.Layout().QargiRecords(), 0o700)
-	f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 	approved(f)
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
 	mustNoErr(t, r)

@@ -164,9 +164,9 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 		ro(mirrorInside, l.Mirror(), RoleMirror, true),
 		ro(QargiInside, in.QargiInstall, RoleQargi, true),
 	)
-	if in.QargiRecords != "" {
-		t = append(t, rw(in.QargiRecordsInside, in.QargiRecords, RoleRecords))
-	}
+	// The lead's working Qargi records: the layout's folder, at the inside
+	// path the caller gives (the path Qargi's layout names).
+	t = append(t, rw(in.QargiRecordsInside, l.QargiRecords(), RoleRecords))
 	// The four folders of the lead's requests, mailbox, mail and of what the
 	// project's coordinators publish. A bind cannot be added to a running
 	// sandbox, so they are rows of every table, whether or not the lead has

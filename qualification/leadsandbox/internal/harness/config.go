@@ -118,10 +118,11 @@ type Executables struct {
 
 // State is the scratch state root and the role and project under it. The
 // folders of the layout below the root have no key (profile.Layout names
-// them): the lead's home, config folder, tree, requests folder and mail folder
-// under leads/<role>, the lead's mailbox mailbox/<role>, the folder the
-// project's coordinators publish under, pub/<project>, and the mirror. They
-// must exist before a run; the plan binds them for every lead.
+// them): the lead's home, config folder, tree, records folder (qargi),
+// requests folder and mail folder under leads/<role>, the lead's mailbox
+// mailbox/<role>, the folder the project's coordinators publish under,
+// pub/<project>, and the mirror. They must exist before a run; the plan binds
+// them for every lead.
 type State struct {
 	Root    string `json:"root"`
 	Role    string `json:"role"`
@@ -151,12 +152,14 @@ type Sources struct {
 	QargiInstall   string `json:"qargi_install"`
 
 	// QargiRecordsInside is where the lead's working Qargi records appear
-	// inside; absent means there are none. The host folder is not a key: it is
-	// the layout's own, <state root>/leads/<role>/qargi (rule G1: a folder
-	// the lead writes at any other place could be, or lie above, a source of
-	// another lead). It must exist, as a real folder of mode 0700 owned by the
-	// caller, like the lead's home.
-	QargiRecordsInside string `json:"qargi_records_inside,omitempty"`
+	// inside: the path Qargi's layout names. It is required, because every
+	// lead has the records and nothing here knows a default for the path. The
+	// host folder is not a key: it is the layout's own,
+	// <state root>/leads/<role>/qargi (rule G1: a folder the lead writes at
+	// any other place could be, or lie above, a source of another lead). It
+	// must exist, as a real folder of mode 0700 owned by the caller, like the
+	// lead's home.
+	QargiRecordsInside string `json:"qargi_records_inside"`
 
 	AssignmentDir string `json:"assignment_dir"`
 	ProjectionDir string `json:"projection_dir"`
@@ -442,9 +445,6 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		in.OwnerUID, in.OwnerGID, in.OwnerUser = uint32(os.Getuid()), uint32(os.Getgid()), c.OwnerUser
 	} else if c.OwnerUser != "" {
 		return profile.Inputs{}, configErr("owner_user", "is given for the %q identity only", profile.IdentityOwner)
-	}
-	if c.Sources.QargiRecordsInside != "" {
-		in.QargiRecords = c.layout().QargiRecords()
 	}
 	if s := c.Sources.Seccomp; s != nil {
 		in.SeccompFile, in.SeccompSHA256 = s.File, s.SHA256

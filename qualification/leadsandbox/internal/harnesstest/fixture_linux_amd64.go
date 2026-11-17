@@ -52,7 +52,7 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 		Role: "qual-lead", Project: "qualproj", Runtime: rt, Resolv: "nameserver 192.0.2.53\n", Sysctl: "0\n"}
 	l := profile.Layout{StateRoot: f.State, Role: f.Role, Project: f.Project}
 	cfgDir, _ := l.ConfigDir(rt)
-	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree(), l.Requests(), l.Mail()} {
+	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree(), l.QargiRecords(), l.Requests(), l.Mail()} {
 		f.Mkdir(d, 0o700)
 	}
 	// The lead's mailbox and the folder the project's coordinators publish
@@ -95,7 +95,9 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 			ManagedMarker: "qargi-guard",
 			LeadSkills:    own("skills", true), InstructionFile: own("instructions/"+rt.InstructionFileName(), false),
 			GitIdentityDir: filepath.Dir(own("git/"+profile.GitIdentityFileName, false)), QargiInstall: own("qargi", true),
-			AssignmentDir: own("assignment", true), ProjectionDir: own("projection", true),
+			// Outside the home, so the records add no mount point to make.
+			QargiRecordsInside: "/ataniq/records",
+			AssignmentDir:      own("assignment", true), ProjectionDir: own("projection", true),
 		},
 		NeverMounted:     []string{f.Base + "/owner/work", f.Base + "/owner/.claude", f.Base + "/owner/.codex", f.Base + "/owner/.ssh"},
 		ProviderHost:     "api.example.test",

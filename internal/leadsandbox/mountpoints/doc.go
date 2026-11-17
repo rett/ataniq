@@ -31,10 +31,10 @@
 //     nothing, and returns every problem it finds, typed and bounded.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
 //     worktree, submodule or folder below another repository, and that the
-//     tree, home, config folder, requests folder and mail folder are 0700
-//     folders of the caller's user. A tree whose .git names alternates
-//     (objects of another repository) is refused. The file .git/config is not
-//     parsed.
+//     tree, home, config folder, records folder, requests folder and mail
+//     folder are 0700 folders of the caller's user. A tree whose .git names
+//     alternates (objects of another repository) is refused. The file
+//     .git/config is not parsed.
 //   - [CheckBindSources] takes the rows [ResolveSources] gave and opens, for
 //     each, the path bubblewrap will bind from the root of the file system with
 //     openat2 (no symbolic link, no magic link, on any component), refusing a
@@ -159,13 +159,13 @@
 //     the holder can compare it with the source of the matching mount of the
 //     plan. The probe's assertions from inside the sandbox stay the final
 //     check.
-//  4. Know the limits of the records folder. The profile requires it to be
-//     [profile.Layout.QargiRecords], <state>/leads/<role>/qargi, so the lookup
-//     from the state root without links covers every component of its path.
-//     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
-//     the home, the config folder, the requests folder and the mail folder
-//     only): the holder must make the folder with mode 0700 and check it, as it
-//     does for the other folders. The mailbox and the published folder, which
+//  4. Make the folders the lead writes, and know what is looked at. Every
+//     lead has the records folder, [profile.Layout.QargiRecords],
+//     <state>/leads/<role>/qargi, the requests folder and the mail folder, all
+//     below the state root, so the lookup from the state root without links
+//     covers every component of their paths. The holder makes them with mode
+//     0700; [CheckOwnClone] checks their mode and owner with the tree, the
+//     home and the config folder. The mailbox and the published folder, which
 //     are bound read-only, are sources like any other: [ResolveSources] and
 //     [CheckBindSources] look at their paths, and nothing here looks at their
 //     mode, owner or content.

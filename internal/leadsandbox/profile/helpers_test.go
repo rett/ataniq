@@ -27,6 +27,7 @@ func fixture(rt Runtime) Inputs {
 		GitIdentityDir:        "/srv/owned/git/arc-lead",
 		GitMeta:               "/srv/state/leads/arc-lead/gitmeta",
 		QargiInstall:          "/srv/owned/qargi",
+		QargiRecordsInside:    "/home/lead/.qargi",
 		AssignmentDir:         "/srv/owned/assignment/ataniq",
 		ProjectionDir:         "/srv/owned/projection/ataniq",
 		ResolvConf:            "/srv/owned/resolv/arc-lead/resolv.conf",

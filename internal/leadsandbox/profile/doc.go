@@ -63,10 +63,16 @@
 // is kept for the targets: the mount points of these three rows still lie in
 // the tree, and Ataniq still makes them there before the first run.
 //
-// # The requests, mailbox, mail and coordinator rows
+// # The records, requests, mailbox, mail and coordinator rows
 //
-// Every table has four rows whose sources are the layout's, not the caller's
-// (the lead-hosting design, revision 4, section 3.3):
+// Every table has the row of the lead's working Qargi records: read-write,
+// from [Layout.QargiRecords], <state>/leads/<role>/qargi, at the inside path
+// the caller gives ([Inputs.QargiRecordsInside], required: Qargi's layout
+// names it, and the package knows no default). The host folder is the
+// layout's and no input.
+//
+// Every table also has four rows whose sources are the layout's, not the
+// caller's (the lead-hosting design, revision 4, section 3.3):
 //
 //   - [RequestsInside], /ataniq/requests, read-write, from [Layout.Requests],
 //     <state>/leads/<role>/requests. In this version it is only a bound
