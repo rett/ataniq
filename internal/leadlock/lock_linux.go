@@ -88,7 +88,7 @@ func Acquire(path string) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("leadlock: create folder: %w", err)
 	}
-	fd, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+	fd, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +106,12 @@ func Acquire(path string) (*Lock, error) {
 	}
 	if err := checkFile(path, &st, uint32(os.Geteuid())); err != nil {
 		return nil, err
+	}
+	// O_NONBLOCK only kept the open from blocking on a device or FIFO. The
+	// file is regular now; clear the flag so it is not shared with whoever
+	// receives the descriptor.
+	if err := unix.SetNonblock(fd, false); err != nil {
+		return nil, fmt.Errorf("leadlock: clear nonblock %s: %w", path, err)
 	}
 
 	err = retry(func() error { return unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB) })
@@ -181,7 +187,7 @@ func (l *Lock) Release() error {
 // the socket), never by this value. It returns [ErrNoHolder] when the file
 // holds no decimal pid.
 func ReadHolder(path string) (pid int, err error) {
-	fd, err := openNoFollow(path, unix.O_RDONLY, 0)
+	fd, err := openNoFollow(path, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +212,9 @@ func ReadHolder(path string) (pid int, err error) {
 }
 
 // openNoFollow opens path with O_NOFOLLOW, O_CLOEXEC and O_NOCTTY and maps
-// the errors that mean an unsafe target to ErrUnsafeFile.
+// the errors that mean an unsafe target to ErrUnsafeFile. Callers add
+// O_NONBLOCK so that opening a FIFO or device cannot block before the type
+// check; it has no effect on reads or writes of a regular file.
 func openNoFollow(path string, flags int, mode uint32) (int, error) {
 	var fd int
 	err := retry(func() (e error) {

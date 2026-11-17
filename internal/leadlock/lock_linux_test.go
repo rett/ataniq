@@ -405,3 +405,50 @@ func TestUnlinkedFileGivesFreshLock(t *testing.T) {
 	}
 	l2.Release()
 }
+
+// ReadHolder on a FIFO with no writer returns an error and does not block in
+// open(2).
+func TestReadHolderFIFODoesNotBlock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fifo.lock")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReadHolder(p)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUnsafeFile) {
+			t.Fatalf("ReadHolder on a FIFO: %v, want ErrUnsafeFile", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadHolder blocked on a FIFO")
+	}
+}
+
+// Acquire opens with O_NONBLOCK so a FIFO or device cannot block it, and
+// clears the flag once the file is known to be regular, so the descriptor
+// handed on does not carry it.
+func TestAcquireClearsNonblock(t *testing.T) {
+	l, err := Acquire(lockPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	rc, err := l.File().SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flags int
+	var ferr error
+	if err := rc.Control(func(fd uintptr) {
+		flags, ferr = unix.FcntlInt(fd, unix.F_GETFL, 0)
+	}); err != nil || ferr != nil {
+		t.Fatalf("fcntl: %v %v", err, ferr)
+	}
+	if flags&unix.O_NONBLOCK != 0 {
+		t.Fatalf("lock descriptor still O_NONBLOCK (flags %#x)", flags)
+	}
+}
