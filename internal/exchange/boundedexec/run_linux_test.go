@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -907,5 +908,40 @@ func TestStdinWriteErrorIsNotAnError(t *testing.T) {
 	res, err, _ := within(t, hardLimit, c)
 	if err != nil || string(res.Stdout) != "done\n" {
 		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+}
+
+func TestWatchdogErrorWhileTheLoopIsSlowAfterTheExitCannotWin(t *testing.T) {
+	t.Parallel()
+	// The command ends by itself. Run's loop is held up right after it saw
+	// the exit, and the watchdog fails in that gap. The leader had ended
+	// already, so the watchdog must not be the cause.
+	var failing, returned = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	c := script("echo done")
+	c.WatchInterval = 10 * time.Millisecond
+	c.Watch = func() error {
+		select {
+		case <-failing:
+			defer once.Do(func() { close(returned) })
+			return errors.New("lease lost")
+		default:
+			return nil
+		}
+	}
+	c.testAfterExit = func() {
+		close(failing)
+		select {
+		case <-returned:
+		case <-time.After(2 * time.Second):
+		}
+		time.Sleep(50 * time.Millisecond) // let stopWatch run
+	}
+	res, err, _ := within(t, hardLimit, c)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if string(res.Stdout) != "done\n" || res.Exit != 0 {
+		t.Errorf("%q exit %d", res.Stdout, res.Exit)
 	}
 }

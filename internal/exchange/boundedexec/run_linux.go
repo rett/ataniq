@@ -132,6 +132,13 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 	// exited closes when the leader has ended but is not yet reaped. A
 	// zombie keeps its process group id reserved, so signalling the group
 	// until cmd.Wait has run cannot reach an unrelated process.
+	//
+	// The goroutine that takes the exit seals the watchdog in the same step,
+	// before it closes exited: from then on a watchdog error cannot become
+	// the cause, however late the run loop gets to it. What remains is the
+	// time between the kernel ending the leader and Waitid returning, and an
+	// error recorded before that. The exit and the error really are
+	// concurrent then, and the first one recorded wins.
 	exited := make(chan struct{})
 	go func() {
 		defer close(exited)
@@ -139,6 +146,7 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		for {
 			err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
 			if !errors.Is(err, unix.EINTR) {
+				st.sealWatch()
 				return
 			}
 		}
@@ -169,12 +177,14 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		killGroup()
 	}
 	<-exited
-	// The leader has ended. No watchdog call starts from here on, and one
-	// that is already running cannot make itself the cause: draining the
-	// pipes can take a while, and the command was not stopped by the
-	// watchdog.
+	if c.testAfterExit != nil {
+		c.testAfterExit()
+	}
+	// The leader has ended and the watchdog is sealed (see exited). No
+	// watchdog call starts from here on, and one that is already running
+	// cannot make itself the cause: draining the pipes can take a while, and
+	// the command was not stopped by the watchdog.
 	close(done)
-	st.sealWatch()
 	// Whatever else is in the leader's group goes too, so no background
 	// process outlives the run.
 	killGroup()
