@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"ataniq/internal/pidfd"
+	"ataniq/internal/systemd"
 )
 
 const entryPolicyProperties = "Id,LoadState,ActiveState,Job,InvocationID,ControlGroup,ManagedOOMSwap,ManagedOOMMemoryPressure,OOMRules"
@@ -77,10 +78,7 @@ type entrySnapshot struct {
 
 const entryPolicyResult = "no applicable configured oomd kill policy observed"
 
-func entryManagerEnvironment() []string {
-	runtime := "/run/user/" + strconv.Itoa(os.Getuid())
-	return []string{"LANG=C", "LC_ALL=C", "HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + runtime, "DBUS_SESSION_BUS_ADDRESS=unix:path=" + runtime + "/bus"}
-}
+func entryManagerEnvironment() []string { return systemd.UserManagerEnvironment() }
 
 // Only readable kernel metadata is required for manager identity. In particular
 // PID 1's exe and namespace links need not be accessible to the qualifying user.

@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"ataniq/internal/pidfd"
+	"ataniq/internal/systemd"
 )
 
 func kernelRead(path string, cap int64) ([]byte, error) {
@@ -179,52 +179,9 @@ func originalEnded(start uint64, stat string) (bool, error) {
 	return pidfd.OriginalEnded(start, stat)
 }
 
-func boundary(path string) (Boundary, error) {
-	if !strings.HasPrefix(path, "/") || filepath.Clean(path) != path || path == "/" || strings.ContainsAny(path, "\x00\n\r") {
-		return Boundary{}, errors.New("invalid cgroup path")
-	}
-	f, err := openAbsolute("/sys/fs/cgroup"+path, syscall.O_RDONLY|syscall.O_DIRECTORY)
-	if err != nil {
-		return Boundary{}, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return Boundary{}, err
-	}
-	return Boundary{path, identity(fi)}, nil
-}
+func boundary(path string) (Boundary, error) { return systemd.BoundaryOf(path) }
 
-func populated(want Boundary) (bool, error) {
-	before, err := boundary(want.Path)
-	if err != nil || before != want {
-		return false, errors.New("cgroup identity missing or changed")
-	}
-	b, err := kernelRead("/sys/fs/cgroup"+want.Path+"/cgroup.events", 4096)
-	if err != nil {
-		return false, err
-	}
-	seen := false
-	value := false
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		f := strings.Fields(line)
-		if len(f) != 2 {
-			return false, errors.New("invalid cgroup events")
-		}
-		if f[0] == "populated" {
-			if seen || f[1] != "0" && f[1] != "1" {
-				return false, errors.New("invalid populated value")
-			}
-			seen = true
-			value = f[1] == "1"
-		}
-	}
-	after, err := boundary(want.Path)
-	if err != nil || after != want || !seen {
-		return false, errors.New("unproved boundary population")
-	}
-	return value, nil
-}
+func populated(want Boundary) (bool, error) { return systemd.Populated(want) }
 
 func helperIn(want Boundary, exe FileIdentity) (Process, error) {
 	b, err := kernelRead("/sys/fs/cgroup"+want.Path+"/cgroup.procs", 8192)

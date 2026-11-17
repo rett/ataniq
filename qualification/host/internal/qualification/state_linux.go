@@ -13,12 +13,13 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"ataniq/internal/systemd"
 )
 
-type Boundary struct {
-	Path     string       `json:"path"`
-	Identity FileIdentity `json:"identity"`
-}
+// Boundary is the generic control-group identity; the alias keeps the JSON
+// shape of state files and reports.
+type Boundary = systemd.Boundary
 
 type Process struct {
 	Boot       string                  `json:"boot"`
