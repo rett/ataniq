@@ -56,7 +56,13 @@ Patches, applied in this order to the files of the module as released:
    whose parameters are over `MaxLinkParams` (256) bytes is now dropped: the
    pen gets no link, as if the link had been closed, and
    `Counters().LinksOverLength` rises. The length of the whole string is
-   checked before it is split, so a refused link allocates nothing.
+   checked before it is split, so a refused link allocates nothing. For the
+   same reason an OSC 8 longer than the two caps allow together (the
+   parameters, the URL and their separators) closes the open link and is
+   counted also when it is malformed, that is, when it does not have three
+   fields; the released module ignored such a string. A malformed OSC 8
+   within the caps is ignored as before: the open link stays open and
+   nothing is counted.
 7. `vt: allow at most 256 distinct live links per screen` (`links.go`,
    `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Each screen (main
    and alternate) has a table of the links its cells may reference, at most
