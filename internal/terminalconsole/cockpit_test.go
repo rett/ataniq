@@ -702,10 +702,20 @@ func TestRestartReplaysTheRecording(t *testing.T) {
 	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl"})
 	r.play(900 * time.Millisecond)
 	old := r.m.rep.gen
+	// In the program the new replay starts only if r schedules its first tick;
+	// the rig's later ticks are sent by hand and would hide a missing one.
+	r.sched = nil
 	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
 	if r.m.rep.gen == old || strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 		t.Fatal("not restarted")
 	}
+	if len(r.sched) != 1 || r.sched[0].d != tickInterval {
+		t.Fatalf("r scheduled %+v, want one tick after %v", r.sched, tickInterval)
+	}
+	if tk, ok := r.sched[0].fn(r.t0).(tickMsg); !ok || tk.gen != r.m.rep.gen {
+		t.Fatalf("r scheduled %+v, want a tick of the new replay (generation %d)", tk, r.m.rep.gen)
+	}
+	r.sched = nil
 	// A tick of the old replay is ignored.
 	r.m.Update(tickMsg{at: r.t0.Add(5 * time.Second), gen: old})
 	if strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
