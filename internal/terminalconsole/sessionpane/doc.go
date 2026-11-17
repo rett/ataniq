@@ -12,9 +12,10 @@
 // one line of scrollback and the alternate screen none (the patched x/vt
 // gives it none), a frame held for synchronized output is one copy of the
 // screen, and the title is at most [MaxTitle] bytes. A cell keeps at most
-// 64 bytes of a grapheme cluster, and the emulator records only a fixed table
-// of known modes (the patched x/vt drops and counts the rest of a cluster, and
-// ignores and counts any other mode number).
+// 64 bytes of a grapheme cluster, the emulator records only a fixed table of
+// known modes, and it drops a hyperlink whose URL is over 2 KiB or whose
+// parameters are over 256 bytes (the patched x/vt drops and counts the rest of
+// a cluster, ignores and counts any other mode number, and counts the links).
 // Nothing the session writes reaches the outer terminal except as cells:
 // the pane draws cells, never escape sequences, drops hyperlinks from them
 // and draws no cell content longer than [MaxCellBytes]. [Pane.Text] returns

@@ -9,6 +9,12 @@ const (
 	// MaxClusterBytes is the most bytes of one grapheme cluster that a cell
 	// keeps. The rest of a longer cluster, cut at a rune boundary, is dropped.
 	MaxClusterBytes = 64
+
+	// MaxLinkURL and MaxLinkParams are the most bytes of the URL and of the
+	// parameters of a hyperlink (OSC 8). A link over either is dropped, and
+	// the pen gets no link, as if the link had been closed.
+	MaxLinkURL    = 2048
+	MaxLinkParams = 256
 )
 
 // Counters counts the times a cap was hit. The values only grow, and a reader
@@ -21,6 +27,10 @@ type Counters struct {
 	// recorded modes was set or reset. Nothing was recorded for it and no
 	// callback was called.
 	ModesIgnored uint64
+	// LinksOverLength is the number of hyperlinks (OSC 8) dropped because
+	// the URL was over [MaxLinkURL] bytes or the parameters over
+	// [MaxLinkParams].
+	LinksOverLength uint64
 }
 
 // Counters returns the counters of the caps that were hit.

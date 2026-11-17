@@ -44,6 +44,14 @@ Patches, applied in this order to the files of the module as released:
    and calls no callback; DECRQM for it answers "not recognised", as for a
    mode never set. `EnableMode` and `DisableMode` fire for the table's modes
    exactly as before.
+6. `vt: drop hyperlinks over 2 KiB or with parameters over 256 bytes`
+   (`osc.go`, `limits.go`, `osc_test.go`). `handleHyperlink` copied the URL
+   and parameters of any length into the pen, and every cell printed under the
+   link copied them again. A link whose URL is over `MaxLinkURL` (2048) bytes or
+   whose parameters are over `MaxLinkParams` (256) bytes is now dropped: the
+   pen gets no link, as if the link had been closed, and
+   `Counters().LinksOverLength` rises. The length of the whole string is
+   checked before it is split, so a refused link allocates nothing.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
