@@ -23,7 +23,8 @@ var (
 	// ErrMoved means that the lead branch or the upstream branch is not
 	// where the owner looked when the sign-off was made, or that the
 	// upstream branch moved while the integration was under way. Nothing
-	// has been moved by the integration.
+	// has been moved by the integration: the upstream branch was found at
+	// neither the base nor the tip, or is gone.
 	ErrMoved = errors.New("intake: a branch moved after the sign-off")
 	// ErrRecordMissing is matched by a *[RecordError].
 	ErrRecordMissing = errors.New("intake: the branch moved but its record is missing")
@@ -90,7 +91,16 @@ type IntegrateRequest struct {
 //     old value being the base the review saw, in one transaction on standard
 //     input. No reflog message is written: the intake record is the record.
 //     It fails when the target is no longer at the base, and then the error
-//     is [ErrMoved] and nothing has changed.
+//     is [ErrMoved] and nothing has changed. After any failure of the update
+//     (a status, a time-out, a cancelled context) the target is read again,
+//     on a context of its own with a short time limit, because the update may
+//     have been committed first. At the base: nothing moved, and the error is
+//     the original one. At the tip: the branch moved, and the record is
+//     written as in step 6, with no error if it was written; this cannot be
+//     told apart from the same tip put there by someone else after the
+//     inspection, and a record of a move that is there is the safe side. At
+//     any other id, or gone: [ErrMoved]. Unreadable: an error that says that
+//     the outcome is unknown, and that the branch may have moved.
 //  6. The intake record is written. If that fails, the error is a
 //     *[RecordError] that says the branch moved and the record is missing,
 //     and carries the record.
@@ -143,8 +153,9 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 	if err != nil {
 		return IntakeRecord{}, err
 	}
-	if err := newRunner(src, lim).moveTarget(ctx, rev.BaseRef, rev.Base, rev.Tip); err != nil {
-		return IntakeRecord{}, err
+	atTip, moveErr := newRunner(src, lim).moveTarget(ctx, rev.BaseRef, rev.Base, rev.Tip)
+	if moveErr != nil && !atTip {
+		return IntakeRecord{}, moveErr
 	}
 	signed := slices.Clone(req.SignOff.Paths)
 	slices.Sort(signed)
@@ -156,6 +167,9 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 		SignedPaths: signed, Verification: ver,
 	}
 	if err := req.Store.putIntake(rec); err != nil {
+		if moveErr != nil {
+			err = fmt.Errorf("%w (the update ended with an error, %v, and the branch was then found at the tip)", err, moveErr)
+		}
 		return rec, &RecordError{Record: rec, Err: err}
 	}
 	return rec, nil
@@ -180,41 +194,55 @@ func newestVerification(st *Store, project, tip string) (VerificationRecord, err
 	return newest, nil
 }
 
+// rereadTimeout is the time limit of the look at the target after a failed
+// update. It is a limit of its own: the call's time may be used up.
+const rereadTimeout = 10 * time.Second
+
 // moveTarget sets target from base to tip with one compare-and-swap. The
 // transaction is on standard input, NUL separated: update-ref refuses the
 // update when the ref is not at base, and it never creates the ref, because
-// the old value is not the zero id. A failure is checked once more against
-// the ref: if the ref is somewhere else, the error is [ErrMoved].
-func (r *runner) moveTarget(ctx context.Context, target, base, tip string) error {
+// the old value is not the zero id.
+//
+// After any failure of the update (a non-zero status, a time-out, a cancelled
+// context, any other error) the transaction may already have been committed,
+// so the ref is read again, on a context that is not cancelled and with a
+// time limit of its own. If the ref is at base, nothing moved and the
+// original error is returned. If it is at tip, the branch moved: moveTarget
+// returns true and the error that the update ended with, and the caller
+// records the move. If it is elsewhere, or gone, the error is [ErrMoved].
+// If it cannot be read, the error says that the outcome is unknown.
+func (r *runner) moveTarget(ctx context.Context, target, base, tip string) (atTip bool, err error) {
 	if err := checkRefName(target, "refs/heads/"); err != nil {
-		return err
+		return false, err
 	}
 	if !gitenv.IsObjectID(base) || !gitenv.IsObjectID(tip) || len(base) != len(tip) {
-		return errors.New("intake: the ids to move between are not full object ids")
+		return false, errors.New("intake: the ids to move between are not full object ids")
 	}
 	var in bytes.Buffer
 	in.WriteString("start\x00")
 	in.WriteString("update " + target + "\x00" + tip + "\x00" + base + "\x00")
 	in.WriteString("prepare\x00commit\x00")
 	// The transaction prints "start: ok" and so on; it is read and dropped.
-	_, err := r.git(ctx, []string{"update-ref", "--stdin", "-z", "--no-deref", "--end-of-options"}, &in, smallOutput, nil)
+	_, err = r.git(ctx, []string{"update-ref", "--stdin", "-z", "--no-deref", "--end-of-options"}, &in, smallOutput, nil)
 	if err == nil {
-		return nil
+		return false, nil
 	}
-	var ge *gitExit
-	if !errors.As(err, &ge) {
-		return err
-	}
-	id, found, rerr := r.refID(ctx, target)
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadTimeout)
+	defer cancel()
+	again := &runner{src: r.src, deadline: time.Now().Add(rereadTimeout)}
+	id, found, rerr := again.refID(rctx, target)
 	switch {
 	case rerr != nil:
-		return fmt.Errorf("intake: moving %s failed (%w) and its state could not be read: %v", leadtext.Escape(target), err, rerr)
+		return false, fmt.Errorf("intake: moving %s failed (%w) and its state could not be read, so the outcome is unknown and it may have moved: %v",
+			leadtext.Escape(target), err, rerr)
 	case !found:
-		return fmt.Errorf("%w: %s no longer exists", ErrMoved, leadtext.Escape(target))
+		return false, fmt.Errorf("%w: %s no longer exists", ErrMoved, leadtext.Escape(target))
+	case id == tip:
+		return true, err
 	case id != base:
-		return fmt.Errorf("%w: %s was at %s and is now at %s; nothing was changed", ErrMoved, leadtext.Escape(target), base, id)
+		return false, fmt.Errorf("%w: %s was at %s and is now at %s; nothing was changed", ErrMoved, leadtext.Escape(target), base, id)
 	}
-	return fmt.Errorf("intake: moving %s failed: %w", leadtext.Escape(target), err)
+	return false, fmt.Errorf("intake: moving %s failed: %w", leadtext.Escape(target), err)
 }
 
 // refID returns the id that the ref with exactly this name points at.

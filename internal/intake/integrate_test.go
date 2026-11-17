@@ -427,11 +427,11 @@ func TestIntegrateTargetMovedAfterTheSignOff(t *testing.T) {
 }
 
 // TestIntegrateCompareAndSwap: the target moves between the fresh inspection
-// and the update. The update fails, and nothing else changes.
+// and the update. The update fails, and nothing else changes. A target that
+// is moved to the tip itself is TestIntegrateTargetAtTheTipAfterTheChecks.
 func TestIntegrateCompareAndSwap(t *testing.T) {
 	for name, move := range map[string]func(g *rig, first string){
 		"to an ancestor of the tip": func(g *rig, first string) { g.publish(upstreamRef, first) },
-		"to the tip itself":         func(g *rig, first string) { g.publish(upstreamRef, g.tip) },
 		"deleted":                   func(g *rig, first string) { g.b("update-ref", "-d", upstreamRef) },
 		"to a commit of the owner": func(g *rig, first string) {
 			g.checkout(g.base)
@@ -456,7 +456,7 @@ func TestIntegrateCompareAndSwap(t *testing.T) {
 				t.Errorf("the error does not name the old id: %v", err)
 			}
 			now := g.b("for-each-ref", "--format=%(refname) %(objectname)", upstreamRef)
-			if now == target && name != "to the tip itself" {
+			if now == target {
 				t.Error("the hook did not move the target")
 			}
 			if g.refsExcept(upstreamRef) != others {
@@ -472,7 +472,7 @@ func TestIntegrateCompareAndSwap(t *testing.T) {
 			if strings.Contains(now, s.base) {
 				t.Errorf("the target is back at the base: %s", now)
 			}
-			if name != "deleted" && name != "to the tip itself" && strings.Contains(now, s.tip) {
+			if name != "deleted" && strings.Contains(now, s.tip) {
 				t.Errorf("the target was moved to the tip over the owner's move: %s", now)
 			}
 		})
@@ -584,8 +584,8 @@ func TestIntegrateRefusesWhatIsNotFastForward(t *testing.T) {
 	}
 	// A lead branch at the target: nothing to integrate.
 	g.publish(leadRef, s.tip)
-	if err := g.refuse("at the target", req); err == nil {
-		t.Error("an empty integration was accepted")
+	if err := g.refuse("at the target", req); err == nil || !strings.Contains(err.Error(), "nothing to integrate") {
+		t.Errorf("an empty integration: %v", err)
 	}
 }
 
