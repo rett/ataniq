@@ -17,3 +17,6 @@ func ownerUID(fi fs.FileInfo) (uint32, bool) { return 0, false }
 
 // lockFile is not available on this system.
 func lockFile(path string) (func(), error) { return nil, safefs.ErrUnsupported }
+
+// removeEmptyDir is not available on this system.
+func removeEmptyDir(path string) error { return safefs.ErrUnsupported }

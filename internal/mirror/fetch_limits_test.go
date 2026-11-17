@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,6 +264,65 @@ func TestFetchStagedLimit(t *testing.T) {
 		req.Limits.MaxStaged = 1 << 20
 		if _, err := e.m.Fetch(context.Background(), req); err != nil {
 			t.Errorf("Fetch = %v", err)
+		}
+	})
+}
+
+func TestFetchWatchdogWhenTheMeasureFails(t *testing.T) {
+	// The measure hook stands for a walk that fails because git renames
+	// files under it.
+	errWalk := errors.New("test: the walk failed")
+	slowly := func(e *fetchEnv) {
+		// The fetch runs for a second, which is many watchdog intervals.
+		e.planner.UploadPack = e.wrapper("sleep 1")
+	}
+	// The watchdog runs in another goroutine, so the count is atomic.
+	hook := func(t *testing.T, f func(n int) (safefs.Size, error)) *atomic.Int64 {
+		old, oldInterval := watchMeasureHook, watchInterval
+		calls := new(atomic.Int64)
+		watchMeasureHook = func() (safefs.Size, error) { return f(int(calls.Add(1))) }
+		watchInterval = 20 * time.Millisecond
+		t.Cleanup(func() { watchMeasureHook, watchInterval = old, oldInterval })
+		return calls
+	}
+
+	t.Run("failures in a row stop the fetch", func(t *testing.T) {
+		e := newFetchEnv(t)
+		slowly(e)
+		calls := hook(t, func(int) (safefs.Size, error) { return safefs.Size{}, errWalk })
+		was := e.state0(t)
+		start := time.Now()
+		_, err := e.m.Fetch(context.Background(), e.req())
+		if err == nil || !strings.Contains(err.Error(), "staging folder could not be measured") || !errors.Is(err, errWalk) {
+			t.Fatalf("Fetch = %v, want an error that says the staging folder could not be measured", err)
+		}
+		var le *LimitError
+		if errors.As(err, &le) {
+			t.Errorf("the error is a LimitError: %v", err)
+		}
+		if n := calls.Load(); n != maxWatchFailures {
+			t.Errorf("the measure ran %d times, want %d", n, maxWatchFailures)
+		}
+		if d := time.Since(start); d > 900*time.Millisecond {
+			t.Errorf("the fetch ran %v: the watchdog did not stop it", d)
+		}
+		e.unchanged(t, was)
+	})
+
+	t.Run("failures with a success between them do not", func(t *testing.T) {
+		e := newFetchEnv(t)
+		slowly(e)
+		calls := hook(t, func(n int) (safefs.Size, error) {
+			if n%maxWatchFailures == 0 {
+				return safefs.Size{Bytes: 1, Entries: 1}, nil
+			}
+			return safefs.Size{}, errWalk
+		})
+		if _, err := e.m.Fetch(context.Background(), e.req()); err != nil {
+			t.Fatalf("Fetch = %v", err)
+		}
+		if n := calls.Load(); n < 2*maxWatchFailures {
+			t.Errorf("the measure ran only %d times, so the test proves little", n)
 		}
 	})
 }

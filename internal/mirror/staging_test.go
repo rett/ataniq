@@ -284,6 +284,80 @@ func TestRemoveStale(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleRemovesAnEmptyFolderOnly(t *testing.T) {
+	// A crash between the making of the folder and the writing of the marker
+	// leaves an empty folder with the name of a staging folder. It is
+	// removed, with rmdir semantics only.
+	f := newFixture(t)
+	mirrors := filepath.Dir(f.m.Path())
+	base := filepath.Base(f.m.Path())
+	hex := "0123456789abcdef"
+	dir := func(name string) string {
+		p := filepath.Join(mirrors, name)
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	empty := dir(base + ".staging-" + hex)
+	// What must stay: a folder with content and no marker, an empty folder
+	// whose name is not a staging name or is another mirror's, a symlink to
+	// an empty folder, a plain file, and a folder that holds only an empty
+	// folder.
+	nonEmpty := dir(base + ".staging-" + hex[:15] + "0")
+	if err := os.WriteFile(filepath.Join(nonEmpty, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nested := dir(base + ".staging-" + hex[:15] + "1")
+	if err := os.Mkdir(filepath.Join(nested, "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keep := []string{
+		nonEmpty, nested,
+		dir(base + ".staging-xyz"),
+		dir("other.git.staging-" + hex),
+		dir(base + ".staging-" + strings.ToUpper(hex)),
+	}
+	target := t.TempDir()
+	link := filepath.Join(mirrors, base+".staging-"+hex[:15]+"2")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(mirrors, base+".staging-"+hex[:15]+"3")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keep = append(keep, link, file)
+
+	f.m.removeStale()
+
+	if _, err := os.Lstat(empty); err == nil {
+		t.Error("an empty folder with a staging name was not removed")
+	}
+	for _, p := range keep {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("%s was removed: %v", filepath.Base(p), err)
+		}
+	}
+	if _, err := os.Lstat(target); err != nil {
+		t.Errorf("the folder behind a symlink was removed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(nonEmpty, "keep")); err != nil {
+		t.Errorf("a folder with content lost it: %v", err)
+	}
+
+	// A fetch does it too, and the folder is gone with the next one.
+	e := &fetchEnv{g: f.g, m: f.m, state: stateOf(f.m), planner: newPlanner(t)}
+	e.lead = newLeadClone(t, f.g, e.state, "coder")
+	empty2 := dir(base + ".staging-" + hex[:15] + "4")
+	if _, err := f.m.Fetch(context.Background(), e.req()); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := os.Lstat(empty2); err == nil {
+		t.Error("a fetch left an empty staging folder")
+	}
+}
+
 func TestSnapshot(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -123,7 +123,7 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	prefix, _ := LeadPrefix("coder")
-	lim := DefaultLimits()
+	lim := DefaultFetchLimits()
 	for _, tc := range []struct{ name, id string }{
 		{"tag", f.src.tag}, {"tree", f.src.tree}, {"blob", f.src.blob},
 	} {

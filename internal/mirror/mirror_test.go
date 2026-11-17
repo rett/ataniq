@@ -728,26 +728,26 @@ func TestSize(t *testing.T) {
 }
 
 func TestFetchLimits(t *testing.T) {
-	d := DefaultLimits()
-	want := Limits{
+	d := DefaultFetchLimits()
+	want := FetchLimits{
 		Timeout: 10 * time.Minute, MaxSource: 2 << 30, MaxStaged: 1 << 30,
 		MaxMirror: 8 << 30, MaxEntries: 2_000_000, MaxRefs: 2000,
 	}
 	if d != want {
-		t.Errorf("DefaultLimits = %+v, want %+v", d, want)
+		t.Errorf("DefaultFetchLimits = %+v, want %+v", d, want)
 	}
-	if got := (Limits{}).forFetch(); got != d {
+	if got := (FetchLimits{}).withDefaults(); got != d {
 		t.Errorf("zero limits for a fetch = %+v, want the defaults", got)
 	}
-	set := Limits{Timeout: 1, MaxSource: 2, MaxStaged: 3, MaxMirror: 4, MaxEntries: 5, MaxRefs: 6}
-	if got := set.forFetch(); got != set {
+	set := FetchLimits{Timeout: 1, MaxSource: 2, MaxStaged: 3, MaxMirror: 4, MaxEntries: 5, MaxRefs: 6}
+	if got := set.withDefaults(); got != set {
 		t.Errorf("set limits changed: %+v", got)
 	}
-	part := Limits{MaxStaged: 99}.forFetch()
+	part := FetchLimits{MaxStaged: 99}.withDefaults()
 	if part.MaxStaged != 99 || part.Timeout != d.Timeout || part.MaxRefs != d.MaxRefs {
 		t.Errorf("partly set limits = %+v", part)
 	}
-	for i, l := range []Limits{
+	for i, l := range []FetchLimits{
 		{Timeout: -1}, {MaxSource: -1}, {MaxStaged: -1}, {MaxMirror: -1}, {MaxEntries: -1}, {MaxRefs: -1},
 	} {
 		if l.check() == nil {
@@ -757,14 +757,25 @@ func TestFetchLimits(t *testing.T) {
 	if err := d.check(); err != nil {
 		t.Errorf("the defaults are refused: %v", err)
 	}
-	// A mirror keeps only what it reads, and rejects a negative fetch field.
-	_, m := newMirror(t)
-	m2, err := m.WithLimits(Limits{MaxSource: 7})
-	if err != nil || m2.Limits() != m.Limits() {
-		t.Errorf("a fetch field changed the mirror: %+v, %v", m2.Limits(), err)
+}
+
+func TestMirrorLimitsAreNotFetchLimits(t *testing.T) {
+	// The two are different types, so a mirror's limits cannot be passed as
+	// a fetch's: this does not compile if FetchRequest.Limits is a Limits.
+	var _ FetchLimits = FetchRequest{}.Limits
+	// The defaults of a mirror are its two fields, not those of a fetch.
+	if d := DefaultLimits(); d != (Limits{Timeout: DefaultTimeout, MaxRefs: DefaultMaxRefs}) {
+		t.Errorf("DefaultLimits = %+v", d)
 	}
-	if _, err := m.WithLimits(Limits{MaxMirror: -1}); err == nil {
-		t.Error("WithLimits accepted a negative MaxMirror")
+	_, m := newMirror(t)
+	if m.Limits() != DefaultLimits() {
+		t.Errorf("Limits of a new mirror = %+v, want %+v", m.Limits(), DefaultLimits())
+	}
+	if _, err := m.WithLimits(Limits{Timeout: -1}); err == nil {
+		t.Error("WithLimits accepted a negative Timeout")
+	}
+	if _, err := m.WithLimits(Limits{MaxRefs: -1}); err == nil {
+		t.Error("WithLimits accepted a negative MaxRefs")
 	}
 }
 

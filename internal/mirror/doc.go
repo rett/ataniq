@@ -50,17 +50,53 @@
 // objects as its only alternate. What arrived is checked there: sizes, the
 // number of refs, the names and types of the refs, and that the repository is
 // still what this package made. Only then do the branches move from the
-// staging repository into the mirror, and the refs outside the lead's
-// namespace are compared with the snapshot taken before. The fetch takes the
+// staging repository into the mirror, in one atomic update of refs, and the
+// refs outside the lead's namespace are compared with the snapshot taken
+// before. The fetch takes the
 // lead's branches only (+refs/heads/*:refs/leads/<role>/heads/*) and no tag,
 // so a lead's develop or tag can never replace an upstream one. Two fetches
 // into one mirror cannot overlap: a lock file beside the mirror makes the
 // second one return [ErrBusy].
 //
-// The limits are in [Limits]: a time limit, a size cap for the lead's object
-// store as measured in the sandbox, for what one fetch adds, for the whole
-// mirror and for the number of files, and a cap on the lead's branches. The
-// size of the mirror after the move is a check and not a quota.
+// The limits of a fetch are in [FetchLimits], a type of its own: a time limit
+// for the whole fetch, a size cap for the lead's object store as measured in
+// the sandbox, for what one fetch adds, for the whole mirror and for the
+// number of files, and a cap on the lead's branches. The [Limits] of a
+// [Mirror] are another thing: the time limit of each git run and the cap of a
+// listing. The size of the mirror after the move is a check and not a quota.
+//
+// # A failed fetch
+//
+// A failure before the move leaves the refs and the objects of the mirror as
+// they were. The move is atomic, so a move that fails leaves no ref changed.
+// If a check after the move fails, the lead's namespace is put back as it was
+// before the move, in one transaction, and the error is returned; if that
+// fails too, the error says so. The objects that the move brought stay, with
+// no ref that reaches them, and are the business of the owner's garbage
+// collection, which this package does not run.
+//
+// After the move, a ref outside the lead's namespace may differ from the
+// snapshot taken before, because another owner process, such as an intake or a
+// push, may write there while a fetch runs; the fetch takes no lock against
+// them. That is a note in [FetchReport.OutsideChanged]. The proof that this
+// package can give is narrower: the move names only the lead's namespace, so
+// it can write only the values of the staging repository's refs, the tips. A
+// ref outside the namespace that holds a tip that this fetch staged (one that
+// the mirror lacked before) can only be a bug, and is [ErrUpstreamChanged].
+//
+// # What a lead's ref says
+//
+// A ref under refs/leads/<role>/ says that the role offered that commit. It
+// does not say that the role authored it, or that its objects came from that
+// role's clone. A lead can point a ref at any commit that is in the mirror,
+// for example the commit of another lead, because the staging repository has
+// the mirror's objects as its alternate and git treats them as already
+// there. No check is added, on purpose. The mirror is bound read-only into
+// every lead's sandbox, so a lead can read every object in it and could
+// fetch and offer those objects itself; a check would protect nothing. Commit
+// authorship is lead text in any case. A later step that treats a lead's
+// namespace as that lead's own work must not rely on the namespace for
+// authorship.
 //
 // # How it is safe
 //
@@ -78,9 +114,10 @@
 // prints, logs or interprets them. A caller that shows a name must escape it
 // with the leadtext package first. Error messages from this package carry no
 // output of git and no ref name, with one exception: the text of
-// [ErrUpstreamChanged] names the refs that differ, at most ten, quoted with
-// strconv.QuoteToASCII, so that it holds only printable ASCII. The report of
-// a fetch ([RefUpdate]) holds raw ref names.
+// [ErrUpstreamChanged] names the refs that it is about, at most ten, quoted
+// with strconv.QuoteToASCII, so that it holds only printable ASCII.
+// [FetchReport.OutsideChanged] holds names quoted the same way. The updates
+// of a fetch ([RefUpdate]) hold raw ref names.
 //
 // # What it does not do
 //

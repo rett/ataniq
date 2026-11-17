@@ -254,64 +254,114 @@ func TestCompareSnapshots(t *testing.T) {
 
 	// x changes, w is new; the refs of the other namespaces stay.
 	after := []record{r("refs/heads/main", "1"), r(prefix+"w", "7"), r(prefix+"x", "9"), r(prefix+"y", "3"), r("refs/leads/b/heads/z", "4"), r("refs/tags/t", "5")}
-	got, err := compareSnapshots(before, after, prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got, outside := compareSnapshots(before, after, prefix)
 	want := []RefUpdate{{Ref: prefix + "w", New: "7"}, {Ref: prefix + "x", Old: "2", New: "9"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("updates = %+v, want %+v", got, want)
+	if !reflect.DeepEqual(got, want) || len(outside) != 0 {
+		t.Errorf("updates = %+v, outside = %+v, want %+v and none", got, outside, want)
 	}
 	// A pruned ref.
-	got, err = compareSnapshots(before, []record{before[0], before[1], before[3], before[4]}, prefix)
-	if err != nil || !reflect.DeepEqual(got, []RefUpdate{{Ref: prefix + "y", Old: "3"}}) {
-		t.Errorf("pruned: %+v, %v", got, err)
+	got, outside = compareSnapshots(before, []record{before[0], before[1], before[3], before[4]}, prefix)
+	if len(outside) != 0 || !reflect.DeepEqual(got, []RefUpdate{{Ref: prefix + "y", Old: "3"}}) {
+		t.Errorf("pruned: %+v, %+v", got, outside)
 	}
 
-	// A change outside the namespace, in each way it can happen.
-	for name, bad := range map[string][]record{
-		"an upstream branch moved": {r("refs/heads/main", "8"), before[1], before[2], before[3], before[4]},
-		"an upstream branch gone":  {before[1], before[2], before[3], before[4]},
-		"a tag added":              {before[0], before[1], before[2], before[3], before[4], r("refs/tags/u", "6")},
-		"a tag changed type":       {before[0], before[1], before[2], before[3], {Ref: Ref{Name: "refs/tags/t", ID: "5", Type: "tag"}}},
-		"a ref became symbolic":    {before[0], before[1], before[2], before[3], {Ref: before[4].Ref, Symref: "refs/heads/main"}},
-		"another lead's ref moved": {before[0], before[1], before[2], r("refs/leads/b/heads/z", "5"), before[4]},
-		"another lead's ref added": {before[0], before[1], before[2], before[3], r("refs/leads/b/heads/zz", "5"), before[4]},
+	// A change outside the namespace, in each way it can happen: it is
+	// listed with its new value, and the updates stay empty.
+	for name, tc := range map[string]struct {
+		after []record
+		want  []outsideChange
+	}{
+		"an upstream branch moved": {[]record{r("refs/heads/main", "8"), before[1], before[2], before[3], before[4]}, []outsideChange{{"refs/heads/main", "8"}}},
+		"an upstream branch gone":  {[]record{before[1], before[2], before[3], before[4]}, []outsideChange{{"refs/heads/main", ""}}},
+		"a tag added":              {[]record{before[0], before[1], before[2], before[3], before[4], r("refs/tags/u", "6")}, []outsideChange{{"refs/tags/u", "6"}}},
+		"a tag changed type":       {[]record{before[0], before[1], before[2], before[3], {Ref: Ref{Name: "refs/tags/t", ID: "5", Type: "tag"}}}, []outsideChange{{"refs/tags/t", "5"}}},
+		"a ref became symbolic":    {[]record{before[0], before[1], before[2], before[3], {Ref: before[4].Ref, Symref: "refs/heads/main"}}, []outsideChange{{"refs/tags/t", "5"}}},
+		"another lead's ref moved": {[]record{before[0], before[1], before[2], r("refs/leads/b/heads/z", "5"), before[4]}, []outsideChange{{"refs/leads/b/heads/z", "5"}}},
+		"another lead's ref added": {[]record{before[0], before[1], before[2], before[3], r("refs/leads/b/heads/zz", "5"), before[4]}, []outsideChange{{"refs/leads/b/heads/zz", "5"}}},
 	} {
-		_, err := compareSnapshots(before, bad, prefix)
-		if !errors.Is(err, ErrUpstreamChanged) {
-			t.Errorf("%s: err = %v, want ErrUpstreamChanged", name, err)
+		up, got := compareSnapshots(before, tc.after, prefix)
+		if len(up) != 0 || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: updates = %+v, outside = %+v, want %+v", name, up, got, tc.want)
 		}
-	}
-	// The names in the error are escaped and the list is cut.
-	var many, manyAfter []record
-	for i := 0; i < 30; i++ {
-		many = append(many, r("refs/heads/a"+string(rune('a'+i%26))+"\xff"+string(rune('a'+i/26)), "1"))
-	}
-	for _, x := range many {
-		x.ID = "2"
-		manyAfter = append(manyAfter, x)
-	}
-	_, err = compareSnapshots(many, manyAfter, prefix)
-	if !errors.Is(err, ErrUpstreamChanged) || strings.Contains(err.Error(), "\xff") || !strings.Contains(err.Error(), "30 ref(s)") || !strings.Contains(err.Error(), "and more") {
-		t.Errorf("error = %q", err)
 	}
 }
 
-func TestFetchUpstreamChangedIsReported(t *testing.T) {
-	// A second writer moves an upstream ref while the fetch runs. The check
-	// of step 9 reports it with the ref's name, escaped.
-	f := newFixture(t)
-	e := &fetchEnv{g: f.g, m: f.m, state: stateOf(f.m), planner: newPlanner(t)}
-	e.lead = newLeadClone(t, f.g, e.state, "coder")
-	gup := e.planner.UploadPack[0]
-	// The command runs git in the mirror, as the owner's other process
-	// would: it moves refs/heads/develop.
-	e.planner.UploadPack = []string{"/bin/sh", "-c",
-		"'" + f.g.Path + "' --git-dir='" + f.m.Path() + "' update-ref refs/heads/develop '" + f.second + "'; exec '" + gup + "' \"$@\"", "sh"}
-	_, err := f.m.Fetch(context.Background(), e.req())
-	if !errors.Is(err, ErrUpstreamChanged) || !strings.Contains(err.Error(), "refs/heads/develop") {
-		t.Errorf("Fetch = %v, want ErrUpstreamChanged naming refs/heads/develop", err)
+func TestStagedRefsAndNames(t *testing.T) {
+	outside := []outsideChange{{"refs/heads/a", "1"}, {"refs/heads/b", "2"}, {"refs/heads/c", ""}, {"refs/heads/d", "2"}}
+	if got := stagedRefs(outside, map[string]bool{"2": true}); !reflect.DeepEqual(got, []string{"refs/heads/b", "refs/heads/d"}) {
+		t.Errorf("stagedRefs = %v", got)
 	}
-	noLeftovers(t, f.m)
+	if got := stagedRefs(outside, nil); got != nil {
+		t.Errorf("stagedRefs with no staged tip = %v", got)
+	}
+	if got := stagedRefs([]outsideChange{{"refs/heads/gone", ""}}, map[string]bool{"": true}); got != nil {
+		t.Errorf("stagedRefs for a deleted ref = %v", got)
+	}
+
+	// The names are escaped and the list is cut at ten.
+	var many []outsideChange
+	for i := 0; i < 30; i++ {
+		many = append(many, outsideChange{Name: "refs/heads/a" + string(rune('a'+i%26)) + "\xff" + string(rune('a'+i/26)), New: "2"})
+	}
+	shown := quoteNames(many)
+	if len(shown) != maxReportedRefs || strings.Contains(strings.Join(shown, ""), "\xff") || !strings.Contains(shown[0], `\xff`) {
+		t.Errorf("quoteNames = %q", shown)
+	}
+	if got := quoteNames(nil); got != nil {
+		t.Errorf("quoteNames(nil) = %v", got)
+	}
+	var names []string
+	for _, c := range many {
+		names = append(names, c.Name)
+	}
+	err := upstreamChanged(names)
+	if !errors.Is(err, ErrUpstreamChanged) || strings.Contains(err.Error(), "\xff") || !strings.Contains(err.Error(), "30 ref(s)") || !strings.Contains(err.Error(), "and more") {
+		t.Errorf("error = %q", err)
+	}
+	if n := strings.Count(err.Error(), "refs/heads/"); n != maxReportedRefs {
+		t.Errorf("the error names %d refs, want %d", n, maxReportedRefs)
+	}
+}
+
+func TestFetchLetsALeadOfferAnObjectThatIsOnlyInTheMirror(t *testing.T) {
+	// A stated limit, pinned so that a change is deliberate: a lead can point
+	// a ref at a commit that is in the mirror and that its own clone does
+	// not hold, for example the private commit of another lead. The staging
+	// repository has the mirror's objects as its alternate, so git takes the
+	// object as already there. The mirror is read-only in every lead's
+	// sandbox, so the lead could read the object and offer it itself: the
+	// ref says that the role offered the commit, not that it authored it.
+	e := newFetchEnv(t)
+	ctx := context.Background()
+	other := newLeadClone(t, e.g, e.state, "other")
+	secret := other.commit(t, "private.txt", "the other lead's own work\n", "private")
+	req := e.req()
+	req.Role = "other"
+	if _, err := e.m.Fetch(ctx, req); err != nil {
+		t.Fatalf("Fetch(other): %v", err)
+	}
+
+	// The coder's clone has the id in a ref and none of the objects.
+	if hasObject(t, e.g, e.lead.gitDir(), secret) {
+		t.Fatal("the fixture is wrong: the coder's clone holds the other lead's commit")
+	}
+	ref := filepath.Join(e.lead.gitDir(), "refs", "heads", "borrowed")
+	if err := os.WriteFile(ref, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := e.m.Fetch(ctx, e.req())
+	if err != nil {
+		t.Fatalf("Fetch(coder) = %v: the stated limit changed, and the package comment must change with it", err)
+	}
+	prefix, _ := LeadPrefix("coder")
+	if got, err := e.m.Resolve(ctx, prefix+"borrowed"); err != nil || got.ID != secret {
+		t.Errorf("Resolve = %+v, %v, want the other lead's commit %s", got, err, secret)
+	}
+	found := false
+	for _, u := range rep.Updates {
+		found = found || (u.Ref == prefix+"borrowed" && u.New == secret)
+	}
+	if !found {
+		t.Errorf("Updates = %+v, want the borrowed ref", rep.Updates)
+	}
 }
