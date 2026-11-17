@@ -334,10 +334,17 @@ read-only inside, and are bound from an Ataniq-owned copy, not from the tree.
 The copy is `<state>/leads/<role>/gitmeta`, outside the home, the config folder
 and the tree, and `mountpoints.Prepare` fills it once, before the lead's first
 run: a copy of the clone's `.git/config`, an empty `hooks` folder (a managed
-lead's tree has no hooks) and a copy of the regular files of `.git/info`. For the
-lead this means that git inside reads Ataniq's copy of `config` and `info` and
-cannot change them, and that a change to the clone's git configuration is made
-by Ataniq, outside, in the copy.
+lead's tree has no hooks) and a copy of the regular files of `.git/info`.
+`Prepare` refuses a clone `.git/config` that has an `include` or `includeIf`
+section (any case; a bounded scan of the section headers, and no other key is
+interpreted), because git would read the file it names as configuration. For the
+lead this means that the copies are read-only binds of files it cannot write, so
+it cannot change the files that are bound, and that a change to the clone's git
+configuration is made by Ataniq, outside, in the copy. It does not mean that git
+inside reads only that configuration: a git in the sandbox can still be pointed
+at configuration the lead writes (through its environment, or through a `.git` it
+rebuilds in the tree), which is inside the lead's own authority. The copy is
+never read as configuration by a tool outside the sandbox.
 
 **Mount points inside folders the lead writes.** The targets of the `.git` rows,
 the skills folder and the instruction file of the config folder, and any extra

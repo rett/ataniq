@@ -51,14 +51,24 @@ type infoFile struct {
 // most maxInfoEntries entries, maxInfoFile bytes each, maxInfoTotal in all,
 // none hard-linked). A link, a folder or another type in .git/info is not
 // copied. The clone's .git/hooks is never read: a managed lead's tree has no
-// hooks. Each placeholder of the tree outside .git that exclude does not list
-// is added to the copy of exclude as one anchored line (the file is made when
-// the clone has none).
+// hooks. A .git/config that has an include or includeIf section (any case,
+// found by a bounded scan of the section headers; no other key is
+// interpreted) is refused with ErrInclude, and nothing is copied. Each
+// placeholder of the tree outside .git that exclude does not list is added to
+// the copy of exclude as one anchored line (the file is made when the clone
+// has none).
 func readCloneMeta(tree *safefile.Root, treeDir string, placeholders []Point) (*metaCopy, *Problem) {
 	var m metaCopy
 	var err error
 	if m.config, err = tree.ReadFile(configRel, maxGitConfig, safefile.RefuseHardLinks()); err != nil {
 		return nil, fromErr(treeDir+"/"+configRel, err)
+	}
+	// The copy is read by git inside the sandbox. An include or includeIf
+	// section makes git read other files as configuration, and a relative
+	// path of one lies next to the copy's place in the lead's tree. No other
+	// key is interpreted here.
+	if line, name := findInclude(m.config); name != "" {
+		return nil, problem(ErrInclude, treeDir+"/"+configRel, "line %d has a [%s] section, which makes git read another file as configuration: remove it from the clone's .git/config and call Prepare again", line, name)
 	}
 	names, err := tree.ReadDirNames(infoRel, maxInfoEntries)
 	if err != nil {

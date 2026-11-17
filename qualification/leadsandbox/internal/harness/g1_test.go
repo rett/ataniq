@@ -686,3 +686,23 @@ func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 		t.Error("the records are not bound")
 	}
 }
+
+// A clone whose .git/config has an include or includeIf section is not copied:
+// the step prepare fails with the reason, nothing is made and nothing starts.
+func TestACloneConfigWithAnIncludeSectionEndsTheRunAtPrepare(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	f.Write(f.Layout().Tree()+"/.git/config", "[core]\n\tbare = false\n[includeIf \"gitdir:/work/\"]\n\tpath = ../../x\n", 0o644)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepFailed)
+	if e := step(t, r.out, harness.StepPrepare).Error; !strings.Contains(e, "includeIf") || !strings.Contains(e, "line 3") {
+		t.Errorf("the step's error does not name the section and its line: %q", e)
+	}
+	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
+		t.Errorf("the folder was made: %v", err)
+	}
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}

@@ -40,7 +40,10 @@ type PrepareOptions struct {
 // exclusively, mode 0700, and fills it with files of mode 0600:
 //
 //   - config: a copy of the clone's .git/config, read through the tree's
-//     handle, a regular file of at most 1 MiB that is not hard-linked;
+//     handle, a regular file of at most 1 MiB that is not hard-linked. A config
+//     with an include or includeIf section (any case; a bounded scan of the
+//     section headers, no other key is interpreted) is refused with ErrInclude,
+//     because git would read the file it names as configuration;
 //   - hooks/: empty. The clone's own hooks are NOT copied: a managed lead's
 //     tree has no hooks;
 //   - info/: a copy of each regular file directly in the clone's .git/info

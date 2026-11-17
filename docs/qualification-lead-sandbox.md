@@ -340,10 +340,17 @@ folders; the evidence names it as `checked_path`. The check says what the path w
 afterwards, which is why every source and everything above it must be the
 caller's.
 
-What changes for git inside the sandbox: it reads Ataniq's copy of `config` and
-`info`, which it cannot change (they are read-only binds of files the lead cannot
-write), and the hooks folder is empty, so no hook runs. A change to the clone's
-git configuration is made outside, in the copy, not by the lead. The lead can
+What changes for git inside the sandbox: the copies of `config` and `info` are
+read-only binds of files the lead cannot write, so the lead cannot change the
+files that are bound, and the hooks folder is empty, so no hook runs. A change
+to the clone's git configuration is made outside, in the copy, not by the lead.
+The run refuses a clone `.git/config` that has an `include` or `includeIf`
+section (the step `prepare` fails with the line), because git would read the file
+it names as configuration; no other key of it is interpreted. This does not say
+which configuration the lead's git reads: it can still be pointed at
+configuration the lead writes (through its environment, or through a `.git` it
+rebuilds in the tree), which is inside the lead's own authority, and the copy is
+never read as configuration by a tool outside the sandbox. The lead can
 still rename `.git` in its tree and build another: the binds keep their targets
 in the old one, the start-up check of the mount points refuses a link at them,
 and the rule that no owner-side tool uses a lead's tree is not enforced here.

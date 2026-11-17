@@ -63,7 +63,11 @@
 // exclusively with mode 0700 (its files 0600):
 //
 //   - config is a copy of the clone's .git/config, read through the tree's
-//     handle: a regular file of at most 1 MiB, not hard-linked;
+//     handle: a regular file of at most 1 MiB, not hard-linked, and without an
+//     include or includeIf section. [Prepare] refuses ([ErrInclude]) a config
+//     that has one, found by a bounded scan of the section headers (any case,
+//     any subsection); no other key is interpreted, so core.hooksPath,
+//     core.fsmonitor and the like are copied as they are;
 //   - hooks/ is empty: the clone's own hooks are not copied, because a managed
 //     lead's tree has no hooks;
 //   - info/ holds a copy of each regular file directly in the clone's
@@ -80,13 +84,22 @@
 // every placeholder; what the lead does to the clone's own .git/config,
 // .git/hooks or .git/info does not change what is bound.
 //
-// What this changes for the lead: git inside the sandbox reads Ataniq's copy
-// of config and info, and cannot change them (they are bound read-only, and
-// the lead cannot write the folder); there are no hooks; and a change to the
-// clone's git configuration is made by Ataniq, outside, in the copy. The
-// lead-hosting design, section 3.3, leaves open whether Qargi's flow verbs
-// need to write git configuration (branch tracking): qualification case S5
-// settles it.
+// What this changes for the lead: the copies of config and info are bound
+// read-only and the lead cannot write the folder they come from, so the lead
+// cannot change the files that are bound; there are no hooks in the folder; and
+// a change to the clone's git configuration is made by Ataniq, outside, in the
+// copy. That is all it says. It does not say which configuration the lead's git
+// reads: a git inside the sandbox can still be pointed at configuration the
+// lead writes (through its environment, or through a .git it rebuilds in the
+// tree), and that lies inside the lead's own authority, as anything the lead
+// writes in its own folders does. The refusal of an include section keeps the
+// copy itself from naming a file the lead writes. The copy is never read as
+// configuration by a tool outside the sandbox (Ataniq writes it and no
+// owner-side tool uses a lead's tree: the primary rule of the design, section
+// 3.3, which this package does not enforce). The lead-hosting design, section
+// 3.3, leaves open
+// whether Qargi's flow verbs need to write git configuration (branch
+// tracking): qualification case S5 settles it.
 //
 // # What the holder must do
 //

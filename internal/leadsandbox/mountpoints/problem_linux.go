@@ -40,6 +40,10 @@ var (
 	// ErrNeverMounted: a real path is, or lies in or above, a never-mounted
 	// path or the other runtime's config folder.
 	ErrNeverMounted = errors.New("a never-mounted path")
+	// ErrInclude: the clone's .git/config has an include or includeIf
+	// section, which makes git read another file as configuration; Prepare
+	// refuses to copy it.
+	ErrInclude = errors.New("the git configuration has an include or includeIf section")
 	// ErrOverlap: a real source overlaps a lead-writable folder, or two
 	// lead-writable folders overlap.
 	ErrOverlap = errors.New("overlaps a lead-writable folder")
