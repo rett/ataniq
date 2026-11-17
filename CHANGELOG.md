@@ -126,6 +126,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it and counted; and the data of an OSC, DCS or APC string is cut at 64 KiB
   (it was 4 MiB), with the rest dropped and counted. The emulator exposes the
   counts of every cap it hit through `Counters`.
+  Clearing or resetting the screen, switching the alternate screen and
+  scrolling a whole region cost the lines they change and no longer every
+  cell, so a program that does these in a loop (for example a full-screen
+  program that clears the screen on every frame) no longer stalls the pane for
+  seconds or minutes, and the pane feeds the emulator in slices of 4 KiB, so
+  that a draw waits for one slice of output at most. Output that scrolls a
+  region with left and right margins set can still take about a minute for
+  64 KiB on the largest screen; see `third_party/patched/x-vt/NOTICE.md`.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a
