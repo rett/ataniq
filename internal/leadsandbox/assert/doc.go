@@ -66,6 +66,11 @@
 //     a write is refused by access(W_OK). That the tree is the lead's own
 //     clone, and not below another repository, is the check of the
 //     mountpoints package; the probe checks that .git is a folder.
+//   - Assertion 5 accepts the sysctl dev.tty.legacy_tiocsti reading 0 and
+//     nothing else when the profile names no seccomp filter: a filter that
+//     something else loaded is not evidence that TIOCSTI is blocked. When the
+//     profile names a filter, the probe requires Seccomp: 2 and reports
+//     Seccomp_filters; it does not verify from inside which filter it is.
 //   - The checks run once, before the agent starts. They say nothing about
 //     what the agent does after it.
 package assert

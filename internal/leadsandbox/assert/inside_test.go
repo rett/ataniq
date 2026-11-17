@@ -116,27 +116,39 @@ func TestInsideAssertions(t *testing.T) {
 		{"4 no address", profile.Claude, func(s *Spec, f *fakeSys) { f.hosts = nil }, 4, StatusFailed, "no address"},
 
 		// 5
-		{"5 sysctl 1 and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "1\n") }, 5, StatusFailed, "no seccomp filter is loaded"},
-		{"5 sysctl 1 and a filter", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl 1 and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "1\n") }, 5, StatusFailed, "names no seccomp filter"},
+		{"5 sysctl 1 and an unrelated filter is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(tiocstiSysctl, "1\n")
-			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, "a seccomp filter is loaded"},
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\t1\n")
+		}, 5, StatusFailed, "names no seccomp filter"},
 		{"5 sysctl absent and no filter", profile.Claude, func(s *Spec, f *fakeSys) { delete(f.nodes, tiocstiSysctl) }, 5, StatusFailed, "absent"},
-		{"5 sysctl absent and a filter", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl absent and an unrelated filter is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			delete(f.nodes, tiocstiSysctl)
 			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, ""},
+		}, 5, StatusFailed, "absent"},
 		{"5 sysctl unreadable and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.readErr[tiocstiSysctl] = syscall.EACCES }, 5, StatusNotChecked, "cannot be read"},
-		{"5 sysctl non-zero and status unreadable", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl non-zero is failed whatever the status says", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(tiocstiSysctl, "1\n")
 			f.readErr[procStatus] = syscall.EACCES
-		}, 5, StatusNotChecked, "cannot be read"},
+		}, 5, StatusFailed, `"1", not 0`},
 		{"5 sysctl 0 is enough without status", profile.Claude, func(s *Spec, f *fakeSys) { f.readErr[procStatus] = syscall.EACCES }, 5, StatusOK, "legacy_tiocsti is 0"},
 		{"5 sysctl is garbage", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "zero") }, 5, StatusFailed, `"zero"`},
 		{"5 filter expected and loaded", profile.Claude, func(s *Spec, f *fakeSys) {
 			s.SeccompExpected = true
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\t3\n")
+		}, 5, StatusOK, "Seccomp: 2, Seccomp_filters: 3), as the profile expects; the identity of the filter is not verified from inside"},
+		{"5 filter expected and loaded, no filter count given", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
 			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, "as the profile expects"},
+		}, 5, StatusOK, "Seccomp_filters: not given"},
+		{"5 filter expected, the sysctl does not excuse a missing filter", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
+			f.setFile(tiocstiSysctl, "0\n")
+		}, 5, StatusFailed, "Seccomp: is 0"},
+		{"5 Seccomp_filters line is not a number", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\tmany\n")
+		}, 5, StatusNotChecked, "not a number"},
 		{"5 filter expected and not loaded, sysctl 0", profile.Claude, func(s *Spec, f *fakeSys) { s.SeccompExpected = true }, 5, StatusFailed, "Seccomp: is 0"},
 		{"5 filter expected, strict mode is not a filter", profile.Claude, func(s *Spec, f *fakeSys) {
 			s.SeccompExpected = true

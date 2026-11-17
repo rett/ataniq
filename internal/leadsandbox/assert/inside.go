@@ -295,52 +295,76 @@ func readSysctl(sys System) (sysctlState, string) {
 	return sysctlUnreadable, fmt.Sprintf("legacy_tiocsti cannot be read: %v", err)
 }
 
-// seccompMode reads the Seccomp: line of /proc/self/status. A status without
-// the line (a kernel without seccomp) is mode 0.
-func seccompMode(sys System) (int, error) {
-	data, err := sys.ReadFile(procStatus, maxStatusBytes)
-	if err != nil {
-		return 0, err
-	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		v, ok := bytes.CutPrefix(line, []byte("Seccomp:"))
-		if !ok {
-			continue
-		}
-		mode, err := strconv.Atoi(string(bytes.TrimSpace(v)))
-		if err != nil {
-			return 0, fmt.Errorf("the Seccomp: line is not a number")
-		}
-		return mode, nil
-	}
-	return 0, nil
+// seccompState is what /proc/self/status says about seccomp.
+type seccompState struct {
+	// Mode is the Seccomp: line: 0 off, 1 strict, 2 filter. A status without
+	// the line (a kernel without seccomp) is mode 0.
+	Mode int
+	// Filters is the Seccomp_filters: line, the number of filters the
+	// process carries; HasFilters is false when the kernel does not give it.
+	Filters    int
+	HasFilters bool
 }
 
-// 5. legacy_tiocsti is 0, or a seccomp filter is loaded; when the profile
-// expects a filter, it must be loaded.
-func (c *checker) tiocsti() Result {
-	mode, merr := seccompMode(c.sys)
-	if c.spec.SeccompExpected {
-		switch {
-		case merr != nil:
-			return result(5, StatusNotChecked, "the profile expects a seccomp filter and %s cannot be read: %v", procStatus, merr)
-		case mode != 2:
-			return result(5, StatusFailed, "the profile expects a seccomp filter and Seccomp: is %d, not 2", mode)
+// describe is the state for a detail.
+func (s seccompState) describe() string {
+	if s.HasFilters {
+		return fmt.Sprintf("Seccomp: %d, Seccomp_filters: %d", s.Mode, s.Filters)
+	}
+	return fmt.Sprintf("Seccomp: %d, Seccomp_filters: not given", s.Mode)
+}
+
+// readSeccomp reads the Seccomp: and Seccomp_filters: lines of
+// /proc/self/status.
+func readSeccomp(sys System) (seccompState, error) {
+	var st seccompState
+	data, err := sys.ReadFile(procStatus, maxStatusBytes)
+	if err != nil {
+		return st, err
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if v, ok := bytes.CutPrefix(line, []byte("Seccomp:")); ok {
+			mode, err := strconv.Atoi(string(bytes.TrimSpace(v)))
+			if err != nil {
+				return seccompState{}, fmt.Errorf("the Seccomp: line is not a number")
+			}
+			st.Mode = mode
+		} else if v, ok := bytes.CutPrefix(line, []byte("Seccomp_filters:")); ok {
+			n, err := strconv.Atoi(string(bytes.TrimSpace(v)))
+			if err != nil {
+				return seccompState{}, fmt.Errorf("the Seccomp_filters: line is not a number")
+			}
+			st.Filters, st.HasFilters = n, true
 		}
-		return result(5, StatusOK, "a seccomp filter is loaded (Seccomp: 2), as the profile expects")
 	}
-	st, sdetail := readSysctl(c.sys)
-	switch {
-	case st == sysctlZero:
-		return result(5, StatusOK, "%s", sdetail)
-	case merr == nil && mode == 2:
-		return result(5, StatusOK, "%s; a seccomp filter is loaded (Seccomp: 2)", sdetail)
-	case st == sysctlUnreadable:
-		return result(5, StatusNotChecked, "%s", sdetail)
-	case merr != nil:
-		return result(5, StatusNotChecked, "%s, and %s cannot be read: %v", sdetail, procStatus, merr)
+	return st, nil
+}
+
+// 5. Without a filter in the profile, dev.tty.legacy_tiocsti must be 0: no
+// other reading is accepted, and a seccomp filter that something else
+// installed (a service manager's, say) is not evidence that TIOCSTI is
+// blocked. With a filter in the profile, the process must carry one
+// (Seccomp: 2). That is all the probe can see from inside: it does not verify
+// which filter it is, and the detail says so.
+func (c *checker) tiocsti() Result {
+	if c.spec.SeccompExpected {
+		st, err := readSeccomp(c.sys)
+		switch {
+		case err != nil:
+			return result(5, StatusNotChecked, "the profile expects a seccomp filter and %s cannot be read: %v", procStatus, err)
+		case st.Mode != 2:
+			return result(5, StatusFailed, "the profile expects a seccomp filter and Seccomp: is %d, not 2", st.Mode)
+		}
+		return result(5, StatusOK, "a seccomp filter is loaded (%s), as the profile expects; the identity of the filter is not verified from inside", st.describe())
 	}
-	return result(5, StatusFailed, "%s, and no seccomp filter is loaded (Seccomp: %d)", sdetail, mode)
+	state, detail := readSysctl(c.sys)
+	switch state {
+	case sysctlZero:
+		return result(5, StatusOK, "%s", detail)
+	case sysctlUnreadable:
+		return result(5, StatusNotChecked, "%s", detail)
+	}
+	return result(5, StatusFailed, "%s, and the profile names no seccomp filter: a filter that something else loaded is not evidence that TIOCSTI is blocked", detail)
 }
 
 // 6. The owner's folders and the other runtime's config folder do not exist.
