@@ -73,7 +73,7 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 	if err != nil {
 		return e, note{ActionUnavailable, "manager-unavailable", "inspect: " + err.Error()}, nil
 	}
-	closes := in.At.Add(c.window + c.margin)
+	closes := c.windowClosesAt(in)
 	late := !c.clock.Now().Before(closes)
 	if st.Loaded {
 		if matchesIntent(st, &in) {

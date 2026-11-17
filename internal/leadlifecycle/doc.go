@@ -113,6 +113,10 @@
 // and a step of the wall clock. Across a restart only the wall clock exists,
 // so a step of it (a time adjustment, a suspend and resume) can still close
 // the window early or hold it open; the margin covers a small step only.
+// A margin of zero means the default; [Options].NoLateStartMargin asks for none.
+// The window and the margin are added to the intent's time one after the other
+// and the end of the window is cut at 100 years, so that a large option cannot
+// wrap around into the past and close the window at once.
 //
 // # Status
 //
