@@ -8,8 +8,13 @@
 // This package so far holds the table ([Assertions]), the [Spec] with its
 // strict decoder ([DecodeSpec]) and its builder ([NewSpec]), and the [Report]
 // with its one-line format ([EncodeLine], [ParseLine]) and the judgement of a
-// report against its spec ([Failed], [Problems]). The checks themselves are
-// not in it yet.
-//
-// It does not run a check, open a connection, read a file or start a process.
+// report against its spec ([Failed], [Problems]). It also holds the inside
+// checks, assertions 1 to 8, in [RunInside], over a small [System] interface:
+// [HostSystem] is the real one (Linux) and tests use a fake. The checks never
+// create a file (writability is asked of the kernel with access(W_OK) and read
+// from the mount table's read-only flag, and both must say read-only), never
+// issue TIOCSTI, never send a byte on a connection and start no process: the
+// package imports no os/exec. A check that cannot be made is not-checked, with
+// the reason, and [Failed] counts it as a failure unless the spec marks the
+// assertion optional.
 package assert
