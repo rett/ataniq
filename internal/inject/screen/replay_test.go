@@ -35,6 +35,7 @@ type wantJSON struct {
 	Mode             string   `json:"mode,omitempty"`
 	PastedMarker     bool     `json:"pasted_marker,omitempty"`
 	Notes            []string `json:"notes,omitempty"`
+	StateHidden      bool     `json:"state_hidden,omitempty"`
 	Working          bool     `json:"working,omitempty"`
 	Placeholder      bool     `json:"placeholder,omitempty"`
 }
@@ -44,7 +45,7 @@ func toWant(r Reading) wantJSON {
 		Known: r.Known, Composer: r.Composer, ComposerEmpty: r.ComposerEmpty,
 		ComposerText: r.ComposerText, CursorInComposer: r.CursorInComposer,
 		Dialog: r.Dialog, DialogMarks: r.DialogMarks, BackgroundTask: r.BackgroundTask,
-		Mode: r.Mode, PastedMarker: r.PastedMarker, Notes: r.Notes,
+		Mode: r.Mode, PastedMarker: r.PastedMarker, Notes: r.Notes, StateHidden: r.StateHidden,
 		Working: r.Working, Placeholder: r.Placeholder,
 	}
 }
@@ -386,6 +387,11 @@ func TestProseHigherUpDoesNotCount(t *testing.T) {
 		}
 		// Rows above the bottom rows: more than 20 rows above the last one.
 		for i := 0; i < min(last-bottomRows, top); i++ {
+			if l.runtime == "codex" && i == top-1 {
+				// The blank row directly above the prompt row is part
+				// of the codex layout: anything else there is unknown.
+				continue
+			}
 			for _, p := range prose[l.runtime] {
 				mut := append([]string(nil), base...)
 				mut[i] = p
@@ -858,6 +864,9 @@ func FuzzRead(f *testing.F) {
 			if len(got.Notes) == 0 {
 				t.Fatalf("unknown without a note: %+v", got)
 			}
+		}
+		if got.StateHidden && (!got.Composer || got.Working || got.Mode != "" || len(got.Notes) == 0) {
+			t.Fatalf("state hidden with a working hint, a mode or no note: %+v", got)
 		}
 		if got.ComposerEmpty && !got.CursorInComposer {
 			t.Fatalf("empty composer without the cursor in it: %+v", got)

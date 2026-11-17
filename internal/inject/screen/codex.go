@@ -12,9 +12,11 @@ import "strings"
 // from a fixed window: skip the status rows, then walk up through the
 // continuation rows to the prompt row. The transcript above echoes the
 // owner's earlier prompts with the same "› " start, but the walk stops at the
-// first prompt row. A blank row inside the walk, a row that is neither a
-// continuation nor the prompt, or the top of the screen before a prompt row,
-// make the screen unknown. An open dialog has a numbered list whose selected
+// first prompt row, and a blank row must be directly above it, as in every
+// recorded screen. A blank row inside the walk, a row that is neither a
+// continuation nor the prompt, the top of the screen before a prompt row, a
+// prompt row at the top row or one with a row of text above it, make the
+// screen unknown. An open dialog has a numbered list whose selected
 // row starts with "› " too ("› 1. Yes, proceed (y)"), which is not a composer.
 //
 // An empty composer shows the hint "Ask Codex to do anything" in faint style
@@ -90,6 +92,13 @@ func codexComposer(g *grid) (prompt, end int, why string) {
 			if choiceLine(rs, '›') {
 				return -1, -1, "composer prompt row is a choice"
 			}
+			// A blank row directly above the prompt row, as in every
+			// recorded screen. Without it the walk could join the
+			// indented rows of an echoed earlier prompt to the composer;
+			// at the top row, what is above cannot be seen.
+			if i == 0 || !blank(g.rows[i-1]) {
+				return -1, -1, "no blank row above the composer prompt row"
+			}
 			return i, end, ""
 		case leadingSpaces(rs) < 2:
 			return -1, -1, "no composer prompt row above the status rows"
@@ -127,7 +136,11 @@ func (codex) Read(s Snapshot) Reading {
 		Composer:         true,
 		CursorInComposer: cursorIn(s, prompt, end),
 	}
-	for i := g.windowStart(); i <= g.last; i++ {
+	// The working row is in the bottom rows, or in as many rows directly
+	// above the prompt row: a tall composer pushes it out of the bottom
+	// rows.
+	from := min(g.windowStart(), max(prompt-bottomRows, 0))
+	for i := from; i <= g.last; i++ {
 		if (i < prompt || i > end) && strings.Contains(string(g.rows[i]), "esc to interrupt)") {
 			r.Working = true
 		}

@@ -69,6 +69,46 @@ func TestClaudeFooters(t *testing.T) {
 	}
 }
 
+// TestStateHiddenOnlyUnderThePasteFooter: StateHidden is true exactly for the
+// claude paste footer, on a built screen and on every recorded screen.
+func TestStateHiddenOnlyUnderThePasteFooter(t *testing.T) {
+	rec := mustFor(t, "claude")
+	marker := "❯ x[Pasted text #1 +20 lines]"
+	for _, c := range []struct {
+		footer string
+		hidden bool
+	}{
+		{"  paste again to expand", true},
+		{"  ⏸ manual mode on", false},
+		{"  ⏸ manual mode on · esc to interrupt", false},
+		{"  ⏸ manual mode on · 1 shell · ↓ to manage", false},
+	} {
+		got := rec.Read(claudeScreen([]string{marker}, c.footer))
+		if !got.Known || got.StateHidden != c.hidden || (len(got.Notes) > 0) != c.hidden {
+			t.Errorf("%q: %+v", c.footer, got)
+		}
+	}
+	// An unknown screen has no StateHidden: only the notes.
+	if got := rec.Read(claudeScreen([]string{"❯ x"}, "  paste again to expand")); got.Known || got.StateHidden {
+		t.Errorf("%+v", got)
+	}
+	n := 0
+	for _, l := range loadAll(t) {
+		got := recogniserFor(t, l).Read(l.snap())
+		rs := strings.Split(strings.TrimRight(l.text, "\n"), "\n")
+		paste := l.runtime == "claude" && got.Known && strings.TrimSpace(rs[len(rs)-1]) == "paste again to expand"
+		if got.StateHidden != paste {
+			t.Errorf("%s/%s: StateHidden=%v, paste footer=%v", l.runtime, l.name, got.StateHidden, paste)
+		}
+		if paste {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Error("no recorded screen with the paste footer")
+	}
+}
+
 func TestClaudeBackgroundStatusLine(t *testing.T) {
 	rec := mustFor(t, "claude")
 	s := claudeScreen([]string{"❯ "}, "  ⏸ manual mode on · ? for shortcuts")
@@ -138,6 +178,11 @@ func TestClaudeComposerShapes(t *testing.T) {
 		if !got.Known || !got.Composer || got.ComposerEmpty || !got.PastedMarker || got.Mode != "" ||
 			got.ComposerText != "paste one line[Pasted text #1 +20 lines]" || got.Working || got.BackgroundTask {
 			t.Errorf("%+v", got)
+		}
+		// The footer hides the working hint and the shell count: the
+		// reading says so, and the false values are not observations.
+		if !got.StateHidden || len(got.Notes) == 0 || !strings.Contains(got.Notes[0], "OSC 7501") {
+			t.Errorf("paste footer: state not marked hidden: %+v", got)
 		}
 		// The marker on a continuation row counts as well.
 		got = rec.Read(claudeScreen([]string{"❯ paste one line", "  [Pasted text #2]"}, hint))
@@ -247,11 +292,11 @@ func codexScreen(box []string, below ...string) Snapshot {
 }
 
 // codexTall builds a codex screen of h rows (a screen of at most MaxRows)
-// whose bottom is the composer rows, a blank row and the below rows. When they
-// do not fit, the top of the composer is scrolled off. The cursor is on the
-// prompt row, column 2, when that row is on the screen.
+// whose bottom is a transcript row, a blank row, the composer rows, a blank row
+// and the below rows. When they do not fit, the top is scrolled off. The cursor
+// is on the prompt row, column 2, when that row is on the screen.
 func codexTall(h int, box []string, below ...string) Snapshot {
-	full := append([]string{"• hello"}, box...)
+	full := append([]string{"• hello", ""}, box...)
 	full = append(full, "")
 	full = append(full, below...)
 	skipped := 0
@@ -261,7 +306,7 @@ func codexTall(h int, box []string, below ...string) Snapshot {
 	}
 	return Snapshot{
 		Text: strings.Join(full, "\n"), Cols: 120, Rows: h,
-		CursorX: 2, CursorY: 1 - skipped, AltScreen: true,
+		CursorX: 2, CursorY: 2 - skipped, AltScreen: true,
 	}
 }
 
@@ -400,13 +445,15 @@ func TestCodexShapes(t *testing.T) {
 	t.Run("a composer that does not fit the screen is never empty", func(t *testing.T) {
 		// A message of 4 KiB of one-character lines is 2048 rows: the
 		// screen shows the end of it. The prompt row is off the screen
-		// when the rows do not fit, and the screen is unknown then.
+		// when the rows do not fit, and the screen is unknown then; so it
+		// is when the prompt row is the top row, because the blank row
+		// above it cannot be seen.
 		for _, n := range []int{150, 190, 195, 196, 197, 198, 199, 200, 300, 2048} {
 			got := rec.Read(codexTall(200, tallBox(n, "› x", "  x"), status))
 			if got.ComposerEmpty || got.Placeholder {
 				t.Errorf("%d rows: %+v", n, got)
 			}
-			fits := n+2 <= 200 // the composer, the blank row and the status row
+			fits := n+3 <= 200 // the blank row above, the composer, the blank row and the status row
 			if got.Known != fits {
 				t.Errorf("%d rows: known=%v, want %v: %+v", n, got.Known, fits, got.Notes)
 			}
@@ -445,6 +492,82 @@ func TestCodexShapes(t *testing.T) {
 		got := rec.Read(codexTall(20, box, status))
 		if got.Known {
 			t.Errorf("prompt row scrolled off: %+v", got)
+		}
+	})
+	t.Run("a blank row must be directly above the prompt row", func(t *testing.T) {
+		// The walk must not join transcript rows to the composer: what is
+		// above the prompt row is a blank row, as in every recorded screen.
+		box := tallBox(5, "› first", "  line")
+		if got := rec.Read(codexTall(36, box, status)); !got.Known || !got.Composer {
+			t.Fatalf("with the blank row: %+v", got)
+		}
+		for name, above := range map[string]string{
+			"transcript row":      "• earlier answer",
+			"echoed continuation": "  earlier line",
+			"echoed prompt":       "› earlier prompt",
+			"rule":                "────",
+		} {
+			s := codexTall(36, box, status)
+			r := strings.Split(s.Text, "\n")
+			r[1] = above
+			s.Text = strings.Join(r, "\n")
+			if got := rec.Read(s); got.Known || len(got.Notes) == 0 {
+				t.Errorf("%s directly above: %+v", name, got)
+			}
+		}
+		// A one-row composer is held to the same rule.
+		s := codexScreen([]string{"› hi"}, status)
+		r := strings.Split(s.Text, "\n")
+		r[29] = "• answer"
+		s.Text = strings.Join(r, "\n")
+		if got := rec.Read(s); got.Known {
+			t.Errorf("one row, no blank above: %+v", got)
+		}
+		// A prompt row at the top row: what is above it cannot be seen.
+		s = Snapshot{Text: strings.Join([]string{"› hi", "", "  GPT-6-Luna medium · /home/user/work", "", ""}, "\n"), Cols: 120, Rows: 5, CursorX: 2, AltScreen: true}
+		if got := rec.Read(s); got.Known {
+			t.Errorf("prompt row at row 0: %+v", got)
+		}
+		// The same screen with a row above it is known.
+		s = Snapshot{Text: strings.Join([]string{"", "› hi", "", "  GPT-6-Luna medium · /home/user/work", ""}, "\n"), Cols: 120, Rows: 5, CursorX: 2, CursorY: 1, AltScreen: true}
+		if got := rec.Read(s); !got.Known || !got.Composer {
+			t.Errorf("prompt row at row 1: %+v", got)
+		}
+	})
+	t.Run("working line above a tall composer", func(t *testing.T) {
+		working := "• Working (5s • esc to interrupt)"
+		for _, n := range []int{1, 2, 10, 21} {
+			s := codexTall(60, tallBox(n, "› first", "  line"), status)
+			r := strings.Split(s.Text, "\n")
+			// The working row is directly above the blank row that is
+			// above the composer.
+			r[0] = working
+			s.Text = strings.Join(r, "\n")
+			got := rec.Read(s)
+			if !got.Known || !got.Composer || !got.Working {
+				t.Errorf("%d rows: %+v", n, got)
+			}
+			s.Text = strings.Replace(s.Text, working, "• Worked for 5s", 1)
+			if got := rec.Read(s); !got.Known || got.Working {
+				t.Errorf("%d rows, no working row: %+v", n, got)
+			}
+		}
+		// Rows farther above than the bottom window above the prompt row
+		// are not looked at.
+		s := codexTall(80, tallBox(21, "› first", "  line"), status)
+		rows := []string{working}
+		for i := 0; i < 30; i++ {
+			rows = append(rows, "• earlier answer")
+		}
+		s.Text = strings.Join(rows, "\n") + "\n" + s.Text
+		if got := rec.Read(s); !got.Known || got.Working {
+			t.Errorf("working row far above: %+v", got)
+		}
+		// The text in the composer rows is not a working row.
+		box := tallBox(21, "› first", "  line")
+		box[10] = "  esc to interrupt)"
+		if got := rec.Read(codexTall(60, box, status)); got.Working {
+			t.Errorf("composer text read as the working row: %+v", got)
 		}
 	})
 	t.Run("the nearest prompt row is the composer", func(t *testing.T) {

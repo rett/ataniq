@@ -42,6 +42,12 @@
 // cells; a consumer must test Reading.ComposerEmpty, never
 // Reading.ComposerText == "".
 //
+// Under claude's footer "paste again to expand" (a collapsed paste is in the
+// composer) the footer shows neither the working hint nor the shell count.
+// Reading.StateHidden is true exactly then, with a note: Working and the
+// footer part of BackgroundTask are not observed, and a consumer takes the
+// working state from the runtime's OSC 7501 report.
+//
 // Dialog marks are looked for only in the bottom rows of the screen, and only
 // at the start of a line, so prose higher up in an answer does not count. Prose
 // that wraps into the bottom rows can at worst make a screen look like a
