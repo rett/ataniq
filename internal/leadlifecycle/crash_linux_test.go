@@ -169,7 +169,7 @@ func (r *rig) checkInvariants(when string, reconciled bool, roles ...leadrole.Ro
 // operation or by the owner.
 func (r *rig) wayForward(when string, roles ...leadrole.Role) {
 	r.t.Helper()
-	r.advance(DefaultLateStartWindow + time.Second)
+	r.advance(pastTheWindow)
 	r.reconcile()
 	for _, role := range roles {
 		e := r.get(role)

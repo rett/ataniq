@@ -38,7 +38,11 @@ import (
 //
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.
-// Reconcile never signals it, but Stop is the owner's order, and signals it.
+// So does a unit of ours with an older epoch, which is a start that landed
+// after a newer epoch had run (epochs only grow, so it cannot be newer work).
+// Reconcile never signals either, but Stop is the owner's order, and signals
+// them. A unit of a newer epoch, of the same epoch with another intent, or
+// that is not ours is never signalled.
 func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry.Entry, error) {
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
@@ -109,11 +113,19 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 	return c.terminate(ctx, e, st, notes)
 }
 
-// stopsAsOurs reports whether a loaded unit is the unit the role's record
-// names: ours, with the epoch and intent of the current launch, and the
-// recorded invocation if one is recorded. A pending intent has been settled by
-// now, so this needs no outcome.
+// stopsAsOurs reports whether Stop may signal a loaded unit: it is ours and
+// either the unit the role's record names (the epoch and intent of the current
+// launch, and the recorded invocation if one is recorded), or a unit of an
+// older epoch. Epochs only grow, so a unit of ours with an older epoch is a
+// start request that landed late, after its intent was closed, and cannot be
+// newer work; Stop is the owner's order and ends it. A newer epoch, another
+// intent of the current epoch (an epoch the registry reused after a cut) and
+// another invocation of the current launch are not recognised. A pending
+// intent has been settled by now, so this needs no outcome.
 func stopsAsOurs(st leadunit.State, e leadregistry.Entry) bool {
+	if st.Loaded && st.Ours && st.Epoch < e.Epoch {
+		return true
+	}
 	if !matchesIntent(st, e.Intent) {
 		return false
 	}
@@ -127,7 +139,7 @@ func (c *Controller) stopAbsent(ctx context.Context, e leadregistry.Entry, st le
 		return e, nil
 	}
 	var ab absence
-	why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
+	ok, why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
 		cur, ierr := c.mgr.Inspect(ctx, st.Unit)
 		if ierr != nil {
 			return false, "the unit could not be inspected: " + ierr.Error()
@@ -141,8 +153,8 @@ func (c *Controller) stopAbsent(ctx context.Context, e leadregistry.Entry, st le
 	if err != nil {
 		return e, err
 	}
-	if why != "" {
-		return c.unproven(e, notes, why, nil)
+	if !ok {
+		return c.unproven(e, notes, orNoReason(why), nil)
 	}
 	return c.proven(e, notes, "stop-completed", ab.text)
 }
@@ -185,7 +197,7 @@ func (c *Controller) terminate(ctx context.Context, e leadregistry.Entry, st lea
 
 	killSent := emptied
 	var proof string
-	why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
+	ok, why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
 		if !killSent {
 			err := c.mgr.Signal(ctx, st, syscall.SIGKILL)
 			switch {
@@ -202,7 +214,8 @@ func (c *Controller) terminate(ctx context.Context, e leadregistry.Entry, st lea
 	if err != nil {
 		return e, err
 	}
-	if why != "" {
+	if !ok {
+		why = orNoReason(why)
 		if last != nil {
 			why += "; last manager error: " + last.Error()
 		}
@@ -259,4 +272,13 @@ func (c *Controller) unproven(e leadregistry.Entry, notes []string, why string, 
 		return e, errors.Join(out, err)
 	}
 	return e, out
+}
+
+// orNoReason is the reason text of an unproven stop whose last check gave
+// none.
+func orNoReason(why string) string {
+	if why == "" {
+		return "the proof was not established by the bound"
+	}
+	return why
 }

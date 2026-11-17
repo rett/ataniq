@@ -24,6 +24,10 @@ const (
 	// DefaultLateStartWindow is how long after a launch intent a start whose
 	// reply was lost is still thought able to land.
 	DefaultLateStartWindow = 30 * time.Second
+	// DefaultLateStartMargin is what is added to the late-start window: the
+	// time between the registry stamping a launch intent and the start
+	// request being sent, and a step of the wall clock.
+	DefaultLateStartMargin = 10 * time.Second
 
 	// TermWait is how long Stop lets a control group run after SIGTERM before
 	// it sends SIGKILL.
@@ -95,7 +99,11 @@ type Options struct {
 	Registry *leadregistry.Registry
 	// Manager manages the units. Required.
 	Manager leadunit.Manager
-	// Clock is the time source; default leadunit.SystemClock.
+	// Clock is the time source; default leadunit.SystemClock. It must be the
+	// same source as the registry's Options.Now: the late-start window is
+	// measured from the time the registry stamped on the launch intent, and
+	// is compared with this clock. Two sources that differ make the window
+	// shorter or longer than configured.
 	Clock leadunit.Clock
 	// Preflight checks that a start may go ahead. Required.
 	Preflight Preflight
@@ -110,8 +118,16 @@ type Options struct {
 	ProofBound time.Duration
 	// LateStartWindow is how long after a launch intent a start that lost its
 	// reply is still thought able to land; default DefaultLateStartWindow. It
-	// must be longer than any manager call timeout.
+	// must be longer than any manager call timeout. It is a heuristic, not a
+	// bound: see the package documentation.
 	LateStartWindow time.Duration
+	// LateStartMargin is added to LateStartWindow before a launch intent is
+	// closed as abandoned; default DefaultLateStartMargin. The registry stamps
+	// the intent before the command is built and the request is sent, and
+	// across a restart only the wall clock is available, so a step of it
+	// (a time adjustment, a suspend and resume) can close the window early.
+	// The margin covers both; it is not a guarantee.
+	LateStartMargin time.Duration
 }
 
 // Controller starts, stops and reconciles lead roles. Its methods are safe for
@@ -126,6 +142,7 @@ type Controller struct {
 	poll   time.Duration
 	bound  time.Duration
 	window time.Duration
+	margin time.Duration
 
 	mu        sync.Mutex
 	locks     map[leadrole.Role]chan struct{}
@@ -144,13 +161,13 @@ func New(o Options) (*Controller, error) {
 		return nil, errors.New("leadlifecycle: Options.Preflight is required")
 	case o.Holder == nil:
 		return nil, errors.New("leadlifecycle: Options.Holder is required")
-	case o.PollInterval < 0 || o.ProofBound < 0 || o.LateStartWindow < 0:
+	case o.PollInterval < 0 || o.ProofBound < 0 || o.LateStartWindow < 0 || o.LateStartMargin < 0:
 		return nil, errors.New("leadlifecycle: a duration option is negative")
 	}
 	c := &Controller{
 		reg: o.Registry, mgr: o.Manager, clock: o.Clock, pre: o.Preflight,
 		holder: o.Holder, quiet: o.Quiesce, poll: o.PollInterval, bound: o.ProofBound,
-		window: o.LateStartWindow, locks: map[leadrole.Role]chan struct{}{},
+		window: o.LateStartWindow, margin: o.LateStartMargin, locks: map[leadrole.Role]chan struct{}{},
 	}
 	if c.clock == nil {
 		c.clock = leadunit.SystemClock{}
@@ -163,6 +180,9 @@ func New(o Options) (*Controller, error) {
 	}
 	if c.window == 0 {
 		c.window = DefaultLateStartWindow
+	}
+	if c.margin == 0 {
+		c.margin = DefaultLateStartMargin
 	}
 	return c, nil
 }
@@ -346,25 +366,27 @@ func (c *Controller) proveGone(ctx context.Context, st leadunit.State, ev leadre
 }
 
 // pollUntil calls check until it reports ok or the bound has passed, waiting
-// the poll interval between calls on the injected clock. It returns the last
-// reason it was given. A context error stops it at once.
-func (c *Controller) pollUntil(ctx context.Context, check func(context.Context) (ok bool, why string)) (why string, err error) {
+// the poll interval between calls on the injected clock. Only a check that
+// reported ok gives ok true; a check that never did gives ok false with the
+// last reason it was given, which may be empty, so callers decide on ok and
+// never on the reason. A context error stops it at once and gives ok false.
+func (c *Controller) pollUntil(ctx context.Context, check func(context.Context) (ok bool, why string)) (ok bool, why string, err error) {
 	deadline := c.clock.Now().Add(c.bound)
 	for {
-		ok, w := check(ctx)
-		if ok {
-			return "", nil
+		passed, w := check(ctx)
+		if passed {
+			return true, "", nil
 		}
 		why = w
 		if err := ctx.Err(); err != nil {
-			return why, err
+			return false, why, err
 		}
 		left := deadline.Sub(c.clock.Now())
 		if left <= 0 {
-			return why, nil
+			return false, why, nil
 		}
 		if err := c.clock.Sleep(ctx, min(c.poll, left)); err != nil {
-			return why, err
+			return false, why, err
 		}
 	}
 }

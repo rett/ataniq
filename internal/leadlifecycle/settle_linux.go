@@ -72,7 +72,7 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 	if err != nil {
 		return e, note{ActionUnavailable, "manager-unavailable", "inspect: " + err.Error()}, nil
 	}
-	closes := in.At.Add(c.window)
+	closes := in.At.Add(c.window + c.margin)
 	late := !c.clock.Now().Before(closes)
 	if st.Loaded {
 		if matchesIntent(st, &in) {
@@ -111,8 +111,8 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 		}
 		return e, n, err
 	}
-	basis := fmt.Sprintf("intent %s epoch %d journaled at %s, no unit loaded and the control group empty after the %s late-start window; %s",
-		in.ID, in.Epoch, in.At.UTC().Format(time.RFC3339), c.window, ab.text)
+	basis := fmt.Sprintf("intent %s epoch %d journaled at %s, no unit loaded and the control group empty after the %s late-start window and its %s margin; %s",
+		in.ID, in.Epoch, in.At.UTC().Format(time.RFC3339), c.window, c.margin, ab.text)
 	if e, err = c.reg.RecordOutcome(e.Role, in.ID, in.Epoch, leadregistry.OutcomeAbandoned, leadregistry.UnitEvidence{BootID: st.BootID}); err != nil {
 		return e, note{}, err
 	}

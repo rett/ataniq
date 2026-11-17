@@ -311,6 +311,55 @@ func TestStartBuildFailure(t *testing.T) {
 	})
 }
 
+// After a start that failed, the absence of the unit is proven again before
+// the role is recorded stopped. A control group left behind at the unit's
+// path must leave the role unknown, even though no unit is loaded.
+func TestStartFailedWithAControlGroupLeftBehind(t *testing.T) {
+	t.Run("the manager refused the start", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		failure := errors.New("the manager refused")
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			// The group appears after the proof Start needed to begin.
+			r.fake.LeaveControlGroup(unitOf(rl), true)
+			r.fake.FailNextStart(unitOf(rl), failure)
+		}
+		e, err := r.start(role)
+		isErr(t, err, ErrStartFailed)
+		isErr(t, err, failure)
+		if e.Intent.Outcome != leadregistry.OutcomeFailed {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(role, leadregistry.StateUnknown, "launch-failed-unproven")
+		if r.callsOf(leadunit.MethodStart) != 1 || len(r.fake.StartedSpecs()) != 0 {
+			t.Fatal("start calls or started units are not as scripted")
+		}
+		// Nothing starts while the group is left; once it is gone the owner
+		// or Reconcile can move the role on.
+		_, err = r.start(role)
+		isErr(t, err, leadregistry.ErrLaunchRefused)
+		r.noSignals()
+		r.auditClean()
+	})
+	t.Run("the holder command could not be built", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.holder.err = errors.New("no holder binary")
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			r.fake.LeaveControlGroup(unitOf(rl), true)
+		}
+		e, err := r.start(role)
+		isErr(t, err, ErrStartFailed)
+		if e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(role, leadregistry.StateUnknown, "holder-command-failed-unproven")
+		if r.callsOf(leadunit.MethodStart) != 0 {
+			t.Fatal("Start called")
+		}
+	})
+}
+
 func TestStartL1ReplyLostUnitRunningIsAdopted(t *testing.T) {
 	r := newRig(t)
 	role := r.define("alpha")
@@ -352,4 +401,81 @@ func TestStartWithContextAlreadyDone(t *testing.T) {
 	if r.revision() != rev {
 		t.Fatal("registry changed")
 	}
+}
+
+// The late-start window is counted from the intent's timestamp, which the
+// registry takes before the command is built and the request is sent, so a
+// margin is added to it; the margin is an option.
+func TestLateStartMargin(t *testing.T) {
+	lose := func(r *rig, role leadrole.Role) {
+		r.fake.DropNextStart(unitOf(role))
+		_, err := r.start(role)
+		isErr(t, err, ErrLaunchUncertain)
+	}
+	t.Run("the default margin is added to the window", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		lose(r, role)
+		r.advance(DefaultLateStartWindow)
+		rep := r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionPending {
+			t.Fatalf("report at the end of the window itself: %+v", rr)
+		}
+		r.advance(DefaultLateStartMargin - time.Second)
+		rep = r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionPending {
+			t.Fatalf("report one second before the margin ends: %+v", rr)
+		}
+		if e := r.get(role); e.Intent.Outcome != leadregistry.OutcomePending {
+			t.Fatalf("entry %+v", e)
+		}
+		r.advance(time.Second)
+		rep = r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionStopped {
+			t.Fatalf("report at the end of the margin: %+v", rr)
+		}
+		if e := r.expectState(role, leadregistry.StateStopped, "launch-abandoned"); !strings.Contains(e.Shown.Proof, "margin") {
+			t.Fatalf("proof %q does not name the margin", e.Shown.Proof)
+		}
+	})
+	t.Run("a start that lands in the margin is adopted", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.fake.LateNextStart(unitOf(role))
+		_, err := r.start(role)
+		isErr(t, err, ErrLaunchUncertain)
+		r.advance(DefaultLateStartWindow + DefaultLateStartMargin - time.Second)
+		_, err = r.fake.LandLateStart(unitOf(role))
+		noErr(t, err)
+		rep := r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionAdopted {
+			t.Fatalf("report %+v", rr)
+		}
+	})
+	t.Run("the margin is an option", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		ctl, err := New(Options{Registry: r.reg, Manager: r.aud, Clock: r.clock, Preflight: r.pre, Holder: r.holder,
+			LateStartMargin: 2 * time.Second})
+		noErr(t, err)
+		r.ctl = ctl
+		lose(r, role)
+		r.advance(DefaultLateStartWindow + time.Second)
+		rep := r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionPending {
+			t.Fatalf("report %+v", rr)
+		}
+		r.advance(time.Second)
+		rep = r.reconcile()
+		if rr, _ := rep.Find(role); rr.Action != ActionStopped {
+			t.Fatalf("report %+v", rr)
+		}
+	})
+	t.Run("a negative margin is refused", func(t *testing.T) {
+		r := newRig(t)
+		_, err := New(Options{Registry: r.reg, Manager: r.aud, Preflight: r.pre, Holder: r.holder, LateStartMargin: -time.Second})
+		if err == nil {
+			t.Fatal("a negative margin was accepted")
+		}
+	})
 }

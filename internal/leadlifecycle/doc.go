@@ -27,7 +27,10 @@
 // invocation) and the control group of the stopped invocation proven empty.
 // With the proof the role is stopped, with a proof text naming the invocation
 // and the control group; without it by the bound the role is unknown. Stop
-// never signals a unit that is not ours, and never types into a session.
+// never signals a unit that is not ours, and never types into a session. A
+// unit of ours that the record does not name is signalled only when its epoch
+// is older than the registry's: that is a start request that landed late, and
+// epochs only grow, so it cannot be newer work.
 //
 // Reconcile compares the registry with the manager for every role the daemon
 // runs. It starts nothing and signals nothing, ever. It adopts a running unit
@@ -46,6 +49,11 @@
 // depends on it, and the launch intent is journaled before the first unit
 // call.
 //
+// One limit: that flag is lost when the daemon dies before its first
+// Reconcile has marked every role registry-recovered, because the registry
+// reports a cut only to the Open that made it, so the next daemon reconciles
+// the roles not yet marked as if no cut had happened.
+//
 // # Where the registry's rules win
 //
 // The registry's transition table is stricter than the lifecycle text in a few
@@ -62,9 +70,12 @@
 //     an owner decision. The pending intent of a lost reply (the unit is not
 //     loaded) is therefore left pending, with the role shown unknown and the
 //     reason launch-reply-lost. Reconcile (or a later Stop) closes it as
-//     abandoned only once the late-start window has passed with the unit still
-//     not loaded and its control group empty; a unit that lands afterwards is
-//     stale, is reported, and is never signalled by this package.
+//     abandoned only once the late-start window and its margin have passed
+//     with the unit still not loaded and its control group empty; a unit that lands afterwards is
+//     stale, is reported by Reconcile, and Reconcile never signals it. An
+//     explicit Stop does: it ends a stale unit of ours that has the
+//     record's epoch and intent or an older epoch, which is the owner's way
+//     out when the window did not hold.
 //   - A launch intent carries no boot identity: the registry records the boot
 //     only with the unit evidence of an outcome. A pending intent with no unit
 //     evidence therefore cannot be told apart by boot, and only the window
@@ -77,9 +88,24 @@
 // acts on what the [leadunit.Manager] answers, and the tests run against
 // [leadunit.Fake], which is a model written from the contract. It does not
 // read the lock files, does not look at the holder, and has no view of
-// readiness or of a turn in progress. The late-start window is a time bound
-// that assumes no start request lives longer than it; the option's default is
-// longer than any manager call timeout, but the assumption is not checked.
+// readiness or of a turn in progress. The late-start window is a heuristic, not
+// a bound. The manager's call timeout limits how long the caller waits for a
+// reply, not when systemd executes a request that is already on the bus, so a
+// request can land after the window, even after a newer epoch has run. The
+// window only decides when Reconcile stops waiting for a start that may still
+// land; the stale-unit path (Reconcile reports it, Stop ends it) is what
+// handles a request that lands later.
+//
+// The window is counted from the time the registry stamped on the launch
+// intent and compared with the controller's clock, so the registry's Now and
+// [Options].Clock must be one time source; the package cannot check it, and
+// two sources that differ make the window shorter or longer than configured.
+// The registry stamps the intent before the holder command is built and the
+// request is sent, so the window counted from the send is shorter than
+// configured; [Options].LateStartMargin (default 10 s) is added to cover that
+// and a step of the wall clock. Across a restart only the wall clock exists,
+// so a step of it (a time adjustment, a suspend and resume) can still close
+// the window early or hold it open; the margin covers a small step only.
 //
 // # Status
 //
