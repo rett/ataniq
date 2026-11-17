@@ -49,6 +49,11 @@
 // depends on it, and the launch intent is journaled before the first unit
 // call.
 //
+// One limit: that flag is lost when the daemon dies before its first
+// Reconcile has marked every role registry-recovered, because the registry
+// reports a cut only to the Open that made it, so the next daemon reconciles
+// the roles not yet marked as if no cut had happened.
+//
 // # Where the registry's rules win
 //
 // The registry's transition table is stricter than the lifecycle text in a few
