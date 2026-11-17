@@ -810,3 +810,132 @@ func TestShownQuotesAndShortensNamesFromTheSandbox(t *testing.T) {
 		t.Fatalf("shown is %d bytes", len(got))
 	}
 }
+
+// keepCreating makes every file removal create a new file in the same
+// folder, as a process of the run that is still alive would. It stops after
+// budget new files, so that a removal with no bound ends the test with no
+// error and not with a hang. It returns the number of files created so far.
+func keepCreating(t *testing.T, budget int, delay time.Duration) func() int {
+	t.Helper()
+	var mu sync.Mutex
+	made := 0
+	real := unlinkat
+	unlinkat = func(fd int, path string, flags int) error {
+		err := real(fd, path, flags)
+		if err != nil || flags != 0 {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if made >= budget {
+			return nil
+		}
+		made++
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		f, cerr := unix.Openat(fd, fmt.Sprintf("again-%d", made), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, 0o600)
+		if cerr != nil {
+			return cerr
+		}
+		unix.Close(f)
+		return nil
+	}
+	t.Cleanup(func() { unlinkat = real })
+	return func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return made
+	}
+}
+
+// setRemoveBounds changes the bounds of the removal for one test.
+func setRemoveBounds(t *testing.T, passes int, timeout time.Duration) {
+	t.Helper()
+	oldPasses, oldTimeout := maxRemovePasses, removeTimeout
+	maxRemovePasses, removeTimeout = passes, timeout
+	t.Cleanup(func() { maxRemovePasses, removeTimeout = oldPasses, oldTimeout })
+}
+
+func plantFiles(t *testing.T, dir string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d", i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRemoveStopsWhenEntriesKeepAppearingPassLimit(t *testing.T) {
+	setRemoveBounds(t, 20, time.Hour)
+	created := keepCreating(t, 100000, 0)
+	work := newWork(t)
+	wr, err := openWorkRoot(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wr.close()
+	name, err := wr.makeDir("scratch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plantFiles(t, filepath.Join(work, name), 5)
+
+	err = wr.removeDir(name)
+	if err == nil || !strings.Contains(err.Error(), "keep appearing") {
+		t.Fatalf("removeDir: %v (created %d)", err, created())
+	}
+	if n := created(); n < 20 || n > 200 {
+		t.Fatalf("the removal made %d passes' worth of files, want about 20 passes of 5", n)
+	}
+}
+
+func TestRemoveStopsWhenEntriesKeepAppearingDeadline(t *testing.T) {
+	setRemoveBounds(t, 1<<30, 150*time.Millisecond)
+	// Each removal takes a millisecond, so the budget outlasts the deadline.
+	created := keepCreating(t, 3000, time.Millisecond)
+	work := newWork(t)
+	wr, err := openWorkRoot(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wr.close()
+	name, err := wr.makeDir("scratch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plantFiles(t, filepath.Join(work, name), 5)
+
+	start := time.Now()
+	err = wr.removeDir(name)
+	if err == nil || !strings.Contains(err.Error(), "keep appearing") {
+		t.Fatalf("removeDir: %v (created %d)", err, created())
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the removal took %v", d)
+	}
+}
+
+func TestRunReportsAFolderWhoseEntriesKeepAppearing(t *testing.T) {
+	setRemoveBounds(t, 20, time.Hour)
+	keepCreating(t, 100000, 0)
+	m := newMirror(t)
+	work := newWork(t)
+	p := fakePlanner()
+	fr := &fakeRunner{res: boundedexec.Result{Exit: 0}}
+	fr.hook = func(boundedexec.Cmd) {
+		plantFiles(t, p.VerifyRequests()[0].Scratch, 5)
+	}
+	res, err := Run(context.Background(), request(m, work, p, fr, sh("one", "true")))
+	scratch := p.VerifyRequests()[0].Scratch
+	if err == nil || !strings.Contains(err.Error(), scratch) || !strings.Contains(err.Error(), "keep appearing") {
+		t.Fatalf("the error does not name the leftover folder: %v", err)
+	}
+	if res.Passed {
+		t.Fatalf("a run that left a folder passed: %+v", res)
+	}
+	// The home folder had no files and is gone; the scratch folder is the leftover.
+	if got := entries(t, work); len(got) != 1 || got[0] != filepath.Base(scratch) {
+		t.Fatalf("work root holds %v", got)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -42,11 +43,25 @@ import (
 //
 // Unlinking needs write permission on the parent folder only, so files are
 // not changed. A run that leaves a process behind which keeps creating files
-// can make the removal fail with "directory not empty"; that is reported.
+// (one that left the process group, say) can make the removal fail with
+// "directory not empty", or keep it from ever finishing. The removal is
+// therefore bounded: a folder is read at most maxRemovePasses times, and the
+// whole removal of one folder stops after removeTimeout. Then the error names
+// the folder that still had entries appearing; it is a leftover, and it is
+// reported.
 
 const (
 	maxRemoveDepth = 200
 	dirBatch       = 4096
+)
+
+// maxRemovePasses and removeTimeout are variables so that a test can use
+// small bounds. A pass reads up to dirBatch names, so the pass limit allows
+// tens of millions of entries in one folder; the time limit is what ends a
+// removal that is slow rather than endless.
+var (
+	maxRemovePasses = 10000
+	removeTimeout   = 2 * time.Minute
 )
 
 // unlinkat is a variable so a test can make one removal fail.
@@ -56,6 +71,8 @@ var unlinkat = unix.Unlinkat
 type workRoot struct {
 	fd      int
 	liftSeq int
+	// deadline ends the removal of the folder that is being removed.
+	deadline time.Time
 }
 
 // openWorkRoot opens path without following a symlink in the last element and
@@ -115,6 +132,7 @@ func (w *workRoot) makeDir(kind string) (string, error) {
 
 // removeDir removes the folder name below the work root and all it holds.
 func (w *workRoot) removeDir(name string) error {
+	w.deadline = time.Now().Add(removeTimeout)
 	top, err := openWritableDir(w.fd, name)
 	if err != nil {
 		switch {
@@ -164,7 +182,10 @@ func openWritableDir(parent int, name string) (int, error) {
 // not the folder itself. top is the descriptor of the folder being removed,
 // where too-deep folders are moved to. rel is the path for error messages.
 func (w *workRoot) removeContents(dir, top, depth int, rel string) error {
-	for {
+	for pass := 0; ; pass++ {
+		if pass >= maxRemovePasses || time.Now().After(w.deadline) {
+			return fmt.Errorf("%s: entries keep appearing; is a process of the run still alive?", shown(rel))
+		}
 		names, err := readBatch(dir)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", shown(rel), err)

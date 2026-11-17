@@ -76,6 +76,8 @@
 // owner-only folder, on /proc being mounted, and on the caller owning what is
 // removed; see workdir_linux.go. If a folder cannot be removed, Run returns
 // an error that names it, with Passed false. A leftover is never ignored.
+// The removal is bounded in passes and in time: a process of the run that
+// outlived it and keeps creating entries ends in that error, not in a hang.
 //
 // # What it does not do
 //
