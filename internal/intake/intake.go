@@ -245,6 +245,10 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	if err := r.aliasFlags(ctx, req.Rules, tip, rev.Changes, lim); err != nil {
 		return nil, err
 	}
-	rev.Flagged = collect(rev.Changes, nil)
+	hist, err := r.historyFlags(ctx, req.Rules, rev.Commits, rev.Changes, lim)
+	if err != nil {
+		return nil, err
+	}
+	rev.Flagged = collect(rev.Changes, hist)
 	return rev, nil
 }

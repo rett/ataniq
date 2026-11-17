@@ -36,7 +36,7 @@ func (r *runner) changes(ctx context.Context, base, tip string, lim Limits) ([]C
 	_, err := r.git(ctx, []string{
 		"diff-tree", "-r", "-z", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "--full-index",
 		"--end-of-options", base, tip,
-	}, nil, int64(lim.MaxPaths)*2*maxFieldBytes, sink)
+	}, nil, int64(lim.MaxPaths)*bytesPerRecord, sink)
 	if err != nil {
 		return nil, err
 	}

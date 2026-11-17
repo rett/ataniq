@@ -22,6 +22,10 @@ const (
 	// maxFieldBytes is the longest NUL-terminated field of a listing: a path
 	// with the mode and the ids before it.
 	maxFieldBytes = maxPathBytes + 256
+	// bytesPerRecord is the output a listing may have for each record: a
+	// record has about 150 bytes of mode, ids and status, and a path. A
+	// listing of paths that are 900 bytes long on average is refused.
+	bytesPerRecord = 1024
 	// maxCommitField is the longest field of a commit record.
 	maxCommitField = 32 << 10
 )
