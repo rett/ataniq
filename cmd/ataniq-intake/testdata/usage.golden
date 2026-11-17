@@ -100,16 +100,19 @@ only, in the mirror. Your working checkout is not touched.
 
   --tip ID            the full commit id that 'review' printed (required)
   --digest DIGEST     the review digest that 'review' printed (required)
-  --accept-change     you accept the change as a whole (required)
+  --accept-change     you accept the change as a whole; needed for the
+                      integration
   --accept-path PATH  you accept one flagged path, as 'review' printed it;
                       one for each path under "Needs your sign-off"
   --path-rule PATTERN the same list that you gave to review
   --records DIR       your records folder (required)
 
 It refuses, and lists everything missing with the exact arguments to add,
-when the sign-off is incomplete. It refuses when the tip or the upstream
-branch moved since the review, or when the newest verification of the tip is
-not a pass. Exit status 1 for a refusal.
+when the sign-off is incomplete. A missing --accept-change is such a refusal,
+not a usage error: exit status 1 lists everything that is missing, this flag
+among it. It refuses when the tip or the upstream branch moved since the
+review, or when the newest verification of the tip is not a pass. Exit status
+1 for a refusal.
 
 === ataniq-intake help review
 Usage: ataniq-intake review --state DIR --project NAME --role ROLE --branch BRANCH
