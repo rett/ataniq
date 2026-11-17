@@ -86,7 +86,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   for it is answered "not recognised", and setting 100 000 distinct numbers
   does not grow memory. A hyperlink whose URL is over 2 KiB or whose
   parameters are over 256 bytes is dropped and counted, and the text after it
-  has no link. The emulator exposes the counts of every cap it hit through
+  has no link; a screen (the main and the alternate each) keeps at most 256
+  distinct live links, and text printed under a further link is drawn without
+  it and counted. The emulator exposes the counts of every cap it hit through
   `Counters`.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's

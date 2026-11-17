@@ -17,6 +17,8 @@ type Screen struct {
 	scroll uv.Rectangle
 	// scrollback is the scrollback buffer for lines scrolled off the top.
 	scrollback *Scrollback
+	// links bounds the distinct hyperlinks of the cells of the screen.
+	links linkTable
 }
 
 // NewScreen creates a new screen.
@@ -38,6 +40,9 @@ func (s *Screen) Reset() {
 	s.saved = Cursor{}
 	s.scroll = s.buf.Bounds()
 	s.buf.Touched = nil
+	// No cell references a link now.
+	clear(s.links.set)
+	s.links.wait = 0
 }
 
 // Bounds returns the bounds of the screen.
@@ -120,6 +125,11 @@ func (s *Screen) isLineEmpty(line uv.Line) bool {
 // ClearArea clears the given area.
 func (s *Screen) ClearArea(area uv.Rectangle) {
 	s.buf.ClearArea(area)
+	if area.Min.X <= 0 && area.Min.Y <= 0 && area.Max.X >= s.Width() && area.Max.Y >= s.Height() {
+		// Nothing of the screen references a link now.
+		clear(s.links.set)
+		s.links.wait = 0
+	}
 	s.touchArea(area)
 }
 

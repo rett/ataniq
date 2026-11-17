@@ -248,6 +248,12 @@ func (e *Emulator) handleGrapheme(content string, width int) (int, int) {
 		Style:   e.scr.cursorPen(),
 		Link:    e.scr.cursorLink(),
 	}
+	// A cell under a link that would be one too many for the screen is drawn
+	// without it.
+	if cell.Link.URL != "" && !e.scr.admitLink(cell.Link) {
+		cell.Link = uv.Link{}
+		e.counters.LinksOverLimit++
+	}
 
 	x, y := e.scr.CursorPosition()
 	if e.atPhantom && awm {

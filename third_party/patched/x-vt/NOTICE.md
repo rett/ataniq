@@ -52,6 +52,28 @@ Patches, applied in this order to the files of the module as released:
    pen gets no link, as if the link had been closed, and
    `Counters().LinksOverLength` rises. The length of the whole string is
    checked before it is split, so a refused link allocates nothing.
+7. `vt: allow at most 256 distinct live links per screen` (`links.go`,
+   `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Every printed cell
+   copies the pen's link, so a screen's memory follows its distinct links.
+   Each screen (main and alternate) has a table of the links its cells may
+   reference, at most `MaxLiveLinks` (256) entries and so about 0.6 MiB. Text
+   printed under a link that is not in a full table is drawn without the link
+   and `Counters().LinksOverLimit` counts the cell. Design: the cells are
+   changed by code this module does not own (the `ultraviolet` buffer, in
+   every way a terminal changes cells), so reference counts are not
+   maintained at each change. A full table is instead recounted exactly from
+   the cells when a link that is not in it arrives, which drops every link no
+   cell references, and the recount is rate-limited: after a recount, the
+   next one waits for as many refused cells as the screen's cells divided by
+   256, so a session that prints a new link on every cell of a full table
+   costs at most 256 cells scanned per cell printed, whatever the screen.
+   A slot that frees up (overwrite, erase, scroll, delete, resize) is
+   therefore available after at most that many refusals; a clear of the whole
+   screen empties the table at once. A recount counts every link in a cell,
+   also one that an API call such as `SetCell` put there, which the table
+   does not refuse. Scrollback is not counted: it keeps the links of the lines it holds, and its size is the
+   caller's (the session pane keeps one line on the main screen and none on
+   the alternate).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

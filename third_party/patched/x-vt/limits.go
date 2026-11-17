@@ -15,6 +15,11 @@ const (
 	// the pen gets no link, as if the link had been closed.
 	MaxLinkURL    = 2048
 	MaxLinkParams = 256
+
+	// MaxLiveLinks is the most distinct links (a URL with its parameters)
+	// that the cells of one screen, the main and the alternate screen each,
+	// may reference. Text printed under a further link is drawn without it.
+	MaxLiveLinks = 256
 )
 
 // Counters counts the times a cap was hit. The values only grow, and a reader
@@ -31,6 +36,10 @@ type Counters struct {
 	// the URL was over [MaxLinkURL] bytes or the parameters over
 	// [MaxLinkParams].
 	LinksOverLength uint64
+	// LinksOverLimit is the number of cells drawn without their link because
+	// the link would have been the [MaxLiveLinks]+1st distinct live link of
+	// the screen.
+	LinksOverLimit uint64
 }
 
 // Counters returns the counters of the caps that were hit.
