@@ -36,6 +36,7 @@ const (
 	ProbMountList    ProblemKind = "mount-list"       // Plan.Mounts is not what the arguments mount
 	ProbNever        ProblemKind = "never-mounted"    // a source in or around a never-mounted path
 	ProbOtherRuntime ProblemKind = "other-runtime"    // the other runtime's config folder
+	ProbLeadWritable ProblemKind = "lead-writable"    // a bind source in or below a host folder the lead can write (rule G1)
 	ProbWorkDir      ProblemKind = "workdir"          // --chdir or the plan's working folder is not the options'
 	ProbRemount      ProblemKind = "remount-ro"       // --remount-ro / missing or not last
 	ProbInner        ProblemKind = "inner"            // the probe command line
@@ -383,6 +384,7 @@ func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, f *facts, work
 	v.env(p, f, setenv)
 	v.seccomp(in, opt, seccomp)
 	v.mounts(in, opt, f, mounts)
+	v.writableSources(p, f, mounts)
 	v.mountList(p, f, mounts)
 	v.workDir(p, workDir, chdir)
 	v.remount(remount, items)
@@ -522,6 +524,35 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 			v.add(ProbMountMissing, "%s (%s) is not mounted", b.Inside, b.Kind)
 		case !want && seen[b.Inside]:
 			v.add(ProbMountExtra, "%s is mounted and the options say the host has no such optional path", b.Inside)
+		}
+	}
+}
+
+// writableSources checks rule G1 on the mounts parsed from the arguments, not
+// on the table: no mount has a source in or below the source of a read-write
+// mount (a host folder the lead can write), and no row of Plan.Mounts says
+// so. A mount that is not a row of the table is named by its position.
+func (v *verifier) writableSources(p *Plan, f *facts, got []mount) {
+	inTable := map[string]bool{}
+	for _, b := range f.table {
+		inTable[b.Inside] = true
+	}
+	rows := make([]srcRow, len(got))
+	label := make([]string, len(got))
+	for i, m := range got {
+		rows[i] = srcRow{m.kind, m.inside, m.source}
+		label[i] = fmt.Sprintf("mount number %d (a path outside the table)", i+1)
+		if inTable[m.inside] {
+			label[i] = m.inside
+		}
+	}
+	bad, folder := writableSourceRows(rows)
+	for k := range bad {
+		v.add(ProbLeadWritable, "the source of %s lies in or below the source of the read-write mount %s, a folder the lead can write", label[bad[k]], label[folder[k]])
+	}
+	for i, m := range p.Mounts {
+		if m.LeadWritable {
+			v.add(ProbLeadWritable, "row %d of Mounts says its source lies in a folder the lead can write", i+1)
 		}
 	}
 }

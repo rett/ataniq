@@ -225,12 +225,12 @@ func containsNote(notes []string, sub string) bool {
 func TestNotesInEveryPlan(t *testing.T) {
 	for _, in := range []profile.Inputs{fixture(profile.Claude), withSeccomp(fixture(profile.Codex))} {
 		p := mustBuild(t, in, options(in, nil))
-		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteSession, NotePWD(p.WorkDir)} {
+		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteBindSources, NoteSession, NotePWD(p.WorkDir)} {
 			if !containsNote(p.Notes, want) {
 				t.Errorf("%s: note %q missing", in.Runtime, want)
 			}
 		}
-		for _, w := range []string{"pasta made", "R17", "larger kernel surface"} {
+		for _, w := range []string{"pasta made", "R17", "larger kernel surface", "rule G1", "can write", "symbolic link", "CheckBindSources"} {
 			if !containsNote(p.Notes, w) {
 				t.Errorf("notes do not say %q", w)
 			}
@@ -684,6 +684,12 @@ func TestAssertPlanRefusesOnItsOwn(t *testing.T) {
 		"forbidden option in Argv": {"command line", func(p *Plan) { p.Argv = append(p.Argv, "--disable-userns") }},
 		"command line too long":    {"command line", func(p *Plan) { p.Argv = append(p.Argv, strings.Repeat("a", MaxArgvBytes)) }},
 		"the plan fails Verify":    {"plan", func(p *Plan) { p.Digest = "" }},
+		"a git row bound from the tree": {"plan", func(p *Plan) {
+			i := find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/hooks")
+			p.Bwrap[i+1] = "/state/leads/arc-lead/tree/.git/hooks"
+			p.Mounts[indexOfMount(t, p, "/work/demo/.git/hooks")].Source = "/state/leads/arc-lead/tree/.git/hooks"
+			resync(p)
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := clonePlan(p)
@@ -755,6 +761,102 @@ func TestReportChannelNote(t *testing.T) {
 	} {
 		if !strings.Contains(note, want) {
 			t.Errorf("the report channel note does not say %q: %q", want, note)
+		}
+	}
+}
+
+func indexOfMount(t *testing.T, p *Plan, inside string) int {
+	t.Helper()
+	for i, m := range p.Mounts {
+		if m.Inside == inside {
+			return i
+		}
+	}
+	t.Fatalf("no mount %s", inside)
+	return -1
+}
+
+// Rule G1: no source in or below a folder the lead can write.
+func TestBuildRefusesASourceTheLeadCanWrite(t *testing.T) {
+	// The profile refuses first, with its own refusal, for every way the
+	// inputs can put a source there, including the git metadata folder.
+	for name, m := range map[string]func(*profile.Inputs){
+		"git metadata in the tree":   func(in *profile.Inputs) { in.GitMeta = "/state/leads/arc-lead/tree/.git-meta" },
+		"git metadata in the home":   func(in *profile.Inputs) { in.GitMeta = "/state/leads/arc-lead/home/.gitmeta" },
+		"git metadata is the tree's": func(in *profile.Inputs) { in.GitMeta = "/state/leads/arc-lead/tree" },
+		"a source in the tree":       func(in *profile.Inputs) { in.AssignmentDir = "/state/leads/arc-lead/tree/assignment" },
+		"a source in the config":     func(in *profile.Inputs) { in.LeadSkills = "/state/leads/arc-lead/config/claude/skills" },
+		"a placeholder in the home": func(in *profile.Inputs) {
+			in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/state/leads/arc-lead/home/envrc"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := fixture(profile.Claude)
+			m(&in)
+			if _, err := Build(in, options(fixture(profile.Claude), nil)); err == nil {
+				t.Fatal("Build accepted it")
+			} else if _, ok := err.(*profile.Refusal); !ok {
+				t.Fatalf("got %v, want the profile's *Refusal", err)
+			}
+		})
+	}
+}
+
+func TestCheckSourcesNotWritableOnATable(t *testing.T) {
+	in := fixture(profile.Claude)
+	good, err := in.Binds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSourcesNotWritable(good); err != nil {
+		t.Fatalf("a good table: %v", err)
+	}
+	for name, c := range map[string]struct{ inside, source string }{
+		"a git row from the tree": {"/work/demo/.git/config", "/state/leads/arc-lead/tree/.git/config"},
+		"a row from the home":     {"/ataniq/qargi", "/state/leads/arc-lead/home/q"},
+		"a row from the config":   {"/ataniq/projection", "/state/leads/arc-lead/config/claude/p"},
+		"a row that is a folder":  {"/ataniq/assignment", "/state/leads/arc-lead/tree"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			table := append([]profile.Bind(nil), good...)
+			for i := range table {
+				if table[i].Inside == c.inside {
+					table[i].Source = c.source
+				}
+			}
+			err := checkSourcesNotWritable(table)
+			r := refusal(t, err)
+			if r.Field != "bind "+c.inside || !strings.Contains(r.Reason, c.source) || !strings.Contains(r.Reason, "can write") {
+				t.Errorf("refusal = %+v", r)
+			}
+		})
+	}
+}
+
+func TestNoMountOfEitherRuntimeIsLeadWritable(t *testing.T) {
+	for _, rt := range profile.Runtimes() {
+		in := fixture(rt)
+		in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
+		in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
+		p := mustBuild(t, in, options(in, allPresent(t, in)))
+		var rw []string
+		for _, m := range p.Mounts {
+			if m.LeadWritable {
+				t.Errorf("%s: %s is lead-writable", rt, m.Inside)
+			}
+			if m.Kind == profile.KindRwBind {
+				rw = append(rw, m.Source)
+			}
+		}
+		for _, m := range p.Mounts {
+			for _, w := range rw {
+				if m.Source != "" && m.Kind != profile.KindRwBind && within(m.Source, w) {
+					t.Errorf("%s: the source %s of %s lies in the lead-writable folder %s", rt, m.Source, m.Inside, w)
+				}
+			}
+		}
+		if probs := Verify(p, in, options(in, allPresent(t, in))); len(probs) != 0 {
+			t.Errorf("%s: %v", rt, probs)
 		}
 	}
 }

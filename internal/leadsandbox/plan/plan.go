@@ -58,6 +58,8 @@ const (
 	NoteShareNet = "--share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network"
 	// NoteNestedUserns states owner decision R17.
 	NoteNestedUserns = "nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled"
+	// NoteBindSources states rule G1 of the sandbox plan.
+	NoteBindSources = "bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; this package checks the text of the sources, and the holder checks each source without following links right before the start (mountpoints.CheckBindSources)"
 	// NoteNoSeccomp is the note of a plan without a seccomp file.
 	NoteNoSeccomp = "no seccomp filter: none has been reviewed"
 	// NoteSession explains why bubblewrap does not make the session.
@@ -167,11 +169,13 @@ type Mount struct {
 	Source string
 	// LeadWritable says the source lies below a host folder the lead can
 	// write (the source of a read-write bind row): the lead could replace the
-	// source with a symbolic link, which bubblewrap follows, so the holder
-	// re-checks these rows right before it starts the command. It is not the
-	// profile's Bind.LeadWritable, which says the mount point (the target)
-	// lies in such a folder. A read-write bind's own source is not marked: the
-	// lead cannot replace the folder it is bound to.
+	// source with a symbolic link, which bubblewrap follows. Rule G1 says no
+	// source does, so it is false for every row of a valid plan: Build refuses
+	// a table with such a row and Verify reports one (ProbWritableSource). It
+	// is not the profile's Bind.LeadWritable, which says the mount point (the
+	// target) lies in such a folder, and which stays true for the mount points
+	// the three .git rows have in the tree. A read-write bind's own source is
+	// not marked: the lead cannot replace the folder it is bound to.
 	LeadWritable bool
 	// Optional says the row is optional in the table; the plan emitted it
 	// because the options say the host has it.
@@ -246,6 +250,11 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	}
 	if in.SeccompEnabled() {
 		e.opt("--seccomp", strconv.Itoa(opt.SeccompFD))
+	}
+	// Rule G1, checked on the table itself: the profile refuses such a table,
+	// and the plan does not rely on that.
+	if err := checkSourcesNotWritable(binds); err != nil {
+		return nil, err
 	}
 	var mounts []Mount
 	writable := writableSources(binds)
@@ -517,6 +526,49 @@ func writableSources(table []profile.Bind) []string {
 	return dirs
 }
 
+// srcRow is the part of a bind row that rule G1 looks at: the plan's table and
+// the mounts parsed back from its arguments both reduce to it.
+type srcRow struct {
+	kind   profile.Kind
+	inside string
+	source string
+}
+
+// writableSourceRows returns, for each row whose source is, or lies below, the
+// source of a read-write row other than itself, the index of the row and the
+// index of that read-write row (a host folder the lead can write). A row
+// without a source is never one.
+func writableSourceRows(rows []srcRow) (bad, folder []int) {
+	for i, r := range rows {
+		if r.source == "" {
+			continue
+		}
+		for j, w := range rows {
+			if j == i || w.kind != profile.KindRwBind || w.source == "" {
+				continue
+			}
+			if within(r.source, w.source) {
+				bad, folder = append(bad, i), append(folder, j)
+				break
+			}
+		}
+	}
+	return bad, folder
+}
+
+// checkSourcesNotWritable refuses a table with a row whose source lies in or
+// below a host folder the lead can write (rule G1).
+func checkSourcesNotWritable(table []profile.Bind) error {
+	rows := make([]srcRow, len(table))
+	for i, b := range table {
+		rows[i] = srcRow{b.Kind, b.Inside, b.Source}
+	}
+	if bad, folder := writableSourceRows(rows); len(bad) > 0 {
+		return refuse("bind "+rows[bad[0]].inside, "the source %s lies in or below %s, a folder the lead can write (rule G1: a source the lead can replace with a symbolic link would be followed on the host)", rows[bad[0]].source, rows[folder[0]].source)
+	}
+	return nil
+}
+
 // belowAny reports whether p lies strictly below one of dirs. An empty p (a
 // row without a source) lies below none.
 func belowAny(p string, dirs []string) bool {
@@ -604,7 +656,7 @@ func noteReport(fd int) string {
 }
 
 func notes(in profile.Inputs, opt Options, workDir string, left []string) []string {
-	n := []string{NoteShareNet, NoteNestedUserns}
+	n := []string{NoteShareNet, NoteNestedUserns, NoteBindSources}
 	if in.SeccompEnabled() {
 		n = append(n, fmt.Sprintf("seccomp file named by the caller (sha256 %s), opened read-only as descriptor %d by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter", in.SeccompSHA256, opt.SeccompFD))
 	} else {
