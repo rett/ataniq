@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -109,6 +110,29 @@ func TestRecordedScrubbed(t *testing.T) {
 					t.Errorf("%q holds a home path other than /home/user", text)
 				}
 				rest = after
+			}
+		}
+	}
+}
+
+// uuidPattern matches a session id; the recorded data may hold none.
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// TestRecordedHoldsNoSessionId keeps real session ids out of the recorded
+// data, in the file and in the decoded values: a payload carries its msg in
+// base64, so the file alone does not show it.
+func TestRecordedHoldsNoSessionId(t *testing.T) {
+	raw, err := os.ReadFile("testdata/reports.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range uuidPattern.FindAllString(string(raw), -1) {
+		t.Errorf("testdata/reports.txt holds a session id: %s", id)
+	}
+	for _, l := range recorded(t) {
+		for _, text := range []string{l.want.Msg, l.want.Title} {
+			for _, id := range uuidPattern.FindAllString(text, -1) {
+				t.Errorf("a decoded value holds a session id: %s", id)
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package title
 import (
 	"bufio"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -56,6 +57,21 @@ func loadTitles(t *testing.T) []titleCase {
 }
 
 var versions = map[string]string{"claude": "2.1.325", "codex": "0.169"}
+
+// uuidPattern matches a session id; the recorded titles may hold none.
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// TestRecordedHoldsNoSessionId keeps real session ids out of the recorded
+// titles.
+func TestRecordedHoldsNoSessionId(t *testing.T) {
+	raw, err := os.ReadFile("testdata/titles.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range uuidPattern.FindAllString(string(raw), -1) {
+		t.Errorf("testdata/titles.txt holds a session id: %s", id)
+	}
+}
 
 func TestRecordedTitles(t *testing.T) {
 	cases := loadTitles(t)

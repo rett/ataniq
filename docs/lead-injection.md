@@ -305,12 +305,15 @@ and not with this library: where a fixture's description says "the fence
 pasted", it means that prototype, not `Deliver`. `internal/inject/osc7501/testdata` and
 `internal/inject/title/testdata` hold the recorded report payloads and titles in
 the same way. A home path in a fixture must be the placeholder user's, and a test
+fails on any other. A session id in a screen fixture must be one of the
+placeholders in `placeholderIDs` (`internal/inject/screen/replay_test.go`), and
+the recorded report payloads and titles may hold none; a test in each folder
 fails on any other.
 
 To add a fixture:
 
-1. Scrub the recorded screen and copy it to `<name>.txt` in the folder of its
-   runtime and version.
+1. Scrub the recorded screen (home paths and session ids) and copy it to
+   `<name>.txt` in the folder of its runtime and version.
 2. Write `<name>.json` with the snapshot values, a description and the source.
 3. Run the replay once with `-update` to fill `want`, for example
    `sh scripts/go-tool.sh test ./internal/inject/screen/ -run TestReplay -update`,

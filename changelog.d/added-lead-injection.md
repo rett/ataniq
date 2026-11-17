@@ -14,7 +14,7 @@
   and the caps of 16 messages and 64 KiB for a target's queue (a project lead
   or the supervisor), 6 a minute for a sender and 4 KiB for a text. It is
   provisional and unqualified, built from recorded screens of an earlier
-  prototype and never run against a real agent: no daemon or holder exists,
-  nothing reads delivery from the conversation file, and no live agent was
-  used.
+  prototype and never run against a real agent: no daemon exists, no holder
+  uses it yet, nothing reads delivery from the conversation file, and no live
+  agent was used.
   See [lead injection](docs/lead-injection.md).
