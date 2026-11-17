@@ -80,6 +80,7 @@ type audit struct {
 
 	afterSignal func(st leadunit.State, sig syscall.Signal)
 	beforeStart func(spec leadunit.Spec)
+	afterStart  func(spec leadunit.Spec)
 }
 
 func newAudit(inner leadunit.Manager, plan *crashPlan) *audit {
@@ -109,6 +110,9 @@ func (a *audit) Start(ctx context.Context, spec leadunit.Spec) (leadunit.State, 
 		hook(spec)
 	}
 	st, err := a.inner.Start(ctx, spec)
+	if a.afterStart != nil {
+		a.afterStart(spec)
+	}
 	a.plan.point("after Start")
 	return st, err
 }
