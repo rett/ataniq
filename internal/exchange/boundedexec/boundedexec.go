@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -179,6 +180,16 @@ func (e *WatchError) Error() string {
 
 // Unwrap returns the error the watchdog gave.
 func (e *WatchError) Unwrap() error { return e.Err }
+
+// StopSignals returns the signals on which a command that starts runs through
+// this package should cancel its context (for example with
+// signal.NotifyContext). Every run is in a process group of its own, so a
+// signal that the terminal or a service manager sends to the owner's command
+// does not reach the children, and without a cancelled context nothing kills
+// them: the group is killed, and the run reaped, only when [Run] returns. On
+// Linux the list is interrupt, terminate and hang-up. On other systems it is
+// interrupt alone. Each call returns a new slice.
+func StopSignals() []os.Signal { return stopSignals() }
 
 // Run runs the command and waits for it. See the package comment for the
 // guarantees. The context bounds the run in addition to Cmd.Timeout.
