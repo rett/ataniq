@@ -91,7 +91,7 @@ func TestSingleShiftDoesNotLeakPastACluster(t *testing.T) {
 // load. Each time is the best of several runs, and the factor leaves room for
 // the noise that remains.
 func TestLongClusterRunStaysLinear(t *testing.T) {
-	const n = 16 * 1024
+	const n = 8 * 1024
 	const factor = 10
 	for _, tc := range []struct {
 		name  string

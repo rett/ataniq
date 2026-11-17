@@ -11,6 +11,9 @@ func (e *Emulator) eraseCharacter(n int) {
 		n = 1
 	}
 	x, y := e.scr.CursorPosition()
+	// Nothing past the right edge is erased, and a count of two billion made
+	// the fill loop over it.
+	n = min(n, max(e.Width()-x, 1))
 	rect := uv.Rect(x, y, n, 1)
 	e.scr.FillArea(e.scr.blankCell(), rect)
 	e.atPhantom = false

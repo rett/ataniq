@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/ultraviolet/screen"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/parser"
+	"github.com/charmbracelet/x/exp/ordered"
 )
 
 // Logger represents a logger interface.
@@ -272,6 +273,15 @@ func (e *Emulator) Resize(width int, height int) {
 	e.tabstops = uv.DefaultTabStops(width)
 
 	e.setCursor(x, y)
+	// The cursor of the screen that is not active, and the saved cursors of
+	// both, were not moved: one that was outside the new size made a later
+	// tab stop or restore index past the buffer.
+	for i := range e.scrs {
+		for _, c := range []*Cursor{&e.scrs[i].cur, &e.scrs[i].saved} {
+			c.X = ordered.Clamp(c.X, 0, width-1)
+			c.Y = ordered.Clamp(c.Y, 0, height-1)
+		}
+	}
 
 	if e.isModeSet(ansi.ModeInBandResize) {
 		_, _ = io.WriteString(e.pw, ansi.InBandResize(e.Height(), e.Width(), 0, 0))

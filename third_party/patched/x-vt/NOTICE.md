@@ -36,10 +36,11 @@ Patches, applied in this order to the files of the module as released:
    reached the cap, or that has lost a rune, is neither reopened nor grown by
    the next write: the mark is dropped and counted, and the cluster stays the
    open one and capped. (`OpenCluster` reports the cluster's text only, so a
-   copy of the screen that continues it does not know that it is capped.) A run of marks
-   past the cap costs one segmentation of at most 68 bytes per rune: linear
-   time, no allocation. This patch also adds the `Counters` struct and the
-   `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
+   copy of the screen that continues it does not know that it is capped;
+   `State`, patch 11, reports it.) A run of marks past the cap costs one
+   segmentation of at most 68 bytes per rune: linear time, no allocation.
+   This patch also adds the `Counters` struct and the `Counters` accessor on
+   `Emulator` and `SafeEmulator` that the later caps use.
 5. `vt: record only a fixed table of modes` (`mode.go`, `csi_mode.go`,
    `limits.go`, `mode_test.go`). The emulator kept every mode number a session
    set in a map, so a session could grow it without bound (100 000 distinct
@@ -98,8 +99,8 @@ Patches, applied in this order to the files of the module as released:
    screen empties the table at once. A recount counts every link in a cell,
    also one that an API call such as `SetCell` put there, which the table
    does not refuse. Scrollback is not counted: it keeps the links of the
-   lines it holds, and its size is the caller's (the session pane keeps one line on the main screen and none on
-   the alternate).
+   lines it holds, and its size is the caller's (the session pane keeps none
+   on either screen).
 8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
    `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).
    The parser's data buffer was 4 MiB, so one string could make the handlers
@@ -117,7 +118,63 @@ Patches, applied in this order to the files of the module as released:
    outside the 256-link table. Zero is now accepted and keeps nothing: the
    lines held are released, and lines that scroll off the top, an erase of
    the screen and a resize add none. A negative number is ignored, as zero
-   was. A size above zero works as before.
+   was, except that a screen without a scrollback buffer still gets one of the
+   default size. A size above zero works as before.
+10. `vt: keep the scroll margins and the cursors inside the screen`
+   (`handlers.go`, `emulator.go`, `bounds_test.go`). A few bytes of output
+   could crash the process: `CSI 3;99 r` on a screen of five lines set a
+   scroll region that ended at line 99, and the next insert or delete line,
+   scroll or reverse index indexed past the buffer; `CSI ? 69 h` and
+   `CSI 2;99 s` did the same with the right margin on the next character. A
+   resize left the cursor of the screen that is not active, and the saved
+   cursors of both, where they were, so a later restore followed by a tab
+   stop or a character indexed past a smaller screen. The bottom and right
+   margins are now cut to the screen's last line and column, and a region
+   that starts below the last line (or beyond the last column) is ignored, as
+   an empty one was. A region of one line on the last line, which the tests of
+   the released module use, still works. A resize moves the cursor of both
+   screens and both saved cursors into the new size. Nothing changes for a
+   sequence that did not index past the buffer, except that the cursor and
+   the region it leaves are inside the screen.
+11. `vt: add State, SetState, Quiescent and ModeSettings` (`state.go`,
+   `safe_emulator.go`, `state_test.go`). The session pane hands the screen of
+   one emulator to another, which then follows the same output. `State`
+   returns a copy of everything of an emulator that later output can depend
+   on, and `SetState` replaces the whole state of an emulator, its size
+   included, with one, or refuses it and leaves the emulator as it was: the
+   sizes, the strings, the links (through the admission of the screen's link
+   table, so the cells share one copy of each), the modes, the cursors and the
+   open cluster are checked against the caps first. The state holds both
+   screens (cells, cursor, saved cursor, scroll region, link table), the
+   modes with a setting, the character sets and shifts, the pending wrap, the
+   tab stops, the last character, the colours the session set, and the open
+   cluster with whether it is capped (what `OpenCluster` leaves out). It does
+   not hold what the caller gives the emulator (callbacks, handlers, logger,
+   default colours), what only the API sets (the indexed colours, the
+   scrollback), what is derived (damage, counters, scratch buffers) or the
+   parser, which `SetState` returns to its ground state. `Quiescent` reports
+   whether the parser is at its ground state, which is when a state may be
+   taken: nothing is half received. `ModeSettings` and `RecordedModes` list
+   the settings and the table of modes. `SafeEmulator` has locked versions of
+   the first three and `ModeSettings`. The test of the pair is that an
+   emulator set from the state of another stays equal to it for every write
+   that follows; an inventory test lists every field of the emulator, its
+   screens and its cursors, with whether the state carries it, so that a field
+   added by a later version of the module is decided on.
+12. `vt: bound the sequences that loop by a parameter` (`csi_cursor.go`,
+   `csi_screen.go`, `limits.go`, `loops_test.go`). A parameter is a number of
+   up to two billion, and four sequences looped that many times: `CSI n I`
+   and `CSI n Z` (tab forward and backward) went on after the last tab stop,
+   `CSI n X` (erase characters) filled past the right edge, and `CSI n b`
+   (repeat the last character) printed it n times. A single sequence of
+   eight bytes kept the process busy for minutes (a count of 100 million took
+   40 seconds), and the pane's lock with it. The two tab loops now stop where
+   the cursor cannot move on, and the erase is cut at the right edge: both
+   give the result they gave. A repeat is cut to the number of cells of the
+   screen and `Counters().RepeatsCut` counts the sequences that were cut; the
+   screen then holds what a repeat of exactly that many gives, which is not
+   what a terminal that printed two billion characters would show (the
+   cursor column and the last line depend on the count).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

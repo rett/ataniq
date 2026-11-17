@@ -254,3 +254,35 @@ func (se *SafeEmulator) Counters() Counters {
 	defer se.mu.RUnlock()
 	return se.Emulator.Counters()
 }
+
+// Quiescent reports whether the parser is at its ground state in a
+// concurrency-safe manner. See [Emulator.Quiescent].
+func (se *SafeEmulator) Quiescent() bool {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.Quiescent()
+}
+
+// ModeSettings returns the settings of the modes that have one in a
+// concurrency-safe manner. See [Emulator.ModeSettings].
+func (se *SafeEmulator) ModeSettings() []ModeState {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.ModeSettings()
+}
+
+// State returns a copy of the emulator's state in a concurrency-safe manner.
+// See [Emulator.State].
+func (se *SafeEmulator) State() State {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+	return se.Emulator.State()
+}
+
+// SetState replaces the emulator's state in a concurrency-safe manner. See
+// [Emulator.SetState].
+func (se *SafeEmulator) SetState(st State) error {
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	return se.Emulator.SetState(st)
+}
