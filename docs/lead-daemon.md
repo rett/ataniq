@@ -37,7 +37,7 @@ integration. The list of what is not built is at the [end](#not-built).
 | [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock and the runtime folder lock. Takes no role lock. |
 | [`internal/leadunit`](../internal/leadunit/doc.go) | The unit manager interface, the unit specification and an in-memory fake. | The interface only. |
 | [`internal/leadunit/systemdmgr`](../internal/leadunit/systemdmgr/doc.go) | The unit manager for the systemd user manager. | Reads units for the one reconcile at start. |
-| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles. It does not handle coordinators (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start or stop. |
+| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles, coordinators included (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start, stop, mark or clear a stall. |
 | [`internal/pidfd`](../internal/pidfd/doc.go) | Process identity and boot identity primitives. | Reads the boot identity. |
 | [`internal/systemd`](../internal/systemd/doc.go) | Control group, `systemctl show` and bounded command helpers. | Used by the unit manager. |
 | [`qualification/leadunit/cmd/leadunit-qualify`](../qualification/leadunit/cmd/leadunit-qualify/doc.go) | An opt-in harness for the unit manager. | None. It is run by hand. |
@@ -561,8 +561,9 @@ only under a parent lead that is defined, run by ataniq, shown `starting`,
 And a new epoch of a lead is refused while a coordinator recorded under an
 earlier epoch of that lead is not stopped, ended or never launched. The
 registry does not stop a coordinator when its parent's epoch ends; it keeps the
-record and refuses those launches. What the lifecycle does with coordinators,
-which is nothing, is in
+record and refuses those launches. What the lifecycle does with coordinators
+(it starts one under a live parent, stops a lead's coordinators with the lead,
+and ends one with its parent's epoch) is in
 [Coordinators in the lifecycle](#coordinators-in-the-lifecycle).
 
 ## Locks
@@ -631,9 +632,9 @@ with systemd's no-expand flag so that `$VAR` in an argument is not expanded.
 A unit specification may name a parent unit. The unit is then also **bound** to
 it with `BindsTo=`, `PartOf=` and `After=`, so that stopping the parent stops
 it, and the fake and the systemd manager both do this. It is how a
-coordinator's unit is meant to be bound to its lead's unit, but the lifecycle
-does not set a parent: see
-[Coordinators in the lifecycle](#coordinators-in-the-lifecycle). What systemd
+coordinator's unit is bound to its lead's unit: the lifecycle sets the parent
+when it starts a coordinator (see
+[Coordinators in the lifecycle](#coordinators-in-the-lifecycle)). What systemd
 does with these three, in particular for a start under a parent that is
 missing or deactivating, is not confirmed (see
 [the qualification harness](#the-qualification-harness)).
@@ -797,7 +798,9 @@ ours is never signalled.
 
 ### Coordinators in the lifecycle
 
-**`internal/leadlifecycle` does not handle coordinators.** What has them:
+`internal/leadlifecycle` handles coordinators in start, stop, the stalled
+state and reconcile. A coordinator is a role of its own there, with its own
+unit, epoch (the instance number) and evidence. What it relies on:
 
 - the registry: the coordinator record, the instance number, the shown state
   `stalled`, and the parent rules (a coordinator is launched only under a live
@@ -809,18 +812,68 @@ ours is never signalled.
 - the fake, and the systemd manager's rendering of those properties;
 - the status protocol: the entry of a coordinator and its members.
 
-What the lifecycle does with a coordinator, today:
+What the lifecycle does with a coordinator, as the code and its tests against
+the fake have it:
 
-- **Start** builds a unit with no parent. A coordinator started through it
-  would have an unbound unit.
-- **Stop** of a lead stops no coordinator and does not look for one.
-- **Reconcile** treats a coordinator record like any other role: it compares
-  its unit and record as it does for a lead.
-- Nothing marks or clears `stalled`. The state is part of the table and of the
-  status vocabulary, but no stall detector exists (see [Not built](#not-built)).
-- Nothing ends a coordinator when its parent's epoch ends, and nothing stops a
-  coordinator or proves it stopped on behalf of its lead. The registry only
-  refuses the launches that would need that proof.
+- **Start** of a coordinator checks its parent first, so that a refusal
+  changes nothing: the lead must be defined, run by ataniq, shown `starting`,
+  `ready` or `degraded`, and its own launch must not have failed or been
+  abandoned. Otherwise the error wraps `ErrParentNotLive`. The unit is started
+  with the lead's unit as its parent, so that it is bound to it. The rest is as
+  for a lead: the replacement rule on the coordinator's own unit and evidence,
+  the intent, the single request, and the outcomes. A start that the manager
+  accepts but that never loads a unit, as when the parent unit is no longer
+  live, is a start that failed: the role is `stopped` with the proof of the
+  absent unit, or `unknown` without it. A refusal that names the missing parent
+  is treated as a lost reply, because the real manager cannot tell it from a
+  request that may still land: the intent stays pending and the role is
+  `unknown` until a reconcile or a stop proves the absence. A lead is not
+  started while a coordinator recorded under an earlier epoch of it is not
+  proven stopped (`ErrCoordinatorNotStopped`).
+- **Stop** of a coordinator stops only that coordinator, by the sequence of a
+  lead's stop. The unit is bound to its lead's, so it may already be stopping
+  when it is signalled; the manager's answers that the unit is not loaded or
+  has another invocation lead to the proof as for a lead.
+- **Stop** of a lead stops each of its coordinators that is not proven
+  stopped (one run by ataniq and launched), one after the other, each by the
+  same sequence with its own quiesce, and records each in the registry. Then
+  it stops the lead, whatever became of them, and then lists the coordinators
+  once more, because one may have been started in between: the lead's lock
+  does not serialise a start of its coordinator, but once the lead has left its
+  live states the registry admits no new one. A coordinator that cannot be
+  proven stopped is shown `unknown`, or is left as recorded when the manager or
+  the registry did not answer its stop, and is named in the error (a
+  `*CoordinatorsError`, which wraps `ErrCoordinatorNotStopped`). The lead is
+  stopped all the same, and a later start of the lead is refused until the
+  coordinator is stopped with proof or the owner decides. Once the lead is
+  proven stopped, the second listing runs on a context of its own, which the
+  caller's cannot end, so the result is nil only when that listing was done.
+  When the lead's own stop failed, the result is an error in any case.
+- **Reconcile** judges a coordinator as it judges a lead, and also against its
+  parent, which it settles first in the same call. When the parent's epoch is
+  not the one the coordinator recorded, or the parent is not live, the
+  coordinator has ended with its parent: with its unit proven absent it is
+  `ended` with the reason `parent-epoch-ended` and the proof; with its unit
+  still loaded it is reported `orphan-coordinator` and shown `unknown`, because
+  reconcile signals nothing and an explicit stop ends it. A parent that cannot
+  be read from the registry gives "cannot tell": the coordinator is left as
+  recorded (reason `parent-unreadable`) and reconcile returns the registry's
+  error. After a reboot a coordinator is `stopped` as a lead is. The report
+  carries the kind of each role and, for a coordinator, its feature and parent.
+- **`MarkStalled` and `ClearStalled`** record and clear `stalled`. Marking is a
+  record of an observation that a detector outside the package supplies; the
+  method is the whole interface. Clearing judges the parent first, as reconcile
+  does, and then returns the coordinator to the live state it was stalled from
+  (`ready` or `degraded`; `degraded` for one that was `starting`) only when the
+  unit is loaded, ours and running with the recorded epoch, intent and
+  invocation; otherwise the coordinator is shown `unknown`. A stalled
+  coordinator is never replaced by reconcile or by start: it is stopped, with
+  proof, and then started again as the next instance. After a daemon restart
+  reconcile keeps a stalled coordinator stalled while its unit is live and ours.
+
+A coordinator has no seat and gives no approval. The daemon calls none of the
+above but the reconcile, once at start-up; it has no stall detector either (see
+[Not built](#not-built)).
 
 ## Runtime requirements
 
@@ -925,9 +978,13 @@ None of the following exists in this build:
 - start at boot, and a unit file for the daemon itself: `ataniqd run` is
   started by hand;
 - a coordinator's holder and sandbox;
-- the lifecycle's handling of coordinators (a parent for Start, the stop of a
-  lead's coordinators, the end of a coordinator with its parent's epoch);
-- the stall detector, and anything that marks or clears `stalled`;
+- a caller of the lifecycle's coordinator handling: nothing in the daemon
+  calls `Start`, `Stop`, `MarkStalled` or `ClearStalled`, so it starts, stops,
+  marks and clears no coordinator; only its one reconcile at start-up runs;
+- the stall detector: the lifecycle's `MarkStalled` is an interface that a
+  detector would call, and nothing calls it;
+- a coordinator's bound assignment file, Qargi's delegation record of it and
+  its adoption;
 - a periodic reconcile.
 
 A start also needs a qualification record and a command line for the holder.
