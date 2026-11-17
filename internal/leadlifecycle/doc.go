@@ -80,11 +80,14 @@
 //     explicit Stop does: it ends a stale unit of ours that has the
 //     record's epoch and intent or an older epoch, which is the owner's way
 //     out when the window did not hold.
-//   - A launch intent carries no boot identity: the registry records the boot
-//     only with the unit evidence of an outcome. A pending intent with no unit
-//     evidence therefore cannot be told apart by boot, and only the window
-//     resolves it. A change to leadregistry that records the boot identity at
-//     BeginLaunch would let a reboot settle such an intent at once.
+//   - Every launch journals the boot identity the manager reported before the
+//     intent ([leadregistry.Registry.BeginLaunchWith]). A pending intent (a
+//     lost reply, or a daemon that died between the intent and the outcome)
+//     whose unit is not loaded on another boot than that one is closed as
+//     abandoned and the role stopped at once, without waiting for the window:
+//     the boot changed, which is the proof. An intent with no boot identity (one
+//     journaled by a registry caller that gave none) or with no boot identity
+//     from the manager is settled by the window only.
 //
 // # What it does not prove
 //

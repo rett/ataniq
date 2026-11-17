@@ -82,10 +82,11 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 //     group proven empty the role is unknown (reason launch-unsettled) until
 //     the late-start window and its margin since the intent have passed, then the intent is
 //     abandoned and the role stopped, with a proof text naming the facts used.
+//     With no unit loaded on another boot than the one journaled with the
+//     intent, the intent is abandoned and the role stopped at once: the boot
+//     changed, so no start request of the intent can land.
 //     A loaded unit that is not this launch's makes the role unknown, and the
-//     intent is abandoned once the window and margin have passed. The registry does not
-//     record the boot identity of an intent, so a reboot cannot settle one
-//     earlier than the window and margin do.
+//     intent is abandoned once the window and margin have passed.
 //   - Live (starting, ready, degraded, stopping) or unknown, with the intent
 //     resolved: the unit is inspected. A loaded unit of ours whose epoch and
 //     intent equal the journal's, launched or adopted, is adopted: the shown
