@@ -22,4 +22,7 @@
 // instruction or as a status line, and that stays readable. Callers must keep
 // the label near it and must not put escaped text where a reader would take it
 // for the tool's own words.
+//
+// Escaped text can start with a combining mark. Put a space or a delimiter
+// before it, so that the mark does not join the caller's own text.
 package leadtext
