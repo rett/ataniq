@@ -3,16 +3,15 @@
 package qualification
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"ataniq/internal/systemd"
 )
 
 // hostIO has narrow deterministic test seams, not a backend interface/registry.
@@ -42,19 +41,6 @@ type hostIO struct {
 	realHost       bool
 }
 
-type cappedBuffer struct {
-	bytes.Buffer
-	overflow bool
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > MaxOutputBytes {
-		b.overflow = true
-		return 0, errors.New("supervisor output cap")
-	}
-	return b.Buffer.Write(p)
-}
-
 func liveHost() hostIO {
 	return hostIO{call: func(path string, args []string) (string, error) {
 		return hostCall(path, args, time.Now().Add(5*time.Second))
@@ -66,34 +52,24 @@ func hostCall(path string, args []string, deadline time.Time) (string, error) {
 }
 
 func hostCallBus(path string, args []string, deadline time.Time, realUser bool) (string, error) {
-	if cap := time.Now().Add(5 * time.Second); cap.Before(deadline) {
-		deadline = cap
-	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, args...)
 	// Host manager connection is trusted controller authority; never forwarded
 	// to the workload. No shell, PATH search, listener or manager reconfiguration.
-	cmd.Env = []string{"LANG=C", "LC_ALL=C", "HOME=" + os.Getenv("HOME"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS")}
+	env := systemd.ProcessEnvironment()
 	if realUser {
-		cmd.Env = entryManagerEnvironment()
+		env = entryManagerEnvironment()
 	}
-	cmd.WaitDelay = time.Second
-	var out cappedBuffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	if out.overflow {
+	out, err := systemd.Run(path, args, deadline, env, MaxOutputBytes)
+	if errors.Is(err, systemd.ErrOutputExcessive) {
 		return "", errors.New("supervisor output excessive")
 	}
-	return out.String(), err
+	return out, err
 }
 
 const properties = "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Type,Slice,Description,ExecStart,StopWhenUnneeded,KillMode,NoNewPrivileges,RuntimeMaxUSec,TimeoutStopUSec,MemoryMax,TasksMax,CPUQuotaPerSecUSec,Transient,StandardInput,StandardOutput,StandardError,LimitNOFILE,LimitFSIZE,Restart,RemainAfterExit,Job,FragmentPath"
 const parentProperties = "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,StopWhenUnneeded,Job"
 const freshProperties = "Id,LoadState,ActiveState,ControlGroup,FragmentPath,Job"
 
-func noJob(p map[string]string) bool { v, ok := p["Job"]; return ok && (v == "" || v == "0") }
+func noJob(p map[string]string) bool { return systemd.NoJob(p) }
 
 func (h hostIO) freshNames(a *Attempt) error {
 	for _, name := range []string{a.Service, a.Slice} {
@@ -119,29 +95,7 @@ func (h hostIO) freshNames(a *Attempt) error {
 }
 
 func parseProperties(s, required string) (map[string]string, error) {
-	if len(s) > MaxOutputBytes {
-		return nil, errors.New("show output excessive")
-	}
-	p := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSuffix(s, "\n"), "\n") {
-		key, value, ok := strings.Cut(line, "=")
-		if !ok || key == "" {
-			return nil, errors.New("malformed show output")
-		}
-		if _, ok = p[key]; ok {
-			return nil, errors.New("duplicate show property")
-		}
-		if !strings.Contains(","+required+",", ","+key+",") {
-			return nil, errors.New("unexpected show property")
-		}
-		p[key] = value
-	}
-	for _, key := range strings.Split(required, ",") {
-		if _, ok := p[key]; !ok {
-			return nil, errors.New("missing show property")
-		}
-	}
-	return p, nil
+	return systemd.ParseProperties(s, required, MaxOutputBytes)
 }
 
 func (h hostIO) ctl(a *Attempt, args ...string) (string, error) {

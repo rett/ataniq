@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"ataniq/internal/systemd"
 )
 
 // HostConfig is an explicit qualification subject selection, never discovery of
@@ -51,11 +53,9 @@ type hostFailure struct {
 func (e *hostFailure) Error() string { return e.Stage + ": " + hostReason(e.Cause) }
 func (e *hostFailure) Unwrap() error { return e.Cause }
 
-type FileIdentity struct {
-	Device uint64 `json:"device"`
-	Inode  uint64 `json:"inode"`
-	UID    uint32 `json:"uid"`
-}
+// FileIdentity is the generic file identity; the alias keeps the JSON shape of
+// state files and reports.
+type FileIdentity = systemd.FileIdentity
 
 type Subject struct {
 	Path     string       `json:"path"`
@@ -72,10 +72,7 @@ type ELFMetadata struct {
 	DependencyClosureComplete bool   `json:"dependency_closure_complete"`
 }
 
-func identity(fi os.FileInfo) FileIdentity {
-	s := fi.Sys().(*syscall.Stat_t)
-	return FileIdentity{s.Dev, s.Ino, s.Uid}
-}
+func identity(fi os.FileInfo) FileIdentity { return systemd.IdentityOf(fi) }
 
 func absolute(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && validText(path, 511) && !strings.ContainsAny(path, " %\\\"'")
