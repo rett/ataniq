@@ -72,8 +72,9 @@ type Bind struct {
 	// for a symlink, only if the host has a path of the same name as Inside.
 	// It is set for exactly the host rows that do not exist on every
 	// distribution (see the table), never for a source Ataniq makes. The plan
-	// package decides how to emit it (for bubblewrap, --ro-bind-try). It is
-	// part of the digest.
+	// package decides how to emit it (for bubblewrap, the row is emitted with
+	// --ro-bind only when the caller says the source exists, never with
+	// --ro-bind-try). It is part of the digest.
 	Optional bool
 }
 
