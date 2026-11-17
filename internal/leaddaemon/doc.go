@@ -126,9 +126,10 @@
 // systemd.
 //
 // The package is Linux only, provisional and unqualified: its names and
-// behaviour may change until a qualification run has covered it. It does not
-// build for any other system: paths.go uses clientapi.SocketPath, which
-// exists only in a Linux file, and exit.go and doc.go carry no file name
-// suffix only because nothing in them is system specific. The command still
+// behaviour may change until a qualification run has covered it. For another
+// system it compiles, so that the whole tree builds there, but only as
+// paths.go, exit.go and doc.go, which carry no file name suffix because
+// nothing in them is system specific (the default folders, the socket and
+// lock paths, the exit codes); the daemon is in the Linux files. The command
 // builds elsewhere as a stub that imports nothing of this package.
 package leaddaemon
