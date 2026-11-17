@@ -656,11 +656,12 @@ type StateChange struct {
 // for stopped or ended without a proof text, and with ErrStateTransition for
 // a change the table refuses: desired from any state but desired, stopped or
 // ended; ready, degraded or stopping from unknown; stopped or ended with
-// owner-decision evidence from unknown (use ResolveUnknown); stalled for a
-// role that is not a coordinator and for a coordinator that is not starting,
-// ready or degraded; and, as ErrOutcomePending, stopped or ended while the
-// launch intent is pending. unknown is accepted for the current epoch from
-// every state.
+// owner-decision evidence from every state (an owner decision is recorded
+// through ResolveUnknown, from unknown only); stalled for a role that is not
+// a coordinator and for a coordinator that is not starting, ready or
+// degraded; and, as ErrOutcomePending, stopped or ended while the launch
+// intent is pending. unknown is accepted for the current epoch from every
+// state.
 func (r *Registry) SetState(role leadrole.Role, c StateChange) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

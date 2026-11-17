@@ -46,7 +46,7 @@ func buildJournal(t *testing.T) ([]byte, []int64, [][]Entry) {
 	step()
 	ok(r.SetState(a, setState(StateReady, 1)))
 	step()
-	ok(r.SetState(a, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceOwner, Reason: Reason{Code: "stop", Detail: "café"}, Proof: "gone"}))
+	ok(r.SetState(a, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceProvider, Reason: Reason{Code: "stop", Detail: "café"}, Proof: "gone"}))
 	step()
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err != nil {
@@ -250,6 +250,7 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		{"stale epoch in a record", assemble(3, craft(t, lines, 3, 3, kindState, alpha, &statePayload{Epoch: 9, State: StateReady, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 4},
 		{"desired from a live state", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateDesired, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 6},
 		{"stopped while the intent is pending", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateStopped, Evidence: EvidenceObservation, Reason: Reason{Code: "x"}, Proof: "p"})), 6},
+		{"stopped with owner evidence from a live state", assemble(8, craft(t, lines, 8, 8, kindState, alpha, &statePayload{Epoch: 1, State: StateStopped, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}, Proof: "p"})), 9},
 		{"owner decision outside unknown", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
 		{"owner decision without text", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}})), 4},
 		{"owner decision to a live state", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateReady, Reason: Reason{Code: "x"}, Decision: "d"})), 4},

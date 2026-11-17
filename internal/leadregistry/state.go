@@ -206,11 +206,11 @@ func checkTransition(e Entry, p *statePayload) error {
 			return refuseTransition(from, p.State, "unknown is left only for stopped or ended, with proof")
 		}
 	case StateStopped, StateEnded:
+		if p.Evidence == EvidenceOwner {
+			return refuseTransition(from, p.State, "an owner decision is recorded through ResolveUnknown, from unknown only")
+		}
 		if e.pending() {
 			return ErrOutcomePending
-		}
-		if from == StateUnknown && p.Evidence == EvidenceOwner {
-			return refuseTransition(from, p.State, "an owner decision resolves unknown through ResolveUnknown")
 		}
 	}
 	return nil

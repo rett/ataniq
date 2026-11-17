@@ -17,11 +17,12 @@
 // The shown state changes by these rules only; a record that breaks them is
 // refused when written and makes Open fail with ErrCorrupt when it is found in
 // a journal. SetState takes one state of the first column to one of the
-// others. Y is admitted. P is admitted with a non-empty proof text and while
-// the launch intent is not pending; with a pending intent it is refused with
-// ErrOutcomePending, so the caller records the outcome first (failed,
-// abandoned, launched or adopted) and a stopped or ended with proof after
-// launched or adopted is fine. N is refused with ErrStateTransition.
+// others. Y is admitted. P is admitted with a non-empty proof text, evidence
+// other than owner-decision, and while the launch intent is not pending; with
+// a pending intent it is refused with ErrOutcomePending, so the caller records
+// the outcome first (failed, abandoned, launched or adopted) and a stopped or
+// ended with proof after launched or adopted is fine. N, and P with
+// owner-decision evidence, are refused with ErrStateTransition.
 //
 //	from \ to   desired ready degraded stalled stopping stopped ended unknown
 //	desired        Y      Y      Y        N       Y        P       P     Y
@@ -69,7 +70,9 @@
 // operation, ResolveUnknown, journaled as its own record kind and shown with
 // the evidence kind owner-decision and a non-empty decision text; it moves to
 // stopped or ended only, from unknown only, with the same pending-intent rule.
-// SetState with owner-decision evidence does not leave unknown.
+// SetState refuses owner-decision evidence for stopped and ended from every
+// state with ErrStateTransition, so a decision of the owner enters the journal
+// only as an owner-decision record, and only as the resolution of unknown.
 //
 // What this package does not prove. It never calls systemd and never looks at
 // a process, a control group or a lock: the caller supplies the unit evidence
@@ -82,12 +85,14 @@
 // after Open, says when a cut was made and has not been acknowledged; the
 // daemon should then show the roles as unknown. The cut and its recovered
 // record are written before a single sync, so a crash between them can lose
-// the record and then the cut is not reported. After a failed write or sync the failed record may or may not be
-// on disk (ErrBroken). The registry does not decide when a launch is safe
+// the record and then the cut is not reported. After a failed write or sync
+// the failed record may or may not be on disk (ErrBroken). The registry does not decide when a launch is safe
 // beyond the checks documented on BeginLaunch; the caller must still prove
 // that the previous unit is gone.
 //
 // This package is provisional and unqualified: it is part of the lead daemon
 // work in progress, the file format is version 1 and may change before any
-// release.
+// release. Version 1 has no compatibility promise until the first deployment:
+// a rule may be tightened so that a journal written by an earlier build is no
+// longer accepted, and there is no migration.
 package leadregistry

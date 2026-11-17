@@ -384,3 +384,59 @@ func TestResolveUnknownInputs(t *testing.T) {
 		t.Fatalf("after replay: %+v, want %+v", got, e)
 	}
 }
+
+// TestOwnerEvidenceOnlyThroughResolveUnknown: SetState refuses owner-decision
+// evidence for stopped and ended from every state, in every launch-intent
+// condition, for a lead and for a coordinator, and writes nothing. The same
+// change with other evidence is the table's, and owner evidence for the other
+// states is not affected.
+func TestOwnerEvidenceOnlyThroughResolveUnknown(t *testing.T) {
+	for _, kind := range tableKinds {
+		role := kind.role(t)
+		tried := 0
+		for _, ic := range intentCases {
+			for _, row := range kind.rows {
+				for _, to := range []State{StateStopped, StateEnded} {
+					r, dir, reachable := reachRole(t, role, ic.name, ic.launch, ic.outcome, row.from)
+					if !reachable {
+						continue
+					}
+					tried++
+					cell := kind.name + ", " + ic.name + ": " + string(row.from) + " -> " + string(to)
+					before, _ := r.Get(role)
+					size := journalSize(t, dir)
+					c := StateChange{Epoch: before.Epoch, State: to, Evidence: EvidenceOwner, Reason: Reason{Code: "owner"}, Proof: "the owner says so"}
+					_, err := r.SetState(role, c)
+					if !errors.Is(err, ErrStateTransition) || errors.Is(err, ErrOutcomePending) || errors.Is(err, ErrInvalid) {
+						t.Errorf("%s: err = %v, want ErrStateTransition", cell, err)
+					}
+					if journalSize(t, dir) != size {
+						t.Errorf("%s: a refused change wrote", cell)
+					}
+					if after, _ := r.Get(role); after.Shown != before.Shown {
+						t.Errorf("%s: a refused change changed the shown state", cell)
+					}
+					// The proof of another kind of evidence is the table's.
+					c.Evidence = EvidenceProvider
+					if _, err := r.SetState(role, c); (err == nil) != (!ic.launch || ic.outcome != "") {
+						t.Errorf("%s: with provider evidence: %v", cell, err)
+					}
+				}
+			}
+		}
+		if tried < 80 {
+			t.Errorf("%s: only %d cells", kind.name, tried)
+		}
+	}
+	// Owner evidence for a state that needs no proof is still admitted.
+	r, _, _ := reach(t, "launched", true, OutcomeLaunched, StateReady)
+	role := lead(t, "proj")
+	if _, err := r.SetState(role, StateChange{Epoch: 1, State: StateDegraded, Evidence: EvidenceOwner, Reason: Reason{Code: "owner"}}); err != nil {
+		t.Errorf("owner evidence for degraded: %v", err)
+	}
+	// ResolveUnknown is the way, and it stays one.
+	r, _, _ = reach(t, "launched", true, OutcomeLaunched, StateUnknown)
+	if e, err := r.ResolveUnknown(role, ownerDecision(1, StateStopped)); err != nil || e.Shown.Evidence != EvidenceOwner {
+		t.Errorf("ResolveUnknown: %+v %v", e, err)
+	}
+}
