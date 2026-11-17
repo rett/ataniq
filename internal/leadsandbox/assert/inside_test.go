@@ -284,12 +284,39 @@ func TestInsideAssertions(t *testing.T) {
 		{"7 no mount table", profile.Claude, func(s *Spec, f *fakeSys) { f.mountsErr = errors.New("gone") }, 7, StatusNotChecked, "no mount table"},
 		{"7 access cannot be asked", profile.Claude, func(s *Spec, f *fakeSys) { f.accessErr[s.GitReadOnly[0]] = syscall.ENOSYS }, 7, StatusNotChecked, "access(W_OK)"},
 
+		{"7 a later read-write bind hides the read-only one", profile.Claude, func(s *Spec, f *fakeSys) {
+			// bubblewrap applies binds in argument order: a read-write bind of
+			// the tree after the read-only bind of .git/config hides it. The
+			// longest mount point above the file is the hidden mount; the
+			// kernel puts the file on the later one.
+			f.setMount(s.Tree, false)
+			f.mountIDs[s.GitReadOnly[0]] = f.mounts[len(f.mounts)-1].ID
+		}, 7, StatusFailed, "writable mount"},
+		{"7 a read-write mount below a git path", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount(s.GitReadOnly[1]+"/pre-commit", false)
+		}, 7, StatusFailed, `has a writable mount at or below it: "/work/ataniq/.git/hooks/pre-commit"`},
+		{"7 a read-only mount below a git path is no failure", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount(s.GitReadOnly[1]+"/pre-commit", true)
+		}, 7, StatusOK, ""},
+		{"7 the kernel gives no mount ID", profile.Claude, func(s *Spec, f *fakeSys) { f.noMountID = true }, 7, StatusNotChecked, "no mount ID"},
+		{"7 the mount ID is not in the table", profile.Claude, func(s *Spec, f *fakeSys) { f.mountIDs[s.GitReadOnly[0]] = 424242 }, 7, StatusNotChecked, "424242 is not in the mount table"},
+		{"7 statx fails", profile.Claude, func(s *Spec, f *fakeSys) {
+			delete(f.mountIDs, s.GitReadOnly[0])
+			f.mounts = f.mounts[:0]
+			f.setMount("/elsewhere", true)
+		}, 7, StatusNotChecked, "no mount ID"},
+
 		// 8
 		{"8 missing", profile.Claude, func(s *Spec, f *fakeSys) { delete(f.nodes, s.ManagedSettings) }, 8, StatusFailed, "does not exist"},
 		{"8 a link", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.nodes[s.ManagedSettings] = fakeNode{info: FileInfo{Mode: fs.ModeSymlink | 0o777}}
 		}, 8, StatusFailed, "a symbolic link"},
 		{"8 a folder", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir(s.ManagedSettings) }, 8, StatusFailed, "a folder"},
+		{"8 the kernel gives no mount ID", profile.Claude, func(s *Spec, f *fakeSys) { f.noMountID = true }, 8, StatusNotChecked, "no mount ID"},
+		{"8 a later read-write bind hides the read-only one", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount("/etc/claude-code", false)
+			f.mountIDs[s.ManagedSettings] = f.mounts[len(f.mounts)-1].ID
+		}, 8, StatusFailed, "writable mount"},
 		{"8 writable mount", profile.Claude, func(s *Spec, f *fakeSys) { f.setMount(s.ManagedSettings, false) }, 8, StatusFailed, "writable mount"},
 		{"8 access says writable", profile.Claude, func(s *Spec, f *fakeSys) { f.writable[s.ManagedSettings] = true }, 8, StatusFailed, "access(W_OK)"},
 		{"8 marker missing", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(s.ManagedSettings, `{"hooks":{}}`) }, 8, StatusFailed, "does not contain the marker text"},
@@ -457,36 +484,19 @@ func TestSuperblockReadOnlyCounts(t *testing.T) {
 	s := testSpec(profile.Claude)
 	f := goodSystem(s)
 	f.mounts = f.mounts[:3]
-	f.mounts = append(f.mounts, Mount{Point: s.ManagedSettings, Options: "rw", SuperOptions: "ro,errors=remount-ro"})
+	f.mounts = append(f.mounts, Mount{ID: 500, Point: s.ManagedSettings, Options: "rw", SuperOptions: "ro,errors=remount-ro"})
 	if got := find(t, RunInside(s, f), 8); got.Status != StatusOK {
 		t.Errorf("%s %s", got.Status, got.Detail)
 	}
 }
 
-func TestMountFor(t *testing.T) {
-	mounts := []Mount{
-		{Point: "/"},
-		{Point: "/work/ataniq", Options: "rw"},
-		{Point: "/work/ataniq/.git/info", Options: "ro"},
-		{Point: "/work/ataniq/.git/info", Options: "rw"}, // stacked on top
+func TestMountByID(t *testing.T) {
+	mounts := []Mount{{ID: 1, Point: "/"}, {ID: 7, Point: "/work/ataniq", Options: "rw"}, {ID: 9, Point: "/work/ataniq", Options: "ro"}}
+	if m, ok := mountByID(mounts, 9); !ok || m.Options != "ro" {
+		t.Errorf("mountByID(9) = %+v %v", m, ok)
 	}
-	for _, tc := range []struct {
-		path, point, opts string
-		ok                bool
-	}{
-		{"/etc/passwd", "/", "", true},
-		{"/work/ataniq/x", "/work/ataniq", "rw", true},
-		{"/work/ataniq2/x", "/", "", true}, // a name prefix is not a parent
-		{"/work/ataniq/.git/info", "/work/ataniq/.git/info", "rw", true},
-		{"/work/ataniq/.git/info/exclude", "/work/ataniq/.git/info", "rw", true},
-	} {
-		m, ok := mountFor(mounts, tc.path)
-		if ok != tc.ok || m.Point != tc.point || m.Options != tc.opts {
-			t.Errorf("mountFor(%s) = %+v %v, want %s %s", tc.path, m, ok, tc.point, tc.opts)
-		}
-	}
-	if _, ok := mountFor(mounts[1:], "/etc"); ok {
-		t.Error("a path with no mount above it found one")
+	if _, ok := mountByID(mounts, 8); ok {
+		t.Error("an ID that is not in the table was found")
 	}
 }
 

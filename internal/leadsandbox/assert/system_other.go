@@ -27,5 +27,6 @@ func (HostSystem) Dial(string, string, time.Duration) error { return errors.ErrU
 func (HostSystem) LookupHost(string, time.Duration) ([]string, error) {
 	return nil, errors.ErrUnsupported
 }
+func (HostSystem) MountID(string) (int, error)   { return 0, errors.ErrUnsupported }
 func (HostSystem) DirEmpty(string) (bool, error) { return false, errors.ErrUnsupported }
 func (HostSystem) Writable(string) (bool, error) { return false, errors.ErrUnsupported }

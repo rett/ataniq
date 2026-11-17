@@ -18,9 +18,10 @@
 //   - The inside checks, assertions 1 to 8, in [RunInside], over a small
 //     [System] interface. [HostSystem] is the real one (Linux); tests use a
 //     fake. The checks never create a file: writability is asked of the
-//     kernel with access(W_OK) and read from the mount table's read-only flag,
-//     and both must say read-only. They never issue TIOCSTI, never send a byte
-//     on a connection, and start no process: the package imports no os/exec.
+//     kernel with access(W_OK) and read from the read-only flag of the mount
+//     that statx names, and both must say read-only. They never issue
+//     TIOCSTI, never send a byte on a connection, and start no process: the
+//     package imports no os/exec.
 //   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3
 //     and 5): [CheckRoleLockAndLingering], [CheckQualification],
 //     [CheckHolderBinds], [CheckCanary] and [CheckTIOCSTIOutside], and
@@ -107,8 +108,13 @@
 //     path has the root "/" and is not found by either. The other runtime's
 //     config folder is ok only when it is absent, or an empty folder that is
 //     not a mount point and has nothing mounted below it.
-//   - Assertion 7 shows that the three paths are on a read-only mount and that
-//     a write is refused by access(W_OK). That the tree is the lead's own
+//   - Assertion 7 shows that each of the three paths, and the
+//     managed-settings file of assertion 8, is on a read-only mount (found by
+//     the mount ID that statx gives, not by the longest mount point above the
+//     path, so a later bind that hides an earlier one is seen), that no
+//     read-write mount lies at or below it, and that a write is refused by
+//     access(W_OK). Where the kernel gives no mount ID (before Linux 5.8) the
+//     result is not-checked. That the tree is the lead's own
 //     clone, and not below another repository, is the check of the
 //     mountpoints package; the probe checks that .git is a folder.
 //   - Assertion 8 shows that the managed-settings file is a regular file on a

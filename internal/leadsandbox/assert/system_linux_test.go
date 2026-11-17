@@ -142,8 +142,46 @@ func TestHostSystemMounts(t *testing.T) {
 	if err != nil {
 		t.Skipf("no readable mount table here: %v", err)
 	}
-	if _, ok := mountFor(ms, "/"); !ok {
-		t.Errorf("no mount holds /: %d mounts", len(ms))
+	if id, err := (HostSystem{}).MountID("/"); err != nil {
+		t.Logf("no mount ID of /: %v", err)
+	} else if _, ok := mountByID(ms, id); !ok {
+		t.Errorf("mount ID %d of / is not in the %d mounts", id, len(ms))
+	}
+}
+
+// statx and the mount table agree: the mount ID of a path under the process's
+// temporary folder is the ID of a mount of the table whose point is a parent.
+func TestHostSystemMountID(t *testing.T) {
+	h := HostSystem{}
+	dir := t.TempDir()
+	id, err := h.MountID(dir)
+	if errors.Is(err, ErrNoMountID) {
+		t.Skipf("the kernel gives no mount ID: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms, err := h.Mounts()
+	if err != nil {
+		t.Skipf("no readable mount table here: %v", err)
+	}
+	m, ok := mountByID(ms, id)
+	if !ok {
+		t.Fatalf("mount ID %d of %s is not in the table", id, dir)
+	}
+	if !within(dir, m.Point) {
+		t.Errorf("%s is on mount %d at %s, which is not above it", dir, id, m.Point)
+	}
+	// A file of the same folder is on the same mount.
+	f := filepath.Join(dir, "f")
+	if err := os.WriteFile(f, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if id2, err := h.MountID(f); err != nil || id2 != id {
+		t.Errorf("file: %d %v, want %d", id2, err, id)
+	}
+	if _, err := h.MountID(filepath.Join(dir, "none")); !absent(err) {
+		t.Errorf("a missing path: %v", err)
 	}
 }
 

@@ -17,6 +17,9 @@ var (
 	ErrTooLarge = errors.New("assert: file is larger than the limit")
 	// ErrNotRegular: the path is not a regular file (or is a symbolic link).
 	ErrNotRegular = errors.New("assert: not a regular file")
+	// ErrNoMountID: the kernel gives no mount ID for a path (statx without
+	// STATX_MNT_ID, before Linux 5.8, or not at all).
+	ErrNoMountID = errors.New("assert: the kernel gives no mount ID")
 )
 
 // FileInfo is what the checks need to know about a path: its type and mode
@@ -75,6 +78,13 @@ type System interface {
 	Dial(network, address string, timeout time.Duration) error
 	// LookupHost resolves a name within the timeout.
 	LookupHost(host string, timeout time.Duration) ([]string, error)
+	// MountID returns the ID of the mount that holds the path, the number
+	// that the first field of the mount table gives to a mount (statx with
+	// STATX_MNT_ID), without following a link at the path. A path under a
+	// stack of mounts at one place gets the ID of the one on top, which is the
+	// one a process sees. An error that wraps ErrNoMountID says the kernel
+	// does not give it.
+	MountID(path string) (int, error)
 	// DirEmpty says whether the folder at the path holds no entry. It does
 	// not follow a link at the path, and it reads at most one entry. An error
 	// (the path is not a folder, or cannot be read) is a question that could
@@ -223,21 +233,14 @@ func unescapeMount(s string) (string, error) {
 	return b.String(), nil
 }
 
-// mountFor returns the mount that holds the path: the one with the longest
-// mount point that is the path or one of its parents. Of several mounts at
-// the same point, the last in the table is on top.
-func mountFor(mounts []Mount, path string) (Mount, bool) {
-	var best Mount
-	found := false
+// mountByID returns the mount of the table with the ID.
+func mountByID(mounts []Mount, id int) (Mount, bool) {
 	for _, m := range mounts {
-		if !within(path, m.Point) {
-			continue
-		}
-		if !found || len(m.Point) >= len(best.Point) {
-			best, found = m, true
+		if m.ID == id {
+			return m, true
 		}
 	}
-	return best, found
+	return Mount{}, false
 }
 
 // related says the path p is, lies below or above the path q, comparing whole

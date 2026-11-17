@@ -132,18 +132,41 @@ func (c *checker) mustBeAbsent(t *tally, what, path string) {
 	}
 }
 
-// readOnly records whether path is on a read-only mount and the kernel says it
-// is not writable. Both must hold: access(W_OK) alone says yes to a process
-// with the rights to override permissions, and the mount flag alone does not
-// see a permission or a file system that would let a write through.
+// readOnly records whether path is on a read-only mount, with no read-write
+// mount at or below it, and the kernel says it is not writable. All must hold:
+// access(W_OK) alone says yes to a process with the rights to override
+// permissions, and the mount flag alone does not see a permission or a file
+// system that would let a write through.
+//
+// The mount is found by its ID (statx of the path, matched to the first field
+// of the mount table), not by the longest mount point that is a prefix of the
+// path: when a later bind hides an earlier one (a read-write bind of the tree
+// over a read-only bind of its .git/config, in a plan whose rows are in the
+// wrong order), the prefix is the hidden mount and the path is on the other.
+// A read-write mount at or below the path fails it too, whether or not it is
+// hidden: a path is read-only when nothing writable is bound inside it. Where
+// the kernel gives no mount ID the result is not-checked.
 func (c *checker) readOnly(t *tally, what, path string) {
 	mounts, err := c.mountTable()
 	if err != nil {
 		t.skip("%s %q: no mount table: %v", what, path, err)
-	} else if m, ok := mountFor(mounts, path); !ok {
-		t.skip("%s %q: no mount of the table holds it", what, path)
-	} else if !m.ReadOnly() {
-		t.fail("%s %q is on a writable mount at %q", what, path, m.Point)
+	} else {
+		top := -1
+		if id, err := c.sys.MountID(path); err != nil {
+			t.skip("%s %q: no mount ID (statx): %v", what, path, err)
+		} else if m, ok := mountByID(mounts, id); !ok {
+			t.skip("%s %q: mount ID %d is not in the mount table", what, path, id)
+		} else {
+			top = m.ID
+			if !m.ReadOnly() {
+				t.fail("%s %q is on a writable mount at %q", what, path, m.Point)
+			}
+		}
+		for _, m := range mounts {
+			if m.ID != top && within(m.Point, path) && !m.ReadOnly() {
+				t.fail("%s %q has a writable mount at or below it: %q", what, path, m.Point)
+			}
+		}
 	}
 	w, err := c.sys.Writable(path)
 	switch {
