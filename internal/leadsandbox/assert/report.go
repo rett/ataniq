@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -14,19 +15,25 @@ import (
 const ReportVersion = 1
 
 // ReportPrefix starts the one line of a report (the space is part of it): the
-// prefix, one JSON object and a newline. The probe writes the line to a
-// descriptor, or to the terminal when none survives, so a reader finds the
-// line by its prefix.
+// prefix, one JSON object and a newline. The probe writes the line to its
+// report descriptor, which the holder owns the other end of. The prefix does
+// not authenticate the line: a line with the prefix that is seen anywhere else
+// (the terminal the lead also writes to, say) is display only, and no input
+// to Failed or FailedAll. See the package documentation, "The probe and the
+// holder".
 const ReportPrefix = "ATANIQ-PROBE-REPORT "
 
 // Bounds on a report.
 const (
 	// MaxDetailBytes is the longest detail a result keeps.
 	MaxDetailBytes = 512
-	// MaxResults is the most results a report holds.
+	// MaxResults is the most results a report holds. The table allows 13
+	// distinct results at most (ten assertions and three outside halves).
 	MaxResults = 24
 	// MaxReportLineBytes is the longest line ParseLine accepts, terminator
-	// included.
+	// included. It holds MaxResults results with a detail of MaxDetailBytes
+	// of characters that JSON writes as two bytes (a quote or a backslash):
+	// a line EncodeLine makes from a valid report is never over it.
 	MaxReportLineBytes = 32 << 10
 )
 
@@ -146,14 +153,22 @@ func EncodeLine(r Report) []byte {
 		}
 		out.Results[i] = res
 	}
-	body, err := json.Marshal(out)
-	if err != nil {
+	// HTML escaping is off: it would turn "<", ">" and "&" of a detail into
+	// six bytes each and make a line longer than the limit ParseLine applies
+	// to the same text.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
 		// Unreachable: the report holds only integers and strings. A line
 		// that ParseLine refuses is the safe answer.
-		body = []byte("{}")
+		buf.Reset()
+		buf.WriteString("{}\n")
 	}
-	return append(append([]byte(ReportPrefix), body...), '\n')
+	return append([]byte(ReportPrefix), buf.Bytes()...)
 }
+
+var reportShape = shapeOf(reflect.TypeOf(Report{}))
 
 // ParseLine reads one report line, strictly. The line starts with
 // ReportPrefix, holds one JSON object and ends with at most one newline (or
@@ -181,6 +196,12 @@ func ParseLine(line []byte) (Report, error) {
 		// encoding/json would replace an invalid byte with U+FFFD and go on.
 		return zero, refuse("report line", "is not valid UTF-8")
 	}
+	if err := checkKeys(rest, reportShape, "report line"); err != nil {
+		if _, ok := err.(*Refusal); ok {
+			return zero, err
+		}
+		return zero, refuse("report line", "is not a report: %v", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(rest))
 	dec.DisallowUnknownFields()
 	var r Report
@@ -192,6 +213,36 @@ func ParseLine(line []byte) (Report, error) {
 	}
 	if err := r.validate(); err != nil {
 		return zero, err
+	}
+	return r, nil
+}
+
+// ParseProbeLine is ParseLine for the line a probe writes: the report holds
+// the result of the inside half of every assertion that has one, 1 to 8, each
+// once and no other. A result that only the holder makes (9, 10 and the
+// outside halves) is refused, so a line that carries one cannot stand in for
+// the holder's own checks, and a report that lacks an inside result is
+// refused, not judged. ParseLine stays for the full report, which holds both.
+func ParseProbeLine(line []byte) (Report, error) {
+	r, err := ParseLine(line)
+	if err != nil {
+		return Report{}, err
+	}
+	seen := map[string]bool{}
+	for i, res := range r.Results {
+		a, ok := ByNumber(res.Number)
+		if !ok || !a.HasInside() || res.ID != a.ID {
+			return Report{}, refuse(fmt.Sprintf("results[%d]", i), "id %s is not a result the probe makes", clipQuote(res.ID))
+		}
+		if seen[res.ID] {
+			return Report{}, refuse(fmt.Sprintf("results[%d]", i), "id %s appears twice", res.ID)
+		}
+		seen[res.ID] = true
+	}
+	for _, a := range assertions {
+		if a.HasInside() && !seen[a.ID] {
+			return Report{}, refuse("results", "assertion %d (%s) has no result", a.Number, a.ID)
+		}
 	}
 	return r, nil
 }
@@ -265,8 +316,9 @@ const (
 // optional); when its digest is not the spec's; when a required result is
 // missing; when any result it holds is failed; and when a result is
 // not-checked and the spec does not mark its assertion optional. A
-// not-checked result is never counted as ok. Problems does not check that the
-// report is well formed beyond that: ParseLine does.
+// not-checked result is never counted as ok; and when one ID has more than one
+// result. Problems does not check that the report is well formed beyond that:
+// ParseLine and ParseProbeLine do.
 func Problems(r Report, s Spec, req Require) []string {
 	var out []string
 	if err := s.Validate(); err != nil {
@@ -281,6 +333,9 @@ func Problems(r Report, s Spec, req Require) []string {
 	}
 	have := map[string]Result{}
 	for _, res := range r.Results {
+		if _, dup := have[res.ID]; dup {
+			out = append(out, fmt.Sprintf("assertion %d (%s): more than one result", res.Number, res.ID))
+		}
 		have[res.ID] = res
 	}
 	optional := map[int]bool{}
@@ -311,7 +366,9 @@ func Problems(r Report, s Spec, req Require) []string {
 		case StatusFailed:
 			out = append(out, fmt.Sprintf("assertion %d (%s): failed: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 		case StatusNotChecked:
-			if !optional[res.Number] {
+			// Only the inside half of an assertion can be optional: the
+			// outside half of 1 or 5 is the holder's own check.
+			if !(optional[res.Number] && res.ID == idOf(res.Number)) {
 				out = append(out, fmt.Sprintf("assertion %d (%s): not checked: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 			}
 		default:

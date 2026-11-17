@@ -68,6 +68,41 @@ func (HostSystem) ReadFile(path string, limit int) ([]byte, error) {
 	return data, nil
 }
 
+// MountID asks statx for the mount ID of the path, without following a link.
+// The ID is the one of the mount table (STATX_MNT_ID, Linux 5.8): a kernel
+// that does not set it in the result gets ErrNoMountID.
+func (HostSystem) MountID(path string) (int, error) {
+	var stx unix.Statx_t
+	err := unix.Statx(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW|unix.AT_NO_AUTOMOUNT, unix.STATX_MNT_ID, &stx)
+	switch {
+	case err == unix.ENOSYS:
+		return 0, fmt.Errorf("assert: statx %s: %w", path, ErrNoMountID)
+	case err != nil:
+		return 0, &fs.PathError{Op: "statx", Path: path, Err: err}
+	case stx.Mask&unix.STATX_MNT_ID == 0:
+		return 0, fmt.Errorf("assert: statx %s: %w", path, ErrNoMountID)
+	}
+	return int(stx.Mnt_id), nil
+}
+
+// DirEmpty opens the folder without following a link and reads one entry.
+func (HostSystem) DirEmpty(path string) (bool, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	names, err := f.Readdirnames(1)
+	switch {
+	case err == io.EOF:
+		return true, nil
+	case err != nil:
+		return false, &fs.PathError{Op: "readdir", Path: path, Err: err}
+	}
+	return len(names) == 0, nil
+}
+
 // Mounts reads and parses the mount table, at most MaxMountTableBytes of it.
 func (h HostSystem) Mounts() ([]Mount, error) {
 	path := h.MountInfoPath

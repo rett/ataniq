@@ -73,6 +73,18 @@ func TestCurrent(t *testing.T) {
 	if st, _ := Current(goodRecord(), profile.Claude, "2.1.0", "", t0); st != RecordStale {
 		t.Errorf("empty digest: %s", st)
 	}
+	// A record with an empty version or digest matches an empty request on
+	// every field, and still is not current: nothing was compared.
+	empty := goodRecord()
+	empty.Version = ""
+	if st, why := Current(empty, profile.Claude, "", digest, t0); st != RecordStale || !strings.Contains(why, "no version or profile digest") {
+		t.Errorf("empty version on both sides: %s %q", st, why)
+	}
+	empty = goodRecord()
+	empty.ProfileDigest = ""
+	if st, why := Current(empty, profile.Claude, "2.1.0", "", t0); st != RecordStale || !strings.Contains(why, "no version or profile digest") {
+		t.Errorf("empty digest on both sides: %s %q", st, why)
+	}
 }
 
 type fakeRecords struct {
@@ -218,12 +230,18 @@ func TestRunOutsideAndFailedAll(t *testing.T) {
 		Spec: s, Role: "arc-lead", User: "someone", Version: "2.1.0", Now: t0,
 		Binds:       []profile.Bind{{Kind: profile.KindRoBind, Inside: "/usr", Source: "/usr"}},
 		HolderPaths: s.HolderPaths,
+		Canary:      testCanary(t),
 		Sys:         f, Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
 		Records: fakeRecords{rec: func() *QualificationRecord { r := goodRecord(); r.ProfileDigest = s.Digest; return r }()},
 	}
 	out := RunOutside(in)
-	if len(out) != 4 {
+	if len(out) != 5 {
 		t.Fatalf("%d results", len(out))
+	}
+	for i, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
+		if out[i].ID != id {
+			t.Errorf("result %d is %s, want %s", i, out[i].ID, id)
+		}
 	}
 	for _, r := range out {
 		if r.Status != StatusOK {
@@ -266,5 +284,44 @@ func TestStopRuleData(t *testing.T) {
 	}
 	if StopTermWait != 2*time.Second || StopKillWait != 2*time.Second {
 		t.Error("stop rule times")
+	}
+}
+
+// HolderPaths of the input default to the spec's: leaving them out must not
+// turn the outside half of assertion 1 into not-checked, or hide a leak.
+func TestRunOutsideDefaultsHolderPaths(t *testing.T) {
+	s := testSpec(profile.Claude)
+	in := OutsideInput{
+		Spec: s, Role: "arc-lead", User: "someone", Version: "2.1.0", Now: t0,
+		Binds: []profile.Bind{{Kind: profile.KindRoBind, Inside: "/leak", Source: s.HolderPaths[2]}},
+		Sys:   goodSystem(s), Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
+	}
+	in.Canary = testCanary(t)
+	out := RunOutside(in)
+	if out[0].ID != IDHolderHidden+OutsideSuffix || out[0].Status != StatusFailed {
+		t.Errorf("a bind of a holder path with no HolderPaths given: %+v", out[0])
+	}
+	in.Binds = nil
+	if out := RunOutside(in); out[0].Status != StatusOK {
+		t.Errorf("no binds: %+v", out[0])
+	}
+}
+
+// An outside half is never excused by the spec's optional list: the list may
+// name assertion 4 only, and a not-checked outside result of 1 or 5 still
+// fails the start (the spec that lists 1 is refused as a whole).
+func TestOptionalNeverExcusesAnOutsideHalf(t *testing.T) {
+	s := testSpec(profile.Claude)
+	rep := insideReport(s).With(
+		CheckHolderBinds(nil, nil), // not-checked: no holder path
+		CheckCanary(nil),
+		CheckTIOCSTIOutside(nil, false),
+		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
+	)
+	for _, optional := range [][]int{nil, {4}, {1}, {1, 5}} {
+		s.Optional = optional
+		if !FailedAll(rep, s) {
+			t.Errorf("optional %v: a not-checked outside half passed: %v", optional, Problems(rep, s, RequireAll))
+		}
 	}
 }

@@ -3,6 +3,8 @@ package assert
 import (
 	"errors"
 	"io/fs"
+	"net"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -81,6 +83,42 @@ func TestInsideAssertions(t *testing.T) {
 			f.lstatErr[s.HolderPaths[1]] = syscall.EACCES
 		}, 1, StatusFailed, "1 more checks could not be made"},
 
+		{"1 mount root is the folder above an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/home/owner", which is at, above or below the path "/home/owner/.claude"`},
+		{"1 mount root is an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner/.ssh", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/home/owner/.ssh"`},
+		{"1 mount root is below an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner/.ssh/keys", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, "which is at, above or below"},
+		{"1 mount source is below an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/leak", Source: "/home/owner/.ssh/img", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `source "/home/owner/.ssh/img"`},
+		{"1 mount point is an ancestor of an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/home/owner", Source: "tmpfs", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `mount point "/home/owner"`},
+		{"1 mount root is an ancestor of a holder path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/nowhere"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/run/example", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/run/example"`},
+		{"1 a sibling by text is not related by component", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts,
+				Mount{ID: 900, Root: "/home/owner/.sshd", Point: "/a", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"},
+				Mount{ID: 901, Root: "/home/owner-two", Point: "/b", Source: "/dev/example2", Options: "rw", SuperOptions: "rw"},
+				Mount{ID: 902, Root: "/", Point: "/c", Source: "/home/ownership/img", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusOK, ""},
+		{"1 the root of a file system relates to nothing", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/", Source: "/", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusOK, ""},
+
 		// 2
 		{"2 extra variable", profile.Claude, func(s *Spec, f *fakeSys) { f.env = append(f.env, "SSH_AUTH_SOCK=/tmp/agent") }, 2, StatusFailed, `unexpected "SSH_AUTH_SOCK"`},
 		{"2 missing variable", profile.Claude, func(s *Spec, f *fakeSys) { f.env = f.env[:2] }, 2, StatusFailed, `missing "TERM"`},
@@ -90,10 +128,28 @@ func TestInsideAssertions(t *testing.T) {
 		{"2 an unexpected value is not quoted", profile.Claude, func(s *Spec, f *fakeSys) { f.env = append(f.env, "SECRET_THING=hunter2") }, 2, StatusFailed, "unexpected"},
 
 		// 3
+		{"3 second loopback address connects", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.LoopbackTCP2 = "[::1]:40124"
+			f.dialErr["tcp [::1]:40124"] = nil
+		}, 3, StatusFailed, "second host loopback port [::1]:40124 is reachable"},
+		{"3 second loopback address refused is ok and named", profile.Claude, func(s *Spec, f *fakeSys) { s.LoopbackTCP2 = "[::1]:40124" }, 3, StatusOK, "second host loopback port [::1]:40124 refused"},
+		{"3 second loopback address is not asked about", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.LoopbackTCP2 = "[::1]:40124"
+			f.dialErr["tcp [::1]:40124"] = syscall.EMFILE
+		}, 3, StatusNotChecked, "[::1]:40124"},
 		{"3 tcp connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = nil }, 3, StatusFailed, "host loopback port 127.0.0.1:40123 is reachable"},
 		{"3 abstract connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = nil }, 3, StatusFailed, "host abstract socket @example-canary-1 is reachable"},
 		{"3 network unreachable is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.ENETUNREACH }, 3, StatusOK, ""},
-		{"3 timeout is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = timeoutErr{} }, 3, StatusOK, ""},
+		{"3 timeout is ok and says so", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = timeoutErr{} }, 3, StatusOK, "timed out (weaker than a refusal: the canary count decides)"},
+		{"3 refusal is ok and says so", profile.Claude, func(s *Spec, f *fakeSys) {}, 3, StatusOK, "refused the connection"},
+		{"3 refused by policy is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EACCES }, 3, StatusOK, "refused by policy"},
+		{"3 refused by policy, EPERM, is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = syscall.EPERM }, 3, StatusOK, "refused by policy"},
+		{"3 a full backlog is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = syscall.EAGAIN }, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 a full backlog wrapped as a timeout is not-checked", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.dialErr["unix @"+s.AbstractSocket] = &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.EAGAIN)}
+		}, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 a reset is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.ECONNRESET }, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 no free local port is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EADDRNOTAVAIL }, 3, StatusNotChecked, "does not show it is unreachable"},
 		{"3 out of descriptors is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EMFILE }, 3, StatusNotChecked, "does not show it is unreachable"},
 		{"3 one reachable and one not asked is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.dialErr["tcp "+s.LoopbackTCP] = nil
@@ -105,27 +161,39 @@ func TestInsideAssertions(t *testing.T) {
 		{"4 no address", profile.Claude, func(s *Spec, f *fakeSys) { f.hosts = nil }, 4, StatusFailed, "no address"},
 
 		// 5
-		{"5 sysctl 1 and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "1\n") }, 5, StatusFailed, "no seccomp filter is loaded"},
-		{"5 sysctl 1 and a filter", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl 1 and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "1\n") }, 5, StatusFailed, "names no seccomp filter"},
+		{"5 sysctl 1 and an unrelated filter is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(tiocstiSysctl, "1\n")
-			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, "a seccomp filter is loaded"},
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\t1\n")
+		}, 5, StatusFailed, "names no seccomp filter"},
 		{"5 sysctl absent and no filter", profile.Claude, func(s *Spec, f *fakeSys) { delete(f.nodes, tiocstiSysctl) }, 5, StatusFailed, "absent"},
-		{"5 sysctl absent and a filter", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl absent and an unrelated filter is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			delete(f.nodes, tiocstiSysctl)
 			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, ""},
+		}, 5, StatusFailed, "absent"},
 		{"5 sysctl unreadable and no filter", profile.Claude, func(s *Spec, f *fakeSys) { f.readErr[tiocstiSysctl] = syscall.EACCES }, 5, StatusNotChecked, "cannot be read"},
-		{"5 sysctl non-zero and status unreadable", profile.Claude, func(s *Spec, f *fakeSys) {
+		{"5 sysctl non-zero is failed whatever the status says", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(tiocstiSysctl, "1\n")
 			f.readErr[procStatus] = syscall.EACCES
-		}, 5, StatusNotChecked, "cannot be read"},
+		}, 5, StatusFailed, `"1", not 0`},
 		{"5 sysctl 0 is enough without status", profile.Claude, func(s *Spec, f *fakeSys) { f.readErr[procStatus] = syscall.EACCES }, 5, StatusOK, "legacy_tiocsti is 0"},
 		{"5 sysctl is garbage", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(tiocstiSysctl, "zero") }, 5, StatusFailed, `"zero"`},
 		{"5 filter expected and loaded", profile.Claude, func(s *Spec, f *fakeSys) {
 			s.SeccompExpected = true
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\t3\n")
+		}, 5, StatusOK, "Seccomp: 2, Seccomp_filters: 3), as the profile expects; the identity of the filter is not verified from inside"},
+		{"5 filter expected and loaded, no filter count given", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
 			f.setFile(procStatus, "Seccomp:\t2\n")
-		}, 5, StatusOK, "as the profile expects"},
+		}, 5, StatusOK, "Seccomp_filters: not given"},
+		{"5 filter expected, the sysctl does not excuse a missing filter", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
+			f.setFile(tiocstiSysctl, "0\n")
+		}, 5, StatusFailed, "Seccomp: is 0"},
+		{"5 Seccomp_filters line is not a number", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.SeccompExpected = true
+			f.setFile(procStatus, "Seccomp:\t2\nSeccomp_filters:\tmany\n")
+		}, 5, StatusNotChecked, "not a number"},
 		{"5 filter expected and not loaded, sysctl 0", profile.Claude, func(s *Spec, f *fakeSys) { s.SeccompExpected = true }, 5, StatusFailed, "Seccomp: is 0"},
 		{"5 filter expected, strict mode is not a filter", profile.Claude, func(s *Spec, f *fakeSys) {
 			s.SeccompExpected = true
@@ -149,7 +217,28 @@ func TestInsideAssertions(t *testing.T) {
 		{"6 ssh exists", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/owner/.ssh") }, 6, StatusFailed, ".ssh"},
 		{"6 checkout exists", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/owner/work/ataniq") }, 6, StatusFailed, "ataniq"},
 		{"6 other config folder absent", profile.Claude, func(s *Spec, f *fakeSys) {}, 6, StatusOK, "does not exist"},
-		{"6 other config folder made by the lead", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/lead/.codex") }, 6, StatusOK, "not a failure of the boundary"},
+		{"6 other config folder made by the lead", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/lead/.codex") }, 6, StatusOK, "an empty folder that is not a mount point"},
+		{"6 other config folder holds a file", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.setFile("/home/lead/.codex/auth.json", "{}")
+		}, 6, StatusFailed, "holds entries"},
+		{"6 other config folder holds a folder", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.setDir("/home/lead/.codex/sessions")
+		}, 6, StatusFailed, "holds entries"},
+		{"6 other config folder is a file", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile("/home/lead/.codex", "") }, 6, StatusFailed, "a regular file, not an empty folder"},
+		{"6 other config folder is a link", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.nodes["/home/lead/.codex"] = fakeNode{info: FileInfo{Mode: fs.ModeSymlink | 0o777}}
+		}, 6, StatusFailed, "a symbolic link, not an empty folder"},
+		{"6 other config folder cannot be read", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.dirErr["/home/lead/.codex"] = syscall.EACCES
+		}, 6, StatusNotChecked, "cannot be read"},
+		{"6 the owner's home bound at the lead's home shows in the other folder", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+			f.setDir("/home/lead/.codex")
+			f.setFile("/home/lead/.codex/auth.json", "{}")
+		}, 6, StatusFailed, "holds entries"},
 		{"6 other config folder is a mount point", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setDir("/home/lead/.codex")
 			f.setMount("/home/lead/.codex", false)
@@ -195,15 +284,45 @@ func TestInsideAssertions(t *testing.T) {
 		{"7 no mount table", profile.Claude, func(s *Spec, f *fakeSys) { f.mountsErr = errors.New("gone") }, 7, StatusNotChecked, "no mount table"},
 		{"7 access cannot be asked", profile.Claude, func(s *Spec, f *fakeSys) { f.accessErr[s.GitReadOnly[0]] = syscall.ENOSYS }, 7, StatusNotChecked, "access(W_OK)"},
 
+		{"7 a later read-write bind hides the read-only one", profile.Claude, func(s *Spec, f *fakeSys) {
+			// bubblewrap applies binds in argument order: a read-write bind of
+			// the tree after the read-only bind of .git/config hides it. The
+			// longest mount point above the file is the hidden mount; the
+			// kernel puts the file on the later one.
+			f.setMount(s.Tree, false)
+			f.mountIDs[s.GitReadOnly[0]] = f.mounts[len(f.mounts)-1].ID
+		}, 7, StatusFailed, "writable mount"},
+		{"7 a read-write mount below a git path", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount(s.GitReadOnly[1]+"/pre-commit", false)
+		}, 7, StatusFailed, `has a writable mount at or below it: "/work/ataniq/.git/hooks/pre-commit"`},
+		{"7 a read-only mount below a git path is no failure", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount(s.GitReadOnly[1]+"/pre-commit", true)
+		}, 7, StatusOK, ""},
+		{"7 the kernel gives no mount ID", profile.Claude, func(s *Spec, f *fakeSys) { f.noMountID = true }, 7, StatusNotChecked, "no mount ID"},
+		{"7 the mount ID is not in the table", profile.Claude, func(s *Spec, f *fakeSys) { f.mountIDs[s.GitReadOnly[0]] = 424242 }, 7, StatusNotChecked, "424242 is not in the mount table"},
+		{"7 statx fails", profile.Claude, func(s *Spec, f *fakeSys) {
+			delete(f.mountIDs, s.GitReadOnly[0])
+			f.mounts = f.mounts[:0]
+			f.setMount("/elsewhere", true)
+		}, 7, StatusNotChecked, "no mount ID"},
+
 		// 8
 		{"8 missing", profile.Claude, func(s *Spec, f *fakeSys) { delete(f.nodes, s.ManagedSettings) }, 8, StatusFailed, "does not exist"},
 		{"8 a link", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.nodes[s.ManagedSettings] = fakeNode{info: FileInfo{Mode: fs.ModeSymlink | 0o777}}
 		}, 8, StatusFailed, "a symbolic link"},
 		{"8 a folder", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir(s.ManagedSettings) }, 8, StatusFailed, "a folder"},
+		{"8 the kernel gives no mount ID", profile.Claude, func(s *Spec, f *fakeSys) { f.noMountID = true }, 8, StatusNotChecked, "no mount ID"},
+		{"8 a later read-write bind hides the read-only one", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setMount("/etc/claude-code", false)
+			f.mountIDs[s.ManagedSettings] = f.mounts[len(f.mounts)-1].ID
+		}, 8, StatusFailed, "writable mount"},
 		{"8 writable mount", profile.Claude, func(s *Spec, f *fakeSys) { f.setMount(s.ManagedSettings, false) }, 8, StatusFailed, "writable mount"},
 		{"8 access says writable", profile.Claude, func(s *Spec, f *fakeSys) { f.writable[s.ManagedSettings] = true }, 8, StatusFailed, "access(W_OK)"},
-		{"8 marker missing", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(s.ManagedSettings, `{"hooks":{}}`) }, 8, StatusFailed, "does not contain the marker"},
+		{"8 marker missing", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(s.ManagedSettings, `{"hooks":{}}`) }, 8, StatusFailed, "does not contain the marker text"},
+		{"8 marker text in a disabled place passes and says only that it contains the text", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setFile(s.ManagedSettings, `{"disableAllHooks":true,"note":"example-guard-hook"}`)
+		}, 8, StatusOK, "contains the marker text"},
 		{"8 too large", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(s.ManagedSettings, strings.Repeat("x", MaxManagedSettingsBytes+1))
 		}, 8, StatusFailed, "larger than"},
@@ -305,19 +424,34 @@ func TestNotCheckedFailsUnlessOptional(t *testing.T) {
 	if !Failed(rep, s) {
 		t.Fatal("not-checked results did not fail the report")
 	}
-	s.Optional = notChecked[:len(notChecked)-1]
-	if !Failed(rep, s) {
-		t.Fatal("one assertion still not-checked and not optional, but the report passed")
-	}
+	// A spec that lists the others as optional is refused, and a refused spec
+	// allows nothing (see TestSpecValidate for the refusal).
 	s.Optional = notChecked
+	if Failed(rep, s) != true {
+		t.Fatalf("the optional list of a boundary fact excused it: %v", Problems(rep, s, RequireInside))
+	}
+
+	// Assertion 4 can be optional: a lookup that gets no answer is not-checked.
+	s = testSpec(profile.Claude)
+	f = goodSystem(s)
+	f.lookupErr = timeoutErr{}
+	rep = RunInside(s, f)
+	want(t, rep, 4, StatusNotChecked, "got no answer")
+	if !Failed(rep, s) {
+		t.Fatal("an unanswered lookup passed although it was not optional")
+	}
+	s.Optional = []int{4}
 	if Failed(rep, s) {
-		t.Fatalf("every not-checked assertion is optional: %v", Problems(rep, s, RequireInside))
+		t.Fatalf("assertion 4 is optional and not-checked: %v", Problems(rep, s, RequireInside))
 	}
 	// A failed result is a failure even when optional.
-	rep.Results[notChecked[0]-1].Status = StatusFailed
+	rep.Results[3].Status = StatusFailed
 	if !Failed(rep, s) {
 		t.Fatal("a failed optional assertion passed")
 	}
+	// A lookup that answers no is failed, not not-checked.
+	f.lookupErr = errors.New("no such host")
+	want(t, RunInside(s, f), 4, StatusFailed, "does not resolve")
 }
 
 func TestReadOnlyNeedsBothMountAndAccess(t *testing.T) {
@@ -350,36 +484,19 @@ func TestSuperblockReadOnlyCounts(t *testing.T) {
 	s := testSpec(profile.Claude)
 	f := goodSystem(s)
 	f.mounts = f.mounts[:3]
-	f.mounts = append(f.mounts, Mount{Point: s.ManagedSettings, Options: "rw", SuperOptions: "ro,errors=remount-ro"})
+	f.mounts = append(f.mounts, Mount{ID: 500, Point: s.ManagedSettings, Options: "rw", SuperOptions: "ro,errors=remount-ro"})
 	if got := find(t, RunInside(s, f), 8); got.Status != StatusOK {
 		t.Errorf("%s %s", got.Status, got.Detail)
 	}
 }
 
-func TestMountFor(t *testing.T) {
-	mounts := []Mount{
-		{Point: "/"},
-		{Point: "/work/ataniq", Options: "rw"},
-		{Point: "/work/ataniq/.git/info", Options: "ro"},
-		{Point: "/work/ataniq/.git/info", Options: "rw"}, // stacked on top
+func TestMountByID(t *testing.T) {
+	mounts := []Mount{{ID: 1, Point: "/"}, {ID: 7, Point: "/work/ataniq", Options: "rw"}, {ID: 9, Point: "/work/ataniq", Options: "ro"}}
+	if m, ok := mountByID(mounts, 9); !ok || m.Options != "ro" {
+		t.Errorf("mountByID(9) = %+v %v", m, ok)
 	}
-	for _, tc := range []struct {
-		path, point, opts string
-		ok                bool
-	}{
-		{"/etc/passwd", "/", "", true},
-		{"/work/ataniq/x", "/work/ataniq", "rw", true},
-		{"/work/ataniq2/x", "/", "", true}, // a name prefix is not a parent
-		{"/work/ataniq/.git/info", "/work/ataniq/.git/info", "rw", true},
-		{"/work/ataniq/.git/info/exclude", "/work/ataniq/.git/info", "rw", true},
-	} {
-		m, ok := mountFor(mounts, tc.path)
-		if ok != tc.ok || m.Point != tc.point || m.Options != tc.opts {
-			t.Errorf("mountFor(%s) = %+v %v, want %s %s", tc.path, m, ok, tc.point, tc.opts)
-		}
-	}
-	if _, ok := mountFor(mounts[1:], "/etc"); ok {
-		t.Error("a path with no mount above it found one")
+	if _, ok := mountByID(mounts, 8); ok {
+		t.Error("an ID that is not in the table was found")
 	}
 }
 
@@ -389,8 +506,8 @@ func TestProblemsRequireAll(t *testing.T) {
 	if !FailedAll(rep, s) {
 		t.Fatal("the inside report alone must not satisfy RequireAll")
 	}
-	if p := Problems(rep, s, RequireAll); len(p) != 4 {
-		t.Errorf("want 4 missing outside results, got %v", p)
+	if p := Problems(rep, s, RequireAll); len(p) != 5 {
+		t.Errorf("want 5 missing outside results, got %v", p)
 	}
 }
 
@@ -408,5 +525,43 @@ func TestDetailListsAFewFindingsAndCountsTheRest(t *testing.T) {
 	d := find(t, RunInside(s, f), 6).Detail
 	if !strings.Contains(d, "and 2 more") || strings.Count(d, "exists") != 3 {
 		t.Errorf("detail %q", d)
+	}
+}
+
+func TestRelated(t *testing.T) {
+	for _, tc := range []struct {
+		p, q string
+		want bool
+	}{
+		{"/home/owner", "/home/owner", true},
+		{"/home/owner", "/home/owner/.claude", true},
+		{"/home/owner/.claude/x", "/home/owner/.claude", true},
+		{"/home/owner/./.claude/../.claude", "/home/owner/.claude", true},
+		{"/home/ownerx", "/home/owner/.claude", false},
+		{"/home/owner/.claudex", "/home/owner/.claude", false},
+		{"/home", "/home/owner/.claude", true},
+		{"/", "/home/owner/.claude", false},
+		{"/home/owner/.claude", "/", false},
+		{"tmpfs", "/home/owner/.claude", false},
+		{"", "/home/owner/.claude", false},
+		{"/dev/nvme0n1p2", "/home/owner/.claude", false},
+	} {
+		if got := related(tc.p, tc.q); got != tc.want {
+			t.Errorf("related(%q, %q) = %v, want %v", tc.p, tc.q, got, tc.want)
+		}
+	}
+}
+
+// The review's probe: the owner's home bound at the lead's home put the
+// owner's provider folder at the other runtime's place, and the report said ok.
+func TestOwnerHomeBoundAtTheLeadsHomeFailsTheReport(t *testing.T) {
+	s := testSpec(profile.Claude)
+	f := goodSystem(s)
+	f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+	f.setDir("/home/lead/.codex")
+	f.setFile("/home/lead/.codex/auth.json", "{}")
+	rep := RunInside(s, f)
+	if find(t, rep, 1).Status != StatusFailed || find(t, rep, 6).Status != StatusFailed || !Failed(rep, s) {
+		t.Errorf("assertion 1 %+v, assertion 6 %+v", find(t, rep, 1), find(t, rep, 6))
 	}
 }

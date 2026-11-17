@@ -27,6 +27,12 @@ type fakeSys struct {
 	lookupErr error
 	writable  map[string]bool
 	accessErr map[string]error
+	dirErr    map[string]error
+	// mountIDs sets the answer of MountID for a path; otherwise it is the ID
+	// of the mount of the longest point above the path, the last of several on
+	// top. noMountID makes every answer ErrNoMountID.
+	mountIDs  map[string]int
+	noMountID bool
 
 	dialed []string
 }
@@ -78,6 +84,45 @@ func (f *fakeSys) LookupHost(host string, _ time.Duration) ([]string, error) {
 	return f.hosts[host], nil
 }
 
+// DirEmpty is true for a folder that no other node lies below.
+func (f *fakeSys) DirEmpty(path string) (bool, error) {
+	if err := f.dirErr[path]; err != nil {
+		return false, err
+	}
+	n, ok := f.nodes[path]
+	if !ok {
+		return false, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOENT}
+	}
+	if !n.info.IsDir() {
+		return false, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOTDIR}
+	}
+	for p := range f.nodes {
+		if strings.HasPrefix(p, path+"/") {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (f *fakeSys) MountID(path string) (int, error) {
+	if f.noMountID {
+		return 0, fmt.Errorf("statx %s: %w", path, ErrNoMountID)
+	}
+	if id, ok := f.mountIDs[path]; ok {
+		return id, nil
+	}
+	best, found := Mount{}, false
+	for _, m := range f.mounts {
+		if within(path, m.Point) && (!found || len(m.Point) >= len(best.Point)) {
+			best, found = m, true
+		}
+	}
+	if !found {
+		return 0, &fs.PathError{Op: "statx", Path: path, Err: syscall.ENOENT}
+	}
+	return best.ID, nil
+}
+
 func (f *fakeSys) Writable(path string) (bool, error) {
 	if err := f.accessErr[path]; err != nil {
 		return false, err
@@ -112,6 +157,8 @@ func goodSystem(s Spec) *fakeSys {
 		hosts:     map[string][]string{s.ProviderHost: {"192.0.2.10", "2001:db8::10"}},
 		writable:  map[string]bool{},
 		accessErr: map[string]error{},
+		dirErr:    map[string]error{},
+		mountIDs:  map[string]int{},
 	}
 	for _, e := range s.Env {
 		f.env = append(f.env, e.Name+"="+e.Value)

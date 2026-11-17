@@ -2,6 +2,7 @@ package assert
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -131,18 +132,41 @@ func (c *checker) mustBeAbsent(t *tally, what, path string) {
 	}
 }
 
-// readOnly records whether path is on a read-only mount and the kernel says it
-// is not writable. Both must hold: access(W_OK) alone says yes to a process
-// with the rights to override permissions, and the mount flag alone does not
-// see a permission or a file system that would let a write through.
+// readOnly records whether path is on a read-only mount, with no read-write
+// mount at or below it, and the kernel says it is not writable. All must hold:
+// access(W_OK) alone says yes to a process with the rights to override
+// permissions, and the mount flag alone does not see a permission or a file
+// system that would let a write through.
+//
+// The mount is found by its ID (statx of the path, matched to the first field
+// of the mount table), not by the longest mount point that is a prefix of the
+// path: when a later bind hides an earlier one (a read-write bind of the tree
+// over a read-only bind of its .git/config, in a plan whose rows are in the
+// wrong order), the prefix is the hidden mount and the path is on the other.
+// A read-write mount at or below the path fails it too, whether or not it is
+// hidden: a path is read-only when nothing writable is bound inside it. Where
+// the kernel gives no mount ID the result is not-checked.
 func (c *checker) readOnly(t *tally, what, path string) {
 	mounts, err := c.mountTable()
 	if err != nil {
 		t.skip("%s %q: no mount table: %v", what, path, err)
-	} else if m, ok := mountFor(mounts, path); !ok {
-		t.skip("%s %q: no mount of the table holds it", what, path)
-	} else if !m.ReadOnly() {
-		t.fail("%s %q is on a writable mount at %q", what, path, m.Point)
+	} else {
+		top := -1
+		if id, err := c.sys.MountID(path); err != nil {
+			t.skip("%s %q: no mount ID (statx): %v", what, path, err)
+		} else if m, ok := mountByID(mounts, id); !ok {
+			t.skip("%s %q: mount ID %d is not in the mount table", what, path, id)
+		} else {
+			top = m.ID
+			if !m.ReadOnly() {
+				t.fail("%s %q is on a writable mount at %q", what, path, m.Point)
+			}
+		}
+		for _, m := range mounts {
+			if m.ID != top && within(m.Point, path) && !m.ReadOnly() {
+				t.fail("%s %q has a writable mount at or below it: %q", what, path, m.Point)
+			}
+		}
 	}
 	w, err := c.sys.Writable(path)
 	switch {
@@ -164,15 +188,58 @@ func (c *checker) holderHidden() Result {
 		t.skip("no mount table: %v", err)
 	}
 	for _, m := range mounts {
-		for _, sub := range c.spec.MountSubstrings {
-			if strings.Contains(m.Point, sub) || strings.Contains(m.Root, sub) || strings.Contains(m.Source, sub) {
-				t.fail("mount %q mentions %q", m.Point, sub)
-				break
-			}
+		if sub, ok := mentions(m, c.spec.MountSubstrings); ok {
+			t.fail("mount %q mentions %q", m.Point, sub)
+			continue
+		}
+		if what, p, ok := relatedMount(m, c.spec.OwnerPaths, c.spec.HolderPaths); ok {
+			t.fail("mount %q has %s %q, which is at, above or below the path %q", m.Point, what, clipPath(m.value(what)), p)
 		}
 	}
 	return t.result(1, fmt.Sprintf("none of %d holder paths exists; none of %d mounts mentions any of %d substrings",
 		len(c.spec.HolderPaths), len(mounts), len(c.spec.MountSubstrings)))
+}
+
+// mentions returns the first substring that the root, the mount point or the
+// source of the mount contains.
+func mentions(m Mount, subs []string) (string, bool) {
+	for _, sub := range subs {
+		if strings.Contains(m.Point, sub) || strings.Contains(m.Root, sub) || strings.Contains(m.Source, sub) {
+			return sub, true
+		}
+	}
+	return "", false
+}
+
+// relatedMount says the root, the source or the mount point of the mount is a
+// listed path, lies below it, or is one of its ancestors, comparing whole
+// components. A mount whose root is the folder above an owner path (the
+// owner's home bound at the lead's home) puts the owner path inside, though
+// no listed text appears in the table. It names which of the three fields
+// matched. The root "/" of a file system, the source of a mount that is not a
+// path ("tmpfs") and the mount point "/" are related to nothing. A mount root
+// is relative to its file system: a separate file system mounted at an
+// ancestor of an owner path, with its own root "/", is not found here.
+func relatedMount(m Mount, lists ...[]string) (what, listed string, ok bool) {
+	for _, field := range []string{"root", "source", "mount point"} {
+		v := m.value(field)
+		for _, list := range lists {
+			for _, p := range list {
+				if related(v, p) {
+					return field, p, true
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+
+// clipPath cuts a path for a detail; EscapeDetail makes it visible.
+func clipPath(p string) string {
+	if len(p) > 120 {
+		return p[:120] + "..."
+	}
+	return p
 }
 
 // 2. The environment equals the allowlist.
@@ -195,48 +262,82 @@ func (c *checker) environment() Result {
 	return result(2, StatusOK, "the environment equals the allowlist of %d variables", len(want))
 }
 
-// unreachable says a failed dial is evidence that the address cannot be
-// reached: a refusal, a timeout, no route or no such socket. Another error
-// (out of descriptors, say) says the question was not asked.
-func unreachable(err error) bool {
+// dialEvidence says what a failed dial shows. proves is true when the error is
+// evidence that the address cannot be reached, and how names the evidence for
+// the detail. Any other error says the question was not asked: out of
+// descriptors, a listener whose backlog is full (EAGAIN: something is there to
+// accept), a reset, no free local port.
+func dialEvidence(err error) (how string, proves bool) {
+	if errors.Is(err, syscall.EAGAIN) {
+		// A unix connect to a listener with a full backlog fails with EAGAIN,
+		// which net.Error calls a timeout. A listener exists: not unreachable.
+		return "", false
+	}
+	for _, e := range []struct {
+		errno syscall.Errno
+		how   string
+	}{
+		{syscall.ECONNREFUSED, "refused the connection"},
+		{syscall.ENOENT, "has no such socket"},
+		{syscall.ENETUNREACH, "is on an unreachable network"},
+		{syscall.EHOSTUNREACH, "is an unreachable host"},
+		{syscall.EACCES, "was refused by policy"},
+		{syscall.EPERM, "was refused by policy"},
+		{syscall.ETIMEDOUT, timedOut},
+	} {
+		if errors.Is(err, e.errno) {
+			return e.how, true
+		}
+	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, os.ErrDeadlineExceeded) {
-		return true
+		return timedOut, true
 	}
-	for _, e := range []syscall.Errno{
-		syscall.ECONNREFUSED, syscall.ENOENT, syscall.ENETUNREACH, syscall.EHOSTUNREACH,
-		syscall.EADDRNOTAVAIL, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ETIMEDOUT,
-		syscall.EACCES, syscall.EPERM,
-	} {
-		if errors.Is(err, e) {
-			return true
-		}
-	}
-	return false
+	return "", false
 }
 
-// 3. One host loopback port and one host abstract socket are unreachable.
+// timedOut is the evidence of a dial that got no answer. It is weaker than a
+// refusal: something may have dropped the packets of a path that is routed, so
+// the canary count after the probe has run decides (CheckCanary).
+const timedOut = "timed out (weaker than a refusal: the canary count decides)"
+
+// 3. One host loopback port (two when the spec has a second address) and one
+// host abstract socket are unreachable.
 func (c *checker) loopback() Result {
 	var t tally
-	for _, target := range []struct{ what, network, addr string }{
+	var shown []string
+	targets := []struct{ what, network, addr string }{
 		{"host loopback port", "tcp", c.spec.LoopbackTCP},
-		{"host abstract socket", "unix", "@" + c.spec.AbstractSocket},
-	} {
-		err := c.sys.Dial(target.network, target.addr, c.spec.ConnectTimeout())
-		switch {
-		case err == nil:
-			t.fail("%s %s is reachable: a connection was made", target.what, target.addr)
-		case !unreachable(err):
-			t.skip("%s %s: the dial failed in a way that does not show it is unreachable: %v", target.what, target.addr, err)
-		}
 	}
-	return t.result(3, "the host loopback port and the host abstract socket could not be reached")
+	if c.spec.LoopbackTCP2 != "" {
+		targets = append(targets, struct{ what, network, addr string }{"second host loopback port", "tcp", c.spec.LoopbackTCP2})
+	}
+	targets = append(targets, struct{ what, network, addr string }{"host abstract socket", "unix", "@" + c.spec.AbstractSocket})
+	for _, target := range targets {
+		err := c.sys.Dial(target.network, target.addr, c.spec.ConnectTimeout())
+		if err == nil {
+			t.fail("%s %s is reachable: a connection was made", target.what, target.addr)
+			continue
+		}
+		how, proves := dialEvidence(err)
+		if !proves {
+			t.skip("%s %s: the dial failed in a way that does not show it is unreachable: %v", target.what, target.addr, err)
+			continue
+		}
+		shown = append(shown, fmt.Sprintf("%s %s %s", target.what, target.addr, how))
+	}
+	return t.result(3, strings.Join(shown, "; "))
 }
 
 // 4. A provider host name resolves.
 func (c *checker) provider() Result {
 	addrs, err := c.sys.LookupHost(c.spec.ProviderHost, c.spec.ResolveTimeout())
+	var ne net.Error
 	switch {
+	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout():
+		// No answer is not an answer: the question was not asked. This is the
+		// result the spec's optional list can excuse.
+		return result(4, StatusNotChecked, "%q: the lookup got no answer: %v", c.spec.ProviderHost, err)
 	case err != nil:
 		return result(4, StatusFailed, "%q does not resolve: %v", c.spec.ProviderHost, err)
 	case len(addrs) == 0:
@@ -271,52 +372,76 @@ func readSysctl(sys System) (sysctlState, string) {
 	return sysctlUnreadable, fmt.Sprintf("legacy_tiocsti cannot be read: %v", err)
 }
 
-// seccompMode reads the Seccomp: line of /proc/self/status. A status without
-// the line (a kernel without seccomp) is mode 0.
-func seccompMode(sys System) (int, error) {
-	data, err := sys.ReadFile(procStatus, maxStatusBytes)
-	if err != nil {
-		return 0, err
-	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		v, ok := bytes.CutPrefix(line, []byte("Seccomp:"))
-		if !ok {
-			continue
-		}
-		mode, err := strconv.Atoi(string(bytes.TrimSpace(v)))
-		if err != nil {
-			return 0, fmt.Errorf("the Seccomp: line is not a number")
-		}
-		return mode, nil
-	}
-	return 0, nil
+// seccompState is what /proc/self/status says about seccomp.
+type seccompState struct {
+	// Mode is the Seccomp: line: 0 off, 1 strict, 2 filter. A status without
+	// the line (a kernel without seccomp) is mode 0.
+	Mode int
+	// Filters is the Seccomp_filters: line, the number of filters the
+	// process carries; HasFilters is false when the kernel does not give it.
+	Filters    int
+	HasFilters bool
 }
 
-// 5. legacy_tiocsti is 0, or a seccomp filter is loaded; when the profile
-// expects a filter, it must be loaded.
-func (c *checker) tiocsti() Result {
-	mode, merr := seccompMode(c.sys)
-	if c.spec.SeccompExpected {
-		switch {
-		case merr != nil:
-			return result(5, StatusNotChecked, "the profile expects a seccomp filter and %s cannot be read: %v", procStatus, merr)
-		case mode != 2:
-			return result(5, StatusFailed, "the profile expects a seccomp filter and Seccomp: is %d, not 2", mode)
+// describe is the state for a detail.
+func (s seccompState) describe() string {
+	if s.HasFilters {
+		return fmt.Sprintf("Seccomp: %d, Seccomp_filters: %d", s.Mode, s.Filters)
+	}
+	return fmt.Sprintf("Seccomp: %d, Seccomp_filters: not given", s.Mode)
+}
+
+// readSeccomp reads the Seccomp: and Seccomp_filters: lines of
+// /proc/self/status.
+func readSeccomp(sys System) (seccompState, error) {
+	var st seccompState
+	data, err := sys.ReadFile(procStatus, maxStatusBytes)
+	if err != nil {
+		return st, err
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if v, ok := bytes.CutPrefix(line, []byte("Seccomp:")); ok {
+			mode, err := strconv.Atoi(string(bytes.TrimSpace(v)))
+			if err != nil {
+				return seccompState{}, fmt.Errorf("the Seccomp: line is not a number")
+			}
+			st.Mode = mode
+		} else if v, ok := bytes.CutPrefix(line, []byte("Seccomp_filters:")); ok {
+			n, err := strconv.Atoi(string(bytes.TrimSpace(v)))
+			if err != nil {
+				return seccompState{}, fmt.Errorf("the Seccomp_filters: line is not a number")
+			}
+			st.Filters, st.HasFilters = n, true
 		}
-		return result(5, StatusOK, "a seccomp filter is loaded (Seccomp: 2), as the profile expects")
 	}
-	st, sdetail := readSysctl(c.sys)
-	switch {
-	case st == sysctlZero:
-		return result(5, StatusOK, "%s", sdetail)
-	case merr == nil && mode == 2:
-		return result(5, StatusOK, "%s; a seccomp filter is loaded (Seccomp: 2)", sdetail)
-	case st == sysctlUnreadable:
-		return result(5, StatusNotChecked, "%s", sdetail)
-	case merr != nil:
-		return result(5, StatusNotChecked, "%s, and %s cannot be read: %v", sdetail, procStatus, merr)
+	return st, nil
+}
+
+// 5. Without a filter in the profile, dev.tty.legacy_tiocsti must be 0: no
+// other reading is accepted, and a seccomp filter that something else
+// installed (a service manager's, say) is not evidence that TIOCSTI is
+// blocked. With a filter in the profile, the process must carry one
+// (Seccomp: 2). That is all the probe can see from inside: it does not verify
+// which filter it is, and the detail says so.
+func (c *checker) tiocsti() Result {
+	if c.spec.SeccompExpected {
+		st, err := readSeccomp(c.sys)
+		switch {
+		case err != nil:
+			return result(5, StatusNotChecked, "the profile expects a seccomp filter and %s cannot be read: %v", procStatus, err)
+		case st.Mode != 2:
+			return result(5, StatusFailed, "the profile expects a seccomp filter and Seccomp: is %d, not 2", st.Mode)
+		}
+		return result(5, StatusOK, "a seccomp filter is loaded (%s), as the profile expects; the identity of the filter is not verified from inside", st.describe())
 	}
-	return result(5, StatusFailed, "%s, and no seccomp filter is loaded (Seccomp: %d)", sdetail, mode)
+	state, detail := readSysctl(c.sys)
+	switch state {
+	case sysctlZero:
+		return result(5, StatusOK, "%s", detail)
+	case sysctlUnreadable:
+		return result(5, StatusNotChecked, "%s", detail)
+	}
+	return result(5, StatusFailed, "%s, and the profile names no seccomp filter: a filter that something else loaded is not evidence that TIOCSTI is blocked", detail)
 }
 
 // 6. The owner's folders and the other runtime's config folder do not exist.
@@ -330,9 +455,13 @@ func (c *checker) ownerPaths() Result {
 	return t.result(6, fmt.Sprintf("none of %d owner paths exists; %s", len(c.spec.OwnerPaths), note))
 }
 
-// otherConfig checks the other runtime's config folder. A lead can make an
-// empty folder at that path in its own home, so the folder existing is not a
-// failure of the boundary: a mount at it, or below it, is.
+// otherConfig checks the other runtime's config folder. It is ok only when
+// the folder is absent, or is an empty folder that is not a mount point and
+// has no mount below it: a lead can make an empty folder in its own home, which
+// is not a failure of the boundary. Anything in it is failed, since an owner's
+// folder that came in at that place by a bind of a folder above it (the
+// owner's home at the lead's home, say) is not a mount at the folder, and a
+// link or a file there is not the folder the lead made.
 func (c *checker) otherConfig(t *tally, note *string) {
 	dir := c.spec.OtherConfigDir
 	info, err := c.sys.Lstat(dir)
@@ -342,6 +471,9 @@ func (c *checker) otherConfig(t *tally, note *string) {
 		return
 	case err != nil:
 		t.skip("the other runtime's config folder %q: cannot tell whether it exists: %v", dir, err)
+		return
+	case !info.IsDir():
+		t.fail("the other runtime's config folder %q is %s, not an empty folder", dir, info.Describe())
 		return
 	}
 	mounts, err := c.mountTable()
@@ -355,8 +487,17 @@ func (c *checker) otherConfig(t *tally, note *string) {
 			return
 		}
 	}
-	*note = fmt.Sprintf("the other runtime's config folder %q exists (%s) and nothing is mounted at or below it; "+
-		"a folder the lead made itself is not a failure of the boundary", dir, info.Describe())
+	empty, err := c.sys.DirEmpty(dir)
+	switch {
+	case err != nil:
+		t.skip("the other runtime's config folder %q exists and cannot be read: %v", dir, err)
+		return
+	case !empty:
+		t.fail("the other runtime's config folder %q holds entries: only an empty folder is not a failure of the boundary", dir)
+		return
+	}
+	*note = fmt.Sprintf("the other runtime's config folder %q is an empty folder that is not a mount point and has nothing mounted below it; "+
+		"a folder the lead made itself is not a failure of the boundary", dir)
 }
 
 // 7. The tree is the lead's own clone and its three git paths are read-only.
@@ -391,7 +532,12 @@ func (c *checker) treeGit() Result {
 	return t.result(7, fmt.Sprintf("%q is a folder and its config, hooks and info are read-only", git))
 }
 
-// 8. The managed-settings file is present and read-only, and holds the marker.
+// 8. The managed-settings file is present and read-only, and contains the
+// marker text. The match is a plain search for the text: a file that holds it
+// in a place that does not make the guard hook active (inside a string, next
+// to a setting that disables hooks) passes, and the detail says only that the
+// file contains the text. That the hook runs is for the qualification case
+// that exercises it (S18).
 func (c *checker) managed() Result {
 	var t tally
 	p := c.spec.ManagedSettings
@@ -414,10 +560,10 @@ func (c *checker) managed() Result {
 	case err != nil:
 		t.skip("%q cannot be read: %v", p, err)
 	case c.spec.ManagedMarker != "" && !bytes.Contains(data, []byte(c.spec.ManagedMarker)):
-		t.fail("%q does not contain the marker %q", p, c.spec.ManagedMarker)
+		t.fail("%q does not contain the marker text %q", p, c.spec.ManagedMarker)
 	}
 	if c.spec.ManagedMarker == "" {
 		return t.result(8, fmt.Sprintf("%q is a regular file and read-only; no marker is required for %s", p, c.spec.Runtime))
 	}
-	return t.result(8, fmt.Sprintf("%q is a regular file, read-only, and contains the marker", p))
+	return t.result(8, fmt.Sprintf("%q is a regular file, read-only, and contains the marker text", p))
 }

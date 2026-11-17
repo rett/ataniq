@@ -8,6 +8,7 @@ import "errors"
 // another system NewCanary fails with errors.ErrUnsupported.
 type Canary struct {
 	TCP      string
+	TCP2     string
 	Abstract string
 }
 
@@ -20,8 +21,17 @@ func (c *Canary) Hits() int64 { return 0 }
 // TCPHits is always 0.
 func (c *Canary) TCPHits() int64 { return 0 }
 
+// TCP2Hits is always 0.
+func (c *Canary) TCP2Hits() int64 { return 0 }
+
 // AbstractHits is always 0.
 func (c *Canary) AbstractHits() int64 { return 0 }
+
+// AcceptErrors is always 0.
+func (c *Canary) AcceptErrors() int64 { return 0 }
+
+// Stopped is always true: nothing runs.
+func (c *Canary) Stopped() bool { return true }
 
 // Close does nothing.
 func (c *Canary) Close() error { return nil }

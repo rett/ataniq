@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"reflect"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -25,7 +26,7 @@ const (
 	MaxEnvEntries      = 128
 	MaxPathEntries     = 64
 	MaxMountSubstrings = 64
-	MaxOptional        = NumAssertions
+	MaxOptional        = 1
 	MaxPathBytes       = 4096
 	MaxEnvNameBytes    = 64
 	MaxEnvValueBytes   = 4096
@@ -41,6 +42,10 @@ const (
 	DefaultConnectMS = 1000
 	DefaultResolveMS = 5000
 )
+
+// OptionalAssertion is the only assertion a spec may list as optional: the
+// provider host name resolves (assertion 4).
+const OptionalAssertion = 4
 
 // EnvEntry is one variable of the expected environment.
 type EnvEntry struct {
@@ -74,14 +79,17 @@ type Spec struct {
 	// .ssh, the owner's checkout (assertion 6).
 	OwnerPaths []string `json:"owner_paths"`
 	// OtherConfigDir is the other runtime's config folder as it appears
-	// inside, in the lead's home. A lead can make an empty folder there; the
-	// check is that nothing is mounted at or below it (assertion 6).
+	// inside, in the lead's home. It must be absent, or an empty folder (a
+	// lead can make one) with nothing mounted at or below it (assertion 6).
 	OtherConfigDir string `json:"other_config_dir"`
 
 	// LoopbackTCP is one host loopback address (ip:port) and AbstractSocket
 	// one host abstract socket name (without the leading @) that must be
-	// unreachable (assertion 3).
+	// unreachable (assertion 3). LoopbackTCP2 is an optional second loopback
+	// address, normally the canary's "[::1]:port" when the host has IPv6
+	// loopback; it must differ from the first.
 	LoopbackTCP    string `json:"loopback_tcp"`
+	LoopbackTCP2   string `json:"loopback_tcp_2,omitempty"`
 	AbstractSocket string `json:"abstract_socket"`
 
 	// ProviderHost is a provider host name that must resolve (assertion 4).
@@ -97,13 +105,19 @@ type Spec struct {
 	GitReadOnly []string `json:"git_read_only"`
 
 	// ManagedSettings is the managed-settings file inside, and
-	// ManagedMarker text it must contain: for claude the guard hook
-	// (assertion 8). Required for claude.
+	// ManagedMarker text it must contain: for claude a name that is in the
+	// guard hook's entry (assertion 8). Required for claude. The check is a
+	// plain search for the text; it does not parse the file or show that the
+	// hook is active.
 	ManagedSettings string `json:"managed_settings"`
 	ManagedMarker   string `json:"managed_marker,omitempty"`
 
-	// Optional lists assertions (1 to 8) whose not-checked result does not
-	// fail the start. A failed result always does.
+	// Optional lists assertions whose not-checked result does not fail the
+	// start. Only assertion 4 (OptionalAssertion, the provider host
+	// resolves) may be listed: every other assertion is a boundary fact or
+	// the environment, and a start that passes with it not checked is not a
+	// start the assertions describe. A failed result always fails the start,
+	// and the outside halves are never optional.
 	Optional []int `json:"optional,omitempty"`
 
 	// ConnectTimeoutMS and ResolveTimeoutMS limit a dial and a name
@@ -138,9 +152,12 @@ func (s Spec) OptionalSet(n int) bool {
 	return false
 }
 
+var specShape = shapeOf(reflect.TypeOf(Spec{}))
+
 // DecodeSpec reads a spec, strictly: at most MaxSpecBytes (a larger input is
-// refused, not truncated), one JSON object, no unknown field and no trailing
-// data, and then Validate. The error is a *Refusal.
+// refused, not truncated), valid UTF-8, one JSON object, keys that are exactly
+// the field names (no other case, no unknown key, no key twice) and no
+// trailing data, and then Validate. The error is a *Refusal.
 func DecodeSpec(r io.Reader) (Spec, error) {
 	data, err := io.ReadAll(io.LimitReader(r, MaxSpecBytes+1))
 	if err != nil {
@@ -153,6 +170,17 @@ func DecodeSpec(r io.Reader) (Spec, error) {
 func DecodeSpecBytes(data []byte) (Spec, error) {
 	if len(data) > MaxSpecBytes {
 		return Spec{}, refuse("spec", "is larger than %d bytes", MaxSpecBytes)
+	}
+	if !utf8.Valid(data) {
+		// encoding/json would replace an invalid byte with U+FFFD and go on:
+		// the probe would check another path than the holder wrote.
+		return Spec{}, refuse("spec", "is not valid UTF-8")
+	}
+	if err := checkKeys(data, specShape, "spec"); err != nil {
+		if _, ok := err.(*Refusal); ok {
+			return Spec{}, err
+		}
+		return Spec{}, refuse("spec", "is not a spec: %v", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -188,7 +216,7 @@ func EncodeSpec(s Spec) ([]byte, error) {
 
 // Validate refuses a spec the probe cannot use: a wrong version, an invalid
 // runtime or digest, an empty list that would make an assertion vacuous, an
-// entry or list over its bound, a relative or unclean path, a control
+// entry or list over its bound, an optional assertion other than 4, a relative or unclean path, a control
 // character, an address that is not loopback, a host name that is an address,
 // an other-runtime folder that is not the profile's, git paths that are not
 // the tree's three, and a claude spec without a marker or with another
@@ -249,8 +277,8 @@ func (s Spec) checkEnv() error {
 		if !validEnvName(e.Name) {
 			return refuse(field, "name must match [A-Za-z_][A-Za-z0-9_]* and be at most %d bytes", MaxEnvNameBytes)
 		}
-		if len(e.Value) > MaxEnvValueBytes || hasControl(e.Value) {
-			return refuse(field, "value of %s is longer than %d bytes or holds a control character", e.Name, MaxEnvValueBytes)
+		if len(e.Value) > MaxEnvValueBytes || hasControl(e.Value) || !utf8.ValidString(e.Value) {
+			return refuse(field, "value of %s is longer than %d bytes, holds a control character or is not valid UTF-8", e.Name, MaxEnvValueBytes)
 		}
 		if seen[e.Name] {
 			return refuse(field, "name %s is listed twice", e.Name)
@@ -294,12 +322,25 @@ func checkPaths(field string, paths []string) error {
 		return refuse(field, "more than %d paths", MaxPathEntries)
 	}
 	for i, p := range paths {
-		if err := profile.CheckPath(fmt.Sprintf("%s[%d]", field, i), p); err != nil {
-			return refuse(fmt.Sprintf("%s[%d]", field, i), "%s", reasonOf(err))
+		if err := checkPath(fmt.Sprintf("%s[%d]", field, i), p); err != nil {
+			return err
 		}
 		if p == "/" {
 			return refuse(fmt.Sprintf("%s[%d]", field, i), "must not be the root")
 		}
+	}
+	return nil
+}
+
+// checkPath is profile.CheckPath that also refuses a path that is not valid
+// UTF-8: it would change in the JSON of the spec, and the probe would check
+// another path than the holder meant.
+func checkPath(field, p string) error {
+	if err := profile.CheckPath(field, p); err != nil {
+		return refuse(field, "%s", reasonOf(err))
+	}
+	if !utf8.ValidString(p) {
+		return refuse(field, "is not valid UTF-8 and would change in the JSON of the spec")
 	}
 	return nil
 }
@@ -331,6 +372,15 @@ func (s Spec) checkNet() error {
 	ap, err := netip.ParseAddrPort(s.LoopbackTCP)
 	if err != nil || !ap.Addr().IsLoopback() || ap.Port() == 0 {
 		return refuse("loopback_tcp", "must be a loopback ip:port with a non-zero port")
+	}
+	if s.LoopbackTCP2 != "" {
+		ap2, err := netip.ParseAddrPort(s.LoopbackTCP2)
+		if err != nil || !ap2.Addr().IsLoopback() || ap2.Port() == 0 {
+			return refuse("loopback_tcp_2", "must be empty or a loopback ip:port with a non-zero port")
+		}
+		if ap2 == ap {
+			return refuse("loopback_tcp_2", "is the same address as loopback_tcp")
+		}
 	}
 	if !validAbstractName(s.AbstractSocket) {
 		return refuse("abstract_socket", "must be 1 to %d bytes of [A-Za-z0-9._-], without the leading @", MaxAbstractBytes)
@@ -383,8 +433,8 @@ func checkHostName(h string) error {
 }
 
 func (s Spec) checkTree() error {
-	if err := profile.CheckPath("tree", s.Tree); err != nil {
-		return refuse("tree", "%s", reasonOf(err))
+	if err := checkPath("tree", s.Tree); err != nil {
+		return err
 	}
 	if s.Tree == "/" {
 		return refuse("tree", "must not be the root")
@@ -402,15 +452,15 @@ func (s Spec) checkTree() error {
 }
 
 func (s Spec) checkManaged() error {
-	if err := profile.CheckPath("managed_settings", s.ManagedSettings); err != nil {
-		return refuse("managed_settings", "%s", reasonOf(err))
+	if err := checkPath("managed_settings", s.ManagedSettings); err != nil {
+		return err
 	}
 	if s.Runtime == profile.Claude {
 		if s.ManagedSettings != profile.ClaudeManagedInside {
 			return refuse("managed_settings", "must be %s for claude, the only place it reads policy from", profile.ClaudeManagedInside)
 		}
 		if s.ManagedMarker == "" {
-			return refuse("managed_marker", "is required for claude: the guard hook the file must contain")
+			return refuse("managed_marker", "is required for claude: the text of the guard hook the file must contain")
 		}
 	}
 	if len(s.ManagedMarker) > MaxMarkerBytes || !cleanMarker(s.ManagedMarker) {
@@ -435,16 +485,10 @@ func (s Spec) checkLimits() error {
 	if len(s.Optional) > MaxOptional {
 		return refuse("optional", "more than %d entries", MaxOptional)
 	}
-	seen := map[int]bool{}
 	for _, n := range s.Optional {
-		a, ok := ByNumber(n)
-		if !ok || !a.HasInside() {
-			return refuse("optional", "%d is not an assertion with an inside half (1 to 8)", n)
+		if n != OptionalAssertion {
+			return refuse("optional", "%d cannot be optional: only assertion %d (%s) may be", n, OptionalAssertion, idOf(OptionalAssertion))
 		}
-		if seen[n] {
-			return refuse("optional", "%d is listed twice", n)
-		}
-		seen[n] = true
 	}
 	for _, t := range []struct {
 		field string
