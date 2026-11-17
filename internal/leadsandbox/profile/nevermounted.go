@@ -1,5 +1,7 @@
 package profile
 
+import "strconv"
+
 // neverMounted is the caller's list plus the other runtime's config folder.
 func (in Inputs) neverMounted() []string {
 	never := append([]string(nil), in.NeverMounted...)
@@ -11,10 +13,20 @@ func (in Inputs) neverMounted() []string {
 
 // CheckNeverMounted refuses a bind source that is equal to, below or above any
 // path of never. The comparison is lexical: both sides must be clean absolute
-// paths with their symbolic links resolved by the caller.
+// paths with their symbolic links resolved by the caller. It fails closed: it
+// refuses an empty list, and an entry that is not a clean absolute path
+// (CheckPath), because such an entry would protect nothing.
 func CheckNeverMounted(source string, never []string) error {
+	if len(never) == 0 {
+		return refuse("never-mounted paths", "none given: an empty list protects nothing")
+	}
 	if err := CheckPath("bind source", source); err != nil {
 		return err
+	}
+	for i, n := range never {
+		if err := CheckPath("never-mounted path "+strconv.Itoa(i), n); err != nil {
+			return err
+		}
 	}
 	for _, n := range never {
 		switch {
