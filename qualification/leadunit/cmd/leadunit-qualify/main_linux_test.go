@@ -20,9 +20,17 @@ import (
 // systemd, and no test starts a unit.
 const helperEnv = "LEADUNIT_QUALIFY_TEST_HELPER"
 
+// refuseManager is the manager factory of every test: it builds nothing. A test
+// reaches the real manager only through run, which no test calls, so no test
+// can start a unit by construction and not only because an earlier check
+// happens to fail.
+func refuseManager() (lifecycle, error) {
+	return nil, errors.New("a test must not build a manager")
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv(helperEnv) == "1" {
-		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+		os.Exit(runWith(os.Args[1:], os.Stdout, os.Stderr, refuseManager))
 	}
 	os.Exit(m.Run())
 }
@@ -52,7 +60,7 @@ func TestParseArgs(t *testing.T) {
 		{"--nope"},
 		{"extra"},
 		{"--run", "--state-dir", "/var/q", "extra"},
-		{"child"}, // only run() routes the child subcommand
+		{"child"}, // only runWith() routes the child subcommand
 	}
 	for _, args := range bad {
 		if _, err := parseArgs(args); err == nil {
@@ -67,7 +75,7 @@ func TestParseArgs(t *testing.T) {
 func TestDryRunPrintsThePlanAndTouchesNothing(t *testing.T) {
 	for _, args := range [][]string{nil, {"--state-dir", "/var/q"}} {
 		var out, errb bytes.Buffer
-		if code := run(args, &out, &errb); code != exitOK {
+		if code := runWith(args, &out, &errb, refuseManager); code != exitOK {
 			t.Fatalf("%q: exit %d: %s", args, code, errb.String())
 		}
 		if errb.Len() != 0 {
@@ -97,8 +105,8 @@ func TestDryRunPrintsThePlanAndTouchesNothing(t *testing.T) {
 
 func TestDryRunIsIdenticalForTheSameArguments(t *testing.T) {
 	var a, b bytes.Buffer
-	run(nil, &a, new(bytes.Buffer))
-	run(nil, &b, new(bytes.Buffer))
+	runWith(nil, &a, new(bytes.Buffer), refuseManager)
+	runWith(nil, &b, new(bytes.Buffer), refuseManager)
 	if a.String() != b.String() || a.Len() == 0 {
 		t.Fatal("the dry run is not deterministic")
 	}
@@ -107,7 +115,7 @@ func TestDryRunIsIdenticalForTheSameArguments(t *testing.T) {
 func TestRunUsageErrors(t *testing.T) {
 	for _, args := range [][]string{{"--run"}, {"--bogus"}, {"extra"}, {"--state-dir", "rel"}} {
 		var out, errb bytes.Buffer
-		if code := run(args, &out, &errb); code != exitUsage {
+		if code := runWith(args, &out, &errb, refuseManager); code != exitUsage {
 			t.Errorf("%q: exit %d", args, code)
 		}
 		if out.Len() != 0 || !strings.Contains(errb.String(), "usage: leadunit-qualify") {
@@ -115,7 +123,7 @@ func TestRunUsageErrors(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if code := run([]string{"-h"}, &out, new(bytes.Buffer)); code != exitOK || !strings.Contains(out.String(), "usage:") {
+	if code := runWith([]string{"-h"}, &out, new(bytes.Buffer), refuseManager); code != exitOK || !strings.Contains(out.String(), "usage:") {
 		t.Errorf("-h: %d %q", code, out.String())
 	}
 }
@@ -141,9 +149,37 @@ func TestRunRefusesAnUnacceptableStateFolder(t *testing.T) {
 	}
 	for name, dir := range map[string]string{"missing": filepath.Join(root, "none"), "open": open, "file": file, "symlink": link} {
 		var out, errb bytes.Buffer
-		if code := run([]string{"--run", "--state-dir", dir}, &out, &errb); code != exitUsage || out.Len() != 0 {
+		if code := runWith([]string{"--run", "--state-dir", dir}, &out, &errb, refuseManager); code != exitUsage || out.Len() != 0 {
 			t.Errorf("%s: exit %d stdout %q stderr %q", name, code, out.String(), errb.String())
 		}
+	}
+}
+
+// With an acceptable folder --run reaches the manager factory and nowhere
+// else: the test factory refuses, and the run ends before any check.
+func TestRunBuildsTheManagerOnlyAfterTheFolderIsAccepted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	var out, errb bytes.Buffer
+	code := runWith([]string{"--run", "--state-dir", dir}, &out, &errb, func() (lifecycle, error) {
+		calls++
+		return nil, errors.New("no manager in a test")
+	})
+	if code != exitRuntime || calls != 1 || out.Len() != 0 || !strings.Contains(errb.String(), "no manager in a test") {
+		t.Fatalf("exit %d calls %d stdout %q stderr %q", code, calls, out.String(), errb.String())
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("files written before any check: %v", entries)
+	}
+	// A dry run and a bad argument never ask for it.
+	for _, args := range [][]string{nil, {"--bogus"}, {"--run"}, {"-h"}} {
+		runWith(args, new(bytes.Buffer), new(bytes.Buffer), func() (lifecycle, error) {
+			t.Errorf("%q: the manager was built", args)
+			return nil, errors.New("no")
+		})
 	}
 }
 

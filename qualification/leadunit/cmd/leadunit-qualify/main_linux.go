@@ -68,7 +68,23 @@ func parseArgs(args []string) (options, error) {
 	return o, nil
 }
 
+// managerFactory builds the manager that --run uses. It is called only after
+// every argument and the state folder were accepted, and never in a dry run.
+type managerFactory func() (lifecycle, error)
+
+// realManager is the real manager of the user's systemd user manager.
+func realManager() (lifecycle, error) {
+	return systemdmgr.New(systemdmgr.Options{})
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWith(args, stdout, stderr, realManager)
+}
+
+// runWith is run with the manager factory injected. Every test goes through it
+// with a factory that must not be called or that returns a fake, so that no
+// test can reach the real manager by construction.
+func runWith(args []string, stdout, stderr io.Writer, newManager managerFactory) int {
 	if len(args) > 0 && args[0] == "child" {
 		return runChild(args[1:], stderr)
 	}
@@ -85,7 +101,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		dryRun(stdout, o)
 		return exitOK
 	}
-	return runQualification(o, stdout, stderr)
+	return runQualification(o, stdout, stderr, newManager)
 }
 
 // dryRun prints the plan without touching systemd or the file system.
@@ -112,7 +128,7 @@ Not attempted: a lost start reply.
 }
 
 // runQualification runs the checks against the real manager.
-func runQualification(o options, stdout, stderr io.Writer) int {
+func runQualification(o options, stdout, stderr io.Writer, newManager managerFactory) int {
 	if err := checkStateDir(o.stateDir); err != nil {
 		fmt.Fprintf(stderr, "leadunit-qualify: %v\n", err)
 		return exitUsage
@@ -122,7 +138,7 @@ func runQualification(o options, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "leadunit-qualify: cannot find this executable")
 		return exitRuntime
 	}
-	mgr, err := systemdmgr.New(systemdmgr.Options{})
+	mgr, err := newManager()
 	if err != nil {
 		fmt.Fprintf(stderr, "leadunit-qualify: %v\n", err)
 		return exitRuntime
