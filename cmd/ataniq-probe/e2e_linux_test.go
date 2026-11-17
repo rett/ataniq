@@ -143,7 +143,9 @@ func start(t *testing.T, o runOpts, args []string, out string, withReport bool) 
 	return r
 }
 
-// readReport reads the report descriptor to its end.
+// readReport reads the report descriptor to its end, and fails the test when
+// what came is neither nothing nor exactly one line: the contract of the
+// report channel is one line and no other byte.
 func (r *probeRun) readReport() []byte {
 	r.t.Helper()
 	r.report.SetReadDeadline(time.Now().Add(guard))
@@ -151,7 +153,36 @@ func (r *probeRun) readReport() []byte {
 	if err != nil {
 		r.t.Fatalf("reading the report descriptor: %v", err)
 	}
+	oneReportLine(r.t, data)
 	return data
+}
+
+// oneReportLine says the bytes written to the report descriptor are nothing at
+// all or exactly one line of the report, ended by its newline.
+func oneReportLine(t *testing.T, data []byte) {
+	t.Helper()
+	if len(data) == 0 {
+		return
+	}
+	if !bytes.HasPrefix(data, []byte(assert.ReportPrefix)) || bytes.Count(data, []byte("\n")) != 1 || !bytes.HasSuffix(data, []byte("\n")) {
+		t.Errorf("the report descriptor holds %q, want exactly one report line and nothing else", data)
+	}
+}
+
+// holderReads reads the report descriptor as the holder does: the one line
+// with assert.ReadProbeReport, which stops at the newline and does not wait for
+// end-of-file, then assert.CheckNoMore for any further byte.
+func (r *probeRun) holderReads() assert.Report {
+	r.t.Helper()
+	r.report.SetReadDeadline(time.Now().Add(guard))
+	rep, err := assert.ReadProbeReport(r.report, assert.MaxReportLineBytes)
+	if err != nil {
+		r.t.Fatalf("the holder does not accept the report: %v", err)
+	}
+	if err := assert.CheckNoMore(r.report); err != nil {
+		r.t.Errorf("the holder finds more on the channel: %v", err)
+	}
+	return rep
 }
 
 // wait waits for the probe and returns its exit status, which is -1 when a
@@ -436,6 +467,7 @@ func runInsideRaw(t *testing.T, agent ...string) (code int, stderr string, repor
 		t.Fatalf("got %v, want an exit status (stderr %s)", err, &buf)
 	}
 	report, _ = io.ReadAll(rd)
+	oneReportLine(t, report)
 	return ee.ExitCode(), buf.String(), report
 }
 
@@ -734,4 +766,55 @@ func TestInsideRefusesARuntimeDescriptorAsTheReportChannel(t *testing.T) {
 	if _, err := assert.ParseProbeLine(line); err != nil {
 		t.Errorf("report %q: %v", line, err)
 	}
+}
+
+// TestInsideTheHolderAcceptsExactlyOneLine reads the report channel in each
+// path that writes a report with the holder's own functions: one line, taken
+// without waiting for end-of-file, and no byte after it.
+func TestInsideTheHolderAcceptsExactlyOneLine(t *testing.T) {
+	spec := testSpec(t)
+	t.Run("direct exec", func(t *testing.T) {
+		r := startInside(t, runOpts{mode: modeFake, leak: 1}, writeSpec(t, spec), "3")
+		rep := r.holderReads()
+		if assert.Failed(rep, spec) {
+			t.Errorf("the report fails: %v", assert.Problems(rep, spec, assert.RequireInside))
+		}
+		if code := r.wait(); code != 0 {
+			t.Errorf("exit %d: %s", code, r.stderr)
+		}
+	})
+	t.Run("checks failed", func(t *testing.T) {
+		r := startInside(t, runOpts{mode: modeReal}, writeSpec(t, spec), "3")
+		rep := r.holderReads()
+		if !assert.Failed(rep, spec) {
+			t.Error("the report passes on a developer host")
+		}
+		if code := r.wait(); code != exitFailed {
+			t.Errorf("exit %d, want %d", code, exitFailed)
+		}
+	})
+	t.Run("terminal, direct exec", func(t *testing.T) {
+		master, slave := openPTY(t)
+		r := startInside(t, runOpts{mode: modeFake, tty: slave, hold: true}, writeSpec(t, spec), "3")
+		slave.Close()
+		waitReady(t, master)
+		rep := r.holderReads()
+		if assert.Failed(rep, spec) {
+			t.Errorf("the report fails: %v", assert.Problems(rep, spec, assert.RequireInside))
+		}
+		release(t, master)
+		r.wait()
+	})
+	t.Run("terminal, waiting parent", func(t *testing.T) {
+		master, slave := openPTY(t)
+		r := startInside(t, runOpts{mode: modeFake, tty: slave, hold: true, setpgid: true}, writeSpec(t, spec), "3")
+		slave.Close()
+		waitReady(t, master)
+		rep := r.holderReads()
+		if assert.Failed(rep, spec) {
+			t.Errorf("the report fails: %v", assert.Problems(rep, spec, assert.RequireInside))
+		}
+		release(t, master)
+		r.wait()
+	})
 }

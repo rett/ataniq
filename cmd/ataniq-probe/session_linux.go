@@ -88,10 +88,11 @@ var forwarded = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, sys
 // TIOCSCTTY in the child), waits, forwards the signals of forwarded, and
 // returns the child's exit status, or 128 plus the signal number when a signal
 // ended it. The descriptors above 2 are close-on-exec before the start, so the
-// child has only 0 to 2; the probe closes the report descriptor once the child
-// has started, so the holder sees end-of-file after the agent's execve and
-// not before. Where this probe is itself the agent's parent, the agent's status
-// 97 or 98 cannot be told from the probe's own.
+// child has only 0 to 2; the probe closes its own copy of the report
+// descriptor once the child has started. It writes nothing to that descriptor
+// here: the one report line is already written, and the holder takes that line,
+// not end-of-file, as its signal. Where this probe is itself the agent's
+// parent, the agent's status 97 or 98 cannot be told from the probe's own.
 func runInNewSession(agent, env []string, reportFD int, stderr io.Writer) int {
 	if err := hostCloseOnExecAbove2(nil); err != nil {
 		return fail(stderr, exitSetup, "cannot close the descriptors above 2 before the agent: %v", err)

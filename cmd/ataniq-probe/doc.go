@@ -31,9 +31,10 @@
 //     exit 98 and no report is written: the holder sees the exit status.
 //  4. Runs assert.RunInside against the real system (assert.HostSystem) and
 //     writes the one report line (assert.EncodeLine) to descriptor N, in full,
-//     on success and on failure. A write that fails, or that makes no
-//     progress, is exit 98; a partial write is continued until the line is
-//     whole.
+//     on success and on failure: exactly one line, once, and no other byte,
+//     here or later (see "The report channel"). A write that fails, or that
+//     makes no progress, is exit 98; a partial write is continued until the
+//     line is whole.
 //  5. Judges the report with assert.Failed. When it says the report does not
 //     allow a start the probe exits 97 and executes nothing, after listing the
 //     problems on standard error (display only: the holder reads the
@@ -45,14 +46,15 @@
 //     terminal as its controlling terminal, and the probe waits, forwards
 //     SIGTERM, SIGINT, SIGHUP and SIGQUIT to the child and exits with the
 //     child's status, or 128 plus the signal number when a signal ended it; it
-//     closes the report descriptor after the child has started. When
-//     descriptor 0 is not a terminal it says so on standard error and skips
-//     this step. A failure to get the terminal when there is one is exit 98.
+//     closes its copy of the report descriptor after the child has started
+//     (the child has none). When descriptor 0 is not a terminal it says so on
+//     standard error and skips this step. A failure to get the terminal when
+//     there is one is exit 98.
 //  7. Makes every descriptor above 2 close-on-exec, so that the execve closes
 //     it (the agent keeps none), and executes AGENT with the process's
 //     environment as Go reads it (see below). The agent starts as the probe's
-//     own process, so the report descriptor reaches end-of-file at the exec.
-//     A failure to execute is exit 98. The check of step 2 finds the usual
+//     own process, and the exec closes the probe's copy of the report
+//     descriptor. A failure to execute is exit 98. The check of step 2 finds the usual
 //     causes (a missing, non-executable or non-regular file), but not all: a
 //     file that the kernel does not accept as a program, or one replaced since
 //     the check, fails here, after a good report. A holder cannot tell that
@@ -64,6 +66,26 @@
 // (os.Environ), and that is not always the block it was given: a name that
 // appears twice is passed on once, with its first value, and an entry without
 // "=" is passed on as it is. Both modes do the same.
+//
+// # The report channel
+//
+// The contract is the one of the package assert ("The probe and the holder"):
+// the holder takes one accepted line as the signal that the probe has reported,
+// does not wait for end-of-file, and fails the start on any further byte on the
+// channel. So the probe writes exactly one line, the report, to descriptor N in
+// every path that writes a report, and nothing else, ever: it writes no second
+// line, no marker and no status to it, whether the checks pass or fail, and
+// after the write it only closes its copy, or has it closed by the exec. The
+// descriptor is close-on-exec from the first step, in the process that is
+// executed and in the child of the waiting parent, so the agent has no copy;
+// copies that other processes of the sandbox hold (bubblewrap's) are not the
+// probe's. Standard error is another channel: it holds display-only lines and
+// is never part of the report. A refusal before the report (a usage error, a
+// report descriptor that is not open or that is one of the Go runtime's own, an
+// agent that cannot be executed, a spec that is refused) writes nothing to the
+// channel, and the holder sees the exit status alone. Tests read the channel
+// with the holder's own functions, assert.ReadProbeReport and
+// assert.CheckNoMore.
 //
 // # Pass-through mode
 //
