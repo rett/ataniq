@@ -60,7 +60,7 @@ func (r Rules) Runtime() string { return r.runtime }
 
 // Read says what a title shows. It looks at the first MaxTitleBytes bytes
 // only and does not panic on any input. The zero Rules reads every title as
-// a reading with nothing set.
+// busy, with a note.
 func (r Rules) Read(title string) Reading {
 	if r.read == nil {
 		return Reading{Busy: true, Notes: []string{"no rules for this runtime and version: treated as busy, because the rules cannot tell"}}
