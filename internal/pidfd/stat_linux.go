@@ -69,7 +69,12 @@ func ReadStat(pid int) (Stat, error) {
 // permission and other read failures never mean absence. A changed
 // executable is an exec, not a reused pid, and does not make the original
 // ended. It does not prove that the control group or the children are gone.
+// An impossible identity (a pid below 1 or a start time of 0) is an error, not
+// an answer: absence of such a process proves nothing about the original.
 func Ended(boot string, pid int, start uint64) (bool, error) {
+	if pid < 1 || start == 0 {
+		return false, errors.New("invalid process identity")
+	}
 	current, err := BootID()
 	if err != nil || current != boot {
 		return false, errors.New("unsupported: recovery boot identity differs")
@@ -87,8 +92,12 @@ func Ended(boot string, pid int, start uint64) (bool, error) {
 // OriginalEnded decides from the text of /proc/<pid>/stat whether the process
 // that had the given start time has ended: a different start time (the pid was
 // reused), a zombie or a dead state. Malformed text is an error and never an
-// answer. The text must come from the same boot.
+// answer, and so is a start time of 0, which names no process. The text must
+// come from the same boot.
 func OriginalEnded(start uint64, stat string) (bool, error) {
+	if start == 0 {
+		return false, errors.New("invalid recovery starttime")
+	}
 	s, err := ParseStat(stat)
 	switch {
 	case errors.Is(err, ErrStatFormat):
