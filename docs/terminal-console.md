@@ -148,10 +148,9 @@ no search key.
 - `--recording NAME` picks the fixture recording to replay, by its full file
   name, such as `title.jsonl`. The default is `title.jsonl`. Run
   `ataniq-console --help` to see the names.
-- `--linger DURATION` keeps the session open after the recording's last output,
-  so that you can try the focus and zoom keys. Use a Go duration such as
-  `30s`. The default is 30s, the largest value is 1h, and 0 ends the session
-  as recorded.
+- `--linger DURATION` keeps the session open after the recording's end, so
+  that you can try the focus and zoom keys. Use a Go duration such as `30s`. The
+  default is 30s, the largest value is 1h, and 0 ends the session as recorded.
 
 A bad flag value prints a diagnostic and the usage line and exits with
 status 2.

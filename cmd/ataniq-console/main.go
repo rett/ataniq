@@ -40,7 +40,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	theme := flags.String("theme", "dark", "appearance: dark or light")
 	returnKey := flags.String("return-key", "", "key that leaves the session pane: ctrl+ and one letter, or ctrl+\\ or ctrl+] (default ctrl+\\)")
 	recording := flags.String("recording", terminalconsole.DefaultRecording, "fixture recording to replay: "+strings.Join(terminalconsole.Recordings(), ", "))
-	linger := flags.Duration("linger", defaultLinger, "keep the fixture session open this long after the recording's last output, such as 30s; 0 ends it as recorded")
+	linger := flags.Duration("linger", defaultLinger, "keep the fixture session open this long after the recording's end, such as 30s; 0 ends it as recorded")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
 		flags.SetOutput(errout)

@@ -36,9 +36,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   console asks the outer terminal for mode 2027 at start, also over SSH, and
   asks for mouse reporting and focus events only in session focus and only
   when the session asked. `--recording NAME` picks a fixture recording and
-  `--linger DURATION` (default 30s) keeps the session open after its last
-  output so the keys can be tried. Still unqualified: use over SSH, a live
-  session and any live control.
+  `--linger DURATION` (default 30s) keeps the session open after its end
+  so the keys can be tried. Still unqualified: use over SSH, a live session and
+  any live control.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
