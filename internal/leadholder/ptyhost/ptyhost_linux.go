@@ -33,7 +33,10 @@
 // breadth first and bounded (Config.CgroupWalkLimit); a walk that hits its
 // bound, or cannot read a group, proves nothing and is counted. A group that
 // cannot be opened any more is not taken as removed until its parent no
-// longer lists the name; a name that appeared in the meantime is walked. "Of
+// longer lists the name; a name that appeared in the meantime is walked, and a
+// parent that cannot be listed either (it may have been renamed with its
+// children) proves nothing: the walk counts it, and a later TreeGone call
+// tries again. "Of
 // its own" is judged once, in Start, before the child is created: the group's
 // cgroup.procs lists only this process and the group has no child group.
 // Otherwise the fallback is that no process is left in the child's session
@@ -42,11 +45,14 @@
 // count as present in the session scan (they run nothing, and a process that
 // adopts orphans reaps them on its own schedule).
 //
-// The walk is not atomic, and the limit remains: a process that may write the
-// cgroup.procs of a group in a delegated unit can move during the walk, from a
-// group not read yet into one already read, or out of the subtree (for
-// example into a transient scope), and is then not seen by the walk. The
-// session scan catches such a process only while it stays in the child's
+// The walk is not atomic, and the limit remains. A group, or an ancestor of
+// one, may be renamed or removed after it was listed: the walk finds a renamed
+// group again only while its parent can still be listed, and counts the rest as
+// unreadable. A process that may write the cgroup.procs of a group in a
+// delegated unit can also move during the walk, from a group not read yet into
+// one already read, or out of the subtree (for example into a transient
+// scope), and is then not seen by the walk. The session scan catches such a
+// process only while it stays in the child's
 // session. So the cgroup proof is strong only when the agent cannot migrate,
 // for example with a read-only cgroup filesystem inside the sandbox.
 //
