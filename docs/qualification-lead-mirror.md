@@ -318,6 +318,11 @@ tip, it holds `verification.not-run`.
   given, with an explicit environment. After the clone is moved to
   `leads/<role>/tree` git never runs in it. The mirror is seeded and read
   through the exchange packages' own owner-side git.
+- The control (`s16-fetch.control`) is the one place where git runs in a
+  planted clone, unsandboxed, on the host. It is safe only while the template
+  does not bind the state root or its `fixture` folder writable. A template
+  that breaks that rule lets sandboxed code change the control's hooks, which
+  the harness would then run on the host.
 
 Nothing here qualifies a sandbox by itself. The facts are inputs for a reader
 who knows the template, the host and the design cases S16 and S19: that person
