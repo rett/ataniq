@@ -200,12 +200,12 @@ func NewWithOptions(source Source, o Options) *Model {
 	return m
 }
 
-// Init asks the outer terminal for mode 2027 (Unicode core) whatever the
-// environment is, because Bubble Tea skips its own query when SSH_TTY is set.
-// The answer comes back as a tea.ModeReportMsg, and Bubble Tea's own handling
-// of it switches its width method. The console does not override the
-// environment, since that would also turn on synchronized output (2026)
-// over SSH.
+// Init sends tea.Raw(ansi.RequestModeUnicodeCore), which asks the outer
+// terminal for mode 2027 (Unicode core) whatever the environment is, because
+// Bubble Tea usually skips its own query when SSH_TTY is set. The answer comes
+// back as a tea.ModeReportMsg, and Bubble Tea's own handling of it switches its
+// width method. Init does not override the environment Bubble Tea reads, since
+// that would also turn on synchronized output (2026) over SSH.
 func (m *Model) Init() tea.Cmd { return tea.Raw(ansi.RequestModeUnicodeCore) }
 
 // Recordings returns the names of the fixture recordings the console can
