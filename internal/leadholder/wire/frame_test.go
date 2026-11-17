@@ -493,3 +493,39 @@ func TestWriterRefusalDoesNotBreakItButAWriteErrorDoes(t *testing.T) {
 		t.Fatalf("after a write error: %v", err)
 	}
 }
+
+// A payload is kept in a buffer of exactly its size: a Snapshot of 16 MiB is
+// not held in 20 MiB, and reading it does not allocate many times its size.
+func TestPayloadCapacityIsExact(t *testing.T) {
+	for _, n := range []int{8, 100, 64 << 10, 64<<10 + 1, 128 << 10, 200000, 1<<20 + 7, wire.MaxSnapshotPayload} {
+		var f wire.Frame
+		spent := allocated(func() {
+			src := io.MultiReader(bytes.NewReader(hdr(wire.TypeSnapshot, uint32(n))), zeros(n))
+			var err error
+			if f, err = wire.NewReader(src, wire.ToClient).Next(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if len(f.Payload) != n || cap(f.Payload) != n {
+			t.Errorf("%d bytes: len %d cap %d", n, len(f.Payload), cap(f.Payload))
+		}
+		// The buffers of the doubling add up to under 3n (n itself and, at
+		// worst, the 2n before it), with slack for the test's own small
+		// allocations. The old growth step allocated about 6n.
+		if limit := uint64(3*n + 128<<10); spent > limit {
+			t.Errorf("%d bytes: allocated %d, limit %d", n, spent, limit)
+		}
+	}
+	// A payload that stops part-way costs at most four times what arrived.
+	for _, got := range []int{10, 64 << 10, 64<<10 + 1, 1 << 20} {
+		spent := allocated(func() {
+			src := io.MultiReader(bytes.NewReader(hdr(wire.TypeSnapshot, wire.MaxSnapshotPayload)), zeros(got))
+			if _, err := wire.NewReader(src, wire.ToClient).Next(); !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Fatal(err)
+			}
+		})
+		if limit := uint64(4*got + 192<<10); spent > limit {
+			t.Errorf("%d bytes of a declared 16 MiB: allocated %d, limit %d", got, spent, limit)
+		}
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"sync"
 )
 
@@ -197,8 +196,8 @@ type Frame struct {
 	Payload []byte
 }
 
-// readChunk is how far a Reader grows its buffer in one step. A payload up to
-// this size is allocated at once; a larger one only as its bytes arrive, so a
+// readChunk is the first buffer of a Reader. A payload up to this size is
+// allocated at once; a larger one grows by doubling as its bytes arrive, so a
 // peer that declares a large payload and sends nothing costs one chunk.
 const readChunk = 64 << 10
 
@@ -266,13 +265,20 @@ func (rd *Reader) next() (Frame, error) {
 	return Frame{Type: typ, Payload: payload}, nil
 }
 
-// readPayload reads exactly n bytes, growing the buffer one chunk at a time.
+// readPayload reads exactly n bytes. The buffer starts at one chunk (or n, if
+// that is smaller) and doubles each time it fills, up to exactly n: the
+// capacity of what it returns is n, the buffers it allocates along the way add
+// up to less than 3n, and a peer that declares a large payload and stops costs
+// a buffer of at most twice what it sent.
 func readPayload(r io.Reader, n int) ([]byte, error) {
 	buf := make([]byte, 0, min(n, readChunk))
 	for len(buf) < n {
-		k := min(n-len(buf), readChunk)
-		buf = slices.Grow(buf, k)
-		m, err := io.ReadFull(r, buf[len(buf):len(buf)+k])
+		if len(buf) == cap(buf) {
+			grown := make([]byte, len(buf), min(n, 2*cap(buf)))
+			copy(grown, buf)
+			buf = grown
+		}
+		m, err := io.ReadFull(r, buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+m]
 		if err != nil {
 			return nil, err
