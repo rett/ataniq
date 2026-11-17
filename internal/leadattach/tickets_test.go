@@ -95,7 +95,7 @@ func TestFileTicketsRefusals(t *testing.T) {
 			if err := os.Mkdir(p, 0o700); err != nil {
 				t.Fatal(err)
 			}
-		}, "", true},
+		}, "not a regular file", true},
 		{"a named pipe", func(_, p string) {
 			if err := mkfifo(p); err != nil {
 				t.Skip("no mkfifo")
@@ -207,44 +207,49 @@ func TestFileTicketsOneReaderAtATime(t *testing.T) {
 	}
 }
 
+const modeRefused = "ticket file refused: its mode is not 0600"
+
+// The check names a refusal in the same words as a read of the file, which is
+// what the client shows, and a file that holds no ticket is ErrNoTicket.
 func TestFileTicketSourceReadyIsAPresenceCheck(t *testing.T) {
 	tk := newTicket(t)
 	for _, c := range []struct {
 		name  string
 		setup func(dir, path string)
-		want  bool
+		want  string // "" is nil (dial), "none" is ErrNoTicket, else the reason
 	}{
-		{"absent", func(_, _ string) {}, false},
-		{"empty", func(_, p string) { writeTicketFile(t, p, "", 0o600) }, false},
-		{"a ticket", func(_, p string) { writeTicketFile(t, p, tk, 0o600) }, true},
-		{"a ticket and a newline", func(_, p string) { writeTicketFile(t, p, tk+"\n", 0o600) }, true},
-		{"junk (the source spends it)", func(_, p string) { writeTicketFile(t, p, "junk", 0o600) }, true},
-		{"mode 0644", func(_, p string) { writeTicketFile(t, p, tk, 0o644) }, false},
-		{"mode 0400", func(_, p string) { writeTicketFile(t, p, tk, 0o400) }, false},
-		{"mode 0700", func(_, p string) { writeTicketFile(t, p, tk, 0o700) }, false},
-		{"set-group-id", func(_, p string) { writeTicketFile(t, p, tk, 0o600|os.ModeSetgid) }, false},
+		{"absent", func(_, _ string) {}, "none"},
+		{"empty", func(_, p string) { writeTicketFile(t, p, "", 0o600) }, "none"},
+		{"a ticket", func(_, p string) { writeTicketFile(t, p, tk, 0o600) }, ""},
+		{"a ticket and a newline", func(_, p string) { writeTicketFile(t, p, tk+"\n", 0o600) }, ""},
+		{"junk (the source spends it)", func(_, p string) { writeTicketFile(t, p, "junk", 0o600) }, ""},
+		{"mode 0644", func(_, p string) { writeTicketFile(t, p, tk, 0o644) }, modeRefused},
+		{"mode 0400", func(_, p string) { writeTicketFile(t, p, tk, 0o400) }, modeRefused},
+		{"mode 0700", func(_, p string) { writeTicketFile(t, p, tk, 0o700) }, modeRefused},
+		{"set-group-id", func(_, p string) { writeTicketFile(t, p, tk, 0o600|os.ModeSetgid) }, modeRefused},
 		{"a symbolic link to a good file", func(d, p string) {
 			real := filepath.Join(d, "real")
 			writeTicketFile(t, real, tk, 0o600)
 			if err := os.Symlink(real, p); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, "ticket file refused: it is a symbolic link"},
 		{"a dangling symbolic link", func(d, p string) {
 			if err := os.Symlink(filepath.Join(d, "nowhere"), p); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, "ticket file refused: it is a symbolic link"},
 		{"a directory", func(_, p string) {
 			if err := os.Mkdir(p, 0o700); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, "ticket file refused: it is not a regular file"},
 		{"a named pipe", func(_, p string) {
 			if err := mkfifo(p); err != nil {
 				t.Skip("no mkfifo")
 			}
-		}, false},
+		}, "ticket file refused: it is not a regular file"},
+		{"a wrong mode and no content", func(_, p string) { writeTicketFile(t, p, "", 0o644) }, modeRefused},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir, path := ticketDir(t)
@@ -252,8 +257,18 @@ func TestFileTicketSourceReadyIsAPresenceCheck(t *testing.T) {
 			_, ready := FileTicketSource(path)
 			// Asked again and again, it says the same and changes nothing.
 			for i := 0; i < 3; i++ {
-				if got := ready(); got != c.want {
-					t.Fatalf("ready is %v, want %v", got, c.want)
+				got := ready()
+				switch {
+				case c.want == "" && got != nil, c.want == "none" && !errors.Is(got, ErrNoTicket):
+					t.Fatalf("ready is %v, want %q", got, c.want)
+				case c.want != "" && c.want != "none" && (got == nil || got.Error() != c.want):
+					t.Fatalf("ready is %v, want the reason %q", got, c.want)
+				}
+			}
+			if c.want != "" && c.want != "none" {
+				// The same reason as the read of the file gives.
+				if _, rerr := FileTickets(path)(); rerr == nil || rerr.Error() != c.want {
+					t.Errorf("the read gives %v, want %q", rerr, c.want)
 				}
 			}
 			if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
@@ -268,22 +283,22 @@ func TestFileTicketSourceReadyIsAPresenceCheck(t *testing.T) {
 func TestFileTicketSourceReadyDoesNotTakeTheTicket(t *testing.T) {
 	_, path := ticketDir(t)
 	tickets, ready := FileTicketSource(path)
-	if ready() {
-		t.Fatal("ready for an absent file")
+	if err := ready(); !errors.Is(err, ErrNoTicket) {
+		t.Fatalf("ready for an absent file: %v", err)
 	}
 	tk := newTicket(t)
 	writeTicketFile(t, path, tk+"\n", 0o600)
 	for i := 0; i < 5; i++ {
-		if !ready() {
-			t.Fatal("not ready for a file that holds a ticket")
+		if err := ready(); err != nil {
+			t.Fatalf("not ready for a file that holds a ticket: %v", err)
 		}
 	}
 	// The ticket is there for the one read, and then it is gone.
 	if got, err := tickets(); err != nil || got != tk {
 		t.Fatalf("ticket %q, %v", got, err)
 	}
-	if ready() {
-		t.Error("ready after the ticket was taken")
+	if err := ready(); !errors.Is(err, ErrNoTicket) {
+		t.Errorf("after the ticket was taken: %v", err)
 	}
 	// A reader that holds the lock does not make the check say no: the
 	// source then finds no ticket, and the client closes the connection.
@@ -296,18 +311,19 @@ func TestFileTicketSourceReadyDoesNotTakeTheTicket(t *testing.T) {
 	if err := flockNB(f); err != nil {
 		t.Fatal(err)
 	}
-	if !ready() {
-		t.Error("the check is affected by the lock of another reader")
+	if err := ready(); err != nil {
+		t.Errorf("the check is affected by the lock of another reader: %v", err)
 	}
 }
 
 func TestFileTicketSourceReadyRefusesAnotherOwner(t *testing.T) {
 	_, path := ticketDir(t)
 	writeTicketFile(t, path, newTicket(t), 0o600)
-	if ticketFilePresent(path, os.Geteuid()+1) {
-		t.Error("ready for a file of another owner")
+	if err := ticketFilePresent(path, os.Geteuid()+1); err == nil ||
+		err.Error() != "ticket file refused: it is not owned by the user" {
+		t.Errorf("a file of another owner: %v", err)
 	}
-	if !ticketFilePresent(path, os.Geteuid()) {
-		t.Error("not ready for a file of the user")
+	if err := ticketFilePresent(path, os.Geteuid()); err != nil {
+		t.Errorf("a file of the user: %v", err)
 	}
 }

@@ -178,7 +178,8 @@ func attachModel(cfg config) *terminalconsole.Model {
 	}
 	o := cfg.options
 	// The presence check keeps the console from dialling the holder while the
-	// ticket file is empty.
+	// ticket file is empty or refused, and gives the status the reason of a
+	// refusal.
 	tickets, ready := leadattach.FileTicketSource(a.ticketFile)
 	o.Live = leadattach.New(leadattach.Config{
 		Socket:      a.socket,

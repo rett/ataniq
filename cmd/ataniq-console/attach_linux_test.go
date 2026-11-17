@@ -57,6 +57,7 @@ type holder struct {
 	dir     string // the runtime folder: it holds attach.sock
 	logDir  string
 	control string
+	sess    *session.Session
 	srv     *serve.Server
 	daemon  *os.File
 }
@@ -100,6 +101,7 @@ func startHolder(t *testing.T, script string) *holder {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sess.Close() })
+	h.sess = sess
 
 	// The daemon stand-in: its pid in the lock file, and the lock held.
 	lock := filepath.Join(root, "daemon.lock")
@@ -594,4 +596,43 @@ func TestAttachAUsedTicketLeavesTheConsoleWaitingForAFreshOne(t *testing.T) {
 	second.waitPasteMode()
 	second.typ("c")
 	second.waitReceived(hexOf("c"))
+}
+
+// A console that waits on an empty ticket file makes no connection to the
+// holder: the holder counts a connection that closes with no Hello as a
+// refused handshake, and that count stays at zero while the console waits and
+// when it attaches. The console polls every 500 ms, so the wait covers
+// several polls.
+func TestAttachWaitingOnAnEmptyTicketFileDoesNotTouchTheHolder(t *testing.T) {
+	h := startHolder(t, echoAgent)
+	d := h.attachConsole()
+	if err := os.WriteFile(d.ticket, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d.waitView("WAITING FOR A TICKET")
+	refused := func() map[string]uint64 {
+		out := map[string]uint64{}
+		for name, n := range h.sess.Counters() {
+			if strings.HasPrefix(name, "attach_refused") {
+				out[name] = n
+			}
+		}
+		return out
+	}
+	end := time.Now().Add(1600 * time.Millisecond) // three polls and a bit
+	d.until("a few polls to go by", func() bool { return time.Now().After(end) })
+	for name, n := range refused() {
+		if n != 0 {
+			t.Errorf("the holder counted %s = %d while the console waited", name, n)
+		}
+	}
+	d.waitView("WAITING FOR A TICKET")
+
+	writeTicket(t, d.ticket, h.ticket(wire.RoleWriter))
+	d.waitViewAll("READY", "writer")
+	for name, n := range refused() {
+		if n != 0 {
+			t.Errorf("the holder counted %s = %d once the console attached", name, n)
+		}
+	}
 }
