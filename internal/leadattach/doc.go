@@ -37,11 +37,15 @@
 // connection, with a Detach, and attach again with a new ticket: the state is
 // resyncing until the new snapshot is applied. The mismatch and the resync are
 // counted. The first resync is followed at once; from the second the wait
-// doubles (up to 30 s) and the reason says so, so that a holder whose checks
-// never match is not asked for a snapshot in a tight loop. The count goes back
-// to zero only when a Check past the snapshot's position matched on a
-// connection: the Check the holder sends right after each snapshot matches the
-// screen just restored and shows nothing about following its output. A resync Notice from the
+// doubles (up to 30 s) and the reason says so, so that a holder whose replica
+// goes wrong again and again before a Check past the snapshot has matched is
+// not asked for a snapshot in a tight loop. The counts of resyncs and of
+// protocol errors go back to zero only when a Check past the snapshot's
+// position matched on a connection: the Check the holder sends right after
+// each snapshot matches the screen just restored and shows nothing about
+// following its output. A replica that follows the output for at least one
+// Check each time is attached again at once, however often it diverges later;
+// the wait is for one that does not get that far. A resync Notice from the
 // holder, which drops output this client could not take and sends a new
 // snapshot on the same connection, also makes the state resyncing until that
 // snapshot is applied.
@@ -74,8 +78,9 @@
 // holder). LiveStatus.Counters lists the client's own, all named client-*
 // (snapshots, position-gaps, checks-skipped for a Check at another position,
 // input-dropped for a full queue and for input queued when a connection was
-// given up, keys-unencodable, pastes-refused, notices-dropped), then the holder's from its Exit in name order. The
-// holder's State frame carries no counters.
+// given up, keys-unencodable, pastes-refused, notices-dropped), then the
+// holder's from its Exit in name order. The holder's State frame carries no
+// counters.
 //
 // # Input
 //
