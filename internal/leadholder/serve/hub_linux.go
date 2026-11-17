@@ -65,7 +65,7 @@ type client struct {
 	wake         chan struct{}
 	wantSnap     bool      // waiting for a snapshot point
 	snapSince    time.Time // when the wait began
-	qSince       time.Time // when the parser was first seen quiescent in this wait
+	qSince       time.Time // when the parser was first seen quiescent in this wait; never reset by a later point
 	noticed      bool      // the snapshot-waiting notice was sent
 	streaming    bool      // gets Output from now on
 	snapUnsent   bool      // a snapshot is queued or being written
@@ -273,13 +273,15 @@ func (s *Server) pointLocked(p *sessionpane.Pane, end uint64, now time.Time) {
 				c.qSince = now
 			}
 			// Mode 2026 is a frame in progress: wait for its end, but only for
-			// the hold time. The snapshot is of the real state either way.
+			// the hold time, counted from the first quiescent point of the
+			// wait. A later point that is not quiescent does not restart it,
+			// else output that keeps the mode set and breaks off in the middle
+			// of a sequence now and then would never get its snapshot. The
+			// snapshot is of the real state either way.
 			if !s.lastModes.Has(2026, false) || now.Sub(c.qSince) >= s.cfg.SnapshotHold {
 				ready = append(ready, c)
 				continue
 			}
-		} else {
-			c.qSince = time.Time{}
 		}
 		if !c.noticed && now.Sub(c.snapSince) >= s.cfg.SnapshotNotice {
 			c.noticed = true
