@@ -63,6 +63,10 @@ const TemplateVersion = 1
 // it is an absolute, clean path written out in full, with no placeholder and
 // no brace.
 //
+// Fixed text in a template can still spell out any host path. The owner
+// writes the template and must not name a path below a folder a sandbox can
+// write, other than through the whole-element placeholders.
+//
 // "upload_pack" has no environment list. Git starts the upload-pack command,
 // through sh, with the environment of the process that fetches, and that
 // environment may hold owner credentials or SSH_AUTH_SOCK. The argv itself
@@ -133,9 +137,10 @@ var (
 // [MaxTemplateBytes], unknown fields, a field name that differs in case from
 // the documented one, a field written twice in one object, a version other than
 // [TemplateVersion], trailing data, an empty argv, an argv whose first
-// element is not an absolute path, a NUL byte, a placeholder the section
-// does not have, and any other brace. It checks that the template builds
-// valid plans.
+// element is not an absolute, clean path without a placeholder, a path
+// placeholder that is not a whole argv element, a NUL byte, a placeholder the
+// section does not have, and any other brace. It checks that the template
+// builds valid plans.
 func ParseTemplate(data []byte) (*Template, error) {
 	if len(data) > MaxTemplateBytes {
 		return nil, fmt.Errorf("sandbox template: larger than %d bytes", MaxTemplateBytes)

@@ -141,6 +141,13 @@ func TestEscapeEveryRune(t *testing.T) {
 	}
 }
 
+// blankPrintable lists runes that are printable by category but render as a
+// blank. The list is written out by hand, as the oracle must not use the code
+// under test.
+var blankPrintable = map[rune]bool{
+	0x2800: true, // braille pattern blank
+}
+
 // dangerousRune is the oracle of the safety tests. It decides from Unicode
 // categories and properties and does not call the code under test. A rune
 // below 0x80 is never dangerous here: the byte checks cover it.
@@ -148,7 +155,7 @@ func dangerousRune(r rune) bool {
 	if r < 0x80 {
 		return false
 	}
-	return !unicode.IsPrint(r) ||
+	return !unicode.IsPrint(r) || blankPrintable[r] ||
 		unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp,
 			unicode.Bidi_Control, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
 }
@@ -581,6 +588,21 @@ func TestEscapeDefaultIgnorable(t *testing.T) {
 			if err != nil || back != in {
 				t.Fatalf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
 			}
+		}
+	}
+}
+
+// TestEscapeNamedInvisible pins runes that render as a blank or as nothing.
+// Each must be escaped, among them U+2800, which is printable by category.
+func TestEscapeNamedInvisible(t *testing.T) {
+	for _, r := range []rune{0x00ad, 0x034f, 0x115f, 0x1160, 0x2800, 0x3164, 0xffa0} {
+		in := "a" + string(r) + "b"
+		got := Escape(in)
+		if strings.ContainsRune(got, r) {
+			t.Errorf("U+%04X passed unescaped: %q", r, got)
+		}
+		if back, err := Unescape(got); err != nil || back != in {
+			t.Errorf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
 		}
 	}
 }
