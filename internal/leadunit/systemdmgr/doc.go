@@ -16,13 +16,14 @@
 // arguments. A spec with a Parent adds BindsTo, PartOf and After for it
 // ([leadunit.BoundProperties]), each as a list of that one unit name ("as"),
 // right after the fixed ones; a unit with no Parent gets none of them. A reply
-// that names a job is success, and Start then inspects the
-// unit once; the job completes later, so that state can be partial (see
-// [Manager.Start]). Inspect is one "systemctl --user show --all" with a fixed
-// property list, which includes BindsTo: State.Parent is that unit when the
-// list names exactly one service unit, and empty in any other case. Signal checks the invocation, then runs "systemctl --user
-// kill --kill-whom=all". Empty proves a control group empty from the control
-// group file system and the manager, in the cases listed at [Manager.Empty].
+// that names a job is success, and Start then inspects the unit once; the job
+// completes later, so that state can be partial (see [Manager.Start]). Inspect
+// is one "systemctl --user show --all" with a fixed property list, which
+// includes BindsTo: State.Parent is that unit when the list names exactly one
+// service unit, and empty in any other case. Signal checks the invocation,
+// then runs "systemctl --user kill --kill-whom=all". Empty proves a control
+// group empty from the control group file system and the manager, in the cases
+// listed at [Manager.Empty].
 //
 // # Failure classes of Start
 //

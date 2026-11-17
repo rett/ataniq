@@ -53,16 +53,38 @@ const (
 	// CollectMode=inactive-or-failed. Start returns no error and the State of
 	// a unit that is not loaded, and nothing is started.
 	MissingParentNeverActive MissingParent = iota
-	// MissingParentRefused makes Start return an error wrapping
-	// [ErrParentNotLive], and nothing is started, as when the bus refuses the
-	// call.
+	// MissingParentRefused makes Start return an error wrapping both
+	// [ErrReplyLost] and [ErrParentNotLive], and nothing is started: the
+	// refusal of the bus is one the real manager cannot recognise, so it
+	// reports a lost reply and the caller inspects.
 	MissingParentRefused
 )
 
-// ErrParentNotLive is what [Fake] returns for a start whose parent is not
-// loaded and live when [MissingParentRefused] is set. No real manager returns
-// it: it stands for whatever refusal systemd gives, which is not known.
+// ErrParentNotLive is what [Fake] returns, wrapped in [ErrReplyLost], for a
+// start whose parent is not loaded and live when [MissingParentRefused] is
+// set. No real manager returns it by itself: it stands for whatever refusal
+// systemd gives, which is not known, and which the real manager reports as a
+// lost reply because it cannot recognise it.
 var ErrParentNotLive = errors.New("leadunit: parent unit is not loaded and live")
+
+// BoundStop says when the units bound to a parent are stopped, and from which
+// state of the parent a start under it is accepted. What systemd does is
+// written from its documentation and still to be confirmed by a qualification
+// run, which is why the fake lets a test choose.
+type BoundStop int
+
+const (
+	// BoundStopOnDeactivating is the zero value, and follows the documentation
+	// of BindsTo=: a parent is live only while it is active or activating, a
+	// bound unit is stopped when the parent turns deactivating (its main
+	// process is gone, or it is itself being stopped), and a start under a
+	// deactivating parent is treated as one under a parent that is not live.
+	BoundStopOnDeactivating BoundStop = iota
+	// BoundStopOnUnload is the timing the fake had first: a bound unit is
+	// stopped only when the parent unloads, which is when its control group is
+	// empty, and a parent that is deactivating still accepts a start.
+	BoundStopOnUnload
+)
 
 // ProcScript describes one fake process of a control group.
 type ProcScript struct {
@@ -100,7 +122,7 @@ type Call struct {
 	// lost the reply has its own entry.
 	Late bool
 	// Implied is true for an entry that no caller made: the stop that the
-	// fake applies to a unit bound to a parent when the parent unloads (a
+	// fake applies to a unit bound to a parent when the parent ends (a
 	// [MethodSignal] entry for SIGTERM, and one for SIGKILL when the unit is
 	// still populated after its stop timeout). The entry is made when the
 	// call that observes the stop runs, or when a setup method does, and At
@@ -130,18 +152,22 @@ type Call struct {
 // the fake does not kill those by itself.
 //
 // A unit started with a [Spec.Parent] is bound to that unit, as with
-// [BoundProperties]. It can start only while the parent is loaded and live
-// (and not itself being stopped because of its own parent); otherwise it never
-// becomes active, in the way [Fake.SetMissingParentOutcome] says. When a
-// parent unloads, whatever the cause (its group emptied by a signal or by
-// processes exiting, [Fake.KillProcess], [Fake.Crash]), the units bound to it
-// are stopped at that moment of the fake clock, and their units' bound units
-// in turn: every process gets SIGTERM and follows its script, the unit is
-// deactivating from then on, and the processes that are still there
-// TimeoutStopSec later (2 s, the value in [FixedProperties]) get SIGKILL.
-// A process that survives SIGKILL stays. These stops are logged as calls with
-// [Call.Implied] set. A parent that is gone does not stop a bound unit that
-// was started while the parent was not live, because no such unit exists.
+// [BoundProperties]. It can start only while the parent is loaded and active
+// or activating (and not itself being stopped because of its own parent);
+// otherwise it never becomes active, in the way
+// [Fake.SetMissingParentOutcome] says. When the parent turns deactivating (its
+// main process is gone while others remain, whatever the cause: a signal, a
+// process exiting, [Fake.KillProcess]), or unloads at once ([Fake.Crash], the
+// last process gone), the units bound to it are stopped at that moment of the
+// fake clock, and their units' bound units in turn: every process gets
+// SIGTERM and follows its script, the unit is deactivating from then on, and
+// the processes that are still there TimeoutStopSec later (2 s, the value in
+// [FixedProperties]) get SIGKILL. A process that survives SIGKILL stays. These
+// stops are logged as calls with [Call.Implied] set. A parent that is gone
+// does not stop a bound unit that was started while the parent was not live,
+// because no such unit exists. [Fake.SetBoundStop] chooses the other timing,
+// in which the stop waits for the unload of the parent; which one systemd
+// follows is for the qualification run to confirm.
 type Fake struct {
 	mu          sync.Mutex
 	clock       Clock
@@ -158,6 +184,7 @@ type Fake struct {
 	calls       []Call
 	specs       []Spec
 	missing     MissingParent
+	boundStop   BoundStop
 }
 
 type fakeUnit struct {
@@ -170,8 +197,8 @@ type fakeUnit struct {
 	procs      []*fakeProc
 	// parent is the unit this one is bound to ("" for none).
 	parent string
-	// stopping is set by the stop that follows the unload of the parent: the
-	// unit is deactivating until its group is empty.
+	// stopping is set by the stop that follows the end of the parent: the unit
+	// is deactivating until its group is empty.
 	stopping bool
 	// killAt is when the stop timeout sends SIGKILL to the whole group; zero
 	// when none is pending.
@@ -354,6 +381,16 @@ func (f *Fake) LeaveControlGroup(unit string, left bool) {
 	}
 }
 
+// SetBoundStop chooses when the units bound to a parent are stopped: see
+// [BoundStop]. The default is [BoundStopOnDeactivating]. It applies from the
+// next call on and is kept by a reboot; a unit that is already stopping stays
+// so.
+func (f *Fake) SetBoundStop(b BoundStop) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boundStop = b
+}
+
 // SetMissingParentOutcome chooses what a start does when the unit has a
 // [Spec.Parent] that is not loaded and live: see [MissingParent]. The default
 // is [MissingParentNeverActive]. It applies to every later start, by Start or
@@ -460,7 +497,9 @@ func (f *Fake) KillProcess(unit string, pid int) bool {
 	for i, p := range u.procs {
 		if p.pid == pid {
 			u.procs = append(u.procs[:i], u.procs[i+1:]...)
-			f.collect(u, f.clock.Now())
+			now := f.clock.Now()
+			f.deactivated(u, now)
+			f.collect(u, now)
 			return true
 		}
 	}
@@ -663,6 +702,7 @@ func (f *Fake) runEvents(t time.Time) {
 			kept = append(kept, p)
 		}
 		u.procs = kept
+		f.deactivated(u, t)
 		if !u.killAt.IsZero() && !u.killAt.After(t) {
 			u.killAt = time.Time{}
 			f.logImplied(u, syscall.SIGKILL, t)
@@ -699,6 +739,7 @@ func (f *Fake) deliver(u *fakeUnit, sig syscall.Signal, at time.Time) {
 		}
 	}
 	u.procs = kept
+	f.deactivated(u, at)
 }
 
 // logImplied appends the entry of a signal that the fake sent by itself.
@@ -721,12 +762,31 @@ func (f *Fake) collect(u *fakeUnit, at time.Time) {
 }
 
 // unload removes the unit, which holds no process any more, and stops the
-// units that are bound to its name.
+// units that are bound to its name (when that has not happened already).
 func (f *Fake) unload(u *fakeUnit, at time.Time) {
 	delete(f.units, u.name)
+	f.stopBound(u.name, at)
+}
+
+// deactivated stops the units bound to u when u is deactivating, under
+// [BoundStopOnDeactivating]: its main process is gone, or it is itself being
+// stopped. It is called wherever the processes of u can have changed, and does
+// nothing again for a unit whose bound units are stopped already.
+func (f *Fake) deactivated(u *fakeUnit, at time.Time) {
+	if f.boundStop != BoundStopOnDeactivating || f.units[u.name] != u {
+		return
+	}
+	if f.state(u.name).Active == ActiveDeactivating {
+		f.stopBound(u.name, at)
+	}
+}
+
+// stopBound applies the implied stop to every unit loaded and bound to the
+// unit parent, in name order.
+func (f *Fake) stopBound(parent string, at time.Time) {
 	var bound []string
 	for n, c := range f.units {
-		if c.parent == u.name {
+		if c.parent == parent {
 			bound = append(bound, n)
 		}
 	}
@@ -738,8 +798,8 @@ func (f *Fake) unload(u *fakeUnit, at time.Time) {
 	}
 }
 
-// impliedStop is the stop of a unit whose parent unloaded: SIGTERM to the
-// group now, SIGKILL after the stop timeout when something is left.
+// impliedStop is the stop of a unit whose parent ended: SIGTERM to the group
+// now, SIGKILL after the stop timeout when something is left.
 func (f *Fake) impliedStop(u *fakeUnit, at time.Time) {
 	if u.stopping {
 		return
@@ -754,20 +814,30 @@ func (f *Fake) impliedStop(u *fakeUnit, at time.Time) {
 }
 
 // parentLive reports whether a unit with that parent can start now: the parent
-// is loaded and live, and is not itself being stopped.
+// is loaded and not itself being stopped, and it is active or activating
+// (under [BoundStopOnUnload]: also deactivating).
 func (f *Fake) parentLive(parent string) bool {
 	if parent == "" {
 		return true
 	}
 	p := f.units[parent]
-	return p != nil && !p.stopping && f.state(parent).Live()
+	if p == nil || p.stopping {
+		return false
+	}
+	st := f.state(parent)
+	if f.boundStop == BoundStopOnUnload {
+		return st.Live()
+	}
+	return st.Active == ActiveActive || st.Active == ActiveActivating
 }
 
 // orphan is the result of a start whose parent is not live, by the scripted
 // [MissingParent] outcome. Nothing is started.
 func (f *Fake) orphan(spec Spec) (State, error) {
 	if f.missing == MissingParentRefused {
-		return State{}, fmt.Errorf("%w: %s", ErrParentNotLive, spec.Parent)
+		// The real manager cannot tell this refusal from any other failure
+		// of the call, and reports a lost reply.
+		return State{}, fmt.Errorf("%w: %w: %s", ErrReplyLost, ErrParentNotLive, spec.Parent)
 	}
 	return f.state(spec.Unit), nil
 }
@@ -799,7 +869,8 @@ func (f *Fake) state(unit string) State {
 
 // enter does what every call does first: it refuses on a done context and on a
 // scripted unavailability, and settles the clock (which can log the stops of
-// bound units, so a call is numbered when it is logged, after them). It returns the error to return, if any. The caller holds f.mu.
+// bound units, so a call is numbered when it is logged, after them). It
+// returns the error to return, if any. The caller holds f.mu.
 func (f *Fake) enter(ctx context.Context, call *Call) error {
 	call.At = f.clock.Now()
 	if err := ctx.Err(); err != nil {

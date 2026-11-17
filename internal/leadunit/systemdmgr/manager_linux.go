@@ -170,8 +170,8 @@ func startFailure(unit, out string, err error) error {
 // a loaded unit whose control group cannot be read and a failed read of the
 // boot identity are errors, never "not loaded". The description counts as
 // ours only for a unit that systemd reports as transient. State.Parent is the
-// unit's BindsTo when that is exactly one unit name, and empty otherwise. A failure to reach
-// the tool is [leadunit.ErrUnavailable].
+// unit's BindsTo when that is exactly one unit name, and empty otherwise. A
+// failure to reach the tool is [leadunit.ErrUnavailable].
 func (m *Manager) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
 	if err := ctx.Err(); err != nil {
 		return leadunit.State{}, err
