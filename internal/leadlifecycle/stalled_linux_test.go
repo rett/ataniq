@@ -2,6 +2,7 @@ package leadlifecycle
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -168,6 +169,47 @@ func TestClearStalled(t *testing.T) {
 			t.Fatalf("entry %+v", e.Shown)
 		}
 	})
+	// The parent is judged as Reconcile judges it, and a coordinator under a
+	// parent that has ended is not returned to a live state, even while its
+	// own unit is running.
+	for name, parentState := range map[string]leadregistry.State{
+		"the parent is unknown":  leadregistry.StateUnknown,
+		"the parent is stopping": leadregistry.StateStopping,
+		"the parent is ended":    leadregistry.StateEnded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, lead, coord := coordRig(t)
+			r.mustStart(coord)
+			_, err := r.markStalled(coord, "x")
+			noErr(t, err)
+			if parentState == leadregistry.StateEnded {
+				// The lead's record says ended (its unit went away on its own and
+				// was proven absent); the coordinator's own unit still runs, as
+				// the manager has not got to it, so that the test does not
+				// depend on the moment the fake stops a bound unit.
+				_, err := r.reg.SetState(lead, leadregistry.StateChange{Epoch: 1, State: leadregistry.StateEnded,
+					Evidence: leadregistry.EvidenceObservation, Reason: leadregistry.Reason{Code: "test"}, Proof: "test"})
+				noErr(t, err)
+			} else {
+				r.setShown(lead, parentState)
+			}
+			e, err := r.clearStalled(coord)
+			isErr(t, err, ErrParentNotLive)
+			if errors.Is(err, ErrInstanceChanged) {
+				t.Fatalf("the error says the instance changed: %v", err)
+			}
+			if e.Shown.State != leadregistry.StateUnknown || e.Shown.Reason.Code != "orphan-coordinator" {
+				t.Fatalf("entry %+v", e.Shown)
+			}
+			// It stays unknown after Reconcile, which signals nothing; it was
+			// not given a live state to be taken back from.
+			r.reconcile()
+			if got := r.get(coord).Shown.State; got == leadregistry.StateReady || got == leadregistry.StateDegraded || got == leadregistry.StateStalled {
+				t.Fatalf("coordinator is %s", got)
+			}
+			r.noSignals()
+		})
+	}
 }
 
 // A stalled coordinator is replaced only by a stop with proof and then a start

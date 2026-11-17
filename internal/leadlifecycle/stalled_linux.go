@@ -78,6 +78,14 @@ func (c *Controller) MarkStalled(ctx context.Context, role leadrole.Role, reason
 // is shown unknown (reason stalled-instance-changed), and the error wraps
 // ErrInstanceChanged; with a manager that does not answer nothing is changed
 // and the error says so. A role that is not stalled gives ErrNotStalled.
+//
+// The parent is judged first, as Reconcile judges it: when the parent lead's
+// epoch is no longer the one the coordinator recorded, or the parent is not
+// shown starting, ready or degraded, the coordinator has ended with its parent
+// and is not returned to a live state. It is shown unknown (reason
+// orphan-coordinator), the error wraps ErrParentNotLive, and the unit is not
+// looked at: Reconcile proves it absent, or reports it still loaded, and an
+// explicit Stop ends it.
 func (c *Controller) ClearStalled(ctx context.Context, role leadrole.Role) (leadregistry.Entry, error) {
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
@@ -90,6 +98,18 @@ func (c *Controller) ClearStalled(ctx context.Context, role leadrole.Role) (lead
 	}
 	if e.Shown.State != leadregistry.StateStalled {
 		return e, fmt.Errorf("%w: %s is shown %s", ErrNotStalled, role, e.Shown.State)
+	}
+	// A coordinator ends with its parent's epoch: under a parent that has
+	// ended, or is not live, it is not returned to a live state, whatever its
+	// unit is doing. Reconcile judges the same fact in the same way, and is
+	// what proves the unit absent or reports it still loaded.
+	if orphan := c.parentEnded(e); orphan != "" {
+		out := fmt.Errorf("%w: %s", ErrParentNotLive, orphan)
+		e, serr := c.setUnknown(e, codeOrphanCoordinator, orphan+"; the stall is not cleared, and Reconcile or an explicit Stop ends the coordinator")
+		if serr != nil {
+			return e, errors.Join(out, serr)
+		}
+		return e, out
 	}
 	st, err := c.mgr.Inspect(ctx, role.UnitName())
 	if err != nil {
