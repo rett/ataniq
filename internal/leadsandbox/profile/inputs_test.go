@@ -1,0 +1,280 @@
+package profile
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestValidFixtures(t *testing.T) {
+	for _, rt := range Runtimes() {
+		if err := fixture(rt).Validate(); err != nil {
+			t.Errorf("%s: %v", rt, err)
+		}
+	}
+	// The owner identity fallback, a seccomp file, records and placeholders.
+	in := fixture(Claude)
+	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
+	in.SeccompFile = "/srv/owned/seccomp/reviewed.bpf"
+	in.SeccompSHA256 = strings.Repeat("ab", 32)
+	in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/q", "/home/lead/.qargi"
+	in.ExtraPlaceholders = []Placeholder{{Rel: "sub/.envrc", Source: "/srv/owned/p/envrc"}}
+	if err := in.Validate(); err != nil {
+		t.Errorf("full inputs: %v", err)
+	}
+}
+
+func TestInputsRefusals(t *testing.T) {
+	tests := []struct {
+		name   string
+		rt     Runtime
+		mutate func(*Inputs)
+		field  string // the refused field
+		reason string // a word the reason holds
+	}{
+		{"relative state root", Claude, func(in *Inputs) { in.StateRoot = "state" }, "state root", "absolute"},
+		{"unclean state root", Claude, func(in *Inputs) { in.StateRoot = "/srv/state/." }, "state root", "clean"},
+		{"bad role", Claude, func(in *Inputs) { in.Role = "Arc_Lead" }, "role", "match"},
+		{"bad project", Claude, func(in *Inputs) { in.Project = "a/b" }, "project", "match"},
+		{"empty runtime", Claude, func(in *Inputs) { in.Runtime = "" }, "runtime", "claude"},
+		{"unknown runtime", Claude, func(in *Inputs) { in.Runtime = "gemini" }, "runtime", "codex"},
+		{"empty version", Claude, func(in *Inputs) { in.RuntimeVersion = "" }, "runtime version", "characters"},
+		{"version with a space", Claude, func(in *Inputs) { in.RuntimeVersion = "2.1 0" }, "runtime version", "letters"},
+		{"version with a slash", Claude, func(in *Inputs) { in.RuntimeVersion = "../2" }, "runtime version", "letters"},
+		{"version starts with a dot", Claude, func(in *Inputs) { in.RuntimeVersion = ".2" }, "runtime version", "letters"},
+		{"long version", Claude, func(in *Inputs) { in.RuntimeVersion = strings.Repeat("1", 65) }, "runtime version", "characters"},
+		{"no identity", Claude, func(in *Inputs) { in.Identity = "" }, "identity", "root"},
+		{"unknown identity", Claude, func(in *Inputs) { in.Identity = "wheel" }, "identity", "owner"},
+		{"root mode with ids", Claude, func(in *Inputs) { in.OwnerUID = 1000 }, "identity", "owner ids"},
+		{"owner mode without ids", Claude, func(in *Inputs) { in.Identity, in.OwnerUser = IdentityOwner, "owner" }, "identity", "non-zero"},
+		{"owner mode with uid 0", Claude, func(in *Inputs) {
+			in.Identity, in.OwnerUser, in.OwnerGID = IdentityOwner, "owner", 1000
+		}, "identity", "non-zero"},
+		{"owner mode without a login", Claude, func(in *Inputs) {
+			in.Identity, in.OwnerUID, in.OwnerGID = IdentityOwner, 1000, 1000
+		}, "identity", "login"},
+		{"owner mode bad login", Claude, func(in *Inputs) {
+			in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "Own er"
+		}, "identity", "login"},
+		{"codex without a managed-settings path", Codex, func(in *Inputs) { in.ManagedSettingsInside = "" },
+			"managed-settings path", "names no managed-settings path"},
+		{"relative managed-settings path", Codex, func(in *Inputs) { in.ManagedSettingsInside = "etc/m.toml" }, "managed-settings path", "absolute"},
+		{"unclean managed-settings path", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/etc//m.json" }, "managed-settings path", "clean"},
+		{"records without an inside path", Claude, func(in *Inputs) { in.QargiRecords = "/srv/state/q" }, "Qargi records inside path", "empty"},
+		{"records inside path without a folder", Claude, func(in *Inputs) { in.QargiRecordsInside = "/home/lead/q" }, "Qargi records folder", "empty"},
+		{"relative records folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "q", "/home/lead/q"
+		}, "Qargi records folder", "absolute"},
+		{"seccomp file without a digest", Claude, func(in *Inputs) { in.SeccompFile = "/srv/owned/a.bpf" }, "seccomp digest", "hex"},
+		{"seccomp digest without a file", Claude, func(in *Inputs) { in.SeccompSHA256 = strings.Repeat("a", 64) }, "seccomp file", "empty"},
+		{"short seccomp digest", Claude, func(in *Inputs) {
+			in.SeccompFile, in.SeccompSHA256 = "/srv/owned/a.bpf", "abc"
+		}, "seccomp digest", "hex"},
+		{"upper-case seccomp digest", Claude, func(in *Inputs) {
+			in.SeccompFile, in.SeccompSHA256 = "/srv/owned/a.bpf", strings.Repeat("A", 64)
+		}, "seccomp digest", "hex"},
+		{"relative seccomp file", Claude, func(in *Inputs) {
+			in.SeccompFile, in.SeccompSHA256 = "a.bpf", strings.Repeat("a", 64)
+		}, "seccomp file", "absolute"},
+		{"placeholder in .git", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: ".git/hooks/pre-commit", Source: "/srv/owned/p"}}
+		}, "extra placeholder .git/hooks/pre-commit", ".git"},
+		{"placeholder .git", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: ".git", Source: "/srv/owned/p"}}
+		}, "extra placeholder .git", ".git"},
+		{"placeholder above the tree", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "../x", Source: "/srv/owned/p"}}
+		}, "extra placeholder ../x", "clean"},
+		{"absolute placeholder", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "/etc/x", Source: "/srv/owned/p"}}
+		}, "extra placeholder /etc/x", "relative"},
+		{"unclean placeholder", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "a//b", Source: "/srv/owned/p"}}
+		}, "extra placeholder a//b", "clean"},
+		{"empty placeholder", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "", Source: "/srv/owned/p"}}
+		}, "extra placeholder", "bytes"},
+		{"dot placeholder", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: ".", Source: "/srv/owned/p"}}
+		}, "extra placeholder .", "clean"},
+		{"placeholder with a newline", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "a\nb", Source: "/srv/owned/p"}}
+		}, "extra placeholder a\nb", "control"},
+		{"duplicate placeholder", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "a", Source: "/srv/owned/p"}, {Rel: "a", Source: "/srv/owned/q"}}
+		}, "extra placeholder a", "twice"},
+		{"relative placeholder source", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "a", Source: "p"}}
+		}, "extra placeholder a source", "absolute"},
+		{"nested placeholders", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: "a", Source: "/srv/owned/p", Dir: true}, {Rel: "a/b", Source: "/srv/owned/q"}}
+		}, "bind /work/ataniq/a/b", "below"},
+		{"no never-mounted paths", Claude, func(in *Inputs) { in.NeverMounted = nil }, "never-mounted paths", "none given"},
+		{"relative never-mounted path", Claude, func(in *Inputs) { in.NeverMounted = []string{".ssh"} }, "never-mounted path 0", "absolute"},
+		{"unclean never-mounted path", Claude, func(in *Inputs) {
+			in.NeverMounted = []string{"/home/owner/.ssh", "/home/owner/../.ssh"}
+		}, "never-mounted path 1", "clean"},
+		{"relative records inside", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "q"
+		}, "Qargi records inside path", "absolute"},
+		{"records inside path used twice", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/ataniq/probe"
+		}, "bind /ataniq/probe", "already used"},
+		{"records bound over a parent of the home", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home"
+		}, "bind /home/lead", "before its parent"},
+		{"records below a read-only bind", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/ataniq/agent/records"
+		}, "bind /ataniq/agent/records", "below"},
+		// Overlaps with what the lead can write.
+		{"skills inside the lead's home", Claude, func(in *Inputs) { in.LeadSkills = "/srv/state/leads/arc-lead/home/skills" },
+			"bind /home/lead/.claude/skills", "overlaps"},
+		{"instruction file inside the config folder", Claude, func(in *Inputs) {
+			in.InstructionFile = "/srv/state/leads/arc-lead/config/claude/CLAUDE.md"
+		}, "bind /home/lead/.claude/CLAUDE.md", "overlaps"},
+		{"assignment folder inside the tree", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/leads/arc-lead/tree/a" },
+			"bind /ataniq/assignment", "overlaps"},
+		{"records inside the home folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/home/q", "/home/lead/.qargi"
+		}, "bind /home/lead", "overlaps"},
+		// Never-mounted paths.
+		{"agent install is the owner's .ssh", Claude, func(in *Inputs) { in.AgentInstall = "/home/owner/.ssh" },
+			"bind /ataniq/agent", "never-mounted"},
+		{"qargi install below the owner's checkout", Claude, func(in *Inputs) { in.QargiInstall = "/home/owner/work/ataniq/qargi" },
+			"bind /ataniq/qargi", "below the never-mounted"},
+		{"probe above the owner's real provider folders", Claude, func(in *Inputs) { in.ProbeBinary = "/home/owner" },
+			"bind /ataniq/probe", "above the never-mounted"},
+		{"resolv.conf is the file system root", Claude, func(in *Inputs) { in.ResolvConf = "/" },
+			"bind /etc/resolv.conf", "above the never-mounted"},
+		{"state root inside the owner's checkout", Claude, func(in *Inputs) { in.StateRoot = "/home/owner/work/ataniq/state" },
+			"bind /home/lead", "below the never-mounted"},
+		{"never-mounted path inside a state folder", Claude, func(in *Inputs) {
+			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/tree/.git/hooks/x")
+		}, "bind /work/ataniq", "above the never-mounted"},
+		{"the other runtime's config folder (claude)", Claude, func(in *Inputs) { in.AgentInstall = "/srv/state/leads/arc-lead/config/codex" },
+			"bind /ataniq/agent", "never-mounted"},
+		{"the other runtime's config folder (codex)", Codex, func(in *Inputs) { in.GitIdentityFile = "/srv/state/leads/arc-lead/config/claude/x" },
+			"bind /ataniq/git/config", "below the never-mounted"},
+		{"a folder above the other runtime's config folder", Codex, func(in *Inputs) { in.SpecDir = "/srv/state/leads/arc-lead/config" },
+			"bind /ataniq/spec", "above the never-mounted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := fixture(tt.rt)
+			tt.mutate(&in)
+			err := in.Validate()
+			if err == nil {
+				t.Fatal("Validate = nil, want a refusal")
+			}
+			ref := refusalOf(t, err)
+			if ref.Field != tt.field || !strings.Contains(ref.Reason, tt.reason) {
+				t.Errorf("refusal = {%q, %q}, want field %q and a reason with %q", ref.Field, ref.Reason, tt.field, tt.reason)
+			}
+			// Every accessor refuses the same inputs.
+			if _, err := in.Binds(); err == nil {
+				t.Error("Binds accepted the inputs")
+			}
+			if _, err := in.Environment(); err == nil {
+				t.Error("Environment accepted the inputs")
+			}
+			if _, err := in.Flags(); err == nil {
+				t.Error("Flags accepted the inputs")
+			}
+		})
+	}
+}
+
+func TestEveryRequiredPathIsRequired(t *testing.T) {
+	fields := map[string]func(*Inputs) *string{
+		"agent install folder":  func(in *Inputs) *string { return &in.AgentInstall },
+		"probe binary":          func(in *Inputs) *string { return &in.ProbeBinary },
+		"spec folder":           func(in *Inputs) *string { return &in.SpecDir },
+		"managed-settings file": func(in *Inputs) *string { return &in.ManagedSettings },
+		"lead skills folder":    func(in *Inputs) *string { return &in.LeadSkills },
+		"instruction file":      func(in *Inputs) *string { return &in.InstructionFile },
+		"git identity file":     func(in *Inputs) *string { return &in.GitIdentityFile },
+		"Qargi install":         func(in *Inputs) *string { return &in.QargiInstall },
+		"assignment folder":     func(in *Inputs) *string { return &in.AssignmentDir },
+		"projection folder":     func(in *Inputs) *string { return &in.ProjectionDir },
+		"resolv.conf file":      func(in *Inputs) *string { return &in.ResolvConf },
+	}
+	for name, field := range fields {
+		for _, bad := range []struct{ value, reason string }{
+			{"", "empty"}, {"relative/path", "absolute"}, {"/srv/owned/x/", "clean"}, {"/srv/owned/../x", "clean"},
+		} {
+			in := fixture(Claude)
+			*field(&in) = bad.value
+			ref := refusalOf(t, in.Validate())
+			if ref.Field != name || !strings.Contains(ref.Reason, bad.reason) {
+				t.Errorf("%s = %q: refusal {%q, %q}", name, bad.value, ref.Field, ref.Reason)
+			}
+		}
+	}
+}
+
+func TestManagedSettingsDefaults(t *testing.T) {
+	claude := fixture(Claude)
+	if got := claude.ManagedInside(); got != "/etc/claude-code/managed-settings.json" {
+		t.Errorf("claude default = %q", got)
+	}
+	claude.ManagedSettingsInside = "/etc/other/managed.json"
+	if got := claude.ManagedInside(); got != "/etc/other/managed.json" {
+		t.Errorf("claude given = %q", got)
+	}
+	if got := fixture(Codex).ManagedInside(); got != "/etc/codex/managed-config.toml" {
+		t.Errorf("codex given = %q", got)
+	}
+}
+
+func TestFlags(t *testing.T) {
+	root, err := fixture(Claude).Flags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--die-with-parent --unshare-all --share-net --unshare-user --uid 0 --gid 0 --cap-drop ALL --clearenv"
+	if got := strings.Join(root, " "); got != want {
+		t.Errorf("root flags = %q\nwant %q", got, want)
+	}
+	in := fixture(Codex)
+	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1234, 5678, "owner"
+	owner, err := in.Flags()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "--die-with-parent --unshare-all --share-net --unshare-user --uid 1234 --gid 5678 --cap-drop ALL --clearenv"
+	if got := strings.Join(owner, " "); got != want {
+		t.Errorf("owner flags = %q\nwant %q", got, want)
+	}
+	// R17: nested sandboxes are allowed; the probe makes the session.
+	for _, f := range append(root, owner...) {
+		for _, bad := range ForbiddenFlags() {
+			if f == bad {
+				t.Errorf("the flag set holds %s", bad)
+			}
+		}
+	}
+	if got := ForbiddenFlags(); !reflect.DeepEqual(got, []string{"--disable-userns", "--assert-userns-disabled", "--new-session"}) {
+		t.Errorf("ForbiddenFlags = %v", got)
+	}
+	// --seccomp is the plan's, and only with a named file.
+	if fixture(Claude).SeccompEnabled() {
+		t.Error("seccomp enabled without a file")
+	}
+	in = fixture(Claude)
+	in.SeccompFile, in.SeccompSHA256 = "/srv/owned/a.bpf", strings.Repeat("0", 64)
+	if !in.SeccompEnabled() {
+		t.Error("seccomp not enabled with a file")
+	}
+	if f, _ := in.Flags(); contains(f, "--seccomp") {
+		t.Error("the flag set holds --seccomp")
+	}
+}
+
+func TestFlagsAreNotShared(t *testing.T) {
+	a, _ := fixture(Claude).Flags()
+	a[0] = "changed"
+	b, _ := fixture(Claude).Flags()
+	if b[0] != "--die-with-parent" {
+		t.Error("Flags returns a shared slice")
+	}
+}
