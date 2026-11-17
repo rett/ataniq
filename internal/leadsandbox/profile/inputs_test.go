@@ -237,6 +237,13 @@ func TestInputsRefusals(t *testing.T) {
 			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in another project's mirror", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/mirrors/other.git" },
 			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		// The places the review found accepted.
+		{"git metadata folder in this project's mirror", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/mirrors/ataniq.git/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder in the agent install", Claude, func(in *Inputs) { in.GitMeta = in.AgentInstall + "/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder in the assignment folder", Claude, func(in *Inputs) { in.GitMeta = in.AssignmentDir + "/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder under a never-mounted path", Claude, func(in *Inputs) {
 			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/gitmeta")
 		}, "bind /work/ataniq/.git/config", "never-mounted"},
