@@ -504,7 +504,8 @@ func (e *Emulator) ScrollbackCellAt(x, y int) *uv.Cell {
 }
 
 // SetScrollbackSize sets the maximum number of lines in the main screen's
-// scrollback buffer.
+// scrollback buffer. Zero keeps none: lines that scroll off the top are lost,
+// and the lines already held are released.
 func (e *Emulator) SetScrollbackSize(maxLines int) {
 	e.scrs[0].SetScrollbackSize(maxLines)
 }

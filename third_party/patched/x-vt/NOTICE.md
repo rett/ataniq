@@ -110,6 +110,14 @@ Patches, applied in this order to the files of the module as released:
    A cut can fall inside a UTF-8 character, which a handler gets as invalid
    UTF-8; a 0x9C byte of a character stays string data after the cut, so the
    string ends at its real terminator and none of it reaches the screen.
+9. `vt: let SetScrollbackSize(0) keep no scrollback` (`scrollback.go`,
+   `screen.go`, `emulator.go`, `scrollback_test.go`). `Scrollback.SetMaxLines`
+   ignored zero, so the smallest scrollback the main screen could have was
+   one line, and a screen with one line of scrollback keeps that line's links
+   outside the 256-link table. Zero is now accepted and keeps nothing: the
+   lines held are released, and lines that scroll off the top, an erase of
+   the screen and a resize add none. A negative number is ignored, as zero
+   was. A size above zero works as before.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
