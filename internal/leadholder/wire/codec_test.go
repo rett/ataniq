@@ -686,3 +686,126 @@ func TestDepthLimit(t *testing.T) {
 		t.Errorf("nested objects: %v", err)
 	}
 }
+
+// formatChars are characters that a text field refuses though they are valid
+// UTF-8 and not control characters: the Unicode format category (Cf) and the
+// line and paragraph separators.
+var formatChars = map[string]string{
+	"right-to-left override": "\u202e",
+	"left-to-right embed":    "\u202a",
+	"pop directional":        "\u202c",
+	"right-to-left isolate":  "\u2067",
+	"pop isolate":            "\u2069",
+	"left-to-right mark":     "\u200e",
+	"arabic letter mark":     "\u061c",
+	"zero width space":       "\u200b",
+	"zero width joiner":      "\u200d",
+	"word joiner":            "\u2060",
+	"soft hyphen":            "\u00ad",
+	"byte order mark":        "\ufeff",
+	"arabic number sign":     "\u0600",
+	"tag letter":             "\U000e0041",
+	"line separator":         "\u2028",
+	"paragraph separator":    "\u2029",
+}
+
+// okChars are characters near those that stay allowed.
+var okChars = map[string]string{
+	"no-break space":      "\u00a0",
+	"em space":            "\u2003",
+	"replacement":         "\ufffd",
+	"accented":            "é",
+	"cjk":                 "字",
+	"emoji":               "\U0001F600",
+	"combining accent":    "e\u0301",
+	"variation selector":  "\ufe0f",
+	"private use":         "\ue000",
+	"ideographic space":   "\u3000",
+	"right single quote":  "’",
+	"horizontal ellipsis": "…",
+}
+
+func TestFormatCharactersRefusedOnDecode(t *testing.T) {
+	for _, f := range textFields {
+		c := codecNamed(t, f.codec)
+		good, err := c.encode(c.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _, _ := strings.Cut(f.old, ":")
+		for name, ch := range formatChars {
+			// Once as the raw character and once as a \u escape (a character
+			// outside the BMP as a pair).
+			var esc strings.Builder
+			for _, r := range ch {
+				if r >= 0x10000 {
+					r -= 0x10000
+					fmt.Fprintf(&esc, `\u%04x\u%04x`, 0xd800+(r>>10), 0xdc00+(r&0x3ff))
+				} else {
+					fmt.Fprintf(&esc, `\u%04x`, r)
+				}
+			}
+			for form, val := range map[string]string{"raw": ch, "escaped": esc.String()} {
+				bad := repl(t, good, f.old, key+`:"a`+val+`b"`)
+				if _, err := c.decode(bad); !errors.Is(err, wire.ErrInvalid) {
+					t.Errorf("%s %s %s (%s): err = %v, want ErrInvalid", f.codec, key, name, form, err)
+				}
+			}
+		}
+		for name, ch := range okChars {
+			ok := repl(t, good, f.old, key+`:"a`+ch+`b"`)
+			if _, err := c.decode(ok); err != nil {
+				t.Errorf("%s %s %s: %v", f.codec, key, name, err)
+			}
+		}
+	}
+}
+
+func TestFormatCharactersRefusedOnEncode(t *testing.T) {
+	for name, ch := range formatChars {
+		text := "a" + ch + "b"
+		if _, err := wire.EncodeHello(wire.Hello{Version: 1, Ticket: ticket64, Name: text, Columns: 80, Rows: 24}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("hello name with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeNotice(wire.Notice{Reason: wire.ReasonResync, Text: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("notice text with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeState(wire.State{Facts: sampleFacts, Idle: wire.IdleUnknown, Title: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("title with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeRole(wire.RoleInfo{WriterName: text, WriterPID: 1, Role: wire.RoleViewer}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("writer name with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeExit(wire.Exit{Facts: sampleFacts, LastScreen: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("last screen with %s: %v", name, err)
+		}
+		if _, err := wire.EncodeResponse(wire.Response{Code: "x", Text: text}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("refusal text with %s: %v", name, err)
+		}
+		st := sampleStatus
+		st.Lead = text
+		if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: &st}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("status lead with %s: %v", name, err)
+		}
+		// Sanitize makes it fit, and the result is accepted.
+		clean := wire.Sanitize(text, 64, false)
+		if clean != "a\ufffdb" {
+			t.Errorf("Sanitize(%s) = %q", name, clean)
+		}
+		if _, err := wire.EncodeNotice(wire.Notice{Reason: wire.ReasonResync, Text: clean}); err != nil {
+			t.Errorf("sanitized %s: %v", name, err)
+		}
+		if got := wire.Sanitize("x\n"+ch, 64, true); got != "x\n\ufffd" {
+			t.Errorf("Sanitize with newlines kept, %s = %q", name, got)
+		}
+	}
+	for name, ch := range okChars {
+		text := "a" + ch + "b"
+		if _, err := wire.EncodeHello(wire.Hello{Version: 1, Ticket: ticket64, Name: text, Columns: 80, Rows: 24}); err != nil {
+			t.Errorf("hello name with %s: %v", name, err)
+		}
+		if got := wire.Sanitize(text, 64, false); got != text {
+			t.Errorf("Sanitize changed %s: %q", name, got)
+		}
+	}
+}

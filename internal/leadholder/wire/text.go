@@ -8,6 +8,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -53,8 +54,22 @@ func isControl(r rune) bool {
 	return r < 0x20 || (r >= 0x7f && r < 0xa0)
 }
 
+// forbidden reports a rune that a text field may not hold: a control
+// character (a newline is let through when keepNewline is set), a Unicode
+// format character (category Cf, which includes the bidirectional controls,
+// the zero-width characters and the byte order mark) or a line or paragraph
+// separator (U+2028, U+2029). A name or a title is shown beside other text in
+// every attached pane, and these characters reorder, hide or break it.
+func forbidden(r rune, keepNewline bool) bool {
+	if r == '\n' && keepNewline {
+		return false
+	}
+	return isControl(r) || unicode.Is(unicode.Cf, r) || unicode.In(r, unicode.Zl, unicode.Zp)
+}
+
 // checkText checks one text field: valid UTF-8, between min and max bytes and
-// without control characters (a newline only when keepNewline is set).
+// without control, format or line-separator characters (a newline is allowed
+// only when keepNewline is set).
 func checkText(field, s string, min, max int, keepNewline bool) error {
 	if len(s) < min || len(s) > max {
 		return invalidf("%s is %d bytes, want %d to %d", field, len(s), min, max)
@@ -63,8 +78,8 @@ func checkText(field, s string, min, max int, keepNewline bool) error {
 		return invalidf("%s is not valid UTF-8", field)
 	}
 	for _, r := range s {
-		if isControl(r) && !(keepNewline && r == '\n') {
-			return invalidf("%s has a control character", field)
+		if forbidden(r, keepNewline) {
+			return invalidf("%s has a control, format or line-separator character (U+%04X)", field, r)
 		}
 	}
 	return nil
@@ -106,9 +121,10 @@ func checkDimension(field string, n int) error {
 	return nil
 }
 
-// Sanitize makes s fit a text field: each invalid byte and control character
-// (a newline only when keepNewline is set) becomes U+FFFD and the result is cut
-// at a character boundary to at most max bytes. A holder uses it on text that
+// Sanitize makes s fit a text field: each invalid byte, control character
+// (a newline only when keepNewline is set), format character and line or
+// paragraph separator becomes U+FFFD and the result is cut at a character
+// boundary to at most max bytes. A holder uses it on text that
 // came from the session (a title, the last screen) before it puts it in a
 // frame.
 func Sanitize(s string, max int, keepNewline bool) string {
@@ -122,7 +138,7 @@ func Sanitize(s string, max int, keepNewline bool) string {
 			b.WriteRune(utf8.RuneError)
 			continue
 		}
-		if isControl(r) && !(keepNewline && r == '\n') {
+		if forbidden(r, keepNewline) {
 			r = utf8.RuneError
 		}
 		if b.Len()+utf8.RuneLen(r) > max {

@@ -26,7 +26,10 @@
 // Structured payloads are JSON objects, decoded strictly: a field that the
 // struct does not have (also one that differs only in case), a repeated
 // key, trailing data, a value over its length cap, text with a control
-// character and text that is not valid UTF-8 are all refused. Invalid UTF-8 is
+// character, a Unicode format character (category Cf: the bidirectional
+// controls, zero-width characters, the byte order mark) or a line or
+// paragraph separator (U+2028, U+2029), and text that is not valid UTF-8 are
+// all refused. [Sanitize] replaces the same characters. Invalid UTF-8 is
 // refused as it comes: a raw invalid byte, and a \uD800 to \uDFFF escape that
 // is not half of a pair, are errors and are never replaced by U+FFFD (an
 // escaped U+FFFD itself is fine). The Encode functions apply the same checks,
