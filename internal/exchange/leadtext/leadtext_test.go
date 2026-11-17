@@ -584,3 +584,18 @@ func TestEscapeDefaultIgnorable(t *testing.T) {
 		}
 	}
 }
+
+// TestEscapeNamedInvisible pins runes that the package comment names or that
+// earlier code had a case for. Each must be escaped.
+func TestEscapeNamedInvisible(t *testing.T) {
+	for _, r := range []rune{0x00ad, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0} {
+		in := "a" + string(r) + "b"
+		got := Escape(in)
+		if strings.ContainsRune(got, r) {
+			t.Errorf("U+%04X passed unescaped: %q", r, got)
+		}
+		if back, err := Unescape(got); err != nil || back != in {
+			t.Errorf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
+		}
+	}
+}

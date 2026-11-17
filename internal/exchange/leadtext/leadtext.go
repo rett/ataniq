@@ -163,10 +163,6 @@ func safeRune(r rune) bool {
 		// U+17B4 and U+17B5, U+2065, U+FFF0 to U+FFF8 and the unassigned
 		// and tag-area code points from U+E0000 to U+E0FFF.
 		return false
-	case r == 0x034f: // combining grapheme joiner, invisible
-		return false
-	case r == 0x115f, r == 0x1160, r == 0x3164, r == 0xffa0: // invisible Hangul fillers
-		return false
 	}
 	return true
 }
