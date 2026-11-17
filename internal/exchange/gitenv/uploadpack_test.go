@@ -150,7 +150,8 @@ func TestUploadPackRefuses(t *testing.T) {
 //
 // Proves: every element reaches the program as one literal argument, the
 // source is the last one, `;` and `$(...)` start nothing, and the fetch
-// works and checks the objects. The control shows that the same text
+// works. The check of the objects has its own test below. The control shows
+// that the same text
 // without quoting does run a second command with plain git.
 // Cannot prove: that the program is confined; this package does not do that.
 func TestUploadPackProgramGetsOneWordPerElement(t *testing.T) {
@@ -212,5 +213,61 @@ func TestUploadPackProgramGetsOneWordPerElement(t *testing.T) {
 	}
 	if got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"rev-parse", "--verify", "refs/heads/main"}}); got != head {
 		t.Errorf("main in the mirror is %q, want %q", got, head)
+	}
+}
+
+// TestUploadPackFetchChecksObjects fetches a commit with a malformed author
+// line through a wrapper program. Git checks the objects on the receiving
+// side, so the fetch must fail whichever program serves it.
+//
+// Proves: with UploadPack set, a malformed object is refused and leaves no
+// ref and no object. The control shows that plain git without the check
+// takes the same commit through the same wrapper, so the object is only
+// refused because of the settings of this package.
+// Cannot prove: that every kind of bad object is refused; git's fsck decides.
+func TestUploadPackFetchChecksObjects(t *testing.T) {
+	g := needGit(t)
+	env := fixtureEnv(t, "GIT_ALLOW_PROTOCOL=file")
+	evil := filepath.Join(t.TempDir(), "evil.git")
+	fixture(t, g, env, "", "init", "-q", "--bare", "-b", "main", evil)
+	tree := fixtureIn(t, g, env, evil, "", "mktree")
+	// The author line has no email.
+	commit := "tree " + tree + "\n" +
+		"author Fixture 1767225600 +0000\n" +
+		"committer Fixture <fixture@example.invalid> 1767225600 +0000\n" +
+		"\nmalformed\n"
+	id := fixtureIn(t, g, env, evil, commit, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+	fixture(t, g, env, evil, "update-ref", "refs/heads/main", id)
+
+	wrapper := filepath.Join(t.TempDir(), "wrap")
+	body := "#!/bin/sh\nfor last; do :; done\nexec git-upload-pack \"$last\"\n"
+	if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Control: plain git, no object check, same wrapper.
+	control := bare(t, g)
+	if out, err := run([]string{g.Path, "--git-dir=" + control, "fetch", "-q", "--upload-pack=" + shellQuote(wrapper), "--end-of-options", evil, "+refs/heads/*:refs/heads/*"}, env, "", ""); err != nil {
+		t.Fatalf("control: plain git did not take the commit through the wrapper, so the test shows nothing: %v\n%s", err, out)
+	}
+	if got := fixture(t, g, env, control, "rev-parse", "--verify", "refs/heads/main"); got != id {
+		t.Fatalf("control: main is %q, want %q", got, id)
+	}
+
+	repo := bare(t, g)
+	c := Cmd{GitDir: repo, Protocols: []string{"file"}, UploadPack: []string{wrapper},
+		Args: []string{"fetch", "--end-of-options", evil, "+refs/heads/*:refs/heads/*"}}
+	out, err := owned(g, c)
+	if err == nil {
+		t.Fatalf("the fetch of a malformed commit through the wrapper succeeded: %s", out)
+	}
+	if !strings.Contains(out, "fsck") && !strings.Contains(out, "missingEmail") && !strings.Contains(out, "email") {
+		t.Errorf("the fetch failed, but the message does not name the check: %q", out)
+	}
+	if refs := mustOwned(t, g, Cmd{GitDir: repo, Args: []string{"for-each-ref"}}); refs != "" {
+		t.Errorf("the failed fetch left refs: %q", refs)
+	}
+	if out, err := owned(g, Cmd{GitDir: repo, Args: []string{"cat-file", "-e", id}}); err == nil {
+		t.Errorf("the failed fetch left the commit %s: %q", id, out)
 	}
 }
