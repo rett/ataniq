@@ -75,8 +75,8 @@ const maxPID = 1<<22 - 1
 // executable is an exec, not a reused pid, and does not make the original
 // ended. It does not prove that the control group or the children are gone.
 // An impossible identity (a pid below 1 or above the kernel's maximum of
-// 1<<22 - 1, or a start time of 0) is an error, not an answer: absence of such a
-// process proves nothing about the original.
+// 1<<22 - 1, or a start time of 0) is an error, not an answer: absence of such
+// a process proves nothing about the original.
 func Ended(boot string, pid int, start uint64) (bool, error) {
 	if pid < 1 || pid > maxPID || start == 0 {
 		return false, errors.New("invalid process identity")

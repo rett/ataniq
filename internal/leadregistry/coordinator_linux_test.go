@@ -689,6 +689,44 @@ func TestCoordinatorJournalCorruption(t *testing.T) {
 	leadOnly := prefix(5)
 	orphan := appendRecord(t, prefix(1), kindDefine, c, define(Requested{Provider: ProviderClaude, Model: "fable"}))
 
+	// The journals of a lead whose launch has the given outcome while it is
+	// still shown starting, with the coordinator defined: a launch of the
+	// coordinator appended to one of them is under a parent that is shown
+	// starting, and live only if its launch did not fail or was not abandoned.
+	underOutcome := func(outcome Outcome) []byte {
+		dir := regDir(t)
+		r := openReg(t, dir)
+		if _, err := r.Define(l, ManagerAtaniq, goodProfile()); err != nil {
+			t.Fatal(err)
+		}
+		in, err := r.BeginLaunch(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.RecordOutcome(l, in.ID, in.Epoch, outcome, UnitEvidence{InvocationID: "i"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Define(c, ManagerAtaniq, Requested{}); err != nil {
+			t.Fatal(err)
+		}
+		if e, err := r.Get(l); err != nil || e.Shown.State != StateStarting {
+			t.Fatalf("lead with outcome %s: %v, %v, want shown starting", outcome, e.Shown.State, err)
+		}
+		r.Close()
+		d, err := os.ReadFile(filepath.Join(dir, FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 0 header, 1 define lead, 2 begin lead, 3 outcome lead, 4 define coord.
+		if n := len(journalLines(d)); n != 5 {
+			t.Fatalf("unexpected journal of %d lines", n)
+		}
+		return d
+	}
+	underFailed := appendRecord(t, underOutcome(OutcomeFailed), kindLaunchBegin, c, begin(c, 1, 1, c.Identity(1, 1)))
+	underAbandoned := appendRecord(t, underOutcome(OutcomeAbandoned), kindLaunchBegin, c, begin(c, 1, 1, c.Identity(1, 1)))
+	underLaunched := appendRecord(t, underOutcome(OutcomeLaunched), kindLaunchBegin, c, begin(c, 1, 1, c.Identity(1, 1)))
+
 	cases := []struct {
 		name string
 		data []byte
@@ -717,6 +755,8 @@ func TestCoordinatorJournalCorruption(t *testing.T) {
 		{"stalled to stopped without proof", appendRecord(t, stalled, kindState, c, st(1, StateStopped, "")), 11, "proof"},
 		{"lead launch while a coordinator is stalled", appendRecord(t, leadStopped, kindLaunchBegin, l, begin(l, 2, 0, "")), 12, "not proven stopped"},
 		{"coordinator launch while its parent is stopped", appendRecord(t, bothStopped, kindLaunchBegin, c, begin(c, 2, 1, c.Identity(1, 2))), 13, "not shown starting, ready or degraded"},
+		{"coordinator launch while its parent, shown starting, failed to launch", underFailed, 6, "launch failed or was abandoned"},
+		{"coordinator launch while its parent, shown starting, was abandoned", underAbandoned, 6, "launch failed or was abandoned"},
 	}
 	for _, tc := range cases {
 		err := openErr(t, tc.data)
@@ -746,6 +786,7 @@ func TestCoordinatorJournalCorruption(t *testing.T) {
 		{"coordinator stalled", stalled},
 		{"lead stopped, then the coordinator", bothStopped},
 		{"lead launched again after both stopped", appendRecord(t, bothStopped, kindLaunchBegin, l, begin(l, 2, 0, ""))},
+		{"coordinator launch while its parent, shown starting, launched", underLaunched},
 	}
 	for _, v := range valid {
 		if err := openErr(t, v.data); err != nil {

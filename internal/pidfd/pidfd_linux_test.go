@@ -109,6 +109,45 @@ func TestOpenAndExitedChild(t *testing.T) {
 	}
 }
 
+func TestExitedRepeatsThePollOnEINTR(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	calls := 0
+	dead, err := exitedWith(f, func(p []unix.PollFd, timeout int) (int, error) {
+		calls++
+		if timeout != 0 {
+			t.Errorf("poll timeout %d, want 0", timeout)
+		}
+		if calls <= 3 {
+			return -1, unix.EINTR
+		}
+		p[0].Revents = unix.POLLIN
+		return 1, nil
+	})
+	if err != nil || !dead || calls != 4 {
+		t.Fatalf("got %v, %v after %d polls, want exited after 4", dead, err, calls)
+	}
+}
+
+func TestExitedReturnsOtherPollErrors(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	calls := 0
+	dead, err := exitedWith(f, func([]unix.PollFd, int) (int, error) {
+		calls++
+		return -1, unix.EBADF
+	})
+	if err != unix.EBADF || dead || calls != 1 {
+		t.Fatalf("got %v, %v after %d polls, want EBADF after 1", dead, err, calls)
+	}
+}
+
 func TestOpenRejectsInvalidPid(t *testing.T) {
 	for _, pid := range []int{-1, 0} {
 		f, err := Open(pid)

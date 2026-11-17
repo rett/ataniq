@@ -68,7 +68,7 @@ var (
 	// ErrLaunchParentState is a launch refusal: the parent lead of a
 	// coordinator is not shown starting, ready or degraded, or its own launch
 	// failed or was abandoned.
-	ErrLaunchParentState error = refusal("the parent lead of the coordinator is not shown starting, ready or degraded")
+	ErrLaunchParentState error = refusal("the parent lead of the coordinator is not shown starting, ready or degraded, or its own launch failed or was abandoned")
 	// ErrLaunchCoordinator is a launch refusal: a coordinator of the lead,
 	// recorded under an earlier epoch of the lead, is not stopped, ended or
 	// desired (never launched), so it is not proven stopped.
