@@ -164,14 +164,17 @@ type scene struct {
 	base, tip string
 }
 
-// newScene makes the root commit (README.md and src/main.go) and publishes it
-// as the upstream branch. The caller adds commits with commit and ends with
-// finish.
-func newScene(t *testing.T) *scene {
+// newScene makes the root commit (README.md and src/main.go, and the files
+// given as pairs of path and content) and publishes it as the upstream
+// branch. The caller adds commits with commit and ends with finish.
+func newScene(t *testing.T, files ...string) *scene {
 	t.Helper()
 	l := newLab(t)
 	l.put("README.md", "readme\n")
 	l.put("src/main.go", "package main\n")
+	for i := 0; i+1 < len(files); i += 2 {
+		l.put(files[i], files[i+1])
+	}
 	s := &scene{lab: l, base: l.commit("root\n")}
 	l.publish(upstreamRef, s.base)
 	return s

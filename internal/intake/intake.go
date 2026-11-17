@@ -239,5 +239,9 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	if rev.Changes, err = r.changes(ctx, base, tip, lim); err != nil {
 		return nil, err
 	}
+	for i := range rev.Changes {
+		rev.Changes[i].Flags = entryFlags(req.Rules, rev.Changes[i])
+	}
+	rev.Flagged = collect(rev.Changes, nil)
 	return rev, nil
 }
