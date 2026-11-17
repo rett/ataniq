@@ -86,7 +86,7 @@ func (e *env) cmdIntegrate(args []string) int {
 	}
 	defer store.Close()
 
-	rec, err := intake.Integrate(e.ctx, sourceOf(e, m), intake.IntegrateRequest{
+	rec, err := e.deps.integrate(e.ctx, sourceOf(e, m), intake.IntegrateRequest{
 		Project: c.project,
 		Review:  intake.Request{BaseRef: baseRef, TipRef: tipRef, Rules: set},
 		SignOff: intake.SignOff{Tip: tip, Digest: digest, Change: acceptChange, Paths: paths},
@@ -101,16 +101,43 @@ func (e *env) cmdIntegrate(args []string) int {
 	case err == nil:
 		e.printIntegrated(rec, role, b, t, m.Path())
 		return exitOK
-	case errors.As(err, &sg):
-		e.printSignOffError(sg)
-		return exitRefused
 	case errors.As(err, &re):
 		// The branch moved and the record is missing. The owner must know.
 		e.printIntegrated(re.Record, role, b, t, m.Path())
 		fmt.Fprintf(e.stderr, "%s integrate: the upstream branch moved, but its intake record was not written. Keep this output: it is the record.\n", program)
 		return e.fail("integrate", err)
+	case errors.As(err, &sg):
+		e.printSignOffError(sg)
+		return exitRefused
+	case errors.Is(err, intake.ErrNothingToIntegrate):
+		fmt.Fprintf(e.stderr, "%s integrate: nothing to integrate: the lead branch %s/%s is at the upstream branch %s already. Nothing was moved.\n",
+			program, leadtext.Escape(role), leadtext.Escape(b), leadtext.Escape(t))
+		return exitRefused
+	case errors.Is(err, intake.ErrOutcomeUnknown):
+		fmt.Fprintf(e.stderr, "%s integrate: the update of the upstream branch %s ended unclearly, and the branch could not be read afterwards. It may have moved, and no intake record was written. Look at the upstream branch with '%s branches' before you try again.\n",
+			program, leadtext.Escape(t), program)
+		fmt.Fprintf(e.stderr, "The error was: %s\n", safeText(err.Error()))
+		return exitFailed
+	case rec.Tip != "" && (errors.Is(err, intake.ErrRecovered) || errors.Is(err, intake.ErrNotSynced)):
+		// The branch moved and the record is written: a success with a
+		// warning.
+		e.printIntegrated(rec, role, b, t, m.Path())
+		e.warnRecorded(err)
+		return exitOK
 	}
 	return e.fail("integrate", err)
+}
+
+// warnRecorded says on standard error what is doubtful about a write that
+// succeeded: an update that ended unclearly, or a records folder that could
+// not be synced. The texts are the command's own.
+func (e *env) warnRecorded(err error) {
+	if errors.Is(err, intake.ErrRecovered) {
+		fmt.Fprintf(e.stderr, "%s integrate: warning: the update of the upstream branch ended unclearly. The branch is at the new tip and the intake is recorded, as printed above. It cannot be told whether this call or another writer moved it.\n", program)
+	}
+	if errors.Is(err, intake.ErrNotSynced) {
+		fmt.Fprintf(e.stderr, "%s: warning: the record was written, but the records folder could not be synced to disk. The record is there, and it may not survive a crash of the machine. Do not repeat the command.\n", program)
+	}
 }
 
 // isDigest reports whether s is a hex SHA-256 in lower case.
@@ -167,6 +194,8 @@ func (e *env) printIntegrated(rec intake.IntakeRecord, role, branch, target, mir
 	p.f("Record: intake of %s, %d commits, %d changed paths, %d signed paths", utc(rec.Time), rec.Commits, rec.Paths, len(rec.SignedPaths))
 	p.f("Review digest: %s", rec.ReviewDigest)
 	p.f("Verification: a pass of %s, plan digest %s, output sha256 %s", utc(rec.Verification.Started), rec.Verification.PlanDigest, rec.Verification.OutputSHA256)
+	p.f("%s", gatesHeading)
+	printGates(p, indent, rec.Verification.Gates)
 	if len(rec.SignedPaths) > 0 {
 		p.f("%s", heading("Signed paths"))
 		for _, sp := range rec.SignedPaths {

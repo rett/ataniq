@@ -54,9 +54,10 @@ the state root or inside it. verify also refuses --records and --work when they
 are the same folder or one is inside the other, with symlinks resolved. --state
 must be a real folder that you own.
 
-Exit status: 0 success; 1 a refusal you can act on (sign-off incomplete, not
-verified, moved, a limit, a hostile tree, busy, no usable sandbox); 2 usage;
-3 any other failure.
+Exit status: 0 success (also with a warning on standard error); 1 a refusal you
+can act on (sign-off incomplete, not verified, moved, nothing to integrate, a
+limit, a hostile tree, busy, no usable sandbox); 2 usage; 3 any other failure,
+among them an update whose outcome is unknown.
 
 Run 'ataniq-intake <subcommand> -h' for the flags of a subcommand.
 `
@@ -95,12 +96,14 @@ mirror. Names from a lead are printed escaped.
 `,
 	"review": `Usage: ataniq-intake review --state DIR --project NAME --role ROLE --branch BRANCH
                            --target TARGET [--path-rule PATTERN]... [--diff]
+                           [--records DIR]
 
 Review the lead branch ROLE/BRANCH against the upstream branch TARGET. Nothing
 is checked out. It prints the base and tip commit ids, the review digest, the
-commits, the changed paths, and the section "Needs your sign-off": every path
-that needs its own sign-off, with its kind, its reason and the exact
---accept-path argument to type.
+commits, the changed paths, the verification records of the tip when you give
+--records, and the section "Needs your sign-off": every path that needs its own
+sign-off, with its kind, its reason and the exact --accept-path argument to
+type.
 
   --branch BRANCH     the lead's branch, as 'branches' prints it
   --target TARGET     the upstream branch the work goes to
@@ -109,6 +112,10 @@ that needs its own sign-off, with its kind, its reason and the exact
                       covers the paths that the rules flag, so a list that
                       flags other paths is refused there. A rule that flags
                       nothing changes nothing.
+  --records DIR       your records folder, as for verify. With it, review
+                      shows the gates (name and command) of the verification
+                      records of the tip before the sign-off, so that you see
+                      what a pass stands for, or says that none is recorded.
   --diff              also print the sanitised patch of the change, after its
                       own heading, not indented and with tabs kept (the one
                       exception to the indented lead text)
@@ -160,6 +167,16 @@ when the sign-off is incomplete. A missing --accept-change is such a refusal,
 not a usage error: exit status 1 lists everything that is missing, this flag
 among it. It refuses when the tip or the upstream branch moved since the
 review, or when the newest verification of the tip is not a pass. Exit status
-1 for a refusal.
+1 for a refusal, also when the lead branch is at the upstream branch already
+("nothing to integrate"). After a success it prints the gates of the
+verification that allowed it.
+
+Warnings are exit status 0, with the record printed and a line on standard
+error: the update ended unclearly but the branch is at the tip and the intake
+is recorded, or the record was written but its folder could not be synced. Do
+not repeat the command. Exit status 3 when the update ended unclearly and the
+upstream branch could not be read afterwards: it may have moved and no record
+was written. Look at the branch with 'ataniq-intake branches' before you try
+again.
 `,
 }

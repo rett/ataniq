@@ -103,6 +103,10 @@ type world struct {
 	loader  func(string) (sandboxplan.Planner, error)
 	now     time.Time
 	loads   []string
+	// integrate and putVer replace the integration and the storing of a
+	// verification record, when set.
+	integrate func(context.Context, intake.Source, intake.IntegrateRequest) (intake.IntakeRecord, error)
+	putVer    func(*intake.Store, string, verify.Result, []verify.Gate) (intake.VerificationRecord, error)
 }
 
 func newWorld(t *testing.T) *world {
@@ -147,7 +151,8 @@ func newWorld(t *testing.T) *world {
 func (w *world) run(args ...string) (code int, stdout, stderr string) {
 	w.t.Helper()
 	var out, errb bytes.Buffer
-	d := deps{Git: w.git, LoadPlanner: w.loader, Runner: w.runner, Now: func() time.Time { return w.now }}
+	d := deps{Git: w.git, LoadPlanner: w.loader, Runner: w.runner, Now: func() time.Time { return w.now },
+		Integrate: w.integrate, PutVerification: w.putVer}
 	code = run(context.Background(), args, failOnRead{w.t}, &out, &errb, d)
 	return code, out.String(), errb.String()
 }

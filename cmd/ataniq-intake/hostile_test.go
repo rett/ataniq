@@ -34,7 +34,8 @@ var ownLines = regexp.MustCompile(`^(Review of a lead branch|Verification of a l
 	`Gates: |Outcome: (pass|fail)$|Exit status: |Stopped: |Output: cut$|Stored: |Path rules added|` +
 	`To sign off the change|To integrate, give|Give integrate the same|The first line below|Upstream branches:|` +
 	`Integrated: |Old: |New: |Record: |Review digest: |Verification: |Your working checkout|` +
-	`\d+ earlier lines are not shown|Refs outside)`)
+	`\d+ earlier lines are not shown|\d+ earlier records are not shown|Refs outside|` +
+	`Gates that the pass stands for \(your records, shown escaped\):$|Verification of this tip \(your records, shown escaped\):$)`)
 
 // checkOwnLines checks the rule of the output: no control byte but newline,
 // and every line in the first column is the command's own. Lines of lead
