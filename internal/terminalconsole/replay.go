@@ -89,6 +89,11 @@ func (m *Model) startSession() {
 
 // Close stops the session pane's goroutine. It may be called more than once.
 func (m *Model) Close() {
+	if m.live.begun && !m.live.closed {
+		m.live.closed = true
+		close(m.live.done)
+		m.live.src.Close()
+	}
 	if m.rep.pane != nil {
 		m.rep.pane.Close()
 	}
@@ -96,6 +101,10 @@ func (m *Model) Close() {
 
 // restart plays the recording again from its start, in a new pane.
 func (m *Model) restart() tea.Cmd {
+	if m.live.on() {
+		m.notice = "A live session cannot be replayed."
+		return nil
+	}
 	m.Close()
 	m.rep = replay{gen: m.rep.gen}
 	m.focus = consoleFocus
@@ -206,7 +215,11 @@ func (m *Model) holdCmd() tea.Cmd {
 		return nil
 	}
 	m.rep.holdAt = deadline
-	return m.after(max(0, deadline.Sub(m.now)), func(t time.Time) tea.Msg { return holdMsg{at: t} })
+	now := m.now
+	if m.live.on() {
+		now = m.live.clock()
+	}
+	return m.after(max(0, deadline.Sub(now)), func(t time.Time) tea.Msg { return holdMsg{at: t} })
 }
 
 func (m *Model) onHold(v holdMsg) {
