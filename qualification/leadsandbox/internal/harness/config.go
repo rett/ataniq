@@ -116,7 +116,12 @@ type Executables struct {
 	Probe string `json:"probe"`
 }
 
-// State is the scratch state root and the role and project under it.
+// State is the scratch state root and the role and project under it. The
+// folders of the layout below the root have no key (profile.Layout names
+// them): the lead's home, config folder, tree, requests folder and mail folder
+// under leads/<role>, the lead's mailbox mailbox/<role>, the folder the
+// project's coordinators publish under, pub/<project>, and the mirror. They
+// must exist before a run; the plan binds them for every lead.
 type State struct {
 	Root    string `json:"root"`
 	Role    string `json:"role"`

@@ -185,6 +185,16 @@ func TestInputsRefusals(t *testing.T) {
 		}, "bind /home/lead/.claude/CLAUDE.md", "overlaps"},
 		{"assignment folder inside the tree", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/leads/arc-lead/tree/a" },
 			"bind /ataniq/assignment", "overlaps"},
+		{"skills inside the requests folder", Claude, func(in *Inputs) { in.LeadSkills = "/srv/state/leads/arc-lead/requests/skills" },
+			"bind /home/lead/.claude/skills", "overlaps"},
+		{"agent install inside the mail folder", Codex, func(in *Inputs) { in.AgentInstall = "/srv/state/leads/arc-lead/mail/a-feature" },
+			"bind /ataniq/agent", "overlaps"},
+		{"projection folder is the requests folder", Claude, func(in *Inputs) { in.ProjectionDir = "/srv/state/leads/arc-lead/requests" },
+			"bind /ataniq/projection", "overlaps"},
+		{"qargi install inside the records folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
+			in.QargiInstall = "/srv/state/leads/arc-lead/qargi/install"
+		}, "bind /ataniq/qargi", "overlaps"},
 		// The records folder is the layout's own (rule G1 across leads).
 		{"records inside the home folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/home/q", "/home/lead/.qargi"

@@ -30,10 +30,11 @@
 // write could therefore be replaced by a link that brings a folder of the
 // owner into the sandbox. So the profile holds one rule: no row of the bind
 // table has a source in or below a host folder the lead can write (the home,
-// the config folder, the tree, the records folder: the sources of the
-// read-write rows). A folder the lead writes is bound whole from an
-// Ataniq-owned parent, or its content is copied in. [ValidateTable] refuses a
-// table that breaks the rule, and so does [Inputs.Validate].
+// the config folder, the tree, the records folder, the requests folder and the
+// mail folder: the sources of the read-write rows). A folder the lead writes
+// is bound whole from an Ataniq-owned parent, or its content is copied in.
+// [ValidateTable] refuses a table that breaks the rule, and so does
+// [Inputs.Validate].
 //
 // The rule moved three rows. The tree's .git/config, .git/hooks and .git/info
 // are still bound read-only at their places inside, over the tree, but their
@@ -61,6 +62,27 @@
 // the sandbox. The flag [Bind.LeadWritable]
 // is kept for the targets: the mount points of these three rows still lie in
 // the tree, and Ataniq still makes them there before the first run.
+//
+// # The requests, mailbox, mail and coordinator rows
+//
+// Every table has four rows whose sources are the layout's, not the caller's
+// (the lead-hosting design, revision 4, section 3.3):
+//
+//   - [RequestsInside], /ataniq/requests, read-write, from [Layout.Requests],
+//     <state>/leads/<role>/requests. In this version it is only a bound
+//     folder: nothing in Ataniq reads it;
+//   - [MailboxInside], /ataniq/mailbox, read-only, from [Layout.Mailbox],
+//     <state>/mailbox/<role>, which is Ataniq's;
+//   - [MailInside], /ataniq/mail, read-write, from [Layout.Mail],
+//     <state>/leads/<role>/mail, with one subfolder per feature;
+//   - [CoordInside], /coord, read-only, from [Layout.Published],
+//     <state>/pub/<project>, which holds only <feature>/qargi, <feature>/out
+//     and <feature>/archive of the project's coordinators.
+//
+// A bind cannot be added to a running sandbox, so the four folders are fixed
+// at the lead's start: the rows are in the table and in the digest for both
+// runtimes, whether or not the lead has coordinators. The package says where
+// the folders lie and how they are bound, and nothing about what is in them.
 //
 // # What the digest covers
 //

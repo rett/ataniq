@@ -748,6 +748,87 @@ func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
 	}
 }
 
+// The requests, mailbox, mail and published folders are the layout's own and
+// are bound for every lead: the configuration has no key for them, the plan
+// binds them, and a run without one of them ends before a launch.
+func TestTheFourLayoutFoldersAreBoundAndRequired(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	for _, key := range []string{"requests", "mailbox", "mail", "coord", "published"} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")[key] = f.Base + "/elsewhere" }), `sources has the unknown key "`+key+`"`)
+	}
+	l := f.Layout()
+	want := map[string]struct{ kind, source string }{
+		"/ataniq/requests": {string(profile.KindRwBind), l.Requests()},
+		"/ataniq/mailbox":  {string(profile.KindRoBind), l.Mailbox()},
+		"/ataniq/mail":     {string(profile.KindRwBind), l.Mail()},
+		"/coord":           {string(profile.KindRoBind), l.Published()},
+	}
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	found := 0
+	for _, m := range r.out.Plan.Mounts {
+		if w, ok := want[m.Inside]; ok {
+			found++
+			if m.Kind != w.kind || m.Source != w.source {
+				t.Errorf("%s is bound as %+v, want a %s from %s", m.Inside, m, w.kind, w.source)
+			}
+		}
+	}
+	if found != len(want) {
+		t.Errorf("the plan binds %d of the %d folders", found, len(want))
+	}
+
+	// A folder the lead writes is looked at with the lead's other folders (the
+	// own-clone step); a folder Ataniq owns is a source, looked at by the
+	// resolution.
+	for _, c := range []struct {
+		name string
+		dir  func(profile.Layout) string
+		step string
+	}{
+		{"requests", profile.Layout.Requests, harness.StepOwnClone},
+		{"mail", profile.Layout.Mail, harness.StepOwnClone},
+		{"mailbox", profile.Layout.Mailbox, harness.StepResolve},
+		{"published", profile.Layout.Published, harness.StepResolve},
+	} {
+		t.Run(c.name+" missing", func(t *testing.T) {
+			f := harnesstest.New(t, profile.Codex)
+			approved(f)
+			dir := c.dir(f.Layout())
+			if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+			r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+			mustNoErr(t, r)
+			wantStep(t, r.out, c.step, harness.StepFailed)
+			if e := step(t, r.out, c.step).Error; !strings.Contains(e, dir) {
+				t.Errorf("the step %s does not name %s: %s", c.step, dir, e)
+			}
+			if r.fake.Launches() != 0 {
+				t.Error("launched")
+			}
+		})
+	}
+	// A requests or mail folder that others can enter is refused like the home.
+	for _, dir := range []func(profile.Layout) string{profile.Layout.Requests, profile.Layout.Mail} {
+		f := harnesstest.New(t, profile.Claude)
+		approved(f)
+		if err := os.Chmod(dir(f.Layout()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+		mustNoErr(t, r)
+		wantStep(t, r.out, harness.StepOwnClone, harness.StepFailed)
+		if e := step(t, r.out, harness.StepOwnClone).Error; !strings.Contains(e, dir(f.Layout())) || !strings.Contains(e, "0700") {
+			t.Errorf("own-clone: %s", e)
+		}
+	}
+}
+
 // A clone whose .git/config has an include or includeIf section is not copied:
 // the step prepare fails with the reason, nothing is made and nothing starts.
 func TestACloneConfigWithAnIncludeSectionEndsTheRunAtPrepare(t *testing.T) {

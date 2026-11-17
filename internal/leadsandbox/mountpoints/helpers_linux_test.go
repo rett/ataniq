@@ -41,7 +41,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 	f.home, f.tree = l.Home(), l.Tree()
 	f.gitMeta = l.GitMeta()
 	f.cfg, _ = l.ConfigDir(rt)
-	for _, d := range []string{f.home, f.cfg, f.tree} {
+	for _, d := range []string{f.home, f.cfg, f.tree, l.Requests(), l.Mail(), l.Mailbox(), l.Published()} {
 		f.mkdir(d, 0o700)
 	}
 	f.mkdir(f.out, 0o755)
@@ -94,6 +94,9 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 	}
 	return f
 }
+
+// layout is the host layout of the fixture's lead.
+func (f *fixture) layout() profile.Layout { return f.in.Layout() }
 
 func (f *fixture) mkdir(p string, mode os.FileMode) {
 	f.t.Helper()

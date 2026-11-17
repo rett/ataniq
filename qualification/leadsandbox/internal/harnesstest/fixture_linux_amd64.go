@@ -52,9 +52,13 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 		Role: "qual-lead", Project: "qualproj", Runtime: rt, Resolv: "nameserver 192.0.2.53\n", Sysctl: "0\n"}
 	l := profile.Layout{StateRoot: f.State, Role: f.Role, Project: f.Project}
 	cfgDir, _ := l.ConfigDir(rt)
-	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree()} {
+	for _, d := range []string{f.Campaign, l.LeadDir(), l.Home(), cfgDir, l.Tree(), l.Requests(), l.Mail()} {
 		f.Mkdir(d, 0o700)
 	}
+	// The lead's mailbox and the folder the project's coordinators publish
+	// under: Ataniq's, bound read-only, outside the lead's own folder.
+	f.Mkdir(l.Mailbox(), 0o700)
+	f.Mkdir(l.Published(), 0o700)
 	f.Mkdir(l.MirrorsDir(), 0o700)
 	f.Mkdir(l.Mirror(), 0o700)
 	f.FakeClone()

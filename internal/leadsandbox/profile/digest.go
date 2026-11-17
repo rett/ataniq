@@ -19,7 +19,9 @@ import (
 //	3  the three read-only .git rows take their sources from the Ataniq-owned
 //	   git metadata folder (source role git-meta, not tree-git): no source of
 //	   the table lies in a folder the lead can write
-const Version = 3
+//	4  the layout of the lead-hosting design, revision 4: every table has the
+//	   rows /ataniq/requests, /ataniq/mailbox, /ataniq/mail and /coord
+const Version = 4
 
 const (
 	digestMagic   = "ataniq-lead-sandbox-profile"

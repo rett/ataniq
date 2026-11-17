@@ -38,6 +38,10 @@ const (
 	RoleMirror          = "mirror"
 	RoleQargi           = "qargi"
 	RoleRecords         = "qargi-records"
+	RoleRequests        = "requests"
+	RoleMailbox         = "mailbox"
+	RoleMail            = "mail"
+	RolePublished       = "published"
 	RoleAssignment      = "assignment"
 	RoleProjection      = "projection"
 	RoleExtra           = "extra-placeholder"
@@ -160,6 +164,16 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 	if in.QargiRecords != "" {
 		t = append(t, rw(in.QargiRecordsInside, in.QargiRecords, RoleRecords))
 	}
+	// The four folders of the lead's requests, mailbox, mail and of what the
+	// project's coordinators publish. A bind cannot be added to a running
+	// sandbox, so they are rows of every table, whether or not the lead has
+	// coordinators. Their sources are the layout's, never the caller's.
+	t = append(t,
+		rw(RequestsInside, l.Requests(), RoleRequests),
+		ro(MailboxInside, l.Mailbox(), RoleMailbox, true),
+		rw(MailInside, l.Mail(), RoleMail),
+		ro(CoordInside, l.Published(), RolePublished, true),
+	)
 	t = append(t,
 		ro(AssignmentInside, in.AssignmentDir, RoleAssignment, true),
 		ro(ProjectionInside, in.ProjectionDir, RoleProjection, true),

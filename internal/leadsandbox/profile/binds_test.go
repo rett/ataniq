@@ -42,6 +42,10 @@ var goldenRows = []string{
 	"ro-bind /work/ataniq/.git/info src=git-meta writable-in=/work/ataniq",
 	"ro-bind /ataniq/mirror/ataniq.git src=mirror",
 	"ro-bind /ataniq/qargi src=qargi",
+	"rw-bind /ataniq/requests src=requests",
+	"ro-bind /ataniq/mailbox src=mailbox",
+	"rw-bind /ataniq/mail src=mail",
+	"ro-bind /coord src=published",
 	"ro-bind /ataniq/assignment src=assignment",
 	"ro-bind /ataniq/projection src=projection",
 	"remount-ro /",
@@ -108,6 +112,10 @@ func TestBindTableSourcesAndAccess(t *testing.T) {
 		{"/work/ataniq/.git/info", "/srv/state/leads/arc-lead/gitmeta/info", KindRoBind, true},
 		{"/ataniq/mirror/ataniq.git", "/srv/state/mirrors/ataniq.git", KindRoBind, true},
 		{"/ataniq/qargi", in.QargiInstall, KindRoBind, true},
+		{"/ataniq/requests", "/srv/state/leads/arc-lead/requests", KindRwBind, true},
+		{"/ataniq/mailbox", "/srv/state/mailbox/arc-lead", KindRoBind, true},
+		{"/ataniq/mail", "/srv/state/leads/arc-lead/mail", KindRwBind, true},
+		{"/coord", "/srv/state/pub/ataniq", KindRoBind, true},
 		{"/ataniq/assignment", in.AssignmentDir, KindRoBind, true},
 		{"/ataniq/projection", in.ProjectionDir, KindRoBind, true},
 	}
@@ -448,8 +456,10 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 					writable = append(writable, b)
 				}
 			}
-			if len(writable) < 3 {
-				t.Fatalf("%s %s: only %d read-write rows", rt, name, len(writable))
+			// The home, the config folder, the tree, the requests and the
+			// mail folder; with the records, six.
+			if want := map[string]int{"plain": 5, "full": 6}[name]; len(writable) != want {
+				t.Fatalf("%s %s: %d read-write rows, want %d", rt, name, len(writable), want)
 			}
 			for _, b := range table {
 				if b.Source == "" {
@@ -504,7 +514,9 @@ func TestGitRowsTakeTheirSourcesFromTheGitMetaFolder(t *testing.T) {
 }
 
 func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
-	good := mustBinds(t, fixture(Claude))
+	withRecords := fixture(Claude)
+	withRecords.QargiRecords, withRecords.QargiRecordsInside = "/srv/state/leads/arc-lead/qargi", "/home/lead/.qargi"
+	good := mustBinds(t, withRecords)
 	index := func(inside string) int {
 		for i, b := range good {
 			if b.Inside == inside {
@@ -520,6 +532,15 @@ func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
 		{"a row from the home", "/ataniq/qargi", "/srv/state/leads/arc-lead/home/qargi"},
 		{"a row from the config folder", "/ataniq/assignment", "/srv/state/leads/arc-lead/config/claude/a"},
 		{"a row that is a writable folder's source", "/ataniq/projection", "/srv/state/leads/arc-lead/tree"},
+		// The read-write rows of the layout: requests, mail and the records.
+		{"a row from the requests folder", "/ataniq/agent", "/srv/state/leads/arc-lead/requests/agent"},
+		{"a row that is the requests folder", "/ataniq/spec", "/srv/state/leads/arc-lead/requests"},
+		{"a row from the mail folder", "/ataniq/mailbox", "/srv/state/leads/arc-lead/mail/a-feature"},
+		{"a row that is the mail folder", "/coord", "/srv/state/leads/arc-lead/mail"},
+		{"a row from the records folder", "/ataniq/qargi", "/srv/state/leads/arc-lead/qargi/bin"},
+		{"a row that is the records folder", "/ataniq/assignment", "/srv/state/leads/arc-lead/qargi"},
+		{"the requests folder from the mail folder", "/ataniq/requests", "/srv/state/leads/arc-lead/mail/requests"},
+		{"the mail folder from the records folder", "/ataniq/mail", "/srv/state/leads/arc-lead/qargi/mail"},
 	} {
 		c := append([]Bind(nil), good...)
 		c[index(tt.inside)].Source = tt.source

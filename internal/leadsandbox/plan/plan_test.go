@@ -518,6 +518,8 @@ func TestRefusals(t *testing.T) {
 			in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/qargi", "/home/lead/.qargi"
 			o.ReportPath = "/state/leads/arc-lead/qargi/report"
 		}, "report path", "can write"},
+		{"report path in the requests folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/requests/report" }, "report path", "can write"},
+		{"report path in the mail folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/mail/a-feature/report" }, "report path", "can write"},
 		{"report path never mounted", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.ssh/report" }, "report path", "never-mounted"},
 		{"report path is a never-mounted file", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.claude.json" }, "report path", "never-mounted"},
 		{"report path in the other runtime's folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/config/codex/report" }, "report path", "never-mounted"},
@@ -816,6 +818,9 @@ func TestCheckSourcesNotWritableOnATable(t *testing.T) {
 		"a row from the home":     {"/ataniq/qargi", "/state/leads/arc-lead/home/q"},
 		"a row from the config":   {"/ataniq/projection", "/state/leads/arc-lead/config/claude/p"},
 		"a row that is a folder":  {"/ataniq/assignment", "/state/leads/arc-lead/tree"},
+		"a row from the requests": {"/ataniq/agent", "/state/leads/arc-lead/requests/agent"},
+		"a row from the mail":     {"/coord", "/state/leads/arc-lead/mail/a-feature"},
+		"the mailbox from mail":   {"/ataniq/mailbox", "/state/leads/arc-lead/mail"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			table := append([]profile.Bind(nil), good...)

@@ -14,6 +14,10 @@ const (
 	AssignmentInside  = "/ataniq/assignment"
 	ProjectionInside  = "/ataniq/projection"
 	GitIdentityInside = "/ataniq/git/config"
+	RequestsInside    = "/ataniq/requests"
+	MailboxInside     = "/ataniq/mailbox"
+	MailInside        = "/ataniq/mail"
+	CoordInside       = "/coord"
 	TmpInside         = "/tmp"
 	ResolvConfInside  = "/etc/resolv.conf"
 

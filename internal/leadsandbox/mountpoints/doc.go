@@ -17,7 +17,9 @@
 //     LeadWritable flag, Within, HostMountPoint) into the mount points that
 //     lie in a lead-writable host folder: the host path, the folder it lies in
 //     (home, config folder, tree or Qargi records), the relative path, folder or
-//     file, and whether it is a tree placeholder outside .git.
+//     file, and whether it is a tree placeholder outside .git. The requests
+//     and the mail folder are lead-writable too, but no row of the table has a
+//     target inside them, so they hold no mount point.
 //   - [Prepare] makes them, once, before the first run. It makes a missing
 //     folder or empty file through a [safefile.Root] of the folder the mount
 //     point lies in, keeps an existing entry of the right type, and refuses a
@@ -29,9 +31,10 @@
 //     nothing, and returns every problem it finds, typed and bounded.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
 //     worktree, submodule or folder below another repository, and that the
-//     tree, home and config folder are 0700 folders of the caller's user. A
-//     tree whose .git names alternates (objects of another repository) is
-//     refused. The file .git/config is not parsed.
+//     tree, home, config folder, requests folder and mail folder are 0700
+//     folders of the caller's user. A tree whose .git names alternates
+//     (objects of another repository) is refused. The file .git/config is not
+//     parsed.
 //   - [CheckBindSources] takes the rows [ResolveSources] gave and opens, for
 //     each, the path bubblewrap will bind from the root of the file system with
 //     openat2 (no symbolic link, no magic link, on any component), refusing a
@@ -158,8 +161,12 @@
 //     [profile.Layout.QargiRecords], <state>/leads/<role>/qargi, so the lookup
 //     from the state root without links covers every component of its path.
 //     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
-//     the home and the config folder only): the holder must make the folder
-//     with mode 0700 and check it, as it does for the other folders.
+//     the home, the config folder, the requests folder and the mail folder
+//     only): the holder must make the folder with mode 0700 and check it, as it
+//     does for the other folders. The mailbox and the published folder, which
+//     are bound read-only, are sources like any other: [ResolveSources] and
+//     [CheckBindSources] look at their paths, and nothing here looks at their
+//     mode, owner or content.
 //  5. Use one state root for every lead on the host. Rule G1 holds across
 //     leads only then: the rules about another lead's state know the state
 //     root of their own inputs and no other, so a lead whose inputs name a

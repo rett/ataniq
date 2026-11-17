@@ -22,9 +22,10 @@ var cloneEntries = []struct {
 // the folders of the lead are the owner's alone (the lead-hosting design,
 // sections 3.3, 3.4 and 3.8 item 7):
 //
-//   - the tree, the lead's home and the runtime's config folder are folders,
-//     not symbolic links, of mode 0700 and owned by uid (the caller's user
-//     id), and no link lies on their path below the state root;
+//   - the tree, the lead's home, the runtime's config folder, the requests
+//     folder and the mail folder (folders the lead writes) are folders, not
+//     symbolic links, of mode 0700 and owned by uid (the caller's user id),
+//     and no link lies on their path below the state root;
 //   - the tree's .git is a folder (a .git file means a worktree or submodule),
 //     holds HEAD, config, objects and refs, and has no commondir and no
 //     objects/info/alternates or objects/info/http-alternates (the objects of
@@ -54,7 +55,7 @@ func CheckOwnClone(in profile.Inputs, uid uint32) (Report, error) {
 	treeOK := false
 	for _, f := range []struct {
 		name, dir string
-	}{{"tree", l.Tree()}, {"home", l.Home()}, {"config folder", cfg}} {
+	}{{"tree", l.Tree()}, {"home", l.Home()}, {"config folder", cfg}, {"requests folder", l.Requests()}, {"mail folder", l.Mail()}} {
 		ok := checkFolder(state, strings.TrimPrefix(f.dir, l.StateRoot+"/"), f.name, f.dir, uid, &rep)
 		if f.name == "tree" {
 			treeOK = ok
