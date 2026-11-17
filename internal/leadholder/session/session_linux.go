@@ -188,6 +188,10 @@ type Config struct {
 
 	// slowSlice replaces SlowSlice (tests).
 	slowSlice time.Duration
+	// betweenSlices is a test hook, set before the read loop starts: it is
+	// called with the slice's index after each slice of a chunk, with the
+	// output lock released.
+	betweenSlices func(i int)
 }
 
 // Session is one hosted terminal session. Its methods are safe for
@@ -209,11 +213,6 @@ type Session struct {
 	sub     func(pos uint64, chunk []byte)
 	subID   uint64
 	nextSub uint64
-
-	// betweenSlices is a test hook, set before any output flows: it is
-	// called with the slice's index after each slice of a chunk, with the
-	// output lock released.
-	betweenSlices func(i int)
 
 	// imu is the input lock (design 1.2).
 	imu       sync.Mutex
@@ -425,8 +424,8 @@ func (s *Session) deliver(chunk []byte) {
 		n := min(len(chunk), OutputSlice)
 		s.deliverSlice(chunk[:n])
 		chunk = chunk[n:]
-		if s.betweenSlices != nil {
-			s.betweenSlices(i)
+		if s.cfg.betweenSlices != nil {
+			s.cfg.betweenSlices(i)
 		}
 	}
 }

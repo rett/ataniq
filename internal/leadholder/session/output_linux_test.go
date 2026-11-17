@@ -431,7 +431,6 @@ func TestSnapshotsAndSubscriptionRunBetweenTheSlicesOfOneChunk(t *testing.T) {
 	const slices = 24
 	const total = slices * OutputSlice
 	e := newEnv(t)
-	s := e.start("raw; wait")
 	payload := fakeagent.FloodBytes(6, total)
 	type snap struct {
 		pos  uint64
@@ -442,7 +441,11 @@ func TestSnapshotsAndSubscriptionRunBetweenTheSlicesOfOneChunk(t *testing.T) {
 	var subSnap snap
 	var c capture
 	var unsub func()
-	s.betweenSlices = func(i int) {
+	// The hook is part of the session's settings, so it is in place before the
+	// read loop starts; it runs on this goroutine, in s.deliver below, once s
+	// is set.
+	var s *Session
+	hook := func(i int) {
 		take := func(p *sessionpane.Pane, pos uint64) snap {
 			sn := snap{pos: pos, text: paneText(p)}
 			sn.cur, _ = p.Cursor()
@@ -459,6 +462,7 @@ func TestSnapshotsAndSubscriptionRunBetweenTheSlicesOfOneChunk(t *testing.T) {
 			s.Screen(func(p *sessionpane.Pane, pos uint64) { snaps = append(snaps, take(p, pos)) })
 		}
 	}
+	s = e.start("raw; wait", func(c *Config) { c.betweenSlices = hook })
 	s.deliver(payload)
 	if unsub == nil {
 		t.Fatal("no subscription was made in the middle of the chunk")
@@ -501,10 +505,10 @@ func TestSnapshotsAndSubscriptionRunBetweenTheSlicesOfOneChunk(t *testing.T) {
 func TestResizeRunsBetweenTheSlicesOfOneChunk(t *testing.T) {
 	const total = 20 * OutputSlice
 	e := newEnv(t)
-	s := e.start("raw; wait")
+	var s *Session // set before s.deliver below, the only caller of the hook
 	var posAfter uint64
 	resized := false
-	s.betweenSlices = func(i int) {
+	hook := func(i int) {
 		if i != 4 {
 			return
 		}
@@ -514,6 +518,7 @@ func TestResizeRunsBetweenTheSlicesOfOneChunk(t *testing.T) {
 		resized = true
 		posAfter = position(s)
 	}
+	s = e.start("raw; wait", func(c *Config) { c.betweenSlices = hook })
 	s.deliver(fakeagent.FloodBytes(8, total))
 	if !resized || posAfter != 5*OutputSlice {
 		t.Errorf("resized %v at position %d, want after the fifth slice (%d)", resized, posAfter, 5*OutputSlice)
