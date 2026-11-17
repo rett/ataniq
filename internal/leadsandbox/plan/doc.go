@@ -14,7 +14,7 @@
 //
 // [Build] returns a [Plan] whose Argv is the whole command:
 //
-//	PASTA ARGS... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json -- AGENT ARGV...
+//	PASTA ARGS... -- PROBE_HOST pass-fds [--read FD=PATH]... [--write FD=PATH]... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json --report-fd FD -- AGENT ARGV...
 //
 // ARGS after pasta are sandboxnet.PastaArgs. The bubblewrap arguments come in a
 // fixed order: the profile's flag set (--die-with-parent --unshare-all
@@ -26,6 +26,26 @@
 // only when the caller says the host has it; otherwise it is left out and the
 // plan says so in its notes. --ro-bind-try is never used, so the plan says
 // exactly what is mounted.
+//
+// # Descriptors
+//
+// pasta closes every descriptor it inherits before it starts its command, so
+// nothing the launcher opens reaches bubblewrap. The plan therefore puts a
+// pass-through step between them: PROBE_HOST, the host path of the probe
+// binary (profile.Inputs.ProbeBinary), in its pass-fds mode. That mode opens
+// each PATH read-only (--read) or write-only without creating it (--write) at
+// exactly the descriptor FD, leaves every other descriptor above 2 closed,
+// and executes the command after "--". The command line of the mode is the
+// contract; the mode itself is built elsewhere. [Plan.Files] lists what the
+// step opens, and the launcher opens nothing.
+//
+// The seccomp file, when the inputs name one, is --read FD=PATH, and
+// bubblewrap gets --seccomp FD. The report channel is always present:
+// [Options.ReportPath] is a path the holder made (a FIFO or a file it owns)
+// outside every lead-writable folder, opened --write at [Options.ReportFD],
+// and the probe inside gets --report-fd FD. Whether bubblewrap keeps an
+// inherited descriptor open for its child is a qualification item; every plan
+// says so in a note.
 //
 // --share-net is there because bubblewrap runs inside the network namespace
 // that pasta made: it does not share the host's network. The probe, not
@@ -39,16 +59,18 @@
 // namespaces, which is a larger kernel surface. Every plan carries a note that
 // says so, and a note that says whether a seccomp file is named. The seccomp
 // hook only passes a file the caller names, with its digest, as a descriptor
-// the launcher opens; no filter is generated or reviewed here, and the plan
+// the pass-through step opens; no filter is generated or reviewed here, and the plan
 // says "no seccomp filter: none has been reviewed" when none is named.
 //
 // # Checks
 //
 // [Build] refuses, with a reason, inputs the profile refuses, relative
 // executable or agent paths, an agent argument with a NUL, a seccomp
-// descriptor that is missing or below 3, a working folder outside the tree and
-// the home, an argument that bubblewrap would read as an option, and a command
-// line above [MaxArgvBytes]. It asserts that no option of
+// descriptor or report descriptor that is missing, below 3 or above 1023 (or
+// the same twice), a report path that is not a clean absolute path or that
+// lies in or below a lead-writable host folder or a never-mounted path, a
+// working folder outside the tree and the home, an operand that starts with
+// --, and a command line above [MaxArgvBytes]. It asserts that no option of
 // [profile.ForbiddenFlags] appears anywhere, and runs [Verify] on its own
 // result.
 //

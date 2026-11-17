@@ -83,6 +83,8 @@ func options(in profile.Inputs, present map[string]bool) Options {
 		BwrapPath:   "/usr/bin/bwrap",
 		AgentArgv:   []string{"/ataniq/agent/bin/" + string(in.Runtime), "--model", "example"},
 		HostPresent: present,
+		ReportPath:  "/opt/ataniq/run/arc-lead/report.fifo",
+		ReportFD:    3,
 	}
 	if in.SeccompEnabled() {
 		o.SeccompFD = 7
@@ -111,6 +113,7 @@ func clonePlan(p *Plan) *Plan {
 	c := *p
 	c.Argv = append([]string(nil), p.Argv...)
 	c.Pasta = append([]string(nil), p.Pasta...)
+	c.PassFDs = append([]string(nil), p.PassFDs...)
 	c.Bwrap = append([]string(nil), p.Bwrap...)
 	c.Inner = append([]string(nil), p.Inner...)
 	c.Env = append([]profile.EnvVar(nil), p.Env...)
@@ -121,7 +124,7 @@ func clonePlan(p *Plan) *Plan {
 
 // resync rebuilds Argv from the parts after a test changed one of them.
 func resync(p *Plan) *Plan {
-	p.Argv = join(p.Pasta, p.Bwrap, p.Inner)
+	p.Argv = join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
 	return p
 }
 
@@ -134,6 +137,8 @@ func render(p *Plan) string {
 	line := func(s ...string) { b.WriteString(strings.Join(s, " ") + "\n") }
 	b.WriteString("# pasta\n")
 	line(p.Pasta...)
+	b.WriteString("# pass-fds\n")
+	line(p.PassFDs...)
 	b.WriteString("# bubblewrap\n")
 	line(p.Bwrap[0])
 	var cur []string
@@ -153,7 +158,7 @@ func render(p *Plan) string {
 	}
 	b.WriteString("# files\n")
 	for _, f := range p.Files {
-		line("fd", strconv.Itoa(f.FD), f.Purpose, f.Path, f.SHA256)
+		line(strings.TrimSpace(strings.Join([]string{"fd", strconv.Itoa(f.FD), string(f.Mode), f.Purpose, f.Path, f.SHA256}, " ")))
 	}
 	b.WriteString("# digest\n")
 	line(p.Digest)

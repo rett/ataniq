@@ -19,6 +19,8 @@ const (
 	ProbShape        ProblemKind = "shape"            // a plan with missing or inconsistent parts
 	ProbExecutable   ProblemKind = "executable"       // pasta or bubblewrap path is not absolute
 	ProbPasta        ProblemKind = "pasta"            // pasta arguments differ from sandboxnet.PastaArgs
+	ProbPassFDs      ProblemKind = "pass-fds"         // the pass-through step or the list of descriptors
+	ProbReport       ProblemKind = "report"           // the report channel
 	ProbForbidden    ProblemKind = "forbidden-flag"   // an option of profile.ForbiddenFlags
 	ProbUnknown      ProblemKind = "unknown-option"   // a bubblewrap option the plan never uses
 	ProbMalformed    ProblemKind = "malformed"        // a missing operand or terminator
@@ -127,12 +129,13 @@ func Verify(p *Plan, in profile.Inputs) []Problem {
 	}
 	v.shape(p)
 	v.pasta(p)
+	v.passFDs(p, in)
 	v.inner(p, in)
 	v.size(p)
 	if bad := forbiddenIn(p.Argv); bad != "" {
 		v.add(ProbForbidden, "%s appears in the command line", bad)
 	}
-	if bad := forbiddenIn(join(p.Pasta, p.Bwrap, p.Inner)); bad != "" && forbiddenIn(p.Argv) == "" {
+	if bad := forbiddenIn(join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)); bad != "" && forbiddenIn(p.Argv) == "" {
 		v.add(ProbForbidden, "%s appears in a part of the plan", bad)
 	}
 	v.bwrap(p, in)
@@ -148,10 +151,10 @@ func (v *verifier) add(k ProblemKind, format string, args ...any) {
 
 // shape checks that Argv is the three parts joined.
 func (v *verifier) shape(p *Plan) {
-	if len(p.Pasta) == 0 || len(p.Bwrap) == 0 || len(p.Inner) == 0 {
+	if len(p.Pasta) == 0 || len(p.PassFDs) == 0 || len(p.Bwrap) == 0 || len(p.Inner) == 0 {
 		v.add(ProbShape, "a part of the plan is empty")
 	}
-	joined := join(p.Pasta, p.Bwrap, p.Inner)
+	joined := join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
 	if len(joined) != len(p.Argv) {
 		v.add(ProbShape, "Argv has %d elements, its parts %d", len(p.Argv), len(joined))
 		return
@@ -178,17 +181,95 @@ func (v *verifier) pasta(p *Plan) {
 	}
 }
 
-func (v *verifier) inner(p *Plan, in profile.Inputs) {
-	i := p.Inner
-	if len(i) < 5 {
-		v.add(ProbInner, "the probe command line needs the probe, --spec, the spec file, -- and the agent")
+// passFDs checks the pass-through step: the probe binary of the inputs, the
+// pass-fds mode, the --read and --write operands that Files lists, reads
+// before writes, and the terminator.
+func (v *verifier) passFDs(p *Plan, in profile.Inputs) {
+	s := p.PassFDs
+	if len(s) == 0 {
 		return
 	}
-	head := []string{profile.ProbeInside, "--spec", profile.SpecFileInside, "--"}
-	if !equal(i[:4], head) {
-		v.add(ProbInner, "the probe command line does not start with %s", strings.Join(head, " "))
+	if s[0] != in.ProbeBinary {
+		v.add(ProbPassFDs, "the pass-through step does not run the probe binary of the inputs")
 	}
-	if !path.IsAbs(i[4]) {
+	if len(s) < 2 || s[1] != PassFDsMode {
+		v.add(ProbPassFDs, "the pass-through step is not in the %s mode", PassFDsMode)
+		return
+	}
+	if s[len(s)-1] != "--" {
+		v.add(ProbPassFDs, "the pass-through step does not end in --")
+		return
+	}
+	ops := s[2 : len(s)-1]
+	if len(ops)%2 != 0 {
+		v.add(ProbPassFDs, "an option of the pass-through step is missing its operand")
+		return
+	}
+	var got []File
+	wrote := false
+	for i := 0; i < len(ops); i += 2 {
+		var mode FileMode
+		switch ops[i] {
+		case PassFDsRead:
+			mode = FileRead
+			if wrote {
+				v.add(ProbPassFDs, "a %s follows a %s", PassFDsRead, PassFDsWrite)
+			}
+		case PassFDsWrite:
+			mode = FileWrite
+			wrote = true
+		default:
+			v.add(ProbPassFDs, "the pass-through step has an option that is neither %s nor %s", PassFDsRead, PassFDsWrite)
+			return
+		}
+		num, path, ok := strings.Cut(ops[i+1], "=")
+		fd, err := strconv.Atoi(num)
+		if !ok || err != nil || strconv.Itoa(fd) != num {
+			v.add(ProbPassFDs, "an operand of the pass-through step is not FD=PATH")
+			return
+		}
+		got = append(got, File{FD: fd, Path: path, Mode: mode})
+	}
+	if len(got) != len(p.Files) {
+		v.add(ProbPassFDs, "the pass-through step opens %d descriptors, Files lists %d", len(got), len(p.Files))
+		return
+	}
+	for i, g := range got {
+		f := p.Files[i]
+		if g.FD != f.FD || g.Path != f.Path || g.Mode != f.Mode {
+			v.add(ProbPassFDs, "descriptor %d of the pass-through step is not the one Files lists", i)
+		}
+	}
+	seen := map[int]bool{}
+	for _, f := range p.Files {
+		if f.FD < MinReportFD || f.FD > MaxReportFD {
+			v.add(ProbPassFDs, "a descriptor of the plan is outside %d to %d", MinReportFD, MaxReportFD)
+		}
+		if seen[f.FD] {
+			v.add(ProbPassFDs, "a descriptor number is used twice")
+		}
+		seen[f.FD] = true
+	}
+}
+
+func (v *verifier) inner(p *Plan, in profile.Inputs) {
+	i := p.Inner
+	if len(i) < 7 {
+		v.add(ProbInner, "the probe command line needs the probe, --spec, the spec file, --report-fd, its number, -- and the agent")
+		return
+	}
+	head := []string{profile.ProbeInside, "--spec", profile.SpecFileInside, ProbeReportFD}
+	if !equal(i[:4], head) || i[5] != "--" {
+		v.add(ProbInner, "the probe command line does not have the form %s FD -- AGENT...", strings.Join(head, " "))
+	}
+	if fd, err := strconv.Atoi(i[4]); err != nil || strconv.Itoa(fd) != i[4] {
+		v.add(ProbReport, "the probe's --report-fd is not a plain number")
+	} else if w := p.reportFile(); w == nil {
+		v.add(ProbReport, "the plan lists no report channel")
+	} else if w.FD != fd {
+		v.add(ProbReport, "the probe's --report-fd is not the descriptor the pass-through step opens for the report")
+	}
+	if !path.IsAbs(i[6]) {
 		v.add(ProbInner, "the agent executable is not an absolute path")
 	}
 	for n, a := range i {
@@ -196,6 +277,20 @@ func (v *verifier) inner(p *Plan, in profile.Inputs) {
 			v.add(ProbInner, "element %d of the probe command line holds a NUL", n)
 		}
 	}
+}
+
+// reportFile is the one write-only descriptor of Files, or nil.
+func (p *Plan) reportFile() *File {
+	var w *File
+	for i := range p.Files {
+		if p.Files[i].Purpose == PurposeReport && p.Files[i].Mode == FileWrite {
+			if w != nil {
+				return nil
+			}
+			w = &p.Files[i]
+		}
+	}
+	return w
 }
 
 func (v *verifier) size(p *Plan) {
@@ -342,12 +437,18 @@ func (v *verifier) env(p *Plan, in profile.Inputs, setenv []profile.EnvVar) {
 }
 
 func (v *verifier) seccomp(p *Plan, in profile.Inputs, got []item) {
+	var secFiles []File
+	for _, f := range p.Files {
+		if f.Purpose == PurposeSeccomp || f.Mode == FileRead {
+			secFiles = append(secFiles, f)
+		}
+	}
 	if !in.SeccompEnabled() {
 		if len(got) > 0 {
 			v.add(ProbSeccomp, "--seccomp is passed and the inputs name no seccomp file")
 		}
-		if len(p.Files) > 0 {
-			v.add(ProbSeccomp, "the plan lists a descriptor and the inputs name no seccomp file")
+		if len(secFiles) > 0 {
+			v.add(ProbSeccomp, "the plan lists a seccomp descriptor and the inputs name no seccomp file")
 		}
 		return
 	}
@@ -363,16 +464,16 @@ func (v *verifier) seccomp(p *Plan, in profile.Inputs, got []item) {
 	case fd < MinSeccompFD || fd > MaxSeccompFD:
 		v.add(ProbSeccomp, "the --seccomp descriptor %d is outside %d to %d", fd, MinSeccompFD, MaxSeccompFD)
 	}
-	if len(p.Files) != 1 {
-		v.add(ProbSeccomp, "the plan lists %d descriptors, not the one seccomp file", len(p.Files))
+	if len(secFiles) != 1 {
+		v.add(ProbSeccomp, "the plan lists %d read descriptors, not the one seccomp file", len(secFiles))
 		return
 	}
-	f := p.Files[0]
+	f := secFiles[0]
 	if f.FD != fd {
-		v.add(ProbSeccomp, "the descriptor the launcher opens (%d) is not the one --seccomp names (%d)", f.FD, fd)
+		v.add(ProbSeccomp, "the descriptor the pass-through step opens (%d) is not the one --seccomp names (%d)", f.FD, fd)
 	}
-	if f.Path != in.SeccompFile || f.SHA256 != in.SeccompSHA256 {
-		v.add(ProbSeccomp, "the descriptor does not carry the seccomp file and digest of the inputs")
+	if f.Path != in.SeccompFile || f.SHA256 != in.SeccompSHA256 || f.Mode != FileRead || f.Purpose != PurposeSeccomp {
+		v.add(ProbSeccomp, "the descriptor does not carry the seccomp file and digest of the inputs, read-only")
 	}
 }
 
@@ -491,6 +592,9 @@ func (v *verifier) rest(p *Plan, in profile.Inputs) {
 		if !have[n] {
 			v.add(ProbNotes, "the note %q is missing", clip(n))
 		}
+	}
+	if w := p.reportFile(); w != nil && !have[noteReport(w.FD)] {
+		v.add(ProbNotes, "the note about the report channel is missing")
 	}
 	named := false
 	for _, n := range p.Notes {

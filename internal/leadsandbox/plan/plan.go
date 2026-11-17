@@ -13,15 +13,41 @@ import (
 // Bounds on what a plan holds.
 const (
 	// MaxArgvBytes is the most bytes the whole command line may take, every
-	// argument counted with its terminating NUL. Linux accepts at least this
-	// much on any system; a plan above it is refused rather than left to fail
-	// at exec.
-	MaxArgvBytes = 128 << 10
+	// argument counted with its terminating NUL. Linux shares one budget
+	// between the arguments and the environment of a new program (at least 32
+	// pages, else a quarter of the stack limit) and the plan cannot see the
+	// environment the launcher passes, so the cap stays well under that
+	// minimum. A plan above it is refused rather than left to fail at exec.
+	MaxArgvBytes = 64 << 10
 	// MinSeccompFD is the lowest descriptor number the seccomp file may use:
 	// 0, 1 and 2 are the standard streams.
 	MinSeccompFD = 3
 	// MaxSeccompFD is the highest descriptor number the seccomp file may use.
 	MaxSeccompFD = 1023
+	// MinReportFD and MaxReportFD bound the descriptor of the report channel.
+	MinReportFD = 3
+	MaxReportFD = 1023
+)
+
+// The pass-through step: PROBE_HOST pass-fds [--read FD=PATH]... [--write
+// FD=PATH]... -- COMMAND. The probe binary's pass-fds mode is the contract:
+// it opens each PATH read-only (--read) or write-only without creating it
+// (--write) at exactly the descriptor FD, leaves every other descriptor above
+// 2 closed, and executes the command after the "--".
+const (
+	// PassFDsMode is the mode argument of the probe binary.
+	PassFDsMode = "pass-fds"
+	// PassFDsRead and PassFDsWrite are its options.
+	PassFDsRead  = "--read"
+	PassFDsWrite = "--write"
+	// ProbeReportFD is the probe's option for the report descriptor.
+	ProbeReportFD = "--report-fd"
+)
+
+// The purposes of the descriptors of Plan.Files.
+const (
+	PurposeSeccomp = "seccomp"
+	PurposeReport  = "report"
 )
 
 // The notes every plan carries. Verify checks that they are present.
@@ -74,42 +100,75 @@ type Options struct {
 	// present.
 	HostPresent map[string]bool
 
-	// SeccompFD is the descriptor number the launcher will use for the
-	// seccomp file, from MinSeccompFD to MaxSeccompFD. It is required when
+	// SeccompFD is the descriptor number the pass-through step will open the
+	// seccomp file at, from MinSeccompFD to MaxSeccompFD. It is required when
 	// the inputs name a seccomp file and must be zero when they do not.
 	SeccompFD int
+
+	// ReportPath is the absolute host path the holder made for the report
+	// channel: a FIFO or a file it owns, outside every lead-writable folder.
+	// It is required. The pass-through step opens it write-only without
+	// creating it; the probe inside writes its report line to it. It is
+	// refused when it lies in or below a read-write source of the bind table
+	// (a folder the lead writes) or a never-mounted path.
+	ReportPath string
+	// ReportFD is the descriptor number of the report channel, from
+	// MinReportFD to MaxReportFD and different from SeccompFD. It is required.
+	ReportFD int
 }
 
-// File is a descriptor the launcher must open and pass to the first process of
-// the command, at the number FD.
+// FileMode says how the pass-through step opens a file.
+type FileMode string
+
+// The two ways.
+const (
+	// FileRead opens the path read-only (--read).
+	FileRead FileMode = "read"
+	// FileWrite opens the path write-only without creating it (--write).
+	FileWrite FileMode = "write"
+)
+
+// File is a descriptor the pass-through step of the plan opens, at the number
+// FD, before it executes bubblewrap. The launcher opens nothing: pasta closes
+// every descriptor it inherits, so only a process that pasta starts can open
+// one for bubblewrap.
 type File struct {
 	FD int
-	// Path is the host path the launcher opens, read-only.
+	// Path is the host path the step opens.
 	Path string
-	// SHA256 is the digest the caller gave for the file. This package does
-	// not read the file; the launcher opens it and may compare the digest.
-	SHA256 string
-	// Purpose says what the descriptor is for.
+	// Mode says whether it is opened read-only or write-only.
+	Mode FileMode
+	// Purpose says what the descriptor is for (PurposeSeccomp, PurposeReport).
 	Purpose string
+	// SHA256 is the digest the caller gave for the seccomp file; empty for
+	// the report channel. This package does not read the file; the holder may
+	// compare the digest before the start.
+	SHA256 string
 }
 
-// Plan is a launch plan. Argv is Pasta, Bwrap and Inner joined.
+// Plan is a launch plan. Argv is Pasta, PassFDs, Bwrap and Inner joined.
 type Plan struct {
-	// Argv is the whole command: pasta, its arguments, "--", bwrap, its
-	// arguments, "--", the probe command line.
+	// Argv is the whole command: pasta, its arguments, "--", the pass-through
+	// step, "--", bwrap, its arguments, "--", the probe command line.
 	Argv []string
 	// Pasta is the pasta executable and its arguments, ending in "--".
 	Pasta []string
+	// PassFDs is the pass-through step: the host path of the probe binary,
+	// "pass-fds", one --read FD=PATH or --write FD=PATH per entry of Files,
+	// and "--".
+	PassFDs []string
 	// Bwrap is the bubblewrap executable and its arguments, ending in "--".
 	Bwrap []string
-	// Inner is the probe command line: /ataniq/probe --spec FILE -- AGENT...
+	// Inner is the probe command line: /ataniq/probe --spec FILE --report-fd
+	// FD -- AGENT...
 	Inner []string
 
 	// Env is the environment allowlist with values, sorted by name. The
 	// bubblewrap arguments set exactly these, after --clearenv.
 	Env []profile.EnvVar
-	// Files are the descriptors the launcher must open and pass: the seccomp
-	// file at its number, or none.
+	// Files are the descriptors the pass-through step opens, in the order of
+	// PassFDs: the seccomp file when the inputs name one (read), then the
+	// report channel (write).
 	Files []File
 	// Digest is the profile digest (profile.Inputs.Digest).
 	Digest string
@@ -161,10 +220,8 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	for _, v := range env {
 		e.opt("--setenv", v.Name, v.Value)
 	}
-	var files []File
 	if in.SeccompEnabled() {
 		e.opt("--seccomp", strconv.Itoa(opt.SeccompFD))
-		files = append(files, File{FD: opt.SeccompFD, Path: in.SeccompFile, SHA256: in.SeccompSHA256, Purpose: "seccomp"})
 	}
 	var left []string
 	for _, b := range binds {
@@ -184,17 +241,19 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		return nil, e.err
 	}
 
+	files := wantFiles(in, opt)
 	p := &Plan{
 		Pasta:   append([]string{opt.PastaPath}, sandboxnet.PastaArgs()...),
+		PassFDs: passFDs(in.ProbeBinary, files),
 		Bwrap:   append([]string{opt.BwrapPath}, e.args...),
-		Inner:   append([]string{profile.ProbeInside, "--spec", profile.SpecFileInside, "--"}, opt.AgentArgv...),
+		Inner:   probeCommand(opt),
 		Env:     env,
 		Files:   files,
 		Digest:  digest,
 		WorkDir: workDir,
 		Notes:   notes(in, opt, left),
 	}
-	p.Argv = join(p.Pasta, p.Bwrap, p.Inner)
+	p.Argv = join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
 	if n := argvBytes(p.Argv); n > MaxArgvBytes {
 		return nil, refuse("command line", "is %d bytes, above the cap of %d", n, MaxArgvBytes)
 	}
@@ -205,6 +264,36 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		return nil, refuse("plan", "fails its own check (%d problems, first: %s)", len(probs), probs[0])
 	}
 	return p, nil
+}
+
+// wantFiles lists what the pass-through step opens for these inputs and
+// options: the seccomp file (read) when the inputs name one, then the report
+// channel (write).
+func wantFiles(in profile.Inputs, opt Options) []File {
+	var files []File
+	if in.SeccompEnabled() {
+		files = append(files, File{FD: opt.SeccompFD, Path: in.SeccompFile, Mode: FileRead, Purpose: PurposeSeccomp, SHA256: in.SeccompSHA256})
+	}
+	return append(files, File{FD: opt.ReportFD, Path: opt.ReportPath, Mode: FileWrite, Purpose: PurposeReport})
+}
+
+// passFDs is the pass-through step for the files, reads before writes (the
+// order wantFiles gives).
+func passFDs(probeHost string, files []File) []string {
+	step := []string{probeHost, PassFDsMode}
+	for _, f := range files {
+		opt := PassFDsRead
+		if f.Mode == FileWrite {
+			opt = PassFDsWrite
+		}
+		step = append(step, opt, strconv.Itoa(f.FD)+"="+f.Path)
+	}
+	return append(step, "--")
+}
+
+// probeCommand is the probe command line inside.
+func probeCommand(opt Options) []string {
+	return append([]string{profile.ProbeInside, "--spec", profile.SpecFileInside, ProbeReportFD, strconv.Itoa(opt.ReportFD), "--"}, opt.AgentArgv...)
 }
 
 // check validates the options against the inputs and returns the working
@@ -220,6 +309,9 @@ func (o Options) check(in profile.Inputs) (string, error) {
 		return "", err
 	}
 	if err := o.checkSeccomp(in); err != nil {
+		return "", err
+	}
+	if err := o.checkReport(in); err != nil {
 		return "", err
 	}
 	tree := profile.TreeInside(in.Project)
@@ -269,6 +361,40 @@ func (o Options) checkSeccomp(in profile.Inputs) error {
 		return refuse("seccomp descriptor", "%d is outside %d to %d (0 to 2 are the standard streams)", o.SeccompFD, MinSeccompFD, MaxSeccompFD)
 	case !in.SeccompEnabled() && o.SeccompFD != 0:
 		return refuse("seccomp descriptor", "%d is given but the inputs name no seccomp file", o.SeccompFD)
+	}
+	return nil
+}
+
+// checkReport checks the report channel: its descriptor and its path.
+func (o Options) checkReport(in profile.Inputs) error {
+	switch {
+	case o.ReportFD == 0:
+		return refuse("report descriptor", "missing: the report channel is always present, so the descriptor number is required")
+	case o.ReportFD < MinReportFD || o.ReportFD > MaxReportFD:
+		return refuse("report descriptor", "%d is outside %d to %d (0 to 2 are the standard streams)", o.ReportFD, MinReportFD, MaxReportFD)
+	case in.SeccompEnabled() && o.ReportFD == o.SeccompFD:
+		return refuse("report descriptor", "%d is the seccomp descriptor; they must differ", o.ReportFD)
+	}
+	if err := checkPath("report path", o.ReportPath); err != nil {
+		return err
+	}
+	table, err := in.Binds()
+	if err != nil {
+		return err
+	}
+	for _, b := range table {
+		if b.Kind == profile.KindRwBind && within(o.ReportPath, b.Source) {
+			return refuse("report path", "lies in or below %s, a folder the lead can write", b.Source)
+		}
+	}
+	never := append([]string(nil), in.NeverMounted...)
+	if other := in.OtherConfigDir(); other != "" {
+		never = append(never, other)
+	}
+	for _, n := range never {
+		if within(o.ReportPath, n) {
+			return refuse("report path", "lies in or below the never-mounted path %s", n)
+		}
 	}
 	return nil
 }
@@ -326,10 +452,15 @@ func optionalNote(b profile.Bind) string {
 	return fmt.Sprintf("optional %s %s left out: the caller says the host has no such path", what, b.Inside)
 }
 
+// noteReport is the note about the report channel.
+func noteReport(fd int) string {
+	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows", fd, fd)
+}
+
 func notes(in profile.Inputs, opt Options, left []string) []string {
 	n := []string{NoteShareNet, NoteNestedUserns}
 	if in.SeccompEnabled() {
-		n = append(n, fmt.Sprintf("seccomp file named by the caller (sha256 %s), passed to bubblewrap as descriptor %d: this package neither reads nor generates a filter, and the descriptor must stay open across pasta's start of bubblewrap, which qualification has to show", in.SeccompSHA256, opt.SeccompFD))
+		n = append(n, fmt.Sprintf("seccomp file named by the caller (sha256 %s), opened read-only as descriptor %d by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter", in.SeccompSHA256, opt.SeccompFD))
 	} else {
 		n = append(n, NoteNoSeccomp)
 	}
@@ -338,6 +469,7 @@ func notes(in profile.Inputs, opt Options, left []string) []string {
 	} else {
 		n = append(n, "identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested")
 	}
+	n = append(n, noteReport(opt.ReportFD))
 	n = append(n, "network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed", NoteSession)
 	return append(n, left...)
 }

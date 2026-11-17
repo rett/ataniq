@@ -197,7 +197,7 @@ func TestVerifyMutations(t *testing.T) {
 			insert(p, find(t, p, "--tmpfs", "/"), "--seccomp", "7")
 		}},
 		{"descriptor listed without a file named", ProbSeccomp, false, func(t *testing.T, p *Plan) {
-			p.Files = []File{{FD: 7, Path: "/opt/ataniq/seccomp/lead.bpf"}}
+			p.Files = append([]File{{FD: 7, Path: "/opt/ataniq/seccomp/lead.bpf", Mode: FileRead, Purpose: PurposeSeccomp}}, p.Files...)
 		}},
 		{"seccomp dropped", ProbSeccomp, true, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--seccomp", "")) }},
 		{"seccomp twice", ProbSeccomp, true, func(t *testing.T, p *Plan) { insert(p, find(t, p, "--seccomp", ""), "--seccomp", "8") }},
@@ -217,10 +217,57 @@ func TestVerifyMutations(t *testing.T) {
 		// The probe command line.
 		{"probe path changed", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[0] = "/usr/bin/sh" }},
 		{"spec path changed", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[2] = "/tmp/spec.json" }},
-		{"probe separator dropped", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = append(p.Inner[:3], p.Inner[4:]...) }},
-		{"relative agent", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[4] = "claude" }},
-		{"agent without an executable", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = p.Inner[:4] }},
-		{"NUL in an agent argument", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[5] = "a\x00b" }},
+		{"probe separator dropped", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = append(p.Inner[:5], p.Inner[6:]...) }},
+		{"relative agent", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[6] = "claude" }},
+		{"agent without an executable", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = p.Inner[:6] }},
+		{"NUL in an agent argument", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[7] = "a\x00b" }},
+		{"report option renamed", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[3] = "--report" }},
+
+		// The pass-through step and the report channel.
+		{"pass-through step dropped", ProbShape, false, func(t *testing.T, p *Plan) { p.PassFDs = nil }},
+		{"pass-through runs another program", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[0] = "/usr/bin/env" }},
+		{"pass-through in another mode", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[1] = "run" }},
+		{"pass-through terminator dropped", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs = p.PassFDs[:len(p.PassFDs)-1] }},
+		{"pass-through option unknown", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[2] = "--append" }},
+		{"pass-through operand not FD=PATH", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "report.fifo" }},
+		{"pass-through operand with a signed number", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "+3=/opt/ataniq/run/arc-lead/report.fifo" }},
+		{"pass-through option without operand", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs = append(p.PassFDs[:3], "--") }},
+		{"pass-through opens another path", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "3=/etc/shadow" }},
+		{"pass-through opens another descriptor", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "5=/opt/ataniq/run/arc-lead/report.fifo" }},
+		{"pass-through opens the report read-only", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[2] = "--read" }},
+		{"pass-through opens more than Files lists", ProbPassFDs, false, func(t *testing.T, p *Plan) {
+			p.PassFDs = append(p.PassFDs[:len(p.PassFDs)-1], "--write", "9=/etc/passwd", "--")
+		}},
+		{"pass-through reads after a write", ProbPassFDs, true, func(t *testing.T, p *Plan) {
+			p.PassFDs = []string{p.PassFDs[0], p.PassFDs[1], p.PassFDs[4], p.PassFDs[5], p.PassFDs[2], p.PassFDs[3], "--"}
+			p.Files[0], p.Files[1] = p.Files[1], p.Files[0]
+		}},
+		{"descriptor number used twice", ProbPassFDs, true, func(t *testing.T, p *Plan) {
+			p.Files[1].FD = 7
+			p.PassFDs[5] = "7=" + p.Files[1].Path
+			p.Inner[4] = "7"
+		}},
+		{"descriptor 2 for the report", ProbPassFDs, false, func(t *testing.T, p *Plan) {
+			p.Files[0].FD = 2
+			p.PassFDs[3] = "2=" + p.Files[0].Path
+			p.Inner[4] = "2"
+		}},
+		{"report descriptor differs in the probe", ProbReport, false, func(t *testing.T, p *Plan) { p.Inner[4] = "4" }},
+		{"report descriptor not a number", ProbReport, false, func(t *testing.T, p *Plan) { p.Inner[4] = "x" }},
+		{"no report channel listed", ProbReport, false, func(t *testing.T, p *Plan) {
+			p.Files = nil
+			p.PassFDs = p.PassFDs[:2]
+			p.PassFDs = append(p.PassFDs, "--")
+		}},
+		{"report note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "report channel") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
 
 		// The rest.
 		{"digest changed", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = strings.Repeat("0", 64) }},
@@ -288,7 +335,7 @@ func TestVerifyMutations(t *testing.T) {
 	for _, k := range []ProblemKind{ProbShape, ProbExecutable, ProbPasta, ProbForbidden, ProbUnknown, ProbMalformed,
 		ProbOptionLike, ProbOrder, ProbFlags, ProbEnv, ProbSeccomp, ProbMountMissing, ProbMountExtra, ProbMountDiffers,
 		ProbMountTwice, ProbNever, ProbOtherRuntime, ProbWorkDir, ProbRemount, ProbInner, ProbDigest, ProbNotes,
-		ProbTerminal, ProbSize} {
+		ProbTerminal, ProbSize, ProbPassFDs, ProbReport} {
 		if !seen[k] {
 			t.Errorf("no mutation raises %q", k)
 		}

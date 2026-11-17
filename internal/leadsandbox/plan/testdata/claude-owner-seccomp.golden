@@ -1,5 +1,7 @@
 # pasta
 /usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw --
+# pass-fds
+/opt/ataniq/bin/probe pass-fds --read 7=/opt/ataniq/seccomp/lead.bpf --write 3=/opt/ataniq/run/arc-lead/report.fifo --
 # bubblewrap
 /usr/bin/bwrap
 --die-with-parent
@@ -69,7 +71,7 @@
 --remount-ro /
 --
 # inner
-/ataniq/probe --spec /ataniq/spec/spec.json -- /ataniq/agent/bin/claude --model example
+/ataniq/probe --spec /ataniq/spec/spec.json --report-fd 3 -- /ataniq/agent/bin/claude --model example
 # env
 CLAUDE_CONFIG_DIR=/home/lead/.claude
 COLORTERM=truecolor
@@ -92,7 +94,8 @@ XDG_CONFIG_HOME=/home/lead/.config
 XDG_DATA_HOME=/home/lead/.local/share
 XDG_STATE_HOME=/home/lead/.local/state
 # files
-fd 7 seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+fd 7 read seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
 9abf3e1b13203e7e062510dfa47e721f586b341b404103c3a82cf01cbfce03e9
 # workdir
@@ -102,7 +105,8 @@ false
 # notes
 - --share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network
 - nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled
-- seccomp file named by the caller (sha256 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e), passed to bubblewrap as descriptor 7: this package neither reads nor generates a filter, and the descriptor must stay open across pasta's start of bubblewrap, which qualification has to show
+- seccomp file named by the caller (sha256 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e), opened read-only as descriptor 7 by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter
 - identity: the owner's ids 1000:1001 inside (the fallback mode)
+- report channel: the pass-fds step opens the holder's report path write-only as descriptor 3 after pasta, bubblewrap inherits it and the probe inside gets --report-fd 3; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows
 - network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed
 - bubblewrap does not make the session (--new-session is never passed): the probe gives the agent its session and controlling terminal, so the launcher does not set a controlling terminal
