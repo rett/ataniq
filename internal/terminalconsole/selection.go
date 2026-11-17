@@ -122,7 +122,8 @@ func uvMouse(msg tea.MouseMsg) uv.MouseEvent {
 // starts it, motion extends it, clamped to the drawn pane however far the
 // pointer goes, and the release ends it and copies the text. A press
 // elsewhere, another button, the wheel, and a press while help or the action
-// list is open start nothing.
+// list is open start nothing, and a release while one of them is open ends
+// the selection and copies nothing.
 func (m *Model) selectMouse(msg tea.MouseMsg, l layout) tea.Cmd {
 	area := m.paneArea(l)
 	at := func(x, y int) uv.Position {
@@ -141,6 +142,10 @@ func (m *Model) selectMouse(msg tea.MouseMsg, l layout) tea.Cmd {
 		}
 	case tea.MouseReleaseMsg:
 		if !m.sel.drag {
+			return nil
+		}
+		if m.overlay != "" {
+			m.sel = selection{}
 			return nil
 		}
 		m.extend(at(e.X, e.Y))

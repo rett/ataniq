@@ -154,7 +154,9 @@ clipboard as it was, and the wheel does nothing. A press anywhere clears the
 selection. So do a key or a paste sent to the session, a window resize (and
 the session terminal following it a moment later), F12, `r`, and output that
 changes the selected text, such as the session writing over it, scrolling or
-clearing the screen. Output elsewhere on the screen keeps it. While help or the action list is open, a drag selects nothing.
+clearing the screen. Output elsewhere on the screen keeps it. While help or the action list is open, a drag selects nothing, and
+the release of a drag begun before it opened ends the selection and copies
+nothing.
 
 To select elsewhere in the window, most terminals, Ghostty among them, let you
 hold Shift while you drag to use the terminal's own selection even when the

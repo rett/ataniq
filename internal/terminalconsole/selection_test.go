@@ -492,6 +492,29 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	clears("a replay", func() { r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}) })
 }
 
+// TestReleaseUnderAnOverlayCopiesNothing opens help or the action list with
+// the keyboard while the button is held: the release ends the selection and
+// copies nothing.
+func TestReleaseUnderAnOverlayCopiesNothing(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK} {
+		r := selRig(t, 140, 45, Options{}, selText)
+		x0, y0 := r.win(0, 0)
+		x1, y1 := r.win(4, 1)
+		r.mouse(tea.MouseClickMsg{X: x0, Y: y0, Button: tea.MouseLeft})
+		r.mouse(tea.MouseMotionMsg{X: x1, Y: y1, Button: tea.MouseLeft})
+		r.key(k)
+		if r.m.overlay == "" {
+			t.Fatalf("%v opened nothing", k)
+		}
+		if msg := r.mouse(tea.MouseReleaseMsg{X: x1, Y: y1, Button: tea.MouseLeft}); msg != nil {
+			t.Fatalf("%v: a release under the overlay copied %#v", k, msg)
+		}
+		if r.m.sel.shown() || r.m.sel.drag {
+			t.Fatalf("%v: the release left a selection %+v", k, r.m.sel)
+		}
+	}
+}
+
 // TestSelectionIsClearedWhenThePaneFollowsTheWindow makes a selection after
 // the window size changed but before the pane follows it: the debounced
 // resize clears it. A debounced resize that leaves the pane's size as it was
