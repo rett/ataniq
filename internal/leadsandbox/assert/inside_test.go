@@ -83,6 +83,42 @@ func TestInsideAssertions(t *testing.T) {
 			f.lstatErr[s.HolderPaths[1]] = syscall.EACCES
 		}, 1, StatusFailed, "1 more checks could not be made"},
 
+		{"1 mount root is the folder above an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/home/owner", which is at, above or below the path "/home/owner/.claude"`},
+		{"1 mount root is an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner/.ssh", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/home/owner/.ssh"`},
+		{"1 mount root is below an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner/.ssh/keys", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, "which is at, above or below"},
+		{"1 mount source is below an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/leak", Source: "/home/owner/.ssh/img", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `source "/home/owner/.ssh/img"`},
+		{"1 mount point is an ancestor of an owner path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/home/owner", Source: "tmpfs", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `mount point "/home/owner"`},
+		{"1 mount root is an ancestor of a holder path", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/nowhere"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/run/example", Point: "/leak", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusFailed, `root "/run/example"`},
+		{"1 a sibling by text is not related by component", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts,
+				Mount{ID: 900, Root: "/home/owner/.sshd", Point: "/a", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"},
+				Mount{ID: 901, Root: "/home/owner-two", Point: "/b", Source: "/dev/example2", Options: "rw", SuperOptions: "rw"},
+				Mount{ID: 902, Root: "/", Point: "/c", Source: "/home/ownership/img", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusOK, ""},
+		{"1 the root of a file system relates to nothing", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.MountSubstrings = []string{"/run/example"}
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/", Point: "/", Source: "/", Options: "rw", SuperOptions: "rw"})
+		}, 1, StatusOK, ""},
+
 		// 2
 		{"2 extra variable", profile.Claude, func(s *Spec, f *fakeSys) { f.env = append(f.env, "SSH_AUTH_SOCK=/tmp/agent") }, 2, StatusFailed, `unexpected "SSH_AUTH_SOCK"`},
 		{"2 missing variable", profile.Claude, func(s *Spec, f *fakeSys) { f.env = f.env[:2] }, 2, StatusFailed, `missing "TERM"`},
@@ -181,7 +217,28 @@ func TestInsideAssertions(t *testing.T) {
 		{"6 ssh exists", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/owner/.ssh") }, 6, StatusFailed, ".ssh"},
 		{"6 checkout exists", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/owner/work/ataniq") }, 6, StatusFailed, "ataniq"},
 		{"6 other config folder absent", profile.Claude, func(s *Spec, f *fakeSys) {}, 6, StatusOK, "does not exist"},
-		{"6 other config folder made by the lead", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/lead/.codex") }, 6, StatusOK, "not a failure of the boundary"},
+		{"6 other config folder made by the lead", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir("/home/lead/.codex") }, 6, StatusOK, "an empty folder that is not a mount point"},
+		{"6 other config folder holds a file", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.setFile("/home/lead/.codex/auth.json", "{}")
+		}, 6, StatusFailed, "holds entries"},
+		{"6 other config folder holds a folder", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.setDir("/home/lead/.codex/sessions")
+		}, 6, StatusFailed, "holds entries"},
+		{"6 other config folder is a file", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile("/home/lead/.codex", "") }, 6, StatusFailed, "a regular file, not an empty folder"},
+		{"6 other config folder is a link", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.nodes["/home/lead/.codex"] = fakeNode{info: FileInfo{Mode: fs.ModeSymlink | 0o777}}
+		}, 6, StatusFailed, "a symbolic link, not an empty folder"},
+		{"6 other config folder cannot be read", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setDir("/home/lead/.codex")
+			f.dirErr["/home/lead/.codex"] = syscall.EACCES
+		}, 6, StatusNotChecked, "cannot be read"},
+		{"6 the owner's home bound at the lead's home shows in the other folder", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+			f.setDir("/home/lead/.codex")
+			f.setFile("/home/lead/.codex/auth.json", "{}")
+		}, 6, StatusFailed, "holds entries"},
 		{"6 other config folder is a mount point", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setDir("/home/lead/.codex")
 			f.setMount("/home/lead/.codex", false)
@@ -458,5 +515,43 @@ func TestDetailListsAFewFindingsAndCountsTheRest(t *testing.T) {
 	d := find(t, RunInside(s, f), 6).Detail
 	if !strings.Contains(d, "and 2 more") || strings.Count(d, "exists") != 3 {
 		t.Errorf("detail %q", d)
+	}
+}
+
+func TestRelated(t *testing.T) {
+	for _, tc := range []struct {
+		p, q string
+		want bool
+	}{
+		{"/home/owner", "/home/owner", true},
+		{"/home/owner", "/home/owner/.claude", true},
+		{"/home/owner/.claude/x", "/home/owner/.claude", true},
+		{"/home/owner/./.claude/../.claude", "/home/owner/.claude", true},
+		{"/home/ownerx", "/home/owner/.claude", false},
+		{"/home/owner/.claudex", "/home/owner/.claude", false},
+		{"/home", "/home/owner/.claude", true},
+		{"/", "/home/owner/.claude", false},
+		{"/home/owner/.claude", "/", false},
+		{"tmpfs", "/home/owner/.claude", false},
+		{"", "/home/owner/.claude", false},
+		{"/dev/nvme0n1p2", "/home/owner/.claude", false},
+	} {
+		if got := related(tc.p, tc.q); got != tc.want {
+			t.Errorf("related(%q, %q) = %v, want %v", tc.p, tc.q, got, tc.want)
+		}
+	}
+}
+
+// The review's probe: the owner's home bound at the lead's home put the
+// owner's provider folder at the other runtime's place, and the report said ok.
+func TestOwnerHomeBoundAtTheLeadsHomeFailsTheReport(t *testing.T) {
+	s := testSpec(profile.Claude)
+	f := goodSystem(s)
+	f.mounts = append(f.mounts, Mount{ID: 900, Root: "/home/owner", Point: "/home/lead", Source: "/dev/example1", Options: "rw", SuperOptions: "rw"})
+	f.setDir("/home/lead/.codex")
+	f.setFile("/home/lead/.codex/auth.json", "{}")
+	rep := RunInside(s, f)
+	if find(t, rep, 1).Status != StatusFailed || find(t, rep, 6).Status != StatusFailed || !Failed(rep, s) {
+		t.Errorf("assertion 1 %+v, assertion 6 %+v", find(t, rep, 1), find(t, rep, 6))
 	}
 }

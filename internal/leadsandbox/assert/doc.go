@@ -100,8 +100,13 @@
 //   - Assertion 6 looks for host paths at the same place inside. The probe
 //     cannot know where a leak would be bound, so assertion 1 also looks in
 //     the mount table for the same paths, which a bind mount keeps as its
-//     root. A path bound at another place from a file system with another root
-//     is not found by either.
+//     root, and fails a mount whose root, source or mount point is a listed
+//     owner or holder path, lies below it, or is one of its ancestors
+//     (compared by component). A mount root is relative to its file system:
+//     a separate file system (a /home of its own) mounted above an owner
+//     path has the root "/" and is not found by either. The other runtime's
+//     config folder is ok only when it is absent, or an empty folder that is
+//     not a mount point and has nothing mounted below it.
 //   - Assertion 7 shows that the three paths are on a read-only mount and that
 //     a write is refused by access(W_OK). That the tree is the lead's own
 //     clone, and not below another repository, is the check of the

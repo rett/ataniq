@@ -165,15 +165,58 @@ func (c *checker) holderHidden() Result {
 		t.skip("no mount table: %v", err)
 	}
 	for _, m := range mounts {
-		for _, sub := range c.spec.MountSubstrings {
-			if strings.Contains(m.Point, sub) || strings.Contains(m.Root, sub) || strings.Contains(m.Source, sub) {
-				t.fail("mount %q mentions %q", m.Point, sub)
-				break
-			}
+		if sub, ok := mentions(m, c.spec.MountSubstrings); ok {
+			t.fail("mount %q mentions %q", m.Point, sub)
+			continue
+		}
+		if what, p, ok := relatedMount(m, c.spec.OwnerPaths, c.spec.HolderPaths); ok {
+			t.fail("mount %q has %s %q, which is at, above or below the path %q", m.Point, what, clipPath(m.value(what)), p)
 		}
 	}
 	return t.result(1, fmt.Sprintf("none of %d holder paths exists; none of %d mounts mentions any of %d substrings",
 		len(c.spec.HolderPaths), len(mounts), len(c.spec.MountSubstrings)))
+}
+
+// mentions returns the first substring that the root, the mount point or the
+// source of the mount contains.
+func mentions(m Mount, subs []string) (string, bool) {
+	for _, sub := range subs {
+		if strings.Contains(m.Point, sub) || strings.Contains(m.Root, sub) || strings.Contains(m.Source, sub) {
+			return sub, true
+		}
+	}
+	return "", false
+}
+
+// relatedMount says the root, the source or the mount point of the mount is a
+// listed path, lies below it, or is one of its ancestors, comparing whole
+// components. A mount whose root is the folder above an owner path (the
+// owner's home bound at the lead's home) puts the owner path inside, though
+// no listed text appears in the table. It names which of the three fields
+// matched. The root "/" of a file system, the source of a mount that is not a
+// path ("tmpfs") and the mount point "/" are related to nothing. A mount root
+// is relative to its file system: a separate file system mounted at an
+// ancestor of an owner path, with its own root "/", is not found here.
+func relatedMount(m Mount, lists ...[]string) (what, listed string, ok bool) {
+	for _, field := range []string{"root", "source", "mount point"} {
+		v := m.value(field)
+		for _, list := range lists {
+			for _, p := range list {
+				if related(v, p) {
+					return field, p, true
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+
+// clipPath cuts a path for a detail; EscapeDetail makes it visible.
+func clipPath(p string) string {
+	if len(p) > 120 {
+		return p[:120] + "..."
+	}
+	return p
 }
 
 // 2. The environment equals the allowlist.
@@ -389,9 +432,13 @@ func (c *checker) ownerPaths() Result {
 	return t.result(6, fmt.Sprintf("none of %d owner paths exists; %s", len(c.spec.OwnerPaths), note))
 }
 
-// otherConfig checks the other runtime's config folder. A lead can make an
-// empty folder at that path in its own home, so the folder existing is not a
-// failure of the boundary: a mount at it, or below it, is.
+// otherConfig checks the other runtime's config folder. It is ok only when
+// the folder is absent, or is an empty folder that is not a mount point and
+// has no mount below it: a lead can make an empty folder in its own home, which
+// is not a failure of the boundary. Anything in it is failed, since an owner's
+// folder that came in at that place by a bind of a folder above it (the
+// owner's home at the lead's home, say) is not a mount at the folder, and a
+// link or a file there is not the folder the lead made.
 func (c *checker) otherConfig(t *tally, note *string) {
 	dir := c.spec.OtherConfigDir
 	info, err := c.sys.Lstat(dir)
@@ -401,6 +448,9 @@ func (c *checker) otherConfig(t *tally, note *string) {
 		return
 	case err != nil:
 		t.skip("the other runtime's config folder %q: cannot tell whether it exists: %v", dir, err)
+		return
+	case !info.IsDir():
+		t.fail("the other runtime's config folder %q is %s, not an empty folder", dir, info.Describe())
 		return
 	}
 	mounts, err := c.mountTable()
@@ -414,8 +464,17 @@ func (c *checker) otherConfig(t *tally, note *string) {
 			return
 		}
 	}
-	*note = fmt.Sprintf("the other runtime's config folder %q exists (%s) and nothing is mounted at or below it; "+
-		"a folder the lead made itself is not a failure of the boundary", dir, info.Describe())
+	empty, err := c.sys.DirEmpty(dir)
+	switch {
+	case err != nil:
+		t.skip("the other runtime's config folder %q exists and cannot be read: %v", dir, err)
+		return
+	case !empty:
+		t.fail("the other runtime's config folder %q holds entries: only an empty folder is not a failure of the boundary", dir)
+		return
+	}
+	*note = fmt.Sprintf("the other runtime's config folder %q is an empty folder that is not a mount point and has nothing mounted below it; "+
+		"a folder the lead made itself is not a failure of the boundary", dir)
 }
 
 // 7. The tree is the lead's own clone and its three git paths are read-only.

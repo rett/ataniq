@@ -27,6 +27,7 @@ type fakeSys struct {
 	lookupErr error
 	writable  map[string]bool
 	accessErr map[string]error
+	dirErr    map[string]error
 
 	dialed []string
 }
@@ -78,6 +79,26 @@ func (f *fakeSys) LookupHost(host string, _ time.Duration) ([]string, error) {
 	return f.hosts[host], nil
 }
 
+// DirEmpty is true for a folder that no other node lies below.
+func (f *fakeSys) DirEmpty(path string) (bool, error) {
+	if err := f.dirErr[path]; err != nil {
+		return false, err
+	}
+	n, ok := f.nodes[path]
+	if !ok {
+		return false, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOENT}
+	}
+	if !n.info.IsDir() {
+		return false, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOTDIR}
+	}
+	for p := range f.nodes {
+		if strings.HasPrefix(p, path+"/") {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func (f *fakeSys) Writable(path string) (bool, error) {
 	if err := f.accessErr[path]; err != nil {
 		return false, err
@@ -112,6 +133,7 @@ func goodSystem(s Spec) *fakeSys {
 		hosts:     map[string][]string{s.ProviderHost: {"192.0.2.10", "2001:db8::10"}},
 		writable:  map[string]bool{},
 		accessErr: map[string]error{},
+		dirErr:    map[string]error{},
 	}
 	for _, e := range s.Env {
 		f.env = append(f.env, e.Name+"="+e.Value)

@@ -3,6 +3,7 @@ package assert
 import (
 	"errors"
 	"io/fs"
+	"path"
 	"strconv"
 	"strings"
 	"syscall"
@@ -74,6 +75,11 @@ type System interface {
 	Dial(network, address string, timeout time.Duration) error
 	// LookupHost resolves a name within the timeout.
 	LookupHost(host string, timeout time.Duration) ([]string, error)
+	// DirEmpty says whether the folder at the path holds no entry. It does
+	// not follow a link at the path, and it reads at most one entry. An error
+	// (the path is not a folder, or cannot be read) is a question that could
+	// not be asked.
+	DirEmpty(path string) (bool, error)
 	// Writable asks the kernel whether the calling process may write the path
 	// (access(2) with W_OK), without writing. False with a nil error is a
 	// plain refusal (a read-only mount or no permission); the error is for a
@@ -110,6 +116,17 @@ type Mount struct {
 // say "ro".
 func (m Mount) ReadOnly() bool {
 	return hasOption(m.Options, "ro") || hasOption(m.SuperOptions, "ro")
+}
+
+// value returns the field of the mount that relatedMount names.
+func (m Mount) value(field string) string {
+	switch field {
+	case "root":
+		return m.Root
+	case "source":
+		return m.Source
+	}
+	return m.Point
 }
 
 func hasOption(opts, want string) bool {
@@ -221,6 +238,20 @@ func mountFor(mounts []Mount, path string) (Mount, bool) {
 		}
 	}
 	return best, found
+}
+
+// related says the path p is, lies below or above the path q, comparing whole
+// components, not text: "/a/bc" is not related to "/a/b". Both are made clean
+// first; the root is related to every path, so it is never related here.
+func related(p, q string) bool {
+	if !strings.HasPrefix(p, "/") || !strings.HasPrefix(q, "/") {
+		return false
+	}
+	p, q = path.Clean(p), path.Clean(q)
+	if p == "/" || q == "/" {
+		return false
+	}
+	return within(p, q) || within(q, p)
 }
 
 // within says p is dir or lies below it. Both are clean absolute paths.

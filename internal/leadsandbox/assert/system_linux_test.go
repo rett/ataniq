@@ -264,3 +264,31 @@ func TestHostSystemWithChecks(t *testing.T) {
 		t.Errorf("a missing variable: %+v", r)
 	}
 }
+
+func TestHostSystemDirEmpty(t *testing.T) {
+	dir := t.TempDir()
+	h := HostSystem{}
+	if empty, err := h.DirEmpty(dir); err != nil || !empty {
+		t.Errorf("an empty folder: %v %v", empty, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if empty, err := h.DirEmpty(dir); err != nil || empty {
+		t.Errorf("a folder with a file: %v %v", empty, err)
+	}
+	if _, err := h.DirEmpty(filepath.Join(dir, "f")); err == nil {
+		t.Error("a file was read as a folder")
+	}
+	if _, err := h.DirEmpty(filepath.Join(dir, "none")); !absent(err) {
+		t.Errorf("a missing folder: %v", err)
+	}
+	// A link to a folder is not followed.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.DirEmpty(link); err == nil {
+		t.Error("DirEmpty followed a link")
+	}
+}

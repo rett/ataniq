@@ -79,8 +79,8 @@ type Spec struct {
 	// .ssh, the owner's checkout (assertion 6).
 	OwnerPaths []string `json:"owner_paths"`
 	// OtherConfigDir is the other runtime's config folder as it appears
-	// inside, in the lead's home. A lead can make an empty folder there; the
-	// check is that nothing is mounted at or below it (assertion 6).
+	// inside, in the lead's home. It must be absent, or an empty folder (a
+	// lead can make one) with nothing mounted at or below it (assertion 6).
 	OtherConfigDir string `json:"other_config_dir"`
 
 	// LoopbackTCP is one host loopback address (ip:port) and AbstractSocket
