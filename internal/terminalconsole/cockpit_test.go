@@ -1026,26 +1026,29 @@ func TestStripPasteEnd(t *testing.T) {
 
 // TestMouseHeldRecordingKeepsTheModesOnForTheLinger checks the recording an
 // attended check uses: the modes are still on seconds after the session set
-// them, so session focus can be entered by hand and asks for the mouse.
+// them, so session focus can be entered by hand and asks for all motion and
+// focus events. Elsewhere the console asks for cell motion only, for its own
+// selection.
 func TestMouseHeldRecordingKeepsTheModesOnForTheLinger(t *testing.T) {
 	r := newRig(t, 140, 45, Options{Recording: "mouse-held.jsonl", Linger: time.Minute})
 	r.play(10 * time.Second)
 	if m := r.m.rep.pane.Modes(); m.Mouse != uv.MouseModeMotion || m.MouseEncoding != uv.MouseEncodingSGR || !m.FocusEvents {
 		t.Fatalf("%+v", m)
 	}
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion || v.ReportFocus {
 		t.Fatalf("console focus asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
 	r.focusSession()
 	if v := r.m.View(); v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus {
 		t.Fatalf("session focus asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
-	// When the linger time is over the stream ends and nothing is asked.
+	// When the linger time is over the stream ends and only the console's
+	// cell motion is asked for.
 	r.play(2 * time.Minute)
 	if !r.m.sessionEnded() {
 		t.Fatal("the session did not end")
 	}
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion || v.ReportFocus {
 		t.Fatalf("an ended session asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
 }
@@ -1056,8 +1059,8 @@ func TestMouseFollowsTheSessionAndTheFocus(t *testing.T) {
 	if m := r.m.rep.pane.Modes(); m.Mouse != uv.MouseModeMotion || !m.BracketedPaste || !m.FocusEvents {
 		t.Fatalf("%+v", m)
 	}
-	// Nothing is requested of the outer terminal in console focus.
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+	// In console focus only the console's cell motion is requested.
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion || v.ReportFocus {
 		t.Fatalf("console focus asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
 	r.focusSession()
@@ -1081,17 +1084,19 @@ func TestMouseFollowsTheSessionAndTheFocus(t *testing.T) {
 	if len(r.sink.mouse) != 1 {
 		t.Fatal("mouse reached the session from console focus")
 	}
-	// The session turns the modes off again: the outer terminal is no longer asked.
+	// The session turns the modes off again: the outer terminal is asked
+	// for the console's cell motion only.
 	r.focusSession()
 	r.play(900 * time.Millisecond)
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion || v.ReportFocus {
 		t.Fatalf("modes off, but asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
 }
 
 // TestMouseModeFollowsTheSessionsTrackingMode checks that a session that asks
 // for click or drag reporting (modes 1000 and 1002) is given cell motion, and
-// only one that asks for all motion (mode 1003) is given all motion.
+// only one that asks for all motion (mode 1003) is given all motion. Without
+// any the console still asks for cell motion, for its own selection.
 func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)
@@ -1105,7 +1110,7 @@ func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
 		{"\x1b[?1000l\x1b[?1002h", tea.MouseModeCellMotion},
 		{"\x1b[?1002l\x1b[?1003h", tea.MouseModeAllMotion},
 		{"\x1b[?1003l\x1b[?1000h", tea.MouseModeCellMotion},
-		{"\x1b[?1000l", tea.MouseModeNone},
+		{"\x1b[?1000l", tea.MouseModeCellMotion},
 	} {
 		pane.Write([]byte(tc.write))
 		if got := r.m.View().MouseMode; got != tc.want {
@@ -1115,9 +1120,10 @@ func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
 }
 
 // TestEndedSessionAsksForNoModesAndHasNoCursor checks that a session that
-// ends while it has the focus, and asked for mouse reporting and focus events,
-// no longer has them requested of the outer terminal, and no cursor is placed
-// under its banner. The focus stays until the next key.
+// ends while it has the focus, and asked for all motion and focus events, no
+// longer has them requested of the outer terminal (only the console's cell
+// motion), and no cursor is placed under its banner. The focus stays until
+// the next key.
 func TestEndedSessionAsksForNoModesAndHasNoCursor(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)
@@ -1130,7 +1136,7 @@ func TestEndedSessionAsksForNoModesAndHasNoCursor(t *testing.T) {
 	if !r.m.sessionEnded() || r.m.focus != sessionFocus {
 		t.Fatalf("ended %v, focus %v", r.m.sessionEnded(), r.m.focus)
 	}
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus || v.Cursor != nil {
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion || v.ReportFocus || v.Cursor != nil {
 		t.Fatalf("an ended session: mouse %v focus %v cursor %v", v.MouseMode, v.ReportFocus, v.Cursor)
 	}
 	// A click on it reaches no one.
@@ -1141,11 +1147,11 @@ func TestEndedSessionAsksForNoModesAndHasNoCursor(t *testing.T) {
 	}
 }
 
-func TestMouseModeNeedsTheSessionToAsk(t *testing.T) {
+func TestMouseNeedsTheSessionToAsk(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)
 	r.focusSession()
-	if v := r.m.View(); v.MouseMode != tea.MouseModeNone {
+	if v := r.m.View(); v.MouseMode != tea.MouseModeCellMotion {
 		t.Fatalf("mouse %v", v.MouseMode)
 	}
 	l := r.m.layout()
@@ -1520,7 +1526,8 @@ func TestRandomInputKeepsTheCockpitSound(t *testing.T) {
 				r.m.Update(tea.PasteMsg{Content: "paste\x1b[201~text"})
 			case 5:
 				r.m.Update(tea.MouseClickMsg{X: next(160), Y: next(60), Button: tea.MouseLeft})
-				r.m.Update(tea.MouseMotionMsg{X: next(160), Y: next(60)})
+				r.m.Update(tea.MouseMotionMsg{X: next(160), Y: next(60), Button: tea.MouseLeft})
+				r.m.Update(tea.MouseReleaseMsg{X: next(160), Y: next(60), Button: tea.MouseLeft})
 			default:
 				at += time.Duration(next(80)) * time.Millisecond
 				r.tick(at)

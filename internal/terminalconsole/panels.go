@@ -15,10 +15,13 @@ const fixtureLabel = "fixture recording, not a live session"
 
 const tagline = "Provider-neutral leads · bounded delegates · supervised authority"
 
-// cockpitView draws the cockpit and says what it needs of the outer terminal:
-// mouse reporting and focus events only in session focus and only when the
-// session asked for them, and the session's cursor. A session that has ended
-// may still hold the focus until the next key, but the pane then reports no
+// cockpitView draws the cockpit and says what it needs of the outer terminal.
+// It always asks for mouse reporting, so that a drag selects text in the
+// session pane only (see onMouse): cell motion, or all motion in session
+// focus when the session asked for all motion. Focus events are asked for
+// only in session focus and only when the session asked for them, and the
+// session's cursor is placed in session focus. A session that has ended may
+// still hold the focus until the next key, but the pane then reports no
 // modes and no visible cursor, so none is requested or placed.
 func (m *Model) cockpitView() tea.View {
 	l := m.layout()
@@ -40,13 +43,11 @@ func (m *Model) cockpitView() tea.View {
 		m.drawOverlay(p, l)
 	}
 	v := m.newView(buf.Render())
+	v.MouseMode = tea.MouseModeCellMotion
 	if m.focus == sessionFocus && m.rep.pane != nil {
 		modes := m.rep.pane.Modes()
-		switch {
-		case modes.Mouse >= uv.MouseModeMotion:
+		if modes.Mouse >= uv.MouseModeMotion {
 			v.MouseMode = tea.MouseModeAllMotion
-		case modes.Mouse > uv.MouseModeNone:
-			v.MouseMode = tea.MouseModeCellMotion
 		}
 		v.ReportFocus = modes.FocusEvents
 		if pos, ok := m.rep.pane.Cursor(); ok && pos.X < l.inner.Dx() && pos.Y < l.inner.Dy() {
@@ -228,6 +229,7 @@ func (m *Model) drawPane(p *painter, area uv.Rectangle) {
 			}
 		}
 	}
+	m.drawSelection(p, area)
 	if !ended {
 		return
 	}
@@ -386,7 +388,10 @@ func (m *Model) overlayLines(width int) (string, []line) {
 	add(lnHead, "Session focus")
 	add(lnText, "Every key goes to the session, q and Ctrl+C included.")
 	add(lnText, m.opts.ReturnKey.String()+" returns to the console; F12 zooms. In a terminal without the kitty keyboard protocol, Ctrl+4 sends the same byte as Ctrl+\\ and returns too.")
-	add(lnText, "The mouse is reported to the session only in session focus, and only when the session asked for it.")
+	add(lnHead, "Mouse")
+	add(lnText, "Drag in the session terminal to select its text; the release copies it to the clipboard (OSC 52, up to 1 MiB). A click clears the selection.")
+	add(lnText, "In session focus a session that asked for the mouse gets it instead.")
+	add(lnText, "Shift+drag selects across the window in most terminals.")
 	add(lnHead, "Fixture")
 	add(lnText, "This is "+fixtureLabel+". Nothing typed reaches a process.")
 	return "HELP", out
