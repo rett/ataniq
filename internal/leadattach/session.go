@@ -144,7 +144,6 @@ type session struct {
 	snaps     int
 	checked   bool
 	modesSeen bool
-	roleSeen  bool
 	writer    string
 	hint      string
 }
@@ -479,18 +478,13 @@ func (s *session) roleFrame(payload []byte) *outcome {
 	if err != nil {
 		return protocolError("the holder sent a bad role frame")
 	}
-	changed := s.roleSeen && ri.WriterName != s.writer
-	s.roleSeen, s.writer = true, ri.WriterName
+	// The Role frame only updates the status and the name a later Notice
+	// uses: the holder says every writer change once in a Notice of its
+	// own, and the cockpit must not show it twice.
+	s.writer = ri.WriterName
 	c.mutate(func() {
 		c.role = ri.Role
 		c.st.Role = terminalconsole.LiveRole(ri.Role)
-		if changed {
-			n := terminalconsole.LiveNotice{Code: terminalconsole.NoticeWriterChanged, Client: ri.WriterName}
-			if ri.WriterName == "" {
-				n.Text = "The writer was released: there is no writer now."
-			}
-			c.addNoticeLocked(n)
-		}
 	})
 	return nil
 }

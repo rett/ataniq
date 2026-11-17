@@ -337,18 +337,24 @@ func TestStateFrameSetsTheFactsWithoutEndingThePane(t *testing.T) {
 	e.sameScreen(hc)
 }
 
-func TestRoleChangeAndWriterNotice(t *testing.T) {
+func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})
 	hc := e.attach(wire.RoleWriter)
-	hc.roleFrame(wire.RoleWriter, "test console") // the first frame is the state, not a change
-	e.until("role frame", func(terminalconsole.LiveStatus) bool { return true })
+	hc.roleFrame(wire.RoleWriter, "test console")
 	hc.roleFrame(wire.RoleViewer, "other console")
 	st := e.until("viewer", func(st terminalconsole.LiveStatus) bool { return st.Role == terminalconsole.LiveViewer })
 	if st.Conn != terminalconsole.LiveAttached {
 		t.Errorf("state %v", st.Conn)
 	}
-	ns := e.c.Notices()
+	if ns := e.c.Notices(); len(ns) != 0 {
+		t.Fatalf("a Role frame made notices: %+v", ns)
+	}
+
+	// The holder follows a Role frame with one Notice: one notice for the
+	// writer change, naming the new writer from the Role frame.
+	hc.notice(wire.ReasonWriterChanged, "the writer is now other console")
+	ns := e.notices(1)
 	if len(ns) != 1 || ns[0].Code != terminalconsole.NoticeWriterChanged || ns[0].Client != "other console" {
 		t.Fatalf("notices %+v", ns)
 	}
@@ -356,10 +362,14 @@ func TestRoleChangeAndWriterNotice(t *testing.T) {
 		t.Errorf("notices are kept after being taken: %+v", again)
 	}
 
+	// A release is the same: the Role frame is silent, the holder's Notice
+	// is the one notice, with its own text.
 	hc.roleFrame(wire.RoleViewer, "")
-	ns = e.notices(1)
-	if ns[0].Code != terminalconsole.NoticeWriterChanged || ns[0].Client != "" || ns[0].Text == "" {
-		t.Errorf("notice for no writer: %+v", ns)
+	hc.notice(wire.ReasonWriterReleased, "the writer was released")
+	hc.notice(wire.Reason("barrier"), "")
+	ns = e.notices(2)
+	if len(ns) != 2 || ns[0].Code != "writer-released" || ns[0].Text != "the writer was released" || ns[1].Code != "barrier" {
+		t.Errorf("notices after a release: %+v", ns)
 	}
 }
 
