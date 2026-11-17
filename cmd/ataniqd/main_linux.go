@@ -56,11 +56,23 @@ type app struct {
 }
 
 func main() {
-	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
-	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, signals: ch}
+	args := os.Args[1:]
+	os.Exit(newApp(args).run(args))
+}
+
+// newApp is the command as main runs it: the real surroundings and the
+// manager of the systemd user manager. Only the run command takes the
+// termination signals (SIGTERM and SIGINT end the daemon); status and version
+// keep the default, so that Ctrl-C ends them at once.
+func newApp(args []string) *app {
+	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv}
 	a.newManager = a.systemdManager
-	os.Exit(a.run(os.Args[1:]))
+	if len(args) > 0 && args[0] == "run" {
+		ch := make(chan os.Signal, 2)
+		signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+		a.signals = ch
+	}
+	return a
 }
 
 // systemdManager builds the manager of the systemd user manager. When its

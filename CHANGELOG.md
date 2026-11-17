@@ -101,9 +101,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per role (role, kind, state, reason, epoch, desired, manager, and for a
   coordinator its parent and instance) and one for the daemon, or the status
   result as JSON; every string from the socket is escaped, so a hostile one
-  cannot act on the terminal. It exits 0 when the daemon answered, 20 when no
-  daemon answers, 21 when it refuses the user and 22 for an answer that is not
-  valid. The requested and the observed profile stay apart, and a field that was
+  cannot act on the terminal. Only `run` takes SIGTERM and SIGINT as the
+  request to stop; they end `status` at once. `status` exits 0 when the daemon
+  answered, 20 when no daemon answers, 21 when it refuses the user and 22 for
+  an answer that is not valid. The requested and the observed profile stay apart, and a field that was
   not observed is shown as not observed. `ataniqd version` prints the version,
   `0.0.0-dev` unless set with a linker flag, because the `VERSION` file cannot
   be embedded from the command's folder. Leads, coordinators, the holder, the
