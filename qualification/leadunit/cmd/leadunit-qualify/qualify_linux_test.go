@@ -32,23 +32,52 @@ func (f fakeLife) Populated(_ context.Context, st leadunit.State) (bool, error) 
 }
 
 type qrig struct {
-	t      *testing.T
-	fake   *leadunit.Fake
-	q      *qualifier
-	sleeps []time.Duration
-	ready  error
+	t         *testing.T
+	fake      *leadunit.Fake
+	q         *qualifier
+	sleeps    []time.Duration
+	ready     error
+	childArgs func(sent []string) []string // what the child recorded; nil means what it was sent
+	randCalls int
 }
+
+const freshSuffix = "fedcba9876543210"
 
 func newQRig(t *testing.T) *qrig {
 	t.Helper()
 	r := &qrig{t: t, fake: leadunit.NewFake(leadunit.NewFakeClock(time.Unix(1000, 0)))}
 	r.q = &qualifier{
-		mgr:      fakeLife{r.fake},
-		sleep:    func(_ context.Context, d time.Duration) error { r.sleeps = append(r.sleeps, d); return nil },
-		ready:    func(context.Context, string) error { return r.ready },
-		rand:     func() (string, error) { return testSuffix, nil },
+		mgr:   fakeLife{r.fake},
+		sleep: func(_ context.Context, d time.Duration) error { r.sleeps = append(r.sleeps, d); return nil },
+		rand: func() (string, error) {
+			r.randCalls++
+			if r.randCalls == 1 {
+				return testSuffix, nil
+			}
+			return freshSuffix, nil
+		},
 		exe:      "/usr/bin/leadunit-qualify",
 		stateDir: t.TempDir(),
+	}
+	// The child is not run: the ready hook writes the argument record that the
+	// real child writes before its ready file.
+	r.q.ready = func(context.Context, string) error {
+		if r.ready != nil {
+			return r.ready
+		}
+		specs := r.fake.StartedSpecs()
+		if len(specs) == 0 {
+			return errors.New("no unit was started")
+		}
+		got := specs[0].Argv[2:]
+		if r.childArgs != nil {
+			got = r.childArgs(got)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(r.q.argsPath, append(b, '\n'), 0o600)
 	}
 	r.fake.SetProcs("ataniq-qualify-"+testSuffix+".service", leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})
 	return r
@@ -75,7 +104,7 @@ func TestQualifyPassesAgainstAWellBehavedManager(t *testing.T) {
 		}
 		names = append(names, c.Name)
 	}
-	want := "record-unit-name start unit-active description-read-back child-ready second-start-refused inspect-matches sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded cleanup"
+	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded empty-true-for-a-fresh-name cleanup"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("checks %v", names)
 	}
@@ -244,6 +273,7 @@ type tweakLife struct {
 	lifecycle
 	inspect   func(ctx context.Context, unit string, real func() (leadunit.State, error)) (leadunit.State, error)
 	signalErr error // when set, Signal returns it and sends nothing
+	empty     func(st leadunit.State) (ok bool, handled bool, err error)
 }
 
 func (w *tweakLife) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
@@ -261,6 +291,15 @@ func (w *tweakLife) Signal(ctx context.Context, st leadunit.State, sig syscall.S
 	return w.lifecycle.Signal(ctx, st, sig)
 }
 
+func (w *tweakLife) Empty(ctx context.Context, st leadunit.State) (bool, error) {
+	if w.empty != nil {
+		if ok, handled, err := w.empty(st); handled {
+			return ok, err
+		}
+	}
+	return w.lifecycle.Empty(ctx, st)
+}
+
 // cleanupRig is a qualifier set up as it is after a start whose outcome is
 // not known: the unit may exist and nothing was settled.
 func cleanupRig(t *testing.T) (*qrig, string) {
@@ -273,6 +312,110 @@ func cleanupRig(t *testing.T) (*qrig, string) {
 }
 
 func signalCalls(r *qrig) int { return len(r.fake.CallsOf(leadunit.MethodSignal)) }
+
+func TestArgumentsReachTheChildUnchanged(t *testing.T) {
+	r := newQRig(t)
+	rep := r.q.qualify(context.Background())
+	if results(rep)["arguments-reach-the-child-unchanged"] != resultPass {
+		t.Fatalf("%+v", rep)
+	}
+	specs := r.fake.StartedSpecs()
+	argv := specs[0].Argv
+	count := 0
+	for _, a := range argv {
+		if a == literalDollar || a == literalPercent {
+			count++
+		}
+	}
+	if count != 2 || !strings.Contains(literalDollar, "$HOME") || !strings.Contains(literalDollar, "${HOME}") ||
+		!strings.Contains(literalPercent, "%h") || !strings.Contains(literalPercent, "%%") {
+		t.Fatalf("%q %q %q", argv, literalDollar, literalPercent)
+	}
+}
+
+func TestChangedArgumentsFailTheCheckAndTheRestIsSkippedButCleanedUp(t *testing.T) {
+	for name, change := range map[string]func([]string) []string{
+		"expanded": func(a []string) []string {
+			b := append([]string(nil), a...)
+			for i := range b {
+				b[i] = strings.ReplaceAll(b[i], "$HOME", "/home/x")
+			}
+			return b
+		},
+		"specifier": func(a []string) []string {
+			b := append([]string(nil), a...)
+			for i := range b {
+				b[i] = strings.ReplaceAll(b[i], "%%", "%")
+			}
+			return b
+		},
+		"missing": func(a []string) []string { return a[:len(a)-1] },
+		"extra":   func(a []string) []string { return append(append([]string(nil), a...), "x") },
+	} {
+		r := newQRig(t)
+		r.childArgs = change
+		rep := r.q.qualify(context.Background())
+		res := results(rep)
+		if rep.Verdict != resultFail || res["arguments-reach-the-child-unchanged"] != resultFail || res["second-start-refused"] != resultSkipped || res["cleanup"] != resultPass {
+			t.Errorf("%s: %+v", name, rep)
+		}
+		if r.fake.Loaded(rep.Unit) {
+			t.Errorf("%s: left running", name)
+		}
+	}
+	// No record at all (the child died before it wrote it) fails too.
+	r := newQRig(t)
+	ready := r.q.ready
+	r.q.ready = func(ctx context.Context, p string) error {
+		if err := ready(ctx, p); err != nil {
+			return err
+		}
+		return os.Remove(r.q.argsPath)
+	}
+	if rep := r.q.qualify(context.Background()); results(rep)["arguments-reach-the-child-unchanged"] != resultFail {
+		t.Fatalf("%+v", rep)
+	}
+}
+
+func TestEmptyOnAFreshNameIsACheck(t *testing.T) {
+	r := newQRig(t)
+	rep := r.q.qualify(context.Background())
+	if results(rep)["empty-true-for-a-fresh-name"] != resultPass {
+		t.Fatalf("%+v", rep)
+	}
+	fresh := "ataniq-qualify-" + freshSuffix + ".service"
+	var asked []leadunit.State
+	for _, c := range r.fake.CallsOf(leadunit.MethodEmpty) {
+		if c.Unit == fresh {
+			asked = append(asked, leadunit.State{Unit: c.Unit, InvocationID: c.Invocation})
+		}
+	}
+	if len(asked) != 1 || asked[0].InvocationID != "" {
+		t.Fatalf("Empty for the fresh name: %+v", asked)
+	}
+
+	// A false answer, an error and a repeated random name each fail it.
+	for name, setup := range map[string]func(r *qrig){
+		"false": func(r *qrig) {
+			r.q.mgr = &tweakLife{lifecycle: r.q.mgr, empty: func(st leadunit.State) (bool, bool, error) {
+				return false, st.Unit == fresh, nil
+			}}
+		},
+		"error": func(r *qrig) {
+			r.q.mgr = &tweakLife{lifecycle: r.q.mgr, empty: func(st leadunit.State) (bool, bool, error) {
+				return false, st.Unit == fresh, errors.New("cannot derive the group of the user manager")
+			}}
+		},
+		"repeated name": func(r *qrig) { r.q.rand = func() (string, error) { return testSuffix, nil } },
+	} {
+		r := newQRig(t)
+		setup(r)
+		rep := r.q.qualify(context.Background())
+		if rep.Verdict != resultFail || results(rep)["empty-true-for-a-fresh-name"] != resultFail || results(rep)["cleanup"] != resultPass {
+			t.Errorf("%s: %+v", name, rep)
+		}
+	}
+}
 
 func TestCleanupNeverSignalsAUnitThatIsNotItsOwnIntent(t *testing.T) {
 	for name, desc := range map[string]string{

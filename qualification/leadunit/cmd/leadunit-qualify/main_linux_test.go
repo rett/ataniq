@@ -4,11 +4,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -87,6 +89,8 @@ func TestDryRunPrintsThePlanAndTouchesNothing(t *testing.T) {
 			"ataniq-qualify-<random>.service",
 			"child --ignore-term",
 			"a second start with the same name is refused",
+			"one with $HOME and one with %h, reach the child unchanged",
+			"Empty is true for a fresh, never-used unit name",
 			"never a unit whose description is not this run's",
 			"SIGTERM to the child, which ignores it, leaves the control group populated",
 			"wait 2 s, send SIGKILL",
@@ -199,6 +203,10 @@ func TestParseChild(t *testing.T) {
 	if err != nil || !o.ignoreTerm || o.readyFile != "/x/ready" || o.maxLife != 3*time.Second {
 		t.Fatalf("%+v %v", o, err)
 	}
+	o, err = parseChild([]string{"--args-file", "/x/args", "--literal", "$HOME", "--literal", "%h", "--literal=a%%b"})
+	if err != nil || o.argsFile != "/x/args" || !reflect.DeepEqual(o.literals, []string{"$HOME", "%h", "a%%b"}) {
+		t.Fatalf("%+v %v", o, err)
+	}
 	o, err = parseChild(nil)
 	if err != nil || o.ignoreTerm || o.maxLife != defaultMaxLife {
 		t.Fatalf("%+v %v", o, err)
@@ -289,6 +297,35 @@ func TestChildWithoutIgnoreTermDiesOfTerm(t *testing.T) {
 	}
 }
 
+// The child records the arguments it was started with, as a process sees them,
+// before it writes its ready file, so that the harness can compare them with
+// what it sent.
+func TestChildRecordsItsArgumentsBeforeItIsReady(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	ready := filepath.Join(dir, "ready")
+	sent := []string{"--ignore-term", "--ready-file", ready, "--args-file", argsFile,
+		"--literal", literalDollar, "--literal", literalPercent, "--max-life", "30s"}
+	cmd := helper(t, sent...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	waitFile(t, ready)
+	b, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal("the ready file exists before the argument record:", err)
+	}
+	var got []string
+	if err := json.Unmarshal(b, &got); err != nil || !reflect.DeepEqual(got, sent) {
+		t.Fatalf("%q %v", got, err)
+	}
+	fi, err := os.Stat(argsFile)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("%v %v", fi, err)
+	}
+}
+
 func TestChildEndsByItselfAtItsMaximumLife(t *testing.T) {
 	cmd := helper(t, "--ignore-term", "--max-life", "200ms")
 	if err := cmd.Run(); err != nil {
@@ -304,6 +341,13 @@ func TestChildFailsOnAnExistingReadyFileAndOnBadArguments(t *testing.T) {
 	var errb bytes.Buffer
 	if code := runChild([]string{"--ready-file", ready, "--max-life", "10ms"}, &errb); code != exitRuntime {
 		t.Fatalf("exit %d", code)
+	}
+	args := filepath.Join(t.TempDir(), "args")
+	if err := os.WriteFile(args, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runChild([]string{"--args-file", args, "--max-life", "10ms"}, &errb); code != exitRuntime {
+		t.Fatalf("an existing argument record: exit %d", code)
 	}
 	if code := runChild([]string{"--bogus"}, &errb); code != exitUsage {
 		t.Fatalf("exit %d", code)

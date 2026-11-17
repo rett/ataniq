@@ -8,25 +8,30 @@
 // a unique name, ataniq-qualify-<random>.service (never the name of a role),
 // that re-executes this program as "leadunit-qualify child --ignore-term", a
 // helper that ignores SIGTERM, and checks the manager against it: the start
-// and the description read back; a second start with the same name is
-// refused; Inspect matches the start; SIGTERM leaves the control group
+// and the description read back; the child's arguments, among them one with
+// $HOME and one with %h, reach it unchanged (the child records what it was
+// started with before it says it is ready); a second start with the same name
+// is refused; Inspect matches the start; SIGTERM leaves the control group
 // populated; after 2 s SIGKILL empties it; Empty is then true and the unit is
-// not loaded. It prints one JSON report with a line per check and an overall
-// verdict, and exits non-zero when any check fails. It always cleans up its
-// own unit and says what it did: it sends SIGKILL only to a unit whose
-// description is this run's own epoch and intent (a unit of that name with
-// another description is left alone and reported), waits for the unit's
-// invocation id before it signals, reports "not sent" when nothing was sent,
-// and reports when it could not prove the group empty.
+// not loaded; and Empty is true for a fresh, never-used unit name, which is
+// the one case that needs the user manager's own control group to be derived.
+// It prints one JSON report with a line per check and an overall verdict, and
+// exits non-zero when any check fails. It always cleans up its own unit and
+// says what it did: it sends SIGKILL only to a unit whose description is this
+// run's own epoch and intent (a unit of that name with another description is
+// left alone and reported), waits for the unit's invocation id before it
+// signals, reports "not sent" when nothing was sent, and reports when it could
+// not prove the group empty.
 //
 // What it does not prove. A passing run says that these checks held once, on
 // this host, for this unit, at this systemd version; it is not a
 // qualification of the manager in general. It does not simulate a lost start
 // reply (the report lists it as not attempted), a crash of the daemon, a
 // reboot, a unit that is replaced under the same name, or a populated group
-// that SIGKILL cannot empty. It does not look at the unit's environment beyond
-// what the start call sent. It needs the user manager of the calling user and
-// reaches the system manager nowhere.
+// that SIGKILL cannot empty.
+// It does not look at the unit's environment beyond what the start call sent.
+// It needs the user manager of the calling user and reaches the system
+// manager nowhere.
 //
 // The program is provisional and unqualified.
 package main

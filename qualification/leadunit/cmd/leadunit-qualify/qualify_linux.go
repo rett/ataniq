@@ -30,6 +30,14 @@ const (
 	cleanupBound = 20 * time.Second
 )
 
+// Literal arguments of the child. systemd must hand them to the process as
+// they are: no $VAR or ${VAR} expansion and no specifier ("%h" is the home
+// folder, "%%" a percent sign, "%u" the user) for a transient unit's command.
+const (
+	literalDollar  = "a$HOME-${HOME}-b"
+	literalPercent = "a%h-%%-%u-b"
+)
+
 // The result of one check.
 const (
 	resultPass    = "pass"
@@ -76,6 +84,7 @@ type qualifier struct {
 	unit      string
 	intent    string
 	readyPath string
+	argsPath  string
 	mayExist  bool
 	first     leadunit.State // what Start returned: it can be partial
 	started   leadunit.State // the settled state: active, with its invocation and control group
@@ -119,10 +128,11 @@ func waitReadyFile(ctx context.Context, path string) error {
 
 func (q *qualifier) spec(intent string) leadunit.Spec {
 	return leadunit.Spec{
-		Unit:    q.unit,
-		Epoch:   1,
-		Intent:  intent,
-		Argv:    []string{q.exe, "child", "--ignore-term", "--ready-file", q.readyPath},
+		Unit:   q.unit,
+		Epoch:  1,
+		Intent: intent,
+		Argv: []string{q.exe, "child", "--ignore-term", "--ready-file", q.readyPath, "--args-file", q.argsPath,
+			"--literal", literalDollar, "--literal", literalPercent},
 		WorkDir: q.stateDir,
 		Env:     []string{"LANG=C"},
 	}
@@ -150,6 +160,7 @@ func (q *qualifier) qualify(ctx context.Context) report {
 	q.suffix = suffix
 	q.unit = "ataniq-qualify-" + suffix + ".service"
 	q.readyPath = filepath.Join(q.stateDir, "ready-"+suffix)
+	q.argsPath = filepath.Join(q.stateDir, "args-"+suffix)
 	intent := "q-" + suffix
 	q.intent = intent
 	rep.Unit, rep.Intent = q.unit, intent
@@ -168,6 +179,7 @@ func (q *qualifier) qualify(ctx context.Context) report {
 			defer cancel()
 			return "the child ignores SIGTERM", q.ready(rctx, q.readyPath)
 		}},
+		{"arguments-reach-the-child-unchanged", func(ctx context.Context) (string, error) { return q.argumentsUnchanged(spec) }},
 		{"second-start-refused", func(ctx context.Context) (string, error) { return q.secondStart(ctx, spec) }},
 		{"inspect-matches", q.inspectMatches},
 		{"sigterm-leaves-group-populated", q.sigterm},
@@ -176,6 +188,7 @@ func (q *qualifier) qualify(ctx context.Context) report {
 		}},
 		{"empty-true", q.emptyTrue},
 		{"unit-not-loaded", q.notLoaded},
+		{"empty-true-for-a-fresh-name", q.emptyFreshName},
 	}
 	failed := false
 	for _, s := range steps {
@@ -264,6 +277,53 @@ func (q *qualifier) description(spec leadunit.Spec) (string, error) {
 		}
 	}
 	return "description " + strconv.Quote(spec.Description()) + " read back by Start and by Inspect as epoch and intent", nil
+}
+
+// argumentsUnchanged compares what the child saw as its arguments, which it
+// wrote before its ready file, with what the harness sent, among them one
+// element with $HOME and one with %h.
+func (q *qualifier) argumentsUnchanged(spec leadunit.Spec) (string, error) {
+	b, err := os.ReadFile(q.argsPath)
+	if err != nil {
+		return "", fmt.Errorf("the child's argument record: %w", err)
+	}
+	var got []string
+	if err := json.Unmarshal(b, &got); err != nil {
+		return "", fmt.Errorf("the child's argument record is not a list of strings: %w", err)
+	}
+	want := spec.Argv[2:] // the child saw what follows "child"
+	if len(got) != len(want) {
+		return "", fmt.Errorf("the child saw %d arguments %q, the unit was started with %d %q", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return "", fmt.Errorf("argument %d reached the child as %q, it was sent as %q", i, got[i], want[i])
+		}
+	}
+	return "the arguments, including " + strconv.Quote(literalDollar) + " and " + strconv.Quote(literalPercent) + ", reached the child unchanged", nil
+}
+
+// emptyFreshName checks Empty case 3 on a unit name that was never used: the
+// State has no invocation and no control group, so the answer rests on the
+// unit not being loaded and no group of that name existing under the user
+// manager, which needs the manager's own control group to be derived.
+func (q *qualifier) emptyFreshName(ctx context.Context) (string, error) {
+	suffix, err := q.rand()
+	if err != nil {
+		return "", fmt.Errorf("no random name: %w", err)
+	}
+	if suffix == q.suffix {
+		return "", errors.New("the random name repeated, so it is not a fresh one")
+	}
+	unit := "ataniq-qualify-" + suffix + ".service"
+	ok, err := q.mgr.Empty(ctx, leadunit.State{Unit: unit})
+	if err != nil {
+		return "", fmt.Errorf("Empty for %s: %w", unit, err)
+	}
+	if !ok {
+		return "", fmt.Errorf("Empty for the never-used %s is false", unit)
+	}
+	return "Empty is true for the never-used " + unit + " (case 3: not loaded and no group of that name)", nil
 }
 
 func (q *qualifier) secondStart(ctx context.Context, spec leadunit.Spec) (string, error) {
@@ -431,6 +491,7 @@ func (q *qualifier) saveReport(rep report) error {
 		return nil
 	}
 	_ = os.Remove(q.readyPath)
+	_ = os.Remove(q.argsPath)
 	var buf bytes.Buffer
 	if err := writeReport(&buf, rep); err != nil {
 		return err

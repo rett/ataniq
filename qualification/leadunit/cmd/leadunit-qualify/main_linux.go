@@ -117,13 +117,15 @@ With --run --state-dir %s it would:
   3. start the transient user unit ataniq-qualify-<random>.service, which runs
      "<this executable> child --ignore-term --ready-file %s/ready-<random>"
   4. check: start, and the description read back
-  5. check: a second start with the same name is refused
-  6. check: Inspect matches the start
-  7. check: SIGTERM to the child, which ignores it, leaves the control group populated
-  8. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
-  9. always clean up: SIGKILL its own unit (never a unit whose description is not this run's
+  5. check: the arguments, among them one with $HOME and one with %%h, reach the child unchanged
+  6. check: a second start with the same name is refused
+  7. check: Inspect matches the start
+  8. check: SIGTERM to the child, which ignores it, leaves the control group populated
+  9. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
+ 10. check: Empty is true for a fresh, never-used unit name (no invocation, no group)
+ 11. always clean up: SIGKILL its own unit (never a unit whose description is not this run's
      intent) and report what was and was not sent and whether the group was proven empty
- 10. print one JSON report with a line per check and a verdict; exit non-zero on any failure
+ 12. print one JSON report with a line per check and a verdict; exit non-zero on any failure
 Not attempted: a lost start reply.
 `, dir, dir, dir, dir)
 }
