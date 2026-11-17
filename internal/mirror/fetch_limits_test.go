@@ -206,6 +206,28 @@ func TestFetchRefCap(t *testing.T) {
 	}
 }
 
+// TestFetchRefCapHasACeiling: a request for more than 20 000 branches is
+// refused with an error that says why, before anything is asked of the
+// planner or changed; exactly 20 000 is accepted.
+func TestFetchRefCapHasACeiling(t *testing.T) {
+	e := newFetchEnv(t)
+	was := e.state0(t)
+	req := e.req()
+	req.Limits.MaxRefs = 20001
+	_, err := e.m.Fetch(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "20001") || !strings.Contains(err.Error(), "20000") {
+		t.Fatalf("Fetch with a cap of 20001 = %v, want an error that names both numbers", err)
+	}
+	if got := e.planner.ServeRequests(); len(got) != 0 {
+		t.Errorf("the planner was asked: %+v", got)
+	}
+	e.unchanged(t, was)
+	req.Limits.MaxRefs = 20000
+	if _, err := e.m.Fetch(context.Background(), req); err != nil {
+		t.Errorf("Fetch with a cap of exactly 20000 = %v", err)
+	}
+}
+
 func TestFetchStagedLimit(t *testing.T) {
 	setup := func(t *testing.T) *fetchEnv {
 		e := newFetchEnv(t)

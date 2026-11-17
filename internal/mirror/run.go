@@ -53,9 +53,18 @@ type FetchLimits struct {
 	MaxMirror int64
 	// MaxEntries is the most files and folders that any measure counts.
 	MaxEntries int64
-	// MaxRefs is the most branches that one lead may have.
+	// MaxRefs is the most branches that one lead may have. A request of
+	// more than 20 000 is refused, whatever the lead has: the move names
+	// every new tip as an argument of one git run, and the system limit on
+	// the size of the arguments and the environment of one command (about
+	// 2 MiB on Linux) must not decide the outcome of a fetch.
 	MaxRefs int
 }
+
+// maxFetchMaxRefs is the largest FetchLimits.MaxRefs that is accepted. An
+// argument is at most 65 bytes (a SHA-256 id and its NUL) and 8 for its
+// pointer, so 20 000 tips are about 1.5 MB.
+const maxFetchMaxRefs = 20000
 
 // Defaults of a fetch. See [DefaultFetchLimits].
 const (
@@ -117,6 +126,9 @@ func (l FetchLimits) check() error {
 	if l.Timeout < 0 || l.MaxRefs < 0 || l.MaxSource < 0 || l.MaxStaged < 0 ||
 		l.MaxMirror < 0 || l.MaxEntries < 0 {
 		return errors.New("mirror: limits must not be negative")
+	}
+	if l.MaxRefs > maxFetchMaxRefs {
+		return fmt.Errorf("mirror: the limit of %d branches for one lead is more than a fetch accepts, %d", l.MaxRefs, maxFetchMaxRefs)
 	}
 	return nil
 }
