@@ -54,10 +54,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does, stays inside the pane, and on release copies the text to the outer
   terminal's clipboard with OSC 52 (wide characters and grapheme clusters
   once, trailing blanks dropped, rows joined with newlines, a wrapped line as
-  two lines). A selection over 1 MiB is not copied and the key bar says so.
+  two lines). A selection over 1 MiB is not copied and the key bar says so
+  until the next press; in zoom the header does, which now shows every notice
+  ahead of its keys and keeps the fixture label.
   The selection is cleared by a press, a key or paste sent to the session, a
-  resize, F12, `r`, or output that changes the selected text. A click alone
-  copies nothing, and a press outside the pane or the wheel selects nothing.
+  resize (also when the pane follows it after the debounce), F12, `r`, or
+  output that changes the selected text, also under a held drag whose
+  pointer stays still, so a lost release leaves no highlight. A click alone,
+  a selection of blanks, and a release while help or the action list is open
+  copy nothing, and a press outside the pane or the wheel selects nothing.
   Shift+drag gives the terminal's own selection in most terminals, Ghostty
   included. A terminal that refuses OSC 52 writes copies nothing.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module

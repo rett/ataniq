@@ -1,6 +1,8 @@
 package terminalconsole
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -29,6 +31,11 @@ type selection struct {
 	// text is the selected text as copied, or as read at the last check. A
 	// change in it clears the selection.
 	text string
+	// While the button is held, read is true once text has been read with
+	// the head at readAt. The pointer moving on makes the next check read
+	// it again instead of comparing.
+	read   bool
+	readAt uv.Position
 }
 
 // shown reports whether there is a selection to draw.
@@ -76,8 +83,9 @@ func (m *Model) sessionTakesMouse() bool {
 }
 
 // onMouse handles a mouse event in the cockpit. Any press clears the
-// selection. When the session takes the mouse the event goes to the pane, as
-// the session asked; otherwise it makes a selection in the pane.
+// selection, and the notice of a selection that was not copied. When the
+// session takes the mouse the event goes to the pane, as the session asked;
+// otherwise it makes a selection in the pane.
 func (m *Model) onMouse(msg tea.MouseMsg) tea.Cmd {
 	l := m.layout()
 	if !l.cockpit || m.rep.pane == nil {
@@ -85,6 +93,7 @@ func (m *Model) onMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	if _, ok := msg.(tea.MouseClickMsg); ok {
 		m.sel = selection{}
+		m.dropRefusal()
 	}
 	if m.sessionTakesMouse() {
 		if m.sel.drag {
@@ -118,7 +127,8 @@ func uvMouse(msg tea.MouseMsg) uv.MouseEvent {
 // starts it, motion extends it, clamped to the drawn pane however far the
 // pointer goes, and the release ends it and copies the text. A press
 // elsewhere, another button, the wheel, and a press while help or the action
-// list is open start nothing.
+// list is open start nothing, and a release while one of them is open ends
+// the selection and copies nothing.
 func (m *Model) selectMouse(msg tea.MouseMsg, l layout) tea.Cmd {
 	area := m.paneArea(l)
 	at := func(x, y int) uv.Position {
@@ -137,6 +147,10 @@ func (m *Model) selectMouse(msg tea.MouseMsg, l layout) tea.Cmd {
 		}
 	case tea.MouseReleaseMsg:
 		if !m.sel.drag {
+			return nil
+		}
+		if m.overlay != "" {
+			m.sel = selection{}
 			return nil
 		}
 		m.extend(at(e.X, e.Y))
@@ -158,8 +172,9 @@ func (m *Model) extend(p uv.Position) {
 }
 
 // copySelection reads the selected text and copies it to the outer terminal's
-// clipboard with OSC 52. Empty text is not copied, and text longer than
-// maxCopy is not copied at all; a notice says so.
+// clipboard with OSC 52. Text of blanks alone, on one row or several, is not
+// copied, so the clipboard keeps what it held. Text longer than maxCopy is
+// not copied at all; a notice says so until the next press.
 func (m *Model) copySelection() tea.Cmd {
 	from, to := m.sel.span()
 	text, ok := m.rep.pane.Text(from, to, maxCopy)
@@ -168,23 +183,41 @@ func (m *Model) copySelection() tea.Cmd {
 		return nil
 	}
 	m.sel.text = text
-	if text == "" {
+	if strings.Trim(text, "\n") == "" {
 		return nil
 	}
 	return tea.Raw(ansi.SetSystemClipboard(text))
 }
 
-// checkSelection clears a finished selection when the text it covers has
-// changed since it was copied: the session wrote over it, scrolled or
-// cleared the screen. It runs after output reaches the pane and when a
-// frame held for synchronized output stops being shown. A selection being
-// dragged is not checked: its text is read when it is released.
+// dropRefusal removes the notice of a selection that was not copied, and
+// leaves any other notice.
+func (m *Model) dropRefusal() {
+	if m.notice == copyRefused {
+		m.notice = ""
+	}
+}
+
+// checkSelection clears a selection when the text it covers has changed: the
+// session wrote over it, scrolled or cleared the screen. It runs after output
+// reaches the pane and when a frame held for synchronized output stops being
+// shown. A finished selection is compared with the text it copied. A
+// selection being dragged is compared with the text read at the last check,
+// if the pointer has not moved since; so a drag whose release never arrives
+// does not stay over output that changes under it. A drag over more than
+// maxCopy is left for its release to refuse.
 func (m *Model) checkSelection() {
-	if !m.sel.shown() || m.sel.drag || m.rep.pane == nil {
+	if !m.sel.shown() || m.rep.pane == nil {
 		return
 	}
 	from, to := m.sel.span()
-	if text, ok := m.rep.pane.Text(from, to, maxCopy); !ok || text != m.sel.text {
+	text, ok := m.rep.pane.Text(from, to, maxCopy)
+	if m.sel.drag && (!m.sel.read || m.sel.readAt != m.sel.head) {
+		if ok {
+			m.sel.text, m.sel.read, m.sel.readAt = text, true, m.sel.head
+		}
+		return
+	}
+	if !ok || text != m.sel.text {
 		m.sel = selection{}
 	}
 }

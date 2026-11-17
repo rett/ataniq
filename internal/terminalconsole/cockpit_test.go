@@ -470,9 +470,9 @@ func TestZoomKeyIgnoresLockStatesOnly(t *testing.T) {
 	}
 }
 
-// TestZoomIgnoresTheKeysThatDrawNothing checks that ?, Ctrl+K and a, whose
-// help, action list and notice zoom does not draw, change no state there, so
-// that the next Enter still focuses the session.
+// TestZoomIgnoresTheKeysThatDrawNothing checks that ? and Ctrl+K, whose help
+// and action list zoom does not draw, and a change no state there, so that
+// the next Enter still focuses the session.
 func TestZoomIgnoresTheKeysThatDrawNothing(t *testing.T) {
 	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK, {Code: 'a', Text: "a"}} {
 		r := newRig(t, 140, 45, Options{})

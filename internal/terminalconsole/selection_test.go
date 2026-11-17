@@ -120,6 +120,25 @@ func TestSelectionCopiesAStreamOfRows(t *testing.T) {
 	}
 }
 
+// TestSelectionReplacesReverseVideo selects text the session wrote in
+// reverse video: the selected cells are drawn in the selection colours, not
+// swapped by the reverse attribute, and the cells outside keep it.
+func TestSelectionReplacesReverseVideo(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, "\x1b[7mhello world\x1b[m")
+	wantCopy(t, r.dragPane(0, 0, 4, 0), "hello")
+	buf := r.drawnPane()
+	for x := 0; x <= 4; x++ {
+		wx, wy := r.win(x, 0)
+		if c := buf.CellAt(wx, wy); !r.selected(buf, x, 0) || c.Style.Attrs&uv.AttrReverse != 0 {
+			t.Fatalf("selected cell %d: %+v", x, c.Style)
+		}
+	}
+	wx, wy := r.win(6, 0)
+	if c := buf.CellAt(wx, wy); r.selected(buf, 6, 0) || c.Style.Attrs&uv.AttrReverse == 0 {
+		t.Fatalf("cell after the selection: %+v", c.Style)
+	}
+}
+
 func TestSelectionBackwardsCopiesTheSameText(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, selText)
 	wantCopy(t, r.dragPane(4, 2, 6, 0), "world\nsecond row\nthird")
@@ -159,6 +178,24 @@ func TestSelectionTrimsTrailingBlanks(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, "a  b      \r\n   \r\n  c   ")
 	cols, _ := r.paneSize()
 	wantCopy(t, r.dragPane(0, 0, cols-1, 2), "a  b\n\n  c")
+}
+
+// TestBlankSelectionCopiesNothing checks that a selection of blanks, on one
+// row or across rows, copies nothing, so the clipboard keeps what it held,
+// and that it is still shown.
+func TestBlankSelectionCopiesNothing(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	if msg := r.dragPane(20, 0, 40, 0); msg != nil {
+		t.Fatalf("blanks on one row copied %#v", msg)
+	}
+	if msg := r.dragPane(20, 4, 10, 7); msg != nil {
+		t.Fatalf("blank rows copied %#v", msg)
+	}
+	if !r.m.sel.shown() {
+		t.Fatal("a blank selection is not shown")
+	}
+	// Blanks before text on the next row are copied with it.
+	wantCopy(t, r.dragPane(20, 1, 4, 2), "\nthird")
 }
 
 func TestClickWithoutDragCopiesNothingAndClears(t *testing.T) {
@@ -216,29 +253,132 @@ func TestSelectionStartsOnlyInThePane(t *testing.T) {
 }
 
 // TestSelectionRefusesMoreThanTheCap fills the pane with clusters of
-// combining marks until its text is over maxCopy: the release copies nothing
+// combining marks until its text is over 1 MiB: the release copies nothing
 // and says why.
 func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, "")
-	cols, rows := r.paneSize()
-	cluster := "a" + strings.Repeat("́", 700)
-	cells := maxCopy/len(cluster) + 1
-	if cells > cols*rows {
-		t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, cells)
-	}
-	var b strings.Builder
-	for i := 0; i < cells; i++ {
-		b.WriteString(cluster)
-	}
-	r.m.rep.pane.Write([]byte(b.String()))
-	if msg := r.dragPane(0, 0, cols-1, rows-1); msg != nil {
-		t.Fatalf("copied %d bytes", len(msg.(tea.RawMsg).Msg.(string)))
-	}
+	cluster := r.fillOverCap()
+	r.dragAll(true)
 	if r.m.notice != copyRefused || !strings.Contains(r.view(), copyRefused) {
 		t.Fatalf("notice %q", r.m.notice)
 	}
-	// A selection under the cap is still copied.
+	// A selection under the cap is still copied, and the notice goes.
 	wantCopy(t, r.dragPane(0, 0, 1, 0), cluster+cluster)
+	if r.m.notice != "" || strings.Contains(r.view(), copyRefused) {
+		t.Fatalf("after a copy the notice is %q", r.m.notice)
+	}
+}
+
+// mib is the cap on a copy the guide and the changelog state. The tests use
+// it, not maxCopy, so that a change of the constant fails them.
+const mib = 1 << 20
+
+// fillOverCap fills the session pane with clusters of combining marks until
+// its text is over 1 MiB, and returns the cluster.
+func (r *rig) fillOverCap() string {
+	r.t.Helper()
+	cluster := "a" + strings.Repeat("́", 700)
+	r.fillClusters(cluster, mib/len(cluster)+1)
+	return cluster
+}
+
+// fillClusters clears the session pane and writes n copies of cluster.
+func (r *rig) fillClusters(cluster string, n int) {
+	r.t.Helper()
+	if cols, rows := r.paneSize(); n > cols*rows {
+		r.t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, n)
+	}
+	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + strings.Repeat(cluster, n)))
+}
+
+// TestSelectionJustUnderTheCapIsCopied fills the pane with as many clusters
+// as fit in 1 MiB with the row newlines: all of it is copied.
+func TestSelectionJustUnderTheCapIsCopied(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, "")
+	_, rows := r.paneSize()
+	cluster := "a" + strings.Repeat("́", 700)
+	n := (mib - rows) / len(cluster)
+	r.fillClusters(cluster, n)
+	r.dragAll(false)
+	if len(r.m.sel.text) <= mib-len(cluster) || len(r.m.sel.text) > mib {
+		t.Fatalf("copied %d bytes, want just under %d", len(r.m.sel.text), mib)
+	}
+}
+
+// dragAll selects the whole pane and fails the test unless that copied
+// nothing, when refused is true, or copied something.
+func (r *rig) dragAll(refused bool) {
+	r.t.Helper()
+	cols, rows := r.paneSize()
+	msg := r.dragPane(0, 0, cols-1, rows-1)
+	if refused && msg != nil {
+		r.t.Fatalf("copied %d bytes", len(msg.(tea.RawMsg).Msg.(string)))
+	}
+	if !refused && msg == nil {
+		r.t.Fatal("copied nothing")
+	}
+}
+
+// TestZoomShowsTheRefusal checks that zoom, which has no key bar, shows the
+// notice of a selection that was not copied in its header, and keeps the
+// fixture label there, with the keys when the line has room for them.
+func TestZoomShowsTheRefusal(t *testing.T) {
+	header := func(r *rig) string { return r.rows()[0] }
+	r := selRig(t, 140, 45, Options{}, "")
+	r.focusSession()
+	r.key(zoomPress)
+	r.fillOverCap()
+	r.dragAll(true)
+	h := header(r)
+	if !strings.HasPrefix(h, copyRefused) || !strings.Contains(h, "return Ctrl+\\") || !strings.HasSuffix(strings.TrimRight(h, " "), fixtureLabel) {
+		t.Fatalf("session focus, 140 columns: header %q", h)
+	}
+	// A press removes the notice and brings back the usual header.
+	r.mouse(tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	if h := header(r); !strings.HasPrefix(h, "SESSION FOCUS") {
+		t.Fatalf("after a press: header %q", h)
+	}
+	// Too narrow for the keys too: the notice and the fixture label.
+	r = selRig(t, 100, 30, Options{}, "")
+	r.key(zoomPress)
+	r.fillOverCap()
+	r.dragAll(true)
+	if h := header(r); !strings.HasPrefix(h, copyRefused+" · "+fixtureLabel) {
+		t.Fatalf("console focus, 100 columns: header %q", h)
+	}
+	// A notice too long for the line is cut, and the label stays whole.
+	r.key(zoomPress)
+	r.key(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	r.key(zoomPress)
+	if h := strings.TrimRight(header(r), " "); !strings.HasPrefix(h, "Unavailable: ") || !strings.HasSuffix(h, "… · "+fixtureLabel) {
+		t.Fatalf("a long notice: header %q", h)
+	}
+}
+
+// TestPressDropsTheRefusalOnly checks that a press removes the notice of a
+// selection that was not copied, even when the session takes the mouse, and
+// leaves any other notice.
+func TestPressDropsTheRefusalOnly(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	x, y := r.win(2, 1)
+	r.m.notice = copyRefused
+	r.mouse(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	if r.m.notice != "" {
+		t.Fatalf("a press in the tree kept the notice %q", r.m.notice)
+	}
+	r.focusSession()
+	r.m.rep.pane.Write([]byte("\x1b[?1000h"))
+	r.m.notice = copyRefused
+	r.mouse(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if r.m.notice != "" {
+		t.Fatalf("a press sent to the session kept the notice %q", r.m.notice)
+	}
+	const other = "Paste not sent: it is longer than the console forwards."
+	r.m.notice = other
+	r.mouse(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if r.m.notice != other {
+		t.Fatalf("a press removed another notice: %q", r.m.notice)
+	}
 }
 
 // TestSessionMouseGoesToTheSessionAndSelectsNothing checks that a session
@@ -265,6 +405,29 @@ func TestSessionMouseGoesToTheSessionAndSelectsNothing(t *testing.T) {
 	wantCopy(t, r.dragPane(1, 0, 5, 1), "ello world\nsecond")
 	if len(r.sink.mouse) != 3 {
 		t.Fatal("the selection reached the session")
+	}
+}
+
+// TestSessionTakingTheMouseEndsADrag starts a drag in session focus before
+// the session asks for the mouse: once it asks, the next event goes to the
+// session, the drag ends and the release copies nothing.
+func TestSessionTakingTheMouseEndsADrag(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	r.focusSession()
+	x0, y0 := r.win(0, 0)
+	x1, y1 := r.win(4, 1)
+	r.mouse(tea.MouseClickMsg{X: x0, Y: y0, Button: tea.MouseLeft})
+	r.mouse(tea.MouseMotionMsg{X: x1, Y: y1, Button: tea.MouseLeft})
+	r.m.rep.pane.Write([]byte("\x1b[?1002h"))
+	r.mouse(tea.MouseMotionMsg{X: x1 + 1, Y: y1, Button: tea.MouseLeft})
+	if r.m.sel.drag || r.m.sel.shown() {
+		t.Fatalf("the session took the mouse and the drag went on: %+v", r.m.sel)
+	}
+	if msg := r.mouse(tea.MouseReleaseMsg{X: x1 + 1, Y: y1, Button: tea.MouseLeft}); msg != nil {
+		t.Fatalf("the release copied %#v", msg)
+	}
+	if len(r.sink.mouse) != 2 {
+		t.Fatalf("%d mouse events reached the session, want the motion and the release", len(r.sink.mouse))
 	}
 }
 
@@ -341,7 +504,6 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, selText)
 	sel := func() {
 		t.Helper()
-		r.m.notice = ""
 		wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
 	}
 	clears := func(what string, do func()) {
@@ -388,4 +550,125 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	}
 	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + selText))
 	clears("a replay", func() { r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}) })
+}
+
+// TestSelectionIsCheckedWhenAHeldFrameTimesOut changes the selected text
+// inside a synchronized update that never ends: the pane shows the held
+// frame, so the selection stays until the frame stops being shown, and then
+// the hold timer's message alone clears it.
+func TestSelectionIsCheckedWhenAHeldFrameTimesOut(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.rep.pane.Write([]byte("\x1b[?2026h\x1b[1;1Hjello"))
+	deadline, ok := r.m.rep.pane.HoldDeadline()
+	if !ok {
+		t.Fatal("the pane holds no frame")
+	}
+	r.m.Update(holdMsg{at: deadline.Add(-time.Millisecond)})
+	if !r.m.sel.shown() {
+		t.Fatal("the held frame's text was taken for a change")
+	}
+	r.m.Update(holdMsg{at: deadline})
+	if r.m.sel.shown() {
+		t.Fatal("the end of the held frame kept the selection")
+	}
+}
+
+// TestDragIsClearedByOutputUnderIt checks a drag whose release has not
+// arrived: output that changes the text under it while the pointer stays
+// clears it, so a lost release leaves no highlight, and the release then
+// copies nothing. Output elsewhere, or a pointer that moved on, keeps it.
+func TestDragIsClearedByOutputUnderIt(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	press := func(x, y int) {
+		wx, wy := r.win(x, y)
+		r.mouse(tea.MouseClickMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	move := func(x, y int) {
+		wx, wy := r.win(x, y)
+		r.mouse(tea.MouseMotionMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	release := func(x, y int) tea.Msg {
+		wx, wy := r.win(x, y)
+		return r.mouse(tea.MouseReleaseMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	press(0, 0)
+	move(4, 1)
+	r.tick(time.Second)
+	r.m.rep.pane.Write([]byte("\x1b[5;1Hspinner"))
+	r.tick(2 * time.Second)
+	if !r.m.sel.drag || !r.m.sel.shown() {
+		t.Fatal("output outside the drag ended it")
+	}
+	// The text under the drag changes after the pointer moved on: read again.
+	r.m.rep.pane.Write([]byte("\x1b[1;1Hjello"))
+	move(5, 1)
+	r.tick(3 * time.Second)
+	if !r.m.sel.drag {
+		t.Fatal("a change before the pointer moved on ended the drag")
+	}
+	wantCopy(t, release(5, 1), "jello world\nsecond")
+
+	// The pointer stays and the text under it changes: the drag ends.
+	press(0, 0)
+	move(4, 1)
+	r.tick(4 * time.Second)
+	r.m.rep.pane.Write([]byte("\x1b[2;1Hthird"))
+	r.tick(5 * time.Second)
+	if r.m.sel.drag || r.m.sel.shown() {
+		t.Fatalf("output under a held drag kept it: %+v", r.m.sel)
+	}
+	if msg := release(4, 1); msg != nil {
+		t.Fatalf("the release of a cleared drag copied %#v", msg)
+	}
+}
+
+// TestReleaseUnderAnOverlayCopiesNothing opens help or the action list with
+// the keyboard while the button is held: the release ends the selection and
+// copies nothing.
+func TestReleaseUnderAnOverlayCopiesNothing(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK} {
+		r := selRig(t, 140, 45, Options{}, selText)
+		x0, y0 := r.win(0, 0)
+		x1, y1 := r.win(4, 1)
+		r.mouse(tea.MouseClickMsg{X: x0, Y: y0, Button: tea.MouseLeft})
+		r.mouse(tea.MouseMotionMsg{X: x1, Y: y1, Button: tea.MouseLeft})
+		r.key(k)
+		if r.m.overlay == "" {
+			t.Fatalf("%v opened nothing", k)
+		}
+		if msg := r.mouse(tea.MouseReleaseMsg{X: x1, Y: y1, Button: tea.MouseLeft}); msg != nil {
+			t.Fatalf("%v: a release under the overlay copied %#v", k, msg)
+		}
+		if r.m.sel.shown() || r.m.sel.drag {
+			t.Fatalf("%v: the release left a selection %+v", k, r.m.sel)
+		}
+	}
+}
+
+// TestSelectionIsClearedWhenThePaneFollowsTheWindow makes a selection after
+// the window size changed but before the pane follows it: the debounced
+// resize clears it. A debounced resize that leaves the pane's size as it was
+// keeps it.
+func TestSelectionIsClearedWhenThePaneFollowsTheWindow(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	cols, _ := r.paneSize()
+	r.size(120, 45)
+	if c, _ := r.paneSize(); c != cols {
+		t.Fatal("the pane followed the window at once")
+	}
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if c, _ := r.paneSize(); c == cols {
+		t.Fatal("the debounced resize left the pane as it was")
+	}
+	if r.m.sel.shown() {
+		t.Fatal("the pane's resize kept the selection")
+	}
+	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + selText))
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if !r.m.sel.shown() {
+		t.Fatal("a resize to the pane's own size cleared the selection")
+	}
 }

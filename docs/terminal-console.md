@@ -116,8 +116,10 @@ byte 0x1c for Ctrl+4. Then Ctrl+4 also returns. In the kitty form Ctrl+4 is
 F12 toggles zoom in either focus state. In zoom the session terminal fills the
 window under a one-line header. The header names the focus and the key that
 leaves zoom, F12. Tab and the move keys do nothing while zoomed. Enter focuses
-the session, and `r` replays the recording. Zoom draws no help, action list or
-notice.
+the session, and `r` replays the recording. Zoom draws no help or action list.
+A notice, such as a refused paste or a selection that was not copied, comes
+first in the header. The header always keeps the fixture label, and keeps the
+keys when the line has room for them too.
 
 ### Selecting and copying
 
@@ -137,17 +139,27 @@ to the outer terminal's clipboard with OSC 52, and the selection stays
 highlighted. The text is the pane's screen: a wide character or a grapheme
 cluster is copied once, blanks at the end of each row are dropped, and rows
 are joined with a newline. The emulator keeps no record of where a long line
-wrapped, so a wrapped line is copied as two lines. A selection of more than
-1 MiB of text is not copied at all, and the key bar says so. A terminal that
-does not accept OSC 52 writes, or has them turned off, copies nothing, and the
-console cannot tell.
+wrapped, so a wrapped line is copied as two lines. The text is what the pane
+holds, also where it draws a placeholder (see
+[Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
+bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
+the placeholder. A selection of more than 1 MiB of text is not copied at all,
+and the key bar, or the header in zoom, says so until the next press. A
+terminal that does not accept OSC 52 writes, or has them turned off, copies
+nothing, and the console cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
-drag copies nothing, and the wheel does nothing. A press anywhere clears the
-selection. So do a key or a paste sent to the session, a window resize, F12,
-`r`, and output that changes the selected text, such as the session writing
-over it, scrolling or clearing the screen. Output elsewhere on the screen
-keeps it. While help or the action list is open, a drag selects nothing.
+drag copies nothing, a selection of blanks alone copies nothing and leaves the
+clipboard as it was, and the wheel does nothing. A press anywhere clears the
+selection. So do a key or a paste sent to the session, a window resize (and
+the session terminal following it a moment later), F12, `r`, and output that
+changes the selected text, such as the session writing over it, scrolling or
+clearing the screen. Output elsewhere on the screen keeps it. That output
+rule holds during a drag too, while the pointer stays still: the drag ends
+and its release copies nothing, so a release the console never receives
+leaves no highlight over changing output. While help or the action list is
+open, a drag selects nothing, and the release of a drag begun before it
+opened ends the selection and copies nothing.
 
 To select elsewhere in the window, most terminals, Ghostty among them, let you
 hold Shift while you drag to use the terminal's own selection even when the
@@ -216,10 +228,11 @@ focus events.
 
 Everything on screen is fixture data. The recording looks like a running
 session, which is why the header, the session frame and the help all say
-"fixture recording, not a live session". Output from a recording never reaches
-the outer terminal except as drawn cells. The pane swallows clipboard requests
-and counts them, and the Session block shows the count. A recording's own
-resize records are ignored: the layout sets the pane's size.
+"fixture recording, not a live session". Output from a recording reaches the
+outer terminal only as drawn cells, and as the text you select and copy (see
+[Selecting and copying](#selecting-and-copying)). The pane swallows clipboard
+requests and counts them, and the Session block shows the count. A
+recording's own resize records are ignored: the layout sets the pane's size.
 
 ### When a session ends
 

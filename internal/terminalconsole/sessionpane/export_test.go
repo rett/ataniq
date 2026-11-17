@@ -1,6 +1,10 @@
 package sessionpane
 
-import "strings"
+import (
+	"strings"
+
+	uv "github.com/charmbracelet/ultraviolet"
+)
 
 // Drained returns the channel the drain goroutine closes when it returns.
 func Drained(p *Pane) <-chan struct{} { return p.drained }
@@ -22,4 +26,13 @@ func ScrollbackLen(p *Pane) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.emu.ScrollbackLen()
+}
+
+// SetCell puts c in the emulator's screen at x, y, as no output can: the
+// emulator stores no control character in a cell, so a test of what Text
+// does with one sets it here.
+func SetCell(p *Pane, x, y int, c *uv.Cell) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.emu.SetCell(x, y, c)
 }
