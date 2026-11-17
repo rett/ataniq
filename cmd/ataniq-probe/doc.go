@@ -64,16 +64,17 @@
 // The launch plan puts this step on the host between pasta and bubblewrap,
 // because pasta closes every descriptor it inherits before it starts its
 // command. FD is 3 to 1023 (decimal digits, no leading zero), each at most
-// once, PATH and COMMAND are absolute paths, and at most 8 files are given. A --read file is opened read-only and
-// must be a regular file. A --write file is opened write-only, appending,
-// never created and never truncated, and must be a regular file or a FIFO. All
-// are opened with O_NOFOLLOW (a link at the last component is refused),
-// O_CLOEXEC and O_NOCTTY; a --read file is opened non-blocking while its type
-// is checked, and the flag is cleared afterwards. A FIFO opened write-only
-// blocks until a process has its reading end open: the holder opens its end
-// first. Each file is then placed at exactly its number without close-on-exec,
-// every other descriptor above 2 is made close-on-exec, and COMMAND is
-// executed, with ARGV (whose first element is COMMAND's own) and the
+// once, PATH and COMMAND are absolute paths, and at most 8 files are given. A
+// --read file is opened read-only and must be a regular file. A --write file is
+// opened write-only, appending, never created and never truncated, and must be
+// a regular file or a FIFO. All are opened with O_NOFOLLOW (a link at the last
+// component is refused), O_CLOEXEC and O_NOCTTY, and non-blocking while the
+// open and the type check last; the flag is cleared afterwards. A --write FIFO
+// that no process has open for reading is therefore refused at once (ENXIO,
+// exit 98, one line) and does not hold the launch: the holder opens its reading
+// end first. Each file is then placed at exactly its number without
+// close-on-exec, every other descriptor above 2 is made close-on-exec, and
+// COMMAND is executed, with ARGV (whose first element is COMMAND's own) and the
 // environment as Go reads it (see above). Any error is exit 98 with one line,
 // and nothing is executed; so is a number that the Go runtime holds (see
 // below).

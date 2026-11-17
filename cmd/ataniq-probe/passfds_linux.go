@@ -65,9 +65,10 @@ type openedFile struct {
 // non-blocking flag is cleared afterwards. A --write file is opened
 // write-only, without creating or truncating it, appending, without following
 // a link and without becoming a controlling terminal; it must be a regular
-// file or a FIFO. A write-only open of a FIFO blocks until a process has the
-// reading end open: the holder opens its end first. On an error every file
-// opened so far is closed.
+// file or a FIFO. Both are opened non-blocking, and the flag is cleared
+// afterwards. A write-only open of a FIFO that no process has open for reading
+// is refused at once (ENXIO) and does not wait: the holder opens its end
+// first. On an error every file opened so far is closed.
 func openFiles(files []fdFile) ([]openedFile, error) {
 	var out []openedFile
 	for _, f := range files {
@@ -86,7 +87,9 @@ func openFiles(files []fdFile) ([]openedFile, error) {
 func openOne(f fdFile) (openedFile, error) {
 	opt, flags := optRead, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NOCTTY|unix.O_NONBLOCK
 	if f.Write {
-		opt, flags = optWrite, unix.O_WRONLY|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NOCTTY
+		// Non-blocking, so that a FIFO without a reader is refused (ENXIO) and
+		// does not hold the launch; the flag is cleared below, as for --read.
+		opt, flags = optWrite, unix.O_WRONLY|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NOCTTY|unix.O_NONBLOCK
 		// Look before opening: opening a device or a socket for writing is
 		// not a check. The type of the opened file is checked again below.
 		var st unix.Stat_t
@@ -116,15 +119,13 @@ func openOne(f fdFile) (openedFile, error) {
 		unix.Close(fd)
 		return openedFile{}, fmt.Errorf("%s: %v", o.desc, err)
 	}
-	if !f.Write {
-		fl, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-		if err == nil {
-			_, err = unix.FcntlInt(uintptr(fd), unix.F_SETFL, fl&^unix.O_NONBLOCK)
-		}
-		if err != nil {
-			unix.Close(fd)
-			return openedFile{}, fmt.Errorf("%s: cannot clear O_NONBLOCK: %w", o.desc, err)
-		}
+	fl, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err == nil {
+		_, err = unix.FcntlInt(uintptr(fd), unix.F_SETFL, fl&^unix.O_NONBLOCK)
+	}
+	if err != nil {
+		unix.Close(fd)
+		return openedFile{}, fmt.Errorf("%s: cannot clear O_NONBLOCK: %w", o.desc, err)
 	}
 	return o, nil
 }
@@ -138,11 +139,15 @@ func writeType(mode uint32) error {
 	return errors.New("it is neither a regular file nor a FIFO")
 }
 
-// describeOpenError names a refusal of a link: with O_NOFOLLOW the kernel says
-// ELOOP, which reads as a mystery in a log.
+// describeOpenError names two refusals that read as a mystery in a log: a link
+// (with O_NOFOLLOW the kernel says ELOOP) and a FIFO that no process has open
+// for reading (a non-blocking write-only open says ENXIO).
 func describeOpenError(err error) error {
-	if errors.Is(err, unix.ELOOP) {
+	switch {
+	case errors.Is(err, unix.ELOOP):
 		return errors.New("it is a symbolic link (not followed)")
+	case errors.Is(err, unix.ENXIO):
+		return errors.New("no process has it open for reading (the holder opens its end first)")
 	}
 	return err
 }

@@ -91,10 +91,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   8 files (read-only regular files, or write-only appending regular files and
   FIFOs, never created or truncated, links not followed; every path must lie in
   folders only the holder can write, as the checks on a path are not atomic with
-  the open), places each at exactly its number, makes every other descriptor
-  above 2 close-on-exec and executes the command with the environment as Go
-  reads it, as above; any error is exit 98 and nothing is executed. Both modes
-  refuse (exit 98, one line) a number that is one of the Go runtime's own
+  the open), places each at exactly its number (a FIFO that no process has open
+  for reading is refused at once and does not wait), makes every other
+  descriptor above 2 close-on-exec and executes the command with the environment
+  as Go reads it, as above; any error is exit 98 and nothing is executed. Both
+  modes refuse (exit 98, one line) a number that is one of the Go runtime's own
   descriptors, which it holds when a standard stream was non-blocking at start:
   a target number in the pass-through mode, the report descriptor in the inside
   mode.

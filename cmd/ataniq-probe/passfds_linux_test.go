@@ -114,8 +114,8 @@ func TestPassFDsPlacesFilesAtTheirNumbers(t *testing.T) {
 				}
 				acc := got.Flags & unix.O_ACCMODE
 				switch {
-				case w.write && (acc != unix.O_WRONLY || got.Flags&unix.O_APPEND == 0):
-					t.Errorf("descriptor %d flags %#o, want write-only and append", n, got.Flags)
+				case w.write && (acc != unix.O_WRONLY || got.Flags&unix.O_APPEND == 0 || got.Flags&unix.O_NONBLOCK != 0):
+					t.Errorf("descriptor %d flags %#o, want write-only, append and blocking", n, got.Flags)
 				case !w.write && (acc != unix.O_RDONLY || got.Flags&unix.O_NONBLOCK != 0 || got.Head != "alpha"):
 					t.Errorf("descriptor %d flags %#o head %q, want read-only, blocking, alpha", n, got.Flags, got.Head)
 				}
@@ -146,13 +146,42 @@ func TestPassFDsFIFOWithAReader(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, r.stderr)
 	}
 	a := r.agent()
-	if got, ok := fdByNumber(a, 9); !ok || got.Link != f.fifo || got.Flags&unix.O_ACCMODE != unix.O_WRONLY {
+	if got, ok := fdByNumber(a, 9); !ok || got.Link != f.fifo || got.Flags&unix.O_ACCMODE != unix.O_WRONLY || got.Flags&unix.O_NONBLOCK != 0 {
 		t.Errorf("descriptor 9: %+v", a.FDs)
 	}
 	buf := make([]byte, 8)
 	if n, _ := unix.Read(rd, buf); string(buf[:n]) != "hi" {
 		t.Errorf("the FIFO got %q", buf[:n])
 	}
+}
+
+// TestPassFDsFIFOWithoutAReaderIsRefusedAtOnce: a write-only open of a FIFO
+// that nobody has open for reading would block for ever (the guard of wait
+// fails the test when the probe does not exit).
+func TestPassFDsFIFOWithoutAReaderIsRefusedAtOnce(t *testing.T) {
+	f := newPassFixture(t)
+	r := startPass(t, runOpts{mode: modeFake}, "--read", "4="+f.a, "--write", "9="+f.fifo)
+	if code := r.wait(); code != exitSetup {
+		t.Errorf("exit %d, want %d (stderr %s)", code, exitSetup, r.stderr)
+	}
+	oneLine(t, r.stderr.String())
+	for _, want := range []string{"ataniq-probe: pass-fds: --write 9=", "no process has it open for reading", "the holder opens its end first"} {
+		if !strings.Contains(r.stderr.String(), want) {
+			t.Errorf("stderr %q does not contain %q", r.stderr, want)
+		}
+	}
+	r.noAgent()
+	// The reader that comes and goes is the same: nobody has the end open.
+	rd, err := unix.Open(f.fifo, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(rd)
+	r = startPass(t, runOpts{mode: modeFake}, "--write", "9="+f.fifo)
+	if code := r.wait(); code != exitSetup {
+		t.Errorf("after the reader closed: exit %d, want %d", code, exitSetup)
+	}
+	r.noAgent()
 }
 
 func TestPassFDsNoFilesStillSweeps(t *testing.T) {
