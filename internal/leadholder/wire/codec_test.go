@@ -169,7 +169,6 @@ func TestStrictDecoding(t *testing.T) {
 		"negative":         `{"columns":80,"rows":-1}`,
 		"too big":          `{"columns":80,"rows":65536}`,
 		"missing":          `{"columns":80}`,
-		"deep":             `{"columns":80,"rows":24,"x":` + strings.Repeat(`[`, 100) + strings.Repeat(`]`, 100) + `}`,
 		"NUL":              "{\"columns\":80,\"rows\":24}\x00",
 	} {
 		if _, err := wire.DecodeSize([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
@@ -414,22 +413,23 @@ func TestFieldRules(t *testing.T) {
 
 func TestExitRules(t *testing.T) {
 	e := wire.Exit{Facts: sampleFacts}
-	// The largest last screen, made of the characters that JSON expands most,
-	// still fits in a frame.
-	for _, ch := range []string{"\n", `"`, `\`, " ", "x"} {
+	// The largest last screen, made of the characters that JSON expands most
+	// (a newline, a quote and a backslash take two bytes each), still fits in
+	// a frame.
+	for _, ch := range []string{"\n", `"`, `\`, " ", "x"} {
 		e.LastScreen = strings.Repeat(ch, wire.MaxLastScreen/len(ch))
 		p, err := wire.EncodeExit(e)
 		if err != nil {
-			if ch == " " || ch == `"` || ch == `\` {
-				// not an error of the cap: U+2028 is not a control character here
-				t.Fatalf("%q: %v", ch, err)
-			}
 			t.Fatalf("%q: %v", ch, err)
 		}
 		if len(p) > wire.MaxHolderPayload {
 			t.Fatalf("%q: payload of %d bytes", ch, len(p))
 		}
-		if _, err := wire.DecodeExit(p); err != nil {
+		if expands := ch == "\n" || ch == `"` || ch == `\`; expands != (len(p) > 2*wire.MaxLastScreen) {
+			t.Fatalf("%q: payload of %d bytes for a screen of %d", ch, len(p), wire.MaxLastScreen)
+		}
+		got, err := wire.DecodeExit(p)
+		if err != nil || got.LastScreen != e.LastScreen {
 			t.Fatalf("%q: %v", ch, err)
 		}
 	}
@@ -646,5 +646,43 @@ func TestDecodeAcceptsValidEscapes(t *testing.T) {
 	// Invalid UTF-8 outside a string is refused too.
 	if _, err := wire.DecodeSize([]byte("{\"columns\":80,\"rows\":24}\xff")); !errors.Is(err, wire.ErrInvalid) {
 		t.Errorf("invalid byte after the object: %v", err)
+	}
+}
+
+// depthRefused reports whether decoding a Modes payload with a list nested n
+// levels deep stops at the depth limit. The list is a field that the struct
+// has, so only the depth rule can give this error: without it, the same
+// payload fails on the type of the number.
+func depthRefused(n int) (bool, error) {
+	p := `{"dec":` + strings.Repeat(`[`, n) + `1` + strings.Repeat(`]`, n) + `,"ansi":[]}`
+	_, err := wire.DecodeModes([]byte(p))
+	return err != nil && strings.Contains(err.Error(), "nested deeper"), err
+}
+
+func TestDepthLimit(t *testing.T) {
+	// The object is level one; six levels are allowed.
+	if refused, err := depthRefused(1); refused || err != nil {
+		t.Errorf("one list: refused for depth %v, err %v", refused, err)
+	}
+	for _, n := range []int{2, 5} {
+		if refused, err := depthRefused(n); refused || !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%d nested lists: refused for depth %v, err %v (want a type error)", n, refused, err)
+		}
+	}
+	for _, n := range []int{6, 7, 100, 20000} {
+		if refused, err := depthRefused(n); !refused || !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%d nested lists: refused for depth %v, err %v", n, refused, err)
+		}
+	}
+	// Nesting under an unknown key is refused as an unknown key, whatever its
+	// depth: this is the case the old test used, which did not reach the rule.
+	deep := `{"columns":80,"rows":24,"x":` + strings.Repeat(`[`, 100) + strings.Repeat(`]`, 100) + `}`
+	if _, err := wire.DecodeSize([]byte(deep)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("deep unknown field: %v", err)
+	}
+	// Objects count as levels as well.
+	p := `{"colors":` + strings.Repeat(`{"cursor":`, 7) + `"#000000"` + strings.Repeat(`}`, 7) + `}`
+	if _, err := wire.DecodeHello([]byte(p)); err == nil || !strings.Contains(err.Error(), "nested deeper") {
+		t.Errorf("nested objects: %v", err)
 	}
 }
