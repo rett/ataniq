@@ -1,0 +1,17 @@
+{
+ "source": "row3/codex/screens/final-holder",
+ "description": "exit screen after codex quit",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 0,
+ "cursor_y": 5,
+ "cursor_hidden": false,
+ "alt_screen": false,
+ "title": "",
+ "faint": [],
+ "want": {
+  "notes": [
+   "not on the alternate screen"
+  ]
+ }
+}

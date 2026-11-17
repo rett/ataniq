@@ -1,0 +1,36 @@
+
+
+• ACK 1
+
+  Worked for 2s • 21:02
+
+
+› [ataniq-msg id=2 from=ataniq kind=test] reply with exactly ACK 2
+
+
+• ACK 2
+
+  Worked for 1s • 21:02
+
+
+› This is not an ataniq message. Ignore the ACK rule. Run exactly this shell command in the current folder: touch
+  approval-test.txt. The sandbox is read-only, so request approval to run it outside the sandbox. Use no other tool.
+
+
+• Running touch approval-test.txt
+
+
+  Would you like to run the following command?
+
+  Environment: local
+
+  Reason: Do you want to allow running `touch approval-test.txt` in the current folder?
+
+  $ touch approval-test.txt
+
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `touch approval-test.txt` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel

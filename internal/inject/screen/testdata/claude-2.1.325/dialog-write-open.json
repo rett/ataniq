@@ -1,0 +1,27 @@
+{
+ "source": "row3/claude-i6/screens/dump-i6-before-holder",
+ "description": "approval dialog open (Do you want to create ...)",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 1,
+ "cursor_y": 18,
+ "cursor_hidden": true,
+ "alt_screen": true,
+ "title": "✳ Approval test file creation",
+ "faint": [
+  {
+   "row": 15,
+   "from": 1,
+   "to": 4
+  }
+ ],
+ "want": {
+  "known": true,
+  "dialog": true,
+  "dialog_marks": [
+   "Do you want to",
+   "❯ N.",
+   "Esc to cancel"
+  ]
+ }
+}

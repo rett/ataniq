@@ -1,0 +1,17 @@
+{
+ "source": "row3/claude/screens/attach-001-holder",
+ "description": "empty main screen",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 0,
+ "cursor_y": 0,
+ "cursor_hidden": false,
+ "alt_screen": false,
+ "title": "",
+ "faint": [],
+ "want": {
+  "notes": [
+   "screen is empty"
+  ]
+ }
+}
