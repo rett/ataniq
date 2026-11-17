@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ataniq/internal/leadholder/wire"
@@ -22,6 +23,10 @@ type conn struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	sendDone chan struct{}
+
+	// lost counts the pushes of frames the sender took from the queue and
+	// did not write: the connection was given up under them.
+	lost atomic.Int64
 
 	mu       sync.Mutex
 	cause    string
@@ -57,9 +62,10 @@ func (cn *conn) interrupt() {
 }
 
 // finish stops the sender, sends a Detach when asked and the sender is
-// healthy, and closes the connection.
-func (cn *conn) finish(detach bool) {
-	cn.q.close()
+// healthy, and closes the connection. It returns how many pushes of input
+// were queued and never written.
+func (cn *conn) finish(detach bool) (dropped int) {
+	dropped = cn.q.close()
 	cn.stopOnce.Do(func() { close(cn.stop) })
 	// A sender stuck in a write to a holder that does not read must let go.
 	_ = cn.nc.SetWriteDeadline(time.Now().Add(detachTimeout))
@@ -69,6 +75,7 @@ func (cn *conn) finish(detach bool) {
 		_ = wire.Write(cn.nc, wire.ToHolder, wire.TypeDetach, nil)
 	}
 	_ = cn.nc.Close()
+	return dropped + int(cn.lost.Load())
 }
 
 // sendLoop writes the queued frames to the holder, in order, until the
@@ -88,11 +95,13 @@ func (c *Client) sendLoop(cn *conn) {
 			}
 			select {
 			case <-cn.stop:
+				cn.lost.Add(int64(f.n))
 				return
 			default:
 			}
 			_ = cn.nc.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
 			if err := wire.Write(cn.nc, wire.ToHolder, f.typ, f.payload); err != nil {
+				cn.lost.Add(int64(f.n))
 				if c.ctx.Err() == nil {
 					cn.fail("could not send to the holder: "+netReason(err), true)
 				}
@@ -171,7 +180,13 @@ func (c *Client) attach(nc net.Conn, ticket string, resync bool) (out outcome) {
 		if !started {
 			close(cn.sendDone)
 		}
-		cn.finish(out.kind == outClosed || out.kind == outResync)
+		if n := cn.finish(out.kind == outClosed || out.kind == outResync); n > 0 {
+			// Input that was queued and never written is not sent later, to
+			// a different screen; it is counted.
+			c.mu.Lock()
+			c.cnt.inputDropped += uint64(n)
+			c.mu.Unlock()
+		}
 		out.snapshot = s.snaps > 0
 		out.checked = s.checked
 	}()

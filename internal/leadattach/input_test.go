@@ -550,3 +550,32 @@ func TestAHolderResyncNoticeStopsInputUntilTheNextSnapshot(t *testing.T) {
 		t.Errorf("after the snapshot: %q", got)
 	}
 }
+
+func TestInputQueuedWhenAConnectionIsGivenUpIsCounted(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, pipe: true, tickets: 1})
+	hc := e.attach(wire.RoleWriter)
+	hc.pause()
+
+	// The holder reads the first frame and then stops: the second waits in
+	// the sender's blocked write, and the rest in the queue, where the three
+	// keys share a frame.
+	e.sink.Paste("first")
+	e.sink.Paste("second")
+	e.sink.Key(keyA)
+	e.sink.Key(keyA)
+	e.sink.Key(keyA)
+	e.sink.Paste("last")
+	if n := counter(e.c.Status(), "client-input-dropped"); n != 0 {
+		t.Fatalf("%d dropped before the connection was given up", n)
+	}
+
+	// A check mismatch gives the connection up. Whatever was queued would
+	// reach a different screen, so it is not sent, and it is counted by what
+	// the user typed: one second paste, three keys, one last paste.
+	hc.corrupt("A", "B")
+	hc.check()
+	e.until("the count", func(st terminalconsole.LiveStatus) bool { return counter(st, "client-input-dropped") == 5 })
+	hc.resume()
+	hc.closed()
+}

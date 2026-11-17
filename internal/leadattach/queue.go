@@ -10,6 +10,10 @@ import (
 type outFrame struct {
 	typ     byte
 	payload []byte
+	// n is how many pushes (keys, mouse events, pastes) the frame holds: a
+	// run of keys shares a frame, and a frame that is given up loses them
+	// all.
+	n int
 }
 
 // queueResult says what a push did.
@@ -76,16 +80,20 @@ func (q *outQueue) pushInput(b []byte) queueResult {
 		return queueClosed
 	}
 	res := queued
+	// The push counts once, in the frame that takes its first piece.
+	count := 1
 	for len(b) > 0 {
 		n := min(len(b), q.limit)
 		if tail := len(q.frames) - 1; tail >= 0 && q.frames[tail].typ == wire.TypeInput && len(q.frames[tail].payload)+n <= q.limit {
 			q.frames[tail].payload = append(q.frames[tail].payload, b[:n]...)
+			q.frames[tail].n += count
 		} else if len(q.frames) >= maxQueued {
 			res = q.dropLocked()
 			break
 		} else {
-			q.frames = append(q.frames, outFrame{typ: wire.TypeInput, payload: append([]byte(nil), b[:n]...)})
+			q.frames = append(q.frames, outFrame{typ: wire.TypeInput, payload: append([]byte(nil), b[:n]...), n: count})
 		}
+		count = 0
 		b = b[n:]
 	}
 	q.mu.Unlock()
@@ -105,7 +113,7 @@ func (q *outQueue) pushPaste(p []byte) queueResult {
 		q.mu.Unlock()
 		return res
 	}
-	q.frames = append(q.frames, outFrame{typ: wire.TypePaste, payload: p})
+	q.frames = append(q.frames, outFrame{typ: wire.TypePaste, payload: p, n: 1})
 	q.mu.Unlock()
 	q.signal()
 	return queued
@@ -166,10 +174,16 @@ func (q *outQueue) pop() (outFrame, bool) {
 	return f, true
 }
 
-// close drops everything queued and refuses what comes.
-func (q *outQueue) close() {
+// close drops everything queued and refuses what comes. It returns how many
+// pushes (keys, mouse events, pastes) the dropped frames held; a size waiting
+// is not input and is not counted.
+func (q *outQueue) close() (dropped int) {
 	q.mu.Lock()
 	q.closed = true
+	for _, f := range q.frames {
+		dropped += f.n
+	}
 	q.frames, q.resize = nil, nil
 	q.mu.Unlock()
+	return dropped
 }
