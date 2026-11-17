@@ -273,7 +273,16 @@ func parse(content []byte) (parsed, error) {
 			}
 			p.nameserver(n, strings.Fields(rest))
 		case "search":
-			p.searchLine(n, fields[1:])
+			p.searchLine(n, "search", fields[1:])
+		case "domain":
+			// As on the host, domain and search are alternatives and the
+			// last well-formed one wins; domain takes one name.
+			if len(fields) != 2 {
+				p.rejected++
+				p.note("line %d dropped: a domain line takes exactly one name%s", n, p.searchKept())
+				continue
+			}
+			p.searchLine(n, "domain", fields[1:])
 		case "options":
 			p.optionsLine(n, fields[1:])
 		default:
@@ -348,10 +357,19 @@ func (p *parsed) nameserver(n int, args []string) {
 	p.servers = append(p.servers, a)
 }
 
-func (p *parsed) searchLine(n int, args []string) {
+// searchKept says, for a note about a dropped search or domain line, that an
+// earlier well-formed one is still in force.
+func (p *parsed) searchKept() string {
+	if len(p.search) == 0 {
+		return ""
+	}
+	return "; the earlier search or domain list is kept"
+}
+
+func (p *parsed) searchLine(n int, keyword string, args []string) {
 	if len(args) == 0 {
 		p.rejected++
-		p.note("line %d dropped: empty search list", n)
+		p.note("line %d dropped: empty %s list%s", n, keyword, p.searchKept())
 		return
 	}
 	var kept []string
@@ -359,7 +377,7 @@ func (p *parsed) searchLine(n int, args []string) {
 	for _, d := range args {
 		if !validDomain(d) {
 			p.rejected++
-			p.note("line %d dropped: malformed search domain %s", n, quote(d))
+			p.note("line %d dropped: malformed search domain %s%s", n, quote(d), p.searchKept())
 			return
 		}
 		if len(kept) >= MaxSearchDomains || size+len(d)+1 > MaxSearchBytes {
@@ -369,7 +387,7 @@ func (p *parsed) searchLine(n int, args []string) {
 		kept = append(kept, d)
 		size += len(d) + 1
 	}
-	// As the resolver does, the last search line wins.
+	// As the resolver does, the last well-formed search or domain line wins.
 	p.search = kept
 }
 
