@@ -256,6 +256,53 @@ func TestResolveSourcesAbsentNeverMountedBelowALink(t *testing.T) {
 	wantProblem(t, f.resolve().Report, ErrNeverMounted, f.in.QargiInstall)
 }
 
+func TestResolveSourcesStateFoldersOnRealPaths(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string // below the fixture's state root; made as a folder
+	}{
+		{"another lead's home", "leads/other-lead/home"},
+		{"another lead's provider login", "leads/other-lead/config/claude"},
+		{"the folder of the other leads", "leads"},
+		{"another project's mirror", "mirrors/other.git"},
+		{"the folder of the mirrors", "mirrors"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, profile.Claude)
+			f.mkdir(f.state+"/"+c.target, 0o700)
+			f.remove(f.in.LeadSkills)
+			f.symlink(f.state+"/"+c.target, f.in.LeadSkills)
+			if err := f.in.Validate(); err != nil {
+				t.Fatalf("the lexical check must not see the link: %v", err)
+			}
+			wantProblem(t, f.resolve().Report, ErrNeverMounted, f.in.LeadSkills)
+		})
+	}
+	t.Run("the lead's own folders and the project's mirror are fine", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.mkdir(f.home+"/mine", 0o755) // below the lead's own state: not this check's business
+		res := f.resolve()
+		if !res.OK() {
+			t.Fatal(res.Err())
+		}
+	})
+	t.Run("a state folder that resolves to an unusable path is a problem", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		base := f.resolver()
+		res, err := ResolveSources(f.in, func(p string) (string, error) {
+			if p == f.state+"/mirrors" {
+				return "relative/mirrors", nil
+			}
+			return base(p)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantProblem(t, res.Report, ErrUnreadable, f.state+"/mirrors")
+	})
+}
+
 func TestResolveSourcesUnusableNeverMountedAnswer(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	base := f.resolver()
