@@ -282,3 +282,16 @@ func TestDefinitionHoldsNoHostPath(t *testing.T) {
 		t.Errorf("owner flags = %v", f)
 	}
 }
+
+func TestDigestWithRecordsIsIndependentOfTheProject(t *testing.T) {
+	for _, rt := range Runtimes() {
+		a, b := fixture(rt), fixture(rt)
+		for _, in := range []*Inputs{&a, &b} {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi"
+		}
+		b.Project = "another-project"
+		if mustDigest(t, a) != mustDigest(t, b) {
+			t.Errorf("%s: two projects, two digests, with records", rt)
+		}
+	}
+}

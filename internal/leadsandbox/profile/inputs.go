@@ -296,6 +296,22 @@ func (in Inputs) checkRecords() error {
 	if err := CheckPath("Qargi records inside path", in.QargiRecordsInside); err != nil {
 		return err
 	}
+	// The digest is independent of the project and of the host: it replaces
+	// the project only in the rows it builds itself, so a caller-given path
+	// must not depend on the project, hold a token, or touch the other
+	// runtime's config folder.
+	ri := in.QargiRecordsInside
+	switch {
+	case ri == WorkRootInside || below(ri, WorkRootInside):
+		return refuse("Qargi records inside path", "must not lie in %s (the work tree's path depends on the project)", WorkRootInside)
+	case strings.ContainsAny(ri, "<>"):
+		return refuse("Qargi records inside path", "must not hold '<' or '>' (the digest uses them for tokens)")
+	}
+	// An ancestor of that folder is refused by the table (a parent comes
+	// before what is bound over it, and no inside path is used twice).
+	if other := in.Runtime.Other(); other != "" && (ri == ConfigInside(other) || below(ri, ConfigInside(other))) {
+		return refuse("Qargi records inside path", "must not lie in the %s config folder %s", other, ConfigInside(other))
+	}
 	return nil
 }
 

@@ -134,6 +134,30 @@ func TestInputsRefusals(t *testing.T) {
 		{"unclean never-mounted path", Claude, func(in *Inputs) {
 			in.NeverMounted = []string{"/home/owner/.ssh", "/home/owner/../.ssh"}
 		}, "never-mounted path 1", "clean"},
+		{"records inside the work tree", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/ataniq/.qargi"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside the work folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside another project's tree", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/other/.qargi"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside path with the project token", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/<project>/q"
+		}, "Qargi records inside path", "'<'"},
+		{"records inside the other runtime's folder (claude)", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex"
+		}, "Qargi records inside path", "codex config folder"},
+		{"records below the other runtime's folder (claude)", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex/records"
+		}, "Qargi records inside path", "codex config folder"},
+		{"records inside the other runtime's folder (codex)", Codex, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.claude/q"
+		}, "Qargi records inside path", "claude config folder"},
+		{"records over the home", Codex, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead"
+		}, "bind /home/lead", "already used"},
 		{"relative records inside", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "q"
 		}, "Qargi records inside path", "absolute"},
