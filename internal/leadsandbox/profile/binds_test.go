@@ -37,9 +37,9 @@ var goldenRows = []string{
 	"ro-bind /home/lead/CFG/INSTR src=instructions writable-in=/home/lead/CFG",
 	"ro-bind /ataniq/git/config src=git-identity",
 	"rw-bind /work/ataniq src=tree",
-	"ro-bind /work/ataniq/.git/config src=tree-git writable-in=/work/ataniq",
-	"ro-bind /work/ataniq/.git/hooks src=tree-git writable-in=/work/ataniq",
-	"ro-bind /work/ataniq/.git/info src=tree-git writable-in=/work/ataniq",
+	"ro-bind /work/ataniq/.git/config src=git-meta writable-in=/work/ataniq",
+	"ro-bind /work/ataniq/.git/hooks src=git-meta writable-in=/work/ataniq",
+	"ro-bind /work/ataniq/.git/info src=git-meta writable-in=/work/ataniq",
 	"ro-bind /ataniq/mirror/ataniq.git src=mirror",
 	"ro-bind /ataniq/qargi src=qargi",
 	"ro-bind /ataniq/assignment src=assignment",
@@ -103,9 +103,9 @@ func TestBindTableSourcesAndAccess(t *testing.T) {
 		{"/home/lead/.claude/CLAUDE.md", in.InstructionFile, KindRoBind, false},
 		{"/ataniq/git/config", in.GitIdentityFile, KindRoBind, false},
 		{"/work/ataniq", "/srv/state/leads/arc-lead/tree", KindRwBind, true},
-		{"/work/ataniq/.git/config", "/srv/state/leads/arc-lead/tree/.git/config", KindRoBind, false},
-		{"/work/ataniq/.git/hooks", "/srv/state/leads/arc-lead/tree/.git/hooks", KindRoBind, true},
-		{"/work/ataniq/.git/info", "/srv/state/leads/arc-lead/tree/.git/info", KindRoBind, true},
+		{"/work/ataniq/.git/config", "/srv/state/leads/arc-lead/gitmeta/config", KindRoBind, false},
+		{"/work/ataniq/.git/hooks", "/srv/state/leads/arc-lead/gitmeta/hooks", KindRoBind, true},
+		{"/work/ataniq/.git/info", "/srv/state/leads/arc-lead/gitmeta/info", KindRoBind, true},
 		{"/ataniq/mirror/ataniq.git", "/srv/state/mirrors/ataniq.git", KindRoBind, true},
 		{"/ataniq/qargi", in.QargiInstall, KindRoBind, true},
 		{"/ataniq/assignment", in.AssignmentDir, KindRoBind, true},
@@ -425,5 +425,119 @@ func TestOptionalRows(t *testing.T) {
 	// A valid optional symlink and host bind pass the table check.
 	if err := ValidateTable(mustBinds(t, fixture(Codex))); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestNoSourceInALeadWritableFolder is rule G1: no row of the table has a
+// source that is, or lies below, the source of a read-write row (a host folder
+// the lead can write), for both runtimes and with every optional input given.
+func TestNoSourceInALeadWritableFolder(t *testing.T) {
+	for _, rt := range Runtimes() {
+		in := fixture(rt)
+		in.ExtraPlaceholders = []Placeholder{
+			{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
+			{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
+		}
+		in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
+		in.QargiRecordsInside = "/home/lead/.qargi"
+		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": in} {
+			table := mustBinds(t, in)
+			var writable []Bind
+			for _, b := range table {
+				if b.Kind == KindRwBind {
+					writable = append(writable, b)
+				}
+			}
+			if len(writable) < 3 {
+				t.Fatalf("%s %s: only %d read-write rows", rt, name, len(writable))
+			}
+			for _, b := range table {
+				if b.Source == "" {
+					continue
+				}
+				for _, w := range writable {
+					if w.Inside != b.Inside && (b.Source == w.Source || below(b.Source, w.Source)) {
+						t.Errorf("%s %s: the source %s of %s lies in the lead-writable folder %s", rt, name, b.Source, b.Inside, w.Source)
+					}
+				}
+			}
+			if err := ValidateTable(table); err != nil {
+				t.Errorf("%s %s: %v", rt, name, err)
+			}
+		}
+	}
+}
+
+func TestGitRowsTakeTheirSourcesFromTheGitMetaFolder(t *testing.T) {
+	for _, rt := range Runtimes() {
+		in := fixture(rt)
+		want := map[string]string{
+			"/work/ataniq/.git/config": in.GitMeta + "/config",
+			"/work/ataniq/.git/hooks":  in.GitMeta + "/hooks",
+			"/work/ataniq/.git/info":   in.GitMeta + "/info",
+		}
+		n := 0
+		for _, b := range mustBinds(t, in) {
+			src, ok := want[b.Inside]
+			if !ok {
+				if b.SourceRole == RoleGitMeta {
+					t.Errorf("%s: %s has the git-meta role", rt, b.Inside)
+				}
+				continue
+			}
+			n++
+			if b.Source != src || b.SourceRole != RoleGitMeta || b.Kind != KindRoBind {
+				t.Errorf("%s: %s = %+v, want source %s, role %s, ro-bind", rt, b.Inside, b, src, RoleGitMeta)
+			}
+			// The target keeps the flag: its mount point lies in the tree.
+			if !b.LeadWritable || b.Within != "/work/ataniq" {
+				t.Errorf("%s: the target %s is not flagged as lying in the tree", rt, b.Inside)
+			}
+			if b.Source == "" || strings.Contains(b.Source, "/tree") {
+				t.Errorf("%s: the source %s lies in the tree", rt, b.Source)
+			}
+		}
+		if n != 3 {
+			t.Errorf("%s: %d git rows", rt, n)
+		}
+	}
+}
+
+func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
+	good := mustBinds(t, fixture(Claude))
+	index := func(inside string) int {
+		for i, b := range good {
+			if b.Inside == inside {
+				return i
+			}
+		}
+		t.Fatalf("no row %s", inside)
+		return -1
+	}
+	for _, tt := range []struct{ name, inside, source string }{
+		{"a git row from the tree", "/work/ataniq/.git/config", "/srv/state/leads/arc-lead/tree/.git/config"},
+		{"a git row from the tree's .git folder", "/work/ataniq/.git/hooks", "/srv/state/leads/arc-lead/tree/.git/hooks"},
+		{"a row from the home", "/ataniq/qargi", "/srv/state/leads/arc-lead/home/qargi"},
+		{"a row from the config folder", "/ataniq/assignment", "/srv/state/leads/arc-lead/config/claude/a"},
+		{"a row that is a writable folder's source", "/ataniq/projection", "/srv/state/leads/arc-lead/tree"},
+	} {
+		c := append([]Bind(nil), good...)
+		c[index(tt.inside)].Source = tt.source
+		err := ValidateTable(c)
+		if err == nil {
+			t.Errorf("%s: ValidateTable = nil", tt.name)
+			continue
+		}
+		ref := refusalOf(t, err)
+		if ref.Field != "bind "+tt.inside || !strings.Contains(ref.Reason, "lead-writable folder") || !strings.Contains(ref.Reason, tt.source) {
+			t.Errorf("%s: refusal = {%q, %q}", tt.name, ref.Field, ref.Reason)
+		}
+	}
+	// A folder above a writable one is not "in" it: the table check leaves
+	// that to Inputs.Validate (see the refusals in inputs_test.go).
+	c := append([]Bind(nil), good...)
+	c[index("/ataniq/qargi")].Source = "/srv/state/leads"
+	if err := ValidateTable(c); err != nil {
+		t.Errorf("a source above a writable folder: %v", err)
 	}
 }

@@ -200,6 +200,21 @@ func TestLayout(t *testing.T) {
 	if got := l.Tree(); got != "/srv/state/leads/arc-lead/tree" {
 		t.Errorf("Tree = %q", got)
 	}
+	if got := l.GitMeta(); got != "/srv/state/leads/arc-lead/gitmeta" {
+		t.Errorf("GitMeta = %q", got)
+	}
+	for rel, want := range map[string]string{
+		".git/config": "/srv/git/config",
+		".git/hooks":  "/srv/git/hooks",
+		".git/info":   "/srv/git/info",
+	} {
+		if got := GitMetaSource("/srv/git", rel); got != want {
+			t.Errorf("GitMetaSource(%q) = %q, want %q", rel, got, want)
+		}
+	}
+	if GitMetaConfig != "config" || GitMetaHooks != "hooks" || GitMetaInfo != "info" {
+		t.Error("the entries of the git metadata folder changed")
+	}
 	if got := l.Mirror(); got != "/srv/state/mirrors/ataniq.git" {
 		t.Errorf("Mirror = %q", got)
 	}

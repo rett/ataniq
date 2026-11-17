@@ -389,19 +389,14 @@ func TestMounts(t *testing.T) {
 	for _, m := range full.Mounts {
 		byInside[m.Inside] = m
 	}
-	// Exactly the three rows of the lead's .git are sourced inside a folder
-	// the lead writes, and none of the folders themselves.
-	writable := map[string]bool{
-		"/work/demo/.git/config": true,
-		"/work/demo/.git/hooks":  true,
-		"/work/demo/.git/info":   true,
-	}
+	// No row is sourced inside a folder the lead writes (rule G1): the three
+	// rows of the tree's .git take their sources from Ataniq's copy.
 	for _, m := range full.Mounts {
-		if m.LeadWritable != writable[m.Inside] {
-			t.Errorf("%s: LeadWritable = %v", m.Inside, m.LeadWritable)
+		if m.LeadWritable {
+			t.Errorf("%s: LeadWritable = true", m.Inside)
 		}
 	}
-	if m := byInside["/work/demo/.git/hooks"]; m.Kind != profile.KindRoBind || m.Source != "/state/leads/arc-lead/tree/.git/hooks" {
+	if m := byInside["/work/demo/.git/hooks"]; m.Kind != profile.KindRoBind || m.Source != "/state/leads/arc-lead/gitmeta/hooks" {
 		t.Errorf("hooks row = %+v", m)
 	}
 	if m := byInside["/work/demo"]; m.Kind != profile.KindRwBind || m.Source != "/state/leads/arc-lead/tree" || m.LeadWritable {

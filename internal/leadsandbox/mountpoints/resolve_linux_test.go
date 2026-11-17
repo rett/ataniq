@@ -18,6 +18,9 @@ import (
 // leaves every other path (/usr, /etc/hosts and the like) as it is, so the
 // test does not depend on the host's layout.
 func (f *fixture) resolver() Resolver {
+	if _, err := os.Lstat(f.gitMeta); err != nil {
+		f.handMadeGitMeta() // the folder Prepare makes; this test does not run Prepare
+	}
 	return func(p string) (string, error) {
 		if p == f.base || strings.HasPrefix(p, f.base+"/") {
 			return filepath.EvalSymlinks(p)
@@ -170,12 +173,33 @@ func TestResolveSourcesOverlap(t *testing.T) {
 	})
 }
 
-func TestResolveSourcesTreeGitThroughLink(t *testing.T) {
-	f := newFixture(t, profile.Claude)
-	f.mkdir(f.out+"/hooks", 0o755)
-	f.remove(f.tree + "/.git/hooks")
-	f.symlink(f.out+"/hooks", f.tree+"/.git/hooks")
-	wantProblem(t, f.resolve().Report, ErrSymlink, f.tree+"/.git/hooks")
+func TestResolveSourcesGitMetaThroughLink(t *testing.T) {
+	// The git metadata folder is Ataniq's: a link in it is not special for
+	// ResolveSources, which resolves it like any source and judges the real
+	// path (CheckBindSources and Check refuse the link itself).
+	t.Run("the folder is a link into the lead's tree", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.symlink(f.tree+"/.git", f.gitMeta)
+		res := f.resolve()
+		wantProblem(t, res.Report, ErrOverlap, f.gitMeta+"/config")
+	})
+	t.Run("an entry is a link into a never-mounted folder", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.handMadeGitMeta()
+		f.mkdir(f.base+"/owner/.ssh", 0o700)
+		f.remove(f.gitMeta + "/hooks")
+		f.symlink(f.base+"/owner/.ssh", f.gitMeta+"/hooks")
+		wantProblem(t, f.resolve().Report, ErrNeverMounted, f.gitMeta+"/hooks")
+	})
+	t.Run("a link in the tree's .git changes nothing", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.mkdir(f.out+"/hooks", 0o755)
+		f.remove(f.tree + "/.git/hooks")
+		f.symlink(f.out+"/hooks", f.tree+"/.git/hooks")
+		if res := f.resolve(); !res.OK() {
+			t.Fatalf("%v", res.Err())
+		}
+	})
 }
 
 func TestResolveSourcesMissingAndOptional(t *testing.T) {

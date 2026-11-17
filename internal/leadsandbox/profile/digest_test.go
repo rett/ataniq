@@ -32,6 +32,7 @@ func otherHost(rt Runtime) Inputs {
 	in.LeadSkills = "/opt/ataniq/skills"
 	in.InstructionFile = "/opt/ataniq/instructions.md"
 	in.GitIdentityFile = "/run/ataniq/gitconfig"
+	in.GitMeta = "/var/lib/other/gitmeta/second-lead"
 	in.QargiInstall = "/opt/qargi"
 	in.AssignmentDir = "/run/ataniq/assignment"
 	in.ProjectionDir = "/run/ataniq/projection"
@@ -53,9 +54,16 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "7116a3541c80f4e80e00b1093505c42eb86815ec948ae3616ccf02ca888ab7e4"
-	goldenCodex  = "8c1b13d393a8ce47cd6525df5029bb39fb816578a4c105bddde21541b2079bff"
+	goldenClaude = "f7128872ebcd1aae1c78a216e80e62ef43a3bb559781b456b8ad82c8e7006b2b"
+	goldenCodex  = "3bc34618dc4f97f70476dbedab917ccf31f317ca527cf0cbd18d27c31177f94b"
 )
+
+func TestVersionIsThree(t *testing.T) {
+	// The three read-only .git rows changed their sources (rule G1).
+	if Version != 3 {
+		t.Errorf("Version = %d, want 3", Version)
+	}
+}
 
 func TestDigestGolden(t *testing.T) {
 	// A change here is a change to the profile's data or to the encoding:
@@ -85,10 +93,11 @@ func TestDigestIsIndependentOfHostAndLead(t *testing.T) {
 		name   string
 		mutate func(*Inputs)
 	}{
-		{"state root", func(in *Inputs) { in.StateRoot = "/elsewhere/state" }},
-		{"role", func(in *Inputs) { in.Role = "other" }},
+		{"state root", func(in *Inputs) { in.StateRoot = "/elsewhere/state"; in.GitMeta = in.Layout().GitMeta() }},
+		{"role", func(in *Inputs) { in.Role = "other"; in.GitMeta = in.Layout().GitMeta() }},
 		{"project", func(in *Inputs) { in.Project = "other" }},
 		{"agent install", func(in *Inputs) { in.AgentInstall = "/a/b" }},
+		{"git metadata folder", func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/gitmeta-2" }},
 		{"never-mounted paths", func(in *Inputs) { in.NeverMounted = []string{"/x"} }},
 		{"TERM", func(in *Inputs) { in.Term = "linux" }},
 		{"COLORTERM unset", func(in *Inputs) { in.ColorTerm = "" }},

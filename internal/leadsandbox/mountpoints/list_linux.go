@@ -76,7 +76,7 @@ func List(in profile.Inputs) ([]Point, error) {
 		}
 		pt := Point{
 			Inside: b.Inside, HostPath: host, Root: kind, RootDir: rootDir, Rel: rel, Dir: b.IsDir,
-			Git:         b.SourceRole == profile.RoleTreeGit,
+			Git:         b.SourceRole == profile.RoleGitMeta,
 			Placeholder: b.SourceRole == profile.RoleExtra,
 		}
 		if pt.Placeholder {

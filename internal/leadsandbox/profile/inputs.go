@@ -83,6 +83,16 @@ type Inputs struct {
 	// GIT_CONFIG_GLOBAL.
 	GitIdentityFile string
 
+	// GitMeta is the Ataniq-owned folder of the tree's protected git files:
+	// config (a file), hooks and info (folders). The tree's .git/config,
+	// .git/hooks and .git/info are bound read-only over the tree from the
+	// entries of this folder, not from the tree itself, because bubblewrap
+	// follows a symbolic link in a bind source and the lead writes the tree.
+	// The default place is Layout.GitMeta. It is required, and must not be,
+	// lie in or lie above the lead's home, config folder, tree or records
+	// folder.
+	GitMeta string
+
 	// QargiInstall is the Qargi install, bound at QargiInside.
 	QargiInstall string
 
@@ -190,6 +200,7 @@ func (in Inputs) check() error {
 		{"lead skills folder", in.LeadSkills},
 		{"instruction file", in.InstructionFile},
 		{"git identity file", in.GitIdentityFile},
+		{"git metadata folder", in.GitMeta},
 		{"Qargi install", in.QargiInstall},
 		{"assignment folder", in.AssignmentDir},
 		{"projection folder", in.ProjectionDir},
@@ -216,6 +227,9 @@ func (in Inputs) check() error {
 		return err
 	}
 	if err := in.checkNeverList(); err != nil {
+		return err
+	}
+	if err := in.checkGitMeta(); err != nil {
 		return err
 	}
 	return in.checkEnv()
@@ -319,6 +333,28 @@ func (in Inputs) checkRecords() error {
 	// before what is bound over it, and no inside path is used twice).
 	if other := in.Runtime.Other(); other != "" && (ri == ConfigInside(other) || below(ri, ConfigInside(other))) {
 		return refuse("Qargi records inside path", "must not lie in the %s config folder %s", other, ConfigInside(other))
+	}
+	return nil
+}
+
+// checkGitMeta refuses a git metadata folder the lead can write or reach: one
+// that is, lies in or lies above the home, the runtime's config folder, the
+// tree or the records folder (above, because a bind of it would then hold a
+// folder the lead writes), or that a never-mounted path covers.
+func (in Inputs) checkGitMeta() error {
+	l := in.Layout()
+	cfg, _ := l.ConfigDir(in.Runtime)
+	writable := []struct{ what, dir string }{{"home", l.Home()}, {"config folder", cfg}, {"tree", l.Tree()}}
+	if in.QargiRecords != "" {
+		writable = append(writable, struct{ what, dir string }{"records folder", in.QargiRecords})
+	}
+	for _, w := range writable {
+		if related(in.GitMeta, w.dir) {
+			return refuse("git metadata folder", "%s is, lies in or lies above the lead's %s %s, a folder the lead can write", in.GitMeta, w.what, w.dir)
+		}
+	}
+	if err := in.CheckSource(in.GitMeta); err != nil {
+		return refuse("git metadata folder", "%s", reasonOf(err))
 	}
 	return nil
 }

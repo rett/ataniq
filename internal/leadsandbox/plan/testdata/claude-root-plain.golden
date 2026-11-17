@@ -59,9 +59,9 @@
 --ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md
 --ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
 --bind /state/leads/arc-lead/tree /work/demo
---ro-bind /state/leads/arc-lead/tree/.git/config /work/demo/.git/config
---ro-bind /state/leads/arc-lead/tree/.git/hooks /work/demo/.git/hooks
---ro-bind /state/leads/arc-lead/tree/.git/info /work/demo/.git/info
+--ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
+--ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
+--ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
 --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
 --ro-bind /opt/ataniq/qargi /ataniq/qargi
 --ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
@@ -120,9 +120,9 @@ ro-bind /home/lead/.claude/skills /opt/ataniq/skills/arc-lead
 ro-bind /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead/CLAUDE.md
 ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
 rw-bind /work/demo /state/leads/arc-lead/tree
-ro-bind /work/demo/.git/config /state/leads/arc-lead/tree/.git/config [lead-writable]
-ro-bind /work/demo/.git/hooks /state/leads/arc-lead/tree/.git/hooks [lead-writable]
-ro-bind /work/demo/.git/info /state/leads/arc-lead/tree/.git/info [lead-writable]
+ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
+ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
 ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
 ro-bind /ataniq/qargi /opt/ataniq/qargi
 ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
@@ -130,7 +130,7 @@ ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-7116a3541c80f4e80e00b1093505c42eb86815ec948ae3616ccf02ca888ab7e4
+f7128872ebcd1aae1c78a216e80e62ef43a3bb559781b456b8ad82c8e7006b2b
 # workdir
 /work/demo
 # set-controlling-terminal

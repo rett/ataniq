@@ -61,11 +61,14 @@
 //
 // [Plan.Mounts] lists each row of the bind table the plan emits, in order, with
 // whether its source lies below a host folder the lead can write
-// ([Mount.LeadWritable]): the three .git rows of the tree. bubblewrap follows
-// symbolic links in a bind source, so a lead that replaced one of those sources
-// with a link to a file of the owner would have that file bound at the next
-// start. The plan treats a host path as a string; the holder re-checks the
-// flagged rows right before it starts the command.
+// ([Mount.LeadWritable]). It is false for every row, because the profile
+// refuses a table with a source in such a folder (rule G1): bubblewrap follows
+// symbolic links in a bind source, resolved on the host, so a source the lead
+// could replace with a link to a file of the owner would have that file bound
+// at the next start. The three read-only .git rows of the tree take their
+// sources from an Ataniq-owned copy (profile.Inputs.GitMeta), not from the
+// tree. The plan treats a host path as a string; the holder re-checks every
+// source right before it starts the command.
 //
 // # The environment inside
 //

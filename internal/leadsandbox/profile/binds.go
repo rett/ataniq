@@ -37,7 +37,7 @@ const (
 	RoleInstructions    = "instructions"
 	RoleGitIdentity     = "git-identity"
 	RoleTree            = "tree"
-	RoleTreeGit         = "tree-git"
+	RoleGitMeta         = "git-meta"
 	RoleMirror          = "mirror"
 	RoleQargi           = "qargi"
 	RoleRecords         = "qargi-records"
@@ -51,7 +51,12 @@ type Bind struct {
 	Kind Kind
 	// Inside is the target path inside the sandbox.
 	Inside string
-	// Source is the host path (read-only and read-write binds only).
+	// Source is the host path (read-only and read-write binds only). It never
+	// lies in or below a host folder the lead can write (the source of a
+	// read-write row): bubblewrap resolves a source on the host, outside
+	// every sandbox, and follows a symbolic link there, so a source the lead
+	// could replace with a link would bring any folder of the owner into the
+	// sandbox. ValidateTable refuses such a row.
 	Source string
 	// SourceRole says where Source comes from (RoleHost, RoleHome, ...).
 	SourceRole string
@@ -60,9 +65,10 @@ type Bind struct {
 	// IsDir says the target is a folder; else a file. It tells the code that
 	// makes mount points what to make.
 	IsDir bool
-	// LeadWritable says the target lies inside a folder the lead can write,
+	// LeadWritable says the TARGET lies inside a folder the lead can write,
 	// so its mount point is made by Ataniq before the lead's first run and
-	// checked on every start, never made by bubblewrap at start.
+	// checked on every start, never made by bubblewrap at start. It says
+	// nothing about the source, which is never in such a folder.
 	LeadWritable bool
 	// Within is the inside path of the lead-writable read-write bind that
 	// holds the target ("" when LeadWritable is false).
@@ -142,8 +148,10 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 		ro(GitIdentityInside, in.GitIdentityFile, RoleGitIdentity, false),
 		rw(treeInside, l.Tree(), RoleTree),
 	)
+	// The three protected git paths keep their targets in the tree, but their
+	// sources are Ataniq's copies, in a folder the lead cannot write.
 	for _, rel := range GitReadOnlyRel() {
-		t = append(t, ro(treeInside+"/"+rel, path.Join(l.Tree(), rel), RoleTreeGit, rel != ".git/config"))
+		t = append(t, ro(treeInside+"/"+rel, GitMetaSource(in.GitMeta, rel), RoleGitMeta, rel != ".git/config"))
 	}
 	for _, p := range in.ExtraPlaceholders {
 		t = append(t, ro(treeInside+"/"+p.Rel, p.Source, RoleExtra, p.Dir))
@@ -185,8 +193,9 @@ func markWritable(t []Bind) {
 // with the root tmpfs and ends with the root remount, every row is well
 // formed, no inside path appears twice, a parent comes before what is bound
 // over it, a row lies only below a read-write bind or a tmpfs (never below a
-// read-only bind, /dev, /proc or a symlink), and LeadWritable and Within say
-// what they must.
+// read-only bind, /dev, /proc or a symlink), LeadWritable and Within say
+// what they must, and no row has a source that is, or lies below, the source
+// of a read-write row, that is, in a host folder the lead can write.
 func ValidateTable(t []Bind) error {
 	n := len(t)
 	if n < 2 || t[0].Kind != KindTmpfs || t[0].Inside != rootInsidePath {
@@ -228,6 +237,30 @@ func ValidateTable(t []Bind) error {
 	for i := range t {
 		if t[i].LeadWritable != want[i].LeadWritable || t[i].Within != want[i].Within {
 			return refuse("bind "+t[i].Inside, "the lead-writable flag does not match the table")
+		}
+	}
+	return checkSourcesNotWritable(t)
+}
+
+// checkSourcesNotWritable refuses a row whose source is, or lies below, the
+// source of a read-write row: a host folder the lead can write. bubblewrap
+// follows a symbolic link in a bind source, resolved on the host outside every
+// sandbox, so a source the lead can replace is a path out of the sandbox. A
+// folder the lead writes is bound whole, from an Ataniq-owned parent, or its
+// content is copied in. The read-write row's own source is not a problem: the
+// lead cannot replace the folder it is bound to.
+func checkSourcesNotWritable(t []Bind) error {
+	for i, b := range t {
+		if b.Source == "" {
+			continue
+		}
+		for j, w := range t {
+			if j == i || w.Kind != KindRwBind || w.Source == "" {
+				continue
+			}
+			if b.Source == w.Source || below(b.Source, w.Source) {
+				return refuse("bind "+b.Inside, "the source %s overlaps the lead-writable folder %s (%s, bound at %s): no source may lie in a folder the lead can write", b.Source, w.Source, w.SourceRole, w.Inside)
+			}
 		}
 	}
 	return nil
@@ -317,11 +350,11 @@ func (in Inputs) checkTable() error {
 		}
 	}
 	// A source that Ataniq owns and binds read-only must not be reachable
-	// through a folder the lead can write; two writable folders must not
-	// overlap. The .git rows are the exception: they are bound over the tree
-	// on purpose.
+	// through a folder the lead can write, and must not contain one; two
+	// writable folders must not overlap. (ValidateTable has refused a source
+	// in or below a writable folder; this adds the sources above one.)
 	for _, b := range t {
-		if b.Source == "" || b.SourceRole == RoleTreeGit {
+		if b.Source == "" {
 			continue
 		}
 		for _, w := range rwSrc {

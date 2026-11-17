@@ -129,7 +129,7 @@ func TestVerifyMutations(t *testing.T) {
 			p.Bwrap[find(t, p, "--ro-bind", "/usr")] = "--bind"
 		}},
 		{"git config made writable", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/tree/.git/config")] = "--bind"
+			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")] = "--bind"
 		}},
 		{"source changed", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/tree")+1] = "/state/leads/other/tree"
@@ -300,15 +300,6 @@ func TestVerifyMutations(t *testing.T) {
 		{"Mounts rows swapped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[2], p.Mounts[3] = p.Mounts[3], p.Mounts[2] }},
 		{"Mounts source changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Source = "/usr/share" }},
 		{"Mounts kind changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Kind = profile.KindRwBind }},
-		{"Mounts lead-writable flag cleared", ProbMountList, false, func(t *testing.T, p *Plan) {
-			for i := range p.Mounts {
-				if p.Mounts[i].LeadWritable {
-					p.Mounts[i].LeadWritable = false
-					return
-				}
-			}
-			t.Fatal("no lead-writable row in the plan")
-		}},
 		{"Mounts lead-writable flag set", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
 		{"Mounts optional flag changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Optional = true }},
 

@@ -18,15 +18,16 @@ import (
 // fixture is a lead's folders under a temporary state root, with a fake clone
 // built by hand (no git binary) and inputs that name them.
 type fixture struct {
-	t     *testing.T
-	base  string // the real path of the temporary folder
-	state string
-	owned string
-	home  string
-	cfg   string
-	tree  string
-	out   string // a folder outside every lead folder, for link targets
-	in    profile.Inputs
+	t       *testing.T
+	base    string // the real path of the temporary folder
+	state   string
+	owned   string
+	home    string
+	cfg     string
+	tree    string
+	gitMeta string // Ataniq's copy of the protected git files (made by Prepare)
+	out     string // a folder outside every lead folder, for link targets
+	in      profile.Inputs
 }
 
 func newFixture(t *testing.T, rt profile.Runtime) *fixture {
@@ -38,6 +39,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 	f := &fixture{t: t, base: base, state: base + "/state", owned: base + "/owned", out: base + "/outside"}
 	l := profile.Layout{StateRoot: f.state, Role: "arc-lead", Project: "ataniq"}
 	f.home, f.tree = l.Home(), l.Tree()
+	f.gitMeta = l.GitMeta()
 	f.cfg, _ = l.ConfigDir(rt)
 	for _, d := range []string{f.home, f.cfg, f.tree} {
 		f.mkdir(d, 0o700)
@@ -71,6 +73,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 		LeadSkills:            own("skills", true),
 		InstructionFile:       own("instructions/"+rt.InstructionFileName(), false),
 		GitIdentityFile:       own("git/config", false),
+		GitMeta:               l.GitMeta(),
 		QargiInstall:          own("qargi", true),
 		AssignmentDir:         own("assignment", true),
 		ProjectionDir:         own("projection", true),
@@ -231,4 +234,16 @@ func wantProblem(t *testing.T, r Report, kind error, path string) {
 		}
 	}
 	t.Fatalf("no %v problem at %s; got %v", kind, path, r.Err())
+}
+
+// handMadeGitMeta makes the folder Prepare makes, by hand, for a test that
+// resolves sources without a Prepare: a config file, an empty hooks folder and
+// an info folder with an exclude file.
+func (f *fixture) handMadeGitMeta() {
+	f.t.Helper()
+	f.mkdir(f.gitMeta, 0o700)
+	f.mkdir(f.gitMeta+"/hooks", 0o700)
+	f.mkdir(f.gitMeta+"/info", 0o700)
+	f.write(f.gitMeta+"/config", "[core]\n")
+	f.write(f.gitMeta+"/info/exclude", "# comment\n")
 }

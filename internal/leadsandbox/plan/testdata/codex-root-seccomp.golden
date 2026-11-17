@@ -60,9 +60,9 @@
 --ro-bind /opt/ataniq/instructions/arc-lead/AGENTS.md /home/lead/.codex/AGENTS.md
 --ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
 --bind /state/leads/arc-lead/tree /work/demo
---ro-bind /state/leads/arc-lead/tree/.git/config /work/demo/.git/config
---ro-bind /state/leads/arc-lead/tree/.git/hooks /work/demo/.git/hooks
---ro-bind /state/leads/arc-lead/tree/.git/info /work/demo/.git/info
+--ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
+--ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
+--ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
 --ro-bind /opt/ataniq/placeholders/envrc /work/demo/.envrc
 --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
 --ro-bind /opt/ataniq/qargi /ataniq/qargi
@@ -123,9 +123,9 @@ ro-bind /home/lead/.codex/skills /opt/ataniq/skills/arc-lead
 ro-bind /home/lead/.codex/AGENTS.md /opt/ataniq/instructions/arc-lead/AGENTS.md
 ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
 rw-bind /work/demo /state/leads/arc-lead/tree
-ro-bind /work/demo/.git/config /state/leads/arc-lead/tree/.git/config [lead-writable]
-ro-bind /work/demo/.git/hooks /state/leads/arc-lead/tree/.git/hooks [lead-writable]
-ro-bind /work/demo/.git/info /state/leads/arc-lead/tree/.git/info [lead-writable]
+ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
+ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
 ro-bind /work/demo/.envrc /opt/ataniq/placeholders/envrc
 ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
 ro-bind /ataniq/qargi /opt/ataniq/qargi
@@ -136,7 +136,7 @@ ro-bind /ataniq/projection /opt/ataniq/projection/demo
 fd 7 read seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
-dc607849216de74c72f1ae190ee1a14e6523173bca949ff2f4b4fa297904b2b6
+d89b70bd8a8a01a13ec7e47af99cf416141cb9f55f0bf8b1c7325aae4794d350
 # workdir
 /work/demo
 # set-controlling-terminal
