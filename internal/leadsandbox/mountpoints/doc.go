@@ -58,6 +58,36 @@
 //     reported as unreadable; [ResolveSourcesWith] takes the reader of links
 //     where the resolver is not the real file system.
 //
+// # Handles, not names (rule B1)
+//
+// Rule B1 of the design (revision 4, section 3.6): host-side code never binds
+// or reads a path any of whose components a sandbox can write. It opens the
+// nearest folder no sandbox can write by name, walks every further component
+// from that handle with openat2 (RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS),
+// refuses a symbolic link and an unexpected type, and does so at the moment of
+// use, every time: an earlier check is never reused.
+//
+// For [Check], [Prepare] and [CheckOwnClone] the folder opened by name is the
+// state root, which the caller owns. Every folder below it that they work in is
+// opened once per call, from a handle and never by its name
+// ([safefile.Root.SubRoot]: one lookup without links, the type decided on the
+// descriptor the lookup returned): the home, the runtime's config folder, the
+// tree, the records, requests and mail folders, the lead's state folder and the
+// git metadata folder from the state root's handle; the folder the git metadata
+// folder is built in from the handle of the lead's state folder; and, for the
+// own-clone check, the tree's .git from the tree's handle. The handle is kept
+// for the call, and every later step (a look at a mount point, a folder or file
+// made, a file read, the mode and owner of the folder itself) is beneath the
+// descriptor that one lookup returned. So no folder is looked at and then
+// opened again by its name, and what a lead does to the name between two steps
+// changes nothing: the folder that was checked is the folder that is used.
+// Nothing found by one call is kept for the next.
+//
+// What these three still open by name is the state root alone: it is the
+// folder the walk starts from, and a link at or above it is the caller's to
+// rule out (see Limits). [ResolveSources] and [CheckBindSources] work on the
+// paths of the bind sources, as described above.
+//
 // # The git metadata folder (rule G1)
 //
 // bubblewrap resolves a bind source on the host, outside every sandbox, and

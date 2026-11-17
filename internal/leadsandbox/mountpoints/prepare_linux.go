@@ -152,17 +152,23 @@ func lookGitMeta(rs *rootSet, in profile.Inputs, treeDir string, placeholders []
 	case !isNotExist(err):
 		return nil, nil, fromErr(tmp, err)
 	}
-	_, err := parent.Lstat(path.Base(in.GitMeta))
-	switch {
-	case err == nil:
+	// The folder itself is opened once, from the state root's handle. An
+	// absent folder is the one to build; one that exists is only checked,
+	// through the handle this lookup returned; a link or another type at its
+	// place is refused.
+	switch gm, prob := rs.get(in.GitMeta); {
+	case prob != nil && prob.Kind == ErrMissing:
+	case prob != nil:
+		return nil, nil, prob
+	case gm == nil:
+		return nil, nil, problem(ErrUnreadable, in.GitMeta, "the git metadata folder is not usable")
+	default:
 		var rep Report
 		checkGitMeta(rs, in, placeholders, &rep)
 		if len(rep.Problems) > 0 {
 			return nil, nil, rep.Problems[0]
 		}
 		return nil, nil, nil
-	case !isNotExist(err):
-		return nil, nil, fromErr(in.GitMeta, err)
 	}
 	tree, prob := rs.get(treeDir)
 	if prob != nil {
