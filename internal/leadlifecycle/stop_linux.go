@@ -61,7 +61,10 @@ import (
 // new coordinator launch, and a Start of a coordinator that began earlier holds
 // the coordinator's lock until it returns, so that the second listing either
 // sees its intent or waits for it. A coordinator instance named by the first
-// pass is not stopped a second time, but a later instance of the same role
+// pass is not stopped a second time. It stays named unless the registry has it
+// as proven stopped when the second listing reaches it (an owner's Stop of the
+// coordinator, or a Reconcile, proved it in the gap): the result names no
+// coordinator that is stopped with proof. A later instance of the same role
 // found in the second listing (the owner stopped the first and started the next
 // in the gap) is stopped, or named, in its place, and the result carries that
 // instance's error and not the stale one. The unit is bound to the lead's, so
@@ -200,10 +203,13 @@ func namedError(named *CoordinatorsError) error {
 // context ended, or the registry failed); the first result is then not dropped:
 // it holds every coordinator named until the failure, those of named included,
 // and the caller returns it with the error. The instances that named holds (the
-// result of an earlier pass over the same lead) are not stopped again and stay
-// in the result; a later instance of the same role replaces the entry of the
-// earlier one. The lead's lock is held by the caller; a coordinator's stop
-// takes only its own, and no operation on a coordinator takes the lead's.
+// result of an earlier pass over the same lead) are not stopped again, and each
+// stays in the result unless the registry has it as proven stopped by now (an
+// owner's Stop of the coordinator or a Reconcile since the earlier pass), in
+// which case its entry is dropped; a later instance of the same role replaces
+// the entry of the earlier one. The lead's lock is held by the caller; a
+// coordinator's stop takes only its own, and no operation on a coordinator
+// takes the lead's.
 func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, named *CoordinatorsError) (unproven *CoordinatorsError, err error) {
 	var out *CoordinatorsError
 	if named != nil {
@@ -217,18 +223,20 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 		if co.Manager != leadregistry.ManagerAtaniq || co.Epoch == 0 {
 			continue
 		}
+		// kept is the entry of the earlier pass about this very instance,
+		// -1 when there is none.
+		kept := -1
 		if out != nil {
 			if i := slices.Index(out.Roles, co.Role); i >= 0 {
 				if out.epochs[i] == co.Epoch {
-					continue
+					kept = i
+				} else {
+					// The instance the first pass named is gone and a later
+					// one runs (an owner's Stop and Start in the gap): the
+					// entry is about a stale instance, which is replaced if
+					// this one is not proven stopped.
+					out.drop(i)
 				}
-				// The instance the first pass named is gone and a later one
-				// runs (an owner's Stop and Start in the gap): the entry is
-				// about a stale instance, which is replaced if this one is
-				// not proven stopped.
-				out.Roles = slices.Delete(out.Roles, i, i+1)
-				out.Errs = slices.Delete(out.Errs, i, i+1)
-				out.epochs = slices.Delete(out.epochs, i, i+1)
 			}
 		}
 		done, err := c.reg.CoordinatorStopped(co.Role, co.Epoch)
@@ -236,6 +244,19 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 			return nonEmpty(out), err
 		}
 		if done {
+			if kept >= 0 {
+				// The instance the first pass named was proven stopped in
+				// the gap (an owner's Stop of the coordinator, a Reconcile):
+				// the registry is asked before the entry is kept, so that
+				// the result does not name a coordinator that it has as
+				// stopped with proof.
+				out.drop(kept)
+			}
+			continue
+		}
+		if kept >= 0 {
+			// Named by the first pass and still not proven stopped: it is
+			// not stopped again, and its entry stays.
 			continue
 		}
 		if _, err := c.Stop(ctx, co.Role); err == nil {
@@ -254,9 +275,16 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 	return nonEmpty(out), nil
 }
 
+// drop removes entry i.
+func (e *CoordinatorsError) drop(i int) {
+	e.Roles = slices.Delete(e.Roles, i, i+1)
+	e.Errs = slices.Delete(e.Errs, i, i+1)
+	e.epochs = slices.Delete(e.epochs, i, i+1)
+}
+
 // nonEmpty is what a listing returns as named: nil when it names none, which
-// is the case when every entry of an earlier pass was a stale instance and the
-// later ones are proven.
+// is the case when every entry of an earlier pass was a stale instance, or
+// one that was proven stopped since, and the later ones are proven.
 func nonEmpty(out *CoordinatorsError) *CoordinatorsError {
 	if out != nil && len(out.Roles) == 0 {
 		return nil

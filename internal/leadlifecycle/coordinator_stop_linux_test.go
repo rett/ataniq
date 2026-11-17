@@ -576,6 +576,66 @@ func TestStopLeadSecondListingDropsAStaleNamedInstanceThatIsReplacedAndStops(t *
 	r.auditClean()
 }
 
+// TestStopLeadSecondListingDropsANamedInstanceProvenStoppedInTheGap: the
+// first pass names instance 1 of a coordinator (it survives SIGKILL). In the
+// gap its processes die and the owner's Stop proves that same instance
+// stopped; nothing starts the coordinator again. The second listing finds the
+// instance the first pass named, which the registry now has as stopped with
+// proof, and must not name it: the Stop of the lead returns nil, and the
+// coordinator is not signalled again.
+func TestStopLeadSecondListingDropsANamedInstanceProvenStoppedInTheGap(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	cunit := unitOf(coord)
+	r.fake.SetProcs(cunit, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	e1 := r.mustStart(coord)
+	gap := false
+	r.quiet.hook = func(role leadrole.Role, _ uint64) error {
+		if role != lead {
+			return nil
+		}
+		gap = true
+		// The first pass named instance 1 and left it unknown.
+		if ce := r.get(coord); ce.Epoch != e1.Epoch || ce.Shown.State != leadregistry.StateUnknown {
+			t.Errorf("coordinator in the gap: %+v", ce)
+		}
+		if !r.fake.Crash(cunit) {
+			t.Error("instance 1 was not loaded in the gap")
+		}
+		if _, err := r.ctl.Stop(context.Background(), coord); err != nil {
+			t.Errorf("Stop of instance 1 in the gap: %v", err)
+		}
+		return nil
+	}
+	e, err := r.stop(lead)
+	if !gap {
+		t.Fatal("the lead's quiesce did not run")
+	}
+	if e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	ce := r.expectState(coord, leadregistry.StateStopped, "")
+	if ce.Epoch != e1.Epoch {
+		t.Fatalf("coordinator epoch %d, want %d", ce.Epoch, e1.Epoch)
+	}
+	if ok, serr := r.reg.CoordinatorStopped(coord, e1.Epoch); serr != nil || !ok {
+		t.Fatalf("CoordinatorStopped %v %v", ok, serr)
+	}
+	if err != nil {
+		t.Fatalf("Stop(lead) names a coordinator that is proven stopped: %v", err)
+	}
+	// Only the first pass signalled the coordinator: TERM and then KILL.
+	n := 0
+	for _, c := range r.ownSignals() {
+		if c.Unit == cunit {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d signals to the coordinator, want 2: %+v", n, r.ownSignals())
+	}
+	r.auditClean()
+}
+
 // gapRig is a running lead whose own stop fails (its processes survive
 // SIGKILL, so it is not proven stopped) and the two coordinators aaa and bbb
 // of its project, which are defined and not running. When the lead is stopped,
