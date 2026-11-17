@@ -11,7 +11,7 @@ import (
 
 // showProperties is the fixed property list of one inspection. The parser
 // refuses any output that lacks one of them or has another.
-const showProperties = "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Description,Transient"
+const showProperties = "Id,LoadState,ActiveState,SubState,InvocationID,ControlGroup,MainPID,Description,Transient,BindsTo"
 
 // timeoutArg renders the tool's own timeout, in whole seconds rounded up.
 func timeoutArg(d time.Duration) string {
@@ -63,6 +63,15 @@ func startArgv(spec leadunit.Spec, timeout time.Duration) ([]string, error) {
 		}
 		add(parts...)
 	}
+	if spec.Parent != "" {
+		for _, p := range leadunit.BoundProperties(spec.Parent) {
+			parts, err := boundProperty(p)
+			if err != nil {
+				return nil, err
+			}
+			add(parts...)
+		}
+	}
 	add("Description", "s", spec.Description())
 	add("WorkingDirectory", "s", spec.WorkDir)
 	env := append([]string{"Environment", "as", strconv.Itoa(len(spec.Env))}, spec.Env...)
@@ -103,6 +112,36 @@ func fixedProperty(p leadunit.Property) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("systemdmgr: no bus rendering for fixed property %s=%q", p.Name, p.Value)
+}
+
+// boundProperty renders one of [leadunit.BoundProperties] as the name, the
+// signature and the value the bus takes: each is a list of unit names, "as",
+// and the unit has exactly one. A property this table does not know is an
+// error, as for [fixedProperty].
+func boundProperty(p leadunit.Property) ([]string, error) {
+	switch p.Name {
+	case "BindsTo", "PartOf", "After":
+		if p.Value != "" {
+			return []string{p.Name, "as", "1", p.Value}, nil
+		}
+	}
+	return nil, fmt.Errorf("systemdmgr: no bus rendering for bound property %s=%q", p.Name, p.Value)
+}
+
+// parentFromBindsTo reads the BindsTo value of a show answer, a list of unit
+// names separated by single spaces, as the Parent of a unit. It is that unit
+// when the list has exactly one entry and [leadunit.ValidateUnitName] accepts
+// it. In every other case (no entry, several, or an entry that is not a
+// service unit name) it is empty: the unit is not shown to be bound to one
+// parent.
+func parentFromBindsTo(v string) string {
+	if v == "" || strings.Contains(v, " ") {
+		return ""
+	}
+	if leadunit.ValidateUnitName(v) != nil {
+		return ""
+	}
+	return v
 }
 
 // snippet returns text made safe and short for an error message: printable

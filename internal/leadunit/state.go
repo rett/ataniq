@@ -62,6 +62,12 @@ type State struct {
 	Intent string
 	// Ours is whether the description is one that [Spec.Description] renders.
 	Ours bool
+	// Parent is the unit this unit is bound to (the value of its BindsTo
+	// property), read back where the manager can: it is empty for a unit that
+	// is bound to nothing, and also when the manager cannot tell or finds more
+	// than one unit it is bound to, so an empty Parent is not proof that a
+	// unit has none.
+	Parent string
 }
 
 // SetDescription records the description and parses Epoch, Intent and Ours

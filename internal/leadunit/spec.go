@@ -45,6 +45,22 @@ func FixedProperties() []Property {
 	}
 }
 
+// BoundProperties returns the properties that bind a unit to the unit named
+// parent, in the order they are set: BindsTo, PartOf and After, each with the
+// parent as its value. A unit with a [Spec.Parent] gets these in addition to
+// [FixedProperties]. BindsTo makes the unit stop when the parent stops or is
+// gone (and fail to start when the parent is not active), PartOf makes a stop
+// or restart of the parent reach the unit, and After orders the unit's start
+// after the parent's and its stop before it. The caller owns the returned
+// slice. BoundProperties does not validate parent: [Spec.Validate] does.
+func BoundProperties(parent string) []Property {
+	return []Property{
+		{Name: "BindsTo", Value: parent},
+		{Name: "PartOf", Value: parent},
+		{Name: "After", Value: parent},
+	}
+}
+
 // Hardening is one extra hardening property of a unit, taken from a closed
 // set: only the values this package defines mean anything. The set is empty
 // for now, so the zero value is the only one there is and [Spec.Validate]
@@ -83,12 +99,24 @@ type Spec struct {
 	Env []string
 	// Hardening holds extra hardening properties beyond [FixedProperties].
 	Hardening []Hardening
+	// Parent is the optional name of the unit this one is bound to, as for
+	// the coordinator of a lead, which is bound to the lead's unit so that
+	// stopping the lead stops it. It is empty for a unit that is bound to
+	// nothing. When it is set the unit gets [BoundProperties] for it, and
+	// it must be a unit name that [ValidateUnitName] accepts and not the
+	// name of the unit itself.
+	Parent string
 }
 
 // ValidateUnitName returns an error wrapping [ErrInvalidSpec] unless name is a
 // unit name this package accepts: a non-empty name before a ".service" suffix,
-// at most 255 bytes, made of [A-Za-z0-9:_.@-].
+// at most 255 bytes, made of [A-Za-z0-9:_.@-], that does not start with a dash
+// (a name that does would be read as an option by a tool that takes it on a
+// command line).
 func ValidateUnitName(name string) error {
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("%w: unit name %q starts with a dash", ErrInvalidSpec, name)
+	}
 	if !strings.HasSuffix(name, unitSuffix) || len(name) == len(unitSuffix) {
 		return fmt.Errorf("%w: unit name %q must be a name followed by %s", ErrInvalidSpec, name, unitSuffix)
 	}
@@ -149,13 +177,22 @@ func validEnvName(name string) bool {
 // a unit may be started from: a unit name that [ValidateUnitName] refuses; an
 // epoch of 0; an intent that is empty, longer than 128 bytes or outside
 // [A-Za-z0-9:_.@-] (the intent is read back from the description, which has
-// no room for anything else); an empty or relative argv[0]; a relative or
+// no room for anything else); a Parent that [ValidateUnitName] refuses or that
+// is the unit's own name; an empty or relative argv[0]; a relative or
 // empty working directory; an environment entry that is not KEY=VALUE with a
 // KEY of [A-Za-z_][A-Za-z0-9_]* or that repeats a key; a NUL or a newline in
 // any string; or any value of [Hardening].
 func (s Spec) Validate() error {
 	if err := ValidateUnitName(s.Unit); err != nil {
 		return err
+	}
+	if s.Parent != "" {
+		if err := ValidateUnitName(s.Parent); err != nil {
+			return fmt.Errorf("parent: %w", err)
+		}
+		if s.Parent == s.Unit {
+			return fmt.Errorf("%w: unit %q is its own parent", ErrInvalidSpec, s.Unit)
+		}
 	}
 	if s.Epoch == 0 {
 		return fmt.Errorf("%w: epoch is 0", ErrInvalidSpec)

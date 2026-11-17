@@ -37,8 +37,6 @@ func TestStartArgvGolden(t *testing.T) {
 	mustEqual(t, got, want)
 }
 
-// The command's arguments reach the call as single elements and the
-// expansion of $VAR is switched off with the flag, in the rendered arguments.
 // Caller text that starts with a dash never reaches a tool as an option: the
 // options of busctl end with "--" before the verb, whatever the command's
 // arguments, the environment, the working directory or the intent hold.
@@ -104,6 +102,8 @@ func TestUnitNameWithALeadingDashIsRefusedBeforeAnyCall(t *testing.T) {
 	}
 }
 
+// The command's arguments reach the call as single elements and the
+// expansion of $VAR is switched off with the flag, in the rendered arguments.
 func TestStartArgvExecStartExDisablesExpansion(t *testing.T) {
 	argv, err := startArgv(validSpec(), DefaultTimeout)
 	if err != nil {
@@ -121,6 +121,113 @@ func TestStartArgvExecStartExDisablesExpansion(t *testing.T) {
 	}
 	if !contains(argv, "$HOME") {
 		t.Fatal("the argument is not carried literally")
+	}
+}
+
+// A spec with a parent adds the three bound properties, each a list of one
+// unit name, right after the fixed ones; nothing else moves.
+func TestStartArgvBoundGolden(t *testing.T) {
+	s := validSpec()
+	s.Parent = "ataniq-lead-parent.service"
+	got, err := startArgv(s, DefaultTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"busctl", "--user", "--timeout=5s", "--", "call",
+		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "13",
+		"Type", "s", "exec",
+		"CollectMode", "s", "inactive-or-failed",
+		"KillMode", "s", "control-group",
+		"Restart", "s", "no",
+		"TimeoutStopUSec", "t", "2000000",
+		"NoNewPrivileges", "b", "true",
+		"BindsTo", "as", "1", "ataniq-lead-parent.service",
+		"PartOf", "as", "1", "ataniq-lead-parent.service",
+		"After", "as", "1", "ataniq-lead-parent.service",
+		"Description", "s", "ataniq lead epoch=3 intent=intent-7",
+		"WorkingDirectory", "s", "/srv/work",
+		"Environment", "as", "2", "A=1", "PATH=/usr/bin:/bin",
+		"ExecStartEx", "a(sasas)", "1", "/usr/bin/lead", "5", "/usr/bin/lead", "--name", "a b", "$HOME", "%h", "1", "no-env-expand",
+		"0",
+	}
+	mustEqual(t, got, want)
+
+	// Without a parent none of the three is in the call.
+	plain, err := startArgv(validSpec(), DefaultTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"BindsTo", "PartOf", "After"} {
+		if indexOf(plain, name) >= 0 {
+			t.Errorf("%s in the call of a unit with no parent: %q", name, plain)
+		}
+	}
+}
+
+func TestStartArgvCarriesEveryBoundProperty(t *testing.T) {
+	s := validSpec()
+	s.Parent = "ataniq-lead-parent.service"
+	argv, err := startArgv(s, DefaultTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range leadunit.BoundProperties(s.Parent) {
+		parts, err := boundProperty(p)
+		if err != nil {
+			t.Fatalf("%s: %v", p.Name, err)
+		}
+		if !containsRun(argv, parts) {
+			t.Errorf("bound property %s=%s is not in the call as %q", p.Name, p.Value, parts)
+		}
+	}
+	n := 4 + len(leadunit.FixedProperties()) + len(leadunit.BoundProperties(s.Parent))
+	i := indexOf(argv, "fail")
+	if i < 0 || argv[i+1] != fmt.Sprint(n) {
+		t.Fatalf("property count after the mode: %q, want %d", argv[i+1:i+2], n)
+	}
+}
+
+func TestBoundPropertyRefusesWhatItDoesNotKnow(t *testing.T) {
+	for _, p := range []leadunit.Property{
+		{Name: "Requires", Value: "x.service"},
+		{Name: "BindsTo", Value: ""},
+	} {
+		if _, err := boundProperty(p); err == nil {
+			t.Errorf("%v accepted", p)
+		}
+	}
+}
+
+// A parent that is not a unit name never reaches a tool: the spec is refused
+// before any call, a parent that starts with a dash included.
+func TestStartRefusesAnInvalidParentBeforeAnyCall(t *testing.T) {
+	r := newRig(t)
+	for _, parent := range []string{"-x.service", "--user.service", "a b.service", "parent", unitName} {
+		s := validSpec()
+		s.Parent = parent
+		if _, err := r.m.Start(context.Background(), s); !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("%q: %v", parent, err)
+		}
+	}
+	if n := len(r.run.recorded()); n != 0 {
+		t.Fatalf("%d tool calls: %v", n, r.run.recorded())
+	}
+}
+
+func TestStartWithAParentSendsTheBoundProperties(t *testing.T) {
+	r := newRig(t)
+	s := validSpec()
+	s.Parent = "ataniq-lead-parent.service"
+	r.setUnit(with(loadedProps(), "BindsTo", s.Parent))
+	st, err := r.m.Start(context.Background(), s)
+	if err != nil || st.Parent != s.Parent {
+		t.Fatalf("%+v %v", st, err)
+	}
+	calls := r.run.recorded()
+	if len(calls) != 2 || calls[0][0] != "busctl" || !containsRun(calls[0], []string{"BindsTo", "as", "1", s.Parent}) {
+		t.Fatalf("%q", calls)
 	}
 }
 
@@ -236,8 +343,6 @@ func TestStartUnitExists(t *testing.T) {
 	}
 }
 
-// A message about another unit, or with more text, is not recognised as the
-// refusal for this one and degrades to a lost reply.
 // The text of "nothing was started" is matched as its own, not as a phrase
 // anywhere in the output: a "Failed to connect to bus" that is not the start
 // of the output is one more failure after the request and a lost reply.
@@ -262,6 +367,8 @@ func TestStartUnreachableIsMatchedAsThePrefixOfTheOutput(t *testing.T) {
 	}
 }
 
+// A message about another unit, or with more text, is not recognised as the
+// refusal for this one and degrades to a lost reply.
 func TestStartUnitExistsOnlyForThisUnit(t *testing.T) {
 	for _, msg := range []string{
 		"Call failed: Unit other.service was already loaded or has a fragment file.\n",

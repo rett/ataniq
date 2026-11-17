@@ -270,6 +270,8 @@ func TestEndedImpossibleIdentity(t *testing.T) {
 	}{
 		{"pid zero", 0, 12345},
 		{"negative pid", -1, 12345},
+		{"pid above the kernel maximum", 1<<22 + 1, 12345},
+		{"largest int pid", int(^uint(0) >> 1), 12345},
 		{"start zero for a living process", os.Getpid(), 0},
 		{"both impossible", 0, 0},
 	} {
@@ -281,6 +283,16 @@ func TestEndedImpossibleIdentity(t *testing.T) {
 	// hide it.
 	if ended, err := Ended("11111111-1111-1111-1111-111111111111", 0, 1); err == nil || ended || err.Error() != "invalid process identity" {
 		t.Errorf("pid zero, other boot: %v %v", ended, err)
+	}
+	if ended, err := Ended("11111111-1111-1111-1111-111111111111", 1<<22+1, 1); err == nil || ended || err.Error() != "invalid process identity" {
+		t.Errorf("pid above the maximum, other boot: %v %v", ended, err)
+	}
+	// The maximum itself and the pid 1 are possible identities: they get as far
+	// as the boot check.
+	for _, pid := range []int{1, 1 << 22} {
+		if ended, err := Ended("11111111-1111-1111-1111-111111111111", pid, 1); err == nil || ended || !strings.HasPrefix(err.Error(), "unsupported: ") {
+			t.Errorf("pid %d, other boot: %v %v", pid, ended, err)
+		}
 	}
 }
 

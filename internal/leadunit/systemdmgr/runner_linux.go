@@ -36,7 +36,18 @@ var ErrNotLaunched = errors.New("systemdmgr: tool not launched")
 // It returns the tool's combined output; on an error it may still return the
 // text the tool printed, which the manager reads only to tell a refusal from
 // a failure. A runner returns an error wrapping [ErrNotLaunched] only when the
-// tool did not start, and it honours ctx. A Runner is safe for concurrent use.
+// tool did not start, and it honours ctx.
+//
+// Run returns only after the tool has ended, also when ctx ends first: it then
+// waits for the tool, which is cut off at the deadline it was given so that the
+// wait is bounded, and returns the context's error. The manager relies on this.
+// A caller that sees a lost reply from Start inspects the unit next; a runner
+// that had returned at the end of ctx while busctl was still running would let
+// the request reach systemd after that inspection, a window the caller can
+// neither see nor close. What the tool had already written to the bus before it
+// ended can still be processed afterwards: that window belongs to the bus, not
+// to the runner (see [ExecRunner.Run]). A runner that cannot promise this does
+// not satisfy the contract. A Runner is safe for concurrent use.
 type Runner interface {
 	Run(ctx context.Context, argv []string) (stdout string, err error)
 }

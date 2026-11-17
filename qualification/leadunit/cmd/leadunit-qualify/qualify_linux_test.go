@@ -104,7 +104,7 @@ func TestQualifyPassesAgainstAWellBehavedManager(t *testing.T) {
 		}
 		names = append(names, c.Name)
 	}
-	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded empty-true-for-a-fresh-name cleanup"
+	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches bound-child-started sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded bound-child-stops-with-parent empty-true-for-a-fresh-name cleanup"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("checks %v", names)
 	}
@@ -129,12 +129,32 @@ func TestQualifyPassesAgainstAWellBehavedManager(t *testing.T) {
 		t.Fatalf("unit record %q %v", b, err)
 	}
 	specs := r.fake.StartedSpecs()
-	if len(specs) != 1 || specs[0].Argv[1] != "child" || specs[0].Argv[2] != "--ignore-term" || specs[0].Epoch != 1 || len(specs[0].Env) != 1 {
+	if len(specs) != 2 || specs[0].Argv[1] != "child" || specs[0].Argv[2] != "--ignore-term" || specs[0].Epoch != 1 || len(specs[0].Env) != 1 || specs[0].Parent != "" {
 		t.Fatalf("%+v", specs)
 	}
+	// The second unit is the bound one: a plain child, bound to the first.
+	if b := specs[1]; b.Unit != "ataniq-qualify-"+testSuffix+"-child.service" || b.Parent != rep.Unit || b.Epoch != 1 ||
+		b.Intent != "qc-"+testSuffix || len(b.Argv) != 2 || b.Argv[1] != "child" || b.Validate() != nil {
+		t.Fatalf("%+v", b)
+	}
 	calls := r.fake.CallsOf(leadunit.MethodStart)
-	if len(calls) != 2 || !errors.Is(calls[1].Err, leadunit.ErrUnitExists) {
+	if len(calls) != 3 || !errors.Is(calls[1].Err, leadunit.ErrUnitExists) || calls[2].Err != nil {
 		t.Fatalf("starts: %+v", calls)
+	}
+	// The bound unit went with its parent, and nothing signalled it.
+	for _, c := range r.fake.CallsOf(leadunit.MethodSignal) {
+		if c.Unit == specs[1].Unit && !c.Implied {
+			t.Fatalf("the harness signalled the bound unit: %+v", c)
+		}
+	}
+	implied := 0
+	for _, c := range r.fake.Calls() {
+		if c.Implied && c.Unit == specs[1].Unit && c.Signal == syscall.SIGTERM {
+			implied++
+		}
+	}
+	if implied != 1 || r.fake.Loaded(specs[1].Unit) {
+		t.Fatalf("the bound unit was stopped %d times, loaded=%v", implied, r.fake.Loaded(specs[1].Unit))
 	}
 }
 
@@ -529,5 +549,187 @@ func TestCleanupInspectFailureIsAFailure(t *testing.T) {
 	c := r.q.cleanup(context.Background())
 	if c.Result != resultFail || !strings.Contains(c.Detail, "could not inspect") || signalCalls(r) != 0 {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// lyingLife makes the manager look as if systemd did not bind the child to its
+// parent: the child is started without its Parent, and Inspect still reads the
+// parent back for it.
+type lyingLife struct {
+	lifecycle
+	childUnit string
+	parent    string
+}
+
+func (w *lyingLife) Start(ctx context.Context, spec leadunit.Spec) (leadunit.State, error) {
+	if spec.Unit == w.childUnit {
+		spec.Parent = ""
+	}
+	return w.lifecycle.Start(ctx, spec)
+}
+
+func (w *lyingLife) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
+	st, err := w.lifecycle.Inspect(ctx, unit)
+	if err == nil && unit == w.childUnit && st.Loaded {
+		st.Parent = w.parent
+	}
+	return st, err
+}
+
+const (
+	boundParent = "ataniq-qualify-" + testSuffix + ".service"
+	boundChild  = "ataniq-qualify-" + testSuffix + "-child.service"
+)
+
+func TestBoundChildStartedIsAnActiveUnitWhoseParentIsReadBack(t *testing.T) {
+	r := newQRig(t)
+	rep := r.q.qualify(context.Background())
+	var detail string
+	for _, c := range rep.Checks {
+		if c.Name == "bound-child-started" {
+			detail = c.Detail
+		}
+	}
+	if results(rep)["bound-child-started"] != resultPass || !strings.Contains(detail, boundChild) || !strings.Contains(detail, boundParent) {
+		t.Fatalf("%q %+v", detail, rep)
+	}
+	// The unit name of the bound child is a unit name of the harness and of no
+	// role, and not the name used for the fresh-name check.
+	if err := leadunit.ValidateUnitName(boundChild); err != nil || strings.Contains(boundChild, freshSuffix) {
+		t.Fatal(err)
+	}
+}
+
+func TestBoundChildWithoutTheParentReadBackFailsAndIsCleanedUp(t *testing.T) {
+	r := newQRig(t)
+	r.q.mgr = &tweakLife{lifecycle: r.q.mgr, inspect: func(_ context.Context, unit string, real func() (leadunit.State, error)) (leadunit.State, error) {
+		st, err := real()
+		if unit == boundChild {
+			st.Parent = ""
+		}
+		return st, err
+	}}
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if rep.Verdict != resultFail || res["bound-child-started"] != resultFail || res["sigterm-leaves-group-populated"] != resultSkipped || res["bound-child-stops-with-parent"] != resultSkipped || res["cleanup"] != resultPass {
+		t.Fatalf("%+v", rep)
+	}
+	for _, c := range rep.Checks {
+		if c.Name == "bound-child-started" && !strings.Contains(c.Detail, "reads its parent as") {
+			t.Fatalf("%+v", c)
+		}
+	}
+	if r.fake.Loaded(boundParent) || r.fake.Loaded(boundChild) {
+		t.Fatal("a unit was left running")
+	}
+}
+
+func TestBoundChildThatSystemdDoesNotStopFailsAndIsCleanedUp(t *testing.T) {
+	r := newQRig(t)
+	r.q.mgr = &lyingLife{lifecycle: r.q.mgr, childUnit: boundChild, parent: boundParent}
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if rep.Verdict != resultFail || res["bound-child-started"] != resultPass || res["unit-not-loaded"] != resultPass ||
+		res["bound-child-stops-with-parent"] != resultFail || res["empty-true-for-a-fresh-name"] != resultSkipped {
+		t.Fatalf("%+v", rep)
+	}
+	// The harness did not stop the child to make the check pass: the cleanup
+	// did, and says so.
+	last := rep.Checks[len(rep.Checks)-1]
+	if last.Name != "cleanup" || last.Result != resultPass || !strings.Contains(last.Detail, "bound child: SIGKILL sent;") {
+		t.Fatalf("%+v", last)
+	}
+	if r.fake.Loaded(boundChild) {
+		t.Fatal("the child was left running")
+	}
+}
+
+func TestBoundChildThatStaysPopulatedFailsTheCheckAndTheCleanup(t *testing.T) {
+	r := newQRig(t)
+	r.fake.SetProcs(boundChild, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if rep.Verdict != resultFail || res["bound-child-stops-with-parent"] != resultFail || res["cleanup"] != resultFail {
+		t.Fatalf("%+v", rep)
+	}
+	last := rep.Checks[len(rep.Checks)-1]
+	if !strings.Contains(last.Detail, "bound child:") || !strings.Contains(last.Detail, "could not be proven empty") {
+		t.Fatalf("%+v", last)
+	}
+}
+
+func TestBoundChildRefusedStartFailsTheCheckAndTheRestIsCleanedUp(t *testing.T) {
+	r := newQRig(t)
+	r.fake.FailNextStart(boundChild, leadunit.ErrUnavailable)
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if rep.Verdict != resultFail || res["bound-child-started"] != resultFail || res["sigterm-leaves-group-populated"] != resultSkipped || res["cleanup"] != resultPass {
+		t.Fatalf("%+v", rep)
+	}
+	// The child was never started, so the cleanup has nothing to say of it.
+	if last := rep.Checks[len(rep.Checks)-1]; strings.Contains(last.Detail, "bound child") || r.fake.Loaded(boundParent) {
+		t.Fatalf("%+v", last)
+	}
+}
+
+// A run that stops with a lost reply for the child still looks for the child.
+// The cleanup ends the parent first, which stops the child with it, and the
+// child's part of the cleanup then proves its group empty.
+func TestBoundChildLostReplyIsStillCleanedUp(t *testing.T) {
+	r := newQRig(t)
+	r.fake.LoseNextStartReply(boundChild)
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if rep.Verdict != resultFail || res["bound-child-started"] != resultFail || res["cleanup"] != resultPass || r.fake.Loaded(boundChild) || r.fake.Loaded(boundParent) {
+		t.Fatalf("%+v", rep)
+	}
+	if last := rep.Checks[len(rep.Checks)-1]; !strings.Contains(last.Detail, "bound child: ") || !strings.Contains(last.Detail, "proven empty") {
+		t.Fatalf("%+v", last)
+	}
+}
+
+// A unit of the run's name that systemd reports as not transient is not ours,
+// whatever its description says: the manager answers Ours false for it (see
+// systemdmgr's TestInspectForeignUnitIsNotOurs), the harness acts on Ours and
+// not on the text, and so the cleanup leaves it alone and says that it could
+// not prove it empty. The wrapper turns the fake's answer into the one the
+// real manager gives for a unit file.
+func TestCleanupLeavesANonTransientUnitWithTheRunsExactDescriptionAlone(t *testing.T) {
+	for name, c := range map[string]struct{ unit, intent string }{
+		"the unit":        {"ataniq-qualify-" + testSuffix + ".service", "q-" + testSuffix},
+		"the bound child": {boundChild, "qc-" + testSuffix},
+	} {
+		r, _ := cleanupRig(t)
+		r.q.childUnit, r.q.childIntent = boundChild, "qc-"+testSuffix
+		spec := r.q.spec(r.q.intent)
+		if c.unit == boundChild {
+			spec = r.q.childSpec()
+		}
+		if err := r.fake.AddForeign(c.unit, spec.Description(), leadunit.ProcScript{Behavior: leadunit.IgnoreTerm}); err != nil {
+			t.Fatal(err)
+		}
+		r.q.mgr = &tweakLife{lifecycle: r.q.mgr, inspect: func(_ context.Context, u string, real func() (leadunit.State, error)) (leadunit.State, error) {
+			st, err := real()
+			if err == nil && u == c.unit {
+				// As the manager does for Transient=no: the description is
+				// kept as it is, but it is not read as ours.
+				st.Epoch, st.Intent, st.Ours = 0, "", false
+			}
+			return st, err
+		}}
+		got := r.q.cleanupUnit(context.Background(), c.unit, c.intent, true, leadunit.State{})
+		if got.Result != resultFail || !strings.Contains(got.Detail, "not signalled") || !strings.Contains(got.Detail, "not this run's intent") {
+			t.Errorf("%s: %+v", name, got)
+		}
+		if signalCalls(r) != 0 || len(r.fake.CallsOf(leadunit.MethodEmpty)) != 0 || !r.fake.Loaded(c.unit) {
+			t.Errorf("%s: the unit file's unit was touched: %v", name, r.fake.Calls())
+		}
+		// Without the wrapper the fake, which knows nothing of unit files,
+		// answers Ours for the same unit: the test is about the manager's
+		// answer being what the harness goes by.
+		r.q.mgr = fakeLife{r.fake}
+		if st, err := r.q.mgr.Inspect(context.Background(), c.unit); err != nil || !st.Ours {
+			t.Errorf("%s: %+v %v", name, st, err)
+		}
 	}
 }

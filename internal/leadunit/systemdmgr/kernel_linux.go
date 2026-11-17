@@ -3,6 +3,7 @@ package systemdmgr
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -22,6 +23,13 @@ var cgroupMount = "/sys/fs/cgroup"
 const findMaxDepth = 8
 
 var findMaxDirs = 20000
+
+// findReadChunk is how many entries one read of a directory takes. A directory
+// is read in chunks of this size and each entry is checked against the bounds
+// as it comes, so that the search stops at its bound without first reading
+// the whole of a directory that has very many entries. It is a variable only
+// so that a test can lower it.
+var findReadChunk = 256
 
 // kernel is the part of the host that the manager reads outside systemd: the
 // identity of a control group, its populated flag, the control groups below a
@@ -80,35 +88,55 @@ func (hostKernel) FindNamed(base, name string) ([]string, error) {
 		depth int
 	}
 	queue := []dir{{base, 0}}
+	// scan reads one directory in chunks, appending to found and to queue.
+	scan := func(d dir) error {
+		f, err := os.Open(cgroupMount + d.p)
+		if err != nil {
+			if d.depth > 0 && errors.Is(err, fs.ErrNotExist) {
+				return nil // removed since its parent was listed: not there
+			}
+			return err
+		}
+		defer f.Close()
+		for {
+			entries, err := f.ReadDir(findReadChunk)
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				child := d.p + "/" + e.Name()
+				if e.Name() == name {
+					found = append(found, child)
+				}
+				if d.depth+1 > findMaxDepth {
+					return errors.New("control group tree is deeper than the search bound")
+				}
+				// The bound is on the directories seen so far (visited and
+				// still queued), checked before the queue grows and before
+				// the next chunk is read, so that one directory with very many
+				// child groups neither grows the queue past the bound nor is
+				// read to its end first.
+				if visited+len(queue)+1 > findMaxDirs {
+					return errors.New("control group search is over its bound")
+				}
+				queue = append(queue, dir{child, d.depth + 1})
+			}
+			switch {
+			case errors.Is(err, io.EOF):
+				return nil
+			case err != nil && d.depth > 0 && errors.Is(err, fs.ErrNotExist):
+				return nil // removed while it was read: what was listed stands
+			case err != nil:
+				return err
+			}
+		}
+	}
 	for len(queue) > 0 {
 		d := queue[0]
 		queue = queue[1:]
 		visited++
-		entries, err := os.ReadDir(cgroupMount + d.p)
-		if err != nil {
-			if d.depth > 0 && errors.Is(err, fs.ErrNotExist) {
-				continue // removed since its parent was listed: not there
-			}
+		if err := scan(d); err != nil {
 			return nil, err
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			child := d.p + "/" + e.Name()
-			if e.Name() == name {
-				found = append(found, child)
-			}
-			if d.depth+1 > findMaxDepth {
-				return nil, errors.New("control group tree is deeper than the search bound")
-			}
-			// The bound is on the directories seen so far (visited and still
-			// queued), checked before the queue grows, so that one directory
-			// with very many child groups cannot grow it past the bound.
-			if visited+len(queue)+1 > findMaxDirs {
-				return nil, errors.New("control group search is over its bound")
-			}
-			queue = append(queue, dir{child, d.depth + 1})
 		}
 	}
 	return found, nil

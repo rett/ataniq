@@ -70,12 +70,13 @@ func (m *Manager) call(ctx context.Context, argv []string) (string, error) {
 	return m.run.Run(cctx, argv)
 }
 
-// validUnitName is [leadunit.ValidateUnitName] and a refusal of a name that
-// starts with "-". The name is the one caller-supplied word that reaches a
-// command line besides the command's own arguments, and a leading dash would
-// let a tool read it as an option wherever the "--" terminators are missed.
-// The terminators are in place; this is the second guard, and it runs before
-// any call.
+// validUnitName is [leadunit.ValidateUnitName] and, kept on its own, a refusal
+// of a name that starts with "-". [leadunit.ValidateUnitName] refuses that
+// itself, so the second check cannot fire today; it stays because the name is
+// the one caller-supplied word that reaches a command line besides the
+// command's own arguments, and this package does not rely on a rule it does not
+// own staying as it is. The "--" terminators are the first guard of the
+// command lines; this runs before any call.
 func validUnitName(name string) error {
 	if err := leadunit.ValidateUnitName(name); err != nil {
 		return err
@@ -168,7 +169,8 @@ func startFailure(unit, out string, err error) error {
 // an error. Any other LoadState but "loaded", a property that does not parse,
 // a loaded unit whose control group cannot be read and a failed read of the
 // boot identity are errors, never "not loaded". The description counts as
-// ours only for a unit that systemd reports as transient. A failure to reach
+// ours only for a unit that systemd reports as transient. State.Parent is the
+// unit's BindsTo when that is exactly one unit name, and empty otherwise. A failure to reach
 // the tool is [leadunit.ErrUnavailable].
 func (m *Manager) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
 	if err := ctx.Err(); err != nil {
@@ -250,6 +252,7 @@ func stateFromProperties(unit string, p map[string]string) (leadunit.State, erro
 	st.ControlGroup = cg
 	st.MainPID = pid
 	st.SetDescription(p["Description"])
+	st.Parent = parentFromBindsTo(p["BindsTo"])
 	if transient != "yes" {
 		// A unit file can carry any description; only a transient unit that
 		// the daemon started is ours.

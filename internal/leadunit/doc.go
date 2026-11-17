@@ -11,7 +11,10 @@
 // unit gets, in one place for the real manager and for the documentation. A
 // [State] is what an inspection or a start returns, with the invocation id and
 // the control group identity that tie a later signal or proof to one run of
-// the unit.
+// the unit. A [Spec] may name a Parent, the unit this one is bound to (the
+// coordinator of a lead is bound to the lead's unit): [BoundProperties] lists
+// the three properties that binding sets, and [State] reads the parent back
+// where the manager can.
 //
 // The package holds no systemd call, no process, no file and no socket. The
 // real manager lives elsewhere and implements [Manager]; [Fake] is an
@@ -26,8 +29,13 @@
 // refusal of a signal for a stale invocation), but it is a model written from
 // the contract, not from systemd: it does not stop the other processes of a
 // control group when the main process exits, it has no unit that is only
-// activating, and it knows no signal but SIGTERM and SIGKILL. A passing test
-// against the fake says that the caller follows the contract, not that the
+// activating, and it knows no signal but SIGTERM and SIGKILL. Its model of a
+// unit bound to a parent is written from the documentation of BindsTo=,
+// PartOf= and TimeoutStopSec=, not from a run: it stops a bound unit when its
+// parent unloads and gives it the stop timeout of [FixedProperties], and as
+// systemd's answer to a start whose parent is not active is not known, it
+// offers both outcomes that could be ([Fake.SetMissingParentOutcome]). A
+// passing test against the fake says that the caller follows the contract, not that the
 // real manager keeps it.
 //
 // # Status

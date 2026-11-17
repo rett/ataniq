@@ -15,8 +15,9 @@ import (
 	"ataniq/internal/leadunit"
 )
 
-// None of these tests runs a tool: they resolve files in temporary
-// directories and check what is refused before anything would run.
+// The tests down to TestSnippetIsBoundedAndPrintable run no tool: they resolve
+// files in temporary directories and check what is refused before anything
+// would run. The ones after them run a shell script that the test wrote.
 
 func writeTool(t *testing.T, dir, name string, mode os.FileMode) string {
 	t.Helper()
