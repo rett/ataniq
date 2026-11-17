@@ -16,6 +16,7 @@ import (
 
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/ptyhost"
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // FinalName is the name of the final record in Config.StateDir.
@@ -83,6 +84,9 @@ type Facts struct {
 type FinalScreen struct {
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
+	// Position is the count of PTY bytes fed to the pane when the screen was
+	// read; Cols, Rows and Text are from the same moment.
+	Position uint64 `json:"position"`
 	// Text is Pane.Text of the whole screen, cut at a row boundary when it
 	// would be over MaxFinalScreenBytes; Truncated says so.
 	Text      string `json:"text"`
@@ -267,27 +271,36 @@ func (s *Session) waitTree() (bool, string) {
 }
 
 // finalScreen reads the whole screen as text, cut at a row boundary at
-// MaxFinalScreenBytes.
+// MaxFinalScreenBytes. The size, the text and the position come from one
+// Screen call, under the output lock: while a grandchild still holds the
+// terminal the output goes on, and they must describe one moment.
 func (s *Session) finalScreen() FinalScreen {
-	cols, rows := s.pane.Size()
-	fs := FinalScreen{Cols: cols, Rows: rows}
-	if t, ok := s.pane.Text(uv.Pos(0, 0), uv.Pos(cols-1, rows-1), MaxFinalScreenBytes); ok {
-		fs.Text = t
-		return fs
-	}
-	var b strings.Builder
-	for y := 0; y < rows; y++ {
-		line, ok := s.pane.Text(uv.Pos(0, y), uv.Pos(cols-1, y), MaxFinalScreenBytes-b.Len()-1)
-		if !ok {
-			break
+	var fs FinalScreen
+	truncated := false
+	s.Screen(func(p *sessionpane.Pane, pos uint64) {
+		cols, rows := p.Size()
+		fs = FinalScreen{Cols: cols, Rows: rows, Position: pos}
+		if t, ok := p.Text(uv.Pos(0, 0), uv.Pos(cols-1, rows-1), MaxFinalScreenBytes); ok {
+			fs.Text = t
+			return
 		}
-		if y > 0 {
-			b.WriteByte('\n')
+		var b strings.Builder
+		for y := 0; y < rows; y++ {
+			line, ok := p.Text(uv.Pos(0, y), uv.Pos(cols-1, y), MaxFinalScreenBytes-b.Len()-1)
+			if !ok {
+				break
+			}
+			if y > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
 		}
-		b.WriteString(line)
+		fs.Text, fs.Truncated = b.String(), true
+		truncated = true
+	})
+	if truncated {
+		s.addCount("final_screen_truncated", 1)
 	}
-	fs.Text, fs.Truncated = b.String(), true
-	s.addCount("final_screen_truncated", 1)
 	return fs
 }
 

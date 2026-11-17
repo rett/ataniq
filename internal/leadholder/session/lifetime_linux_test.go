@@ -16,6 +16,7 @@ import (
 
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/fakeagent"
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // Case H10: the agent exits with status 3; the three facts, the status and the
@@ -57,6 +58,9 @@ func TestExitStatusThreeGivesTheThreeFactsAndTheFinalRecord(t *testing.T) {
 	}
 	if !strings.Contains(rec.Screen.Text, "LASTWORDS") || rec.Screen.Cols != 100 || rec.Screen.Rows != 30 {
 		t.Errorf("screen %+v", rec.Screen)
+	}
+	if rec.Screen.Position == 0 || rec.Screen.Position != rec.Counters["output_bytes"] {
+		t.Errorf("screen position %d, output bytes %d", rec.Screen.Position, rec.Counters["output_bytes"])
 	}
 	for _, name := range []string{"pty_scan_errors", "reply_dropped_bytes", "held_keys_suspend", "held_keys_signal", "clipboard_blocked", "output_bytes"} {
 		if _, ok := rec.Counters[name]; !ok {
@@ -384,6 +388,35 @@ func TestAFailedFinalRecordLeavesNoTemporaryFile(t *testing.T) {
 	// No folder at all: the creation fails.
 	if err := writeFinal(filepath.Join(dir, "nope"), &FinalRecord{}); err == nil {
 		t.Error("writeFinal to a missing folder succeeded")
+	}
+}
+
+// The size and the text of the final screen come from one hold of the output
+// lock: while it is held elsewhere, the final screen waits.
+func TestFinalScreenIsReadUnderTheOutputLock(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("say HERE; wait")
+	waitScreen(t, s, "HERE")
+	held, release := make(chan struct{}), make(chan struct{})
+	go s.Screen(func(*sessionpane.Pane, uint64) {
+		close(held)
+		<-release
+	})
+	<-held
+	got := make(chan FinalScreen, 1)
+	go func() { got <- s.finalScreen() }()
+	select {
+	case <-got:
+		t.Fatal("the final screen was read while the output lock was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	fs := <-got
+	if fs.Cols != 100 || fs.Rows != 30 || fs.Position == 0 || !strings.Contains(fs.Text, "HERE") {
+		t.Errorf("final screen %+v", fs)
+	}
+	if fs.Position != position(s) {
+		t.Errorf("position %d, the session is at %d", fs.Position, position(s))
 	}
 }
 
