@@ -86,6 +86,12 @@ func TestInputsRefusals(t *testing.T) {
 		{"relative records folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "q", "/home/lead/q"
 		}, "Qargi records folder", "absolute"},
+		{"no managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = "" }, "managed-settings digest", "hex"},
+		{"short managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = "abc" }, "managed-settings digest", "hex"},
+		{"long managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("a", 65) }, "managed-settings digest", "hex"},
+		{"upper-case managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("A", 64) }, "managed-settings digest", "hex"},
+		{"non-hex managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("g", 64) }, "managed-settings digest", "hex"},
+		{"managed-settings digest with a newline", Codex, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("a", 63) + "\n" }, "managed-settings digest", "hex"},
 		{"seccomp file without a digest", Claude, func(in *Inputs) { in.SeccompFile = "/srv/owned/a.bpf" }, "seccomp digest", "hex"},
 		{"seccomp digest without a file", Claude, func(in *Inputs) { in.SeccompSHA256 = strings.Repeat("a", 64) }, "seccomp file", "empty"},
 		{"short seccomp digest", Claude, func(in *Inputs) {

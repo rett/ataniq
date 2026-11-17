@@ -1,9 +1,12 @@
 package profile
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+
+	"ataniq/internal/leadsandbox/sandboxnet"
 )
 
 func mustDigest(t *testing.T, in Inputs) string {
@@ -50,8 +53,8 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "7228d528c2fe4325cbb12def180aeb0bb517cebefc5bcfbe4c9bff4aa579d894"
-	goldenCodex  = "cb98c56ee0952fd84828e749783c5c90b918aa89314f15ef148d5de8b7a00e69"
+	goldenClaude = "aa3db2e74c12597088109a9e6cf4228cae7fac38cb27f60fe85720359dd65932"
+	goldenCodex  = "2b4f4fd58d9e9059e1a8c9bcbc99d63de23ea644df334df1637283fd82192d73"
 )
 
 func TestDigestGolden(t *testing.T) {
@@ -138,6 +141,7 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
 		{"the Qargi records", func(in *Inputs) { in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi" }},
 		{"an environment name", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}} }},
+		{"the managed-settings digest", func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("d", 64) }},
 		{"PATH", func(in *Inputs) { in.Path = "/home/lead/.local/bin:/usr/bin" }},
 		{"SHELL", func(in *Inputs) { in.Shell = "/home/lead/sh" }},
 	}
@@ -257,6 +261,12 @@ func TestDigestChangesWithEveryPartOfTheDefinition(t *testing.T) {
 		{"an environment value removed", func(d *definition) { d.EnvValues = d.EnvValues[1:] }},
 		{"environment values reordered", func(d *definition) { d.EnvValues[0], d.EnvValues[1] = d.EnvValues[1], d.EnvValues[0] }},
 		{"seccomp digest", func(d *definition) { d.Seccomp = strings.Repeat("c", 64) }},
+		{"managed-settings digest", func(d *definition) { d.ManagedSettings = strings.Repeat("d", 64) }},
+		{"a network argument", func(d *definition) { d.Network[0] = "-F" }},
+		{"a network argument added", func(d *definition) { d.Network = append(d.Network, "--extra") }},
+		{"a network argument removed", func(d *definition) { d.Network = d.Network[:len(d.Network)-1] }},
+		{"network arguments reordered", func(d *definition) { d.Network[0], d.Network[1] = d.Network[1], d.Network[0] }},
+		{"no network arguments", func(d *definition) { d.Network = nil }},
 	}
 	for _, tt := range tests {
 		d := def()
@@ -401,5 +411,34 @@ func TestDigestEnvironmentValues(t *testing.T) {
 	if enc := string(o.definition().encode()); strings.Contains(enc, "alice") || strings.Contains(enc, "xterm-256color") ||
 		strings.Contains(enc, "arc-lead") || strings.Contains(enc, "C.UTF-8") {
 		t.Error("the encoding holds a host or lead value")
+	}
+}
+
+func TestDigestCoversTheManagedSettingsAndTheNetwork(t *testing.T) {
+	for _, rt := range Runtimes() {
+		in := fixture(rt)
+		d := in.definition()
+		if d.ManagedSettings != in.ManagedSettingsSHA256 {
+			t.Errorf("%s: the definition holds %q, want the caller's digest", rt, d.ManagedSettings)
+		}
+		if !reflect.DeepEqual(d.Network, sandboxnet.PastaArgs()) || len(d.Network) == 0 {
+			t.Errorf("%s: network = %v, want sandboxnet.PastaArgs()", rt, d.Network)
+		}
+		// Two managed-settings contents, two digests; the same content on
+		// two hosts, one.
+		a, b := in, in
+		b.ManagedSettingsSHA256 = strings.Repeat("e", 64)
+		if mustDigest(t, a) == mustDigest(t, b) {
+			t.Errorf("%s: the managed-settings digest does not change the digest", rt)
+		}
+		if mustDigest(t, in) != mustDigest(t, otherHost(rt)) {
+			t.Errorf("%s: the same managed-settings content on another host changes the digest", rt)
+		}
+	}
+	// The network arguments are copied: a caller cannot change the shared list.
+	d := fixture(Claude).definition()
+	d.Network[0] = "changed"
+	if sandboxnet.PastaArgs()[0] == "changed" {
+		t.Error("the definition shares the pasta argument slice")
 	}
 }

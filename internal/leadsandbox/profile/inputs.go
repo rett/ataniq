@@ -67,6 +67,11 @@ type Inputs struct {
 	// folder.
 	ManagedSettings       string
 	ManagedSettingsInside string
+	// ManagedSettingsSHA256 is the SHA-256 (64 lower-case hex digits) of the
+	// managed-settings file's content: required, and part of the digest,
+	// because the file is the policy half of the profile. The package does
+	// not read the file or compare the digest.
+	ManagedSettingsSHA256 string
 
 	// LeadSkills is the Ataniq-owned folder bound over the skills folder of
 	// the config folder; InstructionFile is the Ataniq-owned instruction file
@@ -201,6 +206,9 @@ func (in Inputs) check() error {
 	if err := in.checkRecords(); err != nil {
 		return err
 	}
+	if err := checkSHA256("managed-settings digest", in.ManagedSettingsSHA256); err != nil {
+		return err
+	}
 	if err := in.checkSeccomp(); err != nil {
 		return err
 	}
@@ -322,13 +330,18 @@ func (in Inputs) checkSeccomp() error {
 	if err := CheckPath("seccomp file", in.SeccompFile); err != nil {
 		return err
 	}
-	if len(in.SeccompSHA256) != 64 {
-		return refuse("seccomp digest", "must be 64 lower-case hex digits")
+	return checkSHA256("seccomp digest", in.SeccompSHA256)
+}
+
+// checkSHA256 refuses a value that is not 64 lower-case hex digits.
+func checkSHA256(field, v string) error {
+	if len(v) != 64 {
+		return refuse(field, "must be 64 lower-case hex digits")
 	}
-	for i := 0; i < len(in.SeccompSHA256); i++ {
-		c := in.SeccompSHA256[i]
+	for i := 0; i < len(v); i++ {
+		c := v[i]
 		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return refuse("seccomp digest", "must be 64 lower-case hex digits")
+			return refuse(field, "must be 64 lower-case hex digits")
 		}
 	}
 	return nil

@@ -4,13 +4,16 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+
+	"ataniq/internal/leadsandbox/sandboxnet"
 )
 
 // Version is the profile version. It is part of the digest: change it when
 // the profile's data changes in a way the digest must show.
 //
 //	1  first version
-//	2  the digest carries the values of the variables the profile defines
+//	2  the digest carries the values of the variables the profile defines,
+//	   the digest of the managed-settings file and the pasta arguments
 const Version = 2
 
 const (
@@ -38,6 +41,10 @@ type definition struct {
 	EnvNames  []string
 	EnvValues []EnvVar
 	Seccomp   string
+	// ManagedSettings is the SHA-256 of the managed-settings file the
+	// caller gave. Network is the argument vector for pasta.
+	ManagedSettings string
+	Network         []string
 }
 
 // definition builds the host-independent definition of the profile. The
@@ -57,15 +64,17 @@ func (in Inputs) definition() definition {
 		seccomp = in.SeccompSHA256
 	}
 	return definition{
-		Version:        Version,
-		Runtime:        in.Runtime,
-		RuntimeVersion: in.RuntimeVersion,
-		Identity:       in.Identity,
-		Flags:          flags,
-		Binds:          t,
-		EnvNames:       in.EnvNames(),
-		EnvValues:      in.profileEnvValues(),
-		Seccomp:        seccomp,
+		Version:         Version,
+		Runtime:         in.Runtime,
+		RuntimeVersion:  in.RuntimeVersion,
+		Identity:        in.Identity,
+		Flags:           flags,
+		Binds:           t,
+		EnvNames:        in.EnvNames(),
+		EnvValues:       in.profileEnvValues(),
+		Seccomp:         seccomp,
+		ManagedSettings: in.ManagedSettingsSHA256,
+		Network:         sandboxnet.PastaArgs(),
 	}
 }
 
@@ -115,6 +124,11 @@ func (d definition) encode() []byte {
 		str(e.Value)
 	}
 	str(d.Seccomp)
+	str(d.ManagedSettings)
+	num(len(d.Network))
+	for _, a := range d.Network {
+		str(a)
+	}
 	return b
 }
 
@@ -130,7 +144,9 @@ func (d definition) digest() string {
 // the bind table with source roles in place of host paths, every environment
 // name, the value of every variable whose value the profile defines (the
 // fixed values, PATH, SHELL, the config variable, the git and Go variables,
-// every extra variable) and the seccomp file digest (or "none"). The state
+// every extra variable), the seccomp file digest (or "none"), the digest of
+// the managed-settings file, and the pasta arguments of sandboxnet.PastaArgs.
+// The state
 // root, the role, the project and every host path are not in it, nor are the
 // values the host terminal or the lead gives (TERM, COLORTERM, LANG, TZ,
 // QARGI_LEAD, and USER and LOGNAME in owner mode, which are in it by name
