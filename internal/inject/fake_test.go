@@ -542,7 +542,8 @@ func (f *fake) Ended() bool { return f.ended || f.dead }
 
 // Pending is true when the agent has already written output (a frame whose
 // time has come) that no Settle has read: it sits in the PTY. A frame that
-// arrives later is output the agent has not written yet.
+// arrives later is output not yet queued to the holder; the fake treats the
+// kernel's hand-over to the line discipline as instant.
 func (f *fake) Pending() bool {
 	for _, fr := range f.pty {
 		if !fr.at.After(f.clock) {

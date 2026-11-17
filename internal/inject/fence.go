@@ -84,12 +84,14 @@ type Message struct {
 // design's values. The fence itself never sleeps; Settle does the waiting and
 // these values are what it is asked for.
 //
-// Each zero field takes its default on its own, and no field may be below the
-// design's value: a smaller one is raised to it (owner quiet 2 s, screen
-// quiet 300 ms, check quiet 50 ms, at least 150 ms after the paste). A value
-// above the design's is used. The two maxima are at least the quiet that ends
-// their Settle, and the maximum after the paste is at least its minimum. There
-// is no way to ask for less than the design.
+// Each zero field takes its default on its own. No quiet and no minimum is
+// below the design's value: a smaller one is raised to it (owner quiet 2 s,
+// screen quiet 300 ms, check quiet 50 ms, at least 150 ms after the paste). A
+// value above the design's is used, but a Settle is never asked to wait past
+// the deadline (see Deliver). A maximum may be lower than the default, since a
+// lower maximum only makes the Settle give up sooner (not idle, or not
+// submitted); it is not below the quiet that ends its Settle, and the maximum
+// after the paste is not below its minimum.
 type Timing struct {
 	// OwnerQuiet is how long the writer must have typed nothing (2 s).
 	OwnerQuiet time.Duration
@@ -236,6 +238,13 @@ type Result struct {
 // from the run and the result is died with Written unknown, whatever the first
 // run concluded.
 //
+// Settle bounds. The fence asks no Settle to wait past the deadline: the
+// maximum given to each is cut to the time left before it. When less than the
+// minimum or the quiet of a Settle is left, the fence does not settle: before
+// the paste the outcome is not idle (nothing written, detail "the deadline is
+// too near to settle"), after it not submitted. A large Timing value therefore
+// cannot hold the input lock, and the writer's keys, past the deadline.
+//
 // A zero Options.Deadline is refused before the session is touched: not idle,
 // detail "no deadline given", nothing written.
 //
@@ -250,8 +259,10 @@ type Result struct {
 //
 // What the fence cannot close is written in design 4.6: the agent can open a
 // dialog after the last reading and before the Enter lands, and then the Enter
-// answers it. The fence narrows that window to output the agent has not written
-// yet when Pending is read, and cannot remove it.
+// answers it. The fence narrows that window to output that is not yet queued to
+// the holder when Pending is read (written by the agent but not yet handed to
+// the line discipline, or taken by the holder's reader and not yet counted),
+// and cannot remove it.
 func Deliver(ctx context.Context, s Session, msg Message, opts Options) Result {
 	if ctx == nil {
 		ctx = context.Background()
@@ -343,6 +354,28 @@ func (r *run) stopped() string {
 		return "deadline passed"
 	}
 	return ""
+}
+
+// settleBound returns the longest a Settle may be asked to wait: most, cut to
+// the time left before the deadline, so that the input lock is never held past
+// the deadline by a large Timing value. It returns false when less than least or
+// the quiet is left: the fence does not settle then.
+func (r *run) settleBound(least, quiet, most time.Duration) (time.Duration, bool) {
+	left := r.deadline.Sub(r.now())
+	if left < least || left < quiet {
+		return 0, false
+	}
+	return min(most, left), true
+}
+
+// nearDetail is the detail of a refused Settle: the reason the fence has
+// stopped when it has (the deadline already passed, the context ended), else
+// the given phrase.
+func (r *run) nearDetail(phrase string) string {
+	if why := r.stopped(); why != "" {
+		return why
+	}
+	return phrase
 }
 
 // written says what was written, from the attempts so far.
@@ -454,7 +487,12 @@ func (r *run) fence(l Locked) error {
 	r.entered = true
 	t := r.timing
 
-	drained, err := l.Settle(r.ctx, 0, t.CheckQuiet, t.FirstSettleMax)
+	bound, ok := r.settleBound(0, t.CheckQuiet, t.FirstSettleMax)
+	if !ok {
+		r.end(OutcomeNotIdle, r.nearDetail("the deadline is too near to settle"))
+		return nil
+	}
+	drained, err := l.Settle(r.ctx, 0, t.CheckQuiet, bound)
 	if err != nil {
 		r.sessionError(err, "settle")
 		return nil
@@ -479,7 +517,12 @@ func (r *run) fence(l Locked) error {
 		return nil
 	}
 
-	drained, err = l.Settle(r.ctx, t.PasteSettleMin, t.CheckQuiet, t.PasteSettleMax)
+	bound, ok = r.settleBound(t.PasteSettleMin, t.CheckQuiet, t.PasteSettleMax)
+	if !ok {
+		r.end(OutcomeNotSubmitted, r.nearDetail("the deadline is too near to settle after the paste"))
+		return nil
+	}
+	drained, err = l.Settle(r.ctx, t.PasteSettleMin, t.CheckQuiet, bound)
 	if err != nil {
 		r.sessionError(err, "settle after the paste")
 		return nil

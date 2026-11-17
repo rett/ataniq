@@ -28,9 +28,10 @@ type TermState struct {
 }
 
 // View is the holder's state at one instant. Every method answers from what
-// the emulator has applied so far; no method reads the PTY or waits, and two
-// calls inside one Frozen function see the same state. The one method that
-// looks at the PTY is Pending, and it only asks whether output is waiting.
+// the emulator has applied so far, and two calls inside one Frozen function
+// see the same state, except Pending: it asks at each call, without reading
+// or waiting, whether output is waiting, and must never be cached (not
+// snapshotted when Frozen starts, not remembered from an earlier call).
 type View interface {
 	// Snapshot is the screen as a text snapshot: the text, the size, the
 	// cursor, the alternate-screen flag, the window title and the faint
@@ -58,14 +59,18 @@ type View interface {
 	ScreenQuiet() time.Duration
 	// Ended is true when the agent's process has ended.
 	Ended() bool
-	// Pending is true when output of the agent exists that the emulator has
-	// not applied: bytes still unread in the PTY master (the holder asks the
-	// kernel how many are queued, without reading them) and bytes the holder
-	// read during Frozen into the buffer it applies afterwards. It is
-	// evaluated when called, so the fence reads it last, directly before each
-	// write, and writes nothing while it is true: the screen it just read is
-	// then not the agent's screen. It narrows the window of design 4.6 to
-	// output the agent has not written yet.
+	// Pending is true when output of the agent is queued for the holder that
+	// the emulator has not applied: bytes queued for reading on the PTY
+	// master (the holder asks the kernel how many, without reading them) and
+	// bytes the holder's reader has received during Frozen into the buffer it
+	// applies afterwards, counted from the moment its read returns. It is
+	// asked fresh at each call, so the fence reads it last, directly before
+	// each write, and writes nothing while it is true: the screen it just
+	// read is then not the agent's screen. It covers output already queued to
+	// the holder when it is read. Output the agent has written that the
+	// kernel has not yet handed to the line discipline, or that the holder's
+	// reader has taken and not yet counted, is not seen: the window of design
+	// 4.6 narrows to that, and does not close.
 	Pending() bool
 }
 
@@ -136,6 +141,15 @@ type Locked interface {
 	// error from write means the bytes may or may not have reached the agent
 	// (the bound passing is such an error). Frozen returns fn's error, or its
 	// own when it could not run fn.
+	//
+	// A write that times out in the middle of a paste can leave an open
+	// bracketed paste in the agent's input: ESC [ 200 ~ and part of the
+	// text, without ESC [ 201 ~. The holder must not complete or retry the
+	// write, and must not write a paste end by itself. The fence reports
+	// died with Written unknown, and the operator's decision covers it. The
+	// writer's held input is still delivered after the lock, and it may land
+	// inside that open paste (an Enter then becomes a newline, not a
+	// submit), which is why the operator must look at the session.
 	Frozen(deadline time.Time, fn func(v View, write func([]byte) error) error) error
 }
 

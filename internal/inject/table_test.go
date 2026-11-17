@@ -12,9 +12,10 @@ type tableEvent struct {
 	do   func(*fake)
 	// opensDialog is true when the event changes the agent itself to a
 	// dialog. When it fires after the last reading of the fence and the
-	// agent has not written it yet (at the Enter), the fence cannot see it:
-	// that is the window of design 4.6, and an approval is allowed there, and
-	// only there. Fired earlier, the output is in the PTY and Pending sees it.
+	// output is queued to the holder yet (at the Enter), the fence cannot see
+	// it: that is the window of design 4.6, and an approval is allowed there,
+	// and only there. Fired earlier, the output is in the PTY and Pending sees
+	// it.
 	opensDialog bool
 	// skip lists the steps where the event cannot be told from the write
 	// itself: a clock that jumps inside the write call is after the

@@ -63,9 +63,14 @@
 // the lock while Settle waits for it. The holder also keeps reading the PTY
 // into a buffer it does not apply while a Frozen function runs, bounds the
 // write by the deadline Frozen is given (an error once the bound passes), and
-// answers View.Pending: true while output of the agent is unread in the PTY or
-// held in that buffer. The fence reads Pending last, directly before each
-// write, and writes nothing while it is true.
+// answers View.Pending: true while output is queued to the holder and not
+// applied (bytes queued on the PTY master, or in that buffer from the moment
+// the holder's read returns). Pending is asked fresh at each call and is never
+// cached. The fence reads it last, directly before each write, and writes
+// nothing while it is true. A write that times out in the middle of a paste
+// can leave an open bracketed paste in the agent's input: the holder must not
+// complete or retry it, and the result is died with Written unknown, for the
+// operator to decide.
 //
 // # What the fence leaves to the daemon
 //
@@ -108,9 +113,10 @@
 // The fence narrows a window and cannot close it. The agent can open a dialog
 // on its own after the last reading and before the Enter lands, for example
 // when a background task finishes; then the Enter answers that dialog with its
-// default. Output the agent has already written is seen (Pending refuses the
-// write); what remains is output the agent has not written yet when Pending is
-// read. Treating a background task as not idle narrows it. Input that
+// default. Output already queued to the holder when Pending is read is seen
+// (Pending refuses the write); what remains is output the agent has written
+// that the kernel has not yet handed to the line discipline, or that the
+// holder's reader has taken and not yet counted. Treating a background task as not idle narrows it. Input that
 // reaches the agent without passing the holder (Remote Control) cannot be seen
 // or held. That a paste into an open dialog does nothing rests on one
 // observation per agent, so it is a live case per version, not an assumption.
