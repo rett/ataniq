@@ -1,0 +1,295 @@
+# Lead mirror qualification harness
+
+This is the manual of `qualification/leadmirror`, an opt-in harness that
+records what a real sandbox template does with a hostile lead clone. It
+looks at two things: the fetch of a lead's branches into the exchange mirror
+(design case S16) and the intake review of a lead branch (design case S19).
+
+The harness records facts. It does not qualify a sandbox, and nothing here does
+by itself. No field of its report says pass, supported or qualified. A person
+reads the facts and decides.
+
+## Who runs it, and when
+
+The lead or the coordinator runs it, by hand, on a host they have chosen, with
+a sandbox template they name. It is not part of `make test` or any ordinary
+test run, no Makefile target builds it, and no test of the repository runs it
+against a sandbox. Its own tests use a fake planner that runs plain
+`git-upload-pack` with no namespace, and they check the shape of the facts and
+the refusals only.
+
+It never touches a real lead's state. It works in a scratch state root that you
+name, which must not exist yet or must be an empty folder. It does not delete
+anything: remove the scratch root yourself when you have read the report.
+
+## Build and run
+
+Run `make doctor` first, then build with the repository's Go wrapper:
+
+```sh
+sh scripts/go-tool.sh build -o build/qualify-mirror ./qualification/leadmirror/cmd/qualify-mirror
+```
+
+Run it with a config and a new output file:
+
+```sh
+build/qualify-mirror --config /path/to/config.json --out /path/to/report.json
+```
+
+The targeted check of the harness itself, which starts no sandbox, is:
+
+```sh
+sh scripts/go-tool.sh test ./qualification/leadmirror/... ./tests/...
+```
+
+The command refuses to run, with exit status 2 and nothing created, when:
+
+- `--config` or `--out` is missing, or there is another argument;
+- the config is missing, unreadable, has an unknown field or lacks a field;
+- the config does not say `"i_run_this_on_purpose": true`;
+- the template is missing, unreadable or does not parse;
+- the scratch state root exists and holds anything, is a symlink, is not a
+  folder, or can be written by group or others;
+- the output file exists, its folder does not exist, or it lies inside the
+  scratch state root.
+
+## The config
+
+One JSON object. Every field is required, and an unknown field is refused.
+
+```json
+{
+  "state_root": "/abs/path/to/scratch/state",
+  "template": "/abs/path/to/sandbox-template.json",
+  "role": "coder",
+  "project": "proj",
+  "i_run_this_on_purpose": true
+}
+```
+
+- `state_root`: an absolute, clean path made of letters, digits, dot, dash,
+  underscore and slash, not at the top of the file system. The harness writes
+  this path into shell commands and git config values, so it takes no other
+  character. Choose a folder that is not under your home and that no other
+  process uses.
+- `template`: an absolute path to a sandbox template file in the format that
+  `internal/exchange/sandboxplan` documents (`ParseTemplate`). The digest in
+  the report is the SHA-256 of this file's bytes.
+- `role` and `project`: names of the scratch lead and project. Each is a
+  lower-case name of letters, digits and dashes, up to 63 characters, that does
+  not start with a dash.
+- `i_run_this_on_purpose`: must be `true`. It says that you mean to run this
+  on this host with this template.
+
+## What the template must provide
+
+The harness runs everything that touches the lead's clone through the template,
+as the real fetch and intake do. The template is yours; the harness checks
+nothing about it. For the facts to mean something, it must provide the
+following.
+
+**The serving half** (`serve` section):
+
+- `upload_pack` runs `git-upload-pack` on the whole element `{tree}`, with
+  the clone **read-only** and **no network**. Git starts this command through
+  `sh` with the environment of the harness, so the argv must clear the
+  environment itself (for example `bwrap --clearenv`).
+- `measure` prints the size of the clone's object store, and runs in the same
+  kind of sandbox.
+- The sandbox gives `git-upload-pack` what it needs to run and nothing else.
+
+**The verification sandbox** (`verify` section). It is optional: without it
+the verification case ends after one fact. When present:
+
+- `prefix` runs the inner command in a sandbox with `{mirror}` read-only,
+  `{scratch}` and `{home}` writable, and its own home, with no provider login
+  and no credential of the lead or of the person who runs the harness. The
+  inner command is `/bin/sh -c <script>`, and the script uses `git`, so the
+  sandbox needs a shell and git. The gates use `/bin/sh` and `env`.
+
+**What the template must not bind**, in either section, for the canary facts to
+mean something:
+
+- the scratch state root, or any folder above it, writable;
+- any `canary` folder (`<root>/canary` and `<root>/cases/<case>/canary`),
+  writable. Bind nothing of the scratch root but what the placeholders name:
+  `{tree}` (read-only), `{mirror}` (read-only), `{scratch}` and `{home}`;
+- the `fixture` folders or the mirrors of the other cases.
+
+A canary file is a file that a planted hook or gate would write if it ran with
+access to the host's folder. If the template binds the canary folder writable,
+a file in it shows only that the template allows the write.
+
+## The report
+
+One JSON document, written with mode 0600 to a new file:
+
+```text
+{ "format": 1,
+  "tools":    { "git": "git version 2.x", "go": "go1.x", "goos": "linux", "goarch": "amd64" },
+  "template": { "sha256": "..." },
+  "role": "...", "project": "...",
+  "cases": [ { "id": "...", "title": "...",
+               "facts": [ { "id": "<case>.<name>", "detail": "...", "observed": { ... } } ] } ] }
+```
+
+`tools.git` is the output of `git version` of the git that the harness and the
+mirror run. `tools.go` is the Go version the harness was built with.
+
+Text that a lead wrote (ref names, paths, commit subjects, gate output) is
+passed through `leadtext.Escape` before it is written. Error texts come from
+the packages, which put no output of git and no lead text in them. The harness
+puts no scratch path in a fact of its own; the text of an error from a package
+may name a folder.
+
+A fact never says that something is good. Where a fact compares two values it
+says whether they are `identical`, and nothing more.
+
+An error is recorded as `result: "error"` with `error` (the text),
+`error_classes` (the sentinel errors it matches, for example
+`mirror.ErrHostileTree` or `sandboxplan.ErrNotConfigured`) and, for a limit
+error, `limit` with `what`, `got` and `max`. A call that returned no error has
+`result: "ok"`.
+
+A problem of the harness itself (a fixture it could not make) is a fact
+`<case>.harness-error`, and the run goes on with the next case.
+
+### Case `s16-fetch` (design case S16)
+
+The harness builds a hostile lead clone at `<state_root>/leads/<role>/tree`
+and an exchange mirror at `<state_root>/mirrors/<project>.git`, with the
+upstream branch `main` and an annotated tag `v1`. The clone has:
+
+- a branch `main` that has the upstream branch's name and different content,
+  and a branch `feature`;
+- a tag `v1` that has the upstream tag's name and points elsewhere, and a tag
+  `lead-only`;
+- in `.git/hooks`, a script for each hook name in the harness (the git sample
+  names and the other documented hooks), and the same set in `.git/lead-hooks`;
+- in `.git/config`, `core.fsmonitor`, `core.hooksPath` (naming
+  `.git/lead-hooks`, with the clone's path as the serving half sees it),
+  `uploadpack.packObjectsHook` and `core.alternateRefsCommand`.
+
+Every hook and command writes one file in the canary folder
+`<state_root>/canary`. The harness then runs `Mirror.Fetch` of the lead's
+branches through the template, with the default limits.
+
+| Fact | Observed values |
+| --- | --- |
+| `s16-fetch.clone` | What was planted; `repository_inside`, the clone's path as the serving half sees it; the number of canary names. |
+| `s16-fetch.fetch` | The fetch result and error; `updates` (lead ref, old and new id); `source_bytes` (the sandbox's measure), `mirror_before_bytes`, `staged_bytes`, `mirror_after_bytes`; `outside_changed`; `serve_requests` (planner requests the fetch made). |
+| `s16-fetch.upstream-refs` | `refs/heads/*` and `refs/tags/*` of the mirror `before` and `after` (name, id, type), and whether they are `identical`. |
+| `s16-fetch.lead-refs` | The lead's refs in the mirror `before` and `after`. |
+| `s16-fetch.mirror-size` | The mirror folder's allocated bytes and entries before and after. |
+| `s16-fetch.canaries` | `before` and `after`: which planted canary names exist on the host (`present`), other names in the canary folder, and the number of entries. |
+
+### Case `oversize`
+
+A fresh clone, mirror and canary folder under `<state_root>/cases/oversize`.
+The clone has a branch `big` with about 300 KiB of text that does not compress.
+Three fetches run, in this order, on one mirror:
+
+| Fact | What runs | Observed values |
+| --- | --- | --- |
+| `oversize.measure` | A fetch with `MaxSource` of 512 bytes (the sandbox's measure is compared with it). | The fetch result as above, with `mirror_before` and `mirror_after` (upstream refs, lead refs, size), `mirrors_folder` (the names left beside the mirror), `serve_requests`. |
+| `oversize.staged` | A fetch with `MaxStaged` of 64 KiB. | The same keys. |
+| `oversize.control` | A fetch with the default limits. | The same keys. It shows that the limits and not the clone caused the two errors. |
+
+### Case `planted`
+
+A fresh clone under `<state_root>/cases/planted`, fetched through the template
+once as it is, then with a plant, then once more after the plants are taken
+away. The owner-side check of the clone refuses the three plants before the
+planner is asked, so these facts show `serve_requests` of 0.
+
+| Fact | What runs |
+| --- | --- |
+| `planted.control-before`, `planted.control-after` | A fetch of the clone as made. |
+| `planted.alternates` | A fetch with `.git/objects/info/alternates` present. |
+| `planted.git-symlink` | A fetch with `.git` replaced by a symlink to the real folder. |
+| `planted.tree-symlink` | A fetch with `leads/<role>/tree` replaced by a symlink to the real folder. |
+
+Each has the fetch values, `lead_refs_before` and `lead_refs_after`, and
+`upstream_refs_identical`.
+
+### Case `s19-review` (design case S19)
+
+A fresh clone and mirror under `<state_root>/cases/review`. The lead branch
+`review` has nine commits on top of the upstream branch: one each for
+`.claude/settings.json` (with a hook), `.mcp.json`, `.codex/config.toml`,
+`.envrc`, `.vscode/tasks.json`, a change of `Makefile`, a change of a file in
+`scripts/`, a `toolchain` line in `go.mod`, and a last one for `docs/notes.md`,
+which is not execution config. The harness fetches it through the template and
+runs `intake.Inspect` against the upstream branch with the default
+execution-config rules.
+
+| Fact | Observed values |
+| --- | --- |
+| `s19-review.fetch` | The fetch values, and the lead refs after. |
+| `s19-review.inspect` | The result; `base` and `tip`; `commits` (id and subject); `changes` (path, status, modes, flag kinds); `flagged` (kind, path, pattern, reason); `flagged_paths`; `unflagged_changed_paths`; `rule_count`. |
+| `s19-review.upstream-refs` | The upstream refs before the fetch and after the review, and whether they are `identical`. They show that neither the fetch nor the review moved the upstream branch. |
+
+### Case `verification`
+
+Only when the template has a `verify` section. Two runs of `verify.Run` on the
+tip of the review branch, one gate each:
+
+| Fact | What runs | Observed values |
+| --- | --- | --- |
+| `verification.canary-gate` | A gate that tries to write a file in the canary folder, outside the scratch folder, prints `canary-write-succeeded` or `canary-write-failed`, and exits 0. | `exit`, `stopped`, `output_cut`, `output` (escaped lines), `canary_exists_on_host`, `verify_requests`. |
+| `verification.environment-gate` | A gate that prints its environment with `env`. | `exit`, `stopped`, `environment` (escaped lines), `environment_names`, `same_as_harness_env`. |
+
+A value in the gate's environment that equals the same name in the harness's
+own environment is not recorded, except for `PATH`, `LANG`, `LC_ALL`, `TERM`
+and `SHLVL`; its name is listed in `same_as_harness_env`. Other values are
+recorded as the gate saw them, and the file is mode 0600: treat it as
+sensitive and read it before you share it.
+
+Without a `verify` section the case holds one fact,
+`verification.no-verify-section`. If the review case did not give a fetched
+tip, it holds `verification.not-run`.
+
+## What a fact does and does not show
+
+- A fact says what one call returned and what the harness saw on the host, in
+  one run, on one host, with one template file (named by its digest), one git
+  and one Go version. A different template, kernel, git or run can give other
+  facts.
+- A canary that does not exist shows that no write reached that path by the
+  commands the harness planted. It does not show that a hook or a configured
+  command was started and then blocked, or never started. `git-upload-pack`
+  does not run these hooks or these configured commands in ordinary use, and
+  the harness does not claim that it does. The planted files only give an
+  escape a place to show itself. A template that does not bind the canary
+  folder makes the write fail for a plain reason, and that is the intended
+  reading: nothing reached the host.
+- A canary that exists is a real finding: something wrote outside the places
+  the template gave. With the fake planner (no sandbox) the verification gate
+  does write its canary; that is the control that shows the check can see a
+  write.
+- `canary-write-failed` in the output of the canary gate is the sandbox's own
+  statement. The fact `canary_exists_on_host` is the harness's check.
+- `identical` upstream refs show that the refs `refs/heads/*` and
+  `refs/tags/*` had the same ids before and after, as read through the mirror
+  package. They do not show that the objects of the mirror are unchanged: the
+  fetch adds objects, and the size facts show that.
+- Limit errors show that the code compared a number with a limit. The measure
+  is the sandbox's statement and a first check; the staged size is the owner's
+  own measure.
+- Flagged paths show what the intake's rules mark for a separate sign-off. A
+  path that is not flagged is not shown to be harmless. The harness does not
+  run the sign-off, the integration or the lead's code.
+- `serve_requests` shows how many times the planner was asked for a serve
+  plan during that call. The harness asks the planner once per case, before the
+  fetches, only to learn the clone's path as the sandbox sees it.
+- The fixtures (the upstream repository, and the clone before it is made
+  hostile) are made with git by the harness, in a folder that no sandbox is
+  given, with an explicit environment. After the clone is moved to
+  `leads/<role>/tree` git never runs in it. The mirror is seeded and read
+  through the exchange packages' own owner-side git.
+
+Nothing here qualifies a sandbox by itself. The facts are inputs for a reader
+who knows the template, the host and the design cases S16 and S19: that person
+reads them, decides whether they are enough, and records the decision
+elsewhere. A report that holds no surprise is not a support statement, and one
+that does is not a verdict on the code: it is a reason to look.
