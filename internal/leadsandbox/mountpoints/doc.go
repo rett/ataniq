@@ -84,7 +84,11 @@
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
 // looks for the anchored line and takes any later line that starts with "!"
-// as un-listing it, and does not evaluate the patterns git knows. The package
+// as un-listing it, and does not evaluate the patterns git knows. It reads only
+// .git/info/exclude: a .gitignore in the tree, tracked or not, which git ranks
+// above that file, can un-ignore a placeholder (a line "!.envrc"), and git then
+// shows the placeholder as untracked while [Check] reports it listed. That is
+// cosmetic: nothing is disclosed and nothing is mounted differently. The package
 // does not start a process, run git, create a namespace, or read any provider
 // folder. It reads, bounded, the one file .git/info/exclude.
 //
