@@ -20,10 +20,23 @@
 //
 // # What this part does
 //
-// It holds the names and paths: [ValidName], [ValidBranch], [Path],
-// [LeadTree], [UpstreamRef], [LeadRef], [LeadPrefix], [LeadRefspec] and
-// [SplitLeadRef]. The ref name rules are written in Go, without starting git,
-// and are tested against git check-ref-format.
+//   - Names and paths: [ValidName], [ValidBranch], [Path], [LeadTree],
+//     [UpstreamRef], [LeadRef], [LeadPrefix], [LeadRefspec], [SplitLeadRef].
+//     The ref name rules are written in Go, without starting git, and are
+//     tested against git check-ref-format.
+//   - [Create] makes the repository with fixed settings and a marker file.
+//     [Open] checks that the folder is still what Create made.
+//   - [Mirror.Size] counts the whole mirror folder.
+//
+// # How it is safe
+//
+// The folder is checked with safefs: no symlink is followed, and a swap of
+// the path after the check changes nothing. Every git run goes through gitenv
+// with an explicit --git-dir and through boundedexec with a time limit and
+// output caps. Nothing runs in a lead's tree and nothing is checked out. The
+// check in [Open] is a consistency check of a repository that Ataniq made; it
+// catches a mirror somebody edited by hand, and it is not a defence against
+// an attacker who can write the folder.
 //
 // # Text from the lead
 //
@@ -35,5 +48,7 @@
 // # What it does not do
 //
 // It does not fetch from a lead's clone, does not decide which branches are
-// taken in, does not write upstream refs, and does not delete or prune.
+// taken in, does not write upstream refs, does not delete or prune, and does
+// not run garbage collection. Code for systems other than Linux is a stub
+// whose calls return an "unsupported" error.
 package mirror
