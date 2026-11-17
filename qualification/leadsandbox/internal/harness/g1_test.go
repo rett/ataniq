@@ -603,6 +603,38 @@ func TestEvidenceOfARefusedLaunchHasTheFactFalse(t *testing.T) {
 	}
 }
 
+// A problem that names no row (the root of the file system could not be opened)
+// means no row was checked: no source has a fact, the case says not-checked, and
+// the launch is refused.
+func TestEvidenceOfAReportThatNamesNoRowClaimsNothing(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		o.CheckBindSources = func(rows []mountpoints.ResolvedSource) mountpoints.Report {
+			return mountpoints.Report{Problems: []*mountpoints.Problem{{
+				Kind:   mountpoints.ErrUnreadable,
+				Path:   "/",
+				Detail: "the root of the file system cannot be opened without following links",
+			}}}
+		}
+	})
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepBindSources, harness.StepFailed)
+	var sum harness.Summary
+	readJSON(t, r.out.Dir+"/summary.json", &sum)
+	if len(sum.BindSources.Sources) == 0 {
+		t.Fatal("the evidence lists no source")
+	}
+	for _, s := range sum.BindSources.Sources {
+		if s.NoSymbolicLinkComponent != nil {
+			t.Errorf("%s has the fact %v, though no row was checked", s.Inside, *s.NoSymbolicLinkComponent)
+		}
+	}
+	if st := g1Status(t, r.out, "bind-sources-no-symbolic-link"); st != assert.StatusNotChecked {
+		t.Errorf("G1 links result is %s", st)
+	}
+}
+
 // Nothing is claimed for a run that never reached the check: the list is empty,
 // the fact is absent and the case says not-checked, with the verifier's fact
 // when the plan was verified.

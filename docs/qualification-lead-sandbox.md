@@ -97,7 +97,8 @@ make qualification-leadsandbox-build
 This builds the static Linux/amd64 probe `build/ataniq-probe` (from
 `cmd/ataniq-probe`) and the harness `build/qualification-leadsandbox`, through
 the same offline Go helper as the other targets. The target is defined in
-[the Makefile](../Makefile). Building runs nothing.
+[the Makefile](../Makefile). The target runs the doctor and builds; it starts no
+sandbox and launches nothing.
 
 The host also needs a kernel that lets the user create the namespaces the plan
 asks for, pseudo-terminals (`/dev/ptmx`), and openat2 (Linux 5.6 or newer, as
@@ -136,11 +137,15 @@ caller's environment or home.
   for another one, because a folder elsewhere could lie beside or above a
   folder the lead writes, and nothing would look at its parents. Do not make it
   by hand: its parent (`leads/<role>`) must exist and be the caller's, and the
-  folder itself must not exist before the first run. The run builds it in a
+  folder itself should not exist before the first run (a run that finds one
+  keeps it and only checks it, it does not rebuild it). The run builds it in a
   sibling, `leads/<role>/gitmeta.tmp`, and moves it into place when it is
   complete; a run that failed or was interrupted before the move leaves that
-  sibling, the next run refuses it in the step `prepare` and names it, and you
-  remove it by hand (nothing in it is the lead's) before you try again.
+  sibling. When the configuration says no lead has run, the next run refuses the
+  sibling in the step `prepare` and names it; otherwise `prepare` is skipped and
+  `check` fails because the folder is missing, without naming the sibling. In
+  both cases you remove the sibling by hand (nothing in it is the lead's) before
+  you try again.
 
   The tree is a full clone (a `.git` folder, not a worktree, with no
   alternates), not below another repository. Create it with an ordinary

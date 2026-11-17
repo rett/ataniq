@@ -38,7 +38,10 @@ type PrepareOptions struct {
 // binds (the lead-hosting design, section 3.3; rule G1: no bind source lies in
 // a folder the lead can write). When it is absent, Prepare builds it in a
 // temporary sibling in the lead's state folder (the name of the folder and
-// ".tmp"), exclusively, mode 0700, filled with files of mode 0600; syncs each
+// ".tmp"), with mode 0700, filled with files of mode 0600 that are created
+// exclusively (the folder itself is made with MkdirAll, which keeps one that
+// exists; a leftover sibling is refused before, and two Prepare calls that race
+// are stopped by the exclusive creation of the files); syncs each
 // file and each folder; and moves it into its place with renameat2 and
 // RENAME_NOREPLACE, then syncs the folder that holds it. The place never holds
 // a folder that is only partly written, even after an error part-way or a

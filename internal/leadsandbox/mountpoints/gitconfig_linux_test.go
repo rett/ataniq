@@ -37,7 +37,11 @@ func TestFindInclude(t *testing.T) {
 		{"after a subsection with an escaped quote", "[remote \"a\\\"b\"]\n[include]\n", 2, "include"},
 		{"after an unterminated header", "[remote \"a\n[include]\n", 2, "include"},
 		{"no space before a subsection", "[include\"x\"]\n", 1, "include"},
+		{"after a byte order mark", "\xef\xbb\xbf[include]\n\tpath = x\n", 1, "include"},
+		{"after a byte order mark, later in the file", "\xef\xbb\xbf[core]\n[includeIf \"gitdir:/x/\"]\n", 2, "includeIf"},
 		// Text that is not such a section.
+		{"a byte order mark and ordinary configuration", "\xef\xbb\xbf[core]\n\tbare = false\n", 0, ""},
+		{"only a byte order mark", "\xef\xbb\xbf", 0, ""},
 		{"empty", "", 0, ""},
 		{"ordinary configuration", "[core]\n\trepositoryformatversion = 0\n[user]\n\tname = x\n", 0, ""},
 		{"a section with a longer name", "[includes]\n[includeIfs]\n[inclu]\n", 0, ""},
@@ -68,6 +72,7 @@ func TestPrepareRefusesACloneConfigWithAnIncludeSection(t *testing.T) {
 		"[core]\n\tbare = false\n[include]\n\tpath = ../../../x\n",
 		"[includeIf \"gitdir:/work/\"]\n\tpath = ../x\n",
 		"[INCLUDE]\n\tpath = /etc/x\n",
+		"\xef\xbb\xbf[include]\n\tpath = /etc/x\n", // git skips a leading byte order mark
 	} {
 		f := newFixture(t, profile.Claude)
 		f.write(f.tree+"/.git/config", cfg)

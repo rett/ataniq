@@ -148,8 +148,11 @@ var beforeGitMetaMove = func() error { return nil }
 
 // writeGitMeta makes the folder: it builds it in a temporary sibling in the
 // folder parent (the lead's state folder, which no sandbox binds and the lead
-// cannot reach), exclusively, mode 0700, its files 0600: config is a copy of
-// the clone's, hooks is empty and info holds the copied files. Each file and
+// cannot reach), mode 0700, its files 0600 and each created exclusively: config
+// is a copy of the clone's, hooks is empty and info holds the copied files. The
+// sibling itself is made with MkdirAll, which accepts a folder that exists:
+// lookGitMeta refuses a leftover sibling before, and a second Prepare that
+// races this one is stopped by the exclusive creation of the files. Each file and
 // each folder is synced, then the whole is moved into its place with
 // RENAME_NOREPLACE (nothing is ever replaced) and the folder that holds it is
 // synced. So the place never holds a folder that is only partly written, even
