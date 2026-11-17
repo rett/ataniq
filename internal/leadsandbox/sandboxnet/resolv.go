@@ -180,7 +180,35 @@ var (
 	siit = netip.MustParsePrefix("::ffff:0:0:0/96")
 	// thisNet4 is the IPv4 "this network" block.
 	thisNet4 = netip.MustParsePrefix("0.0.0.0/8")
+	// loopback4 is the IPv4 loopback block.
+	loopback4 = netip.MustParsePrefix("127.0.0.0/8")
+	// nat64 is the NAT64 well-known prefix; its last 32 bits are an IPv4
+	// address.
+	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+	// sixToFour is the 6to4 range; bits 16 to 47 are an IPv4 address.
+	sixToFour = netip.MustParsePrefix("2002::/16")
 )
+
+// embeddedUnroutable reports whether a is a NAT64 well-known-prefix or 6to4
+// address that embeds a loopback or this-network IPv4 address. Such an
+// address would reach a host loopback service only through a translator on
+// the host, but it is no usable resolver either way.
+func embeddedUnroutable(a netip.Addr) bool {
+	if !a.Is6() {
+		return false
+	}
+	b := a.As16()
+	var v4 netip.Addr
+	switch {
+	case nat64.Contains(a):
+		v4 = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	case sixToFour.Contains(a):
+		v4 = netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]})
+	default:
+		return false
+	}
+	return loopback4.Contains(v4) || thisNet4.Contains(v4)
+}
 
 func refusal(format string, args ...any) error {
 	return &Refusal{Reason: fmt.Sprintf(format, args...)}
@@ -347,6 +375,10 @@ func (p *parsed) nameserver(n int, args []string) {
 	case a.Is6() && !a.IsLoopback() && (v4compat.Contains(a) || siit.Contains(a)):
 		p.rejected++
 		p.note("line %d dropped: address %s embeds IPv4 in a form that is not routed", n, quote(tok))
+		return
+	case embeddedUnroutable(a):
+		p.rejected++
+		p.note("line %d dropped: address %s embeds a loopback or this-network IPv4 address", n, quote(tok))
 		return
 	case a.Is4() && thisNet4.Contains(a):
 		p.rejected++

@@ -238,6 +238,17 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 		{"nameserver ::0102:0304", "embeds IPv4"},
 		{"nameserver ::ffff:0:127.0.0.1", "embeds IPv4"},
 		{"nameserver ::ffff:0:0:0", "embeds IPv4"},
+		{"nameserver 64:ff9b::7f00:1", "embeds a loopback"},
+		{"nameserver 64:ff9b::127.0.0.1", "embeds a loopback"},
+		{"nameserver 64:ff9b::7fff:ffff", "embeds a loopback"},
+		{"nameserver 64:ff9b::1", "embeds a loopback"},
+		{"nameserver 64:ff9b::", "embeds a loopback"},
+		{"nameserver 64:ff9b::ff:ffff", "embeds a loopback"},
+		{"nameserver 2002:7f00:1::1", "embeds a loopback"},
+		{"nameserver 2002:7fff:ffff::", "embeds a loopback"},
+		{"nameserver 2002:1::", "embeds a loopback"},
+		{"nameserver 2002::", "embeds a loopback"},
+		{"nameserver 2002:ff:ffff:1::5", "embeds a loopback"},
 		{"nameserver 0.1.2.3", "0.0.0.0/8"},
 		{"nameserver 0.255.255.255", "0.0.0.0/8"},
 		{"nameserver ::ffff:0.1.2.3", "0.0.0.0/8"},
@@ -341,6 +352,8 @@ func TestNonRoutedFormsAreNotAccepted(t *testing.T) {
 		"nameserver ::127.0.0.1\n",
 		"nameserver ::ffff:0:127.0.0.1\n",
 		"nameserver 0.1.2.3\n",
+		"nameserver 64:ff9b::7f00:1\n",
+		"nameserver 2002:7f00:1::1\n",
 	} {
 		res, err := Derive(Input{HostContent: []byte(host)})
 		mustContain(t, refusalReason(t, err), "no usable nameserver")
@@ -350,6 +363,15 @@ func TestNonRoutedFormsAreNotAccepted(t *testing.T) {
 	}
 	// Addresses just outside the ranges stay usable.
 	res, err := Derive(Input{HostContent: []byte("nameserver 1.0.0.1\nnameserver ::1:0:0\nnameserver ::ffff:1:0:0:0\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Nameservers) != 3 || res.Rejected != 0 {
+		t.Errorf("%+v", res)
+	}
+	// NAT64 and 6to4 addresses that embed a public IPv4 address, and the
+	// neighbouring ranges, stay usable.
+	res, err = Derive(Input{HostContent: []byte("nameserver 64:ff9b::808:808\nnameserver 2002:808:808::1\nnameserver 64:ff9b:1::7f00:1\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
