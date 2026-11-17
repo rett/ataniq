@@ -113,6 +113,11 @@ func TestParseLineRefusals(t *testing.T) {
 		{"oversized", append([]byte(ReportPrefix), bytes.Repeat([]byte("x"), MaxReportLineBytes)...), "longer than"},
 		{"unknown field", replace(`"version":1`, `"version":1,"sandbox_ok":true`), "sandbox_ok"},
 		{"unknown result field", replace(`"detail":"fine"`, `"detail":"fine","extra":1`), "extra"},
+		{"key in another case", replace(`"version":1`, `"Version":1`), "case-sensitive"},
+		{"result key in another case", replace(`"status":"ok"`, `"STATUS":"ok"`), "case-sensitive"},
+		{"key twice", replace(`"version":1`, `"version":1,"version":1`), "twice"},
+		{"key twice in two cases", replace(`"version":1`, `"version":1,"VERSION":1`), "case-sensitive"},
+		{"result key twice", replace(`"detail":"fine"`, `"detail":"fine","detail":"other"`), "twice"},
 		{"trailing data", mk(body + " {}"), "after the report"},
 		{"not json", mk("version=1"), "not a report"},
 		{"wrong version", replace(`"version":1`, `"version":2`), "version"},
@@ -432,4 +437,66 @@ func TestProblems(t *testing.T) {
 	if !FailedAll(all, good) || !Failed(all, good) {
 		t.Error("an outside failure did not fail the report")
 	}
+}
+
+// A line that EncodeLine makes from a valid report is one ParseLine takes,
+// however many results and however the details read in JSON: no HTML
+// escaping, and a limit that holds the largest valid report.
+func TestLargestValidReportRoundTrips(t *testing.T) {
+	for _, detail := range []string{
+		strings.Repeat("<", MaxDetailBytes),
+		strings.Repeat("&", MaxDetailBytes),
+		strings.Repeat(`"`, MaxDetailBytes),
+		strings.Repeat(`\`, MaxDetailBytes),
+		strings.Repeat("\u00e9", MaxDetailBytes),
+	} {
+		var results []Result
+		for _, a := range Assertions() {
+			if a.HasInside() {
+				results = append(results, Result{a.Number, a.ID, StatusNotChecked, detail})
+			}
+			if a.Where == Both {
+				results = append(results, Result{a.Number, a.ID + OutsideSuffix, StatusNotChecked, detail})
+			}
+			if a.Where == Outside {
+				results = append(results, Result{a.Number, a.ID, StatusNotChecked, detail})
+			}
+		}
+		rep := Report{Version: ReportVersion, Digest: strings.Repeat("ab", 32), Results: results}
+		line := EncodeLine(rep)
+		if bytes.Contains(line, []byte(`\u003c`)) || bytes.Contains(line, []byte(`\u0026`)) {
+			t.Errorf("a detail was HTML-escaped: %.80s", line)
+		}
+		back, err := ParseLine(line)
+		if err != nil {
+			t.Fatalf("%d results of %d bytes: %v", len(results), len(line), err)
+		}
+		if len(back.Results) != len(results) || back.Results[0].Detail != EscapeDetail(detail) {
+			t.Errorf("the report changed in a round trip")
+		}
+	}
+}
+
+// The limits agree: even MaxResults results, each at the largest detail that
+// JSON writes in two bytes a character, fit one line.
+func TestReportLimitsAgree(t *testing.T) {
+	worstResult := len(`{"number":10,"id":"host-loopback-unreachable.outside","status":"not-checked","detail":""},`) + 2*MaxDetailBytes
+	header := len(ReportPrefix) + len(`{"version":1,"digest":"`) + 64 + len(`","results":[]}`) + 1
+	if got := header + MaxResults*worstResult; got > MaxReportLineBytes {
+		t.Errorf("%d results of the longest kind take %d bytes, over MaxReportLineBytes %d", MaxResults, got, MaxReportLineBytes)
+	}
+	if got := len(allResultIDs()); got > MaxResults {
+		t.Errorf("the table allows %d results, MaxResults is %d", got, MaxResults)
+	}
+}
+
+func allResultIDs() []string {
+	var ids []string
+	for _, a := range Assertions() {
+		ids = append(ids, a.ID)
+		if a.Where == Both {
+			ids = append(ids, a.ID+OutsideSuffix)
+		}
+	}
+	return ids
 }

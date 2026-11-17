@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,10 +24,13 @@ const ReportPrefix = "ATANIQ-PROBE-REPORT "
 const (
 	// MaxDetailBytes is the longest detail a result keeps.
 	MaxDetailBytes = 512
-	// MaxResults is the most results a report holds.
+	// MaxResults is the most results a report holds. The table allows 13
+	// distinct results at most (ten assertions and three outside halves).
 	MaxResults = 24
 	// MaxReportLineBytes is the longest line ParseLine accepts, terminator
-	// included.
+	// included. It holds MaxResults results with a detail of MaxDetailBytes
+	// of characters that JSON writes as two bytes (a quote or a backslash):
+	// a line EncodeLine makes from a valid report is never over it.
 	MaxReportLineBytes = 32 << 10
 )
 
@@ -146,14 +150,22 @@ func EncodeLine(r Report) []byte {
 		}
 		out.Results[i] = res
 	}
-	body, err := json.Marshal(out)
-	if err != nil {
+	// HTML escaping is off: it would turn "<", ">" and "&" of a detail into
+	// six bytes each and make a line longer than the limit ParseLine applies
+	// to the same text.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
 		// Unreachable: the report holds only integers and strings. A line
 		// that ParseLine refuses is the safe answer.
-		body = []byte("{}")
+		buf.Reset()
+		buf.WriteString("{}\n")
 	}
-	return append(append([]byte(ReportPrefix), body...), '\n')
+	return append([]byte(ReportPrefix), buf.Bytes()...)
 }
+
+var reportShape = shapeOf(reflect.TypeOf(Report{}))
 
 // ParseLine reads one report line, strictly. The line starts with
 // ReportPrefix, holds one JSON object and ends with at most one newline (or
@@ -180,6 +192,12 @@ func ParseLine(line []byte) (Report, error) {
 	if !utf8.Valid(rest) {
 		// encoding/json would replace an invalid byte with U+FFFD and go on.
 		return zero, refuse("report line", "is not valid UTF-8")
+	}
+	if err := checkKeys(rest, reportShape, "report line"); err != nil {
+		if _, ok := err.(*Refusal); ok {
+			return zero, err
+		}
+		return zero, refuse("report line", "is not a report: %v", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(rest))
 	dec.DisallowUnknownFields()

@@ -3,6 +3,7 @@ package assert
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 )
@@ -72,6 +73,9 @@ func walkKeys(dec *json.Decoder, sh *keyShape, path string, depth int) error {
 	}
 	switch delim {
 	case '{':
+		if sh != nil && sh.fields == nil {
+			return errors.New("an object where a list is expected")
+		}
 		seen := map[string]bool{}
 		for dec.More() {
 			kt, err := dec.Token()
@@ -96,6 +100,9 @@ func walkKeys(dec *json.Decoder, sh *keyShape, path string, depth int) error {
 			}
 		}
 	case '[':
+		if sh != nil && sh.fields != nil {
+			return errors.New("a list where an object is expected")
+		}
 		var elem *keyShape
 		if sh != nil {
 			elem = sh.elem
