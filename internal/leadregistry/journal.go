@@ -32,6 +32,7 @@ const (
 	kindLaunchOutcome = "launch-outcome"
 	kindState         = "state"
 	kindObserved      = "observed"
+	kindOwnerDecision = "owner-decision"
 )
 
 // envelope is the content of one journal line, without its hash. The field
@@ -78,6 +79,13 @@ type statePayload struct {
 	Evidence Evidence `json:"evidence"`
 	Reason   Reason   `json:"reason"`
 	Proof    string   `json:"proof,omitempty"`
+}
+
+type decisionPayload struct {
+	Epoch    uint64 `json:"epoch"`
+	State    State  `json:"state"`
+	Reason   Reason `json:"reason"`
+	Decision string `json:"decision"`
 }
 
 type observedPayload struct {
@@ -249,6 +257,8 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		p = &statePayload{}
 	case kindObserved:
 		p = &observedPayload{}
+	case kindOwnerDecision:
+		p = &decisionPayload{}
 	default:
 		return record{}, zero, fmt.Errorf("unknown record kind %q", env.Kind)
 	}
@@ -293,6 +303,22 @@ func (b *beginPayload) validate() error {
 	}
 	if b.Epoch == 0 {
 		return invalid("launch epoch 0")
+	}
+	return nil
+}
+
+func (d *decisionPayload) validate() error {
+	if d.State != StateStopped && d.State != StateEnded {
+		return invalid("an owner decision resolves unknown to stopped or ended, not %q", string(d.State))
+	}
+	if err := d.Reason.validate(); err != nil {
+		return err
+	}
+	if err := validText("decision", d.Decision, MaxProofBytes, false); err != nil {
+		return err
+	}
+	if d.Decision == "" {
+		return ErrDecisionRequired
 	}
 	return nil
 }

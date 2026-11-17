@@ -24,7 +24,7 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 	if rng.Intn(6) == 0 {
 		epoch = uint64(rng.Intn(5))
 	}
-	switch rng.Intn(10) {
+	switch rng.Intn(11) {
 	case 0:
 		p := goodProfile()
 		p.Model = pick(rng, "m1", "m2", "m3")
@@ -64,6 +64,10 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 			c.Proof = pick(rng, "p1", "proof two")
 		}
 		_, err := r.SetState(role, c)
+		return err
+	case 9:
+		_, err := r.ResolveUnknown(role, OwnerDecision{Epoch: epoch, State: pick(rng, StateStopped, StateEnded),
+			Reason: Reason{Code: "owner-decision"}, Decision: pick(rng, "decision one", "decision two")})
 		return err
 	default:
 		f := func() Field {

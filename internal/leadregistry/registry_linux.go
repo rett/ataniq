@@ -27,7 +27,17 @@ type Options struct {
 	Rand io.Reader
 }
 
-// Recovery reports what Open cut off the end of the journal.
+// Recovery reports what Open cut off the end of the journal. It is what the
+// daemon reads after Open to decide whether anything was lost: when Cut is
+// true, every role may have lost its newest records, so it should show every
+// role as unknown until it has looked at the unit.
+//
+// Open reads a cut anywhere in the file as an append that never returned, not
+// only a cut inside the last line: a file truncated from outside inside an
+// earlier line, even in the middle of it, opens with the older state, the
+// records after the cut are lost, and their epochs may be given out again.
+// A cut exactly at a line boundary leaves a valid shorter journal and reports
+// nothing.
 type Recovery struct {
 	// Lines is 1 when a final line without its newline was cut off, else 0.
 	Lines int
@@ -38,14 +48,17 @@ type Recovery struct {
 }
 
 // CorruptError is the error Open returns for a damaged journal. It names the
-// 1-based line of the file and matches ErrCorrupt.
+// 1-based line of the file and matches ErrCorrupt and nothing else: the error
+// of a refused record (a stale epoch, a refused launch, an undefined role) is
+// kept as text in Reason and its identity is not passed through, so a caller
+// that tests for one of those errors around Open does not take a corrupt
+// journal for it.
 type CorruptError struct {
 	// Line is the 1-based line number in the file.
 	Line int
-	// Reason says what is wrong with it.
+	// Reason says what is wrong with it. For a record the state does not
+	// admit it is the text of the refusal.
 	Reason string
-	// Err is the underlying error, if any.
-	Err error
 }
 
 // Error names the line and the damage.
@@ -55,9 +68,6 @@ func (e *CorruptError) Error() string {
 
 // Is makes errors.Is(err, ErrCorrupt) true.
 func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
-
-// Unwrap returns the underlying error.
-func (e *CorruptError) Unwrap() error { return e.Err }
 
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
@@ -283,7 +293,7 @@ func (r *Registry) start(dirFD int) error {
 func (r *Registry) replayLine(n int, line []byte) error {
 	rec, sum, err := decodeLine(r.prev, uint64(n-1), line)
 	if err != nil {
-		return &CorruptError{Line: n, Reason: err.Error(), Err: err}
+		return &CorruptError{Line: n, Reason: err.Error()}
 	}
 	if (n == 1) != (rec.kind == kindHeader) {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
@@ -292,7 +302,7 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, len(r.roles), rec)
 		if err != nil {
-			return &CorruptError{Line: n, Reason: err.Error(), Err: err}
+			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.roles[rec.role] = next
 	}
@@ -301,8 +311,17 @@ func (r *Registry) replayLine(n int, line []byte) error {
 	return nil
 }
 
-// Recovery returns what Open cut off the journal, if anything.
-func (r *Registry) Recovery() Recovery { return r.recovery }
+// Cut reports whether Open cut anything off the journal.
+func (r Recovery) Cut() bool { return r.Lines > 0 || r.Bytes > 0 }
+
+// Recovery returns what Open cut off the journal, if anything. The report is
+// fixed when Open returns and stays the same for the life of the registry,
+// whatever is written afterwards, and after Close.
+func (r *Registry) Recovery() Recovery {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recovery
+}
 
 // Close releases the file lock and closes the journal. It is safe to call
 // more than once.
@@ -330,6 +349,9 @@ func (r *Registry) usable() error {
 // mutate journals one record and installs the resulting entry. The record is
 // validated, encoded, re-read through the replay path and reduced against the
 // current state before a byte is written, so a refused call writes nothing.
+// If the write or the sync fails the registry is broken and the call returns
+// an error, but the record may or may not be on disk: the bytes of a completed
+// write stay in the file when only the sync failed, and a reopen reads them.
 // Called with r.mu held.
 func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry, error) {
 	if err := r.usable(); err != nil {
@@ -357,11 +379,11 @@ func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry,
 	}
 	if _, err := r.f.Write(line); err != nil {
 		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: append: %w", err)
+		return Entry{}, fmt.Errorf("leadregistry: append (the record may or may not be on disk): %w", err)
 	}
 	if err := r.f.Sync(); err != nil {
 		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: sync: %w", err)
+		return Entry{}, fmt.Errorf("leadregistry: sync (the record may or may not be on disk): %w", err)
 	}
 	r.roles[role] = next
 	r.seq = seq
@@ -459,15 +481,49 @@ type StateChange struct {
 	Proof string
 }
 
-// SetState sets the shown state of a role for an epoch. It is refused with
-// ErrStaleEpoch unless the epoch is the current one, and with ErrProofRequired
-// for stopped or ended without a proof text. unknown is accepted for the
-// current epoch with or without a proof.
+// SetState sets the shown state of a role for an epoch. The transition table
+// in the package documentation says what is admitted. It is refused with
+// ErrStaleEpoch unless the epoch is the current one, with ErrProofRequired
+// for stopped or ended without a proof text, and with ErrStateTransition for
+// a change the table refuses: desired from any state but desired, stopped or
+// ended; ready, degraded or stopping from unknown; stopped or ended with
+// owner-decision evidence from unknown (use ResolveUnknown); and, as
+// ErrOutcomePending, stopped or ended while the launch intent is pending.
+// unknown is accepted for the current epoch from every state.
 func (r *Registry) SetState(role leadrole.Role, c StateChange) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.mutate(kindState, role, &statePayload{
 		Epoch: c.Epoch, State: c.State, Evidence: c.Evidence, Reason: c.Reason, Proof: c.Proof,
+	})
+}
+
+// OwnerDecision is an owner decision that resolves an unknown state.
+type OwnerDecision struct {
+	// Epoch must be the role's current epoch.
+	Epoch uint64
+	// State is the state the owner decided on: stopped or ended.
+	State State
+	// Reason is the machine code and detail.
+	Reason Reason
+	// Decision is the owner's decision text, required, non-empty, journaled.
+	Decision string
+}
+
+// ResolveUnknown records an owner decision that resolves the shown state
+// unknown. It is the only way besides SetState with proof out of unknown. It
+// moves the role to stopped or ended only, with the evidence kind
+// owner-decision, and stores the decision text as the proof of the shown
+// state. It is journaled as its own record kind, owner-decision. It is
+// refused with ErrDecisionRequired for an empty decision text, ErrInvalid
+// unless the state is stopped or ended, ErrStaleEpoch unless the epoch is the
+// current one, and ErrStateTransition when the shown state is not unknown or,
+// as ErrOutcomePending, when the launch intent is pending.
+func (r *Registry) ResolveUnknown(role leadrole.Role, d OwnerDecision) (Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mutate(kindOwnerDecision, role, &decisionPayload{
+		Epoch: d.Epoch, State: d.State, Reason: d.Reason, Decision: d.Decision,
 	})
 }
 

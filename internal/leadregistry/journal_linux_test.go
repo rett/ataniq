@@ -162,6 +162,14 @@ func craft(t *testing.T, lines [][]byte, n int, seq uint64, kind string, role le
 	return line
 }
 
+// otherErrors are the named errors a corrupt journal must not match.
+var otherErrors = []error{
+	ErrInvalid, ErrNoRole, ErrTooManyRoles, ErrTooLarge, ErrStaleEpoch, ErrEpochExhausted,
+	ErrLaunchRefused, ErrLaunchState, ErrLaunchManager, ErrLaunchPending, ErrIntentMismatch, ErrIntentResolved,
+	ErrProofRequired, ErrStateTransition, ErrOutcomePending, ErrDecisionRequired,
+	ErrLocked, ErrInsecure, ErrClosed, ErrBroken,
+}
+
 func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 	data, _, _ := buildJournal(t)
 	lines := journalLines(data)
@@ -206,6 +214,13 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		{"second header", assemble(3, craft(t, lines, 3, 3, kindHeader, leadrole.Role{}, &headerPayload{Format: formatName, Version: 1})), 4},
 		{"invalid record", assemble(3, craft(t, lines, 3, 3, kindDesired, alpha, &desiredPayload{Desired: "paused"})), 4},
 		{"stale epoch in a record", assemble(3, craft(t, lines, 3, 3, kindState, alpha, &statePayload{Epoch: 9, State: StateReady, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 4},
+		{"desired from a live state", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateDesired, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 6},
+		{"stopped while the intent is pending", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateStopped, Evidence: EvidenceObservation, Reason: Reason{Code: "x"}, Proof: "p"})), 6},
+		{"owner decision outside unknown", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
+		{"owner decision without text", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}})), 4},
+		{"owner decision to a live state", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateReady, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
+		{"launch from a live state", assemble(8, craft(t, lines, 8, 8, kindLaunchBegin, alpha, &beginPayload{
+			IntentID: strings.Repeat("ab", 16), Epoch: 2, UnitName: alpha.UnitName(), ProfileDigest: goodProfile().Digest()})), 9},
 		{"record for an undefined role", assemble(3, craft(t, lines, 3, 3, kindDesired, lead(t, "ghost"), &desiredPayload{Desired: DesiredRunning})), 4},
 		{"record without a role", assemble(3, craft(t, lines, 3, 3, kindDesired, leadrole.Role{}, &desiredPayload{Desired: DesiredRunning})), 4},
 		{"line over the cap", assemble(3, append(bytes.Repeat([]byte("x"), MaxLineBytes+10), '\n')), 4},
@@ -222,6 +237,19 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "line ") {
 			t.Errorf("%s: message does not name the line: %v", c.name, err)
+		}
+		// A corrupt journal is ErrCorrupt and no other named error, whatever
+		// the record was refused for; its text is kept.
+		for _, other := range otherErrors {
+			if errors.Is(err, other) {
+				t.Errorf("%s: Open error also matches %v", c.name, other)
+			}
+		}
+		if errors.Unwrap(err) != nil {
+			t.Errorf("%s: Open error unwraps to %v", c.name, errors.Unwrap(err))
+		}
+		if ce.Reason == "" || !strings.Contains(err.Error(), ce.Reason) {
+			t.Errorf("%s: the reason is not in the message: %v", c.name, err)
 		}
 	}
 }
@@ -425,4 +453,71 @@ func TestEmptyAndExistingFolder(t *testing.T) {
 		t.Fatal(rev)
 	}
 	r2.Close()
+}
+
+// TestRecoveryAfterOpen: the report is there after Open, says whether
+// anything was cut, and does not change with later writes or Close.
+func TestRecoveryAfterOpen(t *testing.T) {
+	if (Recovery{}).Cut() {
+		t.Fatal("an empty report says a cut was made")
+	}
+	data, sizes, _ := buildJournal(t)
+	// A torn final line: the record is cut, the report stays.
+	cutAt := int(sizes[len(sizes)-1]) - 5
+	dir := writeJournal(t, data[:cutAt])
+	r, err := Open(dir, testOpts(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Recovery{Lines: 1, Bytes: int64(cutAt) - sizes[len(sizes)-2], Offset: sizes[len(sizes)-2]}
+	if got := r.Recovery(); got != want || !got.Cut() {
+		t.Fatalf("Recovery = %+v, want %+v", got, want)
+	}
+	if _, err := r.SetDesired(lead(t, "alpha"), DesiredRunning); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Recovery(); got != want {
+		t.Fatalf("Recovery after a write = %+v", got)
+	}
+	r.Close()
+	if got := r.Recovery(); got != want {
+		t.Fatalf("Recovery after Close = %+v", got)
+	}
+	// A clean journal reports no cut.
+	r2, err := Open(writeJournal(t, data), testOpts(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	if r2.Recovery().Cut() {
+		t.Fatalf("Recovery of a clean journal = %+v", r2.Recovery())
+	}
+}
+
+// TestCutInsideAnEarlierLine pins the limit stated in doc.go: a cut inside a
+// committed line, not only the last one, opens successfully with the older
+// state, reports the cut, and the epochs of the lost records are given out
+// again.
+func TestCutInsideAnEarlierLine(t *testing.T) {
+	data, sizes, _ := buildJournal(t)
+	// Records: define alpha, define beta, desired, launch-begin (epoch 1), ...
+	const beginRecord = 4
+	cut := sizes[beginRecord-1] + 10
+	r, err := Open(writeJournal(t, data[:cut]), testOpts(1))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+	rec := r.Recovery()
+	if !rec.Cut() || rec.Offset != sizes[beginRecord-1] || rec.Bytes != 10 {
+		t.Fatalf("Recovery = %+v", rec)
+	}
+	alpha := lead(t, "alpha")
+	if e, _ := r.Get(alpha); e.Epoch != 0 || e.Intent != nil {
+		t.Fatalf("the committed launch is still there: %+v", e)
+	}
+	in, err := r.BeginLaunch(alpha)
+	if err != nil || in.Epoch != 1 {
+		t.Fatalf("epoch is given out again: %+v %v", in, err)
+	}
 }

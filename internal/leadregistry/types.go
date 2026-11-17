@@ -65,6 +65,15 @@ var (
 	ErrIntentResolved = errors.New("leadregistry: launch intent already resolved")
 	// ErrProofRequired means stopped and ended need a non-empty proof text.
 	ErrProofRequired = errors.New("leadregistry: proof required")
+	// ErrStateTransition is matched by every refusal of SetState or
+	// ResolveUnknown for the shown state the role is in.
+	ErrStateTransition = errors.New("leadregistry: state change refused")
+	// ErrOutcomePending is a state refusal: stopped, ended and an owner
+	// decision are refused while the launch intent is pending. The caller
+	// records the outcome first.
+	ErrOutcomePending error = transition("stopped or ended while the launch intent is pending; record the outcome first")
+	// ErrDecisionRequired means an owner decision needs a non-empty decision text.
+	ErrDecisionRequired = errors.New("leadregistry: owner decision text required")
 	// ErrCorrupt is matched by the error Open returns for a damaged journal.
 	ErrCorrupt = errors.New("leadregistry: corrupt journal")
 	// ErrLocked means another holder has the registry file locked.
@@ -76,7 +85,12 @@ var (
 	// ErrClosed means the registry is closed.
 	ErrClosed = errors.New("leadregistry: closed")
 	// ErrBroken means an earlier write or sync failed; reopen the registry.
-	ErrBroken = errors.New("leadregistry: earlier write failed, reopen")
+	// The record of the failed call may or may not be on disk: a write that
+	// completed and then failed to sync stays in the file, and a reopen in
+	// the same boot reads it back. So the error of that call is not "nothing
+	// happened"; the caller must reopen and read the state, and an epoch the
+	// failed call took is consumed.
+	ErrBroken = errors.New("leadregistry: earlier write failed, the record may or may not be on disk, reopen")
 )
 
 // refusal is a launch refusal that also matches ErrLaunchRefused.
@@ -87,6 +101,19 @@ func (r refusal) Error() string { return "leadregistry: launch refused: " + stri
 
 // Is makes errors.Is(err, ErrLaunchRefused) true.
 func (refusal) Is(target error) bool { return target == ErrLaunchRefused }
+
+// transition is a state refusal that also matches ErrStateTransition.
+type transition string
+
+// Error returns the refusal text.
+func (t transition) Error() string { return "leadregistry: state change refused: " + string(t) }
+
+// Is makes errors.Is(err, ErrStateTransition) true.
+func (transition) Is(target error) bool { return target == ErrStateTransition }
+
+func refuseTransition(from, to State, why string) error {
+	return transition(fmt.Sprintf("%s to %s: %s", from, to, why))
+}
 
 func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
@@ -485,6 +512,11 @@ type Entry struct {
 	Intent *Intent
 	// Unit is the unit evidence of the current epoch.
 	Unit UnitEvidence
+}
+
+// pending reports whether the current launch intent has no outcome yet.
+func (e Entry) pending() bool {
+	return e.Intent != nil && e.Intent.Outcome == OutcomePending
 }
 
 func (e Entry) clone() Entry {
