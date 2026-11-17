@@ -66,7 +66,8 @@ var (
 	// coordinator is not run by ataniq.
 	ErrLaunchParentManager error = refusal("the parent lead of the coordinator is not run by ataniq")
 	// ErrLaunchParentState is a launch refusal: the parent lead of a
-	// coordinator is not shown starting, ready or degraded.
+	// coordinator is not shown starting, ready or degraded, or its own launch
+	// failed or was abandoned.
 	ErrLaunchParentState error = refusal("the parent lead of the coordinator is not shown starting, ready or degraded")
 	// ErrLaunchCoordinator is a launch refusal: a coordinator of the lead,
 	// recorded under an earlier epoch of the lead, is not stopped, ended or
