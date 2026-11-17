@@ -61,13 +61,14 @@ These are the nine rules, with the place that enforces each.
 5. **Who may send is a short list, and caps refuse, not drop.**
    `command.EdgeAllowed` and `Machine.Submit` enforce the edges and the caps.
    A refused message is journaled with its reason and the sender.
-6. **Ataniq never sends a key to an approval prompt.** `Deliver` writes
-   nothing when the report is `blocked` or the screen shows a dialog (the
-   first check), and writes no Enter when a dialog is there after the paste
-   (the second check). The only bytes it ever writes are one bracketed paste
+6. **Ataniq never sends a key to an approval prompt it can see.** `Deliver`
+   writes nothing when the report is `blocked` or the screen shows a dialog the
+   recognisers read (the first check), and writes no Enter when a dialog is
+   there after the paste (the second check). A dialog that opens after the
+   second check is not seen; see [Limits](#limits-and-what-is-not-established). The only bytes it ever writes are one bracketed paste
    and, at most once, one carriage return. `idle.Classifier.Classify` gives
    `blocked` for a `blocked` report or a dialog on the alternate screen,
-   whatever else it reads.
+   whatever else it reads except an ended process, which gives `ended`.
 7. **Never write Enter unless the composer is known to be idle and known to
    hold the text.** The second check of `Deliver` (see
    [The fence](#the-fence)).
@@ -102,7 +103,9 @@ refused.
   dialog was a file write, and the codex dialog was a command to run. One run
   for each agent.
 
-It does not mean the code has been run against a live agent. See
+The attended runs, and every recorded screen, came from an earlier prototype
+holder and fence, not from this library, and used single-line messages only.
+This library has never been run against a real agent. See
 [Limits](#limits-and-what-is-not-established).
 
 ## Idle classification
@@ -257,7 +260,10 @@ A `Reading` says whether it is `Known`, and then what it saw:
   claude's ghost text is the last prompt and cannot be pinned. `Placeholder`
   says that the hint case applied.
 - **Dialog marks.** Looked for only in the bottom rows (20), and only at the
-  start of a row. claude: `Esc to cancel`, `Do you want to`, and a numbered
+  start of a row. For claude the start of a row is after at most one blank, and
+  `Esc to cancel` is also found at the start of any segment of a row after a
+  middle dot (` · `). For codex the text marks are accepted after up to two
+  leading blanks. claude: `Esc to cancel`, `Do you want to`, and a numbered
   choice that starts with `❯`. codex: `Press enter to confirm`, `Would you like
   to`, and a numbered choice that starts with `›`. A dialog replaces the
   composer: `Dialog` is true and `Composer` false.
@@ -294,7 +300,9 @@ The fixtures are recorded screens, scrubbed, in
 `<name>.txt` with the screen text and a `<name>.json` with the size, the
 cursor, the alternate-screen flag, the title, the faint spans, a description,
 where it was recorded, and the expected reading (`want`). They come from
-attended runs of the agents. `internal/inject/osc7501/testdata` and
+attended runs of the agents, made with the earlier prototype holder and fence
+and not with this library: where a fixture's description says "the fence
+pasted", it means that prototype, not `Deliver`. `internal/inject/osc7501/testdata` and
 `internal/inject/title/testdata` hold the recorded report payloads and titles in
 the same way. A home path in a fixture must be the placeholder user's, and a test
 fails on any other.
@@ -320,14 +328,23 @@ collapsed paste, a pasted header, and so on).
 `inject.Deliver(ctx, session, Message{Text, Header}, Options)` makes one
 attempt to put one message into one session. It never waits for the lead to
 become idle, never retries, never writes anything to clean up, and never
-sleeps. Every wait is a `Settle` call of the holder, and the only clock it has
-is the deadline it was given.
+sleeps. Every wait is a `Settle` call of the holder, or the wait for the input
+lock. The deadline it was given cuts each `Settle`; only the context bounds the
+wait for the lock (see below).
 
 `Options.Deadline` is required. The daemon always sets it, shorter than
-`command.Limits.FenceTimeout`. A zero value is refused with the outcome `not
+`command.Limits.FenceTimeout`. It does not bound the wait for the input lock:
+only the context does. The daemon passes a context with the same deadline
+(`context.WithDeadline`); otherwise the wait can outlast `FenceTimeout`, and the
+command becomes `uncertain` with `no-fence-result`. Nothing is written after
+the deadline, so that failure is safe, but an operator has to act. A zero value is refused with the outcome `not
 idle`, the detail "no deadline given" and nothing written. That check comes
 after the table, so an untested version is still reported as `untested
 version`.
+
+Two exits come before the lock. A session that is nil gives `died`, with
+nothing written. A context that has already ended, or a deadline that has
+already passed, gives `not idle` with nothing written and no lock taken.
 
 The steps, in order:
 
@@ -398,7 +415,7 @@ sooner; a maximum is not below the quiet that ends its `Settle`, and the
 maximum after the paste is not below its minimum. The 1 s maximum for the first
 settle is this package's choice.
 
-What the fence never does: it never writes a key into a dialog, never writes
+What the fence never does: it never writes a key into a dialog it has read, never writes
 anything but the paste and one Enter, never writes the Enter without a second
 check that passed, never writes after the deadline, never retries and never
 cleans up. The context ending, or the deadline passing, gives `not idle` before
@@ -583,13 +600,24 @@ message reached the agent. The reasons:
 
 Any of the three unfreezes the queue.
 
+Every decision carries `Resolution.SeenLate`, the number of late notes on the
+command that the operator was shown (`len(CommandView.Late)`, also available
+from `Machine.Command(id)`). `Resolve` refuses it as `notes-changed` when that
+number differs from the command's current number of late notes, so a decision
+never covers a note the operator has not seen. The same holds when a half
+written resend is completed by repeating the call: it goes through only with the
+current count, so late information that arrived in between is seen first.
+
 **No automatic retry.** Nothing in the package resends. A command that is
 `uncertain` stays so until an operator decides. `Tick` never dispatches and
 never resends.
 
 **Late notes.** A fence result or delivery evidence that arrives after the
 command became `uncertain` (after a `FenceTimeout`, say) is journaled as a note
-on the command, and `View` shows it to the operator (`CommandView.Late`). A note
+on the command. `View` shows the notes of a queued or uncertain command to the
+operator (`CommandView.Late`). `View` leaves out an ended command, so the notes
+of a resolved command, such as `HeldFor` and `HeldAlso` of a hold, are read with
+`Machine.Command(id)`; a release screen takes them from there. A note
 never ends the `uncertain` state and never unfreezes the queue. The rules for
 every late note:
 
@@ -619,11 +647,19 @@ While a queue is held, `BeginDispatch` refuses it as `queue-held` and names the
 command, whatever state any replacement is in. The hold is set even when the
 call is then refused: for evidence that is bad (`bad-evidence`), or when the
 note list is full (`late-notes-full`), or when the note repeats an earlier one.
-Each piece of late information about a command the hold is about advances a
+A piece of late information about a command that calls for a hold (one
+resolved as dropped or sent again, or uncertain with a resend pending) advances a
 counter (`Held` in the record, `TargetView.HeldSeq` in the view), except a
 repeat, byte for byte, of the last piece. A hold record carries a digest of the
-late call (`Piece`) for that. The counter is never reset, not by a release
-either.
+late call (`Piece`) for that, and a bounded, safe rendering of the call in its
+detail: the evidence text, or what was written, the outcome and the readings.
+The counter is never reset, not by a release either.
+
+`TargetView.HeldPieces` shows the last pieces behind a hold, at most eight:
+for each, the counter value, the command id, the time and the rendering. It
+shows a piece even when its note was refused (a full note list, bad evidence),
+so a release covers what the operator has seen when the daemon shows
+`HeldPieces` up to `HeldSeq`. `Restore` rebuilds it from the hold records.
 
 The operator ends a hold, and only the operator:
 
@@ -638,7 +674,7 @@ The operator ends a hold, and only the operator:
   command is not interrupted, and `Withdraw` does not end the hold.
 
 The view shows, per target, `Held`, `HeldFor` (the first command), `HeldAlso`
-(the others), `HeldReason`, `HeldSince` and `HeldSeq`. A queue can be both frozen
+(the others), `HeldReason`, `HeldSince`, `HeldSeq` and `HeldPieces`. A queue can be both frozen
 and held, and a held queue may be empty.
 
 What a hold does not do. It does not recall a replacement whose fence is already
@@ -664,6 +700,13 @@ is not held, a dispatch while the queue is held, and a note for a decided
 command with no hold behind it.
 
 **What the daemon must do.** The machine is told only what the daemon tells it.
+
+- The daemon passes each piece of late information once. A daemon that polls
+  and passes the pieces A, B, A, B advances the counter on every call, and each
+  call refuses a release made in between as `hold-changed`.
+- The daemon shows the operator `HeldPieces` and the late notes, and passes back
+  `HeldSeq` (to `ReleaseHold`) and the note count (`Resolution.SeenLate`) that
+  it showed. The notes of a resolved command come from `Machine.Command(id)`.
 
 - The daemon repeats a late call (`RecordFence` or `ConfirmDelivery` for a
   decided command) that returned a journal error. The hold is written before
@@ -764,7 +807,9 @@ refused as not idle. It has no default, and `command.New` fails until the caller
 sets it. `FenceTimeout` must be longer than the fence's worst case (both
 settles, the wait for the input lock, and the call to the holder), and
 `Options.Deadline` must be shorter than it, so that a command that a `Tick`
-made `uncertain` has no fence still writing.
+made `uncertain` has no fence still writing. The context passed to `Deliver`
+carries the same deadline, since `Options.Deadline` does not bound the wait for
+the input lock.
 
 ## Outcomes
 
@@ -793,7 +838,9 @@ bluntly as we can state them.
 
 - **The window cannot be closed.** The agent can open a dialog on its own
   between the last check and the Enter, for example when a background task
-  finishes. Then the Enter answers that dialog with its default. The window is
+  finishes. Then the Enter answers that dialog with its default (that was seen
+  in earlier attended runs that injected without a fence, not in a fenced
+  run). The window is
   the time of one write. Treating a background task as not idle narrows it, and
   so does `Pending`. Nothing closes it.
 - **The window that `Pending` leaves.** `Pending` sees output already queued to
@@ -819,7 +866,7 @@ bluntly as we can state them.
 - **Look-alike letters.** A body can still show a line that looks like a
   header (see [Admission](#admission)).
 - **A body line that begins with a dialog mark.** The recognisers read a mark
-  at the start of a row. A codex composer indents its continuation rows by two
+  at the start of a row (with the blanks allowed above). A codex composer indents its continuation rows by two
   blanks, which the codex rule accepts, so a body line such as `Press enter to
   confirm` shown in the composer reads as a dialog. The second check then sees
   `blocked`, and the command ends `uncertain: not submitted`, with the text
@@ -828,9 +875,11 @@ bluntly as we can state them.
 - **Blanks typed and the cursor moved home.** A composer of blanks that the
   owner typed, with the cursor then moved back to the first column, shows the
   same as an empty composer and reads as empty.
-- **No recording shows a multi-line paste in a composer.** No recording shows a
-  multi-line paste displayed in either composer, in the form the fence writes (a
-  header, a carriage return and a body inside one bracketed paste). What the
+- **No recording shows the fence's form of a multi-line paste.** What no
+  recording shows is a header line, a line break and a body, written as one
+  bracketed paste and displayed in either composer. Tall and collapsed pastes
+  were recorded (a tall codex composer, and claude's collapsed marker), but not
+  in this form. What the
   fake session does there is an assumption: that claude collapses a paste over
   1000 bytes or over 10 lines into a marker, and shows a short multi-line paste
   inline. If it is wrong, the fence fails safe with `not submitted`, but then
@@ -863,8 +912,12 @@ bluntly as we can state them.
   `wrong-state` and is not journaled. The message may never have reached the
   lead, and the audit loses the result. Whether it should be kept as a note and
   also hold the queue is an open question for the owner.
-- **No live qualification.** No run of this code against a live agent has been
-  made. Every test uses recorded screens and a fake session.
+- **No live qualification.** This library has never been run against a real
+  agent. Every test uses recorded screens and a fake session. The attended runs
+  that the fixtures and the observations above come from used an earlier
+  prototype holder and fence, not this library, and single-line messages only;
+  so the timing, `Pending`, the deadline bounds, the header check and the
+  at-most-once guard have not been seen live.
 
 ## Not built here
 
