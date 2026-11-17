@@ -606,12 +606,30 @@ func TestFakeBoundStopCascadesWhenDeactivating(t *testing.T) {
 	g := r.start(unitG, 1)
 	r.startBound(unitP, unitG)
 	r.startBound(unitC, unitP)
+	r.startBound(unitD, unitG) // a second unit bound to the same parent
 	r.signal(g, syscall.SIGTERM)
-	r.wantImplied(impliedWant{unitP, syscall.SIGTERM, 0}, impliedWant{unitC, syscall.SIGTERM, 0})
+	r.wantImplied(
+		impliedWant{unitD, syscall.SIGTERM, 0},
+		impliedWant{unitP, syscall.SIGTERM, 0},
+		impliedWant{unitC, syscall.SIGTERM, 0},
+	)
+	if r.fake.Loaded(unitD) {
+		t.Fatal("the unit that exits on SIGTERM is still loaded")
+	}
+	if !r.fake.Loaded(unitP) || !r.fake.Loaded(unitC) {
+		t.Fatal("the units that ignore SIGTERM went away before their stop timeout")
+	}
 	r.clock.Advance(2 * time.Second)
 	if r.fake.Loaded(unitP) || r.fake.Loaded(unitC) {
 		t.Fatal("both units should be killed at their stop timeout")
 	}
+	r.wantImplied(
+		impliedWant{unitD, syscall.SIGTERM, 0},
+		impliedWant{unitP, syscall.SIGTERM, 0},
+		impliedWant{unitC, syscall.SIGTERM, 0},
+		impliedWant{unitC, syscall.SIGKILL, 2 * time.Second},
+		impliedWant{unitP, syscall.SIGKILL, 2 * time.Second},
+	)
 }
 
 // A start under a parent that is deactivating is treated as one under a
@@ -669,6 +687,9 @@ func TestFakeBoundUnitKeepsRunningUnderADeactivatingParentOnUnload(t *testing.T)
 	// Back to the default: the next look does not stop it retroactively, but
 	// the next change of the parent does.
 	r.fake.SetBoundStop(BoundStopOnDeactivating)
+	if got := r.inspect(unitC); !got.Loaded || got.Active != ActiveActive || len(r.implied()) != 0 {
+		t.Fatalf("a look stopped the unit retroactively: %+v %v", got, r.implied())
+	}
 	r.signal(parent, syscall.SIGKILL)
 	if r.fake.Loaded(unitC) || r.fake.Loaded(unitP) {
 		t.Fatal("the parent was killed and the child did not follow")
