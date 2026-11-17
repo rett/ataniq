@@ -72,7 +72,8 @@ func (h *Host) reap() {
 }
 
 // letGo allows the reap of the zombie. It is called when the session is
-// proven empty, when the control group is proven empty, and by Close.
+// proven empty (also as part of the control group proof, which needs the
+// session empty too), and by Close.
 func (h *Host) letGo() { h.releaseOnce.Do(func() { close(h.release) }) }
 
 // latchEmpty records that the session has no live member and lets the zombie

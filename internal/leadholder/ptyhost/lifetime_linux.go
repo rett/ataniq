@@ -61,7 +61,8 @@ func (h *Host) TreeMethod() string {
 // TreeGone reports whether the agent's process tree is gone, and how that
 // was decided. The proof string starts with the method, "cgroup" or
 // "session", so that a caller can label a session proof as weaker (a
-// descendant that started its own session escapes it). A tree is never
+// descendant that started its own session escapes it). With the cgroup
+// method the control group walk and the session scan must both be empty. A tree is never
 // gone while the direct child is not yet reaped. gone false with a proof
 // that says why is also the answer when the check itself failed.
 func (h *Host) TreeGone() (gone bool, proof string) {
@@ -91,10 +92,14 @@ func (h *Host) scanCgroup() cgroupScan {
 	return s
 }
 
-// cgroupGone judges the holder's group and every group below it: the tree is
-// gone only when no process but the holder is listed in any of them. A walk
-// that hit its bound or could not read a group proves nothing. A tree that is
-// gone lets the zombie of the direct child go.
+// cgroupGone judges the holder's group and every group below it, and the
+// session: the tree is gone only when no process but the holder is listed in
+// any of the groups and no live process is left in the child's session. The
+// session scan covers a process that left the groups during the walk, which
+// the walk cannot see (a delegated group lets a process move; the scan does
+// not catch one that also started a session of its own). A walk that hit its
+// bound or could not read a group proves nothing. A tree that is gone lets
+// the zombie of the direct child go.
 func (h *Host) cgroupGone() (bool, string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -110,23 +115,24 @@ func (h *Host) cgroupGone() (bool, string) {
 	case !s.selfSeen:
 		return false, fmt.Sprintf("cgroup %s: the holder is not listed in its own group", h.cgroupProcs)
 	}
-	h.letGo()
-	return true, fmt.Sprintf("cgroup %s: only the holder remains in the group and its %d group(s)", h.cgroupProcs, s.groups)
+	if ok, why := h.sessionEmptyLocked(); !ok {
+		return false, fmt.Sprintf("cgroup %s: the group and its %d group(s) hold only the holder, but %s", h.cgroupProcs, s.groups, why)
+	}
+	return true, fmt.Sprintf("cgroup %s: only the holder remains in the group and its %d group(s), and session %d holds no live process", h.cgroupProcs, s.groups, h.pid)
 }
 
-// sessionGone is the session proof. It scans under h.mu, which the reap also
-// takes, so the zombie that reserves the session id cannot be reaped between
-// the scan and the verdict. Once the child was reaped without the session
-// having been proven empty (the host was closed first, or the child could not
-// be waited for), the id is no longer reserved: a process that happens to hold
-// that number as its session id is not a member, and nothing is proven.
-func (h *Host) sessionGone() (bool, string) {
-	const weaker = "weaker proof: a process that started its own session is not seen"
+// sessionEmptyLocked scans the child's session; the caller holds h.mu, which
+// the reap also takes, so the zombie that reserves the session id cannot be
+// reaped between the scan and the verdict. When the session is empty it is
+// latched and the zombie is let go. Once the child was reaped without the
+// session having been proven empty (the host was closed first, or the child
+// could not be waited for), the id is no longer reserved: a process that
+// happens to hold that number as its session id is not a member, and nothing
+// is proven. why says what is wrong when ok is false.
+func (h *Host) sessionEmptyLocked() (ok bool, why string) {
 	if h.sessionEmpty.Load() {
-		return true, fmt.Sprintf("session %d: no live process in the session (%s; %s)", h.pid, weaker, h.cgroupNote)
+		return true, ""
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.reaped {
 		return false, fmt.Sprintf("session %d: the child was reaped before the session was proven empty, so the id is no longer reserved: nothing proven", h.pid)
 	}
@@ -142,6 +148,20 @@ func (h *Host) sessionGone() (bool, string) {
 		return false, fmt.Sprintf("session %d: %d entries could not be read, nothing proven", h.pid, nerr)
 	}
 	h.latchEmpty()
+	return true, ""
+}
+
+// sessionGone is the session proof (see sessionEmptyLocked).
+func (h *Host) sessionGone() (bool, string) {
+	const weaker = "weaker proof: a process that started its own session is not seen"
+	if h.sessionEmpty.Load() {
+		return true, fmt.Sprintf("session %d: no live process in the session (%s; %s)", h.pid, weaker, h.cgroupNote)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if ok, why := h.sessionEmptyLocked(); !ok {
+		return false, why
+	}
 	return true, fmt.Sprintf("session %d: no live process in the session (%s; %s)", h.pid, weaker, h.cgroupNote)
 }
 

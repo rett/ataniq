@@ -26,18 +26,29 @@
 // # Tree proof
 //
 // When the process runs in a control group of its own, the tree is gone when
-// that group and every group below it hold only this process (proof starts
-// with "cgroup"). A process in a child group is not listed in its parent's
+// that group and every group below it hold only this process and no live
+// process is left in the child's session (proof starts with "cgroup", and
+// names both). A process in a child group is not listed in its parent's
 // cgroup.procs, so the walk reads the cgroup.procs of every descendant group,
 // breadth first and bounded (Config.CgroupWalkLimit); a walk that hits its
-// bound, or cannot read a group, proves nothing and is counted. "Of its own"
-// is judged once, in Start, before the child is created: the group's
+// bound, or cannot read a group, proves nothing and is counted. A group that
+// cannot be opened any more is not taken as removed until its parent no
+// longer lists the name; a name that appeared in the meantime is walked. "Of
+// its own" is judged once, in Start, before the child is created: the group's
 // cgroup.procs lists only this process and the group has no child group.
 // Otherwise the fallback is that no process is left in the child's session
 // (proof starts with "session"). That is weaker: a descendant that started
 // its own session escapes it, and callers should label it so. Zombies do not
 // count as present in the session scan (they run nothing, and a process that
 // adopts orphans reaps them on its own schedule).
+//
+// The walk is not atomic, and the limit remains: a process that may write the
+// cgroup.procs of a group in a delegated unit can move during the walk, from a
+// group not read yet into one already read, or out of the subtree (for
+// example into a transient scope), and is then not seen by the walk. The
+// session scan catches such a process only while it stays in the child's
+// session. So the cgroup proof is strong only when the agent cannot migrate,
+// for example with a read-only cgroup filesystem inside the sandbox.
 //
 // # What the proofs fit
 //
@@ -69,7 +80,7 @@
 // holds the pid, the group id and the session id. It is reaped only when the
 // session is proven empty (a scan that finds no live member while the zombie
 // holds the id is authoritative, because no process can join a session whose
-// leader is a zombie), when the control group is proven empty, or when the
+// leader is a zombie; the control group proof needs the same scan), or when the
 // host is closed (Close, the final release; the host then gives up acting on
 // the ids). Every signal sent by group or session id is sent under the mutex
 // that guards the reap and only while the child is not reaped. Session members

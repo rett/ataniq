@@ -720,7 +720,7 @@ func pidFromFile(t *testing.T, path string) int {
 			if err != nil {
 				t.Fatalf("pid file: %v", err)
 			}
-			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			killAtCleanup(t, pid)
 			return pid
 		}
 		if time.Now().After(deadline) {
@@ -906,7 +906,7 @@ func TestAStrangerThatReusedTheSessionIdIsNeverSignalled(t *testing.T) {
 func TestCgroupProofIgnoresTheZombieAndReleasesIt(t *testing.T) {
 	self := strconv.Itoa(os.Getpid())
 	_, _, procsFile := fakeCgroup(t, self+"\n4242\n")
-	h := &Host{pid: 4242, cgroupProcs: procsFile, walkMax: 10, done: closedChan(), release: make(chan struct{})}
+	h := &Host{pid: 4242, cgroupProcs: procsFile, walkMax: 10, procRoot: t.TempDir(), scanMax: DefaultProcScanLimit, done: closedChan(), release: make(chan struct{})}
 	if h.TreeMethod() != "cgroup" {
 		t.Fatalf("method %q", h.TreeMethod())
 	}
@@ -1212,8 +1212,8 @@ func TestTreeGoneWithAFakeControlGroup(t *testing.T) {
 	}
 	writeFile(t, procsFile, self+"\n")
 	gone, proof = h.TreeGone()
-	if !gone || !strings.HasPrefix(proof, "cgroup") || strings.Contains(proof, "session") {
-		t.Errorf("TreeGone = %v, %q: want gone by cgroup", gone, proof)
+	if !gone || !strings.HasPrefix(proof, "cgroup") || !strings.Contains(proof, "session") {
+		t.Errorf("TreeGone = %v, %q: want gone by cgroup, naming the session too", gone, proof)
 	}
 	// The group file becoming unreadable proves nothing.
 	if err := os.Remove(procsFile); err != nil {
@@ -1329,14 +1329,19 @@ func TestTreeGoneProvesNothingWhenAGroupCannotBeRead(t *testing.T) {
 			t.Errorf("case %d: the failure was not counted: %+v -> %+v", i, before, after)
 		}
 	}
-	// A group that vanished during the walk (a directory with no cgroup.procs
-	// any more) was empty.
+	// A directory that its parent still lists but that has no cgroup.procs is
+	// not a group that was removed: it is unreadable and proves nothing.
 	os.RemoveAll(filepath.Join(dir, "k"))
 	if err := os.MkdirAll(filepath.Join(dir, "gone"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	before := h.Counters()
+	if gone, proof := h.TreeGone(); gone || h.Counters().CgroupErrors != before.CgroupErrors+1 {
+		t.Errorf("a listed group without cgroup.procs: TreeGone = %v, %q, counters %+v -> %+v", gone, proof, before, h.Counters())
+	}
+	os.RemoveAll(filepath.Join(dir, "gone"))
 	if gone, proof := h.TreeGone(); !gone {
-		t.Errorf("a vanished group blocked the proof: %q", proof)
+		t.Errorf("after the directory was removed: %q", proof)
 	}
 }
 
@@ -1385,6 +1390,159 @@ func TestWalkCgroupCountsGroupsAndIgnores(t *testing.T) {
 	// The top group must be readable.
 	if s := walkCgroup(filepath.Join(root, "missing"), 100, 10, nil); s.complete() || s.err == nil {
 		t.Errorf("walk of a missing top group = %+v, want an error", s)
+	}
+}
+
+// A child group that cannot be opened any more was removed or renamed. The
+// parent is listed again: a name that is new is walked, so a process that was
+// moved by a rename is found; a name that is gone is removed and is no error
+// (the review of the package, finding 2a).
+func TestWalkCgroupListsTheParentAgainWhenAGroupVanishes(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cgroup.procs"), "10\n")
+	writeFile(t, filepath.Join(root, "renamed", "cgroup.procs"), "4194000\n")
+	writeFile(t, filepath.Join(root, "removed", "cgroup.procs"), "")
+	writeFile(t, filepath.Join(root, "stays", "cgroup.procs"), "")
+	changed := false
+	s := walkCgroupHook(root, 100, 10, nil, func(dir string) {
+		if dir != root || changed {
+			return
+		}
+		changed = true // after the top group's children were listed
+		if err := os.Rename(filepath.Join(root, "renamed"), filepath.Join(root, "renamed-later")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Join(root, "removed")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !changed {
+		t.Fatal("the hook did not run")
+	}
+	if len(s.members) != 1 || s.members[0].pid != 4194000 || !strings.Contains(s.members[0].procs, "renamed-later") {
+		t.Errorf("members %+v, want the process in the renamed group", s.members)
+	}
+	if !s.complete() || s.errs != 0 {
+		t.Errorf("walk %+v: a removed group, and a renamed one that was found again, are no error", s)
+	}
+
+	// A name that is still listed but cannot be read is an error, however it
+	// came about.
+	writeFile(t, filepath.Join(root, "renamed-later", "cgroup.procs"), "")
+	if err := os.Remove(filepath.Join(root, "stays", "cgroup.procs")); err != nil {
+		t.Fatal(err)
+	}
+	s = walkCgroup(root, 100, 10, nil)
+	if s.complete() || s.errs != 1 {
+		t.Errorf("walk %+v: want one unreadable group", s)
+	}
+
+	// The groups found by listing again count against the group limit.
+	s = walkCgroup(root, 2, 10, nil)
+	if !s.truncated {
+		t.Errorf("walk with a limit of 2 over the top group and 2 children: %+v, want truncated", s)
+	}
+}
+
+// With the cgroup method the tree is gone only when the walk and the session
+// scan are both empty, and the proof names both (finding 2b). The host is
+// built by hand over a fake proc root, with a number that stands for the
+// unreaped leader.
+func TestCgroupProofNeedsTheSessionEmptyToo(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	_, _, procsFile := fakeCgroup(t, self+"\n")
+	procRoot := t.TempDir()
+	const leader = 4242
+	stat := func(pid int, state string, sid int) {
+		t.Helper()
+		writeFile(t, filepath.Join(procRoot, strconv.Itoa(pid), "stat"),
+			strconv.Itoa(pid)+" (x y) "+state+" 1 "+strconv.Itoa(sid)+" "+strconv.Itoa(sid)+" 0 0\n")
+	}
+	newHost := func() *Host {
+		return &Host{pid: leader, cgroupProcs: procsFile, walkMax: 10, procRoot: procRoot,
+			scanMax: DefaultProcScanLimit, done: closedChan(), release: make(chan struct{})}
+	}
+	released := func(h *Host) bool {
+		select {
+		case <-h.release:
+			return true
+		default:
+			return false
+		}
+	}
+
+	h := newHost()
+	stat(500, "S", leader) // left the group but stayed in the session
+	stat(501, "S", 501)    // another session: not a member
+	gone, proof := h.TreeGone()
+	if gone || !strings.HasPrefix(proof, "cgroup") || !strings.Contains(proof, "session 4242") || !strings.Contains(proof, "500") {
+		t.Errorf("a live process in the session: TreeGone = %v, %q, want not gone naming the session and the pid", gone, proof)
+	}
+	if released(h) {
+		t.Error("the zombie was let go while the session was not empty")
+	}
+	stat(500, "Z", leader) // a zombie runs nothing
+	gone, proof = h.TreeGone()
+	if !gone || !strings.HasPrefix(proof, "cgroup") || !strings.Contains(proof, "session 4242") {
+		t.Errorf("both empty: TreeGone = %v, %q, want gone naming both", gone, proof)
+	}
+	if !released(h) {
+		t.Error("a proven tree did not let the zombie go")
+	}
+
+	// A group that lists a process is not gone, whatever the session says.
+	writeFile(t, procsFile, self+"\n4194000\n")
+	if gone, proof := h.TreeGone(); gone {
+		t.Errorf("a process listed in the group: TreeGone = true, %q", proof)
+	}
+	writeFile(t, procsFile, self+"\n")
+
+	// A session scan that proves nothing proves nothing for the group either.
+	h = newHost()
+	h.scanMax = 1
+	stat(502, "S", 502)
+	stat(503, "S", 503)
+	if gone, proof := h.TreeGone(); gone || !strings.Contains(proof, "limit") {
+		t.Errorf("a cut session scan: TreeGone = %v, %q", gone, proof)
+	}
+	// Reaped before the session was proven empty: the id is not reserved, so
+	// the session part proves nothing, and neither does the group.
+	h = newHost()
+	h.reaped = true
+	if gone, proof := h.TreeGone(); gone || !strings.Contains(proof, "no longer reserved") {
+		t.Errorf("reaped without the proof: TreeGone = %v, %q", gone, proof)
+	}
+}
+
+// CgroupWalkLimit counts groups, but a real group directory holds about 44
+// files, so the check at Start must not count the files against the limit
+// (the review of the package, finding 3).
+func TestStartJudgesAGroupWithManyFilesByTheSameBoundAsTheWalk(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	procRoot, cgroupRoot, procsFile := fakeCgroup(t, self+"\n")
+	dir := filepath.Dir(procsFile)
+	for i := 1; i < 44; i++ {
+		writeFile(t, filepath.Join(dir, "cgroup.file"+strconv.Itoa(i)), "0\n")
+	}
+	if es, err := os.ReadDir(dir); err != nil || len(es) != 44 {
+		t.Fatalf("fake group holds %d entries (%v), want 44", len(es), err)
+	}
+	h, _ := start(t, "exit 0", opts{mod: func(c *Config) {
+		c.NoCgroup, c.ProcRoot, c.CgroupRoot, c.CgroupWalkLimit = false, procRoot, cgroupRoot, 6
+	}})
+	if h.TreeMethod() != "cgroup" {
+		t.Errorf("method %q, want cgroup with a group of 44 files and a limit of 6 groups (note %q)", h.TreeMethod(), h.cgroupNote)
+	}
+	waitExit(t, h)
+	if gone, proof := h.TreeGone(); !gone {
+		t.Errorf("the walk of the same group: TreeGone = false, %q", proof)
+	}
+	// More entries than the bound still proves nothing at Start.
+	for i := 0; i < 6+walkEntrySlack; i++ {
+		writeFile(t, filepath.Join(dir, "more"+strconv.Itoa(i)), "")
+	}
+	if _, note := privateCgroup(procRoot, cgroupRoot, os.Getpid(), 6); !strings.Contains(note, "more than") {
+		t.Errorf("a group over the entry bound: note %q", note)
 	}
 }
 
