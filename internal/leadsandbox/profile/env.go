@@ -295,6 +295,28 @@ func (in Inputs) EnvNames() []string {
 	return sortedCopy(names)
 }
 
+// profileEnvValues is the name and value of every variable whose value the
+// profile defines, sorted by name: the fixed values, PATH, SHELL, the config
+// variable, the git and Go variables, USER and LOGNAME in root mode, and
+// every extra variable. It leaves out what the host terminal or the lead
+// gives: TERM, COLORTERM, LANG, TZ, QARGI_LEAD, and USER and LOGNAME in owner
+// mode. The digest encodes these values; the others it encodes by name only.
+func (in Inputs) profileEnvValues() []EnvVar {
+	var out []EnvVar
+	for _, e := range in.environment() {
+		switch e.Name {
+		case EnvTerm, EnvColorTerm, EnvLang, EnvTZ, EnvQargiLead:
+			continue
+		case EnvUser, EnvLogname:
+			if in.Identity == IdentityOwner {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // EnvDiffKind says how an observed variable differs from the allowlist.
 type EnvDiffKind string
 

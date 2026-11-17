@@ -36,8 +36,6 @@ func otherHost(rt Runtime) Inputs {
 	in.NeverMounted = []string{"/home/someone/checkout", "/home/someone/.ssh"}
 	in.Term, in.ColorTerm, in.Lang, in.TZ = "screen", "", "en_US.UTF-8", "Asia/Tokyo"
 	in.LeadIdentity = "another-project-lead"
-	in.Shell = "/bin/sh"
-	in.Path = "/usr/bin:/bin"
 	return in
 }
 
@@ -52,8 +50,8 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "323942e67fa85e976440e31d603d1b728cab8c3de57a315e72513f6f7f0fd2f4"
-	goldenCodex  = "d17eed5ffb037c8fec0c06fe747dbc2fea892847f115d03b123d1dc8a15a71e1"
+	goldenClaude = "7228d528c2fe4325cbb12def180aeb0bb517cebefc5bcfbe4c9bff4aa579d894"
+	goldenCodex  = "cb98c56ee0952fd84828e749783c5c90b918aa89314f15ef148d5de8b7a00e69"
 )
 
 func TestDigestGolden(t *testing.T) {
@@ -140,6 +138,8 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
 		{"the Qargi records", func(in *Inputs) { in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi" }},
 		{"an environment name", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}} }},
+		{"PATH", func(in *Inputs) { in.Path = "/home/lead/.local/bin:/usr/bin" }},
+		{"SHELL", func(in *Inputs) { in.Shell = "/home/lead/sh" }},
 	}
 	seen := map[string]string{baseDigest: "the base"}
 	for _, tt := range tests {
@@ -170,12 +170,39 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 	if mustDigest(t, a) != mustDigest(t, c) {
 		t.Error("the seccomp file's path changes the digest")
 	}
-	// An environment name changes it; a value of an added name does not.
+	// An environment name changes it, and so does the value of an added
+	// name: the profile defines the value.
 	d, e := base, base
 	d.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}}
 	e.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=vendor"}}
-	if mustDigest(t, d) != mustDigest(t, e) {
-		t.Error("an environment value changes the digest")
+	if mustDigest(t, d) == mustDigest(t, e) {
+		t.Error("the value of an added variable does not change the digest")
+	}
+	// The values of the variables a lead's boundary depends on: a changed
+	// PATH, SHELL or proxy is a changed profile. The default value is the
+	// value the profile defines, so naming it is no change.
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Inputs)
+		same   bool
+	}{
+		{"PATH with a lead-writable folder first", func(in *Inputs) { in.Path = "/home/lead/.local/bin:" + DefaultPath }, false},
+		{"PATH as the default", func(in *Inputs) { in.Path = DefaultPath }, true},
+		{"SHELL", func(in *Inputs) { in.Shell = "/bin/sh" }, false},
+		{"SHELL as the default", func(in *Inputs) { in.Shell = DefaultShell }, true},
+		{"a proxy", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"HTTPS_PROXY", "http://a"}} }, false},
+	} {
+		x := base
+		tt.mutate(&x)
+		if same := mustDigest(t, x) == baseDigest; same != tt.same {
+			t.Errorf("%s: same digest = %v, want %v", tt.name, same, tt.same)
+		}
+	}
+	p1, p2 := base, base
+	p1.ExtraEnv = []EnvVar{{"HTTPS_PROXY", "http://a"}}
+	p2.ExtraEnv = []EnvVar{{"HTTPS_PROXY", "http://b"}}
+	if mustDigest(t, p1) == mustDigest(t, p2) {
+		t.Error("a proxy value does not change the digest")
 	}
 	// The order of added names does not matter.
 	f, g := base, base
@@ -224,6 +251,11 @@ func TestDigestChangesWithEveryPartOfTheDefinition(t *testing.T) {
 		{"an environment name", func(d *definition) { d.EnvNames[0] += "X" }},
 		{"an environment name added", func(d *definition) { d.EnvNames = append(d.EnvNames, "ZZZ") }},
 		{"an environment name removed", func(d *definition) { d.EnvNames = d.EnvNames[1:] }},
+		{"an environment value", func(d *definition) { d.EnvValues[0].Value += "x" }},
+		{"an environment value's name", func(d *definition) { d.EnvValues[0].Name += "X" }},
+		{"an environment value added", func(d *definition) { d.EnvValues = append(d.EnvValues, EnvVar{"ZZZ", "1"}) }},
+		{"an environment value removed", func(d *definition) { d.EnvValues = d.EnvValues[1:] }},
+		{"environment values reordered", func(d *definition) { d.EnvValues[0], d.EnvValues[1] = d.EnvValues[1], d.EnvValues[0] }},
 		{"seccomp digest", func(d *definition) { d.Seccomp = strings.Repeat("c", 64) }},
 	}
 	for _, tt := range tests {
@@ -253,6 +285,18 @@ func TestDigestEncodingHasNoAmbiguity(t *testing.T) {
 	b.EnvNames = []string{"A", "BC"}
 	if a.digest() == b.digest() {
 		t.Error("moving a boundary between names keeps the digest")
+	}
+	a = fixture(Claude).definition()
+	b = fixture(Claude).definition()
+	a.EnvValues = []EnvVar{{"AB", "C"}}
+	b.EnvValues = []EnvVar{{"A", "BC"}}
+	if a.digest() == b.digest() {
+		t.Error("moving a boundary between a name and its value keeps the digest")
+	}
+	a.EnvValues = []EnvVar{{"A", "B"}, {"C", "D"}}
+	b.EnvValues = []EnvVar{{"A", "B"}, {"C", ""}, {"D", ""}}
+	if a.digest() == b.digest() {
+		t.Error("moving a boundary between two variables keeps the digest")
 	}
 }
 
@@ -293,5 +337,69 @@ func TestDigestWithRecordsIsIndependentOfTheProject(t *testing.T) {
 		if mustDigest(t, a) != mustDigest(t, b) {
 			t.Errorf("%s: two projects, two digests, with records", rt)
 		}
+	}
+}
+
+func TestDigestEnvironmentValues(t *testing.T) {
+	// Which values the digest carries: those the profile defines. The host
+	// terminal's values, the lead identity and, in owner mode, the user name
+	// are names only.
+	has := func(d definition, name string) (string, bool) {
+		for _, e := range d.EnvValues {
+			if e.Name == name {
+				return e.Value, true
+			}
+		}
+		return "", false
+	}
+	root := fixture(Claude)
+	root.Path, root.Shell = "/usr/bin", "/bin/sh"
+	root.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}}
+	d := root.definition()
+	for name, want := range map[string]string{
+		"PATH": "/usr/bin", "SHELL": "/bin/sh", "HOME": HomeInside, "USER": "root", "LOGNAME": "root",
+		"TMPDIR": TmpInside, "XDG_CONFIG_HOME": HomeInside + "/.config", "XDG_DATA_HOME": HomeInside + "/.local/share",
+		"XDG_STATE_HOME": HomeInside + "/.local/state", "XDG_CACHE_HOME": HomeInside + "/.cache",
+		"CLAUDE_CONFIG_DIR": ConfigInside(Claude), "GIT_CEILING_DIRECTORIES": WorkRootInside,
+		"GIT_CONFIG_GLOBAL": GitIdentityInside, "GOCACHE": GoCacheInside, "GOMODCACHE": GoModCacheInside,
+		"GOFLAGS": "-mod=mod",
+	} {
+		if got, ok := has(d, name); !ok || got != want {
+			t.Errorf("%s = %q (present %v), want %q", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"TERM", "COLORTERM", "LANG", "TZ", "QARGI_LEAD"} {
+		if _, ok := has(d, name); ok {
+			t.Errorf("the digest carries the value of %s", name)
+		}
+		if !contains(d.EnvNames, name) {
+			t.Errorf("the digest lacks the name %s", name)
+		}
+	}
+	if len(d.EnvValues) != len(d.EnvNames)-5 {
+		t.Errorf("%d values for %d names", len(d.EnvValues), len(d.EnvNames))
+	}
+	// Sorted.
+	for i := 1; i < len(d.EnvValues); i++ {
+		if d.EnvValues[i-1].Name >= d.EnvValues[i].Name {
+			t.Errorf("values not sorted at %s", d.EnvValues[i].Name)
+		}
+	}
+	// Owner mode: the user and login names are the owner's.
+	o := fixture(Claude)
+	o.Identity, o.OwnerUID, o.OwnerGID, o.OwnerUser = IdentityOwner, 1000, 1000, "alice"
+	od := o.definition()
+	for _, name := range []string{"USER", "LOGNAME"} {
+		if _, ok := has(od, name); ok {
+			t.Errorf("owner mode: the digest carries the value of %s", name)
+		}
+		if !contains(od.EnvNames, name) {
+			t.Errorf("owner mode: the digest lacks the name %s", name)
+		}
+	}
+	// The digest holds none of the host values.
+	if enc := string(o.definition().encode()); strings.Contains(enc, "alice") || strings.Contains(enc, "xterm-256color") ||
+		strings.Contains(enc, "arc-lead") || strings.Contains(enc, "C.UTF-8") {
+		t.Error("the encoding holds a host or lead value")
 	}
 }

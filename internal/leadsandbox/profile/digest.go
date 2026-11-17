@@ -8,7 +8,10 @@ import (
 
 // Version is the profile version. It is part of the digest: change it when
 // the profile's data changes in a way the digest must show.
-const Version = 1
+//
+//	1  first version
+//	2  the digest carries the values of the variables the profile defines
+const Version = 2
 
 const (
 	digestMagic   = "ataniq-lead-sandbox-profile"
@@ -20,7 +23,7 @@ const (
 
 // definition is what defines the profile independent of the host and of the
 // lead: no state root, role, project or host path, no owner ids and no
-// environment value that comes from a host.
+// environment value that comes from a host or a lead.
 type definition struct {
 	Version        int
 	Runtime        Runtime
@@ -28,8 +31,13 @@ type definition struct {
 	Identity       IdentityMode
 	Flags          []string
 	Binds          []Bind
-	EnvNames       []string
-	Seccomp        string
+	// EnvNames is every name the profile defines, sorted. EnvValues holds
+	// the names and values of the variables whose value the profile defines
+	// (not the host-terminal ones, the lead identity and, in owner mode, the
+	// user name), sorted by name.
+	EnvNames  []string
+	EnvValues []EnvVar
+	Seccomp   string
 }
 
 // definition builds the host-independent definition of the profile. The
@@ -56,6 +64,7 @@ func (in Inputs) definition() definition {
 		Flags:          flags,
 		Binds:          t,
 		EnvNames:       in.EnvNames(),
+		EnvValues:      in.profileEnvValues(),
 		Seccomp:        seccomp,
 	}
 }
@@ -100,6 +109,11 @@ func (d definition) encode() []byte {
 	for _, n := range d.EnvNames {
 		str(n)
 	}
+	num(len(d.EnvValues))
+	for _, e := range d.EnvValues {
+		str(e.Name)
+		str(e.Value)
+	}
 	str(d.Seccomp)
 	return b
 }
@@ -113,12 +127,16 @@ func (d definition) digest() string {
 // Digest validates the inputs and returns the SHA-256 (lower-case hex) of a
 // canonical, versioned encoding of what defines the profile: the profile
 // version, the runtime, the pinned version, the identity mode, the flag set,
-// the bind table with source roles in place of host paths, the environment
-// names and the seccomp file digest (or "none"). The state root, the role, the
-// project and every host path are not in it, so the same profile on two hosts,
-// for two roles or for two projects gives the same digest, and a changed flag,
-// bind, name or seccomp digest changes it. Environment values and the owner's
-// ids are not in it either.
+// the bind table with source roles in place of host paths, every environment
+// name, the value of every variable whose value the profile defines (the
+// fixed values, PATH, SHELL, the config variable, the git and Go variables,
+// every extra variable) and the seccomp file digest (or "none"). The state
+// root, the role, the project and every host path are not in it, nor are the
+// values the host terminal or the lead gives (TERM, COLORTERM, LANG, TZ,
+// QARGI_LEAD, and USER and LOGNAME in owner mode, which are in it by name
+// only) or the owner's ids, so the same profile on two hosts, for two roles
+// or for two projects gives the same digest, and a changed flag, bind, name,
+// profile-defined value or seccomp digest changes it.
 func (in Inputs) Digest() (string, error) {
 	if err := in.Validate(); err != nil {
 		return "", err
