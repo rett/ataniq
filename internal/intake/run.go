@@ -69,7 +69,7 @@ func (r *runner) git(ctx context.Context, args []string, stdin io.Reader, maxOut
 	if left <= 0 {
 		return nil, errTimeout(boundedexec.ErrTimeout)
 	}
-	if maxOut < smallOutput {
+	if maxOut <= 0 {
 		maxOut = smallOutput
 	}
 	res, err := boundedexec.Run(ctx, boundedexec.Cmd{
@@ -131,3 +131,7 @@ func (c *capture) Write(p []byte) (int, error) {
 	c.buf = append(c.buf, p...)
 	return len(p), nil
 }
+
+// capFor returns n bytes of output, but at least smallOutput, for a listing
+// whose size is computed from a limit.
+func capFor(n int64) int64 { return max(n, smallOutput) }

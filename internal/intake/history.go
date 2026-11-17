@@ -44,7 +44,7 @@ func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, commits
 	_, err := r.git(ctx, []string{
 		"diff-tree", "--stdin", "-m", "-r", "-z", "--raw", "--no-renames", "--root",
 		"--no-ext-diff", "--no-textconv", "--full-index",
-	}, &in, int64(records+headers)*bytesPerRecord, sink)
+	}, &in, capFor(int64(records+headers)*bytesPerRecord), sink)
 	if err != nil {
 		return nil, err
 	}

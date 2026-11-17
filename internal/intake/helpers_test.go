@@ -43,6 +43,8 @@ type lab struct {
 	bare  string
 	cur   string // the commit the index was last read from or written as
 	clock int64
+	// Names for the next commits, when a test sets them.
+	authorName, committerName string
 }
 
 func newLab(t *testing.T) *lab {
@@ -61,13 +63,20 @@ func (l *lab) env() []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
-		"GIT_AUTHOR_NAME=Lead Author",
+		"GIT_AUTHOR_NAME=" + or(l.authorName, "Lead Author"),
 		"GIT_AUTHOR_EMAIL=author@example.invalid",
-		"GIT_COMMITTER_NAME=Lead Committer",
+		"GIT_COMMITTER_NAME=" + or(l.committerName, "Lead Committer"),
 		"GIT_COMMITTER_EMAIL=committer@example.invalid",
 		fmt.Sprintf("GIT_AUTHOR_DATE=%d +0000", l.clock),
 		fmt.Sprintf("GIT_COMMITTER_DATE=%d +0000", l.clock+1),
 	}
+}
+
+func or(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // run runs the installed git in dir with the fixture environment.
@@ -221,4 +230,22 @@ func hasFlag(flags []Flag, kind FlagKind) bool {
 		}
 	}
 	return false
+}
+
+// rawCommit writes a commit object as given: the header lines (each ending in
+// a newline) and the message after a blank line. It makes it the current
+// commit. The tree is the index.
+func (l *lab) rawCommit(extraHeaders, message string, parents ...string) string {
+	l.t.Helper()
+	l.clock += 60
+	var b strings.Builder
+	b.WriteString("tree " + l.w("write-tree") + "\n")
+	for _, p := range parents {
+		b.WriteString("parent " + p + "\n")
+	}
+	fmt.Fprintf(&b, "author Raw Author <raw@example.invalid> %d +0000\n", l.clock)
+	fmt.Fprintf(&b, "committer Raw Committer <raw@example.invalid> %d +0000\n", l.clock+1)
+	b.WriteString(extraHeaders + "\n" + message)
+	l.cur = l.run([]byte(b.String()), l.work, "hash-object", "-t", "commit", "-w", "--stdin")
+	return l.cur
 }

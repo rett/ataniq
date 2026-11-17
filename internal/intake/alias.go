@@ -29,7 +29,7 @@ type treeEntry struct {
 func (r *runner) treeEntries(ctx context.Context, tip string, lim Limits) ([]treeEntry, error) {
 	sink := newCapture(lim.MaxPaths, maxFieldBytes, "tree entries")
 	_, err := r.git(ctx, []string{"ls-tree", "-r", "-z", "--end-of-options", tip},
-		nil, int64(lim.MaxPaths)*bytesPerRecord, sink)
+		nil, capFor(int64(lim.MaxPaths)*bytesPerRecord), sink)
 	if err != nil {
 		return nil, err
 	}

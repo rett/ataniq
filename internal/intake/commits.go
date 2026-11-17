@@ -40,7 +40,7 @@ func (r *runner) commits(ctx context.Context, base, tip string, lim Limits) ([]C
 		"log", "-z", commitFormat, "--encoding=",
 		"--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature",
 		"--end-of-options", base + ".." + tip,
-	}, nil, int64(n)*commitFields*maxCommitField, sink)
+	}, nil, capFor(int64(n)*commitFields*maxCommitField), sink)
 	if err != nil {
 		return nil, err
 	}
