@@ -88,11 +88,15 @@ type Manager interface {
 	// When st names no invocation (the answer of an Inspect that found the
 	// unit not loaded, or a State holding only the unit name), a true answer
 	// means exactly this and no more: no unit of that name is loaded now AND
-	// no control group exists at the unit's fixed path. It says nothing about
-	// a start whose reply was lost and whose request has not yet been
-	// executed: that start can land after the answer, and the unit then
-	// appears with the epoch and intent of the lost start. A caller must not
-	// record a lost intent as ended, or stopped, on that answer alone; it
-	// treats a later unit with an older epoch as stale and stops it.
+	// no control group exists at the unit's fixed path. It frees the name for
+	// the replacement rule, and it proves nothing about a start whose reply
+	// was lost and whose request has not yet been executed: that start can
+	// land after the answer. A caller must not record a lost intent as ended,
+	// or stopped, on that answer alone. The only further evidence this
+	// interface offers is a changed boot identity ([State.BootID]), or the
+	// passing of a bound the caller chose, with the unit still not loaded at
+	// its end. A unit that lands late may carry the current epoch and intent
+	// (when no newer intent was journaled): it is then the caller's own unit,
+	// to adopt, and not a stale one.
 	Empty(ctx context.Context, st State) (bool, error)
 }

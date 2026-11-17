@@ -3,7 +3,9 @@ package leadunit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -1080,5 +1082,88 @@ func TestFakeEmptyOtherInvocationChecksControlGroup(t *testing.T) {
 	first := r.start(unitA, 5)
 	if first.ControlGroupID == next.ControlGroupID {
 		t.Fatal("reused a control group across a reboot")
+	}
+}
+
+// TestFakeLeftControlGroupIsReusedByAStart: a control group left at the fixed
+// path is the one a new start runs in, so the old identity is not proven gone,
+// whether the start is a Start or a late start that lands.
+func TestFakeLeftControlGroupIsReusedByAStart(t *testing.T) {
+	r := newRig(t)
+	old := r.start(unitA, 1)
+	r.fake.LeaveControlGroup(unitA, true)
+	r.signal(old, syscall.SIGKILL)
+	cur := r.start(unitA, 2)
+	if cur.InvocationID == old.InvocationID || cur.ControlGroupID != old.ControlGroupID || cur.ControlGroup != old.ControlGroup {
+		t.Fatalf("the left group was not reused: %+v %+v", old, cur)
+	}
+	if e, err := r.fake.Empty(r.ctx, old); e || err != nil {
+		t.Fatalf("Empty(old) = %v, %v, want false", e, err)
+	}
+	// Once nothing is left, the next start has a group of its own.
+	r.signal(cur, syscall.SIGKILL)
+	r.fake.LeaveControlGroup(unitA, false)
+	next := r.start(unitA, 3)
+	if next.ControlGroupID == cur.ControlGroupID {
+		t.Fatal("the group was reused with nothing left")
+	}
+	if !r.empty(cur) {
+		t.Fatal("not proof once the group changed")
+	}
+}
+
+// TestFakeLeftControlGroupIsReusedByALateStart: the late start that lands
+// runs in the left group too, so the old state is still not proven gone.
+func TestFakeLeftControlGroupIsReusedByALateStart(t *testing.T) {
+	r := newRig(t)
+	old := r.start(unitA, 1)
+	r.fake.LeaveControlGroup(unitA, true)
+	r.signal(old, syscall.SIGKILL)
+	r.fake.LateNextStart(unitA)
+	if _, err := r.fake.Start(r.ctx, r.spec(unitA, 2)); !errors.Is(err, ErrReplyLost) {
+		t.Fatalf("Start: %v", err)
+	}
+	late, err := r.fake.LandLateStart(unitA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if late.ControlGroupID != old.ControlGroupID || late.ControlGroup != old.ControlGroup {
+		t.Fatalf("the left group was not reused: %+v %+v", old, late)
+	}
+	if e, err := r.fake.Empty(r.ctx, old); e || err != nil {
+		t.Fatalf("Empty(old) = %v, %v, want false", e, err)
+	}
+}
+
+// TestFakeFailNextStartRefusesLostReplyAndContextErrors: a start that started
+// nothing cannot return ErrReplyLost or a context error of its own.
+func TestFakeFailNextStartRefusesLostReplyAndContextErrors(t *testing.T) {
+	r := newRig(t)
+	for name, err := range map[string]error{
+		"reply lost":       ErrReplyLost,
+		"wrapped lost":     fmt.Errorf("start: %w", ErrReplyLost),
+		"canceled":         context.Canceled,
+		"deadline":         context.DeadlineExceeded,
+		"wrapped deadline": fmt.Errorf("start: %w", context.DeadlineExceeded),
+		"joined":           errors.Join(errors.New("x"), context.Canceled),
+	} {
+		func() {
+			defer func() {
+				v := recover()
+				msg, ok := v.(string)
+				if !ok || !strings.Contains(msg, "FailNextStart") || !strings.Contains(msg, "ErrReplyLost") {
+					t.Errorf("%s: recovered %v, want a clear panic message", name, v)
+				}
+			}()
+			r.fake.FailNextStart(unitA, err)
+		}()
+	}
+	// Nothing was scripted by the refused calls.
+	r.start(unitA, 1)
+	// Other errors, and nil, are still accepted.
+	r.signal(r.inspect(unitA), syscall.SIGKILL)
+	r.fake.FailNextStart(unitA, ErrUnavailable)
+	if _, err := r.fake.Start(r.ctx, r.spec(unitA, 2)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("got %v", err)
 	}
 }
