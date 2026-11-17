@@ -51,8 +51,9 @@ type ProcScript struct {
 }
 
 // Call is one entry of the call log of a [Fake]. The entry is appended when
-// the call returns, so the order of the log is the order in which the calls
-// took effect.
+// the call takes effect, which is when it returns except for a Start with a
+// scripted reply delay, so the order of the log is the order in which the
+// calls took effect.
 type Call struct {
 	// Seq numbers the calls from 1.
 	Seq int
@@ -71,6 +72,10 @@ type Call struct {
 	Err error
 	// Empty is the boolean a [MethodEmpty] call returned.
 	Empty bool
+	// Late is true for the entry of a Start request whose reply was lost and
+	// that was executed afterwards, by [Fake.LandLateStart]. The call that
+	// lost the reply has its own entry.
+	Late bool
 }
 
 // Fake is an in-memory [Manager] for tests: units with invocation ids, control
@@ -79,9 +84,10 @@ type Call struct {
 // the rules the contract fixes (a second Start for a loaded unit is
 // [ErrUnitExists], a unit whose control group is empty is collected, a Signal
 // for a stale invocation is refused) and lets a test script the failures:
-// lost start replies, failing starts, processes that ignore SIGTERM or
-// survive SIGKILL, an unavailable manager, a unit that dies by itself, a
-// reboot and a foreign unit with the name of a role.
+// lost start replies (also by a context that ends after the request was
+// sent), failing starts, processes that ignore SIGTERM or survive SIGKILL, an
+// unavailable manager, a unit that dies by itself, a reboot and a foreign unit
+// with the name of a role.
 //
 // Time is the injected [Clock]. A process that exits after a delay does so
 // when the clock has passed it and the next call observes it. Setup methods
@@ -99,6 +105,9 @@ type Fake struct {
 	nextCG      uint64
 	nextPID     int
 	units       map[string]*fakeUnit
+	late        map[string][]Spec
+	leftover    map[string]bool
+	lastCG      map[string]string
 	scripts     map[string]*unitScript
 	unavailable map[Method]int
 	calls       []Call
@@ -128,16 +137,21 @@ const (
 	outcomeLoseReply startOutcomeKind = iota
 	outcomeDrop
 	outcomeFail
+	outcomeExpire
+	outcomeDelay
+	outcomeLate
 )
 
 type startOutcome struct {
-	kind startOutcomeKind
-	err  error
+	kind  startOutcomeKind
+	err   error
+	delay time.Duration
 }
 
 type unitScript struct {
-	starts []startOutcome
-	procs  []ProcScript
+	starts  []startOutcome
+	procs   []ProcScript
+	reuseCG bool
 }
 
 var _ Manager = (*Fake)(nil)
@@ -149,6 +163,9 @@ func NewFake(clock Clock) *Fake {
 		bootN:       1,
 		nextPID:     1000,
 		units:       map[string]*fakeUnit{},
+		late:        map[string][]Spec{},
+		leftover:    map[string]bool{},
+		lastCG:      map[string]string{},
 		scripts:     map[string]*unitScript{},
 		unavailable: map[Method]int{},
 	}
@@ -192,8 +209,112 @@ func (f *Fake) DropNextStart(unit string) {
 	s.starts = append(s.starts, startOutcome{kind: outcomeDrop})
 }
 
+// LateNextStart scripts the next Start of unit to return [ErrReplyLost] without
+// starting anything yet: the request is held, as a message still on its way to
+// systemd. [Fake.LandLateStart] executes it later. Until then the unit is not
+// loaded, and an Inspect answers so.
+func (f *Fake) LateNextStart(unit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.script(unit)
+	s.starts = append(s.starts, startOutcome{kind: outcomeLate})
+}
+
+// ErrNoLateStart is returned by [Fake.LandLateStart] when no late start is
+// held for the unit.
+var ErrNoLateStart = errors.New("leadunit: no late start held")
+
+// LandLateStart executes the oldest start request that [Fake.LateNextStart]
+// held for unit, as when a message whose reply was lost reaches systemd after
+// the caller's Inspect answered "not loaded". The unit starts with the spec of
+// that request (so with its epoch and intent), appears in
+// [Fake.StartedSpecs] and gets an entry marked Late in the call log. It
+// returns the state of the new unit. When the name is loaded by then the
+// request is refused and dropped, as systemd refuses a second unit of a name:
+// it returns [ErrUnitExists], and the log entry carries that error. It returns
+// [ErrNoLateStart] when nothing is held.
+func (f *Fake) LandLateStart(unit string) (State, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settle()
+	call := Call{Seq: len(f.calls) + 1, At: f.clock.Now(), Method: MethodStart, Unit: unit, Late: true}
+	held := f.late[unit]
+	if len(held) == 0 {
+		return State{}, ErrNoLateStart
+	}
+	spec := held[0]
+	if len(held) == 1 {
+		delete(f.late, unit)
+	} else {
+		f.late[unit] = held[1:]
+	}
+	var st State
+	var err error
+	if f.units[unit] != nil {
+		err = ErrUnitExists
+	} else {
+		st = f.launch(spec)
+		call.Invocation = st.InvocationID
+	}
+	call.Err = err
+	f.calls = append(f.calls, call)
+	return st, err
+}
+
+// ReuseNextControlGroup scripts the next start of unit, whether by Start or by
+// [Fake.LandLateStart], to run in the control group of the unit's previous
+// invocation: same path and same identity, as when a new invocation starts
+// while leftover processes of the old one remain in the group. Without it every
+// invocation gets a control group of a new identity. It has no effect on the
+// first start of a unit or after a reboot.
+func (f *Fake) ReuseNextControlGroup(unit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.script(unit).reuseCG = true
+}
+
+// LeaveControlGroup says whether a control group is left at the fixed path of
+// unit when the unit is not loaded, so that nothing can prove it gone. While it
+// is set, [Fake.Empty] answers false, without an error, for a State of that
+// unit when the unit is not loaded. It is cleared by a reboot.
+func (f *Fake) LeaveControlGroup(unit string, left bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if left {
+		f.leftover[unit] = true
+	} else {
+		delete(f.leftover, unit)
+	}
+}
+
+// ExpireNextStart scripts the next Start of unit to start the unit and then
+// return an error wrapping both [ErrReplyLost] and [context.DeadlineExceeded],
+// as a real manager does when the caller's deadline passes after the request
+// was sent. The context the caller passed is not touched.
+func (f *Fake) ExpireNextStart(unit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.script(unit)
+	s.starts = append(s.starts, startOutcome{kind: outcomeExpire})
+}
+
+// DelayNextStart scripts the next Start of unit to start the unit at once and
+// to return its reply only d of fake time later (d of 0 or less: at once). A
+// context that ends during the delay makes Start return a zero State and an
+// error wrapping both [ErrReplyLost] and the context's error; the unit is
+// running by then. Other calls are served during the delay. The call log has
+// the entry of the Start from the moment the unit started, and its Err is set
+// when the call returns.
+func (f *Fake) DelayNextStart(unit string, d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.script(unit)
+	s.starts = append(s.starts, startOutcome{kind: outcomeDelay, delay: d})
+}
+
 // FailNextStart scripts the next Start of unit to return err without starting
-// anything.
+// anything. The caller of FailNextStart says by it that nothing was started, so
+// err must not wrap [ErrReplyLost].
 func (f *Fake) FailNextStart(unit string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -277,6 +398,9 @@ func (f *Fake) Reboot() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.units = map[string]*fakeUnit{}
+	f.late = map[string][]Spec{}
+	f.leftover = map[string]bool{}
+	f.lastCG = map[string]string{}
 	f.bootN++
 	return f.bootID()
 }
@@ -450,25 +574,63 @@ func (f *Fake) enter(ctx context.Context, call *Call) error {
 }
 
 // Start implements [Manager]. See [Fake] for the scripted outcomes.
-func (f *Fake) Start(ctx context.Context, spec Spec) (st State, err error) {
+func (f *Fake) Start(ctx context.Context, spec Spec) (State, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	call := Call{Method: MethodStart, Unit: spec.Unit}
-	defer func() {
-		call.Err = err
-		if st.InvocationID != "" {
-			call.Invocation = st.InvocationID
-		}
-		f.calls = append(f.calls, call)
-	}()
-	if err := f.enter(ctx, &call); err != nil {
+	st, delay, err := f.start(ctx, &call, spec)
+	call.Err = err
+	if st.InvocationID != "" {
+		call.Invocation = st.InvocationID
+	}
+	f.calls = append(f.calls, call)
+	idx := len(f.calls) - 1
+	f.mu.Unlock()
+	if delay <= 0 || err != nil {
+		return st, err
+	}
+	// The unit is started and the reply is on its way: wait for it without
+	// holding the lock, and lose it when the context ends first.
+	if serr := f.clock.Sleep(ctx, delay); serr != nil {
+		err = fmt.Errorf("%w: %w", ErrReplyLost, serr)
+		f.mu.Lock()
+		f.calls[idx].Err = err
+		f.mu.Unlock()
 		return State{}, err
+	}
+	return st, nil
+}
+
+// launch starts the unit of spec, which must not be loaded, and returns its
+// state. The caller holds f.mu.
+func (f *Fake) launch(spec Spec) State {
+	procs := f.script(spec.Unit).procs
+	if len(procs) == 0 {
+		procs = []ProcScript{{}}
+	}
+	script := f.script(spec.Unit)
+	prev := f.lastCG[spec.Unit]
+	u := f.newUnit(spec.Unit, spec.Description(), procs)
+	if script.reuseCG && prev != "" {
+		u.cgroupID = prev
+	}
+	script.reuseCG = false
+	f.lastCG[spec.Unit] = u.cgroupID
+	f.units[spec.Unit] = u
+	f.specs = append(f.specs, spec.clone())
+	return f.state(spec.Unit)
+}
+
+// start is the part of Start that runs under f.mu. It returns the delay of the
+// reply, for a scripted delay that the caller must wait for.
+func (f *Fake) start(ctx context.Context, call *Call, spec Spec) (State, time.Duration, error) {
+	if err := f.enter(ctx, call); err != nil {
+		return State{}, 0, err
 	}
 	if err := spec.Validate(); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if f.units[spec.Unit] != nil {
-		return State{}, ErrUnitExists
+		return State{}, 0, ErrUnitExists
 	}
 	script := f.script(spec.Unit)
 	var outcome *startOutcome
@@ -479,27 +641,31 @@ func (f *Fake) Start(ctx context.Context, spec Spec) (st State, err error) {
 	if outcome != nil {
 		switch outcome.kind {
 		case outcomeDrop:
-			return State{}, ErrReplyLost
+			return State{}, 0, ErrReplyLost
+		case outcomeLate:
+			f.late[spec.Unit] = append(f.late[spec.Unit], spec.clone())
+			return State{}, 0, ErrReplyLost
 		case outcomeFail:
 			if outcome.err == nil {
-				return State{}, errors.New("leadunit: scripted start failure")
+				return State{}, 0, errors.New("leadunit: scripted start failure")
 			}
-			return State{}, outcome.err
+			return State{}, 0, outcome.err
 		}
 	}
-	procs := script.procs
-	if len(procs) == 0 {
-		procs = []ProcScript{{}}
+	st := f.launch(spec)
+	if outcome != nil {
+		switch outcome.kind {
+		case outcomeLoseReply:
+			call.Invocation = st.InvocationID
+			return State{}, 0, ErrReplyLost
+		case outcomeExpire:
+			call.Invocation = st.InvocationID
+			return State{}, 0, fmt.Errorf("%w: %w", ErrReplyLost, context.DeadlineExceeded)
+		case outcomeDelay:
+			return st, outcome.delay, nil
+		}
 	}
-	u := f.newUnit(spec.Unit, spec.Description(), procs)
-	f.units[spec.Unit] = u
-	f.specs = append(f.specs, spec.clone())
-	st = f.state(spec.Unit)
-	if outcome != nil && outcome.kind == outcomeLoseReply {
-		call.Invocation = st.InvocationID
-		return State{}, ErrReplyLost
-	}
-	return st, nil
+	return st, 0, nil
 }
 
 // Inspect implements [Manager].
@@ -575,13 +741,23 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	return nil
 }
 
-// Empty implements [Manager]. It is true when the unit is not loaded, when it
-// has another invocation than st, or when it has the invocation and control
-// group of st and the group holds no process (which cannot be seen on a loaded
-// unit of the fake, because it unloads an empty one). It is false with
+// Empty implements [Manager]. It is true in three cases:
+//
+//   - the unit is not loaded, unless [Fake.LeaveControlGroup] says a control
+//     group is left (then false, without an error);
+//   - the unit has another invocation than st and st names a control group
+//     identity that is not the one the unit's control group has: the old group
+//     is gone. When st names no identity, or the new invocation runs in the old
+//     control group (see [Fake.ReuseNextControlGroup]), the answer is false;
+//   - the unit has the invocation and control group of st and the group holds no
+//     process, which a loaded unit of the fake never shows, because it unloads
+//     an empty one.
+//
+// A start request that [Fake.LateNextStart] holds is not seen: the answer says
+// nothing about it, as the interface says. The answer is false with
 // [ErrUnavailable] when scripted so, and false with an error when st names no
-// unit or no invocation of a loaded unit, or a control group of another
-// identity.
+// invocation of a loaded unit, or a control group of another identity than the
+// unit's for the same invocation.
 func (f *Fake) Empty(ctx context.Context, st State) (empty bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -599,13 +775,16 @@ func (f *Fake) Empty(ctx context.Context, st State) (empty bool, err error) {
 	}
 	u := f.units[st.Unit]
 	if u == nil {
-		return true, nil
+		return !f.leftover[st.Unit], nil
 	}
 	if st.InvocationID == "" {
 		return false, ErrInvocationChanged
 	}
 	if st.InvocationID != u.invocation {
-		return true, nil
+		// The old control group is gone only when this invocation runs in
+		// another one. The fake gives every invocation its own, unless a
+		// test scripted the reuse.
+		return st.ControlGroupID != "" && st.ControlGroupID != u.cgroupID, nil
 	}
 	if st.ControlGroupID != u.cgroupID || st.ControlGroup != u.cgroup {
 		return false, ErrControlGroupMismatch

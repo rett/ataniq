@@ -31,14 +31,39 @@ var (
 )
 
 // Manager manages the transient user unit of a lead role. Every method takes
-// a context and returns its error at once when the context is done. An
-// implementation is safe for concurrent use.
+// a context and returns at once, with the context's error, when the context is
+// done before the call does anything; for [Manager.Start] the rule for a
+// context that ends later is its own, below. An implementation is safe for
+// concurrent use.
+//
+// Two obligations come from what [Spec.Validate] accepts, which is wider than
+// what is safe to hand to systemd:
+//
+//   - An implementation that talks to systemd passes the argument vector
+//     through ExecStartEx with the no-env-expand flag. Validate accepts a $ in
+//     an argument, and systemd would otherwise expand $VAR and ${VAR} in the
+//     arguments of ExecStart when it runs the command, so that a crafted
+//     argument could read the unit's environment.
+//   - Validate accepts any unit name of the allowed characters ending in
+//     .service, a template name such as x@.service included. The caller builds
+//     the unit names of the contract itself (ataniq-lead-PROJECT.service and
+//     ataniq-supervisor.service) and never takes a name from a request.
 type Manager interface {
 	// Start starts the unit the spec describes and returns its state. It
-	// returns [ErrUnitExists] when the unit name is loaded, an error wrapping
-	// [ErrInvalidSpec] for a spec that does not validate, and [ErrReplyLost]
-	// (with a zero State) when the outcome is unknown. After [ErrReplyLost]
-	// the caller inspects and never starts again for that intent.
+	// returns [ErrUnitExists] when the unit name is loaded and an error
+	// wrapping [ErrInvalidSpec] for a spec that does not validate.
+	//
+	// An error that wraps [ErrReplyLost] (with a zero State) is returned
+	// whenever the outcome is unknown: the context ends, or anything else
+	// fails, after the start request may have been sent. When the cause is a
+	// context that ended, the error wraps both [ErrReplyLost] and the
+	// context's error, so errors.Is finds either; a bare context error is
+	// never returned for a request that may have been sent. Every other error
+	// means nothing was started and nothing will be: a context that was
+	// already done, an invalid spec, [ErrUnitExists], and [ErrUnavailable]
+	// (which Start returns only when the request was not sent). After
+	// [ErrReplyLost] the caller inspects and never starts again for that
+	// intent.
 	Start(ctx context.Context, spec Spec) (State, error)
 
 	// Inspect returns the state of the unit. A unit that is not loaded is
@@ -53,8 +78,21 @@ type Manager interface {
 
 	// Empty reports whether the control group of the invocation that st names
 	// is positively proven to hold no process: it is gone together with a unit
-	// that is not loaded or that has another invocation, or it is present
-	// with the same identity and not populated. In every case of doubt it
-	// returns false, with an error or without, never true.
+	// that is not loaded, it is gone because the unit has another invocation
+	// in a control group of another identity than the one st names, or it is
+	// present with the same identity and not populated. A new invocation that
+	// runs in the control group of the old one, with or without leftover
+	// processes, proves nothing. In every case of doubt it returns false, with
+	// an error or without, never true.
+	//
+	// When st names no invocation (the answer of an Inspect that found the
+	// unit not loaded, or a State holding only the unit name), a true answer
+	// means exactly this and no more: no unit of that name is loaded now AND
+	// no control group exists at the unit's fixed path. It says nothing about
+	// a start whose reply was lost and whose request has not yet been
+	// executed: that start can land after the answer, and the unit then
+	// appears with the epoch and intent of the lost start. A caller must not
+	// record a lost intent as ended, or stopped, on that answer alone; it
+	// treats a later unit with an older epoch as stale and stops it.
 	Empty(ctx context.Context, st State) (bool, error)
 }
