@@ -687,3 +687,49 @@ func TestBoundChildLostReplyIsStillCleanedUp(t *testing.T) {
 		t.Fatalf("%+v", last)
 	}
 }
+
+// A unit of the run's name that systemd reports as not transient is not ours,
+// whatever its description says: the manager answers Ours false for it (see
+// systemdmgr's TestInspectForeignUnitIsNotOurs), the harness acts on Ours and
+// not on the text, and so the cleanup leaves it alone and says that it could
+// not prove it empty. The wrapper turns the fake's answer into the one the
+// real manager gives for a unit file.
+func TestCleanupLeavesANonTransientUnitWithTheRunsExactDescriptionAlone(t *testing.T) {
+	for name, c := range map[string]struct{ unit, intent string }{
+		"the unit":        {"ataniq-qualify-" + testSuffix + ".service", "q-" + testSuffix},
+		"the bound child": {boundChild, "qc-" + testSuffix},
+	} {
+		r, _ := cleanupRig(t)
+		r.q.childUnit, r.q.childIntent = boundChild, "qc-"+testSuffix
+		spec := r.q.spec(r.q.intent)
+		if c.unit == boundChild {
+			spec = r.q.childSpec()
+		}
+		if err := r.fake.AddForeign(c.unit, spec.Description(), leadunit.ProcScript{Behavior: leadunit.IgnoreTerm}); err != nil {
+			t.Fatal(err)
+		}
+		r.q.mgr = &tweakLife{lifecycle: r.q.mgr, inspect: func(_ context.Context, u string, real func() (leadunit.State, error)) (leadunit.State, error) {
+			st, err := real()
+			if err == nil && u == c.unit {
+				// As the manager does for Transient=no: the description is
+				// kept as it is, but it is not read as ours.
+				st.Epoch, st.Intent, st.Ours = 0, "", false
+			}
+			return st, err
+		}}
+		got := r.q.cleanupUnit(context.Background(), c.unit, c.intent, true, leadunit.State{})
+		if got.Result != resultFail || !strings.Contains(got.Detail, "not signalled") || !strings.Contains(got.Detail, "not this run's intent") {
+			t.Errorf("%s: %+v", name, got)
+		}
+		if signalCalls(r) != 0 || len(r.fake.CallsOf(leadunit.MethodEmpty)) != 0 || !r.fake.Loaded(c.unit) {
+			t.Errorf("%s: the unit file's unit was touched: %v", name, r.fake.Calls())
+		}
+		// Without the wrapper the fake, which knows nothing of unit files,
+		// answers Ours for the same unit: the test is about the manager's
+		// answer being what the harness goes by.
+		r.q.mgr = fakeLife{r.fake}
+		if st, err := r.q.mgr.Inspect(context.Background(), c.unit); err != nil || !st.Ours {
+			t.Errorf("%s: %+v %v", name, st, err)
+		}
+	}
+}

@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +38,81 @@ func TestMain(m *testing.M) {
 		os.Exit(runWith(os.Args[1:], os.Stdout, os.Stderr, refuseManager))
 	}
 	os.Exit(m.Run())
+}
+
+// The test helper (TestMain) and every test reach the program only through
+// runWith, with a factory that refuses or that returns a fake. This test fails
+// when a test file could reach the real manager instead: a call of run, which
+// is runWith with realManager; any other use of realManager; an import of the
+// package of the real manager; or a TestMain whose runWith call does not pass
+// refuseManager. It reads the source and runs nothing, because the case it
+// guards against is the one in which a run would start a unit.
+func TestNoTestFileCanReachTheRealManager(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no test files: %v", err)
+	}
+	fset := token.NewFileSet()
+	sawTestMain := false
+	for _, name := range files {
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, imp := range f.Imports {
+			if strings.Contains(imp.Path.Value, "leadunit/systemdmgr") {
+				t.Errorf("%s imports the real manager: %s", name, imp.Path.Value)
+			}
+		}
+		var walk func(n ast.Node) bool
+		walk = func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.SelectorExpr:
+				ast.Inspect(x.X, walk) // a field or method called run is not the function
+				return false
+			case *ast.KeyValueExpr:
+				ast.Inspect(x.Value, walk) // nor is the key of a literal
+				return false
+			case *ast.Ident:
+				if x.Name == "run" || x.Name == "realManager" {
+					t.Errorf("%s:%d: %s is the way to the real manager", name, fset.Position(x.Pos()).Line, x.Name)
+				}
+			}
+			return true
+		}
+		ast.Inspect(f, walk)
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Name.Name != "TestMain" || fn.Recv != nil {
+				continue
+			}
+			sawTestMain = true
+			calls := 0
+			ast.Inspect(fn, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "runWith" {
+					calls++
+					if len(c.Args) != 4 {
+						t.Errorf("TestMain: runWith with %d arguments", len(c.Args))
+						return true
+					}
+					if m, ok := c.Args[3].(*ast.Ident); !ok || m.Name != "refuseManager" {
+						t.Errorf("TestMain: runWith does not get refuseManager")
+					}
+				}
+				return true
+			})
+			if calls != 1 {
+				t.Errorf("TestMain calls runWith %d times, want 1", calls)
+			}
+		}
+	}
+	if !sawTestMain {
+		t.Error("no TestMain: the helper is not the one this test guards")
+	}
 }
 
 func TestParseArgs(t *testing.T) {
