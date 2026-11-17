@@ -12,6 +12,7 @@ const (
 	maxDetailBytes   = 1024 // a detail or a fence reading
 	maxEvidenceBytes = 512  // a piece of evidence
 	maxOperatorBytes = 128  // an operator name
+	maxLateNotes     = 8    // late annotations kept for one uncertain command
 )
 
 // command is the machine's memory of one command. A command that has ended
@@ -29,6 +30,10 @@ type command struct {
 	evidenceKind EvidenceKind
 	evidence     string
 	operator     string
+
+	// late are the annotations of an uncertain command: fence results and
+	// delivery evidence that came after it became uncertain.
+	late []LateNote
 
 	admitted time.Time
 	updated  time.Time

@@ -64,9 +64,23 @@ const (
 	// ReasonSubmittedNotConfirmed: Enter was written and no evidence came in
 	// time.
 	ReasonSubmittedNotConfirmed Reason = "submitted-not-confirmed"
-	// ReasonHolderDied: the holder or the agent died, or the daemon found the
-	// command dispatching at restore.
+	// ReasonHolderDied: the fence reported that the holder or the agent died,
+	// or what it wrote is unknown, or the daemon found the command dispatching
+	// at restore.
 	ReasonHolderDied Reason = "holder-or-agent-died"
+	// ReasonNoFenceResult: no fence result was recorded in FenceTimeout after
+	// the dispatching record. Nobody saw the holder or the agent die: the
+	// fence may still be running, or its result may be lost. What was written
+	// is unknown; a result or evidence that comes later is kept as an
+	// annotation (ReasonLateFenceResult, ReasonLateEvidence).
+	ReasonNoFenceResult Reason = "no-fence-result"
+	// ReasonLateFenceResult: a fence result arrived for a command that was
+	// already uncertain. It annotates the command and changes nothing else.
+	ReasonLateFenceResult Reason = "late-fence-result"
+	// ReasonLateEvidence: delivery evidence arrived for a command that was
+	// already uncertain. It annotates the command and changes nothing else:
+	// only an operator ends uncertain.
+	ReasonLateEvidence Reason = "late-evidence"
 	// ReasonInconsistentResult: the fence result contradicted itself.
 	ReasonInconsistentResult Reason = "inconsistent-result"
 	// ReasonOperatorDelivered: an operator decided the command was delivered.

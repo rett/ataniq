@@ -339,8 +339,11 @@ func TestTickConfirmationTimeout(t *testing.T) {
 	if !v.Frozen || v.FrozenBy != "m1" || len(v.Commands) != 2 || v.Commands[1].ID != "m2" || v.Commands[1].State != StateQueued {
 		t.Errorf("view %+v", v)
 	}
-	// Late evidence does not move it.
-	wantRefusal(t, m.ConfirmDelivery("m1", "pos:9", at(40*time.Second)), ReasonWrongState)
+	// Late evidence is an annotation: it does not move it.
+	if err := m.ConfirmDelivery("m1", "pos:9", at(40*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wantState(t, m, "m1", StateUncertain)
 }
 
 func TestNotSubmittedFreezesTheQueue(t *testing.T) {
@@ -399,7 +402,7 @@ func TestTickDoesNotRefuseAHeadThatIsDispatching(t *testing.T) {
 	// Past it the command is uncertain, never refused: the queue time limit
 	// does not apply to a command that may have been written.
 	recs, _ := m.Tick(at(time.Hour))
-	if len(recs) != 1 || recs[0].To != StateUncertain || recs[0].Reason != ReasonHolderDied {
+	if len(recs) != 1 || recs[0].To != StateUncertain || recs[0].Reason != ReasonNoFenceResult {
 		t.Errorf("tick wrote %+v", recs)
 	}
 }
@@ -441,16 +444,20 @@ func TestNoAutomaticRetryOfAnUncertainCommand(t *testing.T) {
 				t.Errorf("the journal grew by %d records", len(j.recs)-n)
 			}
 			sameSnap(t, "an hour of ticks", before, snap(m))
-			// No method moves it but Resolve.
+			// No method moves it but Resolve. A fence result and evidence that
+			// arrive are annotations: they are journaled and leave it uncertain.
 			now := at(2 * time.Hour)
 			if _, err := m.BeginDispatch(leadA, now); err == nil {
 				t.Error("BeginDispatch dispatched past an uncertain command")
 			}
-			if _, err := m.RecordFence("m1", FenceResult{Written: WrittenPasteAndEnter, Outcome: OutcomeSubmitted}, now); err == nil {
-				t.Error("RecordFence moved an uncertain command")
+			if _, err := m.RecordFence("m1", FenceResult{Written: WrittenPasteAndEnter, Outcome: OutcomeSubmitted}, now); err != nil {
+				t.Errorf("a late fence result: %v", err)
 			}
-			if err := m.ConfirmDelivery("m1", "pos:1", now); err == nil {
-				t.Error("ConfirmDelivery moved an uncertain command")
+			if err := m.ConfirmDelivery("m1", "pos:1", now); err != nil {
+				t.Errorf("late evidence: %v", err)
+			}
+			if _, err := m.BeginDispatch(leadA, now); err == nil {
+				t.Error("BeginDispatch dispatched past an uncertain command after late evidence")
 			}
 			if _, err := m.Submit(msg("m3", Daemon(), leadA), now); err != nil {
 				t.Errorf("a new message is queued behind it: %v", err)
@@ -458,8 +465,8 @@ func TestNoAutomaticRetryOfAnUncertainCommand(t *testing.T) {
 			wantState(t, m, "m1", StateUncertain)
 			wantState(t, m, "m2", StateQueued)
 			for _, r := range j.recs[n:] {
-				if r.ID == "m1" {
-					t.Errorf("record for the uncertain command: %+v", r)
+				if r.ID == "m1" && !(r.From == StateUncertain && r.To == StateUncertain && in(r.Reason, ReasonLateFenceResult, ReasonLateEvidence)) {
+					t.Errorf("record for the uncertain command that is not an annotation: %+v", r)
 				}
 			}
 		})

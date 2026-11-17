@@ -20,6 +20,12 @@ import (
 // A command left accepted, because its queued record was never written, is
 // queued. The rate windows are rebuilt from the times of the accepted records.
 //
+// The text cap of limits applies to every journaled text. A journal that holds
+// a text over the configured MaxTextBytes is refused as a whole, with a
+// *RestoreError naming the record: Restore fails closed and does not truncate
+// or skip it. So the cap must not be lowered under a live journal; to lower it,
+// start a new journal.
+//
 // now is a parameter, not a clock, for the completion records and for the
 // times they carry. If appending a completion record fails, Restore returns
 // the *JournalError and no machine.

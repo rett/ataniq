@@ -136,9 +136,18 @@ func (m *Machine) BeginDispatch(target Target, now time.Time) (Dispatch, error) 
 //   - any other combination contradicts itself: uncertain (inconsistent
 //     result), which is safe because it freezes the queue.
 //
-// It refuses with ReasonWrongState unless the command is dispatching and Enter
-// has not been recorded, which includes a command a Tick made uncertain after
-// FenceTimeout. On a journal error nothing changed: the daemon retries
+// A fence result for a command that is already uncertain, as one that a Tick
+// made uncertain after FenceTimeout, is late. It is journaled as an annotation
+// (uncertain to uncertain, ReasonLateFenceResult, with what was written as the
+// evidence and the outcome and readings as the detail) and shown in the view
+// (CommandView.Late). It never moves the command out of uncertain and never
+// unfreezes the queue: only an operator does. The update carries the state and
+// reason the command has. At most eight annotations are kept for a command; the
+// next one is refused with ReasonWrongState. What was written is normalised to
+// one of the four values of Written, and anything else is recorded as unknown.
+//
+// Otherwise it refuses with ReasonWrongState unless the command is dispatching
+// and Enter has not been recorded. On a journal error nothing changed: the daemon retries
 // RecordFence with the same result, and never calls BeginDispatch again for
 // the command, which stays dispatching and is refused as already dispatching.
 func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceUpdate, error) {
@@ -146,6 +155,8 @@ func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceU
 	switch {
 	case c == nil:
 		return FenceUpdate{}, refusal(ReasonNoCommand, id, "no command %q", safeField(id, 70))
+	case c.state == StateUncertain:
+		return m.lateFence(c, res, now)
 	case c.state != StateDispatching || c.hasEnter:
 		return FenceUpdate{}, refusal(ReasonWrongState, id, "command %q is %s and cannot take a fence result", id, c.state)
 	}
@@ -197,6 +208,25 @@ func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceU
 	return up, nil
 }
 
+// lateFence journals a fence result that arrived for an uncertain command.
+func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUpdate, error) {
+	if len(c.late) >= maxLateNotes {
+		return FenceUpdate{}, refusal(ReasonWrongState, c.id, "command %q is uncertain and already has %d late annotations", c.id, len(c.late))
+	}
+	written := res.Written
+	if !knownWritten(string(written)) {
+		written = WrittenUnknown
+	}
+	r := base(c, now)
+	r.From, r.To, r.Reason = StateUncertain, StateUncertain, ReasonLateFenceResult
+	r.Detail = safeField("outcome: "+safeField(string(res.Outcome), 40)+"; "+res.Readings, maxDetailBytes)
+	r.EvidenceKind, r.Evidence = EvidenceObservation, string(written)
+	if err := m.commit(r); err != nil {
+		return FenceUpdate{}, err
+	}
+	return FenceUpdate{ID: c.id, Target: c.target, State: c.state, Reason: c.reason}, nil
+}
+
 // ConfirmDelivery records evidence that the message reached the agent, such as
 // a position in the conversation file, and makes the command delivered. The
 // evidence is recorded as a provider report. It is allowed only for a
@@ -204,19 +234,43 @@ func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceU
 // otherwise), and the evidence must be non-empty and at most 512 bytes
 // (ReasonBadEvidence). An uncertain command cannot be confirmed: only an
 // operator leaves uncertain.
+//
+// Evidence for a command that is already uncertain is late, and its Enter may
+// never have been recorded (a fence the timeout cut off may still have
+// written). It is journaled as an annotation (uncertain to uncertain,
+// ReasonLateEvidence, as a provider report), shown in the view
+// (CommandView.Late) for the operator, and the command stays uncertain with
+// the queue frozen. The same bounds apply to the evidence, and at most eight
+// annotations are kept for a command (ReasonWrongState after that).
 func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 	c := m.cmds[id]
+	var bad *Refusal
+	switch {
+	case strings.TrimSpace(evidence) == "":
+		bad = refusal(ReasonBadEvidence, id, "delivery needs evidence")
+	case len(evidence) > maxEvidenceBytes:
+		bad = refusal(ReasonBadEvidence, id, "evidence is %d bytes, the limit is %d", len(evidence), maxEvidenceBytes)
+	}
 	switch {
 	case c == nil:
 		return refusal(ReasonNoCommand, id, "no command %q", safeField(id, 70))
+	case c.state == StateUncertain:
+		if bad != nil {
+			return bad
+		}
+		if len(c.late) >= maxLateNotes {
+			return refusal(ReasonWrongState, id, "command %q is uncertain and already has %d late annotations", id, len(c.late))
+		}
+		r := base(c, now)
+		r.From, r.To, r.Reason = StateUncertain, StateUncertain, ReasonLateEvidence
+		r.EvidenceKind, r.Evidence = EvidenceProviderReport, safeField(evidence, maxEvidenceBytes)
+		return m.commit(r)
 	case c.state != StateDispatching:
 		return refusal(ReasonWrongState, id, "command %q is %s, not dispatching", id, c.state)
 	case !c.hasEnter:
 		return refusal(ReasonNoEnter, id, "Enter was not written for command %q", id)
-	case strings.TrimSpace(evidence) == "":
-		return refusal(ReasonBadEvidence, id, "delivery needs evidence")
-	case len(evidence) > maxEvidenceBytes:
-		return refusal(ReasonBadEvidence, id, "evidence is %d bytes, the limit is %d", len(evidence), maxEvidenceBytes)
+	case bad != nil:
+		return bad
 	}
 	r := base(c, now)
 	r.From, r.To, r.Reason = StateDispatching, StateDelivered, ReasonConfirmed
@@ -229,10 +283,11 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 //
 //   - a command left accepted (its queued record failed) is queued;
 //   - a dispatching command with no fence result (Enter not recorded) FenceTimeout
-//     after its dispatching record becomes uncertain (holder or agent died); the
-//     queue is then frozen and shows it, and a fence result that comes later is
-//     refused (ReasonWrongState). Like ConfirmTimeout, it is reached when the
-//     elapsed time equals it;
+//     after its dispatching record becomes uncertain (no-fence-result, which is
+//     not a reported death); the queue is then frozen and shows it. A fence
+//     result or evidence that comes later is kept as an annotation and does not
+//     change that (see RecordFence and ConfirmDelivery). Like ConfirmTimeout, it
+//     is reached when the elapsed time equals it;
 //   - a submitted command with no evidence ConfirmTimeout after its Enter becomes
 //     uncertain (submitted, not confirmed);
 //   - a queued head that is not behind an uncertain command, and is past
@@ -268,10 +323,11 @@ func (m *Machine) Tick(now time.Time) ([]Record, error) {
 		head := q[0]
 		switch {
 		case head.state == StateDispatching && !head.hasEnter && now.Sub(head.updated) >= m.limits.FenceTimeout:
-			// No fence result was recorded in time: the holder or the agent
-			// died, or the result was lost. Whatever was written is unknown.
+			// No fence result was recorded in time. Nobody saw the holder or the
+			// agent die: the fence may still be running, or the result was
+			// lost. Whatever was written is unknown.
 			r := base(head, now)
-			r.From, r.To, r.Reason = StateDispatching, StateUncertain, ReasonHolderDied
+			r.From, r.To, r.Reason = StateDispatching, StateUncertain, ReasonNoFenceResult
 			r.Detail = fmt.Sprintf("no fence result %s after the dispatching record", now.Sub(head.updated).Round(time.Second))
 			r.EvidenceKind, r.Evidence = EvidenceObservation, string(WrittenUnknown)
 			if err := step(r); err != nil {

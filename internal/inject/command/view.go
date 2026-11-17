@@ -19,6 +19,10 @@ type CommandView struct {
 	EvidenceKind EvidenceKind
 	Evidence     string
 	Operator     string
+	// Late are the late fence results and late delivery evidence of an
+	// uncertain command, in the order they were journaled. They are for the
+	// operator who decides; they never end the uncertain state.
+	Late []LateNote
 	// Admitted is when the command was admitted; Updated when it last moved.
 	// Submitted is when Enter was written, and the zero time before that.
 	Admitted, Updated, Submitted time.Time
@@ -26,6 +30,22 @@ type CommandView struct {
 	// the command that replaced this one.
 	Of          string
 	Replacement string
+}
+
+// LateNote is a late fence result or late delivery evidence, kept on a command
+// that was already uncertain when it arrived.
+type LateNote struct {
+	// Seq and At are the sequence number and the time of the record.
+	Seq uint64
+	At  time.Time
+	// Reason is ReasonLateFenceResult or ReasonLateEvidence.
+	Reason Reason
+	// Detail is, for a late fence result, its outcome and readings.
+	Detail string
+	// EvidenceKind and Evidence are the observation of what the fence wrote
+	// (a fence result), or the provider's report (delivery evidence).
+	EvidenceKind EvidenceKind
+	Evidence     string
 }
 
 // TargetView is a read-only copy of one target's queue.
@@ -89,6 +109,7 @@ func (c *command) view() CommandView {
 	if c.hasEnter {
 		v.Submitted = c.enterAt
 	}
+	v.Late = append([]LateNote(nil), c.late...)
 	return v
 }
 

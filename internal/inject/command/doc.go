@@ -23,7 +23,9 @@
 // a position in the conversation file) is likewise a value the daemon passes
 // to ConfirmDelivery. Nothing here retries: a command that is uncertain stays
 // uncertain, and freezes its queue, until an operator records a decision with
-// Resolve.
+// Resolve. A fence result or delivery evidence that arrives after a command
+// became uncertain (for example after FenceTimeout) is kept as an annotation
+// that the view shows to the operator; it never ends the uncertain state.
 //
 // Ended commands (delivered, refused, resolved) stay in memory, without their
 // text, so that a command id is never used twice; trimming that history is the

@@ -134,8 +134,33 @@ func (m *Machine) check(r Record) error {
 				return errors.New("submitted-not-confirmed before Enter")
 			}
 		case ReasonHolderDied, ReasonInconsistentResult:
+		case ReasonNoFenceResult:
+			if c.hasEnter {
+				return errors.New("no-fence-result after Enter")
+			}
 		default:
 			return fmt.Errorf("uncertain with reason %q", r.Reason)
+		}
+	case r.From == StateUncertain && r.To == StateUncertain:
+		// An annotation: a late fence result or late evidence. It changes no
+		// state, so it never unfreezes a queue.
+		if r.Operator != "" || r.Replacement != "" {
+			return errors.New("a late annotation names no operator and no replacement")
+		}
+		if len(c.late) >= maxLateNotes {
+			return fmt.Errorf("command %q already has %d late annotations", c.id, len(c.late))
+		}
+		switch r.Reason {
+		case ReasonLateFenceResult:
+			if r.EvidenceKind != EvidenceObservation || !knownWritten(r.Evidence) {
+				return errors.New("a late fence result rests on the observation of what was written")
+			}
+		case ReasonLateEvidence:
+			if r.EvidenceKind != EvidenceProviderReport || strings.TrimSpace(r.Evidence) == "" || len(r.Evidence) > maxEvidenceBytes {
+				return errors.New("late evidence is a provider report, not empty and bounded")
+			}
+		default:
+			return fmt.Errorf("uncertain to uncertain with reason %q", r.Reason)
 		}
 	case r.From == StateUncertain && r.To == StateDelivered:
 		if r.Reason != ReasonOperatorDelivered || !validOperator(r.Operator) || r.EvidenceKind != EvidenceOwnerDecision {
@@ -168,6 +193,16 @@ func (m *Machine) check(r Record) error {
 		return fmt.Errorf("no transition from %s to %s", r.From, r.To)
 	}
 	return nil
+}
+
+// knownWritten reports whether s is one of the four things a fence can have
+// written.
+func knownWritten(s string) bool {
+	switch Written(s) {
+	case WrittenNothing, WrittenPaste, WrittenPasteAndEnter, WrittenUnknown:
+		return true
+	}
+	return false
 }
 
 // checkWritten requires the evidence of a fence record to be the observation
@@ -258,6 +293,15 @@ func (m *Machine) apply(r Record) {
 	}
 
 	c := m.cmds[r.ID]
+	if r.From == StateUncertain && r.To == StateUncertain {
+		// An annotation keeps the state, the last reason, the evidence and the
+		// update time of the command; it is only added to the notes.
+		c.late = append(c.late, LateNote{
+			Seq: r.Seq, At: r.At, Reason: r.Reason, Detail: r.Detail,
+			EvidenceKind: r.EvidenceKind, Evidence: r.Evidence,
+		})
+		return
+	}
 	key := c.target.String()
 	c.state = r.To
 	c.updated = r.At

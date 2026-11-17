@@ -27,8 +27,15 @@ type Limits struct {
 	// evidence before it becomes uncertain (30 s).
 	ConfirmTimeout time.Duration
 	// FenceTimeout is how long a command may stay dispatching with no fence
-	// result recorded before a Tick makes it uncertain (holder or agent
-	// died). It counts from the dispatching record (30 s).
+	// result recorded before a Tick makes it uncertain (no-fence-result). It
+	// counts from the dispatching record (30 s).
+	//
+	// It must be longer than the fence's worst case: both settles, the wait for
+	// the input lock and the RPC to the holder. The daemon gives the fence a
+	// deadline shorter than this value, and the fence writes nothing after its
+	// deadline. Then a command that a Tick made uncertain has no fence still
+	// writing to the agent. If a result or evidence arrives late anyway, it is
+	// kept as an annotation and never leaves uncertain.
 	FenceTimeout time.Duration
 	// QueueTimeLimit is how long after admission a queued head may wait for
 	// an idle lead before it is refused as not idle. The design gives no
