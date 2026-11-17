@@ -21,7 +21,15 @@ import (
 const (
 	// maxRecordBytes is the largest record file that is read.
 	maxRecordBytes = 1 << 20
-	// maxStoreEntries is the most names read from the records folder.
+	// maxStoreEntries is the most names read from the records folder, of
+	// every kind (a record, its ".out" file, or any other). A verification
+	// with output uses two names, an intake record one. When the folder has
+	// more, every listing fails with [ErrStore], so every read and every
+	// write fails, and [Integrate] fails before it moves a branch: it fails
+	// closed. This package never deletes a record and never rotates the
+	// folder, so the owner (the command that opens the Store) must move old
+	// records to another folder, or open a new folder, before this happens,
+	// after about 50000 verifications with output.
 	maxStoreEntries = 100000
 	// nameTimeFormat is the time in a file name: fixed width, UTC, so that
 	// names sort by time.
@@ -34,6 +42,15 @@ var recordName = regexp.MustCompile(`^(\d{8}T\d{6}\.\d{9}Z)-(verification|intake
 // ErrStore means that the records folder or a record in it cannot be used. A
 // message names the file of a record and never a lead's text.
 var ErrStore = errors.New("intake: records store")
+
+// ErrNotSynced is matched by the error of a write that is complete except
+// that the folder could not be synced afterwards. The record is written: it
+// is in the folder under its name and it can be read. Only its durability
+// across a crash of the machine is not certain. [Store.PutVerification] and
+// [Integrate] return the record together with such an error, and a caller
+// shows it as a warning; it is not a failure of the write, and the write must
+// not be repeated.
+var ErrNotSynced = errors.New("intake: the record was written but the folder could not be synced")
 
 // Store is the owner's records folder: one JSON file for each record.
 //
@@ -153,9 +170,14 @@ func (s *Store) newBase(t time.Time, kind string) (string, error) {
 	return nt.Format(nameTimeFormat) + "-" + kind + "-" + hex.EncodeToString(b[:]), nil
 }
 
-// put writes data under a new name, exclusively and synced.
+// put writes data under a new name, exclusively and synced. When only the
+// sync of the folder fails, the file is there: the error then matches
+// [ErrNotSynced] and does not match [ErrStore].
 func (s *Store) put(name string, data []byte) error {
 	if err := s.dir.create(name, data); err != nil {
+		if errors.Is(err, ErrNotSynced) {
+			return err
+		}
 		return fmt.Errorf("%w: write %s: %w", ErrStore, name, err)
 	}
 	return nil
@@ -172,6 +194,10 @@ func (s *Store) put(name string, data []byte) error {
 // never reads it back and never parses it; a person who looks at it shows it
 // only through leadtext. It is written first, so that a record never names an
 // output that is missing. A run with no output has no such file.
+//
+// When the files are written but the folder could not be synced, the record
+// is returned together with an error that matches [ErrNotSynced]: a warning,
+// the record is there.
 //
 // PutVerification records what it is given, also a failure. Whether a record
 // allows an integration is decided by [Integrate].
@@ -209,15 +235,22 @@ func (s *Store) PutVerification(project string, res verify.Result, gates []verif
 	if err != nil {
 		return VerificationRecord{}, err
 	}
+	var warn error
 	if len(res.Output) > 0 {
 		if err := s.put(base+".out", res.Output); err != nil {
-			return VerificationRecord{}, err
+			if !errors.Is(err, ErrNotSynced) {
+				return VerificationRecord{}, err
+			}
+			warn = err
 		}
 	}
 	if err := s.put(base+".json", append(data, '\n')); err != nil {
-		return VerificationRecord{}, err
+		if !errors.Is(err, ErrNotSynced) {
+			return VerificationRecord{}, err
+		}
+		warn = errors.Join(warn, err)
 	}
-	return rec, nil
+	return rec, warn
 }
 
 // putIntake stores an intake record. The name takes its time from the record.

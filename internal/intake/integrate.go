@@ -103,7 +103,10 @@ type IntegrateRequest struct {
 //     the outcome is unknown, and that the branch may have moved.
 //  6. The intake record is written. If that fails, the error is a
 //     *[RecordError] that says the branch moved and the record is missing,
-//     and carries the record.
+//     and carries the record. If the record is written but the folder could
+//     not be synced afterwards, the record is there: Integrate returns it
+//     with an error that matches [ErrNotSynced], a warning that the caller
+//     shows, not a failure.
 //
 // It writes no ref but the target. It never creates, deletes or forces a
 // ref, and runs no checkout, merge, pull, reset, worktree or push: the
@@ -167,6 +170,10 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 		SignedPaths: signed, Verification: ver,
 	}
 	if err := req.Store.putIntake(rec); err != nil {
+		if errors.Is(err, ErrNotSynced) {
+			// The record is in the folder; only its durability is in doubt.
+			return rec, err
+		}
 		if moveErr != nil {
 			err = fmt.Errorf("%w (the update ended with an error, %v, and the branch was then found at the tip)", err, moveErr)
 		}

@@ -31,8 +31,9 @@
 //     of the tip) stands for, in the change of some commit of the branch,
 //     but that is not in the net change. It was added and removed again (or
 //     changed and changed back) inside the branch. It enters upstream
-//     history, so it needs a sign-off too. For a merge commit only the paths that differ from every parent
-//     count: a path that equals one parent was brought in by that parent.
+//     history, so it needs a sign-off too. For a merge commit only the paths
+//     that differ from every parent count: a path that equals one parent was
+//     brought in by that parent.
 //
 // The flags are collected in [Review.Flagged], one for each kind and path.
 // [Review.Digest] is a hash over what the owner is asked to sign off, so a
@@ -100,6 +101,14 @@
 // every Store on it, in any process), reads the newest record name in the
 // folder, and names the new record later than it when the writer's clock is
 // not later. Names can therefore run ahead of the clock after a step of it.
+// The folder is synced after the rename. If only that sync fails, the record
+// is there under its name; the write counts as done, and the call returns the
+// record with an error that matches [ErrNotSynced], to be shown as a warning.
+// The folder holds at most 100000 names of any kind (a verification with
+// output uses two); with more, every read and write fails with [ErrStore] and
+// [Integrate] stops before it moves a branch. Nothing here deletes or rotates
+// records, so the owner moves old ones away before that.
+//
 // Records are read through safefs: regular files only, at most 1 MiB,
 // no symlink followed, no block on a FIFO. A file whose name is not a record's
 // name is ignored. A file with a record's name that cannot be read, or that

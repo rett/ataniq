@@ -96,7 +96,8 @@ func (f folder) unlock() { unix.Flock(f.fd, unix.LOCK_UN) }
 // there: renameat2 with RENAME_NOREPLACE, or link and unlink where the
 // filesystem has no renameat2. The folder is synced afterwards. On an error
 // the temporary file, which this call made, is removed; a file called name is
-// never touched.
+// never touched. When only the sync of the folder fails, the file has its
+// name and is there, and the error matches [ErrNotSynced].
 func (f folder) create(name string, data []byte) (err error) {
 	var rnd [8]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
@@ -148,8 +149,15 @@ func (f folder) create(name string, data []byte) (err error) {
 	default:
 		return err
 	}
-	return unix.Fsync(f.fd)
+	if err := syncFolder(f.fd); err != nil {
+		return fmt.Errorf("%w: %s: %w", ErrNotSynced, name, err)
+	}
+	return nil
 }
+
+// syncFolder syncs the folder's descriptor. Tests replace it to make the sync
+// fail.
+var syncFolder = func(fd int) error { return unix.Fsync(fd) }
 
 func writeAll(fd int, data []byte) error {
 	for len(data) > 0 {
