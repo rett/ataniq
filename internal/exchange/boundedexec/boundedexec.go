@@ -54,7 +54,8 @@ type Cmd struct {
 	// the command runs, from a goroutine of its own, never twice at once. A
 	// non-nil error stops the command. Run does not wait for a call that is
 	// still running when the command has ended, and starts no new call after
-	// that.
+	// that. An error that such a call returns later is ignored: the command
+	// had already ended, so the watchdog did not stop it.
 	Watch func() error
 	// WatchInterval is the time between Watch calls. Zero means
 	// DefaultWatchInterval. It must not be negative.
@@ -203,6 +204,7 @@ func (c *Cmd) validate() error {
 type stopper struct {
 	mu     sync.Mutex
 	cause  error
+	sealed bool
 	notify chan struct{}
 }
 
@@ -211,8 +213,18 @@ func newStopper() *stopper {
 }
 
 // stop records cause unless an earlier one is set, and wakes the run loop.
-func (s *stopper) stop(cause error) {
+func (s *stopper) stop(cause error) { s.record(cause, false) }
+
+// stopWatch records a watchdog error as the cause, unless an earlier cause is
+// set or the watchdog is sealed.
+func (s *stopper) stopWatch(err error) { s.record(&WatchError{Err: err}, true) }
+
+func (s *stopper) record(cause error, fromWatch bool) {
 	s.mu.Lock()
+	if fromWatch && s.sealed {
+		s.mu.Unlock()
+		return
+	}
 	if s.cause == nil {
 		s.cause = cause
 	}
@@ -221,6 +233,15 @@ func (s *stopper) stop(cause error) {
 	case s.notify <- struct{}{}:
 	default:
 	}
+}
+
+// sealWatch makes later watchdog errors count for nothing. It is called when
+// the leader has ended: the watchdog did not stop a command that had already
+// stopped.
+func (s *stopper) sealWatch() {
+	s.mu.Lock()
+	s.sealed = true
+	s.mu.Unlock()
 }
 
 func (s *stopper) reason() error {

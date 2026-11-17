@@ -64,6 +64,32 @@ func pids(t *testing.T, out []byte) []int {
 	return ps
 }
 
+// holderBody is a script prefix that starts a process outside the leader's
+// group (setsid) which holds the output pipes for six seconds and prints its
+// pid on the first line. A process group kill cannot reach it, so only the
+// bounded wait for the pipes ends a run that has it.
+func holderBody(t *testing.T) string {
+	t.Helper()
+	return tool(t, "setsid") + " " + tool(t, "sleep") + " 6 & echo $!; "
+}
+
+// reapHolder kills the process holderBody started, whose pid is the first
+// field of out.
+func reapHolder(t *testing.T, out []byte) {
+	t.Helper()
+	f := strings.Fields(string(out))
+	if len(f) == 0 {
+		t.Errorf("no pid from the holder in %q", out)
+		return
+	}
+	pid, err := strconv.Atoi(f[0])
+	if err != nil {
+		t.Errorf("bad holder pid in %q", out)
+		return
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+}
+
 func TestSuccessWithOutput(t *testing.T) {
 	res, err := Run(context.Background(), script("echo out; echo err >&2"))
 	if err != nil {
@@ -487,5 +513,62 @@ func TestFirstStopWins(t *testing.T) {
 	_, err := Run(ctx, c)
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWatchdogErrorAfterTheCommandEndedDoesNotReplaceTheOutcome(t *testing.T) {
+	t.Parallel()
+	// The command exits 0 after 0.2s. A process outside its group holds the
+	// pipe, so Run is still draining for two seconds. The watchdog fails
+	// from 0.5s on; it must not be asked, and must not win, after the exit.
+	started := time.Now()
+	var late atomic.Int32
+	c := script(holderBody(t) + "sleep 0.2; echo done")
+	c.WatchInterval = 50 * time.Millisecond
+	c.Watch = func() error {
+		if time.Since(started) < 500*time.Millisecond {
+			return nil
+		}
+		late.Add(1)
+		return errors.New("lease lost")
+	}
+	res, err := Run(context.Background(), c)
+	reapHolder(t, res.Stdout)
+	var we *WatchError
+	if errors.As(err, &we) {
+		t.Fatalf("a watchdog error after the exit replaced the outcome: %v", err)
+	}
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+	if n := late.Load(); n != 0 {
+		t.Errorf("the watchdog was called %d times after the command ended", n)
+	}
+}
+
+func TestWatchdogCallRunningAtTheExitCannotWin(t *testing.T) {
+	t.Parallel()
+	// A call that began before the exit and returns an error after it, while
+	// Run drains the pipes, does not count.
+	var calls atomic.Int32
+	c := script(holderBody(t) + "sleep 0.3; echo done")
+	c.WatchInterval = 50 * time.Millisecond
+	c.Watch = func() error {
+		if calls.Add(1) > 1 {
+			return nil
+		}
+		time.Sleep(900 * time.Millisecond) // past the exit, inside the drain
+		return errors.New("lease lost")
+	}
+	res, err := Run(context.Background(), c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
 	}
 }

@@ -83,11 +83,16 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		killGroup()
 	}
 	<-exited
-	// The leader has ended. Whatever else is in its group goes too, so no
-	// background process outlives the run.
+	// The leader has ended. No watchdog call starts from here on, and one
+	// that is already running cannot make itself the cause: draining the
+	// pipes can take a while, and the command was not stopped by the
+	// watchdog.
+	close(done)
+	st.sealWatch()
+	// Whatever else is in the leader's group goes too, so no background
+	// process outlives the run.
 	killGroup()
 	werr := cmd.Wait()
-	close(done)
 
 	res := Result{Stdout: out.bytes(), Exit: -1}
 	res.Stderr, res.StderrCut = errw.result()
@@ -126,7 +131,7 @@ func watch(fn func() error, interval time.Duration, st *stopper, done <-chan str
 		default:
 		}
 		if err := fn(); err != nil {
-			st.stop(&WatchError{Err: err})
+			st.stopWatch(err)
 			return
 		}
 	}
