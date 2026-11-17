@@ -88,6 +88,37 @@ func TestOpenCreatesPrivateFile(t *testing.T) {
 	}
 }
 
+func TestSequenceRestartsAndStartEventCarriesTheRunStart(t *testing.T) {
+	dir := newDir(t)
+	clock := &fakeClock{t: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)}
+	for run, epoch := range []string{"e1", "e2"} {
+		l := openLog(t, dir, Options{Clock: clock.now})
+		mustAppend(t, l, KindHolder, EventStart, Fields{Epoch: epoch})
+		mustAppend(t, l, KindHolder, EventExit, Fields{})
+		if err := l.Close(); err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+	}
+	ev := readAll(t, dir)
+	if len(ev) != 4 {
+		t.Fatalf("%d events", len(ev))
+	}
+	seqs := []uint64{ev[0].Seq, ev[1].Seq, ev[2].Seq, ev[3].Seq}
+	if !reflect.DeepEqual(seqs, []uint64{1, 2, 1, 2}) {
+		t.Fatalf("sequence %v", seqs)
+	}
+	// Each run starts with a start event that has the time and the epoch,
+	// which is how a restart is told from a gap.
+	for _, i := range []int{0, 2} {
+		if ev[i].Event != EventStart || ev[i].Time.IsZero() || ev[i].Epoch == "" {
+			t.Errorf("event %d: %+v", i, ev[i])
+		}
+	}
+	if !ev[2].Time.After(ev[0].Time) {
+		t.Errorf("second start %v is not after the first %v", ev[2].Time, ev[0].Time)
+	}
+}
+
 func TestOpenCreatedFileFixesUmask(t *testing.T) {
 	dir := newDir(t)
 	old := syscall.Umask(0o277)

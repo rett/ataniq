@@ -64,8 +64,19 @@
 // A write error is returned and counted, and the log keeps working when the
 // disk recovers. If a failed write left part of a line in the file, the next
 // event first writes a newline so the fragment cannot join the next record;
-// [Read] skips such a fragment and reports it. The sequence number is taken
-// before the write, so a lost event leaves a gap that shows in the file.
+// [Read] skips such a fragment and reports it.
+//
+// # Sequence numbers
+//
+// The sequence number is taken before the write, so an event lost inside one
+// run of the holder leaves a gap that shows in the file. The sequence starts
+// at 1 with each Open, that is with each process: it does not continue from
+// the file. Across a restart the numbers go 1..n and then 1 again, so a gap
+// cannot be seen there, and a restart shows as a seq that goes back to 1. The
+// holder's first event of a run is "start"; its Time, which every event has
+// in UTC, is the wall-clock start of the process, so the start has no field of
+// its own. Fields.Epoch, which the holder sets on that event, tells the runs
+// apart where the clock is not enough.
 //
 // The package has one writer per folder: two processes appending to the same
 // folder are not coordinated (the holder's role lock gives the exclusivity).
