@@ -25,7 +25,10 @@ const (
 
 // Span marks a run of faint (dim) characters on one row of a Snapshot. Row is
 // the zero-based row of Text; From and To are zero-based character (rune)
-// offsets in that row's text, From included and To excluded.
+// offsets in that row of Text, From included and To excluded. They are not
+// cell columns: Snapshot.CursorX is a cell column, and the two differ after
+// any character that is wider than one cell, so the holder converts the
+// columns of the emulator's cells to offsets in the row's text.
 type Span struct {
 	Row, From, To int
 }
@@ -51,7 +54,11 @@ type Snapshot struct {
 	// so plain text alone cannot tell a hint from owner text. Without
 	// Faint (nil) a composer that shows any text is read as holding text,
 	// never as empty. The holder fills it from the cell attributes of the
-	// emulator.
+	// emulator. The holder must fill it from the cell attributes of its
+	// emulator on every snapshot: when it leaves it nil, no composer that
+	// shows a hint reads as empty (every recorded codex idle screen shows
+	// one), so nothing would ever be injected. The offsets of the spans are
+	// offsets in the row's text, not cell columns (see Span).
 	Faint []Span
 }
 
@@ -65,12 +72,17 @@ type Reading struct {
 	// Composer is true when the composer is at its place on the screen.
 	Composer bool
 	// ComposerEmpty is true when the composer holds nothing: no characters
-	// but blanks, or only the runtime's faint hint text. It implies
-	// Composer and not Dialog.
+	// but blanks with the cursor visible at the first input column of the
+	// prompt row, or only the runtime's faint hint text. Blanks with the
+	// cursor anywhere else are text the owner typed. It implies Composer,
+	// CursorInComposer and not Dialog.
 	ComposerEmpty bool
 	// ComposerText is what the composer holds, rows joined by "\n", without
 	// the prompt glyph and without a faint hint. Empty for an empty
-	// composer.
+	// composer. A consumer must test ComposerEmpty and never
+	// ComposerText == "": the text is empty too when the composer holds only
+	// blanks that the owner typed (or a box of blank rows), which is not an
+	// empty composer.
 	ComposerText string
 	// CursorInComposer is true when the cursor is visible and on a row of
 	// the composer.
@@ -266,6 +278,15 @@ func choiceLine(rs []rune, glyph rune) bool {
 func cursorIn(s Snapshot, top, bottom int) bool {
 	return !s.CursorHidden && s.CursorY >= top && s.CursorY <= bottom &&
 		s.CursorX >= 0 && s.CursorX < s.Cols
+}
+
+// emptyCursor reports whether the cursor is where it sits in an empty
+// composer: visible, on the prompt row, at the first input column (after the
+// prompt glyph and its blank). A composer that shows nothing but blanks is
+// empty only then; with the cursor anywhere else the owner typed the blanks,
+// and they are text. Every recorded empty composer has the cursor at column 2.
+func emptyCursor(s Snapshot, row int) bool {
+	return !s.CursorHidden && s.CursorY == row && s.CursorX == 2
 }
 
 // hintOnly reports whether the characters of row, from the offset textFrom,

@@ -192,6 +192,7 @@ func TestFixtureCoverage(t *testing.T) {
 		{"open dialog", func(w wantJSON) bool { return w.Dialog && !w.Composer }},
 		{"agent working", func(w wantJSON) bool { return w.Working }},
 		{"unknown screen", func(w wantJSON) bool { return !w.Known }},
+		{"pasted-text marker", func(w wantJSON) bool { return w.Composer && w.PastedMarker && !w.ComposerEmpty }},
 	}
 	byRuntime := map[string][]kind{
 		"claude": append([]kind{
@@ -199,8 +200,15 @@ func TestFixtureCoverage(t *testing.T) {
 			{"background shell", func(w wantJSON) bool { return w.BackgroundTask }},
 			{"manual mode", func(w wantJSON) bool { return w.Mode == "manual" }},
 			{"auto mode", func(w wantJSON) bool { return w.Mode == "auto" }},
+			{"collapsed paste, footer without a mode", func(w wantJSON) bool {
+				return w.Composer && w.PastedMarker && w.Mode == ""
+			}},
 		}, common...),
-		"codex": common,
+		"codex": append([]kind{
+			{"composer taller than the bottom rows", func(w wantJSON) bool {
+				return w.Composer && strings.Count(w.ComposerText, "\n") >= bottomRows
+			}},
+		}, common...),
 	}
 	counts := map[string]int{}
 	seen := map[string]map[string]bool{}
@@ -367,8 +375,17 @@ func TestProseHigherUpDoesNotCount(t *testing.T) {
 			}
 		}
 		want := rec.Read(l.snap())
+		// The composer starts at the last prompt row; a tall composer (the
+		// codex fixtures of a long paste) starts above the bottom rows,
+		// and rows of it are not prose.
+		top := last
+		for i, r := range base {
+			if strings.HasPrefix(r, "› ") || strings.HasPrefix(r, "❯") {
+				top = i
+			}
+		}
 		// Rows above the bottom rows: more than 20 rows above the last one.
-		for i := 0; i < last-bottomRows; i++ {
+		for i := 0; i < min(last-bottomRows, top); i++ {
 			for _, p := range prose[l.runtime] {
 				mut := append([]string(nil), base...)
 				mut[i] = p
@@ -562,6 +579,7 @@ func TestPastedMarkerAndHolds(t *testing.T) {
 		}
 	}
 	// A header that wraps over two rows is still held.
+	matched := map[string]int{}
 	for _, l := range loadAll(t) {
 		if l.name != "typed-two-rows" {
 			continue
@@ -572,16 +590,26 @@ func TestPastedMarkerAndHolds(t *testing.T) {
 		}
 		// The wrapped text, with its break and blanks, is found by its
 		// squashed header.
+		squashed := squash(got.ComposerText)
 		for _, h := range []string{
 			"when a message starts with [ataniq-msg id=N], reply",
 			"reply with exactly ACK N and nothing else, and use no tools",
 			"approval to run it outside the sandbox. Use no other tool",
 			"command in the current folder: touch approval-test.txt. The sandbox is read-only, so request approval",
 		} {
-			squashed := squash(got.ComposerText)
-			if strings.Contains(squashed, squash(h)) && !got.Holds(h) {
-				t.Errorf("%s: Holds(%q) false for text %q", l.runtime, h, got.ComposerText)
+			if strings.Contains(squashed, squash(h)) {
+				matched[l.runtime]++
+				if !got.Holds(h) {
+					t.Errorf("%s: Holds(%q) false for text %q", l.runtime, h, got.ComposerText)
+				}
 			}
+		}
+	}
+	// The assertion above checks nothing for a runtime without a fixture
+	// that holds one of the headers, so each runtime needs one.
+	for _, rt := range []string{"claude", "codex"} {
+		if matched[rt] == 0 {
+			t.Errorf("%s: no fixture exercises Holds with a header it holds", rt)
 		}
 	}
 }
@@ -663,6 +691,106 @@ func TestHintNeedsStyle(t *testing.T) {
 	}
 }
 
+// TestEmptyNeedsCursor: an empty composer needs the cursor on the prompt row,
+// at the first input column; moved or hidden, the composer is not empty.
+func TestEmptyNeedsCursor(t *testing.T) {
+	n := 0
+	for _, l := range loadAll(t) {
+		if !l.fix.Want.ComposerEmpty {
+			continue
+		}
+		rec := recogniserFor(t, l)
+		s := l.snap()
+		if !rec.Read(s).ComposerEmpty {
+			t.Fatalf("%s/%s: not empty as recorded", l.runtime, l.name)
+		}
+		if s.CursorX != 2 {
+			t.Errorf("%s/%s: recorded empty composer with the cursor at column %d", l.runtime, l.name, s.CursorX)
+		}
+		for name, mod := range map[string]func(*Snapshot){
+			"right":  func(s *Snapshot) { s.CursorX++ },
+			"left":   func(s *Snapshot) { s.CursorX-- },
+			"far":    func(s *Snapshot) { s.CursorX += 40 },
+			"up":     func(s *Snapshot) { s.CursorY-- },
+			"down":   func(s *Snapshot) { s.CursorY++ },
+			"hidden": func(s *Snapshot) { s.CursorHidden = true },
+		} {
+			m := s
+			mod(&m)
+			n++
+			if got := rec.Read(m); got.ComposerEmpty {
+				t.Errorf("%s/%s: cursor %s still reads as an empty composer: %+v", l.runtime, l.name, name, got)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no fixture with an empty composer")
+	}
+}
+
+// TestCodexHintIsPinned: faint text that is not the recorded hint is text,
+// whatever its style.
+func TestCodexHintIsPinned(t *testing.T) {
+	n := 0
+	for _, l := range loadAll(t) {
+		if l.runtime != "codex" || !l.fix.Want.Placeholder {
+			continue
+		}
+		const hint = "Ask Codex to do anything"
+		if !strings.Contains(l.text, hint) {
+			t.Fatalf("%s: the recorded hint is not on the screen", l.name)
+		}
+		for _, other := range []string{"Ask Codex to do anythinX", "Ask Codex to do something", "queued message, edit it", "xxxxxxxxxxxxxxxxxxxxxxxx"} {
+			n++
+			s := l.fix.snapshot(strings.Replace(l.text, hint, other, 1))
+			got := recogniserFor(t, l).Read(s)
+			if got.ComposerEmpty || got.Placeholder || !got.Known {
+				t.Errorf("%s: faint %q read as a hint: %+v", l.name, other, got)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no codex fixture with a hint")
+	}
+}
+
+// TestPasteFooterNeedsTheMarker: the claude screens of a collapsed paste are
+// known only while the composer holds the marker, and never read as empty.
+func TestPasteFooterNeedsTheMarker(t *testing.T) {
+	n := 0
+	for _, l := range loadAll(t) {
+		if l.runtime != "claude" || !strings.HasPrefix(l.name, "collapsed-paste-footer") {
+			continue
+		}
+		rec := recogniserFor(t, l)
+		got := rec.Read(l.snap())
+		if !got.Known || got.Mode != "" || got.ComposerEmpty || !got.PastedMarker {
+			t.Errorf("%s: %+v", l.name, got)
+		}
+		r := rows(l.text)
+		// The composer row is the last row that starts with the prompt.
+		i := -1
+		for j, row := range r {
+			if strings.HasPrefix(row, "❯") {
+				i = j
+			}
+		}
+		if i >= 0 {
+			for _, repl := range []string{"❯ ", "❯", "❯ paste one line alpha beta gamma", "❯ [Pasted text 1]"} {
+				m := append([]string(nil), r...)
+				m[i] = repl
+				n++
+				if got := rec.Read(l.fix.snapshot(join(m))); got.Known || got.ComposerEmpty {
+					t.Errorf("%s: composer %q with the paste footer: %+v", l.name, repl, got)
+				}
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no mutation ran")
+	}
+}
+
 // TestHostileSpans: any Faint value is safe.
 func TestHostileSpans(t *testing.T) {
 	for _, l := range loadAll(t) {
@@ -730,6 +858,12 @@ func FuzzRead(f *testing.F) {
 			if len(got.Notes) == 0 {
 				t.Fatalf("unknown without a note: %+v", got)
 			}
+		}
+		if got.ComposerEmpty && !got.CursorInComposer {
+			t.Fatalf("empty composer without the cursor in it: %+v", got)
+		}
+		if got.PastedMarker && (!got.Composer || got.ComposerEmpty) {
+			t.Fatalf("pasted marker without a composer that holds text: %+v", got)
 		}
 		if got.CursorInComposer && !got.Composer {
 			t.Fatalf("cursor in a composer that is not there: %+v", got)

@@ -9,6 +9,9 @@
 // claude 2.1.325 and codex 0.169 exist; any other runtime or version has no
 // recogniser, and nothing here guesses for it.
 //
+// The package is provisional and unqualified: it is built from recorded
+// sessions of one version per runtime, with no live qualification yet.
+//
 // The package is pure. It takes a Snapshot value, reads no file, no terminal
 // and no clock, starts nothing and keeps no state, so the same snapshot always
 // gives the same Reading and a Recogniser is safe for concurrent use.
@@ -32,7 +35,12 @@
 // a Snapshot carries the runs of faint characters (Snapshot.Faint), and the
 // hint counts as an empty composer only when every character of it is faint
 // and the cursor is on the first one. Without that style data a composer that
-// shows any text is read as holding text.
+// shows any text is read as holding text. For codex the hint must also be
+// exactly the recorded text; claude's ghost text is the last prompt and cannot
+// be pinned. The holder must fill Snapshot.Faint from the cell attributes of
+// its emulator, and its offsets count characters in the row of Text, not
+// cells; a consumer must test Reading.ComposerEmpty, never
+// Reading.ComposerText == "".
 //
 // Dialog marks are looked for only in the bottom rows of the screen, and only
 // at the start of a line, so prose higher up in an answer does not count. Prose

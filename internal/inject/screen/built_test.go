@@ -55,6 +55,9 @@ func TestClaudeFooters(t *testing.T) {
 		{"   ⏸ manual mode on", false, "", false, false},
 		{"⏸ manual mode on", false, "", false, false},
 		{"  shift+tab to cycle", false, "", false, false},
+		// The paste hint is a footer only together with the marker in the
+		// composer; this composer is empty.
+		{"  paste again to expand", false, "", false, false},
 	} {
 		got := rec.Read(claudeScreen([]string{"❯ "}, c.footer))
 		if got.Known != c.known || got.Mode != c.mode || got.BackgroundTask != c.shells || got.Working != c.work {
@@ -104,6 +107,79 @@ func TestClaudeComposerShapes(t *testing.T) {
 			t.Errorf("%+v", got)
 		}
 	})
+	t.Run("typed blanks are text, not an empty composer", func(t *testing.T) {
+		for _, c := range []struct {
+			name   string
+			x, y   int
+			hidden bool
+			want   bool
+		}{
+			{"cursor at the first input column", 2, 32, false, true},
+			{"cursor after the typed blanks", 6, 32, false, false},
+			{"cursor before the first input column", 1, 32, false, false},
+			{"cursor on another row", 2, 20, false, false},
+			{"cursor hidden", 2, 32, true, false},
+		} {
+			s := claudeScreen([]string{"❯     "}, foot)
+			s.CursorX, s.CursorY, s.CursorHidden = c.x, c.y, c.hidden
+			got := rec.Read(s)
+			if !got.Known || !got.Composer || got.ComposerEmpty != c.want {
+				t.Errorf("%s: %+v", c.name, got)
+			}
+			if !c.want && got.Holds(" ") {
+				t.Errorf("%s: blanks held as a header: %+v", c.name, got)
+			}
+		}
+	})
+	t.Run("a collapsed paste and the paste footer", func(t *testing.T) {
+		marker := "❯ paste one line[Pasted text #1 +20 lines]"
+		hint := "  paste again to expand"
+		got := rec.Read(claudeScreen([]string{marker}, hint))
+		if !got.Known || !got.Composer || got.ComposerEmpty || !got.PastedMarker || got.Mode != "" ||
+			got.ComposerText != "paste one line[Pasted text #1 +20 lines]" || got.Working || got.BackgroundTask {
+			t.Errorf("%+v", got)
+		}
+		// The marker on a continuation row counts as well.
+		got = rec.Read(claudeScreen([]string{"❯ paste one line", "  [Pasted text #2]"}, hint))
+		if !got.Known || got.ComposerEmpty || !got.PastedMarker || got.Mode != "" {
+			t.Errorf("marker on a second row: %+v", got)
+		}
+		// Without the marker in the composer the footer is not known.
+		for name, box := range map[string][]string{
+			"empty composer":    {"❯ "},
+			"bare glyph":        {"❯"},
+			"typed text":        {"❯ paste one line"},
+			"wrong marker":      {"❯ [Pasted text 1]"},
+			"two rows, no mark": {"❯ one", "  two"},
+			"marker as a glyph": {"[Pasted text #1 +2 lines]"},
+			"codex marker":      {"❯ one", "  two [Pasted Content 12 chars]"},
+		} {
+			if got := rec.Read(claudeScreen(box, hint)); got.Known || got.ComposerEmpty || got.Mode != "" {
+				t.Errorf("%s: %+v", name, got)
+			}
+		}
+		// A faint marker is a hint, and a hint never makes the footer known.
+		s := claudeScreen([]string{marker}, hint)
+		s.CursorX, s.CursorY = 2, 32
+		s.Faint = []Span{{Row: 32, From: 2, To: 44}}
+		if got := rec.Read(s); got.Known || got.ComposerEmpty || got.Placeholder {
+			t.Errorf("faint marker: %+v", got)
+		}
+		// Only the whole hint is the footer: no other part, no other blanks.
+		for _, f := range []string{
+			"  paste again to expand · ? for shortcuts",
+			"  ⏸ manual mode on · paste again to expand",
+			"   paste again to expand",
+			"paste again to expand",
+			"  Paste again to expand",
+			"  paste again to expand now",
+			"  paste again",
+		} {
+			if got := rec.Read(claudeScreen([]string{marker}, f)); got.Known {
+				t.Errorf("footer %q: %+v", f, got)
+			}
+		}
+	})
 	t.Run("a box without a prompt is unknown", func(t *testing.T) {
 		for _, row := range []string{"hello", "> hello", "❯hello", "  ❯ hello", ""} {
 			if got := rec.Read(claudeScreen([]string{row}, foot)); got.Known {
@@ -112,13 +188,15 @@ func TestClaudeComposerShapes(t *testing.T) {
 		}
 	})
 	t.Run("cursor outside the box", func(t *testing.T) {
-		s := claudeScreen([]string{"❯ "}, foot)
+		// Blanks are an empty composer only with the cursor at the first
+		// input column of the prompt row; anywhere else the owner typed them.
+		s := claudeScreen([]string{"❯ "}, foot)
 		s.CursorY = 5
-		if got := rec.Read(s); got.CursorInComposer || !got.ComposerEmpty {
+		if got := rec.Read(s); got.CursorInComposer || got.ComposerEmpty || !got.Composer {
 			t.Errorf("%+v", got)
 		}
 		s.CursorY, s.CursorHidden = 32, true
-		if got := rec.Read(s); got.CursorInComposer {
+		if got := rec.Read(s); got.CursorInComposer || got.ComposerEmpty {
 			t.Errorf("hidden cursor counted: %+v", got)
 		}
 	})
@@ -166,6 +244,34 @@ func codexScreen(box []string, below ...string) Snapshot {
 	copy(r[30:], box)
 	copy(r[30+len(box)+1:], below)
 	return Snapshot{Text: strings.Join(r, "\n"), Cols: 120, Rows: 36, CursorX: 2, CursorY: 30, AltScreen: true}
+}
+
+// codexTall builds a codex screen of h rows (a screen of at most MaxRows)
+// whose bottom is the composer rows, a blank row and the below rows. When they
+// do not fit, the top of the composer is scrolled off. The cursor is on the
+// prompt row, column 2, when that row is on the screen.
+func codexTall(h int, box []string, below ...string) Snapshot {
+	full := append([]string{"• hello"}, box...)
+	full = append(full, "")
+	full = append(full, below...)
+	skipped := 0
+	if len(full) > h {
+		skipped = len(full) - h
+		full = full[skipped:]
+	}
+	return Snapshot{
+		Text: strings.Join(full, "\n"), Cols: 120, Rows: h,
+		CursorX: 2, CursorY: 1 - skipped, AltScreen: true,
+	}
+}
+
+// tallBox is a composer of n rows: a prompt row and n-1 continuation rows.
+func tallBox(n int, prompt, cont string) []string {
+	box := []string{prompt}
+	for len(box) < n {
+		box = append(box, cont)
+	}
+	return box
 }
 
 func TestCodexShapes(t *testing.T) {
@@ -234,6 +340,145 @@ func TestCodexShapes(t *testing.T) {
 			t.Errorf("%+v", got)
 		}
 	})
+	t.Run("the hint must be the recorded text", func(t *testing.T) {
+		for _, text := range []string{
+			"Ask Codex to do anything else", "Ask Codex", "ask codex to do anything",
+			"Type a message", "queued: do the thing", "x",
+		} {
+			s := codexScreen([]string{"› " + text}, status)
+			s.Faint = []Span{{Row: 30, From: 2, To: 2 + len([]rune(text))}}
+			got := rec.Read(s)
+			if got.ComposerEmpty || got.Placeholder || got.ComposerText != text || !got.Composer {
+				t.Errorf("faint %q read as a hint: %+v", text, got)
+			}
+		}
+		// The recorded hint, with blanks after it, is still the hint.
+		s := codexScreen([]string{"› Ask Codex to do anything   "}, status)
+		s.Faint = []Span{{Row: 30, From: 2, To: 26}}
+		if got := rec.Read(s); !got.ComposerEmpty || !got.Placeholder {
+			t.Errorf("%+v", got)
+		}
+	})
+	t.Run("typed blanks are text, not an empty composer", func(t *testing.T) {
+		for _, c := range []struct {
+			name   string
+			x, y   int
+			hidden bool
+			want   bool
+		}{
+			{"cursor at the first input column", 2, 30, false, true},
+			{"cursor after the typed blanks", 6, 30, false, false},
+			{"cursor before the first input column", 1, 30, false, false},
+			{"cursor on another row", 2, 20, false, false},
+			{"cursor hidden", 2, 30, true, false},
+		} {
+			s := codexScreen([]string{"›     "}, status)
+			s.CursorX, s.CursorY, s.CursorHidden = c.x, c.y, c.hidden
+			got := rec.Read(s)
+			if !got.Known || !got.Composer || got.ComposerEmpty != c.want {
+				t.Errorf("%s: %+v", c.name, got)
+			}
+			if !c.want && got.Holds(" ") {
+				t.Errorf("%s: blanks held as a header: %+v", c.name, got)
+			}
+		}
+	})
+	t.Run("a tall composer is found from the bottom", func(t *testing.T) {
+		for _, n := range []int{2, 17, 18, 19, 20, 21, 22, 40, 100, 190} {
+			box := tallBox(n, "› first", "  line")
+			box[n-1] = "   [Pasted Content 5000 chars]"
+			got := rec.Read(codexTall(200, box, status, "  more status"))
+			if !got.Known || !got.Composer || got.ComposerEmpty || !got.PastedMarker ||
+				strings.Count(got.ComposerText, "\n") != n-1 || !got.CursorInComposer {
+				t.Errorf("%d rows: %+v", n, got)
+			}
+			if !got.Holds("first") {
+				t.Errorf("%d rows: header not held: %+v", n, got)
+			}
+		}
+	})
+	t.Run("a composer that does not fit the screen is never empty", func(t *testing.T) {
+		// A message of 4 KiB of one-character lines is 2048 rows: the
+		// screen shows the end of it. The prompt row is off the screen
+		// when the rows do not fit, and the screen is unknown then.
+		for _, n := range []int{150, 190, 195, 196, 197, 198, 199, 200, 300, 2048} {
+			got := rec.Read(codexTall(200, tallBox(n, "› x", "  x"), status))
+			if got.ComposerEmpty || got.Placeholder {
+				t.Errorf("%d rows: %+v", n, got)
+			}
+			fits := n+2 <= 200 // the composer, the blank row and the status row
+			if got.Known != fits {
+				t.Errorf("%d rows: known=%v, want %v: %+v", n, got.Known, fits, got.Notes)
+			}
+		}
+		// The tallest screen and a one-row composer on a small screen.
+		if got := rec.Read(codexTall(5, []string{"› x"}, status)); !got.Known || got.ComposerEmpty {
+			t.Errorf("%+v", got)
+		}
+	})
+	t.Run("a broken walk is unknown", func(t *testing.T) {
+		box := tallBox(21, "› first", "  line")
+		for name, mod := range map[string]func([]string){
+			"blank row inside":       func(b []string) { b[10] = "" },
+			"blanks only inside":     func(b []string) { b[10] = "   " },
+			"row without indent":     func(b []string) { b[10] = " line" },
+			"unindented text":        func(b []string) { b[10] = "line" },
+			"no prompt row":          func(b []string) { b[0] = "  first" },
+			"prompt glyph, no blank": func(b []string) { b[0] = "›first" },
+			"prompt is a choice":     func(b []string) { b[0] = "› 1. first" },
+		} {
+			b := append([]string(nil), box...)
+			mod(b)
+			got := rec.Read(codexTall(36, b, status))
+			if got.Known && !got.Dialog && got.ComposerEmpty {
+				t.Errorf("%s: %+v", name, got)
+			}
+			if name != "prompt is a choice" && got.Known {
+				t.Errorf("%s: read as known: %+v", name, got)
+			}
+			if name == "prompt is a choice" && (got.Composer || got.ComposerEmpty) {
+				t.Errorf("%s: %+v", name, got)
+			}
+		}
+		// The prompt row must be on the screen: with the prompt row
+		// scrolled off, the transcript above it is not the composer.
+		got := rec.Read(codexTall(20, box, status))
+		if got.Known {
+			t.Errorf("prompt row scrolled off: %+v", got)
+		}
+	})
+	t.Run("the nearest prompt row is the composer", func(t *testing.T) {
+		// The echoed prompt of an earlier turn sits above the transcript
+		// of the answer; only the prompt row at the top of the walk counts.
+		s := codexTall(36, []string{"› now", "  and more"}, status)
+		r := strings.Split(s.Text, "\n")
+		r[0] = "› an earlier prompt"
+		s.Text = strings.Join(r, "\n")
+		got := rec.Read(s)
+		if !got.Known || got.ComposerText != "now\nand more" {
+			t.Errorf("%+v", got)
+		}
+	})
+	t.Run("dialog marks in the bottom rows win over a tall composer", func(t *testing.T) {
+		box := tallBox(21, "› first", "  line")
+		s := codexTall(36, box, status)
+		r := strings.Split(s.Text, "\n")
+		// A tall composer starts above the bottom rows; this row is in them.
+		last := len(r) - 1
+		r[last-3] = "  Press enter to confirm or esc to cancel"
+		s.Text = strings.Join(r, "\n")
+		if got := rec.Read(s); !got.Dialog || got.Composer || got.ComposerEmpty {
+			t.Errorf("%+v", got)
+		}
+		// The same text high up in the composer is not in the bottom rows.
+		r[last-3] = "  line"
+		r[last-21] = "  Press enter to confirm or esc to cancel"
+		s.Text = strings.Join(r, "\n")
+		if got := rec.Read(s); got.Dialog || !got.Composer {
+			t.Errorf("%+v", got)
+		}
+	})
+
 }
 
 // TestDialogAfterPasteStaysDialog: the dumps taken after the fence pasted into

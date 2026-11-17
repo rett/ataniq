@@ -12,7 +12,9 @@ import (
 // full-width rules of '─' at the bottom. Its first row starts with the prompt
 // glyph '❯' and a blank (a no-break space in the empty composer); further
 // rows are indented by two blanks. The footer is the one row directly below
-// the lower rule and the last row of the screen. An open dialog has no
+// the lower rule and the last row of the screen: the mode line, or, while a
+// collapsed paste ("[Pasted text #1 +20 lines]") is in the composer, the hint
+// "paste again to expand" and no mode. An open dialog has no
 // composer box: it ends in a row that starts with "Esc to cancel".
 type claude struct{}
 
@@ -25,6 +27,12 @@ var claudeModes = map[string]string{
 	"⏸ manual mode on":                     "manual",
 	"⏵⏵ auto mode on (shift+tab to cycle)": "auto",
 }
+
+// claudePasteFooter is the whole footer while a collapsed paste is in the
+// composer: the hint replaces the mode line, so the footer shows no mode
+// (row1/claude-s2 mark-017 and mark-018, row2/cfg4-B-claude-r2 dump-f-paste).
+// It is accepted only together with the pasted-text marker in the composer.
+const claudePasteFooter = "paste again to expand"
 
 // claudeHints are the other parts of the footer seen in the recorded screens,
 // each separated from the others by " · ".
@@ -66,6 +74,12 @@ func claudeMarks(g *grid) []string {
 		}
 	}
 	return marks
+}
+
+// isClaudePasteFooter reports whether the footer row is the paste hint.
+func isClaudePasteFooter(rs []rune) bool {
+	rs = trimRight(rs)
+	return leadingSpaces(rs) == 2 && string(rs[2:]) == claudePasteFooter
 }
 
 // parseClaudeFooter reads the footer row. It returns the mode, the number of
@@ -129,9 +143,14 @@ func (claude) Read(s Snapshot) Reading {
 	if len(first) == 0 || first[0] != '❯' || (len(first) > 1 && !unicode.IsSpace(first[1])) {
 		return unknown("composer box has no prompt row")
 	}
-	mode, shells, working, ok := parseClaudeFooter(g.rows[g.last])
-	if !ok {
-		return unknown("footer is not one of the recorded footers")
+	pasteFooter := isClaudePasteFooter(g.rows[g.last])
+	mode, shells, working := "", 0, false
+	if !pasteFooter {
+		var ok bool
+		mode, shells, working, ok = parseClaudeFooter(g.rows[g.last])
+		if !ok {
+			return unknown("footer is not one of the recorded footers")
+		}
 	}
 
 	r := Reading{
@@ -149,7 +168,7 @@ func (claude) Read(s Snapshot) Reading {
 	}
 	text := composerText(box, 2)
 	switch {
-	case len(box) == 1 && text == "":
+	case len(box) == 1 && text == "" && emptyCursor(s, upper+1):
 		r.ComposerEmpty = true
 	case len(box) == 1 && hintOnly(s, upper+1, first, 2):
 		r.ComposerEmpty = true
@@ -158,5 +177,8 @@ func (claude) Read(s Snapshot) Reading {
 		r.ComposerText = text
 	}
 	r.PastedMarker = strings.Contains(r.ComposerText, "[Pasted text #")
+	if pasteFooter && (r.ComposerEmpty || !r.PastedMarker) {
+		return unknown("paste footer without a pasted-text marker in the composer")
+	}
 	return r
 }
