@@ -36,17 +36,22 @@ type HostFacts struct {
 	ResolveTimeoutMS int
 }
 
-// NewSpec builds the spec for a profile's inputs and the host's facts: the
-// digest, the runtime, the expected environment (the profile's allowlist with
-// its values), the other runtime's config folder inside, the tree and its
-// three read-only git paths, the managed-settings path and whether a seccomp
-// filter is expected come from the inputs. The result is validated.
-func NewSpec(in profile.Inputs, h HostFacts) (Spec, error) {
+// NewSpec builds the spec for a profile's inputs, the environment the process
+// inside is expected to have and the host's facts: the digest, the runtime,
+// the other runtime's config folder inside, the tree and its three read-only
+// git paths, the managed-settings path and whether a seccomp filter is
+// expected come from the inputs. The result is validated.
+//
+// The expected environment is the caller's, not derived from the inputs
+// alone: bubblewrap keeps and sets PWD, from --chdir, even with --clearenv, so
+// the environment inside is the profile's allowlist plus PWD, and a spec made
+// from the allowlist alone would fail assertion 2 on a start that is as the
+// plan says. The caller has the plan and passes its inside environment (the
+// allowlist and PWD); the order is kept and a variable the plan sets must be
+// listed with its value, as assertion 2 compares the names and values
+// exactly.
+func NewSpec(in profile.Inputs, env []profile.EnvVar, h HostFacts) (Spec, error) {
 	digest, err := in.Digest()
-	if err != nil {
-		return Spec{}, err
-	}
-	env, err := in.Environment()
 	if err != nil {
 		return Spec{}, err
 	}

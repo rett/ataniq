@@ -14,7 +14,9 @@
 //   - The [Spec]: JSON, versioned ([SpecVersion]), at most [MaxSpecBytes]
 //     (256 KiB), decoded strictly by [DecodeSpec] (an unknown field, trailing
 //     data, an over-long list or a malformed entry is refused with the
-//     reason). [NewSpec] builds one from the profile inputs.
+//     reason). [NewSpec] builds one from the profile inputs, the expected
+//     environment the caller passes (the plan's inside environment, which holds
+//     PWD) and the facts of the host.
 //   - The inside checks, assertions 1 to 8, in [RunInside], over a small
 //     [System] interface. [HostSystem] is the real one (Linux); tests use a
 //     fake. The checks never create a file: writability is asked of the

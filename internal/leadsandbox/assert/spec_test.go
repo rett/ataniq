@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -310,6 +311,19 @@ func profileInputs(rt profile.Runtime) profile.Inputs {
 	return in
 }
 
+// insideEnv is the environment of the process inside: the allowlist of the
+// inputs and PWD, which bubblewrap sets from --chdir even with --clearenv.
+func insideEnv(t *testing.T, in profile.Inputs) []profile.EnvVar {
+	t.Helper()
+	env, err := in.Environment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = append(env, profile.EnvVar{Name: "PWD", Value: profile.TreeInside(in.Project)})
+	sort.Slice(env, func(i, j int) bool { return env[i].Name < env[j].Name })
+	return env
+}
+
 func TestNewSpec(t *testing.T) {
 	for _, rt := range profile.Runtimes() {
 		t.Run(string(rt), func(t *testing.T) {
@@ -325,7 +339,7 @@ func TestNewSpec(t *testing.T) {
 				ManagedMarker:   "example-guard-hook",
 				Optional:        []int{4},
 			}
-			s, err := NewSpec(in, h)
+			s, err := NewSpec(in, insideEnv(t, in), h)
 			if err != nil {
 				t.Fatalf("NewSpec: %v", err)
 			}
@@ -336,7 +350,8 @@ func TestNewSpec(t *testing.T) {
 			if s.Digest != digest || s.Runtime != rt {
 				t.Errorf("digest or runtime: %s %s", s.Digest, s.Runtime)
 			}
-			env, _ := in.Environment()
+			// The expected environment is the caller's: the allowlist and PWD.
+			env := insideEnv(t, in)
 			if len(s.Env) != len(env) {
 				t.Fatalf("env has %d entries, want %d", len(s.Env), len(env))
 			}
@@ -381,7 +396,7 @@ func TestNewSpecSeccompAndRefusals(t *testing.T) {
 		HolderPaths: []string{"/run/example/holder.sock"}, LoopbackTCP: "127.0.0.1:40123",
 		AbstractSocket: "example-canary-1", ProviderHost: "api.example.org", ManagedMarker: "m",
 	}
-	s, err := NewSpec(in, h)
+	s, err := NewSpec(in, insideEnv(t, in), h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,18 +404,18 @@ func TestNewSpecSeccompAndRefusals(t *testing.T) {
 		t.Error("a seccomp file in the inputs did not make the spec expect a filter")
 	}
 	// Different profiles give different digests, so the spec follows.
-	other, _ := NewSpec(profileInputs(profile.Claude), h)
+	other, _ := NewSpec(profileInputs(profile.Claude), insideEnv(t, profileInputs(profile.Claude)), h)
 	if other.Digest == s.Digest {
 		t.Error("the digest does not follow the profile")
 	}
 
 	bad := in
 	bad.Term = ""
-	if _, err := NewSpec(bad, h); err == nil {
+	if _, err := NewSpec(bad, insideEnv(t, in), h); err == nil {
 		t.Error("invalid inputs gave a spec")
 	}
 	h.ManagedMarker = ""
-	if _, err := NewSpec(in, h); err == nil {
+	if _, err := NewSpec(in, insideEnv(t, in), h); err == nil {
 		t.Error("a claude spec without a marker")
 	}
 }
@@ -514,5 +529,57 @@ func TestDecodeSpecKeysAreExact(t *testing.T) {
 	deep := `{"version":` + strings.Repeat("[", 100) + strings.Repeat("]", 100) + `}`
 	if _, err := DecodeSpecBytes([]byte(deep)); err == nil {
 		t.Error("a deeply nested spec was accepted")
+	}
+}
+
+// The environment inside holds PWD, which the allowlist of the profile does
+// not: the spec carries what the caller gives, so a start with PWD set passes
+// assertion 2 and one without it (a spec made from the allowlist alone, were
+// it so) would differ by exactly that variable.
+func TestNewSpecTakesTheExpectedEnvironmentFromTheCaller(t *testing.T) {
+	in := profileInputs(profile.Claude)
+	h := HostFacts{
+		HolderPaths: []string{"/run/example/holder.sock"}, LoopbackTCP: "127.0.0.1:40123",
+		AbstractSocket: "example-canary-1", ProviderHost: "api.example.org", ManagedMarker: "m",
+	}
+	env := insideEnv(t, in)
+	s, err := NewSpec(in, env, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pwd string
+	for _, e := range s.Env {
+		if e.Name == "PWD" {
+			pwd = e.Value
+		}
+	}
+	if pwd != "/work/ataniq" {
+		t.Errorf("PWD in the spec is %q", pwd)
+	}
+	// The spec does not alias the caller's slice.
+	env[0].Value = "changed"
+	if s.Env[0].Value == "changed" {
+		t.Error("the spec shares the caller's environment")
+	}
+	// A process inside that has the allowlist and PWD passes assertion 2; one
+	// without PWD fails it.
+	f := goodSystem(s)
+	want(t, RunInside(s, f), 2, StatusOK, "equals the allowlist")
+	var without []string
+	for _, kv := range f.env {
+		if !strings.HasPrefix(kv, "PWD=") {
+			without = append(without, kv)
+		}
+	}
+	f.env = without
+	want(t, RunInside(s, f), 2, StatusFailed, `missing "PWD"`)
+	// An environment that is not given is refused, not guessed from the
+	// profile.
+	if _, err := NewSpec(in, nil, h); err == nil {
+		t.Error("a spec without an expected environment was made")
+	}
+	// A name the allowlist rules refuse is refused.
+	if _, err := NewSpec(in, []profile.EnvVar{{Name: "bad name", Value: "x"}}, h); err == nil {
+		t.Error("an invalid variable name was accepted")
 	}
 }
