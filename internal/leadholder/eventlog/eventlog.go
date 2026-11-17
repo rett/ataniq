@@ -298,7 +298,7 @@ func Open(dir string, o Options) (*Log, error) {
 		unix.Close(dfd)
 		return nil, err
 	}
-	f, err := openFile(dfd, FileName, true)
+	f, err := openFile(dfd, FileName, openCreate)
 	if err != nil {
 		unix.Close(dfd)
 		return nil, err
@@ -398,7 +398,7 @@ func (l *Log) Append(kind Kind, name EventName, f Fields) error {
 		return fmt.Errorf("%w: event of %d bytes, cap %d", ErrTooLarge, n, l.maxEvent)
 	}
 	if l.f == nil { // a failed rotation left no file
-		f, err := openFile(l.dfd, FileName, true)
+		f, err := openFile(l.dfd, FileName, openCreate)
 		if err == nil {
 			err = l.adopt(f)
 			if err != nil {
@@ -451,12 +451,12 @@ func (l *Log) rotate() error {
 	l.f = nil
 	if err := unix.Renameat(l.dfd, FileName, l.dfd, RotatedName); err != nil {
 		// Reopen the unrotated file so the log keeps working.
-		if f, e := openFile(l.dfd, FileName, false); e == nil {
+		if f, e := openFile(l.dfd, FileName, openAppend); e == nil {
 			l.f = f
 		}
 		return fmt.Errorf("eventlog: rotate: %w", err)
 	}
-	f, err := openFile(l.dfd, FileName, true)
+	f, err := openFile(l.dfd, FileName, openCreate)
 	if err != nil {
 		return fmt.Errorf("eventlog: rotate: %w", err)
 	}
@@ -643,12 +643,26 @@ func openDir(dir string) (int, error) {
 	return fd, nil
 }
 
-// openFile opens name in the folder for appending, never through a symlink
-// and never blocking on a special file. With create it makes the file with
-// mode 0600 when it is absent. The result is a regular file of the caller
-// with mode 0600.
-func openFile(dfd int, name string, create bool) (*os.File, error) {
-	const base = unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+// How openFile opens a file: for reading only, for appending, or for
+// appending and creating it when absent.
+type openMode int
+
+const (
+	openRead openMode = iota
+	openAppend
+	openCreate
+)
+
+// openFile opens name in the folder, never through a symlink and never
+// blocking on a special file. In openCreate mode it makes the file with mode
+// 0600 when it is absent. The result is a regular file of the caller with
+// mode 0600, open read-only for openRead and for appending otherwise.
+func openFile(dfd int, name string, mode openMode) (*os.File, error) {
+	base := unix.O_RDWR | unix.O_APPEND | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	if mode == openRead {
+		base = unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	}
+	create := mode == openCreate
 	var fd int
 	var err error
 	created := false
@@ -714,8 +728,15 @@ const MaxReadBytes = MaxMaxBytes
 // caller; a missing file is empty. Lines that are not events (a torn line, an
 // over-long line) are skipped and reported in the error, which wraps
 // ErrCorrupt; a file larger than MaxReadBytes is read up to that size and the
-// error wraps ErrTooLarge. The events are valid whenever they are returned,
-// even with an error.
+// error wraps ErrTooLarge. A read error is returned as it is, with the events
+// read before it. The files are opened read-only, so Read works on a folder
+// that cannot be written.
+//
+// Read is for tests and the status command. It decodes each line and checks
+// that it has a sequence number, a kind and a name, but it does not check the
+// kind or the name against the known ones and it does not cap the fields
+// again: a line another writer put in the file comes back as it is, so a
+// caller that shows it must treat its strings as untrusted.
 func Read(dir string) ([]Event, error) {
 	dfd, err := openDir(dir)
 	if err != nil {
@@ -726,7 +747,7 @@ func Read(dir string) ([]Event, error) {
 	var skipped int
 	var tooLarge bool
 	for _, name := range []string{RotatedName, FileName} {
-		f, err := openFile(dfd, name, false)
+		f, err := openFile(dfd, name, openRead)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) {
 				continue
@@ -738,7 +759,7 @@ func Read(dir string) ([]Event, error) {
 		skipped += sk
 		tooLarge = tooLarge || big
 		if err != nil {
-			return events, err
+			return events, fmt.Errorf("eventlog: read %s: %w", name, err)
 		}
 	}
 	var errs []error
@@ -757,7 +778,15 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 		return 0, false, err
 	}
 	tooLarge = st.Size() > MaxReadBytes
-	r := bufio.NewReaderSize(io.LimitReader(f, MaxReadBytes), 2*MaxEventBytes)
+	skipped, err = scanEvents(io.LimitReader(f, MaxReadBytes), events)
+	return skipped, tooLarge, err
+}
+
+// scanEvents appends the events of the lines of rd to events and counts the
+// lines it skipped. A read error other than the end of the data is returned,
+// also after an over-long line.
+func scanEvents(rd io.Reader, events *[]Event) (skipped int, err error) {
+	r := bufio.NewReaderSize(rd, 2*MaxEventBytes)
 	for {
 		line, rerr := r.ReadSlice('\n')
 		if rerr == bufio.ErrBufferFull {
@@ -766,6 +795,9 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 				_, rerr = r.ReadSlice('\n')
 			}
 			if rerr != nil {
+				if rerr != io.EOF {
+					err = rerr
+				}
 				break
 			}
 			continue
@@ -791,5 +823,5 @@ func readFile(f *os.File, events *[]Event) (skipped int, tooLarge bool, err erro
 			break
 		}
 	}
-	return skipped, tooLarge, err
+	return skipped, err
 }

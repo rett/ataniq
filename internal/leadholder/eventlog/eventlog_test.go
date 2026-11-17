@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -947,6 +948,84 @@ func TestReadBounds(t *testing.T) {
 			t.Fatalf("%v %v", err, ev)
 		}
 	})
+}
+
+// failAfter yields data and then fails with err instead of the end of data.
+type failAfter struct {
+	data []byte
+	err  error
+}
+
+func (r *failAfter) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestScanEventsKeepsAReadError(t *testing.T) {
+	boom := errors.New("boom")
+	good := `{"time":"2026-01-01T00:00:00Z","seq":1,"kind":"holder","event":"start"}` + "\n"
+	cases := map[string]struct {
+		data    string
+		skipped int
+		events  int
+	}{
+		"after an over-long line":      {good + strings.Repeat("x", 3*MaxEventBytes), 1, 1},
+		"after a line and its newline": {good, 0, 1},
+		"in the middle of a line":      {good + `{"time":`, 1, 1},
+	}
+	for name, c := range cases {
+		var ev []Event
+		sk, err := scanEvents(&failAfter{data: []byte(c.data), err: boom}, &ev)
+		if !errors.Is(err, boom) || sk != c.skipped || len(ev) != c.events {
+			t.Errorf("%s: skipped %d, %d events, error %v", name, sk, len(ev), err)
+		}
+	}
+	// The end of the data is not an error.
+	var ev []Event
+	sk, err := scanEvents(&failAfter{data: []byte(good + strings.Repeat("x", 3*MaxEventBytes)), err: io.EOF}, &ev)
+	if err != nil || sk != 1 || len(ev) != 1 {
+		t.Errorf("EOF after an over-long line: skipped %d, %d events, error %v", sk, len(ev), err)
+	}
+}
+
+func TestReadOpensReadOnly(t *testing.T) {
+	dir := newDir(t)
+	openLog(t, dir, Options{}).Close()
+	dfd, err := openDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(dfd)
+	f, err := openFile(dfd, FileName, openRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	fl, err := fcntlFlags(f)
+	if err != nil {
+		t.Skip("no F_GETFL")
+	}
+	if fl&syscall.O_ACCMODE != syscall.O_RDONLY || fl&syscall.O_APPEND != 0 {
+		t.Errorf("flags %o: not read-only", fl)
+	}
+	if _, err := f.Write([]byte("x")); err == nil {
+		t.Error("write to a file opened for Read")
+	}
+	if fl&syscall.O_NONBLOCK != 0 {
+		t.Errorf("O_NONBLOCK left set: %o", fl)
+	}
+}
+
+func fcntlFlags(f *os.File) (int, error) {
+	r, _, e := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFL, 0)
+	if e != 0 {
+		return 0, e
+	}
+	return int(r), nil
 }
 
 // --- Design case H14: no keystroke and no output text can be logged. ---
