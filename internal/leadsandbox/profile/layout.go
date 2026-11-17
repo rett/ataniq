@@ -10,8 +10,10 @@ const DirMode = 0o700
 //	<state>/leads/<role>/home
 //	<state>/leads/<role>/config/<runtime>
 //	<state>/leads/<role>/tree
+//	<state>/leads/<role>/gitmeta
 //	<state>/mirrors/<project>.git
 //
+// gitmeta is Ataniq's copy of the tree's protected git files (see GitMeta).
 // Every folder has mode DirMode and lies outside every repository. The
 // methods build strings only; call Validate first.
 type Layout struct {
@@ -60,3 +62,22 @@ func (l Layout) MirrorsDir() string { return path.Join(l.StateRoot, "mirrors") }
 
 // Mirror is the exchange mirror of the project on the host.
 func (l Layout) Mirror() string { return path.Join(l.MirrorsDir(), l.Project+".git") }
+
+// The entries of the folder GitMeta names: a file and two folders, one for
+// each path of GitReadOnlyRel.
+const (
+	GitMetaConfig = "config"
+	GitMetaHooks  = "hooks"
+	GitMetaInfo   = "info"
+)
+
+// GitMeta is the default host folder of Ataniq's copy of the tree's protected
+// git files: <state>/leads/<role>/gitmeta, with config (a file), hooks/ and
+// info/ inside. It lies outside the home, the config folder and the tree, so
+// the lead cannot write it. The inputs name the folder they use (Inputs.GitMeta);
+// this is where a caller puts it by default.
+func (l Layout) GitMeta() string { return path.Join(l.LeadDir(), "gitmeta") }
+
+// GitMetaSource is the source, below the folder gitMeta, of one path of
+// GitReadOnlyRel: the entry of the folder with the same last element.
+func GitMetaSource(gitMeta, rel string) string { return path.Join(gitMeta, path.Base(rel)) }

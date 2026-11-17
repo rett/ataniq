@@ -97,6 +97,9 @@ func TestPrepareThenCheckClean(t *testing.T) {
 			if got, want := f.exclude(), "# comment\n/.envrc\n/.vscode\n/tools/local/x.txt\n"; got != want {
 				t.Errorf("exclude:\n got %q\nwant %q", got, want)
 			}
+			if got := f.cloneExclude(); got != "# comment\n" {
+				t.Errorf("the clone's own exclude file was changed: %q", got)
+			}
 			if err := CheckOwn(t, f); err != nil {
 				t.Fatalf("own clone: %v", err)
 			}
@@ -381,6 +384,9 @@ func TestExcludeFile(t *testing.T) {
 		if got, want := f.exclude(), "/.envrc\n/.vscode\n/tools/local/x.txt\n"; got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
+		if _, err := os.Lstat(f.tree + "/.git/info/exclude"); err == nil {
+			t.Fatal("the clone's exclude file was made: only Ataniq's copy is written")
+		}
 	})
 	t.Run("only the missing lines are appended", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
@@ -388,6 +394,9 @@ func TestExcludeFile(t *testing.T) {
 		f.prepare()
 		if got, want := f.exclude(), "*.log\n/.vscode\n/.envrc\n/tools/local/x.txt\n"; got != want {
 			t.Fatalf("got %q, want %q", got, want)
+		}
+		if got := f.cloneExclude(); got != "*.log\n/.vscode\n" {
+			t.Fatalf("the clone's exclude file was changed: %q", got)
 		}
 	})
 	t.Run("a missing final newline is supplied", func(t *testing.T) {
@@ -401,13 +410,17 @@ func TestExcludeFile(t *testing.T) {
 	t.Run("a negation of the line does not count as listed", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.write(f.tree+"/.git/info/exclude", "/.envrc\n!/.envrc\n/.vscode\n/tools/local/x.txt\n")
+		f.prepare()
+		if got, want := f.exclude(), "/.envrc\n!/.envrc\n/.vscode\n/tools/local/x.txt\n/.envrc\n"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+		if rep := f.check(); !rep.OK() {
+			t.Fatal(rep.Err())
+		}
+		f.write(f.metaExclude(), "/.envrc\n!/.envrc\n/.vscode\n/tools/local/x.txt\n")
 		rep := f.check()
 		if got := problemPaths(rep, ErrNotExcluded); len(got) != 1 || got[0] != f.tree+"/.envrc" {
 			t.Fatalf("got %v", got)
-		}
-		f.prepare()
-		if rep := f.check(); !rep.OK() {
-			t.Fatal(rep.Err())
 		}
 	})
 	t.Run("any later negation that could match un-lists the entry", func(t *testing.T) {
@@ -416,49 +429,55 @@ func TestExcludeFile(t *testing.T) {
 		for _, neg := range []string{"!/.envrc ", "!.envrc", "!*rc", "!/.env?rc", "!/.envrc/", "!/unrelated"} {
 			f := newFixture(t, profile.Claude)
 			f.write(f.tree+"/.git/info/exclude", "/.envrc\n"+neg+"\n/.vscode\n/tools/local/x.txt\n")
-			rep := f.check()
-			if got := problemPaths(rep, ErrNotExcluded); len(got) != 1 || got[0] != f.tree+"/.envrc" {
-				t.Errorf("%q: got %v", neg, got)
-			}
 			f.prepare()
 			if rep := f.check(); !rep.OK() {
 				t.Errorf("%q: %v", neg, rep.Err())
+			}
+			f.write(f.metaExclude(), "/.envrc\n"+neg+"\n/.vscode\n/tools/local/x.txt\n")
+			rep := f.check()
+			if got := problemPaths(rep, ErrNotExcluded); len(got) != 1 || got[0] != f.tree+"/.envrc" {
+				t.Errorf("%q: got %v", neg, got)
 			}
 		}
 	})
 	t.Run("a negation before the line does not un-list it", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.prepare()
-		f.write(f.tree+"/.git/info/exclude", "!*rc\n/.envrc\n/.vscode\n/tools/local/x.txt\n")
+		f.write(f.metaExclude(), "!*rc\n/.envrc\n/.vscode\n/tools/local/x.txt\n")
 		if rep := f.check(); !rep.OK() {
 			t.Fatal(rep.Err())
 		}
 	})
 	t.Run("a line that is not anchored does not count", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
-		f.write(f.tree+"/.git/info/exclude", ".envrc\n#/.vscode\n /tools/local/x.txt\n")
-		f.prepareIgnoringErrors()
+		f.prepare()
+		f.write(f.metaExclude(), ".envrc\n#/.vscode\n /tools/local/x.txt\n")
 		rep := f.check()
 		if got := problemPaths(rep, ErrNotExcluded); len(got) != 3 {
 			t.Fatalf("got %v", got)
 		}
 	})
-	t.Run("a symbolic link as the file is refused", func(t *testing.T) {
+	t.Run("a symbolic link as the clone's file is not copied", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.write(f.out+"/other", "outside\n")
 		f.remove(f.tree + "/.git/info/exclude")
 		f.symlink(f.out+"/other", f.tree+"/.git/info/exclude")
-		before := listing(t, f.base)
-		wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrSymlink)
-		sameListing(t, before, listing(t, f.base))
-		f.prepareIgnoringErrors()
-		wantProblem(t, f.check(), ErrSymlink, f.tree+"/.git/info/exclude")
+		f.prepare()
+		if got, want := f.exclude(), "/.envrc\n/.vscode\n/tools/local/x.txt\n"; got != want {
+			t.Fatalf("got %q, want %q: what the link names was read", got, want)
+		}
+		if b, _ := os.ReadFile(f.out + "/other"); string(b) != "outside\n" {
+			t.Fatalf("the target of the link was changed: %q", b)
+		}
 	})
-	t.Run("a folder as the file is refused", func(t *testing.T) {
+	t.Run("a folder as the clone's file is not copied", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.remove(f.tree + "/.git/info/exclude")
 		f.mkdir(f.tree+"/.git/info/exclude", 0o755)
-		wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrWrongType)
+		f.prepare()
+		if got, want := f.exclude(), "/.envrc\n/.vscode\n/tools/local/x.txt\n"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
 	})
 	t.Run("a file over the cap is refused", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
@@ -466,48 +485,78 @@ func TestExcludeFile(t *testing.T) {
 		before := listing(t, f.base)
 		wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrUnreadable)
 		sameListing(t, before, listing(t, f.base))
-		f.prepareIgnoringErrors()
-		wantProblem(t, f.check(), ErrUnreadable, f.tree+"/.git/info/exclude")
 	})
 	t.Run("a hard-linked file is refused", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		if err := os.Link(f.tree+"/.git/info/exclude", f.out+"/alias"); err != nil {
 			t.Fatal(err)
 		}
+		before := listing(t, f.base)
 		wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrWrongType)
+		sameListing(t, before, listing(t, f.base))
 	})
-	t.Run("a hard-linked file is refused by Check too", func(t *testing.T) {
-		f := newFixture(t, profile.Claude)
-		f.prepare()
-		if err := os.Link(f.tree+"/.git/info/exclude", f.out+"/alias"); err != nil {
-			t.Fatal(err)
+	t.Run("Check refuses a link, a folder, a big file and a hard link as Ataniq's copy", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			setup func(f *fixture)
+			kind  error
+		}{
+			"link": {func(f *fixture) {
+				f.write(f.out+"/other", "/.envrc\n/.vscode\n/tools/local/x.txt\n")
+				f.remove(f.metaExclude())
+				f.symlink(f.out+"/other", f.metaExclude())
+			}, ErrSymlink},
+			"folder": {func(f *fixture) {
+				f.remove(f.metaExclude())
+				f.mkdir(f.metaExclude(), 0o700)
+			}, ErrWrongType},
+			"big file": {func(f *fixture) {
+				f.write(f.metaExclude(), strings.Repeat("#"+strings.Repeat("x", 1022)+"\n", 1100))
+			}, ErrUnreadable},
+			"hard link": {func(f *fixture) {
+				if err := os.Link(f.metaExclude(), f.out+"/alias"); err != nil {
+					f.t.Fatal(err)
+				}
+			}, ErrWrongType},
+		} {
+			f := newFixture(t, profile.Claude)
+			f.prepare()
+			tc.setup(f)
+			wantProblem(t, f.check(), tc.kind, f.metaExclude())
+			t.Logf("%s ok", name)
 		}
-		wantProblem(t, f.check(), ErrWrongType, f.tree+"/.git/info/exclude")
 	})
 	t.Run("lines that end in CR LF count as listed", func(t *testing.T) {
 		// git strips the carriage return, so the lines name the paths.
 		f := newFixture(t, profile.Claude)
 		f.prepare()
-		f.write(f.tree+"/.git/info/exclude", "/.envrc\r\n/.vscode\r\n/tools/local/x.txt\r\n")
+		f.write(f.metaExclude(), "/.envrc\r\n/.vscode\r\n/tools/local/x.txt\r\n")
 		if rep := f.check(); !rep.OK() {
 			t.Fatal(rep.Err())
 		}
 		before := f.exclude()
 		f.prepare()
 		if got := f.exclude(); got != before {
-			t.Fatalf("Prepare added lines that are listed: %q", got)
+			t.Fatalf("Prepare changed a folder it had made: %q", got)
 		}
 	})
-	t.Run("no placeholders, no exclude file touched", func(t *testing.T) {
+	t.Run("no placeholders, no exclude file made", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.in.ExtraPlaceholders = nil
 		f.remove(f.tree + "/.git/info/exclude")
 		f.prepare()
-		if _, err := os.Lstat(f.tree + "/.git/info/exclude"); err == nil {
+		if _, err := os.Lstat(f.metaExclude()); err == nil {
 			t.Fatal("the exclude file was created without a placeholder")
 		}
 		if rep := f.check(); !rep.OK() {
 			t.Fatal(rep.Err())
+		}
+	})
+	t.Run("no placeholders, the clone's file is copied as it is", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.in.ExtraPlaceholders = nil
+		f.prepare()
+		if got := f.exclude(); got != "# comment\n" {
+			t.Fatalf("got %q", got)
 		}
 	})
 }
@@ -515,12 +564,12 @@ func TestExcludeFile(t *testing.T) {
 func TestCheckMissingExcludeLine(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	f.prepare()
-	f.write(f.tree+"/.git/info/exclude", "/.envrc\n/tools/local/x.txt\n")
+	f.write(f.metaExclude(), "/.envrc\n/tools/local/x.txt\n")
 	rep := f.check()
 	if got := problemPaths(rep, ErrNotExcluded); len(got) != 1 || got[0] != f.tree+"/.vscode" {
 		t.Fatalf("got %v", rep.Err())
 	}
-	f.remove(f.tree + "/.git/info/exclude")
+	f.remove(f.metaExclude())
 	if got := problemPaths(f.check(), ErrNotExcluded); len(got) != 3 {
 		t.Fatalf("got %v", got)
 	}
@@ -534,7 +583,7 @@ func TestCheckReportsEveryProblemAndChangesNothing(t *testing.T) {
 	f.write(f.cfg+"/skills", "x")
 	f.remove(f.tree + "/.vscode") // a link
 	f.symlink(f.out, f.tree+"/.vscode")
-	f.write(f.tree+"/.git/info/exclude", "") // nothing listed
+	f.write(f.metaExclude(), "") // nothing listed
 	before := listing(t, f.base)
 	rep := f.check()
 	sameListing(t, before, listing(t, f.base))

@@ -27,6 +27,7 @@ func fixture(rt profile.Runtime) profile.Inputs {
 		LeadSkills:            "/opt/ataniq/skills/arc-lead",
 		InstructionFile:       "/opt/ataniq/instructions/arc-lead/" + rt.InstructionFileName(),
 		GitIdentityFile:       "/opt/ataniq/git/arc-lead/config",
+		GitMeta:               "/state/leads/arc-lead/gitmeta",
 		QargiInstall:          "/opt/ataniq/qargi",
 		AssignmentDir:         "/opt/ataniq/assignment/demo",
 		ProjectionDir:         "/opt/ataniq/projection/demo",

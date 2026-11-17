@@ -129,7 +129,7 @@ func TestVerifyMutations(t *testing.T) {
 			p.Bwrap[find(t, p, "--ro-bind", "/usr")] = "--bind"
 		}},
 		{"git config made writable", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/tree/.git/config")] = "--bind"
+			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")] = "--bind"
 		}},
 		{"source changed", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/tree")+1] = "/state/leads/other/tree"
@@ -161,6 +161,29 @@ func TestVerifyMutations(t *testing.T) {
 		{"folder below a never-mounted path", ProbNever, false, func(t *testing.T, p *Plan) {
 			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/home/owner/.claude/projects", "/x")
 		}},
+		// Rule G1: no source in or below a folder the lead can write.
+		{"git config bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")+1] = "/state/leads/arc-lead/tree/.git/config"
+		}},
+		{"git hooks bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/hooks")+1] = "/state/leads/arc-lead/tree/.git/hooks"
+		}},
+		{"git info bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/info")+1] = "/state/leads/arc-lead/tree/.git/info"
+		}},
+		{"a read-only source in the home", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/home/qargi"
+		}},
+		{"a read-only source in the config folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/skills/arc-lead")+1] = "/state/leads/arc-lead/config/claude/skills"
+		}},
+		{"a read-write source made a parent of many sources", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/home")+1] = "/opt/ataniq"
+		}},
+		{"a mount that is no row, from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/leads/arc-lead/tree/.envrc", "/x")
+		}},
+		{"Mounts row says lead-writable", ProbLeadWritable, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
 		{"folder above a never-mounted path", ProbNever, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/home/owner"
 		}},
@@ -300,15 +323,6 @@ func TestVerifyMutations(t *testing.T) {
 		{"Mounts rows swapped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[2], p.Mounts[3] = p.Mounts[3], p.Mounts[2] }},
 		{"Mounts source changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Source = "/usr/share" }},
 		{"Mounts kind changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Kind = profile.KindRwBind }},
-		{"Mounts lead-writable flag cleared", ProbMountList, false, func(t *testing.T, p *Plan) {
-			for i := range p.Mounts {
-				if p.Mounts[i].LeadWritable {
-					p.Mounts[i].LeadWritable = false
-					return
-				}
-			}
-			t.Fatal("no lead-writable row in the plan")
-		}},
 		{"Mounts lead-writable flag set", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
 		{"Mounts optional flag changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Optional = true }},
 
@@ -319,6 +333,7 @@ func TestVerifyMutations(t *testing.T) {
 		{"r17 note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = p.Notes[:1] }},
 		{"share-net note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteShareNet) }},
 		{"nested-userns note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteNestedUserns) }},
+		{"bind sources note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteBindSources) }},
 		{"session note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteSession) }},
 		{"identity note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
 			var n []string
@@ -405,7 +420,7 @@ func TestVerifyMutations(t *testing.T) {
 	for _, k := range []ProblemKind{ProbShape, ProbExecutable, ProbPasta, ProbForbidden, ProbUnknown, ProbMalformed,
 		ProbOptionLike, ProbOrder, ProbFlags, ProbEnv, ProbSeccomp, ProbMountMissing, ProbMountExtra, ProbMountDiffers,
 		ProbMountTwice, ProbNever, ProbOtherRuntime, ProbWorkDir, ProbRemount, ProbInner, ProbDigest, ProbNotes,
-		ProbTerminal, ProbSize, ProbPassFDs, ProbReport, ProbAgent, ProbMountList} {
+		ProbTerminal, ProbSize, ProbPassFDs, ProbReport, ProbAgent, ProbMountList, ProbLeadWritable} {
 		if !seen[k] {
 			t.Errorf("no mutation raises %q", k)
 		}

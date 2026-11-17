@@ -21,11 +21,10 @@
 //   - [Prepare] makes them, once, before the first run. It makes a missing
 //     folder or empty file through a [safefile.Root] of the folder the mount
 //     point lies in, keeps an existing entry of the right type, and refuses a
-//     symbolic link or a wrong type. It lists each tree placeholder outside
-//     .git in .git/info/exclude as one anchored line. It needs the caller's
-//     statement that no lead has run in these folders yet ([PrepareOptions]);
-//     without it, it refuses, because nothing is written into a folder a
-//     lead has run in. It is idempotent.
+//     symbolic link or a wrong type. It also fills the git metadata folder
+//     (see below). It needs the caller's statement that no lead has run in
+//     these folders yet ([PrepareOptions]); without it, it refuses, because
+//     nothing is written into a folder a lead has run in. It is idempotent.
 //   - [Check] runs on every start. It is read-only: it creates and repairs
 //     nothing, and returns every problem it finds, typed and bounded.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
@@ -33,6 +32,10 @@
 //     tree, home and config folder are 0700 folders of the caller's user. A
 //     tree whose .git names alternates (objects of another repository) is
 //     refused. The file .git/config is not parsed.
+//   - [CheckBindSources] opens every bind source of a plan from the root of the
+//     file system with openat2 (no symbolic link, no magic link, on any
+//     component) and refuses a source that has a link anywhere on its path,
+//     naming it. It is the last check before a launch.
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each host bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
@@ -43,6 +46,46 @@
 //     [ResolveSourcesWith] takes the reader of links where the resolver is not
 //     the real file system.
 //
+// # The git metadata folder (rule G1)
+//
+// bubblewrap resolves a bind source on the host, outside every sandbox, and
+// follows a symbolic link in it. The tree's .git/config, .git/hooks and
+// .git/info are bound read-only over the tree, so their sources must not be
+// the tree's own files: a link a lead planted there would be followed at the
+// next start. Their sources are the entries of an Ataniq-owned folder,
+// profile.Inputs.GitMeta (by default <state>/leads/<role>/gitmeta), which lies
+// outside the home, the config folder and the tree. The mount points in the
+// tree are still made and checked as before; they are only the targets.
+//
+// [Prepare] fills the folder once, before the lead's first run, and makes it
+// exclusively with mode 0700 (its files 0600):
+//
+//   - config is a copy of the clone's .git/config, read through the tree's
+//     handle: a regular file of at most 1 MiB, not hard-linked;
+//   - hooks/ is empty: the clone's own hooks are not copied, because a managed
+//     lead's tree has no hooks;
+//   - info/ holds a copy of each regular file directly in the clone's
+//     .git/info (at most 64 entries, 1 MiB each, 4 MiB in all; a link, a folder
+//     or another type is skipped; a hard-linked file is refused), with the
+//     placeholder lines of the tree placeholders in exclude, as one anchored
+//     line each, now written in this copy.
+//
+// A folder that exists is kept and only checked, so a second [Prepare] changes
+// nothing, and a folder left incomplete by an interrupted one is refused: remove
+// it (nothing in it is the lead's) and call [Prepare] again before the first
+// run. [Check] makes sure on every start that the folder and its three entries
+// exist with the right types, modes and no link, and that info/exclude lists
+// every placeholder; what the lead does to the clone's own .git/config,
+// .git/hooks or .git/info does not change what is bound.
+//
+// What this changes for the lead: git inside the sandbox reads Ataniq's copy
+// of config and info, and cannot change them (they are bound read-only, and
+// the lead cannot write the folder); there are no hooks; and a change to the
+// clone's git configuration is made by Ataniq, outside, in the copy. The
+// lead-hosting design, section 3.3, leaves open whether Qargi's flow verbs
+// need to write git configuration (branch tracking): qualification case S5
+// settles it.
+//
 // # What the holder must do
 //
 // The package checks; the holder of the lead's launch (the probe command, the
@@ -52,18 +95,22 @@
 //  1. Call [CheckOwnClone] when the tree is made. Then call [Prepare], only
 //     before the lead's first run, with the statement that no lead has run.
 //     Prepare does not run [CheckOwnClone] itself. At every start after that
-//     call [Check] and [ResolveSources], not [Prepare].
-//  2. Run [Check] and [ResolveSources] only after the previous unit has gone
-//     and its control group is empty, and right before the launch, with
-//     nothing between them and the launch that runs a lead process. Nested
+//     call [Check], [ResolveSources] and [CheckBindSources], not [Prepare].
+//  2. Run [Check], [ResolveSources] and [CheckBindSources] only after the
+//     previous unit has gone and its control group is empty, and right before
+//     the launch, with nothing between them and the launch that runs a lead
+//     process: [Check] first, then [ResolveSources], then [CheckBindSources]
+//     on the sources it gives (the last step before the launch). Nested
 //     sandboxes are allowed for now, so the sandbox's own process tree does
 //     not show that no lead process remains; only an empty control group
 //     does. A check made while a lead process remains says nothing.
 //  3. Pass the resolved real paths ([ResolvedSource].Real, or the source after
-//     checking that Real equals Source) to the plan. bubblewrap resolves a
-//     source by its path when it binds, so a source that is checked and a
-//     different one that is bound is a check that did not happen. The probe's
-//     assertions from inside the sandbox stay the final check.
+//     checking that Real equals Source) to the plan, and the same paths, the
+//     plan's sources, to [CheckBindSources]. bubblewrap resolves a source by
+//     its path when it binds, so a source that is checked and a different one
+//     that is bound is a check that did not happen. A source with a link on
+//     its path is refused, so the real path is what a plan must carry. The
+//     probe's assertions from inside the sandbox stay the final check.
 //  4. Know the limits of the records folder. It lies outside the state root,
 //     so the lookup from the state root does not reach it: only its last
 //     component is opened without following a symbolic link, nothing above it
@@ -84,18 +131,24 @@
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
 // looks for the anchored line and takes any later line that starts with "!"
-// as un-listing it, and does not evaluate the patterns git knows. It reads only
-// .git/info/exclude: a .gitignore in the tree, tracked or not, which git ranks
-// above that file, can un-ignore a placeholder (a line "!.envrc"), and git then
-// shows the placeholder as untracked while [Check] reports it listed. That is
-// cosmetic: nothing is disclosed and nothing is mounted differently. The package
-// does not start a process, run git, create a namespace, or read any provider
-// folder. It reads, bounded, the one file .git/info/exclude.
+// as un-listing it, and does not evaluate the patterns git knows. A
+// .gitignore in the tree, tracked or not, which git ranks above that file,
+// can un-ignore a placeholder (a line "!.envrc"), and git then shows the
+// placeholder as untracked while [Check] reports it listed. That is cosmetic:
+// nothing is disclosed and nothing is mounted differently. The package does
+// not start a process, run git, create a namespace, or read any provider
+// folder. It reads, bounded, from the clone: .git/config and the regular files
+// of .git/info (when it fills the git metadata folder), and from the git
+// metadata folder, the one file info/exclude. The copy of config and info is
+// taken once, when the lead's first run has not happened: what the clone held
+// then is what the lead gets, and the package cannot tell whether a lead wrote
+// to the clone before the owner took it over.
 //
 // A tree placeholder whose path holds a character git treats as a pattern
 // (backslash, star, question mark, opening bracket, a trailing space) is
 // refused, because an anchored line would then not name only that path.
 //
 // The package is Linux only: on other systems it has no behaviour. Files are
-// made with mode 0755 (folders) and 0644 (files), before the umask.
+// made with mode 0755 (folders) and 0644 (files), before the umask; the git
+// metadata folder and what Prepare puts in it are made with 0700 and 0600.
 package mountpoints

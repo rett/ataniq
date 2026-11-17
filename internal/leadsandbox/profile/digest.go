@@ -16,7 +16,10 @@ import (
 //	2  the digest carries the values of the variables the profile defines,
 //	   the digest of the managed-settings file, the pasta arguments and the
 //	   optional flag of a row, and lists the extra placeholders sorted
-const Version = 2
+//	3  the three read-only .git rows take their sources from the Ataniq-owned
+//	   git metadata folder (source role git-meta, not tree-git): no source of
+//	   the table lies in a folder the lead can write
+const Version = 3
 
 const (
 	digestMagic   = "ataniq-lead-sandbox-profile"

@@ -23,6 +23,38 @@
 // seccomp file and of the managed-settings file are taken as given and are not
 // compared with the files.
 //
+// # No bind source the lead can write (rule G1)
+//
+// bubblewrap resolves a bind source on the host, outside every sandbox, and
+// follows a symbolic link in it. A source that lies in a folder the lead can
+// write could therefore be replaced by a link that brings a folder of the
+// owner into the sandbox. So the profile holds one rule: no row of the bind
+// table has a source in or below a host folder the lead can write (the home,
+// the config folder, the tree, the records folder: the sources of the
+// read-write rows). A folder the lead writes is bound whole from an
+// Ataniq-owned parent, or its content is copied in. [ValidateTable] refuses a
+// table that breaks the rule, and so does [Inputs.Validate].
+//
+// The rule moved three rows. The tree's .git/config, .git/hooks and .git/info
+// are still bound read-only at their places inside, over the tree, but their
+// sources are no longer the tree's own files: they are the entries config
+// (a file), hooks and info (folders) of an Ataniq-owned folder, [Inputs.GitMeta]
+// (the default place is [Layout.GitMeta], <state>/leads/<role>/gitmeta), with
+// the source role [RoleGitMeta]. The folder is required, and is refused when
+// it is, lies in or lies above the home, the config folder, the tree or the
+// records folder. Another package fills it before the lead's first run (the
+// mountpoints package: a copy of the clone's config and of the regular files
+// of .git/info, and an empty hooks folder).
+//
+// What this changes for the lead: git inside the sandbox reads Ataniq's copy
+// of config and info, and cannot change them; a hook of the clone is not
+// there, so a managed lead's tree has no hooks; and a change to the clone's
+// git configuration is made by Ataniq, outside, in the copy (the lead-hosting
+// design, section 3.3, leaves open whether the flow verbs need to write git
+// configuration; qualification case S5 settles it). The flag [Bind.LeadWritable]
+// is kept for the targets: the mount points of these three rows still lie in
+// the tree, and Ataniq still makes them there before the first run.
+//
 // # What the digest covers
 //
 // Digest is the SHA-256 of a canonical, versioned encoding of:

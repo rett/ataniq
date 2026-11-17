@@ -65,9 +65,9 @@ type Resolution struct {
 //   - a source that is missing, unless its row is optional;
 //   - a real source that overlaps a read-write folder of another row, or a
 //     read-write folder that overlaps another, as the profile checks
-//     lexically (the .git rows, which are bound over the tree on purpose,
-//     are the exception);
-//   - a .git row whose source is reached through a symbolic link.
+//     lexically (no source lies in a folder the lead can write; the sources of
+//     the .git rows are Ataniq's copies in the git metadata folder, and are
+//     checked like any other).
 //
 // A never-mounted path that does not exist and is a dangling link (its
 // target does not exist either) is resolved through the link: its target is
@@ -168,12 +168,9 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r))
 			}
 		}
-		if b.SourceRole == profile.RoleTreeGit && r != b.Source {
-			res.add(problem(ErrSymlink, b.Source, "the source of %s is reached through a symbolic link (real path %s)", b.Inside, r))
-		}
 	}
 	for i, b := range t {
-		if realPaths[i] == "" || b.SourceRole == profile.RoleTreeGit {
+		if realPaths[i] == "" {
 			continue
 		}
 		for j, w := range t {
