@@ -39,7 +39,9 @@
 // counted. The first resync is followed at once; from the second the wait
 // doubles (up to 30 s) and the reason says so, so that a holder whose checks
 // never match is not asked for a snapshot in a tight loop. The count goes back
-// to zero only when a Check matched on a connection. A resync Notice from the
+// to zero only when a Check past the snapshot's position matched on a
+// connection: the Check the holder sends right after each snapshot matches the
+// screen just restored and shows nothing about following its output. A resync Notice from the
 // holder, which drops output this client could not take and sends a new
 // snapshot on the same connection, also makes the state resyncing until that
 // snapshot is applied.

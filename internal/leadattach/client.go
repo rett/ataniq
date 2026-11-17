@@ -345,9 +345,11 @@ func (c *Client) run() {
 		resync bool
 		// fails counts consecutive protocol errors and resyncs counts
 		// consecutive client-side resyncs; both go back to zero only when a
-		// Check matched on a connection, not when a snapshot was applied: a
-		// holder whose checks never match would otherwise be asked for a
-		// snapshot in a tight loop.
+		// Check past the snapshot's position matched on a connection, not
+		// when a snapshot was applied, and not on the Check the holder sends
+		// right after each snapshot: a holder whose output the replica does
+		// not follow would otherwise be asked for a snapshot in a tight
+		// loop.
 		fails, resyncs int
 		wait           time.Duration
 	)

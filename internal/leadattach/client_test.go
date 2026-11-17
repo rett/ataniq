@@ -841,7 +841,8 @@ func (hc *hconn) mismatch() {
 }
 
 // reattach welcomes the connection the client made next, with a snapshot of
-// the holder's screen, and waits for the client to be attached.
+// the holder's screen and, as the real holder does, a Check at the snapshot's
+// position, and waits for the client to be attached.
 func (e *env) reattach() *hconn { return e.reattachAs(wire.RoleViewer) }
 
 func (e *env) reattachAs(role wire.Role) *hconn {
@@ -849,6 +850,7 @@ func (e *env) reattachAs(role wire.Role) *hconn {
 	hc := e.h.accept()
 	hc.welcome(role)
 	hc.snapshot()
+	hc.check()
 	e.untilConn(terminalconsole.LiveAttached)
 	return hc
 }
@@ -922,7 +924,9 @@ func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
 		t.Fatalf("waits %v, want %v", w, want)
 	}
 
-	// A snapshot alone does not end the back-off, a matching Check does.
+	// A snapshot alone does not end the back-off, nor does the matching Check
+	// that follows it (reattach sent one each time); a matching Check past
+	// the snapshot's position does.
 	hc.write("ok")
 	hc.check()
 	e.until("the check", func(terminalconsole.LiveStatus) bool { return e.pane.Digest() == hc.pane.Digest() })
