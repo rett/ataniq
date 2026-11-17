@@ -41,8 +41,9 @@ stops and manages no unit and defines no lead, and no flag changes that.
 
 Exit codes: 0 done; 2 usage; 10-18 start-up refused (10 config or root, 11
 state folder, 12 daemon lock held, 13 lock, 14 registry, 15 unit manager,
-16 reconcile, 17 socket, 18 server); status: 20 no daemon, 21 unauthorized,
-22 protocol error; 1 anything else.
+16 reconcile, 17 socket, 18 server); 19 the server did not stop within the
+shutdown grace (the registry and the lock are left to the end of the process);
+status: 20 no daemon, 21 unauthorized, 22 protocol error; 1 anything else.
 `
 
 // app is the command with its surroundings, so that tests run it in process.
@@ -56,11 +57,23 @@ type app struct {
 }
 
 func main() {
-	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
-	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, signals: ch}
+	args := os.Args[1:]
+	os.Exit(newApp(args).run(args))
+}
+
+// newApp is the command as main runs it: the real surroundings and the
+// manager of the systemd user manager. Only the run command takes the
+// termination signals (SIGTERM and SIGINT end the daemon); status and version
+// keep the default, so that Ctrl-C ends them at once.
+func newApp(args []string) *app {
+	a := &app{stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv}
 	a.newManager = a.systemdManager
-	os.Exit(a.run(os.Args[1:]))
+	if len(args) > 0 && args[0] == "run" {
+		ch := make(chan os.Signal, 2)
+		signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+		a.signals = ch
+	}
+	return a
 }
 
 // systemdManager builds the manager of the systemd user manager. When its

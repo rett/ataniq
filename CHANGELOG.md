@@ -87,27 +87,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reconciles once, removes a stale socket only once it holds the lock, and
   serves `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. At
   shutdown it stops accepting, waits for the connections for a bounded time,
-  closes the registry and releases the lock last; it never stops a lead or
-  any unit. The reconcile reads the units and starts and signals nothing; when
-  systemd cannot be asked, the daemon still serves the roles as the registry
-  has them, with the reconcile shown as not completed, which is also how an
-  unacknowledged recovery of the registry shows, as the protocol has no field
-  for the reason. Reconcile runs at start only, not on a timer. Each start-up
-  step that fails has its own exit code (10 to 18) and one line on standard
-  error. The socket is mode 0600 in a 0700 folder, and a peer is accepted only
-  when its user id equals the daemon's, which does not tell one process of that
-  user from another. `ataniqd status [--socket PATH] [--json]` prints one line
-  per role (role, kind, state, reason, epoch, desired, manager, and for a
-  coordinator its parent and instance) and one for the daemon, or the status
-  result as JSON; every string from the socket is escaped, so a hostile one
-  cannot act on the terminal. It exits 0 when the daemon answered, 20 when no
-  daemon answers, 21 when it refuses the user and 22 for an answer that is not
-  valid. The requested and the observed profile stay apart, and a field that was
-  not observed is shown as not observed. `ataniqd version` prints the version,
-  `0.0.0-dev` unless set with a linker flag, because the `VERSION` file cannot
-  be embedded from the command's folder. Leads, coordinators, the holder, the
-  sandbox and the console are not part of it, and nothing in it has run against
-  systemd.
+  closes the registry and releases the lock last; when the server does not end
+  in that time it exits with code 19, says what is left and closes and releases
+  nothing under it. It never stops a lead or any unit. The reconcile reads the
+  units and may write the registry's journal, the states stopped, ended or
+  unknown with their proof or reason and the outcomes adopted or abandoned of
+  launch intents; it starts, stops and signals nothing. When systemd cannot be
+  asked (also when the registry has no role to ask about), the daemon still
+  serves the roles as the registry has them, with the reconcile shown as not
+  completed, which is also how an unacknowledged recovery of the registry shows,
+  as the protocol has no field for the reason. Reconcile runs at start only, not
+  on a timer. Each start-up step that fails has its own exit code (10 to 18) and
+  one line on standard error. The socket is mode 0600 in a 0700 folder, and a
+  peer is accepted only when its user id equals the daemon's, which does not
+  tell one process of that user from another. `ataniqd status [--socket PATH]
+  [--json]` prints one line per role (role, kind, state, reason, epoch, desired,
+  manager, and for a coordinator its parent and instance) and one for the
+  daemon, or the status result as JSON; every string from the socket is escaped,
+  so a hostile one cannot act on the terminal. Only `run` takes SIGTERM and
+  SIGINT as the request to stop; they end `status` at once. `status` exits 0
+  when the daemon answered, 20 when no daemon answers, 21 when it refuses the
+  user and 22 for an answer that is not valid or an error the daemon answered.
+  The requested and the observed profile stay apart, and a field that was not
+  observed is shown as not observed. The protocol has no place for the proof of
+  a stopped or ended state or for the unit evidence, so `status` shows neither.
+  `ataniqd version` prints the version, `0.0.0-dev` unless set with a linker
+  flag, because the `VERSION` file cannot be embedded from the command's folder.
+  Leads, coordinators, the holder, the sandbox and the console are not part of
+  it, and nothing in it has run against systemd.
 
 ### Changed
 

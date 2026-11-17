@@ -203,6 +203,27 @@ func TestStatusCommandJSONEscapesHostileStrings(t *testing.T) {
 	}
 }
 
+// TestAsciiJSONWritesOnlyASCII: whatever a string holds, also bytes that are
+// not valid UTF-8 and the replacement character itself, every byte of the
+// output is printable ASCII or layout, and the text decodes to the same value.
+func TestAsciiJSONWritesOnlyASCII(t *testing.T) {
+	for _, v := range []string{"a\xffb", "\ufffd", "\x7f", "\u00e9\U0001f600"} {
+		out, err := asciiJSON(map[string]string{"k": v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range out {
+			if b >= 0x7f || (b < 0x20 && b != '\n') {
+				t.Fatalf("%q: byte %#x in %q", v, b, out)
+			}
+		}
+		var got map[string]string
+		if err := json.Unmarshal(out, &got); err != nil || got["k"] != strings.ToValidUTF8(v, "\ufffd") {
+			t.Fatalf("%q: decodes to %q, %v", v, got["k"], err)
+		}
+	}
+}
+
 func TestSafeText(t *testing.T) {
 	for in, want := range map[string]string{
 		"plain text-1":  "plain text-1",

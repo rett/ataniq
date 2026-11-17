@@ -24,14 +24,20 @@
 //  6. reconcile: call [leadlifecycle.Controller.Reconcile] once. It starts
 //     nothing and signals nothing. A manager that does not answer is not
 //     fatal: the daemon serves the roles as the registry has them and shows
-//     the reconcile as not completed.
+//     the reconcile as not completed. It does so also for a manager that is
+//     known to be unavailable ([UnavailableManager]) when the registry holds
+//     nothing to ask it about, an empty one or one of tmux-managed roles only.
 //  7. stale socket: only now, with the lock held, remove a socket file an
 //     earlier daemon left (clientapi.RemoveStale).
 //  8. socket: listen on <runtime>/daemon.sock (clientapi.Listen).
 //  9. serve until the signal source delivers a signal (SIGTERM or SIGINT in
 //     the binary) or the context ends.
 //  10. shutdown: stop accepting, wait for the connections for a bounded time,
-//     close the registry, and release the lock last.
+//     close the registry, and release the lock last. When the server has not
+//     ended within that time, [Run] returns a [StartupError] of [StepShutdown]
+//     ([ExitShutdown]) that says what is left, and closes the registry and
+//     releases the lock for no one: a goroutine that may still run could use
+//     them, and both end with the process.
 //
 // The daemon never starts, signals or stops a unit, at start-up, while it
 // serves or at shutdown: it does not call Start or Stop of the controller,
@@ -56,6 +62,12 @@
 // themselves are shown unknown with the reason registry-recovered. Nothing in
 // this build acknowledges a recovery.
 //
+// The wire type has no place either for the proof text of a stopped or ended
+// state, for the unit evidence (invocation, control group and boot identity)
+// or for the launch intent's boot identity and times. They stay in the
+// registry and are not shown in this protocol version, so a client sees
+// stopped or ended without the proof it rests on.
+//
 // # Not in this build
 //
 // The lifecycle controller needs a Preflight and a HolderCommand. This
@@ -63,10 +75,13 @@
 // daemon passes implementations that always refuse with [ErrNotAvailable]
 // ("not available in this build"); they are never reached, because nothing
 // calls Start. Reconcile runs once at start and is not repeated on a timer:
-// a periodic reconcile is not part of this feature. Leads, coordinators, the
-// holder, the sandbox and the console are not part of it either, and no
-// operation of the protocol or flag of the binary starts, stops or defines a
-// lead.
+// a periodic reconcile is not part of this feature. A launch intent that is
+// still pending inside its late-start window at that moment leaves the role
+// unknown (launch-unsettled) with the reconcile shown as completed, and
+// nothing settles the intent until the daemon is restarted. Leads,
+// coordinators, the holder, the sandbox and the console are not part of it
+// either, and no operation of the protocol or flag of the binary starts,
+// stops or defines a lead.
 //
 // The version the hello operation reports is [DefaultVersion]. The
 // repository's VERSION file cannot be embedded from the command's folder
@@ -85,5 +100,9 @@
 // systemd.
 //
 // The package is Linux only, provisional and unqualified: its names and
-// behaviour may change until a qualification run has covered it.
+// behaviour may change until a qualification run has covered it. It does not
+// build for any other system: paths.go uses clientapi.SocketPath, which
+// exists only in a Linux file, and exit.go and doc.go carry no file name
+// suffix only because nothing in them is system specific. The command still
+// builds elsewhere as a stub that imports nothing of this package.
 package leaddaemon

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,12 +26,86 @@ import (
 // and exits when it is set.
 const asBinaryEnv = "ATANIQD_TEST_AS_BINARY"
 
+// TestMain, with asBinaryEnv set, runs the command as main does (newApp, so
+// the signal wiring is the real one) but with a manager that cannot reach
+// systemd: an ordinary test never builds the real one.
 func TestMain(m *testing.M) {
 	if os.Getenv(asBinaryEnv) == "1" {
-		main()
-		return
+		args := os.Args[1:]
+		a := newApp(args)
+		a.newManager = func(context.Context) (leadunit.Manager, error) {
+			return leaddaemon.UnavailableManager(errors.New("systemd is out of reach in a test")), nil
+		}
+		os.Exit(a.run(args))
 	}
 	os.Exit(m.Run())
+}
+
+// TestMainWiringCompiles checks the wiring of main without running it: main
+// and the real manager factory exist with the types the command needs, and
+// newApp, for a command that is not run, takes no signal and leaves the
+// factory set. Nothing here calls the factory, which would build the real
+// systemd manager.
+func TestMainWiringCompiles(t *testing.T) {
+	var _ func() = main
+	var _ func(context.Context) (leadunit.Manager, error) = (&app{}).systemdManager
+	a := newApp([]string{"version"})
+	if a.newManager == nil || a.signals != nil || a.getenv == nil || a.stdout != os.Stdout || a.stderr != os.Stderr {
+		t.Fatalf("newApp: %+v", a)
+	}
+}
+
+// TestStatusEndsOnASignal: SIGTERM and SIGINT end status at once, and
+// SIGTERM still ends the daemon cleanly.
+func TestStatusEndsOnASignal(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		t.Run(sig.String(), func(t *testing.T) {
+			if sig == syscall.SIGINT && signal.Ignored(sig) {
+				t.Skip("SIGINT is ignored in this process, and so in the child")
+			}
+			// A listener that accepts and never answers.
+			socket := shortDir(t) + "/silent.sock"
+			l, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			accepted := make(chan net.Conn, 1)
+			go func() {
+				if c, err := l.Accept(); err == nil {
+					accepted <- c
+				}
+			}()
+			cmd := binary(t, "status", "--socket", socket)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan error, 1)
+			go func() { exited <- cmd.Wait() }()
+			t.Cleanup(func() { cmd.Process.Kill() })
+			select {
+			case c := <-accepted:
+				defer c.Close()
+			case err := <-exited:
+				t.Fatalf("status ended before it connected: %v", err)
+			case <-time.After(20 * time.Second):
+				t.Fatal("status did not connect in 20 s")
+			}
+			if err := cmd.Process.Signal(sig); err != nil {
+				t.Fatal(err)
+			}
+			// The client's own timeout is 10 s; the signal must be faster.
+			select {
+			case err := <-exited:
+				var ee *exec.ExitError
+				if !asExit(err, &ee) || ee.ExitCode() == 0 {
+					t.Fatalf("status ended with %v after %s", err, sig)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("status did not end within 5 s of %s", sig)
+			}
+		})
+	}
 }
 
 type testApp struct {

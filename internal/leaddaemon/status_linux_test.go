@@ -171,6 +171,63 @@ func TestStatusOverTheSocket(t *testing.T) {
 	})
 }
 
+// TestUnavailableManagerWithNothingToInspect: a manager known to be
+// unavailable shows the reconcile as not completed also when the registry
+// holds nothing the reconcile asks the manager about.
+func TestUnavailableManagerWithNothingToInspect(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		prep        func(t *testing.T, e *env)
+		unavailable bool
+		completed   bool
+	}{
+		{"empty registry", func(t *testing.T, e *env) {}, true, false},
+		{"tmux roles only", func(t *testing.T, e *env) {
+			e.prepare(func(reg *leadregistry.Registry) {
+				if _, err := reg.Define(lead(t, "delta"), leadregistry.ManagerTmux, profile()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}, true, false},
+		// The same registries with a manager that answers: completed.
+		{"empty registry, manager answers", func(t *testing.T, e *env) {}, false, true},
+		{"tmux roles only, manager answers", func(t *testing.T, e *env) {
+			e.prepare(func(reg *leadregistry.Registry) {
+				if _, err := reg.Define(lead(t, "delta"), leadregistry.ManagerTmux, profile()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}, false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			tt.prep(t, e)
+			cfg := e.config()
+			if tt.unavailable {
+				cfg.NewManager = func(context.Context) (leadunit.Manager, error) {
+					return UnavailableManager(errors.New("no systemctl")), nil
+				}
+			}
+			calls := len(e.fake.Calls())
+			d := e.startDaemon(cfg)
+			res := status(t, d.socket)
+			if res.Daemon.LastReconcileCompleted != tt.completed {
+				t.Fatalf("LastReconcileCompleted=%v, want %v", res.Daemon.LastReconcileCompleted, tt.completed)
+			}
+			if res.Daemon.LastReconcileAt == nil {
+				t.Fatal("no reconcile time")
+			}
+			if got := strings.Contains(e.log.String(), "the unit manager is unavailable (no systemctl)"); got != tt.unavailable {
+				t.Fatalf("log mentions the unavailable manager: %v\n%s", got, e.log)
+			}
+			if err := d.stop(); err != nil {
+				t.Fatal(err)
+			}
+			noStartNoSignal(t, e.fake, calls)
+		})
+	}
+}
+
 func TestStatusWhileSystemdIsUnavailable(t *testing.T) {
 	for _, tt := range []struct {
 		name string

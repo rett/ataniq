@@ -159,7 +159,7 @@ func asciiJSON(v any) ([]byte, error) {
 		case r < utf8.RuneSelf:
 			out = append(out, in[0])
 		case r == utf8.RuneError && n == 1:
-			out = append(out, `�`...)
+			out = append(out, `\ufffd`...)
 		case r >= 0x10000:
 			r1 := 0xd800 + (r-0x10000)>>10
 			r2 := 0xdc00 + (r-0x10000)&0x3ff
