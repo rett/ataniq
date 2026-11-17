@@ -193,7 +193,8 @@ func newServer(h Handler, opts Options) *server {
 // each with h. It takes ownership of l and closes it before it returns; a
 // socket file that [Listen] bound is unlinked by that close. Serve returns nil
 // when ctx ended, and the accept error otherwise. When it returns, every
-// connection goroutine has ended.
+// connection goroutine has ended; Serve waits for a handler call in flight, so
+// a [Handler] must return when its context ends, or Serve does not return.
 //
 // For each connection Serve reads the peer UID before it reads any byte. A
 // peer whose UID differs from the server's effective UID gets one
