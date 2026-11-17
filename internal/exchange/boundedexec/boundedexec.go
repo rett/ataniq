@@ -41,7 +41,11 @@ type Cmd struct {
 	// Stdin is the standard input. Nil means no input (/dev/null). An
 	// *os.File is handed to the command as it is. Any other reader is copied
 	// to the command in a goroutine of Run's own, and Run never waits for
-	// that goroutine. If Read blocks (an io.Pipe that nobody writes to or
+	// that goroutine. If Read fails with an error other than io.EOF, the
+	// command is stopped (it is not given EOF, so it cannot take truncated
+	// input for the whole) and Run returns that error, wrapped. A write
+	// error towards the command, because it closed its input, is not an
+	// error. If Read blocks (an io.Pipe that nobody writes to or
 	// closes), the goroutine is left behind, blocked in the caller's Read,
 	// until Read returns; Run still returns in time.
 	Stdin io.Reader
@@ -78,11 +82,17 @@ type Cmd struct {
 	// non-nil error stops the command. Run does not wait for a call that is
 	// still running when the command has ended, and starts no new call after
 	// that. An error that such a call returns later is ignored: the command
-	// had already ended, so the watchdog did not stop it.
+	// had already ended, so the watchdog did not stop it. The line is drawn
+	// when Run takes the command's exit; an error that was recorded in the
+	// instant before that still counts, since the two were concurrent.
 	Watch func() error
 	// WatchInterval is the time between Watch calls. Zero means
 	// DefaultWatchInterval. It must not be negative.
 	WatchInterval time.Duration
+
+	// testAfterExit, when set, is called by Run's loop once the leader has
+	// ended, before the loop goes on. Tests use it to delay the loop.
+	testAfterExit func()
 }
 
 // Result is what a run produced. It is filled in even when Run returns an
@@ -264,9 +274,9 @@ func (s *stopper) record(cause error, fromWatch bool) {
 	}
 }
 
-// sealWatch makes later watchdog errors count for nothing. It is called when
-// the leader has ended: the watchdog did not stop a command that had already
-// stopped.
+// sealWatch makes later watchdog errors count for nothing. It is called in the
+// step that takes the leader's exit: the watchdog did not stop a command that
+// had already stopped.
 func (s *stopper) sealWatch() {
 	s.mu.Lock()
 	s.sealed = true

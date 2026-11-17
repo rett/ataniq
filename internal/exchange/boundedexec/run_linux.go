@@ -80,8 +80,24 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		// caller's reader, until Read returns. Nothing waits for it. When
 		// Run returns, pw is closed, so a Write into a pipe that nobody
 		// reads any more ends too.
+		//
+		// A read error (not EOF) stops the command and is returned by Run.
+		// The command is not given EOF then: truncated input must not look
+		// complete. Run kills the group and the deferred close ends pw. A
+		// write error (the command closed its input) is not an error.
 		stdinFeed = func() {
-			_, _ = io.Copy(pw, in)
+			var rerr error
+			_, _ = io.Copy(pw, readerFunc(func(p []byte) (int, error) {
+				n, err := in.Read(p)
+				if err != nil && err != io.EOF {
+					rerr = err
+				}
+				return n, err
+			}))
+			if rerr != nil {
+				st.stop(fmt.Errorf("boundedexec: read standard input: %w", rerr))
+				return
+			}
 			_ = pw.Close()
 		}
 	}
@@ -116,6 +132,13 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 	// exited closes when the leader has ended but is not yet reaped. A
 	// zombie keeps its process group id reserved, so signalling the group
 	// until cmd.Wait has run cannot reach an unrelated process.
+	//
+	// The goroutine that takes the exit seals the watchdog in the same step,
+	// before it closes exited: from then on a watchdog error cannot become
+	// the cause, however late the run loop gets to it. What remains is the
+	// time between the kernel ending the leader and Waitid returning, and an
+	// error recorded before that. The exit and the error really are
+	// concurrent then, and the first one recorded wins.
 	exited := make(chan struct{})
 	go func() {
 		defer close(exited)
@@ -123,6 +146,7 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		for {
 			err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
 			if !errors.Is(err, unix.EINTR) {
+				st.sealWatch()
 				return
 			}
 		}
@@ -153,12 +177,14 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		killGroup()
 	}
 	<-exited
-	// The leader has ended. No watchdog call starts from here on, and one
-	// that is already running cannot make itself the cause: draining the
-	// pipes can take a while, and the command was not stopped by the
-	// watchdog.
+	if c.testAfterExit != nil {
+		c.testAfterExit()
+	}
+	// The leader has ended and the watchdog is sealed (see exited). No
+	// watchdog call starts from here on, and one that is already running
+	// cannot make itself the cause: draining the pipes can take a while, and
+	// the command was not stopped by the watchdog.
 	close(done)
-	st.sealWatch()
 	// Whatever else is in the leader's group goes too, so no background
 	// process outlives the run.
 	killGroup()
@@ -206,6 +232,12 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 	}
 	return res, nil
 }
+
+// readerFunc makes a function a reader. It also hides any WriterTo of the
+// caller's reader from io.Copy, so every read goes through the function.
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 // copyPipe copies r to w in a goroutine of its own and closes r when the
 // copy ends. The returned channel closes when the goroutine has ended.
