@@ -720,7 +720,7 @@ func pidFromFile(t *testing.T, path string) int {
 			if err != nil {
 				t.Fatalf("pid file: %v", err)
 			}
-			t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+			killAtCleanup(t, pid)
 			return pid
 		}
 		if time.Now().After(deadline) {
