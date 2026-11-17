@@ -65,7 +65,9 @@
 // coordinators that is not proven stopped, one after the other, by the same
 // sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each recorded in
 // the registry, and then the lead itself. A coordinator that cannot be proven
-// stopped is shown unknown and named in the error (a *[CoordinatorsError]); the
+// stopped is shown unknown, or left as recorded when the manager or the
+// registry did not answer its stop, and is named in the error (a
+// *[CoordinatorsError]); the
 // lead is stopped all the same, and a later Start of the lead is refused until
 // the coordinator is stopped with proof or the owner decides. The coordinators
 // are listed once more after the lead's own stop, because one may have been

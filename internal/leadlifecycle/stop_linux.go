@@ -43,7 +43,8 @@ import (
 // stopped or ended with proof is left alone), one after the other, each by the
 // sequence above: its own quiesce, SIGTERM, 2 s, SIGKILL, the proof. Then the
 // lead is stopped, whatever became of them. A coordinator that cannot be proven
-// stopped is shown unknown by its own stop, and the result's error is a
+// stopped is shown unknown by its own stop, or is left as recorded when the
+// manager or the registry did not answer its stop, and the result's error is a
 // *CoordinatorsError naming it (errors.Is(err, ErrCoordinatorNotStopped)),
 // joined with the lead's own error if there is one; the lead's own stop is
 // still carried out, and its entry is returned. A later Start of the lead is
@@ -69,7 +70,8 @@ import (
 // Stop of a lead never returns nil while the second listing was not done. When
 // the lead is proven stopped the second listing runs on a context of its own
 // that the caller's cannot end, so a caller whose context ended after the proof
-// still gets the coordinator named, shown unknown, in the result, and can no
+// still gets the coordinator named (shown unknown, or left as recorded when the
+// manager or the registry did not answer its stop) in the result, and can no
 // longer shorten that wait. The wait is bounded by the stop sequences of the
 // coordinators (TermWait, the proof bound and the manager's call timeout, which
 // limits each call to the manager and is not counted by the injected clock, so
@@ -153,8 +155,9 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 // every coordinator of the lead stopped. It wraps ErrCoordinatorNotStopped and
 // the error of each coordinator's stop; the lead's own stop went ahead.
 type CoordinatorsError struct {
-	// Roles are the coordinators that are not proven stopped, each shown
-	// unknown, in the registry's order.
+	// Roles are the coordinators that are not proven stopped, in the
+	// registry's order: each shown unknown, or left as recorded when the
+	// manager or the registry did not answer its stop.
 	Roles []leadrole.Role
 	// Errs holds the error of the stop of each of them, in the same order.
 	Errs []error
@@ -182,7 +185,8 @@ func (e *CoordinatorsError) Unwrap() []error {
 // stopCoordinators stops each coordinator of the lead that is not proven
 // stopped, one after the other in the registry's order, each by the whole
 // sequence of Stop. A coordinator that cannot be proven stopped is shown
-// unknown by its own stop and is named in the first result (nil when there is
+// unknown by its own stop, or left as recorded when the manager or the registry
+// did not answer its stop, and is named in the first result (nil when there is
 // none); the second result is for a failure that ends the lead's stop too (the
 // context). The instances that named holds (the result of an earlier pass over
 // the same lead) are not stopped again and stay in the result; a later
