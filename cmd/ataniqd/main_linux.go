@@ -41,8 +41,9 @@ stops and manages no unit and defines no lead, and no flag changes that.
 
 Exit codes: 0 done; 2 usage; 10-18 start-up refused (10 config or root, 11
 state folder, 12 daemon lock held, 13 lock, 14 registry, 15 unit manager,
-16 reconcile, 17 socket, 18 server); 19 the server did not stop within the
-shutdown grace (the registry and the lock are left to the end of the process);
+16 reconcile, 17 socket, also another daemon serving the same runtime folder,
+18 server); 19 the server did not stop within the shutdown grace (the registry
+and the locks are left to the end of the process);
 status: 20 no daemon, 21 unauthorized, 22 protocol error; 1 anything else.
 `
 
@@ -82,11 +83,19 @@ func newApp(args []string) *app {
 func (a *app) systemdManager(context.Context) (leadunit.Manager, error) {
 	m, err := systemdmgr.New(systemdmgr.Options{})
 	if err != nil {
-		fmt.Fprintf(a.stderr, "ataniqd: the systemd tools are unavailable (%s); the reconcile will be shown as not completed\n",
-			leaddaemon.SafeText(err.Error()))
-		return leaddaemon.UnavailableManager(err), nil
+		return a.unavailable(err), nil
 	}
 	return m, nil
+}
+
+// unavailable is the manager of a daemon that cannot ask systemd: it says so
+// on standard error and answers every call with an error. The daemon shows its
+// reconcile as not completed for such a manager whatever the registry holds,
+// also an empty one, so what the line says is true in every case.
+func (a *app) unavailable(cause error) leadunit.Manager {
+	fmt.Fprintf(a.stderr, "ataniqd: the systemd tools are unavailable (%s); the reconcile will be shown as not completed\n",
+		leaddaemon.SafeText(cause.Error()))
+	return leaddaemon.UnavailableManager(cause)
 }
 
 func (a *app) run(args []string) int {

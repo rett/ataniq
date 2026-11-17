@@ -24,20 +24,35 @@
 //  6. reconcile: call [leadlifecycle.Controller.Reconcile] once. It starts
 //     nothing and signals nothing. A manager that does not answer is not
 //     fatal: the daemon serves the roles as the registry has them and shows
-//     the reconcile as not completed. It does so also for a manager that is
-//     known to be unavailable ([UnavailableManager]) when the registry holds
-//     nothing to ask it about, an empty one or one of tmux-managed roles only.
-//  7. stale socket: only now, with the lock held, remove a socket file an
-//     earlier daemon left (clientapi.RemoveStale).
+//     the reconcile as not completed. It does so whenever any call to the
+//     manager failed during the reconcile (the daemon wraps the manager and
+//     counts them; an answer such as "not loaded" is not a failure, see the
+//     counter's comment for the exact set), when the reconcile ran out of
+//     time (also in its last step), and for a manager that is known to be
+//     unavailable ([UnavailableManager]) when the registry holds nothing to
+//     ask it about, an empty one or one of tmux-managed roles only.
+//  7. stale socket: make the runtime folder (mode 0700, its parent must
+//     exist) and take the socket lock in it, <runtime>/daemon.sock.lock
+//     (leadlock); only then, with both locks held, remove a socket file an
+//     earlier daemon left (clientapi.RemoveStale). The daemon lock is per
+//     state folder, so it cannot tell a live socket from a stale one when two
+//     daemons with different state folders share a runtime folder; the socket
+//     lock is per runtime folder. A daemon that finds it held exits with the
+//     socket code ([ExitSocket]), says that another daemon serves the runtime
+//     folder and shows the pid in the lock as a hint. A lock file that an
+//     earlier daemon left is no obstacle: the lock is the flock on it, not the
+//     file.
 //  8. socket: listen on <runtime>/daemon.sock (clientapi.Listen).
 //  9. serve until the signal source delivers a signal (SIGTERM or SIGINT in
 //     the binary) or the context ends.
-//  10. shutdown: stop accepting, wait for the connections for a bounded time,
-//     close the registry, and release the lock last. When the server has not
-//     ended within that time, [Run] returns a [StartupError] of [StepShutdown]
-//     ([ExitShutdown]) that says what is left, and closes the registry and
-//     releases the lock for no one: a goroutine that may still run could use
-//     them, and both end with the process.
+//  10. shutdown: stop accepting, wait for the connections for a bounded time
+//     (the listener is closed, which unlinks the socket, under the socket
+//     lock), then release the socket lock, close the registry, and release the
+//     daemon lock last. When the server has not ended within that time, [Run]
+//     returns a [StartupError] of [StepShutdown] ([ExitShutdown]) that says
+//     what is left, and closes the registry and releases both locks for no
+//     one: a goroutine that may still run could use them, and all end with
+//     the process.
 //
 // The daemon never starts, signals or stops a unit, at start-up, while it
 // serves or at shutdown: it does not call Start or Stop of the controller,
@@ -94,7 +109,7 @@
 //
 // The same-user check of the socket is the protocol's: the peer's UID from
 // SO_PEERCRED must equal the daemon's, which says nothing about which of the
-// user's processes is the peer. The lock and the registry are as qualified as
+// user's processes is the peer. The locks and the registry are as qualified as
 // their packages, which is not at all yet. Every test runs against the
 // in-memory leadunit.Fake and private sockets; nothing here has run against
 // systemd.

@@ -102,8 +102,8 @@ func (d *daemon) step(s Step) {
 // another error for a server that stopped by itself. A server that has not
 // ended within the shutdown grace makes it return a [StartupError] of
 // [StepShutdown] ([ExitShutdown]) that says what is left: the registry is then
-// left open and the daemon lock held, not closed under a goroutine that may
-// still use them, and both end with the process. It starts, signals and stops
+// left open, with the daemon lock and the socket lock held, not closed under a
+// goroutine that may still use them, and all end with the process. It starts, signals and stops
 // no unit.
 func Run(ctx context.Context, cfg Config) error {
 	d := &daemon{Config: cfg, log: cfg.Log}
@@ -130,7 +130,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// abandoned is set when the server did not end within the grace: the
-	// registry and the lock are then left to the end of the process.
+	// registry and the locks are then left to the end of the process.
 	abandoned := false
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -212,10 +212,13 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return &StartupError{Step: StepManager, Err: fmt.Errorf("read the boot identity: %w", err)}
 	}
-	mgr, err := d.NewManager(ctx)
+	built, err := d.NewManager(ctx)
 	if err != nil {
 		return &StartupError{Step: StepManager, Err: fmt.Errorf("build the unit manager: %w", err)}
 	}
+	// The lifecycle gets the counting wrapper, so that every call that fails
+	// is known to the reconcile's verdict.
+	mgr := &failureCounter{Manager: built}
 	ctl, err := leadlifecycle.New(leadlifecycle.Options{
 		Registry: reg, Manager: mgr, Clock: d.Clock,
 		Preflight: refusePreflight{}, Holder: refuseHolder{},
@@ -241,18 +244,36 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// stale socket, only with the lock held
+	// stale socket, only with both locks held: the daemon lock of this state
+	// folder, and the socket lock of the runtime folder, which another daemon
+	// with another state folder and the same runtime folder would hold. The
+	// socket lock is held until after the listener is closed, so that the
+	// removal of a stale socket and the unlink at close are both under it.
 	d.step(StepStaleSocket)
-	if _, err := os.Lstat(d.RuntimeDir); err == nil {
-		removed, err := clientapi.RemoveStale(d.RuntimeDir)
-		if err != nil {
-			return &StartupError{Step: StepStaleSocket, Err: err}
-		}
-		if removed {
-			d.logf("removed a stale socket in %s", d.RuntimeDir)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	if err := ensureRuntimeDir(d.RuntimeDir); err != nil {
 		return &StartupError{Step: StepStaleSocket, Err: err}
+	}
+	sockLock, err := leadlock.Acquire(SocketLockPath(d.RuntimeDir))
+	if err != nil {
+		if errors.Is(err, leadlock.ErrHeld{}) {
+			return &StartupError{Step: StepStaleSocket, Err: fmt.Errorf("another daemon serves the runtime folder %s (the pid in the lock is a hint, not proof): %w", d.RuntimeDir, err)}
+		}
+		return &StartupError{Step: StepStaleSocket, Err: err}
+	}
+	defer func() {
+		if abandoned {
+			return
+		}
+		if err := sockLock.Release(); err != nil {
+			d.logf("release the socket lock: %v", err)
+		}
+	}()
+	removed, err := clientapi.RemoveStale(d.RuntimeDir)
+	if err != nil {
+		return &StartupError{Step: StepStaleSocket, Err: err}
+	}
+	if removed {
+		d.logf("removed a stale socket in %s", d.RuntimeDir)
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -285,9 +306,8 @@ func Run(ctx context.Context, cfg Config) error {
 		if !d.awaitServe(done) {
 			abandoned = true
 			serveErr = &StartupError{Step: StepShutdown, Err: fmt.Errorf(
-				"the server did not stop within %s; its goroutine and the connections it holds may still be running, the registry is left open and the daemon lock held, and both end with this process",
+				"the server did not stop within %s; its goroutine and the connections it holds may still be running, the registry is left open and the daemon lock held, the socket lock too, and all end with this process",
 				d.ShutdownGrace)}
-			d.logf("%v", serveErr)
 		}
 	case err := <-done:
 		d.step(StepShutdown)
@@ -300,8 +320,11 @@ func Run(ctx context.Context, cfg Config) error {
 			serveErr = &StartupError{Step: StepServe, Err: err}
 		}
 	}
-	// The registry and the lock are released by the deferred calls, in that
-	// order: the lock last, unless the server is left running.
+	// The socket lock (the listener is closed by then), the registry and the
+	// daemon lock are released by the deferred calls, in that order: the daemon
+	// lock last, unless the server is left running. A server that is
+	// left running is reported by the returned error alone, which the command
+	// prints once.
 	return serveErr
 }
 
@@ -332,14 +355,49 @@ func (d *daemon) checkConfig() error {
 	return nil
 }
 
+// ensureRuntimeDir makes the runtime folder with mode 0700 when it is missing
+// (its parent must exist, as for [clientapi.Listen]) and checks it as Listen
+// does: a real folder, owned by the caller, with no access for group or
+// others. The socket lock is made in it, so it is checked before that.
+func ensureRuntimeDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err == nil {
+		// The umask can only narrow 0700; this sets it exactly.
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder (a symbolic link is refused too)", dir)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("cannot read the owner of the runtime folder")
+	}
+	if st.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("%s is not owned by the caller", dir)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 || perm&0o700 != 0o700 {
+		return fmt.Errorf("%s is accessible to group or others or not usable by its owner (mode %04o); it must be 0700", dir, perm)
+	}
+	return nil
+}
+
 func cleanAbs(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == p }
 
 // reconcile runs the one Reconcile and reports whether it completed. A
 // manager that is known to be unavailable (also with nothing in the registry
-// to ask it about), a manager that did not answer for some role, a reconcile
-// that ran out of time and an unacknowledged recovery of the registry make it
-// not completed and are not fatal; a failure of the registry is.
-func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, reg *leadregistry.Registry, mgr leadunit.Manager) (bool, error) {
+// to ask it about), a manager call that failed (Inspect, Empty or any other;
+// see [failureCounter] for the answers that are not failures), a reconcile
+// whose context ended (also inside the last role, where no later step would
+// see it) and an unacknowledged recovery of the registry make it not
+// completed and are not fatal; a failure of the registry is.
+func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, reg *leadregistry.Registry, mgr *failureCounter) (bool, error) {
 	rctx, rcancel := context.WithTimeout(ctx, d.ReconcileTimeout)
 	defer rcancel()
 	rep, err := ctl.Reconcile(rctx)
@@ -353,6 +411,11 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 		}
 		completed = false
 		d.logf("the reconcile did not finish within %s; it is shown as not completed", d.ReconcileTimeout)
+	} else if rctx.Err() != nil && ctx.Err() == nil {
+		// The deadline ended inside the last role's call: Reconcile saw no later
+		// step that would have noticed it, and returned no error.
+		completed = false
+		d.logf("the reconcile ran out of time (%s) in its last step; it is shown as not completed", d.ReconcileTimeout)
 	}
 	unavailable := 0
 	for _, r := range rep.Roles {
@@ -360,9 +423,13 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 			unavailable++
 		}
 	}
-	if um, known := mgr.(unavailableManager); known {
+	if um, known := mgr.Manager.(unavailableManager); known {
 		completed = false
 		d.logf("the unit manager is unavailable (%s); the reconcile is shown as not completed and the roles as the registry has them", SafeText(fmt.Sprint(um.cause)))
+	}
+	if n := mgr.failures(); n > 0 {
+		completed = false
+		d.logf("%d unit manager call(s) failed during the reconcile; it is shown as not completed", n)
 	}
 	if unavailable > 0 {
 		completed = false
