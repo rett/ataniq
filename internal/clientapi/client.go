@@ -221,6 +221,15 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 // spelling of one of known: encoding/json matches keys without regard to case,
 // and the protocol's keys are exact. A key that is not near any of known is
 // an unknown key and is ignored, as is anything raw is not an object.
+//
+// The client applies it to the response envelope and to the error body, which
+// decide what a response means. It does not apply it to the keys inside a
+// result: those are matched by encoding/json, so a result key spelled in
+// another case is read as the key it resembles. That is acceptable because a
+// result is read-only data that the client shows and acts on in no way, and
+// the server that could send such a spelling is one the client already trusts
+// by the path it dialled; a wrongly cased key can only change what is shown,
+// not what the response means.
 func exactKeys(raw []byte, known ...string) bool {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
