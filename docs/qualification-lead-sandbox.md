@@ -129,6 +129,11 @@ caller's environment or home.
   leads/<role>/home
   leads/<role>/config/<runtime>
   leads/<role>/tree
+  leads/<role>/qargi
+  leads/<role>/requests
+  leads/<role>/mail
+  mailbox/<role>
+  pub/<project>
   mirrors/<project>.git
   ```
 
@@ -155,14 +160,19 @@ caller's environment or home.
 - **Sources**: the agent's install folder for the pinned version; the managed
   settings file and its SHA-256 (for claude it must contain the text named by
   `managed_marker`); the lead skills folder; the instruction file; the git
-  identity file; the Qargi install; the assignment and projection folders.
-  Optional: the lead's working Qargi records, named by the path they appear at
-  inside (`sources.qargi_records_inside`); their folder is always
-  `leads/<role>/records` in the state root, which you make (mode 0700, owned by
-  the caller, a real path with no symbolic link in it) before the run, and
-  there is no key for another place (rule G1: a folder a lead writes elsewhere
-  could be, or lie above, a source of another lead). Also optional: extra tree
-  placeholders, and a seccomp file with its SHA-256.
+  identity folder (`sources.git_identity_dir`), which holds the file `config`
+  (a regular file; the whole folder is bound read-only, so it holds that file
+  and nothing else); the Qargi install; the assignment and projection folders;
+  and the path the lead's working Qargi records appear at inside
+  (`sources.qargi_records_inside`), which is required because every lead has
+  the records. Their folder is always `leads/<role>/qargi` in the state root,
+  which you make (mode 0700, owned by the caller, a real path with no symbolic
+  link in it) before the run, and there is no key for another place (rule G1: a
+  folder a lead writes elsewhere could be, or lie above, a source of another
+  lead). The folders `leads/<role>/requests`, `leads/<role>/mail`,
+  `mailbox/<role>` and `pub/<project>` in the state root must exist too, like
+  the other folders of the layout. Optional: extra tree placeholders, and a
+  seccomp file with its SHA-256.
 - **Never-mounted paths**: the owner's checkout, the real provider folders, and
   `.ssh`, as real paths. Give the paths even if they do not exist on the host.
   The other runtime's config folder is added by the profile.
@@ -204,8 +214,9 @@ example for a claude lead:
     "managed_marker": "qargi-guard",
     "lead_skills": "/owned/qualification/skills",
     "instruction_file": "/owned/qualification/instructions/CLAUDE.md",
-    "git_identity_file": "/owned/qualification/git/config",
+    "git_identity_dir": "/owned/qualification/git",
     "qargi_install": "/owned/qualification/qargi",
+    "qargi_records_inside": "/home/lead/.qargi",
     "assignment_dir": "/owned/qualification/assignment",
     "projection_dir": "/owned/qualification/projection"
   },
@@ -241,7 +252,7 @@ managed-settings file with it and refuses a difference.
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
 | `identity`, `owner_user` | `root` (the default) or `owner`, which needs the owner's login name; `owner_user` is given for `owner` only. |
-| `sources` | Every host source of the profile (see above). There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
+| `sources` | Every host source of the profile (see above). `git_identity_dir` is a folder that holds the file `config`; `qargi_records_inside` is required, and its host folder is `<state root>/leads/<role>/qargi`, which has no key. There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
 | `never_mounted` | Host paths no bind source may equal, lie below or lie above. At least one. |
 | `scratch_command` | The command run inside, as an absolute argv. Absent: `/bin/sh -c 'echo ataniq-leadsandbox-scratch-marker'`. |
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
