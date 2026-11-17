@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rollbackEnv is the fixture mirror, where the lead "coder" has the branches
@@ -147,11 +149,85 @@ func TestFetchSaysWhenTheLeadRefsCannotBePutBack(t *testing.T) {
 	noLeftovers(t, r.m)
 }
 
+func TestFetchRestoreHasItsOwnTimeLimit(t *testing.T) {
+	// The move may use up the time it has: a run of git is limited to 600 ms
+	// here, and the move to moveRuns times that. A check of step 9 then fails
+	// after the deadline of the move, and the restore must still run, with
+	// the limit of a git run of its own.
+	r := newRollbackEnv(t)
+	r.m.limits = Limits{Timeout: 600 * time.Millisecond}
+	before := r.leadRefs(t)
+	alt := filepath.Join(r.m.Path(), "objects", "info", "alternates")
+	atStep(t, 90, func() {
+		time.Sleep((moveRuns + 1) * r.m.limits.Timeout)
+		if err := os.WriteFile(alt, []byte(t.TempDir()+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, err := r.m.Fetch(context.Background(), r.req())
+	if err == nil || !strings.Contains(err.Error(), "alternates") {
+		t.Fatalf("Fetch = %v, want the alternates error", err)
+	}
+	if strings.Contains(err.Error(), "put back") {
+		t.Errorf("the restore failed: %v", err)
+	}
+	if err := os.Remove(alt); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.leadRefs(t); !reflect.DeepEqual(got, before) {
+		t.Errorf("the lead's refs after the failure:\n%q\nbefore:\n%q", got, before)
+	}
+	noLeftovers(t, r.m)
+}
+
+func TestFetchPutsTheLeadRefsBackWhenTheListingAfterTheMoveFails(t *testing.T) {
+	// The listing after the move fails: its time ran out, which stands for a
+	// killed run or a mirror with too many refs. The lead's refs are put
+	// back against the values that the move wrote, and the error is the
+	// listing's own.
+	r := newRollbackEnv(t)
+	r.m.limits = Limits{Timeout: 600 * time.Millisecond}
+	before := mirrorRefs(t, r.m)
+	atStep(t, 9, func() { time.Sleep((moveRuns + 1) * r.m.limits.Timeout) })
+	rep, err := r.m.Fetch(context.Background(), r.req())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Fetch = %v, want the failure of the listing", err)
+	}
+	if strings.Contains(err.Error(), "put back") {
+		t.Errorf("the restore failed: %v", err)
+	}
+	if got := mirrorRefs(t, r.m); !reflect.DeepEqual(got, before) {
+		t.Errorf("the refs after the failure:\n%q\nbefore:\n%q", got, before)
+	}
+	if len(rep.Updates) != 0 {
+		t.Errorf("a failed fetch reports updates %+v", rep.Updates)
+	}
+	noLeftovers(t, r.m)
+}
+
+func TestNamespaceAfter(t *testing.T) {
+	const prefix = "refs/leads/coder/heads/"
+	rec := func(name, id string) record { return record{Ref: Ref{Name: name, ID: id, Type: "commit"}} }
+	before := []record{
+		rec("refs/heads/main", "1"), rec(prefix+"a", "2"), rec(prefix+"b/c", "3"),
+		rec("refs/leads/other/heads/x", "4"),
+	}
+	staged := []record{rec(prefix+"b", "5"), rec(prefix+"a", "6")}
+	got := namespaceAfter(before, staged, prefix)
+	want := []record{
+		rec("refs/heads/main", "1"), rec(prefix+"a", "6"), rec(prefix+"b", "5"),
+		rec("refs/leads/other/heads/x", "4"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("namespaceAfter = %+v, want %+v", got, want)
+	}
+}
+
 func TestFetchMoveThatFailsPartwayChangesNoRef(t *testing.T) {
 	// The lead has main (a new ref in the mirror), aaa and zzz. A stale lock
-	// on zzz makes git fail while it takes the locks of the move. Without
-	// --atomic the other refs would have moved by then, and develop and
-	// feature/x pruned. The lead's refs are as before.
+	// on zzz makes git fail while it takes the locks of the second
+	// transaction of the move, after the first deleted develop and feature/x.
+	// The deletes are put back and the lead's refs are as before.
 	r := newRollbackEnv(t)
 	r.lead.git(t, "branch", "aaa")
 	r.lead.git(t, "branch", "zzz")
@@ -176,6 +252,168 @@ func TestFetchMoveThatFailsPartwayChangesNoRef(t *testing.T) {
 	if err != nil || len(rep.Updates) != 5 {
 		t.Errorf("Fetch without the lock = %+v, %v", rep, err)
 	}
+}
+
+// renameStep is one rename of a lead's branch for the tests of the move.
+type renameStep struct{ from, to string }
+
+// renames is the sequence of the renames across a "/" that the tests use: a
+// branch moves to a name that is a folder of another, and back.
+var renames = []renameStep{
+	{"feature/x", "feature"}, // a/b becomes a
+	{"feature", "feature/x"}, // a becomes a/b
+	{"feature/x", "feature/x/y"},
+	{"feature/x/y", "feature"},
+}
+
+func TestFetchRenamesABranchAcrossASlash(t *testing.T) {
+	// The branch feature/x of the lead becomes feature, and the reverse. A
+	// ref transaction that deletes a/b and creates a is refused by the files
+	// backend, so the move deletes first and creates after. Each fetch goes
+	// through and the mirror holds what the lead holds.
+	r := newRollbackEnv(t)
+	ctx := context.Background()
+	r.lead.git(t, "branch", "feature/x")
+	if _, err := r.m.Fetch(ctx, r.req()); err != nil {
+		t.Fatalf("the first Fetch = %v", err)
+	}
+	for _, rn := range renames {
+		r.lead.git(t, "branch", "-m", rn.from, rn.to)
+		rep, err := r.m.Fetch(ctx, r.req())
+		if err != nil {
+			t.Fatalf("Fetch after the rename %s to %s = %v", rn.from, rn.to, err)
+		}
+		want := []RefUpdate{
+			{Ref: r.prefix + rn.from, Old: r.tip0(t, rn.to)},
+			{Ref: r.prefix + rn.to, New: r.tip0(t, rn.to)},
+		}
+		slices.SortFunc(want, func(a, b RefUpdate) int { return strings.Compare(a.Ref, b.Ref) })
+		if !reflect.DeepEqual(rep.Updates, want) {
+			t.Errorf("rename %s to %s: Updates = %+v, want %+v", rn.from, rn.to, rep.Updates, want)
+		}
+		got := r.leadRefs(t)
+		wantRefs := []string{
+			r.prefix + "main " + r.tip + " commit ",
+			r.prefix + rn.to + " " + r.tip0(t, rn.to) + " commit ",
+		}
+		slices.Sort(wantRefs)
+		if !reflect.DeepEqual(got, wantRefs) {
+			t.Errorf("rename %s to %s: the lead's refs\n%q\nwant\n%q", rn.from, rn.to, got, wantRefs)
+		}
+	}
+	noLeftovers(t, r.m)
+}
+
+// tip0 returns the commit of the lead's branch.
+func (r *rollbackEnv) tip0(t *testing.T, branch string) string {
+	t.Helper()
+	return r.lead.git(t, "rev-parse", "refs/heads/"+branch)
+}
+
+func TestFetchPutsARenamedBranchBack(t *testing.T) {
+	// A check of step 9 fails after a move that renamed a branch across a
+	// "/": the restore deletes what the move created first, and then creates
+	// what it deleted, so the lead's refs are as before, in both directions.
+	for _, rn := range renames[:2] {
+		t.Run(rn.from+" to "+rn.to, func(t *testing.T) {
+			r := newRollbackEnv(t)
+			ctx := context.Background()
+			r.lead.git(t, "branch", rn.from)
+			if _, err := r.m.Fetch(ctx, r.req()); err != nil {
+				t.Fatalf("the first Fetch = %v", err)
+			}
+			before := r.leadRefs(t)
+			r.lead.git(t, "branch", "-m", rn.from, rn.to)
+			alt := filepath.Join(r.m.Path(), "objects", "info", "alternates")
+			atStep(t, 9, func() {
+				if err := os.WriteFile(alt, []byte(t.TempDir()+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			})
+			_, err := r.m.Fetch(ctx, r.req())
+			if err == nil || !strings.Contains(err.Error(), "alternates") || strings.Contains(err.Error(), "put back") {
+				t.Fatalf("Fetch = %v, want the alternates error alone", err)
+			}
+			if err := os.Remove(alt); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.leadRefs(t); !reflect.DeepEqual(got, before) {
+				t.Errorf("the lead's refs after the failure:\n%q\nbefore:\n%q", got, before)
+			}
+			noLeftovers(t, r.m)
+		})
+	}
+}
+
+func TestFetchSecondTransactionThatFailsPutsTheDeletesBack(t *testing.T) {
+	// The first transaction deletes develop and feature/x. A stale lock on a
+	// new branch makes the second fail. The namespace is as before, and
+	// between the two the deleted refs were really gone, so the test
+	// proves that the move has two transactions.
+	r := newRollbackEnv(t)
+	r.lead.git(t, "branch", "zzz")
+	before := mirrorRefs(t, r.m)
+	lock := filepath.Join(r.m.Path(), r.prefix+"zzz.lock")
+	var between []string
+	namespaceHook = func(phase int) {
+		if phase == 2 {
+			between = r.leadRefs(t)
+			// Git removed the folders of the deleted refs.
+			if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(lock, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { namespaceHook = nil })
+	_, err := r.m.Fetch(context.Background(), r.req())
+	if err == nil || strings.Contains(err.Error(), "created again") {
+		t.Fatalf("Fetch = %v, want the failure of the second transaction alone", err)
+	}
+	if len(between) != 0 {
+		t.Errorf("between the transactions the lead's refs were %q, want none", between)
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if got := mirrorRefs(t, r.m); !reflect.DeepEqual(got, before) {
+		t.Errorf("the refs after a failed second transaction:\n%q\nbefore:\n%q", got, before)
+	}
+	noLeftovers(t, r.m)
+}
+
+func TestFetchSaysWhenTheDeletesCannotBePutBack(t *testing.T) {
+	// The second transaction fails, and another writer creates develop
+	// between the two, so that creating it again fails as well: the error
+	// says both, and develop is the writer's.
+	r := newRollbackEnv(t)
+	r.lead.git(t, "branch", "zzz")
+	lock := filepath.Join(r.m.Path(), r.prefix+"zzz.lock")
+	namespaceHook = func(phase int) {
+		if phase == 2 {
+			r.ownerGit(t, "update-ref", r.prefix+"develop", r.f.first)
+			if err := os.WriteFile(lock, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { namespaceHook = nil })
+	_, err := r.m.Fetch(context.Background(), r.req())
+	if err == nil || !strings.Contains(err.Error(), "could not be created again") {
+		t.Fatalf("Fetch = %v, want both failures", err)
+	}
+	if strings.Contains(err.Error(), "develop") || strings.Contains(err.Error(), "zzz") {
+		t.Errorf("the error holds a ref name: %v", err)
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.ownerGit(t, "rev-parse", r.prefix+"develop"); got != r.f.first {
+		t.Errorf("develop = %s, want the writer's %s", got, r.f.first)
+	}
+	noLeftovers(t, r.m)
 }
 
 func TestFetchOutsideChangeIsANoteAndNotAnError(t *testing.T) {
@@ -254,7 +492,11 @@ func TestNewTipsAreWhatTheMirrorLacks(t *testing.T) {
 	file := []string{"file"}
 	mirrorGit(t, r.g, s.path, file, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options",
 		r.lead.tree, "+refs/heads/main:"+r.prefix+"main")
-	got, err := r.m.newTips(ctx, s, DefaultFetchLimits())
+	recs, err := r.m.snapshot(ctx, s.path, DefaultFetchLimits().MaxRefs, snapshotOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.m.newTips(ctx, recs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +509,11 @@ func TestNewTipsAreWhatTheMirrorLacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s2.remove()
-	if got, err := r.m.newTips(ctx, s2, DefaultFetchLimits()); err != nil || len(got) != 0 {
+	recs2, err := r.m.snapshot(ctx, s2.path, DefaultFetchLimits().MaxRefs, snapshotOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.m.newTips(ctx, recs2); err != nil || len(got) != 0 {
 		t.Errorf("newTips of an empty staging repository = %v, %v", got, err)
 	}
 }
@@ -292,16 +538,41 @@ func TestRestoreNamespace(t *testing.T) {
 	}
 
 	// Another writer moved a ref since the snapshot: the restore fails and
-	// changes nothing.
-	f.updateRef(t, prefix+"new", f.second)
-	mid := mirrorRefs(t, f.m)
-	if err := f.m.restoreNamespace(ctx, prefix, before, after); err == nil {
-		t.Fatal("restoreNamespace succeeded against a ref that moved")
+	// changes nothing. It is each kind of command in turn: the restore
+	// deletes new, updates develop (back to its first value) and creates
+	// feature/x, and each of them checks the value that the ref has now.
+	for _, tc := range []struct {
+		what, ref, move string // move is the writer's value; empty deletes
+	}{
+		{"a ref that the restore deletes", prefix + "new", f.second},
+		{"a ref that the restore updates", prefix + "develop", f.second},
+		{"a ref that the restore creates", prefix + "feature/x", f.second},
+	} {
+		was := mirrorRefs(t, f.m)
+		restoreTo := ""
+		for _, line := range was {
+			if strings.HasPrefix(line, tc.ref+" ") {
+				restoreTo = line
+			}
+		}
+		f.updateRef(t, tc.ref, tc.move)
+		mid := mirrorRefs(t, f.m)
+		if err := f.m.restoreNamespace(ctx, prefix, before, after); err == nil {
+			t.Fatalf("restoreNamespace succeeded against %s that moved", tc.what)
+		}
+		if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, mid) {
+			t.Errorf("a failed restore changed refs (%s):\n%q\n%q", tc.what, got, mid)
+		}
+		// Back to the value of the snapshot, or gone where it was gone.
+		if restoreTo == "" {
+			fixtureGit(t, f.g, ".", "--git-dir="+f.m.Path(), "update-ref", "-d", tc.ref)
+		} else {
+			f.updateRef(t, tc.ref, strings.Fields(restoreTo)[1])
+		}
+		if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, was) {
+			t.Fatalf("the test did not put %s back:\n%q\n%q", tc.what, got, was)
+		}
 	}
-	if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, mid) {
-		t.Errorf("a failed restore changed refs:\n%q\n%q", got, mid)
-	}
-	f.updateRef(t, prefix+"new", f.first)
 
 	if err := f.m.restoreNamespace(ctx, prefix, before, after); err != nil {
 		t.Fatal(err)

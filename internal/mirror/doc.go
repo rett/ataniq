@@ -50,7 +50,10 @@
 // objects as its only alternate. What arrived is checked there: sizes, the
 // number of refs, the names and types of the refs, and that the repository is
 // still what this package made. Only then do the branches move from the
-// staging repository into the mirror, in one atomic update of refs, and the
+// staging repository into the mirror: first the objects, fetched by object id
+// so that no ref is written, then the lead's refs, in two compare-and-swap
+// transactions of git update-ref, the deletes first and then the creates and
+// updates (a lead's rename of a branch across a "/" needs that order). The
 // refs outside the lead's namespace are compared with the snapshot taken
 // before. The fetch takes the
 // lead's branches only (+refs/heads/*:refs/leads/<role>/heads/*) and no tag,
@@ -68,10 +71,13 @@
 // # A failed fetch
 //
 // A failure before the move leaves the refs and the objects of the mirror as
-// they were. The move is atomic, so a move that fails leaves no ref changed.
-// If a check after the move fails, the lead's namespace is put back as it was
-// before the move, in one transaction, and the error is returned; if that
-// fails too, the error says so. The objects that the move brought stay, with
+// they were. A move that fails leaves no ref changed: the first transaction
+// deletes and the second creates and updates, and a failure of the second puts
+// back what the first deleted (the error says so if that fails too). If a
+// check after the move fails, or the listing after it, the lead's namespace is
+// put back as it was before the move, in the same two transactions the other
+// way (what the move created is deleted first), and the error is returned; if
+// that fails too, the error says so. A restore has a time limit of its own. The objects that the move brought stay, with
 // no ref that reaches them, and are the business of the owner's garbage
 // collection, which this package does not run.
 //

@@ -118,6 +118,10 @@ const (
 	// maxReportedRefs is how many ref names the text of
 	// [ErrUpstreamChanged] and [FetchReport.OutsideChanged] hold.
 	maxReportedRefs = 10
+	// moveRuns is how many git runs of the mirror's limit the move of step 8
+	// may take in all: the fetch of the objects, the two transactions, the
+	// listing after them, and one to spare.
+	moveRuns = 5
 )
 
 // watchInterval is how often the watchdog of a fetch measures the staging
@@ -134,8 +138,9 @@ const maxWatchFailures = 3
 var watchMeasureHook func() (safefs.Size, error)
 
 // fetchHook is called by a fetch right before each of the steps 3 to 10, with
-// the number of the step. It is nil outside the tests, which use it to stop
-// a fetch at a given step, for example with a panic.
+// the number of the step, and once more, with 90, right after the listing that
+// step 9 makes. It is nil outside the tests, which use it to stop a fetch at a
+// given step, for example with a panic.
 var fetchHook func(step int)
 
 func hook(step int) {
@@ -179,15 +184,26 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //     fails refuses the whole fetch with [ErrRefused] and the count of such
 //     refs, never their names. The staging repository must still be what this
 //     code made.
-//  8. The branches move from the staging repository into the mirror, with
-//     refs of the lead's namespace only, pruning, and all or none of the ref
-//     updates (git fetch --atomic): a move that fails leaves no ref changed.
+//  8. The branches move from the staging repository into the mirror, in two
+//     parts. First the objects that the mirror lacks are fetched from the
+//     staging repository by object id, with no ref destination, so the fetch
+//     writes no ref. Then the lead's namespace, and only it, is changed to
+//     what the staging repository holds, in two compare-and-swap
+//     transactions of git update-ref --stdin -z: first every delete, then
+//     every create and update. The two steps are needed because the files
+//     backend refuses a delete of a/b and a create of a in one transaction,
+//     which is what a lead's rename of a branch across a "/" is. A failure of
+//     the second transaction puts back what the first deleted. A move that
+//     fails leaves no ref changed.
 //  9. The refs of the mirror are listed again. A ref outside the lead's
 //     namespace that holds an object that this fetch staged is a bug or an
 //     attack ([ErrUpstreamChanged]), and so is an alternates file in the
 //     mirror. In both cases the lead's namespace is put back as it was before
-//     the move, in one transaction (git update-ref --stdin), and then the
-//     error is returned; if putting it back fails too, the error says both.
+//     the move, in the same two transactions in the other direction (what the
+//     move created is deleted first), and then the error is returned; if
+//     putting it back fails too, the error says both. The same holds when the
+//     listing itself fails: the lead's namespace is then put back against the
+//     values that the move wrote, the refs of the staging repository.
 //     Any other ref outside the namespace that differs is listed in
 //     [FetchReport.OutsideChanged] and left alone.
 //  10. The staging repository is deleted, on every path and on a panic, and
@@ -195,7 +211,8 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //
 // From step 8 on, the fetch is not cancelled by ctx or by the time limit: a
 // git run killed in the middle of the move would leave refs half moved. Each
-// git run there has the mirror's own time limit.
+// git run there has the mirror's own time limit, and a restore or an undo has
+// a time limit of its own that the move cannot have spent.
 //
 // The objects that a failed fetch brought into the mirror in step 8 stay. They
 // are not reachable from any ref and they are not a danger; the owner's
@@ -327,10 +344,11 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	if before+staged > lim.MaxMirror {
 		return &LimitError{What: "mirror", Got: before + staged, Max: lim.MaxMirror}
 	}
-	if err := m.checkArrived(ctx, st, prefix, lim); err != nil {
+	stagedRecs, err := m.checkArrived(ctx, st, prefix, lim)
+	if err != nil {
 		return timedOut(err)
 	}
-	newTips, err := m.newTips(ctx, st, lim)
+	newTips, err := m.newTips(ctx, stagedRecs)
 	if err != nil {
 		return timedOut(err)
 	}
@@ -340,17 +358,12 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 
 	// Step 8. The move is not cancelled: see the comment of Fetch.
 	hook(8)
-	move, cancelMove := context.WithTimeout(context.WithoutCancel(ctx), 3*m.limits.timeout())
+	move, cancelMove := context.WithTimeout(context.WithoutCancel(ctx), moveRuns*m.limits.timeout())
 	defer cancelMove()
-	if _, err := m.run(move, gitenv.Cmd{
-		GitDir:    m.path,
-		Protocols: []string{"file"},
-		Args: []string{
-			"fetch", "--atomic", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
-			"--no-auto-maintenance", "--prune", "--end-of-options",
-			st.path, "+" + prefix + "*:" + prefix + "*",
-		},
-	}, nil, fetchOutput); err != nil {
+	if err := m.fetchObjects(move, st, newTips); err != nil {
+		return err
+	}
+	if err := m.changeNamespace(move, prefix, snapBefore, stagedRecs); err != nil {
 		return err
 	}
 
@@ -358,8 +371,11 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	hook(9)
 	snapAfter, err := m.snapshotMirror(move)
 	if err != nil {
-		return err
+		// Without the listing, the move is still known: the lead's namespace
+		// is what the staging repository held. Put it back against that.
+		return m.rollback(move, prefix, snapBefore, namespaceAfter(snapBefore, stagedRecs, prefix), err)
 	}
+	hook(90)
 	updates, outside := compareSnapshots(snapBefore, snapAfter, prefix)
 	if bad := stagedRefs(outside, newTips); len(bad) > 0 {
 		return m.rollback(move, prefix, snapBefore, snapAfter, upstreamChanged(bad))
@@ -468,6 +484,12 @@ func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan
 			// fine and the measure after the fetch decides. A walk that
 			// keeps failing would turn the limit off, so it stops the fetch.
 			if failures++; failures >= maxWatchFailures {
+				// The path of a failed walk is a ref file of the lead, whose
+				// name is the lead's text: keep the cause and drop the path.
+				var pe *fs.PathError
+				if errors.As(err, &pe) {
+					err = pe.Err
+				}
 				return fmt.Errorf("mirror: the staging folder could not be measured: %w", err)
 			}
 			return nil
@@ -535,21 +557,22 @@ func negotiationTips(snap []record, prefix string) []string {
 }
 
 // checkArrived is the check of step 7 on the refs and on the staging
-// repository itself.
-func (m *Mirror) checkArrived(ctx context.Context, st *staging, prefix string, lim FetchLimits) error {
+// repository itself. It returns the refs of the staging repository, sorted by
+// name: what the move writes into the mirror.
+func (m *Mirror) checkArrived(ctx context.Context, st *staging, prefix string, lim FetchLimits) ([]record, error) {
 	reason, err := st.check(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if reason != "" {
-		return fmt.Errorf("%w: %s", ErrRefused, reason)
+		return nil, fmt.Errorf("%w: %s", ErrRefused, reason)
 	}
 	recs, err := m.snapshot(ctx, st.path, lim.MaxRefs, int64(lim.MaxRefs+1)*snapshotRecord)
 	if errors.Is(err, ErrTooManyRefs) {
-		return &LimitError{What: "refs", Got: int64(lim.MaxRefs) + 1, Max: int64(lim.MaxRefs)}
+		return nil, &LimitError{What: "refs", Got: int64(lim.MaxRefs) + 1, Max: int64(lim.MaxRefs)}
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bad := 0
 	for _, r := range recs {
@@ -559,9 +582,9 @@ func (m *Mirror) checkArrived(ctx context.Context, st *staging, prefix string, l
 		}
 	}
 	if bad > 0 {
-		return fmt.Errorf("%w: %d of %d refs fail the checks of names and types", ErrRefused, bad, len(recs))
+		return nil, fmt.Errorf("%w: %d of %d refs fail the checks of names and types", ErrRefused, bad, len(recs))
 	}
-	return nil
+	return recs, nil
 }
 
 // outsideChange is a ref outside the lead's namespace that differs between two
@@ -623,9 +646,9 @@ func compareSnapshots(before, after []record, prefix string) ([]RefUpdate, []out
 	return updates, outside
 }
 
-// newTips returns the ids of the refs of the staging repository that the
-// mirror does not hold: the tips that this fetch staged. The mirror is asked
-// before the move, when it still has only what it had before the fetch. A
+// newTips returns the ids of the refs of the staging repository, recs, that
+// the mirror does not hold: the tips that this fetch staged. The mirror is
+// asked before the move, when it still has only what it had before the fetch. A
 // staging repository holds, in its own object store, exactly what the lead
 // sent that the mirror lacked, and the staging repository's alternate is the
 // mirror; so a tip that the mirror lacks is in the staging repository's own
@@ -636,14 +659,7 @@ func compareSnapshots(before, after []record, prefix string) ([]RefUpdate, []out
 // those values are these tips. A ref outside the namespace that holds one of
 // them was written by the move or by a bug; a ref that holds any other value
 // was not written by this fetch.
-func (m *Mirror) newTips(ctx context.Context, st *staging, lim FetchLimits) (map[string]bool, error) {
-	recs, err := m.snapshot(ctx, st.path, lim.MaxRefs, int64(lim.MaxRefs+1)*snapshotRecord)
-	if errors.Is(err, ErrTooManyRefs) {
-		return nil, &LimitError{What: "refs", Got: int64(lim.MaxRefs) + 1, Max: int64(lim.MaxRefs)}
-	}
-	if err != nil {
-		return nil, err
-	}
+func (m *Mirror) newTips(ctx context.Context, recs []record) (map[string]bool, error) {
 	var ids []string
 	seen := map[string]bool{}
 	for _, r := range recs {
@@ -707,56 +723,158 @@ func upstreamChanged(names []string) error {
 	return fmt.Errorf("%w: %d ref(s): %s%s", ErrUpstreamChanged, len(names), strings.Join(shown, ", "), more)
 }
 
+// namespaceAfter returns the snapshot that the mirror has after a move that
+// changed the namespace under prefix from its value in before to staged, the
+// refs of the staging repository, and nothing else: the refs of before outside
+// prefix, and staged, sorted by name. It is what the mirror holds if the move
+// did what it was asked, and it is known without a second listing.
+func namespaceAfter(before, staged []record, prefix string) []record {
+	after := make([]record, 0, len(before)+len(staged))
+	for _, r := range before {
+		if !strings.HasPrefix(r.Name, prefix) {
+			after = append(after, r)
+		}
+	}
+	after = append(after, staged...)
+	slices.SortFunc(after, func(a, b record) int { return strings.Compare(a.Name, b.Name) })
+	return after
+}
+
 // rollback puts the lead's namespace back as it was in before, after a check
 // of step 9 failed with cause, and returns cause. If that fails too, the
-// returned error holds both.
+// returned error holds both. The restore does not share the time of the move,
+// which may be spent: ctx gives it its values and not its deadline or its
+// cancellation, and each git run of the restore has the mirror's own limit.
 func (m *Mirror) rollback(ctx context.Context, prefix string, before, after []record, cause error) error {
+	ctx = context.WithoutCancel(ctx)
 	if err := m.restoreNamespace(ctx, prefix, before, after); err != nil {
 		return errors.Join(cause, fmt.Errorf("mirror: the lead's refs could not be put back as they were: %w", err))
 	}
 	return cause
 }
 
-// restoreNamespace sets every ref under prefix that differs between before and
-// after to its value in before, and deletes those that before lacks, in one
-// transaction of git update-ref --stdin -z: all of it or none. Each command
-// names the value that the ref has in after, so a ref that someone else moved
-// in the meantime makes the transaction fail and nothing change. A symbolic
-// ref under prefix is not restored; the fetch makes none, and the error says
-// so.
+// restoreNamespace puts the lead's namespace back to its value in before, after
+// the move changed it to its value in after: see [Mirror.changeNamespace]. A
+// ref that someone else moved in the meantime makes it fail.
 func (m *Mirror) restoreNamespace(ctx context.Context, prefix string, before, after []record) error {
-	updates, _ := compareSnapshots(before, after, prefix)
+	return m.changeNamespace(ctx, prefix, after, before)
+}
+
+// namespaceHook is called by changeNamespace with 1 right before its first
+// transaction (the deletes) and with 2 right before its second (the creates and
+// updates, after the first is done). It is nil outside the tests, which use it
+// to act between the two.
+var namespaceHook func(phase int)
+
+// changeNamespace changes the refs under prefix from their values in from to
+// their values in to, which are two snapshots sorted by name. Refs outside
+// prefix are not looked at. It runs in two compare-and-swap transactions of
+// git update-ref --no-deref --stdin -z: the first deletes every ref that to
+// lacks, the second creates and updates the others. Every command names the
+// value that the ref has in from (nothing, for a create), so a ref that
+// someone else moved in the meantime makes that transaction fail and change
+// nothing.
+//
+// The deletes come first because the files backend refuses to delete a/b and
+// create a in one transaction, and a lead's rename of a branch across a "/" is
+// that. If the second transaction fails, the refs that the first deleted are
+// created again, and the error from the second is returned; if that fails too,
+// the returned error holds both. In between, the namespace holds a subset of
+// its refs, under the lock of the fetch. A failure of the first transaction
+// leaves nothing changed. A symbolic ref under prefix, in either snapshot, is
+// refused before anything changes: the fetch makes none.
+//
+// A restore or an undo runs on a context with the values of ctx and none of
+// its deadline, so each git run has the mirror's own limit.
+func (m *Mirror) changeNamespace(ctx context.Context, prefix string, from, to []record) error {
+	updates, _ := compareSnapshots(from, to, prefix)
 	if len(updates) == 0 {
 		return nil
 	}
-	rec := func(snap []record, name string) *record {
+	symbolic := func(snap []record, name string) bool {
 		i, ok := slices.BinarySearchFunc(snap, name, func(r record, n string) int { return strings.Compare(r.Name, n) })
-		if !ok {
-			return nil
-		}
-		return &snap[i]
+		return ok && snap[i].Symref != ""
 	}
-	var tx strings.Builder
+	var deletes, writes, undo strings.Builder
 	for _, u := range updates {
-		if r := rec(before, u.Ref); r != nil && r.Symref != "" {
-			return errors.New("a symbolic ref is in the lead's namespace")
-		}
-		if r := rec(after, u.Ref); r != nil && r.Symref != "" {
+		if symbolic(from, u.Ref) || symbolic(to, u.Ref) {
 			return errors.New("a symbolic ref is in the lead's namespace")
 		}
 		switch {
-		case u.Old == "":
-			tx.WriteString("delete " + u.Ref + "\x00" + u.New + "\x00")
 		case u.New == "":
-			tx.WriteString("create " + u.Ref + "\x00" + u.Old + "\x00")
+			deletes.WriteString("delete " + u.Ref + "\x00" + u.Old + "\x00")
+			undo.WriteString("create " + u.Ref + "\x00" + u.Old + "\x00")
+		case u.Old == "":
+			writes.WriteString("create " + u.Ref + "\x00" + u.New + "\x00")
 		default:
-			tx.WriteString("update " + u.Ref + "\x00" + u.Old + "\x00" + u.New + "\x00")
+			writes.WriteString("update " + u.Ref + "\x00" + u.New + "\x00" + u.Old + "\x00")
 		}
 	}
+	if namespaceHook != nil {
+		namespaceHook(1)
+	}
+	if deletes.Len() > 0 {
+		if err := m.updateRefs(ctx, deletes.String()); err != nil {
+			return err
+		}
+	}
+	if namespaceHook != nil {
+		namespaceHook(2)
+	}
+	if writes.Len() > 0 {
+		err := m.updateRefs(ctx, writes.String())
+		if err == nil {
+			return nil
+		}
+		if undo.Len() == 0 {
+			return err
+		}
+		if uerr := m.updateRefs(context.WithoutCancel(ctx), undo.String()); uerr != nil {
+			return errors.Join(err, fmt.Errorf("mirror: the refs that were deleted could not be created again: %w", uerr))
+		}
+		return err
+	}
+	return nil
+}
+
+// updateRefs runs one transaction of git update-ref --no-deref --stdin -z. The
+// text is the commands, each ending in NUL: all of them apply or none.
+func (m *Mirror) updateRefs(ctx context.Context, tx string) error {
 	_, err := m.run(ctx, gitenv.Cmd{
 		GitDir: m.path,
 		Args:   []string{"update-ref", "--no-deref", "--stdin", "-z"},
-	}, strings.NewReader(tx.String()), smallOutput)
+	}, strings.NewReader(tx), smallOutput)
+	return err
+}
+
+// fetchObjects brings the objects of the tips from the staging repository into
+// the mirror, with no ref destination: git fetch of the object ids writes no
+// ref and no FETCH_HEAD. The refs are then changed by [Mirror.changeNamespace].
+// A tip that the mirror holds is not named, since the staging repository has
+// the mirror's objects as its alternate; with none to fetch, nothing runs.
+//
+// The other way, a refspec into a temporary namespace that this code deletes
+// again, was not chosen: it writes refs that a crash would leave behind, and
+// it needs a second change of refs. A want of an object id needs no ref and
+// works here because gitenv selects protocol version 2, where upload-pack
+// serves any object that it has; the staging repository has every tip.
+func (m *Mirror) fetchObjects(ctx context.Context, st *staging, tips map[string]bool) error {
+	if len(tips) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(tips))
+	for id := range tips {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	_, err := m.run(ctx, gitenv.Cmd{
+		GitDir:    m.path,
+		Protocols: []string{"file"},
+		Args: slices.Concat(
+			[]string{"fetch", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--end-of-options", st.path},
+			ids,
+		),
+	}, nil, fetchOutput)
 	return err
 }
 
