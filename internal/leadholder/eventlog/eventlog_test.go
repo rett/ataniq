@@ -892,17 +892,121 @@ func TestH14AppendTakesNoFreeFormValue(t *testing.T) {
 	}
 }
 
-func TestH14TypedInputDoesNotReachTheFile(t *testing.T) {
-	// A session with typing: the holder logs the attach, resizes and an
-	// injection, but nothing it logs has a place for the typed bytes.
-	dir := newDir(t)
-	l := openLog(t, dir, Options{})
-	secret := "hunter2-typed-by-the-owner"
-	mustAppend(t, l, KindHolder, EventAttach, Fields{ClientName: "console", ClientPID: 42})
-	mustAppend(t, l, KindHolder, EventResize, Fields{Cols: 100, Rows: 30})
-	mustAppend(t, l, KindAtaniqObservation, EventInject, Fields{Digest: "sha256:abc123", Reason: "accepted"})
-	raw, _ := os.ReadFile(filepath.Join(dir, FileName))
-	if bytes.Contains(raw, []byte(secret)) {
-		t.Fatal("typed text in the log")
+// frozenField is one reviewed field: its name, its type and its JSON tag.
+type frozenField struct{ name, typ, tag string }
+
+// reviewedEvent and reviewedFields are the whole field set of the log line,
+// reviewed for design case H14. A field added to Event or Fields fails
+// TestH14FieldSetIsReviewed until it is added here on purpose, by a reviewer
+// who has checked that it takes no input bytes and no screen text. The order
+// is the order of the struct.
+var reviewedEvent = []frozenField{
+	{"Time", "time.Time", `json:"time"`},
+	{"Seq", "uint64", `json:"seq"`},
+	{"Kind", "eventlog.Kind", `json:"kind"`},
+	{"Event", "eventlog.EventName", `json:"event"`},
+	{"Fields", "eventlog.Fields", ``},
+}
+
+var reviewedFields = []frozenField{
+	{"Role", "string", `json:"role,omitempty"`},
+	{"Epoch", "string", `json:"epoch,omitempty"`},
+	{"ClientName", "string", `json:"client,omitempty"`},
+	{"ClientPID", "int", `json:"client_pid,omitempty"`},
+	{"ClientCommand", "string", `json:"client_cmd,omitempty"`},
+	{"Cols", "int", `json:"cols,omitempty"`},
+	{"Rows", "int", `json:"rows,omitempty"`},
+	{"Reason", "string", `json:"reason,omitempty"`},
+	{"State", "string", `json:"state,omitempty"`},
+	{"Counters", "map[string]uint64", `json:"counters,omitempty"`},
+	{"Digest", "string", `json:"digest,omitempty"`},
+	{"ExitStatus", "*int", `json:"exit_status,omitempty"`},
+	{"StreamEnded", "*bool", `json:"stream_ended,omitempty"`},
+	{"TUIExited", "*bool", `json:"tui_exited,omitempty"`},
+	{"TreeGone", "*bool", `json:"tree_gone,omitempty"`},
+}
+
+// diffFields returns every difference between the exported fields of typ and
+// the reviewed list: a field that is not listed, a listed field that is gone
+// and a changed type or tag.
+func diffFields(typ reflect.Type, want []frozenField) []string {
+	var bad []string
+	have := map[string]frozenField{}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		have[f.Name] = frozenField{f.Name, f.Type.String(), string(f.Tag)}
+	}
+	listed := map[string]bool{}
+	for _, w := range want {
+		listed[w.name] = true
+		h, ok := have[w.name]
+		switch {
+		case !ok:
+			bad = append(bad, fmt.Sprintf("%s: reviewed field %s is gone", typ.Name(), w.name))
+		case h != w:
+			bad = append(bad, fmt.Sprintf("%s.%s is %s %s, reviewed as %s %s", typ.Name(), w.name, h.typ, h.tag, w.typ, w.tag))
+		}
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		if n := typ.Field(i).Name; !listed[n] {
+			bad = append(bad, fmt.Sprintf("%s.%s %s is not in the reviewed set", typ.Name(), n, typ.Field(i).Type))
+		}
+	}
+	if typ.NumField() != len(want) && len(bad) == 0 {
+		bad = append(bad, fmt.Sprintf("%s has %d fields, %d reviewed", typ.Name(), typ.NumField(), len(want)))
+	}
+	return bad
+}
+
+func TestH14FieldSetIsReviewed(t *testing.T) {
+	for _, c := range []struct {
+		typ  reflect.Type
+		want []frozenField
+	}{
+		{reflect.TypeOf(Event{}), reviewedEvent},
+		{reflect.TypeOf(Fields{}), reviewedFields},
+	} {
+		for _, p := range diffFields(c.typ, c.want) {
+			t.Error(p)
+		}
+	}
+}
+
+func TestH14TheFrozenListCanFail(t *testing.T) {
+	want := []frozenField{
+		{"Role", "string", `json:"role"`},
+		{"Pid", "int", `json:"pid"`},
+	}
+	cases := map[string]any{
+		"same": struct {
+			Role string `json:"role"`
+			Pid  int    `json:"pid"`
+		}{},
+		"a new field with a harmless name": struct {
+			Role   string `json:"role"`
+			Pid    int    `json:"pid"`
+			Detail string `json:"detail"`
+		}{},
+		"a changed type": struct {
+			Role string `json:"role"`
+			Pid  int64  `json:"pid"`
+		}{},
+		"a changed tag": struct {
+			Role string `json:"role"`
+			Pid  int    `json:"process"`
+		}{},
+		"a removed field": struct {
+			Role string `json:"role"`
+		}{},
+		"a renamed field": struct {
+			Role string `json:"role"`
+			PID  int    `json:"pid"`
+		}{},
+	}
+	for name, v := range cases {
+		bad := diffFields(reflect.TypeOf(v), want)
+		if (name == "same") != (len(bad) == 0) {
+			t.Errorf("%s: problems %v", name, bad)
+		}
 	}
 }

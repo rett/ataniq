@@ -11,9 +11,25 @@
 // [Fields] is a struct of small typed values. It has no field that takes input
 // bytes or screen text, no []byte, no free map[string]any and no interface.
 // Every string is capped, and a code-like string (reason, state, digest,
-// counter name) is also restricted to a small character set. A test reflects
-// over the exported types so that a later change adding such a field fails
-// there (design case H14).
+// counter name) is also restricted to a small character set.
+//
+// Two checks in the tests keep it that way (design case H14). One freezes the
+// exported fields of [Event] and [Fields], by name, type and JSON tag, against
+// a list a reviewer has read: any new field fails there until the list is
+// changed on purpose. The other rejects, by type and by name, a field that
+// could carry bytes, a slice of bytes, an interface or a word like "text".
+// Neither can tell what a caller puts into a string field, so the free-text
+// fields are named here.
+//
+// # Free text
+//
+// Four fields take any text, capped and made valid UTF-8, but not restricted
+// to a character set. ClientName and ClientCommand come from the peer's
+// process (the client's name and its command line). Role and Epoch come from
+// the holder's own configuration. The caller must take them only from those
+// sources: never from the terminal, the session's output or anything typed.
+// Every other string is a code. The package cannot check where a value came
+// from; the frozen field set above is what stops a new text field.
 //
 // # Files and bounds
 //
