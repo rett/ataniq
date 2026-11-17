@@ -134,9 +134,11 @@ func (r ServeRequest) Validate() error {
 // ServePlan is how to serve one lead's clone.
 type ServePlan struct {
 	// UploadPack is the complete argv that runs git-upload-pack sandboxed.
-	// Git appends the repository path as one more argument. The argv
-	// carries its own environment: the launcher's environment is not for
-	// it.
+	// Git appends the repository path as one more argument. Git starts the
+	// command, through sh, with the environment of the process that
+	// fetches, and the plan has no environment for it. So the argv must
+	// clear the environment itself, for example with bwrap --clearenv or
+	// env -i.
 	UploadPack []string
 	// Repository is the path of the lead's clone as the serving half
 	// sees it, inside the sandbox.

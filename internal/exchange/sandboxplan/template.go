@@ -63,6 +63,12 @@ const TemplateVersion = 1
 // it is an absolute, clean path written out in full, with no placeholder and
 // no brace.
 //
+// "upload_pack" has no environment list. Git starts the upload-pack command,
+// through sh, with the environment of the process that fetches, and that
+// environment may hold owner credentials or SSH_AUTH_SOCK. The argv itself
+// must clear the environment it is started with (for example bwrap with
+// --clearenv, or env -i). Nothing in this package can do it for the owner.
+//
 // Either section may be absent. The matching method then returns
 // [ErrNotConfigured].
 //
