@@ -214,19 +214,26 @@ cell. The columns after it then stay where the pane put them. The cockpit's
 own text follows the same rule. A cell holding more than 64 bytes also becomes
 a placeholder, in either mode.
 
-Use over SSH is not qualified. <!-- owner: confirm wording -->
+Use over SSH is not qualified. The only SSH use checked by hand so far is
+`ssh localhost`: see [Qualification](#qualification).
 
 ## Qualification
 
-Nothing in the console is qualified. <!-- owner: confirm wording -->
-It hosts no live session: it only replays fixture recordings. <!-- owner: confirm wording -->
-It has no live backend, and every control is unavailable. <!-- owner: confirm wording -->
+Nothing in the console is qualified. It hosts no live session: it only replays
+fixture recordings. It has no live backend, and every control is unavailable.
 Use over SSH, terminal restoration after a startup error and any live control
-are not qualified. <!-- owner: confirm wording -->
-The automated tests check keys, layout, the replay and the input handling.
-They are not a qualification of the console in a real terminal. <!-- owner: confirm wording -->
-An attended check in a real terminal, directly and over SSH, at two window
-sizes with zoom and the return key, is still to be done. <!-- owner: confirm wording -->
+are not qualified. The automated tests check keys, layout, the replay and the
+input handling. They do not qualify the console in a real terminal.
+
+One person made one attended check, on 2026-11-16, in one terminal (Ghostty),
+on one machine, with fixture recordings only. It is not a qualification. The
+check ran locally and over `ssh localhost`, including with
+`TERM=xterm-256color`. It passed for the layout, focus and the return key
+(with CapsLock and NumLock), F12 zoom, Ctrl+K, a resize across the 100x30
+boundary, the ended state, emoji alignment, the `mouse-held.jsonl` recording
+and restoring the terminal after quit. It found one problem: mouse selection
+is not confined to the session pane. The terminal's own selection spans the
+window. Confining it is planned.
 
 The pane does not track the kitty keyboard flags a session may set. The
 console sets no keyboard enhancement of its own. Bubble Tea always asks the
