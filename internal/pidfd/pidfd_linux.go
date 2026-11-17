@@ -25,12 +25,29 @@ func Open(pid int) (*os.File, error) {
 // non-blocking poll. It reports exit of that one process only, not of its
 // children or of its control group, and an exited process may still be a
 // zombie its parent has not reaped.
+//
+// A signal can interrupt the poll (EINTR), which the Go runtime's own
+// preemption signals make frequent under the race detector. The poll has a
+// zero timeout and cannot block, so Exited repeats it on EINTR and on
+// nothing else.
 func Exited(f *os.File) (bool, error) {
+	return exitedWith(f, unix.Poll)
+}
+
+// exitedWith is Exited with the poll call supplied, so a test can make it
+// fail with EINTR.
+func exitedWith(f *os.File, pollFn func([]unix.PollFd, int) (int, error)) (bool, error) {
 	poll := []unix.PollFd{{Fd: int32(f.Fd()), Events: unix.POLLIN}}
-	if _, err := unix.Poll(poll, 0); err != nil {
-		return false, err
+	for {
+		_, err := pollFn(poll, 0)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		return Events(poll[0].Revents)
 	}
-	return Events(poll[0].Revents)
 }
 
 // Events decodes the revents of a poll on a pidfd. POLLIN (the process has
