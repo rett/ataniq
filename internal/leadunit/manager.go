@@ -31,14 +31,26 @@ var (
 )
 
 // Manager manages the transient user unit of a lead role. Every method takes
-// a context and returns its error at once when the context is done. An
-// implementation is safe for concurrent use.
+// a context and returns at once, with the context's error, when the context is
+// done before the call does anything; for [Manager.Start] the rule for a
+// context that ends later is its own, below. An implementation is safe for
+// concurrent use.
 type Manager interface {
 	// Start starts the unit the spec describes and returns its state. It
-	// returns [ErrUnitExists] when the unit name is loaded, an error wrapping
-	// [ErrInvalidSpec] for a spec that does not validate, and [ErrReplyLost]
-	// (with a zero State) when the outcome is unknown. After [ErrReplyLost]
-	// the caller inspects and never starts again for that intent.
+	// returns [ErrUnitExists] when the unit name is loaded and an error
+	// wrapping [ErrInvalidSpec] for a spec that does not validate.
+	//
+	// An error that wraps [ErrReplyLost] (with a zero State) is returned
+	// whenever the outcome is unknown: the context ends, or anything else
+	// fails, after the start request may have been sent. When the cause is a
+	// context that ended, the error wraps both [ErrReplyLost] and the
+	// context's error, so errors.Is finds either; a bare context error is
+	// never returned for a request that may have been sent. Every other error
+	// means nothing was started and nothing will be: a context that was
+	// already done, an invalid spec, [ErrUnitExists], and [ErrUnavailable]
+	// (which Start returns only when the request was not sent). After
+	// [ErrReplyLost] the caller inspects and never starts again for that
+	// intent.
 	Start(ctx context.Context, spec Spec) (State, error)
 
 	// Inspect returns the state of the unit. A unit that is not loaded is

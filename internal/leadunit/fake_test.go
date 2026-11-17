@@ -752,3 +752,111 @@ func TestFakeConcurrentUse(t *testing.T) {
 		}
 	}
 }
+
+// TestFakeExpiredStartIsReplyLost: a deadline that passes after the request was
+// sent starts the unit and returns an error that is ErrReplyLost and also the
+// context error, never a bare context error.
+func TestFakeExpiredStartIsReplyLost(t *testing.T) {
+	r := newRig(t)
+	r.fake.ExpireNextStart(unitA)
+	st, err := r.fake.Start(r.ctx, r.spec(unitA, 1))
+	if !errors.Is(err, ErrReplyLost) || !errors.Is(err, context.DeadlineExceeded) || !reflect.DeepEqual(st, State{}) {
+		t.Fatalf("got %+v, %v", st, err)
+	}
+	got := r.inspect(unitA)
+	if !got.Live() || !got.Ours || got.Epoch != 1 {
+		t.Fatalf("the unit is not running: %+v", got)
+	}
+	if n := len(r.fake.StartedSpecs()); n != 1 {
+		t.Fatalf("%d specs", n)
+	}
+	if c := r.fake.CallsOf(MethodStart); len(c) != 1 || c[0].Invocation != got.InvocationID || !errors.Is(c[0].Err, ErrReplyLost) {
+		t.Fatalf("log: %+v", c)
+	}
+	// The caller must not start again for that intent.
+	if _, err := r.fake.Start(r.ctx, r.spec(unitA, 1)); !errors.Is(err, ErrUnitExists) {
+		t.Fatalf("second start: %v", err)
+	}
+}
+
+// TestFakeContextEndsDuringStartDelay: a context that ends while the reply of a
+// started unit is delayed loses the reply and not the unit.
+func TestFakeContextEndsDuringStartDelay(t *testing.T) {
+	r := newRig(t)
+	r.fake.DelayNextStart(unitA, 5*time.Second)
+	ctx, cancel := context.WithCancel(r.ctx)
+	defer cancel()
+	type result struct {
+		st  State
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		st, err := r.fake.Start(ctx, r.spec(unitA, 1))
+		done <- result{st, err}
+	}()
+	bctx, bcancel := context.WithTimeout(r.ctx, 10*time.Second)
+	defer bcancel()
+	if err := r.clock.BlockUntil(bctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	// The unit is running and other calls are served during the delay.
+	if got := r.inspect(unitA); !got.Live() || got.Epoch != 1 {
+		t.Fatalf("during the delay: %+v", got)
+	}
+	select {
+	case res := <-done:
+		t.Fatalf("Start returned early: %+v", res)
+	default:
+	}
+	cancel()
+	res := <-done
+	if !errors.Is(res.err, ErrReplyLost) || !errors.Is(res.err, context.Canceled) || !reflect.DeepEqual(res.st, State{}) {
+		t.Fatalf("got %+v, %v", res.st, res.err)
+	}
+	if !r.fake.Loaded(unitA) {
+		t.Fatal("the unit is gone")
+	}
+	// The log has the Start before the Inspect that saw its unit, with the
+	// error the call returned.
+	calls := r.fake.Calls()
+	if len(calls) != 2 || calls[0].Method != MethodStart || calls[1].Method != MethodInspect || !errors.Is(calls[0].Err, ErrReplyLost) || calls[0].Invocation == "" {
+		t.Fatalf("log: %+v", calls)
+	}
+	if r.clock.Waiters() != 0 {
+		t.Fatalf("waiters: %d", r.clock.Waiters())
+	}
+}
+
+// TestFakeStartDelayWithinContext: without a context that ends, the delayed
+// reply is the ordinary one.
+func TestFakeStartDelayWithinContext(t *testing.T) {
+	r := newRig(t)
+	r.fake.DelayNextStart(unitA, 5*time.Second)
+	type result struct {
+		st  State
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		st, err := r.fake.Start(r.ctx, r.spec(unitA, 1))
+		done <- result{st, err}
+	}()
+	bctx, bcancel := context.WithTimeout(r.ctx, 10*time.Second)
+	defer bcancel()
+	if err := r.clock.BlockUntil(bctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	r.clock.Advance(5 * time.Second)
+	res := <-done
+	if res.err != nil || !res.st.Live() || res.st != r.inspect(unitA) {
+		t.Fatalf("got %+v, %v", res.st, res.err)
+	}
+	// A delay of 0 is no delay, and a failed start is not delayed.
+	r.fake.DelayNextStart("ataniq-lead-b.service", 0)
+	r.start("ataniq-lead-b.service", 1)
+	r.fake.DelayNextStart(unitA, time.Hour)
+	if _, err := r.fake.Start(r.ctx, r.spec(unitA, 2)); !errors.Is(err, ErrUnitExists) {
+		t.Fatalf("got %v", err)
+	}
+}

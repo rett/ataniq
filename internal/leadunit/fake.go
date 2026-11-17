@@ -51,8 +51,9 @@ type ProcScript struct {
 }
 
 // Call is one entry of the call log of a [Fake]. The entry is appended when
-// the call returns, so the order of the log is the order in which the calls
-// took effect.
+// the call takes effect, which is when it returns except for a Start with a
+// scripted reply delay, so the order of the log is the order in which the
+// calls took effect.
 type Call struct {
 	// Seq numbers the calls from 1.
 	Seq int
@@ -79,9 +80,10 @@ type Call struct {
 // the rules the contract fixes (a second Start for a loaded unit is
 // [ErrUnitExists], a unit whose control group is empty is collected, a Signal
 // for a stale invocation is refused) and lets a test script the failures:
-// lost start replies, failing starts, processes that ignore SIGTERM or
-// survive SIGKILL, an unavailable manager, a unit that dies by itself, a
-// reboot and a foreign unit with the name of a role.
+// lost start replies (also by a context that ends after the request was
+// sent), failing starts, processes that ignore SIGTERM or survive SIGKILL, an
+// unavailable manager, a unit that dies by itself, a reboot and a foreign unit
+// with the name of a role.
 //
 // Time is the injected [Clock]. A process that exits after a delay does so
 // when the clock has passed it and the next call observes it. Setup methods
@@ -128,11 +130,14 @@ const (
 	outcomeLoseReply startOutcomeKind = iota
 	outcomeDrop
 	outcomeFail
+	outcomeExpire
+	outcomeDelay
 )
 
 type startOutcome struct {
-	kind startOutcomeKind
-	err  error
+	kind  startOutcomeKind
+	err   error
+	delay time.Duration
 }
 
 type unitScript struct {
@@ -192,8 +197,34 @@ func (f *Fake) DropNextStart(unit string) {
 	s.starts = append(s.starts, startOutcome{kind: outcomeDrop})
 }
 
+// ExpireNextStart scripts the next Start of unit to start the unit and then
+// return an error wrapping both [ErrReplyLost] and [context.DeadlineExceeded],
+// as a real manager does when the caller's deadline passes after the request
+// was sent. The context the caller passed is not touched.
+func (f *Fake) ExpireNextStart(unit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.script(unit)
+	s.starts = append(s.starts, startOutcome{kind: outcomeExpire})
+}
+
+// DelayNextStart scripts the next Start of unit to start the unit at once and
+// to return its reply only d of fake time later (d of 0 or less: at once). A
+// context that ends during the delay makes Start return a zero State and an
+// error wrapping both [ErrReplyLost] and the context's error; the unit is
+// running by then. Other calls are served during the delay. The call log has
+// the entry of the Start from the moment the unit started, and its Err is set
+// when the call returns.
+func (f *Fake) DelayNextStart(unit string, d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.script(unit)
+	s.starts = append(s.starts, startOutcome{kind: outcomeDelay, delay: d})
+}
+
 // FailNextStart scripts the next Start of unit to return err without starting
-// anything.
+// anything. The caller of FailNextStart says by it that nothing was started, so
+// err must not wrap [ErrReplyLost].
 func (f *Fake) FailNextStart(unit string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -450,25 +481,43 @@ func (f *Fake) enter(ctx context.Context, call *Call) error {
 }
 
 // Start implements [Manager]. See [Fake] for the scripted outcomes.
-func (f *Fake) Start(ctx context.Context, spec Spec) (st State, err error) {
+func (f *Fake) Start(ctx context.Context, spec Spec) (State, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	call := Call{Method: MethodStart, Unit: spec.Unit}
-	defer func() {
-		call.Err = err
-		if st.InvocationID != "" {
-			call.Invocation = st.InvocationID
-		}
-		f.calls = append(f.calls, call)
-	}()
-	if err := f.enter(ctx, &call); err != nil {
+	st, delay, err := f.start(ctx, &call, spec)
+	call.Err = err
+	if st.InvocationID != "" {
+		call.Invocation = st.InvocationID
+	}
+	f.calls = append(f.calls, call)
+	idx := len(f.calls) - 1
+	f.mu.Unlock()
+	if delay <= 0 || err != nil {
+		return st, err
+	}
+	// The unit is started and the reply is on its way: wait for it without
+	// holding the lock, and lose it when the context ends first.
+	if serr := f.clock.Sleep(ctx, delay); serr != nil {
+		err = fmt.Errorf("%w: %w", ErrReplyLost, serr)
+		f.mu.Lock()
+		f.calls[idx].Err = err
+		f.mu.Unlock()
 		return State{}, err
+	}
+	return st, nil
+}
+
+// start is the part of Start that runs under f.mu. It returns the delay of the
+// reply, for a scripted delay that the caller must wait for.
+func (f *Fake) start(ctx context.Context, call *Call, spec Spec) (State, time.Duration, error) {
+	if err := f.enter(ctx, call); err != nil {
+		return State{}, 0, err
 	}
 	if err := spec.Validate(); err != nil {
-		return State{}, err
+		return State{}, 0, err
 	}
 	if f.units[spec.Unit] != nil {
-		return State{}, ErrUnitExists
+		return State{}, 0, ErrUnitExists
 	}
 	script := f.script(spec.Unit)
 	var outcome *startOutcome
@@ -479,12 +528,12 @@ func (f *Fake) Start(ctx context.Context, spec Spec) (st State, err error) {
 	if outcome != nil {
 		switch outcome.kind {
 		case outcomeDrop:
-			return State{}, ErrReplyLost
+			return State{}, 0, ErrReplyLost
 		case outcomeFail:
 			if outcome.err == nil {
-				return State{}, errors.New("leadunit: scripted start failure")
+				return State{}, 0, errors.New("leadunit: scripted start failure")
 			}
-			return State{}, outcome.err
+			return State{}, 0, outcome.err
 		}
 	}
 	procs := script.procs
@@ -494,12 +543,20 @@ func (f *Fake) Start(ctx context.Context, spec Spec) (st State, err error) {
 	u := f.newUnit(spec.Unit, spec.Description(), procs)
 	f.units[spec.Unit] = u
 	f.specs = append(f.specs, spec.clone())
-	st = f.state(spec.Unit)
-	if outcome != nil && outcome.kind == outcomeLoseReply {
-		call.Invocation = st.InvocationID
-		return State{}, ErrReplyLost
+	st := f.state(spec.Unit)
+	if outcome != nil {
+		switch outcome.kind {
+		case outcomeLoseReply:
+			call.Invocation = st.InvocationID
+			return State{}, 0, ErrReplyLost
+		case outcomeExpire:
+			call.Invocation = st.InvocationID
+			return State{}, 0, fmt.Errorf("%w: %w", ErrReplyLost, context.DeadlineExceeded)
+		case outcomeDelay:
+			return st, outcome.delay, nil
+		}
 	}
-	return st, nil
+	return st, 0, nil
 }
 
 // Inspect implements [Manager].
