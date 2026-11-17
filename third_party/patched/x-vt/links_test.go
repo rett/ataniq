@@ -198,11 +198,12 @@ func TestWorstCaseScreen(t *testing.T) {
 		t.Errorf("%d recounts for %d refusals, want at most %d", e.scr.links.recounts, c.LinksOverLimit, limit)
 	}
 
-	// The live heap: two screens of 100 000 cells and the table. Uncapped,
-	// the 64 KiB links alone would be 400 x 64 KiB and the short ones
-	// 100 000 x 16 bytes of key in a table that grew with them.
-	if grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc); grown > 128<<20 {
-		t.Errorf("heap grew %d MiB", grown>>20)
+	// The live heap: two screens of 100 000 cells and the table. About 28 MiB
+	// were measured. Uncapped, the 64 KiB links alone would be 400 x 64 KiB
+	// and the short ones 100 000 x 16 bytes of key in a table that grew with
+	// them.
+	if grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc); grown > heapCeilingWorstCase {
+		t.Errorf("heap grew %d MiB, want at most %d MiB", grown>>20, heapCeilingWorstCase>>20)
 	}
 	// What a snapshot of the screen carries: the content of every cell and
 	// each live link once.
@@ -222,6 +223,71 @@ func TestWorstCaseScreen(t *testing.T) {
 	if len(e.scr.links.set) > MaxLiveLinks {
 		t.Errorf("table holds %d links", len(e.scr.links.set))
 	}
+}
+
+// The same screen with the links at their caps: every cell has a cluster of 63
+// bytes and a link of its own that is 2048 bytes of URL and 256 bytes of
+// parameters, so the table fills with 256 links of 2.3 KiB and every other cell
+// is refused. The table holds 0.6 MiB of links and the cells hold none; the
+// heap is the cells', the recounts are rate-limited, and the screen as a
+// snapshot would carry it is far under 16 MiB.
+func TestWorstCaseScreenMaxLengthLinks(t *testing.T) {
+	const cols, rows = 500, 200
+	const cells = cols * rows
+	cluster := "e" + strings.Repeat("\u0301", 31)
+	distinct := func(prefix string, size, i int) string {
+		s := fmt.Sprintf("%s%06d/", prefix, i)
+		return s + strings.Repeat("u", size-len(s))
+	}
+
+	runtime.GC()
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	e := NewEmulator(cols, rows)
+	for i := 0; i < cells; i++ {
+		e.handleOsc(8, []byte("8;"+distinct("id=", MaxLinkParams, i)+";"+distinct("http://x/", MaxLinkURL, i)))
+		for _, r := range cluster {
+			e.handlePrint(r)
+		}
+	}
+	e.flushGrapheme()
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc)
+	t.Logf("heap grew %d MiB, %d recounts", grown>>20, e.scr.links.recounts)
+
+	if got := len(liveLinks(e.scr)); got != MaxLiveLinks {
+		t.Errorf("%d live links, want %d", got, MaxLiveLinks)
+	}
+	c := e.Counters()
+	if want := uint64(cells - MaxLiveLinks); c.LinksOverLimit != want {
+		t.Errorf("LinksOverLimit = %d, want %d", c.LinksOverLimit, want)
+	}
+	if c.LinksOverLength != 0 || c.ClusterBytesDropped != 0 {
+		t.Errorf("counters %+v", c)
+	}
+	if limit := cells/(cells/recountCost) + 2; e.scr.links.recounts > limit {
+		t.Errorf("%d recounts, want at most %d", e.scr.links.recounts, limit)
+	}
+	// Two screens of cells and 256 links. About 28 MiB were measured; a copy
+	// of the link in every refused cell would add 230 MiB.
+	if grown > heapCeilingWorstCase {
+		t.Errorf("heap grew %d MiB, want at most %d MiB", grown>>20, heapCeilingWorstCase>>20)
+	}
+	var snapshot int
+	for _, line := range e.scr.buf.Lines {
+		for _, c := range line {
+			snapshot += len(c.Content)
+		}
+	}
+	for l := range liveLinks(e.scr) {
+		snapshot += len(l.URL) + len(l.Params)
+	}
+	t.Logf("snapshot payload %d bytes", snapshot)
+	if snapshot > 16<<20 {
+		t.Errorf("a snapshot would carry %d bytes", snapshot)
+	}
+	runtime.KeepAlive(e)
 }
 
 // Scanning for live links is bounded by the screen: a session that prints a
@@ -248,7 +314,11 @@ func TestLinkRecountsAreRateLimited(t *testing.T) {
 }
 
 // heapCeilingResent is the most the heap may grow for the test below.
-const heapCeilingResent = 48 << 20
+const heapCeilingResent = 32 << 20
+
+// heapCeilingWorstCase is the most the heap may grow for the worst-case screen
+// of maximum-length links.
+const heapCeilingWorstCase = 36 << 20
 
 // maxLink is a link at both caps, which is the most a cell can reference.
 func maxLink() (params, url string) {
@@ -304,42 +374,47 @@ func TestResentLinkIsOneCopy(t *testing.T) {
 	}
 }
 
+// printUnder prints the character c under the link, as the parser does for an
+// OSC 8 and a printable character: the handlers are called with a fresh byte
+// slice, which they copy. The text goes straight to the handlers so that a
+// test that fills a 500 x 200 screen with 2.3 KiB links does not parse
+// hundreds of megabytes (a minute and a half under the race detector).
+func printUnder(e *Emulator, params, url string, c rune) {
+	e.handleOsc(8, []byte("8;"+params+";"+url))
+	e.handlePrint(c)
+}
+
 // Sending one maximum-length link again before every character of a screen is
 // one distinct link, and the screen must not hold a copy of it per cell: that
-// is 100 000 x 2.3 KiB, 230 MiB, on a 500 x 200 screen. The text is written
-// a row at a time so that the input is not held in memory.
+// is 100 000 x 2.3 KiB, 230 MiB, on a 500 x 200 screen.
 func TestResentMaxLengthLinkOnEveryCell(t *testing.T) {
 	const cols, rows = 500, 200
 	params, url := maxLink()
-	var b strings.Builder
-	for x := 0; x < cols; x++ {
-		b.WriteString(link(params, url))
-		b.WriteByte('x')
-	}
-	row := []byte(b.String())
-	b.Reset()
 
 	runtime.GC()
 	var m0, m1 runtime.MemStats
 	runtime.ReadMemStats(&m0)
 	e := NewEmulator(cols, rows)
-	for y := 0; y < rows; y++ {
-		e.Write(row)
+	for i := 0; i < cols*rows; i++ {
+		printUnder(e, params, url, 'x')
 	}
+	e.flushGrapheme()
 	runtime.GC()
 	runtime.ReadMemStats(&m1)
-	runtime.KeepAlive(row)
 	grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc)
 	t.Logf("heap grew %d MiB, %d live links", grown>>20, len(liveLinks(e.scr)))
 
+	if c := e.CellAt(cols-1, rows-1); c == nil || c.Content != "x" || c.Link.URL != url {
+		t.Fatalf("last cell %v", c)
+	}
 	if got := len(liveLinks(e.scr)); got != 1 {
 		t.Errorf("%d live links, want 1", got)
 	}
 	if c := e.Counters(); c.LinksOverLimit != 0 || c.LinksOverLength != 0 {
 		t.Errorf("counters %+v", c)
 	}
-	// The cells themselves are about 20 MiB (the review measured 22). A copy
-	// of the link in every cell would be 241 MiB.
+	// The cells themselves are about 21 MiB. A copy of the link in every cell
+	// would be 241 MiB.
 	if grown > heapCeilingResent {
 		t.Errorf("heap grew %d MiB, want at most %d MiB: cells keep their own copies of a re-sent link", grown>>20, heapCeilingResent>>20)
 	}
