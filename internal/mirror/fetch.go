@@ -110,6 +110,15 @@ const (
 // repository. Zero means the default of boundedexec. Tests shorten it.
 var watchInterval time.Duration
 
+// maxWatchFailures is how many measures of the staging folder in a row may
+// fail before the watchdog stops the fetch.
+const maxWatchFailures = 3
+
+// watchMeasureHook replaces the measure of the staging folder in the watchdog
+// when it is not nil. It is nil outside the tests, which use it to make the
+// measure fail.
+var watchMeasureHook func() (safefs.Size, error)
+
 // fetchHook is called by a fetch right before each of the steps 3 to 10, with
 // the number of the step. It is nil outside the tests, which use it to stop
 // a fetch at a given step, for example with a panic.
@@ -148,7 +157,8 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //  6. The receiving half of git runs as the owner, with the sandboxed command
 //     as upload-pack, into the staging repository. The fetch has a time limit
 //     ([ErrFetchTimeout]) and a watchdog that stops it when the staging
-//     repository passes MaxStaged or MaxEntries.
+//     repository passes MaxStaged or MaxEntries, or when three measures of
+//     the staging folder in a row fail.
 //  7. What arrived is checked in the staging repository: the sizes, the count
 //     of refs, and every ref, which must be under the lead's namespace, have
 //     a name that this package accepts and point at a commit. A name that
@@ -407,16 +417,32 @@ func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan
 		return fmt.Errorf("mirror: the staging repository: %w", err)
 	}
 	defer root.Close()
+	failures := 0
 	watch := func() error {
-		size, err := root.TreeSize(".", safefs.SizeLimits{MaxBytes: lim.MaxStaged, MaxEntries: lim.MaxEntries})
+		var size safefs.Size
+		var err error
+		if watchMeasureHook != nil {
+			size, err = watchMeasureHook()
+		} else {
+			size, err = root.TreeSize(".", safefs.SizeLimits{MaxBytes: lim.MaxStaged, MaxEntries: lim.MaxEntries})
+		}
 		if errors.Is(err, safefs.ErrLimit) {
 			if size.Entries > lim.MaxEntries {
 				return &LimitError{What: "entries", Got: size.Entries, Max: lim.MaxEntries}
 			}
 			return &LimitError{What: "staged", Got: size.Bytes, Max: lim.MaxStaged}
 		}
-		// git renames and removes files while the walk runs, which makes
-		// the walk fail now and then. The measure after the fetch decides.
+		if err != nil {
+			// git renames and removes files while the walk runs, which makes
+			// the walk fail now and then. A few failures in a row are
+			// fine and the measure after the fetch decides. A walk that
+			// keeps failing would turn the limit off, so it stops the fetch.
+			if failures++; failures >= maxWatchFailures {
+				return fmt.Errorf("mirror: the staging folder could not be measured: %w", err)
+			}
+			return nil
+		}
+		failures = 0
 		return nil
 	}
 	left := lim.Timeout
