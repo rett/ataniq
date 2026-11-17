@@ -22,9 +22,13 @@ const hexUpper = "0123456789ABCDEF"
 // below 0x20, and 0x7f, becomes \xNN. A byte that is not valid UTF-8 also
 // becomes \xNN. A valid non-ASCII rune passes only if it is printable and not
 // dangerous. The dangerous ones are C1 controls, bidirectional controls,
-// zero-width and other invisible format characters, line and paragraph
-// separators, invisible filler letters, private use and unassigned code
-// points. They become \u{HEX}.
+// zero-width and other invisible format characters, variation selectors and
+// every other default-ignorable code point, line and paragraph separators,
+// invisible filler letters, private use and unassigned code points. They
+// become \u{HEX}.
+//
+// The escaping prefers an unambiguous line over a pretty one. An emoji with a
+// variation selector shows the selector as escape text.
 //
 // The result has no byte below 0x20 or equal to 0x7f, and Unescape returns
 // the original text.
@@ -151,6 +155,13 @@ func safeRune(r rune) bool {
 	case r >= 0x200b && r <= 0x200d, r == 0x2060, r == 0xfeff: // zero width
 		return false
 	case r == 0x2028, r == 0x2029: // line and paragraph separators
+		return false
+	case unicode.Is(unicode.Variation_Selector, r), unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):
+		// Invisible: they print as nothing, so they make two names look the
+		// same. This covers the variation selectors, the combining grapheme
+		// joiner U+034F, the Hangul fillers, the Khmer invisible vowels
+		// U+17B4 and U+17B5, U+2065, U+FFF0 to U+FFF8 and the unassigned
+		// and tag-area code points from U+E0000 to U+E0FFF.
 		return false
 	case r == 0x034f: // combining grapheme joiner, invisible
 		return false
