@@ -544,10 +544,15 @@ func TestClosedAndBroken(t *testing.T) {
 	ok(r.Define(role, ManagerAtaniq, goodProfile()))
 	// A failed write poisons the registry.
 	r.f.Close()
-	if _, err := r.SetDesired(role, DesiredRunning); err == nil {
+	_, err := r.SetDesired(role, DesiredRunning)
+	if err == nil {
 		t.Fatal("write to a closed file succeeded")
 	}
-	if _, err := r.SetDesired(role, DesiredRunning); !errors.Is(err, ErrBroken) {
+	// The failed call must not read as "nothing happened".
+	if !strings.Contains(err.Error(), "may or may not be on disk") {
+		t.Fatalf("failed write: %v", err)
+	}
+	if _, err := r.SetDesired(role, DesiredRunning); !errors.Is(err, ErrBroken) || !strings.Contains(err.Error(), "may or may not be on disk") {
 		t.Fatalf("after a failed write: %v", err)
 	}
 	if e, _ := r.Get(role); e.Desired != DesiredStopped {

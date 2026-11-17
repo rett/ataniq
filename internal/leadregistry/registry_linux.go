@@ -27,7 +27,17 @@ type Options struct {
 	Rand io.Reader
 }
 
-// Recovery reports what Open cut off the end of the journal.
+// Recovery reports what Open cut off the end of the journal. It is what the
+// daemon reads after Open to decide whether anything was lost: when Cut is
+// true, every role may have lost its newest records, so it should show every
+// role as unknown until it has looked at the unit.
+//
+// Open reads a cut anywhere in the file as an append that never returned, not
+// only a cut inside the last line: a file truncated from outside inside an
+// earlier line, even in the middle of it, opens with the older state, the
+// records after the cut are lost, and their epochs may be given out again.
+// A cut exactly at a line boundary leaves a valid shorter journal and reports
+// nothing.
 type Recovery struct {
 	// Lines is 1 when a final line without its newline was cut off, else 0.
 	Lines int
@@ -301,8 +311,17 @@ func (r *Registry) replayLine(n int, line []byte) error {
 	return nil
 }
 
-// Recovery returns what Open cut off the journal, if anything.
-func (r *Registry) Recovery() Recovery { return r.recovery }
+// Cut reports whether Open cut anything off the journal.
+func (r Recovery) Cut() bool { return r.Lines > 0 || r.Bytes > 0 }
+
+// Recovery returns what Open cut off the journal, if anything. The report is
+// fixed when Open returns and stays the same for the life of the registry,
+// whatever is written afterwards, and after Close.
+func (r *Registry) Recovery() Recovery {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recovery
+}
 
 // Close releases the file lock and closes the journal. It is safe to call
 // more than once.
@@ -330,6 +349,9 @@ func (r *Registry) usable() error {
 // mutate journals one record and installs the resulting entry. The record is
 // validated, encoded, re-read through the replay path and reduced against the
 // current state before a byte is written, so a refused call writes nothing.
+// If the write or the sync fails the registry is broken and the call returns
+// an error, but the record may or may not be on disk: the bytes of a completed
+// write stay in the file when only the sync failed, and a reopen reads them.
 // Called with r.mu held.
 func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry, error) {
 	if err := r.usable(); err != nil {
@@ -357,11 +379,11 @@ func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry,
 	}
 	if _, err := r.f.Write(line); err != nil {
 		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: append: %w", err)
+		return Entry{}, fmt.Errorf("leadregistry: append (the record may or may not be on disk): %w", err)
 	}
 	if err := r.f.Sync(); err != nil {
 		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: sync: %w", err)
+		return Entry{}, fmt.Errorf("leadregistry: sync (the record may or may not be on disk): %w", err)
 	}
 	r.roles[role] = next
 	r.seq = seq

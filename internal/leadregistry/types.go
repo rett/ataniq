@@ -85,7 +85,12 @@ var (
 	// ErrClosed means the registry is closed.
 	ErrClosed = errors.New("leadregistry: closed")
 	// ErrBroken means an earlier write or sync failed; reopen the registry.
-	ErrBroken = errors.New("leadregistry: earlier write failed, reopen")
+	// The record of the failed call may or may not be on disk: a write that
+	// completed and then failed to sync stays in the file, and a reopen in
+	// the same boot reads it back. So the error of that call is not "nothing
+	// happened"; the caller must reopen and read the state, and an epoch the
+	// failed call took is consumed.
+	ErrBroken = errors.New("leadregistry: earlier write failed, the record may or may not be on disk, reopen")
 )
 
 // refusal is a launch refusal that also matches ErrLaunchRefused.

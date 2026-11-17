@@ -431,3 +431,70 @@ func TestEmptyAndExistingFolder(t *testing.T) {
 	}
 	r2.Close()
 }
+
+// TestRecoveryAfterOpen: the report is there after Open, says whether
+// anything was cut, and does not change with later writes or Close.
+func TestRecoveryAfterOpen(t *testing.T) {
+	if (Recovery{}).Cut() {
+		t.Fatal("an empty report says a cut was made")
+	}
+	data, sizes, _ := buildJournal(t)
+	// A torn final line: the record is cut, the report stays.
+	cutAt := int(sizes[len(sizes)-1]) - 5
+	dir := writeJournal(t, data[:cutAt])
+	r, err := Open(dir, testOpts(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Recovery{Lines: 1, Bytes: int64(cutAt) - sizes[len(sizes)-2], Offset: sizes[len(sizes)-2]}
+	if got := r.Recovery(); got != want || !got.Cut() {
+		t.Fatalf("Recovery = %+v, want %+v", got, want)
+	}
+	if _, err := r.SetDesired(lead(t, "alpha"), DesiredRunning); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Recovery(); got != want {
+		t.Fatalf("Recovery after a write = %+v", got)
+	}
+	r.Close()
+	if got := r.Recovery(); got != want {
+		t.Fatalf("Recovery after Close = %+v", got)
+	}
+	// A clean journal reports no cut.
+	r2, err := Open(writeJournal(t, data), testOpts(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Close()
+	if r2.Recovery().Cut() {
+		t.Fatalf("Recovery of a clean journal = %+v", r2.Recovery())
+	}
+}
+
+// TestCutInsideAnEarlierLine pins the limit stated in doc.go: a cut inside a
+// committed line, not only the last one, opens successfully with the older
+// state, reports the cut, and the epochs of the lost records are given out
+// again.
+func TestCutInsideAnEarlierLine(t *testing.T) {
+	data, sizes, _ := buildJournal(t)
+	// Records: define alpha, define beta, desired, launch-begin (epoch 1), ...
+	const beginRecord = 4
+	cut := sizes[beginRecord-1] + 10
+	r, err := Open(writeJournal(t, data[:cut]), testOpts(1))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+	rec := r.Recovery()
+	if !rec.Cut() || rec.Offset != sizes[beginRecord-1] || rec.Bytes != 10 {
+		t.Fatalf("Recovery = %+v", rec)
+	}
+	alpha := lead(t, "alpha")
+	if e, _ := r.Get(alpha); e.Epoch != 0 || e.Intent != nil {
+		t.Fatalf("the committed launch is still there: %+v", e)
+	}
+	in, err := r.BeginLaunch(alpha)
+	if err != nil || in.Epoch != 1 {
+		t.Fatalf("epoch is given out again: %+v %v", in, err)
+	}
+}
