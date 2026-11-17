@@ -69,6 +69,15 @@ type Classification struct {
 	// prompt is idle with ComposerEmpty false. Test this field, never the
 	// text of the composer.
 	ComposerEmpty bool
+	// ReportOnly is true when the state is idle and the screen could not
+	// show the working state or the shell count (claude's collapsed-paste
+	// footer, Screen.StateHidden), so the idle rests on the OSC 7501 report
+	// alone. This idle does not rule out a background task. Only the fence's
+	// check after its own paste may accept it, as a caller that saw idle
+	// with no background task and no paste marker before the paste. Every
+	// other consumer (the status, the notices, the check before a paste)
+	// must treat a classification with ReportOnly as not idle.
+	ReportOnly bool
 	// Screen is what the recogniser read.
 	Screen screen.Reading
 	// Title is what the title rules read.
@@ -210,9 +219,11 @@ func (c Classifier) Classify(in Input) Classification {
 	scr := c.rec.Read(in.Screen)
 	tit := c.rules.Read(in.Screen.Title)
 	rep := readReport(in.Report, c.app)
+	state := c.decide(in, scr, tit, rep)
 	return Classification{
-		State:         c.decide(in, scr, tit, rep),
+		State:         state,
 		ComposerEmpty: scr.ComposerEmpty,
+		ReportOnly:    state == StateIdle && c.runtime == "claude" && claudePasteHidden(scr),
 		Screen:        scr,
 		Title:         tit,
 		Signals:       c.signals(in, scr, tit, rep),
@@ -252,7 +263,8 @@ func (c Classifier) decide(in Input, scr screen.Reading, tit title.Reading, rep 
 }
 
 // decideCodex: the report is required, and the second signal must agree with
-// an idle report.
+// an idle report: the composer with the cursor in it, no dialog, no working
+// line and a title without a busy or Action Required mark.
 func decideCodex(scr screen.Reading, tit title.Reading, rep report) State {
 	switch {
 	case rep.says(osc7501.StateWorking):
@@ -262,8 +274,8 @@ func decideCodex(scr screen.Reading, tit title.Reading, rep report) State {
 		// None, clear or error.
 		return StateUnknown
 	}
-	if tit.Busy || tit.ActionRequired || !scr.Composer || scr.Dialog ||
-		scr.Working || scr.BackgroundTask {
+	if tit.Busy || tit.ActionRequired || !scr.Composer || !scr.CursorInComposer ||
+		scr.Dialog || scr.Working || scr.BackgroundTask {
 		// The report says idle and another signal says otherwise (I-12):
 		// the signals disagree, so the answer is unknown.
 		return StateUnknown
@@ -275,7 +287,7 @@ func decideCodex(scr screen.Reading, tit title.Reading, rep report) State {
 // where the screen shows neither the working line, nor the shell count, nor a
 // mode.
 func claudePasteHidden(scr screen.Reading) bool {
-	return scr.PastedMarker && scr.Mode == ""
+	return scr.StateHidden
 }
 
 // decideClaude: the recogniser is required, the report and the title can only
@@ -294,7 +306,8 @@ func decideClaude(in Input, scr screen.Reading, tit title.Reading, rep report) S
 		return StateUnknown
 	}
 	if claudePasteHidden(scr) {
-		// The state is not shown on screen: it comes from the report.
+		// The state is not shown on screen: it comes from the report, and a
+		// background task is not observed (Classification.ReportOnly).
 		if !rep.says(osc7501.StateIdle, osc7501.StateDone) {
 			return StateUnknown
 		}
