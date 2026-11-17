@@ -1,0 +1,110 @@
+# pasta
+/usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw --
+# bubblewrap
+/usr/bin/bwrap
+--die-with-parent
+--unshare-all
+--share-net
+--unshare-user
+--uid 0
+--gid 0
+--cap-drop ALL
+--clearenv
+--setenv CODEX_HOME /home/lead/.codex
+--setenv COLORTERM truecolor
+--setenv GIT_CEILING_DIRECTORIES /work
+--setenv GIT_CONFIG_GLOBAL /ataniq/git/config
+--setenv GOCACHE /home/lead/.cache/go-build
+--setenv GOMODCACHE /home/lead/go/pkg/mod
+--setenv HOME /home/lead
+--setenv LANG C.UTF-8
+--setenv LOGNAME root
+--setenv PATH /ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
+--setenv QARGI_LEAD arc-lead
+--setenv SHELL /bin/bash
+--setenv TERM xterm-256color
+--setenv TMPDIR /tmp
+--setenv TZ UTC
+--setenv USER root
+--setenv XDG_CACHE_HOME /home/lead/.cache
+--setenv XDG_CONFIG_HOME /home/lead/.config
+--setenv XDG_DATA_HOME /home/lead/.local/share
+--setenv XDG_STATE_HOME /home/lead/.local/state
+--seccomp 7
+--tmpfs /
+--ro-bind /usr /usr
+--symlink usr/bin /bin
+--symlink usr/lib /lib
+--symlink usr/lib64 /lib64
+--symlink usr/sbin /sbin
+--ro-bind /etc/ssl /etc/ssl
+--ro-bind /etc/ca-certificates /etc/ca-certificates
+--ro-bind /etc/hosts /etc/hosts
+--ro-bind /etc/nsswitch.conf /etc/nsswitch.conf
+--ro-bind /etc/passwd /etc/passwd
+--ro-bind /etc/group /etc/group
+--ro-bind /etc/localtime /etc/localtime
+--ro-bind /opt/ataniq/resolv/arc-lead/resolv.conf /etc/resolv.conf
+--dev /dev
+--proc /proc
+--tmpfs /tmp
+--ro-bind /opt/ataniq/bin/probe /ataniq/probe
+--ro-bind /opt/ataniq/spec/arc-lead /ataniq/spec
+--ro-bind /opt/agent/codex/2.1.0 /ataniq/agent
+--ro-bind /opt/ataniq/managed/arc-lead/settings.json /etc/codex/managed-config.toml
+--bind /state/leads/arc-lead/home /home/lead
+--bind /state/leads/arc-lead/config/codex /home/lead/.codex
+--ro-bind /opt/ataniq/skills/arc-lead /home/lead/.codex/skills
+--ro-bind /opt/ataniq/instructions/arc-lead/AGENTS.md /home/lead/.codex/AGENTS.md
+--ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
+--bind /state/leads/arc-lead/tree /work/demo
+--ro-bind /state/leads/arc-lead/tree/.git/config /work/demo/.git/config
+--ro-bind /state/leads/arc-lead/tree/.git/hooks /work/demo/.git/hooks
+--ro-bind /state/leads/arc-lead/tree/.git/info /work/demo/.git/info
+--ro-bind /opt/ataniq/placeholders/envrc /work/demo/.envrc
+--ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
+--ro-bind /opt/ataniq/qargi /ataniq/qargi
+--bind /state/leads/arc-lead/records /home/lead/.qargi
+--ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
+--ro-bind /opt/ataniq/projection/demo /ataniq/projection
+--chdir /work/demo
+--remount-ro /
+--
+# inner
+/ataniq/probe --spec /ataniq/spec/spec.json -- /ataniq/agent/bin/codex --model example
+# env
+CODEX_HOME=/home/lead/.codex
+COLORTERM=truecolor
+GIT_CEILING_DIRECTORIES=/work
+GIT_CONFIG_GLOBAL=/ataniq/git/config
+GOCACHE=/home/lead/.cache/go-build
+GOMODCACHE=/home/lead/go/pkg/mod
+HOME=/home/lead
+LANG=C.UTF-8
+LOGNAME=root
+PATH=/ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
+QARGI_LEAD=arc-lead
+SHELL=/bin/bash
+TERM=xterm-256color
+TMPDIR=/tmp
+TZ=UTC
+USER=root
+XDG_CACHE_HOME=/home/lead/.cache
+XDG_CONFIG_HOME=/home/lead/.config
+XDG_DATA_HOME=/home/lead/.local/share
+XDG_STATE_HOME=/home/lead/.local/state
+# files
+fd 7 seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+# digest
+dc607849216de74c72f1ae190ee1a14e6523173bca949ff2f4b4fa297904b2b6
+# workdir
+/work/demo
+# set-controlling-terminal
+false
+# notes
+- --share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network
+- nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled
+- seccomp file named by the caller (sha256 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e), passed to bubblewrap as descriptor 7: this package neither reads nor generates a filter, and the descriptor must stay open across pasta's start of bubblewrap, which qualification has to show
+- identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested
+- network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed
+- bubblewrap does not make the session (--new-session is never passed): the probe gives the agent its session and controlling terminal, so the launcher does not set a controlling terminal
