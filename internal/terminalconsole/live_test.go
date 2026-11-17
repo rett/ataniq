@@ -1160,6 +1160,121 @@ func TestLiveCountersAndStatusAreShown(t *testing.T) {
 	}
 }
 
+func TestLiveHolderCountersIdleAndTitleAreShownBounded(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	evidence := func() string { return strings.Join(textOf(r.m.evidenceLines(200)), "\n") }
+
+	// Before the holder says anything the idle state is unknown, and there
+	// are no counters beyond the three.
+	ev := evidence()
+	if !strings.Contains(ev, "idle state: unknown (not built)") || strings.Contains(ev, "more counters not shown") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	for _, idle := range []string{"unknown", "UNKNOWN", "", "\x1b"} {
+		f.set(func(s *LiveStatus) { s.Idle = idle })
+		r.pump()
+		if got := evidence(); !strings.Contains(got, "idle state: unknown (not built)") {
+			t.Fatalf("idle %q:\n%s", idle, got)
+		}
+	}
+	f.set(func(s *LiveStatus) { s.Idle = "wa\x1b[1mit" + strings.Repeat("i", 100) })
+	r.pump()
+	if got := r.m.live.st.Idle; len(got) > maxLiveIdle || strings.Contains(got, "\x1b") || !strings.HasPrefix(got, "wa[1mit") {
+		t.Fatalf("idle %q", got)
+	}
+	f.set(func(s *LiveStatus) { s.Idle = "busy" })
+	r.pump()
+	if got := evidence(); !strings.Contains(got, "idle state: busy") || strings.Contains(got, "not built") {
+		t.Fatalf("evidence:\n%s", got)
+	}
+
+	// Counters keep their order, and a list over the limit is cut and the
+	// cut is counted.
+	var many []LiveCounter
+	for i := range 100 {
+		many = append(many, LiveCounter{Name: fmt.Sprintf("counter-%02d", i), Value: uint64(i) * 1000})
+	}
+	many[1].Name = "a\x1b[31mb\x07" + strings.Repeat("n", 200)
+	many[2].Name = "\x1b"
+	f.set(func(s *LiveStatus) { s.Counters = many })
+	r.pump()
+	got := r.m.live.st.Counters
+	if len(got) != LiveCounterLimit || LiveCounterLimit != 32 {
+		t.Fatalf("%d counters kept, limit %d", len(got), LiveCounterLimit)
+	}
+	for i, c := range got {
+		if len(c.Name) > maxLiveCounterName || strings.ContainsAny(c.Name, "\x1b\x07") || c.Name == "" {
+			t.Fatalf("counter %d: %q", i, c.Name)
+		}
+		if c.Value != many[i].Value {
+			t.Fatalf("counter %d: value %d", i, c.Value)
+		}
+	}
+	if got[0].Name != "counter-00" || got[2].Name != "?" || got[31].Name != "counter-31" {
+		t.Fatalf("names %q %q %q", got[0].Name, got[2].Name, got[31].Name)
+	}
+	ev = evidence()
+	for _, want := range []string{"counter-00: 0", "counter-31: 31000", "68 more counters not shown (the limit is 32)"} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("evidence lacks %q:\n%s", want, ev)
+		}
+	}
+	if strings.Contains(ev, "counter-32") || strings.Index(ev, "counter-00") > strings.Index(ev, "counter-31") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	// The cockpit keeps its own copy.
+	many[0].Name = "changed"
+	if r.m.live.st.Counters[0].Name != "counter-00" {
+		t.Fatal("the cockpit keeps the source's slice")
+	}
+	// A list within the limit says nothing of a cut.
+	f.set(func(s *LiveStatus) { s.Counters = many[:3] })
+	r.pump()
+	if ev := evidence(); strings.Contains(ev, "not shown") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+}
+
+func TestLiveTitleIsTheHoldersOrThePanes(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	meta := func() string { return strings.Join(r.rows(), "\n") }
+	if v := meta(); !strings.Contains(v, "Title: none") {
+		t.Fatalf("no title:\n%s", v)
+	}
+	// The title the pane's emulator saw, when the holder gives none.
+	f.emit("\x1b]2;from the stream\x07")
+	r.pump()
+	if v := meta(); !strings.Contains(v, "Title: from the stream") {
+		t.Fatalf("pane title:\n%s", v)
+	}
+	f.set(func(s *LiveStatus) { s.Title = "ho\x1b[31mlder title" })
+	r.pump()
+	v := meta()
+	if !strings.Contains(v, "Title: ho[31mlder title") || strings.Contains(v, "from the stream") || strings.Contains(r.m.View().Content, "\x1b[31mlder") {
+		t.Fatalf("holder title:\n%s", v)
+	}
+	f.set(func(s *LiveStatus) { s.Title = strings.Repeat("t", 1000) })
+	r.pump()
+	if n := len(r.m.live.st.Title); n != maxLiveTitle {
+		t.Fatalf("title kept at %d bytes", n)
+	}
+}
+
+func TestLiveSaysAClientGetsTheVisibleScreenOnly(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	const want = "visible screen only"
+	if ev := strings.Join(textOf(r.m.evidenceLines(200)), "\n"); !strings.Contains(ev, want) || !strings.Contains(ev, "no scrollback") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	r.key(tea.KeyPressMsg{Code: '?'})
+	if v := r.view(); !strings.Contains(v, want) {
+		t.Fatalf("help:\n%s", v)
+	}
+}
+
 func TestLiveSelectionAndCopyKeepWorking(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 140, 45, f, Options{})

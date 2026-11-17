@@ -193,6 +193,25 @@ type LiveStatus struct {
 	// CheckMismatches counts snapshot checks that failed, Resyncs the
 	// resynchronisations, RefusedInput the input the holder refused.
 	CheckMismatches, Resyncs, RefusedInput uint64
+	// Counters are the holder's other counters, in the order the holder
+	// gives them, shown in the evidence pane as they are. The cockpit keeps
+	// at most LiveCounterLimit: it cleans the names and cuts them to
+	// maxLiveCounterName bytes, and says how many it did not keep.
+	Counters []LiveCounter
+	// Idle is the holder's idle classification, a short word. Empty and
+	// "unknown" are shown as "unknown (not built)": the holder does not
+	// classify yet. It is cleaned and cut to maxLiveIdle bytes.
+	Idle string
+	// Title is the session's title as the holder reports it. It is cleaned
+	// and cut to maxLiveTitle bytes. Empty means the cockpit shows the title
+	// the pane's own emulator saw, if any.
+	Title string
+}
+
+// LiveCounter is one of the holder's counters: a name and a value.
+type LiveCounter struct {
+	Name  string
+	Value uint64
 }
 
 // LiveNotice is a short message from the holder with a reason code.
@@ -224,12 +243,21 @@ const (
 // LiveNoticeLimit is how many notices the cockpit keeps for the evidence pane.
 const LiveNoticeLimit = 16
 
+// LiveCounterLimit is how many of the holder's counters the cockpit keeps
+// for the evidence pane. A longer list is cut, and the cut is counted and
+// shown.
+const LiveCounterLimit = 32
+
 // Bounds on what a source reports. Longer text is cut.
 const (
 	maxLiveCode   = 32
 	maxLiveText   = 160
 	maxLiveClient = 64
 	maxLiveBatch  = 4 * LiveNoticeLimit
+
+	maxLiveCounterName = 48
+	maxLiveIdle        = 32
+	maxLiveTitle       = 160
 )
 
 // liveGap is the shortest time between two wake-ups the program handles: a
@@ -272,8 +300,11 @@ type liveState struct {
 	// tick time cannot be it.
 	clock func() time.Time
 
-	st      LiveStatus
-	notices []liveNote
+	st LiveStatus
+	// countersCut is how many counters of the source's last status were over
+	// LiveCounterLimit and not kept.
+	countersCut int
+	notices     []liveNote
 	// sentCols and sentRows are the last size asked of the source.
 	sentCols, sentRows int
 	// paneCols and paneRows are the pane's size at the last wake-up.
@@ -443,6 +474,19 @@ func (m *Model) refreshLive() {
 	if st.Conn < LiveConnecting || st.Conn > LiveDisconnected {
 		st.Conn = LiveConnecting
 	}
+	st.Idle, st.Title = cut(clean(st.Idle), maxLiveIdle), cut(clean(st.Title), maxLiveTitle)
+	// The source's list is read only up to the limit, and copied: the cockpit
+	// keeps nothing of the source's memory.
+	m.live.countersCut = max(0, len(st.Counters)-LiveCounterLimit)
+	var counters []LiveCounter
+	for _, c := range st.Counters[:min(len(st.Counters), LiveCounterLimit)] {
+		c.Name = cut(clean(c.Name), maxLiveCounterName)
+		if c.Name == "" {
+			c.Name = "?"
+		}
+		counters = append(counters, c)
+	}
+	st.Counters = counters
 	m.live.st = st
 }
 
@@ -687,6 +731,27 @@ func (m *Model) liveCountersText() string {
 func (m *Model) liveRuntimeText() string {
 	st := m.live.st
 	return strings.TrimSpace(orNone(st.Runtime) + " " + st.Version)
+}
+
+// liveIdleText returns the holder's idle classification as it is shown.
+func (m *Model) liveIdleText() string {
+	idle := m.live.st.Idle
+	if idle == "" || strings.EqualFold(idle, "unknown") {
+		return "idle state: unknown (not built)"
+	}
+	return "idle state: " + idle
+}
+
+// liveTitle returns the session's title: the holder's, or the one the
+// pane's emulator saw.
+func (m *Model) liveTitle() string {
+	if t := m.live.st.Title; t != "" {
+		return t
+	}
+	if m.rep.pane != nil {
+		return m.rep.pane.Title()
+	}
+	return ""
 }
 
 // liveSizeText returns the holder's screen size, or "unknown".
