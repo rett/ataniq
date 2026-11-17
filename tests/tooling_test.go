@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,8 +20,17 @@ func root(t *testing.T) string {
 
 func fakePath(t *testing.T, goScript string) string {
 	t.Helper()
+	return fakePathWithout(t, goScript)
+}
+
+// fakePathWithout is fakePath without the named tools.
+func fakePathWithout(t *testing.T, goScript string, omit ...string) string {
+	t.Helper()
 	dir := t.TempDir()
 	for _, name := range []string{"git", "make", "sh", "dirname", "cat", "grep", "wc"} {
+		if slices.Contains(omit, name) {
+			continue
+		}
 		path, err := exec.LookPath(name)
 		if err != nil {
 			t.Fatal(err)
@@ -96,7 +106,7 @@ func TestToolchainResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "calls")
-	selected := "#!/bin/sh\n" + guard + "printf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|test|build) :;; *) exit 3;; esac\n"
+	selected := "#!/bin/sh\n" + guard + "printf 'selected:%s:%s:%s:%s\\n' \"$1\" \"$GOTOOLCHAIN\" \"$GOPROXY\" \"$GOSUMDB\" >> \"$MARKER\"\ncase \"$1\" in version) printf 'go version go" + version + " linux/amd64\\n';; mod|list|test|build) :;; *) exit 3;; esac\n"
 	if err := os.WriteFile(filepath.Join(selectedRoot, "bin", "go"), []byte(selected), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +188,77 @@ func TestToolchainResolution(t *testing.T) {
 	}
 	if out, err := runHelper(t, dir, fakePath(t, ""), "doctor"); err == nil || !strings.Contains(out, "missing: go") {
 		t.Fatalf("missing driver: %s %v", out, err)
+	}
+}
+
+// Doctor must run both module checks offline and report each failure with the
+// diagnostic of the failing Go command.
+func TestDoctorModuleChecks(t *testing.T) {
+	dir, pin := fixture(t)
+	for _, tc := range []struct{ failing, want string }{
+		{"none", "ok: module dependencies available and unmodified offline (go mod verify does not cover the directory replacements in third_party/patched; git protects those copies)\n"},
+		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the failing package"},
+		{"mod", "fail: cached module dependencies modified"},
+	} {
+		path := fakePath(t, `[ "$GOTOOLCHAIN" = local ] && [ "$GOPROXY" = off ] && [ "$GOSUMDB" = off ] || exit 8
+[ "$1" != list ] || [ "$*" = "list -deps -test ./..." ] || exit 11
+[ "$1" != mod ] || [ "$*" = "mod verify" ] || exit 12
+case "$1" in
+version) printf 'go version go`+pin+` linux/amd64\n';;
+`+tc.failing+`) printf 'go: downloading example.test/mod v1.0.0\ngo: example.test/mod@v1.0.0: diagnostic\n' >&2; exit 1;;
+list|mod) :;;
+*) exit 10;;
+esac
+`)
+		out, err := runHelper(t, dir, path, "doctor")
+		failed := tc.failing != "none"
+		if (err != nil) != failed || !strings.Contains(out, tc.want) || strings.Contains(out, "\n  go: example.test/mod@v1.0.0: diagnostic\n") != failed || strings.Contains(out, "go: downloading") {
+			t.Fatalf("%s: %s %v", tc.failing, out, err)
+		}
+	}
+}
+
+// A failing Go command that prints nothing, or only download progress, must not
+// leave a blank line above the fail line.
+func TestDoctorEmptyDiagnostic(t *testing.T) {
+	dir, pin := fixture(t)
+	for _, tc := range []struct{ name, printed string }{
+		{"silent", ":"},
+		{"downloading only", "printf 'go: downloading example.test/mod v1.0.0\\n' >&2"},
+	} {
+		path := fakePath(t, `case "$1" in
+version) printf 'go version go`+pin+` linux/amd64\n';;
+list) `+tc.printed+`; exit 1;;
+*) exit 10;;
+esac
+`)
+		out, err := runHelper(t, dir, path, "doctor")
+		if err == nil || !strings.Contains(out, "\n  (no diagnostic from go)\nfail: packages or module dependencies do not load offline") || strings.Contains(out, "go: downloading") || strings.Contains(out, "\n  \n") {
+			t.Fatalf("%s: %s %v", tc.name, out, err)
+		}
+	}
+}
+
+// Doctor reports a missing grep on its own line and does not run Go; the other
+// actions refuse to continue.
+func TestDoctorMissingGrep(t *testing.T) {
+	dir, pin := fixture(t)
+	path := fakePathWithout(t, "printf x > invoked\nprintf 'go version go"+pin+" linux/amd64\\n'\n", "grep")
+	out, err := runHelper(t, dir, path, "doctor")
+	if err == nil || !strings.Contains(out, "\nmissing: grep\n") || !strings.Contains(out, "ok: go available\n") || strings.Contains(out, "invalid Go toolchain pin") || strings.Contains(out, "ok: go version") {
+		t.Fatalf("doctor without grep: %s %v", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "invoked")); err == nil {
+		t.Fatal("doctor ran Go without grep")
+	}
+	for _, action := range []string{"bootstrap", "test"} {
+		out, err := runHelper(t, dir, path, action)
+		if err == nil || !strings.Contains(out, "missing: grep") || strings.Contains(out, "invalid Go toolchain pin") {
+			t.Fatalf("%s without grep: %s %v", action, out, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "invoked")); err == nil {
+		t.Fatal("an action ran Go without grep")
 	}
 }
 

@@ -6,6 +6,161 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-17
+
+### Added
+
+- Add `ataniq-console`, a provisional terminal console built on Bubble Tea.
+  It is a fixture console, not a qualification: `ataniq-console --demo
+  [--theme dark|light]` shows fictional, read-only projects, persistent leads,
+  subagents, tasks and conversations, and without `--demo` it reports that the
+  backend is unavailable. Dark is the default theme. Nothing typed reaches a
+  process, and every control (approve, deny, full attach, send, interrupt,
+  detach) is unavailable and listed with its reason under Ctrl+K; `a` says why
+  full attach is unavailable. Live control, provider integration, use over SSH
+  and terminal restoration after a startup error remain unqualified.
+- Show the console as a cockpit in a window of 100x30 or more, on the alternate
+  screen: three panes (projects and leads with a context block; a session
+  block, an embedded session terminal and a focus bar; evidence and approvals
+  with the attachment contract, the pending gate and the lead's binding), a
+  timeline and a key bar. Below that size it shows single-column pages. The
+  session terminal replays a synthetic recording through an embedded emulator
+  and is labelled "fixture recording, not a live session" in every state.
+  Tab cycles the panes and Enter on the session focuses it. In session focus
+  every key goes to the session, `q` and Ctrl+C included, except the return
+  key (Ctrl+\ by default, set with `--return-key ctrl+KEY`) and F12, which
+  zooms the pane to the window in either focus. Both work with CapsLock,
+  NumLock or ScrollLock on. The return key is read from the byte 0x1c and from
+  `CSI 92;5u`; without the kitty keyboard protocol Ctrl+4 sends the same byte
+  and returns too. Ctrl+Enter is never bound. A recording that ends shows its
+  last screen, dimmed, under a banner with the exit status or "unknown",
+  saying that the terminal stream ended, not necessarily the agent; in session
+  focus any key but F12 returns to the console, and in console focus `r`
+  replays the recording. `--recording NAME` picks a fixture recording and
+  `--linger DURATION` (default 30s) keeps the session open after its end so
+  the keys can be tried; `mouse-held.jsonl` sets mouse reporting and focus
+  events and never resets them, to try the mouse by hand during the linger
+  time. The console asks the outer terminal for mode 2027 at start, also over
+  SSH, so that the pane can draw grapheme clusters as the terminal measures
+  them, and for focus events only in session focus and only when the session
+  asked.
+- Confine mouse selection in the cockpit to the session terminal. While the
+  cockpit is shown the console asks the outer terminal for mouse reporting, so
+  the terminal's own selection no longer spans the window; the single-column
+  pages below 100x30 leave the mouse to the terminal. In session focus a
+  session that asked for the mouse still gets it. Otherwise a left-button drag
+  in the session terminal selects its text, stays inside the pane, and on
+  release copies the text to the outer terminal's clipboard with OSC 52 (wide
+  characters and grapheme clusters once, trailing blanks dropped, rows joined
+  with newlines, a wrapped line as two lines). A selection over 1 MiB is not
+  copied and the key bar says so. A click alone, a selection of blanks, a
+  press outside the pane and the wheel copy nothing, and a press, a key or
+  paste sent to the session, a resize, F12, `r` or output that changes the
+  selected text clears the selection. Shift+drag gives the terminal's own
+  selection in most terminals, Ghostty included. A terminal that refuses OSC 52
+  writes copies nothing.
+- Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
+  dependencies, and preserve their dependency notices in
+  `third_party/terminal-console`. The session terminal is built on
+  `charmbracelet/x/vt` v0.1.0, a new dependency, which with
+  `charmbracelet/x/ansi` v0.11.9 is carried as a patched, in-tree copy under
+  `third_party/patched`, selected by `replace` lines in `go.mod`. The patches
+  keep a grapheme cluster whole when it arrives in two writes, keep a UTF-8
+  character such as U+2733 from ending a window title early, and keep no
+  scrollback for the alternate screen, whose default of 10000 lines let a
+  full-screen program grow memory by hundreds of megabytes. Each copy has a
+  `NOTICE.md` and is dropped once an upstream release contains the fixes.
+  `go mod verify` does not cover directory replacements, so the doctor says so
+  and git protects the copies, and `make test` also runs their own tests
+  (`make test-patched` runs only those; it covers x/vt and x/ansi with its
+  parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
+  an uncached module).
+- Record each change's changelog entry as a fragment file in `changelog.d`,
+  named `<section>-<slug>.md` (section: added, changed, deprecated, removed,
+  fixed or security), in the same commit as the change, so parallel features no
+  longer collide on `CHANGELOG.md`. `scripts/changelog-fold.sh` (`make
+  changelog-fold`) folds the fragments under their headings in the Keep a
+  Changelog order, each section's fragments sorted by name, and removes them;
+  `--into VERSION` folds into the dated `## [VERSION]` section that `qargi
+  release start VERSION` makes, and refuses when it does not exist, while
+  without it the fold writes to `[Unreleased]`. It refuses an unknown section
+  or a malformed fragment (including one with Windows line ends) without
+  changing anything, replaces `CHANGELOG.md` in one rename so an interrupted
+  run leaves it intact, is safe to repeat, and `--dry-run` writes nothing.
+  `make changelog-check` fails while any fragment is left. The release flow is
+  `qargi release start VERSION`, then `make changelog-fold ARGS='--into
+  VERSION'` as the first fix commit on the release branch, then `make
+  changelog-check`, then `qargi release push`; a hotfix does the same before
+  its pull request, and CI runs the check on both and on manual runs of those
+  branches. Entries already in `CHANGELOG.md` stay where they are.
+
+### Changed
+
+- Add the feature coordinator to the design documents. A coordinator is an
+  ephemeral delegate of a project lead for exactly one feature: it holds no
+  seat or lead assignment epoch, is never a handoff target and never approves.
+  Its questions go to its lead; the owner may watch it and type into it as its
+  single writer, with the lead notified and its powers unchanged. It may
+  prepare, verify, apply and merge runs into its own feature, sync it and clean
+  any run of its feature; the lead runs the whole-suite verify, and start and
+  finish of a feature, push, release, hotfix, prune and adoption of other
+  actors' runs stay with the lead, and approval with the owner. Its label only
+  narrows what it may do and is never identity; identity comes only from a
+  bound file Ataniq writes. A lead quiesces its coordinators before a handoff,
+  and a stalled coordinator is confirmed stopped before its runs are adopted.
+  The approvals document states that no approval, plan token or grant passes to
+  or through a coordinator, that a lead's feature delegation to one is neither a
+  grant nor an approval, and that the owner typing into one is not an approval.
+  Specification only; nothing is implemented.
+- Record the order of work in the design documents. Qualification comes first
+  and sandbox qualification precedes any Ataniq-managed lead; a provider's
+  remote control stays an optional launch profile during the transition; a
+  Codex lead is an interactive `codex` in its own session. Session hosting is
+  decided by an attended spike and documented after it. Nothing here is
+  implemented.
+- Add a design document for approvals and delegation. Only the owner's direct
+  words, or a delegation-chain grant whose signatures verify back to the
+  owner's root key, approve anything. Grants have scope, expiry, a use count
+  (single use for a sub-grant), revocation and audit; a message is never the
+  authority, though a signed grant may travel by message and the gate verifies
+  it; an owner channel is unreachable by leads; and relayed direction is never
+  an approval. Delegation grants are kept in one qargi store and are honoured
+  for qargi gates only in the first version. The designated-approver wording in
+  the design baseline and client protocol is corrected to match. Specification
+  only; nothing is implemented.
+- Add a design document for roles and the authority split. Each project has
+  exactly one assigned lead and a single supervisor spans projects; both are
+  assignable roles separate from agent identity, provider, model and effort.
+  A role changes hands only by a verified handoff (reconcile, exclusive
+  ownership, fence the old holder) that grants no authority. If any step
+  fails the outgoing holder keeps the role and an unresolvable outcome goes
+  to the owner; who verifies each step is left to the handoff contract. The
+  supervisor never acts on its own project's gates. Ataniq owns processes,
+  sessions, lifecycle, attach, messaging, scheduling and escalation routing,
+  qargi owns development tasks, evidence and gates, and each record has one
+  authoritative system. Specification only; nothing is implemented.
+- Record the owner-approved interface direction in the design documents: a
+  terminal-first Bubble Tea console is the primary operator client, a web
+  console with the same information architecture comes later, a shared typed
+  command and event contract sits under both with MCP as the agent-facing
+  surface, dark is the default theme, and unavailable or unqualified controls
+  are shown with their reason. This replaces the earlier assistant-ui web
+  console first direction. Only the fixture console is implemented.
+- `make doctor` checks offline that every package and test for the host
+  platform loads from the module cache with hashes matching `go.sum`, and that
+  cached modules are unchanged since download. It prints the Go diagnostic,
+  which names the failing module when the failure is in a module, and leaves
+  out Go's `go: downloading` lines, which are misleading offline; when nothing
+  is left it prints `(no diagnostic from go)`. A missing module is fixed with
+  `make bootstrap`. For a checksum mismatch, restore `go.sum`, or run
+  `chmod -R u+w` on the named module directory in the module cache, remove it
+  and run `make bootstrap`. A modified module is handled the same way: its
+  files are read-only, so run `chmod -R u+w` on it first, remove it, then run
+  `make bootstrap`. Any other load error is in the failing package and is
+  fixed there. It also checks that `grep` is installed, which the Go helper
+  uses. When it is not, doctor prints `missing: grep` and skips the Go checks,
+  and bootstrap, test and build stop with `missing: grep`.
+
 ## [0.0.8] - 2026-11-15
 
 ### Added

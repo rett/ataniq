@@ -27,7 +27,7 @@ and authenticated live admission remain pending implementation. See the
 | Commands | Shipped public typed command contracts, strict JSON codecs and canonical binary bindings. Private internal administration, resource, status and conflict contracts add bounded canonical arithmetic. Public v1 contracts and vectors are retained. See the [application contracts](docs/design/application-contracts.md) and [private contract source](internal/appcontract/admin.go). |
 | Cursors | Internal v2 encrypted cursor codec with strict canonical decoding and a bounded epoch reservation allocator per codec. Tests cover rotation, concurrent reservations, failed-mint consumption and fresh construction without received-epoch adoption. See the [cursor source](internal/appcontract/cursor.go). |
 | Controller qualification | Finite synthetic ledger, proof and generation checks with an independent verifier. Broader model behavior and real authority, gate and provider composition remain unqualified. See the [controller qualification scope](qualification/controllerhandoff/README.md). |
-| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. CLI and console prototypes remain on separate development branches and are outside this release. |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. A fixture-only terminal console (`ataniq-console --demo`) shows fictional, read-only data with no live control or provider integration. It ships in this release as a provisional fixture console; it is not a qualification. The CLI prototype remains on a separate development branch. |
 
 Cursor service composition must provide caller authentication and authorization,
 key provisioning and nonzero key/identity validation, one codec per composition,
@@ -45,16 +45,19 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 
 These decisions describe the planned design.
 
-- Go for the service and CLI, with native terminal access prioritized. Later
-  browser interface options remain an open design choice.
-- Unified Ataniq clients with a shared command and event contract; MCP remains
-  an agent-facing integration and federation surface.
+- Go for the service and CLI. A terminal-first Bubble Tea console is the
+  primary operator client. A web console with the same information architecture
+  comes later.
+- A shared typed command and event contract sits under both consoles and the
+  CLI; MCP is the agent-facing integration and federation surface.
+- Dark is the default theme. A control that is unavailable or unqualified is
+  shown with its reason.
 - OAuth authorization for remote MCP access and mTLS support for trusted
   service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
-- A proposed Ataniq runner and systemd lifecycle on Linux, subject to sandbox
-  qualification.
+- Session hosting is decided by an attended spike, and its design is written
+  after the spike. Sandbox qualification comes before any Ataniq-managed lead.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between
@@ -69,7 +72,7 @@ See [the design contract baseline](docs/design/README.md) and
 
 Development follows qargi's feature, review, and verification workflow.
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
-Install Git, Make, a POSIX shell and a Go bootstrap driver with toolchain
+Install Git, Make, a POSIX shell, grep and a Go bootstrap driver with toolchain
 selection support (Go 1.21 or newer). The driver selects the developer Go
 version pinned in `.go-version`; see [Go toolchains](https://go.dev/doc/toolchain).
 Review `make -n bootstrap` and `scripts/go-tool.sh` before running `make bootstrap`.
