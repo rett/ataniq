@@ -271,6 +271,8 @@ func (in Inputs) checkTable() error {
 		return err
 	}
 	never := in.neverMounted()
+	l := in.Layout()
+	leads, mirrors := path.Join(l.StateRoot, "leads"), l.MirrorsDir()
 	var rwSrc []Bind
 	for _, b := range t {
 		if b.Source == "" {
@@ -278,6 +280,15 @@ func (in Inputs) checkTable() error {
 		}
 		if err := CheckNeverMounted(b.Source, never); err != nil {
 			return refuse("bind "+b.Inside, "%s", reasonOf(err))
+		}
+		// The profile knows the state root: a source in another lead's
+		// state (its login, its home, its tree) or in another project's
+		// mirror is never right, whatever the caller lists as never-mounted.
+		if related(b.Source, leads) && b.Source != l.LeadDir() && !below(b.Source, l.LeadDir()) {
+			return refuse("bind "+b.Inside, "the source %s lies in or above another lead's state", b.Source)
+		}
+		if related(b.Source, mirrors) && b.Source != l.Mirror() && !below(b.Source, l.Mirror()) {
+			return refuse("bind "+b.Inside, "the source %s lies in or above another project's mirror folder", b.Source)
 		}
 		if b.Kind == KindRwBind {
 			rwSrc = append(rwSrc, b)

@@ -181,6 +181,30 @@ func TestInputsRefusals(t *testing.T) {
 		{"records inside the home folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/home/q", "/home/lead/.qargi"
 		}, "bind /home/lead", "overlaps"},
+		// Another lead's or another project's state.
+		{"agent install in another lead's claude login", Claude, func(in *Inputs) {
+			in.AgentInstall = "/srv/state/leads/other-lead/config/claude"
+		}, "bind /ataniq/agent", "another lead's state"},
+		{"agent install in another lead's codex login", Codex, func(in *Inputs) {
+			in.AgentInstall = "/srv/state/leads/other-lead/config/codex/auth.json"
+		}, "bind /ataniq/agent", "another lead's state"},
+		{"spec folder is another lead's home", Claude, func(in *Inputs) { in.SpecDir = "/srv/state/leads/other-lead/home" },
+			"bind /ataniq/spec", "another lead's state"},
+		{"qargi install is another lead's folder", Codex, func(in *Inputs) { in.QargiInstall = "/srv/state/leads/other-lead" },
+			"bind /ataniq/qargi", "another lead's state"},
+		{"qargi install is a lead whose name starts like this one", Claude, func(in *Inputs) {
+			in.QargiInstall = "/srv/state/leads/arc-lead2/home"
+		}, "bind /ataniq/qargi", "another lead's state"},
+		{"projection folder is the folder of all leads", Claude, func(in *Inputs) { in.ProjectionDir = "/srv/state/leads" },
+			"bind /ataniq/projection", "above the never-mounted"},
+		{"assignment folder is another project's mirror", Claude, func(in *Inputs) {
+			in.AssignmentDir = "/srv/state/mirrors/other.git"
+		}, "bind /ataniq/assignment", "another project's mirror"},
+		{"assignment folder is below another project's mirror", Codex, func(in *Inputs) {
+			in.AssignmentDir = "/srv/state/mirrors/other.git/refs"
+		}, "bind /ataniq/assignment", "another project's mirror"},
+		{"assignment folder is the mirrors folder", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/mirrors" },
+			"bind /ataniq/assignment", "another project's mirror"},
 		// Never-mounted paths.
 		{"agent install is the owner's .ssh", Claude, func(in *Inputs) { in.AgentInstall = "/home/owner/.ssh" },
 			"bind /ataniq/agent", "never-mounted"},
