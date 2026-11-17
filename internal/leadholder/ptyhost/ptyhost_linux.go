@@ -80,7 +80,7 @@
 // holds the pid, the group id and the session id. It is reaped only when the
 // session is proven empty (a scan that finds no live member while the zombie
 // holds the id is authoritative, because no process can join a session whose
-// leader is a zombie), when the control group is proven empty, or when the
+// leader is a zombie; the control group proof needs the same scan), or when the
 // host is closed (Close, the final release; the host then gives up acting on
 // the ids). Every signal sent by group or session id is sent under the mutex
 // that guards the reap and only while the child is not reaped. Session members
