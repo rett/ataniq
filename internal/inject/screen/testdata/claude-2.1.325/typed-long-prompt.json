@@ -1,0 +1,19 @@
+{
+ "source": "row3/claude-i6/screens/dump-i6-typed-holder",
+ "description": "a long owner prompt, wrapped",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 27,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "✳ Claude Code",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "Use the Write tool to create a file named approval-test.txt in the current folder containing exactly one line:\nhello. Use no other tool.",
+  "cursor_in_composer": true,
+  "mode": "manual"
+ }
+}

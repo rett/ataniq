@@ -1,0 +1,28 @@
+{
+ "source": "row3/claude/screens/final-holder",
+ "description": "exit screen after claude quit",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 0,
+ "cursor_y": 3,
+ "cursor_hidden": false,
+ "alt_screen": false,
+ "title": "",
+ "faint": [
+  {
+   "row": 1,
+   "from": 0,
+   "to": 25
+  },
+  {
+   "row": 2,
+   "from": 0,
+   "to": 66
+  }
+ ],
+ "want": {
+  "notes": [
+   "not on the alternate screen"
+  ]
+ }
+}

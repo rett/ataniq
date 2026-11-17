@@ -1,0 +1,82 @@
+{
+ "source": "row3/codex-i6/screens/dump-i6-before-holder",
+ "description": "approval dialog open (Would you like to run ...)",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 119,
+ "cursor_y": 35,
+ "cursor_hidden": true,
+ "alt_screen": true,
+ "title": "[ . ] Action Required | Run approval test command | work",
+ "faint": [
+  {
+   "row": 0,
+   "from": 5,
+   "to": 43
+  },
+  {
+   "row": 2,
+   "from": 0,
+   "to": 63
+  },
+  {
+   "row": 4,
+   "from": 7,
+   "to": 62
+  },
+  {
+   "row": 5,
+   "from": 9,
+   "to": 46
+  },
+  {
+   "row": 6,
+   "from": 14,
+   "to": 51
+  },
+  {
+   "row": 7,
+   "from": 8,
+   "to": 56
+  },
+  {
+   "row": 8,
+   "from": 9,
+   "to": 46
+  },
+  {
+   "row": 13,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 17,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 35,
+   "from": 2,
+   "to": 8
+  },
+  {
+   "row": 35,
+   "from": 13,
+   "to": 28
+  },
+  {
+   "row": 35,
+   "from": 31,
+   "to": 120
+  }
+ ],
+ "want": {
+  "known": true,
+  "dialog": true,
+  "dialog_marks": [
+   "Would you like to",
+   "› N.",
+   "Press enter to confirm"
+  ]
+ }
+}

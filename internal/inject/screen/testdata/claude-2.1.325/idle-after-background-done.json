@@ -1,0 +1,19 @@
+{
+ "source": "row3/claude/screens/dump-i3-7-after-holder",
+ "description": "empty composer after a background command finished",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 2,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "✳ ataniq-msg acknowledgment protocol",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_empty": true,
+  "cursor_in_composer": true,
+  "mode": "manual"
+ }
+}

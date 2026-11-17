@@ -1,0 +1,19 @@
+{
+ "source": "row3/claude/screens/dump-p0-typed-holder",
+ "description": "owner text wrapped over two rows, bare footer",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 32,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "✳ Claude Code",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "For the rest of this session: when a message starts with [ataniq-msg id=N], reply with exactly ACK N and nothing\nelse, and use no tools for it.",
+  "cursor_in_composer": true,
+  "mode": "manual"
+ }
+}
