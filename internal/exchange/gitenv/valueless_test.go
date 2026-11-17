@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,16 @@ func askGit(t *testing.T, g Git, c Cmd, dir string) string {
 // marker as its value. The table is built here at run time from
 // [subcommands] and [valuelessFlags], so a flag added later is covered.
 //
+// "--zzbogus" is not enough for the commands that do not report an unknown
+// option. "rev-parse" prints it back, so for it the probe is "--git-dir"
+// (the output must not hold the repository path), and the other probes of
+// [markerProbes] that belong to a subcommand are put after the marker for it
+// ("config --list", "version --build-options", "count-objects -v",
+// "check-ref-format --normalize"). A probe the flag itself stands for is
+// skipped. "check-ref-format" fails with its usage text for either marker, so
+// it cannot act on a probe in any case; it is asked all the same, so a git
+// that changes this is seen.
+//
 // Proves: for these subcommands and flags, in this git, no accepted flag
 // swallows the marker. Cannot prove: anything for flags that are not on the
 // list (the strict rule refuses those), or other git versions.
@@ -57,6 +68,12 @@ func TestValuelessFlagsTakeNoValueInGit(t *testing.T) {
 			if sub == "init" || sub == "version" {
 				c.GitDir = ""
 			}
+			probes := []markerProbe{markerProbes[0]} // "--zzbogus"
+			for _, p := range markerProbes[1:] {
+				if p.control == sub {
+					probes = append(probes, p)
+				}
+			}
 			tried := 0
 			for _, flag := range valuelessFlags {
 				for _, marker := range []string{"--", "--end-of-options"} {
@@ -65,8 +82,14 @@ func TestValuelessFlagsTakeNoValueInGit(t *testing.T) {
 						continue // refused here: that is the other way to be safe
 					}
 					tried++
-					if out := askGit(t, g, c, dir); optionRead.MatchString(out) {
-						t.Errorf("git %s: %s took %q as its value and read --zzbogus as an option, yet Argv accepts it:\n%s", sub, flag, marker, out)
+					for _, p := range probes {
+						if slices.Contains(p.args, flag) {
+							continue // the flag itself has this effect
+						}
+						c.Args = append([]string{sub, flag, marker}, p.args...)
+						if out := askGit(t, g, c, dir); p.seen(out, repo) {
+							t.Errorf("git %s: %s took %q as its value and read %q as options, yet Argv accepts it:\n%s", sub, flag, marker, p.args, out)
+						}
 					}
 				}
 			}
