@@ -171,7 +171,7 @@ type Mount struct {
 	// write (the source of a read-write bind row): the lead could replace the
 	// source with a symbolic link, which bubblewrap follows. Rule G1 says no
 	// source does, so it is false for every row of a valid plan: Build refuses
-	// a table with such a row and Verify reports one (ProbWritableSource). It
+	// a table with such a row and Verify reports one (ProbLeadWritable). It
 	// is not the profile's Bind.LeadWritable, which says the mount point (the
 	// target) lies in such a folder, and which stays true for the mount points
 	// the three .git rows have in the tree. A read-write bind's own source is
