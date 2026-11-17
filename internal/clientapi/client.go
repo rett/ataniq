@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -158,6 +159,9 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return fail(fmt.Errorf("%w: not a response object", ErrBadResponse))
 	}
+	if !exactKeys(raw, "protocol", "request_id", "ok", "result", "error") {
+		return fail(fmt.Errorf("%w: a key is not spelled exactly", ErrBadResponse))
+	}
 	if resp.Protocol != Protocol {
 		return fail(fmt.Errorf("%w: protocol does not match", ErrBadResponse))
 	}
@@ -176,9 +180,16 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 	if resp.Error == nil {
 		return fail(fmt.Errorf("%w: error missing", ErrBadResponse))
 	}
-	// A refusal of the connection ("unauthorized", "busy") or of an unreadable
-	// request carries no request id; any other error response must match.
-	if resp.RequestID != id && resp.RequestID != "" {
+	if !exactKeys(rawField(raw, "error"), "code", "message", "supported_protocols") {
+		return fail(fmt.Errorf("%w: a key is not spelled exactly", ErrBadResponse))
+	}
+	// A refusal of the connection ("unauthorized", "busy"), of an over-long
+	// line ("too-large") or of an unreadable request ("invalid-request")
+	// carries no request id when the server had none to echo. Every other
+	// error response must carry the request's.
+	emptyOK := resp.RequestID == "" && (resp.Error.Code == CodeUnauthorized || resp.Error.Code == CodeBusy ||
+		resp.Error.Code == CodeTooLarge || resp.Error.Code == CodeInvalidRequest)
+	if resp.RequestID != id && !emptyOK {
 		return fail(fmt.Errorf("%w: request id does not match", ErrBadResponse))
 	}
 	e := &Error{Code: resp.Error.Code, Message: resp.Error.Message, SupportedProtocols: resp.Error.SupportedProtocols}
@@ -189,6 +200,35 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 		c.conn.Close()
 	}
 	return e
+}
+
+// exactKeys reports whether no key of the JSON object in raw is a different
+// spelling of one of known: encoding/json matches keys without regard to case,
+// and the protocol's keys are exact. A key that is not near any of known is
+// an unknown key and is ignored, as is anything raw is not an object.
+func exactKeys(raw []byte, known ...string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return true
+	}
+	for key := range fields {
+		for _, k := range known {
+			if key != k && strings.EqualFold(key, k) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// rawField returns the value of the exact key name in the JSON object raw, or
+// nil.
+func rawField(raw []byte, name string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	return fields[name]
 }
 
 // readResponseLine reads one line of at most [MaxResponseBytes] bytes

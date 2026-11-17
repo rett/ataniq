@@ -68,6 +68,24 @@ func TestClientChecksProtocolAndRequestID(t *testing.T) {
 		"error with other id": func(r Request) []byte {
 			return []byte(`{"protocol":"` + Protocol + `","request_id":"zzz","ok":false,"error":{"code":"busy","message":"m"}}` + "\n")
 		},
+		"upper-case keys": func(r Request) []byte {
+			return []byte(`{"PROTOCOL":"` + Protocol + `","Request_ID":"` + r.RequestID + `","OK":true,"RESULT":{"protocols":["ataniq.client/1"],"mutations":false,"version":"v"}}` + "\n")
+		},
+		"mixed-case key beside the right ones": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":true,"Result":{"version":"v"}}` + "\n")
+		},
+		"upper-case error keys": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":false,"error":{"Code":"busy","Message":"m"}}` + "\n")
+		},
+		"empty id on unsupported-operation": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"unsupported-operation","message":"m"}}` + "\n")
+		},
+		"empty id on internal": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"internal","message":"m"}}` + "\n")
+		},
+		"empty id on unsupported-protocol": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"unsupported-protocol","message":"m"}}` + "\n")
+		},
 		"result of the wrong type": func(r Request) []byte {
 			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":true,"result":{"protocols":7}}` + "\n")
 		},
@@ -85,6 +103,26 @@ func TestClientChecksProtocolAndRequestID(t *testing.T) {
 			}
 			if _, err := c.Hello(context.Background()); !errors.Is(err, ErrClosed) {
 				t.Fatalf("after a bad response: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientAcceptsEmptyIDOnlyOnRefusalCodes(t *testing.T) {
+	for _, code := range []ErrorCode{CodeUnauthorized, CodeBusy, CodeTooLarge, CodeInvalidRequest} {
+		t.Run(string(code), func(t *testing.T) {
+			path := fakeServer(t, func(r Request) []byte {
+				return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"` + string(code) + `","message":"m"}}` + "\n")
+			})
+			c, err := Dial(context.Background(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.Hello(context.Background())
+			var e *Error
+			if !errors.As(err, &e) || e.Code != code {
+				t.Fatalf("err = %v", err)
 			}
 		})
 	}
