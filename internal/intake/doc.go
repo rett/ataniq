@@ -142,6 +142,14 @@
 // tags and refs/leads/ are never targets. No reflog message is written; the
 // intake record is the record. If the branch moved and the record cannot be
 // written, the error is a [RecordError] that says so and carries the record.
+// A refused update (git exits with a status before it has prepared the
+// transaction) moved nothing and writes no record, even when the branch is
+// found at the tip, put there by another writer: the error is [ErrMoved]. Only
+// an update that ended unclearly (a time-out, a cancel, a kill, or an error
+// after the transaction was prepared) can be found at the tip and recorded;
+// the record then comes back with an error that matches [ErrRecovered], and
+// when the branch cannot be read afterwards the error matches
+// [ErrOutcomeUnknown] and the owner looks at the branch.
 //
 // The integration moves a branch in the bare mirror only. This package runs
 // no checkout, merge, pull, reset, worktree or push, and the mirror has no
