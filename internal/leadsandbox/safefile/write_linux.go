@@ -27,6 +27,10 @@ import (
 // after the move are left where the moved folder went (outside the handle,
 // but only in a place the lead could already write, since it moved the
 // folder), and the call cannot undo them (there is no remove helper).
+//
+// A nil result holds only at the moment of that end check: a folder moved
+// afterwards is not seen. A caller that uses the path later (a bind by path)
+// checks it again right before it does.
 func (r *Root) MkdirAll(rel string, mode fs.FileMode) error {
 	const op = "mkdir"
 	if err := validate(rel, true); err != nil {

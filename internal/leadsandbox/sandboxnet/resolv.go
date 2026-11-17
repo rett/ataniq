@@ -180,7 +180,35 @@ var (
 	siit = netip.MustParsePrefix("::ffff:0:0:0/96")
 	// thisNet4 is the IPv4 "this network" block.
 	thisNet4 = netip.MustParsePrefix("0.0.0.0/8")
+	// loopback4 is the IPv4 loopback block.
+	loopback4 = netip.MustParsePrefix("127.0.0.0/8")
+	// nat64 is the NAT64 well-known prefix; its last 32 bits are an IPv4
+	// address.
+	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+	// sixToFour is the 6to4 range; bits 16 to 47 are an IPv4 address.
+	sixToFour = netip.MustParsePrefix("2002::/16")
 )
+
+// embeddedUnroutable reports whether a is a NAT64 well-known-prefix or 6to4
+// address that embeds a loopback or this-network IPv4 address. Such an
+// address would reach a host loopback service only through a translator on
+// the host, but it is no usable resolver either way.
+func embeddedUnroutable(a netip.Addr) bool {
+	if !a.Is6() {
+		return false
+	}
+	b := a.As16()
+	var v4 netip.Addr
+	switch {
+	case nat64.Contains(a):
+		v4 = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	case sixToFour.Contains(a):
+		v4 = netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]})
+	default:
+		return false
+	}
+	return loopback4.Contains(v4) || thisNet4.Contains(v4)
+}
 
 func refusal(format string, args ...any) error {
 	return &Refusal{Reason: fmt.Sprintf(format, args...)}
@@ -241,7 +269,10 @@ func parse(content []byte) (parsed, error) {
 
 	for i, raw := range lines {
 		n := i + 1
-		line := strings.TrimSuffix(raw, "\r")
+		// A trailing carriage return is not stripped: the host resolver does
+		// not take it for a separator, so the line is rejected as holding a
+		// control byte, never accepted.
+		line := raw
 		if len(line) > MaxLineBytes {
 			p.rejected++
 			p.note("line %d dropped: longer than %d bytes", n, MaxLineBytes)
@@ -278,11 +309,10 @@ func parse(content []byte) (parsed, error) {
 			p.searchLine(n, "search", fields[1:])
 		case "domain":
 			// As on the host, domain and search are alternatives and the
-			// last well-formed one wins; domain takes one name.
-			if len(fields) != 2 {
-				p.rejected++
-				p.note("line %d dropped: a domain line takes exactly one name%s", n, p.searchKept())
-				continue
+			// last one wins; a domain line keeps its first word and the
+			// rest of the line is ignored.
+			if len(fields) > 2 {
+				fields = fields[:2]
 			}
 			p.searchLine(n, "domain", fields[1:])
 		case "options":
@@ -346,6 +376,10 @@ func (p *parsed) nameserver(n int, args []string) {
 		p.rejected++
 		p.note("line %d dropped: address %s embeds IPv4 in a form that is not routed", n, quote(tok))
 		return
+	case embeddedUnroutable(a):
+		p.rejected++
+		p.note("line %d dropped: address %s embeds a loopback or this-network IPv4 address", n, quote(tok))
+		return
 	case a.Is4() && thisNet4.Contains(a):
 		p.rejected++
 		p.note("line %d dropped: address %s is in 0.0.0.0/8, which is not routed", n, quote(tok))
@@ -359,19 +393,11 @@ func (p *parsed) nameserver(n int, args []string) {
 	p.servers = append(p.servers, a)
 }
 
-// searchKept says, for a note about a dropped search or domain line, that an
-// earlier well-formed one is still in force.
-func (p *parsed) searchKept() string {
-	if len(p.search) == 0 {
-		return ""
-	}
-	return "; the earlier search or domain list is kept"
-}
-
 func (p *parsed) searchLine(n int, keyword string, args []string) {
 	if len(args) == 0 {
 		p.rejected++
-		p.note("line %d dropped: empty %s list%s", n, keyword, p.searchKept())
+		p.search = nil
+		p.note("line %d dropped: empty %s list; no search list is passed on", n, keyword)
 		return
 	}
 	var kept []string
@@ -379,7 +405,8 @@ func (p *parsed) searchLine(n int, keyword string, args []string) {
 	for _, d := range args {
 		if !validDomain(d) {
 			p.rejected++
-			p.note("line %d dropped: malformed search domain %s%s", n, quote(d), p.searchKept())
+			p.search = nil
+			p.note("line %d dropped: malformed search domain %s; no search list is passed on", n, quote(d))
 			return
 		}
 		if len(kept) >= MaxSearchDomains || size+len(d)+1 > MaxSearchBytes {
@@ -389,7 +416,9 @@ func (p *parsed) searchLine(n int, keyword string, args []string) {
 		kept = append(kept, d)
 		size += len(d) + 1
 	}
-	// As the resolver does, the last well-formed search or domain line wins.
+	// As the resolver does, the last search or domain line wins. A malformed
+	// one clears the list instead of leaving an earlier list the host no
+	// longer uses.
 	p.search = kept
 }
 

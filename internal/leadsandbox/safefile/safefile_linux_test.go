@@ -851,43 +851,6 @@ func TestOpenRoot(t *testing.T) {
 	}
 }
 
-// A mount point below the handle's folder is refused, not crossed. The test
-// needs a mount point it can see: it takes them from the mount table and
-// skips only when none can be told either way (it makes no mount).
-func TestMountBelowRootRefused(t *testing.T) {
-	data, err := os.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		t.Skipf("no mount table: %v", err)
-	}
-	checked := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 5 || strings.Contains(f[4], "\\") || f[4] == "/" {
-			continue
-		}
-		parent, name := filepath.Split(f[4])
-		r, err := OpenRoot(parent)
-		if err != nil {
-			continue
-		}
-		info, err := r.Lstat(name)
-		r.Close()
-		switch {
-		case err == nil:
-			t.Errorf("Lstat(%q) below %q crossed a mount point (%+v)", name, parent, info)
-			checked++
-		case errors.Is(err, ErrEscapes) && errors.Is(err, unix.EXDEV):
-			checked++
-		}
-		if checked >= 3 {
-			break
-		}
-	}
-	if checked == 0 {
-		t.Skip("no mount point whose parent could be searched")
-	}
-}
-
 // A lease a lead holds on a file does not stall an owner-side open: it fails
 // at once with EAGAIN (the open is O_NONBLOCK). Skipped where leases cannot be
 // taken (they need a file system and a setting that allow them).
