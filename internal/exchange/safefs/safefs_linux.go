@@ -135,7 +135,9 @@ func mapErrno(err error) error {
 // Open opens the regular file rel for reading. The open uses openat2 from the
 // root with no symlink followed anywhere in the name, and with O_NONBLOCK, so
 // it does not block on a FIFO. The file is then checked with fstat: anything
-// but a regular file is closed and refused with [ErrNotRegular]. A socket, or
+// but a regular file is closed and refused with [ErrNotRegular]. The returned
+// file is in blocking mode: O_NONBLOCK is cleared once the file is known to be
+// regular. A socket, or
 // a device with no driver, cannot be opened at all: the kernel fails with ENXIO
 // or ENODEV, and the error then matches [ErrNotRegular] and the errno.
 //
@@ -164,6 +166,12 @@ func (r *Root) Open(rel string) (*os.File, error) {
 		if st.Mode&unix.S_IFMT != unix.S_IFREG {
 			unix.Close(nfd)
 			return pathError("open", rel, ErrNotRegular)
+		}
+		// O_NONBLOCK was for the open only. Clear it, so that a caller who
+		// passes the file on does not hand over a non-blocking descriptor.
+		if err := unix.SetNonblock(nfd, false); err != nil {
+			unix.Close(nfd)
+			return pathError("open", rel, err)
 		}
 		file = os.NewFile(uintptr(nfd), rel)
 		return nil

@@ -91,6 +91,35 @@ func TestOpenReadsRegularFile(t *testing.T) {
 	}
 }
 
+func TestOpenReturnsBlockingFile(t *testing.T) {
+	// Open uses O_NONBLOCK so that a FIFO does not block it. The file it
+	// returns must not keep the flag, which a child would inherit.
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "f"), "x")
+	r := openRoot(t, dir)
+	f, err := r.Open("f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rc, err := f.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flags int
+	var ferr error
+	// Control, not Fd: Fd itself would switch the descriptor to blocking.
+	if err := rc.Control(func(fd uintptr) { flags, ferr = unix.FcntlInt(fd, unix.F_GETFL, 0) }); err != nil {
+		t.Fatal(err)
+	}
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	if flags&unix.O_NONBLOCK != 0 {
+		t.Fatalf("O_NONBLOCK is set on the returned file (flags %#x)", flags)
+	}
+}
+
 func TestOpenMissingIsNotExist(t *testing.T) {
 	r := openRoot(t, t.TempDir())
 	_, err := r.Open("nope")
