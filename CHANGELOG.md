@@ -127,6 +127,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ataniq-console --help` now shows the default return key as
   `(default ctrl+\)`. It showed `(default "ctrl+\\")`, which the flag refuses
   when copied.
+- The fixture console's key bar in console focus no longer loses `? help` and
+  `q quit` at the narrowest cockpit. It was 114 cells long and was cut with an
+  ellipsis in a window of 100 to 113 columns. It is now shorter and drops the
+  F12 zoom entry, which the focus bar and the help still show.
 
 ## [0.0.8] - 2026-11-15
 

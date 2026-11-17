@@ -215,6 +215,24 @@ func TestThreePanesAt140x45(t *testing.T) {
 	}
 }
 
+// TestConsoleKeyBarFitsAtTheMinimumWidth checks that the way out and the help
+// are on screen at the narrowest cockpit, not cut with an ellipsis.
+func TestConsoleKeyBarFitsAtTheMinimumWidth(t *testing.T) {
+	for _, sz := range [][2]int{{MinCols, MinRows}, {MinCols + 1, MinRows}, {140, 45}} {
+		r := newRig(t, sz[0], sz[1], Options{})
+		rows := r.rows()
+		bar := rows[len(rows)-1]
+		for _, want := range []string{"? help", "q quit"} {
+			if !strings.Contains(bar, want) {
+				t.Fatalf("%v: key bar %q lacks %q", sz, bar, want)
+			}
+		}
+		if strings.Contains(bar, "…") {
+			t.Fatalf("%v: key bar is cut: %q", sz, bar)
+		}
+	}
+}
+
 // TestLayoutTiles checks, over many sizes, that the blocks do not overlap and
 // fit the window, and that the fixture label is always on screen.
 func TestLayoutTiles(t *testing.T) {
