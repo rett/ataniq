@@ -522,7 +522,7 @@ func TestFailedEmptyShowsTheReconcileIncomplete(t *testing.T) {
 			empty: func(context.Context, leadunit.State) (bool, error) {
 				return false, errors.New("read cgroup.events: permission denied")
 			}},
-		{name: "deadline in the last role", timeout: 200 * time.Millisecond, log: "ran out of time",
+		{name: "deadline in the last role", timeout: 200 * time.Millisecond, log: "had passed when it returned",
 			empty: func(ctx context.Context, _ leadunit.State) (bool, error) {
 				<-ctx.Done()
 				return false, ctx.Err()

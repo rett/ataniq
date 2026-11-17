@@ -427,10 +427,12 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 		completed = false
 		d.logf("the reconcile did not finish within %s; it is shown as not completed", d.ReconcileTimeout)
 	} else if rctx.Err() != nil && ctx.Err() == nil {
-		// The deadline ended inside the last role's call: Reconcile saw no later
-		// step that would have noticed it, and returned no error.
+		// The deadline had passed when Reconcile returned, without an error: it
+		// ended inside the last role's call, where no later step would have
+		// noticed it, or just after the reconcile finished. The two cannot be
+		// told apart here, and both are shown as not completed.
 		completed = false
-		d.logf("the reconcile ran out of time (%s) in its last step; it is shown as not completed", d.ReconcileTimeout)
+		d.logf("the reconcile's deadline (%s) had passed when it returned; it is shown as not completed", d.ReconcileTimeout)
 	}
 	unavailable := 0
 	for _, r := range rep.Roles {
