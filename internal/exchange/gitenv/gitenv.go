@@ -193,7 +193,7 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkOptions(c.Args[1:]); err != nil {
+	if err := checkOptions(sub, c.Args[1:]); err != nil {
 		return nil, err
 	}
 	uploadPack, err := uploadPackOption(c, sub, protocols)
@@ -332,15 +332,18 @@ func cleanProtocols(in []string) ([]string, error) {
 
 // valuelessFlags are the options that may stand before the end of the
 // options without "=". Each one takes no value, in every subcommand that
-// accepts it here, so git never reads the next argument as its value. This
-// is the one list to extend: add a flag only when it takes no value in any
-// subcommand of [subcommands], and write every other option as
+// accepts it here except those named in [valueIn], so git never reads the
+// next argument as its value. This is the one list to extend: add a flag
+// only when it takes no value in any subcommand of [subcommands], or name
+// the subcommands where it does in [valueIn]; write every other option as
 // "--name=value". The flags come from the callers of this package (the
 // mirror, the intake check) and from its own tests.
+// TestValuelessFlagsTakeNoValueInGit asks the installed git about every
+// entry in every subcommand, so a wrong entry fails there.
 var valuelessFlags = []string{
 	// Fetch and update.
 	"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head",
-	"--no-auto-maintenance", "--no-auto-gc", "--all",
+	"--no-auto-maintenance", "--no-auto-gc", "--all", "--atomic",
 	// Init.
 	"--bare",
 	// Output control.
@@ -359,13 +362,16 @@ var valuelessFlags = []string{
 	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
 }
 
-// separateValueFlags take exactly the next argument as their value and are
-// allowed in that form, because a caller needs it ("config --file /dev/stdin
-// --list"). The value must be a plain argument: if it starts with "-" the
-// command is refused, so the value can never be a terminator or an option.
-// Prefer "--name=value" in new code; add a flag here only when a caller
-// cannot.
-var separateValueFlags = []string{"--file"}
+// valueIn names, for flags of [valuelessFlags], the subcommands in which the
+// flag takes a value. There it is refused as a bare flag, because it would
+// take the end-of-options marker as its value and git would then read the
+// next argument as an option. In "update-ref" and "symbolic-ref", "-m" takes
+// the reflog message and has no "=" form, so it cannot be used there at all.
+// In "for-each-ref", "--count" takes a number and is written "--count=N".
+var valueIn = map[string][]string{
+	"-m":      {"update-ref", "symbolic-ref"},
+	"--count": {"for-each-ref"},
+}
 
 // checkOptions refuses what must not stand before the end of the options:
 // an option that names a program to run (also abbreviated), and any option
@@ -376,8 +382,9 @@ var separateValueFlags = []string{"--file"}
 // neighbour. An option such as "-o" takes the next argument as its value,
 // even when that is "--", and git then reads the argument after it as an
 // option. So before the end of the options an option is either written with
-// "=" (which holds its value), or is in [valuelessFlags].
-func checkOptions(args []string) error {
+// "=" (which holds its value), or is in [valuelessFlags] and takes no value
+// in this subcommand (see [valueIn]).
+func checkOptions(sub string, args []string) error {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" || a == "--end-of-options" {
@@ -385,13 +392,6 @@ func checkOptions(args []string) error {
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
 			continue
-		}
-		if slices.Contains(separateValueFlags, a) {
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++ // the value; git reads it as the value of a
-				continue
-			}
-			return fmt.Errorf("gitenv: option %q needs its value as the next argument, and the value may not start with \"-\"", a)
 		}
 		name, _, hasValue := strings.Cut(a, "=")
 		if strings.HasPrefix(a, "--") && len(name) >= 5 {
@@ -401,7 +401,13 @@ func checkOptions(args []string) error {
 				}
 			}
 		}
-		if hasValue || slices.Contains(valuelessFlags, a) {
+		if hasValue {
+			continue
+		}
+		if slices.Contains(valuelessFlags, a) {
+			if slices.Contains(valueIn[a], sub) {
+				return fmt.Errorf("gitenv: option %q takes a value in %q, so it would take the next argument; write it \"--name=value\" if git accepts that form, otherwise it cannot be used in this subcommand", a, sub)
+			}
 			continue
 		}
 		return fmt.Errorf("gitenv: option %q before the end of the options is not allowed: write its value with \"=\" (\"--name=value\"), or ask for the flag to be added to the list of valueless flags", a)
@@ -416,10 +422,14 @@ func checkOptions(args []string) error {
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
 //     adds --no-ext-diff and --no-textconv to "diff" instead.
-//   - core.alternateRefsCommand is set to the empty string. The tests show
-//     that git then runs no command and that an alternate object store still
-//     works; without it a command from the repository's config runs when a
-//     fetch lists the refs of an alternate.
+//   - core.alternateRefsCommand is set to the empty string. git 2.56 does
+//     not skip an empty command: when a fetch lists the refs of an alternate
+//     it tries to start it, fails, prints "error: cannot run : No such file
+//     or directory" (once for each listing) and reads no alternate refs. The
+//     fetch still succeeds and the alternate's object store still works.
+//     The result is safe: no program starts. Without the setting a command
+//     from the repository's config runs. The tests show both, and that the
+//     error line is the expected sign.
 //   - core.protectNTFS and core.protectHFS are added, so the fsck checks of
 //     ".git" look-alikes do not depend on the platform.
 //   - uploadpack.packObjectsHook is not set. It is read from protected

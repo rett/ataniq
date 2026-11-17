@@ -36,12 +36,13 @@
 //   - It checks the options of a command, and nothing else in the arguments.
 //     Before the first "--" or "--end-of-options" every argument that starts
 //     with "-" must be written "--name=value" or be one of a short list of
-//     flags that take no value. Any other option is refused: git lets an
-//     option such as "-o" take the next argument as its value, even the
-//     end-of-options marker, and would then read what follows as an option.
-//     The one exception is "--file" followed by a plain argument, which
-//     "git config" needs. After the marker git reads no options, so the
-//     rest is not checked. A caller that builds arguments from untrusted
+//     flags that take no value in that subcommand ("-m" takes one in
+//     "update-ref" and "symbolic-ref", "--count" in "for-each-ref", and are
+//     refused there). Any other option is refused: git lets an option such
+//     as "-o" take the next argument as its value, even the end-of-options
+//     marker, and would then read what follows as an option. There is no
+//     exception: "git config" takes "--file=PATH", not "--file PATH". After
+//     the marker git reads no options, so the rest is not checked. A caller that builds arguments from untrusted
 //     text (a ref name, for example) places "--end-of-options" or a fully
 //     qualified ref before it. The options that name a program to run
 //     ("--upload-pack", "--receive-pack", "--exec", "--ext-diff") are
