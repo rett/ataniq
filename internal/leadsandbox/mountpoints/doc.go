@@ -43,8 +43,12 @@
 //
 // The checks are made at one moment. A lead that runs between a check and the
 // start can change what it checked; the folders are the lead's to write while
-// it runs, and the read-only binds of .git/config, .git/hooks and .git/info
-// are what protect them afterwards, not this package. A symbolic link above
+// it runs. The read-only binds of .git/config, .git/hooks and .git/info are
+// defence in depth: they do not stop a lead from renaming .git (renaming the
+// parent of a mount point is allowed) and building another, and Check and
+// CheckOwnClone cannot tell a rebuilt .git from the original. The primary rule
+// is that no owner-side tool uses a lead's tree (the lead-hosting design,
+// section 3.3); this package does not enforce it. A symbolic link above
 // the state root is not looked for: the caller opens a state root it owns.
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
