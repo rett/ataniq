@@ -25,7 +25,8 @@ type Cmd struct {
 	// or "--end-of-options", an option must be written "--name=value" or be
 	// a flag that takes no value (see valuelessFlags in gitenv.go);
 	// [Git.Argv] refuses any other. The options that name a program are
-	// refused in every form.
+	// refused in every form. "config" does not end its options at "--",
+	// so Argv refuses that marker there; use "--end-of-options".
 	Args []string
 	// Protocols lists the transports this command may use. The only name
 	// known is "file". Empty means no transport.
@@ -373,10 +374,31 @@ var valueIn = map[string][]string{
 	"--count": {"for-each-ref"},
 }
 
+// markerNotEnd names, per subcommand, the markers that the installed git
+// does not treat as the end of its options: it reads the next argument as an
+// option and acts on it. "git config" does so for "--" ("config -- --file=X
+// --list" lists the file X, and a key can be written to it). A caller uses
+// "--end-of-options" there, which git config reads as a plain argument, so
+// "config --end-of-options --file=X" names a key that is not valid. Argv
+// refuses these markers. TestMarkerFirstEndsTheOptionsInGit asks git about
+// every subcommand and marker and fails when this table and git disagree.
+var markerNotEnd = map[string][]string{
+	"config": {"--"},
+}
+
 // checkOptions refuses what must not stand before the end of the options:
 // an option that names a program to run (also abbreviated), and any option
 // that git could let take the next argument as its value. It stops at the
-// first "--" or "--end-of-options", after which git reads no options.
+// first "--" or "--end-of-options", after which git reads no options, except
+// where [markerNotEnd] says git does read them: there the marker is refused.
+//
+// Some pairs of subcommand and marker stay allowed although git reads the
+// argument after the marker as an option, because it then dies and acts on
+// nothing. With "--end-of-options" first, "rev-parse", "rev-list", "log",
+// "diff" and "diff-tree" fail with "option '...' must come before non-option
+// arguments" (TestMarkerReadThenDie pins this). "check-ref-format" fails with
+// its usage text for either marker, even before a valid name (it takes no
+// marker; TestCheckRefFormatTakesNoMarker pins this).
 //
 // The rule is strict so that no argument depends on what git does with a
 // neighbour. An option such as "-o" takes the next argument as its value,
@@ -387,6 +409,9 @@ var valueIn = map[string][]string{
 func checkOptions(sub string, args []string) error {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if slices.Contains(markerNotEnd[sub], a) {
+			return fmt.Errorf("gitenv: %q does not end the options of %q: git reads the next argument as an option; use \"--end-of-options\"", a, sub)
+		}
 		if a == "--" || a == "--end-of-options" {
 			return nil
 		}

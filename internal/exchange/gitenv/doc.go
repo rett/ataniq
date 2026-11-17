@@ -42,10 +42,15 @@
 //     as "-o" take the next argument as its value, even the end-of-options
 //     marker, and would then read what follows as an option. There is no
 //     exception: "git config" takes "--file=PATH", not "--file PATH". After
-//     the marker git reads no options, so the rest is not checked. A caller
-//     that builds arguments from untrusted text (a ref name, for example)
-//     places "--end-of-options" or a fully qualified ref before it. The
-//     options that name a program to run ("--upload-pack",
+//     the marker git reads no options, so the rest is not checked, with one
+//     exception: "git config" does not end its options at "--" and reads
+//     the next argument as an option ("config -- --file=PATH --list" lists
+//     the file). Argv refuses "--" for "config"; a caller writes
+//     "--end-of-options" there. A test asks the installed git about every
+//     subcommand and marker, so a pair that is not safe fails there. A
+//     caller that builds arguments from untrusted text (a ref name, for
+//     example) places "--end-of-options" or a fully qualified ref before
+//     it. The options that name a program to run ("--upload-pack",
 //     "--receive-pack", "--exec", "--ext-diff") are refused in every form,
 //     also abbreviated as git accepts. The one way to name an upload-pack
 //     program is [Cmd.UploadPack], for a fetch from a local path; Argv

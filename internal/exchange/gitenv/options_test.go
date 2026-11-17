@@ -246,3 +246,42 @@ func TestAtomicFetchRuns(t *testing.T) {
 		t.Errorf("refs after the atomic fetch: %q", got)
 	}
 }
+
+// TestConfigDoesNotEndTheOptionsAtDashDash covers the probes of the review:
+// git config reads an option after "--" (it writes a key to, or lists, any
+// file named by "--file=PATH"), so Argv refuses that marker for config, in any
+// place before "--end-of-options", and tells the caller what to write. The
+// other subcommands still take "--". TestMarkerFirstEndsTheOptionsInGit asks
+// git about every pair.
+func TestConfigDoesNotEndTheOptionsAtDashDash(t *testing.T) {
+	g := Git{Path: "/usr/bin/git"}
+	ok := "/srv/r.git"
+	for _, args := range [][]string{
+		{"config", "--", "--file=/x/victim", "core.fsmonitor", "/bin/evil"},
+		{"config", "--", "--file=/x/victim", "--list"},
+		{"config", "--", "--list"},
+		{"config", "--", "a.b", "c"},
+		{"config", "--get", "--", "a.b"},
+		{"config", "--file=/dev/stdin", "--", "--list"},
+	} {
+		argv, err := g.Argv(Cmd{GitDir: ok, Args: args})
+		if err == nil {
+			t.Errorf("Argv accepted %q: %q", args, argv)
+			continue
+		}
+		if !strings.Contains(err.Error(), `"--end-of-options"`) || !strings.Contains(err.Error(), `"config"`) {
+			t.Errorf("%q: error %q does not name the subcommand and the marker to use", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"config", "--end-of-options", "--file=/x/victim", "a.b", "c"},
+		{"config", "--get", "--end-of-options", "a.b"},
+		{"config", "--file=/dev/stdin", "--list", "-z"},
+		{"log", "--", "--file=/x"},
+		{"rev-parse", "--", "--git-dir"},
+	} {
+		if _, err := g.Argv(Cmd{GitDir: ok, Args: args}); err != nil {
+			t.Errorf("Argv refused %q: %v", args, err)
+		}
+	}
+}
