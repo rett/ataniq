@@ -98,7 +98,7 @@ func NewEmulator(w, h int) *Emulator {
 	t.scrs[1].cb = &t.cb
 	t.parser = ansi.NewParser()
 	t.parser.SetParamsSize(parser.MaxParamsSize)
-	t.parser.SetDataSize(1024 * 1024 * 4) // 4MB data buffer
+	t.parser.SetDataSize(MaxStringBytes)
 	t.grapheme = make([]byte, 0, MaxClusterBytes+utf8.UTFMax)
 	t.parser.SetHandler(ansi.Handler{
 		Print:     t.handlePrint,

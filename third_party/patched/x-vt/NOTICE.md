@@ -74,6 +74,16 @@ Patches, applied in this order to the files of the module as released:
    does not refuse. Scrollback is not counted: it keeps the links of the lines it holds, and its size is the
    caller's (the session pane keeps one line on the main screen and none on
    the alternate).
+8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
+   `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).
+   The parser's data buffer was 4 MiB, so one string could make the handlers
+   copy megabytes. It is now `MaxStringBytes` (64 KiB), for OSC, DCS, SOS, PM
+   and APC alike. The rest of a longer string is dropped by the parser, the
+   handler of the string sees the 64 KiB that fitted, and
+   `Counters().StringsTruncated` counts the string, using `Parser.Truncated`.
+   A cut can fall inside a UTF-8 character, which a handler gets as invalid
+   UTF-8; a 0x9C byte of a character stays string data after the cut, so the
+   string ends at its real terminator and none of it reaches the screen.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

@@ -88,8 +88,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parameters are over 256 bytes is dropped and counted, and the text after it
   has no link; a screen (the main and the alternate each) keeps at most 256
   distinct live links, and text printed under a further link is drawn without
-  it and counted. The emulator exposes the counts of every cap it hit through
-  `Counters`.
+  it and counted; and the data of an OSC, DCS or APC string is cut at 64 KiB
+  (it was 4 MiB), with the rest dropped and counted. The emulator exposes the
+  counts of every cap it hit through `Counters`.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a

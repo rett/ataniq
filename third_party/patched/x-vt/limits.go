@@ -20,6 +20,11 @@ const (
 	// that the cells of one screen, the main and the alternate screen each,
 	// may reference. Text printed under a further link is drawn without it.
 	MaxLiveLinks = 256
+
+	// MaxStringBytes is the most bytes of the data of one OSC, DCS, SOS, PM or
+	// APC string that the emulator keeps. The rest of a longer string is
+	// dropped, and the handler of the string sees the data that fitted.
+	MaxStringBytes = 64 * 1024
 )
 
 // Counters counts the times a cap was hit. The values only grow, and a reader
@@ -40,9 +45,15 @@ type Counters struct {
 	// the link would have been the [MaxLiveLinks]+1st distinct live link of
 	// the screen.
 	LinksOverLimit uint64
+	// StringsTruncated is the number of OSC, DCS, SOS, PM and APC strings
+	// that were longer than [MaxStringBytes] and lost their end, counted when
+	// the first byte was dropped.
+	StringsTruncated uint64
 }
 
 // Counters returns the counters of the caps that were hit.
 func (e *Emulator) Counters() Counters {
-	return e.counters
+	c := e.counters
+	c.StringsTruncated = e.parser.Truncated()
+	return c
 }
