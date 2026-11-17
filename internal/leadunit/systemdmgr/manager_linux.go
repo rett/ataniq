@@ -363,7 +363,12 @@ func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Sig
 //     [systemd.Populated] says it has no process; for a loaded unit that
 //     further needs the same invocation and a state of inactive, failed or
 //     deactivating, because a unit that is active or activating can still
-//     receive its first process.
+//     receive its first process. A loaded unit of the same invocation that is
+//     inactive or failed, has no main process and reports no control group
+//     (systemd clears it when the unit's group is released and keeps the unit
+//     loaded until it is collected) is decided by the path and identity st
+//     recorded, as in case 1 (gone or another identity: true) or case 2 (the
+//     same identity: true only if it holds no process).
 //  3. st has no invocation and no control group: the unit is not loaded and no
 //     directory named like the unit exists below the control group of the user
 //     manager (the control group of its root slice, "-.slice"), whatever slice
@@ -403,6 +408,18 @@ func (m *Manager) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 			return false, errors.New("systemdmgr: loaded unit has no invocation id")
 		}
 		if cur.InvocationID == st.InvocationID {
+			if cur.ControlGroup == "" {
+				// systemd clears ControlGroup when the unit has ended and its
+				// group is released, while the unit stays loaded (a failed
+				// unit until it is collected). That is not another identity:
+				// decide by the group the State recorded, as in case 1, and
+				// only for a unit that is plainly over (inactive or failed,
+				// no main process). Anything else is a mismatch, as before.
+				if (cur.Active == leadunit.ActiveInactive || cur.Active == leadunit.ActiveFailed) && cur.MainPID == 0 {
+					return m.recordedGroupEmpty(st.ControlGroup, id, want)
+				}
+				return false, leadunit.ErrControlGroupMismatch
+			}
 			if cur.ControlGroup != st.ControlGroup || cur.ControlGroupID != st.ControlGroupID {
 				return false, leadunit.ErrControlGroupMismatch
 			}
@@ -425,6 +442,21 @@ func (m *Manager) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 	}
 	if cur.Loaded {
 		return false, nil
+	}
+	return m.populatedEmpty(want)
+}
+
+// recordedGroupEmpty decides by the control group that a State recorded, for a
+// unit that is over but still loaded: true when that exact path no longer
+// exists or has another identity, otherwise true only if the group of the same
+// identity holds no process. A failure to read is false with the error.
+func (m *Manager) recordedGroupEmpty(path string, id systemd.FileIdentity, want systemd.Boundary) (bool, error) {
+	b, found, err := m.k.Lookup(path)
+	if err != nil {
+		return false, err
+	}
+	if !found || b.Identity != id {
+		return true, nil
 	}
 	return m.populatedEmpty(want)
 }

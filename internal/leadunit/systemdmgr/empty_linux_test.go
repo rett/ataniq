@@ -153,6 +153,70 @@ func TestEmptyCase2LoadedSameInvocation(t *testing.T) {
 	r.wantEmpty(oldState(), false)
 }
 
+// systemd clears ControlGroup of an ended unit that is still loaded. The State's
+// recorded group then decides, and anything doubtful stays false.
+func TestEmptyLoadedSameInvocationWithTheControlGroupCleared(t *testing.T) {
+	for _, active := range []string{"inactive", "failed"} {
+		cleared := with(loadedProps(), "ActiveState", active, "MainPID", "0", "ControlGroup", "")
+
+		// The group is gone: true.
+		r := newRig(t)
+		r.setUnit(cleared)
+		delete(r.k.groups, cgUnit)
+		r.wantEmpty(oldState(), true)
+
+		// The path now has another identity: true.
+		r = newRig(t)
+		r.setUnit(cleared)
+		r.k.groups[cgUnit] = idB
+		r.wantEmpty(oldState(), true)
+		if r.k.popCalls != 0 {
+			t.Fatalf("%s: populated read for another identity", active)
+		}
+
+		// The same group, no process: true. With a process: false, no error.
+		r = newRig(t)
+		r.setUnit(cleared)
+		r.k.populated[cgUnit] = false
+		r.wantEmpty(oldState(), true)
+		r = newRig(t)
+		r.setUnit(cleared)
+		r.k.populated[cgUnit] = true
+		r.wantEmpty(oldState(), false)
+
+		// Any doubt is false with the error: the group cannot be looked up,
+		// the populated flag cannot be read, a main process is reported.
+		r = newRig(t)
+		r.setUnit(cleared)
+		r.k.lookupErr[cgUnit] = errors.New("permission denied")
+		r.wantNotEmptyWithError(oldState())
+		r = newRig(t)
+		r.setUnit(cleared)
+		r.k.popErr = errors.New("unreadable")
+		r.wantNotEmptyWithError(oldState())
+		r = newRig(t)
+		r.setUnit(with(cleared, "MainPID", "321"))
+		delete(r.k.groups, cgUnit)
+		if err := r.wantNotEmptyWithError(oldState()); !errors.Is(err, leadunit.ErrControlGroupMismatch) {
+			t.Fatal(err)
+		}
+	}
+	// Still active, activating or deactivating with no group: not over, false.
+	for _, active := range []string{"active", "activating", "deactivating", "reloading", "maintenance"} {
+		r := newRig(t)
+		r.setUnit(with(loadedProps(), "ActiveState", active, "MainPID", "0", "ControlGroup", ""))
+		delete(r.k.groups, cgUnit)
+		if err := r.wantNotEmptyWithError(oldState()); !errors.Is(err, leadunit.ErrControlGroupMismatch) {
+			t.Fatalf("%s: %v", active, err)
+		}
+	}
+	// Another invocation with no group is still case 1: not this change.
+	r := newRig(t)
+	r.setUnit(with(loadedProps(), "InvocationID", inv2, "ActiveState", "failed", "MainPID", "0", "ControlGroup", ""))
+	delete(r.k.groups, cgUnit)
+	r.wantEmpty(oldState(), true)
+}
+
 func TestEmptyLoadedSameInvocationOtherGroupIsAMismatch(t *testing.T) {
 	r := newRig(t)
 	st := oldState()
