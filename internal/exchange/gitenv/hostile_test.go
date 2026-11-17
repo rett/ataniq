@@ -761,11 +761,11 @@ func TestMailmapFromTheMirrorIsNotRead(t *testing.T) {
 		t.Fatalf("control failed: plain git log did not map the author:\n%s", out)
 	}
 
-	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1", format}})
+	got := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "--max-count=1", format}})
 	if want := plain + " / " + plain + " / " + plain; got != want {
 		t.Errorf("log format printed %q, want %q", got, want)
 	}
-	out := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "-1"}})
+	out := mustOwned(t, g, Cmd{GitDir: mirror, Args: []string{"log", "--max-count=1"}})
 	if !strings.Contains(out, "Author: Fixture <fixture@example.invalid>") || strings.Contains(out, "Somebody Else") {
 		t.Errorf("default log output used the lead's .mailmap:\n%s", out)
 	}
@@ -817,8 +817,8 @@ func TestSignaturePrograms(t *testing.T) {
 			mustFire(t, mark, tc.key+" in the repository config")
 
 			for _, args := range [][]string{
-				{"log", "-1", "--show-signature", "--format=%G? %GS %GK"},
-				{"log", "-1", "--format=%G?"},
+				{"log", "--max-count=1", "--show-signature", "--format=%G? %GS %GK"},
+				{"log", "--max-count=1", "--format=%G?"},
 				{"for-each-ref", "--format=%(contents:signature)", "refs/heads/"},
 				{"show", "--show-signature", "-s", id},
 			} {
