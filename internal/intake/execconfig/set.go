@@ -42,8 +42,12 @@ func (s Set) Rules() []Rule {
 // With returns a new Set with the patterns added after the existing rules,
 // each with the reason "project addition". It refuses an empty pattern, one
 // with a NUL, a line break, a backslash or a bracket, one with a "." or ".."
-// element or an empty element, one over 255 bytes, and a result with more
-// than 256 additions. It changes nothing when it fails.
+// element or an empty element, one with an element that ends in a dot or a
+// space (a path element is matched without them, so such an element would
+// never match), one over 255 bytes, and a result with more
+// than 256 additions. When it fails it returns the receiver unchanged with
+// the error, so a caller that logs the error and goes on keeps the rules it
+// had.
 func (s Set) With(patterns []string) (Set, error) {
 	have := 0
 	for _, r := range s.rules {
@@ -52,7 +56,7 @@ func (s Set) With(patterns []string) (Set, error) {
 		}
 	}
 	if have+len(patterns) > MaxAdditions {
-		return Set{}, fmt.Errorf("%w: %d additions, the limit is %d", ErrPattern, have+len(patterns), MaxAdditions)
+		return s, fmt.Errorf("%w: %d additions, the limit is %d", ErrPattern, have+len(patterns), MaxAdditions)
 	}
 	out := Set{
 		rules: make([]Rule, len(s.rules), len(s.rules)+len(patterns)),
@@ -63,7 +67,7 @@ func (s Set) With(patterns []string) (Set, error) {
 	for i, p := range patterns {
 		c, err := compile(p)
 		if err != nil {
-			return Set{}, fmt.Errorf("addition %d: %w", i+1, err)
+			return s, fmt.Errorf("addition %d: %w", i+1, err)
 		}
 		out.rules = append(out.rules, Rule{Pattern: p, Reason: ProjectReason, Source: SourceProject})
 		out.comp = append(out.comp, c)

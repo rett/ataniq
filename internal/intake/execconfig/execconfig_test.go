@@ -2,6 +2,7 @@ package execconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -204,10 +205,9 @@ func TestDesignScenariosS19(t *testing.T) {
 func TestNearMisses(t *testing.T) {
 	s := Default()
 	for _, p := range []string{
-		"Makefile.txt", "myscripts/x", "scripts", "claude/settings.json",
+		"Makefile.txt", "myscripts/x", "claude/settings.json",
 		"go.mod.bak", "ago.mod", "x.github/workflows/ci.yml", ".githubx/ci.yml",
-		"my.github", ".github", "a/.github", ".claude", "src/.claude", "a/.codex",
-		".vscode", "README.md", "src/main.go", ".editorconfig", ".dockerignore",
+		"my.github", "README.md", "src/main.go", ".editorconfig", ".dockerignore",
 		"docs/.gitignore", ".gitignore", "env", ".environment", "a.env",
 		".envrc.bak", "Dockerfile.bak", "mk", "x.mkx", "package.json5",
 		"git~2/x", "gitt~1", ".gitx/y", "my.git", "docs/CLAUDE.mdx",
@@ -217,13 +217,38 @@ func TestNearMisses(t *testing.T) {
 	}
 }
 
-func TestFolderPatternNeedsAFolder(t *testing.T) {
+// The matcher sees no file modes, and a symbolic link or a submodule stands
+// for a folder. So a folder rule also matches a path whose last element is
+// the folder name.
+func TestFolderRuleMatchesALastElement(t *testing.T) {
 	s := Default()
-	mustNotMatch(t, s, ".claude")
-	mustNotMatch(t, s, "a/scripts")
-	mustMatch(t, s, "scripts/", "scripts/")
-	mustMatch(t, s, "a/scripts/", "scripts/")
-	mustMatch(t, s, ".claude/", ".claude/")
+	for path, pattern := range map[string]string{
+		".claude":          ".claude/",
+		"src/.claude":      ".claude/",
+		"a/.codex":         ".codex/",
+		".vscode":          ".vscode/",
+		"scripts":          "scripts/",
+		"a/scripts":        "scripts/",
+		"x/.devcontainer":  ".devcontainer/",
+		".github":          ".github/",
+		"a/.github":        ".github/",
+		"SCRIPTS":          "scripts/",
+		".claude.":         ".claude/",
+		"scripts/":         "scripts/",
+		"a/scripts/":       "scripts/",
+		".claude/":         ".claude/",
+		".claude/settings": ".claude/",
+	} {
+		mustMatch(t, s, path, pattern)
+	}
+	// A name that merely contains the rule name is not the rule name.
+	for _, p := range []string{
+		"myscripts", "myscripts/x", "scripts.d", "scripts.d/x", "claude",
+		"claude/settings.json", "x.claude", "a/x.claude/y", ".claudex",
+		"my.github", ".githubx", "a/.vscodes",
+	} {
+		mustNotMatch(t, s, p)
+	}
 }
 
 func TestNamePatternMatchesFolderToo(t *testing.T) {
@@ -268,6 +293,20 @@ func TestLetterCase(t *testing.T) {
 	mustNotMatch(t, s, "MAKEFİLE")  // dotted capital I is not I
 }
 
+// The lists have no rule per spelling: matching ignores case, so "makefile"
+// is covered by "Makefile" and needs no rule of its own.
+func TestNoRuleForASpelling(t *testing.T) {
+	s := Default()
+	for _, r := range s.Rules() {
+		if r.Pattern == "makefile" {
+			t.Errorf("rule %q duplicates %q", r.Pattern, "Makefile")
+		}
+	}
+	for _, p := range []string{"makefile", "MAKEFILE", "a/makeFILE"} {
+		mustMatch(t, s, p, "Makefile")
+	}
+}
+
 func TestWith(t *testing.T) {
 	base := Default()
 	for _, tc := range []struct {
@@ -276,14 +315,14 @@ func TestWith(t *testing.T) {
 		no      []string
 	}{
 		{"deploy.sh", []string{"deploy.sh", "a/deploy.sh", "x/DEPLOY.SH", "deploy.sh/y"}, []string{"deploy.sh.bak", "mydeploy.sh"}},
-		{"ci/", []string{"ci/a", "x/ci/a/b", "CI/a"}, []string{"ci", "x/ci", "ci.d/a", "mci/a"}},
+		{"ci/", []string{"ci/a", "x/ci/a/b", "CI/a", "ci", "x/ci"}, []string{"ci.d/a", "mci/a", "ci.d"}},
 		{"/ops", []string{"ops", "ops/x", "OPS/x"}, []string{"a/ops", "a/ops/x", "opsx"}},
-		{"/tools/", []string{"tools/x", "tools/a/b"}, []string{"a/tools/x", "tools", "tools.d/x"}},
+		{"/tools/", []string{"tools/x", "tools/a/b", "tools"}, []string{"a/tools/x", "a/tools", "tools.d/x"}},
 		{"*.gen.go", []string{"a.gen.go", "x/y/b.gen.go", ".gen.go"}, []string{"a.gen.go.txt", "agen.go", "x.gen_go"}},
 		{"build?", []string{"build1", "x/buildz", "buildé"}, []string{"build", "build12"}},
 		{"docs/*.sh", []string{"docs/a.sh", "x/docs/b.sh", "docs/a.sh/y"}, []string{"docs/a/b.sh", "docs.sh", "a.sh"}},
 		{"/a/b", []string{"a/b", "a/b/c"}, []string{"x/a/b", "a/x/b", "a"}},
-		{"a/b/", []string{"a/b/c", "x/a/b/c", "x/a/b/"}, []string{"a/b", "a/c/b/d"}},
+		{"a/b/", []string{"a/b/c", "x/a/b/c", "x/a/b/", "a/b", "x/a/b"}, []string{"a/c/b/d", "a/bc"}},
 		{"*", []string{"anything", "a/b"}, nil},
 	} {
 		s, err := base.With([]string{tc.pattern})
@@ -374,6 +413,16 @@ func TestWithRefusals(t *testing.T) {
 		"class":           "[ab]c",
 		"too long":        strings.Repeat("a", 256),
 		"too long dirs":   strings.Repeat("a/", 128),
+		"trailing dot":    "foo.",
+		"trailing space":  "foo ",
+		"dots":            "foo..",
+		"dot in a dir":    "foo./bar",
+		"space in a dir":  "a/foo /bar",
+		"dot folder":      "foo./",
+		"anchored dot":    "/foo.",
+		"space only":      " ",
+		"star then dot":   "*.",
+		"inner and last":  "a./b.",
 	} {
 		_, err := base.With([]string{p})
 		if err == nil {
@@ -386,10 +435,50 @@ func TestWithRefusals(t *testing.T) {
 	if _, err := base.With([]string{"ok", "bad\\"}); err == nil {
 		t.Error("a bad pattern among good ones was accepted")
 	}
+	// A dot or a space inside an element, or a "*" at its end, is fine.
+	for _, p := range []string{"foo.bar", "a b", ".env.*", ".hidden", "x/.y", "foo*", "foo?"} {
+		if _, err := base.With([]string{p}); err != nil {
+			t.Errorf("With(%q): %v", p, err)
+		}
+	}
 	// The longest pattern is fine.
 	if _, err := base.With([]string{strings.Repeat("a", 255)}); err != nil {
 		t.Errorf("255 bytes: %v", err)
 	}
+}
+
+// A caller that logs the error and keeps going must still have the
+// built-in rules.
+func TestFailedWithKeepsTheReceiver(t *testing.T) {
+	base := Default()
+	extra, err := base.With([]string{"deploy.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, patterns := range map[string][]string{
+		"bad pattern":    {"ok", "bad["},
+		"too many":       make([]string, MaxAdditions+1),
+		"empty pattern":  {""},
+		"bad after good": {"fine", "a/../b"},
+	} {
+		if name == "too many" {
+			for i := range patterns {
+				patterns[i] = "p" + strings.Repeat("x", i%7) + string(rune('a'+i%26))
+			}
+		}
+		for _, recv := range []Set{base, extra} {
+			got, err := recv.With(patterns)
+			if !errors.Is(err, ErrPattern) {
+				t.Errorf("%s: error %v does not wrap ErrPattern", name, err)
+			}
+			if !reflect.DeepEqual(got.Rules(), recv.Rules()) {
+				t.Errorf("%s: a failed With changed the rules: %d, want %d", name, len(got.Rules()), len(recv.Rules()))
+			}
+			mustMatch(t, got, "Makefile", "Makefile")
+			mustMatch(t, got, ".claude/settings.json", ".claude/")
+		}
+	}
+	mustMatch(t, extra, "deploy.sh", "deploy.sh")
 }
 
 func TestWithLimitOnCount(t *testing.T) {
@@ -415,8 +504,8 @@ func TestWithLimitOnCount(t *testing.T) {
 
 func TestOddPaths(t *testing.T) {
 	s := Default()
-	// Matched conservatively: empty elements are skipped and a trailing slash
-	// makes the last element a folder.
+	// Matched conservatively: empty elements are skipped, and so is a
+	// trailing slash.
 	for path, pattern := range map[string]string{
 		"/Makefile":            "Makefile",
 		"//Makefile":           "Makefile",

@@ -16,15 +16,21 @@
 // Built-in rules and project additions use one syntax. A pattern is
 // split at "/" into elements.
 //
-//   - "name/" matches any path with a folder element "name", at any depth.
-//     A file named "name" is not matched.
-//   - "name" matches any path whose last element is "name", at any depth,
-//     and also any path with a folder element "name". A tracked file can
-//     become a folder and the reverse, so both are matched.
+//   - "name" matches any path that has an element "name", at any depth,
+//     the last element included. A tracked file can become a folder and the
+//     reverse, so both are matched.
+//   - "name/" matches the same paths as "name". The matcher sees no file
+//     modes, and a symbolic link or a submodule is one path with no
+//     trailing "/" that stands for a folder, so a folder rule cannot ask for
+//     a folder. ".claude", "scripts" and "x/.devcontainer" match the rules
+//     ".claude/", "scripts/" and ".devcontainer/".
 //   - A leading "/" anchors the pattern at the repository root.
 //   - "*" matches any run of bytes inside one element and "?" matches one
 //     character inside one element. Nothing else is special: brackets and
 //     backslashes are refused.
+//   - An element of a pattern must not end in a dot or a space, and With
+//     refuses such a pattern: path elements are matched without their
+//     trailing dots and spaces, so the pattern could never match.
 //   - A pattern with several elements ("a/b", "a/b/") matches a run of
 //     consecutive path elements, with the same rules.
 //
@@ -39,14 +45,19 @@
 // and the element "git~1" also matches as ".git".
 //
 // Limit: no other folding is done. Other NTFS short names, alternate data
-// streams, Unicode normalization and ignorable code points (HFS+), and
-// symbolic links are out of scope. A caller that needs them must reject
-// such paths before matching.
+// streams, and Unicode normalization and ignorable code points (HFS+) are
+// out of scope. A caller that needs them must reject such paths before
+// matching.
+//
+// Symbolic links: what a link points at is the caller's business, not the
+// matcher's. A link named like a rule is matched by its own name, but a
+// link with another name ("cfg" pointing at ".claude") is not matched, and
+// neither are the paths below it. The intake must flag symbolic link
+// entries, and what they alias, itself.
 //
 // Odd paths are handled conservatively, and never panic:
 //
-//   - Empty elements (a leading "/", "//", a trailing "/") are skipped. A
-//     trailing "/" marks the last element as a folder.
+//   - Empty elements (a leading "/", "//", a trailing "/") are skipped.
 //   - If a path has a leading "/", an empty element inside it, or a "." or
 //     ".." element, anchored rules are applied as if they were not anchored,
 //     so the odd form can never hide a path from a rule.

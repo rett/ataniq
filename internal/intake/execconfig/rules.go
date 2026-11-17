@@ -25,6 +25,9 @@ func rules(source string, pairs [][2]string) []Rule {
 
 // Design returns the rules the design lists as mandatory. The caller gets a
 // new slice each time.
+//
+// Matching ignores ASCII letter case, so a rule covers every spelling of its
+// name: "makefile" has no rule of its own, "Makefile" covers it.
 func Design() []Rule {
 	return rules(SourceDesign, [][2]string{
 		{".claude/", "agent settings and hooks"},
@@ -45,6 +48,9 @@ func Design() []Rule {
 // Scope returns the rules the feature scope adds to the design list. The
 // caller gets a new slice each time. The folder ".githooks/" is in the
 // design list and is not repeated here.
+//
+// Matching ignores ASCII letter case, so a rule covers every spelling of its
+// name: "makefile" has no rule of its own, "Makefile" covers it.
 func Scope() []Rule {
 	return rules(SourceFeature, [][2]string{
 		{".git", "git config and hooks run programs"},
@@ -64,9 +70,10 @@ func Scope() []Rule {
 // Relatives returns the rules added here as close relatives of the two
 // lists above. The caller gets a new slice each time.
 //
-// "makefile" is not a separate rule: matching ignores letter case, so
-// "Makefile" already covers it. ".dockerignore" and ".editorconfig" are not
-// included, because they select no program to run.
+// Matching ignores ASCII letter case, so a rule covers every spelling of its
+// name. "makefile" is not a separate rule: "Makefile" already covers it.
+// ".dockerignore" and ".editorconfig" are not included, because they select
+// no program to run.
 func Relatives() []Rule {
 	return rules(SourceRelative, [][2]string{
 		// Agent folders and instruction files an unsandboxed agent loads.
