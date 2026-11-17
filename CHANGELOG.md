@@ -73,6 +73,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
+- Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
+  is unqualified, runs on Linux only (elsewhere it builds and exits with a
+  message) and nothing uses it yet. `ataniq-probe --spec PATH --report-fd N --
+  AGENT ARGV...` runs the inside checks of the proposal, writes one report line
+  to descriptor N, and exits 97 without starting the agent when the report
+  does not allow a start. Otherwise it gives the agent a new session with
+  descriptor 0 as its controlling terminal when that is a terminal, makes
+  every descriptor above 2 close-on-exec so the exec closes it, and executes
+  the agent with the environment unchanged. A usage error or any failure to
+  read the spec, write the report, get the terminal or execute the agent is
+  exit 98.
 
 ### Changed
 
