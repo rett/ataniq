@@ -3,6 +3,7 @@
 package harness_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"ataniq/internal/leadsandbox/assert"
+	"ataniq/internal/leadsandbox/plan"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/qualification/leadsandbox/internal/harness"
 	"ataniq/qualification/leadsandbox/internal/harnesstest"
@@ -220,7 +222,7 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 			}
 			// Cleaned up: the FIFO is gone, the canary is closed, the terminal
 			// of the fake was released.
-			if _, err := os.Lstat(o.Dir + "/report.fifo"); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Lstat(o.Dir + "/channel/report.fifo"); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("the report FIFO is still there: %v", err)
 			}
 			if !r.canary.Stopped() {
@@ -338,8 +340,17 @@ func TestProbeNeverWritesHitsTheTimeLimit(t *testing.T) {
 	wantStep(t, o, harness.StepWaitExit, harness.StepTimeout)
 	wantStep(t, o, harness.StepOutside, harness.StepOK)
 	wantStep(t, o, harness.StepStop, harness.StepOK)
-	if o.Summary.Report != harness.ReportTimeLimit || o.Summary.Exit.Exited {
+	if o.Summary.Report != harness.ReportTimeLimit || o.Summary.Exit.Exited || o.Summary.Exit.Code != -1 {
 		t.Errorf("report %s, exit %+v", o.Summary.Report, o.Summary.Exit)
+	}
+	// The stop ended it, and the evidence says how.
+	if end := o.Summary.Exit.AfterStop; end == nil || end.Signal != "SIGTERM" || end.Code != -1 {
+		t.Errorf("after the stop: %+v", end)
+	}
+	var onDisk harness.Summary
+	readJSON(t, o.Dir+"/summary.json", &onDisk)
+	if onDisk.Exit.AfterStop == nil || onDisk.Exit.AfterStop.Signal != "SIGTERM" {
+		t.Errorf("summary.json after the stop: %+v", onDisk.Exit)
 	}
 	if o.Summary.Stop.State != harness.StopByTerm || !hasSignal(r.fake.Process(0).Signals(), syscall.SIGTERM) || hasSignal(r.fake.Process(0).Signals(), syscall.SIGKILL) {
 		t.Errorf("stop %+v, signals %v", o.Summary.Stop, r.fake.Process(0).Signals())
@@ -368,6 +379,9 @@ func TestStopEscalatesToKill(t *testing.T) {
 	if strings.Join(r.out.Summary.Stop.Signals, ",") != "SIGTERM,SIGKILL" {
 		t.Errorf("signals recorded: %v", r.out.Summary.Stop.Signals)
 	}
+	if end := r.out.Summary.Exit.AfterStop; end == nil || end.Signal != "SIGKILL" || r.out.Summary.Exit.Exited {
+		t.Errorf("exit %+v", r.out.Summary.Exit)
+	}
 }
 
 func TestStopOfAStuckGroupIsUnknown(t *testing.T) {
@@ -386,6 +400,10 @@ func TestStopOfAStuckGroupIsUnknown(t *testing.T) {
 	mustNoErr(t, r)
 	if r.out.Summary.Stop.State != harness.StopUnknown {
 		t.Errorf("stop %+v", r.out.Summary.Stop)
+	}
+	// The process was still there after the stop: there is nothing to record.
+	if r.out.Summary.Exit.AfterStop != nil || r.out.Summary.Exit.Exited {
+		t.Errorf("exit %+v", r.out.Summary.Exit)
 	}
 	wantStep(t, r.out, harness.StepStop, harness.StepFailed)
 }
@@ -406,7 +424,7 @@ func TestProbeExitsBeforeWriting(t *testing.T) {
 	if o.Summary.Stop.State != harness.StopNothingLeft || !r.canary.Stopped() || r.fake.Process(0).Closed() != 1 {
 		t.Errorf("stop %+v", o.Summary.Stop)
 	}
-	if _, err := os.Lstat(o.Dir + "/report.fifo"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(o.Dir + "/channel/report.fifo"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the report FIFO is still there: %v", err)
 	}
 }
@@ -431,7 +449,7 @@ func TestLaunchFailureStillCleansUpAndRecords(t *testing.T) {
 	if !r.canary.Stopped() {
 		t.Error("the canary is still listening")
 	}
-	if _, err := os.Lstat(o.Dir + "/report.fifo"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(o.Dir + "/channel/report.fifo"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the report FIFO is still there: %v", err)
 	}
 }
@@ -541,7 +559,7 @@ func TestCampaignFolderIsNeverBound(t *testing.T) {
 		}
 	}
 	for _, fl := range r.out.Plan.Files {
-		if fl.Purpose == "report" && fl.Path != r.out.Dir+"/report.fifo" {
+		if fl.Purpose == "report" && fl.Path != r.out.Dir+"/channel/report.fifo" {
 			t.Errorf("report path %s", fl.Path)
 		}
 	}
@@ -587,5 +605,225 @@ func TestRecheckStopsARunWhoseSourceMoved(t *testing.T) {
 	wantStep(t, r.out, harness.StepCleanup, harness.StepOK)
 	if r.fake.Launches() != 0 || !r.canary.Stopped() {
 		t.Errorf("launches %d, canary stopped %v", r.fake.Launches(), r.canary.Stopped())
+	}
+}
+
+// The report path is directly inside a folder of the attempt made for the
+// channel alone, and the folder goes away with the FIFO.
+func TestReportChannelHasAFolderOfItsOwn(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var path string
+	for _, fl := range r.out.Plan.Files {
+		if fl.Purpose == "report" {
+			path = fl.Path
+		}
+	}
+	if path != r.out.Dir+"/channel/report.fifo" {
+		t.Errorf("report path %q", path)
+	}
+	if _, err := os.Lstat(r.out.Dir + "/channel"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the channel folder is still there: %v", err)
+	}
+	// The dry run only names the folder.
+	r = executeWith(t, f, newFake(nil), false, nil)
+	mustNoErr(t, r)
+	if _, err := os.Lstat(r.out.Dir + "/channel"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the dry run made the channel folder: %v", err)
+	}
+}
+
+// Assertion 1 is checked by identity only when the spec lists identities, so
+// the harness collects them for the owner and holder paths.
+func TestSpecListsTheIdentitiesOfTheOwnerAndHolderPaths(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	data, err := os.ReadFile(r.out.Dir + "/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := assert.DecodeSpec(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.ForbiddenIdentities) == 0 {
+		t.Fatal("the spec lists no identity: assertion 1 would not be checked")
+	}
+}
+
+func TestIdentityCollectionFailureStopsTheRunBeforeALaunch(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		o.System = harnesstest.FailingIdentity{System: o.System}
+	})
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepSpec, harness.StepFailed)
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}
+
+// The accepted line is the start: the harness does not wait for end-of-file,
+// which does not come while the sandbox lives.
+func TestLineIsAcceptedWhileTheProcessIsStillRunning(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, func(req harness.LaunchRequest, p *harness.FakeProcess) harness.Exit {
+		_ = harness.WriteReportLine(req, harnesstest.ProbeLine(req.Plan.Digest, assert.StatusOK, 0))
+		<-p.Stop()
+		return harness.Exit{Code: -1, Signal: "SIGTERM"}
+	}, func(o *harness.Options) { o.TimeLimit = 150 * time.Millisecond })
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepReadReport, harness.StepOK)
+	wantStep(t, r.out, harness.StepWaitExit, harness.StepTimeout)
+	wantStep(t, r.out, harness.StepTrailing, harness.StepOK)
+	if r.out.Summary.Report != harness.ReportLineRead {
+		t.Errorf("report %s", r.out.Summary.Report)
+	}
+}
+
+func trailing(t *testing.T, dir string) *bool {
+	t.Helper()
+	var rep harness.ReportEvidence
+	readJSON(t, dir+"/report.json", &rep)
+	return rep.TrailingBytes
+}
+
+func TestQuietChannelAfterTheLineIsRecordedAsQuiet(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepTrailing, harness.StepOK)
+	if got := trailing(t, r.out.Dir); got == nil || *got {
+		t.Errorf("report_trailing_bytes: %v", got)
+	}
+}
+
+func TestBytesAfterTheLineAreAFactAndAStepFailure(t *testing.T) {
+	for name, extra := range map[string]string{"a second line": string(harnesstest.ProbeLine(strings.Repeat("0", 64), assert.StatusOK, 0)), "one byte": "x"} {
+		t.Run(name, func(t *testing.T) {
+			f := harnesstest.New(t, profile.Claude)
+			approved(f)
+			r := execute(t, f, func(req harness.LaunchRequest, p *harness.FakeProcess) harness.Exit {
+				line := harnesstest.ProbeLine(req.Plan.Digest, assert.StatusOK, 0)
+				_ = harness.WriteReportLine(req, append(line, extra...))
+				return harness.Exit{}
+			}, nil)
+			mustNoErr(t, r)
+			// The first line is still what was read; what follows fails the step.
+			wantStep(t, r.out, harness.StepReadReport, harness.StepOK)
+			wantStep(t, r.out, harness.StepTrailing, harness.StepFailed)
+			if !r.out.StepFailed {
+				t.Error("StepFailed is not set")
+			}
+			if got := trailing(t, r.out.Dir); got == nil || !*got {
+				t.Errorf("report_trailing_bytes: %v", got)
+			}
+			if e := step(t, r.out, harness.StepTrailing).Error; !strings.Contains(e, "after the report line") {
+				t.Errorf("error %q", e)
+			}
+		})
+	}
+}
+
+// A report that never came is not asked about trailing bytes.
+func TestNoLineMeansNothingIsAskedAboutTrailingBytes(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, func(req harness.LaunchRequest, p *harness.FakeProcess) harness.Exit {
+		return harness.Exit{Code: 98}
+	}, nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepTrailing, harness.StepSkipped)
+	if got := trailing(t, r.out.Dir); got != nil {
+		t.Errorf("report_trailing_bytes: %v", *got)
+	}
+}
+
+// A source that is reached through a symbolic link into the campaign folder
+// resolves to a path inside it: the lexical check of the configuration cannot
+// see that, and binding it would put the evidence or the report channel into
+// the sandbox. The plan check refuses it before any launch.
+func TestSourceLinkedIntoTheCampaignIsNeverBound(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	inside := f.Campaign + "/stolen"
+	f.Mkdir(inside, 0o755)
+	link := f.Owned + "/assignment-into-campaign"
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+	f.Config.Sources.AssignmentDir = link
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepVerify, harness.StepFailed)
+	if e := step(t, r.out, harness.StepVerify).Error; !strings.Contains(e, "/ataniq/assignment") || !strings.Contains(e, "campaign") {
+		t.Errorf("the refusal does not say what it refused: %q", e)
+	}
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}
+
+// The spec is built with the environment the sandbox shows inside, which is
+// the allowlist and the PWD that bubblewrap sets; without PWD a real probe
+// would report its environment check as failed.
+func TestSpecHoldsTheInsideEnvironment(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	data, err := os.ReadFile(r.out.Dir + "/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := assert.DecodeSpec(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := plan.InsideEnvironment(r.fake.Requests()[0].Plan)
+	if len(want) == 0 {
+		t.Fatal("the plan has no inside environment")
+	}
+	got := map[string]string{}
+	for _, e := range spec.Env {
+		got[e.Name] = e.Value
+	}
+	if got["PWD"] != profile.TreeInside(f.Project) {
+		t.Errorf("PWD in the spec is %q", got["PWD"])
+	}
+	for _, e := range want {
+		if got[e.Name] != e.Value {
+			t.Errorf("%s is %q in the spec, the plan says %q", e.Name, got[e.Name], e.Value)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("the spec holds %d variables, the plan %d", len(got), len(want))
+	}
+}
+
+// With no way to ask, standard input is taken not to be a terminal.
+func TestNoTerminalQuestionMeansNoTerminal(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	fake := newFake(okProbe(assert.StatusOK, 0, 0))
+	r := executeWith(t, f, fake, true, func(o *harness.Options) { o.StdinIsTerminal = nil })
+	var gate *harness.GateError
+	if !errors.As(r.err, &gate) || !strings.Contains(gate.Reason, "terminal") {
+		t.Fatalf("error %v, want a gate error naming the terminal", r.err)
+	}
+	if r.out != nil || fake.Calls() != 0 || len(f.Names(f.Campaign)) != 0 {
+		t.Errorf("the refused run did something: %v, %d calls", r.out, fake.Calls())
 	}
 }

@@ -14,10 +14,11 @@ import (
 // launcher decides nothing: it starts what the plan says and reports what
 // happened.
 type Launcher interface {
-	// Launch starts plan.Argv with a pseudo-terminal as the terminal, in its
-	// own process group, and returns at once. It does not make the terminal
-	// the controlling terminal of the process: the probe inside does (the
-	// plan's SetControllingTerminal is false).
+	// Launch starts plan.Argv with a pseudo-terminal as its standard streams,
+	// in a session and process group of its own, and returns at once. The
+	// process has no controlling terminal, neither the coordinator's nor the
+	// pseudo-terminal: it is not made the controlling terminal here, the probe
+	// inside does it (the plan's SetControllingTerminal is false).
 	Launch(req LaunchRequest) (Process, error)
 	// ToolVersions asks each tool for its version and reads the kernel
 	// release. A tool that cannot be asked is recorded in Errors; no error is
@@ -87,11 +88,17 @@ type Process interface {
 	// Exit is how it ended; valid after Done is closed.
 	Exit() Exit
 	// Signal sends a signal to the process group. delivered is false when no
-	// process is left in the group; sig 0 only asks.
+	// process is left in the group; sig 0 only asks. A first process that
+	// has ended but has not been reaped is not counted as left, and keeps its
+	// process id from reuse until Close, so the group id is never another
+	// process's while Signal sends to it. After Close nothing is sent.
 	Signal(sig syscall.Signal) (delivered bool, err error)
 	// Terminal is a snapshot of the captured output. After Done it waits a
 	// bounded time for the last of the output.
 	Terminal() TerminalOutput
-	// Close releases the pseudo-terminal. It is safe to call twice.
+	// Close releases the pseudo-terminal and the first process, which is
+	// reaped (at once when it has ended). The caller closes after the stop
+	// rule has found the group empty or has given up on it. It is safe to
+	// call twice.
 	Close() error
 }

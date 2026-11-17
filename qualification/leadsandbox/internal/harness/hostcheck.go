@@ -48,8 +48,9 @@ func checkHost(c *Config) (*hostFacts, error) {
 	}
 	if c.Sources.QargiRecords != "" {
 		// The mountpoints package does not look above the last component of
-		// this folder, which lies outside the state root: the harness does.
-		if err := ownedPrivateDir("sources.qargi_records", c.Sources.QargiRecords, false); err != nil {
+		// this folder, which lies outside the state root: the harness does,
+		// and refuses a link anywhere in its path.
+		if err := ownedPrivateDir("sources.qargi_records", c.Sources.QargiRecords, true); err != nil {
 			return nil, err
 		}
 	}

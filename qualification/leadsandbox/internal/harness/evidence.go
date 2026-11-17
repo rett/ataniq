@@ -27,6 +27,9 @@ const (
 	FileSummary  = "summary.json"
 	// FileReportFIFO is the report channel; it is removed when the run ends.
 	FileReportFIFO = "report.fifo"
+	// DirChannel holds the report FIFO and nothing else; it is removed with
+	// the FIFO when the run ends.
+	DirChannel = "channel"
 	// DirBound holds what the plan binds from the harness: the resolv.conf
 	// and the folder of the probe spec.
 	DirBound = "bound"
@@ -124,6 +127,11 @@ type ReportEvidence struct {
 	Digest        string          `json:"digest,omitempty"`
 	DigestMatches *bool           `json:"digest_matches,omitempty"`
 	Results       []assert.Result `json:"results"`
+	// TrailingBytes is the fact asked after the stop: true when the report
+	// channel held any byte after the accepted line (a failure of the
+	// start), false when it held none. It is absent when no line was
+	// accepted, because nothing was asked.
+	TrailingBytes *bool `json:"report_trailing_bytes,omitempty"`
 }
 
 // CanaryEvidence is what the canary counted.
@@ -146,8 +154,22 @@ type OutsideEvidence struct {
 // ExitEvidence is how the first process ended.
 type ExitEvidence struct {
 	Launched bool `json:"launched"`
-	// Exited is false when the process was still there at the time limit.
+	// Exited is false when the process was still there at the time limit (or
+	// the run was interrupted first); Code is then -1 and Signal and Error are
+	// empty, and AfterStop may say how the stop ended it.
 	Exited bool   `json:"exited"`
+	Code   int    `json:"code"`
+	Signal string `json:"signal,omitempty"`
+	Error  string `json:"error,omitempty"`
+	// AfterStop is how the first process ended when it was still there at the
+	// time limit and the stop rule ended it. It is absent when the process
+	// had ended before, and when it was still there after the stop.
+	AfterStop *EndEvidence `json:"after_stop,omitempty"`
+}
+
+// EndEvidence is how a process ended: its exit code, or the signal that ended
+// it (the code is then -1).
+type EndEvidence struct {
 	Code   int    `json:"code"`
 	Signal string `json:"signal,omitempty"`
 	Error  string `json:"error,omitempty"`

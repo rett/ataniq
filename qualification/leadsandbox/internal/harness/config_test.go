@@ -243,6 +243,19 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 			os.Symlink(f.State, link)
 			f.Config.State.Root = link
 		}, "not a real path"},
+		{"records folder below a link", func(f *harnesstest.Fixture) {
+			f.Mkdir(f.Owned+"/records-real/records", 0o700)
+			if err := os.Symlink(f.Owned+"/records-real", f.Owned+"/records-link"); err != nil {
+				t.Fatal(err)
+			}
+			f.Config.Sources.QargiRecords = f.Owned + "/records-link/records"
+			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+		}, "not a real path"},
+		{"records folder too open", func(f *harnesstest.Fixture) {
+			f.Mkdir(f.Owned+"/records", 0o755)
+			f.Config.Sources.QargiRecords = f.Owned + "/records"
+			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+		}, "must be 0700"},
 		{"seccomp digest wrong", func(f *harnesstest.Fixture) {
 			f.Write(f.Owned+"/filter.bpf", "filter", 0o644)
 			f.Config.Sources.Seccomp = &harness.Seccomp{File: f.Owned + "/filter.bpf", SHA256: strings.Repeat("a", 64), ReviewedBPF: true}

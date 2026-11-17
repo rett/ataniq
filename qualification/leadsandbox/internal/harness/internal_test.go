@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -78,5 +79,37 @@ func TestCheckKeysIsExact(t *testing.T) {
 		if err := checkKeys([]byte(good), ty); err != nil {
 			t.Errorf("%s: %v", good, err)
 		}
+	}
+}
+
+// An evidence file is made exclusively: a file that is already there, a link
+// in its place included, is never written over or followed.
+func TestWriteFileNeverReplacesOrFollows(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeFile(dir, "plan.json", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(dir, "plan.json", []byte("second")); err == nil {
+		t.Error("an existing evidence file was replaced")
+	}
+	if got, _ := os.ReadFile(dir + "/plan.json"); string(got) != "first" {
+		t.Errorf("the file holds %q", got)
+	}
+	victim := dir + "/victim"
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, dir+"/spec.json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(dir, "spec.json", []byte("through the link")); err == nil {
+		t.Error("a link in place of an evidence file was followed")
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "keep" {
+		t.Errorf("the target of the link holds %q", got)
+	}
+	st, err := os.Lstat(dir + "/plan.json")
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, %v", st, err)
 	}
 }

@@ -42,6 +42,7 @@ const (
 	StepWaitExit      = "wait-exit"
 	StepOutside       = "outside-checks"
 	StepStop          = "stop"
+	StepTrailing      = "report-trailing"
 	StepCleanup       = "cleanup"
 	StepWriteEvidence = "write-evidence"
 )
@@ -51,7 +52,7 @@ const (
 var stepOrder = []string{
 	StepValidate, StepAttempt, StepVersions, StepOwnClone, StepPrepare, StepCheck, StepResolv, StepResolve,
 	StepChannel, StepCanary, StepBuild, StepVerify, StepSpec, StepRecheck, StepLaunch, StepReadReport,
-	StepWaitExit, StepOutside, StepStop, StepCleanup, StepWriteEvidence,
+	StepWaitExit, StepOutside, StepStop, StepTrailing, StepCleanup, StepWriteEvidence,
 }
 
 // StepRecord is one step with its start, end, status and error text.

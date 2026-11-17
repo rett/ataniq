@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -45,20 +46,78 @@ func TestReaderIsOpenedFirst(t *testing.T) {
 	}
 }
 
-func TestChannelDeliversOneLine(t *testing.T) {
+// reportLine is a valid probe line with the digest given.
+func reportLine(t *testing.T, digest string) []byte {
+	t.Helper()
+	var rs []assert.Result
+	for _, a := range assert.Assertions() {
+		if a.HasInside() {
+			rs = append(rs, assert.Result{Number: a.Number, ID: a.ID, Status: assert.StatusOK, Detail: "fake"})
+		}
+	}
+	return assert.EncodeLine(assert.Report{Version: assert.ReportVersion, Digest: digest, Results: rs})
+}
+
+func TestChannelDeliversOneLineAndLeavesWhatFollows(t *testing.T) {
 	c := newChannel(t)
 	w, err := os.OpenFile(c.path, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := assert.ReportPrefix + `{"x":1}` + "\n"
-	if _, err := io.WriteString(w, line+"and more after the newline\n"); err != nil {
+	digest := strings.Repeat("a", 64)
+	line := reportLine(t, digest)
+	// The writer stays open: no end-of-file comes, and the line is accepted
+	// without waiting for one.
+	if _, err := w.Write(append(append([]byte{}, line...), "and more after the newline\n"...)); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	defer w.Close()
 	got := <-c.out
-	if got.Err != nil || string(got.Data) != line {
-		t.Errorf("got %q, %v", got.Data, got.Err)
+	if got.Err != nil || got.Report.Digest != digest || len(got.Report.Results) != 8 || string(got.Data) != string(line) || got.EOF {
+		t.Fatalf("got %+v", got)
+	}
+	// The bytes after the newline were not taken by the read of the line.
+	err = c.trailing()
+	var refusal *assert.Refusal
+	if !errors.As(err, &refusal) {
+		t.Errorf("the bytes after the line were not found: %v", err)
+	}
+}
+
+func TestChannelQuietAfterTheLineIsNotAFailure(t *testing.T) {
+	c := newChannel(t)
+	w, _ := os.OpenFile(c.path, os.O_WRONLY, 0)
+	defer w.Close()
+	w.Write(reportLine(t, strings.Repeat("b", 64)))
+	if got := <-c.out; got.Err != nil {
+		t.Fatalf("got %+v", got)
+	}
+	// Nothing is there, and the writers are still open: the question
+	// returns at once with no answer to wait for.
+	if err := c.trailing(); err != nil {
+		t.Errorf("a quiet channel: %v", err)
+	}
+	// After the last writer has gone the channel is at end-of-file, which is
+	// quiet too.
+	w.Close()
+	c.closeWriter()
+	if err := c.trailing(); err != nil {
+		t.Errorf("a closed channel: %v", err)
+	}
+}
+
+func TestChannelTrailingByteAfterAQuietCheckIsFound(t *testing.T) {
+	c := newChannel(t)
+	w, _ := os.OpenFile(c.path, os.O_WRONLY, 0)
+	defer w.Close()
+	w.Write(reportLine(t, strings.Repeat("c", 64)))
+	<-c.out
+	if err := c.trailing(); err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte("x"))
+	if err := c.trailing(); err == nil {
+		t.Error("a byte after the line was not found")
 	}
 }
 
@@ -66,13 +125,13 @@ func TestChannelDoesNotEndBeforeTheWriterCloses(t *testing.T) {
 	c := newChannel(t)
 	select {
 	case got := <-c.out:
-		t.Fatalf("the channel delivered %q, %v with nobody having written", got.Data, got.Err)
+		t.Fatalf("the channel delivered %+v with nobody having written", got)
 	default:
 	}
 	c.closeWriter()
 	got := <-c.out
-	if !errors.Is(got.Err, io.EOF) || len(got.Data) != 0 {
-		t.Errorf("got %q, %v", got.Data, got.Err)
+	if got.Err == nil || !got.EOF || len(got.Data) != 0 {
+		t.Errorf("got %+v", got)
 	}
 }
 
@@ -83,8 +142,19 @@ func TestChannelPartialLineEndsAtEOF(t *testing.T) {
 	w.Close()
 	c.closeWriter()
 	got := <-c.out
-	if !errors.Is(got.Err, io.EOF) || string(got.Data) != "no newline" {
-		t.Errorf("got %q, %v", got.Data, got.Err)
+	if got.Err == nil || !got.EOF || string(got.Data) != "no newline" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestChannelRefusesAGarbageLineAndKeepsItForTheEvidence(t *testing.T) {
+	c := newChannel(t)
+	w, _ := os.OpenFile(c.path, os.O_WRONLY, 0)
+	defer w.Close()
+	io.WriteString(w, "not a report\n")
+	got := <-c.out
+	if got.Err == nil || got.EOF || string(got.Data) != "not a report\n" {
+		t.Errorf("got %+v", got)
 	}
 }
 
@@ -101,7 +171,7 @@ func TestChannelRefusesAnOverlongLine(t *testing.T) {
 		}
 	}()
 	got := <-c.out
-	if !errors.Is(got.Err, errOverlong) || len(got.Data) != assert.MaxReportLineBytes+1 {
+	if got.Err == nil || got.EOF || len(got.Data) > assert.MaxReportLineBytes {
 		t.Errorf("got %d bytes, %v", len(got.Data), got.Err)
 	}
 }

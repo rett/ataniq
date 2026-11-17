@@ -13,12 +13,16 @@
 // attempt, the version of each tool, the own-clone check, the preparation of
 // the mount points (only when the configuration says no lead has run), the
 // mount-point check, the resolv.conf derivation, the resolution of every
-// source to its real path, the report channel (a FIFO whose reader is opened
-// first), the canary, the plan ([plan.Build] and [plan.Verify]), the probe
-// spec, a second check right before the launch, the launch through a
-// [Launcher], the probe's report line, the wait for exit, the outside checks,
-// the stop of anything left (SIGTERM, wait, SIGKILL, with the stop-rule
-// constants of package assert) and the evidence.
+// source to its real path, the report channel (a FIFO in a folder of the attempt
+// that holds nothing else, whose reader is opened first), the canary, the plan
+// ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
+// owner and holder paths and their ancestors, which assertion 1 needs), a
+// second check right before the launch, the launch through a [Launcher], the
+// probe's report line (one line, read with [assert.ReadProbeReport], taken as
+// the start without waiting for end-of-file), the wait for exit, the outside
+// checks, the stop of anything left (SIGTERM, wait, SIGKILL, with the
+// stop-rule constants of package assert), the question whether any byte
+// followed the report line ([assert.CheckNoMore]) and the evidence.
 //
 // It starts nothing unless [Options.Run] is set and the configuration says
 // "coordinator_reviewed": true; with a terminal on standard input, unless
@@ -51,8 +55,9 @@
 // outbound network access. The real [Launcher] ([ExecLauncher], in its own
 // file) is the only non-test code here that starts a process, and a test
 // guards that. The tests of the harness use [FakeLauncher]; the tests of
-// ExecLauncher start the test binary itself under a pseudo-terminal, never a
-// sandbox tool.
+// ExecLauncher start only the test binary itself, under a pseudo-terminal and
+// as the stand-in for a tool asked for its version (a link to it under another
+// name), never a sandbox tool, a script or a shell.
 //
 // The package builds on Linux/amd64 only; elsewhere it holds this
 // documentation alone.

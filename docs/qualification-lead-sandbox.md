@@ -8,11 +8,12 @@ no part of its output says that the profile passed, is qualified or is
 supported. A reader draws conclusions from the facts and the attended cases
 below; the owner decides on the profile.
 
-The harness is for a coordinator. Nobody runs it as part of a checkout's checks,
-`make test` does not reach a real launch, and every test in the repository uses
-a fake launcher. One test starts the test binary itself under a pseudo-terminal
-to check the launcher's terminal, process group and signal handling; it starts
-no sandbox tool. See [the host manual](qualification-host.md) for the
+The harness is for a coordinator. Nobody runs it as part of a checkout's checks.
+`make test` does not reach a real launch: the harness's tests use a fake
+launcher, and the tests of the real launcher start only the test binary itself,
+under a pseudo-terminal (to check its terminal, session, process group,
+environment and signal handling) and as the stand-in for a tool asked for its
+version. No test starts pasta, bubblewrap, the probe or a namespace. See [the host manual](qualification-host.md) for the
 conventions this follows: facts, status and errno; no pass or support field;
 explicit configuration; evidence in a private campaign folder; subjects that are
 not developer prerequisites.
@@ -24,26 +25,35 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 
 1. validates the configuration and looks at the host for what it names;
 2. makes an attempt folder with a random name under the campaign folder;
-3. records the versions of the tools;
+3. records the versions of the tools (each question has a time limit, and does
+   not wait for the output of a process the tool left behind longer than a
+   second after the tool has ended; such a case is recorded in the step);
 4. checks that the lead's tree is its own full clone, makes the mount points
    when the configuration says no lead has run, and checks them;
 5. derives the sandbox's `resolv.conf` from the host and writes it into a folder
    of its own;
 6. resolves every bind source to its real path and puts the real paths into the
    profile inputs;
-7. makes the report channel (a FIFO, its reader opened first) and starts the
-   canary (a loopback listener and an abstract socket that count connections);
-8. builds the plan and checks it with the plan package's own verifier, and
-   writes the probe spec;
+7. makes the report channel (a FIFO in a folder of the attempt that holds nothing
+   else, its reader opened first) and starts the canary (a loopback listener
+   and an abstract socket that count connections);
+8. builds the plan and checks it with the plan package's own verifier, collects
+   the identities (device and inode) of the owner's and the holder's paths and
+   of their ancestors, and writes the probe spec with them;
 9. checks the mount points and sources again, right before the launch;
 10. launches pasta, bubblewrap, the probe and a scratch command through a
-    launcher, reads the probe's report line from the channel with a time limit,
-    and waits for the exit;
+    launcher (a session and process group of its own, with a pseudo-terminal as
+    its standard streams and no controlling terminal, as a holder under a unit
+    would run it), reads the probe's report line from the channel with a time limit
+    (one line, taken as the start without waiting for end-of-file), and waits
+    for the exit;
 11. runs the checks that can only be made outside (the canary's count, the
     sysctl, and the checks that need a role lock, lingering or a qualification
     record, which have no source here and are recorded as not-checked);
 12. stops anything left (SIGTERM, wait, SIGKILL, with the stop-rule constants of
-    the assert package) and closes what it opened;
+    the assert package), asks the report channel whether any byte followed the
+    line (a failed step `report-trailing`, and `report_trailing_bytes` in
+    `report.json`), and closes what it opened;
 13. writes the evidence.
 
 It does not:
@@ -96,8 +106,13 @@ caller's environment or home.
 - **Campaign folder**, for example `/owned/qualification/campaign`: mode 0700,
   owned by the caller, a real path, empty or holding earlier attempts. Evidence
   goes here and nowhere else. Do not put credentials or unrelated state in it.
-  It must not be listed as never-mounted and must not lie in or contain the state
-  root or any source, because two bind sources of the harness lie below it.
+  It must not be, lie below or contain a never-mounted path, and must not lie in
+  or contain the state root, any source folder or file of the profile (the agent
+  install, managed settings, skills, instruction file, git identity, Qargi
+  install and records, assignment and projection) or the probe, because two
+  bind sources of the harness lie below it. Put it outside every never-mounted
+  folder rather than shortening the never-mounted list: a configuration that
+  lists a whole home folder as never-mounted cannot keep its campaign inside it.
 - **State root**, for example `/owned/qualification/state`: a real path holding
   the lead's layout, all folders mode 0700:
 
@@ -117,7 +132,7 @@ caller's environment or home.
   settings file and its SHA-256 (for claude it must contain the text named by
   `managed_marker`); the lead skills folder; the instruction file; the git
   identity file; the Qargi install; the assignment and projection folders.
-  Optional: a records folder (mode 0700, owned by the caller) with the path it
+  Optional: a records folder (mode 0700, owned by the caller, a real path with no symbolic link in it) with the path it
   appears at, extra tree placeholders, and a seccomp file with its SHA-256.
 - **Never-mounted paths**: the owner's checkout, the real provider folders, and
   `.ssh`, as real paths. Give the paths even if they do not exist on the host.
@@ -267,14 +282,14 @@ the terminal output. Do not copy it into a repository.
 | --- | --- |
 | `plan.json` | The plan: argument vector, the names of the environment allowlist, the mounts (kind, inside path, source, whether the source lies below a folder the lead can write, optional), the descriptors the pass-through step opens, the notes, and the profile digest. |
 | `spec.json` | The probe's spec, as written for it (also bound read-only inside, in `bound/spec`). |
-| `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). |
+| `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
-| `terminal.log` | The first 1 MiB of what the process wrote to the pseudo-terminal; the rest is counted in `summary.json`. It may hold escape sequences: read it with `cat -v`. |
-| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status, how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, and the requested cases with the results each speaks to. |
+| `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
+| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
-channel's FIFO exists only during the run. The summary is written last; its own
+channel's FIFO and its folder exist only during the run. The summary is written last; its own
 write is not one of its steps.
 
 No file has a field that says the profile passed, is qualified or is supported,
@@ -286,8 +301,13 @@ and a test checks that no key of the evidence contains such a word. A result is
 
 The design (section 7.3) lists the sandbox cases. The harness records facts for
 the automated ones; the others are attended, and the coordinator makes and
-records them by hand, inside a sandbox launched by this harness (with a scratch
-command that waits, for example a shell) or by the holder's own qualification.
+records them by hand. The harness passes no input to the sandbox: it only reads
+the pseudo-terminal, so a scratch command that waits for the keyboard (a shell,
+for example) cannot be driven from it and is stopped at the time limit. Run an
+attended case either as a non-interactive scratch command (a command in
+`scratch_command` that does the steps and prints what happened; it runs inside
+the sandbox, so its program and files must be reachable there, in the lead's
+tree for example; its output goes to `terminal.log` as display only), or in the holder's own qualification.
 
 ### Automated cases
 
@@ -346,9 +366,12 @@ not start, record that too: it is a fact about this host, and the plan's R17 not
 
 ## Cleaning up
 
-A run closes the canary, removes the report FIFO, releases the pseudo-terminal
+A run closes the canary, removes the report FIFO and its folder, releases the pseudo-terminal
 and stops the process group (SIGTERM, wait, SIGKILL, wait, with the stop-rule
-constants). A group still there after that is recorded as `unknown`; look for
+constants). The first process is kept unreaped until the stop has found the group
+empty, so that its process group id cannot be given to another process while
+the stop signals it; members that are zombies do not count as left. A group still
+there after that is recorded as `unknown`; look for
 leftover processes with the ordinary host tools before the next attempt, and
 do not start another attempt on a campaign while one may still run. The harness
 removes nothing else.

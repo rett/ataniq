@@ -31,7 +31,9 @@ const (
 // SIGKILL, wait. The wait is for the whole group to be gone, not only the
 // first process. A group still there after the second wait is in the state
 // StopUnknown, and the harness says so; it does not wait longer. This is the
-// harness's own cleanup of its process group; the unit and control-group
+// harness's own cleanup of its process group (the launcher keeps the first
+// process unreaped until Close, so the group id is not reused while it is
+// signalled); the unit and control-group
 // rules of the design belong to the holder's qualification.
 func stopProcess(p Process, termWait, killWait, poll time.Duration) StopEvidence {
 	var ev StopEvidence
