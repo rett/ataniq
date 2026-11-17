@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 )
 
@@ -42,8 +43,9 @@ const TemplateVersion = 1
 // In "serve" the placeholders are {role}, {project} and {tree}. In "verify"
 // they are {project}, {mirror}, {scratch} and {home}. They work in every
 // string of their section. Any other brace is refused, so a literal brace
-// cannot be written. The first element of each argv is an absolute path
-// written out in full.
+// cannot be written. The first element of each argv is the launcher, which
+// runs as the owner: it is an absolute, clean path written out in full, with
+// no placeholder and no brace.
 //
 // Either section may be absent. The matching method then returns
 // [ErrNotConfigured].
@@ -294,13 +296,16 @@ func compileList(field string, in []string, allowed []string) ([]word, error) {
 }
 
 // compileArgv compiles an argv that must not be empty and whose first
-// element is an absolute path written out in full.
+// element is an absolute, clean path written out in full: no placeholder and
+// no brace. The first element is the launcher, which runs as the owner, so
+// no request value and no lead path may choose it.
 func compileArgv(field string, in []string, allowed []string) ([]word, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("%s: empty argv", field)
 	}
-	if !strings.HasPrefix(in[0], "/") {
-		return nil, fmt.Errorf("%s[0]: not an absolute path written out in full", field)
+	first := in[0]
+	if !strings.HasPrefix(first, "/") || strings.ContainsAny(first, "{}") || filepath.Clean(first) != first {
+		return nil, fmt.Errorf("%s[0]: not an absolute, clean path written out in full", field)
 	}
 	return compileList(field, in, allowed)
 }
