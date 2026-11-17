@@ -32,6 +32,20 @@ func TestFlags(t *testing.T) {
 	}
 }
 
+func TestHelpShowsADefaultTheFlagAccepts(t *testing.T) {
+	var out, err bytes.Buffer
+	if code := run([]string{"--help"}, &out, &err); code != 0 {
+		t.Fatal(code)
+	}
+	if !strings.Contains(err.String(), `(default ctrl+\)`) || strings.Contains(err.String(), `(default "ctrl+`) {
+		t.Fatal(err.String())
+	}
+	// An empty value is a value, not the default.
+	if code := run([]string{"--demo", "--return-key", ""}, &out, &err); code != 2 {
+		t.Fatal(code)
+	}
+}
+
 func TestFlagDiagnosticsDoNotEchoControlSequences(t *testing.T) {
 	var out, err bytes.Buffer
 	if code := run([]string{"--bad\x1b]52;c;payload\a"}, &out, &err); code != 2 {

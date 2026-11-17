@@ -124,6 +124,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   next recorded event or of the end of the linger time, so a cockpit with
   nothing to show is idle. In a very large window that used to keep the
   process busy and make keys wait behind redraws.
+- `ataniq-console --help` now shows the default return key as
+  `(default ctrl+\)`. It showed `(default "ctrl+\\")`, which the flag refuses
+  when copied.
 
 ## [0.0.8] - 2026-11-15
 

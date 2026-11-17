@@ -38,7 +38,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	flags.SetOutput(io.Discard)
 	demo := flags.Bool("demo", false, "show the read-only fixture cockpit")
 	theme := flags.String("theme", "dark", "appearance: dark or light")
-	returnKey := flags.String("return-key", terminalconsole.DefaultReturnKey.Spec(), "key that leaves the session pane: ctrl+ and one letter, or ctrl+\\ or ctrl+]")
+	returnKey := flags.String("return-key", "", "key that leaves the session pane: ctrl+ and one letter, or ctrl+\\ or ctrl+] (default ctrl+\\)")
 	recording := flags.String("recording", terminalconsole.DefaultRecording, "fixture recording to replay: "+strings.Join(terminalconsole.Recordings(), ", "))
 	linger := flags.Duration("linger", defaultLinger, "keep the fixture session open this long after the recording's last output, such as 30s; 0 ends it as recorded")
 	usage := func() {
@@ -62,6 +62,13 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 		fmt.Fprintln(errout, "error: expected --theme dark or light and no positional arguments")
 		usage()
 		return cfg, 2, false
+	}
+	// The default is not a flag default: the flag package prints a string default
+	// quoted, as "ctrl+\\", which the flag then refuses.
+	given := false
+	flags.Visit(func(f *flag.Flag) { given = given || f.Name == "return-key" })
+	if !given {
+		*returnKey = terminalconsole.DefaultReturnKey.Spec()
 	}
 	key, err := terminalconsole.ParseReturnKey(*returnKey)
 	if err != nil {
