@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const changelogBase = `# Changelog
@@ -243,6 +245,8 @@ func TestChangelogFoldRefusesBadFragments(t *testing.T) {
 		{"not a list item", "added-x.md", "X.\n"},
 		{"blank line", "added-x.md", "- X.\n\n- Y.\n"},
 		{"heading", "added-x.md", "- X.\n### Added\n"},
+		{"carriage return", "added-x.md", "- X.\r\n  More.\r\n"},
+		{"blank in the name", "added-a b.md", "- X.\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := changelogRoot(t, changelogBase, map[string]string{
@@ -303,6 +307,10 @@ func TestChangelogFoldDryRun(t *testing.T) {
 	}
 	if names := fragmentNames(t, dir); len(names) != 2 {
 		t.Errorf("dry run removed fragments: %v", names)
+	}
+	// A dry run writes no file at all, not even a temporary one.
+	if got := entriesOf(t, dir); len(got) != 3 {
+		t.Errorf("the dry run left files in the root: %v", got)
 	}
 }
 
@@ -400,4 +408,102 @@ func TestMakeChangelogTargets(t *testing.T) {
 			t.Errorf("make -n %s: %q not in %s", target, want, out)
 		}
 	}
+}
+
+// A fragment that only starts like an existing entry is a new entry; one
+// whose every line is already there is folded away without being added again,
+// including when it is the last lines of the file's entries.
+func TestChangelogFoldComparesTheWholeFragment(t *testing.T) {
+	base := strings.Replace(changelogBase, "- Old changed.\n", "- Fix a crash.\n  In the console.\n- Last one.\n", 1)
+	dir := changelogRoot(t, base, map[string]string{
+		"changed-same-start.md": "- Fix a crash.\n  In the session terminal.\n",
+		"changed-prefix.md":     "- Fix a crash.\n",
+		"changed-whole.md":      "- Fix a crash.\n  In the console.\n",
+		"changed-last.md":       "- Last one.\n",
+	})
+	out, code := runFold(t, dir)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	// The two new entries are added by name: changed-prefix, changed-same-start.
+	want := strings.Replace(base, "- Last one.\n", "- Last one.\n- Fix a crash.\n- Fix a crash.\n  In the session terminal.\n", 1)
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != want {
+		t.Errorf("CHANGELOG.md:\n%s\nwant:\n%s", got, want)
+	}
+	for _, skipped := range []string{"changed-whole.md", "changed-last.md"} {
+		if !strings.Contains(out, "skip changelog.d/"+skipped) {
+			t.Errorf("%s not reported as skipped: %s", skipped, out)
+		}
+	}
+	if names := fragmentNames(t, dir); len(names) != 0 {
+		t.Errorf("fragments left: %v", names)
+	}
+}
+
+// An interrupted fold leaves CHANGELOG.md and the fragments as they were, and
+// no temporary file. The script's test hook holds it while it renders.
+func TestChangelogFoldInterrupted(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			dir := changelogRoot(t, changelogBase, map[string]string{"added-a.md": "- A added.\n"})
+			hold := filepath.Join(t.TempDir(), "hold")
+			if err := os.WriteFile(hold, nil, 0644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/sh", filepath.Join(dir, "scripts/changelog-fold.sh"))
+			cmd.Dir = t.TempDir()
+			cmd.Env = append(os.Environ(), "CHANGELOG_FOLD_TEST_HOLD="+hold)
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			// Wait until the fold has made its temporary file: it is rendering.
+			deadline := time.Now().Add(20 * time.Second)
+			for len(entriesOf(t, dir)) < 4 {
+				if time.Now().After(deadline) {
+					cmd.Process.Kill()
+					t.Fatal("the fold did not reach the render")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			cmd.Process.Signal(sig)
+			// Release the hold: a handler that does not exit would now go on and
+			// replace CHANGELOG.md.
+			time.Sleep(100 * time.Millisecond)
+			os.Remove(hold)
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(20 * time.Second):
+				cmd.Process.Kill()
+				t.Fatal("the fold did not stop")
+			}
+			if err == nil {
+				t.Error("the interrupted fold succeeded")
+			}
+			if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != changelogBase {
+				t.Errorf("CHANGELOG.md changed:\n%s", got)
+			}
+			if names := fragmentNames(t, dir); len(names) != 1 {
+				t.Errorf("fragments changed: %v", names)
+			}
+			if got := entriesOf(t, dir); len(got) != 3 {
+				t.Errorf("files left in the root: %v", got)
+			}
+		})
+	}
+}
+
+func entriesOf(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
 }

@@ -14,16 +14,26 @@
 # Folding appends each fragment to the end of its section in [Unreleased]
 # (the heading is created in the Keep a Changelog order when the section is
 # missing), fragments in a section sorted by file name, and removes the folded
-# fragments. A fragment whose first line is already in [Unreleased] is not
-# added again but is removed, so a run that stopped between writing
-# CHANGELOG.md and removing the fragments can be repeated. Nothing is changed
-# unless every fragment is valid. --dry-run only reports what would happen.
+# fragments. A fragment whose whole text (every line) is already an entry in
+# [Unreleased] is not added again but is removed, so a run that stopped between
+# writing CHANGELOG.md and removing the fragments can be repeated. A fragment
+# that only starts like an existing entry is folded. Nothing is changed unless
+# every fragment is valid. CHANGELOG.md is replaced by one rename of a
+# temporary file made beside it (mktemp, so the rename is atomic and the file
+# mode is kept), so an interrupted run leaves it intact. --dry-run only
+# reports what would happen: it writes no file at all.
 #
 # --check changes nothing and fails while any fragment is left, which the
 # release flow runs after the fold.
 #
-# Exit status: 0 success, 1 --check found fragments, 2 refused or usage error.
+# Exit status: 0 success; 1 --check found fragments, or a file could not be
+# written (CHANGELOG.md is then unchanged); 2 refused (invalid fragment,
+# missing CHANGELOG.md or [Unreleased]) or usage error; 129, 130 or 143 when
+# interrupted by HUP, INT or TERM, with CHANGELOG.md unchanged.
 # Uses only POSIX shell and utilities that are always present with it.
+#
+# Test hook: when CHANGELOG_FOLD_TEST_HOLD names an existing file, a fold
+# waits while that file exists, before it renders, so a test can interrupt it.
 
 set -eu
 LC_ALL=C
@@ -135,7 +145,14 @@ fi
 
 # Validate every entry before anything is read for folding or changed.
 valid=
+nl='
+'
+cr=$(printf '\r')
+oldifs=$IFS
+IFS=$nl
+# The list is split at newlines only, once; the body runs with the usual IFS.
 for name in $entries; do
+	IFS=$oldifs
 	path=$fragdir/$name
 	case $name in
 	added-*.md | changed-*.md | deprecated-*.md | removed-*.md | fixed-*.md | security-*.md) ;;
@@ -169,6 +186,10 @@ for name in $entries; do
 			;;
 		"#"*)
 			bad="line $n starts with #, headings are added by the fold"
+			break
+			;;
+		*"$cr"*)
+			bad="line $n has a carriage return, use Unix line ends"
 			break
 			;;
 		esac
@@ -248,8 +269,6 @@ add_block() {
 
 # Sections in Keep a Changelog order, then fragments by name within each.
 actions=
-nl='
-'
 for sec in $SECTIONS; do
 	lower=$(lowercase "$sec")
 	for name in $valid; do
@@ -258,24 +277,43 @@ for sec in $SECTIONS; do
 		*) continue ;;
 		esac
 		path=$fragdir/$name
-		IFS= read -r first <"$path" || [ -n "$first" ]
-		case $unrel in
-		*"$nl$first$nl"*)
-			actions="$actions${actions:+$nl}skip changelog.d/$name: already in [Unreleased]"
-			continue
-			;;
-		esac
 		text=
 		while IFS= read -r line || [ -n "$line" ]; do
 			text="$text$line$nl"
 		done <"$path"
+		# Already folded: every line is there as consecutive lines, and the
+		# entry there does not go on with a continuation line.
+		case $unrel in
+		*"$nl$text" | *"$nl$text"[!\ ]*)
+			actions="$actions${actions:+$nl}skip changelog.d/$name: already in [Unreleased]"
+			continue
+			;;
+		esac
 		add_block "$sec" "$text"
 		actions="$actions${actions:+$nl}fold changelog.d/$name into $sec"
 	done
 done
 
-tmp=$changelog.fold.$$
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+if [ "$mode" = dry ]; then
+	printf '%s\n' "$actions" | while IFS= read -r line; do
+		printf 'would %s\n' "$line"
+	done
+	exit 0
+fi
+
+# A signal ends the script (the handler must exit, or the run would go on after
+# the temporary file is removed); the EXIT trap removes the temporary file.
+tmp=
+trap '[ -z "$tmp" ] || rm -f "$tmp"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+tmp=$(mktemp "$changelog.fold.XXXXXX") || {
+	echo "error: cannot create a temporary file beside CHANGELOG.md" >&2
+	exit 1
+}
+# The new file starts from CHANGELOG.md's mode, which the rename keeps.
+cp -p "$changelog" "$tmp"
 
 emitted=" "
 pend=0
@@ -326,6 +364,9 @@ flush_before() {
 }
 
 {
+	while [ -n "${CHANGELOG_FOLD_TEST_HOLD:-}" ] && [ -e "$CHANGELOG_FOLD_TEST_HOLD" ]; do
+		sleep 1
+	done
 	state=before
 	while IFS= read -r line || [ -n "$line" ]; do
 		case $state in
@@ -366,14 +407,7 @@ flush_before() {
 	fi
 } >"$tmp"
 
-if [ "$mode" = dry ]; then
-	printf '%s\n' "$actions" | while IFS= read -r line; do
-		printf 'would %s\n' "$line"
-	done
-	exit 0
-fi
-
-cat "$tmp" >"$changelog"
+mv -f "$tmp" "$changelog"
 for name in $valid; do
 	rm -f -- "$fragdir/$name"
 done
