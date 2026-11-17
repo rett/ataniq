@@ -69,6 +69,10 @@ func (e *Emulator) restoreCursor() {
 
 // setMode sets the mode to the given value.
 func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
+	if _, ok := recordedModes[mode]; !ok {
+		e.counters.ModesIgnored++
+		return
+	}
 	e.logf("setting mode %T(%v) to %v", mode, mode, setting)
 	e.modes[mode] = setting
 	switch mode {

@@ -79,8 +79,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bound what the console's session pane keeps of a session's output, in the
   patched `x/vt`. A cell keeps at most 64 bytes of a grapheme cluster, cut at
   a character boundary; the rest is dropped and counted, and a megabyte of
-  combining marks costs bounded memory and linear time. The emulator exposes
-  the counts of every cap it hit through `Counters`.
+  combining marks costs bounded memory and linear time. Only a fixed table
+  of known terminal modes is recorded (the ones the emulator acts on, the ones
+  the pane and console follow, and the ones a full-screen agent commonly sets);
+  setting or resetting any other mode number is ignored and counted, a request
+  for it is answered "not recognised", and setting 100 000 distinct numbers
+  does not grow memory. The emulator exposes the counts of every cap it hit
+  through `Counters`.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a

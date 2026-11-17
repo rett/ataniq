@@ -35,6 +35,15 @@ Patches, applied in this order to the files of the module as released:
    past the cap costs one segmentation of at most 68 bytes per rune: linear
    time, no allocation. This patch also adds the `Counters` struct and the
    `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
+5. `vt: record only a fixed table of modes` (`mode.go`, `csi_mode.go`,
+   `limits.go`, `mode_test.go`). The emulator kept every mode number a session
+   set in a map, so a session could grow it without bound (100 000 distinct
+   numbers cost megabytes). `recordedModes` in `mode.go` is now the one table
+   of recorded modes: every mode `x/ansi` names, plus DEC 12 and 1007. Setting
+   or resetting any other mode is ignored, adds to `Counters().ModesIgnored`
+   and calls no callback; DECRQM for it answers "not recognised", as for a
+   mode never set. `EnableMode` and `DisableMode` fire for the table's modes
+   exactly as before.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

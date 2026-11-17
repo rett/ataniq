@@ -17,6 +17,10 @@ type Counters struct {
 	// ClusterBytesDropped is the number of bytes of grapheme clusters that
 	// were dropped because the cluster was already [MaxClusterBytes] long.
 	ClusterBytesDropped uint64
+	// ModesIgnored is the number of times a mode that is not in the table of
+	// recorded modes was set or reset. Nothing was recorded for it and no
+	// callback was called.
+	ModesIgnored uint64
 }
 
 // Counters returns the counters of the caps that were hit.
