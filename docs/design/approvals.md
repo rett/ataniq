@@ -19,12 +19,15 @@ provider ceremony that bypasses arbitration. Direction relayed by another
 agent or a cloud assistant is never an approval, however faithfully it repeats
 the owner.
 
-A coordinator, the ephemeral delegate of a lead for one feature (see
+A feature coordinator, the ephemeral delegate of a lead for one feature (see
 [roles and authority](roles-and-authority.md)), never approves anything. No
-approval, plan token or grant passes to or through a coordinator, and a
-delegation to a coordinator is not an approval: it hands over some of the
-lead's own verbs on one feature and carries no owner gate. Its questions go to
-its lead, and the lead relays them to the owner.
+approval, plan token or grant passes to or through a coordinator. A lead's
+feature delegation to a coordinator is neither a grant nor an approval and is
+not part of the delegation chain below: it hands over some of the lead's own
+verbs on one feature and carries no owner gate. Its questions go to its lead,
+and the lead relays them to the owner. The owner typing into a coordinator's
+session is not an approval through it: the coordinator still cannot finish,
+push or approve.
 
 ## Grants
 

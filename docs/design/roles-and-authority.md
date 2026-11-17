@@ -1,9 +1,9 @@
 # Roles and authority split
 
 Status: proposed, owner-approved direction; none of it is implemented or
-qualified. Role assignment, handoff, the supervisor, the coordinator and the
-lead registry exist only as this specification. Their contracts are still to be designed and
-reviewed before any runtime work.
+qualified. Role assignment, handoff, the supervisor, the feature coordinator
+and the lead registry exist only as this specification. Their contracts are
+still to be designed and reviewed before any runtime work.
 
 ## Lead and supervisor roles
 
@@ -25,31 +25,40 @@ its own project's gates. It does not run another project's lead-only commands;
 it can send that project's lead a grant-backed approval, which the gate
 verifies (see [approvals](approvals.md)).
 
-## Coordinator
+## Feature coordinator
 
-A coordinator is an ephemeral delegate of a project lead for exactly one
-feature, not an assignable role. It holds no seat (qargi's record that a lead
-holds the project) and no epoch, ends with its lead, is never a handoff target
-and never talks to the owner except through its lead. Nothing it says is an
-approval (see [approvals](approvals.md)).
+A feature coordinator (coordinator below) is an ephemeral delegate of a project
+lead for exactly one feature, not an assignable role and not the internal
+dispatch coordinator of [runtime](runtime.md). It holds no seat (the qargi
+lease by which a lead holds the project) and no lead assignment epoch of its
+own, ends with its lead and is never a handoff target. Its questions go to its
+lead, never to the owner directly. The owner may watch a coordinator and type
+into it as its single writer, and the lead is notified each time; this changes
+none of the coordinator's powers. Nothing it says is an approval (see
+[approvals](approvals.md)).
 
 Within its own feature a coordinator may prepare runs, verify, apply and merge
-them into the feature, sync the feature and run the feature's whole-suite
-verify. Under a seat that verify is advisory: only a pass the host side ran
-itself counts toward finishing the feature. It may clean any run of its own
-feature, including a stopped predecessor's, and never a run of another feature.
-Finishing a feature, push, release, prune and every approval stay with the lead
-and the owner.
+them into the feature and sync the feature. The lead runs the feature's
+whole-suite verify; a pass a coordinator reports never counts toward finishing
+the feature by itself. It may clean any run of its own feature, including a
+stopped predecessor's, and never a run of another feature. Starting or
+finishing a feature, push, release, hotfix, takeover, the orphan sweep, prune
+and adoption of another actor's runs stay with the lead. Approval stays with
+the owner, as [approvals](approvals.md) states; the lead relays the
+coordinator's questions.
 
-Its identity is a declared label. A label only narrows what the coordinator
-may do and never widens it. Real identity comes only from the bound file that
-Ataniq writes for the unit; a label given in the environment or on the command
-line is never honoured as identity.
+A coordinator declares a label, which attributes its runs and only narrows what
+it may do (no finish, push or approval); it never widens anything and is never
+identity. Identity comes only from a bound file that Ataniq writes: a managed
+coordinator's own, or, for one running inside its lead's session, the lead's,
+so the gate sees the lead. A label or lead id given in the environment or on
+the command line is never honoured as identity.
 
 A lead quiesces its coordinators before a handoff: they are confirmed stopped,
-and the open runs are listed for the successor. A stalled coordinator is
-confirmed stopped before its runs are adopted or a new instance starts; two
-instances are never alive for one feature.
+background verifies are stopped and the open runs are listed for the
+successor. A stalled coordinator is confirmed stopped before its runs are
+adopted or a new instance starts; two instances are never alive for one
+feature.
 
 ## Handoff
 
