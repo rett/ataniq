@@ -322,6 +322,39 @@ func TestOpenRoot(t *testing.T) {
 	}
 }
 
+func TestOpenRootRefusesUncleanPath(t *testing.T) {
+	// With a last element "." or "..", the kernel follows a symlink before it
+	// (O_NOFOLLOW sees only the last element). Such a path, and any path that
+	// is not clean, is refused before the open.
+	base := t.TempDir()
+	write(t, filepath.Join(base, "real", "f"), "x")
+	mustSymlink(t, "real", filepath.Join(base, "link"))
+	link := filepath.Join(base, "link")
+	real := filepath.Join(base, "real")
+	for _, p := range []string{
+		link + "/.", link + "/./", link + "/..", link + "/../real",
+		real + "/.", real + "/..", real + "/../real",
+		base + "/./real", base + "//real", base + "/real/./",
+		".", "..", "./real",
+	} {
+		r, err := OpenRoot(p)
+		if r != nil {
+			r.Close()
+		}
+		if !errors.Is(err, ErrEscape) {
+			t.Errorf("%q: want ErrEscape, got %v", p, err)
+		}
+	}
+	for _, p := range []string{"/", "//", real + "/", real + "//"} {
+		r, err := OpenRoot(p)
+		if err != nil {
+			t.Errorf("%q: %v", p, err)
+			continue
+		}
+		r.Close()
+	}
+}
+
 func TestOpenRootSymlinkInParentIsOwners(t *testing.T) {
 	// The folders above the root belong to the owner, so a symlink there is
 	// resolved the ordinary way.

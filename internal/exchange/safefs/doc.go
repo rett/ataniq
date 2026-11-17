@@ -26,7 +26,9 @@
 // A name that is absolute, empty or has a ".." element is refused with
 // [ErrEscape] before any system call. Errors wrap the underlying errno, so
 // errors.Is works with [io/fs.ErrNotExist] and with unix.ELOOP. A symlink
-// the kernel refuses satisfies both unix.ELOOP and [ErrEscape].
+// the kernel refuses satisfies both unix.ELOOP and [ErrEscape]. [OpenRoot]
+// refuses a path that is not clean, or that ends in "." or "..", with
+// [ErrEscape].
 //
 // # Limits of this package
 //

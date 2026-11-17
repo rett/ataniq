@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,8 +32,12 @@ type Root struct{ f *os.File }
 // OpenRoot opens the folder at path. The final component must be a real
 // folder: a symlink there is refused with an error that matches [ErrEscape]
 // and unix.ELOOP. Trailing slashes are ignored, because a trailing slash
-// would make the kernel follow a symlink. The folders above the final
-// component belong to the owner and are resolved the ordinary way.
+// would make the kernel follow a symlink. Apart from them the path must be
+// clean, and its last element must not be "." or "..": with such an element
+// the kernel would reach the folder through a symlink that the final-component
+// rule does not see. Any other path is refused with [ErrEscape]. The folders
+// above the final component belong to the owner and are resolved the ordinary
+// way.
 //
 // OpenRoot returns [ErrUnsupported] when the kernel has no openat2.
 func OpenRoot(path string) (*Root, error) {
@@ -42,6 +47,10 @@ func OpenRoot(path string) (*Root, error) {
 	p := path
 	for len(p) > 1 && p[len(p)-1] == '/' {
 		p = p[:len(p)-1]
+	}
+	last := p[strings.LastIndexByte(p, '/')+1:]
+	if filepath.Clean(p) != p || last == "." || last == ".." {
+		return nil, pathError("open", path, ErrEscape)
 	}
 	var fd int
 	var err error
