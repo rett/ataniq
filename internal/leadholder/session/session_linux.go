@@ -27,7 +27,10 @@
 // package takes the lock with for a fence, and [Session.Inject] is a stub that
 // refuses and logs. The replies are queued (bounded to [ReplyQueueBytes], an
 // overflow is dropped and counted) and written by a goroutine of their own, so
-// the emulator never waits for the agent to read.
+// the emulator never waits for the agent to read. A write to the agent that
+// fails or times out breaks the input for good ([Session.InputBroken]): a
+// prefix may have been delivered, so nothing more is written, from any source,
+// and later input is refused with [ErrInputBroken].
 //
 // Writer input is filtered: Ctrl+Z is never forwarded, and while the terminal
 // has ISIG set the bytes for VINTR, VQUIT and VSUSP are held back too. The
@@ -108,6 +111,9 @@ var (
 	ErrSubscribed = errors.New("session: there is a subscriber already")
 	// ErrInjectionDisabled: injection is not built in this version.
 	ErrInjectionDisabled = errors.New("session: injection is disabled")
+	// ErrInputBroken: an earlier write to the agent failed part-way (see
+	// Session.InputBroken); nothing more is written.
+	ErrInputBroken = errors.New("session: the agent's input is broken by an earlier failed write")
 	// ErrNotOver: the session is not over, so there is no final record yet.
 	ErrNotOver = errors.New("session: not over yet")
 )
@@ -195,6 +201,10 @@ type Session struct {
 	closing  chan struct{} // closed when Close starts
 	stopOnce sync.Once
 
+	// inputBroken is set under imu by the first failed write to the agent
+	// and never cleared.
+	inputBroken atomic.Bool
+
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
@@ -210,6 +220,7 @@ type counters struct {
 	heldSuspend        atomic.Uint64
 	heldSignal         atomic.Uint64
 	inputWriteErrors   atomic.Uint64
+	inputRefused       atomic.Uint64
 	termiosErrors      atomic.Uint64
 	readErrors         atomic.Uint64
 	logErrors          atomic.Uint64
@@ -514,6 +525,11 @@ func (s *Session) Counters() map[string]uint64 {
 	out["held_keys_suspend"] = c.heldSuspend.Load()
 	out["held_keys_signal"] = c.heldSignal.Load()
 	out["input_write_errors"] = c.inputWriteErrors.Load()
+	out["input_refused"] = c.inputRefused.Load()
+	out["input_broken"] = 0
+	if s.inputBroken.Load() {
+		out["input_broken"] = 1
+	}
 	out["termios_errors"] = c.termiosErrors.Load()
 	out["read_errors"] = c.readErrors.Load()
 	out["log_errors"] = c.logErrors.Load()

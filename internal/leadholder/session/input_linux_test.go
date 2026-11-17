@@ -4,6 +4,9 @@ package session
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,5 +284,142 @@ func TestInputAfterCloseIsRefused(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+// bigInput is more than the terminal's input buffer holds, so that a write to
+// an agent that does not read cannot finish.
+var bigInput = strings.Repeat("x", 64<<10)
+
+func shortWriteTimeout(c *Config) { c.PTY.WriteTimeout = 300 * time.Millisecond }
+
+// The first failed or timed-out write from any source breaks the input: every
+// later input, from every source, is refused and logged once, and counted.
+func TestAFailedWriteBreaksTheInputForEverySource(t *testing.T) {
+	queries := filepath.Join(t.TempDir(), "queries")
+	if err := os.WriteFile(queries, []byte(strings.Repeat("\x1b[c", 40000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, script, reason string
+		trigger              func(t *testing.T, s *Session)
+	}{
+		{"writer", "raw; say READY; wait", "writer-write-timeout", func(t *testing.T, s *Session) {
+			if h := s.Input([]byte(bigInput)); !errors.Is(h.Err, os.ErrDeadlineExceeded) || h.Written >= len(bigInput) {
+				t.Fatalf("Input = %+v, want a timeout and a prefix", h)
+			}
+		}},
+		{"paste", "raw; say READY; wait", "paste-write-timeout", func(t *testing.T, s *Session) {
+			if h := s.Paste(bigInput); !errors.Is(h.Err, os.ErrDeadlineExceeded) || h.Written >= len(bigInput) {
+				t.Fatalf("Paste = %+v, want a timeout and a prefix", h)
+			}
+		}},
+		{"section", "raw; say READY; wait", "section-write-timeout", func(t *testing.T, s *Session) {
+			err := s.WithInputLock(func(w AgentWriter) error {
+				_, err := w.Write([]byte(bigInput))
+				return err
+			})
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("WithInputLock = %v, want a timeout", err)
+			}
+		}},
+		{"replies", "raw; say READY; printfile " + queries + "; say AFTER; wait", "reply-write-timeout", func(t *testing.T, s *Session) {
+			poll(t, func() string { return fmt.Sprintf("the reply write to fail; counters %v", s.Counters()) }, s.InputBroken)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t)
+			s := e.start(c.script, shortWriteTimeout)
+			waitScreen(t, s, "READY")
+			if s.InputBroken() {
+				t.Fatal("the input is broken before any failure")
+			}
+			c.trigger(t, s)
+			if !s.InputBroken() {
+				t.Fatal("InputBroken is false after a failed write")
+			}
+			refused := s.Counters()["input_refused"]
+
+			if h := s.Input([]byte("Q")); !errors.Is(h.Err, ErrInputBroken) || h.Written != 0 {
+				t.Errorf("Input after the break = %+v", h)
+			}
+			if h := s.Paste("Q"); !errors.Is(h.Err, ErrInputBroken) || h.Written != 0 {
+				t.Errorf("Paste after the break = %+v", h)
+			}
+			var w AgentWriter
+			err := s.WithInputLock(func(aw AgentWriter) error {
+				w = aw
+				n, err := aw.Write([]byte("Q"))
+				if n != 0 {
+					t.Errorf("the section wrote %d bytes after the break", n)
+				}
+				return err
+			})
+			if !errors.Is(err, ErrInputBroken) {
+				t.Errorf("a section's write after the break: %v", err)
+			}
+			if n, err := w.Write([]byte("Q")); n != 0 || err == nil {
+				t.Errorf("a stale writer wrote %d, %v", n, err)
+			}
+			cnt := s.Counters()
+			if cnt["input_broken"] != 1 || cnt["input_refused"] < refused+3 {
+				t.Errorf("counters after three refusals: %v (refused before: %d)", cnt, refused)
+			}
+
+			// One state event, with the source and the cause as the reason.
+			var broken []eventlog.Event
+			for _, ev := range eventsNamed(e.events(), eventlog.EventState) {
+				if ev.State == "input-broken" {
+					broken = append(broken, ev)
+				}
+			}
+			if len(broken) != 1 || broken[0].Reason != c.reason {
+				t.Errorf("input-broken events %+v, want one with reason %q", broken, c.reason)
+			}
+		})
+	}
+}
+
+// After a cut the agent receives no byte: not the writer's next key, which
+// would sit inside a bracketed paste that never ended, and not a reply.
+func TestTheAgentReceivesNothingAfterTheCut(t *testing.T) {
+	e := newEnv(t)
+	// The agent does not read for a while; then it asks a terminal question
+	// (the answer must not be written) and reads everything that was written.
+	s := e.start("raw; say READY; sleep 2s; print 1b5b63; echo; wait", shortWriteTimeout)
+	waitScreen(t, s, "READY")
+	var out capture
+	unsub, err := s.Subscribe(out.fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsub()
+
+	h := s.Paste(bigInput)
+	if !errors.Is(h.Err, os.ErrDeadlineExceeded) || h.Written == 0 || h.Written >= len(bigInput) {
+		t.Fatalf("Paste = %+v, want a prefix and a timeout", h)
+	}
+	if h := s.Input([]byte("Q")); !errors.Is(h.Err, ErrInputBroken) {
+		t.Errorf("Input after the cut = %+v", h)
+	}
+	if err := s.WithInputLock(func(w AgentWriter) error { _, err := w.Write([]byte("R")); return err }); !errors.Is(err, ErrInputBroken) {
+		t.Errorf("a section's write after the cut: %v", err)
+	}
+	// The agent's question comes after its sleep: its answer is refused too.
+	poll(t, func() string { return fmt.Sprintf("the reply to be refused; counters %v", s.Counters()) }, func() bool {
+		return s.Counters()["input_refused"] >= 3
+	})
+	// The agent now reads what was written, and only that.
+	want := strings.Repeat("x", h.Written)
+	var got []byte
+	poll(t, func() string { return fmt.Sprintf("the agent to read %d bytes, read %d", len(want), len(got)) }, func() bool {
+		got = rxBytes(string(out.all()))
+		return len(got) >= len(want)
+	})
+	// Anything else would be in the same terminal buffer; give it a moment.
+	time.Sleep(150 * time.Millisecond)
+	if got = rxBytes(string(out.all())); string(got) != want {
+		t.Errorf("the agent read %d bytes, want the %d of the prefix and nothing after; tail %q", len(got), len(want), got[max(0, len(got)-20):])
 	}
 }
