@@ -57,11 +57,19 @@ func (r ReturnKey) String() string {
 	return "Ctrl+" + strings.ToUpper(string(r.code))
 }
 
+// lockMods are lock states a terminal may report with a key. With the kitty
+// keyboard protocol they come with any chord or function key, and they never
+// change which key it is.
+const lockMods = tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
+
+// withoutLocks returns m without its lock states.
+func withoutLocks(m tea.KeyMod) tea.KeyMod { return m &^ lockMods }
+
 // matches reports whether k is the return key: Ctrl with the key's code and
-// no other modifier or text.
+// no other modifier, lock states aside, and no text.
 func (r ReturnKey) matches(k tea.KeyPressMsg) bool {
 	if r.code == 0 {
 		r = DefaultReturnKey
 	}
-	return k.Mod == tea.ModCtrl && k.Code == r.code && k.Text == ""
+	return withoutLocks(k.Mod) == tea.ModCtrl && k.Code == r.code && k.Text == ""
 }

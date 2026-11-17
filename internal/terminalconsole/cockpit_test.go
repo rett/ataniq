@@ -43,6 +43,8 @@ func (s *recSink) Mouse(m uv.MouseEvent) {
 type scheduled struct {
 	d  time.Duration
 	fn func(time.Time) tea.Msg
+	// at is when the timer is due on the rig's clock.
+	at time.Time
 }
 
 // rig drives a model with a clock of its own: it replaces tea.Tick, records
@@ -53,6 +55,9 @@ type rig struct {
 	sink  *recSink
 	sched []scheduled
 	t0    time.Time
+	// clock is the rig's own time: the time of the last message it sent or of
+	// the timer it ran. Timers are due at clock plus their delay.
+	clock time.Time
 }
 
 func newRig(t *testing.T, w, h int, o Options) *rig {
@@ -61,11 +66,12 @@ func newRig(t *testing.T, w, h int, o Options) *rig {
 		o.Theme = "dark"
 	}
 	r := &rig{t: t, sink: &recSink{}, t0: time.Unix(1_000_000, 0)}
+	r.clock = r.t0
 	o.Input = r.sink
 	r.m = NewWithOptions(Fixture{}, o)
 	t.Cleanup(r.m.Close)
 	r.m.after = func(d time.Duration, fn func(time.Time) tea.Msg) tea.Cmd {
-		r.sched = append(r.sched, scheduled{d, fn})
+		r.sched = append(r.sched, scheduled{d: d, fn: fn, at: r.clock.Add(d)})
 		return nil
 	}
 	if w > 0 {
@@ -86,7 +92,35 @@ func (r *rig) play(d time.Duration) {
 	}
 }
 
+// run is a clock for the timers the model schedules: it runs the earliest due
+// timer, at its due time, until none is due within d of the start, and returns
+// the time of every tick message it delivered, as a duration from the start.
+// A model that schedules no timer is idle.
+func (r *rig) run(d time.Duration) []time.Duration {
+	var ticks []time.Duration
+	for {
+		next := -1
+		for i, s := range r.sched {
+			if s.at.Sub(r.t0) <= d && (next < 0 || s.at.Before(r.sched[next].at)) {
+				next = i
+			}
+		}
+		if next < 0 {
+			return ticks
+		}
+		s := r.sched[next]
+		r.sched = append(r.sched[:next:next], r.sched[next+1:]...)
+		r.clock = s.at
+		msg := s.fn(s.at)
+		if _, ok := msg.(tickMsg); ok {
+			ticks = append(ticks, s.at.Sub(r.t0))
+		}
+		r.m.Update(msg)
+	}
+}
+
 func (r *rig) tick(at time.Duration) {
+	r.clock = r.t0.Add(at)
 	r.m.Update(tickMsg{at: r.t0.Add(at), gen: r.m.rep.gen})
 }
 
@@ -236,7 +270,8 @@ func TestFallbackBelowTheMinimum(t *testing.T) {
 }
 
 func TestReturnKeyInBothEncodings(t *testing.T) {
-	for _, enc := range []struct{ name, bytes string }{{"legacy", "\x1c"}, {"kitty", "\x1b[92;5u"}, {"kitty with event type", "\x1b[92;5:1u"}} {
+	for _, enc := range []struct{ name, bytes string }{{"legacy", "\x1c"}, {"kitty", "\x1b[92;5u"}, {"kitty with event type", "\x1b[92;5:1u"},
+		{"kitty with NumLock", "\x1b[92;133u"}, {"kitty with CapsLock", "\x1b[92;69u"}, {"kitty with both locks", "\x1b[92;197u"}} {
 		r := newRig(t, 140, 45, Options{})
 		r.focusSession()
 		r.key(decodeKey(t, enc.bytes))
@@ -245,6 +280,44 @@ func TestReturnKeyInBothEncodings(t *testing.T) {
 		}
 		if len(r.sink.keys) != 0 {
 			t.Fatalf("%s: the return key reached the session: %v", enc.name, r.sink.keys)
+		}
+	}
+}
+
+// TestOtherChordsDoNotReturn checks that only Ctrl, with or without a lock
+// state, returns: Ctrl with another modifier, and Ctrl with text, are not the
+// return key.
+func TestOtherChordsDoNotReturn(t *testing.T) {
+	for _, enc := range []string{"\x1b[92;7u", "\x1b[92;6u", "\x1b[92;8u", "\x1b[92;135u", "\x1b[92;71u", "\x1b[92;3u", "\x1b[92;2u", "\x1b[92;1u"} {
+		r := newRig(t, 140, 45, Options{})
+		r.focusSession()
+		r.key(decodeKey(t, enc))
+		if r.m.focus != sessionFocus || len(r.sink.keys) != 1 {
+			t.Fatalf("%q: focus %v keys %v", enc, r.m.focus, r.sink.keys)
+		}
+	}
+	// A press that carries text is a typed character, not the chord.
+	r := newRig(t, 140, 45, Options{})
+	r.focusSession()
+	r.key(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl, Text: "\\"})
+	if r.m.focus != sessionFocus || len(r.sink.keys) != 1 {
+		t.Fatalf("focus %v keys %v", r.m.focus, r.sink.keys)
+	}
+}
+
+// TestEveryLockStateIsIgnored builds the presses directly, because a terminal
+// does not report ScrollLock in the kitty form.
+func TestEveryLockStateIsIgnored(t *testing.T) {
+	for _, lock := range []tea.KeyMod{tea.ModCapsLock, tea.ModNumLock, tea.ModScrollLock, tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock} {
+		r := newRig(t, 140, 45, Options{})
+		r.focusSession()
+		r.key(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl | lock})
+		if r.m.focus != consoleFocus {
+			t.Fatalf("lock %v: did not return", lock)
+		}
+		r.key(tea.KeyPressMsg{Code: tea.KeyF12, Mod: lock})
+		if !r.m.zoom {
+			t.Fatalf("lock %v: did not zoom", lock)
 		}
 	}
 }
@@ -340,6 +413,81 @@ func TestQAndCtrlCDoNotQuitInSessionFocus(t *testing.T) {
 	}
 }
 
+// TestZoomKeyIgnoresLockStatesOnly checks F12 with CapsLock and NumLock on,
+// which a terminal reports with the key, and that F12 with any other modifier
+// is left alone.
+func TestZoomKeyIgnoresLockStatesOnly(t *testing.T) {
+	for _, enc := range []string{"\x1b[24~", "\x1b[24;129~", "\x1b[24;65~", "\x1b[24;193~"} {
+		for _, f := range []focusState{consoleFocus, sessionFocus} {
+			r := newRig(t, 140, 45, Options{})
+			if f == sessionFocus {
+				r.focusSession()
+			}
+			r.key(decodeKey(t, enc))
+			if !r.m.zoom {
+				t.Fatalf("%q focus %v: F12 did not zoom", enc, f)
+			}
+			if len(r.sink.keys) != 0 {
+				t.Fatalf("%q: F12 reached the session: %v", enc, r.sink.keys)
+			}
+			r.key(decodeKey(t, enc))
+			if r.m.zoom {
+				t.Fatalf("%q focus %v: F12 did not leave zoom", enc, f)
+			}
+		}
+	}
+	for _, enc := range []string{"\x1b[24;2~", "\x1b[24;3~", "\x1b[24;5~", "\x1b[24;130~"} {
+		r := newRig(t, 140, 45, Options{})
+		r.key(decodeKey(t, enc))
+		if r.m.zoom {
+			t.Fatalf("%q zoomed", enc)
+		}
+	}
+	// In session focus a modified F12 goes to the session.
+	r := newRig(t, 140, 45, Options{})
+	r.focusSession()
+	r.key(decodeKey(t, "\x1b[24;2~"))
+	if r.m.zoom || len(r.sink.keys) != 1 || r.sink.keys[0] != "shift+f12" {
+		t.Fatalf("zoom %v keys %v", r.m.zoom, r.sink.keys)
+	}
+}
+
+// TestZoomIgnoresTheKeysThatDrawNothing checks that ?, Ctrl+K and a, whose
+// help, action list and notice zoom does not draw, change no state there, so
+// that the next Enter still focuses the session.
+func TestZoomIgnoresTheKeysThatDrawNothing(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK, {Code: 'a', Text: "a"}} {
+		r := newRig(t, 140, 45, Options{})
+		r.key(zoomPress)
+		r.key(k)
+		if r.m.overlay != "" || r.m.notice != "" {
+			t.Fatalf("%v in zoom set overlay %q notice %q", k, r.m.overlay, r.m.notice)
+		}
+		r.key(enterKey)
+		if r.m.focus != sessionFocus {
+			t.Fatalf("%v: Enter did not focus the session", k)
+		}
+		// Back in the cockpit the same key works again.
+		r.key(zoomPress)
+		r.key(decodeKey(t, "\x1c"))
+		r.key(k)
+		if r.m.overlay == "" && r.m.notice == "" {
+			t.Fatalf("%v does nothing outside zoom", k)
+		}
+	}
+	// An overlay opened before the zoom is closed by the zoom.
+	r := newRig(t, 140, 45, Options{})
+	r.key(ctrlK)
+	r.key(zoomPress)
+	if r.m.overlay != "" {
+		t.Fatal("zoom left an overlay open")
+	}
+	r.key(enterKey)
+	if r.m.focus != sessionFocus {
+		t.Fatal("Enter did not focus the session")
+	}
+}
+
 func TestZoomResizesThePane(t *testing.T) {
 	for _, f := range []focusState{consoleFocus, sessionFocus} {
 		r := newRig(t, 140, 45, Options{})
@@ -414,11 +562,22 @@ func TestEndedBanner(t *testing.T) {
 	for _, tc := range []struct {
 		recording string
 		want      string
-	}{{"exit-zero.jsonl", "Exit status: 0."}, {"exit-nonzero.jsonl", "Exit status: 3."}, {"exit-unknown.jsonl", "Exit status: unknown."}} {
+		// screen is text of the recording's last screen.
+		screen string
+	}{
+		{"exit-zero.jsonl", "Exit status: 0.", "session finished"},
+		{"exit-nonzero.jsonl", "Exit status: 3.", "step 2 failed"},
+		{"exit-unknown.jsonl", "Exit status: unknown.", "no exit status was kept"},
+	} {
 		r := newRig(t, 140, 45, Options{Recording: tc.recording})
 		r.play(200 * time.Millisecond)
 		if strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 			t.Fatalf("%s: ended early", tc.recording)
+		}
+		// Nothing is dimmed while the session runs, though its colours may be
+		// truecolor, whose parameters contain a 2.
+		if faint, _ := faintText(r.m.View().Content); faint != "" {
+			t.Fatalf("%s: %q is dimmed before the end", tc.recording, faint)
 		}
 		r.play(600 * time.Millisecond)
 		v := r.view()
@@ -427,19 +586,51 @@ func TestEndedBanner(t *testing.T) {
 				t.Fatalf("%s: missing %q:\n%s", tc.recording, want, v)
 			}
 		}
-		// The last screen stays under the banner, dimmed.
-		if !strings.Contains(v, "session") && !strings.Contains(v, "finished") && !strings.Contains(v, "failure") && !strings.Contains(v, "unknown") {
-			t.Fatalf("%s: the last screen is gone:\n%s", tc.recording, v)
+		// The last screen stays under the banner, dimmed. The banner and the
+		// cockpit around the pane are not.
+		faint, plain := faintText(r.m.View().Content)
+		if !strings.Contains(v, tc.screen) || !strings.Contains(faint, tc.screen) {
+			t.Fatalf("%s: the last screen is not on screen and dimmed: faint text %q\n%s", tc.recording, faint, v)
 		}
-		if !cellsFaint(r.m.View().Content) {
-			t.Fatalf("%s: the last screen is not dimmed", tc.recording)
+		for _, want := range []string{"TERMINAL STREAM ENDED", "ATANIQ", "Timeline", tc.want} {
+			if !strings.Contains(plain, want) || strings.Contains(faint, want) {
+				t.Fatalf("%s: %q is dimmed or missing", tc.recording, want)
+			}
 		}
 	}
 }
 
-// cellsFaint reports whether the styled content has any faint text.
-func cellsFaint(content string) bool {
-	return strings.Contains(content, "\x1b[2m") || strings.Contains(content, ";2m") || strings.Contains(content, ";2;")
+// faintText reads the styled content the way a terminal does and returns the
+// text of its faint cells and of the others. A faint cell is one drawn after
+// SGR 2 and before the SGR that clears it, so the colour parameters of a
+// truecolor style, which also contain a 2, do not count.
+func faintText(content string) (faint, plain string) {
+	var pen uv.Style
+	var f, p strings.Builder
+	parser := ansi.NewParser()
+	parser.SetHandler(ansi.Handler{
+		Print: func(r rune) {
+			if pen.Attrs&uv.AttrFaint != 0 {
+				f.WriteRune(r)
+			} else {
+				p.WriteRune(r)
+			}
+		},
+		HandleCsi: func(cmd ansi.Cmd, params ansi.Params) {
+			if cmd.Final() == 'm' && cmd.Prefix() == 0 && cmd.Intermediate() == 0 {
+				uv.ReadStyle(params, &pen)
+			}
+		},
+	})
+	parser.Parse([]byte(content))
+	return f.String(), p.String()
+}
+
+func TestFaintTextReadsTheAttributeNotTheDigit(t *testing.T) {
+	faint, plain := faintText("\x1b[38;2;10;120;200;48;2;2;2;2mtruecolor\x1b[0m \x1b[2mdim\x1b[22m bright \x1b[1;2mboth\x1b[m")
+	if faint != "dimboth" || plain != "truecolor  bright " {
+		t.Fatalf("faint %q, plain %q", faint, plain)
+	}
 }
 
 func TestEndedSessionAnyKeyReturnsToConsole(t *testing.T) {
@@ -509,6 +700,34 @@ func TestRestartReplaysTheRecording(t *testing.T) {
 	}
 }
 
+// TestStaleTickAfterTheReplayHasStartedChangesNothing sends a tick of the old
+// chain after the new replay has started: it must neither advance the replay
+// nor start a second chain. In the program the old chain's timer is still
+// pending when the person presses r.
+func TestStaleTickAfterTheReplayHasStartedChangesNothing(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl"})
+	r.play(100 * time.Millisecond)
+	old := r.m.rep.gen
+	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	r.t0 = r.t0.Add(time.Hour)
+	r.tick(0) // the new replay's first tick sets its start
+	now, queued := r.m.now, len(r.m.rep.queue)
+	r.sched = nil
+	// Far enough on to end the new replay, if it were taken for its own.
+	_, cmd := r.m.Update(tickMsg{at: r.t0.Add(10 * time.Second), gen: old})
+	if cmd != nil || len(r.sched) != 0 {
+		t.Fatalf("a stale tick scheduled %d timers", len(r.sched))
+	}
+	if r.m.now != now || len(r.m.rep.queue) != queued || r.m.sessionEnded() {
+		t.Fatal("a stale tick advanced the replay")
+	}
+	// The current chain goes on.
+	r.tick(40 * time.Millisecond)
+	if len(r.sched) == 0 {
+		t.Fatal("the current tick scheduled nothing")
+	}
+}
+
 func TestLingerKeepsTheSessionOpen(t *testing.T) {
 	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl", Linger: 5 * time.Second})
 	r.play(4 * time.Second)
@@ -518,6 +737,92 @@ func TestLingerKeepsTheSessionOpen(t *testing.T) {
 	r.play(6 * time.Second)
 	if !strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 		t.Fatal("did not end after the linger time")
+	}
+}
+
+// TestReplayTicksOnlyWhenSomethingIsDue runs the exit-zero recording (output
+// at 0, 40, 80 and 120 ms, its end at 300 ms) on the rig's clock and checks
+// every tick the model asked for. There is none while nothing is due: the
+// wait for the next event and the linger time are one timer each.
+func TestReplayTicksOnlyWhenSomethingIsDue(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl", Linger: 5 * time.Second})
+	ticks := r.run(time.Minute)
+	ms := time.Millisecond
+	// The first tick only sets the replay's start; then one tick per event,
+	// the end's, and the one that applies the end when the linger time is over.
+	want := []time.Duration{tickInterval, tickInterval + 40*ms, tickInterval + 80*ms, tickInterval + 120*ms, tickInterval + 300*ms, tickInterval + 5300*ms}
+	if fmt.Sprint(ticks) != fmt.Sprint(want) {
+		t.Fatalf("ticks at %v, want %v", ticks, want)
+	}
+	if !r.m.sessionEnded() || !strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
+		t.Fatal("the session did not end")
+	}
+	// Idle: the ended session and the cockpit schedule no tick for a key, a
+	// redraw or a window size.
+	r.key(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	r.key(tabKey)
+	r.size(150, 50)
+	_ = r.view()
+	if got := r.run(time.Hour); len(got) != 0 {
+		t.Fatalf("an idle cockpit ticked at %v", got)
+	}
+}
+
+func TestReplayWithNoRecordingSchedulesNoTick(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "no-such.jsonl"})
+	if got := r.run(time.Hour); len(got) != 1 {
+		t.Fatalf("ticks at %v", got)
+	}
+	if got := r.run(2 * time.Hour); len(got) != 0 {
+		t.Fatalf("ticks at %v", got)
+	}
+}
+
+// TestReplayTicksAtOnceWhileOutputIsQueued checks that a tick that leaves
+// output queued asks for the next tick in 33 ms, and that once the queue is
+// empty the wait is for the next event again.
+func TestReplayTicksAtOnceWhileOutputIsQueued(t *testing.T) {
+	ms := time.Millisecond
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl", Linger: time.Hour})
+	r.run(tickInterval + 130*ms) // the first tick is at 33 ms: this is after the last output
+	r.m.rep.queue = append(r.m.rep.queue, sessionreplayOut(strings.Repeat("x", 2*tickBudget+1)))
+	// Three ticks write the queue; the base of the replay is the first tick.
+	for i, at := range []time.Duration{tickInterval + 140*ms, tickInterval + 150*ms, tickInterval + 160*ms} {
+		r.sched = nil
+		r.tick(at)
+		if len(r.sched) != 1 {
+			t.Fatalf("tick %d scheduled %+v", i, r.sched)
+		}
+		wantDelay := tickInterval
+		if i == 2 {
+			// Drained, the wait is for the end at 300 ms: 160 ms after the tick.
+			wantDelay = 300*ms - 160*ms
+		}
+		queued := len(r.m.rep.queue) > 0
+		if got := r.sched[0].d; got != wantDelay || queued != (i < 2) {
+			t.Fatalf("tick %d: delay %v, want %v, queued %v", i, got, wantDelay, queued)
+		}
+	}
+}
+
+// TestReplayTicksWhileAFrameIsHeld checks that ticks come every 33 ms while
+// the pane holds a frame for synchronized output, and not between the
+// release and the next event. sync-frames.jsonl opens a frame at 480 ms that
+// closes at 720 ms.
+func TestReplayTicksWhileAFrameIsHeld(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "sync-frames.jsonl", Linger: time.Hour})
+	base := tickInterval // the first tick sets the start of the replay
+	held, quiet := 0, 0
+	for _, at := range r.run(base + 800*time.Millisecond) {
+		switch e := at - base; {
+		case e > 480*time.Millisecond && e < 480*time.Millisecond+sessionpane.MaxFrameHold:
+			held++
+		case e > 480*time.Millisecond+sessionpane.MaxFrameHold+tickInterval && e < 720*time.Millisecond:
+			quiet++
+		}
+	}
+	if held < 3 || quiet != 0 {
+		t.Fatalf("%d ticks while the frame was held, %d between its release and the next event", held, quiet)
 	}
 }
 
@@ -730,6 +1035,58 @@ func TestMouseFollowsTheSessionAndTheFocus(t *testing.T) {
 	}
 }
 
+// TestMouseModeFollowsTheSessionsTrackingMode checks that a session that asks
+// for click or drag reporting (modes 1000 and 1002) is given cell motion, and
+// only one that asks for all motion (mode 1003) is given all motion.
+func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
+	r := newRig(t, 140, 45, Options{})
+	r.play(100 * time.Millisecond)
+	r.focusSession()
+	pane := r.m.rep.pane
+	for _, tc := range []struct {
+		write string
+		want  tea.MouseMode
+	}{
+		{"\x1b[?1000h", tea.MouseModeCellMotion},
+		{"\x1b[?1000l\x1b[?1002h", tea.MouseModeCellMotion},
+		{"\x1b[?1002l\x1b[?1003h", tea.MouseModeAllMotion},
+		{"\x1b[?1003l\x1b[?1000h", tea.MouseModeCellMotion},
+		{"\x1b[?1000l", tea.MouseModeNone},
+	} {
+		pane.Write([]byte(tc.write))
+		if got := r.m.View().MouseMode; got != tc.want {
+			t.Fatalf("%q: the console asks for %v, want %v (the pane reports %v)", tc.write, got, tc.want, pane.Modes().Mouse)
+		}
+	}
+}
+
+// TestEndedSessionAsksForNoModesAndHasNoCursor checks that a session that
+// ends while it has the focus, and asked for mouse reporting and focus events,
+// no longer has them requested of the outer terminal, and no cursor is placed
+// under its banner. The focus stays until the next key.
+func TestEndedSessionAsksForNoModesAndHasNoCursor(t *testing.T) {
+	r := newRig(t, 140, 45, Options{})
+	r.play(100 * time.Millisecond)
+	r.focusSession()
+	r.m.rep.pane.Write([]byte("\x1b[?1003h\x1b[?1004h\x1b[5;5H"))
+	if v := r.m.View(); v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus || v.Cursor == nil {
+		t.Fatalf("a running session: mouse %v focus %v cursor %v", v.MouseMode, v.ReportFocus, v.Cursor)
+	}
+	r.play(900 * time.Millisecond)
+	if !r.m.sessionEnded() || r.m.focus != sessionFocus {
+		t.Fatalf("ended %v, focus %v", r.m.sessionEnded(), r.m.focus)
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus || v.Cursor != nil {
+		t.Fatalf("an ended session: mouse %v focus %v cursor %v", v.MouseMode, v.ReportFocus, v.Cursor)
+	}
+	// A click on it reaches no one.
+	l := r.m.layout()
+	r.m.Update(tea.MouseClickMsg{X: l.inner.Min.X + 1, Y: l.inner.Min.Y + 1, Button: tea.MouseLeft})
+	if len(r.sink.mouse) != 0 {
+		t.Fatal("a click reached an ended session")
+	}
+}
+
 func TestMouseModeNeedsTheSessionToAsk(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)
@@ -756,6 +1113,46 @@ func TestSessionCursor(t *testing.T) {
 	l := r.m.layout()
 	if c == nil || c.X < l.inner.Min.X || c.X >= l.inner.Max.X || c.Y < l.inner.Min.Y || c.Y >= l.inner.Max.Y {
 		t.Fatalf("%+v not in %v", c, l.inner)
+	}
+}
+
+// TestSessionCursorStaysInsideTheArea checks that the cursor is not placed
+// when the pane, which follows a window resize only after a delay, is larger
+// than the area it is drawn in, and the session's cursor lies outside it.
+func TestSessionCursorStaysInsideTheArea(t *testing.T) {
+	for _, shrink := range []struct {
+		name string
+		w, h int
+	}{{"narrower", 100, 45}, {"shorter", 140, 30}} {
+		r := newRig(t, 140, 45, Options{Linger: time.Hour})
+		r.play(100 * time.Millisecond)
+		r.focusSession()
+		cols, rows := r.paneSize()
+		r.size(shrink.w, shrink.h) // the pane keeps its size until the delay is over
+		if c, rr := r.paneSize(); c != cols || rr != rows {
+			t.Fatalf("%s: the pane resized at once", shrink.name)
+		}
+		l := r.m.layout()
+		w, h := l.inner.Dx(), l.inner.Dy()
+		if w >= cols && h >= rows {
+			t.Fatalf("%s: the area %v did not shrink", shrink.name, l.inner)
+		}
+		// Put the session's cursor on each side of the area's edges.
+		for _, at := range [][2]int{{w - 1, h - 1}, {0, 0}, {w, 0}, {0, h}, {w, h}, {cols - 1, rows - 1}} {
+			x, y := at[0], at[1]
+			if x >= cols || y >= rows {
+				continue
+			}
+			r.m.rep.pane.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1)))
+			c := r.m.View().Cursor
+			if inside := x < w && y < h; inside {
+				if c == nil || c.X != l.inner.Min.X+x || c.Y != l.inner.Min.Y+y {
+					t.Fatalf("%s: the session's cursor at %d,%d is drawn at %v", shrink.name, x, y, c)
+				}
+			} else if c != nil {
+				t.Fatalf("%s: the session's cursor at %d,%d, outside %v, is drawn at %d,%d", shrink.name, x, y, l.inner, c.X, c.Y)
+			}
+		}
 	}
 }
 
@@ -826,7 +1223,15 @@ func TestHeldFrameIsRedrawnAtItsDeadline(t *testing.T) {
 
 func TestOutputIsFedInBoundedChunks(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
-	big := strings.Repeat("x", 30<<10)
+	// Count what each write to the pane carries.
+	var sizes []int
+	write := r.m.rep.write
+	r.m.rep.write = func(b []byte) {
+		sizes = append(sizes, len(b))
+		write(b)
+	}
+	// Not a multiple of the chunk size, so the budget ends inside a chunk.
+	big := strings.Repeat("x", 30000)
 	r.m.rep.queue = nil
 	for i := 0; i < 3; i++ {
 		r.m.rep.queue = append(r.m.rep.queue, sessionreplayOut(big))
@@ -839,11 +1244,28 @@ func TestOutputIsFedInBoundedChunks(t *testing.T) {
 	if want := 3*len(big) - tickBudget; left != want {
 		t.Fatalf("%d bytes left, want %d", left, want)
 	}
+	// One tick writes the budget, in writes of at most chunkBytes, and the
+	// largest of them is a full chunk.
+	total, largest := 0, 0
+	for _, n := range sizes {
+		if n > chunkBytes || n <= 0 {
+			t.Fatalf("a write of %d bytes, the limit is %d", n, chunkBytes)
+		}
+		total, largest = total+n, max(largest, n)
+	}
+	if total != tickBudget || largest != chunkBytes {
+		t.Fatalf("%d bytes in writes of at most %d, want %d in chunks of %d", total, largest, tickBudget, chunkBytes)
+	}
 	for i := 0; i < 10 && len(r.m.rep.queue) > 0; i++ {
 		r.m.feed(0)
 	}
 	if len(r.m.rep.queue) != 0 {
 		t.Fatal("the queue does not drain")
+	}
+	for _, n := range sizes {
+		if n > chunkBytes {
+			t.Fatalf("a write of %d bytes", n)
+		}
 	}
 }
 
@@ -898,13 +1320,91 @@ func TestModeReportSwitchesGraphemeWidths(t *testing.T) {
 	if r.m.graphemes {
 		t.Fatal("another mode's report counts")
 	}
-	r.m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset})
-	if !r.m.graphemes {
-		t.Fatal("a supported mode 2027 is not noticed")
+	// Every answer that says the mode exists counts, whether it is set now,
+	// reset now or fixed on.
+	for _, v := range []ansi.ModeSetting{ansi.ModeSet, ansi.ModeReset, ansi.ModePermanentlySet, ansi.ModePermanentlyReset} {
+		r = newRig(t, 140, 45, Options{})
+		r.m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: v})
+		if want := v != ansi.ModePermanentlyReset; r.m.graphemes != want {
+			t.Fatalf("answer %v: grapheme widths %v, want %v", v, r.m.graphemes, want)
+		}
 	}
-	// A pane made later starts in the same width mode.
+}
+
+// heartSource has a project name with an emoji and a variation selector,
+// which an outer terminal without mode 2027 measures at another width than the
+// grapheme width the console computes.
+type heartSource struct{}
+
+func (heartSource) Snapshot() Projection {
+	return Projection{Projects: []Project{{Name: "Heart \u2764\ufe0f team", Leads: []Lead{{Name: "Lead"}}}}}
+}
+
+// TestCockpitTextFollowsTheModeReport checks the cockpit's own text: a
+// cluster is drawn as it is when the outer terminal measures grapheme
+// clusters, and as a placeholder when it does not say so.
+func TestCockpitTextFollowsTheModeReport(t *testing.T) {
+	m := NewWithOptions(heartSource{}, Options{Theme: "dark"})
+	t.Cleanup(m.Close)
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 45})
+	view := func() string { return ansi.Strip(m.View().Content) }
+	if v := view(); strings.Contains(v, "\u2764\ufe0f") || !strings.Contains(v, "Heart") {
+		t.Fatalf("a cluster drawn without a mode 2027 answer:\n%s", v)
+	}
+	m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeSet})
+	if v := view(); !strings.Contains(v, "Heart \u2764\ufe0f team") {
+		t.Fatalf("the cluster is not drawn after the answer:\n%s", v)
+	}
+}
+
+// zwj is the joiner of an emoji sequence. The pane draws a cluster that has
+// one only when the outer terminal measures grapheme clusters, and a
+// placeholder otherwise, so it is on screen exactly then.
+const zwj = "\u200d"
+
+// TestModeReportReachesThePaneAsGraphemeWidths plays zwj-split.jsonl, whose
+// line has emoji sequences, and looks at what is drawn: the sequences without
+// a mode 2027 answer, and with one, whenever it arrives.
+func TestModeReportReachesThePaneAsGraphemeWidths(t *testing.T) {
+	report := tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset}
+	play := func(r *rig) string {
+		r.play(1000 * time.Millisecond)
+		return r.view()
+	}
+	opts := Options{Recording: "zwj-split.jsonl", Linger: time.Hour}
+
+	// No answer: placeholders, and not a joiner in the screen.
+	r := newRig(t, 140, 45, opts)
+	if v := play(r); strings.Contains(v, zwj) || !strings.Contains(v, "technologist") {
+		t.Fatalf("without a report:\n%s", v)
+	}
+
+	// The answer arrives before the output: the pane that already exists
+	// switches.
+	r = newRig(t, 140, 45, opts)
+	r.m.Update(report)
+	if v := play(r); !strings.Contains(v, zwj) {
+		t.Fatalf("the report did not reach the existing pane:\n%s", v)
+	}
+	// ... and the pane of a replay started afterwards is made in that mode.
 	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	_ = r.view()
+	r.t0 = r.t0.Add(time.Hour)
+	if v := r.view(); strings.Contains(v, zwj) {
+		t.Fatalf("the new replay has output before it is played:\n%s", v)
+	}
+	if v := play(r); !strings.Contains(v, zwj) {
+		t.Fatalf("a pane made after the report is not in the grapheme width mode:\n%s", v)
+	}
+
+	// The answer arrives after the output: what is on screen is redrawn.
+	r = newRig(t, 140, 45, opts)
+	if v := play(r); strings.Contains(v, zwj) {
+		t.Fatal("a joiner before the report")
+	}
+	r.m.Update(report)
+	if v := r.view(); !strings.Contains(v, zwj) {
+		t.Fatalf("the report did not change what the pane draws:\n%s", v)
+	}
 }
 
 func TestInitAsksForUnicodeCoreWithSSHTTYSet(t *testing.T) {

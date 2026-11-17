@@ -121,7 +121,7 @@ func (m *Model) onKey(v tea.KeyPressMsg) tea.Cmd {
 	if !m.layout().cockpit {
 		return m.handleFallbackKey(v)
 	}
-	if v.Code == zoomKey && v.Mod == 0 {
+	if v.Code == zoomKey && withoutLocks(v.Mod) == 0 {
 		m.zoom = !m.zoom
 		m.overlay = ""
 		return m.syncPane(false)
@@ -158,6 +158,12 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 	key := v.String()
 	if key == "q" || key == "ctrl+c" {
 		return m.quit()
+	}
+	// Zoom draws no help, action list or notice, so the keys that would open
+	// one do nothing there. Without this an invisible overlay would take the
+	// next Enter.
+	if m.zoom && (key == "?" || key == "ctrl+k" || key == "a") {
+		return nil
 	}
 	if m.overlay != "" {
 		switch key {

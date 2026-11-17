@@ -11,7 +11,10 @@ import (
 
 // Replay pacing. The console drives the replay player with tea.Tick: each tick
 // message carries the time that the player and the pane's frame time limit
-// both use, so no clock is read anywhere else.
+// both use, so no clock is read anywhere else. A tick is scheduled only when
+// something is due: output still queued, a held frame, or the next event or
+// the end of the linger time. Bubble Tea redraws the whole canvas after every
+// message, so an idle cockpit has no ticks at all.
 const (
 	tickInterval = 33 * time.Millisecond
 	// chunkBytes bounds one write to the pane, which holds its lock for the
@@ -44,6 +47,9 @@ type replay struct {
 	base   time.Time
 	queue  []sessionreplay.Event
 	holdAt time.Time
+	// write sends output to the pane: its Write method. A test replaces it to
+	// see the size of each write.
+	write func([]byte)
 }
 
 // themeColours are the colours the pane reports to the session's colour
@@ -78,6 +84,7 @@ func (m *Model) startSession() {
 		Input:          m.opts.Input,
 		Clock:          func() time.Time { return m.now },
 	})
+	m.rep.write = m.rep.pane.Write
 }
 
 // Close stops the session pane's goroutine. It may be called more than once.
@@ -120,7 +127,47 @@ func (m *Model) onTick(v tickMsg) tea.Cmd {
 	if m.sessionEnded() {
 		return nil
 	}
-	return tea.Batch(m.tickCmd(), m.holdCmd())
+	return tea.Batch(m.nextTickCmd(elapsed), m.holdCmd())
+}
+
+// nextTickCmd schedules the next tick, or none when nothing is due: see
+// nextTickDelay.
+func (m *Model) nextTickCmd(elapsed time.Duration) tea.Cmd {
+	d, ok := m.nextTickDelay(elapsed)
+	if !ok {
+		return nil
+	}
+	gen := m.rep.gen
+	return m.after(d, func(t time.Time) tea.Msg { return tickMsg{at: t, gen: gen} })
+}
+
+// nextTickDelay says when the replay next needs a tick, given the time elapsed
+// since its start. It is tickInterval while output is queued or the pane holds
+// a frame, else the time until the next recorded event, or until the end
+// applies when the linger time is running. It reports false when none of that
+// is pending.
+func (m *Model) nextTickDelay(elapsed time.Duration) (time.Duration, bool) {
+	var delay time.Duration
+	found := false
+	due := func(d time.Duration) {
+		if !found || d < delay {
+			delay, found = d, true
+		}
+	}
+	if len(m.rep.queue) > 0 {
+		if ev := m.rep.queue[0]; ev.Kind == sessionreplay.KindEnd {
+			due(ev.At + m.opts.Linger - elapsed)
+		} else {
+			due(tickInterval)
+		}
+	}
+	if _, held := m.rep.pane.HoldDeadline(); held {
+		due(tickInterval)
+	}
+	if at, ok := m.rep.player.Next(); ok {
+		due(at - elapsed)
+	}
+	return delay, found
 }
 
 // feed writes the queued events to the pane in bounded chunks, at most
@@ -133,7 +180,7 @@ func (m *Model) feed(elapsed time.Duration) {
 		case sessionreplay.KindOutput:
 			for len(ev.Data) > 0 && budget > 0 {
 				n := min(len(ev.Data), chunkBytes, budget)
-				m.rep.pane.Write(ev.Data[:n])
+				m.rep.write(ev.Data[:n])
 				ev.Data, budget = ev.Data[n:], budget-n
 			}
 			if len(ev.Data) > 0 {
