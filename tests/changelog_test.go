@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -780,5 +781,66 @@ func TestMakeChangelogFoldPassesInto(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "sh scripts/changelog-fold.sh --into 0.0.2") {
 		t.Errorf("--into not passed on: %s", out)
+	}
+}
+
+// A name that exists in any form at the fold's temporary file name is refused
+// (exit 1) and left in place, and CHANGELOG.md and the fragments are not
+// changed. Noclobber alone accepts a FIFO, a device and a link to one, and the
+// exit handler then removed the object; a FIFO also made the create wait. The
+// shell makes the object under the name of its own process id and then
+// replaces itself with the script, which keeps that id.
+func TestChangelogFoldRefusesExistingTemporaryName(t *testing.T) {
+	isLink := func(i os.FileInfo) bool { return i.Mode()&os.ModeSymlink != 0 }
+	for _, tc := range []struct {
+		name string
+		make string
+		kind func(os.FileInfo) bool
+	}{
+		{"symlink to /dev/null", `ln -s /dev/null "$1/CHANGELOG.md.fold.$$"`, isLink},
+		{"dangling symlink", `ln -s /nonexistent/target "$1/CHANGELOG.md.fold.$$"`, isLink},
+		{"FIFO", `mkfifo "$1/CHANGELOG.md.fold.$$"`, func(i os.FileInfo) bool { return i.Mode()&os.ModeNamedPipe != 0 }},
+		{"regular file", `echo foreign >"$1/CHANGELOG.md.fold.$$"`, func(i os.FileInfo) bool { return i.Mode().IsRegular() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := changelogRoot(t, changelogBase, map[string]string{"added-a.md": "- A added.\n"})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			script := tc.make + `; exec /bin/sh "$1/scripts/changelog-fold.sh" --root "$1"`
+			cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script, "sh", dir)
+			cmd.Dir = t.TempDir()
+			cmd.WaitDelay = time.Second
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("the fold did not stop: %s", out)
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("exit = %v, want 1: %s", err, out)
+			}
+			if !strings.Contains(string(out), "cannot create a temporary file") {
+				t.Errorf("output: %s", out)
+			}
+			if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != changelogBase {
+				t.Errorf("CHANGELOG.md changed:\n%s", got)
+			}
+			if names := fragmentNames(t, dir); len(names) != 1 {
+				t.Errorf("fragments changed: %v", names)
+			}
+			found := 0
+			for _, name := range entriesOf(t, dir) {
+				if !strings.HasPrefix(name, "CHANGELOG.md.fold.") {
+					continue
+				}
+				found++
+				info, err := os.Lstat(filepath.Join(dir, name))
+				if err != nil || !tc.kind(info) {
+					t.Errorf("%s is not the object that was put there: %v %v", name, info, err)
+				}
+			}
+			if found != 1 {
+				t.Errorf("%d objects at the temporary name, want 1", found)
+			}
+		})
 	}
 }
