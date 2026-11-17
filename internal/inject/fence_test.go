@@ -3,6 +3,7 @@ package inject
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -144,14 +145,15 @@ func TestBlockedGetsNothing(t *testing.T) {
 	})
 }
 
-// I-4: a dialog opens after the first check, before the paste is shown, or
-// after it. The paste is written, Enter is not, nothing is approved.
+// I-4: a dialog opens after the first check, as the paste lands, or after it.
+// The paste is written, Enter is not, nothing is approved. A dialog the agent
+// has already drawn when the first check reads is output the holder has not
+// read: see TestPendingOutputRefuses.
 func TestDialogOpensAfterFirstCheck(t *testing.T) {
 	cases := []struct {
 		name string
 		at   step
 	}{
-		{"before the paste lands, swallowed", stepFrozen1},
 		{"as the paste lands, swallowed", stepPaste},
 		{"after the paste landed", stepSettle2},
 	}
@@ -490,7 +492,7 @@ func TestContextCancelled(t *testing.T) {
 			f := newFake(t, rt)
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			res := Deliver(ctx, f, testMsg, Options{ExpectedMode: "manual", Now: f.now})
+			res := Deliver(ctx, f, testMsg, testOptions(f))
 			wantResult(t, res, WrittenNothing, OutcomeNotIdle)
 			if f.touched() {
 				t.Errorf("the session was touched")
@@ -744,44 +746,145 @@ func TestTimingDefaults(t *testing.T) {
 	if (Timing{}).normalised() != want {
 		t.Errorf("a zero Timing is not the default")
 	}
-	got := Timing{OwnerQuiet: -time.Second, PasteSettleMin: time.Second, PasteSettleMax: time.Millisecond, CheckQuiet: time.Millisecond}.normalised()
-	if got.OwnerQuiet != 0 || got.PasteSettleMax != time.Second {
-		t.Errorf("normalised %+v", got)
+}
+
+// Each zero field takes its default on its own, and a value below the design's
+// is raised to it.
+func TestTimingFieldsOneByOne(t *testing.T) {
+	want := DefaultTiming()
+	partial := Timing{OwnerQuiet: 2 * time.Second}.normalised()
+	if partial != want {
+		t.Errorf("a Timing with only the owner quiet is %+v, want the default %+v", partial, want)
 	}
-	// A timing given by the caller is used.
-	f := newFake(t, "claude")
-	f.ownerLast = f.clock.Add(-time.Second)
-	res := Deliver(context.Background(), f, testMsg, Options{ExpectedMode: "manual", Now: f.now,
-		Timing: Timing{OwnerQuiet: 500 * time.Millisecond, ScreenQuiet: 10 * time.Millisecond, CheckQuiet: 5 * time.Millisecond, FirstSettleMax: 100 * time.Millisecond, PasteSettleMin: 20 * time.Millisecond, PasteSettleMax: 200 * time.Millisecond}})
-	wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
-	if f.settleArg[0] != [3]time.Duration{0, 5 * time.Millisecond, 100 * time.Millisecond} || f.settleArg[1] != [3]time.Duration{20 * time.Millisecond, 5 * time.Millisecond, 200 * time.Millisecond} {
-		t.Errorf("settle arguments %v", f.settleArg)
+	raised := Timing{
+		OwnerQuiet: -time.Second, ScreenQuiet: time.Millisecond, CheckQuiet: time.Millisecond,
+		FirstSettleMax: time.Millisecond, PasteSettleMin: time.Millisecond, PasteSettleMax: time.Millisecond,
+	}.normalised()
+	if raised.OwnerQuiet != want.OwnerQuiet || raised.ScreenQuiet != want.ScreenQuiet || raised.CheckQuiet != want.CheckQuiet || raised.PasteSettleMin != want.PasteSettleMin {
+		t.Errorf("values below the design's were not raised: %+v", raised)
+	}
+	if raised.FirstSettleMax < raised.CheckQuiet || raised.PasteSettleMax < raised.CheckQuiet || raised.PasteSettleMax < raised.PasteSettleMin {
+		t.Errorf("a maximum is below its quiet or minimum: %+v", raised)
+	}
+	above := Timing{OwnerQuiet: 3 * time.Second, ScreenQuiet: 400 * time.Millisecond, CheckQuiet: 60 * time.Millisecond,
+		FirstSettleMax: 2 * time.Second, PasteSettleMin: 200 * time.Millisecond, PasteSettleMax: 3 * time.Second}
+	if above.normalised() != above {
+		t.Errorf("values above the design's were changed: %+v", above.normalised())
+	}
+	if got := (Timing{PasteSettleMin: 2 * time.Second}).normalised(); got.PasteSettleMax != 2*time.Second {
+		t.Errorf("the maximum after the paste %s is below its minimum", got.PasteSettleMax)
 	}
 }
 
-// With no clock and no deadline given, the fence runs and the deadline never
-// stops it.
-func TestNoClockNoDeadline(t *testing.T) {
-	f := newFake(t, "codex")
-	res := Deliver(context.Background(), f, testMsg, Options{ExpectedMode: "manual"})
+// A partly set Timing does not drop the guards of design 4.4: with only the
+// owner quiet given, a screen that changed just now is still not idle, and
+// both Settles are asked for the design's times.
+func TestTimingPartialKeepsGuards(t *testing.T) {
+	f := newFake(t, "claude")
+	f.emu.changed = f.clock
+	o := testOptions(f)
+	o.Timing = Timing{OwnerQuiet: 2 * time.Second}
+	res := Deliver(context.Background(), f, testMsg, o)
+	wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+	if !hasFailed(res.Before, "screen changed too recently") {
+		t.Errorf("failed %q", res.Before.Failed)
+	}
+	if f.settleArg[0] != [3]time.Duration{0, 50 * time.Millisecond, time.Second} {
+		t.Errorf("settle arguments %v", f.settleArg)
+	}
+
+	f = newFake(t, "claude")
+	o = testOptions(f)
+	o.Timing = Timing{ScreenQuiet: time.Millisecond, CheckQuiet: time.Nanosecond}
+	res = Deliver(context.Background(), f, testMsg, o)
 	wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
-	// A nil context is tolerated.
-	f = newFake(t, "codex")
-	var noCtx context.Context
-	res = Deliver(noCtx, f, testMsg, Options{ExpectedMode: "manual"})
+	want := [][3]time.Duration{{0, 50 * time.Millisecond, time.Second}, {150 * time.Millisecond, 50 * time.Millisecond, time.Second}}
+	if f.settleArg[0] != want[0] || f.settleArg[1] != want[1] {
+		t.Errorf("settle arguments %v, want %v", f.settleArg, want)
+	}
+}
+
+// A timing above the design's is used.
+func TestTimingAboveDesignIsUsed(t *testing.T) {
+	timing := Timing{OwnerQuiet: 3 * time.Second, ScreenQuiet: 400 * time.Millisecond, CheckQuiet: 60 * time.Millisecond,
+		FirstSettleMax: 2 * time.Second, PasteSettleMin: 200 * time.Millisecond, PasteSettleMax: 3 * time.Second}
+	f := newFake(t, "claude")
+	o := testOptions(f)
+	o.Timing = timing
+	res := Deliver(context.Background(), f, testMsg, o)
 	wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
+	if f.settleArg[0] != [3]time.Duration{0, 60 * time.Millisecond, 2 * time.Second} || f.settleArg[1] != [3]time.Duration{200 * time.Millisecond, 60 * time.Millisecond, 3 * time.Second} {
+		t.Errorf("settle arguments %v", f.settleArg)
+	}
+	f = newFake(t, "claude")
+	f.ownerLast = f.clock.Add(-2500 * time.Millisecond)
+	o = testOptions(f)
+	o.Timing = timing
+	res = Deliver(context.Background(), f, testMsg, o)
+	wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+	if !hasFailed(res.Before, "owner typed") {
+		t.Errorf("failed %q", res.Before.Failed)
+	}
+}
+
+// testOptions are the options of a fence on the fake with a 30 s deadline.
+func testOptions(f *fake) Options {
+	return Options{ExpectedMode: "manual", Deadline: f.clock.Add(30 * time.Second), Now: f.now}
+}
+
+// A zero Deadline is refused: nothing is written and the session is not touched.
+func TestNoDeadlineIsRefused(t *testing.T) {
+	each(t, func(t *testing.T, rt string) {
+		f := newFake(t, rt)
+		res := Deliver(context.Background(), f, testMsg, Options{ExpectedMode: "manual", Now: f.now})
+		wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+		if res.Detail != "no deadline given" {
+			t.Errorf("detail %q", res.Detail)
+		}
+		if f.touched() {
+			t.Errorf("the session was touched")
+		}
+		// With no clock either.
+		f = newFake(t, rt)
+		res = Deliver(context.Background(), f, testMsg, Options{ExpectedMode: "manual"})
+		wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+		if f.touched() {
+			t.Errorf("the session was touched")
+		}
+	})
+	t.Run("a nil context is tolerated", func(t *testing.T) {
+		f := newFake(t, "codex")
+		var noCtx context.Context
+		wantResult(t, Deliver(noCtx, f, testMsg, testOptions(f)), WrittenPasteAndEnter, OutcomeSubmitted)
+	})
+}
+
+// The holder is given the fence's deadline by both Frozen calls.
+func TestFrozenGetsTheDeadline(t *testing.T) {
+	each(t, func(t *testing.T, rt string) {
+		f := newFake(t, rt)
+		res := deliver(t, f, testMsg)
+		wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
+		if len(f.frozenDeadlines) != 2 || !f.frozenDeadlines[0].Equal(f.deadline) || !f.frozenDeadlines[1].Equal(f.deadline) {
+			t.Errorf("deadlines given to Frozen %v, want two of %v", f.frozenDeadlines, f.deadline)
+		}
+	})
 }
 
 // A claude that expects another mode is not idle.
 func TestExpectedMode(t *testing.T) {
 	f := newFake(t, "claude")
-	res := Deliver(context.Background(), f, testMsg, Options{ExpectedMode: "auto", Now: f.now})
+	o := testOptions(f)
+	o.ExpectedMode = "auto"
+	res := Deliver(context.Background(), f, testMsg, o)
 	wantResult(t, res, WrittenNothing, OutcomeNotIdle)
 	if res.State != idle.StateUnknown {
 		t.Errorf("state %q", res.State)
 	}
 	f = newFake(t, "claude")
-	res = Deliver(context.Background(), f, testMsg, Options{Now: f.now})
+	o = testOptions(f)
+	o.ExpectedMode = ""
+	res = Deliver(context.Background(), f, testMsg, o)
 	wantResult(t, res, WrittenNothing, OutcomeNotIdle)
 }
 
@@ -809,16 +912,16 @@ func TestSessionMisbehaviour(t *testing.T) {
 	})
 	t.Run("the session does not run the fence", func(t *testing.T) {
 		f := newFake(t, "claude")
-		wantResult(t, Deliver(context.Background(), wrapper{Session: f, skipFn: true}, testMsg, Options{ExpectedMode: "manual"}), WrittenNothing, OutcomeDied)
+		wantResult(t, Deliver(context.Background(), wrapper{Session: f, skipFn: true}, testMsg, testOptions(f)), WrittenNothing, OutcomeDied)
 	})
 	t.Run("the lock fails to release after Enter", func(t *testing.T) {
 		f := newFake(t, "claude")
-		res := Deliver(context.Background(), wrapper{Session: f, afterErr: errors.New("holder gone")}, testMsg, Options{ExpectedMode: "manual", Now: f.now})
+		res := Deliver(context.Background(), wrapper{Session: f, afterErr: errors.New("holder gone")}, testMsg, testOptions(f))
 		wantResult(t, res, WrittenUnknown, OutcomeDied)
 	})
 	t.Run("the lock fails to release after a check that wrote nothing", func(t *testing.T) {
 		f := newFake(t, "claude").setMode(mWorking)
-		res := Deliver(context.Background(), wrapper{Session: f, afterErr: errors.New("holder gone")}, testMsg, Options{ExpectedMode: "manual", Now: f.now})
+		res := Deliver(context.Background(), wrapper{Session: f, afterErr: errors.New("holder gone")}, testMsg, testOptions(f))
 		wantResult(t, res, WrittenNothing, OutcomeNotIdle)
 	})
 	t.Run("the lock cannot be taken", func(t *testing.T) {
@@ -829,21 +932,264 @@ func TestSessionMisbehaviour(t *testing.T) {
 }
 
 // Design 4.6, the one window the fence cannot close: the agent opens a dialog
-// after the last reading and before the Enter lands, and then the Enter
-// answers it. This test states the limit; it does not accept it. Every other
-// step is covered by the table in table_test.go with no approval allowed.
+// after the last reading and the check of the PTY, and before the Enter lands,
+// and then the Enter answers it. Output the agent has already written is in the
+// PTY and View.Pending sees it (TestPendingOutputRefuses); what remains is
+// output the agent has not written yet. This test states the limit; it does not
+// accept it. Every other step is covered by the table in table_test.go with no
+// approval allowed.
 func TestKnownLimitDialogAfterLastReading(t *testing.T) {
-	for _, at := range []step{stepFrozen2, stepEnter} {
-		each(t, func(t *testing.T, rt string) {
-			t.Run(string(at), func(t *testing.T) {
-				f := newFake(t, rt).at(at, evOpenDialog)
-				res := runFence(t, f, testMsg)
-				checkInvariants(t, f, testMsg, res, invariants{deadline: f.deadline, residual: true})
-				wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
-				if f.approvals != 1 {
-					t.Errorf("approvals %d: the residual window of design 4.6 was expected to show", f.approvals)
+	each(t, func(t *testing.T, rt string) {
+		f := newFake(t, rt).at(stepEnter, evOpenDialog)
+		res := runFence(t, f, testMsg)
+		checkInvariants(t, f, testMsg, res, invariants{deadline: f.deadline, residual: true})
+		wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
+		if f.approvals != 1 {
+			t.Errorf("approvals %d: the residual window of design 4.6 was expected to show", f.approvals)
+		}
+	})
+}
+
+// Output the agent has already written but the holder has not read is seen: a
+// dialog drawn after the last Settle refuses the write of either check, and no
+// key reaches the dialog.
+func TestPendingOutputRefuses(t *testing.T) {
+	each(t, func(t *testing.T, rt string) {
+		t.Run("before the paste", func(t *testing.T) {
+			f := newFake(t, rt).at(stepFrozen1, evOpenDialog)
+			res := deliver(t, f, testMsg)
+			wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+			if res.Detail != "output not yet read" || !hasFailed(res.Before, "output not yet read") {
+				t.Errorf("detail %q, failed %q", res.Detail, res.Before.Failed)
+			}
+			if len(f.writes) != 0 || f.swallowed != 0 {
+				t.Errorf("writes %d, swallowed %d", len(f.writes), f.swallowed)
+			}
+		})
+		t.Run("before the Enter", func(t *testing.T) {
+			f := newFake(t, rt).at(stepFrozen2, evOpenDialog)
+			res := deliver(t, f, testMsg)
+			wantResult(t, res, WrittenPaste, OutcomeNotSubmitted)
+			if res.Detail != "output not yet read" || !hasFailed(res.After, "output not yet read") {
+				t.Errorf("detail %q, failed %q", res.Detail, res.After.Failed)
+			}
+			if f.approvals != 0 || len(f.writes) != 1 {
+				t.Errorf("approvals %d, writes %d", f.approvals, len(f.writes))
+			}
+		})
+		t.Run("output that has not been written yet is not pending", func(t *testing.T) {
+			f := newFake(t, rt)
+			f.push(time.Hour, func(e *emuState) {})
+			if f.Pending() {
+				t.Errorf("a frame an hour away is pending")
+			}
+			f.clock = f.clock.Add(time.Hour)
+			if !f.Pending() {
+				t.Errorf("a frame that has arrived is not pending")
+			}
+		})
+	})
+}
+
+// repeatSession is a holder that breaks "at most once": it runs the function
+// of the lock again, or one of the two Frozen functions.
+type repeatSession struct {
+	Session
+	// lockAgain runs the lock function a second time after the first.
+	lockAgain bool
+	// frozenAgain is the Frozen call (1 or 2) whose function runs twice.
+	frozenAgain int
+	// swallow makes the repeated Frozen return the first run's error and not
+	// the second's.
+	swallow bool
+}
+
+func (w repeatSession) WithInputLock(ctx context.Context, fn func(Locked) error) error {
+	return w.Session.WithInputLock(ctx, func(l Locked) error {
+		if w.frozenAgain > 0 {
+			l = &repeatLocked{Locked: l, again: w.frozenAgain, swallow: w.swallow}
+		}
+		err := fn(l)
+		if w.lockAgain {
+			_ = fn(l)
+		}
+		return err
+	})
+}
+
+type repeatLocked struct {
+	Locked
+	again, calls int
+	swallow      bool
+}
+
+func (l *repeatLocked) Frozen(deadline time.Time, fn func(View, func([]byte) error) error) error {
+	l.calls++
+	if l.calls != l.again {
+		return l.Locked.Frozen(deadline, fn)
+	}
+	return l.Locked.Frozen(deadline, func(v View, write func([]byte) error) error {
+		err := fn(v, write)
+		err2 := fn(v, write)
+		if err == nil || !l.swallow {
+			err = err2
+		}
+		return err
+	})
+}
+
+// countLog counts the pastes and the Enters that reached the agent.
+func countLog(f *fake) (pastes, enters int) {
+	for _, e := range f.agentLog {
+		switch {
+		case strings.HasPrefix(e, "paste:"):
+			pastes++
+		case e == "enter":
+			enters++
+		}
+	}
+	return
+}
+
+// At most once: if the holder runs the lock function, the first check or the
+// second check a second time, no second paste and no second Enter reaches the
+// agent, and the result is died with Written unknown.
+func TestHolderRunsTwice(t *testing.T) {
+	cases := []struct {
+		name string
+		w    func(Session) repeatSession
+		fail func(*fake)
+		// pastes and enters are what may reach the agent.
+		pastes, enters int
+	}{
+		{"the lock function runs again after a complete run", func(s Session) repeatSession { return repeatSession{Session: s, lockAgain: true} }, nil, 1, 1},
+		{"the lock function runs again after a failed paste write", func(s Session) repeatSession { return repeatSession{Session: s, lockAgain: true} }, evFailWrite, 0, 0},
+		{"the first check runs twice", func(s Session) repeatSession { return repeatSession{Session: s, frozenAgain: 1} }, nil, 1, 0},
+		{"the first check runs twice and the holder hides the error", func(s Session) repeatSession { return repeatSession{Session: s, frozenAgain: 1, swallow: true} }, nil, 1, 0},
+		{"the second check runs twice", func(s Session) repeatSession { return repeatSession{Session: s, frozenAgain: 2} }, nil, 1, 1},
+		{"the second check runs twice and the holder hides the error", func(s Session) repeatSession { return repeatSession{Session: s, frozenAgain: 2, swallow: true} }, nil, 1, 1},
+	}
+	each(t, func(t *testing.T, rt string) {
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				f := newFake(t, rt)
+				if c.fail != nil {
+					f.at(stepStart, c.fail)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				f.cancel = cancel
+				f.deadline = f.clock.Add(30 * time.Second)
+				m := testMsg
+				res := Deliver(ctx, c.w(f), m, Options{ExpectedMode: "manual", Deadline: f.deadline, Now: f.now})
+				checkInvariants(t, f, m, res, invariants{deadline: f.deadline})
+				wantResult(t, res, WrittenUnknown, OutcomeDied)
+				if !strings.Contains(res.Detail, "twice") {
+					t.Errorf("detail %q", res.Detail)
+				}
+				pastes, enters := countLog(f)
+				if pastes > c.pastes || enters > c.enters {
+					t.Errorf("reached the agent: %d pastes %d Enters, at most %d and %d (log %q)", pastes, enters, c.pastes, c.enters, f.agentLog)
+				}
+				if len(f.writes) > 2 {
+					t.Errorf("%d writes", len(f.writes))
 				}
 			})
-		})
+		}
+	})
+}
+
+// An idle that rests on the report alone (claude's collapsed-paste footer) is
+// refused by the first check explicitly, and a reading carries the flag.
+func TestReportOnly(t *testing.T) {
+	t.Run("the first check refuses it", func(t *testing.T) {
+		f := newFake(t, "claude").withCollapsedPaste()
+		res := deliver(t, f, testMsg)
+		wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+		if !res.Before.ReportOnly || !hasFailed(res.Before, "idle rests on the report alone") {
+			t.Errorf("report only %t, failed %q", res.Before.ReportOnly, res.Before.Failed)
+		}
+		if !hasFailed(res.Before, "screen hides the state") || !hasFailed(res.Before, "pasted-text marker present") {
+			t.Errorf("the hidden state and the marker no longer fail: %q", res.Before.Failed)
+		}
+	})
+	t.Run("the second check accepts it with the new marker", func(t *testing.T) {
+		f := newFake(t, "claude")
+		long := message("long1", strings.Repeat("a line of a long body of text\n", 30))
+		res := deliver(t, f, long)
+		wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
+		if res.Before.ReportOnly || !res.After.ReportOnly || !res.After.Screen.PastedMarker {
+			t.Errorf("report only %t then %t, marker %t", res.Before.ReportOnly, res.After.ReportOnly, res.After.Screen.PastedMarker)
+		}
+		if !strings.Contains(res.Readings(), "idle from the report alone") {
+			t.Errorf("readings %q", res.Readings())
+		}
+	})
+	t.Run("the second check fails when the marker is not new", func(t *testing.T) {
+		f := newFake(t, "claude").withCollapsedPaste()
+		r := &run{ctx: context.Background(), cl: mustClassifier(t, f), msg: testMsg, timing: DefaultTiming(), mode: "manual", now: f.now}
+		r.res.Before = &Reading{Screen: ScreenReading{PastedMarker: true}}
+		r.pasteTried, r.pasteOK = true, true
+		var wrote bool
+		if err := r.secondCheck(f, func([]byte) error { wrote = true; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if wrote || !hasFailed(r.res.After, "idle rests on the report alone") {
+			t.Errorf("wrote %t, failed %q", wrote, r.res.After.Failed)
+		}
+		wantResult(t, r.res, WrittenPaste, OutcomeNotSubmitted)
+	})
+}
+
+func mustClassifier(t *testing.T, f *fake) idle.Classifier {
+	t.Helper()
+	cl, ok := idle.Lookup(f.Runtime())
+	if !ok {
+		t.Fatalf("no classifier for %s %s", f.rt, f.version)
 	}
+	return cl
+}
+
+// settleFails makes the Locked of a fake return an error from its Settle.
+type settleFails struct {
+	Locked
+	err error
+}
+
+func (l settleFails) Settle(context.Context, time.Duration, time.Duration, time.Duration) (bool, error) {
+	return false, l.err
+}
+
+type settleFailsSession struct {
+	Session
+	err error
+}
+
+func (w settleFailsSession) WithInputLock(ctx context.Context, fn func(Locked) error) error {
+	return w.Session.WithInputLock(ctx, func(l Locked) error { return fn(settleFails{l, w.err}) })
+}
+
+// An error that wraps some context's end is a cancel only when the fence's own
+// context has ended; a holder's own context error is the session failing.
+func TestSessionErrorChecksTheFenceContext(t *testing.T) {
+	t.Run("a holder's own cancel while the fence's context is alive", func(t *testing.T) {
+		f := newFake(t, "claude")
+		w := settleFailsSession{f, fmt.Errorf("holder stopped: %w", context.Canceled)}
+		res := Deliver(context.Background(), w, testMsg, testOptions(f))
+		wantResult(t, res, WrittenNothing, OutcomeDied)
+	})
+	t.Run("the fence's own cancel", func(t *testing.T) {
+		f := newFake(t, "claude")
+		w := settleFailsSession{f, fmt.Errorf("stopped: %w", context.Canceled)}
+		// The context ends inside the lock, as the caller's cancel does.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		f.cancel = cancel
+		f.at(stepStart, evCancel)
+		res := Deliver(ctx, w, testMsg, testOptions(f))
+		wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+		if res.Detail != "cancelled" {
+			t.Errorf("detail %q", res.Detail)
+		}
+	})
 }

@@ -29,7 +29,8 @@ type TermState struct {
 
 // View is the holder's state at one instant. Every method answers from what
 // the emulator has applied so far; no method reads the PTY or waits, and two
-// calls inside one Frozen function see the same state.
+// calls inside one Frozen function see the same state. The one method that
+// looks at the PTY is Pending, and it only asks whether output is waiting.
 type View interface {
 	// Snapshot is the screen as a text snapshot: the text, the size, the
 	// cursor, the alternate-screen flag, the window title and the faint
@@ -57,6 +58,15 @@ type View interface {
 	ScreenQuiet() time.Duration
 	// Ended is true when the agent's process has ended.
 	Ended() bool
+	// Pending is true when output of the agent exists that the emulator has
+	// not applied: bytes still unread in the PTY master (the holder asks the
+	// kernel how many are queued, without reading them) and bytes the holder
+	// read during Frozen into the buffer it applies afterwards. It is
+	// evaluated when called, so the fence reads it last, directly before each
+	// write, and writes nothing while it is true: the screen it just read is
+	// then not the agent's screen. It narrows the window of design 4.6 to
+	// output the agent has not written yet.
+	Pending() bool
 }
 
 // Locked is the input lock, held. Writer input is held, not dropped, until it
@@ -77,7 +87,10 @@ type View interface {
 //     writes are done; it is never dropped.
 //   - Frozen applies no output, so it makes no reply. A write inside it
 //     therefore follows the reading with nothing between, and no reply can
-//     fall between the paste and the Enter, or inside the paste.
+//     fall inside the paste or between the second reading and the Enter. The
+//     Settle after the paste does apply output, and writes the replies that
+//     output causes itself: they land between the paste and the Enter, in the
+//     agent's input after the paste, in the order the emulator made them.
 //   - No goroutine that carries replies may wait for the lock holder while
 //     Settle waits for it. The handler that writes a reply must not block on
 //     a reader that waits for the input lock, or Settle would never finish.
@@ -101,11 +114,29 @@ type Locked interface {
 	// called at most once, on the calling goroutine, with the view of that
 	// instant and a write function.
 	//
+	// While fn runs the holder keeps reading the PTY master into a buffer it
+	// does not apply, and applies the buffer after fn returns (View.Pending is
+	// true while the buffer holds bytes). An agent that is blocked writing its
+	// own output (claude writes to its terminal synchronously) therefore never
+	// stops reading its input because the holder stopped reading, so the write
+	// below cannot deadlock against it. A paste can be larger than the tty's
+	// input buffer (4096 bytes on Linux; a message is up to 4096 bytes and
+	// the paste adds 12), so the write may have to wait for the agent to read.
+	//
+	// deadline is the fence's Options.Deadline, the time after which nothing
+	// more may be written. The write function must return an error once a
+	// bound no later than deadline has passed without the bytes being
+	// written; the fence reports that as died with Written unknown. The
+	// holder sets the bound, at most the time left before deadline. Frozen
+	// returns when fn returns; it must not outlast deadline waiting for a
+	// write.
+	//
 	// write writes the bytes to the PTY master in one write call: the paste
 	// is one call and the Enter another. It is valid only inside fn. An
-	// error from write means the bytes may or may not have reached the agent.
-	// Frozen returns fn's error, or its own when it could not run fn.
-	Frozen(fn func(v View, write func([]byte) error) error) error
+	// error from write means the bytes may or may not have reached the agent
+	// (the bound passing is such an error). Frozen returns fn's error, or its
+	// own when it could not run fn.
+	Frozen(deadline time.Time, fn func(v View, write func([]byte) error) error) error
 }
 
 // Session is one hosted agent as the fence sees it. The holder implements it.

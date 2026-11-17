@@ -83,6 +83,13 @@ type Message struct {
 // Timing is the waits and quiet periods of the fence. DefaultTiming has the
 // design's values. The fence itself never sleeps; Settle does the waiting and
 // these values are what it is asked for.
+//
+// Each zero field takes its default on its own, and no field may be below the
+// design's value: a smaller one is raised to it (owner quiet 2 s, screen
+// quiet 300 ms, check quiet 50 ms, at least 150 ms after the paste). A value
+// above the design's is used. The two maxima are at least the quiet that ends
+// their Settle, and the maximum after the paste is at least its minimum. There
+// is no way to ask for less than the design.
 type Timing struct {
 	// OwnerQuiet is how long the writer must have typed nothing (2 s).
 	OwnerQuiet time.Duration
@@ -117,16 +124,24 @@ func DefaultTiming() Timing {
 	}
 }
 
-// normalised returns t with the defaults for a zero Timing, negative values
-// raised to zero and a maximum below its minimum raised to it.
+// normalised returns t with each zero or negative field set to its default
+// and no field below the design's value: a smaller value is raised to the
+// design's value. A maximum is never below the quiet that ends its Settle, and
+// the maximum after the paste is never below its minimum.
 func (t Timing) normalised() Timing {
-	if t == (Timing{}) {
-		return DefaultTiming()
+	def := DefaultTiming()
+	t.OwnerQuiet = max(t.OwnerQuiet, def.OwnerQuiet)
+	t.ScreenQuiet = max(t.ScreenQuiet, def.ScreenQuiet)
+	t.CheckQuiet = max(t.CheckQuiet, def.CheckQuiet)
+	t.PasteSettleMin = max(t.PasteSettleMin, def.PasteSettleMin)
+	if t.FirstSettleMax <= 0 {
+		t.FirstSettleMax = def.FirstSettleMax
 	}
-	for _, d := range []*time.Duration{&t.OwnerQuiet, &t.ScreenQuiet, &t.CheckQuiet, &t.FirstSettleMax, &t.PasteSettleMin, &t.PasteSettleMax} {
-		*d = max(*d, 0)
+	if t.PasteSettleMax <= 0 {
+		t.PasteSettleMax = def.PasteSettleMax
 	}
-	t.PasteSettleMax = max(t.PasteSettleMax, t.PasteSettleMin)
+	t.FirstSettleMax = max(t.FirstSettleMax, t.CheckQuiet)
+	t.PasteSettleMax = max(t.PasteSettleMax, t.PasteSettleMin, t.CheckQuiet)
 	return t
 }
 
@@ -135,15 +150,17 @@ type Options struct {
 	// ExpectedMode is the permission mode the footer of a claude screen must
 	// show (see idle.Input). The caller says which mode it expects.
 	ExpectedMode string
-	// Deadline is the time after which nothing more is written. Zero means no
-	// deadline, which only a test should want: the daemon sets one shorter
-	// than the command machine's fence timeout.
+	// Deadline is the time after which nothing more is written. It must be
+	// set: the daemon always sets one, shorter than command.Limits.FenceTimeout.
+	// A zero Deadline is refused (outcome not idle, detail "no deadline
+	// given", nothing written and the session not touched). It is also what
+	// the holder is given as the bound of a write (Locked.Frozen).
 	Deadline time.Time
 	// Now is the clock the deadline is read on. Nil means time.Now. It is
 	// the only clock the fence has.
 	Now func() time.Time
-	// Timing is the waits and quiet periods. A zero Timing means
-	// DefaultTiming.
+	// Timing is the waits and quiet periods. A zero field is its default and
+	// no field goes below the design's value (see Timing).
 	Timing Timing
 }
 
@@ -192,21 +209,35 @@ type Result struct {
 //     the classification must be idle (a blocked state, from the report or
 //     the screen, gives outcome blocked, any other state not idle); the
 //     composer must be empty with the cursor in it, with no pasted-text marker
-//     and no hidden state; the owner and the screen must have been quiet long
-//     enough; the context must be alive and the deadline not passed. If all
-//     hold, the paste is written inside this same call, as one write: ESC [ 200 ~,
-//     the text with each newline as a carriage return, ESC [ 201 ~.
+//     and no hidden state, and the idle must not rest on the report alone
+//     (Classification.ReportOnly); the owner and the screen must have been
+//     quiet long enough; the context must be alive and the deadline not
+//     passed; and, read last, the PTY must hold no output the holder has not
+//     read and applied (View.Pending). If all hold, the paste is written inside
+//     this same call, as one write: ESC [ 200 ~, the text with each newline as
+//     a carriage return, ESC [ 201 ~.
 //  5. Settle after the paste (at least 150 ms, at most 1 s). If it does not
 //     drain, not submitted.
 //  6. One Frozen call, the second check. The session must not have ended,
 //     the parser must be at ground with no frame open and bracketed paste still
 //     on, the classification must be idle again, the composer must be on
 //     screen with the cursor in it and must hold the header, or show the
-//     pasted-text marker where it did not before the paste, and the deadline
-//     must not have passed. If all hold, a carriage return is written as its
+//     pasted-text marker where it did not before the paste (an idle that rests
+//     on the report alone is accepted only with that new marker), the deadline
+//     must not have passed and, read last, View.Pending must be false. If all
+//     hold, a carriage return is written as its
 //     own write inside this same call. Otherwise nothing is written and the
 //     outcome is not submitted: the paste stays where it is.
 //  7. The lock is released.
+//
+// At most once. The function the session runs and the two Frozen functions are
+// each run once. If the holder runs the lock function, the first check or the
+// second check a second time, the fence writes nothing more, returns an error
+// from the run and the result is died with Written unknown, whatever the first
+// run concluded.
+//
+// A zero Options.Deadline is refused before the session is touched: not idle,
+// detail "no deadline given", nothing written.
 //
 // Errors. An error from a write, or from the session once a write was
 // attempted, gives outcome died and Written unknown; an error from the session
@@ -219,7 +250,8 @@ type Result struct {
 //
 // What the fence cannot close is written in design 4.6: the agent can open a
 // dialog after the last reading and before the Enter lands, and then the Enter
-// answers it. The fence narrows that window to one write and cannot remove it.
+// answers it. The fence narrows that window to output the agent has not written
+// yet when Pending is read, and cannot remove it.
 func Deliver(ctx context.Context, s Session, msg Message, opts Options) Result {
 	if ctx == nil {
 		ctx = context.Background()
@@ -237,6 +269,9 @@ func Deliver(ctx context.Context, s Session, msg Message, opts Options) Result {
 			Written: WrittenNothing, Outcome: OutcomeUntestedVersion,
 			Detail: "runtime " + clipToken(runtime) + " version " + clipToken(version) + " is not in the tested table",
 		}
+	}
+	if opts.Deadline.IsZero() {
+		return Result{Written: WrittenNothing, Outcome: OutcomeNotIdle, Detail: "no deadline given"}
 	}
 	r := &run{ctx: ctx, cl: cl, msg: msg, timing: opts.Timing.normalised(), mode: opts.ExpectedMode, deadline: opts.Deadline, now: opts.Now}
 	if r.now == nil {
@@ -286,6 +321,12 @@ type run struct {
 	now      func() time.Time
 
 	entered bool // the function given to WithInputLock was called
+
+	// firstRuns and secondRuns count the calls of the two checks. A repeat is
+	// a holder that broke "at most once": violation says so, and it decides
+	// the result.
+	firstRuns, secondRuns int
+	violation             string
 
 	pasteTried, pasteOK, enterTried, enterOK bool
 
@@ -341,10 +382,26 @@ func (r *run) died(err error, what string) {
 	}
 }
 
+// cancelled reports whether err is the end of the fence's own context. An
+// error that wraps some other context's end (a holder's own) is not: it is
+// the session failing.
+func (r *run) cancelled(err error) bool {
+	return r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+}
+
+// repeated records that the holder ran the fence or a check a second time and
+// returns the error that run gives back. It writes nothing.
+func (r *run) repeated(what string) error {
+	if r.violation == "" {
+		r.violation = what + " was run twice"
+	}
+	return errors.New("inject: " + what + " was run twice")
+}
+
 // sessionError ends the run for an error that Settle, Frozen or the lock
 // returned. The context ending is not a death.
 func (r *run) sessionError(err error, what string) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if r.cancelled(err) {
 		if r.pasteTried {
 			r.end(OutcomeNotSubmitted, "cancelled")
 		} else {
@@ -357,7 +414,7 @@ func (r *run) sessionError(err error, what string) {
 
 // finish turns the end of WithInputLock into the result.
 func (r *run) finish(err error) Result {
-	ctxEnded := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	ctxEnded := r.cancelled(err)
 	switch {
 	case !r.entered && err != nil:
 		r.sessionError(err, "input lock")
@@ -373,6 +430,13 @@ func (r *run) finish(err error) Result {
 		r.sessionError(err, "input lock")
 	}
 	r.died(errors.New("the fence ended without a result"), "session")
+	if r.violation != "" {
+		// The holder broke "at most once": what reached the agent is not
+		// known, and nothing the first run concluded can be trusted.
+		r.res.Outcome = OutcomeDied
+		r.res.Written = WrittenUnknown
+		r.res.Detail = "holder: " + r.violation
+	}
 	switch {
 	case r.res.After != nil:
 		r.res.State = r.res.After.State
@@ -384,6 +448,9 @@ func (r *run) finish(err error) Result {
 
 // fence is the function that runs with the input lock held.
 func (r *run) fence(l Locked) error {
+	if r.entered {
+		return r.repeated("the fence")
+	}
 	r.entered = true
 	t := r.timing
 
@@ -397,7 +464,10 @@ func (r *run) fence(l Locked) error {
 		return nil
 	}
 
-	err = l.Frozen(r.firstCheck)
+	err = l.Frozen(r.deadline, r.firstCheck)
+	if r.violation != "" {
+		return errors.New("inject: " + r.violation)
+	}
 	if r.res.Outcome != "" {
 		return nil
 	}
@@ -419,7 +489,10 @@ func (r *run) fence(l Locked) error {
 		return nil
 	}
 
-	err = l.Frozen(r.secondCheck)
+	err = l.Frozen(r.deadline, r.secondCheck)
+	if r.violation != "" {
+		return errors.New("inject: " + r.violation)
+	}
 	if r.res.Outcome != "" {
 		return nil
 	}
@@ -454,6 +527,9 @@ func termFailures(rd *Reading) {
 // firstCheck is the first Frozen call: it reads, and writes the paste when
 // every condition holds.
 func (r *run) firstCheck(v View, write func([]byte) error) error {
+	if r.firstRuns++; r.firstRuns > 1 {
+		return r.repeated("the first check")
+	}
 	rd, cl := r.read(v, "")
 	r.res.Before = rd
 	t := r.timing
@@ -481,15 +557,21 @@ func (r *run) firstCheck(v View, write func([]byte) error) error {
 	if cl.Screen.PastedMarker {
 		rd.fail("pasted-text marker present")
 	}
+	if cl.ReportOnly {
+		rd.fail("idle rests on the report alone")
+	}
 	if rd.OwnerQuiet < t.OwnerQuiet {
 		rd.fail("the owner typed too recently")
 	}
 	if rd.ScreenQuiet < t.ScreenQuiet {
 		rd.fail("the screen changed too recently")
 	}
-	// The clock is read last, directly before the write.
+	// The clock and the PTY are read last, directly before the write.
 	if why := r.stopped(); why != "" {
 		rd.fail(why)
+	}
+	if v.Pending() {
+		rd.fail("output not yet read")
 	}
 	if len(rd.Failed) > 0 {
 		if cl.State == idle.StateBlocked {
@@ -512,6 +594,9 @@ func (r *run) firstCheck(v View, write func([]byte) error) error {
 // secondCheck is the second Frozen call: it reads, and writes Enter when every
 // condition holds.
 func (r *run) secondCheck(v View, write func([]byte) error) error {
+	if r.secondRuns++; r.secondRuns > 1 {
+		return r.repeated("the second check")
+	}
 	rd, cl := r.read(v, r.msg.Header)
 	r.res.After = rd
 
@@ -536,8 +621,15 @@ func (r *run) secondCheck(v View, write func([]byte) error) error {
 	if !cl.Screen.CursorInComposer {
 		rd.fail("cursor outside the composer")
 	}
+	if cl.ReportOnly && !newMarker {
+		rd.fail("idle rests on the report alone without a new marker")
+	}
+	// The clock and the PTY are read last, directly before the write.
 	if why := r.stopped(); why != "" {
 		rd.fail(why)
+	}
+	if v.Pending() {
+		rd.fail("output not yet read")
 	}
 	if len(rd.Failed) > 0 {
 		r.end(OutcomeNotSubmitted, rd.Failed[0])
