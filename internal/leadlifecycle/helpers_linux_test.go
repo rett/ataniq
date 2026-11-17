@@ -78,9 +78,13 @@ type audit struct {
 	lastBoot   map[string]string
 	violations []string
 
-	afterSignal func(st leadunit.State, sig syscall.Signal)
-	beforeStart func(spec leadunit.Spec)
-	afterStart  func(spec leadunit.Spec)
+	beforeSignal func(st leadunit.State, sig syscall.Signal)
+	afterSignal  func(st leadunit.State, sig syscall.Signal)
+	beforeStart  func(spec leadunit.Spec)
+	afterStart   func(spec leadunit.Spec)
+	afterInspect func(unit string)
+	// afterEmpty runs after every Empty call with its answer.
+	afterEmpty func(st leadunit.State, empty bool)
 }
 
 func newAudit(inner leadunit.Manager, plan *crashPlan) *audit {
@@ -128,6 +132,9 @@ func (a *audit) Inspect(ctx context.Context, unit string) (leadunit.State, error
 		a.lastBoot[unit] = st.BootID
 		a.mu.Unlock()
 	}
+	if a.afterInspect != nil {
+		a.afterInspect(unit)
+	}
 	return st, err
 }
 
@@ -138,7 +145,11 @@ func (a *audit) Signal(ctx context.Context, st leadunit.State, sig syscall.Signa
 	}
 	a.mu.Lock()
 	a.proven[st.Unit] = false
+	hook := a.beforeSignal
 	a.mu.Unlock()
+	if hook != nil {
+		hook(st, sig)
+	}
 	err := a.inner.Signal(ctx, st, sig)
 	if a.afterSignal != nil {
 		a.afterSignal(st, sig)
@@ -155,6 +166,9 @@ func (a *audit) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 		a.proven[st.Unit] = true
 		a.mu.Unlock()
 	}
+	if a.afterEmpty != nil {
+		a.afterEmpty(st, empty && err == nil)
+	}
 	return empty, err
 }
 
@@ -162,13 +176,21 @@ type fakePreflight struct {
 	mu    sync.Mutex
 	err   error
 	calls int
+	// hook, when set, runs for every check after it is counted, without the
+	// mutex held: the moment between the controller's pre-checks and the
+	// registry's launch.
+	hook func(role leadrole.Role)
 }
 
 func (p *fakePreflight) Check(ctx context.Context, role leadrole.Role, e leadregistry.Entry) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.calls++
-	return p.err
+	err, hook := p.err, p.hook
+	p.mu.Unlock()
+	if hook != nil {
+		hook(role)
+	}
+	return err
 }
 
 type fakeHolder struct {
@@ -198,13 +220,20 @@ type fakeQuiesce struct {
 	mu     sync.Mutex
 	err    error
 	epochs []uint64
+	// hook, when set, runs for every call, after it is recorded and without
+	// the mutex held, and its error is the call's result when q.err is nil.
+	hook func(role leadrole.Role, epoch uint64) error
 }
 
 func (q *fakeQuiesce) Stop(ctx context.Context, role leadrole.Role, epoch uint64) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.epochs = append(q.epochs, epoch)
-	return q.err
+	err, hook := q.err, q.hook
+	q.mu.Unlock()
+	if err == nil && hook != nil {
+		err = hook(role, epoch)
+	}
+	return err
 }
 
 // rig is one registry, one fake manager on a fake clock and a controller.

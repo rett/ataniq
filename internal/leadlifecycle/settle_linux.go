@@ -57,6 +57,10 @@ const (
 	codeUnitAbsent     = "unit-absent"
 	codeCompetingUnit  = "competing-unit"
 	codeUnitNotRunning = "unit-not-running"
+
+	codeOrphanCoordinator = "orphan-coordinator"
+	codeParentEpochEnded  = "parent-epoch-ended"
+	codeParentUnreadable  = "parent-unreadable"
 )
 
 // settlePending settles the pending launch intent of e as far as the unit

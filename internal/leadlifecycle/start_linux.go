@@ -25,6 +25,34 @@ import (
 // stays as it is in all of these; Reconcile is what shows a competing unit as
 // unknown.
 //
+// A coordinator is started only under its parent lead: the lead must be
+// defined, run by ataniq, shown starting, ready or degraded and not have a launch
+// outcome of failed or abandoned (a lead whose own launch failed or was given
+// up never ran as that epoch, whatever it is shown as), else nothing is
+// changed and the error wraps ErrParentNotLive and the registry's refusal
+// (leadregistry.ErrLaunchNoParent, ErrLaunchParentManager or
+// ErrLaunchParentState). The unit is started with [leadunit.Spec].Parent set to
+// the lead's unit, so that it is bound to it, and everything else is as for a
+// lead: the replacement rule on the coordinator's own unit and evidence, the
+// intent (which records the parent's epoch and the identity of the instance),
+// the holder command, and the outcomes below. A start that the manager accepts
+// without a unit because the parent unit is not live (it died after the
+// registry was looked at) started nothing: the outcome failed is recorded and
+// the coordinator is stopped with the proof of the absent unit, or unknown
+// without it. A start that the manager refuses with a lost reply that names the
+// missing parent is a lost reply (below), not a start that failed: the real
+// manager cannot tell the two apart. A lead is not started while a coordinator of it is not proven
+// stopped: the error wraps ErrCoordinatorNotStopped and
+// leadregistry.ErrLaunchCoordinator, and nothing is changed.
+//
+// The registry applies those rules again when the launch intent is journaled,
+// and the lead or the coordinators may have changed since the pre-check (their
+// locks are not held): the registry's refusal is mapped to the same errors,
+// ErrParentNotLive and ErrCoordinatorNotStopped, and the desired state that
+// the call set is put back, so that the refusal leaves the role as it was. The
+// two journal lines of the desired state (set, then restored) remain in the
+// registry's journal; the role's record is as before.
+//
 // Once the proof is in hand it sets the desired state to running, journals the
 // launch intent (new epoch, intent id, unit name, and the boot identity the
 // manager reported, so that a later reboot settles an intent that never got a
@@ -71,6 +99,10 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	default:
 		return e, fmt.Errorf("leadlifecycle: %w (shown state is %s)", leadregistry.ErrLaunchState, e.Shown.State)
 	}
+	parent, err := c.admitUnderParent(e)
+	if err != nil {
+		return e, err
+	}
 	if err := c.pre.Check(ctx, role, e); err != nil {
 		return e, fmt.Errorf("%w: %w", ErrPreflight, err)
 	}
@@ -95,7 +127,10 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	}
 	boot := st.BootID
 
-	// From here the registry changes.
+	// From here the registry changes. The desired state is recorded before the
+	// launch intent, as every intent is recorded before its action, and is put
+	// back when the registry refuses the launch (see refuseLaunch).
+	wasDesired := e.Desired
 	if e.Desired != leadregistry.DesiredRunning {
 		if _, err := c.reg.SetDesired(role, leadregistry.DesiredRunning); err != nil {
 			return e, err
@@ -103,7 +138,7 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	}
 	intent, err := c.reg.BeginLaunchWith(role, leadregistry.LaunchOptions{BootIdentity: boot})
 	if err != nil {
-		return e, err
+		return c.refuseLaunch(e, wasDesired, err)
 	}
 	e, err = c.reg.Get(role)
 	if err != nil {
@@ -118,10 +153,20 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 		Unit: intent.UnitName, Epoch: intent.Epoch, Intent: intent.ID,
 		Argv: argv, WorkDir: workdir, Env: env,
 	}
+	if !parent.IsZero() {
+		spec.Parent = parent.UnitName()
+	}
 	got, err := c.mgr.Start(ctx, spec)
 	switch {
 	case err == nil:
 		if !matchesIntent(got, &intent) {
+			if !parent.IsZero() && !got.Loaded {
+				// The manager took the request and the unit never became
+				// active: with its parent not live, a bound unit does not
+				// start. Nothing was started; prove it.
+				return c.nothingStarted(ctx, e, intent, boot, leadregistry.OutcomeFailed, "parent-not-live",
+					fmt.Errorf("the manager accepted the start of %s but the unit is not loaded, as when its parent unit %s is not live", intent.UnitName, spec.Parent))
+			}
 			return c.launchMismatch(e, intent, got)
 		}
 		return c.reg.RecordOutcome(role, intent.ID, intent.Epoch, leadregistry.OutcomeLaunched, evidenceOf(got))
@@ -132,6 +177,40 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	default:
 		return c.nothingStarted(ctx, e, intent, boot, leadregistry.OutcomeFailed, "launch-failed", err)
 	}
+}
+
+// refuseLaunch handles the registry's refusal of the launch after the
+// pre-checks passed: the parent lead stopped being live, or a coordinator of the
+// lead stopped being proven stopped, between the pre-check and the launch (the
+// lock of the role does not cover the other roles). The registry's named
+// errors are mapped to the lifecycle's, as admitUnderParent maps them, and the
+// desired state that this Start set is put back, so that a refused Start leaves
+// the role as it was.
+//
+// Restoring and not setting the desired state only after the launch is
+// admitted keeps the order of every intent: what is wanted is journaled before
+// the action, and a launch intent never exists with a desired state of stopped
+// beside a unit that may run, which a crash between the two lines would leave.
+// It is crash-safe because the restoring line is the only write after the
+// refusal and it adds no state that was not possible already: a crash before
+// it leaves the desired state running with no launch intent, exactly what a
+// crash between the setting and the launch leaves, and nothing in this package
+// starts or signals a unit on the desired state alone.
+func (c *Controller) refuseLaunch(e leadregistry.Entry, was leadregistry.Desired, err error) (leadregistry.Entry, error) {
+	switch {
+	case errors.Is(err, leadregistry.ErrLaunchNoParent), errors.Is(err, leadregistry.ErrLaunchParentManager), errors.Is(err, leadregistry.ErrLaunchParentState):
+		err = fmt.Errorf("%w: %s: %w", ErrParentNotLive, e.Role.Parent(), err)
+	case errors.Is(err, leadregistry.ErrLaunchCoordinator):
+		err = fmt.Errorf("%w: %w", ErrCoordinatorNotStopped, err)
+	}
+	if was != leadregistry.DesiredRunning {
+		cur, derr := c.reg.SetDesired(e.Role, was)
+		if derr != nil {
+			return e, errors.Join(err, fmt.Errorf("restore the desired state %s: %w", was, derr))
+		}
+		return cur, err
+	}
+	return e, err
 }
 
 // settleCtx is the context for the calls that follow a failed Start. The
@@ -249,4 +328,57 @@ func (c *Controller) launchMismatch(e leadregistry.Entry, in leadregistry.Intent
 		return e, errors.Join(out, err)
 	}
 	return e, out
+}
+
+// admitUnderParent applies, before anything is changed, the rules of the
+// registry that tie a coordinator to its parent lead and a lead to its
+// coordinators, so that a refusal costs no journal line. The registry applies
+// them again in BeginLaunch and is what decides. It returns the parent of a
+// coordinator, and the zero role for every other role.
+func (c *Controller) admitUnderParent(e leadregistry.Entry) (leadrole.Role, error) {
+	switch e.Role.Kind() {
+	case leadrole.KindCoordinator:
+		parent := e.Role.Parent()
+		pe, err := c.reg.Get(parent)
+		var why error
+		switch {
+		case errors.Is(err, leadregistry.ErrNoRole):
+			why = leadregistry.ErrLaunchNoParent
+		case err != nil:
+			return leadrole.Role{}, err
+		case pe.Manager != leadregistry.ManagerAtaniq:
+			why = leadregistry.ErrLaunchParentManager
+		case pe.Epoch == 0:
+			why = leadregistry.ErrLaunchParentState
+		default:
+			why = leadregistry.ErrLaunchParentState
+			switch pe.Shown.State {
+			case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
+				// A parent whose own launch failed or was given up never ran
+				// as that epoch, even while it is still shown starting: it is
+				// not live. The registry applies the same rule.
+				if in := pe.Intent; in == nil || (in.Outcome != leadregistry.OutcomeFailed && in.Outcome != leadregistry.OutcomeAbandoned) {
+					return parent, nil
+				}
+			}
+		}
+		return leadrole.Role{}, fmt.Errorf("%w: %s: %w", ErrParentNotLive, parent, why)
+	case leadrole.KindLead:
+		coords, err := c.reg.Coordinators(e.Role)
+		if err != nil {
+			return leadrole.Role{}, err
+		}
+		for _, co := range coords {
+			if co.Intent == nil || co.Intent.ParentEpoch > e.Epoch {
+				continue
+			}
+			switch co.Shown.State {
+			case leadregistry.StateStopped, leadregistry.StateEnded, leadregistry.StateDesired:
+			default:
+				return leadrole.Role{}, fmt.Errorf("%w: %s is %s since epoch %d of the lead: %w", ErrCoordinatorNotStopped,
+					co.Role, co.Shown.State, co.Intent.ParentEpoch, leadregistry.ErrLaunchCoordinator)
+			}
+		}
+	}
+	return leadrole.Role{}, nil
 }

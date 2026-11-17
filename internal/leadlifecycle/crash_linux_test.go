@@ -30,6 +30,10 @@ type crashScenario struct {
 	// after runs after the first Reconcile of a restart, for what happens in
 	// the world meanwhile (a late start request that lands).
 	after func(r *rig, role leadrole.Role)
+	// roles lists every role the invariants are checked for, and that the
+	// way forward stops, in the order they must be stopped; default is just
+	// the role setup returned.
+	roles func(r *rig, role leadrole.Role) []leadrole.Role
 }
 
 // startOp and stopOp call the controller directly: the harness around them
@@ -67,6 +71,49 @@ func scripted(f func(r *rig, unit string)) func(r *rig) leadrole.Role {
 	}
 }
 
+// coordWorld is a running lead and the defined coordinator of a feature; the
+// setup returns the coordinator, and the invariants cover both, the
+// coordinator first.
+func coordWorld(script func(r *rig, lead, coord leadrole.Role)) func(r *rig) leadrole.Role {
+	return func(r *rig) leadrole.Role {
+		lead := r.define("alpha")
+		coord := r.defineCoord("alpha", "feat")
+		r.mustStart(lead)
+		if script != nil {
+			script(r, lead, coord)
+		}
+		return coord
+	}
+}
+
+// coordAndLead is the roles of a scenario that starts from coordWorld.
+func coordAndLead(r *rig, coord leadrole.Role) []leadrole.Role {
+	return []leadrole.Role{coord, coord.Parent()}
+}
+
+// leadWithCoordinator is a running lead and a running coordinator; the setup
+// returns the lead, and the invariants cover both, the coordinator first.
+func leadWithCoordinator(script func(r *rig, coordUnit string)) func(r *rig) leadrole.Role {
+	return func(r *rig) leadrole.Role {
+		lead := r.define("alpha")
+		coord := r.defineCoord("alpha", "feat")
+		if script != nil {
+			script(r, unitOf(coord))
+		}
+		r.mustStart(lead)
+		r.mustStart(coord)
+		return lead
+	}
+}
+
+// leadAndCoordinator is the roles of a scenario that starts from
+// leadWithCoordinator.
+func leadAndCoordinator(r *rig, lead leadrole.Role) []leadrole.Role {
+	coord, err := leadrole.Coordinator(lead.Project(), "feat")
+	noErr(r.t, err)
+	return []leadrole.Role{coord, lead}
+}
+
 var crashScenarios = []crashScenario{
 	{name: "start", setup: plainRole, op: startOp, retry: startOp},
 	{name: "start after an ended epoch", setup: endedRole, op: startOp, retry: startOp},
@@ -88,6 +135,40 @@ var crashScenarios = []crashScenario{
 		r.holder.err = errors.New("no holder")
 		return role
 	}, op: startOp, retry: startOp},
+	{name: "coordinator start", setup: coordWorld(nil), op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "coordinator start, reply lost, unit running", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.fake.LoseNextStartReply(unitOf(c)) }),
+		op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "coordinator start, request dropped", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.fake.DropNextStart(unitOf(c)) }),
+		op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "coordinator start, request lands late", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.fake.LateNextStart(unitOf(c)) }),
+		op: startOp, retry: startOp, roles: coordAndLead,
+		after: func(r *rig, c leadrole.Role) { r.fake.LandLateStart(unitOf(c)) }},
+	{name: "coordinator start, the manager refuses", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.fake.FailNextStart(unitOf(c), errors.New("scripted")) }),
+		op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "coordinator start, the parent unit dies first", setup: coordWorld(func(r *rig, l, c leadrole.Role) {
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			if rl == c {
+				r.fake.Crash(unitOf(l))
+			}
+		}
+	}), op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "coordinator start, the parent unit dies first and the start is refused", setup: coordWorld(func(r *rig, l, c leadrole.Role) {
+		r.fake.SetMissingParentOutcome(leadunit.MissingParentRefused)
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			if rl == c {
+				r.fake.Crash(unitOf(l))
+			}
+		}
+	}), op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "stop a lead with a coordinator", setup: leadWithCoordinator(nil), op: stopOp, retry: stopOp, roles: leadAndCoordinator},
+	{name: "stop a lead with a coordinator that ignores TERM", setup: leadWithCoordinator(func(r *rig, u string) {
+		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})
+	}), op: stopOp, retry: stopOp, roles: leadAndCoordinator},
+	{name: "stop a lead with a coordinator that survives SIGKILL", setup: leadWithCoordinator(func(r *rig, u string) {
+		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	}), op: stopOp, retry: stopOp, roles: leadAndCoordinator,
+		after: func(r *rig, lead leadrole.Role) { r.fake.Crash(unitOf(leadAndCoordinator(r, lead)[0])) }},
+	{name: "stop a coordinator", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.mustStart(c) }), op: stopOp, retry: stopOp, roles: coordAndLead},
 	{name: "stop", setup: runningRole(nil), op: stopOp, retry: stopOp},
 	{name: "stop, TERM ignored", setup: runningRole(func(r *rig, u string) {
 		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})
@@ -235,6 +316,9 @@ func TestCrashSafety(t *testing.T) {
 						t.Fatalf("the operation finished before crash point %d", k)
 					}
 					roles := []leadrole.Role{role}
+					if sc.roles != nil {
+						roles = sc.roles(r, role)
+					}
 
 					// The daemon comes back. What the journal says must already be sane.
 					r.restart()

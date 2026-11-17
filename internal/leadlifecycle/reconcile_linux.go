@@ -13,6 +13,14 @@ import (
 type RoleReport struct {
 	// Role is the role.
 	Role leadrole.Role
+	// Kind is the kind of the role: a project lead, the supervisor or a
+	// coordinator.
+	Kind leadrole.Kind
+	// Feature is the feature of a coordinator, and empty for every other role.
+	Feature string
+	// Parent is the lead a coordinator lives under, and the zero role for
+	// every other role.
+	Parent leadrole.Role
 	// Manager is the manager that runs the role.
 	Manager leadregistry.Manager
 	// Epoch is the role's epoch.
@@ -112,6 +120,20 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 //     and the role is unknown (competing-unit; stale-unit for a unit of ours
 //     that landed late, after its intent was abandoned).
 //   - A role run by the tmux-manager is not touched and is reported as such.
+//   - A coordinator is judged as a lead is, and also against its parent lead,
+//     which is settled first in the same call. When the parent's epoch is no
+//     longer the one the coordinator recorded at launch, or the parent is not
+//     shown starting, ready or degraded, the coordinator has ended with its
+//     parent: with its unit proven absent it is ended with the reason
+//     parent-epoch-ended and the proof; with its unit still loaded (the
+//     manager has not finished stopping a bound unit) it is shown unknown with
+//     the reason orphan-coordinator, and Reconcile signals nothing: an explicit
+//     Stop ends it, or a later Reconcile finds it gone. A parent that cannot
+//     be read from the registry is not a live parent: the coordinator is
+//     reported unchanged (reason parent-unreadable) and Reconcile returns the
+//     error. After a reboot the
+//     coordinator is stopped with the reason host-rebooted, as a lead is. A
+//     stalled coordinator whose unit is live and ours stays stalled.
 //
 // When the manager does not answer, nothing changes for the role and the report
 // says unavailable: the registry does not require a live role to become
@@ -119,7 +141,8 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 // role that is running look lost. A role in a proven state is likewise left.
 //
 // Reconcile returns an error only for a failure of the registry or of the
-// context; the report then holds the roles done so far.
+// context; the report then holds the roles done so far. Each line of the report
+// carries the kind of the role and, for a coordinator, its feature and parent.
 func (c *Controller) Reconcile(ctx context.Context) (Report, error) {
 	rec := c.reg.Recovery()
 	c.mu.Lock()
@@ -132,15 +155,37 @@ func (c *Controller) Reconcile(ctx context.Context) (Report, error) {
 	}
 	rep := Report{Recovered: cut}
 	undone := 0
-	for _, e := range entries {
-		rr, left, err := c.reconcileRole(ctx, e.Role, cut)
-		rep.Roles = append(rep.Roles, rr)
+	// Leads are settled before coordinators, so that a coordinator is judged
+	// against what became of its parent in this very pass; the report keeps
+	// the registry's order.
+	order := make([]int, 0, len(entries))
+	for pass := 0; pass < 2; pass++ {
+		for i, e := range entries {
+			if (e.Role.Kind() == leadrole.KindCoordinator) == (pass == 1) {
+				order = append(order, i)
+			}
+		}
+	}
+	done := make([]*RoleReport, len(entries))
+	var failed error
+	for _, i := range order {
+		rr, left, err := c.reconcileRole(ctx, entries[i].Role, cut)
+		done[i] = &rr
 		if err != nil {
-			return rep, err
+			failed = err
+			break
 		}
 		if left {
 			undone++
 		}
+	}
+	for _, rr := range done {
+		if rr != nil {
+			rep.Roles = append(rep.Roles, *rr)
+		}
+	}
+	if failed != nil {
+		return rep, failed
 	}
 	if cut {
 		c.mu.Lock()
@@ -190,7 +235,7 @@ func cutNote(rep Report) string {
 // reconcileRole settles one role. left is true when the role could not be
 // acted on because the manager did not answer.
 func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut bool) (rr RoleReport, left bool, err error) {
-	rr = RoleReport{Role: role, Action: ActionUnchanged}
+	rr = RoleReport{Role: role, Kind: role.Kind(), Feature: role.Feature(), Parent: role.Parent(), Action: ActionUnchanged}
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
 		return rr, false, err
@@ -297,9 +342,23 @@ func (c *Controller) reconcileResolved(ctx context.Context, e leadregistry.Entry
 	case leadregistry.StateDesired, leadregistry.StateStopped, leadregistry.StateEnded:
 		resting = true
 	}
+	orphan := ""
+	if !resting && e.Role.Kind() == leadrole.KindCoordinator {
+		var perr error
+		if orphan, perr = c.parentEnded(e); perr != nil {
+			// Cannot tell whether the parent still runs the epoch: neither
+			// adopted as under a live parent nor ended as under a dead one.
+			detail := "the parent lead could not be read, so the coordinator was left as recorded: " + perr.Error()
+			return e, note{ActionUnchanged, codeParentUnreadable, detail}, fmt.Errorf("leadlifecycle: reconcile %s: %w", e.Role, perr)
+		}
+	}
 	if st.Loaded {
 		var n note
 		switch {
+		case orphan != "" && matchesEntry(st, e):
+			n = note{ActionUnknown, codeOrphanCoordinator, fmt.Sprintf(
+				"%s, but the unit of epoch %d intent %s is still loaded (%s, invocation %s); Reconcile never signals it, an explicit Stop ends it",
+				orphan, e.Epoch, st.Intent, st.Active, st.InvocationID)}
 		case resting:
 			code := codeCompetingUnit
 			if st.Ours {
@@ -347,7 +406,51 @@ func (c *Controller) reconcileResolved(ctx context.Context, e leadregistry.Entry
 			"the unit is gone and the control group empty", ab.text)
 		return e, note{ActionStopped, codeStopCompleted, ab.text}, err
 	}
+	if orphan != "" {
+		proof := orphan + "; " + ab.text
+		e, err = c.setProven(e, leadregistry.StateEnded, codeParentEpochEnded,
+			"the coordinator ended with its parent lead", proof)
+		return e, note{ActionEnded, codeParentEpochEnded, proof}, err
+	}
 	e, err = c.setProven(e, leadregistry.StateEnded, codeHolderGone,
 		"the holder went away on its own", ab.text)
 	return e, note{ActionEnded, codeHolderGone, ab.text}, err
+}
+
+// parentEnded says why the coordinator e has ended with its parent lead, or
+// returns the empty string when its parent still runs the epoch the
+// coordinator recorded. The parent has ended when its epoch is no longer the
+// one the coordinator's launch recorded, when it is not shown starting, ready
+// or degraded, or when it is shown starting but its own launch outcome is
+// failed or abandoned (the rule that admitUnderParent and the registry apply
+// to a start). The registry is read as it is now: leads are settled
+// before coordinators in one Reconcile. A failure to read the parent from the
+// registry (other than the parent not being defined, which is an answer) is an
+// error and not an answer: the caller cannot tell, and must not take it for a
+// parent that is live.
+func (c *Controller) parentEnded(e leadregistry.Entry) (string, error) {
+	if e.Intent == nil {
+		return "", nil
+	}
+	pr := e.Role.Parent()
+	p, err := c.reg.Get(pr)
+	switch {
+	case errors.Is(err, leadregistry.ErrNoRole):
+		return fmt.Sprintf("the parent lead %s is not defined", pr), nil
+	case err != nil:
+		return "", fmt.Errorf("the parent lead %s could not be read: %w", pr, err)
+	case p.Epoch != e.Intent.ParentEpoch:
+		return fmt.Sprintf("the parent lead %s is at epoch %d, not the epoch %d the coordinator recorded", pr, p.Epoch, e.Intent.ParentEpoch), nil
+	}
+	switch p.Shown.State {
+	case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
+		// The rule of admitUnderParent and of the registry: a parent whose
+		// own launch failed or was given up never ran as that epoch, even
+		// while it is still shown starting, so it is not live.
+		if in := p.Intent; in != nil && (in.Outcome == leadregistry.OutcomeFailed || in.Outcome == leadregistry.OutcomeAbandoned) {
+			return fmt.Sprintf("the parent lead %s epoch %d is shown %s but its launch %s", pr, p.Epoch, p.Shown.State, in.Outcome), nil
+		}
+		return "", nil
+	}
+	return fmt.Sprintf("the parent lead %s epoch %d is shown %s", pr, p.Epoch, p.Shown.State), nil
 }

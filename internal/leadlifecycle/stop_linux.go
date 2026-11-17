@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"syscall"
 
 	"ataniq/internal/leadregistry"
@@ -36,6 +38,47 @@ import (
 // proof decides. A context that ends first leaves the role shown stopping, and
 // Stop can be called again.
 //
+// Stop of a lead first stops each coordinator of the lead that is not proven
+// stopped (a coordinator never launched, run by the tmux-manager, or recorded
+// stopped or ended with proof is left alone), one after the other, each by the
+// sequence above: its own quiesce, SIGTERM, 2 s, SIGKILL, the proof. Then the
+// lead is stopped, whatever became of them. A coordinator that cannot be proven
+// stopped is shown unknown by its own stop, and the result's error is a
+// *CoordinatorsError naming it (errors.Is(err, ErrCoordinatorNotStopped)),
+// joined with the lead's own error if there is one; the lead's own stop is
+// still carried out, and its entry is returned. A later Start of the lead is
+// refused with ErrCoordinatorNotStopped until the coordinator is stopped with
+// proof, or the owner decides. Stop of a coordinator stops only that
+// coordinator. Because a coordinator's unit is bound to its lead's, it may
+// already be stopping when it is signalled: ErrNotLoaded and
+// ErrInvocationChanged from a signal lead to the proof as they do for a lead.
+// The lead's coordinators are listed again after the lead's own stop, and each
+// one found that is not proven stopped is stopped by the same sequence: a
+// coordinator started between the first listing and the lead's stop is thereby
+// stopped, or named in the result. This holds because once the lead has left
+// its live states (it is stopping, unknown or stopped) the registry admits no
+// new coordinator launch, and a Start of a coordinator that began earlier holds the
+// coordinator's lock until it returns, so that the second listing either sees
+// its intent or waits for it. A coordinator instance named by the first pass
+// is not stopped a second time, but a later instance of the same role found in
+// the second listing (the owner stopped the first and started the next in the
+// gap) is stopped, or named, in its place, and the result carries that
+// instance's error and not the stale one. The unit is bound to the lead's, so it is also stopped by the lead's stop,
+// but only the proof that Stop collects says that it is gone.
+//
+// Stop of a lead never returns nil while the second listing was not done. When
+// the lead is proven stopped the second listing runs on a context of its own
+// that the caller's cannot end (it is bounded by the stop sequences, which are
+// bounded by TermWait and the proof bound), so a caller whose context ended
+// after the proof still gets the coordinator named, shown unknown, in the
+// result. When the stop of the lead returned an error, the second listing runs
+// on the caller's context, and a coordinator it could not stop for that
+// context makes the result an error that says the coordinators were not all
+// listed and stopped; the error of the lead's stop is part of the result
+// anyway, and a lead whose own stop failed before it left its live states may
+// still admit a coordinator, which the next Stop finds. A context that has ended on entry returns its error before anything
+// is read or changed.
+//
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.
 // So does a unit of ours with an older epoch, which is a start that landed
@@ -50,6 +93,152 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 	}
 	defer unlock()
 
+	var first *CoordinatorsError
+	if role.Kind() == leadrole.KindLead {
+		if _, err := c.load(role); err != nil {
+			e, _ := c.reg.Get(role)
+			return e, err
+		}
+		if first, err = c.stopCoordinators(ctx, role, nil); err != nil {
+			e, _ := c.reg.Get(role)
+			return e, err
+		}
+	}
+	e, err := c.stopOne(ctx, role)
+	var cerr error
+	if first != nil {
+		cerr = first
+	}
+	if role.Kind() == leadrole.KindLead {
+		// The lead is no longer live (or no coordinator is admitted under it
+		// any more): list the coordinators again, see Stop. Once the lead
+		// is proven stopped this is owed whatever became of the caller's
+		// context, so it runs on a context of its own, which only the
+		// bounds of the stop sequences end; after a failed stop of the lead
+		// it runs on the caller's context.
+		lctx := ctx
+		if err == nil {
+			lctx = settleCtx(ctx)
+		}
+		all, lerr := c.stopCoordinators(lctx, role, first)
+		switch {
+		case lerr != nil:
+			lerr = fmt.Errorf("leadlifecycle: stop %s: the coordinators were not all listed and stopped after the lead's stop: %w", role, lerr)
+			return e, errors.Join(err, cerr, lerr)
+		case all != nil:
+			cerr = all
+		default:
+			// The second listing is the whole truth: what it does not name
+			// is proven stopped, a stale instance of the first pass too.
+			cerr = nil
+		}
+	}
+	switch {
+	case cerr == nil:
+		return e, err
+	case err == nil:
+		return e, cerr
+	}
+	return e, errors.Join(err, cerr)
+}
+
+// CoordinatorsError is the error of a Stop of a lead that could not prove
+// every coordinator of the lead stopped. It wraps ErrCoordinatorNotStopped and
+// the error of each coordinator's stop; the lead's own stop went ahead.
+type CoordinatorsError struct {
+	// Roles are the coordinators that are not proven stopped, each shown
+	// unknown, in the registry's order.
+	Roles []leadrole.Role
+	// Errs holds the error of the stop of each of them, in the same order.
+	Errs []error
+
+	// epochs holds the instance (the epoch) each entry is about, in the same
+	// order: a later pass names an instance, not a role.
+	epochs []uint64
+}
+
+// Error names the coordinators.
+func (e *CoordinatorsError) Error() string {
+	names := make([]string, len(e.Roles))
+	for i, r := range e.Roles {
+		names[i] = r.String()
+	}
+	return fmt.Sprintf("%s: %s", ErrCoordinatorNotStopped, strings.Join(names, ", "))
+}
+
+// Unwrap returns ErrCoordinatorNotStopped and the errors of the coordinators'
+// stops.
+func (e *CoordinatorsError) Unwrap() []error {
+	return append([]error{ErrCoordinatorNotStopped}, e.Errs...)
+}
+
+// stopCoordinators stops each coordinator of the lead that is not proven
+// stopped, one after the other in the registry's order, each by the whole
+// sequence of Stop. A coordinator that cannot be proven stopped is shown
+// unknown by its own stop and is named in the first result (nil when there is
+// none); the second result is for a failure that ends the lead's stop too (the
+// context). The instances that named holds (the result of an earlier pass over
+// the same lead) are not stopped again and stay in the result; a later
+// instance of the same role replaces the entry of the earlier one. The lead's
+// lock is held by the caller; a coordinator's stop takes only its own, and no
+// operation on a coordinator takes the lead's.
+func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, named *CoordinatorsError) (unproven *CoordinatorsError, err error) {
+	coords, err := c.reg.Coordinators(lead)
+	if err != nil {
+		return nil, err
+	}
+	var out *CoordinatorsError
+	if named != nil {
+		out = &CoordinatorsError{Roles: slices.Clone(named.Roles), Errs: slices.Clone(named.Errs), epochs: slices.Clone(named.epochs)}
+	}
+	for _, co := range coords {
+		if co.Manager != leadregistry.ManagerAtaniq || co.Epoch == 0 {
+			continue
+		}
+		if out != nil {
+			if i := slices.Index(out.Roles, co.Role); i >= 0 {
+				if out.epochs[i] == co.Epoch {
+					continue
+				}
+				// The instance the first pass named is gone and a later one
+				// runs (an owner's Stop and Start in the gap): the entry is
+				// about a stale instance, which is replaced if this one is
+				// not proven stopped.
+				out.Roles = slices.Delete(out.Roles, i, i+1)
+				out.Errs = slices.Delete(out.Errs, i, i+1)
+				out.epochs = slices.Delete(out.epochs, i, i+1)
+			}
+		}
+		done, err := c.reg.CoordinatorStopped(co.Role, co.Epoch)
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			continue
+		}
+		if _, err := c.Stop(ctx, co.Role); err == nil {
+			continue
+		} else if ctx.Err() != nil {
+			return nil, err
+		} else {
+			if out == nil {
+				out = &CoordinatorsError{}
+			}
+			out.Roles = append(out.Roles, co.Role)
+			out.Errs = append(out.Errs, err)
+			out.epochs = append(out.epochs, co.Epoch)
+		}
+	}
+	if out != nil && len(out.Roles) == 0 {
+		// Every entry was a stale instance and the later ones are proven.
+		return nil, nil
+	}
+	return out, nil
+}
+
+// stopOne stops one role: the sequence of Stop for a role whose lock the
+// caller holds.
+func (c *Controller) stopOne(ctx context.Context, role leadrole.Role) (leadregistry.Entry, error) {
 	e, err := c.load(role)
 	if err != nil {
 		return e, err

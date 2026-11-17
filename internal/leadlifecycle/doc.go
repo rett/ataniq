@@ -1,7 +1,7 @@
 // Package leadlifecycle is the lead daemon's logic for starting, stopping and
-// reconciling lead roles. It sits on three other packages: leadregistry, the
-// durable record; leadunit, the manager of one transient unit per role; and
-// leadrole, the role names.
+// reconciling lead roles and the coordinators of their features. It sits on
+// three other packages: leadregistry, the durable record; leadunit, the
+// manager of one transient unit per role; and leadrole, the role names.
 //
 // # What it does
 //
@@ -17,7 +17,9 @@
 // call the manager's Start once. It never retries a Start and never waits for
 // readiness. A start that succeeds records the outcome launched; the shown
 // state stays starting. The shown state ready is never set by this package: it
-// needs observations of the holder that this package does not have.
+// needs observations of the holder that this package does not have (the one
+// exception is ClearStalled, below, which gives back a ready that an observer
+// had set).
 //
 // Stop sets the desired state to stopped, asks the delivery side to quiesce
 // through [Quiesce], settles a pending launch intent as far as it can, sends
@@ -38,6 +40,82 @@
 // when it can prove it (stopped after a reboot, ended after the holder went
 // away) and shows unknown where it cannot. It returns a [Report] with one line
 // per role: what it was, what it is, and why.
+//
+// # Coordinators
+//
+// A coordinator is a role of its own, one per feature of a project, with its
+// own unit, epoch (the instance number) and evidence. Start launches it only
+// under a live parent lead, which the registry enforces and Start checks first
+// so that a refusal changes nothing (ErrParentNotLive wraps the registry's
+// refusal), and passes the lead's unit name as [leadunit.Spec].Parent, so that
+// the unit is bound to the lead's. The replacement rule applies to the
+// coordinator's own unit and evidence exactly as to a lead's, and every reply
+// lost, unit exists and failure path of a lead is the coordinator's too. The
+// [HolderCommand] is the same interface; the role tells the kinds apart. A
+// start that the manager takes without a unit ever being loaded because the
+// parent unit is no longer live ends without a unit: the outcome failed is
+// recorded and the coordinator is stopped with the proof of the absent unit, or
+// unknown without it. A start that the manager refuses with a lost reply naming
+// the missing parent is a lost reply like any other: the real manager cannot
+// tell a refusal from a request that may still land, so nothing is assumed, the
+// intent stays pending and the coordinator is unknown (ErrLaunchUncertain),
+// until Reconcile or Stop proves the absence after the late-start window. A
+// lead is not started while a coordinator recorded under an earlier epoch of
+// it is not proven stopped (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
+// coordinators that is not proven stopped, one after the other, by the same
+// sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each recorded in
+// the registry, and then the lead itself. A coordinator that cannot be proven
+// stopped is shown unknown and named in the error (a *[CoordinatorsError]); the
+// lead is stopped all the same, and a later Start of the lead is refused until
+// the coordinator is stopped with proof or the owner decides. The coordinators
+// are listed once more after the lead's own stop, because one may have been
+// started in between (the lock of the lead does not serialise a Start of its
+// coordinator, which takes only its own); once the lead has left its live
+// states the registry admits no new one, so the second listing is complete,
+// and a coordinator found in it is stopped, or named, like the others (a
+// coordinator instance the first pass named is not stopped again, but a later
+// instance of the same role is). Stop of
+// a lead returns nil only when it did the second listing: after the lead's
+// proven stop the listing runs on a context of its own, which the caller's
+// cannot end, so a caller that gave up in the meantime still has a coordinator
+// of that gap named. When the lead's own stop failed (so that it may still be
+// live and a coordinator may still be admitted under it) the result is an
+// error in any case, and the listing is done on the caller's context if that
+// still runs. Stop of a
+// coordinator stops only that coordinator. Because the units are bound, a
+// coordinator may be stopping already when it is signalled; the manager's
+// not-loaded and invocation-changed answers lead to the proof as for a lead.
+// MarkStalled records that a coordinator has stopped making progress, an
+// observation that a detector outside this package supplies; the method is the
+// whole interface. ClearStalled returns the coordinator to its live state when
+// the same instance is still running (the unit inspected has the recorded
+// epoch, intent and invocation, and is running), and shows it unknown
+// otherwise. The live state is the one it was stalled from (ready or
+// degraded; starting, which only a launch can show, comes back as degraded),
+// as MarkStalled recorded it in the reason; this package shows ready only by
+// giving back what an observer had set. A stalled coordinator is never replaced
+// by Reconcile or by Start: it is stopped (Stop, with proof, which is what
+// [leadregistry.Registry.CoordinatorStopped] asks for the instance) and then
+// started again as instance n+1. After a daemon restart Reconcile keeps a
+// stalled coordinator stalled while its unit is live and ours.
+//
+// Reconcile treats a coordinator as it treats a lead, and also against its
+// parent, which it settles first in the same call. A coordinator whose parent's
+// epoch is no longer the one it recorded, or whose parent is not live (a
+// parent shown starting whose own launch failed or was given up is not live,
+// as for a start), has ended with its parent: with its unit proven absent it is ended (reason
+// parent-epoch-ended, with the proof); with the unit still loaded it is
+// reported orphan-coordinator and shown unknown, because Reconcile never
+// signals, and an explicit Stop ends it. A parent that cannot be read from the
+// registry (an error, not a parent that is not defined) is "cannot tell", not
+// "live": the coordinator is reported unchanged (reason parent-unreadable),
+// neither adopted nor ended, and Reconcile returns the registry's error.
+// After a reboot it is stopped, as a
+// lead is, and nothing is started. The lines of the report carry the kind of
+// the role and, for a coordinator, its feature and parent.
+//
+// A coordinator has no seat, no approval and is no
+// handoff target: nothing here gives it authority.
 //
 // # What it keeps in memory
 //
@@ -97,27 +175,11 @@
 //     unknown for a cut of the journal only the intent is closed, and the role
 //     stays unknown.) An intent with no boot identity (one journaled by a
 //     registry caller that gave none) or with no boot identity from the
-//     manager is settled by the window only.
-//
-// # Coordinators
-//
-// The package does not handle coordinator roles yet. The registry, the unit
-// specification ([leadunit.Spec], which can name a parent unit) and the status
-// protocol do have coordinators, but this package does not use them:
-//
-//   - Start builds a unit with no parent: it never sets the parent of a
-//     [leadunit.Spec]. It has no parent check of its own; the registry's
-//     launch gate refuses a coordinator whose parent lead is not live, and
-//     Start returns that refusal.
-//   - Stop of a lead does not stop the coordinators of that lead. It handles
-//     the one role it is given.
-//   - Reconcile treats a coordinator record like any other role: it compares
-//     the record with the unit of that role and applies the same rules, with no
-//     regard for the parent lead.
-//   - There is no handling of the stalled state: this package never sets it
-//     and never returns a stalled role to a live state. Reconcile and Stop
-//     treat it like any other live state and may move it to stopped, ended or
-//     unknown.
+//     manager is settled by the window only. The boot identity is read by the
+//     replacement-rule Inspect, before the intent is journaled and before the
+//     unit call; that is sound because one daemon process cannot outlive a
+//     reboot, so the boot cannot change between the read and the call within
+//     one process.
 //
 // # What it does not prove
 //
@@ -147,6 +209,21 @@
 // The window and the margin are added to the intent's time one after the other
 // and the end of the window is cut at 100 years, so that a large option cannot
 // wrap around into the past and close the window at once.
+//
+// A unit is taken as the role's own from its description alone: the epoch and
+// the intent that [leadunit.State] reads back from it. Any process of the same
+// user can create a unit with such a description, so the description is not
+// proof of origin, and this package has no other. Unit names are derived from
+// the project (and feature) only, not from the Ataniq state folder, so two
+// state folders of one user would share unit names and each would see the
+// other's units as its own, with epochs that mean nothing to it. The daemon is
+// one per user by assumption; nothing in this package enforces that (the
+// daemon's own lock is another package's). An explicit Stop of a unit of ours
+// with an older epoch than the registry's, which is how a start request that
+// landed late is ended, therefore assumes one installation: with a second one a
+// running unit of the other installation can look like such a stale unit, and
+// Stop would signal it. The behaviour is as described; it is a limit, not a
+// guard.
 //
 // # Status
 //
