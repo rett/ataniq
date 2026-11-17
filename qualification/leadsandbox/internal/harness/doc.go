@@ -13,12 +13,16 @@
 // attempt, the version of each tool, the own-clone check, the preparation of
 // the mount points (only when the configuration says no lead has run), the
 // mount-point check, the resolv.conf derivation, the resolution of every
-// source to its real path, the report channel (a FIFO whose reader is opened
-// first), the canary, the plan ([plan.Build] and [plan.Verify]), the probe
-// spec, a second check right before the launch, the launch through a
-// [Launcher], the probe's report line, the wait for exit, the outside checks,
-// the stop of anything left (SIGTERM, wait, SIGKILL, with the stop-rule
-// constants of package assert) and the evidence.
+// source to its real path, the report channel (a FIFO in a folder of the attempt
+// that holds nothing else, whose reader is opened first), the canary, the plan
+// ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
+// owner and holder paths and their ancestors, which assertion 1 needs), a
+// second check right before the launch, the launch through a [Launcher], the
+// probe's report line (one line, read with [assert.ReadProbeReport], taken as
+// the start without waiting for end-of-file), the wait for exit, the outside
+// checks, the stop of anything left (SIGTERM, wait, SIGKILL, with the
+// stop-rule constants of package assert), the question whether any byte
+// followed the report line ([assert.CheckNoMore]) and the evidence.
 //
 // It starts nothing unless [Options.Run] is set and the configuration says
 // "coordinator_reviewed": true; with a terminal on standard input, unless

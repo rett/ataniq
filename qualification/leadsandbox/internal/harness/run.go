@@ -144,8 +144,8 @@ type attempt struct {
 	rec  *recorder
 	host *hostFacts
 
-	start                                           time.Time
-	name, dir, bound, specDir, resolvPath, fifoPath string
+	start                                                    time.Time
+	name, dir, bound, specDir, resolvPath, chanDir, fifoPath string
 
 	in       profile.Inputs
 	resolvEv ResolvEvidence
@@ -153,6 +153,7 @@ type attempt struct {
 	versions ToolVersions
 	notes    []string
 	chn      *reportChannel
+	chanMade bool
 	canary   *assert.Canary
 	pl       *plan.Plan
 	planOpt  plan.Options
@@ -162,6 +163,9 @@ type attempt struct {
 	proc     Process
 	launched bool
 	broken   bool
+	// lineRead is set once the one report line was accepted: only then is
+	// the channel asked whether anything followed it.
+	lineRead bool
 
 	reportEv    ReportEvidence
 	outsideEv   *OutsideEvidence
@@ -283,7 +287,8 @@ func (a *attempt) makeAttemptFolder() error {
 		a.bound = dir + "/" + DirBound
 		a.specDir = a.bound + "/spec"
 		a.resolvPath = a.bound + "/resolv.conf"
-		a.fifoPath = dir + "/" + FileReportFIFO
+		a.chanDir = dir + "/" + DirChannel
+		a.fifoPath = a.chanDir + "/" + FileReportFIFO
 		for _, d := range []string{a.bound, a.specDir} {
 			if err := unix.Mkdir(d, 0o700); err != nil {
 				return fmt.Errorf("make %s: %w", d, err)
@@ -334,6 +339,12 @@ func (a *attempt) pre(ctx context.Context) {
 		{StepResolv, false, false, func(context.Context) error { return a.deriveResolv() }},
 		{StepResolve, false, false, func(context.Context) error { return a.resolveSources() }},
 		{StepChannel, true, false, func(context.Context) error {
+			// A folder of the attempt for the channel alone: the plan wants
+			// the report path directly inside a folder the holder owns.
+			if err := unix.Mkdir(a.chanDir, 0o700); err != nil {
+				return fmt.Errorf("make the report channel folder: %w", err)
+			}
+			a.chanMade = true
 			c, err := openReportChannel(a.fifoPath)
 			a.chn = c
 			return err
@@ -487,7 +498,7 @@ func (a *attempt) buildPlan() error {
 	a.planOpt = plan.Options{
 		PastaPath: a.cfg.Executables.Pasta, BwrapPath: a.cfg.Executables.Bwrap,
 		AgentArgv: a.cfg.Command(), HostPresent: present,
-		ReportPath: a.fifoPath, ReportFD: ReportFD,
+		ReportPath: a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
 	}
 	if a.in.SeccompEnabled() {
 		a.planOpt.SeccompFD = SeccompFD
@@ -534,7 +545,7 @@ func (a *attempt) verifyPlan() error {
 // the report channel and the evidence files, by name. The bound folder is not
 // among them because two sources of the plan lie in it.
 func (a *attempt) holderPaths() []string {
-	out := []string{a.fifoPath}
+	out := []string{a.chanDir, a.fifoPath}
 	for _, n := range []string{FilePlan, FileSpec, FileReport, FileOutside, FileTerminal, FileSummary} {
 		out = append(out, a.dir+"/"+n)
 	}
@@ -542,11 +553,20 @@ func (a *attempt) holderPaths() []string {
 }
 
 func (a *attempt) writeSpec() error {
-	spec, err := assert.NewSpec(a.in, plan.InsideEnvironment(a.pl), assert.HostFacts{
+	facts := assert.HostFacts{
 		HolderPaths: a.holderPaths(),
 		LoopbackTCP: a.canary.TCP, LoopbackTCP2: a.canary.TCP2, AbstractSocket: a.canary.Abstract,
 		ProviderHost: a.cfg.ProviderHost, ManagedMarker: a.cfg.Sources.ManagedMarker,
-	})
+	}
+	// Without the identities of the owner and holder paths (and of their
+	// ancestors) assertion 1 is not checked, so the list is collected here, on
+	// the host, through the System seam.
+	ids, err := assert.CollectIdentities(assert.IdentityPaths(a.in, facts), a.opt.System.Identity)
+	if err != nil {
+		return fmt.Errorf("collect the identities of the owner and holder paths: %w", err)
+	}
+	facts.Identities = ids
+	spec, err := assert.NewSpec(a.in, plan.InsideEnvironment(a.pl), facts)
 	if err != nil {
 		return err
 	}
@@ -601,7 +621,7 @@ func (a *attempt) writeEvidenceFile(name string, data []byte) error {
 
 // skipLaunch records the steps from the launch to the stop as skipped.
 func (a *attempt) skipLaunch(reason string) {
-	for _, n := range []string{StepLaunch, StepReadReport, StepWaitExit, StepOutside, StepStop} {
+	for _, n := range []string{StepLaunch, StepReadReport, StepWaitExit, StepOutside, StepStop, StepTrailing} {
 		a.rec.skip(n, reason)
 	}
 }
@@ -620,7 +640,7 @@ func (a *attempt) launchPhase(ctx context.Context) {
 		return nil
 	}) {
 		a.reportEv = ReportEvidence{Format: EvidenceFormat, Outcome: ReportNotLaunched, Results: []assert.Result{}}
-		for _, n := range []string{StepReadReport, StepWaitExit, StepOutside, StepStop} {
+		for _, n := range []string{StepReadReport, StepWaitExit, StepOutside, StepStop, StepTrailing} {
 			a.rec.skip(n, "nothing was launched")
 		}
 		return
@@ -644,6 +664,30 @@ func (a *attempt) launchPhase(ctx context.Context) {
 		}
 		return StepOK, nil
 	})
+	a.rec.run(StepTrailing, func() (StepStatus, error) { return a.checkTrailing() })
+}
+
+// checkTrailing asks the report channel, after the stop (so the first process
+// has ended and what is left of its group has been signalled), whether any
+// byte followed the accepted line. A byte is a failure of the start and is
+// recorded as a fact. Nothing is asked when no line was accepted: the read of
+// the line may still be in progress, and the report evidence says why.
+func (a *attempt) checkTrailing() (StepStatus, error) {
+	if !a.lineRead {
+		return StepSkipped, nil
+	}
+	err := a.chn.trailing()
+	// A *Refusal says bytes were there; any other error says the question
+	// could not be asked, which is a failure of the step but not a fact about
+	// the channel.
+	var refusal *assert.Refusal
+	if more := errors.As(err, &refusal); more || err == nil {
+		a.reportEv.TrailingBytes = &more
+	}
+	if err != nil {
+		return StepFailed, fmt.Errorf("the report channel was not quiet after the report line: %w", err)
+	}
+	return StepOK, nil
 }
 
 // limitStatus names why a wait ended without its event.
@@ -682,14 +726,14 @@ func (a *attempt) readReport(ctx, limitCtx context.Context) (StepStatus, error) 
 		return st, errors.New(a.reportEv.Detail)
 	}
 	a.reportEv.LineBytes = len(lr.Data)
-	if len(lr.Data) == 0 && errors.Is(lr.Err, io.EOF) {
+	if len(lr.Data) == 0 && lr.EOF {
 		a.reportEv.Outcome = ReportExitedFirst
 		a.reportEv.Detail = "the first process exited and the channel closed with no report line"
 		return StepFailed, errors.New(a.reportEv.Detail)
 	}
-	refuse := func(why string) (StepStatus, error) {
+	if lr.Err != nil {
 		a.reportEv.Outcome = ReportRefused
-		a.reportEv.Detail = assert.EscapeDetail(why)
+		a.reportEv.Detail = assert.EscapeDetail(lr.Err.Error())
 		ex := lr.Data
 		if len(ex) > 200 {
 			ex = ex[:200]
@@ -697,18 +741,12 @@ func (a *attempt) readReport(ctx, limitCtx context.Context) (StepStatus, error) 
 		a.reportEv.LineExcerpt = assert.EscapeDetail(string(ex))
 		return StepFailed, errors.New("the report line was refused: " + a.reportEv.Detail)
 	}
-	if lr.Err != nil {
-		return refuse(fmt.Sprintf("no complete line: %v", lr.Err))
-	}
-	r, err := assert.ParseProbeLine(lr.Data)
-	if err != nil {
-		return refuse(err.Error())
-	}
-	match := r.Digest == a.spec.Digest
+	match := lr.Report.Digest == a.spec.Digest
 	a.reportEv.Outcome = ReportLineRead
-	a.reportEv.Digest = r.Digest
+	a.reportEv.Digest = lr.Report.Digest
 	a.reportEv.DigestMatches = &match
-	a.reportEv.Results = r.Results
+	a.reportEv.Results = lr.Report.Results
+	a.lineRead = true
 	return StepOK, nil
 }
 
@@ -772,6 +810,11 @@ func (a *attempt) cleanup() {
 		}
 		if a.chn != nil {
 			errs = append(errs, a.chn.close())
+		}
+		if a.chanMade {
+			if err := unix.Rmdir(a.chanDir); err != nil && !errors.Is(err, unix.ENOENT) {
+				errs = append(errs, fmt.Errorf("remove the report channel folder: %w", err))
+			}
 		}
 		if a.proc != nil {
 			errs = append(errs, a.proc.Close())

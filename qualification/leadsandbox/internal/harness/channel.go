@@ -3,9 +3,9 @@
 package harness
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -14,25 +14,50 @@ import (
 	"ataniq/internal/leadsandbox/assert"
 )
 
-// errOverlong says the channel held more than a report line may be, without a
-// newline.
-var errOverlong = fmt.Errorf("more than %d bytes without a newline", assert.MaxReportLineBytes)
-
-// lineRead is what the channel delivered: bytes up to the first newline (kept
-// in Data), and the reason it stopped when no newline came.
+// lineRead is what the channel delivered to the one read of the report: the
+// report when a line was accepted, the bytes the read took from the channel
+// (bounded, for the evidence of a refused line), whether the read ended at
+// end-of-file, and the reason when no line was accepted.
 type lineRead struct {
+	Report assert.Report
+	// Data is what the read took from the channel, at most
+	// assert.MaxReportLineBytes bytes.
 	Data []byte
-	// Err is nil when a whole line (ending in a newline) was read; io.EOF
-	// when every writer closed first; errOverlong; or another read error.
+	// EOF is set when the read met end-of-file.
+	EOF bool
+	// Err is nil when assert.ReadProbeReport accepted one line.
 	Err error
+}
+
+// recordingReader remembers what passes through it, up to the bound, and
+// whether the source ended.
+type recordingReader struct {
+	r    io.Reader
+	data []byte
+	eof  bool
+}
+
+func (c *recordingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if room := assert.MaxReportLineBytes - len(c.data); n > 0 && room > 0 {
+		c.data = append(c.data, p[:min(n, room)]...)
+	}
+	if errors.Is(err, io.EOF) {
+		c.eof = true
+	}
+	return n, err
 }
 
 // reportChannel is the FIFO the probe's report line comes through. The
 // harness opens the reader first, then a write end of its own, so the reader
 // does not see end-of-file before the probe's descriptor has been opened; the
 // plan's pass-through step opens the FIFO write-only without creating it.
-// Closing the write end of the harness (CloseWriter) lets the reader see
-// end-of-file once every other writer has gone.
+// The one read takes one line with assert.ReadProbeReport and does not wait
+// for end-of-file: bubblewrap's own processes may keep the other end open for
+// the life of the sandbox. Once the line is in, [reportChannel.trailing] asks
+// whether anything followed it. Closing the write end of the harness
+// (closeWriter) lets the reader see end-of-file once every other writer has
+// gone, which the harness does only after the first process has exited.
 type reportChannel struct {
 	path   string
 	reader *os.File
@@ -66,28 +91,46 @@ func openReportChannel(path string) (*reportChannel, error) {
 	return c, nil
 }
 
-// readLine reads up to the first newline, delivers what it got and ends.
+// readLine reads one report line, delivers what it got and ends.
 func (c *reportChannel) readLine() {
-	var line []byte
-	buf := make([]byte, 4096)
-	for {
-		n, err := c.reader.Read(buf)
-		if n > 0 {
-			line = append(line, buf[:n]...)
-			if i := bytes.IndexByte(line, '\n'); i >= 0 {
-				c.out <- lineRead{Data: line[:i+1]}
-				return
-			}
-			if len(line) > assert.MaxReportLineBytes {
-				c.out <- lineRead{Data: line[:assert.MaxReportLineBytes+1], Err: errOverlong}
-				return
-			}
-		}
-		if err != nil {
-			c.out <- lineRead{Data: line, Err: err}
-			return
-		}
+	rec := &recordingReader{r: c.reader}
+	rep, err := assert.ReadProbeReport(rec, assert.MaxReportLineBytes)
+	c.out <- lineRead{Report: rep, Data: rec.data, EOF: rec.eof, Err: err}
+}
+
+// trailing asks the channel, once and without waiting, whether bytes follow
+// the line that was read: assert.CheckNoMore on a non-blocking read. It is
+// only valid after the read of the line has delivered (the reading goroutine
+// has ended), and a nil result means nothing was there.
+func (c *reportChannel) trailing() error {
+	return assert.CheckNoMore(nonBlockingReader{c.reader})
+}
+
+// nonBlockingReader reads the channel's descriptor with the system call and
+// never waits: a channel with nothing in it gives EAGAIN, and end-of-file is
+// io.EOF.
+type nonBlockingReader struct{ f *os.File }
+
+func (r nonBlockingReader) Read(p []byte) (int, error) {
+	sc, err := r.f.SyscallConn()
+	if err != nil {
+		return 0, err
 	}
+	var n int
+	var rerr error
+	if err := sc.Read(func(fd uintptr) bool {
+		n, rerr = unix.Read(int(fd), p)
+		return true // never wait for readiness
+	}); err != nil {
+		return 0, err
+	}
+	if rerr == nil && n == 0 && len(p) > 0 {
+		return 0, io.EOF
+	}
+	if n < 0 {
+		n = 0
+	}
+	return n, rerr
 }
 
 // closeWriter closes the harness's own write end.

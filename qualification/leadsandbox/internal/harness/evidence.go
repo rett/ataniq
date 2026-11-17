@@ -27,6 +27,9 @@ const (
 	FileSummary  = "summary.json"
 	// FileReportFIFO is the report channel; it is removed when the run ends.
 	FileReportFIFO = "report.fifo"
+	// DirChannel holds the report FIFO and nothing else; it is removed with
+	// the FIFO when the run ends.
+	DirChannel = "channel"
 	// DirBound holds what the plan binds from the harness: the resolv.conf
 	// and the folder of the probe spec.
 	DirBound = "bound"
@@ -124,6 +127,11 @@ type ReportEvidence struct {
 	Digest        string          `json:"digest,omitempty"`
 	DigestMatches *bool           `json:"digest_matches,omitempty"`
 	Results       []assert.Result `json:"results"`
+	// TrailingBytes is the fact asked after the stop: true when the report
+	// channel held any byte after the accepted line (a failure of the
+	// start), false when it held none. It is absent when no line was
+	// accepted, because nothing was asked.
+	TrailingBytes *bool `json:"report_trailing_bytes,omitempty"`
 }
 
 // CanaryEvidence is what the canary counted.

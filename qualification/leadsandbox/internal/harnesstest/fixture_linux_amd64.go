@@ -4,6 +4,7 @@ package harnesstest
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -266,9 +267,30 @@ type sysctlSystem struct {
 	content string
 }
 
+// Identity gives each path an identity made from its name, so that the
+// identities the harness collects are deterministic and nothing of the host's
+// file system is read. A path under the fixture's base exists as far as the
+// real file system says so (an absent path is skipped by the collector).
+func (s sysctlSystem) Identity(path string) (assert.FileIdentity, error) {
+	if _, err := os.Lstat(path); err != nil {
+		return assert.FileIdentity{}, err
+	}
+	h := sha256.Sum256([]byte(path))
+	return assert.FileIdentity{Device: 4242, Inode: binary.BigEndian.Uint64(h[:8]) | 1<<40}, nil
+}
+
 func (s sysctlSystem) ReadFile(path string, limit int) ([]byte, error) {
 	if strings.HasSuffix(path, "legacy_tiocsti") {
 		return []byte(s.content), nil
 	}
 	return nil, errors.New("harnesstest: only the sysctl may be read")
+}
+
+// FailingIdentity wraps a System and makes every identity question fail with a
+// reason other than a missing file, as a host that cannot be read would.
+type FailingIdentity struct{ assert.System }
+
+// Identity implements assert.System.
+func (FailingIdentity) Identity(string) (assert.FileIdentity, error) {
+	return assert.FileIdentity{}, errors.New("harnesstest: the identity cannot be read")
 }

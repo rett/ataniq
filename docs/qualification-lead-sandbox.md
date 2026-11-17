@@ -31,19 +31,24 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    of its own;
 6. resolves every bind source to its real path and puts the real paths into the
    profile inputs;
-7. makes the report channel (a FIFO, its reader opened first) and starts the
-   canary (a loopback listener and an abstract socket that count connections);
-8. builds the plan and checks it with the plan package's own verifier, and
-   writes the probe spec;
+7. makes the report channel (a FIFO in a folder of the attempt that holds nothing
+   else, its reader opened first) and starts the canary (a loopback listener
+   and an abstract socket that count connections);
+8. builds the plan and checks it with the plan package's own verifier, collects
+   the identities (device and inode) of the owner's and the holder's paths and
+   of their ancestors, and writes the probe spec with them;
 9. checks the mount points and sources again, right before the launch;
 10. launches pasta, bubblewrap, the probe and a scratch command through a
-    launcher, reads the probe's report line from the channel with a time limit,
-    and waits for the exit;
+    launcher, reads the probe's report line from the channel with a time limit
+    (one line, taken as the start without waiting for end-of-file), and waits
+    for the exit;
 11. runs the checks that can only be made outside (the canary's count, the
     sysctl, and the checks that need a role lock, lingering or a qualification
     record, which have no source here and are recorded as not-checked);
 12. stops anything left (SIGTERM, wait, SIGKILL, with the stop-rule constants of
-    the assert package) and closes what it opened;
+    the assert package), asks the report channel whether any byte followed the
+    line (a failed step `report-trailing`, and `report_trailing_bytes` in
+    `report.json`), and closes what it opened;
 13. writes the evidence.
 
 It does not:
@@ -267,14 +272,14 @@ the terminal output. Do not copy it into a repository.
 | --- | --- |
 | `plan.json` | The plan: argument vector, the names of the environment allowlist, the mounts (kind, inside path, source, whether the source lies below a folder the lead can write, optional), the descriptors the pass-through step opens, the notes, and the profile digest. |
 | `spec.json` | The probe's spec, as written for it (also bound read-only inside, in `bound/spec`). |
-| `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). |
+| `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
 | `terminal.log` | The first 1 MiB of what the process wrote to the pseudo-terminal; the rest is counted in `summary.json`. It may hold escape sequences: read it with `cat -v`. |
 | `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status, how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
-channel's FIFO exists only during the run. The summary is written last; its own
+channel's FIFO and its folder exist only during the run. The summary is written last; its own
 write is not one of its steps.
 
 No file has a field that says the profile passed, is qualified or is supported,
@@ -346,7 +351,7 @@ not start, record that too: it is a fact about this host, and the plan's R17 not
 
 ## Cleaning up
 
-A run closes the canary, removes the report FIFO, releases the pseudo-terminal
+A run closes the canary, removes the report FIFO and its folder, releases the pseudo-terminal
 and stops the process group (SIGTERM, wait, SIGKILL, wait, with the stop-rule
 constants). A group still there after that is recorded as `unknown`; look for
 leftover processes with the ordinary host tools before the next attempt, and
