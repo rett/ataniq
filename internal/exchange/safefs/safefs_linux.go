@@ -25,8 +25,8 @@ const dirBatch = 256
 
 // Root is a folder opened once and kept open. Every name is resolved from
 // the held descriptor, so a swap of the folder's path after [OpenRoot] has no
-// effect. A Root is safe for concurrent use; [Root.Close] waits for calls in
-// progress.
+// effect. A Root is safe for concurrent use; a call in progress keeps the
+// descriptor until it returns, even if [Root.Close] is called meanwhile.
 type Root struct{ f *os.File }
 
 // OpenRoot opens the folder at path. The final component must be a real
@@ -80,8 +80,8 @@ func OpenRoot(path string) (*Root, error) {
 	return &Root{f: os.NewFile(uintptr(fd), path)}, nil
 }
 
-// Close releases the folder. It waits for calls in progress. Calls made
-// after Close fail with [os.ErrClosed].
+// Close releases the folder. It does not wait: a call in progress keeps the
+// descriptor until it returns. Calls made after Close fail with [os.ErrClosed].
 func (r *Root) Close() error {
 	if r == nil || r.f == nil {
 		return os.ErrClosed
