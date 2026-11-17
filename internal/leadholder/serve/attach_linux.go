@@ -106,8 +106,11 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 		s.refuse(conn, wire.ReasonRefusedTicket, "the ticket is not valid", cntRefusedTicket, status, cred.PID)
 		return nil, nil
 	}
+	// The command line is read before the client is claimed: it does not
+	// depend on the claim, and once the client holds a place the timekeeper
+	// reads it under the lock, for the Role frames of the other clients.
 	c := &client{
-		s: s, conn: conn, name: hello.Name, pid: cred.PID,
+		s: s, conn: conn, name: hello.Name, pid: cred.PID, cmd: readCmdline(cred.PID),
 		wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	s.mu.Lock()
@@ -117,7 +120,6 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 		s.refuse(conn, wire.ReasonRefusedBusy, "the "+string(role)+" place is taken", cntRefusedBusy, "attach-busy", cred.PID)
 		return nil, nil
 	}
-	c.cmd = readCmdline(cred.PID)
 	welcome, err := wire.EncodeWelcome(wire.Welcome{
 		Version: wire.ProtocolVersion, Role: role, Lead: s.cfg.Lead, Epoch: s.cfg.Epoch,
 		Runtime: s.cfg.Runtime, RuntimeVersion: s.cfg.RuntimeVersion, Caps: wire.DefaultCaps(),
