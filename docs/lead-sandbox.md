@@ -294,8 +294,9 @@ adds the other runtime's config folder, and refuses a source in or above another
 lead's state or another project's mirror folder. The host's `/home`, the real
 provider folders and the owner's checkout are not in the table at all: the lead's
 home is its own folder under the state root. The check is on the text of the
-paths; the holder resolves symbolic links first and
-`mountpoints.ResolveSources` runs the same checks again on the real paths.
+paths, so a link could hide a folder: `mountpoints.ResolveSources` runs the same
+checks again on the real paths, and refuses a source Ataniq supplies that has a
+link on it (it must be given as its real path).
 
 **The per-lead home.** `/home/lead` is `<state>/leads/<role>/home`, the same
 inside path for every lead and both runtimes, because providers key their state by
@@ -332,7 +333,13 @@ link that brings a folder of the owner into the sandbox at the next start. So no
 row of the bind table has a source in or below a host folder the lead can write
 (the home, the config folder, the tree and the records folder). The profile
 refuses a table that breaks the rule, `plan.Build` checks it again, and
-`plan.Verify` reports a mount that does.
+`plan.Verify` reports a mount that does. The rule holds across leads too: every
+folder a lead writes lies in that lead's own state folder, so the rules about
+another lead's state keep the read-only sources of one lead out of the reach of
+every other. That is why the records folder, when the inputs name one, must be
+`<state>/leads/<role>/records` (`profile.Layout.Records`) and any other host path
+is refused, and why the git metadata folder must be `<state>/leads/<role>/gitmeta`
+(`profile.Layout.GitMeta`).
 
 **The `.git` rows.** The tree's `.git/config`, `.git/hooks` and `.git/info` are
 read-only inside, and are bound from an Ataniq-owned copy, not from the tree.
@@ -347,6 +354,7 @@ partly written, and nothing is replaced. A `Prepare` that fails or is interrupte
 before the move leaves the sibling and no folder in the place: `Check` then
 refuses the start, and the next `Prepare` refuses the leftover with a reason that
 names it, until it is removed by hand.
+
 `Prepare` refuses a clone `.git/config` that has an `include` or `includeIf`
 section (any case; a bounded scan of the section headers, and no other key is
 interpreted), because git would read the file it names as configuration. For the
@@ -571,6 +579,11 @@ What the checks do and do not show, from the package:
   of the lead's home, config folder and tree. With no identity listed it is
   not-checked, never ok. Whether device numbers match between the holder's reading
   and the probe's, a btrfs subvolume layout in particular, is a qualification item.
+  The list holds those paths and their parents, not their descendants: a bind of
+  a folder below a listed path (say below the owner's `.ssh`) from a file system
+  not mounted at `/` (a separate `/home`, a btrfs subvolume) has a mount root the
+  text check cannot relate, and its identity is not listed, so neither comparison
+  finds it. That is a limit of the assertion and a qualification item.
 - **Assertion 3** is made on both sides. The probe dials the canary's addresses
   and classifies the failure. The canary is a loopback TCP listener (a second on
   `::1` when the host has IPv6 loopback) and an abstract socket, which the holder
