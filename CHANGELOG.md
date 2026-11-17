@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-17
+
 ### Added
 
 - Add `ataniq-console`, a provisional terminal console built on Bubble Tea.
@@ -17,11 +19,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   detach) is unavailable and listed with its reason under Ctrl+K; `a` says why
   full attach is unavailable. Live control, provider integration, use over SSH
   and terminal restoration after a startup error remain unqualified.
-- `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
-  scratch session from a holder in the cockpit: one writer, one read-only
-  viewer, no takeover. A console that waits for a ticket does not connect, so
-  it does not touch the holder, and a refused ticket file shows its reason. It
-  is provisional and unqualified, and for a scratch agent only.
 - Show the console as a cockpit in a window of 100x30 or more, on the alternate
   screen: three panes (projects and leads with a context block; a session
   block, an embedded session terminal and a focus bar; evidence and approvals
@@ -78,65 +75,43 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
-- Add `ataniq-scratch`, a development launcher that hosts a scratch agent (no
-  project, no lead role, a disposable home) in a holder, in a transient systemd
-  user unit or as a direct child with `--direct`, and stands in for the daemon
-  to issue attach tickets over the holder's control socket. `start`, `ticket`,
-  `status`, `release-writer` and `stop` are its subcommands. `start` takes the
-  agent as an absolute path, because the holder does no `PATH` search, and
-  refuses any other with exit status 2. It is provisional and unqualified, and
-  not for a real lead.
-- Add `ataniq-holder`, the per-agent holder process: one process for one
-  hosted agent. It owns the agent's terminal (the PTY master and the emulator
-  that mirrors its screen), the attach and control sockets, the event log and
-  the final record, takes the role lock, and writes a state file (`holder.json`)
-  before it starts the agent. The agent's environment is exactly the `--env`
-  list and nothing of the holder's own. It refuses to run without `--scratch`
-  (exit 2), because the sandbox is not built, so it hosts only a scratch agent;
-  it also refuses to start when `dev.tty.legacy_tiocsti` is not 0, when a
-  signal the agent needs is ignored, or when the state or runtime folder is not
-  a private directory of the user. SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and
-  SIGUSR2 stop it with a final record, and the record of an earlier epoch is
-  kept as `final.json.previous`. A second holder for a held role exits 3 and
-  changes nothing of the first. It is provisional and unqualified, and hosts no
-  real lead; `ataniq-scratch` starts it.
+- Record each change's changelog entry as a fragment file in `changelog.d`,
+  named `<section>-<slug>.md` (section: added, changed, deprecated, removed,
+  fixed or security), in the same commit as the change, so parallel features no
+  longer collide on `CHANGELOG.md`. `scripts/changelog-fold.sh` (`make
+  changelog-fold`) folds the fragments under their headings in the Keep a
+  Changelog order, each section's fragments sorted by name, and removes them;
+  `--into VERSION` folds into the dated `## [VERSION]` section that `qargi
+  release start VERSION` makes, and refuses when it does not exist, while
+  without it the fold writes to `[Unreleased]`. It refuses an unknown section
+  or a malformed fragment (including one with Windows line ends) without
+  changing anything, replaces `CHANGELOG.md` in one rename so an interrupted
+  run leaves it intact, is safe to repeat, and `--dry-run` writes nothing.
+  `make changelog-check` fails while any fragment is left. The release flow is
+  `qargi release start VERSION`, then `make changelog-fold ARGS='--into
+  VERSION'` as the first fix commit on the release branch, then `make
+  changelog-check`, then `qargi release push`; a hotfix does the same before
+  its pull request, and CI runs the check on both and on manual runs of those
+  branches. Entries already in `CHANGELOG.md` stay where they are.
 
 ### Changed
 
-- Amend the runtime and client protocol contracts for a lead hosted as a
-  terminal program (owner decision of 2026-11-17). Its `ready` state is an
-  Ataniq observation of the hosted terminal, never a provider report: the
-  holder runs for the current epoch, the stream is open, the runtime version is
-  the pinned one, login is checked or says `login: not checked`, and the screen
-  is an idle composer. The screen then gates each delivery and never proves
-  health, authority or completion. Its attach stream is a ticketed terminal
-  data plane, not a second command path: Ataniq admits no command, decision or
-  grant from it. It has one writer, one viewer and no takeover, accepts a peer
-  of the holder's own OS user only, and carries the stated same-user limit.
-  Specification only; nothing implements it yet.
-- Bound what the console's session pane keeps of a session's output, in the
-  patched `x/vt`. A cell keeps at most 64 bytes of a grapheme cluster, cut at
-  a character boundary; the rest is dropped and counted, and a megabyte of
-  combining marks costs bounded memory and linear time. Only a fixed table
-  of known terminal modes is recorded (the ones the emulator acts on, the ones
-  the pane and console follow, and the ones a full-screen agent commonly sets);
-  setting or resetting any other mode number is ignored and counted, a request
-  for it is answered "not recognised", and setting 100 000 distinct numbers
-  does not grow memory. A hyperlink whose URL is over 2 KiB or whose
-  parameters are over 256 bytes is dropped and counted, and the text after it
-  has no link; a screen (the main and the alternate each) keeps at most 256
-  distinct live links, and text printed under a further link is drawn without
-  it and counted; and the data of an OSC, DCS or APC string is cut at 64 KiB
-  (it was 4 MiB), with the rest dropped and counted. The emulator exposes the
-  counts of every cap it hit through `Counters`.
-  Clearing or resetting the screen, switching the alternate screen and
-  scrolling a whole region cost the lines they change and no longer every
-  cell, so a program that does these in a loop (for example a full-screen
-  program that clears the screen on every frame) no longer stalls the pane for
-  seconds or minutes, and the pane feeds the emulator in slices of 4 KiB, so
-  that a draw waits for one slice of output at most. Output that scrolls a
-  region with left and right margins set can still take about a minute for
-  64 KiB on the largest screen; see `third_party/patched/x-vt/NOTICE.md`.
+- Add the feature coordinator to the design documents. A coordinator is an
+  ephemeral delegate of a project lead for exactly one feature: it holds no
+  seat or lead assignment epoch, is never a handoff target and never approves.
+  Its questions go to its lead; the owner may watch it and type into it as its
+  single writer, with the lead notified and its powers unchanged. It may
+  prepare, verify, apply and merge runs into its own feature, sync it and clean
+  any run of its feature; the lead runs the whole-suite verify, and start and
+  finish of a feature, push, release, hotfix, prune and adoption of other
+  actors' runs stay with the lead, and approval with the owner. Its label only
+  narrows what it may do and is never identity; identity comes only from a
+  bound file Ataniq writes. A lead quiesces its coordinators before a handoff,
+  and a stalled coordinator is confirmed stopped before its runs are adopted.
+  The approvals document states that no approval, plan token or grant passes to
+  or through a coordinator, that a lead's feature delegation to one is neither a
+  grant nor an approval, and that the owner typing into one is not an approval.
+  Specification only; nothing is implemented.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a
