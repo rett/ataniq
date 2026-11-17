@@ -24,7 +24,9 @@
 //  6. reconcile: call [leadlifecycle.Controller.Reconcile] once. It starts
 //     nothing and signals nothing. A manager that does not answer is not
 //     fatal: the daemon serves the roles as the registry has them and shows
-//     the reconcile as not completed.
+//     the reconcile as not completed. It does so also for a manager that is
+//     known to be unavailable ([UnavailableManager]) when the registry holds
+//     nothing to ask it about, an empty one or one of tmux-managed roles only.
 //  7. stale socket: only now, with the lock held, remove a socket file an
 //     earlier daemon left (clientapi.RemoveStale).
 //  8. socket: listen on <runtime>/daemon.sock (clientapi.Listen).

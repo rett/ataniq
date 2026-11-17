@@ -89,9 +89,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shutdown it stops accepting, waits for the connections for a bounded time,
   closes the registry and releases the lock last; it never stops a lead or
   any unit. The reconcile reads the units and starts and signals nothing; when
-  systemd cannot be asked, the daemon still serves the roles as the registry
-  has them, with the reconcile shown as not completed, which is also how an
-  unacknowledged recovery of the registry shows, as the protocol has no field
+  systemd cannot be asked (also when the registry has no role to ask about),
+  the daemon still serves the roles as the registry has them, with the
+  reconcile shown as not completed, which is also how an unacknowledged
+  recovery of the registry shows, as the protocol has no field
   for the reason. Reconcile runs at start only, not on a timer. Each start-up
   step that fails has its own exit code (10 to 18) and one line on standard
   error. The socket is mode 0600 in a 0700 folder, and a peer is accepted only
