@@ -258,11 +258,21 @@ const (
 	EnvDuplicate EnvDiffKind = "duplicate"
 	// EnvMalformed: an observed entry has no name or no '='.
 	EnvMalformed EnvDiffKind = "malformed"
+	// EnvTruncated: more differences than MaxEnvDiffs; its Name says how
+	// many are not listed.
+	EnvTruncated EnvDiffKind = "truncated"
 )
 
-// EnvDiff is one difference. Want and Got are set only for EnvChanged, whose
-// name is in the allowlist; the value of an unexpected variable is never kept,
-// because it may be a secret.
+// MaxEnvDiffs is the most differences DiffEnvironment returns, the
+// EnvTruncated one not counted.
+const MaxEnvDiffs = 64
+
+// maxDiffName is the longest name kept in a difference.
+const maxDiffName = 64
+
+// EnvDiff is one difference. Name is clipped to 64 bytes. Want and Got are
+// set only for EnvChanged, whose name is in the allowlist; the value of an
+// unexpected variable is never kept, because it may be a secret.
 type EnvDiff struct {
 	Kind EnvDiffKind
 	Name string
@@ -270,21 +280,28 @@ type EnvDiff struct {
 	Got  string
 }
 
-// String is the difference as a line for a report.
+// String is the difference as one line for a report. The name is quoted, so
+// an observed name with a newline or another control byte cannot forge or
+// split a line.
 func (d EnvDiff) String() string {
 	if d.Kind == EnvChanged {
-		return fmt.Sprintf("changed %s: want %q, got %q", d.Name, d.Want, d.Got)
+		return fmt.Sprintf("changed %q: want %q, got %q", d.Name, d.Want, d.Got)
 	}
-	return fmt.Sprintf("%s %s", d.Kind, d.Name)
+	return fmt.Sprintf("%s %q", d.Kind, d.Name)
 }
 
 // DiffEnvironment compares an observed environment, in the form of
 // os.Environ ("NAME=value"), with the allowlist exactly, names and values, and
-// returns the differences sorted by name and then kind. An empty result means
-// the two are equal.
-func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
+// returns the differences sorted by name and then kind, at most MaxEnvDiffs
+// of them followed by one EnvTruncated difference when there are more. An
+// empty result means the two are equal. It refuses an allowlist that lists a
+// name twice, because it would be ambiguous which value is wanted.
+func DiffEnvironment(want []EnvVar, observed []string) ([]EnvDiff, error) {
 	wantMap := make(map[string]string, len(want))
 	for _, w := range want {
+		if _, dup := wantMap[w.Name]; dup {
+			return nil, refuse("environment allowlist", "the name %s is listed twice", quoteName(w.Name))
+		}
 		wantMap[w.Name] = w.Value
 	}
 	var diffs []EnvDiff
@@ -302,10 +319,7 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 		}
 	}
 	for name, n := range count {
-		display := name
-		if len(display) > 64 {
-			display = display[:64] + "..."
-		}
+		display := clipName(name)
 		if n > 1 {
 			diffs = append(diffs, EnvDiff{Kind: EnvDuplicate, Name: display})
 		}
@@ -319,7 +333,7 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 	}
 	for _, w := range want {
 		if count[w.Name] == 0 {
-			diffs = append(diffs, EnvDiff{Kind: EnvMissing, Name: w.Name})
+			diffs = append(diffs, EnvDiff{Kind: EnvMissing, Name: clipName(w.Name)})
 		}
 	}
 	sort.Slice(diffs, func(i, j int) bool {
@@ -328,7 +342,18 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 		}
 		return diffs[i].Kind < diffs[j].Kind
 	})
-	return diffs
+	if len(diffs) > MaxEnvDiffs {
+		more := len(diffs) - MaxEnvDiffs
+		diffs = append(diffs[:MaxEnvDiffs:MaxEnvDiffs], EnvDiff{Kind: EnvTruncated, Name: fmt.Sprintf("(%d more)", more)})
+	}
+	return diffs, nil
+}
+
+func clipName(name string) string {
+	if len(name) > maxDiffName {
+		return name[:maxDiffName] + "..."
+	}
+	return name
 }
 
 func clip(s string) string {

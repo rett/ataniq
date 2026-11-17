@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -262,22 +263,25 @@ func TestDiffEnvironment(t *testing.T) {
 	}{
 		{"equal", []string{"A=1", "B=2", "C=x=y", "D="}, nil},
 		{"equal in another order", []string{"D=", "C=x=y", "B=2", "A=1"}, nil},
-		{"missing", []string{"A=1", "B=2", "C=x=y"}, []string{"missing D"}},
-		{"unexpected", []string{"A=1", "B=2", "C=x=y", "D=", "SSH_AUTH_SOCK=/tmp/s"}, []string{"unexpected SSH_AUTH_SOCK"}},
-		{"changed", []string{"A=1", "B=3", "C=x=y", "D="}, []string{`changed B: want "2", got "3"`}},
-		{"changed to empty", []string{"A=1", "B=", "C=x=y", "D="}, []string{`changed B: want "2", got ""`}},
-		{"changed from empty", []string{"A=1", "B=2", "C=x=y", "D=x"}, []string{`changed D: want "", got "x"`}},
-		{"value with an equals sign", []string{"A=1", "B=2", "C=x", "D="}, []string{`changed C: want "x=y", got "x"`}},
-		{"duplicate", []string{"A=1", "A=1", "B=2", "C=x=y", "D="}, []string{"duplicate A"}},
-		{"duplicate that differs", []string{"A=1", "A=2", "B=2", "C=x=y", "D="}, []string{"duplicate A"}},
-		{"malformed", []string{"A=1", "junk", "B=2", "C=x=y", "D="}, []string{"malformed (entry 1)"}},
-		{"empty name", []string{"=v", "A=1", "B=2", "C=x=y", "D="}, []string{"malformed (entry 0)"}},
-		{"nothing observed", nil, []string{"missing A", "missing B", "missing C", "missing D"}},
-		{"sorted", []string{"Z=1", "A=9", "M=1", "C=x=y", "D="}, []string{`changed A: want "1", got "9"`, "missing B", "unexpected M", "unexpected Z"}},
-		{"case matters", []string{"a=1", "B=2", "C=x=y", "D="}, []string{"missing A", "unexpected a"}},
+		{"missing", []string{"A=1", "B=2", "C=x=y"}, []string{`missing "D"`}},
+		{"unexpected", []string{"A=1", "B=2", "C=x=y", "D=", "SSH_AUTH_SOCK=/tmp/s"}, []string{`unexpected "SSH_AUTH_SOCK"`}},
+		{"changed", []string{"A=1", "B=3", "C=x=y", "D="}, []string{`changed "B": want "2", got "3"`}},
+		{"changed to empty", []string{"A=1", "B=", "C=x=y", "D="}, []string{`changed "B": want "2", got ""`}},
+		{"changed from empty", []string{"A=1", "B=2", "C=x=y", "D=x"}, []string{`changed "D": want "", got "x"`}},
+		{"value with an equals sign", []string{"A=1", "B=2", "C=x", "D="}, []string{`changed "C": want "x=y", got "x"`}},
+		{"duplicate", []string{"A=1", "A=1", "B=2", "C=x=y", "D="}, []string{`duplicate "A"`}},
+		{"duplicate that differs", []string{"A=1", "A=2", "B=2", "C=x=y", "D="}, []string{`duplicate "A"`}},
+		{"malformed", []string{"A=1", "junk", "B=2", "C=x=y", "D="}, []string{`malformed "(entry 1)"`}},
+		{"empty name", []string{"=v", "A=1", "B=2", "C=x=y", "D="}, []string{`malformed "(entry 0)"`}},
+		{"nothing observed", nil, []string{`missing "A"`, `missing "B"`, `missing "C"`, `missing "D"`}},
+		{"sorted", []string{"Z=1", "A=9", "M=1", "C=x=y", "D="}, []string{`changed "A": want "1", got "9"`, `missing "B"`, `unexpected "M"`, `unexpected "Z"`}},
+		{"case matters", []string{"a=1", "B=2", "C=x=y", "D="}, []string{`missing "A"`, `unexpected "a"`}},
 	}
 	for _, tt := range tests {
-		diffs := DiffEnvironment(want, tt.observed)
+		diffs, err := DiffEnvironment(want, tt.observed)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
 		var got []string
 		for _, d := range diffs {
 			got = append(got, d.String())
@@ -288,8 +292,79 @@ func TestDiffEnvironment(t *testing.T) {
 	}
 }
 
+func mustDiff(t *testing.T, want []EnvVar, observed []string) []EnvDiff {
+	t.Helper()
+	d, err := DiffEnvironment(want, observed)
+	if err != nil {
+		t.Fatalf("DiffEnvironment: %v", err)
+	}
+	return d
+}
+
+func TestDiffEnvironmentQuotesObservedNames(t *testing.T) {
+	// A name with a newline or another control byte is legal in environ. It
+	// must not turn one difference into two report lines or forge one.
+	for _, name := range []string{"EVIL\nok: forged", "A\rB", "A\x00B", "\x1b[2JX", "caf\xc3", "A B"} {
+		d := mustDiff(t, nil, []string{name + "=v"})
+		if len(d) != 1 {
+			t.Fatalf("%q: %d differences", name, len(d))
+		}
+		line := d[0].String()
+		if strings.ContainsAny(line, "\n\r\x00\x1b") {
+			t.Errorf("%q: the line %q holds a raw control byte", name, line)
+		}
+		if want := fmt.Sprintf("unexpected %q", name); line != want {
+			t.Errorf("line = %q, want %q", line, want)
+		}
+	}
+	// The same for a changed value's name and a missing name.
+	d := mustDiff(t, []EnvVar{{"A\nB", "1"}}, []string{"A\nB=2"})
+	if len(d) != 1 || strings.Contains(d[0].String(), "\n") || !strings.HasPrefix(d[0].String(), `changed "A\nB":`) {
+		t.Errorf("changed: %q", d)
+	}
+	d = mustDiff(t, []EnvVar{{"A\nB", "1"}}, nil)
+	if len(d) != 1 || strings.Contains(d[0].String(), "\n") {
+		t.Errorf("missing: %q", d)
+	}
+}
+
+func TestDiffEnvironmentRefusesDuplicateWantedNames(t *testing.T) {
+	for _, want := range [][]EnvVar{
+		{{"A", "1"}, {"A", "2"}},
+		{{"A", "1"}, {"B", "1"}, {"A", "1"}},
+	} {
+		d, err := DiffEnvironment(want, []string{"A=1"})
+		if err == nil || d != nil {
+			t.Errorf("%v: got %v, %v", want, d, err)
+			continue
+		}
+		if ref := refusalOf(t, err); !strings.Contains(ref.Reason, "twice") {
+			t.Errorf("reason = %q", ref.Reason)
+		}
+	}
+}
+
+func TestDiffEnvironmentIsBounded(t *testing.T) {
+	var observed []string
+	for i := 0; i < 1000; i++ {
+		observed = append(observed, fmt.Sprintf("X%04d=v", i))
+	}
+	d := mustDiff(t, nil, observed)
+	if len(d) != MaxEnvDiffs+1 {
+		t.Fatalf("%d differences, want %d", len(d), MaxEnvDiffs+1)
+	}
+	last := d[len(d)-1]
+	if last.Kind != EnvTruncated || last.Name != fmt.Sprintf("(%d more)", 1000-MaxEnvDiffs) {
+		t.Errorf("last = %+v", last)
+	}
+	// Exactly the limit is not truncated.
+	if d := mustDiff(t, nil, observed[:MaxEnvDiffs]); len(d) != MaxEnvDiffs || d[len(d)-1].Kind == EnvTruncated {
+		t.Errorf("%d differences at the limit", len(d))
+	}
+}
+
 func TestDiffEnvironmentDoesNotKeepUnexpectedValues(t *testing.T) {
-	diffs := DiffEnvironment(nil, []string{"ANTHROPIC_API_KEY=sk-secret"})
+	diffs := mustDiff(t, nil, []string{"ANTHROPIC_API_KEY=sk-secret"})
 	if len(diffs) != 1 || diffs[0].Kind != EnvUnexpected {
 		t.Fatalf("diffs = %v", diffs)
 	}
@@ -297,11 +372,11 @@ func TestDiffEnvironmentDoesNotKeepUnexpectedValues(t *testing.T) {
 		t.Errorf("the value of an unexpected variable is kept: %+v", diffs[0])
 	}
 	long := strings.Repeat("n", 500)
-	d := DiffEnvironment(nil, []string{long + "=1"})
+	d := mustDiff(t, nil, []string{long + "=1"})
 	if len(d) != 1 || len(d[0].Name) > 70 {
 		t.Errorf("a long name is not clipped: %d", len(d[0].Name))
 	}
-	d = DiffEnvironment([]EnvVar{{"A", "1"}}, []string{"A=" + strings.Repeat("v", 500)})
+	d = mustDiff(t, []EnvVar{{"A", "1"}}, []string{"A=" + strings.Repeat("v", 500)})
 	if len(d) != 1 || len(d[0].Got) > 300 {
 		t.Errorf("a long value is not clipped: %d", len(d[0].Got))
 	}
@@ -317,11 +392,11 @@ func TestDiffAgainstTheProfileEnvironment(t *testing.T) {
 	for _, e := range env {
 		observed = append(observed, e.Name+"="+e.Value)
 	}
-	if d := DiffEnvironment(env, observed); len(d) != 0 {
+	if d := mustDiff(t, env, observed); len(d) != 0 {
 		t.Errorf("the environment differs from itself: %v", d)
 	}
 	observed = append(observed, "XDG_RUNTIME_DIR=/run/user/1000")
-	if d := DiffEnvironment(env, observed); len(d) != 1 || d[0].String() != "unexpected XDG_RUNTIME_DIR" {
+	if d := mustDiff(t, env, observed); len(d) != 1 || d[0].String() != `unexpected "XDG_RUNTIME_DIR"` {
 		t.Errorf("diff = %v", d)
 	}
 }
