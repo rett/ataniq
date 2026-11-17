@@ -42,7 +42,9 @@ func (s Set) Rules() []Rule {
 // With returns a new Set with the patterns added after the existing rules,
 // each with the reason "project addition". It refuses an empty pattern, one
 // with a NUL, a line break, a backslash or a bracket, one with a "." or ".."
-// element or an empty element, one over 255 bytes, and a result with more
+// element or an empty element, one with an element that ends in a dot or a
+// space (a path element is matched without them, so such an element would
+// never match), one over 255 bytes, and a result with more
 // than 256 additions. When it fails it returns the receiver unchanged with
 // the error, so a caller that logs the error and goes on keeps the rules it
 // had.

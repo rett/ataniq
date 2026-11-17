@@ -61,6 +61,11 @@ func compile(p string) (compiled, error) {
 		case ".", "..":
 			return c, fmt.Errorf("%w: %q has a %q element", ErrPattern, p, e)
 		}
+		if strings.TrimRight(e, ". ") != e {
+			// A path element is matched without its trailing dots and
+			// spaces, so a pattern element that ends in one never matches.
+			return c, fmt.Errorf("%w: %q has an element ending in a dot or a space", ErrPattern, p)
+		}
 		c.elems = append(c.elems, lower(e))
 	}
 	return c, nil

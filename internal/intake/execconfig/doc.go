@@ -28,6 +28,9 @@
 //   - "*" matches any run of bytes inside one element and "?" matches one
 //     character inside one element. Nothing else is special: brackets and
 //     backslashes are refused.
+//   - An element of a pattern must not end in a dot or a space, and With
+//     refuses such a pattern: path elements are matched without their
+//     trailing dots and spaces, so the pattern could never match.
 //   - A pattern with several elements ("a/b", "a/b/") matches a run of
 //     consecutive path elements, with the same rules.
 //

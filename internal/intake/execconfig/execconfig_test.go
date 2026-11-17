@@ -399,6 +399,16 @@ func TestWithRefusals(t *testing.T) {
 		"class":           "[ab]c",
 		"too long":        strings.Repeat("a", 256),
 		"too long dirs":   strings.Repeat("a/", 128),
+		"trailing dot":    "foo.",
+		"trailing space":  "foo ",
+		"dots":            "foo..",
+		"dot in a dir":    "foo./bar",
+		"space in a dir":  "a/foo /bar",
+		"dot folder":      "foo./",
+		"anchored dot":    "/foo.",
+		"space only":      " ",
+		"star then dot":   "*.",
+		"inner and last":  "a./b.",
 	} {
 		_, err := base.With([]string{p})
 		if err == nil {
@@ -410,6 +420,12 @@ func TestWithRefusals(t *testing.T) {
 	// A bad pattern among good ones fails the whole call.
 	if _, err := base.With([]string{"ok", "bad\\"}); err == nil {
 		t.Error("a bad pattern among good ones was accepted")
+	}
+	// A dot or a space inside an element, or a "*" at its end, is fine.
+	for _, p := range []string{"foo.bar", "a b", ".env.*", ".hidden", "x/.y", "foo*", "foo?"} {
+		if _, err := base.With([]string{p}); err != nil {
+			t.Errorf("With(%q): %v", p, err)
+		}
 	}
 	// The longest pattern is fine.
 	if _, err := base.With([]string{strings.Repeat("a", 255)}); err != nil {
