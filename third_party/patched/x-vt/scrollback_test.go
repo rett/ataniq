@@ -268,3 +268,61 @@ func TestMainScreenScrollbackObeysSize(t *testing.T) {
 	e.SetScrollbackSize(2)
 	check("after SetScrollbackSize(2)", "m0", "m1")
 }
+
+// SetScrollbackSize(0) keeps no scrollback: the lines held are released, the
+// lines that scroll off the top, an erase of the screen and a resize add none,
+// and a later size above zero keeps lines again.
+func TestScrollbackSizeZeroKeepsNothing(t *testing.T) {
+	e := NewEmulator(10, 3)
+	e.WriteString(numberedLines("l", 20))
+	if e.ScrollbackLen() == 0 {
+		t.Fatal("the main screen kept no scrollback")
+	}
+	e.SetScrollbackSize(0)
+	if got := e.Scrollback().MaxLines(); got != 0 {
+		t.Errorf("scrollback size is %d after SetScrollbackSize(0), want 0", got)
+	}
+	none := func(when string) {
+		t.Helper()
+		if got := e.ScrollbackLen(); got != 0 {
+			t.Errorf("%s: %d lines of scrollback, want none", when, got)
+		}
+		if e.ScrollbackCellAt(0, 0) != nil {
+			t.Errorf("%s: a scrollback cell", when)
+		}
+	}
+	none("after SetScrollbackSize(0)")
+	if got := cap(e.Scrollback().Lines()); got != 0 {
+		t.Errorf("the buffer of %d lines was kept", got)
+	}
+	e.WriteString(numberedLines("m", 50))
+	none("after scrolling")
+	e.WriteString("\x1b[2J") // ED 2 saves the screen to scrollback otherwise
+	none("after ED 2")
+	e.WriteString("\x1b[2;3r\x1b[3;1H" + numberedLines("region ", 10) + "\x1b[r")
+	none("after scrolling a region")
+	e.Resize(20, 4)
+	e.WriteString(numberedLines("n", 20))
+	none("after a resize")
+	e.WriteString("\x1b[?1049h" + numberedLines("alt ", 50) + "\x1b[?1049l")
+	none("after the alternate screen")
+	// The screen itself is intact.
+	if c := e.CellAt(0, 0); c == nil {
+		t.Error("no cell at 0, 0")
+	}
+	// A negative size is ignored.
+	e.SetScrollbackSize(-1)
+	if got := e.Scrollback().MaxLines(); got != 0 {
+		t.Errorf("scrollback size is %d after SetScrollbackSize(-1), want 0", got)
+	}
+	e.SetScrollbackSize(3)
+	e.WriteString(numberedLines("p", 10))
+	if got := e.ScrollbackLen(); got != 3 {
+		t.Errorf("%d lines of scrollback after SetScrollbackSize(3), want 3", got)
+	}
+	// And zero again, from a screen that has no scrollback buffer at all.
+	e.scrs[0].SetScrollback(nil)
+	e.SetScrollbackSize(0)
+	e.WriteString(numberedLines("q", 10))
+	none("after SetScrollbackSize(0) without a buffer")
+}

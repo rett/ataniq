@@ -413,8 +413,14 @@ func (s *Screen) SetScrollback(sb *Scrollback) {
 }
 
 // SetScrollbackSize sets the maximum number of lines in the scrollback buffer.
+// Zero keeps no scrollback. A negative number is ignored, except that a screen
+// without a scrollback buffer gets one of the default size.
 func (s *Screen) SetScrollbackSize(maxLines int) {
 	if s.scrollback == nil {
+		if maxLines == 0 {
+			s.scrollback = &Scrollback{}
+			return
+		}
 		s.scrollback = NewScrollback(maxLines)
 	} else {
 		s.scrollback.SetMaxLines(maxLines)

@@ -46,6 +46,11 @@ type Emulator struct {
 	// runes, so the segmenter can read the buffer without a conversion on
 	// every character.
 	grapheme []byte
+	// capped is set when a rune was dropped from the last cluster of the
+	// buffer because the cluster was full. The cluster does not grow again,
+	// so that a cell keeps a prefix of what was sent. The buffer is then one
+	// cluster. It is cleared when the buffer is drawn or reset.
+	capped bool
 	// scratch holds the cluster and a rune when they are tested for joining.
 	scratch [MaxClusterBytes + utf8.UTFMax]byte
 	// The last cluster a Write drew when it ended. The next Write may still
@@ -499,7 +504,8 @@ func (e *Emulator) ScrollbackCellAt(x, y int) *uv.Cell {
 }
 
 // SetScrollbackSize sets the maximum number of lines in the main screen's
-// scrollback buffer.
+// scrollback buffer. Zero keeps none: lines that scroll off the top are lost,
+// and the lines already held are released.
 func (e *Emulator) SetScrollbackSize(maxLines int) {
 	e.scrs[0].SetScrollbackSize(maxLines)
 }

@@ -7,7 +7,9 @@ package vt
 // NOTICE.md).
 const (
 	// MaxClusterBytes is the most bytes of one grapheme cluster that a cell
-	// keeps. The rest of a longer cluster, cut at a rune boundary, is dropped.
+	// keeps. A cell keeps a prefix of the cluster, cut at a rune boundary: the
+	// first rune that does not fit and every later rune of the cluster are
+	// dropped.
 	MaxClusterBytes = 64
 
 	// MaxLinkURL and MaxLinkParams are the most bytes of the URL and of the

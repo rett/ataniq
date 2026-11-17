@@ -85,25 +85,47 @@ func TestSingleShiftDoesNotLeakPastACluster(t *testing.T) {
 // which is quadratic: 64KB of marks took six seconds before this was a single
 // segmentation at the end of the run.
 //
-// The budget below is thousands of times the linear cost and a fraction of the
-// quadratic one, so it says which of the two is in place without being a
-// stopwatch on the machine it runs on.
+// The test compares the time of n marks with the time of 4n marks, which is
+// about 4 for linear work and 16 for quadratic work, and so says which of the
+// two is in place whatever the speed of the machine, the race detector or the
+// load. Each time is the best of several runs, and the factor leaves room for
+// the noise that remains.
 func TestLongClusterRunStaysLinear(t *testing.T) {
-	input := "a" + strings.Repeat("́", 32*1024)
-
-	done := make(chan time.Duration, 1)
-	go func() {
-		term := NewEmulator(80, 24)
-		start := time.Now()
-		term.WriteString(input)
-		done <- time.Since(start)
-	}()
-
-	select {
-	case elapsed := <-done:
-		t.Logf("%d bytes in %v", len(input), elapsed)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("writing %d bytes of one cluster did not finish in 10s", len(input))
+	const n = 16 * 1024
+	const factor = 10
+	for _, tc := range []struct {
+		name  string
+		write func(*Emulator, []byte)
+	}{
+		{"one write", func(e *Emulator, b []byte) { e.Write(b) }},
+		// Writes that end between marks reopen the cluster each time.
+		{"4 KiB writes", func(e *Emulator, b []byte) {
+			for i := 0; i < len(b); i += 4096 {
+				e.Write(b[i:min(i+4096, len(b))])
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			best := func(marks int) time.Duration {
+				input := []byte("a" + strings.Repeat("\u0301", marks))
+				var best time.Duration
+				for i := 0; i < 3; i++ {
+					term := NewEmulator(80, 24)
+					start := time.Now()
+					tc.write(term, input)
+					if d := time.Since(start); i == 0 || d < best {
+						best = d
+					}
+				}
+				return best
+			}
+			small, large := best(n), best(4*n)
+			t.Logf("%d marks %v, %d marks %v (%.1fx)", n, small, 4*n, large, float64(large)/float64(small))
+			if large > factor*small {
+				t.Errorf("4x the marks took %.1fx the time (%v for %d, %v for %d), want under %dx: the work is not linear",
+					float64(large)/float64(small), small, n, large, 4*n, factor)
+			}
+		})
 	}
 }
 
@@ -304,6 +326,74 @@ func TestClusterAtCapIsNotReopenedOrGrown(t *testing.T) {
 	}
 }
 
+// Once a rune has been dropped from a cluster, the cluster does not grow
+// again, so a cell keeps a prefix of what was sent: a shorter mark after a
+// longer one that did not fit is dropped too, in the same write and in the
+// next one.
+func TestClusterDoesNotGrowAfterADrop(t *testing.T) {
+	// 62 bytes: the base, U+20D0 (3 bytes) and 29 x U+0301 (2 bytes). The next
+	// U+20D0 would make 65 and is dropped; the U+0301 after it would fit.
+	head := "e\u20d0" + strings.Repeat("\u0301", 29)
+	if len(head) != MaxClusterBytes-2 {
+		t.Fatalf("test input is %d bytes", len(head))
+	}
+	tail := "\u20d0\u0301\u0301\u20d0\u0301"
+	input := head + tail
+	// A character that starts a cluster follows, then an ASCII one.
+	after := "\u00e9" + "z"
+
+	run := func(t *testing.T, parts []string) {
+		term := newTestTerminal(t, 10, 1)
+		for _, p := range parts {
+			term.WriteString(p)
+		}
+		if c := term.CellAt(0, 0); c == nil || c.Content != head {
+			t.Errorf("cell 0 is %d bytes, want the first %d bytes of the cluster", len(c.Content), len(head))
+		}
+		if got, want := term.Counters().ClusterBytesDropped, uint64(len(tail)); got != want {
+			t.Errorf("ClusterBytesDropped = %d, want %d", got, want)
+		}
+		if c := term.CellAt(1, 0); c == nil || c.Content != "\u00e9" {
+			t.Errorf("cell 1: %v, want the character that follows", c)
+		}
+		if c := term.CellAt(2, 0); c == nil || c.Content != "z" {
+			t.Errorf("cell 2: %v", c)
+		}
+	}
+
+	t.Run("one write", func(t *testing.T) { run(t, []string{input + after}) })
+	t.Run("rune per write", func(t *testing.T) {
+		var p []string
+		for _, r := range input + after {
+			p = append(p, string(r))
+		}
+		run(t, p)
+	})
+	t.Run("every split", func(t *testing.T) {
+		for i := 0; i <= len(input); i++ {
+			if i < len(head) && !utf8.RuneStart(input[i]) {
+				continue
+			}
+			if !utf8.ValidString(input[:i]) {
+				continue
+			}
+			run(t, []string{input[:i], input[i:] + after})
+		}
+	})
+	// The same when the cluster is not alone in the buffer: text with no
+	// ASCII before it fills the buffer with several clusters, and the last is
+	// the one that is capped.
+	t.Run("after other clusters", func(t *testing.T) {
+		term := newTestTerminal(t, 40, 1)
+		term.WriteString("\u00e9\u00e8" + head + tail + after)
+		for i, want := range []string{"\u00e9", "\u00e8", head, "\u00e9", "z"} {
+			if c := term.CellAt(i, 0); c == nil || c.Content != want {
+				t.Errorf("cell %d: %q, want %q", i, c.Content, want)
+			}
+		}
+	})
+}
+
 // Clusters under the cap still join across writes, up to the cap exactly.
 func TestClusterUnderCapJoinsAcrossWrites(t *testing.T) {
 	// 64 bytes: the base and 21 three-byte marks.
@@ -360,9 +450,9 @@ func TestNonASCIIRunIsNotCutByTheClusterCap(t *testing.T) {
 	}
 }
 
-// Design case H1: a 1 MiB run of combining marks uses bounded memory and
-// linear time, the cell keeps MaxClusterBytes at most, and the counter rises
-// by what was dropped.
+// Design case H1: a 1 MiB run of combining marks uses bounded memory, the cell
+// keeps MaxClusterBytes at most, and the counter rises by what was dropped.
+// That the time is linear is TestLongClusterRunStaysLinear.
 func TestMegabyteOfCombiningMarks(t *testing.T) {
 	marks := []byte("a" + strings.Repeat("\u0301", (1<<20)/2))
 	for _, tc := range []struct {
@@ -380,21 +470,13 @@ func TestMegabyteOfCombiningMarks(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			term := NewEmulator(80, 24)
-			var elapsed time.Duration
-			alloc := allocated(func() {
-				start := time.Now()
-				tc.write(term, tc.input)
-				elapsed = time.Since(start)
-			})
-			t.Logf("%d bytes: %v, %d bytes allocated", len(tc.input), elapsed, alloc)
+			alloc := allocated(func() { tc.write(term, tc.input) })
+			t.Logf("%d bytes, %d bytes allocated", len(tc.input), alloc)
 			// The run costs a few kilobytes at most; the ceiling is far above
 			// that and far below a buffer that keeps the run (the size of the
 			// input and its regrowth).
 			if alloc > 64<<10 {
 				t.Errorf("allocated %d bytes for %d bytes of marks", alloc, len(tc.input))
-			}
-			if elapsed > 20*time.Second {
-				t.Errorf("took %v", elapsed)
 			}
 			if c := cap(term.grapheme); c > 2*(MaxClusterBytes+utf8.UTFMax) {
 				t.Errorf("grapheme buffer capacity %d", c)

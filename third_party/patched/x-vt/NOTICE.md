@@ -24,14 +24,19 @@ Patches, applied in this order to the files of the module as released:
 4. `vt: keep at most 64 bytes of a grapheme cluster` (`limits.go`, `utf8.go`,
    `emulator.go`, `safe_emulator.go`, `utf8_test.go`). The patched code kept a
    cluster whole however long, so a megabyte of combining marks made one cell
-   of a megabyte. A cell now keeps the first `MaxClusterBytes` (64) bytes of a
-   cluster, cut at a rune boundary; the rest is dropped and added to
+   of a megabyte. A cell now keeps a prefix of a cluster of at most
+   `MaxClusterBytes` (64) bytes, cut at a rune boundary: the first rune that
+   does not fit caps the cluster, and that rune and every later rune that
+   extends it are dropped, so a shorter mark after a longer one that did not
+   fit is not kept. The dropped bytes are added to
    `Counters().ClusterBytesDropped`, and the grapheme buffer never grows past
    64 bytes. When the buffer fills, the clusters before the last are drawn and
    the next rune is tested against the last one only, so text without ASCII
    (which fills the buffer with many clusters) is not cut. A cluster that has
-   reached the cap is neither reopened nor grown by the next write: the mark
-   is dropped and counted, and the cluster stays the open one. A run of marks
+   reached the cap, or that has lost a rune, is neither reopened nor grown by
+   the next write: the mark is dropped and counted, and the cluster stays the
+   open one and capped. (`OpenCluster` reports the cluster's text only, so a
+   copy of the screen that continues it does not know that it is capped.) A run of marks
    past the cap costs one segmentation of at most 68 bytes per rune: linear
    time, no allocation. This patch also adds the `Counters` struct and the
    `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
@@ -51,12 +56,26 @@ Patches, applied in this order to the files of the module as released:
    whose parameters are over `MaxLinkParams` (256) bytes is now dropped: the
    pen gets no link, as if the link had been closed, and
    `Counters().LinksOverLength` rises. The length of the whole string is
-   checked before it is split, so a refused link allocates nothing.
+   checked before it is split, so a refused link allocates nothing. For the
+   same reason an OSC 8 longer than the two caps allow together (the
+   parameters, the URL and their separators) closes the open link and is
+   counted also when it is malformed, that is, when it does not have three
+   fields; the released module ignored such a string. A malformed OSC 8
+   within the caps is ignored as before: the open link stays open and
+   nothing is counted.
 7. `vt: allow at most 256 distinct live links per screen` (`links.go`,
-   `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Every printed cell
-   copies the pen's link, so a screen's memory follows its distinct links.
-   Each screen (main and alternate) has a table of the links its cells may
-   reference, at most `MaxLiveLinks` (256) entries and so about 0.6 MiB. Text
+   `screen.go`, `utf8.go`, `limits.go`, `links_test.go`). Each screen (main
+   and alternate) has a table of the links its cells may reference, at most
+   `MaxLiveLinks` (256) entries and so about 0.6 MiB. Each OSC 8 makes new
+   strings for the pen, so the table keeps one copy of every admitted link
+   and gives each cell that copy (`admitLink` returns it): a link sent again
+   before every character is still one copy, not one per cell (a 500 x 200
+   screen of such cells holds about 22 MiB, its cells, where a copy per cell
+   would hold about 240 MiB). Cells that are moved by scroll, insert, delete,
+   resize or the change of screen copy the cell value and share the strings.
+   Erasing and filling use blank cells that carry no link. A cell that an API
+   call such as `SetCell` made keeps the link it was given, which the table
+   does not intern. Text
    printed under a link that is not in a full table is drawn without the link
    and `Counters().LinksOverLimit` counts the cell. Design: the cells are
    changed by code this module does not own (the `ultraviolet` buffer, in
@@ -67,12 +86,19 @@ Patches, applied in this order to the files of the module as released:
    next one waits for as many refused cells as the screen's cells divided by
    256, so a session that prints a new link on every cell of a full table
    costs at most 256 cells scanned per cell printed, whatever the screen.
+   A scanned cell costs a comparison with the cell before it, and a lookup
+   (the hash of the link, up to 2.3 KiB) only where its link differs from
+   the one before, so a run of cells under one link, which share their copy,
+   costs one lookup. The worst case, a screen whose neighbouring cells
+   hold different links, still hashes up to 2.3 KiB per scanned cell, so a
+   scanned cell costs more with long links than with short ones; the time
+   stays linear in the cells printed.
    A slot that frees up (overwrite, erase, scroll, delete, resize) is
    therefore available after at most that many refusals; a clear of the whole
    screen empties the table at once. A recount counts every link in a cell,
    also one that an API call such as `SetCell` put there, which the table
-   does not refuse. Scrollback is not counted: it keeps the links of the lines it holds, and its size is the
-   caller's (the session pane keeps one line on the main screen and none on
+   does not refuse. Scrollback is not counted: it keeps the links of the
+   lines it holds, and its size is the caller's (the session pane keeps one line on the main screen and none on
    the alternate).
 8. `vt: keep at most 64 KiB of an OSC, DCS or APC string` (`emulator.go`,
    `limits.go`, `strings_test.go`; it needs patch 3 of the patched `x/ansi`).
@@ -84,6 +110,14 @@ Patches, applied in this order to the files of the module as released:
    A cut can fall inside a UTF-8 character, which a handler gets as invalid
    UTF-8; a 0x9C byte of a character stays string data after the cut, so the
    string ends at its real terminator and none of it reaches the screen.
+9. `vt: let SetScrollbackSize(0) keep no scrollback` (`scrollback.go`,
+   `screen.go`, `emulator.go`, `scrollback_test.go`). `Scrollback.SetMaxLines`
+   ignored zero, so the smallest scrollback the main screen could have was
+   one line, and a screen with one line of scrollback keeps that line's links
+   outside the 256-link table. Zero is now accepted and keeps nothing: the
+   lines held are released, and lines that scroll off the top, an erase of
+   the screen and a resize add none. A negative number is ignored, as zero
+   was. A size above zero works as before.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

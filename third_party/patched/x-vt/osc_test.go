@@ -104,6 +104,38 @@ func TestHyperlinkLengthCaps(t *testing.T) {
 	}
 }
 
+// An OSC 8 longer than the caps allow in all closes the open link and is
+// counted, also when it is malformed (it does not have three fields), because
+// its length is checked before it is split. A malformed one within the caps is
+// ignored as before: the open link stays open and nothing is counted.
+func TestOverlongMalformedHyperlinkClosesTheLink(t *testing.T) {
+	over := MaxLinkParams + MaxLinkURL + 2 // after "8;" the string is over the total, whatever the separators
+	for _, tc := range []struct {
+		name     string
+		osc      string
+		wantOver uint64
+		wantOpen bool
+	}{
+		{"over, no separator", "\x1b]8;" + strings.Repeat("u", over) + "\x1b\\", 1, false},
+		{"over, one field too many", "\x1b]8;a;b;" + strings.Repeat("u", over) + "\x1b\\", 1, false},
+		{"over, well formed", link("", "http://x/"+strings.Repeat("u", over)), 1, false},
+		{"within, no separator", "\x1b]8;" + strings.Repeat("u", 100) + "\x1b\\", 0, true},
+		{"within, one field too many", "\x1b]8;a;b;c\x1b\\", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := NewEmulator(80, 24)
+			term.WriteString(link("", "http://open/") + "a")
+			term.WriteString(tc.osc + "b")
+			if got := term.Counters().LinksOverLength; got != tc.wantOver {
+				t.Errorf("LinksOverLength = %d, want %d", got, tc.wantOver)
+			}
+			if open := term.CellAt(1, 0).Link.URL == "http://open/"; open != tc.wantOpen {
+				t.Errorf("link still open = %v, want %v", open, tc.wantOpen)
+			}
+		})
+	}
+}
+
 // A link over the cap costs nothing to refuse: 100 links of 64 KiB neither
 // grow the emulator nor give a cell a link, and each is counted once.
 func TestOverlongHyperlinksCostNothing(t *testing.T) {
