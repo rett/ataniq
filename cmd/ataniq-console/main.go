@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"ataniq/internal/leadattach"
 	"ataniq/internal/terminalconsole"
 	tea "charm.land/bubbletea/v2"
 )
@@ -21,11 +24,41 @@ const maxLinger = time.Hour
 // and zoom keys on it.
 const defaultLinger = 30 * time.Second
 
-const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]"
+const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]\n" +
+	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]"
+
+// clientName is the name the console gives the holder, which shows it to the
+// other pane when the writer changes.
+const clientName = "ataniq-console"
+
+// attachSocketName is the holder's attach socket in its runtime folder (the
+// name is the holder's; this command may not import the service that owns it).
+const attachSocketName = "attach.sock"
+
+// maxSocketPath is the longest path a unix socket address holds: sun_path is
+// 108 bytes with the terminating NUL.
+const maxSocketPath = 107
+
+// shiftEnters are the values of --shift-enter, in the order the help lists
+// them. The first is the default.
+var shiftEnters = []leadattach.ShiftEnter{
+	leadattach.ShiftEnterESCCR, leadattach.ShiftEnterLF, leadattach.ShiftEnterCSIu, leadattach.ShiftEnterBackslashCR,
+}
+
+// attachConfig is what --attach selects.
+type attachConfig struct {
+	// socket is the holder's attach socket, ticketFile the file the single-use
+	// tickets are read from.
+	socket, ticketFile string
+	viewer             bool
+	shiftEnter         leadattach.ShiftEnter
+}
 
 // config is what the flags select.
 type config struct {
-	demo    bool
+	demo bool
+	// attach is nil unless --attach was given.
+	attach  *attachConfig
 	options terminalconsole.Options
 }
 
@@ -41,6 +74,10 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	returnKey := flags.String("return-key", "", "key that leaves the session pane: ctrl+ and one letter, or ctrl+\\ or ctrl+] (default ctrl+\\)")
 	recording := flags.String("recording", terminalconsole.DefaultRecording, "fixture recording to replay: "+strings.Join(terminalconsole.Recordings(), ", "))
 	linger := flags.Duration("linger", defaultLinger, "keep the fixture session open this long after the recording's end, such as 30s; 0 ends it as recorded")
+	attach := flags.String("attach", "", "show a live scratch session: the holder's runtime folder, which holds attach.sock (provisional, for a scratch agent only)")
+	ticketFile := flags.String("ticket-file", "", "with --attach: a 0600 file the single-use attach ticket is read from each time one is needed")
+	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
+	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
 		flags.SetOutput(errout)
@@ -65,9 +102,9 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	}
 	// The default is not a flag default: the flag package prints a string default
 	// quoted, as "ctrl+\\", which the flag then refuses.
-	given := false
-	flags.Visit(func(f *flag.Flag) { given = given || f.Name == "return-key" })
-	if !given {
+	given := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	if !given["return-key"] {
 		*returnKey = terminalconsole.DefaultReturnKey.Spec()
 	}
 	key, err := terminalconsole.ParseReturnKey(*returnKey)
@@ -77,17 +114,82 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 		usage()
 		return cfg, 2, false
 	}
-	if !slices.Contains(terminalconsole.Recordings(), *recording) {
-		fmt.Fprintln(errout, "error: --recording must be one of: "+strings.Join(terminalconsole.Recordings(), ", "))
+	usageError := func(msg string) (config, int, bool) {
+		fmt.Fprintln(errout, "error: "+msg)
 		usage()
-		return cfg, 2, false
+		return config{}, 2, false
+	}
+	if !slices.Contains(terminalconsole.Recordings(), *recording) {
+		return usageError("--recording must be one of: " + strings.Join(terminalconsole.Recordings(), ", "))
 	}
 	if *linger < 0 || *linger > maxLinger {
-		fmt.Fprintln(errout, "error: --linger must be between 0 and 1h")
-		usage()
-		return cfg, 2, false
+		return usageError("--linger must be between 0 and 1h")
 	}
-	return config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger}}, 0, true
+	cfg = config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger}}
+	if !given["attach"] && !given["ticket-file"] {
+		if given["viewer"] || given["shift-enter"] {
+			return usageError("--viewer and --shift-enter need --attach")
+		}
+		return cfg, 0, true
+	}
+	// A live session replaces the fixture: nothing of the fixture's flags
+	// applies to it.
+	switch {
+	case !given["attach"] || !given["ticket-file"]:
+		return usageError("--attach and --ticket-file are used together")
+	case *demo || given["recording"] || given["linger"]:
+		return usageError("--attach cannot be used with --demo, --recording or --linger")
+	case *attach == "" || *ticketFile == "":
+		return usageError("--attach and --ticket-file need a path")
+	case strings.ContainsRune(*attach, 0) || strings.ContainsRune(*ticketFile, 0):
+		return usageError("--attach and --ticket-file need a path without a NUL byte")
+	}
+	socket := filepath.Join(*attach, attachSocketName)
+	if len(socket) > maxSocketPath {
+		return usageError("--attach: the socket path is " + strconv.Itoa(len(socket)) + " bytes; a unix socket address holds at most " + strconv.Itoa(maxSocketPath))
+	}
+	ac := attachConfig{socket: socket, ticketFile: *ticketFile, viewer: *viewer}
+	i := slices.IndexFunc(shiftEnters, func(e leadattach.ShiftEnter) bool { return e.String() == *shiftEnter })
+	if i < 0 {
+		return usageError("--shift-enter must be one of: " + strings.Join(shiftEnterNames(), ", "))
+	}
+	ac.shiftEnter = shiftEnters[i]
+	cfg.attach = &ac
+	return cfg, 0, true
+}
+
+func shiftEnterNames() []string {
+	var names []string
+	for _, e := range shiftEnters {
+		names = append(names, e.String())
+	}
+	return names
+}
+
+// attachModel returns the console for a live session: the cockpit with the
+// attach client as its source. The command line and the tests both make it
+// here. It is the one place this command names the client; the client owns
+// the socket.
+func attachModel(cfg config) *terminalconsole.Model {
+	a := cfg.attach
+	mode := leadattach.ModeWriter
+	if a.viewer {
+		mode = leadattach.ModeViewer
+	}
+	o := cfg.options
+	// The presence check keeps the console from dialling the holder while the
+	// ticket file is empty or refused, and gives the status the reason of a
+	// refusal.
+	tickets, ready := leadattach.FileTicketSource(a.ticketFile)
+	o.Live = leadattach.New(leadattach.Config{
+		Socket:      a.socket,
+		Mode:        mode,
+		Name:        clientName,
+		Tickets:     tickets,
+		TicketReady: ready,
+		ShiftEnter:  a.shiftEnter,
+	})
+	return terminalconsole.NewWithOptions(nil, o)
 }
 
 func run(args []string, out, errout io.Writer) int {
@@ -95,11 +197,19 @@ func run(args []string, out, errout io.Writer) int {
 	if !ok {
 		return code
 	}
-	if !cfg.demo {
+	var model *terminalconsole.Model
+	switch {
+	case cfg.attach != nil:
+		model = attachModel(cfg)
+	case cfg.demo:
+		model = terminalconsole.NewWithOptions(terminalconsole.Fixture{}, cfg.options)
+	default:
 		fmt.Fprintln(errout, "Terminal console backend is unavailable. Use --demo to inspect the read-only fixture.")
 		return 1
 	}
-	model := terminalconsole.NewWithOptions(terminalconsole.Fixture{}, cfg.options)
+	// Close ends the attach client's connection with a Detach, so that the
+	// holder sees a clean detach. Quitting from the console closes it first;
+	// a second Close does nothing.
 	defer model.Close()
 	program := tea.NewProgram(model, tea.WithOutput(out))
 	_, err := program.Run()

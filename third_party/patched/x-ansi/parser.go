@@ -54,6 +54,12 @@ type Parser struct {
 	// strUtf8 is the number of UTF-8 continuation bytes still expected in
 	// the data of the current string sequence (OSC, DCS, SOS, PM, APC).
 	strUtf8 int
+
+	// cut is true while the current string sequence has lost data because
+	// the data buffer was full, and truncated counts the string sequences
+	// that did.
+	cut       bool
+	truncated uint64
 }
 
 // NewParser returns a new parser with the default settings.
@@ -83,6 +89,16 @@ func (p *Parser) SetDataSize(size int) {
 		p.dataLen = -1
 	}
 	p.data = make([]byte, size)
+}
+
+// Truncated returns the number of string sequences (OSC, DCS, SOS, PM and
+// APC) that lost data, since the parser was created, because their data did
+// not fit in the data buffer. The rest of such a string is dropped, and the
+// handler gets the data that fitted. A string is counted once, when its first
+// byte is dropped, even if it has not ended yet. A parser with an unlimited
+// data buffer counts none.
+func (p *Parser) Truncated() uint64 {
+	return p.truncated
 }
 
 // Params returns the list of parsed packed parameters.
@@ -131,6 +147,7 @@ func (p *Parser) Reset() {
 	p.clear()
 	p.state = parser.GroundState
 	p.strUtf8 = 0
+	p.cut = false
 }
 
 // clear clears the parser parameters and command.
@@ -342,6 +359,7 @@ func (p *Parser) performAction(action parser.Action, state parser.State, b byte)
 		}
 
 	case parser.StartAction:
+		p.cut = false
 		if p.dataLen < 0 && p.data != nil {
 			p.data = p.data[:0]
 		} else {
@@ -364,11 +382,14 @@ func (p *Parser) performAction(action parser.Action, state parser.State, b byte)
 
 		if p.dataLen < 0 {
 			p.data = append(p.data, b)
-		} else {
-			if p.dataLen < len(p.data) {
-				p.data[p.dataLen] = b
-				p.dataLen++
-			}
+		} else if p.dataLen < len(p.data) {
+			p.data[p.dataLen] = b
+			p.dataLen++
+		} else if !p.cut {
+			// The buffer is full: the byte is dropped, and so is the rest of
+			// the string.
+			p.cut = true
+			p.truncated++
 		}
 
 	case parser.DispatchAction:

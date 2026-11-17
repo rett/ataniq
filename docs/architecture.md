@@ -27,13 +27,17 @@ boundaries. The core must not load arbitrary executable packs in-process.
 Provider-specific capabilities use namespaced, validated extensions.
 Declared support and independently observed support are recorded separately.
 
-Session hosting is decided by an attended spike, and its design is written
-after the spike. Sandbox qualification comes before any Ataniq-managed lead. A
-provider's remote control stays an optional launch profile during the
-transition, and a Codex lead is an interactive `codex` in its own session.
-Codex is the first live provider target, subject to version-specific capability
-and security evidence; qargi integration is limited to qualified public APIs.
-Unknown or disconnected state must remain explicit.
+Session hosting for a lead run as a terminal program follows the amendment in
+[runtime](design/runtime.md#lifecycle) and the one in the
+[client protocol](design/client-protocol.md#terminal-data-plane): a per-lead
+holder owns the PTY and a console attaches to it. Only a provisional,
+scratch-only holder and attach client exist; see
+[the lead holder guide](lead-holder.md). Sandbox qualification comes before any
+Ataniq-managed lead. A provider's remote control stays an optional launch
+profile during the transition, and a Codex lead is an interactive `codex` in its
+own session. Codex is the first live provider target, subject to version-specific
+capability and security evidence; qargi integration is limited to qualified
+public APIs. Unknown or disconnected state must remain explicit.
 The [lead sandbox guide](lead-sandbox.md) describes the sandbox profile for a
 managed lead as a proposal, unqualified; nothing uses it yet.
 

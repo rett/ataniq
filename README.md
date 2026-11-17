@@ -40,6 +40,8 @@ coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
 qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
+A provisional scratch-only lead holder and its attach path are described in
+[the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
 for the sandbox of a managed lead; nothing uses it yet.
 
@@ -58,8 +60,11 @@ These decisions describe the planned design.
   service and worker connections. Authorization is planned to be project-scoped.
 - Versioned feature packs for providers, services, tools, authentication,
   session backends, and project-management integrations.
-- Session hosting is decided by an attended spike, and its design is written
-  after the spike. Sandbox qualification comes before any Ataniq-managed lead.
+- Session hosting follows the amendments in [runtime](docs/design/runtime.md#lifecycle)
+  and the [client protocol](docs/design/client-protocol.md#terminal-data-plane);
+  the holder and attach path built so far are provisional, scratch-only and
+  described in [the lead holder guide](docs/lead-holder.md). Sandbox
+  qualification comes before any Ataniq-managed lead.
 - qargi for governed project development and development evidence.
 - Permissions-based bidirectional federation for project coordination, task
   exchange, communications, and permission-aware task load balancing between

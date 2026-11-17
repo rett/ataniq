@@ -9,6 +9,11 @@
 // An import guard test keeps the package away from every client, mutation,
 // process and network package.
 //
+// With Options.Live set the same cockpit shows a live scratch session that a
+// holder keeps, whose bytes come from a LiveSource: an interface this package
+// defines and another package implements, because this one may not open a
+// socket. See live.go.
+//
 // With a window of at least MinCols by MinRows the console draws the cockpit:
 // three panes, a timeline and a key bar. Below that it falls back to
 // single-column pages.
@@ -161,6 +166,12 @@ func NewWithOptions(source Source, o Options) *Model {
 	m := &Model{theme: o.Theme, page: "projects", opts: o}
 	m.after = tea.Tick
 	m.focus = consoleFocus
+	if o.Live != nil {
+		// A live session shows only what the source reports: the snapshot of
+		// the fixture projection, if one was given, is not read.
+		m.initLive(o.Live)
+		return m
+	}
 	if source == nil {
 		m.startSession()
 		return m
@@ -237,9 +248,18 @@ type Options struct {
 	// session has focus. Nil discards it, which is what the fixture console
 	// does.
 	Input sessionpane.InputSink
+	// Live is a live session source. Nil means the fixture replay. With a
+	// source the console shows a live scratch session through a holder: the
+	// snapshot, Recording, Linger and Input are not used, the session's input
+	// goes to the sink the source returns, and nothing of the fixture is
+	// shown as if it were live data. See LiveSource.
+	Live LiveSource
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.live.begun {
+		m.refreshLive()
+	}
 	switch v := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = min(4096, max(0, v.Width))
@@ -263,6 +283,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// dropped.
 	case resizeMsg:
 		m.onResize(v)
+	case liveMsg:
+		return m, m.onLive()
+	case liveGapMsg:
+		return m, m.waitLive()
 	}
 	return m, nil
 }
@@ -271,6 +295,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // cockpit's minimum size.
 func (m *Model) handleFallbackKey(v tea.KeyPressMsg) tea.Cmd {
 	key := v.String()
+	if m.live.on() {
+		// The live session's one page has nothing to navigate.
+		if key == "q" || key == "ctrl+c" {
+			return m.quit()
+		}
+		return nil
+	}
 	switch key {
 	case "q", "ctrl+c":
 		return m.quit()
@@ -350,6 +381,9 @@ func (m *Model) quit() tea.Cmd {
 }
 
 func (m *Model) lines() []string {
+	if m.live.on() {
+		return m.liveLines()
+	}
 	lines := []string{"ATANIQ / DEMO FIXTURE", "Read-only fixture; no live backend", ""}
 	if len(m.projects) == 0 {
 		return append(lines, "No projects")
@@ -403,6 +437,9 @@ func (m *Model) lines() []string {
 	return lines
 }
 func (m *Model) View() tea.View {
+	if m.live.begun {
+		m.refreshLive()
+	}
 	if m.width <= 0 || m.height <= 0 {
 		return m.newView("")
 	}
