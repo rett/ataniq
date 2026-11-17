@@ -15,6 +15,12 @@ The [guarded dispatch journal](journal.md) documents the implemented internal
 offline Linux journal, its durable attempt guards, retained receipt evidence,
 crash/reopen tests and qualification limits.
 
+Two amendments of 2026-11-16 (owner decision Q20 of the lead-hosting design)
+cover a lead hosted as a terminal program: its `ready` state in
+[runtime](runtime.md), and its attach stream as a terminal data plane in
+[client protocol](client-protocol.md). The holder and attach client that
+implement them are provisional and unqualified.
+
 The [application command contracts](application-contracts.md) document the
 implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.

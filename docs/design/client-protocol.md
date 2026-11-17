@@ -28,6 +28,43 @@ Both transports apply identical checks and produce the same receipts and events.
 Inputs have size limits; rejection occurs before durable admission, with a
 machine-readable reason. Limits and supported protocol versions are advertised.
 
+## Terminal data plane
+
+Amended 2026-11-16 (owner decision Q20 of the lead-hosting design, section
+0.4). The holder that owns a terminal-hosted lead's PTY and the attach client
+that implement this section are provisional and unqualified; see
+[runtime](runtime.md) for the lead's `ready` state.
+
+The attach stream of a terminal-hosted lead is a terminal data plane, not a
+second command path. It carries terminal output to a console and the writer's
+typed input back, and nothing else. Every other mutation stays a typed command
+with a command ID under the rules above; nothing sent on the attach stream is a
+command, an approval or an authority. The stream grants no approval authority
+by connecting to a conversation, as [approvals](approvals.md) states.
+
+The stream is opened only with a single-use ticket that the typed contract
+issues. A console asks with a typed command carrying a command ID, the lead and
+the role wanted, writer or viewer. The ticket is bound to that lead, its
+execution epoch and that role, and expires after a short time; a ticket that is
+used, expired or bound to another lead, epoch or role is refused and the
+refusal is recorded. The holder accepts a connection only with a valid ticket.
+
+There is at most one writer and one read-only viewer, and no takeover. A writer
+ticket is issued only while there is no writer. A writer is replaced only by a
+typed command, recorded like any other, that removes it; the removed client is
+told and becomes the viewer or is closed. Input from the viewer is refused and
+counted, never forwarded. Detaching never ends the lead, and a writer that
+disconnects leaves the lead with no writer; nothing is typed on its behalf.
+
+Typed writer input is the owner's direct words in the sense of
+[approvals](approvals.md). The same limit applies as in [security](security.md)
+for same-user execution: neither the ticket nor the peer check tells the
+owner's console from another unsandboxed process of the same OS user, which
+could ask for a ticket or drive the console or the daemon. Version 1 accepts
+that limit. It records every writer change with the client and shows it as a
+notice in every attached pane. A separate OS user for the console and daemon is
+the exit, and it is not part of version 1.
+
 ## Events, replay and snapshots
 
 Events carry a schema version, stable event ID, authority and project, resource
@@ -122,6 +159,17 @@ Use two enrolled clients, a deterministic journal and both transports:
    reconnect. Assert consumed/uncertain state and no second effect. Change the
    payload, revision or epoch, or expire or revoke the grant before preparation:
    assert dispatch is denied and an old provider ceremony cannot authorize it.
+
+10. Attach to a terminal-hosted lead with no ticket, a used ticket, an expired
+    ticket, and a ticket for another lead, epoch or role. Assert each is refused
+    and recorded. With a writer attached, ask for a second writer ticket and
+    assert none is issued; ask for a viewer ticket and assert it is issued.
+    Send input from the viewer and assert it is refused and counted, with
+    nothing reaching the terminal.
+11. Replace the writer by the typed command. Assert it is recorded with its
+    command ID and the client, the removed client's input is refused afterwards,
+    and every attached pane shows the notice. Send a command, an approval and a
+    decision on the attach stream and assert none takes effect.
 
 These are test specifications; transport, provider and UI conformance remain
 unvalidated. Desktop and phone sharing through unified clients must be tested;

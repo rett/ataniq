@@ -41,6 +41,24 @@ checks block dispatch. Report provider exit even if a shell or runner survives.
 Connection loss makes readiness unknown until reconciled. A resumed provider
 conversation is not proof that an interrupted tool had no external effect.
 
+Amended 2026-11-16 (owner decision Q20 of the lead-hosting design, section
+0.4): for a lead hosted as a terminal program, meaning the agent's own TUI
+running on a PTY that an Ataniq holder owns, there is no provider handshake.
+`ready` for such a lead is defined by Ataniq's own observation of the hosted
+terminal: the holder is running for the lead's current epoch, the terminal
+stream is open, and the screen is recognised as an idle composer by the
+recogniser for that runtime and version. It is labelled an Ataniq observation,
+never a provider report, and evidence records it as one. The screen gates
+delivery into that one agent only. It is never proof of health, authority or
+completion, and a title or screen is text the agent controls. A screen the
+recogniser does not know, or cannot classify, is not `ready`: the answer to
+"cannot tell" is "not ready", and a lead whose recogniser, runtime or version
+is unqualified stays blocked from dispatch. Losing the terminal stream, a
+holder for another epoch or a recogniser that no longer matches ends `ready`
+like any lost connection, and readiness is unknown until reconciled. The
+holder and the attach client that implement this amendment are provisional and
+unqualified.
+
 Bootstrap is a durable per-conversation/version operation: record its intent
 and identity before delivery and completion evidence afterward. Reconnect or
 restart must not silently insert it again. If the provider cannot prove whether
@@ -154,6 +172,7 @@ the required result after restart or reconciliation.
 | Before durable launch intent | No unit is authorized or started. |
 | Intent saved, launch response lost | Inspect the same unit identity; adopt only a matching epoch, with no second launch. |
 | Runner dies before provider readiness | Report failed or unknown readiness; dispatch nothing. |
+| Terminal-hosted lead, screen cannot be classified | Not `ready`; dispatch nothing. The answer to "cannot tell" is "not ready". |
 | Bootstrap intent saved, delivery unknown | Mark uncertain; do not send bootstrap or dependent input again without a recorded disposition. |
 | Command accepted, before dispatch | Recover the same queued command in FIFO order. |
 | Provider receives command, acknowledgement lost | Mark uncertain; no automatic duplicate dispatch. |
@@ -171,4 +190,10 @@ not completed. Disconnect authority after a turn starts, while a bounded tool
 is running and a child, iteration, retry and queued operation are pending:
 assert the tool may finish and none of the pending effects starts. Restore
 authority and assert each requires a fresh check. A provider unable to enforce
-that boundary is unsupported. These are specifications, not executed checks.
+that boundary is unsupported. For a terminal-hosted lead (the amendment under
+Lifecycle), present a screen that is an idle composer and assert `ready`,
+recorded as an Ataniq observation and not a provider report. Then present a
+dialog, a running task, an unknown screen, a closed terminal stream and a
+holder for another epoch, and assert each is not `ready` and dispatches
+nothing. Present an idle composer on a runtime or version without a qualified
+recogniser and assert the same. These are specifications, not executed checks.
