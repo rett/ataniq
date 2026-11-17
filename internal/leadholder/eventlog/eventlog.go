@@ -11,7 +11,11 @@
 // [Fields] is a struct of small typed values. It has no field that takes input
 // bytes or screen text, no []byte, no free map[string]any and no interface.
 // Every string is capped, and a code-like string (reason, state, digest,
-// counter name) is also restricted to a small character set.
+// counter name, message identity, sender, outcome, guard reading, command
+// identity) is also restricted to a small character set. The injection record
+// of design 1.7 has its own typed fields: MessageID, Sender, Outcome, Guard
+// (a short list of codes) and Digest; CommandID names the control command that
+// caused an event.
 //
 // Two checks in the tests keep it that way (design case H14). One freezes the
 // exported fields of [Event] and [Fields], by name, type and JSON tag, against
@@ -108,6 +112,14 @@ const (
 	MaxDigest      = 128
 	MaxCounters    = 64
 	MaxCounterName = 64
+	// The injection record (design 1.7) and the command identity. They are
+	// codes, not text.
+	MaxMessageID  = 96
+	MaxSender     = 96
+	MaxOutcome    = 32
+	MaxGuardCodes = 8  // entries in Fields.Guard
+	MaxGuardCode  = 32 // bytes in one entry
+	MaxCommandID  = 64
 )
 
 // Kind says what sort of statement an event is. The design records a provider
@@ -183,7 +195,18 @@ type Fields struct {
 	State         string            `json:"state,omitempty"`  // state name
 	Counters      map[string]uint64 `json:"counters,omitempty"`
 	Digest        string            `json:"digest,omitempty"` // digest of something, never the thing
-	ExitStatus    *int              `json:"exit_status,omitempty"`
+	// The record of an injection, design 1.7: the identity of the message
+	// in the lead's conversation, who sent it, what the guards read and
+	// what came of it. Each is a code, never the message text; the digest
+	// above stands for the text.
+	MessageID string   `json:"message_id,omitempty"`
+	Sender    string   `json:"sender,omitempty"`
+	Outcome   string   `json:"outcome,omitempty"`
+	Guard     []string `json:"guard,omitempty"` // guard readings, at most MaxGuardCodes codes
+	// CommandID is the identity of the control command that caused the
+	// event, a token of at most MaxCommandID bytes.
+	CommandID  string `json:"command_id,omitempty"`
+	ExitStatus *int   `json:"exit_status,omitempty"`
 	// The three facts of design 1.4, each set only when known.
 	StreamEnded *bool `json:"stream_ended,omitempty"`
 	TUIExited   *bool `json:"tui_exited,omitempty"`
@@ -219,6 +242,7 @@ type Stats struct {
 	Truncated       uint64 // string fields cut to their cap
 	Sanitized       uint64 // code-like strings with characters replaced
 	CountersDropped uint64 // counter entries dropped over MaxCounters
+	GuardDropped    uint64 // guard readings dropped over MaxGuardCodes
 }
 
 type sink interface {
@@ -452,6 +476,19 @@ func (l *Log) bound(f Fields) Fields {
 	f.Reason = l.code(f.Reason, MaxReason)
 	f.State = l.code(f.State, MaxState)
 	f.Digest = l.code(f.Digest, MaxDigest)
+	f.MessageID = l.code(f.MessageID, MaxMessageID)
+	f.Sender = l.code(f.Sender, MaxSender)
+	f.Outcome = l.code(f.Outcome, MaxOutcome)
+	f.CommandID = l.code(f.CommandID, MaxCommandID)
+	if len(f.Guard) > 0 {
+		n := min(len(f.Guard), MaxGuardCodes)
+		g := make([]string, n)
+		for i := range g {
+			g[i] = l.code(f.Guard[i], MaxGuardCode)
+		}
+		l.stats.GuardDropped += uint64(len(f.Guard) - n)
+		f.Guard = g
+	}
 	if f.ClientPID < 0 {
 		f.ClientPID = 0
 	}

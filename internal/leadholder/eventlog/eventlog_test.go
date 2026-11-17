@@ -479,8 +479,13 @@ func worst() Fields {
 		Role: ctl(MaxRole), Epoch: ctl(MaxEpoch), ClientName: ctl(MaxClientName),
 		ClientPID: 1<<62 - 1, ClientCommand: ctl(MaxCommandLine), Cols: 1<<62 - 1, Rows: 1<<62 - 1,
 		Reason: ctl(MaxReason), State: ctl(MaxState), Digest: ctl(MaxDigest),
+		MessageID: ctl(MaxMessageID), Sender: ctl(MaxSender), Outcome: ctl(MaxOutcome),
+		CommandID:  ctl(MaxCommandID),
 		ExitStatus: &exit, StreamEnded: &yes, TUIExited: &yes, TreeGone: &yes,
 		Counters: map[string]uint64{},
+	}
+	for i := 0; i < 2*MaxGuardCodes; i++ {
+		f.Guard = append(f.Guard, ctl(MaxGuardCode))
 	}
 	for i := 0; i < 2*MaxCounters; i++ {
 		f.Counters[fmt.Sprintf("%02d%s", i, strings.Repeat("n", MaxCounterName))] = 1<<64 - 1
@@ -615,6 +620,76 @@ func TestCountersBounded(t *testing.T) {
 	e = readAll(t, dir)[1]
 	if e.Cols != 0 || e.Rows != 0 || e.ClientPID != 0 {
 		t.Fatalf("%+v", e)
+	}
+}
+
+func TestInjectionRecordAndCommandID(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	in := Fields{
+		MessageID: "msg:01J8ZK3-ab", Sender: "proj/lead", Outcome: "accepted",
+		Guard: []string{"idle=yes", "prompt=ready", "queue=0"}, CommandID: "cmd-0001", Digest: "sha256:ab12",
+	}
+	mustAppend(t, l, KindAtaniqObservation, EventInject, in)
+	in.Guard[0] = "changed"
+	e := readAll(t, dir)[0]
+	want := []string{"idle=yes", "prompt=ready", "queue=0"}
+	if e.MessageID != "msg:01J8ZK3-ab" || e.Sender != "proj/lead" || e.Outcome != "accepted" ||
+		e.CommandID != "cmd-0001" || !reflect.DeepEqual(e.Guard, want) {
+		t.Fatalf("%+v", e)
+	}
+	if s := l.Stats(); s != (Stats{Written: 1}) {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestInjectionRecordFieldsAreCodes(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	spoken := "hunter2 typed by the owner\n\x1b[31m"
+	long := func(n int) string { return strings.Repeat("a", n+10) }
+	mustAppend(t, l, KindAtaniqObservation, EventInject, Fields{
+		MessageID: long(MaxMessageID), Sender: long(MaxSender), Outcome: long(MaxOutcome),
+		CommandID: long(MaxCommandID), Guard: []string{spoken, long(MaxGuardCode)},
+	})
+	e := readAll(t, dir)[0]
+	for name, c := range map[string]struct {
+		got string
+		max int
+	}{
+		"MessageID": {e.MessageID, MaxMessageID}, "Sender": {e.Sender, MaxSender},
+		"Outcome": {e.Outcome, MaxOutcome}, "CommandID": {e.CommandID, MaxCommandID},
+		"Guard[1]": {e.Guard[1], MaxGuardCode},
+	} {
+		if len(c.got) != c.max {
+			t.Errorf("%s has %d bytes, want %d", name, len(c.got), c.max)
+		}
+	}
+	if strings.ContainsAny(e.Guard[0], " \n\x1b[") || len(e.Guard[0]) != len(spoken) {
+		t.Fatalf("text kept in a code: %q", e.Guard[0])
+	}
+	if s := l.Stats(); s.Truncated != 5 || s.Sanitized != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestGuardListIsBoundedAndCounted(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	var g []string
+	for i := 0; i < MaxGuardCodes+5; i++ {
+		g = append(g, fmt.Sprintf("g%02d", i))
+	}
+	mustAppend(t, l, KindHolder, EventInject, Fields{Guard: g})
+	e := readAll(t, dir)[0]
+	if len(e.Guard) != MaxGuardCodes || e.Guard[0] != "g00" || e.Guard[MaxGuardCodes-1] != fmt.Sprintf("g%02d", MaxGuardCodes-1) {
+		t.Fatalf("%v", e.Guard)
+	}
+	if s := l.Stats(); s.GuardDropped != 5 {
+		t.Fatalf("stats %+v", s)
+	}
+	if len(g) != MaxGuardCodes+5 {
+		t.Fatal("the caller's slice was changed")
 	}
 }
 
@@ -779,6 +854,11 @@ func TestReadBounds(t *testing.T) {
 // bannedWords are fragments of a field name that would carry input or output.
 var bannedWords = []string{"text", "input", "output", "key", "byte", "screen", "data", "payload", "content", "paste", "stdin", "stdout", "frame", "line", "raw", "body", "message", "msg"}
 
+// nameIsReviewed lists string fields whose name has a banned word in it and
+// that a reviewer has accepted: MessageID is an identifier (a code of at most
+// MaxMessageID bytes), not message text.
+var nameIsReviewed = map[string]bool{"MessageID": true}
+
 // checkType returns the problems with typ and every type reachable from it.
 func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []string {
 	var bad []string
@@ -789,7 +869,10 @@ func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []stri
 		if typ.Elem().Kind() == reflect.Uint8 {
 			return append(bad, path+": byte slice or array")
 		}
-		return append(bad, path+": slice or array (not in the field set)")
+		if typ.Kind() == reflect.Slice && typ.Elem().Kind() == reflect.String {
+			return nil // a list of codes (Fields.Guard); the frozen list names it
+		}
+		return append(bad, path+": slice or array of something but strings")
 	case reflect.Chan, reflect.Func, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128, reflect.Float32, reflect.Float64:
 		return append(bad, path+": "+typ.Kind().String())
 	case reflect.Pointer:
@@ -811,6 +894,9 @@ func checkType(typ reflect.Type, path string, seen map[reflect.Type]bool) []stri
 				continue
 			}
 			names := []string{strings.ToLower(f.Name), strings.ToLower(f.Tag.Get("json"))}
+			if nameIsReviewed[f.Name] && f.Type.Kind() == reflect.String {
+				names = nil
+			}
 			for _, n := range names {
 				for _, w := range bannedWords {
 					if strings.Contains(n, w) {
@@ -849,13 +935,15 @@ func TestH14TheCheckCatchesWhatItShouldCatch(t *testing.T) {
 		"json tag": struct {
 			Role string `json:"key_pressed"`
 		}{},
-		"any":        struct{ Extra any }{},
-		"any map":    struct{ Extra map[string]any }{},
-		"nested":     struct{ Inner struct{ Data []byte } }{},
-		"pointer":    struct{ P *struct{ Bytes []byte } }{},
-		"string map": struct{ M map[string][]byte }{},
-		"slice":      struct{ L []string }{},
-		"unexported": struct{ hidden string }{},
+		"any":             struct{ Extra any }{},
+		"any map":         struct{ Extra map[string]any }{},
+		"nested":          struct{ Inner struct{ Data []byte } }{},
+		"pointer":         struct{ P *struct{ Bytes []byte } }{},
+		"string map":      struct{ M map[string][]byte }{},
+		"slice":           struct{ L []int }{},
+		"string array":    struct{ L [3]string }{},
+		"slice of slices": struct{ L [][]string }{},
+		"unexported":      struct{ hidden string }{},
 	}
 	for name, v := range cases {
 		typ := reflect.TypeOf(v)
@@ -920,6 +1008,11 @@ var reviewedFields = []frozenField{
 	{"State", "string", `json:"state,omitempty"`},
 	{"Counters", "map[string]uint64", `json:"counters,omitempty"`},
 	{"Digest", "string", `json:"digest,omitempty"`},
+	{"MessageID", "string", `json:"message_id,omitempty"`},
+	{"Sender", "string", `json:"sender,omitempty"`},
+	{"Outcome", "string", `json:"outcome,omitempty"`},
+	{"Guard", "[]string", `json:"guard,omitempty"`},
+	{"CommandID", "string", `json:"command_id,omitempty"`},
 	{"ExitStatus", "*int", `json:"exit_status,omitempty"`},
 	{"StreamEnded", "*bool", `json:"stream_ended,omitempty"`},
 	{"TUIExited", "*bool", `json:"tui_exited,omitempty"`},
