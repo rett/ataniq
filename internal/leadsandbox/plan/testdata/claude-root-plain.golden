@@ -106,5 +106,6 @@ false
 - no seccomp filter: none has been reviewed
 - identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested
 - report channel: the pass-fds step opens the holder's report path write-only as descriptor 3 after pasta, bubblewrap inherits it and the probe inside gets --report-fd 3; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows
+- bubblewrap keeps and sets PWD under --clearenv: the agent's environment is the allowlist plus PWD=/work/demo, the working folder
 - network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed
 - bubblewrap does not make the session (--new-session is never passed): the probe gives the agent its session and controlling terminal, so the launcher does not set a controlling terminal

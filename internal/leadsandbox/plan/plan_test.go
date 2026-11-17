@@ -225,7 +225,7 @@ func containsNote(notes []string, sub string) bool {
 func TestNotesInEveryPlan(t *testing.T) {
 	for _, in := range []profile.Inputs{fixture(profile.Claude), withSeccomp(fixture(profile.Codex))} {
 		p := mustBuild(t, in, options(in, nil))
-		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteSession} {
+		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteSession, NotePWD(p.WorkDir)} {
 			if !containsNote(p.Notes, want) {
 				t.Errorf("%s: note %q missing", in.Runtime, want)
 			}
@@ -241,6 +241,69 @@ func TestNotesInEveryPlan(t *testing.T) {
 				t.Errorf("a note claims qualification: %q", n)
 			}
 		}
+	}
+}
+
+func TestInsideEnvironmentHasPWD(t *testing.T) {
+	in := fixture(profile.Claude)
+	for _, dir := range []string{"", "/work/demo/sub", "/home/lead"} {
+		o := options(in, nil)
+		o.WorkDir = dir
+		p := mustBuild(t, in, o)
+		want := dir
+		if dir == "" {
+			want = "/work/demo"
+		}
+		env := InsideEnvironment(p)
+		if len(env) != len(p.Env)+1 {
+			t.Fatalf("workdir %q: %d variables, the allowlist has %d", dir, len(env), len(p.Env))
+		}
+		var seen, sorted = 0, true
+		for i, e := range env {
+			if e.Name == "PWD" {
+				seen++
+				if e.Value != want {
+					t.Errorf("PWD = %q, want %q", e.Value, want)
+				}
+			}
+			if i > 0 && env[i-1].Name >= e.Name {
+				sorted = false
+			}
+		}
+		if seen != 1 || !sorted {
+			t.Errorf("PWD seen %d times, sorted %v: %v", seen, sorted, env)
+		}
+		if !containsNote(p.Notes, "PWD="+want) {
+			t.Errorf("no note for PWD=%s: %q", want, p.Notes)
+		}
+		// The caller's list is not changed, and the start-up comparison
+		// agrees with exactly this environment.
+		for _, e := range p.Env {
+			if e.Name == "PWD" {
+				t.Fatal("PWD added to Plan.Env")
+			}
+		}
+		observed := make([]string, 0, len(env))
+		for _, e := range env {
+			observed = append(observed, e.Name+"="+e.Value)
+		}
+		if d, err := profile.DiffEnvironment(env, observed); err != nil || len(d) > 0 {
+			t.Errorf("diff against the inside environment: %v %v", d, err)
+		}
+		// Against the allowlist alone, PWD is the one difference.
+		d, err := profile.DiffEnvironment(p.Env, observed)
+		if err != nil || len(d) != 1 || d[0].Kind != profile.EnvUnexpected || d[0].Name != "PWD" {
+			t.Errorf("diff against the allowlist alone: %v %v", d, err)
+		}
+	}
+}
+
+func TestPWDInTheAllowlistIsRefused(t *testing.T) {
+	in := fixture(profile.Claude)
+	in.ExtraEnv = []profile.EnvVar{{Name: "PWD", Value: "/elsewhere"}}
+	_, err := Build(in, options(in, nil))
+	if r := refusal(t, err); r.Field != "environment" || !strings.Contains(r.Reason, "PWD") {
+		t.Errorf("refusal = %v", r)
 	}
 }
 

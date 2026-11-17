@@ -52,6 +52,14 @@
 // bubblewrap, gives the agent its session and controlling terminal (variant B
 // of the spike), so --new-session is never passed.
 //
+// # The environment inside
+//
+// The allowlist ([Plan.Env]) is set with --clearenv and --setenv. bubblewrap
+// keeps and sets PWD under --clearenv, so the agent sees the allowlist plus PWD
+// with the working folder as its value. [InsideEnvironment] gives that list,
+// which a start-up comparison uses; every plan carries a note ([NotePWD]), and
+// a profile that puts PWD in the allowlist is refused.
+//
 // # Nested sandboxes (owner decision R17)
 //
 // Nested sandboxes are allowed for now: neither --disable-userns nor

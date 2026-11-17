@@ -544,17 +544,17 @@ func (v *verifier) rest(p *Plan, in profile.Inputs, opt Options, workDir string)
 	if p.SetControllingTerminal {
 		v.add(ProbTerminal, "SetControllingTerminal is true: the probe makes the session")
 	}
-	v.notes(p, in, opt)
+	v.notes(p, in, opt, workDir)
 }
 
 // notes compares the notes with the exact set the inputs and the options give.
-func (v *verifier) notes(p *Plan, in profile.Inputs, opt Options) {
+func (v *verifier) notes(p *Plan, in profile.Inputs, opt Options, workDir string) {
 	table, err := in.Binds()
 	if err != nil {
 		return
 	}
 	want := map[string]int{}
-	for _, n := range notes(in, opt, leftOut(table, opt)) {
+	for _, n := range notes(in, opt, workDir, leftOut(table, opt)) {
 		want[n]++
 	}
 	have := map[string]int{}

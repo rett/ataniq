@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -164,7 +165,9 @@ type Plan struct {
 	Inner []string
 
 	// Env is the environment allowlist with values, sorted by name. The
-	// bubblewrap arguments set exactly these, after --clearenv.
+	// bubblewrap arguments set these after --clearenv. Bubblewrap also keeps
+	// and sets PWD (to the --chdir folder) under --clearenv, so the agent sees
+	// Env plus PWD: use [InsideEnvironment] for what a check inside expects.
 	Env []profile.EnvVar
 	// Files are the descriptors the pass-through step opens, in the order of
 	// PassFDs: the seccomp file when the inputs name one (read), then the
@@ -249,7 +252,7 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		Files:   files,
 		Digest:  digest,
 		WorkDir: workDir,
-		Notes:   notes(in, opt, leftOut(binds, opt)),
+		Notes:   notes(in, opt, workDir, leftOut(binds, opt)),
 	}
 	p.Argv = join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
 	if n := argvBytes(p.Argv); n > MaxArgvBytes {
@@ -311,6 +314,15 @@ func (o Options) check(in profile.Inputs) (string, error) {
 	}
 	if err := o.checkReport(in); err != nil {
 		return "", err
+	}
+	env, err := in.Environment()
+	if err != nil {
+		return "", err
+	}
+	for _, e := range env {
+		if e.Name == "PWD" {
+			return "", refuse("environment", "PWD is in the allowlist; bubblewrap sets PWD itself, to the working folder")
+		}
 	}
 	tree := profile.TreeInside(in.Project)
 	workDir := o.WorkDir
@@ -461,12 +473,30 @@ func optionalNote(b profile.Bind) string {
 	return fmt.Sprintf("optional %s %s left out: the caller says the host has no such path", what, b.Inside)
 }
 
+// NotePWD is the note about the variable bubblewrap sets itself: --clearenv
+// unsets every variable except PWD, and bubblewrap sets PWD to the working
+// folder, so the environment inside is the allowlist plus PWD.
+func NotePWD(workDir string) string {
+	return fmt.Sprintf("bubblewrap keeps and sets PWD under --clearenv: the agent's environment is the allowlist plus PWD=%s, the working folder", workDir)
+}
+
+// InsideEnvironment is the environment the agent is expected to see: the
+// allowlist of the plan plus PWD, which bubblewrap sets to the working folder,
+// sorted by name. The start-up assertion compares what it observes with this
+// list, not with Plan.Env alone.
+func InsideEnvironment(p *Plan) []profile.EnvVar {
+	env := append([]profile.EnvVar(nil), p.Env...)
+	env = append(env, profile.EnvVar{Name: "PWD", Value: p.WorkDir})
+	sort.Slice(env, func(i, j int) bool { return env[i].Name < env[j].Name })
+	return env
+}
+
 // noteReport is the note about the report channel.
 func noteReport(fd int) string {
 	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows", fd, fd)
 }
 
-func notes(in profile.Inputs, opt Options, left []string) []string {
+func notes(in profile.Inputs, opt Options, workDir string, left []string) []string {
 	n := []string{NoteShareNet, NoteNestedUserns}
 	if in.SeccompEnabled() {
 		n = append(n, fmt.Sprintf("seccomp file named by the caller (sha256 %s), opened read-only as descriptor %d by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter", in.SeccompSHA256, opt.SeccompFD))
@@ -478,7 +508,7 @@ func notes(in profile.Inputs, opt Options, left []string) []string {
 	} else {
 		n = append(n, "identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested")
 	}
-	n = append(n, noteReport(opt.ReportFD))
+	n = append(n, noteReport(opt.ReportFD), NotePWD(workDir))
 	n = append(n, "network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed", NoteSession)
 	return append(n, left...)
 }

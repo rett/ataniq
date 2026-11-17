@@ -260,6 +260,22 @@ func TestVerifyMutations(t *testing.T) {
 			p.PassFDs = p.PassFDs[:2]
 			p.PassFDs = append(p.PassFDs, "--")
 		}},
+		{"PWD note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.Contains(x, "PWD") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
+		{"PWD note for another folder", ProbNotes, false, func(t *testing.T, p *Plan) {
+			for i, x := range p.Notes {
+				if x == NotePWD(p.WorkDir) {
+					p.Notes[i] = NotePWD("/work/demo/other")
+				}
+			}
+		}},
 		{"report note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
 			var n []string
 			for _, x := range p.Notes {
