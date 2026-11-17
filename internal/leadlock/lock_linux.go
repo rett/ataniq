@@ -162,8 +162,9 @@ func (l *Lock) Held() bool {
 // File returns the open lock file so the daemon can pass the held descriptor
 // on, for example through exec.Cmd.ExtraFiles. It returns nil after Release.
 // The descriptor is close-on-exec; a process that receives a duplicate keeps
-// the lock until it too closes it, even after Release here. Do not write to
-// or truncate the file.
+// the lock until it too closes it, even after Release here. Do not write to,
+// truncate or close the file; call Release. Closing it drops the lock while
+// Held still reports true.
 func (l *Lock) File() *os.File {
 	l.mu.Lock()
 	defer l.mu.Unlock()
