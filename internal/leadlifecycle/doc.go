@@ -81,6 +81,16 @@
 // started again as instance n+1. After a daemon restart Reconcile keeps a
 // stalled coordinator stalled while its unit is live and ours.
 //
+// Reconcile treats a coordinator as it treats a lead, and also against its
+// parent, which it settles first in the same call. A coordinator whose parent's
+// epoch is no longer the one it recorded, or whose parent is not live, has
+// ended with its parent: with its unit proven absent it is ended (reason
+// parent-epoch-ended, with the proof); with the unit still loaded it is
+// reported orphan-coordinator and shown unknown, because Reconcile never
+// signals, and an explicit Stop ends it. After a reboot it is stopped, as a
+// lead is, and nothing is started. The lines of the report carry the kind of
+// the role and, for a coordinator, its feature and parent.
+//
 // A coordinator has no seat, no approval and is no
 // handoff target: nothing here gives it authority.
 //
