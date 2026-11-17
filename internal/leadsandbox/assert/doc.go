@@ -151,7 +151,15 @@
 //     some file systems are per subvolume (btrfs) and are stable across mount
 //     namespaces on one boot only: whether they match between the holder's
 //     reading and the probe's on a given host, a subvolume layout in
-//     particular, is a qualification item that nothing here shows. The other
+//     particular, is a qualification item that nothing here shows. The list
+//     holds the owner and holder paths and their ancestors, not their
+//     descendants, so a bind of a folder BELOW a listed path (say a folder
+//     under the owner's .ssh) taken from a file system that is not mounted at
+//     / (a separate /home, a btrfs subvolume) is found by neither comparison:
+//     its mount root does not start with the host path, and its identity is
+//     not in the list. That is a limit of the assertion, and a qualification
+//     item: nothing here shows whether a host has such a file system below an
+//     owner path. The other
 //     runtime's config folder is ok only when it is absent, or an empty
 //     folder that is not a mount point and has nothing mounted below it.
 //   - Assertion 7 shows that each of the three paths, and the
