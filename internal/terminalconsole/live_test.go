@@ -27,6 +27,10 @@ type fakeLive struct {
 	st       LiveStatus
 	notices  []LiveNotice
 	resizes  [][2]int
+	// deaf makes the holder ignore Resize: its size stays what the status
+	// says. Otherwise the holder answers a Resize with that size, and takes
+	// the size of the pane's area when the source starts.
+	deaf bool
 }
 
 func newFake(role LiveRole) *fakeLive {
@@ -44,6 +48,9 @@ func (f *fakeLive) Start(s LiveStart) (sessionpane.InputSink, error) {
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
+	if !f.deaf {
+		f.st.Cols, f.st.Rows = s.Cols, s.Rows
+	}
 	return f.sink, nil
 }
 
@@ -51,6 +58,9 @@ func (f *fakeLive) Resize(cols, rows int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resizes = append(f.resizes, [2]int{cols, rows})
+	if !f.deaf {
+		f.st.Cols, f.st.Rows = cols, rows
+	}
 }
 
 func (f *fakeLive) Status() LiveStatus {
@@ -393,6 +403,128 @@ func TestLiveKeysWithoutARoleAreNotSent(t *testing.T) {
 	}
 }
 
+// keyBar returns the bottom row of the window and the focus bar's second row.
+func (r *liveRig) keyBar() (keys, focus string) {
+	rows := r.rows()
+	l := r.m.layout()
+	return rows[len(rows)-1], rows[l.focus.Min.Y+2]
+}
+
+func TestLiveKeyBarIsHonestInSessionFocus(t *testing.T) {
+	const everyKey = "every key goes to the session"
+	for _, tc := range []struct {
+		name string
+		f    func() *fakeLive
+		then func(*fakeLive)
+		keys []string
+		bar  string
+	}{
+		{"writer", func() *fakeLive { return newFake(LiveWriter) }, nil,
+			[]string{everyKey, "Ctrl+\\ returns"}, "Every key goes to the session"},
+		{"viewer", func() *fakeLive { return newFake(LiveViewer) }, nil,
+			[]string{"read-only viewer: keys are not sent", "Ctrl+\\ returns"}, "not sent: read-only viewer"},
+		{"no role", func() *fakeLive { f := newFake(""); f.st.Conn = LiveConnecting; return f }, nil,
+			[]string{"no role yet: keys are not sent", "Ctrl+\\ returns"}, "not sent: no role yet"},
+		{"ended", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.End = LiveEnd{Stream: FactYes} }) },
+			[]string{"the session has ended: keys are not sent", "any key returns"}, "The session has ended"},
+		{"disconnected", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.Conn = LiveDisconnected }) },
+			[]string{"not connected: keys are not sent", "any key returns"}, "not sent: not connected"},
+		{"waiting for a ticket", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.Conn = LiveWaitingTicket }) },
+			[]string{"not connected: keys are not sent", "any key returns"}, "not sent: not connected"},
+	} {
+		f := tc.f()
+		r := newLiveRig(t, 140, 45, f, Options{})
+		if tc.then != nil {
+			tc.then(f)
+			r.pump()
+		}
+		r.focus()
+		keys, focus := r.keyBar()
+		for _, want := range tc.keys {
+			if !strings.Contains(keys, want) {
+				t.Fatalf("%s: key bar %q lacks %q", tc.name, keys, want)
+			}
+		}
+		if !strings.Contains(focus, tc.bar) {
+			t.Fatalf("%s: focus bar %q lacks %q", tc.name, focus, tc.bar)
+		}
+		// The bar says what the keys then do.
+		r.typ("x")
+		if tc.name == "writer" {
+			if r.m.focus != sessionFocus || len(f.sink.keys) != 1 {
+				t.Fatalf("writer: focus %v keys %v", r.m.focus.name(), f.sink.keys)
+			}
+			continue
+		}
+		if len(f.sink.keys) != 0 {
+			t.Fatalf("%s: sent %v", tc.name, f.sink.keys)
+		}
+		anyKey := strings.Contains(keys, "any key returns")
+		if anyKey != (r.m.focus == consoleFocus) {
+			t.Fatalf("%s: bar %q, focus after a key %v", tc.name, keys, r.m.focus.name())
+		}
+		if !anyKey && r.m.focus != sessionFocus {
+			t.Fatalf("%s: a key left the session focus", tc.name)
+		}
+		if strings.Contains(keys, everyKey) || strings.Contains(focus, "Every key") {
+			t.Fatalf("%s: a bar says every key is sent: %q, %q", tc.name, keys, focus)
+		}
+	}
+}
+
+func TestLiveTheReadOnlyNoticeIsShownAfterEachLossOfTheWriterRole(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	r.focus()
+	readOnly := func() int {
+		n := 0
+		for _, note := range r.m.live.notices {
+			if note.code == noticeReadOnly {
+				n++
+			}
+		}
+		return n
+	}
+	r.typ("a")
+	if readOnly() != 1 || !strings.Contains(r.m.notice, "Read-only viewer") {
+		t.Fatalf("first: %d notices, notice %q", readOnly(), r.m.notice)
+	}
+	r.m.notice = ""
+	r.typ("b")
+	if readOnly() != 1 || r.m.notice != "" {
+		t.Fatalf("repeated within one role: %d notices", readOnly())
+	}
+	// The client becomes the writer and types, then loses the role.
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	r.typ("c")
+	if got := f.sink.keys; len(got) != 1 || got[0] != "c" {
+		t.Fatalf("keys %v", got)
+	}
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	r.m.notice = ""
+	r.typ("d")
+	if readOnly() != 2 || !strings.Contains(r.m.notice, "Read-only viewer") {
+		t.Fatalf("second loss of the role: %d notices, notice %q", readOnly(), r.m.notice)
+	}
+	if len(f.sink.keys) != 1 {
+		t.Fatalf("a viewer sent %v", f.sink.keys)
+	}
+	// Once more, for a paste, after losing the role again.
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	f.set(func(s *LiveStatus) { s.Role = "" })
+	r.pump()
+	r.m.onPaste("p")
+	if readOnly() != 3 || len(f.sink.pastes) != 0 {
+		t.Fatalf("third: %d notices, pastes %v", readOnly(), f.sink.pastes)
+	}
+}
+
 func TestLiveModesFromTheStatusDriveTheOuterTerminal(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 140, 45, f, Options{})
@@ -411,7 +543,8 @@ func TestLiveModesFromTheStatusDriveTheOuterTerminal(t *testing.T) {
 	})
 	r.pump()
 	v = r.m.View()
-	if v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus || v.DisableBracketedPasteMode {
+	// Focus reports are not asked for: the sink has no way to take them.
+	if v.MouseMode != tea.MouseModeAllMotion || v.ReportFocus || v.DisableBracketedPasteMode {
 		t.Fatalf("view does not follow the status: mouse %v focus %v paste off %v", v.MouseMode, v.ReportFocus, v.DisableBracketedPasteMode)
 	}
 	// Console focus asks for none of it, and keeps bracketed paste on so that
@@ -556,6 +689,112 @@ func TestLiveANewWriterAsksForItsSizeAtOnce(t *testing.T) {
 	r.key(zoomPress)
 	if len(f.sizes()) != 1 {
 		t.Fatalf("sent %v", f.sizes())
+	}
+}
+
+// settle runs every timer the model has scheduled, such as the resize
+// debounce.
+func (r *liveRig) settle() {
+	r.t.Helper()
+	r.run(24 * time.Hour)
+}
+
+func TestLiveAWriterThatGetsTheRoleBackAsksForItsSize(t *testing.T) {
+	// The holder is resized by another writer while this client is a viewer;
+	// the client's own window has not changed.
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	l := r.m.layout()
+	area := [2]int{l.inner.Dx(), l.inner.Dy()}
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	f.start.Pane.Resize(60, 20)
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 60, 20 })
+	r.pump()
+	if len(f.sizes()) != 0 {
+		t.Fatalf("a viewer asked for a size: %v", f.sizes())
+	}
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	if got := f.sizes(); len(got) != 1 || got[0] != area {
+		t.Fatalf("the regained writer asked for %v, want %v", got, area)
+	}
+
+	// A writer whose holder already has its size asks for nothing.
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	if n := len(f.sizes()); n != 1 {
+		t.Fatalf("asked again for a size the holder has: %v", f.sizes())
+	}
+
+	// A holder that does not follow is asked again, with the same size, at
+	// each point of the rule, and nothing worse comes of it.
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 70, 25 })
+	r.key(zoomPress)
+	r.key(zoomPress)
+	got := f.sizes()
+	if len(got) != 3 || got[2] != area {
+		t.Fatalf("sizes %v", got)
+	}
+}
+
+func TestLiveAWriterWithAnUnknownHolderSizeAsksOnlyForANewSize(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 0, 0 })
+	r.pump()
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if len(f.sizes()) != 0 {
+		t.Fatalf("asked for the size already asked: %v", f.sizes())
+	}
+	r.key(zoomPress)
+	if len(f.sizes()) != 1 {
+		t.Fatalf("zoom: %v", f.sizes())
+	}
+}
+
+func TestLiveASizeWantedWhileTheConnectionWasDownIsSentWhenItIsBack(t *testing.T) {
+	for _, down := range []LiveConn{LiveDisconnected, LiveWaitingTicket} {
+		f := newFake(LiveWriter)
+		r := newLiveRig(t, 140, 45, f, Options{})
+		// The source keeps the role as last granted while the connection is
+		// down.
+		f.set(func(s *LiveStatus) { s.Conn, s.Reason = down, "gone" })
+		r.pump()
+		r.size(160, 55)
+		r.settle()
+		if len(f.sizes()) != 0 {
+			t.Fatalf("%v: asked while down: %v", down, f.sizes())
+		}
+		l := r.m.layout()
+		want := [2]int{l.inner.Dx(), l.inner.Dy()}
+		f.set(func(s *LiveStatus) { s.Conn, s.Reason = LiveAttached, "" })
+		r.pump()
+		if got := f.sizes(); len(got) != 1 || got[0] != want {
+			t.Fatalf("%v: after the reconnect asked %v, want %v", down, got, want)
+		}
+
+		// A window that did not change while down, on a holder that kept
+		// its size, asks for nothing.
+		f.set(func(s *LiveStatus) { s.Conn = down })
+		r.pump()
+		f.set(func(s *LiveStatus) { s.Conn = LiveAttached })
+		r.pump()
+		if n := len(f.sizes()); n != 1 {
+			t.Fatalf("%v: asked again: %v", down, f.sizes())
+		}
+
+		// A holder that changed its size while the connection was down is
+		// asked for the size too.
+		f.set(func(s *LiveStatus) { s.Conn = down })
+		r.pump()
+		f.set(func(s *LiveStatus) { s.Conn, s.Cols, s.Rows = LiveAttached, 90, 30 })
+		r.pump()
+		if got := f.sizes(); len(got) != 2 || got[1] != want {
+			t.Fatalf("%v: asked %v, want %v again", down, got, want)
+		}
 	}
 }
 
@@ -878,7 +1117,7 @@ func TestLiveShowsNoFixtureProjectionEvenWithASnapshot(t *testing.T) {
 			t.Fatalf("%q shown in live mode:\n%s", bad, v)
 		}
 	}
-	for _, want := range []string{"scratch-lead", "claude 2.1", "No daemon, no projects.", "check mismatches 0 · resyncs 0 · refused input 0", "80x24"} {
+	for _, want := range []string{"scratch-lead", "claude 2.1", "No daemon, no projects.", "check mismatches 0 · resyncs 0 · refused input 0", sizeText(f.start.Cols, f.start.Rows)} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q:\n%s", want, v)
 		}
@@ -889,11 +1128,20 @@ func TestLiveShowsNoFixtureProjectionEvenWithASnapshot(t *testing.T) {
 			t.Fatalf("evidence lacks %q:\n%s", want, ev)
 		}
 	}
-	// The tree has nothing to select.
-	m.Update(tabKey)
+	// The tree has nothing to select: its cursor, the selected project and
+	// lead, the focus and the picture stay what they were.
+	before := ansiStrip(m.View().Content)
+	cursor, project, lead := m.treeCursor, m.project, m.lead
+	m.pane = paneTree
 	m.Update(enterKey)
 	m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
-	_ = m.View()
+	m.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if m.treeCursor != cursor || m.project != project || m.lead != lead || m.focus != consoleFocus {
+		t.Fatalf("the tree moved: cursor %d project %d lead %d focus %v", m.treeCursor, m.project, m.lead, m.focus.name())
+	}
+	if after := ansiStrip(m.View().Content); after != before {
+		t.Fatalf("the tree changed the picture:\n%s\n--- was:\n%s", after, before)
+	}
 }
 
 func TestLiveCountersAndStatusAreShown(t *testing.T) {
@@ -909,6 +1157,121 @@ func TestLiveCountersAndStatusAreShown(t *testing.T) {
 	r.pump()
 	if v := r.m.View().Content; strings.Contains(v, "\x1b[31mad") || strings.Contains(v, "\x07") {
 		t.Fatalf("control bytes in the view: %q", v)
+	}
+}
+
+func TestLiveHolderCountersIdleAndTitleAreShownBounded(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	evidence := func() string { return strings.Join(textOf(r.m.evidenceLines(200)), "\n") }
+
+	// Before the holder says anything the idle state is unknown, and there
+	// are no counters beyond the three.
+	ev := evidence()
+	if !strings.Contains(ev, "idle state: unknown (not built)") || strings.Contains(ev, "more counters not shown") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	for _, idle := range []string{"unknown", "UNKNOWN", "", "\x1b"} {
+		f.set(func(s *LiveStatus) { s.Idle = idle })
+		r.pump()
+		if got := evidence(); !strings.Contains(got, "idle state: unknown (not built)") {
+			t.Fatalf("idle %q:\n%s", idle, got)
+		}
+	}
+	f.set(func(s *LiveStatus) { s.Idle = "wa\x1b[1mit" + strings.Repeat("i", 100) })
+	r.pump()
+	if got := r.m.live.st.Idle; len(got) > maxLiveIdle || strings.Contains(got, "\x1b") || !strings.HasPrefix(got, "wa[1mit") {
+		t.Fatalf("idle %q", got)
+	}
+	f.set(func(s *LiveStatus) { s.Idle = "busy" })
+	r.pump()
+	if got := evidence(); !strings.Contains(got, "idle state: busy") || strings.Contains(got, "not built") {
+		t.Fatalf("evidence:\n%s", got)
+	}
+
+	// Counters keep their order, and a list over the limit is cut and the
+	// cut is counted.
+	var many []LiveCounter
+	for i := range 100 {
+		many = append(many, LiveCounter{Name: fmt.Sprintf("counter-%02d", i), Value: uint64(i) * 1000})
+	}
+	many[1].Name = "a\x1b[31mb\x07" + strings.Repeat("n", 200)
+	many[2].Name = "\x1b"
+	f.set(func(s *LiveStatus) { s.Counters = many })
+	r.pump()
+	got := r.m.live.st.Counters
+	if len(got) != LiveCounterLimit || LiveCounterLimit != 32 {
+		t.Fatalf("%d counters kept, limit %d", len(got), LiveCounterLimit)
+	}
+	for i, c := range got {
+		if len(c.Name) > maxLiveCounterName || strings.ContainsAny(c.Name, "\x1b\x07") || c.Name == "" {
+			t.Fatalf("counter %d: %q", i, c.Name)
+		}
+		if c.Value != many[i].Value {
+			t.Fatalf("counter %d: value %d", i, c.Value)
+		}
+	}
+	if got[0].Name != "counter-00" || got[2].Name != "?" || got[31].Name != "counter-31" {
+		t.Fatalf("names %q %q %q", got[0].Name, got[2].Name, got[31].Name)
+	}
+	ev = evidence()
+	for _, want := range []string{"counter-00: 0", "counter-31: 31000", "68 more counters not shown (the limit is 32)"} {
+		if !strings.Contains(ev, want) {
+			t.Fatalf("evidence lacks %q:\n%s", want, ev)
+		}
+	}
+	if strings.Contains(ev, "counter-32") || strings.Index(ev, "counter-00") > strings.Index(ev, "counter-31") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	// The cockpit keeps its own copy.
+	many[0].Name = "changed"
+	if r.m.live.st.Counters[0].Name != "counter-00" {
+		t.Fatal("the cockpit keeps the source's slice")
+	}
+	// A list within the limit says nothing of a cut.
+	f.set(func(s *LiveStatus) { s.Counters = many[:3] })
+	r.pump()
+	if ev := evidence(); strings.Contains(ev, "not shown") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+}
+
+func TestLiveTitleIsTheHoldersOrThePanes(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	meta := func() string { return strings.Join(r.rows(), "\n") }
+	if v := meta(); !strings.Contains(v, "Title: none") {
+		t.Fatalf("no title:\n%s", v)
+	}
+	// The title the pane's emulator saw, when the holder gives none.
+	f.emit("\x1b]2;from the stream\x07")
+	r.pump()
+	if v := meta(); !strings.Contains(v, "Title: from the stream") {
+		t.Fatalf("pane title:\n%s", v)
+	}
+	f.set(func(s *LiveStatus) { s.Title = "ho\x1b[31mlder title" })
+	r.pump()
+	v := meta()
+	if !strings.Contains(v, "Title: ho[31mlder title") || strings.Contains(v, "from the stream") || strings.Contains(r.m.View().Content, "\x1b[31mlder") {
+		t.Fatalf("holder title:\n%s", v)
+	}
+	f.set(func(s *LiveStatus) { s.Title = strings.Repeat("t", 1000) })
+	r.pump()
+	if n := len(r.m.live.st.Title); n != maxLiveTitle {
+		t.Fatalf("title kept at %d bytes", n)
+	}
+}
+
+func TestLiveSaysAClientGetsTheVisibleScreenOnly(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	const want = "visible screen only"
+	if ev := strings.Join(textOf(r.m.evidenceLines(200)), "\n"); !strings.Contains(ev, want) || !strings.Contains(ev, "no scrollback") {
+		t.Fatalf("evidence:\n%s", ev)
+	}
+	r.key(tea.KeyPressMsg{Code: '?'})
+	if v := r.view(); !strings.Contains(v, want) {
+		t.Fatalf("help:\n%s", v)
 	}
 }
 
@@ -935,6 +1298,76 @@ func TestLiveSelectionAndCopyKeepWorking(t *testing.T) {
 	r.pump()
 	if r.m.sel.shown() {
 		t.Fatal("the selection stayed after the pane changed size")
+	}
+}
+
+// TestLiveASourceMayReplaceTheWholePaneAtAnyTime covers a source that
+// resizes the pane and rewrites all its content at once, as a snapshot does:
+// no selection survives, no cursor is left from the old screen, and nothing
+// of the old screen is drawn.
+func TestLiveASourceMayReplaceTheWholePaneAtAnyTime(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	l := r.m.layout()
+	r.focus()
+	f.emit("\x1b[2J\x1b[H" + selText)
+	r.pump()
+	r.dragPane(0, 0, 4, 0)
+	if !r.m.sel.shown() {
+		t.Fatal("no selection to lose")
+	}
+	if c := r.m.View().Cursor; c == nil || c.X != l.inner.Min.X+9 || c.Y != l.inner.Min.Y+2 {
+		t.Fatalf("cursor of the old screen: %+v", c)
+	}
+
+	// A smaller pane, reset and rewritten, with the cursor somewhere else.
+	f.start.Pane.Resize(30, 10)
+	f.emit("\x1bc\x1b[2J\x1b[Hnew screen\x1b[6;8H")
+	r.pump()
+	if r.m.sel.shown() {
+		t.Fatal("the selection survived a rewritten pane")
+	}
+	v := r.view()
+	if !strings.Contains(v, "new screen") || strings.Contains(v, "hello world") || strings.Contains(v, "second row") {
+		t.Fatalf("old content shown:\n%s", v)
+	}
+	if c := r.m.View().Cursor; c == nil || c.X != l.inner.Min.X+7 || c.Y != l.inner.Min.Y+5 {
+		t.Fatalf("cursor %+v, want the new one at %d,%d", c, l.inner.Min.X+7, l.inner.Min.Y+5)
+	}
+	if r.selected(r.drawnPane(), 0, 0) {
+		t.Fatal("a cell of the new screen is drawn selected")
+	}
+	// A new selection works on the new screen.
+	wantCopy(t, r.dragPane(0, 0, 2, 0), "new")
+
+	// A pane wider than the area, its cursor beyond it: the cursor is not
+	// drawn, and the window's cursor does not point into the border.
+	f.start.Pane.Resize(200, 80)
+	f.emit("\x1b[2J\x1b[Hbig\x1b[60;150H")
+	r.pump()
+	if c := r.m.View().Cursor; c != nil {
+		t.Fatalf("cursor outside the area: %+v", c)
+	}
+	if v := r.view(); !strings.Contains(v, "big") || strings.Contains(v, "new screen") {
+		t.Fatalf("rewritten screen:\n%s", v)
+	}
+
+	// A change while the button is down: the release copies nothing from
+	// the screen that is gone.
+	f.start.Pane.Resize(40, 12)
+	f.emit("\x1bc\x1b[2J\x1b[Hfirst screen")
+	r.pump()
+	wx, wy := r.win(0, 0)
+	r.mouse(tea.MouseClickMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	f.start.Pane.Resize(30, 10)
+	f.emit("\x1bc\x1b[2J\x1b[Hsecond screen")
+	r.pump()
+	r.mouse(tea.MouseMotionMsg{X: wx + 4, Y: wy, Button: tea.MouseLeft})
+	if msg := r.mouse(tea.MouseReleaseMsg{X: wx + 4, Y: wy, Button: tea.MouseLeft}); msg != nil {
+		t.Fatalf("the release of a drag over a replaced screen gave %#v", msg)
+	}
+	if r.m.sel.shown() {
+		t.Fatal("a selection over a replaced screen")
 	}
 }
 
@@ -1050,22 +1483,33 @@ func TestLiveHeldFrameIsRedrawnAtItsDeadline(t *testing.T) {
 	f.start.Pane.Write([]byte("\x1b[2J\x1b[Hbefore"))
 	f.emit("\x1b[?2026h\x1b[Hduring")
 	r.pump()
-	found := false
+	var delays []time.Duration
 	for _, s := range r.sched {
 		if _, ok := s.fn(r.t0).(holdMsg); ok {
-			found = true
+			delays = append(delays, s.d)
 		}
 	}
-	if !found {
-		t.Fatalf("no redraw scheduled for the held frame: %v", r.sched)
+	if len(delays) != 1 {
+		t.Fatalf("redraws scheduled for the held frame: %v, timers %v", delays, r.sched)
+	}
+	// The delay is measured on the live clock, which the pane's hold limit
+	// reads: at most the hold limit from now. On the model's own tick time,
+	// which stays zero in live mode, it would be centuries.
+	if d := delays[0]; d < 0 || d > sessionpane.MaxFrameHold {
+		t.Fatalf("the held frame is redrawn after %v, want at most %v", d, sessionpane.MaxFrameHold)
 	}
 }
 
+// TestLiveConcurrentFeedAndDraw runs the source's goroutine against the
+// program's: the data race detector (the suite runs with -race) is what fails
+// it on a race. The checks after it are for the result, which holds without
+// the detector too: nothing the source wrote is lost or unbounded.
 func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 140, 45, f, Options{})
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	var lines uint64
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1078,6 +1522,7 @@ func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 			f.start.Pane.Write([]byte(fmt.Sprintf("line %d\r\n", i)))
 			f.set(func(s *LiveStatus) { s.Resyncs++ })
 			f.notify(LiveNotice{Code: NoticeTooSlow})
+			lines = uint64(i) + 1
 		}
 	}()
 	for range 50 {
@@ -1089,6 +1534,19 @@ func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	if lines == 0 {
+		t.Fatal("the source wrote nothing")
+	}
+	r.m.onLive()
+	if got := r.m.live.st.Resyncs; got != lines {
+		t.Fatalf("status shows %d resyncs, the source made %d", got, lines)
+	}
+	if n := len(r.m.live.notices); n != LiveNoticeLimit {
+		t.Fatalf("%d notices kept", n)
+	}
+	if v := r.view(); !strings.Contains(v, fmt.Sprintf("line %d\n", lines-1)) && !strings.Contains(v, fmt.Sprintf("line %d ", lines-1)) {
+		t.Fatalf("the last line (%d) is not shown:\n%s", lines-1, v)
+	}
 }
 
 func TestLiveFixtureModeStaysTheFixture(t *testing.T) {

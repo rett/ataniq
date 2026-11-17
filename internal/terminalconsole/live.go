@@ -28,12 +28,14 @@ import (
 //     calls Resize on a live pane. The source calls pane.Resize when the
 //     holder says its screen has another size, or on a snapshot.
 //   - The cockpit tells the source the size it wants with Resize, and only
-//     while the role is writer. A viewer draws the holder's size, cut or
-//     padded at the pane area's top left corner.
+//     as the writer with the connection up (see Resize). A viewer draws the
+//     holder's size, cut or padded at the pane area's top left corner.
 //   - What the pane sends (keys, paste, mouse) goes to the sink that Start
 //     returned. A viewer's input is not sent at all.
-//   - Mouse, paste and focus requests to the outer terminal follow
-//     LiveStatus.Modes, never the pane's own emulator.
+//   - Mouse and paste requests to the outer terminal follow LiveStatus.Modes,
+//     never the pane's own emulator. Focus reports are not asked for in live
+//     mode: InputSink has no focus method, so there is nothing to forward
+//     them to. That comes with a sink method later.
 
 // LiveSource is a live session the cockpit shows. An implementation needs
 // nothing from this package but the types named here, and sessionpane's
@@ -50,11 +52,23 @@ type LiveSource interface {
 	// network: connecting happens afterwards and shows in the status.
 	Start(LiveStart) (sessionpane.InputSink, error)
 	// Resize asks for a pane of cols by rows, the size of the area the
-	// cockpit has for the session, at most the pane's own limits. It is
-	// called only while the role is writer and only for a size that differs
-	// from the last one asked for, after the cockpit's 120 ms debounce for a
-	// window resize and at once for zoom. It must not block. The holder
-	// decides the size: the source follows the holder's answer in the pane.
+	// cockpit has for the session, at most the pane's own limits. It must
+	// not block. The holder decides the size: the source follows the
+	// holder's answer in the pane.
+	//
+	// The rule: the cockpit calls Resize whenever it is the writer (Role is
+	// LiveWriter), the connection is up (Conn is neither LiveDisconnected
+	// nor LiveWaitingTicket), and the size it wants differs from the
+	// holder's reported size (LiveStatus.Cols and Rows, when known) or from
+	// the size it last asked for. It checks this when the window size
+	// settles (after its 120 ms debounce), at once for zoom, when the role
+	// becomes writer, and when the connection comes back up as the writer.
+	// So the source may be called again with the size it was already given,
+	// for example when a writer gets the role back and the holder has
+	// another size; it must tolerate that, and may ignore a size the holder
+	// already has. The cockpit never calls it for a viewer, a client with no
+	// role or a connection that is down; a size wanted meanwhile is asked
+	// for when the writer is back.
 	Resize(cols, rows int)
 	// Status is the current state, read on each redraw.
 	Status() LiveStatus
@@ -153,15 +167,22 @@ type LiveStatus struct {
 	Lead             string
 	Epoch            uint64
 	Runtime, Version string
-	// Role is the role granted: LiveWriter, LiveViewer, or empty.
+	// Role is the role granted: LiveWriter, LiveViewer, or empty. The source
+	// keeps the role as last granted while the connection is down
+	// (LiveDisconnected, LiveWaitingTicket) and clears it only when the
+	// holder says so; the cockpit takes no input and asks for no size while
+	// the connection is down, whatever the role says.
 	Role LiveRole
 	// Cols and Rows are the holder's screen size; zero when unknown.
 	Cols, Rows int
 	// Modes are the modes of the session as the holder reports them (its
-	// Modes frame). In live mode the cockpit takes its mouse, paste and focus
+	// Modes frame). In live mode the cockpit takes its mouse and paste
 	// decisions for the outer terminal from these, and not from the pane's
-	// emulator. An ended or read-only session asks for none, whatever these
-	// say.
+	// emulator; it does not ask for focus reports whatever FocusEvents says
+	// (see the top of this file). An ended or read-only session asks for
+	// none, whatever these say. The holder's full mode set is larger than
+	// this type (cursor keys, keypad, alternate screen, synchronized output):
+	// a source that encodes keys keeps its own copy of it.
 	Modes sessionpane.Modes
 	// Conn is the connection state. Reason says why when the state is
 	// LiveWaitingTicket or LiveDisconnected.
@@ -172,6 +193,25 @@ type LiveStatus struct {
 	// CheckMismatches counts snapshot checks that failed, Resyncs the
 	// resynchronisations, RefusedInput the input the holder refused.
 	CheckMismatches, Resyncs, RefusedInput uint64
+	// Counters are the holder's other counters, in the order the holder
+	// gives them, shown in the evidence pane as they are. The cockpit keeps
+	// at most LiveCounterLimit: it cleans the names and cuts them to
+	// maxLiveCounterName bytes, and says how many it did not keep.
+	Counters []LiveCounter
+	// Idle is the holder's idle classification, a short word. Empty and
+	// "unknown" are shown as "unknown (not built)": the holder does not
+	// classify yet. It is cleaned and cut to maxLiveIdle bytes.
+	Idle string
+	// Title is the session's title as the holder reports it. It is cleaned
+	// and cut to maxLiveTitle bytes. Empty means the cockpit shows the title
+	// the pane's own emulator saw, if any.
+	Title string
+}
+
+// LiveCounter is one of the holder's counters: a name and a value.
+type LiveCounter struct {
+	Name  string
+	Value uint64
 }
 
 // LiveNotice is a short message from the holder with a reason code.
@@ -203,12 +243,21 @@ const (
 // LiveNoticeLimit is how many notices the cockpit keeps for the evidence pane.
 const LiveNoticeLimit = 16
 
+// LiveCounterLimit is how many of the holder's counters the cockpit keeps
+// for the evidence pane. A longer list is cut, and the cut is counted and
+// shown.
+const LiveCounterLimit = 32
+
 // Bounds on what a source reports. Longer text is cut.
 const (
 	maxLiveCode   = 32
 	maxLiveText   = 160
 	maxLiveClient = 64
 	maxLiveBatch  = 4 * LiveNoticeLimit
+
+	maxLiveCounterName = 48
+	maxLiveIdle        = 32
+	maxLiveTitle       = 160
 )
 
 // liveGap is the shortest time between two wake-ups the program handles: a
@@ -251,14 +300,20 @@ type liveState struct {
 	// tick time cannot be it.
 	clock func() time.Time
 
-	st      LiveStatus
-	notices []liveNote
+	st LiveStatus
+	// countersCut is how many counters of the source's last status were over
+	// LiveCounterLimit and not kept.
+	countersCut int
+	notices     []liveNote
 	// sentCols and sentRows are the last size asked of the source.
 	sentCols, sentRows int
 	// paneCols and paneRows are the pane's size at the last wake-up.
 	paneCols, paneRows int
 	prevRole           LiveRole
-	// noted is true once the read-only notice was shown.
+	// prevUp is whether the connection was up at the last wake-up.
+	prevUp bool
+	// noted is true once the read-only notice was shown since the role last
+	// changed.
 	noted bool
 	// noticeLive is true while m.notice is a live notice.
 	noticeLive bool
@@ -339,7 +394,7 @@ func (m *Model) startLive() tea.Cmd {
 	m.rep.write = pane.Write
 	m.live.paneCols, m.live.paneRows = cols, rows
 	m.refreshLive()
-	m.live.prevRole = m.live.st.Role
+	m.live.prevRole, m.live.prevUp = m.live.st.Role, !m.liveDown()
 	return m.waitLive()
 }
 
@@ -376,10 +431,18 @@ func (m *Model) onLive() tea.Cmd {
 		m.sel = selection{}
 	}
 	m.checkSelection()
-	if role := m.live.st.Role; role != m.live.prevRole {
-		// A new writer sends the size it wants at once: it has not been
-		// asked for while it was a viewer.
-		m.live.prevRole = role
+	if role, up := m.live.st.Role, !m.liveDown(); role != m.live.prevRole || up != m.live.prevUp {
+		// A client that becomes the writer, or whose connection comes back
+		// as the writer, asks for the size it wants at once, when that is
+		// not the holder's: the window may have changed while it could not
+		// ask, and another writer may have changed the holder's size.
+		if role != m.live.prevRole {
+			// The read-only notice is due again after each change of role:
+			// the keys of a client that lost the writer role are dropped
+			// again.
+			m.live.noted = false
+		}
+		m.live.prevRole, m.live.prevUp = role, up
 		if cmd := m.syncLive(false); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -411,6 +474,19 @@ func (m *Model) refreshLive() {
 	if st.Conn < LiveConnecting || st.Conn > LiveDisconnected {
 		st.Conn = LiveConnecting
 	}
+	st.Idle, st.Title = cut(clean(st.Idle), maxLiveIdle), cut(clean(st.Title), maxLiveTitle)
+	// The source's list is read only up to the limit, and copied: the cockpit
+	// keeps nothing of the source's memory.
+	m.live.countersCut = max(0, len(st.Counters)-LiveCounterLimit)
+	var counters []LiveCounter
+	for _, c := range st.Counters[:min(len(st.Counters), LiveCounterLimit)] {
+		c.Name = cut(clean(c.Name), maxLiveCounterName)
+		if c.Name == "" {
+			c.Name = "?"
+		}
+		counters = append(counters, c)
+	}
+	st.Counters = counters
 	m.live.st = st
 }
 
@@ -463,8 +539,8 @@ func (m *Model) addNote(n LiveNotice) {
 	m.notice, m.live.noticeLive = note.text, true
 }
 
-// noteReadOnly says once that input is not sent, because the client is not
-// the writer.
+// noteReadOnly says that input is not sent, because the client is not the
+// writer: once for each role the client holds.
 func (m *Model) noteReadOnly() {
 	if m.live.noted {
 		return
@@ -475,6 +551,25 @@ func (m *Model) noteReadOnly() {
 		n.Text = "Not attached as the writer: keys are not sent."
 	}
 	m.addNote(n)
+}
+
+// liveInputStop says why keys typed in session focus are not sent, and what
+// a key does then: "" when they are sent. The key bar and the focus bar say
+// it, in the order sessionKey acts: an ended session and a connection that is
+// down return to the console on any key, a viewer or a client with no role
+// is told once and stays.
+func (m *Model) liveInputStop() (why string, anyKeyReturns bool) {
+	switch {
+	case m.sessionEnded():
+		return "the session has ended", true
+	case m.liveDown():
+		return "not connected", true
+	case m.live.st.Role == LiveViewer:
+		return "read-only viewer", false
+	case m.live.st.Role != LiveWriter:
+		return "no role yet", false
+	}
+	return "", false
 }
 
 // liveWriter reports whether input and a size may go to the source: the role
@@ -490,8 +585,9 @@ func (m *Model) liveDown() bool {
 }
 
 // syncLive asks the source for the size the layout gives the session, while
-// the role is writer, at once or after the debounce delay. A size already
-// asked for is not asked again.
+// the role is writer and the connection is up, at once or after the debounce
+// delay. A size is skipped only when it is the one last asked for and the
+// holder reports it too (or reports no size): see LiveSource.Resize.
 func (m *Model) syncLive(debounce bool) tea.Cmd {
 	l := m.layout()
 	if !l.cockpit || m.rep.pane == nil || !m.liveWriter() {
@@ -500,7 +596,8 @@ func (m *Model) syncLive(debounce bool) tea.Cmd {
 	m.resizeSeq++
 	cols := min(max(l.inner.Dx(), sessionpane.MinCols), paneMaxCols)
 	rows := min(max(l.inner.Dy(), sessionpane.MinRows), paneMaxRows)
-	if cols == m.live.sentCols && rows == m.live.sentRows {
+	holder := m.live.st.Cols == 0 || m.live.st.Rows == 0 || (m.live.st.Cols == cols && m.live.st.Rows == rows)
+	if cols == m.live.sentCols && rows == m.live.sentRows && holder {
 		return nil
 	}
 	if !debounce {
@@ -634,6 +731,27 @@ func (m *Model) liveCountersText() string {
 func (m *Model) liveRuntimeText() string {
 	st := m.live.st
 	return strings.TrimSpace(orNone(st.Runtime) + " " + st.Version)
+}
+
+// liveIdleText returns the holder's idle classification as it is shown.
+func (m *Model) liveIdleText() string {
+	idle := m.live.st.Idle
+	if idle == "" || strings.EqualFold(idle, "unknown") {
+		return "idle state: unknown (not built)"
+	}
+	return "idle state: " + idle
+}
+
+// liveTitle returns the session's title: the holder's, or the one the
+// pane's emulator saw.
+func (m *Model) liveTitle() string {
+	if t := m.live.st.Title; t != "" {
+		return t
+	}
+	if m.rep.pane != nil {
+		return m.rep.pane.Title()
+	}
+	return ""
 }
 
 // liveSizeText returns the holder's screen size, or "unknown".

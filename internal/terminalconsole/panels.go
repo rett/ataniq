@@ -51,7 +51,13 @@ func (m *Model) cockpitView() tea.View {
 		if modes.Mouse >= uv.MouseModeMotion {
 			v.MouseMode = tea.MouseModeAllMotion
 		}
-		v.ReportFocus = modes.FocusEvents
+		// Focus reports are asked of the outer terminal for the fixture only.
+		// A live session's input sink has no focus method yet, so the report
+		// would be dropped (console.go ignores FocusMsg and BlurMsg): asking
+		// for it would claim a forwarding that does not happen. Forwarding
+		// focus events comes with a sink method later (the lead-hosting
+		// design, section 2.2).
+		v.ReportFocus = modes.FocusEvents && !m.live.on()
 		if m.live.on() && m.liveWriter() && !m.sessionEnded() {
 			// The outer terminal brackets a paste only when the session asked
 			// for that, as a terminal would.
@@ -435,6 +441,17 @@ func (m *Model) drawKeys(p *painter, l layout) {
 	}
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
+		if m.live.on() {
+			// Say what keys do here: a viewer's are dropped, and on an ended
+			// session or a connection that is down any key returns.
+			if why, anyKey := m.liveInputStop(); why != "" {
+				ret := m.opts.ReturnKey.String() + " returns"
+				if anyKey {
+					ret = "any key returns"
+				}
+				s = "SESSION FOCUS · " + why + ": keys are not sent · " + ret + " · F12 zoom"
+			}
+		}
 	}
 	p.text(0, l.keys.Min.Y, l.keys.Dx(), s, p.style(lnDim))
 }

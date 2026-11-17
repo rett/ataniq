@@ -10,6 +10,9 @@ import (
 // else: no project, lead list, gate or timeline of the fixture, and no
 // invented data. Text from the source has been through clean.
 
+// liveScreenOnly says what a client gets of the session.
+const liveScreenOnly = "A client gets the visible screen only: there is no scrollback."
+
 // drawLiveTree draws the lead and its holder where the fixture draws its
 // projects and leads.
 func (m *Model) drawLiveTree(p *painter, l layout) {
@@ -55,10 +58,10 @@ func (m *Model) drawLiveMeta(p *painter, l layout) {
 	if lead == "" {
 		lead = "unknown"
 	}
-	title, blocked := "none", 0
+	title, blocked := orNone(m.liveTitle()), 0
 	paneSize := "none"
 	if m.rep.pane != nil {
-		title, blocked = orNone(m.rep.pane.Title()), m.rep.pane.ClipboardBlocked()
+		blocked = m.rep.pane.ClipboardBlocked()
 		c, r := m.rep.pane.Size()
 		paneSize = sizeText(c, r)
 	}
@@ -78,11 +81,12 @@ func (m *Model) drawLiveMeta(p *painter, l layout) {
 func (m *Model) drawLiveFocusBar(p *painter, in uv.Rectangle) {
 	first := m.focusName() + " · return key " + m.opts.ReturnKey.String() + " · F12 zoom"
 	second := "Enter focuses the session · " + m.liveRoleText()
+	why, _ := m.liveInputStop()
 	switch {
 	case m.sessionEnded():
 		second = "The session has ended"
-	case m.live.st.Role != LiveWriter:
-		second = "Keys typed in session focus are not sent: " + m.liveRoleText()
+	case why != "":
+		second = "Keys typed in session focus are not sent: " + why
 	case m.focus == sessionFocus:
 		second = "Every key goes to the session; q and Ctrl+C do not quit"
 	}
@@ -104,6 +108,7 @@ func (m *Model) liveEvidenceLines(width int) []line {
 	add(lnText, "Input is the owner's direct words.")
 	add(lnText, "A read-only viewer sends nothing: its keys, paste and size are not sent, and the holder refuses them.")
 	add(lnText, "Role granted: "+m.liveRoleText())
+	add(lnText, liveScreenOnly)
 	add(lnText, "")
 	add(lnHead, "HOLDER")
 	st := m.live.st
@@ -114,6 +119,13 @@ func (m *Model) liveEvidenceLines(width int) []line {
 	add(lnText, "Check mismatches: "+strconv.FormatUint(st.CheckMismatches, 10))
 	add(lnText, "Resyncs: "+strconv.FormatUint(st.Resyncs, 10))
 	add(lnText, "Refused input: "+strconv.FormatUint(st.RefusedInput, 10))
+	for _, c := range st.Counters {
+		add(lnText, c.Name+": "+strconv.FormatUint(c.Value, 10))
+	}
+	if over := m.live.countersCut; over > 0 {
+		add(lnWarn, strconv.Itoa(over)+" more counters not shown (the limit is "+strconv.Itoa(LiveCounterLimit)+")")
+	}
+	add(lnText, m.liveIdleText())
 	if ended, _, _ := m.paneEnded(); ended {
 		add(lnHead, "END, AS REPORTED")
 		for _, f := range factsText(st.End) {
@@ -164,6 +176,7 @@ func (m *Model) liveHelpLines(width int) (string, []line) {
 	add(lnText, "This is a "+m.liveLabel()+", through a holder.")
 	add(lnText, "There is no daemon and no project data.")
 	add(lnText, "There is no replay.")
+	add(lnText, liveScreenOnly)
 	return "HELP", out
 }
 
