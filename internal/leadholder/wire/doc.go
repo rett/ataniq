@@ -45,6 +45,27 @@
 // the digest of a Check) is required: a payload that lacks it, or has it
 // null, is refused, not decoded as zero.
 //
+// # Protocol errors
+//
+// A frame that breaks the protocol (a type its direction lacks, a length over
+// its cap, a payload the strict decoder refuses, a frame out of order) is
+// answered by closing the connection, as the lead-hosting design says. There
+// is no protocol-error notice: a Notice reason exists for a Hello that is
+// refused for a known cause ([ReasonRefusedTicket], [ReasonRefusedBusy],
+// [ReasonRefusedVersion]) and for events on a healthy connection, never for a
+// broken one. The errors of this package ([ErrInvalid], [ErrUnknownType],
+// [ErrTooLarge], [ErrTooSmall]) say what to log before the close.
+//
+// # Control requests
+//
+// On the control socket the daemon sends requests and the holder answers
+// with responses. The daemon mints the attach ticket ([NewTicket]) and gives it to the holder in
+// an [OpTicket] request and to the console out of band; the holder never
+// returns a ticket. An [OpTicket] request names the attach role the ticket is
+// for, and the holder answers ok, or [CodeBusy] when that role is taken (a
+// writer ticket is accepted only while there is no writer). Any request may
+// carry a command id, which the holder records in its event log.
+//
 // # Versions
 //
 // Both sides send [ProtocolVersion] in Hello and Welcome. Any change to a

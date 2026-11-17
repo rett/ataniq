@@ -70,8 +70,10 @@ var codecs = []codec{
 		Counters:   map[string]uint64{"cluster_cut": 18446744073709551615, "a": 1},
 		LastScreen: "line one\nline <two> & \"three\"\n",
 	}, wire.EncodeExit, wire.DecodeExit),
-	wrapCodec("request", wire.TypeRequest, wire.Request{Op: wire.OpTicket, Epoch: 9, Role: wire.RoleWriter}, wire.EncodeRequest, wire.DecodeRequest),
-	wrapCodec("response ticket", wire.TypeResponse, wire.Response{OK: true, Ticket: ticket64}, wire.EncodeResponse, wire.DecodeResponse),
+	wrapCodec("request", wire.TypeRequest, wire.Request{Op: wire.OpTicket, Epoch: 9, Role: wire.RoleWriter, Ticket: ticket64, CommandID: "cmd-0042"}, wire.EncodeRequest, wire.DecodeRequest),
+	wrapCodec("request status", wire.TypeRequest, wire.Request{Op: wire.OpStatus, Epoch: 1}, wire.EncodeRequest, wire.DecodeRequest),
+	wrapCodec("response ok", wire.TypeResponse, wire.Response{OK: true}, wire.EncodeResponse, wire.DecodeResponse),
+	wrapCodec("response busy", wire.TypeResponse, wire.Response{Code: wire.CodeBusy, Text: "a writer is attached"}, wire.EncodeResponse, wire.DecodeResponse),
 	wrapCodec("response status", wire.TypeResponse, wire.Response{OK: true, Status: &sampleStatus}, wire.EncodeResponse, wire.DecodeResponse),
 	wrapCodec("response refusal", wire.TypeResponse, wire.Response{Code: wire.CodeDisabled, Text: "inject is disabled"}, wire.EncodeResponse, wire.DecodeResponse),
 }
@@ -478,17 +480,34 @@ func TestControlRules(t *testing.T) {
 		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1}); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
+		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, CommandID: "c1"}); err != nil {
+			t.Errorf("%s with a command id: %v", op, err)
+		}
 		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, Role: wire.RoleWriter}); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("%s with a role: %v", op, err)
 		}
+		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1, Ticket: ticket64}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%s with a ticket: %v", op, err)
+		}
+	}
+	for _, role := range []wire.Role{wire.RoleWriter, wire.RoleViewer} {
+		if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpTicket, Epoch: 1, Role: role, Ticket: ticket64}); err != nil {
+			t.Errorf("ticket for a %s: %v", role, err)
+		}
 	}
 	for name, r := range map[string]wire.Request{
-		"no op":              {Epoch: 1},
-		"unknown op":         {Op: "restart", Epoch: 1},
-		"ticket without":     {Op: wire.OpTicket, Epoch: 1},
-		"ticket bad role":    {Op: wire.OpTicket, Epoch: 1, Role: "root"},
-		"capitalised op":     {Op: "Status", Epoch: 1},
-		"op with whitespace": {Op: "stop ", Epoch: 1},
+		"no op":               {Epoch: 1},
+		"unknown op":          {Op: "restart", Epoch: 1},
+		"ticket without role": {Op: wire.OpTicket, Epoch: 1, Ticket: ticket64},
+		"ticket bad role":     {Op: wire.OpTicket, Epoch: 1, Role: "root", Ticket: ticket64},
+		"ticket without one":  {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter},
+		"ticket short":        {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: ticket64[:63]},
+		"ticket long":         {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: ticket64 + "0"},
+		"ticket upper case":   {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: strings.ToUpper(ticket64)},
+		"ticket not hex":      {Op: wire.OpTicket, Epoch: 1, Role: wire.RoleWriter, Ticket: strings.Repeat("z", 64)},
+		"capitalised op":      {Op: "Status", Epoch: 1},
+		"op with whitespace":  {Op: "stop ", Epoch: 1},
+		"epoch zero":          {Op: wire.OpStop},
 	} {
 		if _, err := wire.EncodeRequest(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("%s: err = %v", name, err)
@@ -497,10 +516,7 @@ func TestControlRules(t *testing.T) {
 	for name, r := range map[string]wire.Response{
 		"ok with code":        {OK: true, Code: "x"},
 		"ok with text":        {OK: true, Text: "x"},
-		"ok bad ticket":       {OK: true, Ticket: "abc"},
-		"ticket and status":   {OK: true, Ticket: ticket64, Status: &sampleStatus},
 		"refusal no code":     {Text: "x"},
-		"refusal with ticket": {Code: "x", Ticket: ticket64},
 		"refusal with status": {Code: "x", Status: &sampleStatus},
 		"refusal long text":   {Code: "x", Text: strings.Repeat("t", 257)},
 		"refusal bad code":    {Code: "Not OK"},
@@ -933,6 +949,89 @@ func TestEpochZeroIsInvalid(t *testing.T) {
 		}
 		if got, err := wire.DecodeRequest(p); err != nil || got.Epoch != n {
 			t.Errorf("epoch %d: %+v, %v", n, got, err)
+		}
+	}
+}
+
+func TestCommandID(t *testing.T) {
+	for _, id := range []string{"a", "cmd-0042", "01HZX3Y4ABCDEFGHJKMNPQRSTV", "5f0a2c3e-1b2d-4e5f-8a9b-0c1d2e3f4a5b", "daemon:17.3_x", strings.Repeat("c", 64)} {
+		p, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2, CommandID: id})
+		if err != nil {
+			t.Errorf("%q: %v", id, err)
+			continue
+		}
+		if got, err := wire.DecodeRequest(p); err != nil || got.CommandID != id {
+			t.Errorf("%q: %+v, %v", id, got, err)
+		}
+	}
+	for name, id := range map[string]string{
+		"65 bytes":  strings.Repeat("c", 65),
+		"space":     "a b",
+		"newline":   "a\nb",
+		"slash":     "a/b",
+		"quote":     `a"b`,
+		"ESC":       "a\x1b",
+		"non-ASCII": "é",
+		"RTL":       "a\u202eb",
+	} {
+		if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2, CommandID: id}); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("encode %s: %v", name, err)
+		}
+	}
+	// What a peer sends is checked the same way, and an id may be left out.
+	for name, p := range map[string]string{
+		"decode 65 bytes":     `{"op":"stop","epoch":1,"command_id":"` + strings.Repeat("c", 65) + `"}`,
+		"decode with a space": `{"op":"stop","epoch":1,"command_id":"a b"}`,
+		"decode escaped ESC":  `{"op":"stop","epoch":1,"command_id":"a\u001b"}`,
+		"decode a number":     `{"op":"stop","epoch":1,"command_id":5}`,
+	} {
+		if _, err := wire.DecodeRequest([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	p, _ := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: 2})
+	if strings.Contains(string(p), "command_id") {
+		t.Errorf("an empty id is written: %s", p)
+	}
+	if r, err := wire.DecodeRequest([]byte(`{"op":"stop","epoch":2}`)); err != nil || r.CommandID != "" {
+		t.Errorf("no id: %+v, %v", r, err)
+	}
+}
+
+// The caller mints the ticket: a ticket request carries it, and no response
+// does.
+func TestTicketRequestAndResponse(t *testing.T) {
+	ticket, err := wire.NewTicket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := wire.EncodeRequest(wire.Request{Op: wire.OpTicket, Epoch: 3, Role: wire.RoleViewer, Ticket: ticket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"op":"ticket","epoch":3,"role":"viewer","ticket":"` + ticket + `"}`; string(p) != want {
+		t.Errorf("request %s, want %s", p, want)
+	}
+	r, err := wire.DecodeRequest(p)
+	if err != nil || r.Ticket != ticket || r.Role != wire.RoleViewer {
+		t.Errorf("%+v, %v", r, err)
+	}
+	// A response with a ticket in it is an unknown field now.
+	if _, err := wire.DecodeResponse([]byte(`{"ok":true,"ticket":"` + ticket + `"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a response with a ticket: %v", err)
+	}
+	// The answers: ok, or busy with a writer present.
+	for _, resp := range []wire.Response{
+		{OK: true},
+		{Code: wire.CodeBusy, Text: "a writer ticket is issued only while there is no writer"},
+		{Code: wire.CodeWrongEpoch, Text: "epoch 2 is not 3"},
+	} {
+		p, err := wire.EncodeResponse(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := wire.DecodeResponse(p); err != nil || !reflect.DeepEqual(got, resp) {
+			t.Errorf("%+v: %+v, %v", resp, got, err)
 		}
 	}
 }

@@ -28,6 +28,8 @@ const (
 	MaxRuntime = 64
 	// MaxToken is the longest code, signal or counter name.
 	MaxToken = 64
+	// MaxCommandID is the longest command id of a control request.
+	MaxCommandID = 64
 	// MaxModes is the most mode numbers in each list of a Modes frame.
 	MaxModes = 64
 	// MaxSignals is the most idle signals in a State frame.
