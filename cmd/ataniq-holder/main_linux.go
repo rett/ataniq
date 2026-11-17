@@ -11,6 +11,16 @@
 // In this version it hosts only a scratch agent: there is no sandbox yet, so it
 // refuses to start without --scratch. It is provisional and unqualified, and it
 // hosts no real lead. The development launcher ataniq-scratch starts it.
+//
+// The state folder. The holder writes holder.json (its pid and start ticks, the
+// epoch and launch intent it was given) before the agent starts, and
+// session.Start's final record final.json when the session is over. Before it
+// writes holder.json for a new epoch it renames a final.json that an earlier
+// epoch left to final.json.previous, replacing an older one, so that final.json
+// is never the record of an epoch other than the last one that ended. A start
+// that fails after holder.json was written leaves it in place, and says in its
+// diagnostic that holder.json names a holder that is gone; a reader tells that
+// from a running holder by the pid and its start ticks.
 package main
 
 import (
@@ -51,6 +61,9 @@ provisional and unqualified, and it hosts no real lead. ataniq-scratch starts it
 Every flag is required except --env. The agent's environment is exactly the
 --env list, in order: nothing of the holder's own environment is passed on.
 ARGV[0] is an absolute path. The agent runs in --tree.
+
+Before a new epoch writes holder.json in --state-dir, a final.json that an
+earlier epoch left there is renamed to final.json.previous.
 
 SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2 stop the agent and end the holder
 with its final record; SIGHUP and SIGPIPE change nothing.
@@ -120,6 +133,11 @@ func isStopSignal(s os.Signal) bool {
 // signalsNeeded are the signals the agent must not inherit as ignored. The
 // holder refuses to start if it ignores any of them.
 var signalsNeeded = []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGPIPE, syscall.SIGTERM}
+
+// staleStateNote ends the diagnostic of a start that failed after the state
+// file was written: the file stays, and a reader must not take it for a
+// running holder. The pid and its start ticks show that it is gone.
+const staleStateNote = StateFileName + " names a holder that is gone"
 
 // holderOut writes the holder's own diagnostics to stderr. A failure to write
 // is ignored: the holder must not end because its journal is gone.
@@ -228,6 +246,11 @@ func run(args []string, d deps) int {
 	}
 	defer log.Close()
 
+	// A final record of an earlier epoch is moved aside first, so that
+	// final.json never says "ended" for the agent that is about to run.
+	if err := retireFinalRecord(cfg.stateDir); err != nil {
+		return refuse("cannot move the final record of an earlier epoch aside: %v", err)
+	}
 	// The state file is written before the agent starts (design 1.1).
 	if err := writeStateFile(cfg.stateDir, stateFile{
 		Version: stateFileVersion, Role: cfg.role, Epoch: cfg.epoch, LaunchIntent: cfg.launchIntent,
@@ -267,7 +290,7 @@ func run(args []string, d deps) int {
 			return exitLocked
 		}
 		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "start-failed"})
-		out.line("cannot start the agent: %v", err)
+		out.line("cannot start the agent: %v (%s)", err, staleStateNote)
 		return exitFail
 	}
 	defer sess.Close()
@@ -282,7 +305,7 @@ func run(args []string, d deps) int {
 	}
 	srv, err := serve.New(vcfg)
 	if err != nil {
-		out.line("cannot start the attach and control service: %v", err)
+		out.line("cannot start the attach and control service: %v (%s)", err, staleStateNote)
 		return exitFail
 	}
 	defer srv.Close()

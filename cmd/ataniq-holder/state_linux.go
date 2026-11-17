@@ -12,11 +12,19 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ataniq/internal/leadholder/session"
 )
 
 // StateFileName is the holder's state file in the state folder. It is written
 // before the agent starts (the lead-hosting design, section 1.1).
 const StateFileName = "holder.json"
+
+// PreviousFinalName is where a final record left by an earlier epoch is moved
+// before a new epoch writes its state file: final.json then always belongs to
+// the epoch that ended last, never to one that is still running. A record
+// already there is replaced.
+const PreviousFinalName = session.FinalName + ".previous"
 
 // stateFileVersion is the format version of the state file.
 const stateFileVersion = 1
@@ -124,6 +132,24 @@ func writeStateFile(dir string, st stateFile) error {
 	}
 	if err := unix.Renameat(dfd, tmp, dfd, StateFileName); err != nil {
 		_ = unix.Unlinkat(dfd, tmp, 0)
+		return err
+	}
+	return unix.Fsync(dfd)
+}
+
+// retireFinalRecord moves a final record of an earlier epoch aside, to
+// PreviousFinalName, replacing an older one. Without a final record it does
+// nothing.
+func retireFinalRecord(dir string) error {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dfd)
+	if err := unix.Renameat(dfd, session.FinalName, dfd, PreviousFinalName); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
 		return err
 	}
 	return unix.Fsync(dfd)
