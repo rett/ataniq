@@ -54,6 +54,10 @@ type Resolved struct {
 //     must still fit the text cap. The caps of admission do not apply, because
 //     the new command takes the place of the old.
 //
+// Late evidence for the old command after this call is journaled on it, and
+// makes the new command uncertain while it is still queued (see
+// ConfirmDelivery).
+//
 // A resend writes two records: the new command first, then the resolution of
 // the old one. If the second append fails the new command is queued behind
 // nothing but the still uncertain old one, so the queue stays frozen; calling

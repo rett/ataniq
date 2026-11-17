@@ -19,9 +19,10 @@ type CommandView struct {
 	EvidenceKind EvidenceKind
 	Evidence     string
 	Operator     string
-	// Late are the late fence results and late delivery evidence of an
-	// uncertain command, in the order they were journaled. They are for the
-	// operator who decides; they never end the uncertain state.
+	// Late are the late fence results and late delivery evidence of a command
+	// that was uncertain, or that an operator resolved as "send again", in the
+	// order they were journaled. They are for the operator who decides; they
+	// never end the uncertain state. They stay with the command after it ends.
 	Late []LateNote
 	// Admitted is when the command was admitted; Updated when it last moved.
 	// Submitted is when Enter was written, and the zero time before that.
@@ -33,7 +34,8 @@ type CommandView struct {
 }
 
 // LateNote is a late fence result or late delivery evidence, kept on a command
-// that was already uncertain when it arrived.
+// that was already uncertain, or already resolved as sent again, when it
+// arrived.
 type LateNote struct {
 	// Seq and At are the sequence number and the time of the record.
 	Seq uint64

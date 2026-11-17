@@ -60,6 +60,10 @@ func RenderText(id string, from Sender, kind, body string) string {
 //     letter at its offset from U+1D400 modulo 52, and a mathematical digit
 //     U+1D7CE to U+1D7FF by the ASCII digit at its offset from U+1D7CE, modulo
 //     ten. The rest of U+1D400 to U+1D7FF, which is Greek, is left as it is.
+//     Only the code points inside those ranges are mapped. A few letters of the
+//     script, fraktur and double-struck alphabets have no place there (the
+//     script g, for one): Unicode puts them in the Letterlike Symbols block
+//     (U+2100 to U+214F), and they are not mapped.
 //  4. The rune is kept, lower-cased with unicode.ToLower, when it is a letter
 //     (unicode.IsLetter) or a decimal digit (unicode.IsDigit), and dropped
 //     otherwise, so every separator, punctuation, symbol, mark, blank and the
@@ -67,12 +71,13 @@ func RenderText(id string, from Sender, kind, body string) string {
 //
 // So "ataniq-msg", "ATANIQ MSG", "ataniq\u2011msg", "[ataniq_msg", a marker
 // split by a combining mark, a filler or a line break, a marker written in
-// fullwidth or mathematical letters, and a marker after any run of
-// blank-looking runes all fold to "ataniqmsg" and are refused. That is
-// stricter than a rule about the start of a line, on purpose: what looks blank
-// or like a bracket on a screen is not decided by the code points. Letters of
-// other scripts that only look like Latin letters are not folded (see "Known
-// limit" in the package documentation). The rule is about the body only: the
+// fullwidth letters or in mathematical letters of U+1D400 to U+1D6A3 (not the
+// letters of those alphabets that Unicode places in Letterlike Symbols), and a
+// marker after any run of blank-looking runes all fold to "ataniqmsg" and are
+// refused. That is stricter than a rule about the start of a line, on purpose:
+// what looks blank or like a bracket on a screen is not decided by the code
+// points. Any other rune that only looks like a Latin letter is not folded (see
+// "Known limit" in the package documentation). The rule is about the body only: the
 // id and kind of a header are checked by the name grammar, not by this rule.
 //
 // CheckBody does not check the size; Submit does, on the whole text.

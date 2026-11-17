@@ -25,17 +25,34 @@
 // uncertain, and freezes its queue, until an operator records a decision with
 // Resolve. A fence result or delivery evidence that arrives after a command
 // became uncertain (for example after FenceTimeout) is kept as an annotation
-// that the view shows to the operator; it never ends the uncertain state.
+// that the view shows to the operator; it never ends the uncertain state. The
+// same evidence for a command an operator already resolved as "not delivered,
+// send again" is kept as an annotation on it too and is not refused. When the
+// newest replacement along the resend chain is still queued, it becomes
+// uncertain (original-evidence-arrived) and holds its queue until an operator
+// decides about it, so that nothing is sent twice while evidence that the
+// first send arrived is in hand; when the replacement is already dispatching
+// or has ended, only the annotation is written. A note equal to one the command
+// already has is skipped, and at most eight notes are kept (late-notes-full
+// after that). The daemon passes each piece of evidence once.
 //
 // Ended commands (delivered, refused, resolved) stay in memory, without their
 // text, so that a command id is never used twice; trimming that history is the
-// daemon's concern. Refusals at admission are journaled too and keep no command.
+// daemon's concern. Their late notes stay with them for the audit, up to the
+// cap of eight notes, so an ended command can keep a few kilobytes. Refusals
+// at admission are journaled too and keep no command.
 //
 // This package is provisional and unqualified: it is built from recorded
 // sessions of one version per runtime and has no live qualification yet.
 //
 // Left to the daemon. These are known and not handled here:
 //
+//   - Before dispatching a resend, the daemon looks in the conversation file
+//     for the ids of the whole resend chain (the command that was sent again,
+//     and the commands that replaced it in turn) and does not dispatch when
+//     one is found. The machine freezes a queued replacement only for evidence
+//     it is told about; evidence the daemon has not read yet is not known to
+//     it.
 //   - Refused submissions are journaled without a bound: a sender that submits
 //     refused messages in a loop writes a record for each, so the daemon must
 //     rate-limit requests before Submit.
@@ -53,13 +70,19 @@
 // CheckBody.
 //
 // Known limit. The check that keeps a body from carrying the header marker
-// folds the body to ASCII letters and digits, and it folds invisible fillers,
-// fullwidth forms and mathematical alphanumerics (see CheckBody). It does not
-// fold letters of other scripts that merely look like Latin letters: Cyrillic
-// and Greek look-alikes, the dotless i, modifier letters and small capitals. A
-// body that spells the marker with such letters is admitted, so a body can
-// still show a line that looks like a header to a human or a model. Closing
-// that needs a design decision, for example a fixed prefix on every body line
-// so that only the header line has none. That is an open question for the
-// owner.
+// folds the body to ASCII letters and digits. It folds invisible fillers,
+// fullwidth forms, and the mathematical alphanumerics of U+1D400 to U+1D6A3 and
+// the mathematical digits (see CheckBody). It does not fold any other rune that
+// merely looks like a Latin letter: letters of other scripts (Cyrillic, Greek),
+// Latin letters that are not ASCII (the dotless i, IPA letters such as U+0251
+// and U+0261, precomposed letters with a mark, so that the same visible letter
+// written composed is admitted and written with a combining mark is refused),
+// modifier letters, small capitals, the letters of the script, fraktur and
+// double-struck alphabets that Unicode places in Letterlike Symbols (U+210A,
+// U+2110 to U+2133, U+2139) and not in the mathematical block, and enclosed
+// letters (circled, parenthesized), which are not letters and are dropped. A
+// body that spells the marker with such runes is admitted, so a body can still
+// show a line that looks like a header to a human or a model. Closing that
+// needs a design decision, for example a fixed prefix on every body line so
+// that only the header line has none. That is an open question for the owner.
 package command
