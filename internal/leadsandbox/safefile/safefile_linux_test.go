@@ -562,6 +562,40 @@ func TestMkdirAllFolderMovedDuringWalk(t *testing.T) {
 	}
 }
 
+// A mkdirat failure is reported as itself: EPERM from mkdirat is not "openat2
+// is unavailable".
+func TestMkdirAllMkdiratErrors(t *testing.T) {
+	for _, tc := range []struct {
+		errno unix.Errno
+		want  error // nil: only that the error is not a package sentinel
+	}{
+		{unix.EPERM, nil},
+		{unix.EACCES, fs.ErrPermission},
+		{unix.EROFS, nil},
+		{unix.ENOTDIR, ErrNotDirectory},
+	} {
+		t.Run(tc.errno.Error(), func(t *testing.T) {
+			r, dir, _ := newRoot(t)
+			r.mkdirat = func(int, string, uint32) error { return tc.errno }
+			err := r.MkdirAll("d/e", 0o755)
+			if !errors.Is(err, tc.errno) {
+				t.Fatalf("MkdirAll: %v, want it to wrap %v", err, tc.errno)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("MkdirAll: %v, want %v", err, tc.want)
+			}
+			for _, s := range []error{ErrUnsupported, ErrSymlink, ErrEscapes} {
+				if errors.Is(err, s) {
+					t.Errorf("MkdirAll: %v wrongly matches %v", err, s)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "d")); err == nil {
+				t.Error("a folder was made")
+			}
+		})
+	}
+}
+
 // Without a move the end check passes, also for a path that already exists.
 func TestMkdirAllEndCheckAcceptsStablePath(t *testing.T) {
 	r, dir, _ := newRoot(t)

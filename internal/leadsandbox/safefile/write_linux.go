@@ -52,8 +52,8 @@ func (r *Root) MkdirAll(rel string, mode fs.FileMode) error {
 	for _, comp := range strings.Split(rel, "/") {
 		next, err := r.open(cur, comp, unix.O_PATH|unix.O_DIRECTORY, 0)
 		if err == unix.ENOENT {
-			if err := unix.Mkdirat(cur, comp, m); err != nil && err != unix.EEXIST {
-				return classify(op, rel, err)
+			if err := r.mkdirat(cur, comp, m); err != nil && err != unix.EEXIST {
+				return mkdirError(op, rel, err)
 			}
 			next, err = r.open(cur, comp, unix.O_PATH|unix.O_DIRECTORY, 0)
 		}
@@ -86,6 +86,16 @@ func (r *Root) MkdirAll(rel string, mode fs.FileMode) error {
 		return movedError(op, rel)
 	}
 	return nil
+}
+
+// mkdirError reports a mkdirat failure. It is not openat2's: EPERM here is a
+// refusal to create (a filter, an attribute, a read-only file system) and is
+// reported as the errno, never as [ErrUnsupported].
+func mkdirError(op, rel string, err error) error {
+	if err == unix.ENOTDIR {
+		return &Error{Op: op, Path: rel, Err: refuse(ErrNotDirectory, err)}
+	}
+	return &Error{Op: op, Path: rel, Err: err}
 }
 
 func movedError(op, rel string) error {

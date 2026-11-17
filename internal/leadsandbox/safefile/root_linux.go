@@ -23,6 +23,9 @@ const maxRelPath = 4095
 // stand in for a kernel without openat2 or a filter that denies it.
 type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 
+// mkdiratFunc is the mkdirat system call; a test replaces it on its own Root.
+type mkdiratFunc func(dirfd int, path string, mode uint32) error
+
 // Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot].
 // All access goes through it. A Root is safe for concurrent use; Close waits
 // for calls in progress. The caller closes it.
@@ -31,6 +34,7 @@ type Root struct {
 	fd      int
 	closed  bool
 	openat2 openat2Func
+	mkdirat mkdiratFunc
 }
 
 // OpenRoot opens the folder at path as a handle, with O_PATH, O_DIRECTORY,
@@ -62,7 +66,7 @@ func OpenRoot(dir string) (*Root, error) {
 		}
 		return nil, &Error{Op: "open", Path: dir, Err: err}
 	}
-	return &Root{fd: fd, openat2: unix.Openat2}, nil
+	return &Root{fd: fd, openat2: unix.Openat2, mkdirat: unix.Mkdirat}, nil
 }
 
 // Close releases the handle. A second Close returns [ErrClosed].
