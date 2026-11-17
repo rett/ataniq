@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,6 +26,12 @@ const (
 
 	// maxWalkPids bounds how many process ids one walk keeps.
 	maxWalkPids = 1 << 16
+
+	// walkEntrySlack is how many directory entries beyond the group limit one
+	// listing of a group reads in the walk: a group directory holds about 44
+	// files (75 with the memory and pids controllers) besides its child
+	// groups.
+	walkEntrySlack = 256
 
 	// signalBatch is how many pidfds are open at once while the processes of
 	// the group are signalled.
@@ -184,15 +191,53 @@ func (s cgroupScan) complete() bool { return !s.truncated && s.errs == 0 }
 // below it, breadth first, at most limit groups. Processes for which ignore
 // returns true are not listed in members; self is the holder's own pid, whose
 // presence in the top group is reported as selfSeen.
+//
+// A child group that cannot be opened any more (ENOENT) may have been removed
+// or renamed since its parent was listed. The parent is listed again and every
+// name not seen before is queued; only a name that is gone from the parent's
+// listing counts as removed, and a name that is still listed but cannot be
+// read is an unreadable group. The walk is not atomic all the same (see the
+// package comment).
 func walkCgroup(dir string, limit, self int, ignore func(pid int) bool) cgroupScan {
+	return walkCgroupHook(dir, limit, self, ignore, nil)
+}
+
+// walkCgroupHook is walkCgroup with a hook that tests use to change the tree
+// between the listing of a group's children and the reading of the children:
+// afterList is called with the group directory right after its children were
+// listed.
+func walkCgroupHook(dir string, limit, self int, ignore func(pid int) bool, afterList func(dir string)) cgroupScan {
 	var s cgroupScan
 	queue := []string{dir}
-	discovered := 1 // groups queued so far, including the top one
+	queued := map[string]bool{dir: true} // every group queued so far, including the top one
 	pids := 0
 	fail := func(err error) {
 		s.errs++
 		if s.err == nil {
 			s.err = err
+		}
+	}
+	// enqueue lists the children of parent and queues those not seen before.
+	// A parent that is gone has no children.
+	enqueue := func(parent string) {
+		names, more, err := childGroups(parent, limit+walkEntrySlack)
+		if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENODEV) {
+			fail(err)
+		}
+		if more {
+			s.truncated = true
+		}
+		for _, n := range names {
+			child := filepath.Join(parent, n)
+			if queued[child] {
+				continue
+			}
+			if len(queued) >= limit {
+				s.truncated = true
+				break
+			}
+			queued[child] = true
+			queue = append(queue, child)
 		}
 	}
 	for len(queue) > 0 {
@@ -203,7 +248,15 @@ func walkCgroup(dir string, limit, self int, ignore func(pid int) bool) cgroupSc
 		list, trunc, err := readProcs(procs)
 		switch {
 		case err != nil && cur != dir && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENODEV)):
-			continue // removed while we walked
+			// Removed or renamed? List the parent again: a new name is queued,
+			// a name that is gone is removed, a name still listed is a group
+			// that cannot be read.
+			parent := filepath.Dir(cur)
+			enqueue(parent)
+			if stillListed(parent, filepath.Base(cur), limit+walkEntrySlack) {
+				fail(err)
+			}
+			continue
 		case err != nil:
 			fail(err)
 			continue
@@ -225,23 +278,26 @@ func walkCgroup(dir string, limit, self int, ignore func(pid int) bool) cgroupSc
 			}
 			s.members = append(s.members, cgroupMember{pid: p, procs: procs})
 		}
-		names, more, err := childGroups(cur, limit+256)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			fail(err)
-		}
-		if more {
-			s.truncated = true
-		}
-		for _, n := range names {
-			if discovered >= limit {
-				s.truncated = true
-				break
-			}
-			discovered++
-			queue = append(queue, filepath.Join(cur, n))
+		enqueue(cur)
+		if afterList != nil {
+			afterList(cur)
 		}
 	}
 	return s
+}
+
+// stillListed reports whether the group directory parent lists a child group
+// of that name. A listing that fails or is cut short answers true: the name
+// cannot be called removed.
+func stillListed(parent, name string, limit int) bool {
+	names, more, err := childGroups(parent, limit)
+	if err != nil {
+		return !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENODEV)
+	}
+	if slices.Contains(names, name) {
+		return true
+	}
+	return more
 }
 
 // signalCgroup signals every process listed in the holder's control group and
