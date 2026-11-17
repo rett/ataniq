@@ -41,7 +41,12 @@
 // caller and have mode 0700. When the next event would take the file past
 // [Options.MaxBytes] (default 4 MiB) the file is renamed to events.jsonl.1,
 // replacing an older one, and a new file is started. So the file is never
-// larger than the cap and the total kept is at most twice the cap. One event
+// larger than the cap and, once the first rotation has happened, the total kept
+// is at most twice the cap. A file that is over the cap when Open runs (the
+// cap was lowered, or an older writer made it) is renamed to events.jsonl.1
+// whole at Open, before anything is written: the current file starts empty
+// and under the cap, but the rotated file keeps its size, over the cap, until
+// the next rotation replaces it. Nothing is cut or deleted to make room. One event
 // is never split across the two files, and an event over [MaxEventBytes]
 // encoded is refused and counted, not written. Every cap that is hit is
 // counted in [Stats].
@@ -303,6 +308,12 @@ func Open(dir string, o Options) (*Log, error) {
 		f.Close()
 		unix.Close(dfd)
 		return nil, err
+	}
+	if l.size > l.max {
+		if err := l.rotate(); err != nil {
+			l.closeFiles()
+			return nil, err
+		}
 	}
 	return l, nil
 }

@@ -431,19 +431,56 @@ func TestRotationReplacesOlderFile(t *testing.T) {
 	}
 }
 
-func TestFileOverTheCapAtOpenIsRotatedFirst(t *testing.T) {
+func TestFileOverTheCapAtOpenIsRotatedAtOpen(t *testing.T) {
 	dir := newDir(t)
 	line := `{"time":"2026-01-01T00:00:00Z","seq":1,"kind":"holder","event":"start"}` + "\n"
 	big := strings.Repeat(line, 3*MinMaxBytes/len(line))
 	os.WriteFile(filepath.Join(dir, FileName), []byte(big), 0o600)
+	os.WriteFile(filepath.Join(dir, RotatedName), []byte("older\n"), 0o600)
 	l := openLog(t, dir, Options{MaxBytes: MinMaxBytes})
-	mustAppend(t, l, KindHolder, EventExit, Fields{})
+	// Before any Append: the old file is the rotated one, whole, and the
+	// current file is new and empty.
 	if b, _ := os.ReadFile(filepath.Join(dir, RotatedName)); string(b) != big {
-		t.Fatal("the old file was not rotated whole")
+		t.Fatal("the old file was not rotated whole at Open")
 	}
-	st, _ := os.Stat(filepath.Join(dir, FileName))
-	if st.Size() > MinMaxBytes {
+	if st, err := os.Stat(filepath.Join(dir, FileName)); err != nil || st.Size() != 0 || st.Mode().Perm() != 0o600 {
+		t.Fatalf("current file after Open: %v %v", st, err)
+	}
+	if s := l.Stats(); s.Rotations != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+	mustAppend(t, l, KindHolder, EventExit, Fields{})
+	if st, _ := os.Stat(filepath.Join(dir, FileName)); st.Size() == 0 || st.Size() > MinMaxBytes {
 		t.Fatalf("file is %d bytes", st.Size())
+	}
+	// The rotated file is not cut. The next rotation replaces it, and the
+	// total is under twice the cap again.
+	for i := 0; i < 2*MinMaxBytes/len(line); i++ {
+		mustAppend(t, l, KindHolder, EventResize, Fields{Cols: i})
+	}
+	var total int64
+	for _, n := range []string{FileName, RotatedName} {
+		st, err := os.Stat(filepath.Join(dir, n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += st.Size()
+	}
+	if total > 2*MinMaxBytes {
+		t.Fatalf("total %d bytes, over twice the cap", total)
+	}
+}
+
+func TestFileAtTheCapAtOpenIsNotRotated(t *testing.T) {
+	dir := newDir(t)
+	os.WriteFile(filepath.Join(dir, FileName), nil, 0o600)
+	os.Truncate(filepath.Join(dir, FileName), MinMaxBytes) // exactly the cap
+	l := openLog(t, dir, Options{MaxBytes: MinMaxBytes})
+	if s := l.Stats(); s.Rotations != 0 {
+		t.Fatalf("stats %+v", s)
+	}
+	if _, err := os.Stat(filepath.Join(dir, RotatedName)); err == nil {
+		t.Fatal("rotated at the cap")
 	}
 }
 
