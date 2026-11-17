@@ -68,12 +68,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "qualify-mirror: refused:", err)
 		return exitRefused
 	}
-	if err != nil {
-		fmt.Fprintln(stderr, "qualify-mirror: the run did not finish:", err)
+	// A run that was interrupted still has the facts it made: write them,
+	// then say that the run did not finish.
+	if werr := writeReport(out, rep); werr != nil {
+		fmt.Fprintln(stderr, "qualify-mirror: writing the report:", werr)
 		return exitFailed
 	}
-	if err := writeReport(out, rep); err != nil {
-		fmt.Fprintln(stderr, "qualify-mirror: writing the report:", err)
+	if err != nil {
+		fmt.Fprintln(stderr, "qualify-mirror: the run did not finish; the report holds the facts so far:", err)
 		return exitFailed
 	}
 	fmt.Fprintln(stdout, "qualify-mirror: report written; it holds facts only, and a person reads them")

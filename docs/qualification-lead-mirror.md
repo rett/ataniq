@@ -53,6 +53,11 @@ The command refuses to run, with exit status 2 and nothing created, when:
 - the output file exists, its folder does not exist, or it lies inside the
   scratch state root.
 
+If the run is interrupted (SIGINT) after it has started, the command writes the
+report it has made so far, then says that the run did not finish and exits with
+status 1. The report then holds the facts of the cases that ran, and the case
+that was running may hold fewer facts than a finished run.
+
 ## The config
 
 One JSON object. Every field is required, and an unknown field is refused.

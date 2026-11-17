@@ -103,6 +103,33 @@ func TestRunWritesFacts(t *testing.T) {
 	}
 }
 
+// TestInterruptedRunWritesTheReportSoFar: a run that the context ends writes
+// the partial report, then exits 1.
+func TestInterruptedRunWritesTheReportSoFar(t *testing.T) {
+	p := newPaths(t, `, "i_run_this_on_purpose": true`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errb bytes.Buffer
+	code := run(ctx, []string{"--config", p.config, "--out", p.out}, &out, &errb)
+	if code != exitFailed {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "did not finish") || strings.Contains(out.String(), "report written") {
+		t.Errorf("stdout %q, stderr %q", out.String(), errb.String())
+	}
+	data, err := os.ReadFile(p.out)
+	if err != nil {
+		t.Fatalf("no report after an interrupted run: %v", err)
+	}
+	var rep struct {
+		Format int `json:"format"`
+		Role   string
+	}
+	if err := json.Unmarshal(data, &rep); err != nil || rep.Format != 1 {
+		t.Errorf("report: %v, %+v", err, rep)
+	}
+}
+
 func TestRunRefusals(t *testing.T) {
 	ack := `, "i_run_this_on_purpose": true`
 	t.Run("no arguments", func(t *testing.T) {
