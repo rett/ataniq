@@ -3,6 +3,7 @@
 package mountpoints
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -41,7 +42,10 @@ type Resolution struct {
 // ResolveSources resolves each host bind source of the table, and each
 // never-mounted path and the other runtime's config folder too, through
 // resolve, and runs the profile's never-mounted check (which covers the
-// other runtime's config folder) on the real paths. It also refuses:
+// other runtime's config folder) on the real paths. A never-mounted path that
+// does not exist is resolved by its longest existing prefix. A resolved path
+// that cannot be used (relative, not clean, too long, a control character) is
+// a problem, never dropped. It also refuses:
 //
 //   - a source that is missing, unless its row is optional;
 //   - a real source that overlaps a read-write folder of another row, or a
@@ -68,13 +72,15 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		never = append(never, other)
 	}
 	for _, n := range append([]string(nil), never...) {
-		r, err := resolve(n)
+		r, err := realOf(resolve, n)
 		switch {
-		case err != nil && isNotExist(err):
-			// Nothing there for a link to hide.
 		case err != nil:
 			res.add(problem(ErrUnreadable, n, "the never-mounted path cannot be resolved: %v", err))
-		case r != n && profile.CheckPath("resolved path", r) == nil:
+		case r != n:
+			if cerr := profile.CheckPath("resolved path", r); cerr != nil {
+				res.add(problem(ErrUnreadable, n, "the never-mounted path resolves to a path that is not usable: %v", cerr))
+				continue
+			}
 			never = append(never, r)
 		}
 	}
@@ -121,6 +127,31 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		}
 	}
 	return res, nil
+}
+
+// realOf resolves p through resolve. A path that does not exist is resolved by
+// its longest existing prefix, with the rest appended unchanged, so that a
+// link above an absent path is still evaluated. The result is not checked.
+func realOf(resolve Resolver, p string) (string, error) {
+	rest := ""
+	for q := p; ; {
+		r, err := resolve(q)
+		if err == nil {
+			if r == "/" && rest != "" {
+				return rest, nil
+			}
+			return r + rest, nil
+		}
+		if !isNotExist(err) {
+			return "", err
+		}
+		parent := path.Dir(q)
+		if parent == q {
+			return "", err
+		}
+		rest = "/" + path.Base(q) + rest
+		q = parent
+	}
 }
 
 func reason(err error) string {

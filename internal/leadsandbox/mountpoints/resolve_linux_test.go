@@ -240,6 +240,42 @@ func TestResolveSourcesResolverErrors(t *testing.T) {
 	wantProblem(t, res.Report, ErrUnreadable, f.in.QargiInstall)
 }
 
+func TestResolveSourcesAbsentNeverMountedBelowALink(t *testing.T) {
+	// No listed path below the owner's folder exists, but the folder is a
+	// link: the absent paths are resolved by their longest existing prefix, so
+	// a source that is the real folder lies above the real .codex.
+	f := newFixture(t, profile.Claude)
+	f.mkdir(f.base+"/realhome", 0o755)
+	f.remove(f.base + "/owner")
+	f.symlink(f.base+"/realhome", f.base+"/owner")
+	f.remove(f.in.QargiInstall)
+	f.symlink(f.base+"/realhome", f.in.QargiInstall)
+	if err := f.in.Validate(); err != nil {
+		t.Fatalf("the lexical check must not see the link: %v", err)
+	}
+	wantProblem(t, f.resolve().Report, ErrNeverMounted, f.in.QargiInstall)
+}
+
+func TestResolveSourcesUnusableNeverMountedAnswer(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	base := f.resolver()
+	for _, bad := range []string{"relative/ssh", f.base + "/owner/../x", f.base + "/ow\x01ner/ssh", "/" + strings.Repeat("a", 5000)} {
+		res, err := ResolveSources(f.in, func(p string) (string, error) {
+			if p == f.base+"/owner/.ssh" {
+				return bad, nil
+			}
+			return base(p)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.OK() {
+			t.Errorf("%.40q: an unusable answer was dropped", bad)
+		}
+		wantProblem(t, res.Report, ErrUnreadable, f.base+"/owner/.ssh")
+	}
+}
+
 func TestResolveSourcesRefusesBadCalls(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	if _, err := ResolveSources(f.in, nil); !errors.Is(err, ErrInvalid) {
