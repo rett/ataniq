@@ -104,6 +104,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   runtime's own descriptors, which it holds when a standard stream was
   non-blocking at start: a target number in the pass-through mode, the report
   descriptor in the inside mode.
+- Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
+  plan, nested sandboxes under owner decision R17, the file-system view, the
+  clone rules, the environment allowlist, network and DNS, the probe, the ten
+  start-up assertions, symlink-safe reads, the profile digest and the open
+  points. It is a proposal that awaits qualification and the owner's decision on
+  the profile; nothing starts a sandbox in ordinary use, and no command uses it
+  yet. Add the opt-in qualification harness `qualify` for the proposal, with its
+  guide `docs/qualification-lead-sandbox.md`, and the target `make
+  qualification-leadsandbox-build`, which builds the harness and `ataniq-probe`
+  and runs nothing. Both are unqualified infrastructure: the harness records
+  facts for a coordinator and says nothing about the sandbox being qualified,
+  safe or supported.
 
 ### Changed
 

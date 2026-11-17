@@ -40,6 +40,8 @@ coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
 qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
+The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
+for the sandbox of a managed lead; nothing uses it yet.
 
 ## Architecture decisions
 
