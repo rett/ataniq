@@ -54,9 +54,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does, stays inside the pane, and on release copies the text to the outer
   terminal's clipboard with OSC 52 (wide characters and grapheme clusters
   once, trailing blanks dropped, rows joined with newlines, a wrapped line as
-  two lines). A selection over 1 MiB is not copied and the key bar says so
-  until the next press; in zoom the header does, which now shows every notice
-  ahead of its keys and keeps the fixture label.
+  two lines). A selection over 1 MiB is not copied and the key bar says so;
+  in console focus any console key or a press clears the notice, in session
+  focus only a press does. In zoom the header says so, and now shows every
+  notice ahead of its keys and keeps the fixture label.
   The selection is cleared by a press, a key or paste sent to the session, a
   resize (also when the pane follows it after the debounce), F12, `r`, or
   output that changes the selected text, also under a held drag whose

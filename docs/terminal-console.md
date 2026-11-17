@@ -130,6 +130,12 @@ terminal's own selection then no longer spans the window, and a selection is
 confined to the session terminal. The single-column pages below 100x30 do not
 ask for the mouse, so the terminal's own selection works there.
 
+Reporting takes the mouse from the outer terminal for more than selection.
+Its middle-click paste, clicking links, context menu, wheel scrolling of its
+own scrollback, and a multiplexer's mouse handling are unavailable in the
+cockpit unless you hold Shift, in terminals that allow that. Below 100x30
+they work as usual.
+
 Unless the session has the focus and asked for the mouse, drag with the left
 button in the session terminal to select text. The selection runs like a
 terminal's: from the cell where you pressed to the cell where you are, across
@@ -144,9 +150,10 @@ holds, also where it draws a placeholder (see
 [Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
 bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
 the placeholder. A selection of more than 1 MiB of text is not copied at all,
-and the key bar, or the header in zoom, says so until the next press. A
-terminal that does not accept OSC 52 writes, or has them turned off, copies
-nothing, and the console cannot tell.
+and the key bar, or the header in zoom, says so. In console focus any console
+key clears that notice, and so does a press. In session focus only a press
+does, because keys go to the session. A terminal that does not accept OSC 52
+writes, or has them turned off, copies nothing, and the console cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
 drag copies nothing, a selection of blanks alone copies nothing and leaves the
@@ -286,13 +293,15 @@ recording and restoring the terminal after quit. It found one problem: mouse
 selection was not confined to the session pane, because the terminal's own
 selection spans the window. The console now confines it (see
 [Selecting and copying](#selecting-and-copying)); that change has not been
-checked by hand yet.
+checked by hand yet. The attended checks here ran on the build before that
+change, so they do not cover it. It still awaits the owner's attended check.
 
 A second attended check, also with fixture recordings only, went through two
 SSH hops: an SSH session from one remote machine to another, both with the
-outer terminal's terminfo entry. Every case passed. The console's first output
-was the width query (mode 2027), and every mode it set was restored on quit.
-It is not a qualification either.
+outer terminal's terminfo entry. It ran on the build before the selection
+change too. On that build every case passed. The console's first output was
+the width query (mode 2027), and every mode it set was restored on quit. It
+says nothing about the selection change, and it is not a qualification either.
 
 The pane does not track the kitty keyboard flags a session may set. The
 console sets no keyboard enhancement of its own. Bubble Tea always asks the
