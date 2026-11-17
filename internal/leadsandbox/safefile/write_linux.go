@@ -104,8 +104,11 @@ func movedError(op, rel string) error {
 
 // WriteFileExclusive creates the regular file at rel with data and mode
 // (before the umask) and fails if anything exists there, a symbolic link
-// included: it never replaces and never follows (O_CREAT|O_EXCL). The parent
-// folder must exist; use [Root.MkdirAll] first. A failure part-way through
+// included: it never replaces and never follows (O_CREAT|O_EXCL). When what
+// exists is a symbolic link the error is [ErrSymlink] (and still matches
+// fs.ErrExist, as the errno is wrapped too); anything else that exists is
+// only fs.ErrExist, and a link in a parent component is [ErrSymlink]. The
+// parent folder must exist; use [Root.MkdirAll] first. A failure part-way through
 // the write leaves the partial file: there is no remove helper by design.
 func (r *Root) WriteFileExclusive(rel string, data []byte, mode fs.FileMode) error {
 	const op = "create"
@@ -122,6 +125,11 @@ func (r *Root) WriteFileExclusive(rel string, data []byte, mode fs.FileMode) err
 	defer r.end()
 	fd, err := r.open(r.fd, rel, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_NOCTTY, m)
 	if err != nil {
+		if err == unix.EEXIST && r.lastIsSymlink(rel) {
+			// The create was refused; the lookup only names the reason. The
+			// error still matches fs.ErrExist.
+			return &Error{Op: op, Path: rel, Err: refuse(ErrSymlink, err)}
+		}
 		return classify(op, rel, err)
 	}
 	werr := writeAll(fd, data)
@@ -133,6 +141,19 @@ func (r *Root) WriteFileExclusive(rel string, data []byte, mode fs.FileMode) err
 		return &Error{Op: op, Path: rel, Err: cerr}
 	}
 	return nil
+}
+
+// lastIsSymlink reports whether the entry at rel is a symbolic link, looked
+// up without following it (the no-follow stat of [Root.Lstat]). It decides
+// nothing but the wording of a refusal that already happened.
+func (r *Root) lastIsSymlink(rel string) bool {
+	fd, err := r.open(r.fd, rel, unix.O_PATH|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd)
+	info, err := fstat(fd)
+	return err == nil && info.IsSymlink()
 }
 
 // AppendFile appends data to the existing regular file at rel (O_APPEND; it

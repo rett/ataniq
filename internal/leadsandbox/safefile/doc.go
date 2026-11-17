@@ -3,9 +3,14 @@
 // once on a path it owns and trusts, and goes through openat2 with
 // RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS. Nothing
 // here opens, stats or creates anything by path after the handle exists, and
-// nothing follows a link a lead planted: a symbolic link in any component,
-// including the last one and including one that points back inside the
-// folder or points nowhere, is refused with [ErrSymlink]. This is the
+// nothing follows a link a lead planted: a link is refused with [ErrSymlink]
+// even when it points back inside the folder or nowhere. A link
+// in a parent component is refused by every method. A link as the last
+// component is refused by [Root.ReadFile], [Root.ReadFileInfo],
+// [Root.AppendFile], [Root.ReadDirNames] and [Root.MkdirAll]; by
+// [Root.WriteFileExclusive], which refuses to create anything there and
+// reports [ErrSymlink] (the error also matches fs.ErrExist); and it is
+// reported, not refused, by [Root.Lstat], so a caller can see it. This is the
 // symlink-safe access of section 3.6 of the lead-hosting design, the code
 // behind acceptance case S17.
 //

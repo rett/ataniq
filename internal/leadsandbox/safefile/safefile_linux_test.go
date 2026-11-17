@@ -641,8 +641,18 @@ func TestWriteFileExclusive(t *testing.T) {
 	before := snapshot(t, outside)
 	for _, rel := range []string{"dangling", "tosecret", "linkdir/created", "linkdir/secret"} {
 		err := r.WriteFileExclusive(rel, []byte("x"), 0o600)
-		if err == nil || !(errors.Is(err, ErrSymlink) || errors.Is(err, fs.ErrExist)) {
-			t.Errorf("WriteFileExclusive(%q): %v, want a refusal", rel, err)
+		if !errors.Is(err, ErrSymlink) {
+			t.Errorf("WriteFileExclusive(%q): %v, want ErrSymlink", rel, err)
+		}
+		// A link as the last component also still reads as "exists".
+		if !strings.Contains(rel, "/") && !errors.Is(err, fs.ErrExist) {
+			t.Errorf("WriteFileExclusive(%q): %v, want it to match fs.ErrExist too", rel, err)
+		}
+	}
+	// A plain entry that exists is only "exists", not a link.
+	for _, rel := range []string{"d", "d/new"} {
+		if err := r.WriteFileExclusive(rel, nil, 0o600); !errors.Is(err, fs.ErrExist) || errors.Is(err, ErrSymlink) {
+			t.Errorf("WriteFileExclusive(%q) over a non-link: %v, want fs.ErrExist and not ErrSymlink", rel, err)
 		}
 	}
 	if err := r.WriteFileExclusive("linkdir/created", nil, 0o600); !errors.Is(err, ErrSymlink) {

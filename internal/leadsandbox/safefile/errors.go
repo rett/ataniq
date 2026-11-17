@@ -11,8 +11,12 @@ import (
 // an errno that matches fs.ErrNotExist).
 var (
 	// ErrSymlink: a component of the path is a symbolic link (or a magic
-	// link), including the last one, a link that points inside the folder
-	// and a link that points nowhere.
+	// link), a link that points inside the folder or nowhere included. For
+	// the last component: ReadFile, ReadFileInfo, AppendFile and ReadDirNames
+	// return it; WriteFileExclusive returns it, wrapping the errno of the
+	// create (so it also matches fs.ErrExist); MkdirAll returns it, as its
+	// walk opens every component; Lstat does not, it reports the link (see
+	// [Info.IsSymlink]). For a parent component every method returns it.
 	ErrSymlink = errors.New("a component of the path is a symbolic link")
 	// ErrNotRegular: the entry is a FIFO, device, socket or folder where a
 	// regular file is required.
