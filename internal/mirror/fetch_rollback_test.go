@@ -151,7 +151,7 @@ func TestFetchSaysWhenTheLeadRefsCannotBePutBack(t *testing.T) {
 
 func TestFetchRestoreHasItsOwnTimeLimit(t *testing.T) {
 	// The move may use up the time it has: a run of git is limited to 600 ms
-	// here, and the move to three times that. A check of step 9 then fails
+	// here, and the move to moveRuns times that. A check of step 9 then fails
 	// after the deadline of the move, and the restore must still run, with
 	// the limit of a git run of its own.
 	r := newRollbackEnv(t)
@@ -159,7 +159,7 @@ func TestFetchRestoreHasItsOwnTimeLimit(t *testing.T) {
 	before := r.leadRefs(t)
 	alt := filepath.Join(r.m.Path(), "objects", "info", "alternates")
 	atStep(t, 90, func() {
-		time.Sleep(4 * r.m.limits.Timeout)
+		time.Sleep((moveRuns + 1) * r.m.limits.Timeout)
 		if err := os.WriteFile(alt, []byte(t.TempDir()+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
