@@ -81,9 +81,36 @@
 // and no entry names a path that is not flagged (a stale list is noticed). A
 // refusal is a [SignOffError] that lists everything wrong at once.
 //
+// # Records
+//
+// A [Store] is the owner's records folder, with one JSON file for each
+// record: a [VerificationRecord] for each verification run, written by
+// [Store.PutVerification], and an [IntakeRecord] for each integration. The
+// folder must be a real folder owned by the caller with mode 0700. It is the
+// owner's: it must not be inside the exchange mirror or inside a state folder
+// that a lead can read or write, and a lead's sandbox must not have it
+// mounted. This package cannot know the layout, so the command that opens a
+// Store checks it.
+//
+// A file is written to a temporary name, synced, and given its name without
+// replacing anything that is there; this package never overwrites or deletes a
+// record. Records are read through safefs: regular files only, at most 1 MiB,
+// no symlink followed, no block on a FIFO. A file whose name is not a record's
+// name is ignored. A file with a record's name that cannot be read, or that
+// does not decode strictly (an unknown field, a wrong version, a missing
+// value), is an error that names it, and nothing goes on without it, because a
+// record that cannot be read could be the failure that withdraws a pass. Raw
+// bytes of a path or a ref name that are not UTF-8 are kept exactly, as
+// base64.
+//
+// The output of a verification run is lead-influenced text. The record holds
+// only its SHA-256 and length. The raw output is written next to the record
+// with the suffix ".out", never read back and never parsed by this package; a
+// person who looks at it shows it through leadtext.
+//
 // # What it does not do
 //
-// It does not keep records, write refs or merge (yet). The alias
+// It does not write refs or merge (yet). The alias
 // check resolves a symlink's target by its text, against the symlinks of the
 // tip's own tree: it follows a symlink that the target passes through, and one
 // that is its last element, but at most 8 symlinks in all. A longer chain or
