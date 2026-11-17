@@ -19,15 +19,17 @@ var (
 	// [Info.IsSymlink]). For a parent component every method returns it.
 	ErrSymlink = errors.New("a component of the path is a symbolic link")
 	// ErrNotRegular: the entry is a FIFO, device, socket or folder where a
-	// regular file is required.
+	// regular file is required. A device is refused here only when its open
+	// succeeded and fstat saw it; see the package documentation.
 	ErrNotRegular = errors.New("not a regular file")
 	// ErrNotDirectory: a component that must be a folder is not one.
 	ErrNotDirectory = errors.New("a component that must be a folder is not one")
 	// ErrTooLarge: a file is larger than the cap, a file grew past the cap
 	// while it was read, or a folder holds more entries than the cap.
 	ErrTooLarge = errors.New("larger than the cap")
-	// ErrEscapes: the path is absolute, contains "..", or resolves outside
-	// the folder.
+	// ErrEscapes: the path is absolute, contains "..", resolves outside the
+	// folder, or crosses a mount point below it (EXDEV), or, for MkdirAll,
+	// a folder on the path moved while the call ran.
 	ErrEscapes = errors.New("path escapes the folder")
 	// ErrUnsupported: openat2 is not available (ENOSYS), or a filter denied
 	// it (EPERM, which is not told apart from a permission failure), or

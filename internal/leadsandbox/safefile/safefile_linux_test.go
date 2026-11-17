@@ -851,6 +851,83 @@ func TestOpenRoot(t *testing.T) {
 	}
 }
 
+// A mount point below the handle's folder is refused, not crossed. The test
+// needs a mount point it can see: it takes them from the mount table and
+// skips only when none can be told either way (it makes no mount).
+func TestMountBelowRootRefused(t *testing.T) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Skipf("no mount table: %v", err)
+	}
+	checked := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || strings.Contains(f[4], "\\") || f[4] == "/" {
+			continue
+		}
+		parent, name := filepath.Split(f[4])
+		r, err := OpenRoot(parent)
+		if err != nil {
+			continue
+		}
+		info, err := r.Lstat(name)
+		r.Close()
+		switch {
+		case err == nil:
+			t.Errorf("Lstat(%q) below %q crossed a mount point (%+v)", name, parent, info)
+			checked++
+		case errors.Is(err, ErrEscapes) && errors.Is(err, unix.EXDEV):
+			checked++
+		}
+		if checked >= 3 {
+			break
+		}
+	}
+	if checked == 0 {
+		t.Skip("no mount point whose parent could be searched")
+	}
+}
+
+// A lease a lead holds on a file does not stall an owner-side open: it fails
+// at once with EAGAIN (the open is O_NONBLOCK). Skipped where leases cannot be
+// taken (they need a file system and a setting that allow them).
+func TestLeasedFileFailsAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		flags  int
+		lease  int
+		access func(r *Root) error
+	}{
+		{"append under a read lease", unix.O_RDONLY, unix.F_RDLCK, func(r *Root) error { return r.AppendFile("f", []byte("x")) }},
+		{"read under a write lease", unix.O_RDWR, unix.F_WRLCK, func(r *Root) error { _, err := r.ReadFile("f", 10); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, dir, _ := newRoot(t)
+			p := filepath.Join(dir, "f")
+			write(t, p, "x")
+			fd, err := unix.Open(p, tc.flags|unix.O_CLOEXEC, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unix.Close(fd)
+			if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETLEASE, tc.lease); err != nil {
+				t.Skipf("cannot take a lease here: %v", err)
+			}
+			defer unix.FcntlInt(uintptr(fd), unix.F_SETLEASE, unix.F_UNLCK)
+			done := make(chan error, 1)
+			go func() { done <- tc.access(r) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, unix.EAGAIN) {
+					t.Fatalf("access to a leased file: %v, want EAGAIN", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("access to a leased file waited for the lease to break")
+			}
+		})
+	}
+}
+
 // OpenRoot probes openat2 once and refuses with ErrUnsupported when it does
 // not work, closing what it opened.
 func TestOpenRootProbe(t *testing.T) {
@@ -945,8 +1022,13 @@ func TestEveryOpenCarriesFlags(t *testing.T) {
 	if n < 12 || len(bad) != 0 {
 		t.Fatalf("%d calls seen; without the flags: %v", n, bad)
 	}
-	if resolveFlags&unix.RESOLVE_BENEATH == 0 || resolveFlags&unix.RESOLVE_NO_SYMLINKS == 0 || resolveFlags&unix.RESOLVE_NO_MAGICLINKS == 0 {
-		t.Fatalf("resolveFlags %#x lacks BENEATH, NO_SYMLINKS or NO_MAGICLINKS", uint64(resolveFlags))
+	for name, f := range map[string]uint64{
+		"BENEATH": unix.RESOLVE_BENEATH, "NO_SYMLINKS": unix.RESOLVE_NO_SYMLINKS,
+		"NO_MAGICLINKS": unix.RESOLVE_NO_MAGICLINKS, "NO_XDEV": unix.RESOLVE_NO_XDEV,
+	} {
+		if resolveFlags&f == 0 {
+			t.Errorf("resolveFlags %#x lacks RESOLVE_%s", uint64(resolveFlags), name)
+		}
 	}
 }
 

@@ -64,9 +64,13 @@ func (r *Root) ReadFileInfo(rel string, max int64, opts ...ReadOption) (*FileRes
 		return nil, err
 	}
 	defer r.end()
-	// O_NONBLOCK keeps a FIFO from blocking the open; O_NOCTTY keeps a
-	// terminal device from becoming the controlling terminal. The file type
-	// is decided below, on the descriptor.
+	// O_NONBLOCK keeps a FIFO from blocking the open, and also keeps a lease
+	// a lead holds on the file (a process with the owner's uid can take one)
+	// from stalling the owner for the lease-break time: the open fails at
+	// once with EAGAIN. Do not drop it because fstat refuses FIFOs anyway.
+	// O_NOCTTY keeps a terminal device from becoming the controlling
+	// terminal. The file type is decided below, on the descriptor; a device's
+	// open has already run by then (see the package documentation).
 	fd, err := r.open(r.fd, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, classify(op, rel, err)

@@ -170,8 +170,12 @@ func (r *Root) AppendFile(rel string, data []byte) error {
 		return err
 	}
 	defer r.end()
-	// O_NONBLOCK keeps a write open of a FIFO from blocking: with no reader
-	// it fails with ENXIO, which is reported as not regular.
+	// O_NONBLOCK keeps a write open of a FIFO from blocking (with no reader
+	// it fails with ENXIO, reported as not regular), and keeps a lease a lead
+	// holds on the file from stalling the owner for the lease-break time: the
+	// open fails at once with EAGAIN. Do not drop it because fstat refuses
+	// FIFOs anyway. A device's open has already run when fstat sees it (see
+	// the package documentation).
 	fd, err := r.open(r.fd, rel, unix.O_WRONLY|unix.O_APPEND|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return classify(op, rel, err)

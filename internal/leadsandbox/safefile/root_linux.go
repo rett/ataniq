@@ -14,7 +14,11 @@ import (
 
 // resolveFlags is what every lookup below the handle uses. NO_SYMLINKS
 // implies NO_MAGICLINKS; both are named so the intent reads from the code.
-const resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
+// NO_XDEV refuses to cross a mount point, bind mounts included, on any
+// component: a mount below the handle's folder is refused (EXDEV, reported as
+// [ErrEscapes]) and not read across. The handle's own folder may be a mount
+// root or on any file system; only a crossing below it is refused.
+const resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
 
 // maxRelPath bounds a relative path (the kernel's PATH_MAX less the NUL).
 const maxRelPath = 4095
