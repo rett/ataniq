@@ -343,7 +343,7 @@ func cleanProtocols(in []string) ([]string, error) {
 var valuelessFlags = []string{
 	// Fetch and update.
 	"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head",
-	"--no-auto-maintenance", "--no-auto-gc", "--all",
+	"--no-auto-maintenance", "--no-auto-gc", "--all", "--atomic",
 	// Init.
 	"--bare",
 	// Output control.

@@ -19,6 +19,7 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 	}{
 		// Accepted: "=" holds the value; the listed flags take none.
 		{"fetch", []string{"--depth=1", "--no-tags", "--prune", "--end-of-options", "/srv/src"}},
+		{"fetch", []string{"--atomic", "--prune", "--no-tags", "--end-of-options", "/srv/src"}},
 		{"fetch", []string{"-q", "--quiet", "--no-recurse-submodules", "--no-write-fetch-head", "--", "/srv/src"}},
 		{"log", []string{"--max-count=1", "--format=%H", "--first-parent", "--no-walk", "--end-of-options", "HEAD"}},
 		{"config", []string{"--file=/dev/stdin", "--list", "-z"}},
@@ -185,7 +186,7 @@ func TestValuelessFlagsTakeNoValue(t *testing.T) {
 		}
 	}
 	// What the review asked for by name.
-	for _, f := range []string{"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--no-auto-gc", "--bare", "--quiet", "-q", "-z", "-r", "-m", "--raw", "--root", "--no-renames", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--verify", "--is-ancestor", "--no-deref", "--stdin", "--list", "--batch-check", "--batch", "--objects", "--no-walk", "--first-parent", "--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature", "-v", "--count", "--all", "--local"} {
+	for _, f := range []string{"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--no-auto-gc", "--bare", "--quiet", "-q", "-z", "-r", "-m", "--raw", "--root", "--no-renames", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--verify", "--is-ancestor", "--no-deref", "--stdin", "--list", "--batch-check", "--batch", "--objects", "--no-walk", "--first-parent", "--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature", "-v", "--count", "--all", "--local", "--atomic"} {
 		if !seen[f] {
 			t.Errorf("valuelessFlags lacks %q", f)
 		}
@@ -228,5 +229,20 @@ func TestRefusedProbesStartNothing(t *testing.T) {
 			}
 			mustNotFire(t, mark, "the probe "+p.name+" through this package")
 		})
+	}
+}
+
+// TestAtomicFetchRuns runs the fetch that the mirror makes for its move: with
+// "--atomic" before the end of the options, through this package, from a
+// local source. Argv must accept it and git must update the refs.
+func TestAtomicFetchRuns(t *testing.T) {
+	g := needGit(t)
+	src := source(t, g)
+	repo := bare(t, g)
+	mustOwned(t, g, Cmd{GitDir: repo, Protocols: []string{"file"}, Args: []string{
+		"fetch", "--atomic", "--no-tags", "--prune", "--end-of-options", src, "+refs/heads/*:refs/heads/*"}})
+	got := mustOwned(t, g, Cmd{GitDir: repo, Args: []string{"for-each-ref", "--format=%(refname)", "--end-of-options", "refs/heads/"}})
+	if got != "refs/heads/main" {
+		t.Errorf("refs after the atomic fetch: %q", got)
 	}
 }
