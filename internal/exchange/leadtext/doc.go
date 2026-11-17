@@ -11,6 +11,12 @@
 // prefers an unambiguous line over a pretty one: an emoji with a variation
 // selector shows the selector as escape text.
 //
+// Visually blank characters are escaped where they are known: the invisible
+// and default-ignorable code points, and printable ones that render as a blank,
+// such as U+2800 (braille pattern blank). Look-alike letters (homoglyphs) are
+// not handled. Two names that differ only by look-alike letters stay possible,
+// so a caller that compares names must compare bytes, not the escaped text.
+//
 // Escape and Line work on one line. Writer wraps an io.Writer and cleans a
 // stream of many lines, such as a diff or command output. Label names what the
 // text is. Callers show it next to every block of escaped text.
