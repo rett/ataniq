@@ -153,6 +153,8 @@ func Verify(p *Plan, in profile.Inputs, opt Options) []Problem {
 	if bad := forbiddenIn(p.Argv); bad != "" {
 		v.add(ProbForbidden, "%s appears in the command line", bad)
 	}
+	// The parts and Argv are compared by shape; this names a forbidden option
+	// in a part even when Argv has been left unchanged.
 	if bad := forbiddenIn(join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)); bad != "" && forbiddenIn(p.Argv) == "" {
 		v.add(ProbForbidden, "%s appears in a part of the plan", bad)
 	}
@@ -559,6 +561,9 @@ func (v *verifier) workDir(p *Plan, workDir string, chdir []item) {
 	}
 }
 
+// remount checks --remount-ro: once, for the root, and last. That it is last
+// is also implied by the section order the bwrap check reports; it is kept so
+// that the rule stands on its own.
 func (v *verifier) remount(got []item, all []item) {
 	if len(got) != 1 {
 		v.add(ProbRemount, "--remount-ro is passed %d times, not once", len(got))

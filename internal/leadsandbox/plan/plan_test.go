@@ -594,6 +594,35 @@ func TestRefusalDoesNotRepeatTheOperand(t *testing.T) {
 	}
 }
 
+// Build's own assertions refuse on their own, though a step before them
+// reaches the same refusal for every input the package can see.
+func TestAssertPlanRefusesOnItsOwn(t *testing.T) {
+	p, in, o := basePlan(t)
+	if err := assertPlan(p, in, o); err != nil {
+		t.Fatalf("assertPlan refused a good plan: %v", err)
+	}
+	for name, c := range map[string]struct {
+		field string
+		mut   func(p *Plan)
+	}{
+		"forbidden option in Argv": {"command line", func(p *Plan) { p.Argv = append(p.Argv, "--disable-userns") }},
+		"command line too long":    {"command line", func(p *Plan) { p.Argv = append(p.Argv, strings.Repeat("a", MaxArgvBytes)) }},
+		"the plan fails Verify":    {"plan", func(p *Plan) { p.Digest = "" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := clonePlan(p)
+			c.mut(q)
+			err := assertPlan(q, in, o)
+			if err == nil {
+				t.Fatal("assertPlan accepted it")
+			}
+			if r := refusal(t, err); r.Field != c.field {
+				t.Errorf("refusal field = %q, want %q", r.Field, c.field)
+			}
+		})
+	}
+}
+
 func TestInvalidInputsAreTheProfilesRefusal(t *testing.T) {
 	mutations := map[string]func(*profile.Inputs){
 		"role":                func(in *profile.Inputs) { in.Role = "Bad Name" },

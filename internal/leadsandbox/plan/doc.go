@@ -77,8 +77,8 @@
 // namespaces, which is a larger kernel surface. Every plan carries a note that
 // says so, and a note that says whether a seccomp file is named. The seccomp
 // hook only passes a file the caller names, with its digest, as a descriptor
-// the pass-through step opens; no filter is generated or reviewed here, and the plan
-// says "no seccomp filter: none has been reviewed" when none is named.
+// the pass-through step opens; no filter is generated or reviewed here, and
+// the plan says "no seccomp filter: none has been reviewed" when none is named.
 //
 // # Checks
 //
@@ -87,10 +87,22 @@
 // descriptor or report descriptor that is missing, below 3 or above 1023 (or
 // the same twice), a report path that is not a clean absolute path or that
 // lies in or below a lead-writable host folder or a never-mounted path, a
-// working folder outside the tree and the home, an operand that starts with
-// --, and a command line above [MaxArgvBytes]. It asserts that no option of
+// working folder outside the tree and the home, an operand of bubblewrap that
+// starts with --, an agent argument that equals a forbidden option, and a
+// command line above [MaxArgvBytes]. It asserts that no option of
 // [profile.ForbiddenFlags] appears anywhere, and runs [Verify] on its own
 // result.
+//
+// bubblewrap reads operands by position, so it would take an operand that
+// starts with -- as a value, not as an option. The plan refuses such an operand
+// so that its parse and its rendering stay unambiguous; that is a choice of
+// this package, not something bubblewrap needs. The agent arguments come after
+// the probe's -- and bubblewrap never reads them; refusing an agent argument
+// that equals a forbidden option is defence in depth, so that no element of
+// the whole command line is one, and it refuses more than bubblewrap needs. The
+// command-line cap is well under the Linux budget that arguments and the
+// environment of a new program share, because the plan cannot see the
+// environment the launcher passes.
 //
 // [Verify] takes the plan, the profile inputs and the [Options] the holder
 // uses now, and is the check the holder runs before every start. It is written
@@ -100,9 +112,9 @@
 // pasta arguments, the pass-through step, the list of descriptors with their
 // numbers and paths, the bubblewrap arguments (flag set, allowlist, bind
 // table, never-mounted paths, the other runtime's config folder, the working
-// folder), the list of mounts, exactly which optional rows are present, the probe command line
-// with the agent argv, the digest, the terminal flag and the exact set of
-// notes. A plan that agrees with the inputs and the options says the text of
+// folder), the list of mounts, exactly which optional rows are present, the
+// probe command line with the agent argv, the digest, the terminal flag and the
+// exact set of notes. A plan that agrees with the inputs and the options says the text of
 // the plan is the one they describe; it does not say what bubblewrap, pasta or
 // the kernel will do with it. The mutation tests of this package show which
 // changes it catches.

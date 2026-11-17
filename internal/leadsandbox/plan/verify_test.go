@@ -183,6 +183,12 @@ func TestVerifyMutations(t *testing.T) {
 		{"chdir outside the tree and home", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "/etc" }},
 		{"chdir not the plan's", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "/work/demo/sub" }},
 		{"chdir relative", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "work/demo" }},
+		{"chdir unclean", ProbWorkDir, false, func(t *testing.T, p *Plan) {
+			// Consistent with the plan, inside the tree by prefix, and not clean.
+			p.Bwrap[find(t, p, "--chdir", "")+1] = "/work/demo/../../etc"
+			p.WorkDir = "/work/demo/../../etc"
+		}},
+		{"working folder of the plan changed alone", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.WorkDir = "/work/demo/sub" }},
 		{"chdir twice", ProbWorkDir, false, func(t *testing.T, p *Plan) { insert(p, find(t, p, "--chdir", ""), "--chdir", "/work/demo") }},
 		{"remount removed", ProbRemount, false, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--remount-ro", "")) }},
 		{"remount of another path", ProbRemount, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--remount-ro", "")+1] = "/usr" }},
@@ -311,6 +317,31 @@ func TestVerifyMutations(t *testing.T) {
 		{"digest empty", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = "" }},
 		{"controlling terminal set", ProbTerminal, false, func(t *testing.T, p *Plan) { p.SetControllingTerminal = true }},
 		{"r17 note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = p.Notes[:1] }},
+		{"share-net note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteShareNet) }},
+		{"nested-userns note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteNestedUserns) }},
+		{"session note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteSession) }},
+		{"identity note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "identity:") {
+					n = append(n, x)
+				}
+			}
+			if len(n) != len(p.Notes)-1 {
+				t.Fatal("no identity note to drop")
+			}
+			p.Notes = n
+		}},
+		{"network note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "network:") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
+		{"note added", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = append(p.Notes, "all is well") }},
 		{"seccomp note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
 			var n []string
 			for _, x := range p.Notes {
@@ -378,6 +409,32 @@ func TestVerifyMutations(t *testing.T) {
 		if !seen[k] {
 			t.Errorf("no mutation raises %q", k)
 		}
+	}
+}
+
+func removeNote(notes []string, drop string) []string {
+	var out []string
+	for _, n := range notes {
+		if n != drop {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// A forbidden option in a part is named even when Argv was left unchanged.
+func TestVerifyForbiddenOptionInAPartAlone(t *testing.T) {
+	p, in, o := basePlan(t)
+	insert(p, 1, "--new-session") // no resync: Argv does not hold it
+	probs := Verify(p, in, o)
+	var part bool
+	for _, pr := range probs {
+		if pr.Kind == ProbForbidden && strings.Contains(pr.Detail, "part of the plan") {
+			part = true
+		}
+	}
+	if !part {
+		t.Errorf("no forbidden-flag problem for the part: %v", probs)
 	}
 }
 

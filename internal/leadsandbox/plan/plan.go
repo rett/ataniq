@@ -270,16 +270,28 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		Notes:   notes(in, opt, workDir, leftOut(binds, opt)),
 	}
 	p.Argv = join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)
-	if n := argvBytes(p.Argv); n > MaxArgvBytes {
-		return nil, refuse("command line", "is %d bytes, above the cap of %d", n, MaxArgvBytes)
-	}
-	if bad := forbiddenIn(p.Argv); bad != "" {
-		return nil, refuse("command line", "holds the forbidden option %s", bad)
-	}
-	if probs := Verify(p, in, opt); len(probs) > 0 {
-		return nil, refuse("plan", "fails its own check (%d problems, first: %s)", len(probs), probs[0])
+	if err := assertPlan(p, in, opt); err != nil {
+		return nil, err
 	}
 	return p, nil
+}
+
+// assertPlan is Build's last word on its own result: the size cap, the
+// forbidden options and Verify. Each of the first two is also a refusal that
+// an earlier step (checkAgent, the emitter) reaches first for every input the
+// package can see, so the tests call assertPlan on a tampered plan to show
+// that it refuses on its own.
+func assertPlan(p *Plan, in profile.Inputs, opt Options) error {
+	if n := argvBytes(p.Argv); n > MaxArgvBytes {
+		return refuse("command line", "is %d bytes, above the cap of %d", n, MaxArgvBytes)
+	}
+	if bad := forbiddenIn(p.Argv); bad != "" {
+		return refuse("command line", "holds the forbidden option %s", bad)
+	}
+	if probs := Verify(p, in, opt); len(probs) > 0 {
+		return refuse("plan", "fails its own check (%d problems, first: %s)", len(probs), probs[0])
+	}
+	return nil
 }
 
 // wantFiles lists what the pass-through step opens for these inputs and
@@ -390,6 +402,9 @@ func (o Options) checkAgent() error {
 		if strings.IndexByte(a, 0) >= 0 {
 			return refuse("agent argv", "element %d holds a NUL", i)
 		}
+		// An argument after the probe's -- is never read by bubblewrap, so
+		// this over-refuses on purpose: defence in depth, so that no element
+		// of the whole command line equals a forbidden option.
 		for _, f := range profile.ForbiddenFlags() {
 			if a == f {
 				return refuse("agent argv", "element %d is the forbidden option %s", i, f)
