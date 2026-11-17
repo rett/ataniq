@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"ataniq/internal/leadholder/fakeagent"
 )
 
@@ -482,8 +484,26 @@ func TestClosingTheMasterHangsUpTheChild(t *testing.T) {
 	}
 }
 
+// killAtCleanup opens a pidfd for pid now and kills the process through it
+// when the test ends, so a pid that was reaped and reused in between is not
+// hit. A process that is already gone needs nothing.
+func killAtCleanup(t *testing.T, pid int) {
+	t.Helper()
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		if err != unix.ESRCH {
+			t.Errorf("pidfd_open(%d): %v", pid, err)
+		}
+		return
+	}
+	t.Cleanup(func() {
+		_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
+		_ = unix.Close(fd)
+	})
+}
+
 // pidFromFile waits for a file with a pid in it and returns the pid; the
-// process is killed when the test ends.
+// process is killed (through a pidfd opened now) when the test ends.
 func pidFromFile(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(patience)
