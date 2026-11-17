@@ -145,9 +145,13 @@ mirror run. `tools.go` is the Go version the harness was built with.
 
 Text that a lead wrote (ref names, paths, commit subjects, gate output) is
 passed through `leadtext.Escape` before it is written. Error texts come from
-the packages, which put no output of git and no lead text in them. The harness
-puts no scratch path in a fact of its own; the text of an error from a package
-may name a folder.
+the packages, which put no output of git and no lead text in them; the one
+exception is the error of `s16-fetch.control`, which holds the first line of
+git's own message. The harness puts no scratch path in a fact of its own,
+except `repository_inside` in `s16-fetch.clone`, which is the template's own
+value for the clone's path as the serving half sees it, and that value is a
+host path when the template uses `{tree}` there. The text of an error from a
+package or from the control's git may name a folder.
 
 A fact never says that something is good. Where a fact compares two values it
 says whether they are `identical`, and nothing more.
