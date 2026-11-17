@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"ataniq/internal/leadregistry"
@@ -188,5 +189,50 @@ func TestACrashBetweenActingAndAcknowledgingRepeatsTheTreatment(t *testing.T) {
 	}
 	if len(r.signalCalls()) != signals {
 		t.Fatal("Reconcile signalled")
+	}
+}
+
+// TestConcurrentReconcilesAcknowledgeTheCutOnce: two calls at the same time
+// after a cut both act on it. The one that finds it acknowledged by the other
+// is done and does not fail; exactly one of them wrote the acknowledgement.
+func TestConcurrentReconcilesAcknowledgeTheCutOnce(t *testing.T) {
+	r, _, _ := cutWorld(t)
+	const calls = 2
+	var (
+		wg    sync.WaitGroup
+		start = make(chan struct{})
+		reps  [calls]Report
+		errs  [calls]error
+	)
+	r.drive(func() {
+		for i := 0; i < calls; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				reps[i], errs[i] = r.ctl.Reconcile(context.Background())
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+	})
+	acknowledged := 0
+	for i := range reps {
+		if errs[i] != nil {
+			t.Fatalf("call %d: %v", i, errs[i])
+		}
+		if reps[i].Acknowledged {
+			acknowledged++
+		}
+	}
+	if acknowledged != 1 {
+		t.Fatalf("%d of the calls report that they acknowledged the cut, want 1", acknowledged)
+	}
+	if r.reg.Recovery().Cut() {
+		t.Fatal("the cut is still reported")
+	}
+	// Nothing is left to do for a later call.
+	if rep := r.reconcile(); rep.Recovered || rep.Acknowledged {
+		t.Fatalf("later report %+v", rep)
 	}
 }

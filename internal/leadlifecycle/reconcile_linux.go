@@ -2,6 +2,7 @@ package leadlifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"ataniq/internal/leadregistry"
@@ -40,8 +41,10 @@ type Report struct {
 	// role, journaled the registry's acknowledgement of it
 	// ([leadregistry.Registry.AcknowledgeRecovery]), so that a later daemon
 	// does not treat the cut again. It is false when there was no cut to act
-	// on, and when a role could not be acted on (the manager did not answer)
-	// or the acknowledgement could not be written.
+	// on, when a role could not be acted on (the manager did not answer),
+	// when the acknowledgement could not be written, and when a call at the
+	// same time acknowledged the cut first (that call reports it; this one
+	// returns no error for it).
 	Acknowledged bool
 }
 
@@ -145,13 +148,20 @@ func (c *Controller) Reconcile(ctx context.Context) (Report, error) {
 		ackDue = undone == 0
 	}
 	if ackDue {
-		if _, err := c.reg.AcknowledgeRecovery(cutNote(rep)); err != nil {
+		_, err := c.reg.AcknowledgeRecovery(cutNote(rep))
+		switch {
+		case err == nil:
+			rep.Acknowledged = true
+		case errors.Is(err, leadregistry.ErrNoRecovery):
+			// A call at the same time acted on the cut and acknowledged it
+			// first. Each call that acknowledges has acted on every role
+			// itself, so the cut is done; this call did not write it.
+		default:
 			return rep, err
 		}
 		c.mu.Lock()
 		c.ackDue = false
 		c.mu.Unlock()
-		rep.Acknowledged = true
 	}
 	return rep, nil
 }
