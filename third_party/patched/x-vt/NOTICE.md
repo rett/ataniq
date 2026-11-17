@@ -380,10 +380,11 @@ Patches, applied in this order to the files of the module as released:
      narrower than the screen without moving their cells would bound this. The
      pane feeds the emulator in slices of 4 KiB, so that no draw waits for more
      than a slice of it: about 4 s for the line feeds above and 0.5 to 1.4 s for
-     the others (their 64 KiB time over 16). The holder feeds its emulator in slices of 4 KiB as
-     well, and releases its output lock between two of them, so that an attach
-     or a resize waits for one slice and not for the whole chunk (up to 64 KiB
-     of a read), but the session's output still takes the time above.
+     the others (their 64 KiB time over 16). The holder feeds its emulator in
+     slices of 4 KiB as well, and releases its output lock between two of them,
+     so that an attach or a resize waits for one slice and not for the whole
+     chunk (up to 64 KiB of a read), but the session's output still takes the
+     time above.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

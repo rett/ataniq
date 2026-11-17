@@ -77,7 +77,7 @@ sh scripts/go-tool.sh build -o build/ataniq-console ./cmd/ataniq-console
 ignored by git.
 
 The holder refuses to start, with exit status 2 and a line on its standard
-error, among other cases in these three, each checked before the agent starts:
+error, in these cases, among others, each checked before the agent starts:
 
 - `/proc/sys/dev/tty/legacy_tiocsti` is not 0, or cannot be read. The sysctl
   does not exist before Linux 6.2, and the `TIOCSTI` ioctl is then always
@@ -93,6 +93,21 @@ error, among other cases in these three, each checked before the agent starts:
 In unit mode `start` then reports only that the holder did not answer, and the
 reason is in the journal of the unit (`journalctl --user -u
 ataniq-scratch-NAME`); with `--direct` the holder's line is on your terminal.
+
+Once those checks have passed, the holder takes these signals:
+
+- SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2 stop it. It stops the agent as
+  `stop` does (SIGTERM, then SIGKILL after the grace), writes the final record
+  and exits 0. SIGQUIT and the two user signals do not end it at once. SIGKILL
+  cannot be handled and leaves no final record.
+- SIGHUP and SIGPIPE are ignored, so that the holder outlives the terminal of
+  whoever started it.
+
+A stop signal that comes while the holder is starting, before the agent has
+started, ends the holder with exit status 2 and a line on its standard error,
+and the agent is never started. The event log records a `refusal` with the
+reason `signal-before-start`, `holder.json` is removed, and no final record is
+written for that epoch.
 
 Start a scratch agent. NAME is 1 to 31 characters of `a-z`, `0-9` and `-`, and
 the program must be an absolute path, because the holder does no `PATH` search
@@ -221,6 +236,7 @@ The state folder, `$XDG_STATE_HOME/ataniq/scratch/demo/` (`~/.local/state` when
 | `holder.json` | 0600 | What the holder was started with (role, epoch, launch intent, runtime and version, profile digest, tree), written before the agent starts, and which process it is (its pid and start time), the screen size, the agent's program (`ARGV[0]` only, never its arguments or environment) and `scratch: true`. |
 | `events.jsonl` | 0600 | The event log. At 4 MiB it is renamed to `events.jsonl.1` (replacing an older one) and a new file starts, so the two together stay under 8 MiB. |
 | `final.json` | 0600 | The final record, written when the session is over. |
+| `final.json.previous` | 0600 | The final record of an earlier epoch. At the next start that takes the role lock, a `final.json` that is there is renamed to this name (replacing an older one) before the new `holder.json` is written, so that `final.json` is never the record of an epoch other than the last one that ended. A start that fails or is stopped by a signal leaves no `final.json`, and the last record is then only here. |
 | `epoch` | 0600 | The epoch of the last start, a counter. |
 | `role.lock` | 0600 | Held by the holder, with an exclusive lock, for as long as it runs. A second holder for the same NAME gets exit status 3. |
 | `daemon.lock` | 0600 | The stand-in daemon's lock. `ataniq-scratch` takes it for one conversation and writes its own process ID in it, which is what the holder checks on `control.sock`. |
@@ -289,7 +305,7 @@ keeps. A cap that is hit is counted, not silent.
 | Repeat (`CSI n b`) | a count over two lines and two characters is done in bulk or cut | `repeats_cut` |
 | One PTY read | 64 KiB; a longer burst is several chunks | none |
 | Terminal replies waiting for the input lock | 64 KiB | `reply_dropped_chunks`, `reply_dropped_bytes` |
-| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (any control request that is refused, a ticket refused with `busy` and the 8-request cap included) |
+| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted) |
 | Send buffer | 1 MiB of output for each client, plus one queued snapshot outside it | `resyncs`, `too_slow_disconnects`, `stalled_disconnects` |
 | Frame payload | 64 KiB from a client, 1 MiB from the holder, 64 KiB on the control socket | `bad_frames`; the connection is closed |
 | Snapshot frame | 19 MiB | the snapshot is not taken (`snapshot_errors`) |
