@@ -523,6 +523,12 @@ func TestWriterPassesErrors(t *testing.T) {
 		t.Fatalf("short write error = %v", err)
 	}
 
+	// On a downstream error Write returns 0, even when it held a partial rune.
+	w = NewWriter(&failWriter{err: boom})
+	if n, err := w.Write([]byte("a\xe2")); n != 0 || !errors.Is(err, boom) {
+		t.Fatalf("Write with a held rune = %d, %v; want 0 and the error", n, err)
+	}
+
 	w = NewWriter(&failWriter{err: boom})
 	if _, err := w.Write([]byte("\xe2")); err != nil { // held back, nothing written yet
 		t.Fatal(err)

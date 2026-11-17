@@ -289,8 +289,10 @@ func NewWriter(w io.Writer) *Writer {
 
 // Write cleans p and writes it to the wrapped writer. A rune split across
 // calls is held back until it is complete. Write reports the number of bytes
-// of p it took, not the number it wrote. After an error from the wrapped
-// writer every later call returns that error.
+// of p it took, not the number it wrote. When the wrapped writer fails, Write
+// returns 0 and its error, although it may have taken some of p into the
+// held part of a rune. The error is final: every later call returns it, so
+// the caller must not retry the same bytes.
 func (w *Writer) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
