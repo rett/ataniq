@@ -55,8 +55,9 @@
 // outbound network access. The real [Launcher] ([ExecLauncher], in its own
 // file) is the only non-test code here that starts a process, and a test
 // guards that. The tests of the harness use [FakeLauncher]; the tests of
-// ExecLauncher start the test binary itself under a pseudo-terminal, never a
-// sandbox tool.
+// ExecLauncher start only the test binary itself, under a pseudo-terminal and
+// as the stand-in for a tool asked for its version (a link to it under another
+// name), never a sandbox tool, a script or a shell.
 //
 // The package builds on Linux/amd64 only; elsewhere it holds this
 // documentation alone.

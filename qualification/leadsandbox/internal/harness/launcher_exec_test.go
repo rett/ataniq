@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -187,25 +188,59 @@ func TestExecLauncherRefusesWhatItCannotStart(t *testing.T) {
 	}
 }
 
-func TestExecLauncherToolVersions(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) string {
-		p := dir + "/" + name
-		if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		return p
+// The tools of the version tests are the test binary itself, started under a
+// name: a link in a temporary folder whose base name selects what the program
+// does (no script, no shell, and nothing that needs the folder to allow
+// execution). They run before the test framework does anything.
+const toolPrefix = "harness-tool-"
+
+func init() {
+	name := filepath.Base(os.Args[0])
+	if !strings.HasPrefix(name, toolPrefix) {
+		return
 	}
-	good := write("tool-a", "#!/bin/sh\necho \"tool 1.2.3\"\necho second line\n")
-	bad := write("tool-b", "#!/bin/sh\nexit 3\n")
-	v := ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: good, Pasta: bad})
+	switch {
+	case name == toolPrefix+"good":
+		fmt.Println("tool 1.2.3")
+		fmt.Println("second line")
+	case name == toolPrefix+"bad":
+		os.Exit(3)
+	default:
+		os.Exit(99)
+	}
+	os.Exit(0)
+}
+
+// toolLinks makes the tools in a temporary folder and returns the folder and
+// the path of each by name.
+func toolLinks(t *testing.T, names ...string) (string, map[string]string) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	out := map[string]string{}
+	for _, n := range names {
+		p := filepath.Join(dir, toolPrefix+n)
+		if err := os.Symlink(self, p); err != nil {
+			t.Skipf("cannot link the test binary: %v", err)
+		}
+		out[n] = p
+	}
+	return dir, out
+}
+
+func TestExecLauncherToolVersions(t *testing.T) {
+	_, tools := toolLinks(t, "good", "bad")
+	v := ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: tools["good"], Pasta: tools["bad"]})
 	if v.Bwrap != "tool 1.2.3" || v.Pasta != "" || v.Kernel == "" {
 		t.Errorf("versions: %+v", v)
 	}
 	if len(v.Errors) != 1 || !strings.Contains(v.Errors[0], "pasta --version") {
 		t.Errorf("errors: %v", v.Errors)
 	}
-	v = ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: "relative", Pasta: dir + "/missing"})
+	v = ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: "relative", Pasta: filepath.Dir(tools["good"]) + "/missing"})
 	if len(v.Errors) != 2 {
 		t.Errorf("errors: %v", v.Errors)
 	}

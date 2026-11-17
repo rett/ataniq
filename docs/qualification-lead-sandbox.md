@@ -8,11 +8,12 @@ no part of its output says that the profile passed, is qualified or is
 supported. A reader draws conclusions from the facts and the attended cases
 below; the owner decides on the profile.
 
-The harness is for a coordinator. Nobody runs it as part of a checkout's checks,
-`make test` does not reach a real launch, and every test in the repository uses
-a fake launcher. One test starts the test binary itself under a pseudo-terminal
-to check the launcher's terminal, process group and signal handling; it starts
-no sandbox tool. See [the host manual](qualification-host.md) for the
+The harness is for a coordinator. Nobody runs it as part of a checkout's checks.
+`make test` does not reach a real launch: the harness's tests use a fake
+launcher, and the tests of the real launcher start only the test binary itself,
+under a pseudo-terminal (to check its terminal, session, process group,
+environment and signal handling) and as the stand-in for a tool asked for its
+version. No test starts pasta, bubblewrap, the probe or a namespace. See [the host manual](qualification-host.md) for the
 conventions this follows: facts, status and errno; no pass or support field;
 explicit configuration; evidence in a private campaign folder; subjects that are
 not developer prerequisites.
