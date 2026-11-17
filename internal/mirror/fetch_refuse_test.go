@@ -134,11 +134,11 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 			}
 			defer s.remove()
 			mirrorGit(t, f.g, s.path, nil, "update-ref", prefix+"good", f.first)
-			if err := f.m.checkArrived(ctx, s, prefix, lim); err != nil {
+			if _, err := f.m.checkArrived(ctx, s, prefix, lim); err != nil {
 				t.Fatalf("a commit was refused: %v", err)
 			}
 			mirrorGit(t, f.g, s.path, nil, "update-ref", prefix+"odd", tc.id)
-			err = f.m.checkArrived(ctx, s, prefix, lim)
+			_, err = f.m.checkArrived(ctx, s, prefix, lim)
 			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "1 of 2 refs") {
 				t.Errorf("checkArrived = %v", err)
 			}
@@ -151,7 +151,7 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 		}
 		defer s.remove()
 		mirrorGit(t, f.g, s.path, nil, "update-ref", "refs/heads/develop", f.first)
-		if err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
+		if _, err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
 			t.Errorf("checkArrived = %v", err)
 		}
 	})
@@ -162,7 +162,7 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 		}
 		defer s.remove()
 		mirrorGit(t, f.g, s.path, nil, "update-ref", "refs/leads/other/heads/x", f.first)
-		if err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
+		if _, err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
 			t.Errorf("checkArrived = %v", err)
 		}
 	})
@@ -178,11 +178,11 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 		lim := lim
 		lim.MaxRefs = 2
 		var le *LimitError
-		if err := f.m.checkArrived(ctx, s, prefix, lim); !errors.As(err, &le) || le.What != "refs" || le.Max != 2 {
+		if _, err := f.m.checkArrived(ctx, s, prefix, lim); !errors.As(err, &le) || le.What != "refs" || le.Max != 2 {
 			t.Errorf("checkArrived = %v", err)
 		}
 		lim.MaxRefs = 3
-		if err := f.m.checkArrived(ctx, s, prefix, lim); err != nil {
+		if _, err := f.m.checkArrived(ctx, s, prefix, lim); err != nil {
 			t.Errorf("exactly the cap was refused: %v", err)
 		}
 	})
@@ -195,7 +195,7 @@ func TestCheckArrivedRefusesWhatIsNotACommit(t *testing.T) {
 		if err := os.WriteFile(s.path+"/shallow", nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
+		if _, err := f.m.checkArrived(ctx, s, prefix, lim); !errors.Is(err, ErrRefused) {
 			t.Errorf("checkArrived = %v", err)
 		}
 	})
