@@ -137,10 +137,13 @@ to the outer terminal's clipboard with OSC 52, and the selection stays
 highlighted. The text is the pane's screen: a wide character or a grapheme
 cluster is copied once, blanks at the end of each row are dropped, and rows
 are joined with a newline. The emulator keeps no record of where a long line
-wrapped, so a wrapped line is copied as two lines. A selection of more than
-1 MiB of text is not copied at all, and the key bar says so. A terminal that
-does not accept OSC 52 writes, or has them turned off, copies nothing, and the
-console cannot tell.
+wrapped, so a wrapped line is copied as two lines. The text is what the pane
+holds, also where it draws a placeholder (see
+[Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
+bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
+the placeholder. A selection of more than 1 MiB of text is not copied at all,
+and the key bar says so. A terminal that does not accept OSC 52 writes, or has
+them turned off, copies nothing, and the console cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
 drag copies nothing, and the wheel does nothing. A press anywhere clears the
@@ -216,10 +219,11 @@ focus events.
 
 Everything on screen is fixture data. The recording looks like a running
 session, which is why the header, the session frame and the help all say
-"fixture recording, not a live session". Output from a recording never reaches
-the outer terminal except as drawn cells. The pane swallows clipboard requests
-and counts them, and the Session block shows the count. A recording's own
-resize records are ignored: the layout sets the pane's size.
+"fixture recording, not a live session". Output from a recording reaches the
+outer terminal only as drawn cells, and as the text you select and copy (see
+[Selecting and copying](#selecting-and-copying)). The pane swallows clipboard
+requests and counts them, and the Session block shows the count. A
+recording's own resize records are ignored: the layout sets the pane's size.
 
 ### When a session ends
 
