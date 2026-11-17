@@ -340,6 +340,17 @@ type AgentWriter interface {
 	Write(p []byte) (int, error)
 	// Screen is Session.Screen: fn runs under the output lock.
 	Screen(fn func(p *sessionpane.Pane, pos uint64))
+	// FlushReplies writes the emulator's queued terminal replies to the agent
+	// now, in order, inside the critical section, and returns how many bytes
+	// it wrote (0 when none wait). The replies are otherwise written only
+	// when the section ends, so an agent that asked a terminal question (the
+	// device attributes, a colour query) and waits for the answer before it
+	// draws again looks stalled for the whole section. A fence that waits
+	// for the screen to settle calls FlushReplies between its steps, so that
+	// such an agent goes on. It breaks the input like any write when it
+	// fails, and returns ErrInputBroken when the input is already broken
+	// (the queued replies are then dropped and counted in "input_refused").
+	FlushReplies() (int, error)
 }
 
 type lockedWriter struct {
@@ -354,6 +365,17 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return w.s.writeAgent(p, "section", &w.s.cnt.inputWriteErrors)
 }
 
+func (w *lockedWriter) FlushReplies() (int, error) {
+	if !w.valid {
+		return 0, errors.New("session: the agent writer is used outside its critical section")
+	}
+	batch := w.s.replies.take()
+	if len(batch) == 0 {
+		return 0, nil
+	}
+	return w.s.writeAgent(batch, "reply", &w.s.cnt.replyWriteErrors)
+}
+
 func (w *lockedWriter) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
 	if w.valid {
 		w.s.Screen(fn)
@@ -362,7 +384,8 @@ func (w *lockedWriter) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
 
 // WithInputLock takes the input lock for the whole of f. Writer input and the
 // emulator's replies wait until f returns; nothing reaches the agent in
-// between except what f writes. A later injection package uses it for its
+// between except what f writes, and the replies f lets through with
+// AgentWriter.FlushReplies (a fence calls it between its steps). A later injection package uses it for its
 // fence. f must not call Input, Paste or WithInputLock (the lock is not
 // reentrant). It returns f's error, or ErrClosed.
 func (s *Session) WithInputLock(f func(w AgentWriter) error) error {

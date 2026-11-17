@@ -5,6 +5,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"strings"
@@ -421,5 +422,73 @@ func TestTheAgentReceivesNothingAfterTheCut(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got = rxBytes(string(out.all())); string(got) != want {
 		t.Errorf("the agent read %d bytes, want the %d of the prefix and nothing after; tail %q", len(got), len(want), got[max(0, len(got)-20):])
+	}
+}
+
+// A fence that waits for the screen to settle lets the replies through, so
+// that an agent waiting for a terminal answer is not stalled by the lock.
+func TestFlushRepliesLetsAnAgentThatWaitsForAnAnswerGoOn(t *testing.T) {
+	e := newEnv(t)
+	got := filepath.Join(t.TempDir(), "answers")
+	s := e.start("raw; say READY; echo 1; query osc10,da1 "+got+"; say AFTER; wait", func(c *Config) {
+		c.Colours = sessionpane.Colours{Foreground: color.RGBA{R: 1, G: 2, B: 3, A: 255}}
+	})
+	waitScreen(t, s, "READY")
+
+	var flushed int
+	err := s.WithInputLock(func(w AgentWriter) error {
+		if n, err := w.FlushReplies(); n != 0 || err != nil {
+			t.Errorf("FlushReplies with nothing queued = %d, %v", n, err)
+		}
+		// The byte that makes the agent send its queries.
+		if _, err := w.Write([]byte("x")); err != nil {
+			return err
+		}
+		poll(t, func() string { return "the agent's queries to be answered by the emulator" }, func() bool { return s.replies.pending() > 0 })
+		// The answers wait for the lock, which this section holds.
+		time.Sleep(100 * time.Millisecond) // a window to see that nothing moves
+		var stalled string
+		w.Screen(func(p *sessionpane.Pane, _ uint64) { stalled = paneText(p) })
+		if strings.Contains(stalled, "AFTER") {
+			t.Error("the agent went on without its answers")
+		}
+		n, err := w.FlushReplies()
+		if err != nil || n == 0 {
+			t.Errorf("FlushReplies = %d, %v", n, err)
+		}
+		flushed = n
+		if n, err := w.FlushReplies(); n != 0 || err != nil {
+			t.Errorf("a second FlushReplies = %d, %v", n, err)
+		}
+		// Still inside the section: the agent got its answers and went on.
+		poll(t, func() string { return "the agent to go on inside the section" }, func() bool {
+			var text string
+			w.Screen(func(p *sessionpane.Pane, _ uint64) { text = paneText(p) })
+			return strings.Contains(text, "AFTER")
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != flushed {
+		t.Errorf("the agent read %d bytes, FlushReplies returned %d", len(b), flushed)
+	}
+	// In order: the colour answer first, then the device attributes.
+	i, j := strings.Index(string(b), "\x1b]10;rgb:"), strings.Index(string(b), "\x1b[?")
+	if i < 0 || j < 0 || i > j {
+		t.Errorf("the answers %q are missing or out of order", b)
+	}
+	if n := s.Counters()["reply_write_errors"]; n != 0 {
+		t.Errorf("reply_write_errors = %d", n)
+	}
+	var w AgentWriter
+	s.WithInputLock(func(aw AgentWriter) error { w = aw; return nil })
+	if _, err := w.FlushReplies(); err == nil {
+		t.Error("FlushReplies works after the section")
 	}
 }
