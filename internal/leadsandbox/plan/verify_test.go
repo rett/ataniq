@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -181,6 +183,12 @@ func TestVerifyMutations(t *testing.T) {
 		{"chdir outside the tree and home", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "/etc" }},
 		{"chdir not the plan's", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "/work/demo/sub" }},
 		{"chdir relative", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--chdir", "")+1] = "work/demo" }},
+		{"chdir unclean", ProbWorkDir, false, func(t *testing.T, p *Plan) {
+			// Consistent with the plan, inside the tree by prefix, and not clean.
+			p.Bwrap[find(t, p, "--chdir", "")+1] = "/work/demo/../../etc"
+			p.WorkDir = "/work/demo/../../etc"
+		}},
+		{"working folder of the plan changed alone", ProbWorkDir, false, func(t *testing.T, p *Plan) { p.WorkDir = "/work/demo/sub" }},
 		{"chdir twice", ProbWorkDir, false, func(t *testing.T, p *Plan) { insert(p, find(t, p, "--chdir", ""), "--chdir", "/work/demo") }},
 		{"remount removed", ProbRemount, false, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--remount-ro", "")) }},
 		{"remount of another path", ProbRemount, false, func(t *testing.T, p *Plan) { p.Bwrap[find(t, p, "--remount-ro", "")+1] = "/usr" }},
@@ -197,7 +205,7 @@ func TestVerifyMutations(t *testing.T) {
 			insert(p, find(t, p, "--tmpfs", "/"), "--seccomp", "7")
 		}},
 		{"descriptor listed without a file named", ProbSeccomp, false, func(t *testing.T, p *Plan) {
-			p.Files = []File{{FD: 7, Path: "/opt/ataniq/seccomp/lead.bpf"}}
+			p.Files = append([]File{{FD: 7, Path: "/opt/ataniq/seccomp/lead.bpf", Mode: FileRead, Purpose: PurposeSeccomp}}, p.Files...)
 		}},
 		{"seccomp dropped", ProbSeccomp, true, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--seccomp", "")) }},
 		{"seccomp twice", ProbSeccomp, true, func(t *testing.T, p *Plan) { insert(p, find(t, p, "--seccomp", ""), "--seccomp", "8") }},
@@ -217,16 +225,123 @@ func TestVerifyMutations(t *testing.T) {
 		// The probe command line.
 		{"probe path changed", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[0] = "/usr/bin/sh" }},
 		{"spec path changed", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[2] = "/tmp/spec.json" }},
-		{"probe separator dropped", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = append(p.Inner[:3], p.Inner[4:]...) }},
-		{"relative agent", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[4] = "claude" }},
-		{"agent without an executable", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = p.Inner[:4] }},
-		{"NUL in an agent argument", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner[5] = "a\x00b" }},
+		{"probe separator dropped", ProbInner, false, func(t *testing.T, p *Plan) { p.Inner = append(p.Inner[:5], p.Inner[6:]...) }},
+		{"relative agent", ProbAgent, false, func(t *testing.T, p *Plan) { p.Inner[6] = "claude" }},
+		{"agent without an executable", ProbAgent, false, func(t *testing.T, p *Plan) { p.Inner = p.Inner[:6] }},
+		{"NUL in an agent argument", ProbAgent, false, func(t *testing.T, p *Plan) { p.Inner[7] = "a\x00b" }},
+		{"report option renamed", ProbReport, false, func(t *testing.T, p *Plan) { p.Inner[3] = "--report" }},
+
+		// The pass-through step and the report channel.
+		{"pass-through step dropped", ProbShape, false, func(t *testing.T, p *Plan) { p.PassFDs = nil }},
+		{"pass-through runs another program", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[0] = "/usr/bin/env" }},
+		{"pass-through in another mode", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[1] = "run" }},
+		{"pass-through terminator dropped", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs = p.PassFDs[:len(p.PassFDs)-1] }},
+		{"pass-through option unknown", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[2] = "--append" }},
+		{"pass-through operand not FD=PATH", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "report.fifo" }},
+		{"pass-through operand with a signed number", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "+3=/opt/ataniq/run/arc-lead/report.fifo" }},
+		{"pass-through option without operand", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs = append(p.PassFDs[:3], "--") }},
+		{"pass-through opens another path", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "3=/etc/shadow" }},
+		{"pass-through opens another descriptor", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[3] = "5=/opt/ataniq/run/arc-lead/report.fifo" }},
+		{"pass-through opens the report read-only", ProbPassFDs, false, func(t *testing.T, p *Plan) { p.PassFDs[2] = "--read" }},
+		{"pass-through opens more than Files lists", ProbPassFDs, false, func(t *testing.T, p *Plan) {
+			p.PassFDs = append(p.PassFDs[:len(p.PassFDs)-1], "--write", "9=/etc/passwd", "--")
+		}},
+		{"pass-through reads after a write", ProbPassFDs, true, func(t *testing.T, p *Plan) {
+			p.PassFDs = []string{p.PassFDs[0], p.PassFDs[1], p.PassFDs[4], p.PassFDs[5], p.PassFDs[2], p.PassFDs[3], "--"}
+			p.Files[0], p.Files[1] = p.Files[1], p.Files[0]
+		}},
+		{"descriptor number used twice", ProbPassFDs, true, func(t *testing.T, p *Plan) {
+			p.Files[1].FD = 7
+			p.PassFDs[5] = "7=" + p.Files[1].Path
+			p.Inner[4] = "7"
+		}},
+		{"descriptor 2 for the report", ProbPassFDs, false, func(t *testing.T, p *Plan) {
+			p.Files[0].FD = 2
+			p.PassFDs[3] = "2=" + p.Files[0].Path
+			p.Inner[4] = "2"
+		}},
+		{"report descriptor differs in the probe", ProbReport, false, func(t *testing.T, p *Plan) { p.Inner[4] = "4" }},
+		{"report descriptor not a number", ProbReport, false, func(t *testing.T, p *Plan) { p.Inner[4] = "x" }},
+		{"no report channel listed", ProbReport, false, func(t *testing.T, p *Plan) {
+			p.Files = nil
+			p.PassFDs = p.PassFDs[:2]
+			p.PassFDs = append(p.PassFDs, "--")
+		}},
+		{"PWD note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.Contains(x, "PWD") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
+		{"PWD note for another folder", ProbNotes, false, func(t *testing.T, p *Plan) {
+			for i, x := range p.Notes {
+				if x == NotePWD(p.WorkDir) {
+					p.Notes[i] = NotePWD("/work/demo/other")
+				}
+			}
+		}},
+		{"report note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "report channel") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
+
+		// The list of mounts.
+		{"Mounts dropped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = nil }},
+		{"Mounts row dropped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = append(p.Mounts[:3], p.Mounts[4:]...) }},
+		{"Mounts row added", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = append(p.Mounts, Mount{Kind: profile.KindTmpfs, Inside: "/x"}) }},
+		{"Mounts rows swapped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[2], p.Mounts[3] = p.Mounts[3], p.Mounts[2] }},
+		{"Mounts source changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Source = "/usr/share" }},
+		{"Mounts kind changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Kind = profile.KindRwBind }},
+		{"Mounts lead-writable flag cleared", ProbMountList, false, func(t *testing.T, p *Plan) {
+			for i := range p.Mounts {
+				if p.Mounts[i].LeadWritable {
+					p.Mounts[i].LeadWritable = false
+					return
+				}
+			}
+			t.Fatal("no lead-writable row in the plan")
+		}},
+		{"Mounts lead-writable flag set", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
+		{"Mounts optional flag changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Optional = true }},
 
 		// The rest.
 		{"digest changed", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = strings.Repeat("0", 64) }},
 		{"digest empty", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = "" }},
 		{"controlling terminal set", ProbTerminal, false, func(t *testing.T, p *Plan) { p.SetControllingTerminal = true }},
 		{"r17 note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = p.Notes[:1] }},
+		{"share-net note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteShareNet) }},
+		{"nested-userns note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteNestedUserns) }},
+		{"session note dropped", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = removeNote(p.Notes, NoteSession) }},
+		{"identity note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "identity:") {
+					n = append(n, x)
+				}
+			}
+			if len(n) != len(p.Notes)-1 {
+				t.Fatal("no identity note to drop")
+			}
+			p.Notes = n
+		}},
+		{"network note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
+			var n []string
+			for _, x := range p.Notes {
+				if !strings.HasPrefix(x, "network:") {
+					n = append(n, x)
+				}
+			}
+			p.Notes = n
+		}},
+		{"note added", ProbNotes, false, func(t *testing.T, p *Plan) { p.Notes = append(p.Notes, "all is well") }},
 		{"seccomp note dropped", ProbNotes, false, func(t *testing.T, p *Plan) {
 			var n []string
 			for _, x := range p.Notes {
@@ -250,14 +365,16 @@ func TestVerifyMutations(t *testing.T) {
 		}},
 	}
 
-	plain, plainIn := basePlan(t)
+	plain, plainIn, plainOpt := basePlan(t)
 	secIn := withSeccomp(fixture(profile.Claude))
-	sec := mustBuild(t, secIn, options(secIn, allPresent(t, secIn)))
+	secOpt := options(secIn, allPresent(t, secIn))
+	sec := mustBuild(t, secIn, secOpt)
 	for name, base := range map[string]struct {
-		p  *Plan
-		in profile.Inputs
-	}{"plain": {plain, plainIn}, "seccomp": {sec, secIn}} {
-		if probs := Verify(base.p, base.in); len(probs) > 0 {
+		p   *Plan
+		in  profile.Inputs
+		opt Options
+	}{"plain": {plain, plainIn, plainOpt}, "seccomp": {sec, secIn, secOpt}} {
+		if probs := Verify(base.p, base.in, base.opt); len(probs) > 0 {
 			t.Fatalf("the %s base plan has problems: %v", name, probs)
 		}
 	}
@@ -265,9 +382,9 @@ func TestVerifyMutations(t *testing.T) {
 	seen := map[ProblemKind]bool{}
 	for _, m := range muts {
 		t.Run(m.name, func(t *testing.T) {
-			base, in := plain, plainIn
+			base, in, opt := plain, plainIn, plainOpt
 			if m.seccomp {
-				base, in = sec, secIn
+				base, in, opt = sec, secIn, secOpt
 			}
 			p := clonePlan(base)
 			m.do(t, p)
@@ -276,7 +393,7 @@ func TestVerifyMutations(t *testing.T) {
 			if m.want != ProbShape {
 				resync(p)
 			}
-			probs := Verify(p, in)
+			probs := Verify(p, in, opt)
 			if !hasKind(probs, m.want) {
 				t.Fatalf("want a %q problem, got %v", m.want, probs)
 			}
@@ -288,25 +405,80 @@ func TestVerifyMutations(t *testing.T) {
 	for _, k := range []ProblemKind{ProbShape, ProbExecutable, ProbPasta, ProbForbidden, ProbUnknown, ProbMalformed,
 		ProbOptionLike, ProbOrder, ProbFlags, ProbEnv, ProbSeccomp, ProbMountMissing, ProbMountExtra, ProbMountDiffers,
 		ProbMountTwice, ProbNever, ProbOtherRuntime, ProbWorkDir, ProbRemount, ProbInner, ProbDigest, ProbNotes,
-		ProbTerminal, ProbSize} {
+		ProbTerminal, ProbSize, ProbPassFDs, ProbReport, ProbAgent, ProbMountList} {
 		if !seen[k] {
 			t.Errorf("no mutation raises %q", k)
 		}
 	}
 }
 
+func removeNote(notes []string, drop string) []string {
+	var out []string
+	for _, n := range notes {
+		if n != drop {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// A forbidden option in a part is named even when Argv was left unchanged.
+func TestVerifyForbiddenOptionInAPartAlone(t *testing.T) {
+	p, in, o := basePlan(t)
+	insert(p, 1, "--new-session") // no resync: Argv does not hold it
+	probs := Verify(p, in, o)
+	var part bool
+	for _, pr := range probs {
+		if pr.Kind == ProbForbidden && strings.Contains(pr.Detail, "part of the plan") {
+			part = true
+		}
+	}
+	if !part {
+		t.Errorf("no forbidden-flag problem for the part: %v", probs)
+	}
+}
+
 func TestVerifyAcceptsAnOptionalRowLeftOut(t *testing.T) {
 	in := fixture(profile.Claude)
-	p := mustBuild(t, in, options(in, nil))
-	if probs := Verify(p, in); len(probs) > 0 {
+	o := options(in, nil)
+	p := mustBuild(t, in, o)
+	if probs := Verify(p, in, o); len(probs) > 0 {
 		t.Errorf("a plan without its optional rows: %v", probs)
 	}
-	// The same plan with an optional row added back is also valid.
-	q := clonePlan(p)
-	insert(q, find(t, q, "--ro-bind", "/etc/hosts"), "--ro-bind", "/etc/ssl", "/etc/ssl")
-	resync(q)
-	if probs := Verify(q, in); len(probs) > 0 {
-		t.Errorf("optional row put back: %v", probs)
+}
+
+// The optional rows are exactly the ones the options say the host has: a row
+// the plan mounts against the options, or leaves out against them, is a
+// problem, and so is a note that does not match.
+func TestVerifyChecksWhichOptionalRowsArePresent(t *testing.T) {
+	in := fixture(profile.Claude)
+	present := allPresent(t, in)
+	full, none := options(in, present), options(in, nil)
+	pFull, pNone := mustBuild(t, in, full), mustBuild(t, in, none)
+
+	if probs := Verify(pNone, in, full); !hasKind(probs, ProbMountMissing) || !hasKind(probs, ProbNotes) {
+		t.Errorf("a plan without the optional rows against options that say the host has them: %v", probs)
+	}
+	if probs := Verify(pFull, in, none); !hasKind(probs, ProbMountExtra) || !hasKind(probs, ProbNotes) {
+		t.Errorf("a plan with the optional rows against options that say the host lacks them: %v", probs)
+	}
+	// Every optional row, one at a time, in both directions.
+	for _, row := range []string{"/lib64", "/sbin", "/etc/ssl", "/etc/ca-certificates", "/etc/nsswitch.conf", "/etc/localtime"} {
+		if !present[row] {
+			t.Fatalf("%s is not an optional row of the fixture", row)
+		}
+		o := options(in, without(present, row))
+		if probs := Verify(pFull, in, o); !hasKind(probs, ProbMountExtra) {
+			t.Errorf("%s mounted against the options: %v", row, probs)
+		}
+		q := mustBuild(t, in, o)
+		if probs := Verify(q, in, full); !hasKind(probs, ProbMountMissing) {
+			t.Errorf("%s left out against the options: %v", row, probs)
+		}
+		// The plan that agrees with its options has no problem.
+		if probs := Verify(q, in, o); len(probs) > 0 {
+			t.Errorf("%s left out, options agree: %v", row, probs)
+		}
 	}
 }
 
@@ -314,61 +486,242 @@ func TestVerifyRefusesARequiredRowLeftOut(t *testing.T) {
 	// The optional flag belongs to the row, not to the plan: a plan from a
 	// caller that dropped /etc/passwd is not valid.
 	in := fixture(profile.Claude)
-	p := mustBuild(t, in, options(in, nil))
+	o := options(in, nil)
+	p := mustBuild(t, in, o)
 	cut(p, find(t, p, "--ro-bind", "/etc/passwd"))
 	resync(p)
-	probs := Verify(p, in)
+	probs := Verify(p, in, o)
 	if !hasKind(probs, ProbMountMissing) || !strings.Contains(probs[0].Detail, "/etc/passwd") {
 		t.Errorf("problems = %v", probs)
 	}
 }
 
 func TestVerifyAgainstOtherInputs(t *testing.T) {
-	p, in := basePlan(t)
+	p, in, o := basePlan(t)
 	// A plan checked against inputs of another runtime, mode or project.
 	other := fixture(profile.Codex)
-	if probs := Verify(p, other); len(probs) == 0 {
+	if probs := Verify(p, other, o); len(probs) == 0 {
 		t.Error("a claude plan verifies against codex inputs")
 	}
 	owner := ownerMode(in)
-	if probs := Verify(p, owner); !hasKind(probs, ProbFlags) {
+	if probs := Verify(p, owner, o); !hasKind(probs, ProbFlags) {
 		t.Errorf("a root plan verifies against owner inputs: %v", probs)
 	}
 	sec := withSeccomp(in)
-	if probs := Verify(p, sec); !hasKind(probs, ProbSeccomp) {
+	so := o
+	so.SeccompFD = 7
+	if probs := Verify(p, sec, so); !hasKind(probs, ProbSeccomp) {
 		t.Errorf("a plan without seccomp verifies against inputs that name one: %v", probs)
 	}
 	moved := in
 	moved.Project = "other"
-	if probs := Verify(p, moved); len(probs) == 0 {
+	if probs := Verify(p, moved, o); len(probs) == 0 {
 		t.Error("a plan verifies against another project")
 	}
 }
 
-func TestVerifyProblemsDoNotCarryValues(t *testing.T) {
-	p, in := basePlan(t)
-	i := find(t, p, "--setenv", "HOME")
-	insert(p, i, "--setenv", "EXAMPLE_NAME", "hunter2-value")
-	resync(p)
-	p.Inner = append(p.Inner, "hunter2-argument")
-	resync(p)
-	for _, pr := range Verify(p, in) {
-		if strings.Contains(pr.String(), "hunter2") {
-			t.Errorf("a problem carries a value: %s", pr)
+// Everything the holder knows independently is checked: a plan whose parts
+// are consistent with each other but differ from the options is refused.
+func TestVerifyAgainstOtherOptions(t *testing.T) {
+	_, in, o := basePlan(t)
+	secIn := withSeccomp(fixture(profile.Claude))
+	so := options(secIn, allPresent(t, secIn))
+	cases := []struct {
+		name string
+		want ProblemKind
+		sec  bool
+		mut  func(o *Options)
+	}{
+		{"another pasta", ProbExecutable, false, func(o *Options) { o.PastaPath = "/usr/bin/env" }},
+		{"another bubblewrap", ProbExecutable, false, func(o *Options) { o.BwrapPath = "/bin/sh" }},
+		{"another agent", ProbAgent, false, func(o *Options) { o.AgentArgv = []string{"/bin/sh", "--model", "example"} }},
+		{"agent argument added", ProbAgent, false, func(o *Options) { o.AgentArgv = append([]string{}, append(o.AgentArgv, "--dangerous")...) }},
+		{"agent argument dropped", ProbAgent, false, func(o *Options) { o.AgentArgv = o.AgentArgv[:2] }},
+		{"another working folder", ProbWorkDir, false, func(o *Options) { o.WorkDir = "/work/demo/sub" }},
+		{"another report path", ProbReport, false, func(o *Options) { o.ReportPath = "/opt/ataniq/run/arc-lead/other.fifo" }},
+		{"another report descriptor", ProbReport, false, func(o *Options) { o.ReportFD = 9 }},
+		{"another seccomp descriptor", ProbSeccomp, true, func(o *Options) { o.SeccompFD = 9 }},
+		{"refused options", ProbOptions, false, func(o *Options) { o.ReportFD = 0 }},
+		{"report path in a writable folder", ProbOptions, false, func(o *Options) { o.ReportPath = "/state/leads/arc-lead/home/report" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base, bin := o, in
+			if c.sec {
+				base, bin = so, secIn
+			}
+			p := mustBuild(t, bin, base)
+			other := base
+			other.AgentArgv = append([]string(nil), base.AgentArgv...)
+			c.mut(&other)
+			probs := Verify(p, bin, other)
+			if !hasKind(probs, c.want) {
+				t.Errorf("want a %q problem, got %v", c.want, probs)
+			}
+		})
+	}
+}
+
+// A plan from tampered parts that agree with each other, which the earlier
+// shape-only check let through: each one is refused now.
+func TestVerifyTamperedPartsThatAgree(t *testing.T) {
+	p, in, o := basePlan(t)
+	for name, mut := range map[string]func(p *Plan){
+		"bubblewrap replaced":  func(p *Plan) { p.Bwrap[0] = "/bin/sh" },
+		"pasta replaced":       func(p *Plan) { p.Pasta[0] = "/usr/bin/env" },
+		"agent replaced":       func(p *Plan) { p.Inner[6] = "/bin/sh" },
+		"agent option added":   func(p *Plan) { p.Inner = append(p.Inner, "--dangerously-skip-permissions") },
+		"agent option dropped": func(p *Plan) { p.Inner = p.Inner[:len(p.Inner)-1] },
+		"note added":           func(p *Plan) { p.Notes = append(p.Notes, "all is well") },
+		"note duplicated":      func(p *Plan) { p.Notes = append(p.Notes, p.Notes[0]) },
+		"optional row dropped": func(p *Plan) { cut(p, find(t, p, "--ro-bind", "/etc/ssl")) },
+		"working folder": func(p *Plan) {
+			p.WorkDir = "/work/demo/sub"
+			p.Bwrap[find(t, p, "--chdir", "")+1] = "/work/demo/sub"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := clonePlan(p)
+			mut(q)
+			resync(q)
+			if probs := Verify(q, in, o); len(probs) == 0 {
+				t.Error("Verify found no problem")
+			}
+		})
+	}
+	// The pass-through step and the seccomp descriptor, changed together.
+	secIn := withSeccomp(fixture(profile.Claude))
+	so := options(secIn, allPresent(t, secIn))
+	sp := mustBuild(t, secIn, so)
+	for _, fd := range []string{"9", "1023"} {
+		q := clonePlan(sp)
+		q.Bwrap[find(t, q, "--seccomp", "")+1] = fd
+		q.PassFDs[3] = fd + "=" + q.Files[0].Path
+		q.Files[0].FD, _ = strconv.Atoi(fd)
+		resync(q)
+		if probs := Verify(q, secIn, so); !hasKind(probs, ProbSeccomp) {
+			t.Errorf("seccomp descriptor %s changed everywhere: %v", fd, probs)
 		}
 	}
 }
 
+// sample returns the indexes of a list to try: all of them, except that of the
+// bubblewrap arguments only the first occurrence of each option and operand
+// slot is kept (the same code reads the others).
+func sample(name string, list []string) []int {
+	if name != "bwrap" {
+		idx := make([]int, len(list))
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
+	}
+	var idx []int
+	seen := map[string]bool{}
+	for i := 1; i < len(list); {
+		w := width(list[i])
+		for j := 0; j < w && i+j < len(list); j++ {
+			if key := fmt.Sprintf("%s/%d", list[i], j); !seen[key] {
+				seen[key] = true
+				idx = append(idx, i+j)
+			}
+		}
+		i += w
+	}
+	return append(idx, 0, len(list)-1)
+}
+
+// canary is text that no valid plan holds and no problem may repeat.
+const canary = "hunter2-canary"
+
+// A problem never repeats text from the plan's own arguments: each token of
+// every list of the plan is replaced by the canary, and the canary is also
+// inserted before each token, so that the parse sees an unknown option, an
+// operand out of place, a name, a value, a path, a link target and an agent
+// argument that is not the options'.
+func TestVerifyProblemsDoNotCarryPlanText(t *testing.T) {
+	for _, withSeccompFile := range []bool{false, true} {
+		in := fixture(profile.Claude)
+		if withSeccompFile {
+			in = withSeccomp(in)
+		}
+		o := options(in, allPresent(t, in))
+		base := mustBuild(t, in, o)
+		parts := map[string]func(p *Plan) *[]string{
+			"pasta":   func(p *Plan) *[]string { return &p.Pasta },
+			"passfds": func(p *Plan) *[]string { return &p.PassFDs },
+			"bwrap":   func(p *Plan) *[]string { return &p.Bwrap },
+			"inner":   func(p *Plan) *[]string { return &p.Inner },
+			"notes":   func(p *Plan) *[]string { return &p.Notes },
+		}
+		check := func(what string, p *Plan) {
+			t.Helper()
+			resync(p)
+			for _, pr := range Verify(p, in, o) {
+				if strings.Contains(pr.String(), "hunter2") || strings.Contains(pr.String(), canary) {
+					t.Errorf("%s: a problem repeats text of the plan: %s", what, pr)
+				}
+			}
+		}
+		for name, part := range parts {
+			if withSeccompFile && (name == "pasta" || name == "bwrap") {
+				continue // the same tokens as the plain plan, but for --seccomp
+			}
+			for _, i := range sample(name, *part(base)) {
+				p := clonePlan(base)
+				(*part(p))[i] = canary
+				check(fmt.Sprintf("%s[%d] replaced", name, i), p)
+
+				p = clonePlan(base)
+				l := part(p)
+				*l = append((*l)[:i], append([]string{canary}, (*l)[i:]...)...)
+				check(fmt.Sprintf("%s[%d] preceded", name, i), p)
+			}
+		}
+		// The environment and the descriptors of the plan.
+		for i := range base.Env {
+			p := clonePlan(base)
+			p.Env[i].Name, p.Env[i].Value = canary, canary
+			check(fmt.Sprintf("Env[%d]", i), p)
+		}
+		for i := range base.Files {
+			p := clonePlan(base)
+			p.Files[i].Path, p.Files[i].SHA256, p.Files[i].Purpose = canary, canary, canary
+			check(fmt.Sprintf("Files[%d]", i), p)
+		}
+		for i := range base.Mounts {
+			p := clonePlan(base)
+			p.Mounts[i].Inside, p.Mounts[i].Source, p.Mounts[i].Kind = canary, canary, canary
+			check(fmt.Sprintf("Mounts[%d]", i), p)
+		}
+		p := clonePlan(base)
+		p.Digest, p.WorkDir = canary, canary
+		check("digest and working folder", p)
+	}
+}
+
 func TestVerifyDoesNotPanicOnHostilePlans(t *testing.T) {
-	p, in := basePlan(t)
+	p, in, o := basePlan(t)
 	for n := 0; n <= len(p.Bwrap); n++ {
 		q := clonePlan(p)
 		q.Bwrap = q.Bwrap[:n]
 		resync(q)
-		Verify(q, in) // a truncated list is a set of problems, never a panic
+		Verify(q, in, o) // a truncated list is a set of problems, never a panic
 	}
-	for _, q := range []*Plan{{}, {Pasta: []string{"/x"}}, {Bwrap: []string{"/y", "--uid"}}, {Inner: []string{"a"}}} {
-		if len(Verify(q, in)) == 0 {
+	for n := 0; n <= len(p.Inner); n++ {
+		q := clonePlan(p)
+		q.Inner = q.Inner[:n]
+		resync(q)
+		Verify(q, in, o)
+	}
+	for n := 0; n <= len(p.PassFDs); n++ {
+		q := clonePlan(p)
+		q.PassFDs = q.PassFDs[:n]
+		resync(q)
+		Verify(q, in, o)
+	}
+	for _, q := range []*Plan{{}, {Pasta: []string{"/x"}}, {Bwrap: []string{"/y", "--uid"}}, {Inner: []string{"a"}}, {PassFDs: []string{"a"}}} {
+		if len(Verify(q, in, o)) == 0 {
 			t.Errorf("an empty plan %+v verifies", q)
 		}
 	}

@@ -14,7 +14,7 @@
 //
 // [Build] returns a [Plan] whose Argv is the whole command:
 //
-//	PASTA ARGS... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json -- AGENT ARGV...
+//	PASTA ARGS... -- PROBE_HOST pass-fds [--read FD=PATH]... [--write FD=PATH]... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json --report-fd FD -- AGENT ARGV...
 //
 // ARGS after pasta are sandboxnet.PastaArgs. The bubblewrap arguments come in a
 // fixed order: the profile's flag set (--die-with-parent --unshare-all
@@ -27,10 +27,48 @@
 // plan says so in its notes. --ro-bind-try is never used, so the plan says
 // exactly what is mounted.
 //
+// # Descriptors
+//
+// pasta closes every descriptor it inherits before it starts its command, so
+// nothing the launcher opens reaches bubblewrap. The plan therefore puts a
+// pass-through step between them: PROBE_HOST, the host path of the probe
+// binary (profile.Inputs.ProbeBinary), in its pass-fds mode. That mode opens
+// each PATH read-only (--read) or write-only without creating it (--write) at
+// exactly the descriptor FD, leaves every other descriptor above 2 closed,
+// and executes the command after "--". The command line of the mode is the
+// contract; the mode itself is built elsewhere. [Plan.Files] lists what the
+// step opens, and the launcher opens nothing.
+//
+// The seccomp file, when the inputs name one, is --read FD=PATH, and
+// bubblewrap gets --seccomp FD. The report channel is always present:
+// [Options.ReportPath] is a path the holder made (a FIFO or a file it owns)
+// outside every lead-writable folder, opened --write at [Options.ReportFD],
+// and the probe inside gets --report-fd FD. Whether bubblewrap keeps an
+// inherited descriptor open for its child is a qualification item; every plan
+// says so in a note.
+//
 // --share-net is there because bubblewrap runs inside the network namespace
 // that pasta made: it does not share the host's network. The probe, not
 // bubblewrap, gives the agent its session and controlling terminal (variant B
 // of the spike), so --new-session is never passed.
+//
+// # Mounts
+//
+// [Plan.Mounts] lists each row of the bind table the plan emits, in order, with
+// whether its source lies below a host folder the lead can write
+// ([Mount.LeadWritable]): the three .git rows of the tree. bubblewrap follows
+// symbolic links in a bind source, so a lead that replaced one of those sources
+// with a link to a file of the owner would have that file bound at the next
+// start. The plan treats a host path as a string; the holder re-checks the
+// flagged rows right before it starts the command.
+//
+// # The environment inside
+//
+// The allowlist ([Plan.Env]) is set with --clearenv and --setenv. bubblewrap
+// keeps and sets PWD under --clearenv, so the agent sees the allowlist plus PWD
+// with the working folder as its value. [InsideEnvironment] gives that list,
+// which a start-up comparison uses; every plan carries a note ([NotePWD]), and
+// a profile that puts PWD in the allowlist is refused.
 //
 // # Nested sandboxes (owner decision R17)
 //
@@ -39,27 +77,47 @@
 // namespaces, which is a larger kernel surface. Every plan carries a note that
 // says so, and a note that says whether a seccomp file is named. The seccomp
 // hook only passes a file the caller names, with its digest, as a descriptor
-// the launcher opens; no filter is generated or reviewed here, and the plan
-// says "no seccomp filter: none has been reviewed" when none is named.
+// the pass-through step opens; no filter is generated or reviewed here, and
+// the plan says "no seccomp filter: none has been reviewed" when none is named.
 //
 // # Checks
 //
 // [Build] refuses, with a reason, inputs the profile refuses, relative
 // executable or agent paths, an agent argument with a NUL, a seccomp
-// descriptor that is missing or below 3, a working folder outside the tree and
-// the home, an argument that bubblewrap would read as an option, and a command
-// line above [MaxArgvBytes]. It asserts that no option of
+// descriptor or report descriptor that is missing, below 3 or above 1023 (or
+// the same twice), a report path that is not a clean absolute path or that
+// lies in or below a lead-writable host folder or a never-mounted path, a
+// working folder outside the tree and the home, an operand of bubblewrap that
+// starts with --, an agent argument that equals a forbidden option, and a
+// command line above [MaxArgvBytes]. It asserts that no option of
 // [profile.ForbiddenFlags] appears anywhere, and runs [Verify] on its own
 // result.
 //
-// [Verify] is the check the holder runs before every start. It is written
+// bubblewrap reads operands by position, so it would take an operand that
+// starts with -- as a value, not as an option. The plan refuses such an operand
+// so that its parse and its rendering stay unambiguous; that is a choice of
+// this package, not something bubblewrap needs. The agent arguments come after
+// the probe's -- and bubblewrap never reads them; refusing an agent argument
+// that equals a forbidden option is defence in depth, so that no element of
+// the whole command line is one, and it refuses more than bubblewrap needs. The
+// command-line cap is well under the Linux budget that arguments and the
+// environment of a new program share, because the plan cannot see the
+// environment the launcher passes.
+//
+// [Verify] takes the plan, the profile inputs and the [Options] the holder
+// uses now, and is the check the holder runs before every start. It is written
 // apart from the code that builds the arguments: it parses the bubblewrap
-// arguments back into flags, environment and mounts and compares them with the
-// profile (flag set, allowlist, bind table, never-mounted paths, the other
-// runtime's config folder, pasta arguments, seccomp descriptor). A parse that
-// agrees with the profile says the argument list is the one the profile
-// describes; it does not say what bubblewrap, pasta or the kernel will do with
-// it. The mutation tests of this package show which changes it catches.
+// arguments back into flags, environment and mounts, and compares every part
+// of the plan with what the inputs and the options give: both executables, the
+// pasta arguments, the pass-through step, the list of descriptors with their
+// numbers and paths, the bubblewrap arguments (flag set, allowlist, bind
+// table, never-mounted paths, the other runtime's config folder, the working
+// folder), the list of mounts, exactly which optional rows are present, the
+// probe command line with the agent argv, the digest, the terminal flag and the
+// exact set of notes. A plan that agrees with the inputs and the options says the text of
+// the plan is the one they describe; it does not say what bubblewrap, pasta or
+// the kernel will do with it. The mutation tests of this package show which
+// changes it catches.
 //
 // # What it does not do
 //

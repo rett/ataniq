@@ -97,8 +97,9 @@ func TestEveryPlanVerifiesAndHasNoForbiddenFlag(t *testing.T) {
 					in = withSeccomp(in)
 				}
 				for _, present := range []map[string]bool{allPresent(t, in), nil} {
-					p := mustBuild(t, in, options(in, present))
-					if probs := Verify(p, in); len(probs) > 0 {
+					o := options(in, present)
+					p := mustBuild(t, in, o)
+					if probs := Verify(p, in, o); len(probs) > 0 {
 						t.Errorf("%s owner=%v seccomp=%v: %v", rt, owner, sec, probs)
 					}
 					for _, a := range p.Argv {
@@ -115,9 +116,13 @@ func TestEveryPlanVerifiesAndHasNoForbiddenFlag(t *testing.T) {
 }
 
 func TestPartsAndOrder(t *testing.T) {
-	p, in := basePlan(t)
-	if got := join(p.Pasta, p.Bwrap, p.Inner); !equal(got, p.Argv) {
-		t.Fatalf("Argv is not Pasta, Bwrap and Inner joined")
+	p, in, _ := basePlan(t)
+	if got := join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner); !equal(got, p.Argv) {
+		t.Fatalf("Argv is not Pasta, PassFDs, Bwrap and Inner joined")
+	}
+	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo", "--"}
+	if !equal(p.PassFDs, wantPass) {
+		t.Errorf("pass-through step = %q", p.PassFDs)
 	}
 	if p.Pasta[0] != "/usr/bin/pasta" || !equal(p.Pasta[1:], sandboxnet.PastaArgs()) {
 		t.Errorf("pasta part = %q", p.Pasta)
@@ -125,7 +130,7 @@ func TestPartsAndOrder(t *testing.T) {
 	if p.Bwrap[0] != "/usr/bin/bwrap" || p.Bwrap[len(p.Bwrap)-1] != "--" {
 		t.Errorf("bwrap part = %q ... %q", p.Bwrap[0], p.Bwrap[len(p.Bwrap)-1])
 	}
-	wantInner := []string{"/ataniq/probe", "--spec", "/ataniq/spec/spec.json", "--", "/ataniq/agent/bin/claude", "--model", "example"}
+	wantInner := []string{"/ataniq/probe", "--spec", "/ataniq/spec/spec.json", "--report-fd", "3", "--", "/ataniq/agent/bin/claude", "--model", "example"}
 	if !equal(p.Inner, wantInner) {
 		t.Errorf("inner = %q", p.Inner)
 	}
@@ -152,8 +157,9 @@ func TestPartsAndOrder(t *testing.T) {
 	if p.Digest != d {
 		t.Errorf("digest = %s, want %s", p.Digest, d)
 	}
-	if len(p.Files) != 0 {
-		t.Errorf("Files = %v without a seccomp file", p.Files)
+	wantReport := File{FD: 3, Path: "/opt/ataniq/run/arc-lead/report.fifo", Mode: FileWrite, Purpose: PurposeReport}
+	if len(p.Files) != 1 || p.Files[0] != wantReport {
+		t.Errorf("Files = %+v without a seccomp file, want the report channel only", p.Files)
 	}
 	for _, o := range []string{"--ro-bind-try", "--new-session", "--disable-userns", "--assert-userns-disabled"} {
 		if indexOf(p.Argv, o) >= 0 {
@@ -188,9 +194,13 @@ func TestSeccompHook(t *testing.T) {
 	if j := indexOf(p.Bwrap, "--tmpfs"); i > j {
 		t.Errorf("--seccomp at %d after the first mount at %d", i, j)
 	}
-	want := File{FD: 7, Path: in.SeccompFile, SHA256: in.SeccompSHA256, Purpose: "seccomp"}
-	if len(p.Files) != 1 || p.Files[0] != want {
+	want := File{FD: 7, Path: in.SeccompFile, Mode: FileRead, Purpose: PurposeSeccomp, SHA256: in.SeccompSHA256}
+	if len(p.Files) != 2 || p.Files[0] != want || p.Files[1].Purpose != PurposeReport {
 		t.Errorf("Files = %+v", p.Files)
+	}
+	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--read", "7=/opt/ataniq/seccomp/lead.bpf", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo", "--"}
+	if !equal(p.PassFDs, wantPass) {
+		t.Errorf("pass-through step = %q", p.PassFDs)
 	}
 	if !containsNote(p.Notes, "descriptor 7") || containsNote(p.Notes, NoteNoSeccomp) {
 		t.Errorf("notes = %q", p.Notes)
@@ -198,7 +208,7 @@ func TestSeccompHook(t *testing.T) {
 
 	in = fixture(profile.Claude)
 	p = mustBuild(t, in, options(in, nil))
-	if indexOf(p.Bwrap, "--seccomp") >= 0 || len(p.Files) != 0 || !containsNote(p.Notes, NoteNoSeccomp) {
+	if indexOf(p.Bwrap, "--seccomp") >= 0 || len(p.Files) != 1 || indexOf(p.PassFDs, "--read") >= 0 || !containsNote(p.Notes, NoteNoSeccomp) {
 		t.Errorf("no-seccomp plan: files %v notes %q", p.Files, p.Notes)
 	}
 }
@@ -215,7 +225,7 @@ func containsNote(notes []string, sub string) bool {
 func TestNotesInEveryPlan(t *testing.T) {
 	for _, in := range []profile.Inputs{fixture(profile.Claude), withSeccomp(fixture(profile.Codex))} {
 		p := mustBuild(t, in, options(in, nil))
-		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteSession} {
+		for _, want := range []string{NoteShareNet, NoteNestedUserns, NoteSession, NotePWD(p.WorkDir)} {
 			if !containsNote(p.Notes, want) {
 				t.Errorf("%s: note %q missing", in.Runtime, want)
 			}
@@ -231,6 +241,69 @@ func TestNotesInEveryPlan(t *testing.T) {
 				t.Errorf("a note claims qualification: %q", n)
 			}
 		}
+	}
+}
+
+func TestInsideEnvironmentHasPWD(t *testing.T) {
+	in := fixture(profile.Claude)
+	for _, dir := range []string{"", "/work/demo/sub", "/home/lead"} {
+		o := options(in, nil)
+		o.WorkDir = dir
+		p := mustBuild(t, in, o)
+		want := dir
+		if dir == "" {
+			want = "/work/demo"
+		}
+		env := InsideEnvironment(p)
+		if len(env) != len(p.Env)+1 {
+			t.Fatalf("workdir %q: %d variables, the allowlist has %d", dir, len(env), len(p.Env))
+		}
+		var seen, sorted = 0, true
+		for i, e := range env {
+			if e.Name == "PWD" {
+				seen++
+				if e.Value != want {
+					t.Errorf("PWD = %q, want %q", e.Value, want)
+				}
+			}
+			if i > 0 && env[i-1].Name >= e.Name {
+				sorted = false
+			}
+		}
+		if seen != 1 || !sorted {
+			t.Errorf("PWD seen %d times, sorted %v: %v", seen, sorted, env)
+		}
+		if !containsNote(p.Notes, "PWD="+want) {
+			t.Errorf("no note for PWD=%s: %q", want, p.Notes)
+		}
+		// The caller's list is not changed, and the start-up comparison
+		// agrees with exactly this environment.
+		for _, e := range p.Env {
+			if e.Name == "PWD" {
+				t.Fatal("PWD added to Plan.Env")
+			}
+		}
+		observed := make([]string, 0, len(env))
+		for _, e := range env {
+			observed = append(observed, e.Name+"="+e.Value)
+		}
+		if d, err := profile.DiffEnvironment(env, observed); err != nil || len(d) > 0 {
+			t.Errorf("diff against the inside environment: %v %v", d, err)
+		}
+		// Against the allowlist alone, PWD is the one difference.
+		d, err := profile.DiffEnvironment(p.Env, observed)
+		if err != nil || len(d) != 1 || d[0].Kind != profile.EnvUnexpected || d[0].Name != "PWD" {
+			t.Errorf("diff against the allowlist alone: %v %v", d, err)
+		}
+	}
+}
+
+func TestPWDInTheAllowlistIsRefused(t *testing.T) {
+	in := fixture(profile.Claude)
+	in.ExtraEnv = []profile.EnvVar{{Name: "PWD", Value: "/elsewhere"}}
+	_, err := Build(in, options(in, nil))
+	if r := refusal(t, err); r.Field != "environment" || !strings.Contains(r.Reason, "PWD") {
+		t.Errorf("refusal = %v", r)
 	}
 }
 
@@ -278,6 +351,88 @@ func TestOptionalRows(t *testing.T) {
 	}
 }
 
+func TestMounts(t *testing.T) {
+	in := fixture(profile.Claude)
+	present := allPresent(t, in)
+	full := mustBuild(t, in, options(in, present))
+	some := mustBuild(t, in, options(in, without(present, absent...)))
+
+	table, _ := in.Binds()
+	// One Mount per emitted row of the table, in order, the final remount not
+	// included.
+	var want []string
+	for _, b := range table {
+		if b.Kind != profile.KindRemountRO {
+			want = append(want, b.Inside)
+		}
+	}
+	var got []string
+	for _, m := range full.Mounts {
+		got = append(got, m.Inside)
+	}
+	if !equal(got, want) {
+		t.Errorf("Mounts = %q, want the table's rows %q", got, want)
+	}
+	// A row left out is not listed.
+	for _, m := range some.Mounts {
+		for _, r := range absent {
+			if m.Inside == r {
+				t.Errorf("%s listed though left out", r)
+			}
+		}
+	}
+	if len(some.Mounts) != len(full.Mounts)-len(absent) {
+		t.Errorf("%d rows, %d expected", len(some.Mounts), len(full.Mounts)-len(absent))
+	}
+
+	byInside := map[string]Mount{}
+	for _, m := range full.Mounts {
+		byInside[m.Inside] = m
+	}
+	// Exactly the three rows of the lead's .git are sourced inside a folder
+	// the lead writes, and none of the folders themselves.
+	writable := map[string]bool{
+		"/work/demo/.git/config": true,
+		"/work/demo/.git/hooks":  true,
+		"/work/demo/.git/info":   true,
+	}
+	for _, m := range full.Mounts {
+		if m.LeadWritable != writable[m.Inside] {
+			t.Errorf("%s: LeadWritable = %v", m.Inside, m.LeadWritable)
+		}
+	}
+	if m := byInside["/work/demo/.git/hooks"]; m.Kind != profile.KindRoBind || m.Source != "/state/leads/arc-lead/tree/.git/hooks" {
+		t.Errorf("hooks row = %+v", m)
+	}
+	if m := byInside["/work/demo"]; m.Kind != profile.KindRwBind || m.Source != "/state/leads/arc-lead/tree" || m.LeadWritable {
+		t.Errorf("tree row = %+v", m)
+	}
+	if m := byInside["/lib64"]; m.Kind != profile.KindSymlink || m.Source != "" || !m.Optional {
+		t.Errorf("lib64 row = %+v", m)
+	}
+	if m := byInside["/etc/ssl"]; m.Kind != profile.KindRoBind || m.Source != "/etc/ssl" || !m.Optional || m.LeadWritable {
+		t.Errorf("ssl row = %+v", m)
+	}
+	if m := byInside["/"]; m.Kind != profile.KindTmpfs || m.Source != "" || m.Optional {
+		t.Errorf("root row = %+v", m)
+	}
+
+	// With the records folder and a placeholder the lead-writable rows follow
+	// the table, not a fixed list.
+	in = fixture(profile.Codex)
+	in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
+	in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
+	p := mustBuild(t, in, options(in, nil))
+	for _, m := range p.Mounts {
+		if m.Inside == "/home/lead/.qargi" && (m.Kind != profile.KindRwBind || m.LeadWritable) {
+			t.Errorf("records row = %+v", m)
+		}
+		if m.Inside == "/work/demo/.envrc" && m.LeadWritable {
+			t.Errorf("placeholder row = %+v: its source is Ataniq's", m)
+		}
+	}
+}
+
 func TestDeterministic(t *testing.T) {
 	in := withSeccomp(fixture(profile.Codex))
 	a := render(mustBuild(t, in, options(in, nil)))
@@ -293,7 +448,7 @@ func TestBuildDoesNotAliasInputs(t *testing.T) {
 	o := options(in, nil)
 	p := mustBuild(t, in, o)
 	o.AgentArgv[1] = "--changed"
-	if p.Inner[5] != "--model" {
+	if p.Inner[7] != "--model" {
 		t.Errorf("plan shares the caller's agent argv: %q", p.Inner)
 	}
 	p.Pasta[1] = "x"
@@ -351,6 +506,26 @@ func TestRefusals(t *testing.T) {
 		{"seccomp descriptor negative", func(in *profile.Inputs, o *Options) { *in = withSeccomp(*in); o.SeccompFD = -1 }, "seccomp descriptor", "outside"},
 		{"seccomp descriptor huge", func(in *profile.Inputs, o *Options) { *in = withSeccomp(*in); o.SeccompFD = 1 << 20 }, "seccomp descriptor", "outside"},
 		{"descriptor without a seccomp file", func(_ *profile.Inputs, o *Options) { o.SeccompFD = 9 }, "seccomp descriptor", "no seccomp file"},
+		{"report descriptor missing", func(_ *profile.Inputs, o *Options) { o.ReportFD = 0 }, "report descriptor", "missing"},
+		{"report descriptor 2", func(_ *profile.Inputs, o *Options) { o.ReportFD = 2 }, "report descriptor", "outside"},
+		{"report descriptor negative", func(_ *profile.Inputs, o *Options) { o.ReportFD = -4 }, "report descriptor", "outside"},
+		{"report descriptor 1024", func(_ *profile.Inputs, o *Options) { o.ReportFD = 1024 }, "report descriptor", "outside"},
+		{"report descriptor is the seccomp one", func(in *profile.Inputs, o *Options) { *in = withSeccomp(*in); o.SeccompFD = 5; o.ReportFD = 5 }, "report descriptor", "differ"},
+		{"report path missing", func(_ *profile.Inputs, o *Options) { o.ReportPath = "" }, "report path", "empty"},
+		{"report path relative", func(_ *profile.Inputs, o *Options) { o.ReportPath = "run/report" }, "report path", "absolute"},
+		{"report path unclean", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/opt/ataniq/run/../report" }, "report path", "clean"},
+		{"report path with a newline", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/opt/ataniq/run/a\nb" }, "report path", "control"},
+		{"report path in the lead's home", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/home/report" }, "report path", "can write"},
+		{"report path in the lead's tree", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/tree/.git/report" }, "report path", "can write"},
+		{"report path in the lead's config", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/config/claude/report" }, "report path", "can write"},
+		{"report path is a writable folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/home" }, "report path", "can write"},
+		{"report path in the records folder", func(in *profile.Inputs, o *Options) {
+			in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
+			o.ReportPath = "/state/leads/arc-lead/records/report"
+		}, "report path", "can write"},
+		{"report path never mounted", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.ssh/report" }, "report path", "never-mounted"},
+		{"report path is a never-mounted file", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/home/owner/.claude.json" }, "report path", "never-mounted"},
+		{"report path in the other runtime's folder", func(_ *profile.Inputs, o *Options) { o.ReportPath = "/state/leads/arc-lead/config/codex/report" }, "report path", "never-mounted"},
 		{"workdir relative", func(_ *profile.Inputs, o *Options) { o.WorkDir = "work/demo" }, "working folder", "absolute"},
 		{"workdir unclean", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/work/demo/../x" }, "working folder", "clean"},
 		{"workdir outside", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/etc" }, "working folder", "outside"},
@@ -358,10 +533,10 @@ func TestRefusals(t *testing.T) {
 		{"workdir work root", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/work" }, "working folder", "outside"},
 		{"workdir tmp", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/tmp" }, "working folder", "outside"},
 		{"workdir beside the home", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/home/lead2" }, "working folder", "outside"},
-		{"environment value read as an option", func(in *profile.Inputs, _ *Options) { in.Term = "--weird" }, "bubblewrap argument", "option"},
+		{"environment value read as an option", func(in *profile.Inputs, _ *Options) { in.Term = "--weird" }, "bubblewrap argument", "starts with --"},
 		{"extra variable read as an option", func(in *profile.Inputs, _ *Options) {
 			in.ExtraEnv = []profile.EnvVar{{Name: "EXAMPLE", Value: "--x"}}
-		}, "bubblewrap argument", "option"},
+		}, "bubblewrap argument", "starts with --"},
 		{"agent too long", func(_ *profile.Inputs, o *Options) {
 			o.AgentArgv = append(o.AgentArgv, long, long, long)
 		}, "agent argv", "cap"},
@@ -385,6 +560,64 @@ func TestRefusals(t *testing.T) {
 			}
 			if p != nil {
 				t.Error("a plan came back with the error")
+			}
+		})
+	}
+}
+
+func TestReportPathBoundaries(t *testing.T) {
+	// A path that only shares a prefix with a lead-writable or never-mounted
+	// path is not in or below it.
+	in := fixture(profile.Claude)
+	for _, path := range []string{
+		"/state/leads/arc-lead/homework",
+		"/state/leads/arc-lead/run/report",
+		"/state/leads/arc-lead2/home/report",
+		"/home/owner/.sshd/report",
+		"/home/owner/work/demo2/report",
+		"/run/ataniq/arc-lead/report",
+	} {
+		o := options(in, nil)
+		o.ReportPath = path
+		if _, err := Build(in, o); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+}
+
+func TestRefusalDoesNotRepeatTheOperand(t *testing.T) {
+	in := fixture(profile.Claude)
+	in.Term = "--hunter2-term"
+	_, err := Build(in, options(in, nil))
+	if err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+// Build's own assertions refuse on their own, though a step before them
+// reaches the same refusal for every input the package can see.
+func TestAssertPlanRefusesOnItsOwn(t *testing.T) {
+	p, in, o := basePlan(t)
+	if err := assertPlan(p, in, o); err != nil {
+		t.Fatalf("assertPlan refused a good plan: %v", err)
+	}
+	for name, c := range map[string]struct {
+		field string
+		mut   func(p *Plan)
+	}{
+		"forbidden option in Argv": {"command line", func(p *Plan) { p.Argv = append(p.Argv, "--disable-userns") }},
+		"command line too long":    {"command line", func(p *Plan) { p.Argv = append(p.Argv, strings.Repeat("a", MaxArgvBytes)) }},
+		"the plan fails Verify":    {"plan", func(p *Plan) { p.Digest = "" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := clonePlan(p)
+			c.mut(q)
+			err := assertPlan(q, in, o)
+			if err == nil {
+				t.Fatal("assertPlan accepted it")
+			}
+			if r := refusal(t, err); r.Field != c.field {
+				t.Errorf("refusal field = %q, want %q", r.Field, c.field)
 			}
 		})
 	}
@@ -417,13 +650,13 @@ func TestInvalidInputsAreTheProfilesRefusal(t *testing.T) {
 }
 
 func TestVerifyReportsInvalidInputs(t *testing.T) {
-	p, in := basePlan(t)
+	p, in, o := basePlan(t)
 	in.Role = ""
-	probs := Verify(p, in)
+	probs := Verify(p, in, o)
 	if len(probs) != 1 || probs[0].Kind != ProbInputs {
 		t.Errorf("problems = %v", probs)
 	}
-	if got := Verify(nil, fixture(profile.Claude)); len(got) != 1 || got[0].Kind != ProbShape {
+	if got := Verify(nil, fixture(profile.Claude), Options{}); len(got) != 1 || got[0].Kind != ProbShape {
 		t.Errorf("nil plan: %v", got)
 	}
 }

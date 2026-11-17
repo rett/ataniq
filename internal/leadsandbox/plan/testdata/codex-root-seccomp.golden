@@ -1,5 +1,7 @@
 # pasta
 /usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw --
+# pass-fds
+/opt/ataniq/bin/probe pass-fds --read 7=/opt/ataniq/seccomp/lead.bpf --write 3=/opt/ataniq/run/arc-lead/report.fifo --
 # bubblewrap
 /usr/bin/bwrap
 --die-with-parent
@@ -71,7 +73,7 @@
 --remount-ro /
 --
 # inner
-/ataniq/probe --spec /ataniq/spec/spec.json -- /ataniq/agent/bin/codex --model example
+/ataniq/probe --spec /ataniq/spec/spec.json --report-fd 3 -- /ataniq/agent/bin/codex --model example
 # env
 CODEX_HOME=/home/lead/.codex
 COLORTERM=truecolor
@@ -93,8 +95,46 @@ XDG_CACHE_HOME=/home/lead/.cache
 XDG_CONFIG_HOME=/home/lead/.config
 XDG_DATA_HOME=/home/lead/.local/share
 XDG_STATE_HOME=/home/lead/.local/state
+# mounts
+tmpfs /
+ro-bind /usr /usr
+symlink /bin
+symlink /lib
+symlink /lib64 [optional]
+symlink /sbin [optional]
+ro-bind /etc/ssl /etc/ssl [optional]
+ro-bind /etc/ca-certificates /etc/ca-certificates [optional]
+ro-bind /etc/hosts /etc/hosts
+ro-bind /etc/nsswitch.conf /etc/nsswitch.conf [optional]
+ro-bind /etc/passwd /etc/passwd
+ro-bind /etc/group /etc/group
+ro-bind /etc/localtime /etc/localtime [optional]
+ro-bind /etc/resolv.conf /opt/ataniq/resolv/arc-lead/resolv.conf
+dev /dev
+proc /proc
+tmpfs /tmp
+ro-bind /ataniq/probe /opt/ataniq/bin/probe
+ro-bind /ataniq/spec /opt/ataniq/spec/arc-lead
+ro-bind /ataniq/agent /opt/agent/codex/2.1.0
+ro-bind /etc/codex/managed-config.toml /opt/ataniq/managed/arc-lead/settings.json
+rw-bind /home/lead /state/leads/arc-lead/home
+rw-bind /home/lead/.codex /state/leads/arc-lead/config/codex
+ro-bind /home/lead/.codex/skills /opt/ataniq/skills/arc-lead
+ro-bind /home/lead/.codex/AGENTS.md /opt/ataniq/instructions/arc-lead/AGENTS.md
+ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+rw-bind /work/demo /state/leads/arc-lead/tree
+ro-bind /work/demo/.git/config /state/leads/arc-lead/tree/.git/config [lead-writable]
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/tree/.git/hooks [lead-writable]
+ro-bind /work/demo/.git/info /state/leads/arc-lead/tree/.git/info [lead-writable]
+ro-bind /work/demo/.envrc /opt/ataniq/placeholders/envrc
+ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
+ro-bind /ataniq/qargi /opt/ataniq/qargi
+rw-bind /home/lead/.qargi /state/leads/arc-lead/records
+ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
+ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
-fd 7 seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+fd 7 read seccomp /opt/ataniq/seccomp/lead.bpf 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e
+fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest
 dc607849216de74c72f1ae190ee1a14e6523173bca949ff2f4b4fa297904b2b6
 # workdir
@@ -104,7 +144,9 @@ false
 # notes
 - --share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network
 - nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled
-- seccomp file named by the caller (sha256 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e), passed to bubblewrap as descriptor 7: this package neither reads nor generates a filter, and the descriptor must stay open across pasta's start of bubblewrap, which qualification has to show
+- seccomp file named by the caller (sha256 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e), opened read-only as descriptor 7 by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter
 - identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested
+- report channel: the pass-fds step opens the holder's report path write-only as descriptor 3 after pasta, bubblewrap inherits it and the probe inside gets --report-fd 3; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows
+- bubblewrap keeps and sets PWD under --clearenv: the agent's environment is the allowlist plus PWD=/work/demo, the working folder
 - network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed
 - bubblewrap does not make the session (--new-session is never passed): the probe gives the agent its session and controlling terminal, so the launcher does not set a controlling terminal
