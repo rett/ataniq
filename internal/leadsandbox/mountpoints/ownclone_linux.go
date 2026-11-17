@@ -26,7 +26,10 @@ var cloneEntries = []struct {
 //     not symbolic links, of mode 0700 and owned by uid (the caller's user
 //     id), and no link lies on their path below the state root;
 //   - the tree's .git is a folder (a .git file means a worktree or submodule),
-//     holds HEAD, config, objects and refs, and has no commondir;
+//     holds HEAD, config, objects and refs, and has no commondir and no
+//     objects/info/alternates or objects/info/http-alternates (the objects of
+//     another repository, which a sandbox may not have). .git/config is not
+//     parsed: a core.worktree or core.bare setting is not looked for;
 //   - no folder from the tree's parent up to and including the state root
 //     holds a .git entry, so the tree does not sit below another repository.
 //
@@ -157,10 +160,16 @@ func checkGit(treeDir string, rep *Report) {
 			rep.add(problem(ErrWrongType, host, "the entry is %s", describe(ei)))
 		}
 	}
-	switch _, err := tree.Lstat(".git/commondir"); {
-	case err == nil:
-		rep.add(problem(ErrNotOwnClone, git+"/commondir", "a commondir means a linked worktree"))
-	case !isNotExist(err):
-		rep.add(fromErr(git+"/commondir", err))
+	for _, r := range []struct{ name, why string }{
+		{"commondir", "a commondir means a linked worktree"},
+		{"objects/info/alternates", "alternates borrow objects from another repository, so the tree is not a full clone"},
+		{"objects/info/http-alternates", "alternates borrow objects from another repository, so the tree is not a full clone"},
+	} {
+		switch _, err := tree.Lstat(".git/" + r.name); {
+		case err == nil:
+			rep.add(problem(ErrNotOwnClone, git+"/"+r.name, "%s", r.why))
+		case !isNotExist(err):
+			rep.add(fromErr(git+"/"+r.name, err))
+		}
 	}
 }

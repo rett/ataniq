@@ -30,7 +30,9 @@
 //     nothing, and returns every problem it finds, typed and bounded.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
 //     worktree, submodule or folder below another repository, and that the
-//     tree, home and config folder are 0700 folders of the caller's user.
+//     tree, home and config folder are 0700 folders of the caller's user. A
+//     tree whose .git names alternates (objects of another repository) is
+//     refused. The file .git/config is not parsed.
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each host bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
