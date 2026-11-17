@@ -46,6 +46,7 @@ func (e *Emulator) handlePrint(r rune) {
 		if len(e.grapheme) == 1 && printableASCII(rune(e.grapheme[0])) {
 			e.handleGrapheme(string(e.grapheme[0]), 1)
 			e.grapheme = utf8.AppendRune(e.grapheme[:0], r)
+			e.capped = false
 			return
 		}
 		e.flushGrapheme()
@@ -58,11 +59,12 @@ func (e *Emulator) handlePrint(r rune) {
 // [MaxClusterBytes] bytes. The buffer collects text until a character that
 // cannot extend it arrives, so it holds several clusters when a run has no
 // ASCII in it, and one long one when a run is made of combining marks. A rune
-// that does not fit settles the buffer first.
+// that does not fit settles the buffer first, and so does every rune once a
+// rune has been dropped from the last cluster.
 func (e *Emulator) appendGrapheme(r rune) {
 	var enc [utf8.UTFMax]byte
 	n := utf8.EncodeRune(enc[:], r)
-	if len(e.grapheme)+n > MaxClusterBytes {
+	if e.capped || len(e.grapheme)+n > MaxClusterBytes {
 		e.settleGrapheme(enc[:n])
 		return
 	}
@@ -72,7 +74,10 @@ func (e *Emulator) appendGrapheme(r rune) {
 // settleGrapheme makes room in a full grapheme buffer for the rune whose
 // bytes are enc. If the buffer is one cluster and the rune extends it, the
 // rune is dropped and its bytes are counted: a cluster keeps its first
-// [MaxClusterBytes] bytes, cut at a rune boundary. Otherwise it draws every
+// [MaxClusterBytes] bytes, cut at a rune boundary. The first rune dropped
+// caps the cluster, and a capped cluster drops every rune that extends it, so
+// that a shorter mark after a longer one that did not fit is not kept: a cell
+// holds a prefix of what was sent. Otherwise it draws every
 // cluster of the buffer except the last, which is the only one the rune can
 // extend; if the rune starts a new cluster, the last one is drawn too and the
 // rune starts the buffer. The work is bounded by the size of the buffer,
@@ -81,6 +86,7 @@ func (e *Emulator) settleGrapheme(enc []byte) {
 	e.open.ok = false
 	if e.extendsCluster(e.grapheme, enc) {
 		e.counters.ClusterBytesDropped += uint64(len(enc))
+		e.capped = true
 		return
 	}
 
@@ -100,6 +106,7 @@ func (e *Emulator) settleGrapheme(enc []byte) {
 			e.grapheme = append(e.grapheme, enc...)
 		} else {
 			e.counters.ClusterBytesDropped += uint64(len(enc))
+			e.capped = true
 		}
 		return
 	}
@@ -129,6 +136,9 @@ type openCluster struct {
 	curX, curY int
 	phantom    bool
 	single     int
+	// capped is set when a rune was dropped from the cluster: it does not
+	// grow again.
+	capped bool
 }
 
 // reopenCluster puts the open cluster back into the grapheme buffer and the
@@ -139,9 +149,9 @@ type openCluster struct {
 // are committed as two clusters.
 //
 // A cluster that has reached [MaxClusterBytes], or that r would take past it,
-// is not reopened and not grown: r is dropped and counted, and the cluster
-// stays open, so that the marks that follow are dropped too. It reports
-// whether it dropped r.
+// or from which a rune was dropped before, is not reopened and not grown: r
+// is dropped and counted, and the cluster stays open and capped, so that the
+// marks that follow are dropped too. It reports whether it dropped r.
 func (e *Emulator) reopenCluster(r rune) (dropped bool) {
 	o := &e.open
 	o.ok = false
@@ -157,8 +167,9 @@ func (e *Emulator) reopenCluster(r rune) (dropped bool) {
 	if !e.extendsCluster(o.content, enc[:n]) {
 		return false
 	}
-	if len(o.content)+n > MaxClusterBytes {
+	if o.capped || len(o.content)+n > MaxClusterBytes {
 		e.counters.ClusterBytesDropped += uint64(n)
+		o.capped = true
 		o.ok = true
 		return true
 	}
@@ -234,9 +245,11 @@ func (e *Emulator) drawGrapheme(keepOpen bool) {
 			o.curX, o.curY = e.scr.CursorPosition()
 			o.phantom = e.atPhantom
 			o.single = single
+			o.capped = e.capped
 		}
 	}
 	e.grapheme = e.grapheme[:0] // Reset the grapheme buffer.
+	e.capped = false
 }
 
 // handleGrapheme handles UTF-8 graphemes. It returns the cell it drew in.

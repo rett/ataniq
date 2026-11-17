@@ -304,6 +304,74 @@ func TestClusterAtCapIsNotReopenedOrGrown(t *testing.T) {
 	}
 }
 
+// Once a rune has been dropped from a cluster, the cluster does not grow
+// again, so a cell keeps a prefix of what was sent: a shorter mark after a
+// longer one that did not fit is dropped too, in the same write and in the
+// next one.
+func TestClusterDoesNotGrowAfterADrop(t *testing.T) {
+	// 62 bytes: the base, U+20D0 (3 bytes) and 29 x U+0301 (2 bytes). The next
+	// U+20D0 would make 65 and is dropped; the U+0301 after it would fit.
+	head := "e\u20d0" + strings.Repeat("\u0301", 29)
+	if len(head) != MaxClusterBytes-2 {
+		t.Fatalf("test input is %d bytes", len(head))
+	}
+	tail := "\u20d0\u0301\u0301\u20d0\u0301"
+	input := head + tail
+	// A character that starts a cluster follows, then an ASCII one.
+	after := "\u00e9" + "z"
+
+	run := func(t *testing.T, parts []string) {
+		term := newTestTerminal(t, 10, 1)
+		for _, p := range parts {
+			term.WriteString(p)
+		}
+		if c := term.CellAt(0, 0); c == nil || c.Content != head {
+			t.Errorf("cell 0 is %d bytes, want the first %d bytes of the cluster", len(c.Content), len(head))
+		}
+		if got, want := term.Counters().ClusterBytesDropped, uint64(len(tail)); got != want {
+			t.Errorf("ClusterBytesDropped = %d, want %d", got, want)
+		}
+		if c := term.CellAt(1, 0); c == nil || c.Content != "\u00e9" {
+			t.Errorf("cell 1: %v, want the character that follows", c)
+		}
+		if c := term.CellAt(2, 0); c == nil || c.Content != "z" {
+			t.Errorf("cell 2: %v", c)
+		}
+	}
+
+	t.Run("one write", func(t *testing.T) { run(t, []string{input + after}) })
+	t.Run("rune per write", func(t *testing.T) {
+		var p []string
+		for _, r := range input + after {
+			p = append(p, string(r))
+		}
+		run(t, p)
+	})
+	t.Run("every split", func(t *testing.T) {
+		for i := 0; i <= len(input); i++ {
+			if i < len(head) && !utf8.RuneStart(input[i]) {
+				continue
+			}
+			if !utf8.ValidString(input[:i]) {
+				continue
+			}
+			run(t, []string{input[:i], input[i:] + after})
+		}
+	})
+	// The same when the cluster is not alone in the buffer: text with no
+	// ASCII before it fills the buffer with several clusters, and the last is
+	// the one that is capped.
+	t.Run("after other clusters", func(t *testing.T) {
+		term := newTestTerminal(t, 40, 1)
+		term.WriteString("\u00e9\u00e8" + head + tail + after)
+		for i, want := range []string{"\u00e9", "\u00e8", head, "\u00e9", "z"} {
+			if c := term.CellAt(i, 0); c == nil || c.Content != want {
+				t.Errorf("cell %d: %q, want %q", i, c.Content, want)
+			}
+		}
+	})
+}
+
 // Clusters under the cap still join across writes, up to the cap exactly.
 func TestClusterUnderCapJoinsAcrossWrites(t *testing.T) {
 	// 64 bytes: the base and 21 three-byte marks.

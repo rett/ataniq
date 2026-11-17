@@ -24,14 +24,19 @@ Patches, applied in this order to the files of the module as released:
 4. `vt: keep at most 64 bytes of a grapheme cluster` (`limits.go`, `utf8.go`,
    `emulator.go`, `safe_emulator.go`, `utf8_test.go`). The patched code kept a
    cluster whole however long, so a megabyte of combining marks made one cell
-   of a megabyte. A cell now keeps the first `MaxClusterBytes` (64) bytes of a
-   cluster, cut at a rune boundary; the rest is dropped and added to
+   of a megabyte. A cell now keeps a prefix of a cluster of at most
+   `MaxClusterBytes` (64) bytes, cut at a rune boundary: the first rune that
+   does not fit caps the cluster, and that rune and every later rune that
+   extends it are dropped, so a shorter mark after a longer one that did not
+   fit is not kept. The dropped bytes are added to
    `Counters().ClusterBytesDropped`, and the grapheme buffer never grows past
    64 bytes. When the buffer fills, the clusters before the last are drawn and
    the next rune is tested against the last one only, so text without ASCII
    (which fills the buffer with many clusters) is not cut. A cluster that has
-   reached the cap is neither reopened nor grown by the next write: the mark
-   is dropped and counted, and the cluster stays the open one. A run of marks
+   reached the cap, or that has lost a rune, is neither reopened nor grown by
+   the next write: the mark is dropped and counted, and the cluster stays the
+   open one and capped. (`OpenCluster` reports the cluster's text only, so a
+   copy of the screen that continues it does not know that it is capped.) A run of marks
    past the cap costs one segmentation of at most 68 bytes per rune: linear
    time, no allocation. This patch also adds the `Counters` struct and the
    `Counters` accessor on `Emulator` and `SafeEmulator` that the later caps use.
