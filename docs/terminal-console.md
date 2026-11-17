@@ -44,12 +44,14 @@ The cockpit has these parts:
   No approval is possible.
 - The timeline runs along the bottom and the key bar under it.
 
-The session terminal frame carries the fixture label in every state.
+The session terminal frame carries the fixture label in every state. In zoom
+the header carries it.
 
 The console draws at most 512 columns by 256 rows. In a larger window it draws
 in the top left corner and leaves the rest blank. The session terminal is at
-most 500 columns by 200 rows. A window resize or a zoom resizes the pane after
-a short pause, and the replay continues at the new size.
+most 500 columns by 200 rows. The pane follows a window resize after the size
+has stayed the same for a short pause (120 ms). It follows a zoom at once. The
+replay continues at the new size.
 
 ### Small windows
 
@@ -61,8 +63,9 @@ scroll. The a key explains why full attach is unavailable. These pages have no
 session terminal, no zoom and no replay key.
 
 The demo identity takes priority at height one. At height two the selected
-project or lead takes the remaining line. At greater heights a control notice
-also has a reserved line. Narrow widths truncate each line. Display text is
+project or lead takes the remaining line on the projects and leads pages, and
+a notice takes it on the other pages. At greater heights a control notice also
+has a reserved line. Narrow widths truncate each line. Display text is
 limited to 4096 inspected bytes and 512 emitted bytes per field.
 
 If you shrink the window below the minimum while the session has focus, focus
@@ -110,8 +113,9 @@ byte 0x1c for Ctrl+4. Then Ctrl+4 also returns. In the kitty form Ctrl+4 is
 
 F12 toggles zoom in either focus state. In zoom the session terminal fills the
 window under a one-line header. The header names the focus and the key that
-leaves zoom, F12. Tab and the move keys do nothing while zoomed.
-Enter focuses the session.
+leaves zoom, F12. Tab and the move keys do nothing while zoomed. Enter focuses
+the session, and `r` replays the recording. Zoom draws no help, action list or
+notice.
 
 ### The action list
 
@@ -160,7 +164,10 @@ They are not captures of a real agent. They hold no private names or paths.
 The recordings exercise the pane's behaviour: a window title, modes, colour
 queries, clipboard requests, frames for synchronized output, a grapheme
 cluster split across two writes, a resize record and the three kinds of exit
-(status 0, a non-zero status and an unknown status).
+(status 0, a non-zero status and an unknown status). Their names are
+`clipboard.jsonl`, `exit-nonzero.jsonl`, `exit-unknown.jsonl`,
+`exit-zero.jsonl`, `modes.jsonl`, `queries.jsonl`, `resize.jsonl`,
+`sync-frames.jsonl`, `title.jsonl` and `zwj-split.jsonl`.
 
 Everything on screen is fixture data. The recording looks like a running
 session, which is why the header, the session frame and the help all say
@@ -171,14 +178,14 @@ resize records are ignored: the layout sets the pane's size.
 
 ### When a session ends
 
-After the recording's last output and the linger time, the stream ends. The
-pane keeps its last screen, dimmed, under a banner. The banner says "TERMINAL
+When the replay reaches the recording's end record and the linger time has
+passed, the stream ends. The pane keeps its last screen, dimmed, under a banner. The banner says "TERMINAL
 STREAM ENDED" and gives the exit status, or "unknown" when the recording has
 none. It says that the terminal stream ended, not necessarily the agent. A
 Codex terminal can exit while its daemon keeps running.
 
-In session focus, any key returns to console focus. In console focus, `r`
-replays the recording.
+In session focus, any key returns to console focus, except F12, which still
+zooms. In console focus, `r` replays the recording.
 
 An ended pane is not resized. If you zoom it, leave zoom or resize the window,
 the old screen keeps its old size, cut or padded under the banner.
@@ -188,15 +195,16 @@ the old screen keeps its old size, cut or padded under the banner.
 Terminals disagree on how wide some emoji are. A ZWJ family or an emoji with a
 variation selector is one example. The console asks the outer terminal for mode
 2027 (Unicode core) when it starts. It asks even when `SSH_TTY` is set, because
-Bubble Tea skips its own query over SSH. It does not turn on synchronized
-output (mode 2026) for this.
+Bubble Tea usually skips its own query over SSH. It does not turn on
+synchronized output (mode 2026) for this.
 
 If the terminal reports mode 2027 as set, reset or permanently set, the pane
-draws grapheme clusters as they are. If it gives no such report, the pane draws a placeholder of the same
-cell width instead of a cluster that the terminal might measure differently:
-`?`, or the full-width `？` for a wide cell. The columns after it then stay
-where the pane put them. A cell holding more than 64 bytes also becomes a
-placeholder, in either mode.
+draws grapheme clusters as they are. If it gives no such report, the pane
+draws a placeholder of the same cell width instead of a cluster that the
+terminal might measure differently: `?`, or the full-width `？` for a wide
+cell. The columns after it then stay where the pane put them. The cockpit's
+own text follows the same rule. A cell holding more than 64 bytes also becomes
+a placeholder, in either mode.
 
 Use over SSH is not qualified. <!-- owner: confirm wording -->
 
@@ -213,8 +221,10 @@ An attended check in a real terminal, directly and over SSH, at two window
 sizes with zoom and the return key, is still to be done. <!-- owner: confirm wording -->
 
 The pane does not track the kitty keyboard flags a session may set. The
-console itself asks Bubble Tea for keyboard enhancement, which the return key
-relies on. The snapshot is taken once at start. There is no refresh.
+console sets no keyboard enhancement of its own. Bubble Tea always asks the
+outer terminal for basic key disambiguation, which is how the kitty form of the
+return key can arrive. The snapshot is taken once at start. There is no
+refresh.
 
 ## Dependencies
 
