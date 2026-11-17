@@ -27,7 +27,10 @@
 // invocation) and the control group of the stopped invocation proven empty.
 // With the proof the role is stopped, with a proof text naming the invocation
 // and the control group; without it by the bound the role is unknown. Stop
-// never signals a unit that is not ours, and never types into a session.
+// never signals a unit that is not ours, and never types into a session. A
+// unit of ours that the record does not name is signalled only when its epoch
+// is older than the registry's: that is a start request that landed late, and
+// epochs only grow, so it cannot be newer work.
 //
 // Reconcile compares the registry with the manager for every role the daemon
 // runs. It starts nothing and signals nothing, ever. It adopts a running unit
@@ -64,7 +67,10 @@
 //     reason launch-reply-lost. Reconcile (or a later Stop) closes it as
 //     abandoned only once the late-start window has passed with the unit still
 //     not loaded and its control group empty; a unit that lands afterwards is
-//     stale, is reported, and is never signalled by this package.
+//     stale, is reported by Reconcile, and Reconcile never signals it. An
+//     explicit Stop does: it ends a stale unit of ours that has the
+//     record's epoch and intent or an older epoch, which is the owner's way
+//     out when the window did not hold.
 //   - A launch intent carries no boot identity: the registry records the boot
 //     only with the unit evidence of an outcome. A pending intent with no unit
 //     evidence therefore cannot be told apart by boot, and only the window
@@ -77,9 +83,13 @@
 // acts on what the [leadunit.Manager] answers, and the tests run against
 // [leadunit.Fake], which is a model written from the contract. It does not
 // read the lock files, does not look at the holder, and has no view of
-// readiness or of a turn in progress. The late-start window is a time bound
-// that assumes no start request lives longer than it; the option's default is
-// longer than any manager call timeout, but the assumption is not checked.
+// readiness or of a turn in progress. The late-start window is a heuristic, not
+// a bound. The manager's call timeout limits how long the caller waits for a
+// reply, not when systemd executes a request that is already on the bus, so a
+// request can land after the window, even after a newer epoch has run. The
+// window only decides when Reconcile stops waiting for a start that may still
+// land; the stale-unit path (Reconcile reports it, Stop ends it) is what
+// handles a request that lands later.
 //
 // # Status
 //

@@ -2,6 +2,7 @@ package leadlifecycle
 
 import (
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -220,6 +221,72 @@ func TestStartReplyLostLandingLate(t *testing.T) {
 		}
 		r.auditClean()
 	})
+}
+
+// A start request that lands after a newer epoch has run leaves a stale unit
+// of ours with an older epoch. Reconcile reports it and never signals it; the
+// owner's Stop ends it, and the role has a way forward.
+func TestStopEndsAStaleUnitOfAnOlderEpoch(t *testing.T) {
+	r := newRig(t)
+	role := r.define("alpha")
+	unit := unitOf(role)
+	// Epoch 1: the start request is held on its way, the reply is lost.
+	r.fake.LateNextStart(unit)
+	_, err := r.start(role)
+	isErr(t, err, ErrLaunchUncertain)
+	first := r.get(role).Intent.ID
+	// The window passes with nothing loaded: the intent is abandoned.
+	r.advance(DefaultLateStartWindow + time.Second)
+	rep := r.reconcile()
+	if rr, _ := rep.Find(role); rr.Action != ActionStopped {
+		t.Fatalf("report %+v", rr)
+	}
+	// Epoch 2 runs and its holder dies.
+	if e := r.mustStart(role); e.Epoch != 2 {
+		t.Fatalf("epoch %d", e.Epoch)
+	}
+	r.fake.Crash(unit)
+	rep = r.reconcile()
+	if rr, _ := rep.Find(role); rr.Action != ActionEnded {
+		t.Fatalf("report %+v", rr)
+	}
+	// The epoch 1 request lands now.
+	st, err := r.fake.LandLateStart(unit)
+	noErr(t, err)
+	if st.Epoch != 1 || st.Intent != first {
+		t.Fatalf("landed %+v", st)
+	}
+	rep = r.reconcile()
+	rr, _ := rep.Find(role)
+	if rr.Action != ActionUnknown || rr.Reason != "stale-unit" || rr.After != leadregistry.StateUnknown {
+		t.Fatalf("report %+v", rr)
+	}
+	r.noSignals()
+	// A start is refused while the stale unit is loaded.
+	_, err = r.start(role)
+	isErr(t, err, leadregistry.ErrLaunchRefused)
+	// Stop is the owner's order and ends it, with proof.
+	e, err := r.stop(role)
+	noErr(t, err)
+	if e.Shown.State != leadregistry.StateStopped || e.Epoch != 2 {
+		t.Fatalf("entry %+v", e)
+	}
+	if r.fake.Loaded(unit) || len(r.fake.Processes(unit)) != 0 {
+		t.Fatal("the stale unit is still there")
+	}
+	if got := signalsOf(r.signalCalls()); len(got) == 0 || got[0] != syscall.SIGTERM {
+		t.Fatalf("signals %v", got)
+	}
+	for _, c := range r.signalCalls() {
+		if c.Invocation != st.InvocationID {
+			t.Fatalf("signal to invocation %s, want the stale unit's %s", c.Invocation, st.InvocationID)
+		}
+	}
+	// And the role moves on: a new epoch starts.
+	if e := r.mustStart(role); e.Epoch != 3 {
+		t.Fatalf("epoch %d", e.Epoch)
+	}
+	r.auditClean()
 }
 
 func TestStartManagerUnavailableThenReconcile(t *testing.T) {
