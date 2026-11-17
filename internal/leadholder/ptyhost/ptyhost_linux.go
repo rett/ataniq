@@ -64,6 +64,28 @@
 //
 // The facts and the zombie are visible to the caller: the child shows as
 // defunct in a process listing between its exit and the proof.
+//
+// # What the child inherits
+//
+// Start gives the child exactly the slave as descriptors 0, 1 and 2 and
+// exactly Config.Env. Two other things cross fork and exec on their own:
+//
+//   - Descriptors of 3 or above that the holder opened without close-on-exec
+//     (a socket handed over by the service manager, a descriptor inherited from
+//     the holder's own parent). This package and the standard library open
+//     their descriptors close-on-exec, so these are the ones the process was
+//     started with. They are the holder's to close: it calls CloseOnExecFrom(3)
+//     once at start, before the first Start.
+//   - Signals the holder ignores. The Go runtime restores the default
+//     disposition in the child for every signal it handles itself, but an
+//     ignored signal (SIG_IGN) is kept across fork and exec; the runtime also
+//     leaves SIGHUP and SIGINT ignored when the process started with them
+//     ignored, and signal.Ignore does it for any signal. syscall.ForkExec has
+//     no field to reset dispositions in the child, and doing it would need a
+//     fork and exec of our own written with raw system calls, unsafe code in
+//     the window between fork and exec, which this package does not contain.
+//     So the holder must not ignore signals the agent should not ignore, and
+//     asserts it at start with IgnoredSignals.
 package ptyhost
 
 import (

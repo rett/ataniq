@@ -10,9 +10,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -241,6 +243,154 @@ func TestChildOfAnotherLanguageInheritsOnlyTheTerminal(t *testing.T) {
 	// 0, 1 and 2 are the slave; 3 is the directory ls itself opened.
 	if want := []string{"0", "1", "2", "3"}; !reflect.DeepEqual(fds, want) {
 		t.Errorf("ls saw descriptors %q, want %q", fds, want)
+	}
+}
+
+// leakedFd opens /dev/null without close-on-exec, as a process started by a
+// service manager may hold a descriptor it was handed.
+func leakedFd(t *testing.T) int {
+	t.Helper()
+	fd, err := unix.Open("/dev/null", unix.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unix.Close(fd) })
+	return fd
+}
+
+func closeOnExec(t *testing.T, fd int) bool {
+	t.Helper()
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return flags&unix.FD_CLOEXEC != 0
+}
+
+func TestCloseOnExecFromMarksOnlyTheDescriptorsFromTheBound(t *testing.T) {
+	low, mid, high := leakedFd(t), leakedFd(t), leakedFd(t)
+	if closeOnExec(t, low) || closeOnExec(t, mid) || closeOnExec(t, high) {
+		t.Fatal("a plain open is close-on-exec")
+	}
+	if err := CloseOnExecFrom(mid); err != nil {
+		t.Fatal(err)
+	}
+	if closeOnExec(t, low) || !closeOnExec(t, mid) || !closeOnExec(t, high) {
+		t.Errorf("after CloseOnExecFrom(%d): low %v, mid %v, high %v, want false, true, true", mid, closeOnExec(t, low), closeOnExec(t, mid), closeOnExec(t, high))
+	}
+	// The fallback for kernels without CLOSE_RANGE_CLOEXEC does the same.
+	a, b := leakedFd(t), leakedFd(t)
+	if err := closeOnExecFromProc(b, "/proc"); err != nil {
+		t.Fatal(err)
+	}
+	if closeOnExec(t, a) || !closeOnExec(t, b) {
+		t.Errorf("fallback from %d: a %v, b %v, want false, true", b, closeOnExec(t, a), closeOnExec(t, b))
+	}
+	if err := closeOnExecFromProc(0, filepath.Join(t.TempDir(), "no-proc")); err == nil {
+		t.Error("the fallback without a proc filesystem succeeded")
+	}
+	if err := CloseOnExecFrom(-1); err == nil {
+		t.Error("CloseOnExecFrom(-1) succeeded")
+	}
+	if err := CloseOnExecFrom(low); err != nil {
+		t.Fatal(err)
+	}
+	if !closeOnExec(t, low) || !closeOnExec(t, a) {
+		t.Error("CloseOnExecFrom(low) left a descriptor above it open to children")
+	}
+}
+
+// What the helper is for: a descriptor the holder was handed reaches the
+// agent, until CloseOnExecFrom(3) is called.
+func TestInheritedDescriptorReachesTheChildUnlessMarkedCloseOnExec(t *testing.T) {
+	fd := leakedFd(t)
+	fds := func() map[int]string {
+		t.Helper()
+		rep := filepath.Join(t.TempDir(), "report")
+		h, _ := start(t, "report "+rep+"; exit 0")
+		if e := waitExit(t, h); e.How != "exit" || e.Code != 0 {
+			t.Fatalf("exit %v", e)
+		}
+		r, err := fakeagent.ReadReport(rep)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Fds
+	}
+	if got := fds(); got[fd] != "/dev/null" {
+		t.Fatalf("the child's descriptors %v: want %d to be inherited, or the test shows nothing", got, fd)
+	}
+	if err := CloseOnExecFrom(3); err != nil {
+		t.Fatal(err)
+	}
+	for n, target := range fds() {
+		if n > 2 && target == "/dev/null" {
+			t.Errorf("descriptor %d (%s) was inherited after CloseOnExecFrom(3)", n, target)
+		}
+	}
+}
+
+func TestParseSigIgn(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want []syscall.Signal
+	}{
+		{"Name:\tx\nSigIgn:\t0000000000001001\nSigCgt:\t0\n", []syscall.Signal{syscall.SIGHUP, syscall.SIGPIPE}},
+		{"SigIgn:\t0000000000000000\n", nil},
+		{"SigIgn:\t8000000000000000\n", []syscall.Signal{64}},
+	} {
+		got, err := parseSigIgn([]byte(c.in))
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("parseSigIgn(%q) = %v, %v, want %v", c.in, got, err, c.want)
+		}
+	}
+	for _, in := range []string{"", "Name:\tx\n", "SigIgn:\tzz\n", "SigIgn:\t\n"} {
+		if got, err := parseSigIgn([]byte(in)); err == nil {
+			t.Errorf("parseSigIgn(%q) = %v, want an error", in, got)
+		}
+	}
+	if _, err := ignoredSignals(filepath.Join(t.TempDir(), "no-proc")); err == nil {
+		t.Error("ignoredSignals without a proc filesystem succeeded")
+	}
+}
+
+// The limit the package comment states: an ignored signal is inherited by the
+// agent. A program that is not written in Go (grep stands for it; a Go program
+// puts its own handler over most inherited ignores) lists its own mask.
+func TestIgnoredSignalsAreInheritedByTheChild(t *testing.T) {
+	grep, err := exec.LookPath("grep")
+	if err != nil {
+		t.Skip("no grep binary")
+	}
+	signal.Ignore(syscall.SIGUSR2)
+	t.Cleanup(func() {
+		// Reset does not undo Ignore for a signal the runtime handles; handling
+		// it again does.
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGUSR2)
+		signal.Stop(c)
+	})
+	ours, err := IgnoredSignals()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(ours, syscall.SIGUSR2) || slices.Contains(ours, syscall.SIGUSR1) {
+		t.Fatalf("IgnoredSignals = %v, want USR2 and not USR1", ours)
+	}
+	h, tl := start(t, "", opts{mod: func(c *Config) {
+		c.Argv = []string{grep, "SigIgn:", "/proc/self/status"}
+		c.Env = nil
+	}})
+	if e := waitExit(t, h); e.How != "exit" || e.Code != 0 {
+		t.Fatalf("exit %v", e)
+	}
+	tl.waitEOF(t)
+	theirs, err := parseSigIgn(bytes.ReplaceAll(tl.bytes(), []byte("\r"), nil))
+	if err != nil {
+		t.Fatalf("the child's status %q: %v", tl.bytes(), err)
+	}
+	if !slices.Contains(theirs, syscall.SIGUSR2) || slices.Contains(theirs, syscall.SIGUSR1) {
+		t.Errorf("the child ignores %v, want USR2 inherited and not USR1: the package comment is wrong", theirs)
 	}
 }
 
