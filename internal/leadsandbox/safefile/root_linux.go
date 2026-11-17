@@ -30,15 +30,16 @@ type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 // mkdiratFunc is the mkdirat system call; a test replaces it on its own Root.
 type mkdiratFunc func(dirfd int, path string, mode uint32) error
 
-// Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot].
-// All access goes through it, and only a Root from OpenRoot works: the zero
-// value refuses every call (and Close) with [ErrClosed]. A Root is safe for
+// Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot],
+// or beneath another Root by [Root.SubRoot]. All access goes through it, and
+// only a Root from one of the two works: the zero value refuses every call
+// (and Close) with [ErrClosed]. A Root is safe for
 // concurrent use. The caller closes it; Close does not wait for calls in
 // progress (see [Root.Close]).
 type Root struct {
 	mu      sync.Mutex
 	fd      int
-	opened  bool // set by OpenRoot; false for the zero value
+	opened  bool // set by OpenRoot and SubRoot; false for the zero value
 	closed  bool
 	active  int // calls in progress; the descriptor stays open until they end
 	openat2 openat2Func
