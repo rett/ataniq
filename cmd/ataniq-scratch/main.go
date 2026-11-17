@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -87,6 +89,20 @@ type app struct {
 	uid         int
 	launch      launcher
 	lim         limits
+	// signals, when set, replaces the real signal subscription: it returns the
+	// channel of SIGINT, SIGTERM and SIGHUP and a function that stops it.
+	signals func() (<-chan os.Signal, func())
+}
+
+// notifySignals subscribes to the signals that a --direct start forwards to
+// the holder.
+func (a *app) notifySignals() (<-chan os.Signal, func()) {
+	if a.signals != nil {
+		return a.signals()
+	}
+	c := make(chan os.Signal, 4)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	return c, func() { signal.Stop(c) }
 }
 
 func (a *app) usage(w io.Writer) { fmt.Fprint(w, usageText) }

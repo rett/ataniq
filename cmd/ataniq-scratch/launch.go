@@ -129,6 +129,10 @@ func holderArgs(l layout, epoch uint64, intent string, cols, rows int, env, agen
 // value and in the agent's argv. That would hand the caller's real HOME and
 // session variables to the agent and rewrite the user's argv, and --direct
 // does neither. The option needs systemd 254 or newer.
+//
+// --collect is the same property as -p CollectMode=inactive-or-failed (the
+// systemd-run manual calls it a shortcut for it), so the property is not
+// given a second time.
 func systemdRunArgv(name, holder string, hArgs []string) []string {
 	argv := []string{
 		"systemd-run", "--user", "--unit=" + unitName(name), "--collect", "--quiet",
@@ -137,7 +141,6 @@ func systemdRunArgv(name, holder string, hArgs []string) []string {
 		"-p", "Restart=no",
 		"-p", "TimeoutStopSec=2",
 		"-p", "NoNewPrivileges=yes",
-		"-p", "CollectMode=inactive-or-failed",
 		"--", holder,
 	}
 	return append(argv, hArgs...)

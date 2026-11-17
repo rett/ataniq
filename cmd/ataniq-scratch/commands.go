@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"syscall"
@@ -63,6 +62,7 @@ const (
 	readyRefused
 	readyExited
 	readyTimeout
+	readyInterrupted // a signal reached this command while it waited
 )
 
 type readyResult struct {
@@ -73,8 +73,9 @@ type readyResult struct {
 }
 
 // waitReady waits for the holder to answer a status request. exited, when not
-// nil, reports a direct holder that ended.
-func (a *app) waitReady(l layout, epoch uint64, exited <-chan exitResult) readyResult {
+// nil, reports a direct holder that ended. sigs, when not nil, reports a signal
+// that interrupts the wait.
+func (a *app) waitReady(l layout, epoch uint64, exited <-chan exitResult, sigs <-chan os.Signal) readyResult {
 	deadline := time.Now().Add(a.lim.startWait)
 	var last error
 	for {
@@ -93,6 +94,8 @@ func (a *app) waitReady(l layout, epoch uint64, exited <-chan exitResult) readyR
 		select {
 		case r := <-exited:
 			return readyResult{kind: readyExited, exit: r}
+		case <-sigs:
+			return readyResult{kind: readyInterrupted}
 		default:
 		}
 		if !time.Now().Before(deadline) {
@@ -101,25 +104,30 @@ func (a *app) waitReady(l layout, epoch uint64, exited <-chan exitResult) readyR
 		select {
 		case r := <-exited:
 			return readyResult{kind: readyExited, exit: r}
+		case <-sigs:
+			return readyResult{kind: readyInterrupted}
 		case <-time.After(a.lim.startPoll):
 		}
 	}
 }
 
 // terminate ends a direct holder that this command started: SIGTERM, then
-// SIGKILL when it has not ended within lim.termWait.
-func (a *app) terminate(c child, exited <-chan exitResult) {
+// SIGKILL when it has not ended within lim.termWait. It reports whether the
+// holder was seen to end.
+func (a *app) terminate(c child, exited <-chan exitResult) bool {
 	_ = c.Signal(syscall.SIGTERM)
 	select {
 	case <-exited:
-		return
+		return true
 	case <-time.After(a.lim.termWait):
 	}
 	_ = c.Signal(syscall.SIGKILL)
 	select {
 	case <-exited:
+		return true
 	case <-time.After(a.lim.termWait):
 	}
+	return false
 }
 
 func exitText(r exitResult) string {
@@ -162,8 +170,15 @@ func (a *app) cmdStart(cfg startConfig) int {
 	var (
 		proc   child
 		exited chan exitResult
+		sigs   <-chan os.Signal
 	)
 	if cfg.direct {
+		// Taken before the holder starts, so that a signal during the wait is
+		// answered here and not by the default action, which would end this
+		// command and leave the holder running without a word.
+		var stopSigs func()
+		sigs, stopSigs = a.notifySignals()
+		defer stopSigs()
 		holderEnv := []string{agentPath, "LANG=" + lang}
 		proc, err = a.launch.Start(append([]string{holder}, hArgs...), holderEnv, a.errout, a.errout)
 		if err != nil {
@@ -190,11 +205,17 @@ func (a *app) cmdStart(cfg startConfig) int {
 		fmt.Fprintf(a.errout, "warning: cannot remove an old ticket file: %v\n", err)
 	}
 
-	res := a.waitReady(l, hold.N, exited)
+	res := a.waitReady(l, hold.N, exited, sigs)
 	switch res.kind {
 	case readyExited:
 		hold.Undo()
 		return a.fail("the holder ended before it answered (%s)", exitText(res.exit))
+	case readyInterrupted:
+		if a.terminate(proc, exited) {
+			hold.Undo()
+			return a.fail("interrupted before the holder answered; the holder was ended and is not running")
+		}
+		return a.fail("interrupted before the holder answered; the holder was told to end but was not seen to end, so it may still be running (epoch %d is kept)", hold.N)
 	case readyRefused:
 		if cfg.direct {
 			a.terminate(proc, exited)
@@ -223,9 +244,6 @@ func (a *app) cmdStart(cfg startConfig) int {
 	}
 	fmt.Fprintln(a.out, "holder:      direct child of this command, in the foreground until it exits")
 	fmt.Fprintln(a.out, "note:        with --direct no unit cgroup holds the process tree, so the process-tree proof is the weaker one")
-	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(sigs)
 	for {
 		select {
 		case s := <-sigs:
@@ -424,7 +442,7 @@ func (a *app) cmdStop(name string) int {
 			return status
 		}
 		if !active {
-			fmt.Fprintf(a.out, "unit %s is not active (it has ended, or the holder was started with --direct)\n", unit)
+			fmt.Fprintf(a.out, "unit %s is not active (it is inactive, failed or still stopping, or the holder was started with --direct)\n", unit)
 			return status
 		}
 		if !time.Now().Before(deadline) {

@@ -239,6 +239,10 @@ func TestStopAskedAndTheUnitEnded(t *testing.T) {
 			t.Errorf("output lacks %q: %q", s, out.String())
 		}
 	}
+	// A unit that is stopping is not active either, so the text never says it ended.
+	if strings.Contains(out.String(), "has ended") || strings.Contains(out.String(), "it has ended") {
+		t.Errorf("output says the unit ended: %q", out.String())
+	}
 	for _, argv := range fl.runList() {
 		if argv[2] == "stop" {
 			t.Errorf("systemctl stop was run: %q", argv)

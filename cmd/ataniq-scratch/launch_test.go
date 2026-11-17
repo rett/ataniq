@@ -40,7 +40,7 @@ func TestHolderAndSystemdRunArgv(t *testing.T) {
 		"systemd-run", "--user", "--unit=ataniq-scratch-demo", "--collect", "--quiet",
 		"--expand-environment=no",
 		"-p", "KillMode=control-group", "-p", "Restart=no", "-p", "TimeoutStopSec=2",
-		"-p", "NoNewPrivileges=yes", "-p", "CollectMode=inactive-or-failed",
+		"-p", "NoNewPrivileges=yes",
 		"--", "/bin/ataniq-holder",
 	}, wantH...)
 	if !reflect.DeepEqual(got, want) {

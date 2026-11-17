@@ -275,6 +275,9 @@ func TestEpochHeldLockBlocksAReaderAndAStarter(t *testing.T) {
 	if _, err := readEpoch(path, 50*time.Millisecond); err != errLockTimeout {
 		t.Errorf("reader: %v", err)
 	}
+	if msg := errLockTimeout.Error(); !strings.Contains(msg, "another ataniq-scratch command") || !strings.Contains(msg, "start") || !strings.Contains(msg, "in progress") {
+		t.Errorf("lock timeout text %q", msg)
+	}
 	h.Release()
 	if got, err := readEpoch(path, time.Second); err != nil || got != 1 {
 		t.Errorf("after release: %d %v", got, err)

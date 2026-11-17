@@ -146,7 +146,7 @@ func TestStartUnitMode(t *testing.T) {
 		"systemd-run", "--user", "--unit=ataniq-scratch-demo", "--collect", "--quiet",
 		"--expand-environment=no",
 		"-p", "KillMode=control-group", "-p", "Restart=no", "-p", "TimeoutStopSec=2",
-		"-p", "NoNewPrivileges=yes", "-p", "CollectMode=inactive-or-failed",
+		"-p", "NoNewPrivileges=yes",
 		"--", holder,
 		"--scratch", "--role", "scratch/demo", "--epoch", "1", "--launch-intent", argAfter(runs[0], "--launch-intent"),
 		"--runtime", "scratch", "--runtime-version", "0", "--profile-digest", "none",
@@ -676,5 +676,74 @@ func TestDirectWithASilentHolderIsEnded(t *testing.T) {
 	}
 	if !strings.Contains(errout.String(), "did not answer") {
 		t.Errorf("stderr %q", errout.String())
+	}
+}
+
+// stubbornChild is a direct holder that ignores every signal.
+type stubbornChild struct {
+	mu       sync.Mutex
+	signaled []os.Signal
+}
+
+func (c *stubbornChild) Wait() (int, error) { select {} }
+func (c *stubbornChild) Signal(s os.Signal) error {
+	c.mu.Lock()
+	c.signaled = append(c.signaled, s)
+	c.mu.Unlock()
+	return nil
+}
+
+// interruptedStart runs a --direct start whose holder never answers and whose
+// signal channel already holds a SIGINT, so that the interrupt arrives while
+// start waits for the holder.
+func interruptedStart(t *testing.T, r *rig, ch child) (code int, errout string) {
+	t.Helper()
+	r.fl.startFn = func(argv, env []string) (child, error) { return ch, nil }
+	a, _, eb := r.e.newApp(r.fl)
+	a.lim.termWait = 50 * time.Millisecond
+	sigs := make(chan os.Signal, 4)
+	sigs <- syscall.SIGINT
+	stopped := false
+	a.signals = func() (<-chan os.Signal, func()) { return sigs, func() { stopped = true } }
+	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"})
+	if !stopped {
+		t.Error("the signal subscription was not stopped")
+	}
+	return code, eb.String()
+}
+
+func TestStartDirectInterruptedSaysTheHolderWasEnded(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := newFakeChild(-1)
+	code, errout := interruptedStart(t, r, ch)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "the holder was ended and is not running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if len(ch.signaled) == 0 || ch.signaled[0] != syscall.SIGTERM {
+		t.Errorf("signals %v, want SIGTERM first", ch.signaled)
+	}
+	if r.epochFile() != "" {
+		t.Errorf("epoch kept after the holder ended: %q", r.epochFile())
+	}
+}
+
+func TestStartDirectInterruptedSaysTheHolderMayStillRun(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := &stubbornChild{}
+	code, errout := interruptedStart(t, r, ch)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "may still be running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[0] != syscall.SIGTERM || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "1\n" {
+		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
 	}
 }
