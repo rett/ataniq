@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -235,5 +236,132 @@ func TestAliasTreeOverTheLimit(t *testing.T) {
 	_, err := Inspect(context.Background(), s.source(), req)
 	if !errors.Is(err, ErrLimit) {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// chainScene has cfg/settings.json and b/cfg/settings.json in its base, and
+// the links the test gives, which are in the upstream branch too.
+func chainScene(t *testing.T, links ...string) *scene {
+	t.Helper()
+	s := newScene(t, "cfg/settings.json", "{}\n", "b/cfg/settings.json", "{}\n")
+	for i := 0; i+1 < len(links); i += 2 {
+		s.symlink(links[i], links[i+1])
+	}
+	s.commit("links in upstream\n")
+	s.publish(upstreamRef, s.cur)
+	return s
+}
+
+func TestAliasChainOfSymlinks(t *testing.T) {
+	for name, links := range map[string][]string{
+		// The target passes through a link in the middle.
+		"middle": {".claude", "a/cfg", "a", "b"},
+		// The last element of the target is a link.
+		"last": {".claude", "a", "a", "b/cfg"},
+		// A link whose own folder is reached by a relative target.
+		"nested": {"x/.claude", "../a", "a", "b/cfg"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := chainScene(t, links...)
+			s.put("b/cfg/settings.json", `{"hooks":1}`+"\n")
+			s.put("cfg/settings.json", `{"hooks":1}`+"\n")
+			s.commit("change\n")
+			s.finish()
+			r := s.inspect()
+			f := flagFor(t, byPath(t, r, "b/cfg/settings.json").Flags, FlagAliased, "b/cfg/settings.json")
+			if !strings.Contains(f.Reason, ".claude") || !strings.Contains(f.Reason, "b/cfg") {
+				t.Errorf("reason: %q", f.Reason)
+			}
+			if hasFlag(byPath(t, r, "cfg/settings.json").Flags, FlagAliased) {
+				t.Error("a path outside the chain's target is flagged")
+			}
+		})
+	}
+}
+
+func TestAliasChainLength(t *testing.T) {
+	// .claude -> l1 -> l2 -> ... -> cfg. The link being resolved is the first
+	// step, so seven links after it are eight steps and the ninth is too many.
+	chain := func(n int) []string {
+		links := []string{".claude", "l1"}
+		for i := 1; i < n; i++ {
+			links = append(links, fmt.Sprintf("l%d", i), fmt.Sprintf("l%d", i+1))
+		}
+		return append(links, fmt.Sprintf("l%d", n), "cfg")
+	}
+	for n, follows := range map[int]bool{6: true, 7: true, 8: false, 12: false} {
+		s := chainScene(t)
+		links := chain(n)
+		for i := 0; i+1 < len(links); i += 2 {
+			s.symlink(links[i], links[i+1])
+		}
+		s.put("cfg/settings.json", `{"hooks":1}`+"\n")
+		s.commit("the chain and a change\n")
+		s.finish()
+		r := s.inspect()
+		viaChain := hasFlag(byPath(t, r, "cfg/settings.json").Flags, FlagAliased)
+		onLink := hasFlag(byPath(t, r, ".claude").Flags, FlagAliased)
+		if viaChain != follows || onLink == follows {
+			t.Errorf("chain of %d links after the first: path flagged %v, link flagged %v", n, viaChain, onLink)
+		}
+		if !follows {
+			f := flagFor(t, byPath(t, r, ".claude").Flags, FlagAliased, ".claude")
+			if !strings.Contains(f.Reason, "more than 8 symlinks") {
+				t.Errorf("reason: %q", f.Reason)
+			}
+		}
+	}
+}
+
+func TestAliasLoop(t *testing.T) {
+	for name, links := range map[string][]string{
+		"itself": {".claude", ".claude"},
+		"pair":   {".claude", "a", "a", ".claude"},
+		"deep":   {".claude", "a/x", "a", "a"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := chainScene(t)
+			for i := 0; i+1 < len(links); i += 2 {
+				s.symlink(links[i], links[i+1])
+			}
+			s.put("cfg/settings.json", `{"hooks":1}`+"\n")
+			s.commit("a loop\n")
+			s.finish()
+			r := s.inspect()
+			f := flagFor(t, byPath(t, r, ".claude").Flags, FlagAliased, ".claude")
+			if !strings.Contains(f.Reason, "or loops") {
+				t.Errorf("reason: %q", f.Reason)
+			}
+			if hasFlag(byPath(t, r, "cfg/settings.json").Flags, FlagAliased) {
+				t.Error("a loop stands for a path")
+			}
+		})
+	}
+}
+
+func TestAliasChainLinkThatCannotBeFollowed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		links []string
+		want  string
+	}{
+		"absolute":    {[]string{".claude", "a/cfg", "a", "/opt/elsewhere"}, "the symlink a on its way: its target is an absolute path"},
+		"outside":     {[]string{".claude", "a/cfg", "a", ".."}, "its target leaves the repository"},
+		"empty":       {[]string{".claude", "a", "a", ""}, "the symlink a on its way: its target is empty"},
+		"too long":    {[]string{".claude", "a", "a", strings.Repeat("b/", 3000)}, "the symlink a on its way: its target cannot be read"},
+		"first empty": {[]string{".claude", ""}, "its target is empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := chainScene(t)
+			for i := 0; i+1 < len(tc.links); i += 2 {
+				s.symlink(tc.links[i], tc.links[i+1])
+			}
+			s.commit("links\n")
+			s.finish()
+			r := s.inspect()
+			f := flagFor(t, byPath(t, r, ".claude").Flags, FlagAliased, ".claude")
+			if !strings.Contains(f.Reason, tc.want) {
+				t.Errorf("reason %q lacks %q", f.Reason, tc.want)
+			}
+		})
 	}
 }

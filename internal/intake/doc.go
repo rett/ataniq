@@ -24,7 +24,8 @@
 //   - submodule: the entry is, or was, a submodule (a gitlink).
 //   - aliased: a symlink whose own path is execution config stands for a
 //     folder, and this path lies in that folder. A symlink that points out of
-//     the repository, or at an absolute path, is flagged on its own path.
+//     the repository, at an absolute path, or through too long a chain of
+//     symlinks, is flagged on its own path.
 //   - history-only: a path that is execution config, a symlink or a
 //     submodule in the change of some commit of the branch, but that is not
 //     in the net change. It was added and removed again inside the branch. It
@@ -70,9 +71,12 @@
 //
 // # What it does not do
 //
-// It does not sign anything off, keep records, write refs or merge. It does
-// not follow a symlink through another symlink: the alias check resolves one
-// link at a time, by its text. It does not check the content of a file, only
-// the path and the kind of each entry. Matching of paths is the job of the
+// It does not sign anything off, keep records, write refs or merge. The alias
+// check resolves a symlink's target by its text, against the symlinks of the
+// tip's own tree: it follows a symlink that the target passes through, and one
+// that is its last element, but at most 8 symlinks in all. A longer chain or
+// a loop is not followed; it is flagged on the symlink itself, when that
+// symlink is changed. It does not check the content of a file, only the path
+// and the kind of each entry. Matching of paths is the job of the
 // execconfig package, with the limits its comment lists.
 package intake
