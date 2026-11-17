@@ -870,13 +870,16 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 		if bottom < 1 {
 			bottom = height
 		}
-		// A region ends at the screen's last line at most: a margin beyond
-		// it made the scrolling operations index past the buffer.
-		bottom = min(bottom, height)
-
 		if top >= bottom {
 			return false
 		}
+		// A region lies on the screen: a margin beyond its last line made
+		// the scrolling operations index past the buffer. The region ends at
+		// the last line at most, and one that starts below it is ignored.
+		if top > height {
+			return false
+		}
+		bottom = min(bottom, height)
 
 		// Rect is [x, y) which means y is exclusive. So the top margin
 		// is the top of the screen minus one.
@@ -906,13 +909,15 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 			if right < 1 {
 				right = width
 			}
-			// As for the bottom margin, the right margin is the last column
-			// at most.
-			right = min(right, width)
-
 			if left >= right {
 				return false
 			}
+			// As for the vertical margins, the region ends at the last
+			// column at most, and one that starts beyond it is ignored.
+			if left > width {
+				return false
+			}
+			right = min(right, width)
 
 			e.scr.setHorizontalMargins(left-1, right)
 

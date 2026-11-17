@@ -20,10 +20,11 @@ func TestScrollMarginsStayInsideTheScreen(t *testing.T) {
 		{"bottom margin at the screen", "\x1b[3;5r", uv.Rect(0, 2, 10, 3)},
 		{"default bottom margin", "\x1b[2r", uv.Rect(0, 1, 10, 4)},
 		{"top margin below the screen is ignored", "\x1b[40;90r", uv.Rect(0, 0, 10, 5)},
-		{"top margin on the last line is ignored", "\x1b[5;99r", uv.Rect(0, 0, 10, 5)},
+		{"top margin on the last line", "\x1b[5;99r", uv.Rect(0, 4, 10, 1)},
 		{"empty region is ignored", "\x1b[4;4r", uv.Rect(0, 0, 10, 5)},
 		{"right margin past the screen", "\x1b[?69h\x1b[2;99s", uv.Rect(1, 0, 9, 5)},
 		{"left margin past the screen is ignored", "\x1b[?69h\x1b[40;99s", uv.Rect(0, 0, 10, 5)},
+		{"left margin on the last column", "\x1b[?69h\x1b[10;99s", uv.Rect(9, 0, 1, 5)},
 		{"right margin at the screen", "\x1b[?69h\x1b[3;10s", uv.Rect(2, 0, 8, 5)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

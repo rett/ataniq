@@ -129,9 +129,10 @@ Patches, applied in this order to the files of the module as released:
    resize left the cursor of the screen that is not active, and the saved
    cursors of both, where they were, so a later restore followed by a tab
    stop or a character indexed past a smaller screen. The bottom and right
-   margins are now cut to the screen's last line and column, as in xterm, and
-   a region that is empty after the cut (the top margin on or below the last
-   line) is ignored, as an empty one was. A resize moves the cursor of both
+   margins are now cut to the screen's last line and column, and a region
+   that starts below the last line (or beyond the last column) is ignored, as
+   an empty one was. A region of one line on the last line, which the tests of
+   the released module use, still works. A resize moves the cursor of both
    screens and both saved cursors into the new size. Nothing changes for a
    sequence that did not index past the buffer, except that the cursor and
    the region it leaves are inside the screen.
