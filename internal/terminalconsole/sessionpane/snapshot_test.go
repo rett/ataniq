@@ -768,6 +768,51 @@ func TestDigestSeesEveryPartOfTheState(t *testing.T) {
 	}
 }
 
+// The links are hashed as a list after the cells, and each cell holds the
+// number of its link in the order of first use: panes that differ only in
+// which link a cell is under, in the order of the links, in the parameters of
+// a link or in how often a link is shared have different digests, and panes
+// that have the same cells and links have the same.
+func TestDigestSeesWhichLinkEveryCellIsUnder(t *testing.T) {
+	const a, b, c = "\x1b]8;;http://a.example\x1b\\", "\x1b]8;;http://b.example\x1b\\", "\x1b]8;id=1;http://a.example\x1b\\"
+	const off = "\x1b]8;;\x1b\\"
+	digest := func(stream string) [32]byte {
+		p := newPane(t, 8, 2, sessionpane.Options{})
+		p.Write([]byte(stream))
+		return p.Digest()
+	}
+	streams := []string{
+		"xyz",
+		a + "x" + a + "y" + a + "z",
+		a + "x" + b + "y" + a + "z",
+		b + "x" + a + "y" + a + "z", // the same numbers as the one before, other links
+		a + "x" + a + "y" + b + "z",
+		a + "x" + b + "y" + b + "z",
+		a + "x" + b + "y" + c + "z", // parameters are part of the link
+		b + "x" + a + "y" + b + "z",
+		a + "x" + off + "y" + a + "z", // a link, none, the same link again
+		a + "x" + b + "y" + off + "z",
+		off + "x" + a + "y" + b + "z",
+		b + "x" + b + "y" + a + "z",
+	}
+	seen := map[[32]byte]string{}
+	for _, s := range streams {
+		d := digest(s)
+		if other, ok := seen[d]; ok {
+			t.Errorf("%q and %q have the same digest", s, other)
+		}
+		seen[d] = s
+		if digest(s) != d {
+			t.Errorf("%q: the digest is not stable", s)
+		}
+	}
+	// A link used by no cell is not in the digest: a screen the link was
+	// scrolled off or erased from is the screen without it.
+	if digest(a+"x"+off+"\x1b[2J\x1b[H") != digest("\x1b[2J") {
+		t.Error("an erased link is in the digest")
+	}
+}
+
 // Every cell counts: a change anywhere on the screen changes the digest.
 func TestDigestSeesEveryCell(t *testing.T) {
 	p := newPane(t, 9, 4, sessionpane.Options{})

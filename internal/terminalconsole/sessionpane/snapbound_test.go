@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
@@ -277,5 +278,54 @@ func TestSnapshotOverTheLimitFails(t *testing.T) {
 	got, err := sessionpane.AppendSnapshotLimit(p, prefix, len(full))
 	if err != nil || !bytes.Equal(got, append(append([]byte(nil), prefix...), full...)) {
 		t.Fatalf("a limit of exactly the size: %v", err)
+	}
+}
+
+// Case H15 at the digest: the worst-case screen (500 by 200 cells of 64 bytes,
+// each under its own style and under one of 256 links of the longest size) is
+// hashed in a time that does not stall the pane's read loop. The digest used
+// to hash the whole link of every cell, 230 MB of links, and took 0.7 to 0.9
+// s; it now hashes each link once. The screen is tried with the links in runs
+// (what a screen of a program has) and with a different link in every cell
+// (the worst a session can make, and a lookup of a link of 2 KiB for every
+// cell). The ceilings are generous, a few times what the digest takes on an
+// idle machine, and the race detector makes the test meaningless.
+func TestDigestOfTheWorstCaseScreenIsFast(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector makes the timing meaningless")
+	}
+	cols, rows := sessionpane.MaxCols, sessionpane.MaxRows
+	for _, tc := range []struct {
+		name    string
+		link    func(links []uv.Link, i, cells int) uv.Link
+		ceiling time.Duration
+	}{
+		{"links in runs", func(links []uv.Link, i, cells int) uv.Link { return links[i*len(links)/cells] }, 100 * time.Millisecond},
+		{"a link per cell", func(links []uv.Link, i, cells int) uv.Link { return links[i%len(links)] }, 200 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPane(t, cols, rows, sessionpane.Options{})
+			st := worstCaseState(cols, rows)
+			st.Alt = false
+			sc := &st.Screens[0]
+			for i := range sc.Cells {
+				sc.Cells[i].Link = tc.link(sc.Links, i, len(sc.Cells))
+			}
+			must(t, sessionpane.SetEmulatorState(p, st))
+			best := time.Hour
+			var d [32]byte
+			for i := 0; i < 5; i++ {
+				start := time.Now()
+				d = p.Digest()
+				best = min(best, time.Since(start))
+			}
+			t.Logf("the digest of %dx%d cells of 64 bytes under 256 links of 2 KiB, %s: %v", cols, rows, tc.name, best)
+			if best > tc.ceiling {
+				t.Errorf("the digest took %v, ceiling %v", best, tc.ceiling)
+			}
+			if p.Digest() != d {
+				t.Error("the digest is not stable")
+			}
+		})
 	}
 }
