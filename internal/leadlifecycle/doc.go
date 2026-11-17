@@ -70,9 +70,16 @@
 // the coordinator is stopped with proof or the owner decides. The coordinators
 // are listed once more after the lead's own stop, because one may have been
 // started in between (the lock of the lead does not serialise a Start of its
-// coordinator, which takes only its own); by then the registry admits no new
-// one, so the second listing is complete, and a coordinator found in it is
-// stopped, or named, like the others. Stop of a
+// coordinator, which takes only its own); once the lead has left its live
+// states the registry admits no new one, so the second listing is complete,
+// and a coordinator found in it is stopped, or named, like the others. Stop of
+// a lead returns nil only when it did the second listing: after the lead's
+// proven stop the listing runs on a context of its own, which the caller's
+// cannot end, so a caller that gave up in the meantime still has a coordinator
+// of that gap named. When the lead's own stop failed (so that it may still be
+// live and a coordinator may still be admitted under it) the result is an
+// error in any case, and the listing is done on the caller's context if that
+// still runs. Stop of a
 // coordinator stops only that coordinator. Because the units are bound, a
 // coordinator may be stopping already when it is signalled; the manager's
 // not-loaded and invocation-changed answers lead to the proof as for a lead.

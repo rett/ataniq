@@ -55,14 +55,26 @@ import (
 // The lead's coordinators are listed again after the lead's own stop, and each
 // one found that is not proven stopped is stopped by the same sequence: a
 // coordinator started between the first listing and the lead's stop is thereby
-// stopped, or named in the result, and is never left running unnamed. This
-// holds because once the lead is stopping (or unknown, or stopped) the registry
-// admits no new coordinator launch, and a Start of a coordinator that began
-// earlier holds the coordinator's lock until it returns, so that the second
-// listing either sees its intent or waits for it. A coordinator named by the
-// first pass is not stopped a second time. The unit is bound to the lead's, so
-// it is also stopped by the lead's stop, but only the proof that Stop collects
-// says that it is gone.
+// stopped, or named in the result. This holds because once the lead has left
+// its live states (it is stopping, unknown or stopped) the registry admits no
+// new coordinator launch, and a Start of a coordinator that began earlier holds the
+// coordinator's lock until it returns, so that the second listing either sees
+// its intent or waits for it. A coordinator named by the first pass is not
+// stopped a second time. The unit is bound to the lead's, so it is also stopped by the lead's stop,
+// but only the proof that Stop collects says that it is gone.
+//
+// Stop of a lead never returns nil while the second listing was not done. When
+// the lead is proven stopped the second listing runs on a context of its own
+// that the caller's cannot end (it is bounded by the stop sequences, which are
+// bounded by TermWait and the proof bound), so a caller whose context ended
+// after the proof still gets the coordinator named, shown unknown, in the
+// result. When the stop of the lead returned an error, the second listing runs
+// on the caller's context, and a coordinator it could not stop for that
+// context makes the result an error that says the coordinators were not all
+// listed and stopped; the error of the lead's stop is part of the result
+// anyway, and a lead whose own stop failed before it left its live states may
+// still admit a coordinator, which the next Stop finds. A context that has ended on entry returns its error before anything
+// is read or changed.
 //
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.
@@ -94,12 +106,21 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 	if first != nil {
 		cerr = first
 	}
-	if role.Kind() == leadrole.KindLead && ctx.Err() == nil {
+	if role.Kind() == leadrole.KindLead {
 		// The lead is no longer live (or no coordinator is admitted under it
-		// any more): list the coordinators again, see Stop.
-		all, lerr := c.stopCoordinators(ctx, role, first)
+		// any more): list the coordinators again, see Stop. Once the lead
+		// is proven stopped this is owed whatever became of the caller's
+		// context, so it runs on a context of its own, which only the
+		// bounds of the stop sequences end; after a failed stop of the lead
+		// it runs on the caller's context.
+		lctx := ctx
+		if err == nil {
+			lctx = settleCtx(ctx)
+		}
+		all, lerr := c.stopCoordinators(lctx, role, first)
 		switch {
 		case lerr != nil:
+			lerr = fmt.Errorf("leadlifecycle: stop %s: the coordinators were not all listed and stopped after the lead's stop: %w", role, lerr)
 			return e, errors.Join(err, cerr, lerr)
 		case all != nil:
 			cerr = all

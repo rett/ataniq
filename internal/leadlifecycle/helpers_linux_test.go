@@ -83,6 +83,8 @@ type audit struct {
 	beforeStart  func(spec leadunit.Spec)
 	afterStart   func(spec leadunit.Spec)
 	afterInspect func(unit string)
+	// afterEmpty runs after every Empty call with its answer.
+	afterEmpty func(st leadunit.State, empty bool)
 }
 
 func newAudit(inner leadunit.Manager, plan *crashPlan) *audit {
@@ -163,6 +165,9 @@ func (a *audit) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 		a.mu.Lock()
 		a.proven[st.Unit] = true
 		a.mu.Unlock()
+	}
+	if a.afterEmpty != nil {
+		a.afterEmpty(st, empty && err == nil)
 	}
 	return empty, err
 }

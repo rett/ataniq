@@ -3,6 +3,7 @@ package leadlifecycle
 import (
 	"context"
 	"errors"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -367,4 +368,126 @@ func TestStopLeadDoesNotStopANamedCoordinatorTwice(t *testing.T) {
 		t.Fatalf("%s was sent TERM %d times", cc, count[unitOf(cc)])
 	}
 	r.auditClean()
+}
+
+// cancelAfterTheLeadsProof cancels the context the moment the lead's stop has
+// its proof: the second Empty that answers true for the lead's unit (the first
+// is the wait for SIGTERM, the second is the proof of the stopped invocation).
+func cancelAfterTheLeadsProof(r *rig, lead leadrole.Role, cancel context.CancelFunc) {
+	var mu sync.Mutex
+	empties := 0
+	r.aud.afterEmpty = func(st leadunit.State, empty bool) {
+		if st.Unit != unitOf(lead) || !empty {
+			return
+		}
+		mu.Lock()
+		empties++
+		n := empties
+		mu.Unlock()
+		if n == 2 {
+			cancel()
+		}
+	}
+}
+
+// TestStopLeadWhoseContextEndsRightAfterItsProofStillListsTheGap: a coordinator
+// is started in the gap (it survives SIGKILL), and the caller's context ends
+// right after the proof of the lead's stop. The second listing must still run
+// and name the coordinator, shown unknown; Stop must not return nil.
+func TestStopLeadWhoseContextEndsRightAfterItsProofStillListsTheGap(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	r.fake.SetProcs(unitOf(coord), leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	startInTheGap(t, r, lead, coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelAfterTheLeadsProof(r, lead, cancel)
+	var e leadregistry.Entry
+	var err error
+	r.drive(func() { e, err = r.ctl.Stop(ctx, lead) })
+	if ctx.Err() == nil {
+		t.Fatal("the context was not cancelled: the test did not reach the lead's proof")
+	}
+	if err == nil {
+		t.Fatalf("Stop(lead) returned nil; coordinator shown %+v, loaded %v", r.get(coord).Shown, r.fake.Loaded(unitOf(coord)))
+	}
+	isErr(t, err, ErrCoordinatorNotStopped)
+	var ce *CoordinatorsError
+	if !errors.As(err, &ce) || len(ce.Roles) != 1 || ce.Roles[0] != coord {
+		t.Fatalf("error %v", err)
+	}
+	if e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	r.expectState(coord, leadregistry.StateUnknown, "stop-unproven")
+	if !r.fake.Loaded(unitOf(coord)) {
+		t.Fatal("the unkillable unit is gone")
+	}
+	r.auditClean()
+}
+
+// The same sequence with a coordinator that exits when told to: the second
+// listing stops it with proof and Stop(lead) returns nil, with the caller's
+// context over.
+func TestStopLeadWhoseContextEndsRightAfterItsProofStopsTheGapCoordinator(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	startInTheGap(t, r, lead, coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelAfterTheLeadsProof(r, lead, cancel)
+	var e leadregistry.Entry
+	var err error
+	r.drive(func() { e, err = r.ctl.Stop(ctx, lead) })
+	if ctx.Err() == nil {
+		t.Fatal("the context was not cancelled: the test did not reach the lead's proof")
+	}
+	noErr(t, err)
+	if e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	ce := r.expectState(coord, leadregistry.StateStopped, "")
+	if ok, err := r.reg.CoordinatorStopped(coord, ce.Epoch); err != nil || !ok {
+		t.Fatalf("CoordinatorStopped %v %v", ok, err)
+	}
+	r.auditClean()
+}
+
+// A context that has ended on entry returns its error before anything is read
+// or changed: no listing, no signal, no registry write.
+func TestStopLeadWithAnEndedContextOnEntryChangesNothing(t *testing.T) {
+	r, lead, _ := coordRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rev := r.revision()
+	_, err := r.ctl.Stop(ctx, lead)
+	isErr(t, err, context.Canceled)
+	if r.revision() != rev || len(r.signalCalls()) != 0 {
+		t.Fatal("Stop with an ended context changed something")
+	}
+}
+
+// When the stop of the lead itself fails and the caller's context is over, the
+// result is an error, and a coordinator it could not list is not reported as
+// stopped.
+func TestStopLeadFailingWithTheContextEndedIsNeverNil(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	r.mustStart(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The context ends when the lead is first signalled, so the lead's stop
+	// does not finish.
+	r.aud.afterSignal = func(st leadunit.State, sig syscall.Signal) {
+		if st.Unit == unitOf(lead) {
+			cancel()
+		}
+	}
+	var e leadregistry.Entry
+	var err error
+	r.drive(func() { e, err = r.ctl.Stop(ctx, lead) })
+	if err == nil {
+		t.Fatalf("Stop(lead) returned nil with the lead %+v", e)
+	}
+	isErr(t, err, context.Canceled)
+	if e.Shown.State == leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
 }
