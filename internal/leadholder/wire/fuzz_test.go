@@ -15,7 +15,7 @@ import (
 func FuzzReader(f *testing.F) {
 	for _, ft := range frameTypes {
 		var buf bytes.Buffer
-		_ = wire.Write(&buf, ft.typ, bytes.Repeat([]byte{'{', '}'}, 5))
+		_ = wire.Write(&buf, dirOf(ft.typ), ft.typ, bytes.Repeat([]byte{'{', '}'}, 5))
 		f.Add(buf.Bytes())
 		f.Add(hdr(ft.typ, uint32(ft.max)+1))
 		f.Add(hdr(ft.typ, 0xffffffff))
@@ -27,8 +27,8 @@ func FuzzReader(f *testing.F) {
 	for _, c := range codecs {
 		p, _ := c.encode(c.sample)
 		var buf bytes.Buffer
-		_ = wire.Write(&buf, c.typ, p)
-		_ = wire.Write(&buf, wire.TypeDetach, nil)
+		_ = wire.Write(&buf, dirOf(c.typ), c.typ, p)
+		_ = wire.Write(&buf, wire.ToHolder, wire.TypeDetach, nil)
 		f.Add(buf.Bytes())
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {

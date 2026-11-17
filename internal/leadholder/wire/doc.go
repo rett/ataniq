@@ -18,8 +18,11 @@
 // before it reads or allocates any payload: an unknown type for that
 // direction, or a length over the cap of the type, is an error and the reader
 // reads nothing more. A payload that is declared large but never arrives is
-// not allocated up front: the reader doubles its buffer as bytes come in, up to the declared length.
-// [Write] and [Writer] write one frame.
+// not allocated up front: the reader doubles its buffer as bytes come in, up
+// to the declared length.
+// [Write] and [Writer] write one frame, for one direction as well: they refuse
+// a type that the direction does not have, exactly as the reader on the other
+// end would, so a holder cannot send a client a Hello.
 //
 // # Payloads
 //

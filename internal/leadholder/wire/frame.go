@@ -211,14 +211,23 @@ type Reader struct {
 	err error
 }
 
+// valid reports whether d is one of the four directions.
+func (d Direction) valid() bool {
+	switch d {
+	case ToHolder, ToClient, ControlRequests, ControlResponses:
+		return true
+	}
+	return false
+}
+
+func errDirection(d Direction) error { return fmt.Errorf("%w: %d", ErrDirection, int(d)) }
+
 // NewReader returns a Reader of frames that travel in direction dir. An
 // unknown direction makes every Next return [ErrDirection].
 func NewReader(r io.Reader, dir Direction) *Reader {
 	rd := &Reader{r: r, dir: dir}
-	switch dir {
-	case ToHolder, ToClient, ControlRequests, ControlResponses:
-	default:
-		rd.err = fmt.Errorf("%w: %d", ErrDirection, int(dir))
+	if !dir.valid() {
+		rd.err = errDirection(dir)
 	}
 	return rd
 }
@@ -291,18 +300,26 @@ func readPayload(r io.Reader, n int) ([]byte, error) {
 // send both in one call to the underlying writer.
 const smallFrame = 64 << 10
 
-// Write writes one frame to w. It refuses an unknown type and a payload over
-// the cap of its type before it writes anything.
+// Write writes one frame that travels in direction dir to w: the direction of
+// the [Reader] on the other end. It refuses an unknown direction
+// ([ErrDirection]), a type that the direction does not have
+// ([ErrUnknownType], as the Reader would refuse it), a payload over the cap of
+// its type and one too short for it, before it writes anything. A holder that
+// writes a Hello to a client, or a client that writes a Welcome, gets an error
+// here and not a connection that the peer's Reader has to close.
 //
 // A frame with a payload of up to 64 KiB is written with one call to w.Write,
 // so a writer that makes each call atomic (a datagram or a locked stream)
 // never interleaves two frames. A larger payload is written in two calls;
 // callers that share one connection between goroutines must use a [Writer],
 // which serialises whole frames.
-func Write(w io.Writer, typ byte, payload []byte) error {
+func Write(w io.Writer, dir Direction, typ byte, payload []byte) error {
+	if !dir.valid() {
+		return errDirection(dir)
+	}
 	ti, ok := types[typ]
-	if !ok {
-		return fmt.Errorf("%w: 0x%02x", ErrUnknownType, typ)
+	if !ok || ti.dir != dir {
+		return fmt.Errorf("%w: 0x%02x on %s", ErrUnknownType, typ, dir)
 	}
 	if len(payload) > ti.max {
 		return fmt.Errorf("%w: %s payload is %d bytes, cap %d", ErrTooLarge, TypeName(typ), len(payload), ti.max)
@@ -331,17 +348,27 @@ func writeAll(w io.Writer, b []byte) error {
 	return err
 }
 
-// Writer writes frames to one connection from any number of goroutines. A
-// frame is written whole before the next one starts. After a write error the
-// connection is out of step, so every later call returns that error.
+// Writer writes the frames of one direction to one connection from any number
+// of goroutines. A frame is written whole before the next one starts. After a
+// write error the connection is out of step, so every later call returns that
+// error.
 type Writer struct {
 	mu  sync.Mutex
 	w   io.Writer
+	dir Direction
 	err error
 }
 
-// NewWriter returns a Writer on w.
-func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
+// NewWriter returns a Writer on w of frames that travel in direction dir, the
+// direction of the [Reader] on the other end. An unknown direction makes
+// every WriteFrame return [ErrDirection].
+func NewWriter(w io.Writer, dir Direction) *Writer {
+	wr := &Writer{w: w, dir: dir}
+	if !dir.valid() {
+		wr.err = errDirection(dir)
+	}
+	return wr
+}
 
 // WriteFrame writes one frame; see [Write] for what it refuses. A frame
 // refused before any byte is written does not break the Writer.
@@ -351,7 +378,7 @@ func (w *Writer) WriteFrame(typ byte, payload []byte) error {
 	if w.err != nil {
 		return w.err
 	}
-	if err := Write(w.w, typ, payload); err != nil {
+	if err := Write(w.w, w.dir, typ, payload); err != nil {
 		if !errors.Is(err, ErrUnknownType) && !errors.Is(err, ErrTooLarge) && !errors.Is(err, ErrTooSmall) {
 			w.err = err
 		}

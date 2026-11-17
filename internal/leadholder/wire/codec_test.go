@@ -99,7 +99,7 @@ func TestRoundTripEveryPayload(t *testing.T) {
 			}
 			// It also goes through a frame of its own type.
 			var buf bytes.Buffer
-			if err := wire.Write(&buf, c.typ, p); err != nil {
+			if err := wire.Write(&buf, dirOf(c.typ), c.typ, p); err != nil {
 				t.Fatal(err)
 			}
 		})
