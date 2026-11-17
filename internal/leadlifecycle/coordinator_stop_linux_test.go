@@ -491,3 +491,87 @@ func TestStopLeadFailingWithTheContextEndedIsNeverNil(t *testing.T) {
 		t.Fatalf("lead %+v", e)
 	}
 }
+
+// TestStopLeadSecondListingReplacesAStaleNamedInstance: the first pass names
+// instance 1 of a coordinator (it survives SIGKILL). In the gap instance 1
+// dies, the owner's Stop proves it stopped and a Start launches instance 2
+// under the lead, which is still live. The second listing must stop, or
+// name, instance 2, and the result must carry its error and not instance 1's.
+func TestStopLeadSecondListingReplacesAStaleNamedInstance(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	cunit := unitOf(coord)
+	r.fake.SetProcs(cunit, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	e1 := r.mustStart(coord)
+	r.quiet.hook = func(role leadrole.Role, _ uint64) error {
+		if role != lead {
+			return nil
+		}
+		if !r.fake.Crash(cunit) {
+			t.Error("instance 1 was not loaded in the gap")
+		}
+		if _, err := r.ctl.Stop(context.Background(), coord); err != nil {
+			t.Errorf("Stop of instance 1 in the gap: %v", err)
+		}
+		r.fake.SetProcs(cunit, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+		e, err := r.ctl.Start(context.Background(), coord)
+		if err != nil || e.Epoch != e1.Epoch+1 {
+			t.Errorf("Start of instance 2 in the gap: %+v %v", e, err)
+		}
+		return nil
+	}
+	e, err := r.stop(lead)
+	isErr(t, err, ErrCoordinatorNotStopped)
+	var ce *CoordinatorsError
+	if !errors.As(err, &ce) || len(ce.Roles) != 1 || ce.Roles[0] != coord || len(ce.Errs) != 1 {
+		t.Fatalf("error %v", err)
+	}
+	if e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	ce2 := r.expectState(coord, leadregistry.StateUnknown, "stop-unproven")
+	if ce2.Epoch != e1.Epoch+1 {
+		t.Fatalf("coordinator epoch %d, want %d", ce2.Epoch, e1.Epoch+1)
+	}
+	if ce.epochs[0] != ce2.Epoch {
+		t.Fatalf("the result is about epoch %d, want %d", ce.epochs[0], ce2.Epoch)
+	}
+	// Instance 2 was signalled by this Stop: TERM and then KILL, after the
+	// two signals instance 1 got from the first pass.
+	n := 0
+	for _, c := range r.ownSignals() {
+		if c.Unit == cunit {
+			n++
+		}
+	}
+	if n != 4 {
+		t.Fatalf("%d signals to the coordinator, want 4: %+v", n, r.ownSignals())
+	}
+	r.auditClean()
+}
+
+// A stale named instance that the later one replaces and that is proven
+// stopped leaves no entry: the result is nil.
+func TestStopLeadSecondListingDropsAStaleNamedInstanceThatIsReplacedAndStops(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	cunit := unitOf(coord)
+	r.fake.SetProcs(cunit, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	e1 := r.mustStart(coord)
+	r.quiet.hook = func(role leadrole.Role, _ uint64) error {
+		if role != lead {
+			return nil
+		}
+		r.fake.Crash(cunit)
+		if _, err := r.ctl.Stop(context.Background(), coord); err != nil {
+			t.Errorf("Stop of instance 1 in the gap: %v", err)
+		}
+		r.fake.SetProcs(cunit, leadunit.ProcScript{})
+		if e, err := r.ctl.Start(context.Background(), coord); err != nil || e.Epoch != e1.Epoch+1 {
+			t.Errorf("Start of instance 2 in the gap: %+v %v", e, err)
+		}
+		return nil
+	}
+	_, err := r.stop(lead)
+	noErr(t, err)
+	r.expectState(coord, leadregistry.StateStopped, "")
+	r.auditClean()
+}

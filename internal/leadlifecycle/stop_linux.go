@@ -59,8 +59,11 @@ import (
 // its live states (it is stopping, unknown or stopped) the registry admits no
 // new coordinator launch, and a Start of a coordinator that began earlier holds the
 // coordinator's lock until it returns, so that the second listing either sees
-// its intent or waits for it. A coordinator named by the first pass is not
-// stopped a second time. The unit is bound to the lead's, so it is also stopped by the lead's stop,
+// its intent or waits for it. A coordinator instance named by the first pass
+// is not stopped a second time, but a later instance of the same role found in
+// the second listing (the owner stopped the first and started the next in the
+// gap) is stopped, or named, in its place, and the result carries that
+// instance's error and not the stale one. The unit is bound to the lead's, so it is also stopped by the lead's stop,
 // but only the proof that Stop collects says that it is gone.
 //
 // Stop of a lead never returns nil while the second listing was not done. When
@@ -124,6 +127,10 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 			return e, errors.Join(err, cerr, lerr)
 		case all != nil:
 			cerr = all
+		default:
+			// The second listing is the whole truth: what it does not name
+			// is proven stopped, a stale instance of the first pass too.
+			cerr = nil
 		}
 	}
 	switch {
@@ -144,6 +151,10 @@ type CoordinatorsError struct {
 	Roles []leadrole.Role
 	// Errs holds the error of the stop of each of them, in the same order.
 	Errs []error
+
+	// epochs holds the instance (the epoch) each entry is about, in the same
+	// order: a later pass names an instance, not a role.
+	epochs []uint64
 }
 
 // Error names the coordinators.
@@ -166,8 +177,9 @@ func (e *CoordinatorsError) Unwrap() []error {
 // sequence of Stop. A coordinator that cannot be proven stopped is shown
 // unknown by its own stop and is named in the first result (nil when there is
 // none); the second result is for a failure that ends the lead's stop too (the
-// context). The coordinators that named holds (the result of an earlier pass
-// over the same lead) are not stopped again and stay in the result. The lead's
+// context). The instances that named holds (the result of an earlier pass over
+// the same lead) are not stopped again and stay in the result; a later
+// instance of the same role replaces the entry of the earlier one. The lead's
 // lock is held by the caller; a coordinator's stop takes only its own, and no
 // operation on a coordinator takes the lead's.
 func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, named *CoordinatorsError) (unproven *CoordinatorsError, err error) {
@@ -177,14 +189,25 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 	}
 	var out *CoordinatorsError
 	if named != nil {
-		out = &CoordinatorsError{Roles: slices.Clone(named.Roles), Errs: slices.Clone(named.Errs)}
+		out = &CoordinatorsError{Roles: slices.Clone(named.Roles), Errs: slices.Clone(named.Errs), epochs: slices.Clone(named.epochs)}
 	}
 	for _, co := range coords {
 		if co.Manager != leadregistry.ManagerAtaniq || co.Epoch == 0 {
 			continue
 		}
-		if out != nil && slices.Contains(out.Roles, co.Role) {
-			continue
+		if out != nil {
+			if i := slices.Index(out.Roles, co.Role); i >= 0 {
+				if out.epochs[i] == co.Epoch {
+					continue
+				}
+				// The instance the first pass named is gone and a later one
+				// runs (an owner's Stop and Start in the gap): the entry is
+				// about a stale instance, which is replaced if this one is
+				// not proven stopped.
+				out.Roles = slices.Delete(out.Roles, i, i+1)
+				out.Errs = slices.Delete(out.Errs, i, i+1)
+				out.epochs = slices.Delete(out.epochs, i, i+1)
+			}
 		}
 		done, err := c.reg.CoordinatorStopped(co.Role, co.Epoch)
 		if err != nil {
@@ -203,7 +226,12 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 			}
 			out.Roles = append(out.Roles, co.Role)
 			out.Errs = append(out.Errs, err)
+			out.epochs = append(out.epochs, co.Epoch)
 		}
+	}
+	if out != nil && len(out.Roles) == 0 {
+		// Every entry was a stale instance and the later ones are proven.
+		return nil, nil
 	}
 	return out, nil
 }

@@ -72,7 +72,9 @@
 // started in between (the lock of the lead does not serialise a Start of its
 // coordinator, which takes only its own); once the lead has left its live
 // states the registry admits no new one, so the second listing is complete,
-// and a coordinator found in it is stopped, or named, like the others. Stop of
+// and a coordinator found in it is stopped, or named, like the others (a
+// coordinator instance the first pass named is not stopped again, but a later
+// instance of the same role is). Stop of
 // a lead returns nil only when it did the second listing: after the lead's
 // proven stop the listing runs on a context of its own, which the caller's
 // cannot end, so a caller that gave up in the meantime still has a coordinator
