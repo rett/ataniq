@@ -23,15 +23,15 @@ func TestValidName(t *testing.T) {
 
 func TestParseStart(t *testing.T) {
 	getenv := func(string) string { return "" }
-	cfg, err := parseStart([]string{"n1", "--cols", "120", "--rows=40", "--env", "A=1", "--env", "B=two words", "--holder", "/x/holder", "--direct", "--", "agent", "--flag", "--", "x"}, getenv)
+	cfg, err := parseStart([]string{"n1", "--cols", "120", "--rows=40", "--env", "A=1", "--env", "B=two words", "--holder", "/x/holder", "--direct", "--", "/bin/agent", "--flag", "--", "x"}, getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := startConfig{name: "n1", cols: 120, rows: 40, env: []string{"A=1", "B=two words"}, holder: "/x/holder", direct: true, argv: []string{"agent", "--flag", "--", "x"}}
+	want := startConfig{name: "n1", cols: 120, rows: 40, env: []string{"A=1", "B=two words"}, holder: "/x/holder", direct: true, argv: []string{"/bin/agent", "--flag", "--", "x"}}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
 	}
-	cfg, err = parseStart([]string{"n1", "--", "agent"}, getenv)
+	cfg, err = parseStart([]string{"n1", "--", "/bin/agent"}, getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,30 +44,34 @@ func TestParseStartRefusals(t *testing.T) {
 	const secret = "SECRETTEXT"
 	cases := map[string][]string{
 		"no name":            {},
-		"bad name":           {secret + "_X", "--", "a"},
+		"bad name":           {secret + "_X", "--", "/bin/a"},
 		"no dash":            {"n"},
 		"empty argv":         {"n", "--"},
-		"stray positional":   {"n", secret, "--", "a"},
-		"unknown flag":       {"n", "--" + secret, "--", "a"},
-		"flag lacks value":   {"n", "--cols", "--", "a"},
-		"cols not a number":  {"n", "--cols", secret, "--", "a"},
-		"cols too small":     {"n", "--cols", "19", "--", "a"},
-		"cols too large":     {"n", "--cols", "501", "--", "a"},
-		"rows too small":     {"n", "--rows", "4", "--", "a"},
-		"rows too large":     {"n", "--rows", "201", "--", "a"},
-		"env without equals": {"n", "--env", secret, "--", "a"},
-		"env bad key":        {"n", "--env", "1A=" + secret, "--", "a"},
-		"env bad key 2":      {"n", "--env", "A-B=" + secret, "--", "a"},
-		"env empty key":      {"n", "--env", "=" + secret, "--", "a"},
-		"env control char":   {"n", "--env", "A=" + secret + "\n", "--", "a"},
-		"env too long":       {"n", "--env", "A=" + strings.Repeat("x", maxEnvValue+1), "--", "a"},
-		"env sets TERM":      {"n", "--env", "TERM=" + secret, "--", "a"},
-		"env sets HOME":      {"n", "--env", "HOME=" + secret, "--", "a"},
-		"env sets PATH":      {"n", "--env", "PATH=" + secret, "--", "a"},
-		"env sets LANG":      {"n", "--env", "LANG=" + secret, "--", "a"},
-		"env repeated":       {"n", "--env", "A=1", "--env", "A=" + secret, "--", "a"},
-		"holder relative":    {"n", "--holder", secret, "--", "a"},
-		"bool with junk":     {"n", "--direct=" + secret, "--", "a"},
+		"stray positional":   {"n", secret, "--", "/bin/a"},
+		"unknown flag":       {"n", "--" + secret, "--", "/bin/a"},
+		"flag lacks value":   {"n", "--cols", "--", "/bin/a"},
+		"cols not a number":  {"n", "--cols", secret, "--", "/bin/a"},
+		"cols too small":     {"n", "--cols", "19", "--", "/bin/a"},
+		"cols too large":     {"n", "--cols", "501", "--", "/bin/a"},
+		"rows too small":     {"n", "--rows", "4", "--", "/bin/a"},
+		"rows too large":     {"n", "--rows", "201", "--", "/bin/a"},
+		"env without equals": {"n", "--env", secret, "--", "/bin/a"},
+		"env bad key":        {"n", "--env", "1A=" + secret, "--", "/bin/a"},
+		"env bad key 2":      {"n", "--env", "A-B=" + secret, "--", "/bin/a"},
+		"env empty key":      {"n", "--env", "=" + secret, "--", "/bin/a"},
+		"env control char":   {"n", "--env", "A=" + secret + "\n", "--", "/bin/a"},
+		"env too long":       {"n", "--env", "A=" + strings.Repeat("x", maxEnvValue+1), "--", "/bin/a"},
+		"env sets TERM":      {"n", "--env", "TERM=" + secret, "--", "/bin/a"},
+		"env sets HOME":      {"n", "--env", "HOME=" + secret, "--", "/bin/a"},
+		"env sets PATH":      {"n", "--env", "PATH=" + secret, "--", "/bin/a"},
+		"env sets LANG":      {"n", "--env", "LANG=" + secret, "--", "/bin/a"},
+		"env repeated":       {"n", "--env", "A=1", "--env", "A=" + secret, "--", "/bin/a"},
+		"holder relative":    {"n", "--holder", secret, "--", "/bin/a"},
+		"agent relative":     {"n", "--", secret},
+		"agent dot-relative": {"n", "--", "./" + secret},
+		"agent control char": {"n", "--", "/bin/" + secret + "\n"},
+		"agent too long":     {"n", "--", "/" + strings.Repeat("x", maxAgentPath)},
+		"bool with junk":     {"n", "--direct=" + secret, "--", "/bin/a"},
 	}
 	for name, args := range cases {
 		_, err := parseStart(args, func(string) string { return "" })
@@ -87,7 +91,7 @@ func TestParseStartRefusals(t *testing.T) {
 	for i := 0; i <= maxEnv; i++ {
 		long = append(long, "--env", "K"+strings.Repeat("a", i)+"=1")
 	}
-	long = append(long, "--", "a")
+	long = append(long, "--", "/bin/a")
 	if _, err := parseStart(long, func(string) string { return "" }); err == nil {
 		t.Error("more than maxEnv --env flags accepted")
 	}
@@ -100,7 +104,9 @@ func TestRunUsageErrorsNeverEchoArguments(t *testing.T) {
 		nil,
 		{secret},
 		{"start", secret + "_"},
-		{"start", "n", "--" + secret, "--", "a"},
+		{"start", "n", "--" + secret, "--", "/bin/a"},
+		{"start", "n", "--", secret, "x"},
+		{"start", "n", "--direct", "--", "./" + secret},
 		{"ticket", secret + "_"},
 		{"ticket", "n", "--" + secret},
 		{"ticket", "n", secret},
@@ -121,7 +127,7 @@ func TestRunUsageErrorsNeverEchoArguments(t *testing.T) {
 		if !strings.HasPrefix(errout.String(), "error: ") || !strings.Contains(errout.String(), "Usage:") {
 			t.Errorf("%q: want a short diagnostic then the usage, got %q", args, errout.String())
 		}
-		if len(l.runList()) != 0 {
+		if len(l.runList()) != 0 || len(l.starts) != 0 {
 			t.Errorf("%q: started something", args)
 		}
 	}

@@ -135,7 +135,7 @@ func (a *app) terminate(c child, exited <-chan exitResult) (ended, killed bool) 
 // killed to end it.
 func killNote(killed bool) string {
 	if killed {
-		return "; SIGKILL was needed, so its agent may outlive it"
+		return "; the holder needed SIGKILL, so its agent may outlive it"
 	}
 	return ""
 }

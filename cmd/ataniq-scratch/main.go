@@ -36,7 +36,8 @@ issues attach tickets over the holder's control socket.
 
 NAME is 1 to 31 characters of a-z, 0-9 and -, starting with a letter or digit.
 
-start    Start a holder for a scratch agent that runs ARGV. The agent's
+start    Start a holder for a scratch agent that runs ARGV. ARGV[0] must be an
+         absolute path: the holder does no PATH search. The agent's
          environment is only TERM, HOME (a disposable home), PATH, LANG and each
          --env; nothing else is inherited. --env values appear in the holder's
          command line: put no secret in them. By default the holder runs in a

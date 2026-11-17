@@ -379,7 +379,7 @@ func (h *fakeHolder) answer(req wire.Request) wire.Response {
 // fakeHolderMain is the holder when this test binary is started with the
 // holder's command line. It records its arguments and environment in
 // RUNTIME-DIR/fake-holder.json, serves the control socket like fakeHolder and
-// exits on a stop request. The first word after -- picks a behaviour:
+// exits on a stop request. The last element of the program path after -- picks a behaviour:
 // "exit3" ends at once with status 3, "silent" never answers.
 func fakeHolderMain(args []string) int {
 	flags := map[string]string{}
@@ -413,7 +413,7 @@ func fakeHolderMain(args []string) int {
 	}
 	mode := ""
 	if len(argv) > 0 {
-		mode = argv[0]
+		mode = filepath.Base(argv[0])
 	}
 	switch mode {
 	case "exit3":

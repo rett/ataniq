@@ -81,8 +81,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   project, no lead role, a disposable home) in a holder, in a transient systemd
   user unit or as a direct child with `--direct`, and stands in for the daemon
   to issue attach tickets over the holder's control socket. `start`, `ticket`,
-  `status`, `release-writer` and `stop` are its subcommands. It is provisional
-  and unqualified, and not for a real lead.
+  `status`, `release-writer` and `stop` are its subcommands. `start` takes the
+  agent as an absolute path, because the holder does no `PATH` search, and
+  refuses any other with exit status 2. It is provisional and unqualified, and
+  not for a real lead.
 - Add `ataniq-holder`, the per-agent holder process: one process for one
   hosted agent. It owns the agent's terminal (the PTY master and the emulator
   that mirrors its screen), the attach and control sockets, the event log and

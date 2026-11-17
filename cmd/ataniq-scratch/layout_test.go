@@ -79,7 +79,7 @@ func TestStartRefusesALongRuntimePathAndMakesNothing(t *testing.T) {
 	e.vars["XDG_RUNTIME_DIR"] = long
 	fl := &fakeLauncher{}
 	a, _, errout := e.newApp(fl)
-	code := a.run([]string{"start", "demo", "--holder", e.holderFile(t), "--", "agent"})
+	code := a.run([]string{"start", "demo", "--holder", e.holderFile(t), "--", "/bin/agent"})
 	if code != exitFail || !strings.Contains(errout.String(), "too deep for a unix socket") {
 		t.Errorf("exit %d, stderr %q", code, errout.String())
 	}
