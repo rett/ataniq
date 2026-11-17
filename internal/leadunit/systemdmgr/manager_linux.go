@@ -378,6 +378,11 @@ func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Sig
 // Everything else is false, with an error when the cause is a failure or an
 // inconsistency and without one when the group is plainly still there. A new
 // invocation alone is never proof.
+//
+// True says that the control group of the unit is empty (or gone), not that
+// every process the unit ever ran is gone: a process can move itself into
+// another control group of the user's delegated subtree before its group is
+// removed, and nothing here sees it.
 func (m *Manager) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

@@ -49,7 +49,8 @@
 // from the documentation and from the existing qualification host code, not
 // from a run (that includes the "--" that ends busctl's options before the
 // verb, so that no argument of the command is read as an option: whether
-// busctl accepts it as written is for the qualification run to show); tests check them against canned output. The process of the unit
+// busctl accepts it as written is for the qualification run to show); tests
+// check them against canned output. The process of the unit
 // gets, besides the explicit environment, what systemd adds (the environment
 // block of the user manager, HOME, LOGNAME, USER, SHELL, INVOCATION_ID and
 // the like); the explicit entries win on the same name. Signal checks the
@@ -58,6 +59,16 @@
 // read. The control group file system is read at the fixed mount
 // "/sys/fs/cgroup" through internal/systemd; nothing proves that the mount is
 // the manager's own beyond the identity checks those helpers make.
+//
+// Limit of Empty. Empty proves that the control group of the unit, the one
+// the State names by path and identity, has no process. It does not prove that
+// every process the unit ever ran is gone: a process of the unit can move
+// itself into another control group of the user's delegated subtree (the
+// subtree the user manager owns and the user may write to) before its own
+// group is removed, and an empty unit group says nothing of it. No check here
+// sees such a process and none is attempted; it is a limit of what the user
+// manager can prove for processes of the same user, to be known by whoever
+// relies on "ended".
 //
 // # Status
 //

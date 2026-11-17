@@ -28,7 +28,10 @@
 // qualification of the manager in general. It does not simulate a lost start
 // reply (the report lists it as not attempted), a crash of the daemon, a
 // reboot, a unit that is replaced under the same name, or a populated group
-// that SIGKILL cannot empty.
+// that SIGKILL cannot empty. An empty control group of the unit proves that
+// the unit's group is empty, not that every process the unit ever ran is gone:
+// a process can move itself into another control group of the user's
+// delegated subtree before its group is removed, and no check here sees that.
 // It does not look at the unit's environment beyond what the start call sent.
 // It needs the user manager of the calling user and reaches the system
 // manager nowhere.
