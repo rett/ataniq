@@ -159,6 +159,12 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 	if key == "q" || key == "ctrl+c" {
 		return m.quit()
 	}
+	// Zoom draws no help, action list or notice, so the keys that would open
+	// one do nothing there. Without this an invisible overlay would take the
+	// next Enter.
+	if m.zoom && (key == "?" || key == "ctrl+k" || key == "a") {
+		return nil
+	}
 	if m.overlay != "" {
 		switch key {
 		case "esc", "enter", "?", "ctrl+k":

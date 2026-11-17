@@ -418,6 +418,42 @@ func TestZoomKeyIgnoresLockStatesOnly(t *testing.T) {
 	}
 }
 
+// TestZoomIgnoresTheKeysThatDrawNothing checks that ?, Ctrl+K and a, whose
+// help, action list and notice zoom does not draw, change no state there, so
+// that the next Enter still focuses the session.
+func TestZoomIgnoresTheKeysThatDrawNothing(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: '?', Text: "?"}, ctrlK, {Code: 'a', Text: "a"}} {
+		r := newRig(t, 140, 45, Options{})
+		r.key(zoomPress)
+		r.key(k)
+		if r.m.overlay != "" || r.m.notice != "" {
+			t.Fatalf("%v in zoom set overlay %q notice %q", k, r.m.overlay, r.m.notice)
+		}
+		r.key(enterKey)
+		if r.m.focus != sessionFocus {
+			t.Fatalf("%v: Enter did not focus the session", k)
+		}
+		// Back in the cockpit the same key works again.
+		r.key(zoomPress)
+		r.key(decodeKey(t, "\x1c"))
+		r.key(k)
+		if r.m.overlay == "" && r.m.notice == "" {
+			t.Fatalf("%v does nothing outside zoom", k)
+		}
+	}
+	// An overlay opened before the zoom is closed by the zoom.
+	r := newRig(t, 140, 45, Options{})
+	r.key(ctrlK)
+	r.key(zoomPress)
+	if r.m.overlay != "" {
+		t.Fatal("zoom left an overlay open")
+	}
+	r.key(enterKey)
+	if r.m.focus != sessionFocus {
+		t.Fatal("Enter did not focus the session")
+	}
+}
+
 func TestZoomResizesThePane(t *testing.T) {
 	for _, f := range []focusState{consoleFocus, sessionFocus} {
 		r := newRig(t, 140, 45, Options{})
