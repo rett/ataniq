@@ -86,12 +86,18 @@ func pidfdPID(fd int) (int, error) {
 	return 0, errors.New("no Pid line in the pidfd's fdinfo")
 }
 
-// daemonPID reads the pid written in the daemon's lock file and reports
-// whether the file is locked now: a non-blocking exclusive flock on a fresh
-// open of it must fail with "would block", so somebody holds it. The probe
-// takes no lock when the file is held. When it is not held, the probe's lock is
-// let go at once and the peer is refused.
-func (s *Server) daemonPID() (pid int, locked bool, err error) {
+// daemonPID reads the pid written in the daemon's lock file and, when it is
+// the peer's pid, reports whether the file is locked now: a non-blocking
+// exclusive flock on a fresh open of it must fail with "would block", so
+// somebody holds it. The probe takes no lock when the file is held. When it is
+// not held, the probe's lock is let go at once and the peer is refused.
+//
+// The probe is made only for the peer the file names: for any other pid the
+// file is not locked at all and locked is false. So a same-user process that
+// is not the daemon cannot make the probe take the lock of a daemon that is
+// starting (the daemon takes its lock without waiting, and it would take the
+// probe's brief lock for a second daemon's).
+func (s *Server) daemonPID(peer int) (pid int, locked bool, err error) {
 	fd, err := unix.Open(s.cfg.DaemonLock, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return 0, false, err
@@ -112,6 +118,9 @@ func (s *Server) daemonPID() (pid int, locked bool, err error) {
 	pid, err = strconv.Atoi(string(bytes.TrimSpace(b)))
 	if err != nil || pid <= 0 {
 		return 0, false, errors.New("the daemon lock holds no pid")
+	}
+	if pid != peer {
+		return pid, false, nil // not the daemon: no probe
 	}
 	probe, err := unix.Open(s.cfg.DaemonLock, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -143,7 +152,7 @@ func (s *Server) checkControlPeer(c *net.UnixConn) (string, bool) {
 	if err != nil {
 		return "peer-pid", false
 	}
-	want, locked, err := s.daemonPID()
+	want, locked, err := s.daemonPID(pid)
 	switch {
 	case err != nil:
 		return "daemon-lock", false

@@ -17,7 +17,9 @@
 // The control socket also checks the peer process: the pidfd that SO_PEERPIDFD
 // gives names the peer, and its pid must be the pid written in the daemon
 // lock file while that file is locked (a non-blocking exclusive flock on a
-// fresh open of it fails with "would block"). That is the stated limit of the
+// fresh open of it fails with "would block"; the probe is made only when the
+// peer's pid is the file's, so no other process can make the holder take the
+// lock for a moment). That is the stated limit of the
 // design: any process of the same user that writes its own pid into that file
 // and holds a lock on it passes, and so does one that replaces the daemon.
 // The check separates the daemon from a process that merely runs as the same
