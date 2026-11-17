@@ -47,6 +47,9 @@ type replay struct {
 	base   time.Time
 	queue  []sessionreplay.Event
 	holdAt time.Time
+	// write sends output to the pane: its Write method. A test replaces it to
+	// see the size of each write.
+	write func([]byte)
 }
 
 // themeColours are the colours the pane reports to the session's colour
@@ -81,6 +84,7 @@ func (m *Model) startSession() {
 		Input:          m.opts.Input,
 		Clock:          func() time.Time { return m.now },
 	})
+	m.rep.write = m.rep.pane.Write
 }
 
 // Close stops the session pane's goroutine. It may be called more than once.
@@ -176,7 +180,7 @@ func (m *Model) feed(elapsed time.Duration) {
 		case sessionreplay.KindOutput:
 			for len(ev.Data) > 0 && budget > 0 {
 				n := min(len(ev.Data), chunkBytes, budget)
-				m.rep.pane.Write(ev.Data[:n])
+				m.rep.write(ev.Data[:n])
 				ev.Data, budget = ev.Data[n:], budget-n
 			}
 			if len(ev.Data) > 0 {

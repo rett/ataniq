@@ -562,11 +562,22 @@ func TestEndedBanner(t *testing.T) {
 	for _, tc := range []struct {
 		recording string
 		want      string
-	}{{"exit-zero.jsonl", "Exit status: 0."}, {"exit-nonzero.jsonl", "Exit status: 3."}, {"exit-unknown.jsonl", "Exit status: unknown."}} {
+		// screen is text of the recording's last screen.
+		screen string
+	}{
+		{"exit-zero.jsonl", "Exit status: 0.", "session finished"},
+		{"exit-nonzero.jsonl", "Exit status: 3.", "step 2 failed"},
+		{"exit-unknown.jsonl", "Exit status: unknown.", "no exit status was kept"},
+	} {
 		r := newRig(t, 140, 45, Options{Recording: tc.recording})
 		r.play(200 * time.Millisecond)
 		if strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 			t.Fatalf("%s: ended early", tc.recording)
+		}
+		// Nothing is dimmed while the session runs, though its colours may be
+		// truecolor, whose parameters contain a 2.
+		if faint, _ := faintText(r.m.View().Content); faint != "" {
+			t.Fatalf("%s: %q is dimmed before the end", tc.recording, faint)
 		}
 		r.play(600 * time.Millisecond)
 		v := r.view()
@@ -575,19 +586,51 @@ func TestEndedBanner(t *testing.T) {
 				t.Fatalf("%s: missing %q:\n%s", tc.recording, want, v)
 			}
 		}
-		// The last screen stays under the banner, dimmed.
-		if !strings.Contains(v, "session") && !strings.Contains(v, "finished") && !strings.Contains(v, "failure") && !strings.Contains(v, "unknown") {
-			t.Fatalf("%s: the last screen is gone:\n%s", tc.recording, v)
+		// The last screen stays under the banner, dimmed. The banner and the
+		// cockpit around the pane are not.
+		faint, plain := faintText(r.m.View().Content)
+		if !strings.Contains(v, tc.screen) || !strings.Contains(faint, tc.screen) {
+			t.Fatalf("%s: the last screen is not on screen and dimmed: faint text %q\n%s", tc.recording, faint, v)
 		}
-		if !cellsFaint(r.m.View().Content) {
-			t.Fatalf("%s: the last screen is not dimmed", tc.recording)
+		for _, want := range []string{"TERMINAL STREAM ENDED", "ATANIQ", "Timeline", tc.want} {
+			if !strings.Contains(plain, want) || strings.Contains(faint, want) {
+				t.Fatalf("%s: %q is dimmed or missing", tc.recording, want)
+			}
 		}
 	}
 }
 
-// cellsFaint reports whether the styled content has any faint text.
-func cellsFaint(content string) bool {
-	return strings.Contains(content, "\x1b[2m") || strings.Contains(content, ";2m") || strings.Contains(content, ";2;")
+// faintText reads the styled content the way a terminal does and returns the
+// text of its faint cells and of the others. A faint cell is one drawn after
+// SGR 2 and before the SGR that clears it, so the colour parameters of a
+// truecolor style, which also contain a 2, do not count.
+func faintText(content string) (faint, plain string) {
+	var pen uv.Style
+	var f, p strings.Builder
+	parser := ansi.NewParser()
+	parser.SetHandler(ansi.Handler{
+		Print: func(r rune) {
+			if pen.Attrs&uv.AttrFaint != 0 {
+				f.WriteRune(r)
+			} else {
+				p.WriteRune(r)
+			}
+		},
+		HandleCsi: func(cmd ansi.Cmd, params ansi.Params) {
+			if cmd.Final() == 'm' && cmd.Prefix() == 0 && cmd.Intermediate() == 0 {
+				uv.ReadStyle(params, &pen)
+			}
+		},
+	})
+	parser.Parse([]byte(content))
+	return f.String(), p.String()
+}
+
+func TestFaintTextReadsTheAttributeNotTheDigit(t *testing.T) {
+	faint, plain := faintText("\x1b[38;2;10;120;200;48;2;2;2;2mtruecolor\x1b[0m \x1b[2mdim\x1b[22m bright \x1b[1;2mboth\x1b[m")
+	if faint != "dimboth" || plain != "truecolor  bright " {
+		t.Fatalf("faint %q, plain %q", faint, plain)
+	}
 }
 
 func TestEndedSessionAnyKeyReturnsToConsole(t *testing.T) {
@@ -654,6 +697,34 @@ func TestRestartReplaysTheRecording(t *testing.T) {
 	r.play(900 * time.Millisecond)
 	if !strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 		t.Fatal(r.view())
+	}
+}
+
+// TestStaleTickAfterTheReplayHasStartedChangesNothing sends a tick of the old
+// chain after the new replay has started: it must neither advance the replay
+// nor start a second chain. In the program the old chain's timer is still
+// pending when the person presses r.
+func TestStaleTickAfterTheReplayHasStartedChangesNothing(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl"})
+	r.play(100 * time.Millisecond)
+	old := r.m.rep.gen
+	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	r.t0 = r.t0.Add(time.Hour)
+	r.tick(0) // the new replay's first tick sets its start
+	now, queued := r.m.now, len(r.m.rep.queue)
+	r.sched = nil
+	// Far enough on to end the new replay, if it were taken for its own.
+	_, cmd := r.m.Update(tickMsg{at: r.t0.Add(10 * time.Second), gen: old})
+	if cmd != nil || len(r.sched) != 0 {
+		t.Fatalf("a stale tick scheduled %d timers", len(r.sched))
+	}
+	if r.m.now != now || len(r.m.rep.queue) != queued || r.m.sessionEnded() {
+		t.Fatal("a stale tick advanced the replay")
+	}
+	// The current chain goes on.
+	r.tick(40 * time.Millisecond)
+	if len(r.sched) == 0 {
+		t.Fatal("the current tick scheduled nothing")
 	}
 }
 
@@ -964,6 +1035,31 @@ func TestMouseFollowsTheSessionAndTheFocus(t *testing.T) {
 	}
 }
 
+// TestMouseModeFollowsTheSessionsTrackingMode checks that a session that asks
+// for click or drag reporting (modes 1000 and 1002) is given cell motion, and
+// only one that asks for all motion (mode 1003) is given all motion.
+func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
+	r := newRig(t, 140, 45, Options{})
+	r.play(100 * time.Millisecond)
+	r.focusSession()
+	pane := r.m.rep.pane
+	for _, tc := range []struct {
+		write string
+		want  tea.MouseMode
+	}{
+		{"\x1b[?1000h", tea.MouseModeCellMotion},
+		{"\x1b[?1000l\x1b[?1002h", tea.MouseModeCellMotion},
+		{"\x1b[?1002l\x1b[?1003h", tea.MouseModeAllMotion},
+		{"\x1b[?1003l\x1b[?1000h", tea.MouseModeCellMotion},
+		{"\x1b[?1000l", tea.MouseModeNone},
+	} {
+		pane.Write([]byte(tc.write))
+		if got := r.m.View().MouseMode; got != tc.want {
+			t.Fatalf("%q: the console asks for %v, want %v (the pane reports %v)", tc.write, got, tc.want, pane.Modes().Mouse)
+		}
+	}
+}
+
 func TestMouseModeNeedsTheSessionToAsk(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)
@@ -990,6 +1086,46 @@ func TestSessionCursor(t *testing.T) {
 	l := r.m.layout()
 	if c == nil || c.X < l.inner.Min.X || c.X >= l.inner.Max.X || c.Y < l.inner.Min.Y || c.Y >= l.inner.Max.Y {
 		t.Fatalf("%+v not in %v", c, l.inner)
+	}
+}
+
+// TestSessionCursorStaysInsideTheArea checks that the cursor is not placed
+// when the pane, which follows a window resize only after a delay, is larger
+// than the area it is drawn in, and the session's cursor lies outside it.
+func TestSessionCursorStaysInsideTheArea(t *testing.T) {
+	for _, shrink := range []struct {
+		name string
+		w, h int
+	}{{"narrower", 100, 45}, {"shorter", 140, 30}} {
+		r := newRig(t, 140, 45, Options{Linger: time.Hour})
+		r.play(100 * time.Millisecond)
+		r.focusSession()
+		cols, rows := r.paneSize()
+		r.size(shrink.w, shrink.h) // the pane keeps its size until the delay is over
+		if c, rr := r.paneSize(); c != cols || rr != rows {
+			t.Fatalf("%s: the pane resized at once", shrink.name)
+		}
+		l := r.m.layout()
+		w, h := l.inner.Dx(), l.inner.Dy()
+		if w >= cols && h >= rows {
+			t.Fatalf("%s: the area %v did not shrink", shrink.name, l.inner)
+		}
+		// Put the session's cursor on each side of the area's edges.
+		for _, at := range [][2]int{{w - 1, h - 1}, {0, 0}, {w, 0}, {0, h}, {w, h}, {cols - 1, rows - 1}} {
+			x, y := at[0], at[1]
+			if x >= cols || y >= rows {
+				continue
+			}
+			r.m.rep.pane.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1)))
+			c := r.m.View().Cursor
+			if inside := x < w && y < h; inside {
+				if c == nil || c.X != l.inner.Min.X+x || c.Y != l.inner.Min.Y+y {
+					t.Fatalf("%s: the session's cursor at %d,%d is drawn at %v", shrink.name, x, y, c)
+				}
+			} else if c != nil {
+				t.Fatalf("%s: the session's cursor at %d,%d, outside %v, is drawn at %d,%d", shrink.name, x, y, l.inner, c.X, c.Y)
+			}
+		}
 	}
 }
 
@@ -1060,7 +1196,15 @@ func TestHeldFrameIsRedrawnAtItsDeadline(t *testing.T) {
 
 func TestOutputIsFedInBoundedChunks(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
-	big := strings.Repeat("x", 30<<10)
+	// Count what each write to the pane carries.
+	var sizes []int
+	write := r.m.rep.write
+	r.m.rep.write = func(b []byte) {
+		sizes = append(sizes, len(b))
+		write(b)
+	}
+	// Not a multiple of the chunk size, so the budget ends inside a chunk.
+	big := strings.Repeat("x", 30000)
 	r.m.rep.queue = nil
 	for i := 0; i < 3; i++ {
 		r.m.rep.queue = append(r.m.rep.queue, sessionreplayOut(big))
@@ -1073,11 +1217,28 @@ func TestOutputIsFedInBoundedChunks(t *testing.T) {
 	if want := 3*len(big) - tickBudget; left != want {
 		t.Fatalf("%d bytes left, want %d", left, want)
 	}
+	// One tick writes the budget, in writes of at most chunkBytes, and the
+	// largest of them is a full chunk.
+	total, largest := 0, 0
+	for _, n := range sizes {
+		if n > chunkBytes || n <= 0 {
+			t.Fatalf("a write of %d bytes, the limit is %d", n, chunkBytes)
+		}
+		total, largest = total+n, max(largest, n)
+	}
+	if total != tickBudget || largest != chunkBytes {
+		t.Fatalf("%d bytes in writes of at most %d, want %d in chunks of %d", total, largest, tickBudget, chunkBytes)
+	}
 	for i := 0; i < 10 && len(r.m.rep.queue) > 0; i++ {
 		r.m.feed(0)
 	}
 	if len(r.m.rep.queue) != 0 {
 		t.Fatal("the queue does not drain")
+	}
+	for _, n := range sizes {
+		if n > chunkBytes {
+			t.Fatalf("a write of %d bytes", n)
+		}
 	}
 }
 
@@ -1132,13 +1293,91 @@ func TestModeReportSwitchesGraphemeWidths(t *testing.T) {
 	if r.m.graphemes {
 		t.Fatal("another mode's report counts")
 	}
-	r.m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset})
-	if !r.m.graphemes {
-		t.Fatal("a supported mode 2027 is not noticed")
+	// Every answer that says the mode exists counts, whether it is set now,
+	// reset now or fixed on.
+	for _, v := range []ansi.ModeSetting{ansi.ModeSet, ansi.ModeReset, ansi.ModePermanentlySet, ansi.ModePermanentlyReset} {
+		r = newRig(t, 140, 45, Options{})
+		r.m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: v})
+		if want := v != ansi.ModePermanentlyReset; r.m.graphemes != want {
+			t.Fatalf("answer %v: grapheme widths %v, want %v", v, r.m.graphemes, want)
+		}
 	}
-	// A pane made later starts in the same width mode.
+}
+
+// heartSource has a project name with an emoji and a variation selector,
+// which an outer terminal without mode 2027 measures at another width than the
+// grapheme width the console computes.
+type heartSource struct{}
+
+func (heartSource) Snapshot() Projection {
+	return Projection{Projects: []Project{{Name: "Heart \u2764\ufe0f team", Leads: []Lead{{Name: "Lead"}}}}}
+}
+
+// TestCockpitTextFollowsTheModeReport checks the cockpit's own text: a
+// cluster is drawn as it is when the outer terminal measures grapheme
+// clusters, and as a placeholder when it does not say so.
+func TestCockpitTextFollowsTheModeReport(t *testing.T) {
+	m := NewWithOptions(heartSource{}, Options{Theme: "dark"})
+	t.Cleanup(m.Close)
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 45})
+	view := func() string { return ansi.Strip(m.View().Content) }
+	if v := view(); strings.Contains(v, "\u2764\ufe0f") || !strings.Contains(v, "Heart") {
+		t.Fatalf("a cluster drawn without a mode 2027 answer:\n%s", v)
+	}
+	m.Update(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeSet})
+	if v := view(); !strings.Contains(v, "Heart \u2764\ufe0f team") {
+		t.Fatalf("the cluster is not drawn after the answer:\n%s", v)
+	}
+}
+
+// zwj is the joiner of an emoji sequence. The pane draws a cluster that has
+// one only when the outer terminal measures grapheme clusters, and a
+// placeholder otherwise, so it is on screen exactly then.
+const zwj = "\u200d"
+
+// TestModeReportReachesThePaneAsGraphemeWidths plays zwj-split.jsonl, whose
+// line has emoji sequences, and looks at what is drawn: the sequences without
+// a mode 2027 answer, and with one, whenever it arrives.
+func TestModeReportReachesThePaneAsGraphemeWidths(t *testing.T) {
+	report := tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset}
+	play := func(r *rig) string {
+		r.play(1000 * time.Millisecond)
+		return r.view()
+	}
+	opts := Options{Recording: "zwj-split.jsonl", Linger: time.Hour}
+
+	// No answer: placeholders, and not a joiner in the screen.
+	r := newRig(t, 140, 45, opts)
+	if v := play(r); strings.Contains(v, zwj) || !strings.Contains(v, "technologist") {
+		t.Fatalf("without a report:\n%s", v)
+	}
+
+	// The answer arrives before the output: the pane that already exists
+	// switches.
+	r = newRig(t, 140, 45, opts)
+	r.m.Update(report)
+	if v := play(r); !strings.Contains(v, zwj) {
+		t.Fatalf("the report did not reach the existing pane:\n%s", v)
+	}
+	// ... and the pane of a replay started afterwards is made in that mode.
 	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
-	_ = r.view()
+	r.t0 = r.t0.Add(time.Hour)
+	if v := r.view(); strings.Contains(v, zwj) {
+		t.Fatalf("the new replay has output before it is played:\n%s", v)
+	}
+	if v := play(r); !strings.Contains(v, zwj) {
+		t.Fatalf("a pane made after the report is not in the grapheme width mode:\n%s", v)
+	}
+
+	// The answer arrives after the output: what is on screen is redrawn.
+	r = newRig(t, 140, 45, opts)
+	if v := play(r); strings.Contains(v, zwj) {
+		t.Fatal("a joiner before the report")
+	}
+	r.m.Update(report)
+	if v := r.view(); !strings.Contains(v, zwj) {
+		t.Fatalf("the report did not change what the pane draws:\n%s", v)
+	}
 }
 
 func TestInitAsksForUnicodeCoreWithSSHTTYSet(t *testing.T) {
