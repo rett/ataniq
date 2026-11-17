@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,13 +276,14 @@ func TestFetchWatchdogWhenTheMeasureFails(t *testing.T) {
 		// The fetch runs for a second, which is many watchdog intervals.
 		e.planner.UploadPack = e.wrapper("sleep 1")
 	}
-	hook := func(t *testing.T, f func(n int) (safefs.Size, error)) *int {
+	// The watchdog runs in another goroutine, so the count is atomic.
+	hook := func(t *testing.T, f func(n int) (safefs.Size, error)) *atomic.Int64 {
 		old, oldInterval := watchMeasureHook, watchInterval
-		calls := 0
-		watchMeasureHook = func() (safefs.Size, error) { calls++; return f(calls) }
+		calls := new(atomic.Int64)
+		watchMeasureHook = func() (safefs.Size, error) { return f(int(calls.Add(1))) }
 		watchInterval = 20 * time.Millisecond
 		t.Cleanup(func() { watchMeasureHook, watchInterval = old, oldInterval })
-		return &calls
+		return calls
 	}
 
 	t.Run("failures in a row stop the fetch", func(t *testing.T) {
@@ -298,8 +300,8 @@ func TestFetchWatchdogWhenTheMeasureFails(t *testing.T) {
 		if errors.As(err, &le) {
 			t.Errorf("the error is a LimitError: %v", err)
 		}
-		if *calls != maxWatchFailures {
-			t.Errorf("the measure ran %d times, want %d", *calls, maxWatchFailures)
+		if n := calls.Load(); n != maxWatchFailures {
+			t.Errorf("the measure ran %d times, want %d", n, maxWatchFailures)
 		}
 		if d := time.Since(start); d > 900*time.Millisecond {
 			t.Errorf("the fetch ran %v: the watchdog did not stop it", d)
@@ -319,8 +321,8 @@ func TestFetchWatchdogWhenTheMeasureFails(t *testing.T) {
 		if _, err := e.m.Fetch(context.Background(), e.req()); err != nil {
 			t.Fatalf("Fetch = %v", err)
 		}
-		if *calls < 2*maxWatchFailures {
-			t.Errorf("the measure ran only %d times, so the test proves little", *calls)
+		if n := calls.Load(); n < 2*maxWatchFailures {
+			t.Errorf("the measure ran only %d times, so the test proves little", n)
 		}
 	})
 }
