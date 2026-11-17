@@ -142,7 +142,6 @@ func TestLoopbackOnlyRefused(t *testing.T) {
 		"nameserver 127.0.0.1\n",
 		"nameserver 127.1.2.3\nnameserver ::1\n",
 		"nameserver ::ffff:127.0.0.1\n",
-		"nameserver 127.0.0.1\nnameserver 127.0.0.1\n", // duplicate counts once
 	} {
 		res, err := Derive(Input{HostContent: []byte(host), HostRealPath: "/etc/resolv.conf"})
 		reason := refusalReason(t, err)
@@ -155,6 +154,21 @@ func TestLoopbackOnlyRefused(t *testing.T) {
 	mustContain(t, refusalReason(t, err), "(3 dropped)")
 	if res.DroppedLoopback != 3 {
 		t.Errorf("dropped %d", res.DroppedLoopback)
+	}
+}
+
+func TestDuplicateLoopbackCountsOnce(t *testing.T) {
+	// The same server in two spellings is one server.
+	for _, host := range []string{
+		"nameserver 127.0.0.1\nnameserver 127.0.0.1\n",
+		"nameserver ::1\nnameserver 0:0:0:0:0:0:0:1\n",
+		"nameserver 127.0.0.1\nnameserver ::ffff:127.0.0.1\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "(1 dropped)")
+		if res.DroppedLoopback != 1 {
+			t.Errorf("%q: a duplicate counted %d times", host, res.DroppedLoopback)
+		}
 	}
 }
 
