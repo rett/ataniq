@@ -79,7 +79,8 @@ func (m *Mirror) WithLimits(l Limits) (*Mirror, error) {
 	return &c, nil
 }
 
-// Limits returns the limits of the mirror, with the defaults filled in.
+// Limits returns the limits of the mirror, with the defaults filled in. Only
+// Timeout and MaxRefs are set: they are the two fields that a mirror reads.
 func (m *Mirror) Limits() Limits {
 	return Limits{Timeout: m.limits.timeout(), MaxRefs: m.limits.maxRefs()}
 }

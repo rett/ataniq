@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -723,5 +724,58 @@ func TestSize(t *testing.T) {
 	}
 	if _, err := m.Size(ctx, lim); !errors.Is(err, safefs.ErrEscape) {
 		t.Errorf("Size through a symlinked mirror: err = %v, want ErrEscape", err)
+	}
+}
+
+func TestFetchLimits(t *testing.T) {
+	d := DefaultLimits()
+	want := Limits{
+		Timeout: 10 * time.Minute, MaxSource: 2 << 30, MaxStaged: 1 << 30,
+		MaxMirror: 8 << 30, MaxEntries: 2_000_000, MaxRefs: 2000,
+	}
+	if d != want {
+		t.Errorf("DefaultLimits = %+v, want %+v", d, want)
+	}
+	if got := (Limits{}).forFetch(); got != d {
+		t.Errorf("zero limits for a fetch = %+v, want the defaults", got)
+	}
+	set := Limits{Timeout: 1, MaxSource: 2, MaxStaged: 3, MaxMirror: 4, MaxEntries: 5, MaxRefs: 6}
+	if got := set.forFetch(); got != set {
+		t.Errorf("set limits changed: %+v", got)
+	}
+	part := Limits{MaxStaged: 99}.forFetch()
+	if part.MaxStaged != 99 || part.Timeout != d.Timeout || part.MaxRefs != d.MaxRefs {
+		t.Errorf("partly set limits = %+v", part)
+	}
+	for i, l := range []Limits{
+		{Timeout: -1}, {MaxSource: -1}, {MaxStaged: -1}, {MaxMirror: -1}, {MaxEntries: -1}, {MaxRefs: -1},
+	} {
+		if l.check() == nil {
+			t.Errorf("case %d: a negative limit was accepted", i)
+		}
+	}
+	if err := d.check(); err != nil {
+		t.Errorf("the defaults are refused: %v", err)
+	}
+	// A mirror keeps only what it reads, and rejects a negative fetch field.
+	_, m := newMirror(t)
+	m2, err := m.WithLimits(Limits{MaxSource: 7})
+	if err != nil || m2.Limits() != m.Limits() {
+		t.Errorf("a fetch field changed the mirror: %+v, %v", m2.Limits(), err)
+	}
+	if _, err := m.WithLimits(Limits{MaxMirror: -1}); err == nil {
+		t.Error("WithLimits accepted a negative MaxMirror")
+	}
+}
+
+func TestLimitError(t *testing.T) {
+	var err error = &LimitError{What: "staged", Got: 12, Max: 10}
+	wrapped := fmt.Errorf("outer: %w", err)
+	var le *LimitError
+	if !errors.As(wrapped, &le) || le.What != "staged" || le.Got != 12 || le.Max != 10 {
+		t.Fatalf("errors.As = %+v", le)
+	}
+	if got := err.Error(); !strings.Contains(got, "staged") || !strings.Contains(got, "12") || !strings.Contains(got, "10") {
+		t.Errorf("Error() = %q", got)
 	}
 }
