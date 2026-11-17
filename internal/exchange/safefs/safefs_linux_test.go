@@ -5,8 +5,10 @@ package safefs
 import (
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -89,6 +91,35 @@ func TestOpenReadsRegularFile(t *testing.T) {
 	}
 }
 
+func TestOpenReturnsBlockingFile(t *testing.T) {
+	// Open uses O_NONBLOCK so that a FIFO does not block it. The file it
+	// returns must not keep the flag, which a child would inherit.
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "f"), "x")
+	r := openRoot(t, dir)
+	f, err := r.Open("f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rc, err := f.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flags int
+	var ferr error
+	// Control, not Fd: Fd itself would switch the descriptor to blocking.
+	if err := rc.Control(func(fd uintptr) { flags, ferr = unix.FcntlInt(fd, unix.F_GETFL, 0) }); err != nil {
+		t.Fatal(err)
+	}
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	if flags&unix.O_NONBLOCK != 0 {
+		t.Fatalf("O_NONBLOCK is set on the returned file (flags %#x)", flags)
+	}
+}
+
 func TestOpenMissingIsNotExist(t *testing.T) {
 	r := openRoot(t, t.TempDir())
 	_, err := r.Open("nope")
@@ -133,20 +164,27 @@ func TestReadFileLimit(t *testing.T) {
 }
 
 func TestReadFileLimitIsDecidedByReading(t *testing.T) {
-	// A file that grows after the open must still hit the cap: the check
-	// reads, and does not trust a size taken earlier.
-	dir := t.TempDir()
-	write(t, filepath.Join(dir, "f"), "ab")
-	r := openRoot(t, dir)
-	f, err := r.Open("f")
+	// A file in /proc reports size 0 but has content, so a check on the
+	// reported size passes it. Only reading finds that it is too large.
+	// /proc/self is a symlink, which OpenRoot refuses: use the pid.
+	r, err := OpenRoot("/proc/" + strconv.Itoa(os.Getpid()))
 	if err != nil {
-		t.Fatal(err)
+		t.Skip("no /proc:", err)
 	}
-	defer f.Close()
-	write(t, filepath.Join(dir, "f"), strings.Repeat("x", 1000))
-	got, err := r.ReadFile("f", 10)
+	defer r.Close()
+	fi, err := r.Lstat("status")
+	if err != nil {
+		t.Skip("no status file:", err)
+	}
+	if fi.Size() != 0 {
+		t.Skipf("status reports size %d, not 0", fi.Size())
+	}
+	got, err := r.ReadFile("status", 16)
 	if !errors.Is(err, ErrLimit) {
 		t.Fatalf("got %d bytes, %v", len(got), err)
+	}
+	if got, err = r.ReadFile("status", 1<<20); err != nil || len(got) <= 16 {
+		t.Fatalf("large cap: %d bytes, %v", len(got), err)
 	}
 }
 
@@ -243,6 +281,27 @@ func TestFIFORefusedWithoutBlocking(t *testing.T) {
 	})
 }
 
+func TestSocketRefused(t *testing.T) {
+	// A lead can bind a socket in its folder without privilege. open(2) of a
+	// socket fails with ENXIO, which must still read as "not a regular file".
+	dir := t.TempDir()
+	l, err := net.Listen("unix", filepath.Join(dir, "s"))
+	if err != nil {
+		t.Skip("no unix sockets:", err)
+	}
+	defer l.Close()
+	r := openRoot(t, dir)
+	withDeadline(t, func() {
+		_, err := r.Open("s")
+		if !errors.Is(err, ErrNotRegular) || !errors.Is(err, unix.ENXIO) {
+			t.Errorf("Open: want ErrNotRegular and ENXIO, got %v", err)
+		}
+		if _, err := r.ReadFile("s", 10); !errors.Is(err, ErrNotRegular) {
+			t.Errorf("ReadFile: %v", err)
+		}
+	})
+}
+
 func TestDeviceRefused(t *testing.T) {
 	// A symlink-free path to a device needs root to create, so this uses the
 	// real /dev as the root: the null device is world readable.
@@ -295,6 +354,39 @@ func TestOpenRoot(t *testing.T) {
 		}
 		if got, err := r.ReadFile("f", 5); err != nil || string(got) != "x" {
 			t.Errorf("%q: %q, %v", p, got, err)
+		}
+		r.Close()
+	}
+}
+
+func TestOpenRootRefusesUncleanPath(t *testing.T) {
+	// With a last element "." or "..", the kernel follows a symlink before it
+	// (O_NOFOLLOW sees only the last element). Such a path, and any path that
+	// is not clean, is refused before the open.
+	base := t.TempDir()
+	write(t, filepath.Join(base, "real", "f"), "x")
+	mustSymlink(t, "real", filepath.Join(base, "link"))
+	link := filepath.Join(base, "link")
+	real := filepath.Join(base, "real")
+	for _, p := range []string{
+		link + "/.", link + "/./", link + "/..", link + "/../real",
+		real + "/.", real + "/..", real + "/../real",
+		base + "/./real", base + "//real", base + "/real/./",
+		".", "..", "./real",
+	} {
+		r, err := OpenRoot(p)
+		if r != nil {
+			r.Close()
+		}
+		if !errors.Is(err, ErrEscape) {
+			t.Errorf("%q: want ErrEscape, got %v", p, err)
+		}
+	}
+	for _, p := range []string{"/", "//", real + "/", real + "//"} {
+		r, err := OpenRoot(p)
+		if err != nil {
+			t.Errorf("%q: %v", p, err)
+			continue
 		}
 		r.Close()
 	}

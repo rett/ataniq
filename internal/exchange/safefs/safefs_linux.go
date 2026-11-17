@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,15 +25,19 @@ const dirBatch = 256
 
 // Root is a folder opened once and kept open. Every name is resolved from
 // the held descriptor, so a swap of the folder's path after [OpenRoot] has no
-// effect. A Root is safe for concurrent use; [Root.Close] waits for calls in
-// progress.
+// effect. A Root is safe for concurrent use; a call in progress keeps the
+// descriptor until it returns, even if [Root.Close] is called meanwhile.
 type Root struct{ f *os.File }
 
 // OpenRoot opens the folder at path. The final component must be a real
 // folder: a symlink there is refused with an error that matches [ErrEscape]
 // and unix.ELOOP. Trailing slashes are ignored, because a trailing slash
-// would make the kernel follow a symlink. The folders above the final
-// component belong to the owner and are resolved the ordinary way.
+// would make the kernel follow a symlink. Apart from them the path must be
+// clean, and its last element must not be "." or "..": with such an element
+// the kernel would reach the folder through a symlink that the final-component
+// rule does not see. Any other path is refused with [ErrEscape]. The folders
+// above the final component belong to the owner and are resolved the ordinary
+// way.
 //
 // OpenRoot returns [ErrUnsupported] when the kernel has no openat2.
 func OpenRoot(path string) (*Root, error) {
@@ -42,6 +47,10 @@ func OpenRoot(path string) (*Root, error) {
 	p := path
 	for len(p) > 1 && p[len(p)-1] == '/' {
 		p = p[:len(p)-1]
+	}
+	last := p[strings.LastIndexByte(p, '/')+1:]
+	if filepath.Clean(p) != p || last == "." || last == ".." {
+		return nil, pathError("open", path, ErrEscape)
 	}
 	var fd int
 	var err error
@@ -71,8 +80,8 @@ func OpenRoot(path string) (*Root, error) {
 	return &Root{f: os.NewFile(uintptr(fd), path)}, nil
 }
 
-// Close releases the folder. It waits for calls in progress. Calls made
-// after Close fail with [os.ErrClosed].
+// Close releases the folder. It does not wait: a call in progress keeps the
+// descriptor until it returns. Calls made after Close fail with [os.ErrClosed].
 func (r *Root) Close() error {
 	if r == nil || r.f == nil {
 		return os.ErrClosed
@@ -126,7 +135,11 @@ func mapErrno(err error) error {
 // Open opens the regular file rel for reading. The open uses openat2 from the
 // root with no symlink followed anywhere in the name, and with O_NONBLOCK, so
 // it does not block on a FIFO. The file is then checked with fstat: anything
-// but a regular file is closed and refused with [ErrNotRegular].
+// but a regular file is closed and refused with [ErrNotRegular]. The returned
+// file is in blocking mode: O_NONBLOCK is cleared once the file is known to be
+// regular. A socket, or
+// a device with no driver, cannot be opened at all: the kernel fails with ENXIO
+// or ENODEV, and the error then matches [ErrNotRegular] and the errno.
 //
 // rel must be relative with no ".." element, else [ErrEscape].
 func (r *Root) Open(rel string) (*os.File, error) {
@@ -138,6 +151,11 @@ func (r *Root) Open(rel string) (*os.File, error) {
 	err = r.withFd(func(fd int) error {
 		nfd, err := openat2(fd, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
 		if err != nil {
+			if err == unix.ENXIO || err == unix.ENODEV {
+				// A socket, or a device with no driver: never a regular
+				// file. Opening a regular file does not fail this way.
+				return pathError("open", rel, fmt.Errorf("%w: %w", ErrNotRegular, err))
+			}
 			return wrapErrno("open", rel, err)
 		}
 		var st unix.Stat_t
@@ -148,6 +166,12 @@ func (r *Root) Open(rel string) (*os.File, error) {
 		if st.Mode&unix.S_IFMT != unix.S_IFREG {
 			unix.Close(nfd)
 			return pathError("open", rel, ErrNotRegular)
+		}
+		// O_NONBLOCK was for the open only. Clear it, so that a caller who
+		// passes the file on does not hand over a non-blocking descriptor.
+		if err := unix.SetNonblock(nfd, false); err != nil {
+			unix.Close(nfd)
+			return pathError("open", rel, err)
 		}
 		file = os.NewFile(uintptr(nfd), rel)
 		return nil
@@ -224,7 +248,9 @@ func fstatat(dirfd int, name string, st *unix.Stat_t) error {
 // with [ErrLimit]; the returned Size holds what was counted up to then. Folders
 // nested deeper than [MaxDepth] are [ErrLimit] too. Both limits must be
 // greater than zero. The walk returns the first error it meets, so a tree
-// that the lead changes during the walk can fail with ENOENT or ENOTDIR.
+// that the lead changes during the walk can fail with ENOENT or ENOTDIR. A
+// lead can also make the walk fail on purpose, for example with a folder it
+// made unreadable: any error is a refusal.
 func (r *Root) TreeSize(rel string, lim SizeLimits) (Size, error) {
 	if lim.MaxBytes <= 0 || lim.MaxEntries <= 0 {
 		return Size{}, pathError("treesize", rel, errors.New("safefs: both size limits must be greater than zero"))
