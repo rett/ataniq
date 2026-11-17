@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"ataniq/internal/leadholder/fakeagent"
 )
 
@@ -175,7 +177,19 @@ func readPid(t *testing.T, path string) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	// Kill through a pidfd opened now: by the time the cleanup runs the pid
+	// may have been reaped and reused.
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		if err != unix.ESRCH {
+			t.Errorf("pidfd_open(%d): %v", pid, err)
+		}
+		return pid
+	}
+	t.Cleanup(func() {
+		_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
+		_ = unix.Close(fd)
+	})
 	return pid
 }
 

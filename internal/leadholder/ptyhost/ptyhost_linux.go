@@ -26,29 +26,82 @@
 // # Tree proof
 //
 // When the process runs in a control group of its own, the tree is gone when
-// that group holds only this process (proof starts with "cgroup"). "Of its
-// own" is judged once, in Start, before the child is created: the group's
-// cgroup.procs lists only this process. Otherwise the fallback is that no
-// process is left in the child's session (proof starts with "session"). That
-// is weaker: a descendant that started its own session escapes it, and
-// callers should label it so. Zombies do not count as present in the session
-// scan (they run nothing, and a process that adopts orphans reaps them on its
-// own schedule).
+// that group and every group below it hold only this process (proof starts
+// with "cgroup"). A process in a child group is not listed in its parent's
+// cgroup.procs, so the walk reads the cgroup.procs of every descendant group,
+// breadth first and bounded (Config.CgroupWalkLimit); a walk that hits its
+// bound, or cannot read a group, proves nothing and is counted. "Of its own"
+// is judged once, in Start, before the child is created: the group's
+// cgroup.procs lists only this process and the group has no child group.
+// Otherwise the fallback is that no process is left in the child's session
+// (proof starts with "session"). That is weaker: a descendant that started
+// its own session escapes it, and callers should label it so. Zombies do not
+// count as present in the session scan (they run nothing, and a process that
+// adopts orphans reaps them on its own schedule).
+//
+// # What the proofs fit
+//
+// Both proofs fit a holder that starts the agent directly and alone in its
+// control group: the child of Start is the agent (or the process that stays
+// the leader of the agent's whole tree), the holder is the only other process
+// in its group, and the agent's tree stays in the child's session or in that
+// group. The sandbox layout of the lead-hosting design (section 1.1) is not
+// that. A network helper runs in the holder's group, so Start does not judge
+// the group "of its own" and the cgroup method is not chosen; and the probe
+// gives the agent a new session, so the session proof, which is keyed on the
+// direct child's pid, never sees the agent's session. The sandbox work must add
+// what this package does not have: the caller naming the group to judge and
+// the pids it expects to find there (the holder, the helper), or the session
+// id to scan. Until then neither proof is evidence about a sandboxed tree, and
+// the holder must not use them as such.
 //
 // # Signalling and pid reuse
 //
-// The direct child is reaped only after it has been observed to exit (waitid
-// with WNOWAIT, then wait4), and every signal to its process group is sent
-// under the same mutex that guards the reap, so a pid is never signalled
-// after it was reaped. Session members other than the leader are signalled
-// through a pidfd after their session id was read again. After the leader was
-// reaped the session id is reserved by the kernel only while the session has
-// members: the scan taken at the moment the leader exits (before it is reaped)
-// latches the "session is empty" fact, and the latch is never undone, so a
-// later process that happens to get the same number and call setsid is not
-// taken for a member. The one remaining window is a session that empties
-// completely between two scans after the leader was reaped; it makes the
-// scan conservative (it can only report "not gone"), never wrongly "gone".
+// The kernel does not give a pid out again while some process still uses the
+// number as its process group id or session id, but only while the number is
+// in use. A session leader that was reaped, whose session then emptied
+// unobserved, leaves the number free: the next process that gets it and calls
+// setsid would look like a member of the old session, and a signal sent "to
+// the session" would hit a stranger, outside the agent's tree.
+//
+// So the direct child is not reaped when it exits. Its exit facts are taken
+// with waitid and WNOWAIT, and Wait returns at once, but the zombie stays: it
+// holds the pid, the group id and the session id. It is reaped only when the
+// session is proven empty (a scan that finds no live member while the zombie
+// holds the id is authoritative, because no process can join a session whose
+// leader is a zombie), when the control group is proven empty, or when the
+// host is closed (Close, the final release; the host then gives up acting on
+// the ids). Every signal sent by group or session id is sent under the mutex
+// that guards the reap and only while the child is not reaped. Session members
+// other than the leader are signalled through a pidfd after their session id
+// was read again. Once the child is reaped without the session having been
+// proven empty, TreeGone by the session method says "not gone" for good, and
+// Stop signals nothing by those ids.
+//
+// The facts and the zombie are visible to the caller: the child shows as
+// defunct in a process listing between its exit and the proof.
+//
+// # What the child inherits
+//
+// Start gives the child exactly the slave as descriptors 0, 1 and 2 and
+// exactly Config.Env. Two other things cross fork and exec on their own:
+//
+//   - Descriptors of 3 or above that the holder opened without close-on-exec
+//     (a socket handed over by the service manager, a descriptor inherited from
+//     the holder's own parent). This package and the standard library open
+//     their descriptors close-on-exec, so these are the ones the process was
+//     started with. They are the holder's to close: it calls CloseOnExecFrom(3)
+//     once at start, before the first Start.
+//   - Signals the holder ignores. The Go runtime restores the default
+//     disposition in the child for every signal it handles itself, but an
+//     ignored signal (SIG_IGN) is kept across fork and exec; the runtime also
+//     leaves SIGHUP and SIGINT ignored when the process started with them
+//     ignored, and signal.Ignore does it for any signal. syscall.ForkExec has
+//     no field to reset dispositions in the child, and doing it would need a
+//     fork and exec of our own written with raw system calls, unsafe code in
+//     the window between fork and exec, which this package does not contain.
+//     So the holder must not ignore signals the agent should not ignore, and
+//     asserts it at start with IgnoredSignals.
 package ptyhost
 
 import (
@@ -72,7 +125,10 @@ const (
 	ReadBufferSize = 64 << 10
 
 	// Terminal size limits, inclusive. Start and Resize refuse a size outside
-	// them; the caller clamps before it asks.
+	// them; the caller clamps before it asks. This layer is looser than the
+	// holder on purpose and keeps accepting a 2 by 1 terminal: the holder's own
+	// minimum is 20 by 5 (the lead-hosting design, section 1.3), and the
+	// holder's caller applies it before it calls Start or Resize.
 	MinCols = 2
 	MaxCols = 500
 	MinRows = 1
@@ -121,6 +177,10 @@ type Config struct {
 	// ProcScanLimit bounds the entries one /proc scan reads; zero means
 	// DefaultProcScanLimit. A scan that hits it proves nothing, and counts.
 	ProcScanLimit int
+	// CgroupWalkLimit bounds how many control groups one walk of the
+	// holder's group and the groups below it reads; zero means
+	// DefaultCgroupWalkLimit. A walk that hits it proves nothing, and counts.
+	CgroupWalkLimit int
 }
 
 // Exit is how the direct child ended.
@@ -157,6 +217,16 @@ type Counters struct {
 	// ScanErrors counts /proc entries that could not be read or parsed (an
 	// entry that vanished during the scan is not an error).
 	ScanErrors uint64
+	// CgroupTruncated counts walks of the control group tree that hit the
+	// group or process limit.
+	CgroupTruncated uint64
+	// CgroupErrors counts control groups that could not be read during a
+	// walk (one that vanished is not an error).
+	CgroupErrors uint64
+	// PidfdFailures counts pidfd_open and pidfd_send_signal calls that failed
+	// for a reason other than the process being gone (ESRCH): a process that
+	// should have been signalled may not have been.
+	PidfdFailures uint64
 }
 
 // Host is one running child on a pseudo-terminal.
@@ -167,6 +237,7 @@ type Host struct {
 	writeTmo time.Duration
 	procRoot string
 	scanMax  int
+	walkMax  int
 
 	wmu sync.Mutex // serialises Write (deadline and write together)
 
@@ -175,15 +246,28 @@ type Host struct {
 	cgroupProcs string
 	cgroupNote  string
 
-	mu     sync.Mutex // guards reaped and the signalling of the process group
+	// mu guards reaped and every signal sent by the child's group or session
+	// id, and the judging of the session and the control group: while a
+	// holder of mu sees reaped false, the zombie reserves the pid.
+	mu     sync.Mutex
 	reaped bool
 	exit   Exit
-	done   chan struct{}
+	// done is closed once the child has exited and exit is set; the zombie may
+	// still be held. release is closed (once, by letGo) when the zombie may be
+	// reaped.
+	done        chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+	killFor     time.Duration // how long Stop keeps killing after the grace
 
 	sessionEmpty atomic.Bool // latched: the session had no live member
 
 	scanTruncated atomic.Uint64
 	scanErrors    atomic.Uint64
+
+	cgroupTruncated atomic.Uint64
+	cgroupErrors    atomic.Uint64
+	pidfdFailures   atomic.Uint64
 
 	closeOnce sync.Once
 }
@@ -204,7 +288,10 @@ func Start(cfg Config) (*Host, error) {
 		writeTmo: cfg.WriteTimeout,
 		procRoot: cfg.ProcRoot,
 		scanMax:  cfg.ProcScanLimit,
+		walkMax:  cfg.CgroupWalkLimit,
 		done:     make(chan struct{}),
+		release:  make(chan struct{}),
+		killFor:  killWait,
 	}
 	if h.writeTmo <= 0 {
 		h.writeTmo = DefaultWriteTimeout
@@ -215,6 +302,9 @@ func Start(cfg Config) (*Host, error) {
 	if h.scanMax <= 0 {
 		h.scanMax = DefaultProcScanLimit
 	}
+	if h.walkMax <= 0 {
+		h.walkMax = DefaultCgroupWalkLimit
+	}
 	if cfg.NoCgroup {
 		h.cgroupNote = "control group method disabled"
 	} else {
@@ -222,7 +312,7 @@ func Start(cfg Config) (*Host, error) {
 		if root == "" {
 			root = "/sys/fs/cgroup"
 		}
-		h.cgroupProcs, h.cgroupNote = privateCgroup(h.procRoot, root, os.Getpid())
+		h.cgroupProcs, h.cgroupNote = privateCgroup(h.procRoot, root, os.Getpid(), h.walkMax)
 	}
 
 	masterFd, slaveFd, err := openPair()
@@ -369,16 +459,33 @@ func (h *Host) Resize(cols, rows int) error {
 
 // Close closes the master. The kernel then hangs up the terminal (SIGHUP to
 // the session leader's foreground group, and EOF-like errors for any reader
-// of the slave). It is safe to call more than once. After the child is
-// reaped and Close has returned, the host holds no goroutine and no
-// descriptor.
+// of the slave). Close is also the final release of the direct child's
+// zombie (see the package comment): it tries the tree proof one last time
+// and lets the zombie be reaped whether the tree is gone or not, and the
+// host stops acting on the child's group and session ids. It is safe to call
+// more than once. After the child has exited and Close has returned, the
+// host holds no goroutine and no descriptor.
 func (h *Host) Close() error {
 	var err error
-	h.closeOnce.Do(func() { err = h.master.Close() })
+	h.closeOnce.Do(func() {
+		err = h.master.Close()
+		// The last chance to prove the tree gone while the zombie still
+		// reserves its ids; then the zombie is let go, proven or not.
+		if h.hasExited() {
+			h.TreeGone()
+		}
+		h.letGo()
+	})
 	return err
 }
 
 // Counters returns the counted caps and failures.
 func (h *Host) Counters() Counters {
-	return Counters{ScanTruncated: h.scanTruncated.Load(), ScanErrors: h.scanErrors.Load()}
+	return Counters{
+		ScanTruncated:   h.scanTruncated.Load(),
+		ScanErrors:      h.scanErrors.Load(),
+		CgroupTruncated: h.cgroupTruncated.Load(),
+		CgroupErrors:    h.cgroupErrors.Load(),
+		PidfdFailures:   h.pidfdFailures.Load(),
+	}
 }
