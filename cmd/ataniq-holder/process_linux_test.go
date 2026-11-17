@@ -109,13 +109,20 @@ func TestHolderProcessSignals(t *testing.T) {
 	if strings.Join(rep.Env, "\x00") != strings.Join(a.env, "\x00") {
 		t.Errorf("the agent's environment is %q, want exactly %q", rep.Env, a.env)
 	}
-	// The holder itself ignores nothing; neither does the agent.
+	// The holder itself ignores nothing of its own, and neither does the
+	// agent. A signal the test process inherited as ignored (job control
+	// signals, when it was started from a command substitution, say) stays
+	// ignored over exec, in the holder and then in the agent, and is not the
+	// holder's doing: those bits are left out of the comparison. The signals
+	// the holder needs are checked on their own, and the test is skipped when
+	// the test process ignores one of them.
+	inherited := sigIgn(t, os.Getpid())
 	for _, who := range []struct {
 		name string
 		pid  int
 	}{{"holder", cmd.Process.Pid}, {"agent", rep.Pid}} {
-		if m := sigIgn(t, who.pid); m != 0 {
-			t.Errorf("the %s ignores signals (mask %x)", who.name, m)
+		if m := sigIgn(t, who.pid); m&^inherited != 0 {
+			t.Errorf("the %s ignores signals that the test process does not (mask %x, inherited %x)", who.name, m, inherited)
 		}
 	}
 	if rep.Ppid != cmd.Process.Pid {
