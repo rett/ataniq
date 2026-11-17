@@ -168,14 +168,14 @@ func TestAliasLinkToTheRoot(t *testing.T) {
 
 func TestAliasLinkThatCannotBeFollowed(t *testing.T) {
 	s := aliasScene(t)
-	s.symlink(".claude", "/home/owner/.claude")
+	s.symlink(".claude", "/opt/agent/.claude")
 	s.symlink("sub/.codex", "../../outside")
 	s.symlink(".agents", strings.Repeat("a/", 3000))
 	s.symlink("scripts", "")
 	s.commit("links that lead out\n")
 	s.publish(upstreamRef, s.cur)
 	// A changed link flags itself; an unchanged one does not.
-	s.symlink(".claude", "/home/other/.claude")
+	s.symlink(".claude", "/opt/other/.claude")
 	s.symlink("sub/.codex", "../../elsewhere")
 	s.symlink(".agents", strings.Repeat("b/", 3000))
 	s.put("src/ordinary.go", "package main\n")
