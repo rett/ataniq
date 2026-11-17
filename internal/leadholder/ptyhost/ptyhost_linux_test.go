@@ -1514,6 +1514,38 @@ func TestCgroupProofNeedsTheSessionEmptyToo(t *testing.T) {
 	}
 }
 
+// CgroupWalkLimit counts groups, but a real group directory holds about 44
+// files, so the check at Start must not count the files against the limit
+// (the review of the package, finding 3).
+func TestStartJudgesAGroupWithManyFilesByTheSameBoundAsTheWalk(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	procRoot, cgroupRoot, procsFile := fakeCgroup(t, self+"\n")
+	dir := filepath.Dir(procsFile)
+	for i := 1; i < 44; i++ {
+		writeFile(t, filepath.Join(dir, "cgroup.file"+strconv.Itoa(i)), "0\n")
+	}
+	if es, err := os.ReadDir(dir); err != nil || len(es) != 44 {
+		t.Fatalf("fake group holds %d entries (%v), want 44", len(es), err)
+	}
+	h, _ := start(t, "exit 0", opts{mod: func(c *Config) {
+		c.NoCgroup, c.ProcRoot, c.CgroupRoot, c.CgroupWalkLimit = false, procRoot, cgroupRoot, 6
+	}})
+	if h.TreeMethod() != "cgroup" {
+		t.Errorf("method %q, want cgroup with a group of 44 files and a limit of 6 groups (note %q)", h.TreeMethod(), h.cgroupNote)
+	}
+	waitExit(t, h)
+	if gone, proof := h.TreeGone(); !gone {
+		t.Errorf("the walk of the same group: TreeGone = false, %q", proof)
+	}
+	// More entries than the bound still proves nothing at Start.
+	for i := 0; i < 6+walkEntrySlack; i++ {
+		writeFile(t, filepath.Join(dir, "more"+strconv.Itoa(i)), "")
+	}
+	if _, note := privateCgroup(procRoot, cgroupRoot, os.Getpid(), 6); !strings.Contains(note, "more than") {
+		t.Errorf("a group over the entry bound: note %q", note)
+	}
+}
+
 func TestSharedOrMissingControlGroupFallsBackToTheSession(t *testing.T) {
 	self := strconv.Itoa(os.Getpid())
 	fall := func(t *testing.T, procRoot, cgroupRoot, wantNote string) {

@@ -28,9 +28,9 @@ const (
 	maxWalkPids = 1 << 16
 
 	// walkEntrySlack is how many directory entries beyond the group limit one
-	// listing of a group reads in the walk: a group directory holds about 44
-	// files (75 with the memory and pids controllers) besides its child
-	// groups.
+	// listing of a group reads, in the walk and in the check at Start: a group
+	// directory holds about 44 files (75 with the memory and pids controllers)
+	// besides its child groups, and the limit counts groups, not files.
 	walkEntrySlack = 256
 
 	// signalBatch is how many pidfds are open at once while the processes of
@@ -81,7 +81,7 @@ func privateCgroup(procRoot, cgroupRoot string, self, walkLimit int) (procs, not
 	if !selfSeen {
 		return "", "holder not listed in its control group"
 	}
-	has, err := hasChildGroup(filepath.Dir(procs), walkLimit)
+	has, err := hasChildGroup(filepath.Dir(procs), walkLimit+walkEntrySlack)
 	switch {
 	case err != nil:
 		return "", "control group directory not readable: " + err.Error()
