@@ -558,11 +558,11 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // the project must be defined, run by ataniq and shown starting, ready or
 // degraded and its own launch not failed or abandoned, else the launch is
 // refused with ErrLaunchNoParent, ErrLaunchParentManager or
-// ErrLaunchParentState. The intent then records the
-// parent's epoch (Intent.ParentEpoch) and the identity of the instance
-// (Intent.Identity); the instance number is the coordinator's epoch. A lead is
-// refused with ErrLaunchCoordinator while a coordinator of it that was
-// launched under one of its earlier epochs is not stopped, ended or desired.
+// ErrLaunchParentState. The intent then records the parent's epoch
+// (Intent.ParentEpoch) and the identity of the instance (Intent.Identity); the
+// instance number is the coordinator's epoch. A lead is refused with
+// ErrLaunchCoordinator while a coordinator of it that was launched under one
+// of its earlier epochs is not stopped, ended or desired.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 	return r.BeginLaunchWith(role, LaunchOptions{})
 }

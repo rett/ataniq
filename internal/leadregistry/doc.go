@@ -49,10 +49,10 @@
 // and fable when empty); its other profile fields are optional. BeginLaunch
 // admits a coordinator only when, in addition to the gate of every role, the
 // parent lead (the lead of its project) is defined, run by ataniq and shown
-// starting, ready or degraded, and whose own launch did not fail and was not
-// abandoned; the intent then records the parent's epoch and
-// the identity "<project>-lead@e<parent epoch>:coord:<feature>:<n>". The other
-// direction: BeginLaunch of a lead is refused with ErrLaunchCoordinator while a
+// starting, ready or degraded, and its own launch did not fail and was not
+// abandoned; the intent then records the parent's epoch and the identity
+// "<project>-lead@e<parent epoch>:coord:<feature>:<n>". The other direction:
+// BeginLaunch of a lead is refused with ErrLaunchCoordinator while a
 // coordinator of it, recorded under an earlier epoch of the lead, is not
 // stopped, ended or desired (never launched). CoordinatorStopped says whether
 // an instance is proven stopped, and Coordinators lists those of a lead. The

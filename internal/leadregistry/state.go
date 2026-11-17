@@ -126,8 +126,8 @@ func reduce(cur Entry, exists bool, all map[leadrole.Role]Entry, rec record) (En
 // ataniq, shown desired, stopped or ended, and an epoch that can grow. A
 // coordinator also needs its parent lead defined, run by ataniq and shown
 // starting, ready or degraded, and its launch intent not failed or abandoned.
-// A lead also needs every coordinator recorded
-// under one of its earlier epochs stopped, ended or desired (never launched).
+// A lead also needs every coordinator recorded under one of its earlier
+// epochs stopped, ended or desired (never launched).
 func launchGate(e Entry, all map[leadrole.Role]Entry) error {
 	if e.pending() {
 		return ErrLaunchPending
