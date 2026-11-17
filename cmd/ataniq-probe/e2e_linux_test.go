@@ -45,6 +45,7 @@ type runOpts struct {
 	leak    int      // inherited extra descriptors from 4 up (descriptor 3 is the report pipe)
 	exit    int      // the agent's exit status
 	hold    bool     // the agent waits for a byte on descriptor 0 after READY
+	rawEnv  []string // when set, the probe is executed with exactly these entries, after baseEnv's (see modeRawEnv)
 }
 
 // probeRun is a started probe.
@@ -78,6 +79,11 @@ func start(t *testing.T, o runOpts, args []string, out string, withReport bool) 
 	r := &probeRun{t: t, env: baseEnv(o.mode), stderr: &bytes.Buffer{}, out: out}
 	cmd := exec.Command(testExe(t), args...)
 	cmd.Env = r.env
+	if o.rawEnv != nil {
+		// os/exec drops a duplicated name, so a wrapper (TestMain) executes
+		// the probe with the block as it is.
+		cmd.Env = []string{modeEnv + "=" + modeRawEnv, rawEnvVar + "=" + strings.Join(append(baseEnv(o.mode), o.rawEnv...), "\x1f")}
+	}
 	var closeAfter []*os.File
 	if withReport {
 		rd, wr, err := os.Pipe()
@@ -584,4 +590,35 @@ func TestInsideFailureWithATerminalStartsNothing(t *testing.T) {
 	if !bytes.Contains(buf[:n], []byte("the inside checks did not pass")) {
 		t.Errorf("the terminal got %q", buf[:n])
 	}
+}
+
+// TestEnvironmentIsWhatGoReads pins what both modes pass on: the environment
+// as os.Environ reads it, so a name that appears twice is passed on once, with
+// its first value, and an entry without "=" is passed on as it is. The agent
+// reads the kernel's copy of its environment, which os.Environ would hide.
+func TestEnvironmentIsWhatGoReads(t *testing.T) {
+	extra := []string{"NOEQ", "A=1", "A=2", "B=x"}
+	check := func(t *testing.T, a agentReport) {
+		t.Helper()
+		got := sorted(a.EnvRaw)
+		want := sorted([]string{modeEnv + "=" + modeFake, "FOO=bar", "EMPTY=", "NOEQ", "A=1", "B=x"})
+		if !slices.Equal(got, want) {
+			t.Errorf("the agent's environment is %q, want %q", got, want)
+		}
+	}
+	t.Run("inside", func(t *testing.T) {
+		r := startInside(t, runOpts{mode: modeFake, rawEnv: extra}, writeSpec(t, testSpec(t)), "3")
+		r.readReport()
+		if code := r.wait(); code != 0 {
+			t.Fatalf("exit %d: %s", code, r.stderr)
+		}
+		check(t, r.agent())
+	})
+	t.Run("pass-fds", func(t *testing.T) {
+		r := startPass(t, runOpts{mode: modeFake, rawEnv: extra})
+		if code := r.wait(); code != 0 {
+			t.Fatalf("exit %d: %s", code, r.stderr)
+		}
+		check(t, r.agent())
+	})
 }

@@ -25,7 +25,7 @@ func hostPassDeps() passDeps {
 // runPassFDs is the pass-through mode. It opens each file, checks its type,
 // places each at exactly its number without close-on-exec, makes every other
 // descriptor above 2 close-on-exec (so the execve closes it) and executes the
-// command with the environment unchanged. Any error is exit 98 with one line,
+// command with the environment as Go reads it (os.Environ). Any error is exit 98 with one line,
 // and nothing is executed.
 func runPassFDs(args []string, stderr io.Writer, d passDeps) int {
 	a, err := parsePassFDs(args)

@@ -45,7 +45,8 @@ func hostInsideDeps() insideDeps {
 // report descriptor close-on-exec; read the spec; run the inside checks; write
 // the report line, in full; decide from the report; give the agent its
 // session; close the other descriptors; execute the agent. It never issues
-// TIOCSTI, never creates or writes a file, and never changes the environment.
+// TIOCSTI, never creates or writes a file, and never adds, removes or changes
+// an environment variable (what it passes on is os.Environ, see doc.go).
 func runInside(args []string, stderr io.Writer, d insideDeps) int {
 	a, err := parseInside(args)
 	if err != nil {

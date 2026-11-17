@@ -17,7 +17,8 @@ type execFunc func(path string, argv, env []string) error
 
 // execProgram closes the descriptors above 2 (see closeOnExecAbove2) and
 // executes argv[0] with env, which the caller takes from the process
-// unchanged. It returns the exit status of a failure, with one line on
+// (os.Environ: a name that appears twice is passed on once, with its first
+// value). It returns the exit status of a failure, with one line on
 // standard error; on success it does not return.
 func execProgram(what string, argv, env []string, stderr io.Writer, exec execFunc, closeAbove2 func() error) int {
 	if err := closeAbove2(); err != nil {

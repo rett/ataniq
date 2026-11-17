@@ -45,14 +45,16 @@
 //     this step. A failure to get the terminal when there is one is exit 98.
 //  6. Makes every descriptor above 2 close-on-exec, so that the execve closes
 //     it (the agent keeps none), and executes AGENT with the process's
-//     environment unchanged. The agent starts as the probe's own process, so
-//     the report descriptor reaches end-of-file at the exec. A failure to
-//     execute is exit 98.
+//     environment as Go reads it (see below). The agent starts as the probe's
+//     own process, so the report descriptor reaches end-of-file at the exec.
+//     A failure to execute is exit 98.
 //
-// The probe never issues TIOCSTI, never creates or writes a file, never changes
-// the environment, and starts no program but the agent. Where it passes on the
-// environment, that is what Go reads from the process (os.Environ): an entry
-// without "=" or a name that appears twice is not passed on.
+// The probe never issues TIOCSTI, never creates or writes a file, never adds,
+// removes or changes an environment variable, and starts no program but the
+// agent. The environment it passes on is what Go reads from the process
+// (os.Environ), and that is not always the block it was given: a name that
+// appears twice is passed on once, with its first value, and an entry without
+// "=" is passed on as it is. Both modes do the same.
 //
 // # Pass-through mode
 //
@@ -72,7 +74,7 @@
 // first. Each file is then placed at exactly its number without close-on-exec,
 // every other descriptor above 2 is made close-on-exec, and COMMAND is
 // executed, with ARGV (whose first element is COMMAND's own) and the
-// environment unchanged. Any error is exit 98 with one line, and nothing is
+// environment as Go reads it (see above). Any error is exit 98 with one line, and nothing is
 // executed.
 //
 // # Descriptors are closed by the exec

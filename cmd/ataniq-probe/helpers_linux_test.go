@@ -27,6 +27,11 @@ const (
 	modeEnv  = "ATANIQ_PROBE_TEST_MODE"
 	modeFake = "fake"
 	modeReal = "real"
+	// modeRawEnv executes the test binary again with the environment block
+	// that rawEnvVar holds, entries separated by \x1f, duplicates and entries
+	// without "=" included.
+	modeRawEnv = "rawenv"
+	rawEnvVar  = "ATANIQ_PROBE_TEST_RAWENV"
 )
 
 // testSpec is a valid spec of invented paths. For the fake system it is
@@ -181,10 +186,32 @@ type agentReport struct {
 	SID      int       `json:"sid"`
 	PGID     int       `json:"pgid"`
 	Env      []string  `json:"env"`
+	EnvRaw   []string  `json:"env_raw"` // /proc/self/environ as it is, without os.Environ's reading
 	FDs      []agentFD `json:"fds"`
 	Args     []string  `json:"args"`
 	TIOCGSID int       `json:"tiocgsid"`
 	DevTTY   bool      `json:"dev_tty"`
+}
+
+// rawEnviron reads the environment block of the process as the kernel holds
+// it, with plain system calls: os.Environ drops the later of two entries of
+// one name, which would hide what the probe passed on.
+func rawEnviron() []string {
+	fd, err := unix.Open("/proc/self/environ", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil
+	}
+	defer unix.Close(fd)
+	var data []byte
+	buf := make([]byte, 4096)
+	for len(data) < 1<<20 {
+		n, err := unix.Read(fd, buf)
+		if n <= 0 || err != nil {
+			break
+		}
+		data = append(data, buf[:n]...)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00")
 }
 
 // agentMain is the trivial agent: the test binary again. It writes what it
@@ -197,6 +224,7 @@ func agentMain(args []string) int {
 	out, exit, hold := args[0], 0, args[2] == "1"
 	fmt.Sscan(args[1], &exit)
 	r := agentReport{PID: unix.Getpid(), PGID: unix.Getpgrp(), Env: os.Environ(), Args: args, TIOCGSID: -1}
+	r.EnvRaw = rawEnviron()
 	r.SID, _ = unix.Getsid(0)
 	if sid, err := unix.IoctlGetInt(0, unix.TIOCGSID); err == nil {
 		r.TIOCGSID = sid
@@ -246,6 +274,15 @@ func TestMain(m *testing.M) {
 	mode := os.Getenv(modeEnv)
 	if mode == "" {
 		os.Exit(m.Run())
+	}
+	if mode == modeRawEnv {
+		env := strings.Split(os.Getenv(rawEnvVar), "\x1f")
+		exe, err := os.Executable()
+		if err == nil {
+			err = unix.Exec(exe, os.Args, env)
+		}
+		fmt.Fprintln(os.Stderr, "test wrapper:", err)
+		os.Exit(120)
 	}
 	// The test binary as the probe, or as the agent the probe executes. The
 	// variable stays in the environment the agent gets; the tests compare
