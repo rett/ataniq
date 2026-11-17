@@ -65,7 +65,7 @@ func TestManualCoversEveryCaseAndEvidenceFile(t *testing.T) {
 			t.Errorf("evidence file %s is not described", name)
 		}
 	}
-	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build", "git_meta", harness.StepBindSources} {
+	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build", harness.StepBindSources} {
 		if !strings.Contains(m, key) {
 			t.Errorf("the manual does not mention %s", key)
 		}

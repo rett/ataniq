@@ -193,35 +193,34 @@ func TestInputsRefusals(t *testing.T) {
 		{"relative git metadata folder", Claude, func(in *Inputs) { in.GitMeta = "gitmeta" }, "git metadata folder", "absolute"},
 		{"unclean git metadata folder", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/gitmeta/" }, "git metadata folder", "clean"},
 		{"git metadata folder is the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/home" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/home/gitmeta" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the config folder", Claude, func(in *Inputs) {
 			in.GitMeta = "/srv/state/leads/arc-lead/config/claude/gitmeta"
-		}, "git metadata folder", "lead can write"},
+		}, "git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the tree", Codex, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/tree/.git-meta" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder is the tree's .git", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/tree/.git" },
-			"git metadata folder", "lead can write"},
-		{"git metadata folder in the records folder", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/q", "/ataniq/records"
-			in.GitMeta = "/srv/state/leads/arc-lead/q/gitmeta"
-		}, "git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder above the tree", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder above the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state" },
-			"git metadata folder", "lead can write"},
-		{"git metadata folder in the other runtime's folder", Claude, func(in *Inputs) {
-			in.GitMeta = "/srv/state/leads/arc-lead/config/codex/gitmeta"
-		}, "git metadata folder", "never-mounted"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder outside the state root", Claude, func(in *Inputs) { in.GitMeta = "/var/lib/other/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder beside the lead's folders under a sibling name", Claude, func(in *Inputs) {
+			in.GitMeta = "/srv/state/leads/arc-lead/gitmeta2"
+		}, "git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the owner's checkout", Claude, func(in *Inputs) { in.GitMeta = "/home/owner/work/ataniq/gitmeta" },
-			"git metadata folder", "never-mounted"},
-		{"git metadata folder above the owner's .ssh", Claude, func(in *Inputs) { in.GitMeta = "/home/owner" },
-			"git metadata folder", "never-mounted"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in another lead's state", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/other-lead/gitmeta" },
-			"bind /work/ataniq/.git/config", "another lead's state"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in another project's mirror", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/mirrors/other.git" },
-			"bind /work/ataniq/.git/config", "another project's mirror"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder under a never-mounted path", Claude, func(in *Inputs) {
+			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/gitmeta")
+		}, "bind /work/ataniq/.git/config", "never-mounted"},
 		// Another lead's or another project's state.
 		{"agent install in another lead's claude login", Claude, func(in *Inputs) {
 			in.AgentInstall = "/srv/state/leads/other-lead/config/claude"
@@ -255,8 +254,10 @@ func TestInputsRefusals(t *testing.T) {
 			"bind /ataniq/probe", "above the never-mounted"},
 		{"resolv.conf is the file system root", Claude, func(in *Inputs) { in.ResolvConf = "/" },
 			"bind /etc/resolv.conf", "above the never-mounted"},
-		{"state root inside the owner's checkout", Claude, func(in *Inputs) { in.StateRoot = "/home/owner/work/ataniq/state" },
-			"bind /home/lead", "below the never-mounted"},
+		{"state root inside the owner's checkout", Claude, func(in *Inputs) {
+			in.StateRoot = "/home/owner/work/ataniq/state"
+			in.GitMeta = in.Layout().GitMeta()
+		}, "bind /home/lead", "below the never-mounted"},
 		{"never-mounted path inside a state folder", Claude, func(in *Inputs) {
 			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/tree/.git/hooks/x")
 		}, "bind /work/ataniq", "above the never-mounted"},

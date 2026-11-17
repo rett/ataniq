@@ -71,11 +71,10 @@ const (
 	GitMetaInfo   = "info"
 )
 
-// GitMeta is the default host folder of Ataniq's copy of the tree's protected
-// git files: <state>/leads/<role>/gitmeta, with config (a file), hooks/ and
-// info/ inside. It lies outside the home, the config folder and the tree, so
-// the lead cannot write it. The inputs name the folder they use (Inputs.GitMeta);
-// this is where a caller puts it by default.
+// GitMeta is the host folder of Ataniq's copy of the tree's protected git
+// files: <state>/leads/<role>/gitmeta, with config (a file), hooks/ and info/
+// inside. It lies outside the home, the config folder and the tree, so the
+// lead cannot write it. Inputs.GitMeta must be this path.
 func (l Layout) GitMeta() string { return path.Join(l.LeadDir(), "gitmeta") }
 
 // GitMetaSource is the source, below the folder gitMeta, of one path of

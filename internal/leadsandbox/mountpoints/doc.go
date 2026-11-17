@@ -53,9 +53,11 @@
 // .git/info are bound read-only over the tree, so their sources must not be
 // the tree's own files: a link a lead planted there would be followed at the
 // next start. Their sources are the entries of an Ataniq-owned folder,
-// profile.Inputs.GitMeta (by default <state>/leads/<role>/gitmeta), which lies
-// outside the home, the config folder and the tree. The mount points in the
-// tree are still made and checked as before; they are only the targets.
+// profile.Inputs.GitMeta, which the profile requires to be the layout's folder
+// <state>/leads/<role>/gitmeta: outside the home, the config folder and the
+// tree, and below the state root, so the lookup from the state root without
+// links covers every component of its path. The mount points in the tree are
+// still made and checked as before; they are only the targets.
 //
 // [Prepare] fills the folder once, before the lead's first run, and makes it
 // exclusively with mode 0700 (its files 0600):

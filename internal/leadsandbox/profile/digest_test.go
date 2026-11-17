@@ -32,11 +32,11 @@ func otherHost(rt Runtime) Inputs {
 	in.LeadSkills = "/opt/ataniq/skills"
 	in.InstructionFile = "/opt/ataniq/instructions.md"
 	in.GitIdentityFile = "/run/ataniq/gitconfig"
-	in.GitMeta = "/var/lib/other/gitmeta/second-lead"
 	in.QargiInstall = "/opt/qargi"
 	in.AssignmentDir = "/run/ataniq/assignment"
 	in.ProjectionDir = "/run/ataniq/projection"
 	in.ResolvConf = "/run/ataniq/resolv.conf"
+	in.GitMeta = in.Layout().GitMeta()
 	in.NeverMounted = []string{"/home/someone/checkout", "/home/someone/.ssh"}
 	in.Term, in.ColorTerm, in.Lang, in.TZ = "screen", "", "en_US.UTF-8", "Asia/Tokyo"
 	in.LeadIdentity = "another-project-lead"
@@ -97,7 +97,6 @@ func TestDigestIsIndependentOfHostAndLead(t *testing.T) {
 		{"role", func(in *Inputs) { in.Role = "other"; in.GitMeta = in.Layout().GitMeta() }},
 		{"project", func(in *Inputs) { in.Project = "other" }},
 		{"agent install", func(in *Inputs) { in.AgentInstall = "/a/b" }},
-		{"git metadata folder", func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/gitmeta-2" }},
 		{"never-mounted paths", func(in *Inputs) { in.NeverMounted = []string{"/x"} }},
 		{"TERM", func(in *Inputs) { in.Term = "linux" }},
 		{"COLORTERM unset", func(in *Inputs) { in.ColorTerm = "" }},

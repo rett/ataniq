@@ -38,11 +38,11 @@
 // The rule moved three rows. The tree's .git/config, .git/hooks and .git/info
 // are still bound read-only at their places inside, over the tree, but their
 // sources are no longer the tree's own files: they are the entries config
-// (a file), hooks and info (folders) of an Ataniq-owned folder, [Inputs.GitMeta]
-// (the default place is [Layout.GitMeta], <state>/leads/<role>/gitmeta), with
-// the source role [RoleGitMeta]. The folder is required, and is refused when
-// it is, lies in or lies above the home, the config folder, the tree or the
-// records folder. Another package fills it before the lead's first run (the
+// (a file), hooks and info (folders) of an Ataniq-owned folder, [Inputs.GitMeta],
+// with the source role [RoleGitMeta]. The folder is required and must be
+// [Layout.GitMeta], <state>/leads/<role>/gitmeta: beside the lead's folders, below
+// the state root, and covered by the rules about another lead's state. Another
+// package fills it before the lead's first run (the
 // mountpoints package: a copy of the clone's config and of the regular files
 // of .git/info, and an empty hooks folder).
 //

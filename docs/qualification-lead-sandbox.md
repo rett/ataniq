@@ -128,10 +128,12 @@ caller's environment or home.
   mirrors/<project>.git
   ```
 
-  The run makes one more folder, `leads/<role>/gitmeta` (or the folder the
-  configuration names in `sources.git_meta`), when the configuration says no
-  lead has run. Do not make it by hand: its parent must exist and be the
-  caller's, and the folder itself must not exist before the first run.
+  The run makes one more folder, `leads/<role>/gitmeta`, when the configuration
+  says no lead has run. It is always that folder: the configuration has no key
+  for another one, because a folder elsewhere could lie beside or above a
+  folder the lead writes, and nothing would look at its parents. Do not make it
+  by hand: its parent (`leads/<role>`) must exist and be the caller's, and the
+  folder itself must not exist before the first run.
 
   The tree is a full clone (a `.git` folder, not a worktree, with no
   alternates), not below another repository. Create it with an ordinary
@@ -222,7 +224,7 @@ managed-settings file with it and refuses a difference.
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
 | `identity`, `owner_user` | `root` (the default) or `owner`, which needs the owner's login name; `owner_user` is given for `owner` only. |
-| `sources` | Every host source of the profile (see above). `git_meta` is optional: the Ataniq-owned folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info` (default `<state root>/leads/<role>/gitmeta`). It is checked like the other sources: the profile refuses a folder that is, lies in or lies above the lead's home, config folder, tree or records folder, or on a never-mounted path, and it must not overlap the campaign folder. Its parent folder must exist. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
+| `sources` | Every host source of the profile (see above). There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
 | `never_mounted` | Host paths no bind source may equal, lie below or lie above. At least one. |
 | `scratch_command` | The command run inside, as an absolute argv. Absent: `/bin/sh -c 'echo ataniq-leadsandbox-scratch-marker'`. |
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |

@@ -141,16 +141,6 @@ type Sources struct {
 	GitIdentityFile string `json:"git_identity_file"`
 	QargiInstall    string `json:"qargi_install"`
 
-	// GitMeta is the Ataniq-owned folder of the copy of the tree's .git/config,
-	// .git/hooks and .git/info (rule G1: the tree's own files are never a bind
-	// source). Absent means the layout's default, <state root>/leads/<role>/gitmeta.
-	// A value is checked like every other source: the profile refuses a folder
-	// that is, lies in or lies above the lead's home, config folder, tree or
-	// records folder, or on a never-mounted path, and the campaign must not
-	// overlap it. Its parent folder must exist and be the caller's: the run
-	// makes the folder itself, once (see no_lead_has_run).
-	GitMeta string `json:"git_meta,omitempty"`
-
 	QargiRecords       string `json:"qargi_records,omitempty"`
 	QargiRecordsInside string `json:"qargi_records_inside,omitempty"`
 
@@ -402,7 +392,6 @@ func (c *Config) checkCampaign(in profile.Inputs) error {
 		"sources.git_identity_file": c.Sources.GitIdentityFile, "sources.qargi_install": c.Sources.QargiInstall,
 		"sources.qargi_records": c.Sources.QargiRecords, "sources.assignment_dir": c.Sources.AssignmentDir,
 		"sources.projection_dir": c.Sources.ProjectionDir, "executables.probe": c.Executables.Probe,
-		"sources.git_meta": c.Sources.GitMeta,
 	} {
 		if p != "" && related(p, c.Campaign) {
 			return configErr(name, "overlaps the campaign folder")
@@ -449,12 +438,9 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 	return in, nil
 }
 
-// gitMeta is the git metadata folder: the configured one, else the layout's
-// default below the scratch state root.
+// gitMeta is the git metadata folder, the layout's own below the scratch state
+// root: the configuration has no key for it.
 func (c *Config) gitMeta() string {
-	if c.Sources.GitMeta != "" {
-		return c.Sources.GitMeta
-	}
 	return profile.Layout{StateRoot: c.State.Root, Role: c.State.Role, Project: c.State.Project}.GitMeta()
 }
 

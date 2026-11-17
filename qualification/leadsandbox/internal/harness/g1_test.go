@@ -180,46 +180,15 @@ func TestGitMetaFolderIsMadeOnceAndBoundOverTheTree(t *testing.T) {
 	}
 }
 
-func TestGitMetaKeyNamesAnotherFolder(t *testing.T) {
+// The git metadata folder is the layout's own, <state>/leads/<role>/gitmeta:
+// the configuration has no key that names another one (rule G1: a folder
+// elsewhere could lie beside or above a folder the lead writes, and only its
+// last component would be looked at).
+func TestGitMetaHasNoKeyInTheConfiguration(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
-	approved(f)
 	f.Mkdir(f.Base+"/ataniq-owned", 0o700)
-	gm := f.Base + "/ataniq-owned/gitmeta"
-	f.Config.Sources.GitMeta = gm
-	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
-	mustNoErr(t, r)
-	if r.out.StepFailed {
-		t.Fatalf("steps: %+v", r.out.Summary.Steps)
-	}
-	if got := strings.Join(f.Names(gm), ","); got != "config,hooks,info" {
-		t.Errorf("the folder holds %s", got)
-	}
-	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
-		t.Errorf("the default folder was made: %v", err)
-	}
-	if src, _ := mountSource(r.out, profile.TreeInside(f.Project)+"/.git/config"); src != gm+"/config" {
-		t.Errorf("config is bound from %s", src)
-	}
-}
-
-func TestGitMetaKeyIsValidatedLikeASource(t *testing.T) {
-	f := harnesstest.New(t, profile.Claude)
-	l := f.Layout()
-	cfg, _ := l.ConfigDir(profile.Claude)
-	for _, tc := range []struct{ name, value, want string }{
-		{"relative", "gitmeta", "git metadata folder"},
-		{"unclean", f.Base + "/a/../gitmeta", "git metadata folder"},
-		{"in the tree", l.Tree() + "/gitmeta", "tree"},
-		{"in the home", l.Home() + "/gitmeta", "home"},
-		{"in the config folder", cfg + "/gitmeta", "config folder"},
-		{"is the tree", l.Tree(), "tree"},
-		{"above the tree", l.LeadDir(), "lead's"},
-		{"in the campaign", f.Campaign + "/gitmeta", "campaign"},
-		{"never mounted", f.Base + "/owner/work/gitmeta", "never-mounted"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["git_meta"] = tc.value }), tc.want)
-		})
+	for _, value := range []string{f.Base + "/ataniq-owned/gitmeta", f.Layout().GitMeta(), ""} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["git_meta"] = value }), `sources has the unknown key "git_meta"`)
 	}
 }
 
