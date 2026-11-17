@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -61,6 +62,33 @@ func openFolder(dir string, root *safefs.Root) (folder, error) {
 }
 
 func (f folder) close() error { return unix.Close(f.fd) }
+
+// lockWait is how long lock waits for another writer of the folder.
+const lockWait = 30 * time.Second
+
+// lock takes an exclusive flock on the folder's descriptor, which excludes
+// every other descriptor of the folder (another Store, another process). The
+// lock is released by unlock, or when the descriptor is closed or the process
+// ends. It waits at most lockWait.
+func (f folder) lock() error {
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := unix.Flock(f.fd, unix.LOCK_EX|unix.LOCK_NB)
+		switch {
+		case err == nil:
+			return nil
+		case err != unix.EINTR && err != unix.EWOULDBLOCK:
+			return err
+		}
+		if time.Now().After(deadline) {
+			return errors.New("another writer holds the folder lock")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// unlock releases the lock of lock.
+func (f folder) unlock() { unix.Flock(f.fd, unix.LOCK_UN) }
 
 // create writes data to a new file called name in the folder. The data goes
 // to a temporary name first (created exclusively, mode 0600, no symlink

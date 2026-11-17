@@ -95,7 +95,12 @@
 //
 // A file is written to a temporary name, synced, and given its name without
 // replacing anything that is there; this package never overwrites or deletes a
-// record. Records are read through safefs: regular files only, at most 1 MiB,
+// record. The order of the names is the order of the records, and it does not
+// depend on a clock: a write holds an exclusive lock on the folder (shared by
+// every Store on it, in any process), reads the newest record name in the
+// folder, and names the new record later than it when the writer's clock is
+// not later. Names can therefore run ahead of the clock after a step of it.
+// Records are read through safefs: regular files only, at most 1 MiB,
 // no symlink followed, no block on a FIFO. A file whose name is not a record's
 // name is ignored. A file with a record's name that cannot be read, or that
 // does not decode strictly (an unknown field, a wrong version, a missing

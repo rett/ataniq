@@ -50,12 +50,20 @@ var ErrStore = errors.New("intake: records store")
 // record's name is ignored. A file with a record's name that cannot be read or
 // decoded is an error that names it, and no later step goes on without it:
 // a record that cannot be read could be the failure that withdraws a pass.
+//
+// The order of the names is the order of the records, and the newest
+// verification record for a tip decides. It does not depend on a clock: a
+// write takes an exclusive lock on the folder (shared by every Store on it,
+// in any process), reads the newest record name in the folder, and gives the
+// new record a time later than it when the writer's clock is not. Names can
+// run ahead of the clock after a step of it. A record's own time field is the
+// writer's clock and is not used for the order.
 type Store struct {
 	root *safefs.Root
 	dir  folder
 
-	mu   sync.Mutex
-	last time.Time // the newest name time handed out
+	mu   sync.Mutex // held for the whole of a write, with the folder lock
+	last time.Time  // the newest name time handed out
 	// now is the clock of the names of verification records.
 	now func() time.Time
 }
@@ -85,28 +93,64 @@ func (s *Store) Close() error {
 	return errors.Join(s.root.Close(), s.dir.close())
 }
 
-// nameTime returns t in UTC, moved forward by a nanosecond when needed so that
-// every name of this Store is later than the one before it: the order of
-// names is the order of records.
-func (s *Store) nameTime(t time.Time) time.Time {
+// lock takes the lock of the folder for one write: the mutex of this Store
+// and an exclusive lock on the folder that other Stores, in this process or
+// another, also take. The names of a write are chosen and written under it,
+// so that no write can choose a name earlier than a record that is already
+// there. The returned function releases both.
+func (s *Store) lock() (unlock func(), err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.dir.lock(); err != nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("%w: lock the folder: %w", ErrStore, err)
+	}
+	return func() {
+		s.dir.unlock()
+		s.mu.Unlock()
+	}, nil
+}
+
+// nameTime returns t in UTC, moved forward by a nanosecond when needed so that
+// it is later than every name time that this Store handed out and later than
+// the newest record name in the folder, whatever the clock says: the order of
+// names is the order of records. A clock that stepped back, or a writer whose
+// clock is behind, therefore gives names that run ahead of the clock. The
+// caller holds the lock.
+func (s *Store) nameTime(t time.Time) (time.Time, error) {
 	t = t.UTC().Truncate(time.Nanosecond)
 	if !t.After(s.last) {
 		t = s.last.Add(time.Nanosecond)
 	}
+	files, err := s.recordFiles()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if n := len(files); n > 0 {
+		newest, err := time.Parse(nameTimeFormat, recordName.FindStringSubmatch(files[n-1].name)[1])
+		if err != nil {
+			return time.Time{}, fmt.Errorf("%w: record %s has no valid time in its name", ErrStore, files[n-1].name)
+		}
+		if !t.After(newest) {
+			t = newest.Add(time.Nanosecond)
+		}
+	}
 	s.last = t
-	return t
+	return t, nil
 }
 
 // newBase returns the part of a file name that the record file and its
-// output file share: time, kind and a random part.
+// output file share: time, kind and a random part. The caller holds the
+// lock.
 func (s *Store) newBase(t time.Time, kind string) (string, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("%w: no random bytes: %w", ErrStore, err)
 	}
-	return s.nameTime(t).Format(nameTimeFormat) + "-" + kind + "-" + hex.EncodeToString(b[:]), nil
+	nt, err := s.nameTime(t)
+	if err != nil {
+		return "", err
+	}
+	return nt.Format(nameTimeFormat) + "-" + kind + "-" + hex.EncodeToString(b[:]), nil
 }
 
 // put writes data under a new name, exclusively and synced.
@@ -156,6 +200,11 @@ func (s *Store) PutVerification(project string, res verify.Result, gates []verif
 	if err != nil {
 		return VerificationRecord{}, fmt.Errorf("%w: %w", ErrStore, err)
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return VerificationRecord{}, err
+	}
+	defer unlock()
 	base, err := s.newBase(s.now(), "verification")
 	if err != nil {
 		return VerificationRecord{}, err
@@ -180,6 +229,11 @@ func (s *Store) putIntake(rec IntakeRecord) error {
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrStore, err)
 	}
+	unlock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	base, err := s.newBase(rec.Time, "intake")
 	if err != nil {
 		return err
