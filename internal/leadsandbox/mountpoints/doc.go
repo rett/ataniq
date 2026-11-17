@@ -38,7 +38,10 @@
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
 //     the profile's never-mounted, other-runtime, other-lead and
 //     other-project checks again on the real paths, so that a link cannot
-//     hide a never-mounted folder.
+//     hide a never-mounted folder. A never-mounted path that is a dangling
+//     link is resolved through the link's target, or reported as unreadable;
+//     [ResolveSourcesWith] takes the reader of links where the resolver is not
+//     the real file system.
 //
 // # What the holder must do
 //
