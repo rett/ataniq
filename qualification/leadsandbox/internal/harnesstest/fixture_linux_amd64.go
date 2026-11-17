@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"ataniq/internal/leadsandbox/assert"
+	"ataniq/internal/leadsandbox/mountpoints"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/qualification/leadsandbox/internal/harness"
 )
@@ -96,7 +97,7 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 		ProviderHost:     "api.example.test",
 		Terminal:         harness.Terminal{Term: "xterm-256color", Lang: "C.UTF-8", Rows: 24, Cols: 80},
 		TimeLimitSeconds: 30,
-		Cases:            []string{"S1", "S2", "S3", "S4", "S7", "S11"},
+		Cases:            []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1"},
 	}
 	if rt == profile.Codex {
 		cfg.Sources.ManagedSettingsInside = "/etc/codex/managed-config.toml"
@@ -185,12 +186,13 @@ func (f *Fixture) Load() *harness.Config {
 // launcher: every seam is hermetic.
 func (f *Fixture) Options(l harness.Launcher) harness.Options {
 	return harness.Options{
-		Launcher:        l,
-		StdinIsTerminal: func() bool { return true },
-		NetFS:           fakeNetFS{content: f.Resolv},
-		Resolver:        f.resolve,
-		HostHas:         func(string) bool { return true },
-		System:          sysctlSystem{content: f.Sysctl},
+		Launcher:         l,
+		StdinIsTerminal:  func() bool { return true },
+		NetFS:            fakeNetFS{content: f.Resolv},
+		Resolver:         f.resolve,
+		CheckBindSources: f.CheckBindSources,
+		HostHas:          func(string) bool { return true },
+		System:           sysctlSystem{content: f.Sysctl},
 	}
 }
 
@@ -202,6 +204,19 @@ func (f *Fixture) resolve(p string) (string, error) {
 		return filepath.EvalSymlinks(p)
 	}
 	return p, nil
+}
+
+// CheckBindSources is the check of the bind sources against the real file
+// system for the sources that lie under the fixture, and nothing for the host's
+// own rows (/usr, /etc/localtime and the like), which a test never looks at.
+func (f *Fixture) CheckBindSources(sources []string) mountpoints.Report {
+	var own []string
+	for _, s := range sources {
+		if s == f.Base || strings.HasPrefix(s, f.Base+"/") {
+			own = append(own, s)
+		}
+	}
+	return mountpoints.CheckBindSources(own)
 }
 
 // Attempts lists the attempt folders of the campaign.

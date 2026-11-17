@@ -54,7 +54,9 @@ func DefaultScratchCommand() []string {
 
 // AutomatedCases are the cases of the design (section 7.3) that the probe and
 // the outside checks speak to. Every other case is attended (see the manual).
-var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11"}
+// G1 is not in the design's table: it is the case of rule G1 (no bind source a
+// sandbox can write, every bind source checked without following links).
+var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1"}
 
 // Config is the configuration file. Nothing in it is discovered or defaulted
 // from the environment or the home folder of the caller: every path is the
@@ -138,6 +140,16 @@ type Sources struct {
 	InstructionFile string `json:"instruction_file"`
 	GitIdentityFile string `json:"git_identity_file"`
 	QargiInstall    string `json:"qargi_install"`
+
+	// GitMeta is the Ataniq-owned folder of the copy of the tree's .git/config,
+	// .git/hooks and .git/info (rule G1: the tree's own files are never a bind
+	// source). Absent means the layout's default, <state root>/leads/<role>/gitmeta.
+	// A value is checked like every other source: the profile refuses a folder
+	// that is, lies in or lies above the lead's home, config folder, tree or
+	// records folder, or on a never-mounted path, and the campaign must not
+	// overlap it. Its parent folder must exist and be the caller's: the run
+	// makes the folder itself, once (see no_lead_has_run).
+	GitMeta string `json:"git_meta,omitempty"`
 
 	QargiRecords       string `json:"qargi_records,omitempty"`
 	QargiRecordsInside string `json:"qargi_records_inside,omitempty"`
@@ -390,6 +402,7 @@ func (c *Config) checkCampaign(in profile.Inputs) error {
 		"sources.git_identity_file": c.Sources.GitIdentityFile, "sources.qargi_install": c.Sources.QargiInstall,
 		"sources.qargi_records": c.Sources.QargiRecords, "sources.assignment_dir": c.Sources.AssignmentDir,
 		"sources.projection_dir": c.Sources.ProjectionDir, "executables.probe": c.Executables.Probe,
+		"sources.git_meta": c.Sources.GitMeta,
 	} {
 		if p != "" && related(p, c.Campaign) {
 			return configErr(name, "overlaps the campaign folder")
@@ -409,6 +422,7 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		StateRoot: c.State.Root, Role: c.State.Role, Project: c.State.Project,
 		Runtime: rt, RuntimeVersion: c.RuntimeVersion,
 		Identity:     profile.IdentityRoot,
+		GitMeta:      c.gitMeta(),
 		AgentInstall: c.Sources.AgentInstall, ProbeBinary: c.Executables.Probe, SpecDir: specDir,
 		ManagedSettings: c.Sources.ManagedSettings, ManagedSettingsInside: c.Sources.ManagedSettingsInside,
 		ManagedSettingsSHA256: c.Sources.ManagedSettingsSHA256,
@@ -433,6 +447,15 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		in.ExtraPlaceholders = append(in.ExtraPlaceholders, profile.Placeholder{Rel: p.Rel, Source: p.Source, Dir: p.Dir})
 	}
 	return in, nil
+}
+
+// gitMeta is the git metadata folder: the configured one, else the layout's
+// default below the scratch state root.
+func (c *Config) gitMeta() string {
+	if c.Sources.GitMeta != "" {
+		return c.Sources.GitMeta
+	}
+	return profile.Layout{StateRoot: c.State.Root, Role: c.State.Role, Project: c.State.Project}.GitMeta()
 }
 
 func related(a, b string) bool {

@@ -65,9 +65,16 @@ func TestManualCoversEveryCaseAndEvidenceFile(t *testing.T) {
 			t.Errorf("evidence file %s is not described", name)
 		}
 	}
-	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build"} {
+	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build", "git_meta", harness.StepBindSources} {
 		if !strings.Contains(m, key) {
 			t.Errorf("the manual does not mention %s", key)
+		}
+	}
+	// Case G1 is not in the design's table: it has its own row, the attended
+	// variant and the keys of its evidence.
+	for _, s := range []string{"| G1 |", "### Case G1, attended variant", "bind_sources", "links_checked", "no_symbolic_link_component", "no_source_in_read_write_source", "checked_path", "ataniq-g1-canary-text", "Rule G1 and git inside the sandbox"} {
+		if !strings.Contains(m, s) {
+			t.Errorf("the manual does not mention %q", s)
 		}
 	}
 	// The statements the harness's own text depends on.

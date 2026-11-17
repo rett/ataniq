@@ -207,6 +207,41 @@ type CaseEvidence struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
+// BindSourceFact is what the check of one bind source of the plan found (rule
+// G1).
+type BindSourceFact struct {
+	// Inside is where the plan binds the source; Source is the source as the
+	// plan names it.
+	Inside string `json:"inside"`
+	Source string `json:"source"`
+	// CheckedPath is the path the check opened when it is not Source: the real
+	// path of a row of the host whose own name is a link. Absent otherwise.
+	CheckedPath string `json:"checked_path,omitempty"`
+	// NoSymbolicLinkComponent is the fact: the check opened the path from the
+	// root of the file system without following a link, and no component of it,
+	// the last included, is one. False says it is (Problem says where, or what
+	// else was found). Absent when the report of the check was cut short and
+	// does not say.
+	NoSymbolicLinkComponent *bool `json:"no_symbolic_link_component,omitempty"`
+	// Problem is the check's reason, bounded and escaped, when it found one.
+	Problem string `json:"problem,omitempty"`
+}
+
+// BindSourcesEvidence is what the harness knows of the bind sources of the plan
+// (rule G1): each one with the fact from the check without following links, and
+// the fact from the plan's own verifier.
+type BindSourcesEvidence struct {
+	// LinksChecked says the step check-bind-sources ran: the facts of Sources
+	// are from it. When it is false, Sources is empty and nothing was checked.
+	LinksChecked bool `json:"links_checked"`
+	// Sources lists every bind source of the plan, in the order of its mounts.
+	Sources []BindSourceFact `json:"sources"`
+	// NoSourceInReadWriteSource is the fact from plan.Verify: no bind source
+	// lies in or below the source of a read-write bind, a folder the lead can
+	// write. Absent when the plan was not built or verified.
+	NoSourceInReadWriteSource *bool `json:"no_source_in_read_write_source,omitempty"`
+}
+
 // Summary is summary.json.
 type Summary struct {
 	Format  int    `json:"format"`
@@ -230,6 +265,8 @@ type Summary struct {
 	Canary   CanaryEvidence   `json:"canary"`
 	Terminal TerminalEvidence `json:"terminal"`
 	Resolv   ResolvEvidence   `json:"resolv_conf"`
+	// BindSources are the bind sources of the plan with the facts of rule G1.
+	BindSources BindSourcesEvidence `json:"bind_sources"`
 	// Notes are facts the steps found that no other field holds (a source
 	// whose real path differs from its name, for example).
 	Notes []string `json:"notes,omitempty"`

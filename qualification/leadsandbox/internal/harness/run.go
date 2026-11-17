@@ -69,6 +69,12 @@ type Options struct {
 	// HostHas says whether the host has a path (for the optional symbolic
 	// link rows of the bind table); nil means a no-follow stat.
 	HostHas func(path string) bool
+	// CheckBindSources checks the bind sources of the plan, right before the
+	// launch, without following a link (rule G1); nil means
+	// mountpoints.CheckBindSources. The tests of the harness replace it so that
+	// the host's own folders (/usr, /etc/localtime and the like) are not looked
+	// at.
+	CheckBindSources func(sources []string) mountpoints.Report
 	// System is what the outside checks read the sysctl through; nil means
 	// assert.HostSystem.
 	System assert.System
@@ -95,6 +101,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.Resolver == nil {
 		o.Resolver = mountpoints.RealResolver
+	}
+	if o.CheckBindSources == nil {
+		o.CheckBindSources = mountpoints.CheckBindSources
 	}
 	if o.HostHas == nil {
 		o.HostHas = func(p string) bool { _, err := os.Lstat(p); return err == nil }
@@ -150,6 +159,9 @@ type attempt struct {
 	in       profile.Inputs
 	resolvEv ResolvEvidence
 	res      mountpoints.Resolution
+	// res2 is the second resolution, the one of the recheck: the last
+	// resolution before the check of the bind sources.
+	res2     mountpoints.Resolution
 	versions ToolVersions
 	notes    []string
 	chn      *reportChannel
@@ -174,6 +186,7 @@ type attempt struct {
 	termEv      TerminalEvidence
 	termData    []byte
 	canaryEv    CanaryEvidence
+	bindEv      BindSourcesEvidence
 	files       []string
 	evidenceErr error
 }
@@ -358,6 +371,7 @@ func (a *attempt) pre(ctx context.Context) {
 		{StepVerify, false, false, func(context.Context) error { return a.verifyPlan() }},
 		{StepSpec, true, false, func(context.Context) error { return a.writeSpec() }},
 		{StepRecheck, true, false, func(context.Context) error { return a.recheck() }},
+		{StepBindSources, true, false, func(context.Context) error { return a.checkBindSources() }},
 	}
 	for _, d := range defs {
 		switch {
@@ -400,6 +414,7 @@ func (a *attempt) resolveSources() error {
 	if err != nil {
 		return err
 	}
+	a.allowUnmadeGitMeta(&res)
 	if err := res.Report.Err(); err != nil {
 		return err
 	}
@@ -410,6 +425,35 @@ func (a *attempt) resolveSources() error {
 	}
 	a.res = res
 	return a.in.Validate()
+}
+
+// allowUnmadeGitMeta drops, in a dry run of a configuration that states no lead
+// has run, the "does not exist" problems of the three entries of the git
+// metadata folder: the run would make the folder (the step prepare), a dry run
+// makes nothing, and the plan is built from the names alone. Any other problem,
+// and the same problem in a run, stays. A note says what was left out.
+func (a *attempt) allowUnmadeGitMeta(res *mountpoints.Resolution) {
+	if !a.dry() || !a.cfg.NoLeadHasRun {
+		return
+	}
+	entries := map[string]bool{}
+	for _, rel := range profile.GitReadOnlyRel() {
+		entries[profile.GitMetaSource(a.in.GitMeta, rel)] = true
+	}
+	var kept []*mountpoints.Problem
+	dropped := 0
+	for _, p := range res.Problems {
+		if errors.Is(p, mountpoints.ErrMissing) && entries[p.Path] {
+			dropped++
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if dropped == 0 {
+		return
+	}
+	res.Problems = kept
+	a.notes = append(a.notes, fmt.Sprintf("dry run: %d of the 3 entries of the git metadata folder %s do not exist yet; a run makes the folder (step %s) and checks every source again", dropped, a.in.GitMeta, StepPrepare))
 }
 
 // applyReal puts the real path of each input source into the inputs. A source
@@ -517,7 +561,15 @@ func (a *attempt) buildPlan() error {
 // check fails, so the plan can be read).
 func (a *attempt) verifyPlan() error {
 	var errs []error
-	if probs := plan.Verify(a.pl, a.in, a.planOpt); len(probs) > 0 {
+	probs := plan.Verify(a.pl, a.in, a.planOpt)
+	noWritable := true
+	for _, p := range probs {
+		if p.Kind == plan.ProbLeadWritable {
+			noWritable = false
+		}
+	}
+	a.bindEv.NoSourceInReadWriteSource = &noWritable
+	if len(probs) > 0 {
 		show := probs
 		if len(show) > 5 {
 			show = show[:5]
@@ -599,6 +651,7 @@ func (a *attempt) recheck() error {
 	if err := res.Report.Err(); err != nil {
 		return err
 	}
+	a.res2 = res
 	if len(res.Sources) != len(a.res.Sources) {
 		return errors.New("the set of sources changed since the plan was built")
 	}
@@ -608,6 +661,108 @@ func (a *attempt) recheck() error {
 		}
 	}
 	return nil
+}
+
+// bindSource is one bind source of the plan and the path it is checked by.
+type bindSource struct {
+	Inside, Source, Checked string
+}
+
+// planBindSources lists the bind sources of the plan, in the order of its
+// mounts. A source is checked by its own name. The one exception is a row of
+// the host (/etc/localtime, /etc/ssl and the like), whose name the plan cannot
+// change: when the last resolution says its real path differs, the real path
+// is what is checked, because the name of such a row is a link of the host
+// itself, which no lead can write, and a check by name would refuse every
+// host that has one.
+func (a *attempt) planBindSources() ([]bindSource, error) {
+	binds, err := a.in.Binds()
+	if err != nil {
+		return nil, err
+	}
+	role := map[string]string{}
+	for _, b := range binds {
+		role[b.Inside] = b.SourceRole
+	}
+	resolved := map[string]string{}
+	for _, s := range a.res2.Sources {
+		if !s.Skipped {
+			resolved[s.Inside] = s.Real
+		}
+	}
+	var out []bindSource
+	for _, m := range a.pl.Mounts {
+		if m.Source == "" {
+			continue
+		}
+		checked := m.Source
+		if r, ok := resolved[m.Inside]; ok && r != m.Source && role[m.Inside] == profile.RoleHost {
+			checked = r
+		}
+		out = append(out, bindSource{Inside: m.Inside, Source: m.Source, Checked: checked})
+	}
+	return out, nil
+}
+
+// checkBindSources is the last check before the launch (rule G1): every bind
+// source of the plan is opened from the root of the file system without
+// following a link, and a link anywhere on a path refuses the launch. It comes
+// after the second resolution and nothing that runs a lead process lies
+// between it and the launch.
+func (a *attempt) checkBindSources() error {
+	srcs, err := a.planBindSources()
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range srcs {
+		if !seen[s.Checked] {
+			seen[s.Checked] = true
+			paths = append(paths, s.Checked)
+		}
+	}
+	rep := a.opt.CheckBindSources(paths)
+	a.recordBindSources(srcs, rep)
+	return rep.Err()
+}
+
+// recordBindSources puts the facts of the check into the evidence: each source
+// of the plan, with the problem the check found about its path, or the fact
+// that no component of it is a link. A report that was cut short does not say
+// about the sources it did not reach, so those have no fact.
+func (a *attempt) recordBindSources(srcs []bindSource, rep mountpoints.Report) {
+	byPath := map[string]*mountpoints.Problem{}
+	for _, p := range rep.Problems {
+		if _, ok := byPath[p.Path]; !ok {
+			byPath[p.Path] = p
+		}
+	}
+	a.bindEv.LinksChecked = true
+	a.bindEv.Sources = []BindSourceFact{}
+	for _, s := range srcs {
+		f := BindSourceFact{Inside: s.Inside, Source: s.Source}
+		if s.Checked != s.Source {
+			f.CheckedPath = s.Checked
+		}
+		switch p, bad := byPath[s.Checked]; {
+		case bad:
+			f.Problem = assert.EscapeDetail(p.Error())
+			if errors.Is(p, mountpoints.ErrSymlink) {
+				found := false
+				f.NoSymbolicLinkComponent = &found
+			}
+			// Any other problem (missing, unreadable) says nothing about
+			// links, so no fact is given either way.
+		case rep.Truncated:
+			// The report was cut short: this source may be among the problems
+			// that were not listed.
+		default:
+			none := true
+			f.NoSymbolicLinkComponent = &none
+		}
+		a.bindEv.Sources = append(a.bindEv.Sources, f)
+	}
 }
 
 func (a *attempt) writeEvidenceFile(name string, data []byte) error {
@@ -906,6 +1061,10 @@ func (a *attempt) summary() Summary {
 	if a.outsideEv != nil {
 		results = append(results, a.outsideEv.Results...)
 	}
-	s.Cases = casesFor(a.cfg.Cases, results)
+	s.BindSources = a.bindEv
+	if s.BindSources.Sources == nil {
+		s.BindSources.Sources = []BindSourceFact{}
+	}
+	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources)})
 	return s
 }

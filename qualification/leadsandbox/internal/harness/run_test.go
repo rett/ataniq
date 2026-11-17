@@ -199,10 +199,13 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 					cases[c.Case] = append(cases[c.Case], res.ID+"="+string(res.Status))
 				}
 			}
+			if !contains(cases["G1"], "bind-sources-no-symbolic-link=ok") || !contains(cases["G1"], "no-bind-source-in-read-write-source=ok") {
+				t.Errorf("G1: %v", cases["G1"])
+			}
 			if !contains(cases["S11"], "qualification-record=not-checked") {
 				t.Errorf("S11: %v", cases["S11"])
 			}
-			if len(o.Summary.Cases) != 6 || len(cases["S1"]) != 3 || len(cases["S2"]) != 2 || len(cases["S7"]) != 2 {
+			if len(o.Summary.Cases) != 7 || len(cases["S1"]) != 3 || len(cases["S2"]) != 2 || len(cases["S7"]) != 2 {
 				t.Errorf("cases: %+v", o.Summary.Cases)
 			}
 			if o.Summary.Terminal.MarkerSeen == nil || !*o.Summary.Terminal.MarkerSeen {
