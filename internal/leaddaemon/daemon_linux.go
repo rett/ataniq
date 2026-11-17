@@ -358,8 +358,12 @@ func (d *daemon) checkConfig() error {
 // ensureRuntimeDir makes the runtime folder with mode 0700 when it is missing
 // (its parent must exist, as for [clientapi.Listen]) and checks it as Listen
 // does: a real folder, owned by the caller, with no access for group or
-// others. The socket lock is made in it, so it is checked before that.
+// others. The socket lock is made in it, so it is checked before that. A
+// socket path that cannot be bound is refused first, before anything is made.
 func ensureRuntimeDir(dir string) error {
+	if err := clientapi.CheckSocketPath(dir); err != nil {
+		return err
+	}
 	if err := os.Mkdir(dir, 0o700); err == nil {
 		// The umask can only narrow 0700; this sets it exactly.
 		if err := os.Chmod(dir, 0o700); err != nil {

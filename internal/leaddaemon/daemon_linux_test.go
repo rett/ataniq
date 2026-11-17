@@ -590,6 +590,37 @@ func TestTwoDaemonsOneRuntimeFolder(t *testing.T) {
 	}
 }
 
+// TestTooLongSocketPathLeavesNothingBehind: a runtime folder whose socket path
+// does not fit in a Unix socket address is refused before the folder or the
+// socket lock file is made, whether the folder is missing or already there.
+func TestTooLongSocketPathLeavesNothingBehind(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		exist bool
+	}{{"folder missing", false}, {"folder there", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := e.config()
+			cfg.RuntimeDir = filepath.Join(e.base, strings.Repeat("r", 120))
+			if tt.exist {
+				if err := os.Mkdir(cfg.RuntimeDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mustFail(t, e.runToEnd(cfg), StepStaleSocket, ExitSocket)
+			if !tt.exist {
+				if _, err := os.Lstat(cfg.RuntimeDir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("the runtime folder was made: %v", err)
+				}
+				return
+			}
+			if left, err := os.ReadDir(cfg.RuntimeDir); err != nil || len(left) != 0 {
+				t.Fatalf("the folder holds %d entries after the refusal: %v", len(left), err)
+			}
+		})
+	}
+}
+
 // TestShutdownReleasesTheSocketLock: after a clean shutdown the socket is gone
 // and the socket lock can be taken; the lock file itself stays.
 func TestShutdownReleasesTheSocketLock(t *testing.T) {
