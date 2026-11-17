@@ -1060,6 +1060,33 @@ func TestMouseModeFollowsTheSessionsTrackingMode(t *testing.T) {
 	}
 }
 
+// TestEndedSessionAsksForNoModesAndHasNoCursor checks that a session that
+// ends while it has the focus, and asked for mouse reporting and focus events,
+// no longer has them requested of the outer terminal, and no cursor is placed
+// under its banner. The focus stays until the next key.
+func TestEndedSessionAsksForNoModesAndHasNoCursor(t *testing.T) {
+	r := newRig(t, 140, 45, Options{})
+	r.play(100 * time.Millisecond)
+	r.focusSession()
+	r.m.rep.pane.Write([]byte("\x1b[?1003h\x1b[?1004h\x1b[5;5H"))
+	if v := r.m.View(); v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus || v.Cursor == nil {
+		t.Fatalf("a running session: mouse %v focus %v cursor %v", v.MouseMode, v.ReportFocus, v.Cursor)
+	}
+	r.play(900 * time.Millisecond)
+	if !r.m.sessionEnded() || r.m.focus != sessionFocus {
+		t.Fatalf("ended %v, focus %v", r.m.sessionEnded(), r.m.focus)
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus || v.Cursor != nil {
+		t.Fatalf("an ended session: mouse %v focus %v cursor %v", v.MouseMode, v.ReportFocus, v.Cursor)
+	}
+	// A click on it reaches no one.
+	l := r.m.layout()
+	r.m.Update(tea.MouseClickMsg{X: l.inner.Min.X + 1, Y: l.inner.Min.Y + 1, Button: tea.MouseLeft})
+	if len(r.sink.mouse) != 0 {
+		t.Fatal("a click reached an ended session")
+	}
+}
+
 func TestMouseModeNeedsTheSessionToAsk(t *testing.T) {
 	r := newRig(t, 140, 45, Options{})
 	r.play(100 * time.Millisecond)

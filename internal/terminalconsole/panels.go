@@ -17,7 +17,9 @@ const tagline = "Provider-neutral leads · bounded delegates · supervised autho
 
 // cockpitView draws the cockpit and says what it needs of the outer terminal:
 // mouse reporting and focus events only in session focus and only when the
-// session asked for them, and the session's cursor.
+// session asked for them, and the session's cursor. A session that has ended
+// may still hold the focus until the next key, but the pane then reports no
+// modes and no visible cursor, so none is requested or placed.
 func (m *Model) cockpitView() tea.View {
 	l := m.layout()
 	buf := uv.NewBuffer(l.canvas.Dx(), l.canvas.Dy())
