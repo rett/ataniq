@@ -72,9 +72,18 @@
 // therefore trusted only as the first line. Everything after the first line is
 // leadtext.Label: unverified lead data.
 //
+// # Sign-off
+//
+// The owner signs off the change, and separately each flagged path. A
+// [SignOff] is bound to the tip's full commit id and to the [Review.Digest] of
+// the review the owner saw. [Review.CheckSignOff] accepts it only when both
+// match, the change as a whole is accepted, every flagged path has an entry,
+// and no entry names a path that is not flagged (a stale list is noticed). A
+// refusal is a [SignOffError] that lists everything wrong at once.
+//
 // # What it does not do
 //
-// It does not sign anything off, keep records, write refs or merge. The alias
+// It does not keep records, write refs or merge (yet). The alias
 // check resolves a symlink's target by its text, against the symlinks of the
 // tip's own tree: it follows a symlink that the target passes through, and one
 // that is its last element, but at most 8 symlinks in all. A longer chain or
