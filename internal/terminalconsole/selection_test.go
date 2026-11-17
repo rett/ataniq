@@ -237,8 +237,37 @@ func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	if r.m.notice != copyRefused || !strings.Contains(r.view(), copyRefused) {
 		t.Fatalf("notice %q", r.m.notice)
 	}
-	// A selection under the cap is still copied.
+	// A selection under the cap is still copied, and the notice goes.
 	wantCopy(t, r.dragPane(0, 0, 1, 0), cluster+cluster)
+	if r.m.notice != "" || strings.Contains(r.view(), copyRefused) {
+		t.Fatalf("after a copy the notice is %q", r.m.notice)
+	}
+}
+
+// TestPressDropsTheRefusalOnly checks that a press removes the notice of a
+// selection that was not copied, even when the session takes the mouse, and
+// leaves any other notice.
+func TestPressDropsTheRefusalOnly(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	x, y := r.win(2, 1)
+	r.m.notice = copyRefused
+	r.mouse(tea.MouseClickMsg{X: 2, Y: 3, Button: tea.MouseLeft})
+	if r.m.notice != "" {
+		t.Fatalf("a press in the tree kept the notice %q", r.m.notice)
+	}
+	r.focusSession()
+	r.m.rep.pane.Write([]byte("\x1b[?1000h"))
+	r.m.notice = copyRefused
+	r.mouse(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if r.m.notice != "" {
+		t.Fatalf("a press sent to the session kept the notice %q", r.m.notice)
+	}
+	const other = "Paste not sent: it is longer than the console forwards."
+	r.m.notice = other
+	r.mouse(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if r.m.notice != other {
+		t.Fatalf("a press removed another notice: %q", r.m.notice)
+	}
 }
 
 // TestSessionMouseGoesToTheSessionAndSelectsNothing checks that a session
@@ -341,7 +370,6 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, selText)
 	sel := func() {
 		t.Helper()
-		r.m.notice = ""
 		wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
 	}
 	clears := func(what string, do func()) {

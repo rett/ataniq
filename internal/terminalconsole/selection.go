@@ -76,8 +76,9 @@ func (m *Model) sessionTakesMouse() bool {
 }
 
 // onMouse handles a mouse event in the cockpit. Any press clears the
-// selection. When the session takes the mouse the event goes to the pane, as
-// the session asked; otherwise it makes a selection in the pane.
+// selection, and the notice of a selection that was not copied. When the
+// session takes the mouse the event goes to the pane, as the session asked;
+// otherwise it makes a selection in the pane.
 func (m *Model) onMouse(msg tea.MouseMsg) tea.Cmd {
 	l := m.layout()
 	if !l.cockpit || m.rep.pane == nil {
@@ -85,6 +86,7 @@ func (m *Model) onMouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	if _, ok := msg.(tea.MouseClickMsg); ok {
 		m.sel = selection{}
+		m.dropRefusal()
 	}
 	if m.sessionTakesMouse() {
 		if m.sel.drag {
@@ -159,7 +161,7 @@ func (m *Model) extend(p uv.Position) {
 
 // copySelection reads the selected text and copies it to the outer terminal's
 // clipboard with OSC 52. Empty text is not copied, and text longer than
-// maxCopy is not copied at all; a notice says so.
+// maxCopy is not copied at all; a notice says so until the next press.
 func (m *Model) copySelection() tea.Cmd {
 	from, to := m.sel.span()
 	text, ok := m.rep.pane.Text(from, to, maxCopy)
@@ -172,6 +174,14 @@ func (m *Model) copySelection() tea.Cmd {
 		return nil
 	}
 	return tea.Raw(ansi.SetSystemClipboard(text))
+}
+
+// dropRefusal removes the notice of a selection that was not copied, and
+// leaves any other notice.
+func (m *Model) dropRefusal() {
+	if m.notice == copyRefused {
+		m.notice = ""
+	}
 }
 
 // checkSelection clears a finished selection when the text it covers has

@@ -54,7 +54,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   does, stays inside the pane, and on release copies the text to the outer
   terminal's clipboard with OSC 52 (wide characters and grapheme clusters
   once, trailing blanks dropped, rows joined with newlines, a wrapped line as
-  two lines). A selection over 1 MiB is not copied and the key bar says so.
+  two lines). A selection over 1 MiB is not copied and the key bar says so
+  until the next press.
   The selection is cleared by a press, a key or paste sent to the session, a
   resize, F12, `r`, or output that changes the selected text. A click alone
   copies nothing, and a press outside the pane or the wheel selects nothing.

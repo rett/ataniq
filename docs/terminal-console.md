@@ -142,8 +142,9 @@ holds, also where it draws a placeholder (see
 [Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
 bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
 the placeholder. A selection of more than 1 MiB of text is not copied at all,
-and the key bar says so. A terminal that does not accept OSC 52 writes, or has
-them turned off, copies nothing, and the console cannot tell.
+and the key bar says so until the next press. A terminal that does not
+accept OSC 52 writes, or has them turned off, copies nothing, and the console
+cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
 drag copies nothing, and the wheel does nothing. A press anywhere clears the
