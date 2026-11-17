@@ -26,69 +26,18 @@ const (
 	pollEvery = 20 * time.Millisecond
 )
 
-// reap waits until the direct child has exited without reaping it, takes the
-// session snapshot while its pid is still reserved, then reaps it under the
-// mutex that guards signalling.
-func (h *Host) reap() {
-	defer close(h.done)
-	var info unix.Siginfo
-	for {
-		err := unix.Waitid(unix.P_PID, h.pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
-		if err == unix.EINTR {
-			continue
-		}
-		if err != nil {
-			h.finish(Exit{Pid: h.pid, How: "unknown", Code: -1, Err: fmt.Errorf("waitid: %w", err)})
-			return
-		}
-		break
-	}
-	// The child is a zombie: its pid, and so its session id, cannot be
-	// reused yet. An empty session now is authoritative.
-	if members, trunc, nerr, err := h.scanSession(); err == nil && !trunc && nerr == 0 && len(members) == 0 {
-		h.sessionEmpty.Store(true)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	var ws unix.WaitStatus
-	for {
-		_, err := unix.Wait4(h.pid, &ws, 0, nil)
-		if err == unix.EINTR {
-			continue
-		}
-		if err != nil {
-			h.exit = Exit{Pid: h.pid, How: "unknown", Code: -1, Err: fmt.Errorf("wait4: %w", err)}
-			break
-		}
-		switch {
-		case ws.Exited():
-			h.exit = Exit{Pid: h.pid, How: "exit", Code: ws.ExitStatus()}
-		case ws.Signaled():
-			h.exit = Exit{Pid: h.pid, How: "signal", Code: -1, Signal: ws.Signal(), CoreDump: ws.CoreDump()}
-		default:
-			h.exit = Exit{Pid: h.pid, How: "unknown", Code: -1, Err: fmt.Errorf("unexpected wait status %#x", uint32(ws))}
-		}
-		break
-	}
-	h.reaped = true
-}
-
-// finish records an exit when the child could not be reaped normally.
-func (h *Host) finish(e Exit) {
-	h.mu.Lock()
-	h.exit = e
-	h.reaped = true
-	h.mu.Unlock()
-}
-
-// Wait blocks until the direct child has been reaped and returns how it
-// ended. It may be called any number of times.
+// Wait blocks until the direct child has exited and returns how it ended. It
+// may be called any number of times. The child is not reaped at that moment:
+// its zombie keeps the pid, the process group id and the session id reserved
+// until the session is proven empty or the host is closed (see the package
+// comment), so Wait does not mean the tree is gone.
 func (h *Host) Wait() Exit {
 	<-h.done
 	return h.exit
 }
 
-// Exited is closed once the direct child has exited and been reaped.
+// Exited is closed once the direct child has exited and its exit facts are
+// known (it may still be a zombie, see Wait).
 func (h *Host) Exited() <-chan struct{} { return h.done }
 
 func (h *Host) hasExited() bool {
@@ -126,9 +75,13 @@ func (h *Host) TreeGone() (gone bool, proof string) {
 }
 
 // scanCgroup walks the holder's group and the groups below it, and counts a
-// walk that hit its bound and every group it could not read.
+// walk that hit its bound and every group it could not read. The caller holds
+// h.mu. The direct child's zombie, if it is not reaped yet, is not a process
+// of the tree: its pid is reserved, so a listing of that number can only be
+// the zombie itself (a zombie normally is not listed at all).
 func (h *Host) scanCgroup() cgroupScan {
-	s := walkCgroup(filepath.Dir(h.cgroupProcs), h.walkMax, os.Getpid(), nil)
+	ignore := func(pid int) bool { return !h.reaped && pid == h.pid }
+	s := walkCgroup(filepath.Dir(h.cgroupProcs), h.walkMax, os.Getpid(), ignore)
 	if s.truncated {
 		h.cgroupTruncated.Add(1)
 	}
@@ -140,8 +93,11 @@ func (h *Host) scanCgroup() cgroupScan {
 
 // cgroupGone judges the holder's group and every group below it: the tree is
 // gone only when no process but the holder is listed in any of them. A walk
-// that hit its bound or could not read a group proves nothing.
+// that hit its bound or could not read a group proves nothing. A tree that is
+// gone lets the zombie of the direct child go.
 func (h *Host) cgroupGone() (bool, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	s := h.scanCgroup()
 	switch {
 	case len(s.members) > 0:
@@ -154,12 +110,25 @@ func (h *Host) cgroupGone() (bool, string) {
 	case !s.selfSeen:
 		return false, fmt.Sprintf("cgroup %s: the holder is not listed in its own group", h.cgroupProcs)
 	}
+	h.letGo()
 	return true, fmt.Sprintf("cgroup %s: only the holder remains in the group and its %d group(s)", h.cgroupProcs, s.groups)
 }
 
+// sessionGone is the session proof. It scans under h.mu, which the reap also
+// takes, so the zombie that reserves the session id cannot be reaped between
+// the scan and the verdict. Once the child was reaped without the session
+// having been proven empty (the host was closed first, or the child could not
+// be waited for), the id is no longer reserved: a process that happens to hold
+// that number as its session id is not a member, and nothing is proven.
 func (h *Host) sessionGone() (bool, string) {
+	const weaker = "weaker proof: a process that started its own session is not seen"
 	if h.sessionEmpty.Load() {
-		return true, fmt.Sprintf("session %d: no live process in the session (weaker proof: a process that started its own session is not seen; %s)", h.pid, h.cgroupNote)
+		return true, fmt.Sprintf("session %d: no live process in the session (%s; %s)", h.pid, weaker, h.cgroupNote)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reaped {
+		return false, fmt.Sprintf("session %d: the child was reaped before the session was proven empty, so the id is no longer reserved: nothing proven", h.pid)
 	}
 	members, trunc, nerr, err := h.scanSession()
 	switch {
@@ -172,29 +141,29 @@ func (h *Host) sessionGone() (bool, string) {
 	case nerr > 0:
 		return false, fmt.Sprintf("session %d: %d entries could not be read, nothing proven", h.pid, nerr)
 	}
-	h.sessionEmpty.Store(true)
-	return true, fmt.Sprintf("session %d: no live process in the session (weaker proof: a process that started its own session is not seen; %s)", h.pid, h.cgroupNote)
+	h.latchEmpty()
+	return true, fmt.Sprintf("session %d: no live process in the session (%s; %s)", h.pid, weaker, h.cgroupNote)
 }
 
 // Stop ends the child and what it left in its session. It sends SIGTERM to
-// the child's process group, waits up to grace for the child to be reaped
+// the child's process group, waits up to grace for the child to have exited
 // and the tree to be gone, then sends SIGKILL to the group and to every
 // process left in the session, repeating for up to killWait (3 s) while
 // the tree is not gone. It returns when the tree is gone or that time has
 // passed; the caller reads Wait and TreeGone for the facts. A process that
 // left the session is out of reach here (TreeGone says so for the session
-// method). Stop never signals a pid after the child was reaped, except
-// session members it re-verified through a pidfd. It may be called again and
-// concurrently.
+// method). Stop signals by group or session id only while the direct child's
+// zombie still reserves that id, and session members through a pidfd after
+// their session id was read again. It may be called again and concurrently.
 func (h *Host) Stop(grace time.Duration) {
 	h.signalGroup(syscall.SIGTERM)
 	if h.waitGone(grace) {
 		return
 	}
-	deadline := time.Now().Add(killWait)
+	deadline := time.Now().Add(h.killFor)
 	for {
 		h.signalGroup(syscall.SIGKILL)
-		h.killSession(syscall.SIGKILL, false)
+		h.killSession(syscall.SIGKILL)
 		step := 5 * pollEvery
 		if left := time.Until(deadline); left < step {
 			step = left
@@ -246,28 +215,32 @@ func (h *Host) waitGone(d time.Duration) bool {
 	}
 }
 
-// signalGroup signals the child's process group. While the leader is not
-// reaped its pid is reserved, so the group signal cannot reach an unrelated
-// group; under the mutex it cannot be reaped between the check and the
-// signal. After the reap the group's members, if any, are reached one by one
-// through a pidfd.
+// signalGroup signals the child's process group. The leader's pid is also the
+// group id, and it is reserved while the leader is not reaped (a zombie
+// holds it), so the signal cannot reach an unrelated group; under the mutex
+// the leader cannot be reaped between the check and the signal. After the reap
+// the id is not reserved and nothing is signalled by it: by then the session
+// was proven empty, or the host was closed and has given up acting on it.
 func (h *Host) signalGroup(sig syscall.Signal) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	if !h.reaped {
 		_ = syscall.Kill(-h.pid, sig)
-		h.mu.Unlock()
-		return
 	}
-	h.mu.Unlock()
-	h.killSession(sig, true)
 }
 
-// killSession signals the processes of the session (only those in the
-// child's process group when groupOnly), each through a pidfd and after
-// its session id was read again, so a pid that was reused in between is not
-// hit. Once the session was seen empty nothing is signalled.
-func (h *Host) killSession(sig syscall.Signal, groupOnly bool) {
+// killSession signals the live processes of the session, each through a
+// pidfd and after its session id was read again. It does this only while the
+// leader is not reaped, so the session id is reserved and a process that
+// reports it really is in the session; once the session was seen empty, or
+// the leader was reaped, nothing is signalled by that id.
+func (h *Host) killSession(sig syscall.Signal) {
 	if h.sessionEmpty.Load() {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reaped {
 		return
 	}
 	members, _, _, err := h.scanSession()
@@ -275,13 +248,12 @@ func (h *Host) killSession(sig syscall.Signal, groupOnly bool) {
 		return
 	}
 	for _, m := range members {
-		if groupOnly && m.pgrp != h.pid {
-			continue
-		}
 		h.signalMember(m.pid, sig)
 	}
 }
 
+// signalMember signals one process of the session through a pidfd. The caller
+// holds h.mu with the leader unreaped.
 func (h *Host) signalMember(pid int, sig syscall.Signal) {
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {

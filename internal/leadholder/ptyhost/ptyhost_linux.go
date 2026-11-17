@@ -41,18 +41,29 @@
 //
 // # Signalling and pid reuse
 //
-// The direct child is reaped only after it has been observed to exit (waitid
-// with WNOWAIT, then wait4), and every signal to its process group is sent
-// under the same mutex that guards the reap, so a pid is never signalled
-// after it was reaped. Session members other than the leader are signalled
-// through a pidfd after their session id was read again. After the leader was
-// reaped the session id is reserved by the kernel only while the session has
-// members: the scan taken at the moment the leader exits (before it is reaped)
-// latches the "session is empty" fact, and the latch is never undone, so a
-// later process that happens to get the same number and call setsid is not
-// taken for a member. The one remaining window is a session that empties
-// completely between two scans after the leader was reaped; it makes the
-// scan conservative (it can only report "not gone"), never wrongly "gone".
+// The kernel does not give a pid out again while some process still uses the
+// number as its process group id or session id, but only while the number is
+// in use. A session leader that was reaped, whose session then emptied
+// unobserved, leaves the number free: the next process that gets it and calls
+// setsid would look like a member of the old session, and a signal sent "to
+// the session" would hit a stranger, outside the agent's tree.
+//
+// So the direct child is not reaped when it exits. Its exit facts are taken
+// with waitid and WNOWAIT, and Wait returns at once, but the zombie stays: it
+// holds the pid, the group id and the session id. It is reaped only when the
+// session is proven empty (a scan that finds no live member while the zombie
+// holds the id is authoritative, because no process can join a session whose
+// leader is a zombie), when the control group is proven empty, or when the
+// host is closed (Close, the final release; the host then gives up acting on
+// the ids). Every signal sent by group or session id is sent under the mutex
+// that guards the reap and only while the child is not reaped. Session members
+// other than the leader are signalled through a pidfd after their session id
+// was read again. Once the child is reaped without the session having been
+// proven empty, TreeGone by the session method says "not gone" for good, and
+// Stop signals nothing by those ids.
+//
+// The facts and the zombie are visible to the caller: the child shows as
+// defunct in a process listing between its exit and the proof.
 package ptyhost
 
 import (
@@ -190,10 +201,19 @@ type Host struct {
 	cgroupProcs string
 	cgroupNote  string
 
-	mu     sync.Mutex // guards reaped and the signalling of the process group
+	// mu guards reaped and every signal sent by the child's group or session
+	// id, and the judging of the session and the control group: while a
+	// holder of mu sees reaped false, the zombie reserves the pid.
+	mu     sync.Mutex
 	reaped bool
 	exit   Exit
-	done   chan struct{}
+	// done is closed once the child has exited and exit is set; the zombie may
+	// still be held. release is closed (once, by letGo) when the zombie may be
+	// reaped.
+	done        chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+	killFor     time.Duration // how long Stop keeps killing after the grace
 
 	sessionEmpty atomic.Bool // latched: the session had no live member
 
@@ -224,6 +244,8 @@ func Start(cfg Config) (*Host, error) {
 		scanMax:  cfg.ProcScanLimit,
 		walkMax:  cfg.CgroupWalkLimit,
 		done:     make(chan struct{}),
+		release:  make(chan struct{}),
+		killFor:  killWait,
 	}
 	if h.writeTmo <= 0 {
 		h.writeTmo = DefaultWriteTimeout
@@ -391,12 +413,23 @@ func (h *Host) Resize(cols, rows int) error {
 
 // Close closes the master. The kernel then hangs up the terminal (SIGHUP to
 // the session leader's foreground group, and EOF-like errors for any reader
-// of the slave). It is safe to call more than once. After the child is
-// reaped and Close has returned, the host holds no goroutine and no
-// descriptor.
+// of the slave). Close is also the final release of the direct child's
+// zombie (see the package comment): it tries the tree proof one last time
+// and lets the zombie be reaped whether the tree is gone or not, and the
+// host stops acting on the child's group and session ids. It is safe to call
+// more than once. After the child has exited and Close has returned, the
+// host holds no goroutine and no descriptor.
 func (h *Host) Close() error {
 	var err error
-	h.closeOnce.Do(func() { err = h.master.Close() })
+	h.closeOnce.Do(func() {
+		err = h.master.Close()
+		// The last chance to prove the tree gone while the zombie still
+		// reserves its ids; then the zombie is let go, proven or not.
+		if h.hasExited() {
+			h.TreeGone()
+		}
+		h.letGo()
+	})
 	return err
 }
 

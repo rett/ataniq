@@ -4,6 +4,7 @@ package ptyhost
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -533,6 +535,23 @@ func killAtCleanup(t *testing.T, pid int) {
 	})
 }
 
+// staysRunning reports whether the process behind a pidfd is still running
+// after d: the pidfd becomes readable when the process exits (a zombie has).
+func staysRunning(t *testing.T, pid int, d time.Duration) bool {
+	t.Helper()
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd)
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	n, err := unix.Poll(fds, int(d.Milliseconds()))
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	return n == 0
+}
+
 // pidFromFile waits for a file with a pid in it and returns the pid; the
 // process is killed (through a pidfd opened now) when the test ends.
 func pidFromFile(t *testing.T, path string) int {
@@ -592,6 +611,200 @@ func TestStreamAndChildAreSeparateFacts(t *testing.T) {
 	}
 	if h.TreeMethod() != "session" {
 		t.Errorf("TreeMethod = %q", h.TreeMethod())
+	}
+}
+
+// stateOf returns the state letter of a process from /proc, or 0 when there is
+// no such process.
+func stateOf(pid int) byte {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0
+	}
+	st, ok := parseStat(b)
+	if !ok {
+		return '?'
+	}
+	return st.state
+}
+
+// waitGoneFromProc waits until /proc no longer lists pid.
+func waitGoneFromProc(t *testing.T, pid int, what string) {
+	t.Helper()
+	deadline := time.Now().Add(patience)
+	for stateOf(pid) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: process %d is still in /proc (state %c)", what, pid, stateOf(pid))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The child is a zombie from its exit until the session is proven empty: the
+// zombie keeps the pid, and so the session id, from being given to a stranger
+// (the review of the package, finding F2). Wait does not wait for the proof.
+func TestLeaderStaysAZombieUntilTheSessionIsEmpty(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "grandchild")
+	h, tl := start(t, "spawn same "+pidFile+" ttl=60s; say READY; exit 0")
+	tl.waitFor(t, "READY")
+	grandchild := pidFromFile(t, pidFile)
+	if e := waitExit(t, h); e.How != "exit" || e.Code != 0 {
+		t.Fatalf("exit %+v", e)
+	}
+	leader := h.Pid()
+	if st := stateOf(leader); st != 'Z' || h.isReaped() {
+		t.Fatalf("after Wait the leader's state is %c, reaped %v: want a zombie holding the pid", st, h.isReaped())
+	}
+	if gone, proof := h.TreeGone(); gone {
+		t.Fatalf("TreeGone = true, %q, with a live grandchild in the session", proof)
+	}
+	if st := stateOf(leader); st != 'Z' {
+		t.Fatalf("a failed proof released the zombie: state %c", st)
+	}
+	// The group signal reaches the grandchild through the held group id.
+	h.Stop(5 * time.Second)
+	if alive(grandchild) {
+		t.Error("the grandchild survived Stop")
+	}
+	if gone, proof := h.TreeGone(); !gone || !strings.HasPrefix(proof, "session") {
+		t.Errorf("TreeGone after Stop = %v, %q", gone, proof)
+	}
+	waitGoneFromProc(t, leader, "the proof lets the zombie go")
+	if !h.isReaped() {
+		t.Error("the zombie is gone from /proc but the host does not know it")
+	}
+}
+
+// Close is the final release: the zombie is reaped whether or not the session
+// was proven empty, and from then on nothing is signalled by its ids.
+func TestCloseLetsTheZombieGoAndTheHostStopsActingOnItsIds(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "grandchild")
+	h, tl := start(t, "spawn same "+pidFile+" ttl=60s; say READY; exit 0")
+	tl.waitFor(t, "READY")
+	grandchild := pidFromFile(t, pidFile)
+	waitExit(t, h)
+	leader := h.Pid()
+	if st := stateOf(leader); st != 'Z' {
+		t.Fatalf("the leader's state is %c, want a zombie", st)
+	}
+	h.killFor = 100 * time.Millisecond
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitGoneFromProc(t, leader, "Close lets the zombie go")
+	gone, proof := h.TreeGone()
+	if gone || !strings.Contains(proof, "no longer reserved") {
+		t.Errorf("TreeGone = %v, %q: want not gone, the id no longer reserved", gone, proof)
+	}
+	h.Stop(0)
+	if !staysRunning(t, grandchild, 300*time.Millisecond) {
+		t.Error("Stop signalled a member by an id that is no longer reserved")
+	}
+}
+
+// The reviewer's probe: the host believes its child was reaped without the
+// session having been proven empty, and a stranger that called setsid holds
+// the number. Neither the proof nor Stop may treat it as a member.
+func TestAStrangerThatReusedTheSessionIdIsNeverSignalled(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	cmd := exec.Command(sleep, "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stranger := cmd.Process.Pid
+	killAtCleanup(t, stranger)
+	t.Cleanup(func() { cmd.Wait() }) // after the kill above (cleanups run last in, first out)
+	h := &Host{
+		pid: stranger, procRoot: "/proc", scanMax: DefaultProcScanLimit, walkMax: 10,
+		cgroupNote: "fake", done: closedChan(), release: make(chan struct{}),
+		reaped: true, killFor: 100 * time.Millisecond,
+	}
+	if gone, proof := h.TreeGone(); gone || !strings.Contains(proof, "no longer reserved") {
+		t.Errorf("TreeGone = %v, %q", gone, proof)
+	}
+	h.Stop(0)
+	if !staysRunning(t, stranger, 300*time.Millisecond) {
+		t.Fatalf("Stop killed the stranger (state %c)", stateOf(stranger))
+	}
+	// With the leader unreaped the same number is the session, and is signalled.
+	h = &Host{
+		pid: stranger, procRoot: "/proc", scanMax: DefaultProcScanLimit, walkMax: 10,
+		cgroupNote: "fake", done: closedChan(), release: make(chan struct{}),
+		killFor: 2 * time.Second,
+	}
+	h.Stop(0)
+	if staysRunning(t, stranger, patience) {
+		t.Error("a member of the reserved session was not signalled")
+	}
+}
+
+// A zombie that is still listed in cgroup.procs is not a process of the tree,
+// and a proven group lets the zombie go; once it is reaped its number is
+// nobody's, so a listing of it counts again. The host is built by hand, with
+// a number that stands for the unreaped leader.
+func TestCgroupProofIgnoresTheZombieAndReleasesIt(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	_, _, procsFile := fakeCgroup(t, self+"\n4242\n")
+	h := &Host{pid: 4242, cgroupProcs: procsFile, walkMax: 10, done: closedChan(), release: make(chan struct{})}
+	if h.TreeMethod() != "cgroup" {
+		t.Fatalf("method %q", h.TreeMethod())
+	}
+	if gone, proof := h.TreeGone(); !gone {
+		t.Fatalf("the unreaped leader counted as a process of the tree: %q", proof)
+	}
+	select {
+	case <-h.release:
+	default:
+		t.Error("a proven group did not let the zombie go")
+	}
+	h.reaped = true
+	gone, proof := h.TreeGone()
+	if gone || !strings.Contains(proof, "4242") {
+		t.Errorf("after the reap TreeGone = %v, %q: want the listed number to count", gone, proof)
+	}
+}
+
+func fakeSiginfo(signo, code, pid, status int32) *unix.Siginfo {
+	info := &unix.Siginfo{Signo: signo, Code: code}
+	b := unsafe.Slice((*byte)(unsafe.Pointer(info)), unsafe.Sizeof(*info))
+	off := 16
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		off = 12
+	}
+	binary.NativeEndian.PutUint32(b[off:], uint32(pid))
+	binary.NativeEndian.PutUint32(b[off+8:], uint32(status))
+	return info
+}
+
+func TestExitFromSiginfo(t *testing.T) {
+	chld := int32(syscall.SIGCHLD)
+	for _, c := range []struct {
+		name string
+		info *unix.Siginfo
+		want Exit
+	}{
+		{"exited", fakeSiginfo(chld, cldExited, 77, 3), Exit{Pid: 77, How: "exit", Code: 3}},
+		{"status above 255 is kept as the kernel reports it", fakeSiginfo(chld, cldExited, 77, 255), Exit{Pid: 77, How: "exit", Code: 255}},
+		{"killed", fakeSiginfo(chld, cldKilled, 77, 9), Exit{Pid: 77, How: "signal", Code: -1, Signal: syscall.SIGKILL}},
+		{"dumped", fakeSiginfo(chld, cldDumped, 77, 11), Exit{Pid: 77, How: "signal", Code: -1, Signal: syscall.SIGSEGV, CoreDump: true}},
+	} {
+		if got := exitFromSiginfo(77, c.info); got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
+	}
+	for name, info := range map[string]*unix.Siginfo{
+		"another signal":  fakeSiginfo(int32(syscall.SIGUSR1), cldExited, 77, 0),
+		"another pid":     fakeSiginfo(chld, cldExited, 78, 0),
+		"stopped (CLD_4)": fakeSiginfo(chld, 5, 77, 0),
+		"empty":           {},
+	} {
+		if got := exitFromSiginfo(77, info); got.How != "unknown" || got.Err == nil || got.Code != -1 {
+			t.Errorf("%s: %+v, want an unknown exit with a reason", name, got)
+		}
 	}
 }
 
@@ -973,7 +1186,7 @@ func TestSessionScanReadsStatCarefully(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "21"), 0o755); err != nil { // vanished: no stat
 		t.Fatal(err)
 	}
-	h := &Host{pid: 4242, procRoot: root, scanMax: 1000, done: closedChan()}
+	h := &Host{pid: 4242, procRoot: root, scanMax: 1000, done: closedChan(), release: make(chan struct{})}
 	members, trunc, nerr, err := h.scanSession()
 	if err != nil || trunc {
 		t.Fatalf("scan: truncated %v, err %v", trunc, err)
@@ -997,7 +1210,7 @@ func TestSessionScanIsBoundedAndCounted(t *testing.T) {
 		stats[strconv.Itoa(i)] = strconv.Itoa(i) + " (x) S 1 77 77 0\n"
 	}
 	root := fakeProc(t, stats)
-	h := &Host{pid: 4242, procRoot: root, scanMax: 25, cgroupNote: "fake", done: closedChan()}
+	h := &Host{pid: 4242, procRoot: root, scanMax: 25, cgroupNote: "fake", done: closedChan(), release: make(chan struct{})}
 	_, trunc, _, err := h.scanSession()
 	if err != nil || !trunc {
 		t.Fatalf("truncated %v, err %v, want a truncated scan", trunc, err)
@@ -1023,7 +1236,7 @@ func TestSessionScanIsBoundedAndCounted(t *testing.T) {
 }
 
 func TestSessionScanFailureProvesNothing(t *testing.T) {
-	h := &Host{pid: 4242, procRoot: filepath.Join(t.TempDir(), "missing"), scanMax: 10, cgroupNote: "fake", done: closedChan()}
+	h := &Host{pid: 4242, procRoot: filepath.Join(t.TempDir(), "missing"), scanMax: 10, cgroupNote: "fake", done: closedChan(), release: make(chan struct{})}
 	if gone, proof := h.TreeGone(); gone || !strings.HasPrefix(proof, "session") {
 		t.Errorf("TreeGone = %v, %q", gone, proof)
 	}
