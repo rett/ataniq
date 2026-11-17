@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -298,6 +299,28 @@ func (a *aliasSet) reaching(path string) []link {
 		for _, l := range a.byTarget[k] {
 			if l.path != path {
 				out = append(out, l)
+			}
+		}
+	}
+	return out
+}
+
+// union returns an alias set that holds the symlinks of both sets. Either may
+// be nil. A symlink that is in both, with the same target, is kept once.
+func (a *aliasSet) union(b *aliasSet) *aliasSet {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	}
+	out := &aliasSet{byTarget: make(map[string][]link, len(a.byTarget)+len(b.byTarget))}
+	for _, set := range []*aliasSet{a, b} {
+		for key, links := range set.byTarget {
+			for _, l := range links {
+				if !slices.Contains(out.byTarget[key], l) {
+					out.byTarget[key] = append(out.byTarget[key], l)
+				}
 			}
 		}
 	}

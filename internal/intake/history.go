@@ -39,8 +39,10 @@ type seen struct {
 // path that is in the net change gets the flag too when it was a symlink or a
 // submodule entry in a commit and is neither at the tip: the net change then
 // does not show it. A path that lies at or below the target of an aliasing
-// symlink of the tip (see aliasFlags) counts as execution config too, and the
-// reason names the symlink.
+// symlink (see aliasFlags) counts as execution config too, and the reason
+// names the symlink. The aliases are those of the base's tree and of the
+// tip's tree together: a symlink that the branch removed or retargeted still
+// stood for its folder in the commits before that.
 func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, aliases *aliasSet, commits []Commit, changes []Change, lim Limits) ([]Flag, error) {
 	if len(commits) == 0 {
 		return nil, nil

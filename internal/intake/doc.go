@@ -27,11 +27,11 @@
 //     the repository, at an absolute path, or through too long a chain of
 //     symlinks, is flagged on its own path.
 //   - history-only: a path that is execution config, a symlink or a
-//     submodule, or that lies in a folder an aliasing symlink stands for, in
-//     the change of some commit of the branch, but that is not in the net
-//     change. It was added and removed again (or changed and changed back)
-//     inside the branch. It enters upstream history, so it needs a sign-off
-//     too. For a merge commit only the paths that differ from every parent
+//     submodule, or that lies in a folder an aliasing symlink (of the base or
+//     of the tip) stands for, in the change of some commit of the branch,
+//     but that is not in the net change. It was added and removed again (or
+//     changed and changed back) inside the branch. It enters upstream
+//     history, so it needs a sign-off too. For a merge commit only the paths that differ from every parent
 //     count: a path that equals one parent was brought in by that parent.
 //
 // The flags are collected in [Review.Flagged], one for each kind and path.
@@ -152,11 +152,12 @@
 // # What it does not do
 //
 // It does not run the gates (package verify does), build a sandbox, decide
-// who signs, or touch a working checkout. The alias
-// check resolves a symlink's target by its text, against the symlinks of the
-// tip's own tree: it follows a symlink that the target passes through, and one
-// that is its last element, but at most 8 symlinks in all. A longer chain or
-// a loop is not followed; it is flagged on the symlink itself, when that
+// who signs, or touch a working checkout. The alias check resolves a
+// symlink's target by its text, against the symlinks of the same tree: the
+// tip's tree for the net change, and the base's tree as well as the tip's for
+// the history pass. It follows a symlink that the target passes through, and
+// one that is its last element, but at most 8 symlinks in all. A longer
+// chain or a loop is not followed; it is flagged on the symlink itself, when that
 // symlink is changed. It does not check the content of a file, only the path
 // and the kind of each entry. Matching of paths is the job of the
 // execconfig package, with the limits its comment lists.
