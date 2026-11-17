@@ -19,9 +19,10 @@
 # writing CHANGELOG.md and removing the fragments can be repeated. A fragment
 # that only starts like an existing entry is folded. Nothing is changed unless
 # every fragment is valid. CHANGELOG.md is replaced by one rename of a
-# temporary file made beside it (mktemp, so the rename is atomic and the file
-# mode is kept), so an interrupted run leaves it intact. --dry-run only
-# reports what would happen: it writes no file at all.
+# temporary file made beside it (created exclusively with noclobber, so an
+# existing file or symbolic link of that name is never written through; the
+# rename is atomic and the file mode is kept), so an interrupted run leaves it
+# intact. --dry-run only reports what would happen: it writes no file at all.
 #
 # --check changes nothing and fails while any fragment is left, which the
 # release flow runs after the fold.
@@ -308,10 +309,14 @@ trap '[ -z "$tmp" ] || rm -f "$tmp"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-tmp=$(mktemp "$changelog.fold.XXXXXX") || {
+new=$changelog.fold.$$
+# Noclobber makes the redirection an exclusive create: it fails when the name
+# exists, even as a dangling symbolic link.
+( set -C; : >"$new" ) 2>/dev/null || {
 	echo "error: cannot create a temporary file beside CHANGELOG.md" >&2
 	exit 1
 }
+tmp=$new
 # The new file starts from CHANGELOG.md's mode, which the rename keeps.
 cp -p "$changelog" "$tmp"
 
