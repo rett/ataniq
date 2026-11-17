@@ -673,11 +673,17 @@ func (a *attempt) checkBindSources() error {
 // recordBindSources puts the facts of the check into the evidence: each source
 // of the plan, with the problem the check found about its path, or the fact
 // that no component of it is a link. The path checked is the path bound, for
-// every row. A report that was cut short does not say about the sources it did
-// not reach, so those have no fact.
+// every row. A report that was cut short, or that holds a problem naming no row,
+// does not say about the sources it did not reach, so those have no fact.
 func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mountpoints.Report) {
 	byRow := map[string]*mountpoints.Problem{}
+	unscoped := false
 	for _, p := range rep.Problems {
+		if p.Inside == "" {
+			// About no row (the root could not be opened): no row was checked.
+			unscoped = true
+			continue
+		}
 		if _, ok := byRow[p.Inside]; !ok {
 			byRow[p.Inside] = p
 		}
@@ -695,9 +701,9 @@ func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mount
 			}
 			// Any other problem (missing, unreadable) says nothing about
 			// links, so no fact is given either way.
-		case rep.Truncated:
-			// The report was cut short: this source may be among the problems
-			// that were not listed.
+		case rep.Truncated, unscoped:
+			// The report was cut short, or a problem names no row: this source
+			// may be among the problems not listed, or was never checked.
 		default:
 			none := true
 			f.NoSymbolicLinkComponent = &none
