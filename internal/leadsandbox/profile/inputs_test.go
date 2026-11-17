@@ -60,6 +60,26 @@ func TestInputsRefusals(t *testing.T) {
 			"managed-settings path", "names no managed-settings path"},
 		{"relative managed-settings path", Codex, func(in *Inputs) { in.ManagedSettingsInside = "etc/m.toml" }, "managed-settings path", "absolute"},
 		{"unclean managed-settings path", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/etc//m.json" }, "managed-settings path", "clean"},
+		{"claude managed settings elsewhere", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/etc/other/managed.json" },
+			"managed-settings path", "only at /etc/claude-code/managed-settings.json"},
+		{"claude managed settings outside /etc", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/tmp/managed.json" },
+			"managed-settings path", "only at"},
+		{"codex managed settings in the tmpfs", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/tmp/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings in the lead's home", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/home/lead/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings in the tree", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/work/ataniq/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings are /etc", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etc" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings lookalike of /etc", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etcetera/m.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings below a read-only host row", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etc/ssl/m.toml" },
+			"bind /etc/ssl/m.toml", "below"},
+		{"codex managed settings in a writable folder under /etc", Codex, func(in *Inputs) {
+			in.ManagedSettingsInside = "/etc/lead/m.toml"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/etc/lead"
+		}, "bind /etc/lead/m.toml", "before its parent /etc/lead"}, // the table puts the policy before every writable bind, so none can hold it
 		{"records without an inside path", Claude, func(in *Inputs) { in.QargiRecords = "/srv/state/q" }, "Qargi records inside path", "empty"},
 		{"records inside path without a folder", Claude, func(in *Inputs) { in.QargiRecordsInside = "/home/lead/q" }, "Qargi records folder", "empty"},
 		{"relative records folder", Claude, func(in *Inputs) {
@@ -181,6 +201,26 @@ func TestInputsRefusals(t *testing.T) {
 				t.Error("Flags accepted the inputs")
 			}
 		})
+	}
+}
+
+func TestManagedSettingsPaths(t *testing.T) {
+	// Claude: empty means the fixed path, and the fixed path may be given.
+	in := fixture(Claude)
+	if got := in.ManagedInside(); got != ClaudeManagedInside {
+		t.Errorf("claude default = %q", got)
+	}
+	in.ManagedSettingsInside = ClaudeManagedInside
+	if err := in.Validate(); err != nil {
+		t.Errorf("the fixed claude path: %v", err)
+	}
+	// Codex: any clean path under /etc that no other bind covers.
+	for _, p := range []string{"/etc/codex/managed-config.toml", "/etc/codex.toml", "/etc/a/b/c/m.toml"} {
+		c := fixture(Codex)
+		c.ManagedSettingsInside = p
+		if err := c.Validate(); err != nil {
+			t.Errorf("codex %s: %v", p, err)
+		}
 	}
 }
 

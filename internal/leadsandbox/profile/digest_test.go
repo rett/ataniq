@@ -136,7 +136,6 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 			in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
 		}},
 		{"a seccomp file", withSeccomp(strings.Repeat("a", 64))},
-		{"the managed-settings path", func(in *Inputs) { in.ManagedSettingsInside = "/etc/other/managed.json" }},
 		{"an extra placeholder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc"}} }},
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
 		{"the Qargi records", func(in *Inputs) { in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi" }},
@@ -151,6 +150,12 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 			t.Errorf("%s gives the digest of %s", tt.name, prev)
 		}
 		seen[got] = tt.name
+	}
+	// Codex's managed-settings path is part of the profile.
+	c1, c2 := fixture(Codex), fixture(Codex)
+	c2.ManagedSettingsInside = "/etc/other/managed.toml"
+	if mustDigest(t, c1) == mustDigest(t, c2) {
+		t.Error("the codex managed-settings path does not change the digest")
 	}
 	// Two seccomp digests differ; none differs from a file.
 	a, b := base, base

@@ -59,9 +59,12 @@ type Inputs struct {
 	SpecDir string
 
 	// ManagedSettings is the managed-settings file written by Ataniq.
-	// ManagedSettingsInside is where it appears: for claude it defaults to
-	// ClaudeManagedInside; for codex it must be given, because the design
-	// names no path for codex's managed configuration.
+	// ManagedSettingsInside is where it appears: for claude it is
+	// ClaudeManagedInside (empty means that, and no other path is accepted,
+	// because claude reads its policy only there); for codex it must be
+	// given, because the design names no path for codex's managed
+	// configuration, and it must lie under /etc, outside every lead-writable
+	// folder.
 	ManagedSettings       string
 	ManagedSettingsInside string
 
@@ -268,7 +271,19 @@ func (in Inputs) checkManaged() error {
 	if inside == "" {
 		return refuse("managed-settings path", "the lead-hosting design names no managed-settings path for %s: the caller must give one", in.Runtime)
 	}
-	return CheckPath("managed-settings path", inside)
+	if err := CheckPath("managed-settings path", inside); err != nil {
+		return err
+	}
+	// The provider reads its policy only at its system path: a file bound
+	// anywhere else delivers nothing. The table binds the policy before
+	// every lead-writable folder, so ValidateTable refuses a path inside one.
+	if in.Runtime == Claude && inside != ClaudeManagedInside {
+		return refuse("managed-settings path", "claude reads its managed settings only at %s", ClaudeManagedInside)
+	}
+	if !below(inside, "/etc") {
+		return refuse("managed-settings path", "must lie under /etc, where the provider reads system policy")
+	}
+	return nil
 }
 
 func (in Inputs) checkRecords() error {
