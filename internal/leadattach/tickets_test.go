@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"ataniq/internal/leadholder/wire"
 )
 
@@ -119,6 +121,29 @@ func TestFileTicketsRefusals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFileTicketsOpensWithoutSideEffects(t *testing.T) {
+	for _, f := range []struct {
+		name string
+		flag int
+	}{
+		{"O_NOCTTY", unix.O_NOCTTY}, {"O_NONBLOCK", unix.O_NONBLOCK},
+		{"O_NOFOLLOW", unix.O_NOFOLLOW}, {"O_CLOEXEC", unix.O_CLOEXEC},
+	} {
+		if ticketOpenFlags&f.flag == 0 {
+			t.Errorf("the ticket file is opened without %s", f.name)
+		}
+	}
+	// A device is refused from its type, before anything is read from it:
+	// /dev/null reads as an empty file, which would be "no ticket yet".
+	if _, err := os.Stat("/dev/null"); err != nil {
+		t.Skip("no /dev/null")
+	}
+	_, err := readTicketFile("/dev/null", os.Geteuid())
+	if err == nil || errors.Is(err, ErrNoTicket) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a character device: %v", err)
 	}
 }
 
