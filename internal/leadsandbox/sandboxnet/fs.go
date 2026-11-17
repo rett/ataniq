@@ -55,9 +55,11 @@ func DeriveFromFS(fsys FS) (Result, error) {
 // files only; nothing a lead can write is read through it.
 type HostFS struct{}
 
-// ReadFile reads at most limit bytes of the named regular file.
+// ReadFile reads at most limit bytes of the named regular file. The file is
+// opened without blocking, so a FIFO or a device left at the path is refused
+// by the type check on the open descriptor instead of waiting for a writer.
 func (HostFS) ReadFile(name string, limit int) ([]byte, error) {
-	f, err := os.Open(name)
+	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
