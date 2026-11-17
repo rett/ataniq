@@ -36,9 +36,9 @@ and security evidence; qargi integration is limited to qualified public APIs.
 Unknown or disconnected state must remain explicit.
 
 [Lead injection](lead-injection.md) describes the provisional library that
-pastes a message into a terminal-hosted lead and submits it only when the
-screen shows it is safe; it is a library with no daemon or holder yet, and it is
-unqualified.
+pastes a message into a terminal-hosted lead and submits it only when its
+recognisers read the screen as idle; it is a library with no daemon or holder
+yet, and it is unqualified.
 
 ## Roles and authority split
 
