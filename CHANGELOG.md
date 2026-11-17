@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-17
+
 ### Added
 
 - Add `ataniq-console`, a provisional terminal console built on Bubble Tea.
@@ -73,52 +75,43 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
-- Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
-  is unqualified, runs on Linux only (elsewhere it builds and exits with a
-  message) and nothing uses it yet. It has two modes. `ataniq-probe --spec PATH
-  --report-fd N -- AGENT ARGV...` runs the inside checks of the proposal, writes
-  exactly one report line to descriptor N (and nothing else to it: the holder
-  takes that line as its signal and fails the start on any further byte), and
-  exits 97 without starting the agent when the report does not allow a start.
-  Otherwise it gives the agent a new session with descriptor 0 as its
-  controlling terminal when that is a terminal, makes every descriptor above 2
-  close-on-exec so the exec closes it, and executes the agent with the
-  environment as Go reads it (os.Environ: a name that appears twice is passed on
-  once, with its first value, and an entry without `=` as it is). A usage error
-  or any failure to read the spec, write the report, get the terminal or execute
-  the agent is exit 98. The agent path is checked first, before the report is
-  written, to be an executable regular file, otherwise it is exit 98 with no
-  report; a file that the kernel then refuses to execute is exit 98 after a good
-  report, which a holder cannot tell from an agent that exited 98. `ataniq-probe
-  pass-fds [--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...` runs on
-  the host between pasta and bubblewrap, because pasta closes the descriptors it
-  inherits: it takes descriptor numbers in decimal digits without a leading
-  zero, opens up to 8 files (read-only regular files, or write-only appending
-  regular files and FIFOs, never created or truncated, links not followed; every
-  path must lie in folders only the holder can write, as the checks on a path
-  are not atomic with the open), places each at exactly its number (a FIFO that
-  no process has open for reading is refused at once and does not wait), makes
-  every other descriptor above 2 close-on-exec and executes the command with the
-  environment as Go reads it, as above; any error is exit 98 and nothing is
-  executed. Both modes refuse (exit 98, one line) a number that is one of the Go
-  runtime's own descriptors, which it holds when a standard stream was
-  non-blocking at start: a target number in the pass-through mode, the report
-  descriptor in the inside mode.
-- Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
-  plan, nested sandboxes under owner decision R17, the file-system view, the
-  clone rules, the environment allowlist, network and DNS, the probe, the ten
-  start-up assertions, symlink-safe reads, the profile digest and the open
-  points. It is a proposal that awaits qualification and the owner's decision on
-  the profile; nothing starts a sandbox in ordinary use, and no command uses it
-  yet. Add the opt-in qualification harness `qualify` for the proposal, with its
-  guide `docs/qualification-lead-sandbox.md`, and the target `make
-  qualification-leadsandbox-build`, which runs the doctor and builds the harness
-  and `ataniq-probe`, and starts no sandbox and launches nothing. Both are
-  unqualified infrastructure: the harness records facts for a coordinator and
-  says nothing about the sandbox being qualified, safe or supported.
+- Record each change's changelog entry as a fragment file in `changelog.d`,
+  named `<section>-<slug>.md` (section: added, changed, deprecated, removed,
+  fixed or security), in the same commit as the change, so parallel features no
+  longer collide on `CHANGELOG.md`. `scripts/changelog-fold.sh` (`make
+  changelog-fold`) folds the fragments under their headings in the Keep a
+  Changelog order, each section's fragments sorted by name, and removes them;
+  `--into VERSION` folds into the dated `## [VERSION]` section that `qargi
+  release start VERSION` makes, and refuses when it does not exist, while
+  without it the fold writes to `[Unreleased]`. It refuses an unknown section
+  or a malformed fragment (including one with Windows line ends) without
+  changing anything, replaces `CHANGELOG.md` in one rename so an interrupted
+  run leaves it intact, is safe to repeat, and `--dry-run` writes nothing.
+  `make changelog-check` fails while any fragment is left. The release flow is
+  `qargi release start VERSION`, then `make changelog-fold ARGS='--into
+  VERSION'` as the first fix commit on the release branch, then `make
+  changelog-check`, then `qargi release push`; a hotfix does the same before
+  its pull request, and CI runs the check on both and on manual runs of those
+  branches. Entries already in `CHANGELOG.md` stay where they are.
 
 ### Changed
 
+- Add the feature coordinator to the design documents. A coordinator is an
+  ephemeral delegate of a project lead for exactly one feature: it holds no
+  seat or lead assignment epoch, is never a handoff target and never approves.
+  Its questions go to its lead; the owner may watch it and type into it as its
+  single writer, with the lead notified and its powers unchanged. It may
+  prepare, verify, apply and merge runs into its own feature, sync it and clean
+  any run of its feature; the lead runs the whole-suite verify, and start and
+  finish of a feature, push, release, hotfix, prune and adoption of other
+  actors' runs stay with the lead, and approval with the owner. Its label only
+  narrows what it may do and is never identity; identity comes only from a
+  bound file Ataniq writes. A lead quiesces its coordinators before a handoff,
+  and a stalled coordinator is confirmed stopped before its runs are adopted.
+  The approvals document states that no approval, plan token or grant passes to
+  or through a coordinator, that a lead's feature delegation to one is neither a
+  grant nor an approval, and that the owner typing into one is not an approval.
+  Specification only; nothing is implemented.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a
