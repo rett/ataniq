@@ -168,11 +168,11 @@ func (p ServePlan) Validate() error {
 // paths are absolute host paths. Scratch and Home are empty folders that the
 // caller made.
 //
-// The caller vouches for Mirror, Scratch and Home before it asks for a plan,
-// and again before each command of the same plan, as the sandbox writes
-// Scratch and Home in between. Every component of each path, its last name
-// included, must be one that no sandbox can write: no sandbox may create,
-// replace or rename any folder on the way to the path or its entry itself.
+// The caller vouches for Mirror, Scratch and Home before it asks for a plan.
+// Scratch and Home must not be reused across plans. Every component of each
+// path, its last name included, must be one that no sandbox can write: no
+// sandbox may create, replace or rename any folder on the way to the path or
+// its entry itself.
 // The exceptions are that Scratch and Home are folders whose content
 // sandboxed code writes. The verify sandbox must not write the mirror at
 // all. The caller checks every component without following symlinks. A plan
