@@ -200,3 +200,18 @@ func TestNoGitIsAFailure(t *testing.T) {
 		t.Fatalf("exit %d\n%s", code, errb)
 	}
 }
+
+// TestIntegrateUsageSaysWhatToDoAfterAnUnknownOutcome: the help tells the
+// owner that a target at the tip means the branch moved without a record, and
+// that the output of the command is then the record.
+func TestIntegrateUsageSaysWhatToDoAfterAnUnknownOutcome(t *testing.T) {
+	flat := strings.Join(strings.Fields(subUsage["integrate"]), " ")
+	for _, want := range []string{
+		"If the target is at the tip, the branch moved and no intake record was written",
+		"keep the output of the command as the record of that intake",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the integrate help does not say %q", want)
+		}
+	}
+}
