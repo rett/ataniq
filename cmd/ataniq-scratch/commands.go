@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -12,6 +14,17 @@ import (
 
 	"ataniq/internal/leadholder/wire"
 )
+
+// reason is the cause of err without the path that a file error carries: a
+// runtime error never prints the --holder argument, which can hold control
+// bytes.
+func reason(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
 
 // resolveHolder returns the holder binary: the one named, or ataniq-holder
 // next to this executable. It must be an absolute path to an existing
@@ -30,10 +43,10 @@ func (a *app) resolveHolder(given string) (string, error) {
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("holder binary: %w", err)
+		return "", fmt.Errorf("cannot look at the holder binary: %s", reason(err))
 	}
 	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("holder binary %s is not an executable file", path)
+		return "", errors.New("the holder binary is not an executable file")
 	}
 	return path, nil
 }
@@ -155,7 +168,7 @@ func (a *app) cmdStart(cfg startConfig) int {
 		proc, err = a.launch.Start(append([]string{holder}, hArgs...), holderEnv, a.errout, a.errout)
 		if err != nil {
 			hold.Undo()
-			return a.fail("cannot start the holder: %v", err)
+			return a.fail("cannot start the holder: %s", reason(err))
 		}
 		exited = make(chan exitResult, 1)
 		go func() {

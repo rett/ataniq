@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -282,6 +283,40 @@ func TestStartRefusesAHolderThatIsNotUsable(t *testing.T) {
 	if _, err := os.Stat(r.l.epochFile); err == nil {
 		t.Error("an epoch was taken for a start that could not begin")
 	}
+}
+
+// TestRuntimeErrorsNeverPrintTheHolderArgument gives --holder a path with a
+// control byte and a marker, and checks that no runtime error repeats it.
+func TestRuntimeErrorsNeverPrintTheHolderArgument(t *testing.T) {
+	const marker = "HOLDERARG"
+	r := newRig(t, "demo")
+	odd := filepath.Join(r.e.root, "\x1b[31m"+marker)
+	plain := odd + "-plain"
+	os.WriteFile(plain, []byte("x"), 0o644)
+	exe := odd + "-exe"
+	os.WriteFile(exe, []byte("x"), 0o755)
+	check := func(what string, args []string, setup func()) {
+		t.Helper()
+		if setup != nil {
+			setup()
+		}
+		a, _, errout := r.e.newApp(r.fl)
+		if code := a.run(append([]string{"start", "demo"}, append(args, "--", "agent")...)); code != exitFail {
+			t.Errorf("%s: exit %d, stderr %q", what, code, errout.String())
+		}
+		if strings.Contains(errout.String(), marker) || strings.Contains(errout.String(), "\x1b") {
+			t.Errorf("%s: stderr repeats the holder argument: %q", what, errout.String())
+		}
+		if errout.String() == "" {
+			t.Errorf("%s: no error printed", what)
+		}
+	}
+	check("missing", []string{"--holder", odd}, nil)
+	check("not executable", []string{"--holder", plain}, nil)
+	r.fl.startFn = func(argv, env []string) (child, error) {
+		return nil, &fs.PathError{Op: "fork/exec", Path: argv[0], Err: os.ErrPermission}
+	}
+	check("direct start fails", []string{"--direct", "--holder", exe}, nil)
 }
 
 func TestStartSystemdRunFailureGivesTheEpochBack(t *testing.T) {
