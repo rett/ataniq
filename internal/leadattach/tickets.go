@@ -46,28 +46,46 @@ func FileTickets(path string) func() (string, error) {
 
 // FileTicketSource returns the two functions of a ticket file, for
 // Config.Tickets and Config.TicketReady: the same source as FileTickets, and
-// a presence check that does not take the ticket. The check is true when the
-// file at path exists, is a regular file (a symbolic link is not followed and
-// is not one) of the user with mode 0600, and is not empty. It does not open
-// the file, reads nothing of its content and empties nothing, so that
-// asking it as often as the client polls costs no ticket; a file that the
-// source would refuse, or that holds no ticket at the time of the read, is a
-// ticket that is not there as far as the check goes, and the reason for a
-// refusal is not shown while the check says no.
-func FileTicketSource(path string) (tickets func() (string, error), ready func() bool) {
+// a presence check that does not take the ticket. The check is one lstat: it
+// does not open the file, reads nothing of its content and empties nothing,
+// so that asking it as often as the client polls costs no ticket. It returns
+//
+//   - ErrNoTicket when the file is absent or empty;
+//   - the reason of a refusal, the same words as the read of FileTickets
+//     gives, when the file is a symbolic link (not followed), is not a regular
+//     file, is not owned by the user, or has any mode but 0600, so that a
+//     client that waits shows why and makes no connection;
+//   - nil when the file is a regular file of the user with mode 0600 and is
+//     not empty. That is not a promise of a ticket: the file may hold junk,
+//     or be locked by another reader, which the read finds out.
+func FileTicketSource(path string) (tickets func() (string, error), ready func() error) {
 	uid := os.Geteuid()
-	return FileTickets(path), func() bool { return ticketFilePresent(path, uid) }
+	return FileTickets(path), func() error { return ticketFilePresent(path, uid) }
 }
 
 // ticketFilePresent is the check of FileTicketSource: one lstat.
-func ticketFilePresent(path string, uid int) bool {
+func ticketFilePresent(path string, uid int) error {
 	fi, err := os.Lstat(path)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
-		return false
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return ErrNoTicket
+	case err != nil:
+		return fmt.Errorf("ticket file refused: %s", fsReason(err))
+	case fi.Mode()&fs.ModeSymlink != 0:
+		return errors.New("ticket file refused: it is a symbolic link")
+	case !fi.Mode().IsRegular():
+		return errors.New("ticket file refused: it is not a regular file")
 	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && int(st.Uid) == uid &&
-		fi.Mode().Perm() == 0o600 && fi.Mode()&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) == 0
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
+		return errors.New("ticket file refused: it is not owned by the user")
+	}
+	if fi.Mode().Perm() != 0o600 || fi.Mode()&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky) != 0 {
+		return errors.New("ticket file refused: its mode is not 0600")
+	}
+	if fi.Size() == 0 {
+		return ErrNoTicket
+	}
+	return nil
 }
 
 // ticketOpenFlags open the ticket file without side effects, whatever is at
@@ -85,6 +103,8 @@ func readTicketFile(path string, uid int) (string, error) {
 			return "", ErrNoTicket
 		case errors.Is(err, syscall.ELOOP):
 			return "", errors.New("ticket file refused: it is a symbolic link")
+		case errors.Is(err, syscall.EISDIR):
+			return "", errors.New("ticket file refused: it is not a regular file")
 		case errors.Is(err, fs.ErrPermission):
 			// Most likely a mode that gives the owner no write access.
 			if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode().IsRegular() && fi.Mode().Perm() != 0o600 {

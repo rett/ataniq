@@ -21,9 +21,11 @@
 //
 // Start never blocks. A goroutine asks Config.TicketReady whether there is a
 // ticket, at once and then every [TicketPoll] (500 ms), and makes no
-// connection while it says no: the status shows "waiting for a ticket" and the
-// holder sees nothing (a connection that closes with no Hello would be counted
-// and logged there as a refused handshake). Only when it says yes, or when
+// connection while it does not say yes (nil): the status shows "waiting for a
+// ticket" and the holder sees nothing (a connection that closes with no Hello
+// would be counted and logged there as a refused handshake). When the check
+// says no with a reason (an error that is not [ErrNoTicket]), the status shows
+// the reason after "waiting for a ticket". Only when it says yes, or when
 // there is no check (it is nil), the goroutine dials the holder's socket and
 // then asks Config.Tickets for the ticket: the ticket is read after the dial,
 // because the source empties a ticket when it gives it and a ticket taken
@@ -32,7 +34,8 @@
 // "waiting for a ticket"; a dial that fails shows "cannot connect" and is
 // tried again after the same wait. [FileTicketSource] gives the pair for a
 // ticket file; its check is one lstat and takes nothing, and a file that it
-// does not accept (a wrong mode, say) shows as no ticket, with no reason. With a ticket the client sends the Hello (the handshake
+// refuses (a wrong mode, say) shows the reason that a read of it would give,
+// with no connection. With a ticket the client sends the Hello (the handshake
 // deadline starts then) and reads the Welcome. The state is attached only once
 // the first snapshot of the connection is applied: until then it is
 // connecting, and input is dropped and counted, because the pane still shows

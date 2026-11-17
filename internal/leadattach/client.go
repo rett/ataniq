@@ -364,19 +364,22 @@ func (c *Client) run() {
 		wait = 0
 		// With a presence check, a ticket that is not there means no
 		// connection at all: the holder would count and log each one as a
-		// refused handshake. The check takes nothing.
-		if ready := c.cfg.TicketReady; ready != nil && !ready() {
-			if c.ctx.Err() != nil {
-				return
+		// refused handshake. The check takes nothing; an error that is not
+		// ErrNoTicket is the reason it gives, and the status shows it.
+		if ready := c.cfg.TicketReady; ready != nil {
+			if rerr := ready(); rerr != nil {
+				if c.ctx.Err() != nil {
+					return
+				}
+				// A client that is resyncing keeps that state through the
+				// first ask.
+				if !(resync && !missed) {
+					c.setWaiting(rerr)
+				}
+				missed = true
+				wait = TicketPoll
+				continue
 			}
-			// A client that is resyncing keeps that state through the
-			// first ask.
-			if !(resync && !missed) {
-				c.setWaiting(ErrNoTicket)
-			}
-			missed = true
-			wait = TicketPoll
-			continue
 		}
 		// Dial first, then read the ticket: a ticket is single use and the
 		// source empties it when it gives it, so a ticket taken before a

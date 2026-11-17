@@ -299,9 +299,10 @@ As the writer, in session focus every key goes to the session, as in the
 fixture console: `q` and Ctrl+C included, except the return key and F12. The
 console encodes each key in the legacy terminal form, never an enhanced form
 (except Shift+Enter with `--shift-enter csi-u`), following the application
-cursor, keypad and Enter modes that the session set. A paste goes to the holder in one piece. The holder takes out of it the held
-keys named below and any paste-end sequence, and wraps it for bracketed paste
-if the session turned that on. The console asks the outer terminal to bracket a
+cursor, keypad and Enter modes that the session set. A paste goes to the
+holder in one piece. The holder takes out of it the held keys named below and
+any paste-end sequence, and wraps it for bracketed paste if the session turned
+that on. The console asks the outer terminal to bracket a
 paste only when the session did. A paste longer than 64 KiB is refused with a
 notice, because it would arrive as several pastes. The mouse reaches the session
 only when it asked for it; otherwise it selects text in the console as in the
@@ -329,28 +330,39 @@ select and copy is that screen. The session's own requests to the clipboard
 
 An attach ticket is a random string of 64 hexadecimal characters, issued for
 one place and one epoch (one run of the holder), single use and valid for 30
-seconds. The console reads one from the ticket file each time it needs one, at
-once and then every half second, and shows "waiting for a ticket" until there
-is one. The file must be a regular file, not a link, owned by you and with mode
-exactly 0600; otherwise the console refuses it and the status says why, naming
-no path. The console empties the file as it reads it, whatever it holds: a
-ticket is spent by being read, and a file with something else in it does not
-stop the console. The writer of the file replaces it (a new 0600 file renamed
-over the old), so a reader that still holds the old file empties only that one.
-A second console that reads at the same moment finds the file locked and sees
-no ticket.
+seconds. The console looks at the ticket file when it starts and then every
+half second, and shows "waiting for a ticket" until there is one. The look is
+one check of the file's status: it does not open the file, read it or empty it.
+While the file is absent or empty the console does not connect, so a waiting
+console does not touch the holder: the holder sees nothing of it, counts and
+logs no refused connection, and the console cannot tell whether the holder is
+running.
+
+The file must be a regular file, not a link, owned by you and with mode exactly
+0600. Otherwise the console refuses it, and the status says why, naming no
+path: for example "waiting for a ticket: ticket file refused: its mode is not
+0600". A refused file is not read and not emptied, and the console does not
+connect. When the file is right the console connects first and reads the
+ticket only then, so a connection that fails does not spend a ticket: the file
+keeps it for the next connection. The console empties the file as it reads it,
+whatever it holds: a ticket is spent by being read, and a file with something
+else in it does not stop the console. The writer of the file replaces it (a new
+0600 file renamed over the old), so a reader that still holds the old file
+empties only that one. A second console that reads at the same moment finds the
+file locked and sees no ticket; the console that found no ticket after it
+connected closes the connection and waits again.
 
 A ticket the holder refuses (used, expired, for another epoch or place) or a
 place that is taken sends the console back to waiting for a ticket, with the
 holder's reason. Writing a fresh ticket to the file attaches it. A connection
 that is lost does the same. A ticket the console has read is spent, because
 the file is emptied as it is read; it is not read again. When a connection
-fails, for example because the holder is not running or DIR is wrong, the
-console shows disconnected with the reason and tries again every half second.
-Whether the file still holds the ticket then depends on where the connection
-failed, so when the console says it is waiting for a ticket, write a fresh one.
-A holder that speaks another protocol version
-stops the console: it shows disconnected and does not retry.
+cannot be made, for example because the holder is not running or DIR is wrong,
+the console shows disconnected with the reason and tries again every half
+second, and the ticket stays in the file. When the console says it is waiting
+for a ticket after it had read one, write a fresh one. A holder that speaks
+another protocol version stops the console: it shows disconnected and does not
+retry.
 
 The holder refuses to issue a ticket for a place while another ticket for the
 same place is waiting to be used, which it is for up to 30 seconds. So when a

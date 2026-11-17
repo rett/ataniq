@@ -96,3 +96,62 @@ func TestOtherSignalsDuringStartUpDoNotStopIt(t *testing.T) {
 		t.Fatalf("exit %d; stderr: %s", code, r.errbuf.String())
 	}
 }
+
+// The holder keeps the role lock until it exits, not until its session is
+// closed: when the service and the event log are closed and the final record
+// is written, a second holder for the role is still refused, and it changes
+// nothing; once the first has exited, the role is free (the lead-hosting
+// design, section 1.6).
+func TestTheRoleLockIsHeldUntilTheHolderEnds(t *testing.T) {
+	r := newRig(t)
+	var (
+		called                bool
+		secondCode            = -1
+		secondErr             = &syncBuf{}
+		stateBefore, stateNow []byte
+		logBefore, logNow     []byte
+	)
+	d := r.deps()
+	d.beforeLockRelease = func() {
+		called = true
+		// The service is closed and the final record is written.
+		if _, err := os.Lstat(filepath.Join(r.runtime, "attach.sock")); err == nil {
+			t.Error("the attach socket is still there when the lock is about to be released")
+		}
+		if _, err := os.Lstat(filepath.Join(r.state, session.FinalName)); err != nil {
+			t.Errorf("no final record when the lock is about to be released: %v", err)
+		}
+		stateBefore, _ = os.ReadFile(filepath.Join(r.state, StateFileName))
+		logBefore = r.logBytes()
+		d2 := r.deps()
+		d2.stderr = secondErr
+		args := r.spec("raw; say SECOND; exit 0").set("epoch", "8").set("launch-intent", "other-intent").build()
+		secondCode = run(args, d2)
+		stateNow, _ = os.ReadFile(filepath.Join(r.state, StateFileName))
+		logNow = r.logBytes()
+	}
+	go func() { r.done <- run(r.spec("raw; say FIRST; exit 0").build(), d) }()
+	if code := r.wait(); code != exitOK {
+		t.Fatalf("the first holder exited %d; stderr: %s", code, r.errbuf.String())
+	}
+	if !called {
+		t.Fatal("the hook before the release of the lock was not called")
+	}
+	if secondCode != exitLocked {
+		t.Fatalf("the second holder exited %d, want %d; stderr: %s", secondCode, exitLocked, secondErr.String())
+	}
+	if !strings.Contains(secondErr.String(), "already held") {
+		t.Errorf("the refusal is not clear: %q", secondErr.String())
+	}
+	if string(stateNow) != string(stateBefore) || len(stateBefore) == 0 {
+		t.Errorf("the state file changed or is absent:\n%s\n%s", stateBefore, stateNow)
+	}
+	if string(logNow) != string(logBefore) {
+		t.Error("the event log changed")
+	}
+	// Once it has exited the role is free.
+	r.errbuf = &syncBuf{}
+	if code := r.runNow(r.spec("raw; say THIRD; exit 0").set("epoch", "9").build()); code != exitOK {
+		t.Errorf("a holder after the first exited %d, want 0; stderr: %s", code, r.errbuf.String())
+	}
+}

@@ -79,6 +79,16 @@ func TestAgentThatCannotStartExits1(t *testing.T) {
 	if !strings.Contains(r.errbuf.String(), "cannot start the agent") {
 		t.Errorf("stderr %q", r.errbuf.String())
 	}
+	// The reason is the system's, and the diagnostic does not name the agent's
+	// path or any other path of the caller.
+	if !strings.Contains(r.errbuf.String(), "no such file or directory") {
+		t.Errorf("the diagnostic gives no reason: %q", r.errbuf.String())
+	}
+	for _, private := range []string{a.agent[0], r.root, "no-such-agent"} {
+		if strings.Contains(r.errbuf.String(), private) {
+			t.Errorf("the diagnostic names %q: %q", private, r.errbuf.String())
+		}
+	}
 	// The diagnostic says that the state file names a holder that is gone.
 	if !strings.Contains(r.errbuf.String(), "holder.json names a holder that is gone") {
 		t.Errorf("the diagnostic does not say that holder.json is stale: %q", r.errbuf.String())

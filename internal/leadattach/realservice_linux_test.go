@@ -295,7 +295,7 @@ func TestWaitingForATicketIsNotARefusedHandshakeAtTheRealHolder(t *testing.T) {
 	c := leadattach.New(leadattach.Config{
 		Socket: filepath.Join(h.dir, serve.AttachSocket), Mode: leadattach.ModeViewer, Name: "test console",
 		Tickets:     func() (string, error) { polls.Add(1); return tickets() },
-		TicketReady: func() bool { polls.Add(1); return ready() },
+		TicketReady: func() error { polls.Add(1); return ready() },
 		// A fast clock: the polls are 500 ms by the client's own count, 5 ms here.
 		Clock: &scaledClock{},
 	})

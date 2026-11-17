@@ -104,7 +104,7 @@ func TestWaitingForATicketFileMakesNoConnection(t *testing.T) {
 	var polls atomic.Int64
 	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
 		c.Tickets = tickets
-		c.TicketReady = func() bool { polls.Add(1); return ready() }
+		c.TicketReady = func() error { polls.Add(1); return ready() }
 	}})
 	e.start()
 	st := e.untilConn(terminalconsole.LiveWaitingTicket)
@@ -153,7 +153,13 @@ func TestTicketReadyNoMeansNoDialAndNoTicketRead(t *testing.T) {
 	var yes atomic.Bool
 	var polls atomic.Int64
 	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
-		c.TicketReady = func() bool { polls.Add(1); return yes.Load() }
+		c.TicketReady = func() error {
+			polls.Add(1)
+			if yes.Load() {
+				return nil
+			}
+			return leadattach.ErrNoTicket
+		}
 	}})
 	e.tickets.give(1)
 	e.start()
@@ -169,6 +175,52 @@ func TestTicketReadyNoMeansNoDialAndNoTicketRead(t *testing.T) {
 	hc := e.h.accept()
 	if hc.hello.Ticket != e.tickets.ticket(0) {
 		t.Errorf("the hello carries %q", hc.hello.Ticket)
+	}
+	hc.welcome(wire.RoleWriter)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+}
+
+// A check that refuses the file with a reason shows it in the status and makes
+// no connection, and the ticket in the file is not read. When the mode is put
+// right the client attaches.
+func TestARefusedTicketFileShowsItsReasonWithNoConnection(t *testing.T) {
+	leakCheck(t)
+	path := filepath.Join(t.TempDir(), "ticket")
+	tk := newTicketString(t)
+	if err := os.WriteFile(path, []byte(tk+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tickets, ready := leadattach.FileTicketSource(path)
+	var polls atomic.Int64
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
+		c.Tickets = tickets
+		c.TicketReady = func() error { polls.Add(1); return ready() }
+	}})
+	e.start()
+	st := e.until("the reason", func(st terminalconsole.LiveStatus) bool {
+		return st.Conn == terminalconsole.LiveWaitingTicket && strings.Contains(st.Reason, "mode is not 0600")
+	})
+	if want := "waiting for a ticket: ticket file refused: its mode is not 0600"; st.Reason != want {
+		t.Errorf("reason %q, want %q", st.Reason, want)
+	}
+	e.until("many polls", func(terminalconsole.LiveStatus) bool { return polls.Load() >= 10 })
+	if n := e.h.accepts.Load(); n != 0 {
+		t.Fatalf("the holder took %d connections while the file was refused", n)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != tk+"\n" {
+		t.Errorf("the ticket file holds %q (%v); the check must not touch it", b, err)
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hc := e.h.accept()
+	if hc.hello.Ticket != tk {
+		t.Errorf("the hello carries %q, want %q", hc.hello.Ticket, tk)
 	}
 	hc.welcome(wire.RoleWriter)
 	hc.snapshot()
