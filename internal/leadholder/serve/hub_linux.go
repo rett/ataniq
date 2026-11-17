@@ -14,6 +14,12 @@ import (
 	"ataniq/internal/terminalconsole/sessionpane"
 )
 
+// The size limit of a snapshot is wire.MaxSnapshotData, the data a Snapshot
+// frame carries, and sessionpane.MaxSnapshotBytes, the most the pane makes: no
+// number of its own. A snapshot of the pane always fits the frame, which this
+// does not compile without; snapshotLocked still checks the length it sends.
+const _ = uint(wire.MaxSnapshotData - sessionpane.MaxSnapshotBytes)
+
 // posLen is the position that starts an Output and a Snapshot payload, for the
 // queue's accounting.
 const posLen = 8
