@@ -36,8 +36,36 @@
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each host bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
-//     the profile's never-mounted and other-runtime checks again on the real
-//     paths, so that a link cannot hide a never-mounted folder.
+//     the profile's never-mounted, other-runtime, other-lead and
+//     other-project checks again on the real paths, so that a link cannot
+//     hide a never-mounted folder.
+//
+// # What the holder must do
+//
+// The package checks; the holder of the lead's launch (the probe command, the
+// harness, the runner) must make the checks mean something. Its obligations,
+// in order:
+//
+//  1. Call [CheckOwnClone] when the tree is made. Then call [Prepare], only
+//     before the lead's first run, with the statement that no lead has run.
+//     Prepare does not run [CheckOwnClone] itself. At every start after that
+//     call [Check] and [ResolveSources], not [Prepare].
+//  2. Run [Check] and [ResolveSources] only after the previous unit has gone
+//     and its control group is empty, and right before the launch, with
+//     nothing between them and the launch that runs a lead process. Nested
+//     sandboxes are allowed for now, so the sandbox's own process tree does
+//     not show that no lead process remains; only an empty control group
+//     does. A check made while a lead process remains says nothing.
+//  3. Pass the resolved real paths ([ResolvedSource].Real, or the source after
+//     checking that Real equals Source) to the plan. bubblewrap resolves a
+//     source by its path when it binds, so a source that is checked and a
+//     different one that is bound is a check that did not happen. The probe's
+//     assertions from inside the sandbox stay the final check.
+//  4. Know the limits of the records folder. It lies outside the state root,
+//     so the lookup from the state root does not reach it: only its last
+//     component is opened without following a symbolic link, nothing above it
+//     is looked for, and its mode and owner are not checked. The holder must
+//     make and check that folder itself.
 //
 // # Limits
 //
@@ -53,9 +81,9 @@
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
 // looks for the anchored line and takes any later line that starts with "!"
-// as un-listing it, and does not evaluate the patterns git knows. The package does not start a
-// process, run git, create a namespace, or read any provider folder. It
-// reads, bounded, the one file .git/info/exclude.
+// as un-listing it, and does not evaluate the patterns git knows. The package
+// does not start a process, run git, create a namespace, or read any provider
+// folder. It reads, bounded, the one file .git/info/exclude.
 //
 // A tree placeholder whose path holds a character git treats as a pattern
 // (backslash, star, question mark, opening bracket, a trailing space) is
