@@ -369,6 +369,30 @@ func TestAStateThatSaysTheStreamEndedEndsThePane(t *testing.T) {
 	}
 }
 
+func TestAProtocolErrorAfterTheStreamEndedEndsTheClient(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer})
+	hc := e.attach(wire.RoleViewer)
+	hc.send(wire.TypeState, enc(t)(wire.EncodeState(wire.State{
+		Facts: wire.Facts{StreamEnded: wire.FactYes, TUIExited: wire.FactYes, TreeGone: wire.FactNo}, Idle: "idle",
+	})))
+	e.until("the pane ended", func(terminalconsole.LiveStatus) bool { ended, _, _ := e.pane.Ended(); return ended })
+
+	// A frame of an unknown type: a protocol error, which would back off and
+	// ask for tickets for ever for a session whose pane has ended.
+	hc.nc.Write([]byte{'X', 0, 0, 0, 1, 0})
+	st := e.until("disconnected", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveDisconnected })
+	if st.Reason != "session ended" {
+		t.Errorf("reason %q", st.Reason)
+	}
+	calls := e.tickets.callCount()
+	e.tickets.give(1)
+	e.h.noConnection(60 * time.Millisecond)
+	if e.tickets.callCount() != calls {
+		t.Error("the client asked for a ticket after the session ended")
+	}
+}
+
 func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})

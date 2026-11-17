@@ -378,6 +378,16 @@ func (c *Client) run() {
 		if out.checked {
 			fails, resyncs = 0, 0
 		}
+		if out.kind != outClosed && out.kind != outStop {
+			if ended, _, _ := c.pane.Ended(); ended {
+				// The holder said the stream ended (a State frame) and the
+				// connection broke or the holder broke the protocol before
+				// the Exit: there is nothing to attach to again, whatever
+				// ended the connection.
+				c.setDisconnected("session ended")
+				return
+			}
+		}
 		switch out.kind {
 		case outClosed:
 			return
@@ -398,13 +408,6 @@ func (c *Client) run() {
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))
 		default:
-			if ended, _, _ := c.pane.Ended(); ended {
-				// The holder said the stream ended (a State frame) and the
-				// connection broke before its Exit: there is nothing to
-				// attach to again.
-				c.setDisconnected("session ended")
-				return
-			}
 			c.setDisconnected(out.reason)
 			wait = TicketPoll
 		}
