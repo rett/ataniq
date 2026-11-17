@@ -72,6 +72,7 @@ type client struct {
 	lastOverflow time.Time
 	nextCheck    time.Time
 	viewerLogged bool
+	brokenTold   bool // the input-broken notice was sent
 	removed      bool
 	dead         bool   // removed: the sender finishes and closes
 	draining     bool   // the session is over: the sender closes after the queue

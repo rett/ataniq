@@ -65,6 +65,13 @@
 // was released during its handshake sets neither the colours nor the size. A
 // release waits for a write in flight, at most one PTY write deadline.
 //
+// A write to the agent that failed part-way breaks the session's input for
+// good ([session.Session.InputBroken]). A writer whose Input or Paste then
+// comes to nothing for that reason gets one Notice with the reason
+// "input-broken" for its connection (the one whose own write broke the input
+// as well), which is counted ("input_broken_notices") and logged once; status
+// reports the state in its counters as "input_broken".
+//
 // The locks are taken in this order, and a lock is never taken while one that
 // comes later in the list is held: the input mutex (inMu), the session's
 // input lock, the session's output lock, the hub lock (mu), the pane's own
@@ -527,6 +534,7 @@ const (
 	cntControlOther     = "control_refused_other"
 	cntBadFrames        = "bad_frames"
 	cntViewerInput      = "viewer_input_refused"
+	cntInputBroken      = "input_broken_notices"
 	cntChecks           = "checks_sent"
 	cntSnapshotsTaken   = "snapshots_taken"
 	cntSnapshotErrors   = "snapshot_errors"
@@ -539,7 +547,9 @@ const (
 	cntEventErrors      = "event_log_errors"
 )
 
-func (s *Server) count(name string) { s.sess.AddCount(name, 1) }
+// count adds one to a counter of the service. The names above are none of the
+// session's reserved ones (a test checks it), so AddCount's error cannot occur.
+func (s *Server) count(name string) { _ = s.sess.AddCount(name, 1) }
 
 // allCounters is every counter of the session and the service, and the pane's
 // cap counters. It takes the session's output lock: call it without mu.
