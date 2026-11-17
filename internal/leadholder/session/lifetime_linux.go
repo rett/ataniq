@@ -201,6 +201,9 @@ func (s *Session) lifecycle() {
 		s.pane.End(st.Status, st.How != "unknown")
 		s.omu.Unlock()
 	}
+	// The session is over: input from every source is refused from here on
+	// (ErrClosed), before the counters are taken for the record.
+	s.over.Store(true)
 	end := time.Now().UTC()
 	method := s.host.TreeMethod()
 	facts := Facts{

@@ -30,7 +30,10 @@
 // the emulator never waits for the agent to read. A write to the agent that
 // fails or times out breaks the input for good ([Session.InputBroken]): a
 // prefix may have been delivered, so nothing more is written, from any source,
-// and later input is refused with [ErrInputBroken].
+// and later input is refused with [ErrInputBroken]. Once the session is over
+// (the lifetime path took the input away before the final record's counters),
+// input from every source is refused with [ErrClosed] and nothing more is
+// written to the terminal, even while a grandchild still holds it.
 //
 // Writer input is filtered: Ctrl+Z is never forwarded, and while the terminal
 // has ISIG set the bytes for VINTR, VQUIT and VSUSP are held back too. The
@@ -208,6 +211,15 @@ type Session struct {
 	// inputBroken is set under imu by the first failed write to the agent
 	// and never cleared.
 	inputBroken atomic.Bool
+
+	// over is set by the lifetime path before it takes the final record's
+	// counters: from then on every source of input is refused with ErrClosed
+	// and nothing is written to the terminal, so that the record describes the
+	// input's final state. A write already past the check when it is set may
+	// still fail, and then breaks the input after the record was taken (the
+	// lifetime path does not take the input lock, so a fence cannot hold the
+	// end of the session).
+	over atomic.Bool
 
 	closed    atomic.Bool
 	closeOnce sync.Once
