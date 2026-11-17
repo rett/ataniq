@@ -104,6 +104,30 @@ func TestControlPeerMustBeTheDaemon(t *testing.T) {
 	}
 }
 
+// The daemon lock is probed (a flock that is let go at once) only when the pid
+// in the file is the peer's: a peer that is another process never makes the
+// holder take a lock that a starting daemon may want. For another pid the file
+// is not locked at all, so it reads as not locked even while it is held.
+func TestDaemonLockProbedOnlyForThePeerTheFileNames(t *testing.T) {
+	e := newEnv(t, "raw; say READY; wait")
+	waitScreen(t, e.sess, "READY") // the lock is held, with this process's pid in it
+	me := os.Getpid()
+
+	if pid, locked, err := e.srv.daemonPID(me); err != nil || pid != me || !locked {
+		t.Errorf("the peer the file names: pid %d locked %v err %v", pid, locked, err)
+	}
+	if pid, locked, err := e.srv.daemonPID(me + 1); err != nil || pid != me || locked {
+		t.Errorf("another peer: pid %d locked %v err %v: the file must not be probed", pid, locked, err)
+	}
+	// Nobody holds the lock: the peer the file names finds it free, and the
+	// holder's probe took nothing that stays.
+	e.releaseDaemonLock()
+	if pid, locked, err := e.srv.daemonPID(me); err != nil || pid != me || locked {
+		t.Errorf("the lock is free: pid %d locked %v err %v", pid, locked, err)
+	}
+	e.holdDaemonLock(me) // the lock can be taken again
+}
+
 // The pidfd of the peer names its process: a pid from another process in the
 // injected function does not pass.
 func TestControlPeerPidfdInjected(t *testing.T) {

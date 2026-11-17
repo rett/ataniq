@@ -43,9 +43,10 @@ func TestSlowClientResyncedOnceThenTooSlow(t *testing.T) {
 	}
 	e.waitCount(cntResyncs, 1)
 	e.waitCount(cntTooSlow, 1)
-	if got := position(e.sess); got <= last {
-		t.Fatalf("the position did not advance after the disconnect")
-	}
+	// The output loop goes on after the disconnect too. The counts above are
+	// usually reached at once, so no time has passed since the last sample:
+	// read the position now and wait for it to advance, never compare at once.
+	waitPosition(t, e.sess, position(e.sess)+1)
 	if e.count(cntSnapshotsTaken) != 2 || e.count(cntResyncs) != 1 || e.count(cntTooSlow) != 1 {
 		t.Errorf("snapshots %d, resyncs %d, too slow %d: want 2, 1, 1", e.count(cntSnapshotsTaken), e.count(cntResyncs), e.count(cntTooSlow))
 	}
@@ -80,11 +81,10 @@ func TestSlowReaderOfTheWorstCaseScreen(t *testing.T) {
 	waitPosition(t, e.sess, filesSize(t, files))                                     // the screen is filled; the flood has begun
 	v := e.attach(wire.RoleViewer, func(h *helloOpts) { h.holdAfterWelcome = true }) // it takes the Welcome and nothing else
 
-	start := position(e.sess)
 	e.waitCount(cntTooSlow, 1)
-	if position(e.sess) <= start {
-		t.Error("the position did not advance")
-	}
+	// The output loop goes on after the disconnect: read the position now and
+	// wait for it to advance, never compare at once.
+	waitPosition(t, e.sess, position(e.sess)+1)
 	if e.count(cntSnapshotsTaken) != 1 || e.count(cntResyncs) != 0 {
 		t.Errorf("snapshots %d, resyncs %d: want 1 and 0: the snapshot is outside the budget and nothing loops", e.count(cntSnapshotsTaken), e.count(cntResyncs))
 	}

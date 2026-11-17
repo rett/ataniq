@@ -14,6 +14,12 @@ import (
 	"ataniq/internal/terminalconsole/sessionpane"
 )
 
+// The size limit of a snapshot is wire.MaxSnapshotData, the data a Snapshot
+// frame carries, and sessionpane.MaxSnapshotBytes, the most the pane makes: no
+// number of its own. A snapshot of the pane always fits the frame, which this
+// does not compile without; snapshotLocked still checks the length it sends.
+const _ = uint(wire.MaxSnapshotData - sessionpane.MaxSnapshotBytes)
+
 // posLen is the position that starts an Output and a Snapshot payload, for the
 // queue's accounting.
 const posLen = 8
@@ -65,13 +71,14 @@ type client struct {
 	wake         chan struct{}
 	wantSnap     bool      // waiting for a snapshot point
 	snapSince    time.Time // when the wait began
-	qSince       time.Time // when the parser was first seen quiescent in this wait
+	qSince       time.Time // when the parser was first seen quiescent in this wait; never reset by a later point
 	noticed      bool      // the snapshot-waiting notice was sent
 	streaming    bool      // gets Output from now on
 	snapUnsent   bool      // a snapshot is queued or being written
 	lastOverflow time.Time
 	nextCheck    time.Time
 	viewerLogged bool
+	brokenTold   bool // the input-broken notice was sent
 	removed      bool
 	dead         bool   // removed: the sender finishes and closes
 	draining     bool   // the session is over: the sender closes after the queue
@@ -273,13 +280,15 @@ func (s *Server) pointLocked(p *sessionpane.Pane, end uint64, now time.Time) {
 				c.qSince = now
 			}
 			// Mode 2026 is a frame in progress: wait for its end, but only for
-			// the hold time. The snapshot is of the real state either way.
+			// the hold time, counted from the first quiescent point of the
+			// wait. A later point that is not quiescent does not restart it,
+			// else output that keeps the mode set and breaks off in the middle
+			// of a sequence now and then would never get its snapshot. The
+			// snapshot is of the real state either way.
 			if !s.lastModes.Has(2026, false) || now.Sub(c.qSince) >= s.cfg.SnapshotHold {
 				ready = append(ready, c)
 				continue
 			}
-		} else {
-			c.qSince = time.Time{}
 		}
 		if !c.noticed && now.Sub(c.snapSince) >= s.cfg.SnapshotNotice {
 			c.noticed = true
@@ -292,7 +301,13 @@ func (s *Server) pointLocked(p *sessionpane.Pane, end uint64, now time.Time) {
 	var digest string
 	getDigest := func() string {
 		if digest == "" {
-			digest = wire.DigestHex(p.Digest())
+			// The screen of one position is the same screen until it is
+			// resized, so an idle pane is digested once, not again for every
+			// client and every interval.
+			if !s.digestValid || s.digestPos != end {
+				s.digestHex, s.digestPos, s.digestValid = wire.DigestHex(p.Digest()), end, true
+			}
+			digest = s.digestHex
 		}
 		return digest
 	}
@@ -388,6 +403,7 @@ func (s *Server) syncSizeLocked(p *sessionpane.Pane) {
 	}
 	first := s.sizePayload == nil
 	s.lastSize, s.sizePayload = sz, payload
+	s.digestValid = false // a resize changes the screen without moving the position
 	if first {
 		return
 	}

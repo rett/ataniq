@@ -17,7 +17,9 @@
 // The control socket also checks the peer process: the pidfd that SO_PEERPIDFD
 // gives names the peer, and its pid must be the pid written in the daemon
 // lock file while that file is locked (a non-blocking exclusive flock on a
-// fresh open of it fails with "would block"). That is the stated limit of the
+// fresh open of it fails with "would block"; the probe is made only when the
+// peer's pid is the file's, so no other process can make the holder take the
+// lock for a moment). That is the stated limit of the
 // design: any process of the same user that writes its own pid into that file
 // and holds a lock on it passes, and so does one that replaces the daemon.
 // The check separates the daemon from a process that merely runs as the same
@@ -51,6 +53,32 @@
 // takes no bytes for the stall time is disconnected. Output that arrives while
 // a resync snapshot is waiting for its point is not queued: the snapshot
 // covers it.
+//
+// # Writer input and the order of locks
+//
+// Only the writer reaches the PTY. A writer frame (Input, Paste, Resize) is
+// handled with the input mutex held, from the check that the client is the
+// writer to the end of the session call, and every change of writer
+// (release-writer) and the writer's colours and size at its handshake are
+// done with that mutex held as well. So when release-writer has answered ok no
+// byte of the released client has reached the PTY or will, and a client that
+// was released during its handshake sets neither the colours nor the size. A
+// release waits for a write in flight, at most one PTY write deadline.
+//
+// A write to the agent that failed part-way breaks the session's input for
+// good ([session.Session.InputBroken]). A writer whose Input or Paste then
+// comes to nothing for that reason gets one Notice with the reason
+// "input-broken" for its connection (the one whose own write broke the input
+// as well), which is counted ("input_broken_notices") and logged once; status
+// reports the state in its counters as "input_broken".
+//
+// The locks are taken in this order, and a lock is never taken while one that
+// comes later in the list is held: the input mutex (inMu), the session's
+// input lock, the session's output lock, the hub lock (mu), the pane's own
+// lock, the session's counter lock. The subscriber runs under the session's
+// output lock and takes mu, never inMu. Nothing that takes the session's
+// output lock or its input lock (Input, Paste, Resize, Screen, Counters,
+// SubscribeScreen) is called with mu held.
 //
 // # Events and counters
 //
@@ -228,9 +256,15 @@ type Server struct {
 	controlLn *net.UnixListener
 	unsub     func()
 
-	// mu is the hub lock. Lock order: the session's output lock, then mu,
-	// then the pane's own lock. Nothing that takes the session's output lock
-	// (Screen, Resize, Counters, SubscribeScreen) is called with mu held.
+	// inMu is held around a writer frame, from the role check to the end of
+	// the session call, and around every change of writer. It is the first
+	// lock of the order in the package doc.
+	inMu sync.Mutex
+
+	// mu is the hub lock. Lock order: inMu, the session's input lock, the
+	// session's output lock, then mu, then the pane's own lock. Nothing that
+	// takes the session's output lock (Screen, Resize, Counters,
+	// SubscribeScreen) is called with mu held.
 	mu          sync.Mutex
 	clients     map[*client]struct{} // attached: after the Welcome
 	writer      *client              // the claimed slots, attached or not yet
@@ -253,6 +287,11 @@ type Server struct {
 	exitStatus   *int
 	nextFacts    time.Time
 	snapHint     int
+	// The digest of the screen at digestPos, when digestValid: it is cleared
+	// when the size changes, as a resize does not move the position.
+	digestHex   string
+	digestPos   uint64
+	digestValid bool
 
 	stop         chan struct{}
 	stopOnce     sync.Once
@@ -495,6 +534,7 @@ const (
 	cntControlOther     = "control_refused_other"
 	cntBadFrames        = "bad_frames"
 	cntViewerInput      = "viewer_input_refused"
+	cntInputBroken      = "input_broken_notices"
 	cntChecks           = "checks_sent"
 	cntSnapshotsTaken   = "snapshots_taken"
 	cntSnapshotErrors   = "snapshot_errors"
@@ -507,7 +547,9 @@ const (
 	cntEventErrors      = "event_log_errors"
 )
 
-func (s *Server) count(name string) { s.sess.AddCount(name, 1) }
+// count adds one to a counter of the service. The names above are none of the
+// session's reserved ones (a test checks it), so AddCount's error cannot occur.
+func (s *Server) count(name string) { _ = s.sess.AddCount(name, 1) }
 
 // allCounters is every counter of the session and the service, and the pane's
 // cap counters. It takes the session's output lock: call it without mu.
