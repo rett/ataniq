@@ -228,11 +228,11 @@ Patches, applied in this order to the files of the module as released:
    bytes) took 4.8 s of CPU on a busy machine (a load of 15 on 8 cores). The
    first version took 17 ms for the first repeat of that size and 0.25 s for
    each one after it with the cursor at the bottom (25 s for 1000 bytes), so
-   64 KiB of them would have taken half an hour. Like the sequences that clear
-   the screen (erase display, scroll by the screen; patch 13), a repeat is
-   bounded by the time it takes to write every cell, and 64 KiB of them take
-   several seconds on the largest screen. A buffer that did not store every
-   blank cell would take less; this patch does not change the buffer.
+   64 KiB of them would have taken half an hour. A repeat is bounded by the
+   time it takes to write every cell it fills, which is a millisecond on the
+   largest screen whatever the code: 64 KiB of the longest repeat took 3.2 s
+   on the machine of the table of patch 14. Since patch 14 the lines a repeat
+   fills are marked and not written, and the same 64 KiB take 0.4 s.
 13. `vt: move the lines of a scroll region as wide as the screen`
    (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
    an index, a reverse index, insert line, delete line, scroll up and scroll
@@ -245,16 +245,22 @@ Patches, applied in this order to the files of the module as released:
    costs the lines and the blanked cells (64 KiB of line feeds take 0.45 s). The
    result is the buffer's: the same cells, the same blank cell (the pen's
    background), the lines saved to the scrollback before, and every line of the
-   region marked as touched, as the buffer's own functions do. A region
-   narrower than the screen still uses the buffer's functions. A test compares
-   the two on screens the property streams make, with every region, cursor,
-   count and pen. What stays: a scroll that blanks the whole region
-   (scroll by the screen, a count over the lines left) writes every cell of
-   it, which takes about a millisecond on the largest screen whatever the
-   code, so 64 KiB of those take several seconds.
+   region marked as touched (the buffer's own functions also marked the n
+   lines above, or below, the region, which do not change; nothing in this
+   repository reads the marks). A region narrower than the screen still uses
+   the buffer's functions. A test compares the two on screens the property
+   streams make, with every region, cursor, count and pen. What this patch
+   left: a scroll that blanks the whole region (scroll by the screen, a count
+   over the lines left) wrote every cell of it, about a millisecond on the
+   largest screen whatever the code, so that 64 KiB of those took 6 to 7 s;
+   the erase of the display took 23 to 33 s and the full reset (RIS, two bytes
+   that clear both screens) 54 s, and were not named here. Patch 14 marks the
+   lines those sequences blank and does not write them, and patch 15 does the
+   same for a region narrower than the screen.
 14. `vt: mark the lines a sequence blanks and write them later` (`blank.go`,
    `screen.go`, `handlers.go`, `csi_screen.go`, `csi_cursor.go`, `emulator.go`,
-   `links.go`, `state.go`, `erase_test.go`). A cell of the
+   `links.go`, `state.go`, `erase_test.go`, `timing_test.go`, `scroll_test.go`,
+   `loops_test.go`). A cell of the
    buffer is 112 bytes, so a line of 500 cells is 56 KB and a screen of 500 by
    200 cells 11 MB, and writing all of it takes about a millisecond whatever
    the code. Erase in display (all three forms), erase in line, erase
@@ -316,6 +322,14 @@ Patches, applied in this order to the files of the module as released:
    the way to read it; `SetCell` is the way to change it. Nothing in the module
    does, and `State` and `SetState` do not carry the marks (the inventory test
    lists them).
+   The timing tests (`timing_test.go`, `scroll_test.go`, `loops_test.go`)
+   replace the ceilings of a minute, which the old code passed for the
+   sequences that were not the worst: each sequence above and each way of
+   scrolling is written to the largest screen in 16 KiB (8 KiB for most
+   repeats), and the test fails when that takes more than 20 times as long as
+   the same number of bytes of line feeds, measured in the same run. The old
+   code took 80 times as long for erase display and 150 times for the full
+   reset, and fails them.
 15. `vt: erase the region of a scroll that is narrower than the screen`
    (`blank.go`, `screen.go`, `links.go`, `erase_test.go`).
    Insert line, delete line, scroll up and scroll down in a region as wide as
