@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,35 @@ import (
 )
 
 const testRef = "refs/leads/lead/heads/main"
+
+// The tests run these programs by these fixed paths, so that they do not
+// depend on PATH.
+const (
+	gitTool = "/usr/bin/git"
+	envTool = "/usr/bin/env"
+)
+
+// checkTool reports why the program at path cannot be run.
+func checkTool(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("these tests need %s and it is missing: %w", path, err)
+	}
+	if st.IsDir() || st.Mode()&0o111 == 0 {
+		return fmt.Errorf("these tests need %s and it is not an executable file", path)
+	}
+	return nil
+}
+
+// requireTool stops the test with a message that names path when the
+// program is not there. It does not skip: a skipped test would hide that the
+// checks did not run.
+func requireTool(t *testing.T, path string) {
+	t.Helper()
+	if err := checkTool(path); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // gitEnv is the environment of every git command the tests run, and of the
 // fake sandbox: it does not depend on the developer's git configuration.
@@ -23,7 +53,8 @@ func gitEnv() []string {
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("/usr/bin/git", args...)
+	requireTool(t, gitTool)
+	cmd := exec.Command(gitTool, args...)
 	cmd.Dir = dir
 	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
@@ -72,4 +103,46 @@ func (m mirror) advance(t *testing.T) string {
 	git(t, m.Work, "commit", "--quiet", "-m", "two")
 	git(t, m.Work, "push", "--quiet", m.Path, "HEAD:"+testRef)
 	return git(t, m.Work, "rev-parse", "HEAD")
+}
+
+func TestCheckToolNamesTheMissingPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-tool")
+	err := checkTool(missing)
+	if err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("a missing tool: %v", err)
+	}
+	plain := filepath.Join(t.TempDir(), "plain")
+	if err := os.WriteFile(plain, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkTool(plain); err == nil || !strings.Contains(err.Error(), plain) {
+		t.Fatalf("a file that is not executable: %v", err)
+	}
+	if err := checkTool(t.TempDir()); err == nil {
+		t.Fatal("a folder passed as a tool")
+	}
+	for _, p := range []string{gitTool, envTool} {
+		if err := checkTool(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestNoTestRunsInParallel keeps the package's tests in sequence: one of them
+// lowers the descriptor limit of the whole process.
+func TestNoTestRunsInParallel(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("test files: %v %v", files, err)
+	}
+	needle := "t.Par" + "allel("
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), needle) {
+			t.Errorf("%s calls %s", f, needle)
+		}
+	}
 }
