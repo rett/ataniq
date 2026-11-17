@@ -55,7 +55,17 @@
 // failed is recorded and the coordinator is stopped with the proof of the
 // absent unit, or unknown without it. A lead is not started while a
 // coordinator recorded under an earlier epoch of it is not proven stopped
-// (ErrCoordinatorNotStopped). A coordinator has no seat, no approval and is no
+// (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
+// coordinators that is not proven stopped, one after the other, by the same
+// sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each recorded in
+// the registry, and then the lead itself. A coordinator that cannot be proven
+// stopped is shown unknown and named in the error (a *[CoordinatorsError]); the
+// lead is stopped all the same, and a later Start of the lead is refused until
+// the coordinator is stopped with proof or the owner decides. Stop of a
+// coordinator stops only that coordinator. Because the units are bound, a
+// coordinator may be stopping already when it is signalled; the manager's
+// not-loaded and invocation-changed answers lead to the proof as for a lead.
+// A coordinator has no seat, no approval and is no
 // handoff target: nothing here gives it authority.
 //
 // # What it keeps in memory

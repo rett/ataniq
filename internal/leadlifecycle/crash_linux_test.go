@@ -91,6 +91,29 @@ func coordAndLead(r *rig, coord leadrole.Role) []leadrole.Role {
 	return []leadrole.Role{coord, coord.Parent()}
 }
 
+// leadWithCoordinator is a running lead and a running coordinator; the setup
+// returns the lead, and the invariants cover both, the coordinator first.
+func leadWithCoordinator(script func(r *rig, coordUnit string)) func(r *rig) leadrole.Role {
+	return func(r *rig) leadrole.Role {
+		lead := r.define("alpha")
+		coord := r.defineCoord("alpha", "feat")
+		if script != nil {
+			script(r, unitOf(coord))
+		}
+		r.mustStart(lead)
+		r.mustStart(coord)
+		return lead
+	}
+}
+
+// leadAndCoordinator is the roles of a scenario that starts from
+// leadWithCoordinator.
+func leadAndCoordinator(r *rig, lead leadrole.Role) []leadrole.Role {
+	coord, err := leadrole.Coordinator(lead.Project(), "feat")
+	noErr(r.t, err)
+	return []leadrole.Role{coord, lead}
+}
+
 var crashScenarios = []crashScenario{
 	{name: "start", setup: plainRole, op: startOp, retry: startOp},
 	{name: "start after an ended epoch", setup: endedRole, op: startOp, retry: startOp},
@@ -137,6 +160,15 @@ var crashScenarios = []crashScenario{
 			}
 		}
 	}), op: startOp, retry: startOp, roles: coordAndLead},
+	{name: "stop a lead with a coordinator", setup: leadWithCoordinator(nil), op: stopOp, retry: stopOp, roles: leadAndCoordinator},
+	{name: "stop a lead with a coordinator that ignores TERM", setup: leadWithCoordinator(func(r *rig, u string) {
+		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})
+	}), op: stopOp, retry: stopOp, roles: leadAndCoordinator},
+	{name: "stop a lead with a coordinator that survives SIGKILL", setup: leadWithCoordinator(func(r *rig, u string) {
+		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	}), op: stopOp, retry: stopOp, roles: leadAndCoordinator,
+		after: func(r *rig, lead leadrole.Role) { r.fake.Crash(unitOf(leadAndCoordinator(r, lead)[0])) }},
+	{name: "stop a coordinator", setup: coordWorld(func(r *rig, _, c leadrole.Role) { r.mustStart(c) }), op: stopOp, retry: stopOp, roles: coordAndLead},
 	{name: "stop", setup: runningRole(nil), op: stopOp, retry: stopOp},
 	{name: "stop, TERM ignored", setup: runningRole(func(r *rig, u string) {
 		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.IgnoreTerm})

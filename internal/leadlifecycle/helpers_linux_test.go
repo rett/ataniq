@@ -78,9 +78,10 @@ type audit struct {
 	lastBoot   map[string]string
 	violations []string
 
-	afterSignal func(st leadunit.State, sig syscall.Signal)
-	beforeStart func(spec leadunit.Spec)
-	afterStart  func(spec leadunit.Spec)
+	beforeSignal func(st leadunit.State, sig syscall.Signal)
+	afterSignal  func(st leadunit.State, sig syscall.Signal)
+	beforeStart  func(spec leadunit.Spec)
+	afterStart   func(spec leadunit.Spec)
 }
 
 func newAudit(inner leadunit.Manager, plan *crashPlan) *audit {
@@ -138,7 +139,11 @@ func (a *audit) Signal(ctx context.Context, st leadunit.State, sig syscall.Signa
 	}
 	a.mu.Lock()
 	a.proven[st.Unit] = false
+	hook := a.beforeSignal
 	a.mu.Unlock()
+	if hook != nil {
+		hook(st, sig)
+	}
 	err := a.inner.Signal(ctx, st, sig)
 	if a.afterSignal != nil {
 		a.afterSignal(st, sig)
