@@ -481,6 +481,32 @@ func TestSigintStopsTheAgent(t *testing.T) {
 	}
 }
 
+// SIGQUIT, SIGUSR1 and SIGUSR2 stop the agent like SIGTERM does, in process:
+// the final record is written and the holder exits 0.
+func TestEveryStopSignalStopsTheAgent(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2} {
+		t.Run(signalName(sig), func(t *testing.T) {
+			r := newRig(t)
+			r.stopGrace = 300 * time.Millisecond
+			r.start(r.spec("raw; say UP; wait").build())
+			r.waitReady()
+			c := r.attach(wire.RoleViewer)
+			c.waitText("UP")
+			r.sigc <- sig
+			c.waitExit()
+			if code := r.wait(); code != exitOK {
+				t.Fatalf("exit %d; stderr: %s", code, r.errbuf.String())
+			}
+			if rec := r.readFinal(); rec.Facts.TUIExited != session.Yes || rec.Facts.TreeGone != session.Yes {
+				t.Errorf("facts %+v", rec.Facts)
+			}
+			if !strings.Contains(r.errbuf.String(), "stopping the agent ("+signalName(sig)+")") {
+				t.Errorf("stderr %q", r.errbuf.String())
+			}
+		})
+	}
+}
+
 // No agent output and no typed text reaches stderr or the event log.
 func TestNoAgentOutputOrInputInStderrOrTheLog(t *testing.T) {
 	const outMarker, typedMarker = "OUTPUT-MARKER-4f2a", "TYPED-MARKER-9c1b"

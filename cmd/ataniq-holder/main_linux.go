@@ -52,6 +52,9 @@ Every flag is required except --env. The agent's environment is exactly the
 --env list, in order: nothing of the holder's own environment is passed on.
 ARGV[0] is an absolute path. The agent runs in --tree.
 
+SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2 stop the agent and end the holder
+with its final record; SIGHUP and SIGPIPE change nothing.
+
 Exit status: 0 the session ended and its final record was written, 1 a holder
 failure after start, 2 wrong usage or a start-up refusal, 3 the role is held.
 `
@@ -65,8 +68,8 @@ type deps struct {
 	procRoot string
 	// now is the clock of the state file, the event log and the service.
 	now func() time.Time
-	// signals subscribes to SIGHUP, SIGINT, SIGTERM and SIGPIPE; stop gives
-	// the subscription up.
+	// signals subscribes to SIGHUP, SIGPIPE and the signals that stop the
+	// holder (see stopSignals); stop gives the subscription up.
 	signals func() (<-chan os.Signal, func())
 	// ignoredSignals lists the signals the process ignores.
 	ignoredSignals func() ([]syscall.Signal, error)
@@ -88,7 +91,8 @@ func realDeps() deps {
 			c := make(chan os.Signal, 8)
 			// Notify, not Ignore: an ignored signal is inherited by the agent
 			// (see ptyhost), a handled one is reset to its default by exec.
-			signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
+			signal.Notify(c, syscall.SIGHUP, syscall.SIGPIPE)
+			signal.Notify(c, stopSignals...)
 			return c, func() { signal.Stop(c) }
 		},
 		ignoredSignals: ptyhost.IgnoredSignals,
@@ -96,6 +100,22 @@ func realDeps() deps {
 }
 
 func main() { os.Exit(run(os.Args[1:], realDeps())) }
+
+// stopSignals are the signals that stop the agent and end the holder with its
+// final record. Besides SIGTERM and SIGINT they hold SIGQUIT, SIGUSR1 and
+// SIGUSR2, which would otherwise end the holder at once (the Go runtime dumps
+// its goroutines on SIGQUIT) with no final record: no signal a user can send
+// by accident ends the holder without one. SIGKILL cannot be handled.
+var stopSignals = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2}
+
+func isStopSignal(s os.Signal) bool {
+	for _, st := range stopSignals {
+		if s == st {
+			return true
+		}
+	}
+	return false
+}
 
 // signalsNeeded are the signals the agent must not inherit as ignored. The
 // holder refuses to start if it ignores any of them.
@@ -175,7 +195,7 @@ func run(args []string, d deps) int {
 		return refuse("cannot read this process's start time: %v", err)
 	}
 
-	// From here on SIGTERM and SIGINT end the agent, and SIGHUP changes
+	// From here on the stop signals end the agent, and SIGHUP changes
 	// nothing: the holder outlives its starter's terminal. One that comes
 	// before the agent starts is acted on just before it would (below).
 	sigc, stopSignals := d.signals()
@@ -226,7 +246,7 @@ func run(args []string, d deps) int {
 	if d.tweakSession != nil {
 		d.tweakSession(&scfg)
 	}
-	// A SIGTERM or SIGINT that came during start-up ends the holder here,
+	// A stop signal that came during start-up ends the holder here,
 	// before the agent exists: there is nothing to stop and nothing to record
 	// but the refusal, and the state file, which names a holder that is going,
 	// is removed. SIGHUP and SIGPIPE change nothing.
@@ -277,7 +297,7 @@ wait:
 	for {
 		select {
 		case s := <-sigc:
-			if s == syscall.SIGTERM || s == syscall.SIGINT {
+			if isStopSignal(s) {
 				// Stop returns when the tree is gone; the lifetime path then
 				// writes the final record and the service sends the Exit.
 				stopOnce.Do(func() {
@@ -312,13 +332,13 @@ wait:
 }
 
 // stopSignalPending takes every signal that is waiting in sigc and returns the
-// first one that ends the holder (SIGTERM or SIGINT), or nil.
+// first one that ends the holder (see stopSignals), or nil.
 func stopSignalPending(sigc <-chan os.Signal) *syscall.Signal {
 	var stop *syscall.Signal
 	for {
 		select {
 		case s := <-sigc:
-			if sg, ok := s.(syscall.Signal); ok && (sg == syscall.SIGTERM || sg == syscall.SIGINT) && stop == nil {
+			if sg, ok := s.(syscall.Signal); ok && isStopSignal(sg) && stop == nil {
 				stop = &sg
 			}
 		default:
@@ -339,6 +359,10 @@ func signalName(s syscall.Signal) string {
 		return "SIGPIPE"
 	case syscall.SIGTERM:
 		return "SIGTERM"
+	case syscall.SIGUSR1:
+		return "SIGUSR1"
+	case syscall.SIGUSR2:
+		return "SIGUSR2"
 	}
 	return "signal " + strconv.Itoa(int(s))
 }
