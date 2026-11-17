@@ -4,6 +4,8 @@
 // recorded session into an embedded session pane. It has no live backend, no
 // process and no network, and no key press, paste or mouse event leaves it
 // except into the input sink it was given, which discards them by default.
+// The one other thing it sends out is text the person selects in the session
+// pane with the mouse, copied to the outer terminal's clipboard with OSC 52.
 // An import guard test keeps the package away from every client, mutation,
 // process and network package.
 //
@@ -248,7 +250,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		m.onPaste(v.Content)
 	case tea.MouseMsg:
-		m.onMouse(v)
+		return m, m.onMouse(v)
 	case tea.ModeReportMsg:
 		m.onModeReport(v)
 	case tickMsg:

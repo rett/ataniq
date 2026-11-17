@@ -99,6 +99,7 @@ func (m *Model) restart() tea.Cmd {
 	m.Close()
 	m.rep = replay{gen: m.rep.gen}
 	m.focus = consoleFocus
+	m.sel = selection{}
 	m.startSession()
 	if m.started {
 		return m.tickCmd()
@@ -124,6 +125,7 @@ func (m *Model) onTick(v tickMsg) tea.Cmd {
 	elapsed := v.at.Sub(m.rep.base)
 	m.rep.queue = append(m.rep.queue, m.rep.player.Advance(elapsed)...)
 	m.feed(elapsed)
+	m.checkSelection()
 	if m.sessionEnded() {
 		return nil
 	}
@@ -211,4 +213,5 @@ func (m *Model) onHold(v holdMsg) {
 	if v.at.After(m.now) {
 		m.now = v.at
 	}
+	m.checkSelection()
 }

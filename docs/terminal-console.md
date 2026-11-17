@@ -99,11 +99,13 @@ Ctrl+K close them. The q and Ctrl+C keys still quit.
 Press Enter on the session terminal to focus it. In session focus every key
 goes to the session terminal, with two exceptions: the return key and F12.
 That includes q and Ctrl+C. They never quit the console from here. Paste goes
-to the session. The mouse goes to the session only when the session asked for
-mouse reporting. The console asks the outer terminal for mouse reporting and
-focus events only in session focus, and only when the session asked for them,
-so selecting text works elsewhere. In this fixture console the session's input
-sink discards all of it.
+to the session. When the session asked for mouse reporting, the mouse inside
+the session terminal goes to the session, as the session asked, and the
+console makes no selection. Otherwise the mouse selects text in the session
+terminal (see [Selecting and copying](#selecting-and-copying)). The console
+asks the outer terminal for focus events only in session focus, and only when
+the session asked for them. In this fixture console the session's input sink
+discards all of it.
 
 The return key leaves session focus. The default is Ctrl+\. The console reads
 it from both of its encodings: the byte 0x1c and the kitty keyboard form
@@ -114,8 +116,61 @@ byte 0x1c for Ctrl+4. Then Ctrl+4 also returns. In the kitty form Ctrl+4 is
 F12 toggles zoom in either focus state. In zoom the session terminal fills the
 window under a one-line header. The header names the focus and the key that
 leaves zoom, F12. Tab and the move keys do nothing while zoomed. Enter focuses
-the session, and `r` replays the recording. Zoom draws no help, action list or
-notice.
+the session, and `r` replays the recording. Zoom draws no help or action list.
+A notice, such as a refused paste or a selection that was not copied, comes
+first in the header. The header always keeps the fixture label, and keeps the
+keys when the line has room for them too.
+
+### Selecting and copying
+
+While the cockpit is shown, in console focus or session focus, zoomed or not,
+the console asks the outer terminal for mouse reporting (cell motion, or all
+motion when the session has the focus and asked for all motion). The outer
+terminal's own selection then no longer spans the window, and a selection is
+confined to the session terminal. The single-column pages below 100x30 do not
+ask for the mouse, so the terminal's own selection works there.
+
+Reporting takes the mouse from the outer terminal for more than selection.
+Its middle-click paste, clicking links, context menu, wheel scrolling of its
+own scrollback, and a multiplexer's mouse handling are unavailable in the
+cockpit unless you hold Shift, in terminals that allow that. Below 100x30
+they work as usual.
+
+Unless the session has the focus and asked for the mouse, drag with the left
+button in the session terminal to select text. The selection runs like a
+terminal's: from the cell where you pressed to the cell where you are, across
+rows, whole rows in between. It stays inside the session terminal when the
+pointer leaves it. When you release the button, the console copies the text
+to the outer terminal's clipboard with OSC 52, and the selection stays
+highlighted. The text is the pane's screen: a wide character or a grapheme
+cluster is copied once, blanks at the end of each row are dropped, and rows
+are joined with a newline. The emulator keeps no record of where a long line
+wrapped, so a wrapped line is copied as two lines. The text is what the pane
+holds, also where it draws a placeholder (see
+[Width of emoji, and SSH](#width-of-emoji-and-ssh)): a cell of more than 64
+bytes, and a cluster in a terminal without mode 2027, are copied whole, not as
+the placeholder. A selection of more than 1 MiB of text is not copied at all,
+and the key bar, or the header in zoom, says so. In console focus any console
+key clears that notice, and so does a press. In session focus only a press
+does, because keys go to the session. A terminal that does not accept OSC 52
+writes, or has them turned off, copies nothing, and the console cannot tell.
+
+A press outside the session terminal starts no selection, a click without a
+drag copies nothing, a selection of blanks alone copies nothing and leaves the
+clipboard as it was, and the wheel does nothing. A press anywhere clears the
+selection. So do a key or a paste sent to the session, a window resize (and
+the session terminal following it a moment later), F12, `r`, and output that
+changes the selected text, such as the session writing over it, scrolling or
+clearing the screen. Output elsewhere on the screen keeps it. That output
+rule holds during a drag too, while the pointer stays still: the drag ends
+and its release copies nothing, so a release the console never receives
+leaves no highlight over changing output. While help or the action list is
+open, a drag selects nothing, and the release of a drag begun before it
+opened ends the selection and copies nothing.
+
+To select elsewhere in the window, most terminals, Ghostty among them, let you
+hold Shift while you drag to use the terminal's own selection even when the
+mouse is reported. Not every terminal does.
 
 ### The action list
 
@@ -173,16 +228,18 @@ and resets them, which is too short to reach session focus by hand.
 `mouse-held.jsonl` sets mouse reporting (modes 1000 and 1003, with the SGR
 encoding 1006) and focus events (1004) in its first 200 ms and never resets
 them. With the default linger they stay on for 30 seconds after the recording's
-end record, so you can enter session focus, where the console asks the outer
-terminal for the mouse and focus events, and leave it, where it asks for
-neither.
+end record, so you can enter session focus, where the mouse goes to the session
+and the console asks the outer terminal for all motion and focus events, and
+leave it, where the console takes the mouse back for selection and asks for no
+focus events.
 
 Everything on screen is fixture data. The recording looks like a running
 session, which is why the header, the session frame and the help all say
-"fixture recording, not a live session". Output from a recording never reaches
-the outer terminal except as drawn cells. The pane swallows clipboard requests
-and counts them, and the Session block shows the count. A recording's own
-resize records are ignored: the layout sets the pane's size.
+"fixture recording, not a live session". Output from a recording reaches the
+outer terminal only as drawn cells, and as the text you select and copy (see
+[Selecting and copying](#selecting-and-copying)). The pane swallows clipboard
+requests and counts them, and the Session block shows the count. A
+recording's own resize records are ignored: the layout sets the pane's size.
 
 ### When a session ends
 
@@ -214,19 +271,37 @@ cell. The columns after it then stay where the pane put them. The cockpit's
 own text follows the same rule. A cell holding more than 64 bytes also becomes
 a placeholder, in either mode.
 
-Use over SSH is not qualified. <!-- owner: confirm wording -->
+Use over SSH is not qualified. The SSH use checked by hand so far is
+`ssh localhost`, SSH from another machine and SSH through two hops: see
+[Qualification](#qualification).
 
 ## Qualification
 
-Nothing in the console is qualified. <!-- owner: confirm wording -->
-It hosts no live session: it only replays fixture recordings. <!-- owner: confirm wording -->
-It has no live backend, and every control is unavailable. <!-- owner: confirm wording -->
+Nothing in the console is qualified. It hosts no live session: it only replays
+fixture recordings. It has no live backend, and every control is unavailable.
 Use over SSH, terminal restoration after a startup error and any live control
-are not qualified. <!-- owner: confirm wording -->
-The automated tests check keys, layout, the replay and the input handling.
-They are not a qualification of the console in a real terminal. <!-- owner: confirm wording -->
-An attended check in a real terminal, directly and over SSH, at two window
-sizes with zoom and the return key, is still to be done. <!-- owner: confirm wording -->
+are not qualified. The automated tests check keys, layout, the replay and the
+input handling. They do not qualify the console in a real terminal.
+
+One person made an attended check, on 2026-11-16, in one terminal (Ghostty),
+with fixture recordings only. It is not a qualification. The check ran in a
+local terminal, over `ssh localhost` and over SSH from another machine,
+including with `TERM=xterm-256color`. It passed for the layout, focus and the
+return key (with CapsLock and NumLock), F12 zoom, Ctrl+K, a resize across the
+100x30 boundary, the ended state, emoji alignment, the `mouse-held.jsonl`
+recording and restoring the terminal after quit. It found one problem: mouse
+selection was not confined to the session pane, because the terminal's own
+selection spans the window. The console now confines it (see
+[Selecting and copying](#selecting-and-copying)); that change has not been
+checked by hand yet. The attended checks here ran on the build before that
+change, so they do not cover it. It still awaits the owner's attended check.
+
+A second attended check, also with fixture recordings only, went through two
+SSH hops: an SSH session from one remote machine to another, both with the
+outer terminal's terminfo entry. It ran on the build before the selection
+change too. On that build every case passed. The console's first output was
+the width query (mode 2027), and every mode it set was restored on quit. It
+says nothing about the selection change, and it is not a qualification either.
 
 The pane does not track the kitty keyboard flags a session may set. The
 console sets no keyboard enhancement of its own. Bubble Tea always asks the

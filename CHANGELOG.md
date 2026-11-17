@@ -34,8 +34,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   console, and `r` replays it. Ctrl+K lists the controls (approve, deny, full
   attach, send, interrupt, detach), all unavailable, each with its reason. The
   console asks the outer terminal for mode 2027 at start, also over SSH, and
-  asks for mouse reporting and focus events only in session focus and only
-  when the session asked. `--recording NAME` picks a fixture recording and
+  asks for focus events only in session focus and only when the session
+  asked. `--recording NAME` picks a fixture recording and
   `--linger DURATION` (default 30s) keeps the session open after its end
   so the keys can be tried. Still unqualified: use over SSH, a live session and
   any live control.
@@ -44,6 +44,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never resets them, so the linger time keeps them on while a person enters
   session focus and tries the mouse by hand; `modes.jsonl` resets them within
   a second.
+- Confine mouse selection in the fixture cockpit to the session terminal.
+  While the cockpit is shown the console asks the outer terminal for mouse
+  reporting (cell motion, or all motion for a session in session focus that
+  asked for it), so the terminal's own selection no longer spans the window;
+  the single-column pages below 100x30 leave the mouse to the terminal. In
+  session focus a session that asked for the mouse still gets it. Otherwise a
+  left-button drag in the session terminal selects its text like a terminal
+  does, stays inside the pane, and on release copies the text to the outer
+  terminal's clipboard with OSC 52 (wide characters and grapheme clusters
+  once, trailing blanks dropped, rows joined with newlines, a wrapped line as
+  two lines). A selection over 1 MiB is not copied and the key bar says so;
+  in console focus any console key or a press clears the notice, in session
+  focus only a press does. In zoom the header says so, and now shows every
+  notice ahead of its keys and keeps the fixture label.
+  The selection is cleared by a press, a key or paste sent to the session, a
+  resize (also when the pane follows it after the debounce), F12, `r`, or
+  output that changes the selected text, also under a held drag whose
+  pointer stays still, so a lost release leaves no highlight. A click alone,
+  a selection of blanks, and a release while help or the action list is open
+  copy nothing, and a press outside the pane or the wheel selects nothing.
+  Shift+drag gives the terminal's own selection in most terminals, Ghostty
+  included. A terminal that refuses OSC 52 writes copies nothing.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
