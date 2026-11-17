@@ -23,7 +23,8 @@ const (
 	// holds twice as many hexadecimal digits.
 	stagingRandomBytes = 8
 	// stagingMarker is the file that this code writes first into every
-	// staging folder. A folder without it is not removed as a leftover.
+	// staging folder. A folder without it is not removed as a leftover,
+	// unless it is empty.
 	stagingMarker = "ataniq-staging"
 	// stagingMarkerText is what the marker holds.
 	stagingMarkerText = "ataniq-mirror-staging 1\n"
@@ -195,8 +196,11 @@ func stagingName(base, name string) bool {
 // [stagingName] and it is a real folder of the calling user that holds the
 // marker file with the text that this code writes. A folder without the
 // marker, a symlink and anything else is left alone. The removal follows no
-// symlink. Failures are not reported: a leftover costs space and nothing
-// else, and the next fetch tries again.
+// symlink. A folder of that name that is empty is what a crash between the
+// making of the folder and the writing of the marker leaves; it is removed with
+// rmdir, which removes nothing that has content, so a folder without the marker
+// that holds anything stays. Failures are not reported: a leftover costs space
+// and nothing else, and the next fetch tries again.
 func (m *Mirror) removeStale() {
 	parent, base := filepath.Dir(m.path), filepath.Base(m.path)
 	entries, err := os.ReadDir(parent)
@@ -209,6 +213,9 @@ func (m *Mirror) removeStale() {
 		}
 		path := filepath.Join(parent, e.Name())
 		if !isOurStaging(path) {
+			// rmdir fails on a folder with content, on a symlink and on a
+			// file, so only an empty folder goes.
+			_ = removeEmptyDir(path)
 			continue
 		}
 		_ = os.RemoveAll(path)

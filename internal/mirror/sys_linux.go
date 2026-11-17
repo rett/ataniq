@@ -26,6 +26,10 @@ func ownerUID(fi fs.FileInfo) (uint32, bool) {
 	return 0, false
 }
 
+// removeEmptyDir removes the folder at path when it is empty. It is rmdir and
+// nothing else: it removes no file, no symlink and no folder with content.
+func removeEmptyDir(path string) error { return unix.Rmdir(path) }
+
 // lockFile takes an exclusive, non-blocking lock (flock) on the file at path
 // and returns the function that releases it. The file is created with mode
 // 0600 when it is missing, and opened without following a symlink. It must be
