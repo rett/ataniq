@@ -48,7 +48,14 @@
 // every bind source of the plan with the fact from the check without following
 // links (no component of its path is a symbolic link), and the fact from
 // [plan.Verify] that no source lies in or below a read-write source. A fact the
-// run did not ask is absent, and the case's result for it is not-checked.
+// run did not ask is absent, and the case's result for it is not-checked. For
+// every row the path the plan binds is the path the check opens, and the
+// evidence says so (checked_path equals the source): a source the configuration
+// supplies must be given as its real path, so a link on one ends the run at the
+// resolution, and a row of the host (/usr, /etc/localtime) that resolves through
+// the host's own links is bound, and checked, by its real path, which the harness
+// gives the plan. The harness refuses to check a plan whose bound path is not the
+// one the check would open.
 //
 // The harness never judges the probe's report: the report's own statuses are
 // the record. A failed or refused report, a report that never comes and a

@@ -126,3 +126,37 @@ func TestInputsCheckSourceRefusesTheOtherRuntimeFolder(t *testing.T) {
 		t.Errorf("OtherConfigDir of empty inputs = %q", got)
 	}
 }
+
+// CheckSource holds a path that did not come from the table (the real path of a
+// host row) to the rules of a source of the table: never-mounted paths, the
+// other runtime's config folder, other leads' state and other projects'
+// mirror folders.
+func TestCheckSourceHoldsAnyPathToTheRulesOfTheTable(t *testing.T) {
+	in := fixture(Claude)
+	for _, ok := range []string{
+		"/usr", "/etc/localtime", "/usr/share/zoneinfo/UTC", "/opt/x",
+		"/srv/state/leads/arc-lead/home", "/srv/state/leads/arc-lead/gitmeta/config",
+		"/srv/state/mirrors/ataniq.git", "/srv/state/mirrors/ataniq.git/refs",
+	} {
+		if err := in.CheckSource(ok); err != nil {
+			t.Errorf("CheckSource(%s) = %v", ok, err)
+		}
+	}
+	for source, want := range map[string]string{
+		"/home/owner/.ssh": "never-mounted",
+		"/home/owner":      "never-mounted",
+		"/srv/state/leads/arc-lead/config/codex/x": "never-mounted",
+		"/srv/state/leads/other-lead/home":         "another lead's state",
+		"/srv/state/leads":                         "never-mounted", // above the other runtime's config folder
+		"/srv/state":                               "never-mounted",
+		"/srv/state/leads/arc-lead2":               "another lead's state",
+		"/srv/state/mirrors/other.git":             "another project's mirror folder",
+		"/srv/state/mirrors":                       "another project's mirror folder",
+		"relative":                                 "absolute",
+	} {
+		err := in.CheckSource(source)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckSource(%s) = %v, want a refusal that says %q", source, err, want)
+		}
+	}
+}

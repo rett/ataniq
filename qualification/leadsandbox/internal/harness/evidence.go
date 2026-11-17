@@ -210,13 +210,15 @@ type CaseEvidence struct {
 // BindSourceFact is what the check of one bind source of the plan found (rule
 // G1).
 type BindSourceFact struct {
-	// Inside is where the plan binds the source; Source is the source as the
-	// plan names it.
+	// Inside is where the plan binds the source; Source is the path the plan
+	// binds there: for a row Ataniq supplies the path of the inputs (which
+	// the resolution found to be its real path), for a row of the host the
+	// real path it resolved to (/etc/localtime is often a link).
 	Inside string `json:"inside"`
 	Source string `json:"source"`
-	// CheckedPath is the path the check opened when it is not Source: the real
-	// path of a row of the host whose own name is a link. Absent otherwise.
-	CheckedPath string `json:"checked_path,omitempty"`
+	// CheckedPath is the path the check opened. It is Source for every row:
+	// the path that is bound is the path that is checked.
+	CheckedPath string `json:"checked_path"`
 	// NoSymbolicLinkComponent is the fact: the check opened the path from the
 	// root of the file system without following a link, and no component of it,
 	// the last included, is one. False says it is (Problem says where, or what

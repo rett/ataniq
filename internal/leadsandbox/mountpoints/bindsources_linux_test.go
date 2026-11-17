@@ -5,7 +5,6 @@ package mountpoints
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,7 +16,7 @@ import (
 func TestCheckBindSourcesCleanPaths(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	f.write(f.base+"/file", "x")
-	rep := CheckBindSources([]string{"/", f.base, f.base + "/file", f.home, f.in.AgentInstall, f.in.ProbeBinary})
+	rep := CheckBindSources(ownRows("/", f.base, f.base+"/file", f.home, f.in.AgentInstall, f.in.ProbeBinary))
 	if !rep.OK() {
 		t.Fatalf("%v", rep.Err())
 	}
@@ -56,7 +55,7 @@ func TestCheckBindSourcesRefusesALinkAnywhereAndNamesTheSource(t *testing.T) {
 			if _, err := os.Stat(tt.source); err != nil && tt.name != "a dangling link" {
 				t.Fatalf("the planted path does not resolve: %v", err)
 			}
-			rep := CheckBindSources([]string{f.base + "/file-before-ok", tt.source})
+			rep := CheckBindSources(ownRows(f.base+"/file-before-ok", tt.source))
 			var found *Problem
 			for _, p := range rep.Problems {
 				if p.Path == tt.source {
@@ -69,6 +68,11 @@ func TestCheckBindSourcesRefusesALinkAnywhereAndNamesTheSource(t *testing.T) {
 			if !strings.Contains(found.Detail, tt.link) {
 				t.Errorf("the problem does not name the link %s: %q", tt.link, found.Detail)
 			}
+			// The problem names the row by its inside path, in the field and in
+			// the text.
+			if found.Inside != "/row/2" || !strings.Contains(found.Detail, "/row/2") || !strings.Contains(found.Error(), "/row/2") {
+				t.Errorf("the problem does not name the row /row/2: %+v", found)
+			}
 			// The missing neighbour is a separate problem about its own path.
 			wantProblem(t, rep, ErrMissing, f.base+"/file-before-ok")
 		})
@@ -78,7 +82,7 @@ func TestCheckBindSourcesRefusesALinkAnywhereAndNamesTheSource(t *testing.T) {
 func TestCheckBindSourcesDanglingLinkIsALinkNotMissing(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	f.symlink(f.base+"/nowhere", f.base+"/dangling")
-	rep := CheckBindSources([]string{f.base + "/dangling"})
+	rep := CheckBindSources(ownRows(f.base + "/dangling"))
 	wantProblem(t, rep, ErrSymlink, f.base+"/dangling")
 	if rep.Has(ErrMissing) {
 		t.Fatalf("a link is not a missing entry: %v", rep.Err())
@@ -90,7 +94,7 @@ func TestCheckBindSourcesMagicLink(t *testing.T) {
 		t.Skip("no /proc")
 	}
 	for _, src := range []string{"/proc/self/exe", "/proc/self/cwd", "/proc/self/fd/0"} {
-		rep := CheckBindSources([]string{src})
+		rep := CheckBindSources(ownRows(src))
 		if !rep.Has(ErrSymlink) {
 			t.Errorf("%s: %v", src, rep.Err())
 		}
@@ -119,7 +123,7 @@ func TestCheckBindSourcesOtherRefusals(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rep := CheckBindSources([]string{tt.src})
+			rep := CheckBindSources(ownRows(tt.src))
 			if !rep.Has(tt.kind) || len(rep.Problems) != 1 {
 				t.Fatalf("want one %v problem, got %v", tt.kind, rep.Err())
 			}
@@ -133,7 +137,7 @@ func TestCheckBindSourcesOtherRefusals(t *testing.T) {
 func TestCheckBindSourcesReportsEverySourceInOrderAndIsBounded(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	f.symlink(f.out, f.base+"/l")
-	rep := CheckBindSources([]string{f.base + "/absent", f.base + "/l", f.home, f.base + "/l/x"})
+	rep := CheckBindSources(ownRows(f.base+"/absent", f.base+"/l", f.home, f.base+"/l/x"))
 	if len(rep.Problems) != 3 || rep.Problems[0].Path != f.base+"/absent" || rep.Problems[1].Path != f.base+"/l" || rep.Problems[2].Path != f.base+"/l/x" {
 		t.Fatalf("got %v", rep.Err())
 	}
@@ -141,7 +145,7 @@ func TestCheckBindSourcesReportsEverySourceInOrderAndIsBounded(t *testing.T) {
 	for i := range many {
 		many[i] = f.base + "/absent"
 	}
-	rep = CheckBindSources(many)
+	rep = CheckBindSources(ownRows(many...))
 	if len(rep.Problems) != MaxProblems || !rep.Truncated {
 		t.Fatalf("%d problems, truncated %v", len(rep.Problems), rep.Truncated)
 	}
@@ -150,7 +154,7 @@ func TestCheckBindSourcesReportsEverySourceInOrderAndIsBounded(t *testing.T) {
 func TestCheckBindSourcesWithoutOpenat2(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	for _, errno := range []error{unix.ENOSYS, unix.EPERM} {
-		rep := checkBindSources([]string{f.home}, func(int, string, *unix.OpenHow) (int, error) { return -1, errno })
+		rep := checkBindSources(ownRows(f.home), func(int, string, *unix.OpenHow) (int, error) { return -1, errno })
 		wantProblem(t, rep, ErrUnreadable, f.home)
 		if !errors.Is(rep.Problems[0], errno) {
 			t.Errorf("the errno %v is not kept: %v", errno, rep.Err())
@@ -158,7 +162,7 @@ func TestCheckBindSourcesWithoutOpenat2(t *testing.T) {
 	}
 	// An interrupted call is retried; the real call is used for the rest.
 	calls := 0
-	rep := checkBindSources([]string{f.home}, func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+	rep := checkBindSources(ownRows(f.home), func(dirfd int, p string, how *unix.OpenHow) (int, error) {
 		if calls++; calls < 3 {
 			return -1, unix.EINTR
 		}
@@ -169,31 +173,46 @@ func TestCheckBindSourcesWithoutOpenat2(t *testing.T) {
 	}
 }
 
-func TestCheckBindSourcesChecksTheRealPathNotTheLexicalOne(t *testing.T) {
-	// A source whose lexical path goes through a link is refused as it is;
-	// the real path ResolveSources gives passes.
+// The path that is checked is the path that is bound: the lexical Source for
+// every row that is not a row of the host, the real path for a row of the host.
+func TestCheckBindSourcesChecksTheBoundPath(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	real := f.base + "/real-agent"
 	f.mkdir(real, 0o755)
 	f.remove(f.in.AgentInstall)
 	f.symlink(real, f.in.AgentInstall)
-	res := f.resolve()
-	if !res.OK() {
-		t.Fatalf("%v", res.Err())
+
+	// A row Ataniq supplies whose lexical path has a link is refused, though
+	// its real path is clean: bubblewrap would bind the lexical path.
+	row := ResolvedSource{Inside: "/ataniq/agent", Source: f.in.AgentInstall, Real: real, Role: profile.RoleAgent}
+	if got := row.Bound(); got != f.in.AgentInstall {
+		t.Fatalf("Bound = %s, want the lexical path %s", got, f.in.AgentInstall)
 	}
-	var lexical, realPaths []string
-	for _, s := range res.Sources {
-		if s.Skipped || !strings.HasPrefix(s.Real, f.base+"/") {
-			continue
-		}
-		lexical = append(lexical, s.Source)
-		realPaths = append(realPaths, s.Real)
+	rep := CheckBindSources([]ResolvedSource{row})
+	wantProblem(t, rep, ErrSymlink, f.in.AgentInstall)
+	if p := rep.Problems[0]; p.Inside != "/ataniq/agent" || !strings.Contains(p.Detail, "/ataniq/agent") {
+		t.Errorf("the problem does not name the row: %+v", p)
 	}
-	wantProblem(t, CheckBindSources(lexical), ErrSymlink, f.in.AgentInstall)
-	if rep := CheckBindSources(realPaths); !rep.OK() {
-		t.Fatalf("the real paths: %v", rep.Err())
+
+	// A row of the host whose own name is a link is checked by its real path,
+	// the one the plan binds; a link on the real path is refused.
+	host := ResolvedSource{Inside: "/etc/localtime", Source: "/etc/localtime", Real: real, Role: profile.RoleHost}
+	if got := host.Bound(); got != real {
+		t.Fatalf("Bound of a host row = %s, want the real path %s", got, real)
 	}
-	if filepath.Base(realPaths[0]) == "" {
-		t.Fatal("no paths")
+	if rep := CheckBindSources([]ResolvedSource{host}); !rep.OK() {
+		t.Fatalf("a host row with a clean real path: %v", rep.Err())
+	}
+	host.Real = f.in.AgentInstall // a path with a link at its last component
+	wantProblem(t, CheckBindSources([]ResolvedSource{host}), ErrSymlink, f.in.AgentInstall)
+	host.Real = ""
+	if rep := CheckBindSources([]ResolvedSource{host}); !rep.Has(ErrInvalid) {
+		t.Errorf("a host row without a real path: %v", rep.Err())
+	}
+
+	// A skipped row is not checked and has no bound path.
+	skipped := ResolvedSource{Inside: "/etc/ssl", Source: "/etc/ssl", Role: profile.RoleHost, Skipped: true}
+	if rep := CheckBindSources([]ResolvedSource{skipped}); !rep.OK() || skipped.Bound() != "" {
+		t.Errorf("a skipped row: %v, bound %q", rep.Err(), skipped.Bound())
 	}
 }

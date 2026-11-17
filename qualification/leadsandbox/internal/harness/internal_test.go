@@ -9,37 +9,22 @@ import (
 
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/mountpoints"
+	"ataniq/internal/leadsandbox/plan"
 	"ataniq/internal/leadsandbox/profile"
 )
 
-func TestApplyRealPutsRealPathsIntoTheInputs(t *testing.T) {
-	in := profile.Inputs{
-		StateRoot: "/s", Role: "r", Project: "p", Runtime: profile.Claude,
-		AgentInstall: "/o/agent", ProbeBinary: "/o/probe", ResolvConf: "/o/resolv",
-		ExtraPlaceholders: []profile.Placeholder{{Rel: ".envrc", Source: "/o/envrc"}},
-	}
-	notes, err := applyReal(&in, []mountpoints.ResolvedSource{
-		{Inside: "/ataniq/agent", Source: "/o/agent", Real: "/real/agent"},
-		{Inside: "/ataniq/probe", Source: "/o/probe", Real: "/o/probe"},
-		{Inside: "/etc/resolv.conf", Source: "/o/resolv", Real: "/real/resolv"},
-		{Inside: "/work/p/.envrc", Source: "/o/envrc", Real: "/real/envrc"},
-		{Inside: "/etc/localtime", Source: "/etc/localtime", Real: "/usr/share/zoneinfo/UTC"},
-		{Inside: "/etc/ssl", Source: "/etc/ssl", Skipped: true},
+func TestHostRowNotesNameTheRealPathOfARowOfTheHostOnly(t *testing.T) {
+	notes := hostRowNotes([]mountpoints.ResolvedSource{
+		{Inside: "/ataniq/agent", Source: "/o/agent", Real: "/o/agent", Role: profile.RoleAgent},
+		{Inside: "/etc/hosts", Source: "/etc/hosts", Real: "/etc/hosts", Role: profile.RoleHost},
+		{Inside: "/etc/localtime", Source: "/etc/localtime", Real: "/usr/share/zoneinfo/UTC", Role: profile.RoleHost},
+		{Inside: "/etc/ssl", Source: "/etc/ssl", Role: profile.RoleHost, Skipped: true},
+		// A row Ataniq supplies whose real path differs is refused by the
+		// resolution, never noted.
+		{Inside: "/ataniq/probe", Source: "/o/probe", Real: "/real/probe", Role: profile.RoleProbe},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if in.AgentInstall != "/real/agent" || in.ResolvConf != "/real/resolv" || in.ExtraPlaceholders[0].Source != "/real/envrc" || in.ProbeBinary != "/o/probe" {
-		t.Errorf("inputs: %+v", in)
-	}
-	if len(notes) != 4 || !strings.Contains(notes[3], "/etc/localtime") {
+	if len(notes) != 1 || !strings.Contains(notes[0], "/etc/localtime") || !strings.Contains(notes[0], "/usr/share/zoneinfo/UTC") {
 		t.Errorf("notes: %q", notes)
-	}
-	for _, inside := range []string{"/home/lead", "/home/lead/.claude", "/work/p", "/work/p/.git/config", "/ataniq/mirror/p.git"} {
-		_, err := applyReal(&in, []mountpoints.ResolvedSource{{Inside: inside, Source: "/s/x", Real: "/elsewhere/x"}})
-		if err == nil || !strings.Contains(err.Error(), "symbolic link") {
-			t.Errorf("%s: %v", inside, err)
-		}
 	}
 }
 
@@ -111,5 +96,41 @@ func TestWriteFileNeverReplacesOrFollows(t *testing.T) {
 	st, err := os.Lstat(dir + "/plan.json")
 	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v, %v", st, err)
+	}
+}
+
+// The harness refuses to check a plan whose bound path is not the path the
+// check would open: for every row the path bound must be the path checked.
+func TestPlanBindRowsRefusesABoundPathThatIsNotTheCheckedOne(t *testing.T) {
+	agent := mountpoints.ResolvedSource{Inside: "/ataniq/agent", Source: "/o/agent", Real: "/o/agent", Role: profile.RoleAgent}
+	local := mountpoints.ResolvedSource{Inside: "/etc/localtime", Source: "/etc/localtime", Real: "/zone/UTC", Role: profile.RoleHost}
+	skipped := mountpoints.ResolvedSource{Inside: "/etc/ssl", Source: "/etc/ssl", Role: profile.RoleHost, Skipped: true}
+	for _, tc := range []struct {
+		name   string
+		mounts []plan.Mount
+		want   string // "" for accepted
+	}{
+		{"every path is the checked one", []plan.Mount{
+			{Inside: "/", Kind: profile.KindTmpfs},
+			{Inside: "/ataniq/agent", Source: "/o/agent"},
+			{Inside: "/etc/localtime", Source: "/zone/UTC"},
+		}, ""},
+		{"a host row bound by its name", []plan.Mount{{Inside: "/etc/localtime", Source: "/etc/localtime"}}, "must be the path that is checked"},
+		{"a row bound from another path", []plan.Mount{{Inside: "/ataniq/agent", Source: "/o/other"}}, "must be the path that is checked"},
+		{"a row with no resolved source", []plan.Mount{{Inside: "/ataniq/probe", Source: "/o/probe"}}, "no source for that row"},
+		{"a skipped row that is bound", []plan.Mount{{Inside: "/etc/ssl", Source: "/etc/ssl"}}, "no source for that row"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &attempt{res2: mountpoints.Resolution{Sources: []mountpoints.ResolvedSource{agent, local, skipped}}, pl: &plan.Plan{Mounts: tc.mounts}}
+			rows, err := a.planBindRows()
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("refused: %v", err)
+			case tc.want == "" && len(rows) != 2:
+				t.Errorf("rows: %+v", rows)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Errorf("got %v, want an error that says %q", err, tc.want)
+			}
+		})
 	}
 }

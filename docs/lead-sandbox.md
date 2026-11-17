@@ -166,7 +166,9 @@ allowlist entry in name order, the optional `--seccomp FD`, the rows of the bind
 table in table order, `--chdir`, and `--remount-ro /` last. An optional host row
 is emitted, as `--ro-bind` or `--symlink`, only when the caller says the host has
 it; otherwise it is left out and a note in the plan says so. `--ro-bind-try` is
-never used, so the plan says exactly what is mounted. Every plan also carries
+never used, so the plan says exactly what is mounted. A row of the host is bound
+from the real path the caller resolved (in the golden files, a host without
+links, so each is its own path). Every plan also carries
 notes (the golden files list them) that state the choices below and what the
 plan does not show.
 
@@ -205,8 +207,11 @@ disable user namespaces.
 relative executable or agent paths; a descriptor number outside 3 to 1023 or used
 twice; a report path that is not directly inside the folder the holder names as
 its own, or that lies in a folder the lead can write, in a never-mounted path or
-above a bind source; a working folder outside the tree and the home; an operand
-of bubblewrap that starts with `--`; and a command line above a fixed cap. It
+above a bind source; host sources that are missing for a row of the host it
+emits (`/usr`, the `/etc` files: the plan binds the real path the holder
+resolved, see [the clone rules](#the-clone-rules-and-rule-g1)) or given for
+another row; a working folder outside the tree and the home; an operand of
+bubblewrap that starts with `--`; and a command line above a fixed cap. It
 then runs `Verify` on its own result. `Verify` is written apart from the code
 that builds the arguments: it parses the bubblewrap arguments back and compares
 each part with the inputs. A plan that verifies says the text is the one the
@@ -366,14 +371,27 @@ git treats as a pattern is refused.
 **Checks before every start.** `mountpoints.Check` finds missing or wrong mount
 points and a copy that is incomplete or has no exclude line for a placeholder;
 `ResolveSources` resolves each bind source to its real path and runs the
-never-mounted checks again; `CheckBindSources` opens every source of the plan
+never-mounted checks again; `CheckBindSources` opens the path bound for every row
 from the root of the file system with `openat2`, without following a symbolic
-link on any component, and refuses a source that has one. They run in that
-order, right before the launch, after the previous unit is gone and its control
-group is empty (the sandbox's own process tree does not show that no lead process
-remains, because nested sandboxes are allowed). The plan must carry the real
-paths, and `CheckBindSources` must check the plan's own sources: a source that is
-checked and a different one that is bound is a check that did not happen.
+link on any component, and refuses a path that has one, naming the row by its
+inside path. They run in that order, right before the launch, after the previous
+unit is gone and its control group is empty (the sandbox's own process tree does
+not show that no lead process remains, because nested sandboxes are allowed).
+
+**The path that is bound is the path that is checked.** bubblewrap binds the path
+the plan names and follows a link in it, so a source that is checked and a
+different one that is bound is a check that did not happen. For every row:
+
+- a source Ataniq supplies (every row but the host's own) must be given as its
+  real path. `ResolveSources` refuses a source whose real path differs from its
+  lexical one, a link anywhere on it, naming the row and the real path; the plan
+  binds the source as given, and `CheckBindSources` opens that path as it is, with
+  no link allowed on it;
+- a row of the host (`/usr`, `/etc/hosts`, `/etc/localtime` and the like), whose
+  own name may be a link of the host that no lead writes, is bound from the real
+  path that `ResolveSources` reported. The holder gives it to the plan
+  (`plan.Options.HostSources`, which `plan.Build` requires for every host row it
+  emits and `plan.Verify` checks), and `CheckBindSources` opens that real path.
 
 **What the read-only binds do not protect against.** They are defence in depth.
 A lead can rename `.git` (renaming the parent of a mount point is allowed) and

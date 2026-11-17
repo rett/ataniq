@@ -63,18 +63,31 @@ const (
 // Problem is one thing a check or Prepare refused. Kind is one of the Err
 // values above; Path is the host path (or the profile path) it is about;
 // Detail says why; Err is the operating system or safefile error behind it,
-// when there is one. Names in Path and Detail come from the caller's layout,
-// not from the lead, except where the detail quotes an operating system error.
+// when there is one. Inside is the inside path of the bind row the problem is
+// about, for a problem found on a bind source ([ResolveSources],
+// [CheckBindSources]), and empty for any other. Names in Path and Detail come
+// from the caller's layout, not from the lead, except where the detail quotes
+// an operating system error.
 type Problem struct {
 	Kind   error
 	Path   string
 	Detail string
 	Err    error
+	Inside string
+}
+
+// at names the bind row the problem is about and returns the problem.
+func (p *Problem) at(inside string) *Problem {
+	p.Inside = inside
+	return p
 }
 
 // Error implements error.
 func (p *Problem) Error() string {
 	s := "mountpoints: " + p.Kind.Error()
+	if p.Inside != "" {
+		s += ": row " + p.Inside
+	}
 	if p.Path != "" {
 		s += ": " + p.Path
 	}

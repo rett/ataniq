@@ -30,16 +30,36 @@ type Readlinker func(path string) (string, error)
 // maxLinkHops bounds the dangling links realOf follows for one path.
 const maxLinkHops = 40
 
-// ResolvedSource is one host bind source and its real path.
+// ResolvedSource is one bind source of the table and its real path.
 type ResolvedSource struct {
 	// Inside is the target of the bind, Source the path the table names and
 	// Real that path with its links evaluated.
 	Inside string
 	Source string
 	Real   string
+	// Role is the row's source role (profile.RoleHost, profile.RoleAgent and
+	// the like). It decides which path is the bound one: for a row of the host
+	// (profile.RoleHost, a path that equals its inside path, such as /usr or
+	// /etc/localtime) the real path, which the caller passes to the plan; for
+	// every other row the Source itself, which must equal Real
+	// ([ResolveSources] refuses a row whose Real differs).
+	Role string
 	// Skipped says the source does not exist and its row is optional (it is
 	// applied only if the host has it): Real is empty.
 	Skipped bool
+}
+
+// Bound is the path bubblewrap is to bind for the row, and the path
+// [CheckBindSources] checks: Real for a row of the host, Source for every other
+// row. It is empty for a skipped row.
+func (r ResolvedSource) Bound() string {
+	switch {
+	case r.Skipped:
+		return ""
+	case r.Role == profile.RoleHost:
+		return r.Real
+	}
+	return r.Source
 }
 
 // Resolution is what [ResolveSources] found: the sources in the order of the
@@ -47,6 +67,23 @@ type ResolvedSource struct {
 type Resolution struct {
 	Sources []ResolvedSource
 	Report
+}
+
+// HostSources gives the real path of each row of the host (Role
+// profile.RoleHost) that exists, keyed by its inside path: the map the plan
+// binds those rows from ([plan.Options].HostSources). A skipped row (an
+// optional source the host lacks) has no entry, and the options must then say
+// the host lacks the row ([plan.Options].HostPresent), as the plan refuses a
+// source for a row it leaves out. Every other row keeps the source the inputs
+// name, which [ResolveSources] has refused unless it is its own real path.
+func (r Resolution) HostSources() map[string]string {
+	m := map[string]string{}
+	for _, s := range r.Sources {
+		if s.Role == profile.RoleHost && !s.Skipped {
+			m[s.Inside] = s.Real
+		}
+	}
+	return m
 }
 
 // ResolveSources is where lexical paths meet the file system. The profile
@@ -63,6 +100,15 @@ type Resolution struct {
 // same way). It also refuses:
 //
 //   - a source that is missing, unless its row is optional;
+//   - for every row that is not a row of the host (profile.RoleHost), a source
+//     whose real path differs from its lexical one, that is, one with a
+//     symbolic link anywhere on its path (ErrSymlink, naming the row and the
+//     real path). bubblewrap binds the path the plan names and follows a link
+//     in it, so a source Ataniq supplies must be given as its real path: then
+//     the path that is checked is the path that is bound. A row of the host
+//     (/usr, the /etc files) may resolve through links of the host, which no
+//     lead writes; its real path is reported in [ResolvedSource].Real, and the
+//     caller passes that path to the plan;
 //   - a real source that overlaps a read-write folder of another row, or a
 //     read-write folder that overlaps another, as the profile checks
 //     lexically (no source lies in a folder the lead can write; the sources of
@@ -143,29 +189,35 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 		r, err := resolve(b.Source)
 		if err != nil {
 			if isNotExist(err) && b.Optional {
-				res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Skipped: true})
+				res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Role: b.SourceRole, Skipped: true})
 			} else if isNotExist(err) {
-				res.add(problem(ErrMissing, b.Source, "the source of %s does not exist", b.Inside))
+				res.add(problem(ErrMissing, b.Source, "the source of %s does not exist", b.Inside).at(b.Inside))
 			} else {
-				res.add(problem(ErrUnreadable, b.Source, "the source of %s cannot be resolved: %v", b.Inside, err))
+				res.add(problem(ErrUnreadable, b.Source, "the source of %s cannot be resolved: %v", b.Inside, err).at(b.Inside))
 			}
 			continue
 		}
 		if cerr := profile.CheckPath("resolved path", r); cerr != nil {
-			res.add(problem(ErrUnreadable, b.Source, "the source of %s resolves to a path that is not usable: %v", b.Inside, cerr))
+			res.add(problem(ErrUnreadable, b.Source, "the source of %s resolves to a path that is not usable: %v", b.Inside, cerr).at(b.Inside))
 			continue
 		}
 		realPaths[i] = r
-		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r})
+		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r, Role: b.SourceRole})
+		// Rule G1: bubblewrap binds the path the plan names, and follows a
+		// link in it. A row Ataniq supplies must name its real path, so that
+		// the path that is checked is the path that is bound.
+		if b.SourceRole != profile.RoleHost && r != b.Source {
+			res.add(problem(ErrSymlink, b.Source, "the source of %s is reached through a symbolic link (its real path is %s): give the real path, because bubblewrap binds the path the plan names and follows a link in it", b.Inside, r).at(b.Inside))
+		}
 		if cerr := profile.CheckNeverMounted(r, never); cerr != nil {
-			res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s: %s", b.Inside, r, reason(cerr)))
+			res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s: %s", b.Inside, r, reason(cerr)).at(b.Inside))
 		}
 		if stateOK {
 			if related(r, st.leads) && r != st.lead && !strings.HasPrefix(r, st.lead+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another lead's state", b.Inside, r))
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another lead's state", b.Inside, r).at(b.Inside))
 			}
 			if related(r, st.mirrors) && r != st.mirror && !strings.HasPrefix(r, st.mirror+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r))
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r).at(b.Inside))
 			}
 		}
 	}
@@ -178,7 +230,7 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 				continue
 			}
 			if related(realPaths[i], realPaths[j]) {
-				res.add(problem(ErrOverlap, b.Source, "the source of %s resolves to %s, which overlaps the lead-writable folder %s (%s)", b.Inside, realPaths[i], realPaths[j], w.SourceRole))
+				res.add(problem(ErrOverlap, b.Source, "the source of %s resolves to %s, which overlaps the lead-writable folder %s (%s)", b.Inside, realPaths[i], realPaths[j], w.SourceRole).at(b.Inside))
 			}
 		}
 	}

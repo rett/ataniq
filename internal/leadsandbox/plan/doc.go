@@ -75,7 +75,38 @@
 // Every plan carries [NoteBindSources], which states the rule. The plan treats
 // a host path as a string, so it cannot see a symbolic link in one: the holder
 // checks every source without following links right before it starts the
-// command (mountpoints.CheckBindSources, on the real paths).
+// command (mountpoints.CheckBindSources).
+//
+// # The path that is bound is the path that is checked
+//
+// bubblewrap binds the path the plan names and follows a link in it, so the
+// check of the sources is worth something only if it opens the path that is
+// bound. For every row that holds:
+//
+//   - A row Ataniq supplies (every row but the host's own) is bound from the
+//     Source the inputs name. The holder gives real paths in the inputs, and
+//     mountpoints.ResolveSources refuses a source whose real path differs from
+//     its lexical one (a link anywhere on it), so the Source is its real path;
+//     mountpoints.CheckBindSources then opens that Source as it is, with no link
+//     allowed on it.
+//   - A row of the host (a read-only bind whose source role is
+//     profile.RoleHost: /usr, the /etc files), whose own name may be a link of
+//     the host that no lead writes (/etc/localtime often is), is bound from the
+//     real path the holder resolved, which it gives in [Options.HostSources]
+//     (mountpoints.Resolution.HostSources makes the map). [Build] requires an
+//     entry for every host row it emits and refuses one for any other key or
+//     for an optional row the host lacks; the path is checked like any other
+//     source (never-mounted paths, the other runtime's config folder, other
+//     leads' state and other projects' mirror folders, the folders a lead
+//     writes). [Verify] compares each mount with the table as these options
+//     give it, so a plan that binds the name of a host row where the options
+//     give a real path is reported ([ProbMountDiffers]), and options that give
+//     no real path for an emitted host row are reported ([ProbOptions]).
+//     mountpoints.CheckBindSources opens that real path.
+//
+// The package cannot see the file system, so it cannot tell that a path is the
+// real path of anything: it binds what the holder gives and the holder's
+// resolution and check are what make the paths real.
 //
 // # The environment inside
 //
@@ -104,7 +135,8 @@
 // lies in or below a lead-writable host folder or a never-mounted path, that
 // is, lies below or lies above any source of the bind table or the state
 // root's leads or mirrors folder, or that is not directly inside
-// [Options.ReportDir], the folder the holder names as its own (required), a
+// [Options.ReportDir], the folder the holder names as its own (required), host
+// sources that are missing for an emitted host row or given for another key, a
 // working folder outside the tree and the home, an operand of bubblewrap that
 // starts with --, an agent argument that equals a forbidden option, and a
 // command line above [MaxArgvBytes]. It asserts that no option of

@@ -1,6 +1,9 @@
 package profile
 
-import "strconv"
+import (
+	"path"
+	"strconv"
+)
 
 // neverMounted is the caller's list plus the other runtime's config folder.
 func (in Inputs) neverMounted() []string {
@@ -42,7 +45,32 @@ func CheckNeverMounted(source string, never []string) error {
 }
 
 // CheckSource is CheckNeverMounted with the list of the inputs: the caller's
-// never-mounted paths and the other runtime's config folder.
+// never-mounted paths and the other runtime's config folder. It also refuses
+// a source in or above another lead's state or another project's mirror
+// folder, as the bind table does for its own sources, so a path that did not
+// come from the table (the real path of a host row, which the plan binds) is
+// held to the same rules. The inputs must be valid.
 func (in Inputs) CheckSource(source string) error {
-	return CheckNeverMounted(source, in.neverMounted())
+	if err := CheckNeverMounted(source, in.neverMounted()); err != nil {
+		return err
+	}
+	if why := in.otherStateReason(source); why != "" {
+		return refuse("bind source", "%s %s", source, why)
+	}
+	return nil
+}
+
+// otherStateReason says why a source lies where another lead's state or
+// another project's mirror folder is (in or above it), or is "" when it does
+// not. The lead's own state folder and the project's own mirror are the
+// places a source may lie in.
+func (in Inputs) otherStateReason(source string) string {
+	l := in.Layout()
+	if leads := path.Join(l.StateRoot, "leads"); related(source, leads) && source != l.LeadDir() && !below(source, l.LeadDir()) {
+		return "lies in or above another lead's state"
+	}
+	if mirrors := l.MirrorsDir(); related(source, mirrors) && source != l.Mirror() && !below(source, l.Mirror()) {
+		return "lies in or above another project's mirror folder"
+	}
+	return ""
 }

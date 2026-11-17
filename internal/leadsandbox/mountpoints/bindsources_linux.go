@@ -19,35 +19,44 @@ type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 // points are crossed on purpose: /usr and the like are mounts.
 const bindResolveFlags = unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
 
-// CheckBindSources checks, without following any link, that each source of a
-// plan's binds is reached by a path with no symbolic link in any component
-// (rule G1). bubblewrap resolves a bind source on the host, outside every
-// sandbox, and follows a link there; a link planted anywhere on the way would
-// bring a folder of the owner into the sandbox. For each source, an absolute
-// clean path, it opens the root of the file system and then the source below
-// it with openat2 (RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS, O_PATH), and
-// closes the descriptor at once: nothing is read, created or changed.
+// CheckBindSources checks, without following any link, that the path each
+// bind row will be bound from is reached by a path with no symbolic link in any
+// component (rule G1). bubblewrap resolves a bind source on the host, outside
+// every sandbox, and follows a link there; a link planted anywhere on the way
+// would bring a folder of the owner into the sandbox. For each row it opens the
+// root of the file system and then the row's bound path below it with openat2
+// (RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS, O_PATH), and closes the
+// descriptor at once: nothing is read, created or changed.
 //
-// The caller passes the sources of the plan it is about to launch: the real
-// paths [ResolveSources] gave ([ResolvedSource].Real), not the lexical ones.
-// A source that is itself a link, or lies below one, is refused with
-// [ErrSymlink] and the first link on the way is named; a source that does not
-// exist is [ErrMissing], one below a file [ErrWrongType], a path that is not
-// absolute and clean [ErrInvalid], and a kernel that refuses openat2 (no
-// support, or a filter) [ErrUnreadable]: there is no fallback to a path-based
-// open. Every problem is about the source, in the order given, and the report
-// is bounded like any other. The caller runs it right before every launch,
-// after [ResolveSources]; it says what the path was at that moment, and what
-// bubblewrap then resolves can still change if something else can write above
-// a source, which is why the sources and everything above them must be
-// Ataniq's.
-func CheckBindSources(sources []string) Report {
-	return checkBindSources(sources, unix.Openat2)
+// The caller passes the rows [ResolveSources] gave. The path checked for a row
+// is the path bubblewrap binds, [ResolvedSource].Bound: for a row of the host
+// (Role profile.RoleHost: /usr, the /etc files), whose path may go through a
+// link of the host that no lead writes, the real path, which the caller must
+// have the plan bind; for every other row the Source
+// itself, the lexical path the plan names, which ResolveSources has refused
+// unless it equals its real path. So the path that is checked is the path that
+// is bound, for every row. A skipped row (an optional source the host lacks) is
+// not checked.
+//
+// A path that is itself a link, or lies below one, is refused with [ErrSymlink]
+// and the first link on the way is named; a path that does not exist is
+// [ErrMissing], one below a file [ErrWrongType], a path that is not absolute and
+// clean (or a row of the host without a real path) [ErrInvalid], and a kernel
+// that refuses openat2 (no support, or a filter) [ErrUnreadable]: there is no
+// fallback to a path-based open. Each problem is about one row: its Path is the
+// path checked, its Inside the row's inside path, and its detail names the row.
+// The problems come in the order of the rows, and the report is bounded like any
+// other. The caller runs it right before every launch, after [ResolveSources];
+// it says what the path was at that moment, and what bubblewrap then resolves
+// can still change if something else can write above a source, which is why the
+// sources and everything above them must be Ataniq's.
+func CheckBindSources(rows []ResolvedSource) Report {
+	return checkBindSources(rows, unix.Openat2)
 }
 
-func checkBindSources(sources []string, call openat2Func) Report {
+func checkBindSources(rows []ResolvedSource, call openat2Func) Report {
 	var rep Report
-	if len(sources) == 0 {
+	if len(rows) == 0 {
 		return rep
 	}
 	root, err := openFS()
@@ -56,8 +65,11 @@ func checkBindSources(sources []string, call openat2Func) Report {
 		return rep
 	}
 	defer unix.Close(root)
-	for _, src := range sources {
-		rep.add(checkOneSource(root, src, call))
+	for _, row := range rows {
+		if row.Skipped {
+			continue
+		}
+		rep.add(checkOneSource(root, row, call))
 	}
 	return rep
 }
@@ -83,9 +95,13 @@ func lookup(call openat2Func, root int, rel string) (int, error) {
 	}
 }
 
-func checkOneSource(root int, src string, call openat2Func) *Problem {
+func checkOneSource(root int, row ResolvedSource, call openat2Func) *Problem {
+	src := row.Bound()
+	if src == "" {
+		return problem(ErrInvalid, "", "the row has no real path to check").at(row.Inside)
+	}
 	if err := profile.CheckPath("bind source", src); err != nil {
-		return problem(ErrInvalid, clip(src), "%s", reason(err))
+		return problem(ErrInvalid, clip(src), "%s", reason(err)).at(row.Inside)
 	}
 	rel := strings.TrimPrefix(src, "/")
 	if rel == "" {
@@ -100,13 +116,13 @@ func checkOneSource(root int, src string, call openat2Func) *Problem {
 	case unix.ELOOP:
 		// Name the first component that is a link; it decides nothing.
 		at := firstLink(root, rel, call)
-		return problem(ErrSymlink, src, "the source of a bind is reached through a symbolic link at %s: a link is never followed", at)
+		return problem(ErrSymlink, src, "the source of %s is reached through a symbolic link at %s: a link is never followed", row.Inside, at).at(row.Inside)
 	case unix.ENOENT:
-		return problem(ErrMissing, src, "the source of a bind does not exist")
+		return problem(ErrMissing, src, "the source of %s does not exist", row.Inside).at(row.Inside)
 	case unix.ENOTDIR:
-		return problem(ErrWrongType, src, "a component of the source of a bind is not a folder")
+		return problem(ErrWrongType, src, "a component of the source of %s is not a folder", row.Inside).at(row.Inside)
 	}
-	p := problem(ErrUnreadable, src, "the source of a bind cannot be opened without following links: %v", err)
+	p := problem(ErrUnreadable, src, "the source of %s cannot be opened without following links: %v", row.Inside, err).at(row.Inside)
 	p.Err = err
 	return p
 }
