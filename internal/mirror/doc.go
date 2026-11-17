@@ -57,10 +57,12 @@
 // into one mirror cannot overlap: a lock file beside the mirror makes the
 // second one return [ErrBusy].
 //
-// The limits are in [Limits]: a time limit, a size cap for the lead's object
-// store as measured in the sandbox, for what one fetch adds, for the whole
-// mirror and for the number of files, and a cap on the lead's branches. The
-// size of the mirror after the move is a check and not a quota.
+// The limits of a fetch are in [FetchLimits], a type of its own: a time limit
+// for the whole fetch, a size cap for the lead's object store as measured in
+// the sandbox, for what one fetch adds, for the whole mirror and for the
+// number of files, and a cap on the lead's branches. The [Limits] of a
+// [Mirror] are another thing: the time limit of each git run and the cap of a
+// listing. The size of the mirror after the move is a check and not a quota.
 //
 // # How it is safe
 //

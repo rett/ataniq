@@ -41,7 +41,7 @@ var (
 	ErrFetchTimeout = errors.New("mirror: the fetch ran past its time limit")
 )
 
-// LimitError is returned when a limit of [Limits] is passed. What is
+// LimitError is returned when a limit of [FetchLimits] is passed. What is
 // "source", "staged", "mirror", "refs" or "entries". Got is what was
 // measured, or the count at which the walk or the listing stopped, and Max is
 // the limit.
@@ -69,8 +69,8 @@ type FetchRequest struct {
 	// [sandboxplan.ErrNotConfigured] and the fetch stops.
 	Planner sandboxplan.Planner
 	// Limits bounds the fetch. A zero field means the default of
-	// [DefaultLimits].
-	Limits Limits
+	// [DefaultFetchLimits].
+	Limits FetchLimits
 }
 
 // RefUpdate is one change of a lead ref. Old is empty when the ref was
@@ -191,7 +191,7 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	if req.Planner == nil {
 		return errors.New("mirror: the fetch has no planner")
 	}
-	lim := req.Limits.forFetch()
+	lim := req.Limits.withDefaults()
 	if err := lim.check(); err != nil {
 		return err
 	}
@@ -376,7 +376,7 @@ func measureSource(ctx context.Context, c sandboxplan.Command) (int64, error) {
 // measure counts the whole mirror folder and returns its allocated bytes. The
 // entry limit is a [*LimitError]. It does not compare the bytes with
 // MaxMirror.
-func (m *Mirror) measure(ctx context.Context, lim Limits) (int64, error) {
+func (m *Mirror) measure(ctx context.Context, lim FetchLimits) (int64, error) {
 	size, err := m.Size(ctx, safefs.SizeLimits{MaxBytes: math.MaxInt64, MaxEntries: lim.MaxEntries})
 	if errors.Is(err, safefs.ErrLimit) && size.Entries > lim.MaxEntries {
 		return size.Bytes, &LimitError{What: "entries", Got: size.Entries, Max: lim.MaxEntries}
@@ -386,7 +386,7 @@ func (m *Mirror) measure(ctx context.Context, lim Limits) (int64, error) {
 
 // measure counts the whole staging folder, as [Mirror.measure] does for the
 // mirror.
-func (s *staging) measure(lim Limits) (int64, error) {
+func (s *staging) measure(lim FetchLimits) (int64, error) {
 	root, err := safefs.OpenRoot(s.path)
 	if err != nil {
 		return 0, fmt.Errorf("mirror: the staging repository: %w", err)
@@ -401,7 +401,7 @@ func (s *staging) measure(lim Limits) (int64, error) {
 
 // fetchStaging runs the receiving half of the fetch into the staging
 // repository, with the sandboxed upload-pack command named by git's option.
-func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan.ServePlan, refspec string, tips []string, lim Limits) error {
+func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan.ServePlan, refspec string, tips []string, lim FetchLimits) error {
 	root, err := safefs.OpenRoot(st.path)
 	if err != nil {
 		return fmt.Errorf("mirror: the staging repository: %w", err)
@@ -480,7 +480,7 @@ func negotiationTips(snap []record, prefix string) []string {
 
 // checkArrived is the check of step 7 on the refs and on the staging
 // repository itself.
-func (m *Mirror) checkArrived(ctx context.Context, st *staging, prefix string, lim Limits) error {
+func (m *Mirror) checkArrived(ctx context.Context, st *staging, prefix string, lim FetchLimits) error {
 	reason, err := st.check(ctx)
 	if err != nil {
 		return err

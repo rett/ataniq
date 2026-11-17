@@ -24,39 +24,40 @@ const (
 	smallOutput = 4 << 10
 )
 
-// Limits bounds the work of a [Mirror] and of one [Mirror.Fetch]. A zero
-// field means the default. A negative field is an error.
-//
-// A Mirror reads two fields: Timeout, the time limit of each git run
-// (default [DefaultTimeout]), and MaxRefs, the most refs a listing returns
-// (default [DefaultMaxRefs]). A [FetchRequest] reads all fields, and there
-// Timeout is the time limit of the whole fetch and MaxRefs is the most
-// branches one lead may have; the defaults are those of [DefaultLimits]. The
-// other fields mean nothing to a Mirror. Pass a Limits value for the one use
-// that it is written for.
+// Limits bounds the work of a [Mirror]. A zero field means the default. A
+// negative field is an error. The limits of one [Mirror.Fetch] are another
+// type, [FetchLimits], so that the two meanings of a time limit cannot be
+// mixed up: the result of [Mirror.Limits] is not a fetch's limits.
 type Limits struct {
-	// Timeout is, for a Mirror, the time limit of each git run, and, for a
-	// fetch, the time limit of the whole fetch.
+	// Timeout is the time limit of each git run (default [DefaultTimeout]).
 	Timeout time.Duration
-	// MaxSource is the most that the clone's object store may measure in
-	// the sandbox, in bytes. A fetch only.
-	MaxSource int64
-	// MaxStaged is the most that one fetch may add, in allocated bytes of
-	// the staging repository, which starts with a few small files. A fetch
-	// only.
-	MaxStaged int64
-	// MaxMirror is the most that the mirror may measure after a fetch, in
-	// allocated bytes. A fetch only.
-	MaxMirror int64
-	// MaxEntries is the most files and folders that any measure counts. A
-	// fetch only.
-	MaxEntries int64
-	// MaxRefs is, for a Mirror, the most refs a listing returns, and, for a
-	// fetch, the most branches that one lead may have.
+	// MaxRefs is the most refs a listing returns (default [DefaultMaxRefs]).
 	MaxRefs int
 }
 
-// Defaults of a fetch. See [DefaultLimits].
+// FetchLimits bounds one [Mirror.Fetch]. A zero field means the default of
+// [DefaultFetchLimits]. A negative field is an error. It is not the [Limits]
+// of a [Mirror]: Timeout here is the time limit of the whole fetch, and
+// MaxRefs is the most branches that one lead may have.
+type FetchLimits struct {
+	// Timeout is the time limit of the whole fetch.
+	Timeout time.Duration
+	// MaxSource is the most that the clone's object store may measure in
+	// the sandbox, in bytes.
+	MaxSource int64
+	// MaxStaged is the most that one fetch may add, in allocated bytes of
+	// the staging repository, which starts with a few small files.
+	MaxStaged int64
+	// MaxMirror is the most that the mirror may measure after a fetch, in
+	// allocated bytes.
+	MaxMirror int64
+	// MaxEntries is the most files and folders that any measure counts.
+	MaxEntries int64
+	// MaxRefs is the most branches that one lead may have.
+	MaxRefs int
+}
+
+// Defaults of a fetch. See [DefaultFetchLimits].
 const (
 	defaultFetchTimeout = 10 * time.Minute
 	defaultMaxSource    = 2 << 30
@@ -66,12 +67,18 @@ const (
 	defaultFetchMaxRefs = 2000
 )
 
-// DefaultLimits returns the limits of a fetch when a [FetchRequest] leaves
+// DefaultLimits returns the limits of a [Mirror] that has none of its own:
+// [DefaultTimeout] for each git run and [DefaultMaxRefs] for a listing.
+func DefaultLimits() Limits {
+	return Limits{Timeout: DefaultTimeout, MaxRefs: DefaultMaxRefs}
+}
+
+// DefaultFetchLimits returns the limits of a fetch when a [FetchRequest] leaves
 // them out: 10 minutes for the whole fetch, 2 GiB for the lead's object store,
 // 1 GiB for what one fetch adds, 8 GiB for the mirror, 2 000 000 entries in any
 // measure and 2 000 branches for one lead.
-func DefaultLimits() Limits {
-	return Limits{
+func DefaultFetchLimits() FetchLimits {
+	return FetchLimits{
 		Timeout:    defaultFetchTimeout,
 		MaxSource:  defaultMaxSource,
 		MaxStaged:  defaultMaxStaged,
@@ -81,9 +88,10 @@ func DefaultLimits() Limits {
 	}
 }
 
-// forFetch returns the limits with each zero field set from [DefaultLimits].
-func (l Limits) forFetch() Limits {
-	d := DefaultLimits()
+// withDefaults returns the limits with each zero field set from
+// [DefaultFetchLimits].
+func (l FetchLimits) withDefaults() FetchLimits {
+	d := DefaultFetchLimits()
 	if l.Timeout == 0 {
 		l.Timeout = d.Timeout
 	}
@@ -105,6 +113,14 @@ func (l Limits) forFetch() Limits {
 	return l
 }
 
+func (l FetchLimits) check() error {
+	if l.Timeout < 0 || l.MaxRefs < 0 || l.MaxSource < 0 || l.MaxStaged < 0 ||
+		l.MaxMirror < 0 || l.MaxEntries < 0 {
+		return errors.New("mirror: limits must not be negative")
+	}
+	return nil
+}
+
 func (l Limits) timeout() time.Duration {
 	if l.Timeout == 0 {
 		return DefaultTimeout
@@ -120,8 +136,7 @@ func (l Limits) maxRefs() int {
 }
 
 func (l Limits) check() error {
-	if l.Timeout < 0 || l.MaxRefs < 0 || l.MaxSource < 0 || l.MaxStaged < 0 ||
-		l.MaxMirror < 0 || l.MaxEntries < 0 {
+	if l.Timeout < 0 || l.MaxRefs < 0 {
 		return errors.New("mirror: limits must not be negative")
 	}
 	return nil
