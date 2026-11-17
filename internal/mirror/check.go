@@ -13,8 +13,8 @@ import (
 // The reasons name only a section and a variable from the fixed list, never a
 // subsection or a value, because a hand-edited file may hold any text there.
 // The list is the one in the package comment: settings that name a program to
-// run, read another file, rewrite a URL or open a remote. Other sections are
-// not looked at.
+// run, read another file, rewrite a URL or open a remote, and the extensions
+// section. Other sections are not looked at.
 func checkConfig(listing []byte) string {
 	bare := false
 	sawBare := false
@@ -32,6 +32,11 @@ func checkConfig(listing []byte) string {
 		switch section {
 		case "include", "includeif":
 			return "the config has an include"
+		case "extensions":
+			// Create sets no extension. The extension worktreeConfig
+			// makes git read config.worktree, which is not checked, and
+			// no other extension is one this package has looked at.
+			return "the config sets an extension"
 		case "url":
 			return "the config has a url rewrite"
 		case "filter":

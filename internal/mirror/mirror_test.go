@@ -364,6 +364,24 @@ func TestOpenRefusals(t *testing.T) {
 		{"remote bare section", appendConfig("[remote]\n\tpushDefault = origin\n"), "a remote"},
 		{"alias", appendConfig("[alias]\n\tpush = !sh -c x\n"), "an alias"},
 		{"alias upper", appendConfig("[ALIAS]\n\tx = y\n"), "an alias"},
+		{"extensions worktreeConfig", appendConfig("[extensions]\n\tworktreeConfig = true\n"), "an extension"},
+		{"extensions any key", appendConfig("[extensions]\n\tfoo = bar\n"), "an extension"},
+		{"extensions upper case", appendConfig("[EXTENSIONS]\n\tObjectFormat = sha1\n"), "an extension"},
+		{"config.worktree", writeFile("config.worktree", "[url \"/elsewhere/\"]\n\tinsteadOf = /x/\n"), "config.worktree file"},
+		{"config.worktree empty", writeFile("config.worktree", ""), "config.worktree file"},
+		{"config.worktree a symlink", replaceWithSymlink("config.worktree"), "config.worktree file"},
+		{"config.worktree with its extension", func(t *testing.T, g gitenv.Git, dir string) {
+			appendConfig("[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n")(t, g, dir)
+			writeFile("config.worktree", "[core]\n\thooksPath = /tmp/h\n")(t, g, dir)
+		}, "config.worktree file"},
+		{"commondir", writeFile("commondir", "../elsewhere\n"), "commondir file"},
+		{"commondir a folder", func(t *testing.T, g gitenv.Git, dir string) {
+			if err := os.Mkdir(filepath.Join(dir, "commondir"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, "commondir file"},
+		{"gitdir", writeFile("gitdir", "/elsewhere/.git\n"), "gitdir file"},
+		{"gitdir a symlink", replaceWithSymlink("gitdir"), "gitdir file"},
 		{"core.bare set twice, last false", appendConfig("[core]\n\tbare = false\n"), "not bare"},
 	}
 	for _, tc := range cases {

@@ -198,8 +198,11 @@ func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirro
 //   - a missing or malformed marker file, or one for another project;
 //   - a repository that is not bare, or that lacks HEAD, objects or refs;
 //   - a "hooks" folder that is not empty;
-//   - an objects/info/alternates or objects/info/http-alternates file;
-//   - a config file with an include or includeIf, or a setting of
+//   - an objects/info/alternates or objects/info/http-alternates file, or a
+//     commondir, gitdir or config.worktree file in the folder (each sends git
+//     to another repository or to more configuration);
+//   - a config file with an include or includeIf, an extensions section (any
+//     key), or a setting of
 //     core.hooksPath, core.fsmonitor, core.sshCommand,
 //     core.alternateRefsCommand, core.worktree, uploadpack.packObjectsHook,
 //     diff.external, or diff.<driver>.command or textconv, or any url.*,
@@ -334,7 +337,29 @@ func checkFolder(root *safefs.Root, project string) (string, error) {
 			return "the alternates file cannot be checked", nil
 		}
 	}
-	return "", nil
+	return checkRedirects(root), nil
+}
+
+// redirects are the files in a repository folder that send git to another
+// repository or make it read more configuration: commondir and gitdir name
+// another repository, and config.worktree is read when the extension
+// worktreeConfig is set. A repository that Ataniq made has none of them.
+var redirects = []string{"commondir", "gitdir", "config.worktree"}
+
+// checkRedirects returns the reason for a refusal when the repository folder
+// that root names has one of the [redirects] files, in any form, or when one
+// cannot be checked. It returns "" otherwise.
+func checkRedirects(root *safefs.Root) string {
+	for _, name := range redirects {
+		_, err := root.Lstat(name)
+		if err == nil {
+			return "the repository has a " + name + " file"
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "the " + name + " file cannot be checked"
+		}
+	}
+	return ""
 }
 
 // Size counts the allocated bytes and the entries of the whole mirror
