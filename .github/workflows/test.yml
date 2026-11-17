@@ -31,3 +31,6 @@ jobs:
       - run: make bootstrap
       - run: make doctor
       - run: make test
+      - name: changelog fragments are folded
+        if: startsWith(github.head_ref, 'release/') || startsWith(github.head_ref, 'hotfix/')
+        run: make changelog-check

@@ -13,6 +13,12 @@ collide on it.
   indented by two spaces. No blank line and no heading.
 - The release branch's first commit folds the fragments into `## [Unreleased]`
   with `make changelog-fold` (`make changelog-fold ARGS=--dry-run` previews),
-  which removes them, and `make changelog-check` must then pass.
+  which removes them, and `make changelog-check` must then pass. A fix on the
+  release branch that adds a fragment is folded again, and a hotfix branch
+  folds its fragments before its pull request. CI runs `make changelog-check`
+  on `release/*` and `hotfix/*` pull requests.
+- The fold refuses, without changing anything, an invalid fragment (exit 2),
+  and an interrupted run leaves `CHANGELOG.md` intact. A fragment whose whole
+  text is already in `[Unreleased]` is removed without being added again.
 
 This file is not a fragment.
