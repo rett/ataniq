@@ -28,8 +28,8 @@ import (
 //     calls Resize on a live pane. The source calls pane.Resize when the
 //     holder says its screen has another size, or on a snapshot.
 //   - The cockpit tells the source the size it wants with Resize, and only
-//     while the role is writer. A viewer draws the holder's size, cut or
-//     padded at the pane area's top left corner.
+//     as the writer with the connection up (see Resize). A viewer draws the
+//     holder's size, cut or padded at the pane area's top left corner.
 //   - What the pane sends (keys, paste, mouse) goes to the sink that Start
 //     returned. A viewer's input is not sent at all.
 //   - Mouse, paste and focus requests to the outer terminal follow
@@ -50,11 +50,23 @@ type LiveSource interface {
 	// network: connecting happens afterwards and shows in the status.
 	Start(LiveStart) (sessionpane.InputSink, error)
 	// Resize asks for a pane of cols by rows, the size of the area the
-	// cockpit has for the session, at most the pane's own limits. It is
-	// called only while the role is writer and only for a size that differs
-	// from the last one asked for, after the cockpit's 120 ms debounce for a
-	// window resize and at once for zoom. It must not block. The holder
-	// decides the size: the source follows the holder's answer in the pane.
+	// cockpit has for the session, at most the pane's own limits. It must
+	// not block. The holder decides the size: the source follows the
+	// holder's answer in the pane.
+	//
+	// The rule: the cockpit calls Resize whenever it is the writer (Role is
+	// LiveWriter), the connection is up (Conn is neither LiveDisconnected
+	// nor LiveWaitingTicket), and the size it wants differs from the
+	// holder's reported size (LiveStatus.Cols and Rows, when known) or from
+	// the size it last asked for. It checks this when the window size
+	// settles (after its 120 ms debounce), at once for zoom, when the role
+	// becomes writer, and when the connection comes back up as the writer.
+	// So the source may be called again with the size it was already given,
+	// for example when a writer gets the role back and the holder has
+	// another size; it must tolerate that, and may ignore a size the holder
+	// already has. The cockpit never calls it for a viewer, a client with no
+	// role or a connection that is down; a size wanted meanwhile is asked
+	// for when the writer is back.
 	Resize(cols, rows int)
 	// Status is the current state, read on each redraw.
 	Status() LiveStatus
@@ -153,7 +165,11 @@ type LiveStatus struct {
 	Lead             string
 	Epoch            uint64
 	Runtime, Version string
-	// Role is the role granted: LiveWriter, LiveViewer, or empty.
+	// Role is the role granted: LiveWriter, LiveViewer, or empty. The source
+	// keeps the role as last granted while the connection is down
+	// (LiveDisconnected, LiveWaitingTicket) and clears it only when the
+	// holder says so; the cockpit takes no input and asks for no size while
+	// the connection is down, whatever the role says.
 	Role LiveRole
 	// Cols and Rows are the holder's screen size; zero when unknown.
 	Cols, Rows int
@@ -258,6 +274,8 @@ type liveState struct {
 	// paneCols and paneRows are the pane's size at the last wake-up.
 	paneCols, paneRows int
 	prevRole           LiveRole
+	// prevUp is whether the connection was up at the last wake-up.
+	prevUp bool
 	// noted is true once the read-only notice was shown.
 	noted bool
 	// noticeLive is true while m.notice is a live notice.
@@ -339,7 +357,7 @@ func (m *Model) startLive() tea.Cmd {
 	m.rep.write = pane.Write
 	m.live.paneCols, m.live.paneRows = cols, rows
 	m.refreshLive()
-	m.live.prevRole = m.live.st.Role
+	m.live.prevRole, m.live.prevUp = m.live.st.Role, !m.liveDown()
 	return m.waitLive()
 }
 
@@ -376,10 +394,12 @@ func (m *Model) onLive() tea.Cmd {
 		m.sel = selection{}
 	}
 	m.checkSelection()
-	if role := m.live.st.Role; role != m.live.prevRole {
-		// A new writer sends the size it wants at once: it has not been
-		// asked for while it was a viewer.
-		m.live.prevRole = role
+	if role, up := m.live.st.Role, !m.liveDown(); role != m.live.prevRole || up != m.live.prevUp {
+		// A client that becomes the writer, or whose connection comes back
+		// as the writer, asks for the size it wants at once, when that is
+		// not the holder's: the window may have changed while it could not
+		// ask, and another writer may have changed the holder's size.
+		m.live.prevRole, m.live.prevUp = role, up
 		if cmd := m.syncLive(false); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -490,8 +510,9 @@ func (m *Model) liveDown() bool {
 }
 
 // syncLive asks the source for the size the layout gives the session, while
-// the role is writer, at once or after the debounce delay. A size already
-// asked for is not asked again.
+// the role is writer and the connection is up, at once or after the debounce
+// delay. A size is skipped only when it is the one last asked for and the
+// holder reports it too (or reports no size): see LiveSource.Resize.
 func (m *Model) syncLive(debounce bool) tea.Cmd {
 	l := m.layout()
 	if !l.cockpit || m.rep.pane == nil || !m.liveWriter() {
@@ -500,7 +521,8 @@ func (m *Model) syncLive(debounce bool) tea.Cmd {
 	m.resizeSeq++
 	cols := min(max(l.inner.Dx(), sessionpane.MinCols), paneMaxCols)
 	rows := min(max(l.inner.Dy(), sessionpane.MinRows), paneMaxRows)
-	if cols == m.live.sentCols && rows == m.live.sentRows {
+	holder := m.live.st.Cols == 0 || m.live.st.Rows == 0 || (m.live.st.Cols == cols && m.live.st.Rows == rows)
+	if cols == m.live.sentCols && rows == m.live.sentRows && holder {
 		return nil
 	}
 	if !debounce {

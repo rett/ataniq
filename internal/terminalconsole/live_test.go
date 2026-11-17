@@ -27,6 +27,10 @@ type fakeLive struct {
 	st       LiveStatus
 	notices  []LiveNotice
 	resizes  [][2]int
+	// deaf makes the holder ignore Resize: its size stays what the status
+	// says. Otherwise the holder answers a Resize with that size, and takes
+	// the size of the pane's area when the source starts.
+	deaf bool
 }
 
 func newFake(role LiveRole) *fakeLive {
@@ -44,6 +48,9 @@ func (f *fakeLive) Start(s LiveStart) (sessionpane.InputSink, error) {
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
+	if !f.deaf {
+		f.st.Cols, f.st.Rows = s.Cols, s.Rows
+	}
 	return f.sink, nil
 }
 
@@ -51,6 +58,9 @@ func (f *fakeLive) Resize(cols, rows int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resizes = append(f.resizes, [2]int{cols, rows})
+	if !f.deaf {
+		f.st.Cols, f.st.Rows = cols, rows
+	}
 }
 
 func (f *fakeLive) Status() LiveStatus {
@@ -559,6 +569,112 @@ func TestLiveANewWriterAsksForItsSizeAtOnce(t *testing.T) {
 	}
 }
 
+// settle runs every timer the model has scheduled, such as the resize
+// debounce.
+func (r *liveRig) settle() {
+	r.t.Helper()
+	r.run(24 * time.Hour)
+}
+
+func TestLiveAWriterThatGetsTheRoleBackAsksForItsSize(t *testing.T) {
+	// The holder is resized by another writer while this client is a viewer;
+	// the client's own window has not changed.
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	l := r.m.layout()
+	area := [2]int{l.inner.Dx(), l.inner.Dy()}
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	f.start.Pane.Resize(60, 20)
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 60, 20 })
+	r.pump()
+	if len(f.sizes()) != 0 {
+		t.Fatalf("a viewer asked for a size: %v", f.sizes())
+	}
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	if got := f.sizes(); len(got) != 1 || got[0] != area {
+		t.Fatalf("the regained writer asked for %v, want %v", got, area)
+	}
+
+	// A writer whose holder already has its size asks for nothing.
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	if n := len(f.sizes()); n != 1 {
+		t.Fatalf("asked again for a size the holder has: %v", f.sizes())
+	}
+
+	// A holder that does not follow is asked again, with the same size, at
+	// each point of the rule, and nothing worse comes of it.
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 70, 25 })
+	r.key(zoomPress)
+	r.key(zoomPress)
+	got := f.sizes()
+	if len(got) != 3 || got[2] != area {
+		t.Fatalf("sizes %v", got)
+	}
+}
+
+func TestLiveAWriterWithAnUnknownHolderSizeAsksOnlyForANewSize(t *testing.T) {
+	f := newFake(LiveWriter)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 0, 0 })
+	r.pump()
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if len(f.sizes()) != 0 {
+		t.Fatalf("asked for the size already asked: %v", f.sizes())
+	}
+	r.key(zoomPress)
+	if len(f.sizes()) != 1 {
+		t.Fatalf("zoom: %v", f.sizes())
+	}
+}
+
+func TestLiveASizeWantedWhileTheConnectionWasDownIsSentWhenItIsBack(t *testing.T) {
+	for _, down := range []LiveConn{LiveDisconnected, LiveWaitingTicket} {
+		f := newFake(LiveWriter)
+		r := newLiveRig(t, 140, 45, f, Options{})
+		// The source keeps the role as last granted while the connection is
+		// down.
+		f.set(func(s *LiveStatus) { s.Conn, s.Reason = down, "gone" })
+		r.pump()
+		r.size(160, 55)
+		r.settle()
+		if len(f.sizes()) != 0 {
+			t.Fatalf("%v: asked while down: %v", down, f.sizes())
+		}
+		l := r.m.layout()
+		want := [2]int{l.inner.Dx(), l.inner.Dy()}
+		f.set(func(s *LiveStatus) { s.Conn, s.Reason = LiveAttached, "" })
+		r.pump()
+		if got := f.sizes(); len(got) != 1 || got[0] != want {
+			t.Fatalf("%v: after the reconnect asked %v, want %v", down, got, want)
+		}
+
+		// A window that did not change while down, on a holder that kept
+		// its size, asks for nothing.
+		f.set(func(s *LiveStatus) { s.Conn = down })
+		r.pump()
+		f.set(func(s *LiveStatus) { s.Conn = LiveAttached })
+		r.pump()
+		if n := len(f.sizes()); n != 1 {
+			t.Fatalf("%v: asked again: %v", down, f.sizes())
+		}
+
+		// A holder that changed its size while the connection was down is
+		// asked for the size too.
+		f.set(func(s *LiveStatus) { s.Conn = down })
+		r.pump()
+		f.set(func(s *LiveStatus) { s.Conn, s.Cols, s.Rows = LiveAttached, 90, 30 })
+		r.pump()
+		if got := f.sizes(); len(got) != 2 || got[1] != want {
+			t.Fatalf("%v: asked %v, want %v again", down, got, want)
+		}
+	}
+}
+
 func TestLiveViewerDrawsTheHoldersSizeLetterboxedAndCropped(t *testing.T) {
 	f := newFake(LiveViewer)
 	r := newLiveRig(t, 140, 45, f, Options{})
@@ -878,7 +994,7 @@ func TestLiveShowsNoFixtureProjectionEvenWithASnapshot(t *testing.T) {
 			t.Fatalf("%q shown in live mode:\n%s", bad, v)
 		}
 	}
-	for _, want := range []string{"scratch-lead", "claude 2.1", "No daemon, no projects.", "check mismatches 0 · resyncs 0 · refused input 0", "80x24"} {
+	for _, want := range []string{"scratch-lead", "claude 2.1", "No daemon, no projects.", "check mismatches 0 · resyncs 0 · refused input 0", sizeText(f.start.Cols, f.start.Rows)} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q:\n%s", want, v)
 		}
