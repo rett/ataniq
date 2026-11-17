@@ -63,6 +63,8 @@ type cockpitState struct {
 	resizeSeq int
 	sized     bool
 	started   bool
+	// sel is the text selected with the mouse in the session pane.
+	sel selection
 }
 
 // resizeMsg applies a debounced window resize to the pane.
@@ -78,6 +80,7 @@ func (m *Model) onSize() tea.Cmd {
 	if !l.cockpit && m.focus == sessionFocus {
 		m.focus = consoleFocus
 	}
+	m.sel = selection{}
 	var cmds []tea.Cmd
 	if !m.started {
 		m.started = true
@@ -124,6 +127,7 @@ func (m *Model) onKey(v tea.KeyPressMsg) tea.Cmd {
 	if v.Code == zoomKey && withoutLocks(v.Mod) == 0 {
 		m.zoom = !m.zoom
 		m.overlay = ""
+		m.sel = selection{}
 		return m.syncPane(false)
 	}
 	if m.focus == sessionFocus {
@@ -140,6 +144,7 @@ func (m *Model) sessionKey(v tea.KeyPressMsg) tea.Cmd {
 		m.focus = consoleFocus
 		return nil
 	}
+	m.sel = selection{}
 	m.rep.pane.Key(uv.KeyPressEvent(v))
 	return nil
 }
@@ -259,6 +264,7 @@ func (m *Model) onPaste(text string) {
 		m.notice = "Paste not sent: it is longer than the console forwards."
 		return
 	}
+	m.sel = selection{}
 	m.rep.pane.Paste(stripPasteEnd(text))
 }
 
@@ -269,32 +275,6 @@ func stripPasteEnd(text string) string {
 		text = strings.ReplaceAll(text, pasteEnd, "")
 	}
 	return text
-}
-
-// onMouse passes a mouse event to the session pane while the session has the
-// focus. The pane drops what the session did not ask for.
-func (m *Model) onMouse(msg tea.MouseMsg) {
-	if m.focus != sessionFocus || m.rep.pane == nil {
-		return
-	}
-	l := m.layout()
-	if !l.cockpit {
-		return
-	}
-	var ev uv.MouseEvent
-	switch e := msg.(type) {
-	case tea.MouseClickMsg:
-		ev = uv.MouseClickEvent(e)
-	case tea.MouseReleaseMsg:
-		ev = uv.MouseReleaseEvent(e)
-	case tea.MouseWheelMsg:
-		ev = uv.MouseWheelEvent(e)
-	case tea.MouseMotionMsg:
-		ev = uv.MouseMotionEvent(e)
-	default:
-		return
-	}
-	m.rep.pane.Mouse(ev, l.inner)
 }
 
 // onModeReport learns that the outer terminal measures grapheme clusters,
