@@ -9,14 +9,17 @@
 //
 // The command gets exactly the argument vector, environment and working
 // folder in [Cmd]. Nothing is looked up in PATH, no environment variable is
-// inherited from the calling process, and no shell is involved. The package passes on no
-// descriptor of its own except 0, 1 and 2, and no descriptor that Go opened:
-// Go opens every file close-on-exec, so they close in the command. The
-// package does not close the others. A descriptor that the calling process
-// inherited or opened without close-on-exec (with a raw system call, or from
-// a parent that did not close it) stays open in the command, and the caller
-// must see to it that there is none. Standard input is /dev/null unless the
-// caller gives a reader.
+// inherited from the calling process, and no shell is involved. The package
+// passes on no descriptor of its own except 0, 1 and 2, and no descriptor
+// that Go opened: Go opens every file close-on-exec, so they close in the
+// command. The package does not close the others. A descriptor that the
+// calling process inherited or opened without close-on-exec (with a raw
+// system call, or from a parent that did not close it) stays open in the
+// command. A process that was started with inherited descriptors that are
+// not close-on-exec, for example sockets that a service manager passed on,
+// must close them or mark them close-on-exec before it calls [Run]. The
+// package cannot see them and does not check. Standard input is /dev/null
+// unless the caller gives a reader.
 //
 // The command runs in its own process group. When the time limit passes, the
 // context ends, standard output grows past its cap, or the watchdog returns an
@@ -33,7 +36,8 @@
 // their Read or Write blocks for ever, that goroutine cannot be stopped: it
 // is left behind, blocked in the caller's Read or Write, until the call
 // returns. Run does not wait for it, and the [Result] holds what was copied
-// so far.
+// so far. If the reader fails with an error other than io.EOF, the command
+// is stopped without being given EOF, and Run returns that error.
 //
 // The error says which bound stopped the command: [ErrTimeout],
 // [ErrOutputLimit], a [*WatchError], or the context's error. The [Result]
