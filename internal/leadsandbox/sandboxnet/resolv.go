@@ -241,7 +241,10 @@ func parse(content []byte) (parsed, error) {
 
 	for i, raw := range lines {
 		n := i + 1
-		line := strings.TrimSuffix(raw, "\r")
+		// A trailing carriage return is not stripped: the host resolver does
+		// not take it for a separator, so the line is rejected as holding a
+		// control byte, never accepted.
+		line := raw
 		if len(line) > MaxLineBytes {
 			p.rejected++
 			p.note("line %d dropped: longer than %d bytes", n, MaxLineBytes)
@@ -278,11 +281,10 @@ func parse(content []byte) (parsed, error) {
 			p.searchLine(n, "search", fields[1:])
 		case "domain":
 			// As on the host, domain and search are alternatives and the
-			// last well-formed one wins; domain takes one name.
-			if len(fields) != 2 {
-				p.rejected++
-				p.note("line %d dropped: a domain line takes exactly one name%s", n, p.searchKept())
-				continue
+			// last one wins; a domain line keeps its first word and the
+			// rest of the line is ignored.
+			if len(fields) > 2 {
+				fields = fields[:2]
 			}
 			p.searchLine(n, "domain", fields[1:])
 		case "options":
@@ -359,19 +361,11 @@ func (p *parsed) nameserver(n int, args []string) {
 	p.servers = append(p.servers, a)
 }
 
-// searchKept says, for a note about a dropped search or domain line, that an
-// earlier well-formed one is still in force.
-func (p *parsed) searchKept() string {
-	if len(p.search) == 0 {
-		return ""
-	}
-	return "; the earlier search or domain list is kept"
-}
-
 func (p *parsed) searchLine(n int, keyword string, args []string) {
 	if len(args) == 0 {
 		p.rejected++
-		p.note("line %d dropped: empty %s list%s", n, keyword, p.searchKept())
+		p.search = nil
+		p.note("line %d dropped: empty %s list; no search list is passed on", n, keyword)
 		return
 	}
 	var kept []string
@@ -379,7 +373,8 @@ func (p *parsed) searchLine(n int, keyword string, args []string) {
 	for _, d := range args {
 		if !validDomain(d) {
 			p.rejected++
-			p.note("line %d dropped: malformed search domain %s%s", n, quote(d), p.searchKept())
+			p.search = nil
+			p.note("line %d dropped: malformed search domain %s; no search list is passed on", n, quote(d))
 			return
 		}
 		if len(kept) >= MaxSearchDomains || size+len(d)+1 > MaxSearchBytes {
@@ -389,7 +384,9 @@ func (p *parsed) searchLine(n int, keyword string, args []string) {
 		kept = append(kept, d)
 		size += len(d) + 1
 	}
-	// As the resolver does, the last well-formed search or domain line wins.
+	// As the resolver does, the last search or domain line wins. A malformed
+	// one clears the list instead of leaving an earlier list the host no
+	// longer uses.
 	p.search = kept
 }
 

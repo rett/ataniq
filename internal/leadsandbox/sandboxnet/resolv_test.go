@@ -112,7 +112,7 @@ func TestStubUpstreamUnusable(t *testing.T) {
 }
 
 func TestPlainFile(t *testing.T) {
-	host := "# corp\n; other\n\ndomain ignored.example\nnameserver 192.0.2.7\r\nnameserver 192.0.2.8\nsearch corp.example. lab.example\noptions ndots:2 timeout:3\noptions rotate ndots:2\nsortlist 10.0.0.0\n"
+	host := "# corp\n; other\n\ndomain ignored.example\nnameserver 192.0.2.7\nnameserver 192.0.2.8\nsearch corp.example. lab.example\noptions ndots:2 timeout:3\noptions rotate ndots:2\nsortlist 10.0.0.0\n"
 	// An upstream file that exists is not used for a host file that is not the stub.
 	res, err := Derive(Input{HostContent: []byte(host), HostRealPath: "/etc/resolv.conf", UpstreamPresent: true, UpstreamContent: []byte(upstreamFile)})
 	if err != nil {
@@ -420,11 +420,15 @@ func TestDomainAndSearchAreAlternatives(t *testing.T) {
 		{"domain alone", "domain corp.example", "search corp.example\n", 0, ""},
 		{"domain after search", "search a.test b.test\ndomain c.test", "search c.test\n", 0, ""},
 		{"search after domain", "domain c.test\nsearch a.test b.test", "search a.test b.test\n", 0, ""},
-		{"bad search after good one", "search a.test\nsearch bad$", "search a.test\n", 1, "the earlier search or domain list is kept"},
-		{"bad domain after good search", "search a.test\ndomain bad$", "search a.test\n", 1, "the earlier search or domain list is kept"},
-		{"two names on a domain line", "domain a.test b.test", "", 1, "exactly one name"},
-		{"two names after a good line", "domain a.test\ndomain b.test c.test", "search a.test\n", 1, "the earlier search or domain list is kept"},
-		{"empty domain line", "domain", "", 1, "exactly one name"},
+		{"bad search after good one", "search a.test\nsearch bad$", "", 1, "no search list is passed on"},
+		{"bad domain after good search", "search a.test\ndomain bad$", "", 1, "no search list is passed on"},
+		{"empty search after good one", "search a.test\nsearch", "", 1, "empty search list"},
+		{"empty domain after good one", "search a.test\ndomain", "", 1, "empty domain list"},
+		{"good line after a bad one", "search bad$\nsearch a.test", "search a.test\n", 1, "no search list is passed on"},
+		{"domain keeps its first word", "domain a.test b.test", "search a.test\n", 0, ""},
+		{"domain after good line keeps its first word", "search z.test\ndomain b.test c.test", "search b.test\n", 0, ""},
+		{"bad first word of a domain line", "search a.test\ndomain bad$ b.test", "", 1, "malformed search domain"},
+		{"empty domain line", "domain", "", 1, "empty domain list"},
 		{"bad line first, none kept", "domain bad$", "", 1, "malformed search domain"},
 	} {
 		res, err := Derive(Input{HostContent: []byte(ns + tc.lines + "\n")})
@@ -442,8 +446,8 @@ func TestDomainAndSearchAreAlternatives(t *testing.T) {
 			notesContain(t, res, tc.note)
 		}
 	}
-	// A bad line with no earlier list does not claim one is kept.
-	res, _ := Derive(Input{HostContent: []byte(ns + "search bad$\n")})
+	// A bad line never leaves an earlier list in force.
+	res, _ := Derive(Input{HostContent: []byte(ns + "search a.test\nsearch bad$\n")})
 	for _, n := range res.Notes {
 		if strings.Contains(n, "is kept") {
 			t.Errorf("note %q", n)
@@ -615,4 +619,23 @@ func equalAddrs(a, b []netip.Addr) bool {
 		}
 	}
 	return true
+}
+
+// A trailing carriage return is not a separator for the host resolver, so a
+// line that carries one is rejected, not accepted with the CR stripped.
+func TestCarriageReturnLineRejected(t *testing.T) {
+	res, err := Derive(Input{HostContent: []byte("nameserver 192.0.2.7\r\nnameserver 192.0.2.8\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Nameservers) != 1 || res.Nameservers[0].String() != "192.0.2.8" {
+		t.Errorf("nameservers %v", res.Nameservers)
+	}
+	if res.Rejected != 1 {
+		t.Errorf("rejected %d", res.Rejected)
+	}
+	notesContain(t, res, "line 1 dropped: contains a control")
+
+	_, err = Derive(Input{HostContent: []byte("nameserver 192.0.2.7\r\n")})
+	mustContain(t, refusalReason(t, err), "no usable nameserver")
 }
