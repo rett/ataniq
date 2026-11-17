@@ -58,14 +58,15 @@ import (
 // coordinator started between the first listing and the lead's stop is thereby
 // stopped, or named in the result. This holds because once the lead has left
 // its live states (it is stopping, unknown or stopped) the registry admits no
-// new coordinator launch, and a Start of a coordinator that began earlier holds the
-// coordinator's lock until it returns, so that the second listing either sees
-// its intent or waits for it. A coordinator instance named by the first pass
-// is not stopped a second time, but a later instance of the same role found in
-// the second listing (the owner stopped the first and started the next in the
-// gap) is stopped, or named, in its place, and the result carries that
-// instance's error and not the stale one. The unit is bound to the lead's, so it is also stopped by the lead's stop,
-// but only the proof that Stop collects says that it is gone.
+// new coordinator launch, and a Start of a coordinator that began earlier holds
+// the coordinator's lock until it returns, so that the second listing either
+// sees its intent or waits for it. A coordinator instance named by the first
+// pass is not stopped a second time, but a later instance of the same role
+// found in the second listing (the owner stopped the first and started the next
+// in the gap) is stopped, or named, in its place, and the result carries that
+// instance's error and not the stale one. The unit is bound to the lead's, so
+// it is also stopped by the lead's stop, but only the proof that Stop collects
+// says that it is gone.
 //
 // Stop of a lead never returns nil while the second listing was not done. When
 // the lead is proven stopped the second listing runs on a context of its own
@@ -79,16 +80,15 @@ import (
 // own limit, and by the operation that holds a coordinator's lock when the
 // listing reaches it (a Start, a Reconcile, MarkStalled, ClearStalled or a Stop
 // of that coordinator, each under its own context). When the stop of the lead
-// returned an error, the second listing runs
-// on the caller's context, and a coordinator it could not stop for that
-// context makes the result an error that says the coordinators were not all
-// listed and stopped; the error of the lead's stop is part of the result
-// anyway, and a lead whose own stop failed before it left its live states may
-// still admit a coordinator, which the next Stop finds. A listing that fails
-// partway (the caller's context ended, or the registry failed) does not drop
-// the coordinators it had already named: the error holds the *CoordinatorsError
-// of those, for either listing. A context that has ended on entry returns its
-// error before anything is read or changed.
+// returned an error, the second listing runs on the caller's context, and a
+// coordinator it could not stop for that context makes the result an error that
+// says the coordinators were not all listed and stopped; the error of the
+// lead's stop is part of the result anyway, and a lead whose own stop failed
+// before it left its live states may still admit a coordinator, which the next
+// Stop finds. A listing that fails partway (the caller's context ended, or the
+// registry failed) does not drop the coordinators it had already named: the
+// error holds the *CoordinatorsError of those, for either listing. A context
+// that has ended on entry returns its error before anything is read or changed.
 //
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.

@@ -60,65 +60,64 @@
 // tell a refusal from a request that may still land, so nothing is assumed, the
 // intent stays pending and the coordinator is unknown (ErrLaunchUncertain),
 // until Reconcile or Stop proves the absence after the late-start window. A
-// lead is not started while a coordinator recorded under an earlier epoch of
-// it is not proven stopped (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
-// coordinators that is not proven stopped, one after the other, by the same
-// sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each recorded in
-// the registry, and then the lead itself. A coordinator that cannot be proven
-// stopped is shown unknown, or left as recorded when the manager or the
-// registry did not answer its stop, and is named in the error (a
-// *[CoordinatorsError]); the
-// lead is stopped all the same, and a later Start of the lead is refused until
-// the coordinator is stopped with proof or the owner decides. The coordinators
-// are listed once more after the lead's own stop, because one may have been
-// started in between (the lock of the lead does not serialise a Start of its
-// coordinator, which takes only its own); once the lead has left its live
-// states the registry admits no new one, so the second listing is complete,
-// and a coordinator found in it is stopped, or named, like the others (a
-// coordinator instance the first pass named is not stopped again, but a later
-// instance of the same role is). Stop of
-// a lead returns nil only when it did the second listing: after the lead's
-// proven stop the listing runs on a context of its own, which the caller's
-// cannot end, so a caller that gave up in the meantime still has a coordinator
-// of that gap named. When the lead's own stop failed (so that it may still be
-// live and a coordinator may still be admitted under it) the result is an
-// error in any case, and the listing is done on the caller's context if that
-// still runs. A listing that fails partway (the caller's context ended, or the
-// registry failed) still returns, in the error, the coordinators it had named. Stop of a
-// coordinator stops only that coordinator. Because the units are bound, a
-// coordinator may be stopping already when it is signalled; the manager's
-// not-loaded and invocation-changed answers lead to the proof as for a lead.
-// MarkStalled records that a coordinator has stopped making progress, an
-// observation that a detector outside this package supplies; the method is the
-// whole interface. ClearStalled returns the coordinator to its live state when
-// the same instance is still running (the unit inspected has the recorded
-// epoch, intent and invocation, and is running), and shows it unknown
-// otherwise. The live state is the one it was stalled from (ready or
-// degraded; starting, which only a launch can show, comes back as degraded),
-// as MarkStalled recorded it in the reason; this package shows ready only by
-// giving back what an observer had set. A stalled coordinator is never replaced
-// by Reconcile or by Start: it is stopped (Stop, with proof, which is what
+// lead is not started while a coordinator recorded under an earlier epoch of it
+// is not proven stopped (ErrCoordinatorNotStopped). Stop of a lead first stops
+// each of its coordinators that is not proven stopped, one after the other, by
+// the same sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each
+// recorded in the registry, and then the lead itself. A coordinator that cannot
+// be proven stopped is shown unknown, or left as recorded when the manager or
+// the registry did not answer its stop, and is named in the error (a
+// *[CoordinatorsError]); the lead is stopped all the same, and a later Start of
+// the lead is refused until the coordinator is stopped with proof or the owner
+// decides. The coordinators are listed once more after the lead's own stop,
+// because one may have been started in between (the lock of the lead does not
+// serialise a Start of its coordinator, which takes only its own); once the
+// lead has left its live states the registry admits no new one, so the second
+// listing is complete, and a coordinator found in it is stopped, or named, like
+// the others (a coordinator instance the first pass named is not stopped again,
+// but a later instance of the same role is). Stop of a lead returns nil only
+// when it did the second listing: after the lead's proven stop the listing runs
+// on a context of its own, which the caller's cannot end, so a caller that gave
+// up in the meantime still has a coordinator of that gap named. When the lead's
+// own stop failed (so that it may still be live and a coordinator may still be
+// admitted under it) the result is an error in any case, and the listing is
+// done on the caller's context if that still runs. A listing that fails partway
+// (the caller's context ended, or the registry failed) still returns, in the
+// error, the coordinators it had named. Stop of a coordinator stops only that
+// coordinator. Because the units are bound, a coordinator may be stopping
+// already when it is signalled; the manager's not-loaded and invocation-changed
+// answers lead to the proof as for a lead. MarkStalled records that a
+// coordinator has stopped making progress, an observation that a detector
+// outside this package supplies; the method is the whole interface.
+// ClearStalled returns the coordinator to its live state when the same instance
+// is still running (the unit inspected has the recorded epoch, intent and
+// invocation, and is running), and shows it unknown otherwise. The live state
+// is the one it was stalled from (ready or degraded; starting, which only a
+// launch can show, comes back as degraded), as MarkStalled recorded it in the
+// reason; this package shows ready only by giving back what an observer had
+// set. A stalled coordinator is never replaced by Reconcile or by Start: it is
+// stopped (Stop, with proof, which is what
 // [leadregistry.Registry.CoordinatorStopped] asks for the instance) and then
 // started again as instance n+1. After a daemon restart Reconcile keeps a
 // stalled coordinator stalled while its unit is live and ours.
 //
 // Reconcile treats a coordinator as it treats a lead, and also against its
 // parent, which it settles first in the same call. A coordinator whose parent's
-// epoch is no longer the one it recorded, or whose parent is not live (a
-// parent shown starting whose own launch failed or was given up is not live,
-// as for a start), has ended with its parent: with its unit proven absent it is ended (reason
-// parent-epoch-ended, with the proof); with the unit still loaded it is
+// epoch is no longer the one it recorded, or whose parent is not live (a parent
+// shown starting whose own launch failed or was given up is not live, as for a
+// start), has ended with its parent: with its unit proven absent it is ended
+// (reason parent-epoch-ended, with the proof); with the unit still loaded it is
 // reported orphan-coordinator and shown unknown, because Reconcile never
 // signals, and an explicit Stop ends it. A parent that cannot be read from the
 // registry (an error, not a parent that is not defined) is "cannot tell", not
 // "live": the coordinator is reported unchanged (reason parent-unreadable),
-// neither adopted nor ended, and Reconcile returns the registry's error.
-// After a reboot it is stopped, as a
-// lead is, and nothing is started. The lines of the report carry the kind of
-// the role and, for a coordinator, its feature and parent.
+// neither adopted nor ended, and Reconcile returns the registry's error. After
+// a reboot it is stopped, as a lead is, and nothing is started. The lines of
+// the report carry the kind of the role and, for a coordinator, its feature and
+// parent.
 //
-// A coordinator has no seat, no approval and is no
-// handoff target: nothing here gives it authority.
+// A coordinator has no seat, no approval and is no handoff target: nothing here
+// gives it authority.
 //
 // # What it keeps in memory
 //
