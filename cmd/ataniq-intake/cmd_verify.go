@@ -88,6 +88,9 @@ func (e *env) cmdVerify(args []string) int {
 	if err := owned("work", work, c.state); err != nil {
 		return e.fail("verify", err)
 	}
+	if err := separate("records", records, "work", work); err != nil {
+		return e.fail("verify", err)
+	}
 	planner, err := e.planner(sandbox, c.state)
 	if err != nil {
 		return e.fail("verify", err)

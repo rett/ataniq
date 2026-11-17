@@ -44,7 +44,9 @@ template confines anything. Without a usable template it refuses and runs
 nothing. The template must not be in the state root.
 
 Folders: --records and --work must be absolute, must exist, and must not be
-the state root or inside it. --state must be a real folder that you own.
+the state root or inside it. verify also refuses --records and --work when they
+are the same folder or one is inside the other, with symlinks resolved. --state
+must be a real folder that you own.
 
 Exit status: 0 success; 1 a refusal you can act on (sign-off incomplete, not
 verified, moved, a limit, a hostile tree, busy, no usable sandbox); 2 usage;
