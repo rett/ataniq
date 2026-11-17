@@ -83,17 +83,69 @@ func TestFakeServeFails(t *testing.T) {
 	for name, g := range map[string]*Fake{
 		"zero":         {},
 		"relative":     {UploadPack: []string{"git-upload-pack"}},
-		"bad tree":     {UploadPack: []string{"/x"}},
 		"bad measure":  {UploadPack: []string{"/x"}, Measure: sandboxplan.Command{Argv: []string{"du"}}},
 		"bad measure2": {UploadPack: []string{"/x"}, Measure: sandboxplan.Command{Argv: []string{"/du"}, Env: []string{"X"}}},
 	} {
-		r := req
-		if name == "bad tree" {
-			r.Tree = "t"
-		}
-		if _, err := g.Serve(r); err == nil {
+		if _, err := g.Serve(req); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestFakeRefusesBadRequests(t *testing.T) {
+	f := &Fake{UploadPack: []string{"/x"}, VerifyPrefix: []string{"/y"}}
+	serveOK := sandboxplan.ServeRequest{Role: "lead", Project: "proj", Tree: "/t"}
+	if _, err := f.Serve(serveOK); err != nil {
+		t.Fatal(err)
+	}
+	for name, mod := range map[string]func(*sandboxplan.ServeRequest){
+		"empty role":    func(r *sandboxplan.ServeRequest) { r.Role = "" },
+		"upper role":    func(r *sandboxplan.ServeRequest) { r.Role = "Lead" },
+		"empty project": func(r *sandboxplan.ServeRequest) { r.Project = "" },
+		"relative tree": func(r *sandboxplan.ServeRequest) { r.Tree = "t" },
+		"root tree":     func(r *sandboxplan.ServeRequest) { r.Tree = "/" },
+		"brace tree":    func(r *sandboxplan.ServeRequest) { r.Tree = "/t/{x}" },
+		"dotdot tree":   func(r *sandboxplan.ServeRequest) { r.Tree = "/t/../u" },
+	} {
+		r := serveOK
+		mod(&r)
+		if _, err := f.Serve(r); err == nil {
+			t.Errorf("serve %s: accepted", name)
+		}
+	}
+	verifyOK := sandboxplan.VerifyRequest{Project: "proj", Mirror: "/m", Scratch: "/s", Home: "/h"}
+	if _, err := f.Verify(verifyOK); err != nil {
+		t.Fatal(err)
+	}
+	for name, mod := range map[string]func(*sandboxplan.VerifyRequest){
+		"empty project":   func(r *sandboxplan.VerifyRequest) { r.Project = "" },
+		"relative mirror": func(r *sandboxplan.VerifyRequest) { r.Mirror = "m" },
+		"root mirror":     func(r *sandboxplan.VerifyRequest) { r.Mirror = "/" },
+		"same folder":     func(r *sandboxplan.VerifyRequest) { r.Home = r.Scratch },
+		"home in scratch": func(r *sandboxplan.VerifyRequest) { r.Home = r.Scratch + "/h" },
+		"brace scratch":   func(r *sandboxplan.VerifyRequest) { r.Scratch = "/s/{x}" },
+	} {
+		r := verifyOK
+		mod(&r)
+		if _, err := f.Verify(r); err == nil {
+			t.Errorf("verify %s: accepted", name)
+		}
+	}
+	// An error the test set comes first.
+	boom := errors.New("boom")
+	g := &Fake{ServeErr: boom, VerifyErr: boom}
+	if _, err := g.Serve(sandboxplan.ServeRequest{}); !errors.Is(err, boom) {
+		t.Errorf("serve with ServeErr: %v", err)
+	}
+	if _, err := g.Verify(sandboxplan.VerifyRequest{}); !errors.Is(err, boom) {
+		t.Errorf("verify with VerifyErr: %v", err)
+	}
+	// Failed calls are recorded too.
+	if got := len(f.ServeRequests()); got != 8 {
+		t.Errorf("serve requests recorded: %d", got)
+	}
+	if got := len(f.VerifyRequests()); got != 7 {
+		t.Errorf("verify requests recorded: %d", got)
 	}
 }
 

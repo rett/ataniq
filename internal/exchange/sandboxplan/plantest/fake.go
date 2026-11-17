@@ -16,9 +16,11 @@ import (
 // call. It is safe for concurrent calls. The zero value has no plans: each
 // call that needs a field the test did not set fails.
 //
-// Each call records its request, also when it fails. The plans are checked
-// with Validate, so a test cannot return a plan that the real code would
-// refuse.
+// Each call records its request, also when it fails. The request is checked
+// with its Validate method, and the plan with the plan's Validate, so a test
+// cannot get a plan for a request or return a plan that the real code would
+// refuse. A call that has ServeErr or VerifyErr set returns that error before
+// the request is checked.
 type Fake struct {
 	// ServeErr, when set, is returned by every Serve call.
 	ServeErr error
@@ -61,6 +63,9 @@ func (f *Fake) Serve(r sandboxplan.ServeRequest) (sandboxplan.ServePlan, error) 
 	if f.ServeErr != nil {
 		return sandboxplan.ServePlan{}, f.ServeErr
 	}
+	if err := r.Validate(); err != nil {
+		return sandboxplan.ServePlan{}, fmt.Errorf("plantest: serve request: %w", err)
+	}
 	p := sandboxplan.ServePlan{
 		UploadPack: append([]string(nil), f.UploadPack...),
 		Repository: f.Repository,
@@ -88,6 +93,9 @@ func (f *Fake) Verify(r sandboxplan.VerifyRequest) (sandboxplan.VerifyPlan, erro
 	f.mu.Unlock()
 	if f.VerifyErr != nil {
 		return sandboxplan.VerifyPlan{}, f.VerifyErr
+	}
+	if err := r.Validate(); err != nil {
+		return sandboxplan.VerifyPlan{}, fmt.Errorf("plantest: verify request: %w", err)
 	}
 	p := sandboxplan.VerifyPlan{
 		Prefix:  append([]string(nil), f.VerifyPrefix...),
