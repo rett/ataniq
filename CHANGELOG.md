@@ -36,9 +36,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   console asks the outer terminal for mode 2027 at start, also over SSH, and
   asks for mouse reporting and focus events only in session focus and only
   when the session asked. `--recording NAME` picks a fixture recording and
-  `--linger DURATION` (default 30s) keeps the session open after its last
-  output so the keys can be tried. Still unqualified: use over SSH, a live
-  session and any live control.
+  `--linger DURATION` (default 30s) keeps the session open after its end
+  so the keys can be tried. Still unqualified: use over SSH, a live session and
+  any live control.
+- Add the fixture recording `mouse-held.jsonl` (`ataniq-console --demo
+  --recording mouse-held.jsonl`). It sets mouse reporting and focus events and
+  never resets them, so the linger time keeps them on while a person enters
+  session focus and tries the mouse by hand; `modes.jsonl` resets them within
+  a second.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
@@ -124,6 +129,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   next recorded event or of the end of the linger time, so a cockpit with
   nothing to show is idle. In a very large window that used to keep the
   process busy and make keys wait behind redraws.
+- `ataniq-console --help` now shows the default return key as
+  `(default ctrl+\)`. It showed `(default "ctrl+\\")`, which the flag refuses
+  when copied.
+- The fixture console's key bar in console focus no longer loses `? help` and
+  `q quit` at the narrowest cockpit. It was 114 cells long and was cut with an
+  ellipsis in a window of 100 to 113 columns. It is now shorter and drops the
+  F12 zoom entry, which the focus bar and the help still show.
 
 ## [0.0.8] - 2026-11-15
 

@@ -280,6 +280,18 @@ func TestFixturesCoverWhatTheyAreFor(t *testing.T) {
 		t.Error("modes: no chunk ends inside a sequence")
 	}
 
+	// The held mouse modes: set once and never reset, so the linger time keeps
+	// them on. This is the recording that lets a person try the mouse by hand.
+	rec = fx["mouse-held.jsonl"]
+	for _, m := range []string{"1000", "1003", "1006", "1004"} {
+		if count(rec, "\x1b[?"+m+"h") != 1 || count(rec, "\x1b[?"+m+"l") != 0 {
+			t.Errorf("mouse-held: ?%s is not set once and never reset", m)
+		}
+	}
+	if last := rec.Events[len(rec.Events)-1]; last.Kind != sessionreplay.KindEnd || last.At < 300*time.Millisecond {
+		t.Errorf("mouse-held: the end record is %+v", last)
+	}
+
 	// Synchronized frames: balanced, chunk boundaries between pieces of frame
 	// content in several frames (the cut inside the closing sequence does not
 	// count), the mode sequence itself cut, whole several-frame chunks, and a

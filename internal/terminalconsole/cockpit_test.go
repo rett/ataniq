@@ -215,6 +215,24 @@ func TestThreePanesAt140x45(t *testing.T) {
 	}
 }
 
+// TestConsoleKeyBarFitsAtTheMinimumWidth checks that the way out and the help
+// are on screen at the narrowest cockpit, not cut with an ellipsis.
+func TestConsoleKeyBarFitsAtTheMinimumWidth(t *testing.T) {
+	for _, sz := range [][2]int{{MinCols, MinRows}, {MinCols + 1, MinRows}, {140, 45}} {
+		r := newRig(t, sz[0], sz[1], Options{})
+		rows := r.rows()
+		bar := rows[len(rows)-1]
+		for _, want := range []string{"? help", "q quit"} {
+			if !strings.Contains(bar, want) {
+				t.Fatalf("%v: key bar %q lacks %q", sz, bar, want)
+			}
+		}
+		if strings.Contains(bar, "…") {
+			t.Fatalf("%v: key bar is cut: %q", sz, bar)
+		}
+	}
+}
+
 // TestLayoutTiles checks, over many sizes, that the blocks do not overlap and
 // fit the window, and that the fixture label is always on screen.
 func TestLayoutTiles(t *testing.T) {
@@ -684,10 +702,20 @@ func TestRestartReplaysTheRecording(t *testing.T) {
 	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl"})
 	r.play(900 * time.Millisecond)
 	old := r.m.rep.gen
+	// In the program the new replay starts only if r schedules its first tick;
+	// the rig's later ticks are sent by hand and would hide a missing one.
+	r.sched = nil
 	r.key(tea.KeyPressMsg{Code: 'r', Text: "r"})
 	if r.m.rep.gen == old || strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 		t.Fatal("not restarted")
 	}
+	if len(r.sched) != 1 || r.sched[0].d != tickInterval {
+		t.Fatalf("r scheduled %+v, want one tick after %v", r.sched, tickInterval)
+	}
+	if tk, ok := r.sched[0].fn(r.t0).(tickMsg); !ok || tk.gen != r.m.rep.gen {
+		t.Fatalf("r scheduled %+v, want a tick of the new replay (generation %d)", tk, r.m.rep.gen)
+	}
+	r.sched = nil
 	// A tick of the old replay is ignored.
 	r.m.Update(tickMsg{at: r.t0.Add(5 * time.Second), gen: old})
 	if strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
@@ -993,6 +1021,32 @@ func TestStripPasteEnd(t *testing.T) {
 		if got := stripPasteEnd(in); got != want {
 			t.Errorf("%q: got %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestMouseHeldRecordingKeepsTheModesOnForTheLinger checks the recording an
+// attended check uses: the modes are still on seconds after the session set
+// them, so session focus can be entered by hand and asks for the mouse.
+func TestMouseHeldRecordingKeepsTheModesOnForTheLinger(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "mouse-held.jsonl", Linger: time.Minute})
+	r.play(10 * time.Second)
+	if m := r.m.rep.pane.Modes(); m.Mouse != uv.MouseModeMotion || m.MouseEncoding != uv.MouseEncodingSGR || !m.FocusEvents {
+		t.Fatalf("%+v", m)
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+		t.Fatalf("console focus asks for %v %v", v.MouseMode, v.ReportFocus)
+	}
+	r.focusSession()
+	if v := r.m.View(); v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus {
+		t.Fatalf("session focus asks for %v %v", v.MouseMode, v.ReportFocus)
+	}
+	// When the linger time is over the stream ends and nothing is asked.
+	r.play(2 * time.Minute)
+	if !r.m.sessionEnded() {
+		t.Fatal("the session did not end")
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+		t.Fatalf("an ended session asks for %v %v", v.MouseMode, v.ReportFocus)
 	}
 }
 

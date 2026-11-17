@@ -9,6 +9,13 @@ module with this directory, so Bubble Tea, ultraviolet and the patched
 The upstream `sixel/.gitattributes` file, which names Git LFS filters for
 fixtures that are not part of this copy, is not kept.
 
+`fixtures/UTF-8-demo.txt` and `fixtures/demo.vte` are test inputs that the
+upstream module ships and its parser tests read (`parser_test.go`). They are
+kept unchanged and are not linked into any binary. They are not Charmbracelet's
+work: the header of `UTF-8-demo.txt` names its author, Markus Kuhn, and
+`demo.vte` is a terminal test stream. The module's MIT licence is kept as
+upstream gave it, and this notice makes no licence claim for these two files.
+
 Patches, applied in this order to the files of the module as released:
 
 1. `ansi: do not end string data on a 0x9C byte inside a UTF-8 character`

@@ -341,7 +341,7 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		p.text(0, l.keys.Min.Y, l.keys.Dx(), m.notice, p.style(lnWarn))
 		return
 	}
-	s := "Tab pane · j/k move · Enter open or focus · a full attach · Ctrl+K actions · r replay · F12 zoom · ? help · q quit"
+	s := "Tab pane · j/k move · Enter focus · a attach · Ctrl+K actions · r replay · ? help · q quit"
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
 	}
