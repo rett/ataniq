@@ -36,11 +36,18 @@
 // drained and dropped, so the command never blocks on it; that is not an
 // error, and [Result.StderrCut] says it happened.
 //
+// A command can end with status 0 and Run can still return [ErrPipeHeld]: a
+// process outside the group held a pipe, or Cmd.Stdout did not take the
+// output, past the wait. The output may then be incomplete. Callers that
+// budget time should count Cmd.Timeout plus two seconds.
+//
 // # What it does not do
 //
 // The package is not a sandbox. It does not limit memory, processes, files,
 // the network or what the command can read or write, and it cannot stop a
-// process that left the group (for example with setsid). It does not parse
+// process that left the group (for example with setsid). It enters the working
+// folder by path and follows symlinks, so a folder that untrusted code can
+// write must not be passed as [Cmd.Dir]. It does not parse
 // output, retry, or keep a log. Code for systems other than Linux is a stub
 // that returns [ErrUnsupported].
 package boundedexec

@@ -32,6 +32,11 @@ type Cmd struct {
 	// name. Nothing is inherited from the calling process; nil means empty.
 	Env []string
 	// Dir is the working folder. Empty means "/". Otherwise it is absolute.
+	// The command's process enters it by path (chdir), which follows
+	// symlinks in every component, and the package does not check any of
+	// them. The caller must not pass a folder that a lead or a sandbox can
+	// write, or whose parents it can write: it could swap a component for a
+	// symlink and send the command elsewhere.
 	Dir string
 	// Stdin is the standard input. Nil means no input (/dev/null). An
 	// *os.File is handed to the command as it is. Any other reader is copied
