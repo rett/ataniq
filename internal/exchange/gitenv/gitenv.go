@@ -282,10 +282,10 @@ func refusedOption(args []string) string {
 //     from a repository's config, and an empty value would make
 //     git-upload-pack run an empty command. The tests show a hook in the
 //     source repository's config is not run.
-//   - The settings that name a program (core.sshCommand, gpg.program) take
-//     "false", which exits non-zero, so a use fails instead of running
-//     something. core.askPass, core.pager and core.editor take values that
-//     start no program.
+//   - The settings that name a program (core.sshCommand, gpg.program,
+//     gpg.x509.program, gpg.ssh.program) take "false", which exits
+//     non-zero, so a use fails instead of running something. core.askPass,
+//     core.pager and core.editor take values that start no program.
 //
 // "url.<base>.insteadOf" and similar come only from configuration files, and
 // none is read apart from the repository's own.
@@ -328,5 +328,8 @@ func settings(protocols []string) []string {
 		"mailmap.blob=",
 		"mailmap.file=",
 		"gpg.program=false",
+		// The signature's own format picks the program, not gpg.format.
+		"gpg.x509.program=false",
+		"gpg.ssh.program=false",
 	)
 }

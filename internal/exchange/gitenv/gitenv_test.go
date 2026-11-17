@@ -193,6 +193,8 @@ var goldenSettings = []string{
 	"mailmap.blob=",
 	"mailmap.file=",
 	"gpg.program=false",
+	"gpg.x509.program=false",
+	"gpg.ssh.program=false",
 }
 
 // TestSettingsAreExactlyTheDocumentedSet is the golden list of the -c
