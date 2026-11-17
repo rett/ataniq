@@ -3,11 +3,13 @@ package vt
 import (
 	"image/color"
 	"io"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/screen"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/parser"
+	"github.com/charmbracelet/x/exp/ordered"
 )
 
 // Logger represents a logger interface.
@@ -45,9 +47,19 @@ type Emulator struct {
 	// runes, so the segmenter can read the buffer without a conversion on
 	// every character.
 	grapheme []byte
+	// capped is set when a rune was dropped from the last cluster of the
+	// buffer because the cluster was full. The cluster does not grow again,
+	// so that a cell keeps a prefix of what was sent. The buffer is then one
+	// cluster. It is cleared when the buffer is drawn or reset.
+	capped bool
+	// scratch holds the cluster and a rune when they are tested for joining.
+	scratch [MaxClusterBytes + utf8.UTFMax]byte
 	// The last cluster a Write drew when it ended. The next Write may still
 	// extend it, because a cluster can be split across writes anywhere.
 	open openCluster
+
+	// counters counts the times a cap of limits.go was hit.
+	counters Counters
 
 	// The ANSI parser to use.
 	parser *ansi.Parser
@@ -92,7 +104,8 @@ func NewEmulator(w, h int) *Emulator {
 	t.scrs[1].cb = &t.cb
 	t.parser = ansi.NewParser()
 	t.parser.SetParamsSize(parser.MaxParamsSize)
-	t.parser.SetDataSize(1024 * 1024 * 4) // 4MB data buffer
+	t.parser.SetDataSize(MaxStringBytes)
+	t.grapheme = make([]byte, 0, MaxClusterBytes+utf8.UTFMax)
 	t.parser.SetHandler(ansi.Handler{
 		Print:     t.handlePrint,
 		Execute:   t.handleControl,
@@ -136,6 +149,7 @@ func (e *Emulator) Touched() []*uv.LineData {
 
 // String returns a string representation of the underlying screen buffer.
 func (e *Emulator) String() string {
+	e.scr.flushAll()
 	s := e.scr.buf.String()
 	return uv.TrimSpace(s)
 }
@@ -143,6 +157,7 @@ func (e *Emulator) String() string {
 // Render renders a snapshot of the terminal screen as a string with styles and
 // links encoded as ANSI escape codes.
 func (e *Emulator) Render() string {
+	e.scr.flushAll()
 	return e.scr.buf.Render()
 }
 
@@ -260,6 +275,15 @@ func (e *Emulator) Resize(width int, height int) {
 	e.tabstops = uv.DefaultTabStops(width)
 
 	e.setCursor(x, y)
+	// The cursor of the screen that is not active, and the saved cursors of
+	// both, were not moved: one that was outside the new size made a later
+	// tab stop or restore index past the buffer.
+	for i := range e.scrs {
+		for _, c := range []*Cursor{&e.scrs[i].cur, &e.scrs[i].saved} {
+			c.X = ordered.Clamp(c.X, 0, width-1)
+			c.Y = ordered.Clamp(c.Y, 0, height-1)
+		}
+	}
 
 	if e.isModeSet(ansi.ModeInBandResize) {
 		_, _ = io.WriteString(e.pw, ansi.InBandResize(e.Height(), e.Width(), 0, 0))
@@ -290,6 +314,9 @@ func (e *Emulator) Write(p []byte) (n int, err error) {
 	if e.closed {
 		return 0, io.ErrClosedPipe
 	}
+	// Lines that a sequence blanked are written by the time Write returns, so
+	// that a reader never finds one that is not (see blank.go).
+	defer e.flushScreens()
 
 	for i := range p {
 		e.parser.Advance(p[i])
@@ -492,7 +519,8 @@ func (e *Emulator) ScrollbackCellAt(x, y int) *uv.Cell {
 }
 
 // SetScrollbackSize sets the maximum number of lines in the main screen's
-// scrollback buffer.
+// scrollback buffer. Zero keeps none: lines that scroll off the top are lost,
+// and the lines already held are released.
 func (e *Emulator) SetScrollbackSize(maxLines int) {
 	e.scrs[0].SetScrollbackSize(maxLines)
 }
