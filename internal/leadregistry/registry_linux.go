@@ -459,15 +459,49 @@ type StateChange struct {
 	Proof string
 }
 
-// SetState sets the shown state of a role for an epoch. It is refused with
-// ErrStaleEpoch unless the epoch is the current one, and with ErrProofRequired
-// for stopped or ended without a proof text. unknown is accepted for the
-// current epoch with or without a proof.
+// SetState sets the shown state of a role for an epoch. The transition table
+// in the package documentation says what is admitted. It is refused with
+// ErrStaleEpoch unless the epoch is the current one, with ErrProofRequired
+// for stopped or ended without a proof text, and with ErrStateTransition for
+// a change the table refuses: desired from any state but desired, stopped or
+// ended; ready, degraded or stopping from unknown; stopped or ended with
+// owner-decision evidence from unknown (use ResolveUnknown); and, as
+// ErrOutcomePending, stopped or ended while the launch intent is pending.
+// unknown is accepted for the current epoch from every state.
 func (r *Registry) SetState(role leadrole.Role, c StateChange) (Entry, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.mutate(kindState, role, &statePayload{
 		Epoch: c.Epoch, State: c.State, Evidence: c.Evidence, Reason: c.Reason, Proof: c.Proof,
+	})
+}
+
+// OwnerDecision is an owner decision that resolves an unknown state.
+type OwnerDecision struct {
+	// Epoch must be the role's current epoch.
+	Epoch uint64
+	// State is the state the owner decided on: stopped or ended.
+	State State
+	// Reason is the machine code and detail.
+	Reason Reason
+	// Decision is the owner's decision text, required, non-empty, journaled.
+	Decision string
+}
+
+// ResolveUnknown records an owner decision that resolves the shown state
+// unknown. It is the only way besides SetState with proof out of unknown. It
+// moves the role to stopped or ended only, with the evidence kind
+// owner-decision, and stores the decision text as the proof of the shown
+// state. It is journaled as its own record kind, owner-decision. It is
+// refused with ErrDecisionRequired for an empty decision text, ErrInvalid
+// unless the state is stopped or ended, ErrStaleEpoch unless the epoch is the
+// current one, and ErrStateTransition when the shown state is not unknown or,
+// as ErrOutcomePending, when the launch intent is pending.
+func (r *Registry) ResolveUnknown(role leadrole.Role, d OwnerDecision) (Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mutate(kindOwnerDecision, role, &decisionPayload{
+		Epoch: d.Epoch, State: d.State, Reason: d.Reason, Decision: d.Decision,
 	})
 }
 

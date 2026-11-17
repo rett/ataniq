@@ -323,10 +323,16 @@ func TestBeginLaunchRefusals(t *testing.T) {
 	}
 	// With an intent pending: refused, whatever the state is.
 	refused(ErrLaunchPending)
-	for _, st := range []State{StateReady, StateUnknown, StateDesired} {
+	for _, st := range []State{StateReady, StateDegraded, StateStopping} {
 		ok(r.SetState(role, setState(st, 1)))
 		refused(ErrLaunchPending)
 	}
+	// desired cannot be set from a live state, so it cannot launder the
+	// pending intent either.
+	if _, err := r.SetState(role, setState(StateDesired, 1)); !errors.Is(err, ErrStateTransition) {
+		t.Fatalf("desired from stopping: %v", err)
+	}
+	refused(ErrLaunchPending)
 	ok(r.RecordOutcome(role, in.ID, 1, OutcomeLaunched, UnitEvidence{InvocationID: "i"}))
 	// No intent pending: refused from every live state and from unknown, and
 	// from starting.
@@ -354,6 +360,7 @@ func TestBeginLaunchRefusals(t *testing.T) {
 		t.Fatalf("launch from ended: %+v %v", in3, err)
 	}
 	ok(r.RecordOutcome(role, in3.ID, 3, OutcomeAbandoned, UnitEvidence{}))
+	ok(r.SetState(role, StateChange{Epoch: 3, State: StateStopped, Evidence: EvidenceObservation, Reason: Reason{Code: "unit-gone"}, Proof: "unit not loaded"}))
 	ok(r.SetState(role, setState(StateDesired, 3)))
 	in4, err := r.BeginLaunch(role)
 	if err != nil || in4.Epoch != 4 {
@@ -369,6 +376,20 @@ func TestBeginLaunchRefusals(t *testing.T) {
 	ok(r.Define(tm, ManagerAtaniq, goodProfile()))
 	if _, err := r.BeginLaunch(tm); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBeginLaunchRefusedPendingFromUnknown(t *testing.T) {
+	ok := okf(t)
+	r := openReg(t, regDir(t))
+	role := lead(t, "proj")
+	ok(r.Define(role, ManagerAtaniq, goodProfile()))
+	if _, err := r.BeginLaunch(role); err != nil {
+		t.Fatal(err)
+	}
+	ok(r.SetState(role, setState(StateUnknown, 1)))
+	if _, err := r.BeginLaunch(role); !errors.Is(err, ErrLaunchPending) {
+		t.Fatalf("BeginLaunch with a pending intent from unknown: %v", err)
 	}
 }
 

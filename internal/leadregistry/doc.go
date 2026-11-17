@@ -11,6 +11,34 @@
 // an append that never returned: Open cuts it off and reports it. Any other
 // damage makes Open fail with ErrCorrupt and nothing is repaired.
 //
+// The shown state changes by these rules only; a record that breaks them is
+// refused when written and makes Open fail with ErrCorrupt when it is found in
+// a journal. SetState takes one state of the first column to one of the
+// others. Y is admitted. P is admitted with a non-empty proof text and while
+// the launch intent is not pending; with a pending intent it is refused with
+// ErrOutcomePending, so the caller records the outcome first (failed,
+// abandoned, launched or adopted) and a stopped or ended with proof after
+// launched or adopted is fine. N is refused with ErrStateTransition.
+//
+//	from \ to   desired ready degraded stopping stopped ended unknown
+//	desired        Y      Y      Y        Y        P       P     Y
+//	starting       N      Y      Y        Y        P       P     Y
+//	ready          N      Y      Y        Y        P       P     Y
+//	degraded       N      Y      Y        Y        P       P     Y
+//	stopping       N      Y      Y        Y        P       P     Y
+//	stopped        Y      Y      Y        Y        P       P     Y
+//	ended          Y      Y      Y        Y        P       P     Y
+//	unknown        N      N      N        N        P       P     Y
+//
+// starting is never set by SetState; BeginLaunch sets it. So desired is
+// accepted only from desired, stopped or ended and cannot make a live or
+// unknown role launchable, and from unknown the only ways out are stopped or
+// ended with proof. An owner decision that resolves unknown is a separate
+// operation, ResolveUnknown, journaled as its own record kind and shown with
+// the evidence kind owner-decision and a non-empty decision text; it moves to
+// stopped or ended only, from unknown only, with the same pending-intent rule.
+// SetState with owner-decision evidence does not leave unknown.
+//
 // What this package does not prove. It never calls systemd and never looks at
 // a process, a control group or a lock: the caller supplies the unit evidence
 // and the proof texts and they are stored as given. The SHA-256 chain finds
