@@ -161,6 +161,24 @@ func TestSelectionTrimsTrailingBlanks(t *testing.T) {
 	wantCopy(t, r.dragPane(0, 0, cols-1, 2), "a  b\n\n  c")
 }
 
+// TestBlankSelectionCopiesNothing checks that a selection of blanks, on one
+// row or across rows, copies nothing, so the clipboard keeps what it held,
+// and that it is still shown.
+func TestBlankSelectionCopiesNothing(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	if msg := r.dragPane(20, 0, 40, 0); msg != nil {
+		t.Fatalf("blanks on one row copied %#v", msg)
+	}
+	if msg := r.dragPane(20, 4, 10, 7); msg != nil {
+		t.Fatalf("blank rows copied %#v", msg)
+	}
+	if !r.m.sel.shown() {
+		t.Fatal("a blank selection is not shown")
+	}
+	// Blanks before text on the next row are copied with it.
+	wantCopy(t, r.dragPane(20, 1, 4, 2), "\nthird")
+}
+
 func TestClickWithoutDragCopiesNothingAndClears(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, selText)
 	wantCopy(t, r.dragPane(0, 0, 4, 0), "hello")

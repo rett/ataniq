@@ -149,7 +149,8 @@ terminal that does not accept OSC 52 writes, or has them turned off, copies
 nothing, and the console cannot tell.
 
 A press outside the session terminal starts no selection, a click without a
-drag copies nothing, and the wheel does nothing. A press anywhere clears the
+drag copies nothing, a selection of blanks alone copies nothing and leaves the
+clipboard as it was, and the wheel does nothing. A press anywhere clears the
 selection. So do a key or a paste sent to the session, a window resize, F12,
 `r`, and output that changes the selected text, such as the session writing
 over it, scrolling or clearing the screen. Output elsewhere on the screen

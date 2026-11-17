@@ -1,6 +1,8 @@
 package terminalconsole
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -160,8 +162,9 @@ func (m *Model) extend(p uv.Position) {
 }
 
 // copySelection reads the selected text and copies it to the outer terminal's
-// clipboard with OSC 52. Empty text is not copied, and text longer than
-// maxCopy is not copied at all; a notice says so until the next press.
+// clipboard with OSC 52. Text of blanks alone, on one row or several, is not
+// copied, so the clipboard keeps what it held. Text longer than maxCopy is
+// not copied at all; a notice says so until the next press.
 func (m *Model) copySelection() tea.Cmd {
 	from, to := m.sel.span()
 	text, ok := m.rep.pane.Text(from, to, maxCopy)
@@ -170,7 +173,7 @@ func (m *Model) copySelection() tea.Cmd {
 		return nil
 	}
 	m.sel.text = text
-	if text == "" {
+	if strings.Trim(text, "\n") == "" {
 		return nil
 	}
 	return tea.Raw(ansi.SetSystemClipboard(text))
