@@ -225,11 +225,13 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 // The client applies it to the response envelope and to the error body, which
 // decide what a response means. It does not apply it to the keys inside a
 // result: those are matched by encoding/json, so a result key spelled in
-// another case is read as the key it resembles. That is acceptable because a
-// result is read-only data that the client shows and acts on in no way, and
-// the server that could send such a spelling is one the client already trusts
-// by the path it dialled; a wrongly cased key can only change what is shown,
-// not what the response means.
+// another case is read as the key it resembles, and when a key is repeated in
+// two spellings the last one wins ({"state":"stopped","STATE":"ready"} reads
+// as ready). The server the client dials is trusted by the path it dialled
+// and today's server sends no such keys, so a result is safe to show. Code
+// that bases a decision on a member of a result (an identity compared whole, a
+// coordinator state of stopped or ended taken as proof) must first check that
+// member's keys with exactKeys, or decode the result strictly.
 func exactKeys(raw []byte, known ...string) bool {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {

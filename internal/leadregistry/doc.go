@@ -49,7 +49,8 @@
 // and fable when empty); its other profile fields are optional. BeginLaunch
 // admits a coordinator only when, in addition to the gate of every role, the
 // parent lead (the lead of its project) is defined, run by ataniq and shown
-// starting, ready or degraded; the intent then records the parent's epoch and
+// starting, ready or degraded, and whose own launch did not fail and was not
+// abandoned; the intent then records the parent's epoch and
 // the identity "<project>-lead@e<parent epoch>:coord:<feature>:<n>". The other
 // direction: BeginLaunch of a lead is refused with ErrLaunchCoordinator while a
 // coordinator of it, recorded under an earlier epoch of the lead, is not
@@ -86,9 +87,9 @@
 // daemon should then show the roles as unknown. The cut and its recovered
 // record are written before a single sync, so a crash between them can lose
 // the record and then the cut is not reported. After a failed write or sync
-// the failed record may or may not be on disk (ErrBroken). The registry does not decide when a launch is safe
-// beyond the checks documented on BeginLaunch; the caller must still prove
-// that the previous unit is gone.
+// the failed record may or may not be on disk (ErrBroken). The registry does
+// not decide when a launch is safe beyond the checks documented on
+// BeginLaunch; the caller must still prove that the previous unit is gone.
 //
 // This package is provisional and unqualified: it is part of the lead daemon
 // work in progress, the file format is version 1 and may change before any

@@ -42,7 +42,8 @@ const (
 	KindCoordinator Kind = 3
 )
 
-// String returns "lead", "supervisor", or "invalid" for any other value.
+// String returns "lead", "supervisor" or "coordinator", or "invalid" for any
+// other value.
 func (k Kind) String() string {
 	switch k {
 	case KindLead:

@@ -16,9 +16,10 @@ const identityLead = "-lead@e"
 // coordinator. Both are plain decimal numbers. The identity is only an
 // identifier: never use it as a path or a ref component, and compare it whole
 // (or through ParseIdentity, segment by segment), never by prefix. Every role
-// that is not a coordinator gives "".
+// that is not a coordinator gives "", and so does a zero parentEpoch or a zero
+// n, which ParseIdentity would refuse: every identity returned parses back.
 func (r Role) Identity(parentEpoch, n uint64) string {
-	if r.kind != KindCoordinator {
+	if r.kind != KindCoordinator || parentEpoch == 0 || n == 0 {
 		return ""
 	}
 	return r.project + identityLead + strconv.FormatUint(parentEpoch, 10) +

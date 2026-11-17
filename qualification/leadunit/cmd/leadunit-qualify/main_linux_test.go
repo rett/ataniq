@@ -43,10 +43,11 @@ func TestMain(m *testing.M) {
 // The test helper (TestMain) and every test reach the program only through
 // runWith, with a factory that refuses or that returns a fake. This test fails
 // when a test file could reach the real manager instead: a call of run, which
-// is runWith with realManager; any other use of realManager; an import of the
-// package of the real manager; or a TestMain whose runWith call does not pass
-// refuseManager. It reads the source and runs nothing, because the case it
-// guards against is the one in which a run would start a unit.
+// is runWith with realManager; a call of main, which calls run; any other use
+// of realManager; an import of the package of the real manager; or a TestMain
+// whose runWith call does not pass refuseManager. It reads the source and runs
+// nothing, because the case it guards against is the one in which a run would
+// start a unit.
 func TestNoTestFileCanReachTheRealManager(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	if err != nil || len(files) == 0 {
@@ -74,7 +75,10 @@ func TestNoTestFileCanReachTheRealManager(t *testing.T) {
 				ast.Inspect(x.Value, walk) // nor is the key of a literal
 				return false
 			case *ast.Ident:
-				if x.Name == "run" || x.Name == "realManager" {
+				if x == f.Name {
+					return true // the package clause, "package main"
+				}
+				if x.Name == "run" || x.Name == "realManager" || x.Name == "main" {
 					t.Errorf("%s:%d: %s is the way to the real manager", name, fset.Position(x.Pos()).Line, x.Name)
 				}
 			}

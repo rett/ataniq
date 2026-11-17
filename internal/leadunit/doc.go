@@ -32,11 +32,12 @@
 // activating, and it knows no signal but SIGTERM and SIGKILL. Its model of a
 // unit bound to a parent is written from the documentation of BindsTo=,
 // PartOf= and TimeoutStopSec=, not from a run: it stops a bound unit when its
-// parent unloads and gives it the stop timeout of [FixedProperties], and as
-// systemd's answer to a start whose parent is not active is not known, it
-// offers both outcomes that could be ([Fake.SetMissingParentOutcome]). A
-// passing test against the fake says that the caller follows the contract, not that the
-// real manager keeps it.
+// parent turns deactivating (or the other timing, when the parent unloads,
+// which [Fake.SetBoundStop] chooses) and gives it the stop timeout of
+// [FixedProperties], and as systemd's answer to a start whose parent is not
+// active is not known, it offers both outcomes that could be
+// ([Fake.SetMissingParentOutcome]). A passing test against the fake says that
+// the caller follows the contract, not that the real manager keeps it.
 //
 // # Status
 //

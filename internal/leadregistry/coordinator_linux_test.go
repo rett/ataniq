@@ -237,8 +237,9 @@ func TestCoordinatorNeedsALiveParent(t *testing.T) {
 			size := journalSize(t, dir)
 			in, err := r.BeginLaunch(c)
 			live := st == StateStarting || st == StateReady || st == StateDegraded
-			// A lead that was never launched is not live, shown ready or not.
-			if live && ic.launch {
+			// A lead that was never launched is not live, shown ready or not,
+			// and neither is one whose launch failed or was abandoned.
+			if live && ic.launch && ic.outcome != OutcomeFailed && ic.outcome != OutcomeAbandoned {
 				if err != nil {
 					t.Errorf("%s: refused: %v", what, err)
 					continue

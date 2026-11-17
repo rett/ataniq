@@ -286,9 +286,9 @@ func (r *Registry) start(dirFD int) error {
 		r.prev = sum
 	}
 	if tail > 0 {
-		// The record of the cut is written before the one sync, so the cut and
-		// its record reach the disk together, or the old tail is still there
-		// and is cut again on the next Open.
+		// The record of the cut is written before the one sync. A crash before
+		// that sync may keep the cut and lose the record; the cut is then not
+		// reported (see the package documentation).
 		if _, _, err := r.commitRecovered(&recoveredPayload{Lines: 1, Bytes: int64(tail), Offset: offset}); err != nil {
 			return err
 		}
@@ -556,8 +556,9 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 //
 // A coordinator is admitted only under its parent lead: the parent lead of
 // the project must be defined, run by ataniq and shown starting, ready or
-// degraded, else the launch is refused with ErrLaunchNoParent,
-// ErrLaunchParentManager or ErrLaunchParentState. The intent then records the
+// degraded and its own launch not failed or abandoned, else the launch is
+// refused with ErrLaunchNoParent, ErrLaunchParentManager or
+// ErrLaunchParentState. The intent then records the
 // parent's epoch (Intent.ParentEpoch) and the identity of the instance
 // (Intent.Identity); the instance number is the coordinator's epoch. A lead is
 // refused with ErrLaunchCoordinator while a coordinator of it that was

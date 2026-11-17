@@ -62,9 +62,10 @@ func ReadStat(pid int) (Stat, error) {
 	return ParseStat(string(b))
 }
 
-// maxPID is the largest process id the kernel hands out: PID_MAX_LIMIT, 1<<22
-// on a 64-bit kernel. A larger number names no process, now or later.
-const maxPID = 1 << 22
+// maxPID is the largest process id the kernel hands out: ids are allocated
+// below pid_max, which is at most PID_MAX_LIMIT (1<<22 on a 64-bit kernel), so
+// the largest is one less. A larger number names no process, now or later.
+const maxPID = 1<<22 - 1
 
 // Ended reports whether the original process, named by boot identity, pid and
 // start time, has ended. It has no surviving pidfd to rely on: only same-boot
@@ -74,7 +75,7 @@ const maxPID = 1 << 22
 // executable is an exec, not a reused pid, and does not make the original
 // ended. It does not prove that the control group or the children are gone.
 // An impossible identity (a pid below 1 or above the kernel's maximum of
-// 1<<22, or a start time of 0) is an error, not an answer: absence of such a
+// 1<<22 - 1, or a start time of 0) is an error, not an answer: absence of such a
 // process proves nothing about the original.
 func Ended(boot string, pid int, start uint64) (bool, error) {
 	if pid < 1 || pid > maxPID || start == 0 {

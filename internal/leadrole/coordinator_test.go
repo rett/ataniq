@@ -156,6 +156,13 @@ func TestIdentity(t *testing.T) {
 			t.Errorf("Identity of %q = %q, want empty", r, r.Identity(1, 1))
 		}
 	}
+	// A zero epoch or instance has no identity: ParseIdentity refuses it, so
+	// Identity gives "" and every identity it returns parses back.
+	for _, zero := range [][2]uint64{{0, 1}, {1, 0}, {0, 0}} {
+		if got := c.Identity(zero[0], zero[1]); got != "" {
+			t.Errorf("Identity(%d, %d) = %q, want empty", zero[0], zero[1], got)
+		}
+	}
 	role, pe, n, err := ParseIdentity("proj-lead@e3:coord:lead-daemon:7")
 	if err != nil || role != c || pe != 3 || n != 7 {
 		t.Fatalf("ParseIdentity = %q %d %d %v", role, pe, n, err)

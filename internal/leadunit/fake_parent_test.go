@@ -122,10 +122,11 @@ func TestFakeBoundUnitNeverBecomesActiveWithoutALiveParent(t *testing.T) {
 	}
 
 	// The same outcome in the other mode is an error that wraps ErrParentNotLive
-	// and nothing else of the contract: not a lost reply.
+	// inside ErrReplyLost, as the real manager reports a refusal it does not
+	// recognise.
 	r.fake.SetMissingParentOutcome(MissingParentRefused)
 	st, err = r.fake.Start(r.ctx, s)
-	if !errors.Is(err, ErrParentNotLive) || errors.Is(err, ErrReplyLost) || errors.Is(err, ErrUnitExists) || st != (State{}) || !strings.Contains(err.Error(), unitP) {
+	if !errors.Is(err, ErrParentNotLive) || !errors.Is(err, ErrReplyLost) || errors.Is(err, ErrUnitExists) || st != (State{}) || !strings.Contains(err.Error(), unitP) {
 		t.Fatalf("%+v %v", st, err)
 	}
 	if r.fake.Loaded(unitC) || len(r.fake.StartedSpecs()) != 0 {
@@ -314,8 +315,11 @@ func TestFakeParentCrashStopsTheBoundUnit(t *testing.T) {
 	r.wantImplied(impliedWant{unitC, syscall.SIGTERM, time.Second}, impliedWant{unitC, syscall.SIGKILL, 3 * time.Second})
 }
 
+// The timing the fake had first, chosen with SetBoundStop: the bound unit is
+// stopped only when the parent is collected.
 func TestFakeParentCollectedStopsTheBoundUnit(t *testing.T) {
 	r := newRig(t)
+	r.fake.SetBoundStop(BoundStopOnUnload)
 	r.fake.SetProcs(unitP, ProcScript{}, ProcScript{Behavior: SurviveKill})
 	r.start(unitP, 1)
 	r.startBound(unitC, unitP)
@@ -410,6 +414,7 @@ func TestFakeBoundStopFollowsEachProcessScript(t *testing.T) {
 
 func TestFakeBoundStopCascades(t *testing.T) {
 	r := newRig(t)
+	r.fake.SetBoundStop(BoundStopOnUnload)
 	r.fake.SetProcs(unitP, ProcScript{Behavior: IgnoreTerm})
 	r.fake.SetProcs(unitC, ProcScript{Behavior: IgnoreTerm})
 	g := r.start(unitG, 1)
@@ -522,4 +527,151 @@ func TestFakeImpliedStopsAreMarkedAndExplicitCallsAreNot(t *testing.T) {
 	if marked != 1 || plain != 4 {
 		t.Fatalf("%d implied, %d explicit: %+v", marked, plain, r.fake.Calls())
 	}
+}
+
+// A parent whose main process is gone while another process of its group
+// ignores SIGTERM is deactivating, and its bound unit is stopped from then on.
+func TestFakeBoundStopWhenTheParentTurnsDeactivating(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitP, ProcScript{}, ProcScript{Behavior: IgnoreTerm})
+	r.fake.SetProcs(unitC, ProcScript{Behavior: IgnoreTerm})
+	parent := r.start(unitP, 1)
+	r.startBound(unitC, unitP)
+	r.clock.Advance(time.Second)
+	r.signal(parent, syscall.SIGTERM)
+	if got := r.inspect(unitP); !got.Loaded || got.Active != ActiveDeactivating {
+		t.Fatalf("the parent should be deactivating: %+v", got)
+	}
+	if got := r.inspect(unitC); !got.Loaded || got.Active != ActiveDeactivating {
+		t.Fatalf("the bound unit should be stopping with its parent: %+v", got)
+	}
+	r.wantImplied(impliedWant{unitC, syscall.SIGTERM, time.Second})
+
+	// The stop timeout counts from the moment the parent turned deactivating,
+	// and the parent stays loaded.
+	r.clock.Advance(2 * time.Second)
+	if r.fake.Loaded(unitC) || !r.fake.Loaded(unitP) {
+		t.Fatalf("child loaded %v, parent loaded %v", r.fake.Loaded(unitC), r.fake.Loaded(unitP))
+	}
+	r.wantImplied(impliedWant{unitC, syscall.SIGTERM, time.Second}, impliedWant{unitC, syscall.SIGKILL, 3 * time.Second})
+}
+
+// The same holds for a main process that exits by itself, and for the
+// process list changing by KillProcess.
+func TestFakeBoundStopWhenTheParentsMainProcessGoes(t *testing.T) {
+	for _, how := range []string{"delayed exit", "kill process"} {
+		t.Run(how, func(t *testing.T) {
+			r := newRig(t)
+			if how == "delayed exit" {
+				r.fake.SetProcs(unitP, ProcScript{Behavior: ExitOnTermAfter, Delay: 3 * time.Second}, ProcScript{Behavior: SurviveKill})
+			} else {
+				r.fake.SetProcs(unitP, ProcScript{}, ProcScript{Behavior: SurviveKill})
+			}
+			parent := r.start(unitP, 1)
+			r.startBound(unitC, unitP)
+			switch how {
+			case "delayed exit":
+				r.signal(parent, syscall.SIGTERM)
+				if len(r.implied()) != 0 {
+					t.Fatal("stopped before the main process is gone")
+				}
+				r.clock.Advance(4 * time.Second) // nothing looks until now
+				if got := r.inspect(unitC); got.Loaded {
+					t.Fatalf("the child should be gone (it exits on SIGTERM): %+v", got)
+				}
+				r.wantImplied(impliedWant{unitC, syscall.SIGTERM, 3 * time.Second})
+			case "kill process":
+				r.clock.Advance(time.Second)
+				if !r.fake.KillProcess(unitP, r.fake.Processes(unitP)[0]) {
+					t.Fatal("no such process")
+				}
+				if r.fake.Loaded(unitC) {
+					t.Fatal("the bound unit outlived the main process of its parent")
+				}
+				r.wantImplied(impliedWant{unitC, syscall.SIGTERM, time.Second})
+			}
+			if !r.fake.Loaded(unitP) {
+				t.Fatal("the parent was collected: it still holds a process")
+			}
+		})
+	}
+}
+
+// A stop of the whole chain: the grandchild is stopped as soon as its parent
+// is stopping, without waiting for it to be collected.
+func TestFakeBoundStopCascadesWhenDeactivating(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetProcs(unitP, ProcScript{Behavior: IgnoreTerm})
+	r.fake.SetProcs(unitC, ProcScript{Behavior: IgnoreTerm})
+	g := r.start(unitG, 1)
+	r.startBound(unitP, unitG)
+	r.startBound(unitC, unitP)
+	r.signal(g, syscall.SIGTERM)
+	r.wantImplied(impliedWant{unitP, syscall.SIGTERM, 0}, impliedWant{unitC, syscall.SIGTERM, 0})
+	r.clock.Advance(2 * time.Second)
+	if r.fake.Loaded(unitP) || r.fake.Loaded(unitC) {
+		t.Fatal("both units should be killed at their stop timeout")
+	}
+}
+
+// A start under a parent that is deactivating is treated as one under a
+// parent that is not live, in both outcomes; under BoundStopOnUnload it is
+// accepted and the unit is stopped when the parent unloads.
+func TestFakeStartUnderADeactivatingParent(t *testing.T) {
+	setup := func(t *testing.T) (*rig, State) {
+		r := newRig(t)
+		r.fake.SetProcs(unitP, ProcScript{}, ProcScript{Behavior: IgnoreTerm})
+		parent := r.start(unitP, 1)
+		r.signal(parent, syscall.SIGTERM)
+		if got := r.inspect(unitP); got.Active != ActiveDeactivating {
+			t.Fatalf("%+v", got)
+		}
+		return r, parent
+	}
+	s := func(r *rig) Spec {
+		sp := r.spec(unitC, 1)
+		sp.Parent = unitP
+		return sp
+	}
+
+	r, _ := setup(t)
+	if st, err := r.fake.Start(r.ctx, s(r)); err != nil || st.Loaded || r.fake.Loaded(unitC) {
+		t.Fatalf("default outcome: %+v %v", st, err)
+	}
+	r.fake.SetMissingParentOutcome(MissingParentRefused)
+	if _, err := r.fake.Start(r.ctx, s(r)); !errors.Is(err, ErrParentNotLive) || !errors.Is(err, ErrReplyLost) {
+		t.Fatalf("refused outcome: %v", err)
+	}
+
+	r, _ = setup(t)
+	r.fake.SetBoundStop(BoundStopOnUnload)
+	if st, err := r.fake.Start(r.ctx, s(r)); err != nil || !st.Loaded || st.Active != ActiveActive {
+		t.Fatalf("the earlier timing accepts the start: %+v %v", st, err)
+	}
+	if len(r.implied()) != 0 {
+		t.Fatal("stopped before the parent unloaded")
+	}
+	r.fake.Crash(unitP)
+	r.wantImplied(impliedWant{unitC, syscall.SIGTERM, 0})
+}
+
+// Under BoundStopOnUnload a deactivating parent keeps its bound unit running.
+func TestFakeBoundUnitKeepsRunningUnderADeactivatingParentOnUnload(t *testing.T) {
+	r := newRig(t)
+	r.fake.SetBoundStop(BoundStopOnUnload)
+	r.fake.SetProcs(unitP, ProcScript{}, ProcScript{Behavior: IgnoreTerm})
+	parent := r.start(unitP, 1)
+	r.startBound(unitC, unitP)
+	r.signal(parent, syscall.SIGTERM)
+	if got := r.inspect(unitC); !got.Loaded || got.Active != ActiveActive || len(r.implied()) != 0 {
+		t.Fatalf("%+v %v", got, r.implied())
+	}
+	// Back to the default: the next look does not stop it retroactively, but
+	// the next change of the parent does.
+	r.fake.SetBoundStop(BoundStopOnDeactivating)
+	r.signal(parent, syscall.SIGKILL)
+	if r.fake.Loaded(unitC) || r.fake.Loaded(unitP) {
+		t.Fatal("the parent was killed and the child did not follow")
+	}
+	r.wantImplied(impliedWant{unitC, syscall.SIGTERM, 0})
 }

@@ -125,7 +125,8 @@ func reduce(cur Entry, exists bool, all map[leadrole.Role]Entry, rec record) (En
 // at with every role of the registry in all: no pending intent, run by
 // ataniq, shown desired, stopped or ended, and an epoch that can grow. A
 // coordinator also needs its parent lead defined, run by ataniq and shown
-// starting, ready or degraded. A lead also needs every coordinator recorded
+// starting, ready or degraded, and its launch intent not failed or abandoned.
+// A lead also needs every coordinator recorded
 // under one of its earlier epochs stopped, ended or desired (never launched).
 func launchGate(e Entry, all map[leadrole.Role]Entry) error {
 	if e.pending() {
@@ -159,6 +160,11 @@ func launchGate(e Entry, all map[leadrole.Role]Entry) error {
 		switch parent.Shown.State {
 		case StateStarting, StateReady, StateDegraded:
 		default:
+			return ErrLaunchParentState
+		}
+		// A parent whose own launch failed or was given up never ran as that
+		// epoch, even while it is still shown starting: it is not live.
+		if in := parent.Intent; in != nil && (in.Outcome == OutcomeFailed || in.Outcome == OutcomeAbandoned) {
 			return ErrLaunchParentState
 		}
 	case leadrole.KindLead:
