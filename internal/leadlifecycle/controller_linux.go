@@ -61,6 +61,16 @@ var (
 	// ErrIntentPending means Stop could not yet settle the role's pending
 	// launch intent, so it signalled nothing.
 	ErrIntentPending = errors.New("leadlifecycle: the launch intent is not settled yet")
+	// ErrParentNotLive means a coordinator is not started because its parent
+	// lead is not defined, not run by ataniq, or not shown starting, ready or
+	// degraded. It is wrapped together with the registry's refusal
+	// (leadregistry.ErrLaunchNoParent, ErrLaunchParentManager or
+	// ErrLaunchParentState), and nothing is changed.
+	ErrParentNotLive = errors.New("leadlifecycle: the parent lead of the coordinator is not live")
+	// ErrCoordinatorNotStopped means a lead is not started because a
+	// coordinator of it is not proven stopped. It is wrapped together with
+	// leadregistry.ErrLaunchCoordinator, and nothing is changed.
+	ErrCoordinatorNotStopped = errors.New("leadlifecycle: a coordinator of the lead is not proven stopped")
 	// ErrStopUnproven means the stop did not end with the proof; the role is
 	// shown unknown.
 	ErrStopUnproven = errors.New("leadlifecycle: stop is not proven")

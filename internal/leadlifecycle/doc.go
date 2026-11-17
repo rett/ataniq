@@ -1,5 +1,5 @@
 // Package leadlifecycle is the lead daemon's logic for starting, stopping and
-// reconciling lead roles. It sits on three other packages: leadregistry, the
+// reconciling lead roles and the coordinators of their features. It sits on three other packages: leadregistry, the
 // durable record; leadunit, the manager of one transient unit per role; and
 // leadrole, the role names.
 //
@@ -38,6 +38,25 @@
 // when it can prove it (stopped after a reboot, ended after the holder went
 // away) and shows unknown where it cannot. It returns a [Report] with one line
 // per role: what it was, what it is, and why.
+//
+// # Coordinators
+//
+// A coordinator is a role of its own, one per feature of a project, with its
+// own unit, epoch (the instance number) and evidence. Start launches it only
+// under a live parent lead, which the registry enforces and Start checks first
+// so that a refusal changes nothing (ErrParentNotLive wraps the registry's
+// refusal), and passes the lead's unit name as [leadunit.Spec].Parent, so that
+// the unit is bound to the lead's. The replacement rule applies to the
+// coordinator's own unit and evidence exactly as to a lead's, and every reply
+// lost, unit exists and failure path of a lead is the coordinator's too. The
+// [HolderCommand] is the same interface; the role tells the kinds apart. A
+// start that the manager refuses, or takes without a unit ever being loaded,
+// because the parent unit is no longer live ends without a unit: the outcome
+// failed is recorded and the coordinator is stopped with the proof of the
+// absent unit, or unknown without it. A lead is not started while a
+// coordinator recorded under an earlier epoch of it is not proven stopped
+// (ErrCoordinatorNotStopped). A coordinator has no seat, no approval and is no
+// handoff target: nothing here gives it authority.
 //
 // # What it keeps in memory
 //

@@ -25,6 +25,22 @@ import (
 // stays as it is in all of these; Reconcile is what shows a competing unit as
 // unknown.
 //
+// A coordinator is started only under its parent lead: the lead must be
+// defined, run by ataniq and shown starting, ready or degraded, else nothing is
+// changed and the error wraps ErrParentNotLive and the registry's refusal
+// (leadregistry.ErrLaunchNoParent, ErrLaunchParentManager or
+// ErrLaunchParentState). The unit is started with [leadunit.Spec].Parent set to
+// the lead's unit, so that it is bound to it, and everything else is as for a
+// lead: the replacement rule on the coordinator's own unit and evidence, the
+// intent (which records the parent's epoch and the identity of the instance),
+// the holder command, and the outcomes below. A start that the manager refuses
+// or accepts without a unit because the parent unit is not live (it died after
+// the registry was looked at) started nothing: the outcome failed is recorded
+// and the coordinator is stopped with the proof of the absent unit, or unknown
+// without it. A lead is not started while a coordinator of it is not proven
+// stopped: the error wraps ErrCoordinatorNotStopped and
+// leadregistry.ErrLaunchCoordinator, and nothing is changed.
+//
 // Once the proof is in hand it sets the desired state to running, journals the
 // launch intent (new epoch, intent id, unit name, and the boot identity the
 // manager reported, so that a later reboot settles an intent that never got a
@@ -70,6 +86,10 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	case leadregistry.StateDesired, leadregistry.StateStopped, leadregistry.StateEnded:
 	default:
 		return e, fmt.Errorf("leadlifecycle: %w (shown state is %s)", leadregistry.ErrLaunchState, e.Shown.State)
+	}
+	parent, err := c.admitUnderParent(e)
+	if err != nil {
+		return e, err
 	}
 	if err := c.pre.Check(ctx, role, e); err != nil {
 		return e, fmt.Errorf("%w: %w", ErrPreflight, err)
@@ -118,10 +138,20 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 		Unit: intent.UnitName, Epoch: intent.Epoch, Intent: intent.ID,
 		Argv: argv, WorkDir: workdir, Env: env,
 	}
+	if !parent.IsZero() {
+		spec.Parent = parent.UnitName()
+	}
 	got, err := c.mgr.Start(ctx, spec)
 	switch {
 	case err == nil:
 		if !matchesIntent(got, &intent) {
+			if !parent.IsZero() && !got.Loaded {
+				// The manager took the request and the unit never became
+				// active: with its parent not live, a bound unit does not
+				// start. Nothing was started; prove it.
+				return c.nothingStarted(ctx, e, intent, boot, leadregistry.OutcomeFailed, "parent-not-live",
+					fmt.Errorf("the manager accepted the start of %s but the unit is not loaded, as when its parent unit %s is not live", intent.UnitName, spec.Parent))
+			}
 			return c.launchMismatch(e, intent, got)
 		}
 		return c.reg.RecordOutcome(role, intent.ID, intent.Epoch, leadregistry.OutcomeLaunched, evidenceOf(got))
@@ -249,4 +279,52 @@ func (c *Controller) launchMismatch(e leadregistry.Entry, in leadregistry.Intent
 		return e, errors.Join(out, err)
 	}
 	return e, out
+}
+
+// admitUnderParent applies, before anything is changed, the rules of the
+// registry that tie a coordinator to its parent lead and a lead to its
+// coordinators, so that a refusal costs no journal line. The registry applies
+// them again in BeginLaunch and is what decides. It returns the parent of a
+// coordinator, and the zero role for every other role.
+func (c *Controller) admitUnderParent(e leadregistry.Entry) (leadrole.Role, error) {
+	switch e.Role.Kind() {
+	case leadrole.KindCoordinator:
+		parent := e.Role.Parent()
+		pe, err := c.reg.Get(parent)
+		var why error
+		switch {
+		case errors.Is(err, leadregistry.ErrNoRole):
+			why = leadregistry.ErrLaunchNoParent
+		case err != nil:
+			return leadrole.Role{}, err
+		case pe.Manager != leadregistry.ManagerAtaniq:
+			why = leadregistry.ErrLaunchParentManager
+		case pe.Epoch == 0:
+			why = leadregistry.ErrLaunchParentState
+		default:
+			switch pe.Shown.State {
+			case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
+				return parent, nil
+			}
+			why = leadregistry.ErrLaunchParentState
+		}
+		return leadrole.Role{}, fmt.Errorf("%w: %s: %w", ErrParentNotLive, parent, why)
+	case leadrole.KindLead:
+		coords, err := c.reg.Coordinators(e.Role)
+		if err != nil {
+			return leadrole.Role{}, err
+		}
+		for _, co := range coords {
+			if co.Intent == nil || co.Intent.ParentEpoch > e.Epoch {
+				continue
+			}
+			switch co.Shown.State {
+			case leadregistry.StateStopped, leadregistry.StateEnded, leadregistry.StateDesired:
+			default:
+				return leadrole.Role{}, fmt.Errorf("%w: %s is %s since epoch %d of the lead: %w", ErrCoordinatorNotStopped,
+					co.Role, co.Shown.State, co.Intent.ParentEpoch, leadregistry.ErrLaunchCoordinator)
+			}
+		}
+	}
+	return leadrole.Role{}, nil
 }
