@@ -44,6 +44,11 @@ graph, member dispatch, evidence, review, merge and release gates, and
 campaigns. Each record has one authoritative system. See
 [roles and authority](design/roles-and-authority.md).
 
+A provisional, unqualified, read-only daemon skeleton, `ataniqd`, and the
+registry, lock, unit-manager and lifecycle packages a later managed-lead daemon
+will use are in the tree. They start, stop and manage no lead. See
+[the lead daemon guide](lead-daemon.md).
+
 ## Authentication and authority
 
 Remote MCP access uses OAuth protected-resource discovery and scoped token
