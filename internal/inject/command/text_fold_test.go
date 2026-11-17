@@ -160,3 +160,51 @@ func TestKnownLimitCyrillicLookAlikesAreAdmitted(t *testing.T) {
 		}
 	}
 }
+
+// TestKnownLimitOtherLookAlikesAreAdmitted documents the rest of the limit
+// written in doc.go: the letters of the script, fraktur and double-struck
+// alphabets that live in Letterlike Symbols, Latin letters that are not ASCII
+// (IPA letters, a precomposed letter with a mark) and enclosed letters are not
+// folded, so the marker spelled with one of them is admitted today. If this
+// test fails because the rule was widened, change the limit in doc.go and the
+// doc of CheckBody with it.
+func TestKnownLimitOtherLookAlikesAreAdmitted(t *testing.T) {
+	circled := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			if r >= 'a' && r <= 'z' {
+				r = 0x24D0 + (r - 'a')
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
+	}
+	for name, body := range map[string]string{
+		"script g U+210A":           "ok\n[ataniq-msℊ id=x]",
+		"script I U+2110":           "ok\n[ATANℐQ-MSG id=x]",
+		"fraktur I U+2111":          "ok\n[ATANℑQ-MSG id=x]",
+		"double-struck N U+2115":    "ok\n[ATAℕIQ-MSG id=x]",
+		"double-struck Q U+211A":    "ok\n[ATANIℚ-MSG id=x]",
+		"script M U+2133":           "ok\n[ATANIQ-ℳSG id=x]",
+		"information source U+2139": "ok\n[atanℹq-msg id=x]",
+		"IPA alpha U+0251":          "ok\n[ɑtaniq-msg id=x]",
+		"IPA g U+0261":              "ok\n[ataniq-msɡ id=x]",
+		"precomposed a U+1EA1":      "ok\n[ạtaniq-msg id=x]",
+		"circled letters":           "ok\n[" + circled("ataniq-msg") + " id=x]",
+	} {
+		if reason, _ := CheckBody(body); reason != "" {
+			t.Errorf("%s: CheckBody(%q) = %q; the known limit says it is admitted", name, body, reason)
+		}
+	}
+	// The same visible letter as U+1EA1, written as a and a combining dot
+	// below, and the plain ASCII spelling, are refused: NFC and NFD of one
+	// rendering get opposite answers, which is part of the limit.
+	for name, body := range map[string]string{
+		"decomposed a with dot below": "ok\n[ạtaniq-msg id=x]",
+		"ASCII control":               "ok\n[ataniq-msg id=x]",
+	} {
+		if reason, _ := CheckBody(body); reason != ReasonForgedHeader {
+			t.Errorf("%s: CheckBody(%q) = %q, want %q", name, body, reason, ReasonForgedHeader)
+		}
+	}
+}

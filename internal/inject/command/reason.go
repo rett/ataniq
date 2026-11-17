@@ -81,6 +81,12 @@ const (
 	// already uncertain. It annotates the command and changes nothing else:
 	// only an operator ends uncertain.
 	ReasonLateEvidence Reason = "late-evidence"
+	// ReasonOriginalEvidenceArrived: a fence result or delivery evidence
+	// arrived for a command that an operator had already resolved as "not
+	// delivered, send again", while its replacement was still queued. The
+	// replacement becomes uncertain, so that nothing is sent a second time
+	// before an operator has looked at the evidence.
+	ReasonOriginalEvidenceArrived Reason = "original-evidence-arrived"
 	// ReasonInconsistentResult: the fence result contradicted itself.
 	ReasonInconsistentResult Reason = "inconsistent-result"
 	// ReasonOperatorDelivered: an operator decided the command was delivered.
@@ -102,8 +108,11 @@ const (
 	ReasonHeadNotQueued      Reason = "head-not-queued"
 	ReasonNoCommand          Reason = "no-such-command"
 	ReasonWrongState         Reason = "wrong-state"
-	ReasonNoEnter            Reason = "enter-not-written"
-	ReasonBadEvidence        Reason = "bad-evidence"
-	ReasonBadOperator        Reason = "bad-operator"
-	ReasonBadDecision        Reason = "bad-decision"
+	// ReasonLateNotesFull: the command already has the most late notes it
+	// keeps, and this one is not a repeat of one of them.
+	ReasonLateNotesFull Reason = "late-notes-full"
+	ReasonNoEnter       Reason = "enter-not-written"
+	ReasonBadEvidence   Reason = "bad-evidence"
+	ReasonBadOperator   Reason = "bad-operator"
+	ReasonBadDecision   Reason = "bad-decision"
 )

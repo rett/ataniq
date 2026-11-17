@@ -92,7 +92,7 @@ func (m *Machine) check(r Record) error {
 			return errors.New("only the head of a queue may dispatch")
 		}
 		if f := frozenBy(q); f != nil {
-			return fmt.Errorf("queue is frozen by uncertain command %q", f.id)
+			return fmt.Errorf("queue is frozen by command %q", f.id)
 		}
 		if r.Reason != "" {
 			return errors.New("dispatching has no reason")
@@ -141,9 +141,22 @@ func (m *Machine) check(r Record) error {
 		default:
 			return fmt.Errorf("uncertain with reason %q", r.Reason)
 		}
-	case r.From == StateUncertain && r.To == StateUncertain:
-		// An annotation: a late fence result or late evidence. It changes no
+	case r.From == StateQueued && r.To == StateUncertain:
+		// The replacement of a command that late evidence arrived for: the
+		// only way a queued command becomes uncertain.
+		if c.freezeFor == "" || r.Reason != ReasonOriginalEvidenceArrived {
+			return errors.New("queued to uncertain only for late evidence of a command this one replaces")
+		}
+		if r.Operator != "" || r.Replacement != "" || r.EvidenceKind != "" || r.Evidence != "" {
+			return errors.New("queued to uncertain names no operator, replacement or evidence")
+		}
+	case r.From == r.To && (r.From == StateUncertain || r.From == StateResolved):
+		// An annotation: a late fence result or late evidence, on an uncertain
+		// command or on one an operator resolved as "send again". It changes no
 		// state, so it never unfreezes a queue.
+		if r.From == StateResolved && c.reason != ReasonOperatorResend {
+			return fmt.Errorf("a late annotation for resolved command %q, which was not sent again", c.id)
+		}
 		if r.Operator != "" || r.Replacement != "" {
 			return errors.New("a late annotation names no operator and no replacement")
 		}
@@ -293,18 +306,26 @@ func (m *Machine) apply(r Record) {
 	}
 
 	c := m.cmds[r.ID]
-	if r.From == StateUncertain && r.To == StateUncertain {
+	if r.From == r.To && (r.From == StateUncertain || r.From == StateResolved) {
 		// An annotation keeps the state, the last reason, the evidence and the
-		// update time of the command; it is only added to the notes.
+		// update time of the command; it is only added to the notes. For a
+		// command that was sent again, the newest replacement, if it is still
+		// queued, is due to become uncertain.
 		c.late = append(c.late, LateNote{
 			Seq: r.Seq, At: r.At, Reason: r.Reason, Detail: r.Detail,
 			EvidenceKind: r.EvidenceKind, Evidence: r.Evidence,
 		})
+		if r.From == StateResolved {
+			if n := m.newestReplacement(c); n != nil && n.state == StateQueued && n.freezeFor == "" {
+				n.freezeFor = c.id
+			}
+		}
 		return
 	}
 	key := c.target.String()
 	c.state = r.To
 	c.updated = r.At
+	c.freezeFor = ""
 	if r.Reason != "" {
 		c.reason, c.detail = r.Reason, r.Detail
 	}

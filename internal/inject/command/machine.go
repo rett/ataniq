@@ -42,6 +42,12 @@ type command struct {
 
 	of          string
 	replacement string
+
+	// freezeFor is set on a queued command when late evidence arrived for a
+	// command it replaces (directly or along a chain of resends): it is the
+	// id of that command. The command is then to become uncertain, and holds
+	// its queue until it does.
+	freezeFor string
 }
 
 // Machine is the durable command state machine of one daemon: the queues of
@@ -261,10 +267,12 @@ func countSince(times []time.Time, cut time.Time) int {
 	return n
 }
 
-// frozenBy returns the uncertain command that freezes a queue, or nil.
+// frozenBy returns the command that freezes a queue, or nil: an uncertain
+// command, or a queued one that late evidence for its predecessor has made
+// uncertain in everything but the record that says so.
 func frozenBy(q []*command) *command {
 	for _, c := range q {
-		if c.state == StateUncertain {
+		if c.state == StateUncertain || (c.state == StateQueued && c.freezeFor != "") {
 			return c
 		}
 	}

@@ -2,6 +2,7 @@ package command
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -631,13 +632,13 @@ func TestRestoreRefusesLateRecordsTheMachineWouldNotWrite(t *testing.T) {
 	wantRestoreError(t, "too many annotations", rs, n+uint64(maxLateNotes)+1)
 	// The live machine stops at the same number.
 	for i := 0; i < maxLateNotes; i++ {
-		if err := m.ConfirmDelivery("m1", "file:1", at(time.Minute)); err != nil {
+		if err := m.ConfirmDelivery("m1", fmt.Sprintf("file:%d", i), at(time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	wantRefusal(t, m.ConfirmDelivery("m1", "file:1", at(time.Minute)), ReasonWrongState)
+	wantRefusal(t, m.ConfirmDelivery("m1", "file:new", at(time.Minute)), ReasonLateNotesFull)
 	_, err := m.RecordFence("m1", FenceResult{Written: WrittenNothing, Outcome: OutcomeNotIdle}, at(time.Minute))
-	wantRefusal(t, err, ReasonWrongState)
+	wantRefusal(t, err, ReasonLateNotesFull)
 }
 
 func TestLateEvidenceOnAJournalFailureChangesNothing(t *testing.T) {
