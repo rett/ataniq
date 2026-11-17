@@ -3,9 +3,14 @@
 // once on a path it owns and trusts, and goes through openat2 with
 // RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS. Nothing
 // here opens, stats or creates anything by path after the handle exists, and
-// nothing follows a link a lead planted: a symbolic link in any component,
-// including the last one and including one that points back inside the
-// folder or points nowhere, is refused with [ErrSymlink]. This is the
+// nothing follows a link a lead planted: a link is refused with [ErrSymlink]
+// even when it points back inside the folder or nowhere. A link
+// in a parent component is refused by every method. A link as the last
+// component is refused by [Root.ReadFile], [Root.ReadFileInfo],
+// [Root.AppendFile], [Root.ReadDirNames] and [Root.MkdirAll]; by
+// [Root.WriteFileExclusive], which refuses to create anything there and
+// reports [ErrSymlink] (the error also matches fs.ErrExist); and it is
+// reported, not refused, by [Root.Lstat], so a caller can see it. This is the
 // symlink-safe access of section 3.6 of the lead-hosting design, the code
 // behind acceptance case S17.
 //
@@ -26,7 +31,8 @@
 // ("a//b", "./a", "a/", a NUL byte) with [ErrInvalidArgument], both before
 // any system call. A file is checked on the open descriptor with fstat, not
 // on its name: a FIFO, device, socket or folder is refused with
-// [ErrNotRegular] (the open uses O_NONBLOCK, so a FIFO cannot block it). A
+// [ErrNotRegular] (the open uses O_NONBLOCK, so a FIFO cannot block it; see
+// "Devices, leases and mounts" below for what the open itself can do). A
 // size over the cap is refused before reading, and the read itself is capped
 // so a file that grows while it is read is refused with [ErrTooLarge] and not
 // truncated silently. Every refusal names its reason and wraps one of the
@@ -35,8 +41,8 @@
 // # Hard links
 //
 // A regular file whose link count is above one is reported ([Info.Nlink],
-// [FileResult.HardLinked]), and [RefuseHardLinks] makes [Root.ReadFile]
-// refuse it with [ErrHardLink]. The reason: a lead can hard-link a file it
+// [Info.HardLinked], reached from [FileResult.Info]), and [RefuseHardLinks]
+// makes [Root.ReadFile] refuse it with [ErrHardLink]. The reason: a lead can hard-link a file it
 // can read into a folder it writes, where it then looks like the lead's own
 // file; it cannot link one it cannot read. With the kernel's protected
 // hard-link setting off, or a file the lead's user may read and write, that
@@ -45,14 +51,51 @@
 // append would change it, so [Root.AppendFile] always refuses a hard-linked
 // file.
 //
+// # Devices, leases and mounts
+//
+// The type of a file is known only from fstat on its descriptor, so a device
+// node is opened before it can be refused: the order is open, then fstat,
+// then [ErrNotRegular]. The open of a device runs the driver's code and can
+// have side effects, and it can fail with a raw errno (EACCES, ENXIO, EPERM)
+// before fstat runs, in which case the error is that errno and not
+// [ErrNotRegular]. A lead cannot create a real device node without
+// CAP_MKNOD, but it can create the 0:0 whiteout character device, whose open
+// fails this way. Keep the owner's state folders on a file system mounted
+// nodev, so that no device node there is ever opened; the package does not
+// check it.
+//
+// Opens use O_NONBLOCK. Besides keeping a FIFO from blocking them, it keeps a
+// file lease from stalling the owner: a process with the lead's user (the
+// owner's, under the design) can take a lease on a file it owns, and a
+// blocking open would then wait the lease-break time (tens of seconds). With
+// O_NONBLOCK the open of a leased file fails at once with EAGAIN, as a raw
+// errno and not a sentinel.
+//
+// Every lookup carries RESOLVE_NO_XDEV: a mount point below the handle's
+// folder (a mount, including a bind mount, on any path component) is refused
+// with [ErrEscapes] wrapping EXDEV, and is never read across. The handle's own
+// folder may itself be a mount root.
+//
 // # When openat2 is not usable
 //
-// If the kernel lacks openat2 (ENOSYS), or a seccomp filter denies it (the
-// call fails with EPERM, which cannot be told apart from a permission
-// failure, so it is not guessed at), the call is refused with
-// [ErrUnsupported]. There is no fallback to a path-based open.
+// [OpenRoot] probes openat2 once, on the new handle and with the flags every
+// call uses, and fails with [ErrUnsupported] when it does not work (the kernel
+// lacks it, a seccomp filter denies it with EPERM, which cannot be told apart
+// from a permission failure and is not guessed at, or the flags are refused),
+// so a start learns it before it has done other work. A call that later gets
+// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too. There is
+// no fallback to a path-based open. The package's tests need a working
+// openat2 and fail, not skip, where there is none.
 //
 // # What it does not do
+//
+// [Root.MkdirAll] walks one folder at a time, so each step is beneath the
+// folder before it and not beneath the handle. It checks at the end that the
+// path, opened again from the handle, is the folder the walk ended on, and
+// refuses with [ErrEscapes] when a folder on the path moved while the call
+// ran. Folders it made after such a move stay where the moved folder went,
+// outside the handle, in a place the lead could already write; it cannot
+// undo that.
 //
 // It does not protect against the folder behind the handle being changed by
 // someone with owner rights, and it trusts the path given to [OpenRoot]: only

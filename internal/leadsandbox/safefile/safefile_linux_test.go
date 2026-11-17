@@ -33,19 +33,13 @@ func newRoot(t *testing.T) (r *Root, dir, outside string) {
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// OpenRoot probes openat2. Where it does not work the tests fail, loudly:
+	// a green run on such a system would cover nothing.
 	r, err := OpenRoot(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("these tests need a working openat2 (OpenRoot: %v)", err)
 	}
 	t.Cleanup(func() { r.Close() })
-	// Skip, loudly, where the kernel or a filter has no openat2: the
-	// package refuses there and there is nothing to test against.
-	if err := os.WriteFile(filepath.Join(dir, ".probe"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.ReadFile(".probe", 1); errors.Is(err, ErrUnsupported) {
-		t.Skipf("openat2 unavailable here: %v", err)
-	}
 	return r, dir, outside
 }
 
@@ -351,14 +345,14 @@ func TestHardLinks(t *testing.T) {
 	r, dir, outside := newRoot(t)
 	write(t, filepath.Join(dir, "one"), "data")
 	res, err := r.ReadFileInfo("one", 100)
-	if err != nil || res.HardLinked || res.Info.Nlink != 1 || string(res.Data) != "data" {
+	if err != nil || res.Info.HardLinked() || res.Info.Nlink != 1 || string(res.Data) != "data" {
 		t.Fatalf("single link: %+v, %v", res, err)
 	}
 	if err := os.Link(filepath.Join(dir, "one"), filepath.Join(dir, "two")); err != nil {
 		t.Skipf("hard links not available here: %v", err)
 	}
 	res, err = r.ReadFileInfo("two", 100)
-	if err != nil || !res.HardLinked || res.Info.Nlink != 2 || string(res.Data) != "data" {
+	if err != nil || !res.Info.HardLinked() || res.Info.Nlink != 2 || string(res.Data) != "data" {
 		t.Fatalf("two links reported: %+v, %v", res, err)
 	}
 	if got, err := r.ReadFile("two", 100); err != nil || string(got) != "data" {
@@ -509,6 +503,104 @@ func TestMkdirAllThroughPlantedSymlink(t *testing.T) {
 	}
 }
 
+// afterOpenat2Call makes r run fn once, right after its n-th openat2 call
+// returns (n counts from 1), which stands in for a lead acting between two
+// steps of the owner's call.
+func afterOpenat2Call(r *Root, n int, fn func()) {
+	calls := 0
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		fd, err := unix.Openat2(dirfd, p, how)
+		calls++
+		if calls == n {
+			fn()
+		}
+		return fd, err
+	}
+}
+
+// A folder renamed out of the root while MkdirAll walks carries the rest of
+// the walk with it: the call must say so and not report success.
+func TestMkdirAllFolderMovedDuringWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replace bool // the lead puts a folder with the same names back
+	}{
+		{"moved away", false},
+		{"moved away and replaced", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, dir, outside := newRoot(t)
+			if err := os.Mkdir(filepath.Join(dir, "a"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			afterOpenat2Call(r, 1, func() {
+				if err := os.Rename(filepath.Join(dir, "a"), filepath.Join(outside, "a")); err != nil {
+					t.Error(err)
+				}
+				if tc.replace {
+					if err := os.MkdirAll(filepath.Join(dir, "a/b/c"), 0o755); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			err := r.MkdirAll("a/b/c", 0o755)
+			if !errors.Is(err, ErrEscapes) {
+				t.Fatalf("MkdirAll after a folder moved: %v, want ErrEscapes", err)
+			}
+			// What the doc admits: the folders made after the move are left
+			// where the moved folder went.
+			if _, err := os.Stat(filepath.Join(outside, "a/b/c")); err != nil {
+				t.Errorf("expected the walk to have continued in the moved folder: %v", err)
+			}
+		})
+	}
+}
+
+// A mkdirat failure is reported as itself: EPERM from mkdirat is not "openat2
+// is unavailable".
+func TestMkdirAllMkdiratErrors(t *testing.T) {
+	for _, tc := range []struct {
+		errno unix.Errno
+		want  error // nil: only that the error is not a package sentinel
+	}{
+		{unix.EPERM, nil},
+		{unix.EACCES, fs.ErrPermission},
+		{unix.EROFS, nil},
+		{unix.ENOTDIR, ErrNotDirectory},
+	} {
+		t.Run(tc.errno.Error(), func(t *testing.T) {
+			r, dir, _ := newRoot(t)
+			r.mkdirat = func(int, string, uint32) error { return tc.errno }
+			err := r.MkdirAll("d/e", 0o755)
+			if !errors.Is(err, tc.errno) {
+				t.Fatalf("MkdirAll: %v, want it to wrap %v", err, tc.errno)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("MkdirAll: %v, want %v", err, tc.want)
+			}
+			for _, s := range []error{ErrUnsupported, ErrSymlink, ErrEscapes} {
+				if errors.Is(err, s) {
+					t.Errorf("MkdirAll: %v wrongly matches %v", err, s)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "d")); err == nil {
+				t.Error("a folder was made")
+			}
+		})
+	}
+}
+
+// Without a move the end check passes, also for a path that already exists.
+func TestMkdirAllEndCheckAcceptsStablePath(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	write(t, filepath.Join(dir, "x/y/f"), "")
+	for _, rel := range []string{"x", "x/y", "x/y/z", "p/q"} {
+		if err := r.MkdirAll(rel, 0o755); err != nil {
+			t.Errorf("MkdirAll(%q): %v", rel, err)
+		}
+	}
+}
+
 func TestWriteFileExclusive(t *testing.T) {
 	r, dir, outside := newRoot(t)
 	if err := r.MkdirAll("d", 0o755); err != nil {
@@ -543,8 +635,18 @@ func TestWriteFileExclusive(t *testing.T) {
 	before := snapshot(t, outside)
 	for _, rel := range []string{"dangling", "tosecret", "linkdir/created", "linkdir/secret"} {
 		err := r.WriteFileExclusive(rel, []byte("x"), 0o600)
-		if err == nil || !(errors.Is(err, ErrSymlink) || errors.Is(err, fs.ErrExist)) {
-			t.Errorf("WriteFileExclusive(%q): %v, want a refusal", rel, err)
+		if !errors.Is(err, ErrSymlink) {
+			t.Errorf("WriteFileExclusive(%q): %v, want ErrSymlink", rel, err)
+		}
+		// A link as the last component also still reads as "exists".
+		if !strings.Contains(rel, "/") && !errors.Is(err, fs.ErrExist) {
+			t.Errorf("WriteFileExclusive(%q): %v, want it to match fs.ErrExist too", rel, err)
+		}
+	}
+	// A plain entry that exists is only "exists", not a link.
+	for _, rel := range []string{"d", "d/new"} {
+		if err := r.WriteFileExclusive(rel, nil, 0o600); !errors.Is(err, fs.ErrExist) || errors.Is(err, ErrSymlink) {
+			t.Errorf("WriteFileExclusive(%q) over a non-link: %v, want fs.ErrExist and not ErrSymlink", rel, err)
 		}
 	}
 	if err := r.WriteFileExclusive("linkdir/created", nil, 0o600); !errors.Is(err, ErrSymlink) {
@@ -642,7 +744,7 @@ func TestReadDirNames(t *testing.T) {
 	if got, err := r.ReadDirNames("empty", 0); err != nil || got == nil || len(got) != 0 {
 		t.Fatalf("empty folder: %#v, %v", got, err)
 	}
-	if got, err := r.ReadDirNames(".", 100); err != nil || !reflect.DeepEqual(got, []string{".probe", "d", "empty"}) {
+	if got, err := r.ReadDirNames(".", 100); err != nil || !reflect.DeepEqual(got, []string{"d", "empty"}) {
 		t.Fatalf("root: %v, %v", got, err)
 	}
 	if _, err := r.ReadDirNames("d/a", 10); !errors.Is(err, ErrNotDirectory) {
@@ -749,6 +851,126 @@ func TestOpenRoot(t *testing.T) {
 	}
 }
 
+// A mount point below the handle's folder is refused, not crossed. The test
+// needs a mount point it can see: it takes them from the mount table and
+// skips only when none can be told either way (it makes no mount).
+func TestMountBelowRootRefused(t *testing.T) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Skipf("no mount table: %v", err)
+	}
+	checked := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 5 || strings.Contains(f[4], "\\") || f[4] == "/" {
+			continue
+		}
+		parent, name := filepath.Split(f[4])
+		r, err := OpenRoot(parent)
+		if err != nil {
+			continue
+		}
+		info, err := r.Lstat(name)
+		r.Close()
+		switch {
+		case err == nil:
+			t.Errorf("Lstat(%q) below %q crossed a mount point (%+v)", name, parent, info)
+			checked++
+		case errors.Is(err, ErrEscapes) && errors.Is(err, unix.EXDEV):
+			checked++
+		}
+		if checked >= 3 {
+			break
+		}
+	}
+	if checked == 0 {
+		t.Skip("no mount point whose parent could be searched")
+	}
+}
+
+// A lease a lead holds on a file does not stall an owner-side open: it fails
+// at once with EAGAIN (the open is O_NONBLOCK). Skipped where leases cannot be
+// taken (they need a file system and a setting that allow them).
+func TestLeasedFileFailsAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		flags  int
+		lease  int
+		access func(r *Root) error
+	}{
+		{"append under a read lease", unix.O_RDONLY, unix.F_RDLCK, func(r *Root) error { return r.AppendFile("f", []byte("x")) }},
+		{"read under a write lease", unix.O_RDWR, unix.F_WRLCK, func(r *Root) error { _, err := r.ReadFile("f", 10); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, dir, _ := newRoot(t)
+			p := filepath.Join(dir, "f")
+			write(t, p, "x")
+			fd, err := unix.Open(p, tc.flags|unix.O_CLOEXEC, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unix.Close(fd)
+			if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETLEASE, tc.lease); err != nil {
+				t.Skipf("cannot take a lease here: %v", err)
+			}
+			defer unix.FcntlInt(uintptr(fd), unix.F_SETLEASE, unix.F_UNLCK)
+			done := make(chan error, 1)
+			go func() { done <- tc.access(r) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, unix.EAGAIN) {
+					t.Fatalf("access to a leased file: %v, want EAGAIN", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("access to a leased file waited for the lease to break")
+			}
+		})
+	}
+}
+
+// OpenRoot probes openat2 once and refuses with ErrUnsupported when it does
+// not work, closing what it opened.
+func TestOpenRootProbe(t *testing.T) {
+	base := t.TempDir()
+	countFDs := func() int {
+		ents, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ents)
+	}
+	before := countFDs()
+	for _, errno := range []unix.Errno{unix.ENOSYS, unix.EPERM, unix.EINVAL, unix.E2BIG} {
+		calls := 0
+		r, err := openRoot(base, func(int, string, *unix.OpenHow) (int, error) {
+			calls++
+			return -1, errno
+		})
+		if r != nil || !errors.Is(err, ErrUnsupported) || !errors.Is(err, errno) {
+			t.Errorf("openat2 failing with %v: %v, %v; want ErrUnsupported wrapping it", errno, r, err)
+		}
+		if calls != 1 {
+			t.Errorf("the probe made %d calls, want 1", calls)
+		}
+	}
+	if after := countFDs(); after != before {
+		t.Errorf("descriptors: %d before, %d after failed OpenRoot calls", before, after)
+	}
+	// A working openat2 passes the probe once and the handle is usable.
+	calls := 0
+	r, err := openRoot(base, func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		calls++
+		if p != "." || how.Resolve != resolveFlags {
+			t.Errorf("probe on %q with resolve %#x", p, how.Resolve)
+		}
+		return unix.Openat2(dirfd, p, how)
+	})
+	if err != nil || calls != 1 {
+		t.Fatalf("openRoot: %v after %d calls", err, calls)
+	}
+	r.Close()
+}
+
 func TestClosedRoot(t *testing.T) {
 	r, dir, _ := newRoot(t)
 	write(t, filepath.Join(dir, "f"), "x")
@@ -766,6 +988,172 @@ func TestClosedRoot(t *testing.T) {
 	}
 	if err := r.MkdirAll("x", 0o700); !errors.Is(err, ErrClosed) {
 		t.Errorf("MkdirAll: %v", err)
+	}
+}
+
+// Every openat2 call, whichever method makes it and on whichever path
+// (success, failure, the lookups behind a refusal), carries the resolve flags
+// and close-on-exec.
+func TestEveryOpenCarriesFlags(t *testing.T) {
+	r, dir, outside := newRoot(t)
+	write(t, filepath.Join(dir, "f"), "x")
+	write(t, filepath.Join(dir, "d/g"), "x")
+	symlink(t, outside, filepath.Join(dir, "l"))
+	var bad []string
+	n := 0
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		n++
+		if how.Flags&unix.O_CLOEXEC == 0 || how.Resolve != resolveFlags {
+			bad = append(bad, p)
+		}
+		return unix.Openat2(dirfd, p, how)
+	}
+	r.ReadFile("f", 10)
+	r.ReadFile("missing", 10)
+	r.ReadFileInfo("f", 10, RefuseHardLinks())
+	r.Lstat("f")
+	r.Lstat("l")
+	r.MkdirAll("m/n", 0o755)
+	r.MkdirAll("d", 0o755)
+	r.WriteFileExclusive("m/n/w", nil, 0o600)
+	r.WriteFileExclusive("l", nil, 0o600)
+	r.AppendFile("f", []byte("y"))
+	r.ReadDirNames("d", 10)
+	if n < 12 || len(bad) != 0 {
+		t.Fatalf("%d calls seen; without the flags: %v", n, bad)
+	}
+	for name, f := range map[string]uint64{
+		"BENEATH": unix.RESOLVE_BENEATH, "NO_SYMLINKS": unix.RESOLVE_NO_SYMLINKS,
+		"NO_MAGICLINKS": unix.RESOLVE_NO_MAGICLINKS, "NO_XDEV": unix.RESOLVE_NO_XDEV,
+	} {
+		if resolveFlags&f == 0 {
+			t.Errorf("resolveFlags %#x lacks RESOLVE_%s", uint64(resolveFlags), name)
+		}
+	}
+}
+
+// A FIFO a lead holds open for reading opens for append; the type check on
+// the descriptor refuses it and nothing is written.
+func TestAppendFIFOWithReader(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	p := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := unix.Open(p, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(rd)
+	if err := r.AppendFile("fifo", []byte("x")); !errors.Is(err, ErrNotRegular) {
+		t.Fatalf("AppendFile on a FIFO with a reader: %v, want ErrNotRegular", err)
+	}
+	if n, _ := unix.Read(rd, make([]byte, 1)); n > 0 {
+		t.Fatal("data was written to the FIFO")
+	}
+}
+
+// A file over the cap is refused from its size, before any byte is read: the
+// message names the size, where the read-time check names growth.
+func TestReadFileSizeCheckBeforeRead(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	f, err := os.Create(filepath.Join(dir, "big"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1 << 20); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	_, err = r.ReadFile("big", 10)
+	if !errors.Is(err, ErrTooLarge) || !strings.Contains(err.Error(), "1048576 bytes") {
+		t.Fatalf("ReadFile over the cap: %v, want ErrTooLarge naming the size", err)
+	}
+}
+
+// Close does not wait behind a call that is stuck: it returns, later calls
+// are refused, and the descriptor is released when the stuck call ends.
+func TestCloseDoesNotWaitForStuckCall(t *testing.T) {
+	r, dir, _ := newRoot(t)
+	write(t, filepath.Join(dir, "f"), "data")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	r.openat2 = func(dirfd int, p string, how *unix.OpenHow) (int, error) {
+		close(entered)
+		<-release
+		return unix.Openat2(dirfd, p, how)
+	}
+	fd := r.fd
+	type result struct {
+		data []byte
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		data, err := r.ReadFile("f", 10)
+		res <- result{data, err}
+	}()
+	<-entered
+	closed := make(chan error, 1)
+	go func() { closed <- r.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close with a call in progress: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		close(release)
+		t.Fatal("Close waited behind a stuck call")
+	}
+	if _, err := r.ReadFile("f", 10); !errors.Is(err, ErrClosed) {
+		t.Errorf("call after Close: %v, want ErrClosed", err)
+	}
+	if err := r.Close(); !errors.Is(err, ErrClosed) {
+		t.Errorf("second Close: %v, want ErrClosed", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+		t.Errorf("descriptor released while a call still uses it: %v", err)
+	}
+	close(release)
+	got := <-res
+	if got.err != nil || string(got.data) != "data" {
+		t.Errorf("the call in progress: %q, %v", got.data, got.err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
+		t.Errorf("descriptor still open after the last call ended: %v", err)
+	}
+}
+
+// A zero Root is not a handle: every call and Close refuse it with ErrClosed,
+// and nothing panics or touches descriptor 0.
+func TestZeroRoot(t *testing.T) {
+	var r Root
+	if _, err := r.ReadFile("f", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadFile: %v", err)
+	}
+	if _, err := r.ReadFileInfo("f", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadFileInfo: %v", err)
+	}
+	if _, err := r.Lstat("f"); !errors.Is(err, ErrClosed) {
+		t.Errorf("Lstat: %v", err)
+	}
+	if err := r.MkdirAll("d", 0o755); !errors.Is(err, ErrClosed) {
+		t.Errorf("MkdirAll: %v", err)
+	}
+	if err := r.WriteFileExclusive("f", nil, 0o600); !errors.Is(err, ErrClosed) {
+		t.Errorf("WriteFileExclusive: %v", err)
+	}
+	if err := r.AppendFile("f", nil); !errors.Is(err, ErrClosed) {
+		t.Errorf("AppendFile: %v", err)
+	}
+	if _, err := r.ReadDirNames(".", 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("ReadDirNames: %v", err)
+	}
+	if err := r.Close(); !errors.Is(err, ErrClosed) {
+		t.Errorf("Close: %v", err)
+	}
+	if _, err := unix.FcntlInt(0, unix.F_GETFD, 0); err != nil {
+		t.Errorf("descriptor 0 was closed: %v", err)
 	}
 }
 

@@ -27,11 +27,10 @@ func RefuseHardLinks() ReadOption {
 // FileResult is what [Root.ReadFileInfo] returns.
 type FileResult struct {
 	Data []byte
+	// Info is what fstat reported on the descriptor the data came from.
+	// Info.HardLinked() tells a link count above one apart (a name other than
+	// the one read points at the same data); there is no separate field.
 	Info Info
-	// HardLinked is true when the file has a link count above one (a name
-	// other than the one read points at the same data). It is only set when
-	// the read was not told to refuse such a file.
-	HardLinked bool
 }
 
 // ReadFile reads the regular file at rel, at most max bytes. See the package
@@ -47,7 +46,8 @@ func (r *Root) ReadFile(rel string, max int64, opts ...ReadOption) ([]byte, erro
 }
 
 // ReadFileInfo is [Root.ReadFile] that also returns what fstat reported on
-// the descriptor the data came from, and whether the file is hard-linked.
+// the descriptor the data came from (Info.HardLinked reports a hard-linked
+// file).
 func (r *Root) ReadFileInfo(rel string, max int64, opts ...ReadOption) (*FileResult, error) {
 	const op = "read"
 	var cfg readConfig
@@ -64,9 +64,13 @@ func (r *Root) ReadFileInfo(rel string, max int64, opts ...ReadOption) (*FileRes
 		return nil, err
 	}
 	defer r.end()
-	// O_NONBLOCK keeps a FIFO from blocking the open; O_NOCTTY keeps a
-	// terminal device from becoming the controlling terminal. The file type
-	// is decided below, on the descriptor.
+	// O_NONBLOCK keeps a FIFO from blocking the open, and also keeps a lease
+	// a lead holds on the file (a process with the owner's uid can take one)
+	// from stalling the owner for the lease-break time: the open fails at
+	// once with EAGAIN. Do not drop it because fstat refuses FIFOs anyway.
+	// O_NOCTTY keeps a terminal device from becoming the controlling
+	// terminal. The file type is decided below, on the descriptor; a device's
+	// open has already run by then (see the package documentation).
 	fd, err := r.open(r.fd, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, classify(op, rel, err)
@@ -89,7 +93,7 @@ func (r *Root) ReadFileInfo(rel string, max int64, opts ...ReadOption) (*FileRes
 	if err != nil {
 		return nil, &Error{Op: op, Path: rel, Err: err}
 	}
-	return &FileResult{Data: data, Info: info, HardLinked: info.HardLinked()}, nil
+	return &FileResult{Data: data, Info: info}, nil
 }
 
 // readCapped reads fd to its end, refusing more than max bytes. hint is the

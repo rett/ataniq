@@ -14,7 +14,11 @@ import (
 
 // resolveFlags is what every lookup below the handle uses. NO_SYMLINKS
 // implies NO_MAGICLINKS; both are named so the intent reads from the code.
-const resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
+// NO_XDEV refuses to cross a mount point, bind mounts included, on any
+// component: a mount below the handle's folder is refused (EXDEV, reported as
+// [ErrEscapes]) and not read across. The handle's own folder may be a mount
+// root or on any file system; only a crossing below it is refused.
+const resolveFlags = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV
 
 // maxRelPath bounds a relative path (the kernel's PATH_MAX less the NUL).
 const maxRelPath = 4095
@@ -23,14 +27,22 @@ const maxRelPath = 4095
 // stand in for a kernel without openat2 or a filter that denies it.
 type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 
+// mkdiratFunc is the mkdirat system call; a test replaces it on its own Root.
+type mkdiratFunc func(dirfd int, path string, mode uint32) error
+
 // Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot].
-// All access goes through it. A Root is safe for concurrent use; Close waits
-// for calls in progress. The caller closes it.
+// All access goes through it, and only a Root from OpenRoot works: the zero
+// value refuses every call (and Close) with [ErrClosed]. A Root is safe for
+// concurrent use. The caller closes it; Close does not wait for calls in
+// progress (see [Root.Close]).
 type Root struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	fd      int
+	opened  bool // set by OpenRoot; false for the zero value
 	closed  bool
+	active  int // calls in progress; the descriptor stays open until they end
 	openat2 openat2Func
+	mkdirat mkdiratFunc
 }
 
 // OpenRoot opens the folder at path as a handle, with O_PATH, O_DIRECTORY,
@@ -38,7 +50,19 @@ type Root struct {
 // O_NOFOLLOW: path must be one the caller owns and trusts, with parents no
 // lead can change. A symbolic link at the path is refused with [ErrSymlink]
 // and a non-folder with [ErrNotDirectory].
+//
+// It then probes openat2 once, on the handle, with the flags every later call
+// uses. When the call does not work (the kernel lacks it, a filter denies it,
+// or the flags are not accepted) OpenRoot returns [ErrUnsupported] wrapping
+// the errno, so a start fails before any work is done. There is no fallback to
+// a path-based open.
 func OpenRoot(dir string) (*Root, error) {
+	return openRoot(dir, unix.Openat2)
+}
+
+// openRoot is OpenRoot with the openat2 call given, so a test can stand in
+// for a kernel without it.
+func openRoot(dir string, call openat2Func) (*Root, error) {
 	if dir == "" || strings.IndexByte(dir, 0) >= 0 {
 		return nil, &Error{Op: "open", Path: dir, Err: ErrInvalidArgument}
 	}
@@ -62,31 +86,57 @@ func OpenRoot(dir string) (*Root, error) {
 		}
 		return nil, &Error{Op: "open", Path: dir, Err: err}
 	}
-	return &Root{fd: fd, openat2: unix.Openat2}, nil
+	r := &Root{fd: fd, opened: true, openat2: call, mkdirat: unix.Mkdirat}
+	probe, err := r.open(fd, ".", unix.O_PATH|unix.O_DIRECTORY, 0)
+	if err != nil {
+		unix.Close(fd)
+		return nil, &Error{Op: "open", Path: dir, Err: refuse(ErrUnsupported, err)}
+	}
+	unix.Close(probe)
+	return r, nil
 }
 
-// Close releases the handle. A second Close returns [ErrClosed].
+// Close releases the handle and does not wait for a call in progress, so a
+// call that is stuck cannot hold Close (and its caller) with it. Every call
+// that starts after Close returns [ErrClosed]; a call already running
+// finishes with the descriptor it has, and the descriptor is closed when the
+// last of them ends (at once when none is running). A second Close, and
+// Close on a zero Root, return [ErrClosed]. The error of the underlying
+// close is returned only when the descriptor is closed by this call.
 func (r *Root) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if !r.opened || r.closed {
 		return &Error{Op: "close", Path: "", Err: ErrClosed}
 	}
 	r.closed = true
-	return unix.Close(r.fd)
-}
-
-// begin takes the read lock when the handle is open.
-func (r *Root) begin(op, rel string) error {
-	r.mu.RLock()
-	if r.closed {
-		r.mu.RUnlock()
-		return &Error{Op: op, Path: rel, Err: ErrClosed}
+	if r.active == 0 {
+		return unix.Close(r.fd)
 	}
 	return nil
 }
 
-func (r *Root) end() { r.mu.RUnlock() }
+// begin registers a call when the handle is open.
+func (r *Root) begin(op, rel string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.opened || r.closed {
+		return &Error{Op: op, Path: rel, Err: ErrClosed}
+	}
+	r.active++
+	return nil
+}
+
+// end unregisters a call; the last call out of a closed handle closes the
+// descriptor.
+func (r *Root) end() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active--
+	if r.closed && r.active == 0 {
+		unix.Close(r.fd)
+	}
+}
 
 // refuse joins a sentinel with the errno behind it, so both match errors.Is.
 func refuse(sentinel error, errno error) error {
