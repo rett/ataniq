@@ -1,8 +1,9 @@
 # Lead injection
 
 This guide describes the fenced message injection library, under
-`internal/inject`. It is for a contributor who will build the holder or the
-daemon, and for the owner, who must know what is established and what is not.
+`internal/inject`. It is for a contributor who will join it to the holder or
+the daemon, and for the owner, who must know what is established and what is
+not.
 
 The library is provisional and unqualified. It is built from recorded screens
 of one version of each agent. No live qualification of this code has been run.
@@ -17,9 +18,12 @@ is idle, and presses Enter only when the screen then shows the message in the
 composer. When it cannot tell, it writes nothing, or it leaves the pasted text
 where it is and does not press Enter.
 
-It is a library only. No daemon, no holder and no command uses it yet. Nothing
-here starts an agent, opens a terminal or touches a real one. The tests use
-recorded screens and a fake session.
+It is a library only. No daemon, no holder and no command uses it yet. The
+scratch-only holder of [the lead holder guide](lead-holder.md) answers an
+`inject` request with `disabled`, and the daemon skeleton of
+[the lead daemon guide](lead-daemon.md) has no queue and delivers nothing.
+Nothing here starts an agent, opens a terminal or touches a real one. The tests
+use recorded screens and a fake session.
 
 The packages are:
 
@@ -32,9 +36,9 @@ The packages are:
 | `internal/inject` | The fence (`Deliver`) and the interface a holder implements for it. |
 | `internal/inject/command` | Message admission and the durable command state machine. |
 
-The queue lives in the daemon and the fence lives in the holder, so `command`
-and the fence do not import each other. Only a test joins them. The daemon
-passes the fence result to the command machine as plain values.
+The queue is meant for the daemon and the fence for the holder, so `command`
+and the fence do not import each other. Only a test joins them. The daemon is
+to pass the fence result to the command machine as plain values.
 
 ## The rules
 
@@ -42,8 +46,10 @@ These are the nine rules, with the place that enforces each.
 
 1. **The daemon is the only injector.** A supervisor or a lead asks the daemon;
    it never reaches a holder. This library does not enforce it, because the
-   daemon is not built. It fixes the shape: `command` is for the daemon and
-   `Deliver` is for the holder, and nothing else joins them.
+   daemon that holds the queue is not built: `ataniqd` is a read-only skeleton
+   (see [the lead daemon guide](lead-daemon.md)). It fixes the shape: `command`
+   is for the daemon and `Deliver` is for the holder, and nothing else joins
+   them.
 2. **A message is data, with a fixed header.** The first line is
    `[ataniq-msg id=<id> from=<from> kind=<kind>]`. `command.HeaderLine` and
    `command.RenderText` make it. `inject.Deliver` refuses a text whose header
@@ -105,6 +111,8 @@ refused.
 
 The attended runs, and every recorded screen, came from an earlier prototype
 holder and fence, not from this library, and used single-line messages only.
+That prototype is not the `ataniq-holder` of
+[the lead holder guide](lead-holder.md), whose injection is a disabled stub.
 This library has never been run against a real agent. See
 [Limits](#limits-and-what-is-not-established).
 
@@ -748,7 +756,8 @@ with an invalid digest, and a hold that repeats the last piece of a held queue.
 
 **Blocked notice.** A result of `blocked` returns the command to the queue and
 gives the daemon the notice "this lead is waiting for an approval", once for a
-blocked spell. The daemon delivers the notice; it is not built.
+blocked spell. Delivering the notice is the daemon's part, and it is not
+built.
 
 ## Admission
 
@@ -952,16 +961,22 @@ bluntly as we can state them.
 
 ## Not built here
 
-- The daemon: the queue process, the journal store, the deadline and fence
-  timeout that must agree, the queue time limit, and the owner's decisions.
-- The holder and its PTY and emulator, which implement `Session`, `Locked` and
-  `View`.
+- The daemon's part: the queue process, the journal store, the deadline and
+  fence timeout that must agree, the queue time limit, and the owner's
+  decisions. The skeleton `ataniqd` of [the lead daemon guide](lead-daemon.md)
+  is read-only and has none of it.
+- A holder that implements `Session`, `Locked` and `View`. The scratch-only
+  holder of [the lead holder guide](lead-holder.md) has the PTY, the emulator
+  and the input lock, and does not implement them.
 - Delivery confirmation from the agent's conversation file, and the rules for
   the daemon that go with it (see [Durable commands](#durable-commands)). None
   of it is built.
-- The control socket operation that carries an injection.
+- The control socket operation that carries an injection. The scratch-only
+  holder's control socket has an `inject` request and always refuses it with
+  `disabled`.
 - The notices to the owner, including "this lead is waiting for an approval".
-- The sandbox.
+- The sandbox. [The lead sandbox guide](lead-sandbox.md) describes a proposal,
+  unqualified, that nothing here runs in.
 
 ### What must be checked live before use
 
