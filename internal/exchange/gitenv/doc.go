@@ -42,14 +42,14 @@
 //     as "-o" take the next argument as its value, even the end-of-options
 //     marker, and would then read what follows as an option. There is no
 //     exception: "git config" takes "--file=PATH", not "--file PATH". After
-//     the marker git reads no options, so the rest is not checked. A caller that builds arguments from untrusted
-//     text (a ref name, for example) places "--end-of-options" or a fully
-//     qualified ref before it. The options that name a program to run
-//     ("--upload-pack", "--receive-pack", "--exec", "--ext-diff") are
-//     refused in every form, also abbreviated as git accepts. The one way to
-//     name an upload-pack program is [Cmd.UploadPack], for a fetch from a
-//     local path; Argv quotes it, and the field comment says what the
-//     program receives.
+//     the marker git reads no options, so the rest is not checked. A caller
+//     that builds arguments from untrusted text (a ref name, for example)
+//     places "--end-of-options" or a fully qualified ref before it. The
+//     options that name a program to run ("--upload-pack",
+//     "--receive-pack", "--exec", "--ext-diff") are refused in every form,
+//     also abbreviated as git accepts. The one way to name an upload-pack
+//     program is [Cmd.UploadPack], for a fetch from a local path; Argv
+//     quotes it, and the field comment says what the program receives.
 //   - It does not confine the process: no namespace, no file system limit, no
 //     network limit.
 package gitenv
