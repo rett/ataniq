@@ -25,7 +25,9 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 
 1. validates the configuration and looks at the host for what it names;
 2. makes an attempt folder with a random name under the campaign folder;
-3. records the versions of the tools;
+3. records the versions of the tools (each question has a time limit, and does
+   not wait for the output of a process the tool left behind longer than a
+   second after the tool has ended; such a case is recorded in the step);
 4. checks that the lead's tree is its own full clone, makes the mount points
    when the configuration says no lead has run, and checks them;
 5. derives the sandbox's `resolv.conf` from the host and writes it into a folder

@@ -200,13 +200,39 @@ func init() {
 		return
 	}
 	switch {
+	case len(os.Args) == 2 && os.Args[1] == "--hold":
+		holdUntilReleased()
 	case name == toolPrefix+"good":
 		fmt.Println("tool 1.2.3")
 		fmt.Println("second line")
 	case name == toolPrefix+"bad":
 		os.Exit(3)
+	case name == toolPrefix+"leaves-child":
+		// Prints its version and ends, leaving a process behind that holds
+		// the same output open until the test releases it.
+		fmt.Println("tool 4.5.6")
+		child := exec.Command(os.Args[0], "--hold")
+		child.Env = []string{}
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(98)
+		}
 	default:
 		os.Exit(99)
+	}
+	os.Exit(0)
+}
+
+// holdUntilReleased waits for the file "release" next to the program, for at
+// most a minute, then ends. The test makes the file; the wait only keeps a
+// process alive and is not a synchronisation of the test.
+func holdUntilReleased() {
+	release := filepath.Join(filepath.Dir(os.Args[0]), "release")
+	for i := 0; i < 600; i++ {
+		if _, err := os.Lstat(release); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	os.Exit(0)
 }
@@ -243,6 +269,35 @@ func TestExecLauncherToolVersions(t *testing.T) {
 	v = ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: "relative", Pasta: filepath.Dir(tools["good"]) + "/missing"})
 	if len(v.Errors) != 2 {
 		t.Errorf("errors: %v", v.Errors)
+	}
+}
+
+// A tool that leaves a process behind holding its output open does not hold
+// the question up: it returns after the delay, with the version the tool
+// printed and the fact that the output was not closed.
+func TestExecLauncherVersionQuestionDoesNotWaitForAChildOfTheTool(t *testing.T) {
+	dir, tools := toolLinks(t, "good", "leaves-child")
+	release := func() {
+		if err := os.WriteFile(dir+"/release", nil, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(release)
+	got := make(chan ToolVersions, 1)
+	go func() {
+		got <- ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: tools["leaves-child"], Pasta: tools["good"]})
+	}()
+	select {
+	case v := <-got:
+		if v.Bwrap != "tool 4.5.6" || v.Pasta != "tool 1.2.3" {
+			t.Errorf("versions: %+v", v)
+		}
+		if len(v.Errors) != 1 || !strings.Contains(v.Errors[0], "bwrap --version") || !strings.Contains(v.Errors[0], "WaitDelay") {
+			t.Errorf("errors: %v", v.Errors)
+		}
+	case <-time.After(30 * time.Second):
+		release()
+		t.Fatal("the version question waited for the output of a process the tool left behind")
 	}
 }
 

@@ -32,6 +32,10 @@ const (
 	versionTimeout = 10 * time.Second
 	// maxVersionBytes bounds what a version question keeps.
 	maxVersionBytes = 4096
+	// versionWaitDelay is how long a version question waits for its output
+	// after the tool has ended or been killed: a process the tool left
+	// behind may hold the pipe open for good.
+	versionWaitDelay = time.Second
 )
 
 // ExecLauncher is the real [Launcher]. It starts the plan's command line with
@@ -313,11 +317,10 @@ func (ExecLauncher) ToolVersions(ctx context.Context, tools ToolPaths) ToolVersi
 		dst        *string
 	}{{"bwrap", tools.Bwrap, &v.Bwrap}, {"pasta", tools.Pasta, &v.Pasta}} {
 		out, err := runVersion(ctx, t.path)
+		*t.dst = out
 		if err != nil {
 			v.Errors = append(v.Errors, t.name+" --version: "+assert.EscapeDetail(err.Error()))
-			continue
 		}
-		*t.dst = out
 	}
 	return v
 }
@@ -331,12 +334,22 @@ func runVersion(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, path, "--version")
 	cmd.Env = []string{}
 	cmd.Dir = "/"
+	// The output is read through a pipe, which a child of the tool can keep
+	// open: without a delay Run would wait for it for good, past the time
+	// limit.
+	cmd.WaitDelay = versionWaitDelay
 	buf := newBoundedBuffer(maxVersionBytes)
 	cmd.Stdout, cmd.Stderr = buf, buf
-	if err := cmd.Run(); err != nil {
-		return "", err
+	err := cmd.Run()
+	switch {
+	case err == nil:
+		return firstLine(buf.snapshot().Data), nil
+	case errors.Is(err, exec.ErrWaitDelay):
+		// The tool itself ended well and printed its version, but something it
+		// started kept the output open: the version is a fact, and so is this.
+		return firstLine(buf.snapshot().Data), err
 	}
-	return firstLine(buf.snapshot().Data), nil
+	return "", err
 }
 
 // firstLine is the first line of the text, escaped and bounded.
