@@ -114,14 +114,14 @@ func testHost(t *testing.T) *hostFixture {
 	parentPath := "/owned/" + a.Slice
 	pp := map[string]string{"Id": a.Slice, "LoadState": "loaded", "ActiveState": "active", "StopWhenUnneeded": "no", "ControlGroup": parentPath, "InvocationID": strings.Repeat("a", 32)}
 	pp["Job"] = "0"
-	x.parent = &Unit{Properties: pp, Boundary: Boundary{parentPath, FileIdentity{Device: 7, Inode: 10}}}
+	x.parent = &Unit{Properties: pp, Boundary: Boundary{Path: parentPath, Identity: FileIdentity{Device: 7, Inode: 10}}}
 	sp := map[string]string{"Id": a.Service, "LoadState": "loaded", "ActiveState": "active", "ControlGroup": parentPath + "/" + a.Service, "Slice": a.Slice, "InvocationID": strings.Repeat("b", 32), "Description": "ataniq-qualification-" + a.ID, "Type": "exec", "Transient": "yes", "KillMode": "control-group", "NoNewPrivileges": "yes", "RuntimeMaxUSec": "20s", "TimeoutStopUSec": "3s", "MemoryMax": "67108864", "TasksMax": "32", "CPUQuotaPerSecUSec": "1s", "LimitNOFILE": "1024", "LimitFSIZE": "131072", "StandardInput": "file", "StandardOutput": "append", "StandardError": "append", "MainPID": "100"}
 	sp["ExecStart"] = "{ path=" + filepath.Join(p, "driver") + " ; argv[]=" + filepath.Join(p, "driver") + " private-inject " + p + " ; ignore_errors=no ; }"
 	sp["Restart"] = "no"
 	sp["RemainAfterExit"] = "no"
 	sp["Job"] = "0"
 	main := fixtureProcess(100, a.Snapshots["driver"].Identity, sp["ControlGroup"])
-	x.service = &Unit{Properties: sp, Boundary: Boundary{sp["ControlGroup"], FileIdentity{Device: 7, Inode: 11}}, Main: &main}
+	x.service = &Unit{Properties: sp, Boundary: Boundary{Path: sp["ControlGroup"], Identity: FileIdentity{Device: 7, Inode: 11}}, Main: &main}
 	a.Streams = map[string]FileIdentity{}
 	for _, name := range []string{"request", "output", "stderr"} {
 		file := name

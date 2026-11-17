@@ -123,7 +123,7 @@ func prepareDescriptorExec(a *Attempt) (*descriptorExec, error) {
 			kind = fd1Kind(d.FD)
 			wantAccess = fd1ExpectedFlags(d.FD) & (syscall.O_ACCMODE | syscall.O_APPEND)
 		}
-		if syscall.Fstat(d.FD, &st) != nil || err != nil || e != 0 || flags != 0 || st.Mode&syscall.S_IFMT != kind || kind == syscall.S_IFREG && st.Nlink != 1 || (FileIdentity{st.Dev, st.Ino, st.Uid}) != d.Identity || int(access)&(syscall.O_ACCMODE|syscall.O_APPEND|0x200000) != wantAccess {
+		if syscall.Fstat(d.FD, &st) != nil || err != nil || e != 0 || flags != 0 || st.Mode&syscall.S_IFMT != kind || kind == syscall.S_IFREG && st.Nlink != 1 || (FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}) != d.Identity || int(access)&(syscall.O_ACCMODE|syscall.O_APPEND|0x200000) != wantAccess {
 			return nil, errors.New("final descriptor identity/access/flags mismatch")
 		}
 		p.fds = append(p.fds, terminalFD{d.FD, st, int(access), permittedForAttempt(a, d.FD)})

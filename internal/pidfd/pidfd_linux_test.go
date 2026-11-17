@@ -220,6 +220,13 @@ func TestOriginalEnded(t *testing.T) {
 			t.Errorf("%q: %v %v, want %s", stat, ended, err, want)
 		}
 	}
+	// An impossible start time is an error whatever the text says, even for a
+	// zombie or a process that would otherwise differ.
+	for _, state := range []string{"S", "Z", "X"} {
+		if ended, err := OriginalEnded(0, statLine(state, "123")); err == nil || ended || err.Error() != "invalid recovery starttime" {
+			t.Errorf("start 0, state %s: %v %v", state, ended, err)
+		}
+	}
 }
 
 func TestReadStatAndEndedAgainstOwnProcess(t *testing.T) {
@@ -248,6 +255,32 @@ func TestReadStatAndEndedAgainstOwnProcess(t *testing.T) {
 	}
 	if _, err := ReadStat(0); err == nil {
 		t.Fatal("pid 0 read")
+	}
+}
+
+func TestEndedImpossibleIdentity(t *testing.T) {
+	boot, err := BootID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		pid   int
+		start uint64
+	}{
+		{"pid zero", 0, 12345},
+		{"negative pid", -1, 12345},
+		{"start zero for a living process", os.Getpid(), 0},
+		{"both impossible", 0, 0},
+	} {
+		if ended, err := Ended(boot, tc.pid, tc.start); err == nil || ended || err.Error() != "invalid process identity" {
+			t.Errorf("%s: %v %v", tc.name, ended, err)
+		}
+	}
+	// The identity is checked before the boot, so a different boot does not
+	// hide it.
+	if ended, err := Ended("11111111-1111-1111-1111-111111111111", 0, 1); err == nil || ended || err.Error() != "invalid process identity" {
+		t.Errorf("pid zero, other boot: %v %v", ended, err)
 	}
 }
 

@@ -174,7 +174,7 @@ func entryFD(pid, fd int) (R1EntryFD, error) {
 		return R1EntryFD{}, err
 	}
 	flags, mount, err := entryFDInfo(b)
-	return R1EntryFD{fd, FileIdentity{st.Dev, st.Ino, st.Uid}, st.Mode, st.Rdev, flags, mount}, err
+	return R1EntryFD{fd, FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}, st.Mode, st.Rdev, flags, mount}, err
 }
 
 func entryMounts(data []byte) (null, dev, control string, err error) {
@@ -300,14 +300,14 @@ func entryEndpoints(main, child Process) (R1EntryEndpoints, error) {
 	if err := syscall.Stat(base+"/dev/null", &st); err != nil {
 		return e, err
 	}
-	e.Null = R1NullDevice{FileIdentity{st.Dev, st.Ino, st.Uid}, st.Mode, st.Gid, st.Rdev}
+	e.Null = R1NullDevice{FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}, st.Mode, st.Gid, st.Rdev}
 	if err := syscall.Stat(base+R1ControlTarget, &st); err != nil {
 		return e, err
 	}
 	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR || st.Mode&0777 != 0700 {
 		return e, errors.New("wrong workload control directory")
 	}
-	e.Control = FileIdentity{st.Dev, st.Ino, st.Uid}
+	e.Control = FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}
 	b, err := kernelRead(fmt.Sprintf("/proc/%d/mountinfo", child.PID), 32768)
 	if err != nil {
 		return e, err

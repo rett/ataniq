@@ -11,10 +11,10 @@ import (
 
 func capturedFD1LegacyPlan(role, policy string) *Attempt {
 	c := HostConfig{Version: 1, Campaign: "/owned/campaign", Driver: "/owned/driver", Probe: "/owned/probe", Bwrap: "/owned/bwrap", BPF: "/owned/bpf", Systemctl: "/owned/systemctl", SystemdRun: "/owned/systemd-run", Role: role, RoleID: "0011223344556677", RunID: "0123456789abcdef", RequestID: "fedcba9876543210", Case: "inventory", ReviewedBPF: true}
-	a := &Attempt{ID: strings.Repeat("a", 32), Config: c, Profile: HostProfile, DescriptorPolicy: policy, Boot: "00000000-0000-0000-0000-000000000000", FixtureNonce: strings.Repeat("e", 32), Subjects: map[string]Subject{}, Snapshots: map[string]Subject{}, Streams: map[string]FileIdentity{"request": {1, 31, 1000}, "output": {1, 32, 1000}, "stderr": {1, 33, 1000}}}
+	a := &Attempt{ID: strings.Repeat("a", 32), Config: c, Profile: HostProfile, DescriptorPolicy: policy, Boot: "00000000-0000-0000-0000-000000000000", FixtureNonce: strings.Repeat("e", 32), Subjects: map[string]Subject{}, Snapshots: map[string]Subject{}, Streams: map[string]FileIdentity{"request": {Device: 1, Inode: 31, UID: 1000}, "output": {Device: 1, Inode: 32, UID: 1000}, "stderr": {Device: 1, Inode: 33, UID: 1000}}}
 	path := filepath.Join(c.Campaign, a.ID)
 	for j, n := range []string{"driver", "probe", "bwrap", "bpf", "systemctl", "systemd-run"} {
-		s := Subject{Path: selected(c)[n], Identity: FileIdentity{1, uint64(j + 10), 1000}, SHA256: syntheticDigest([]byte(n))}
+		s := Subject{Path: selected(c)[n], Identity: FileIdentity{Device: 1, Inode: uint64(j + 10), UID: 1000}, SHA256: syntheticDigest([]byte(n))}
 		a.Subjects[n] = s
 		if j < 4 {
 			s.Path = filepath.Join(path, n)
@@ -22,7 +22,7 @@ func capturedFD1LegacyPlan(role, policy string) *Attempt {
 			a.Snapshots[n] = s
 		}
 	}
-	a.Fixture = Subject{Path: filepath.Join(path, "fixtures", "fake-file"), Identity: FileIdentity{1, 50, 1000}, SHA256: syntheticDigest(fixtureBytes(a.FixtureNonce))}
+	a.Fixture = Subject{Path: filepath.Join(path, "fixtures", "fake-file"), Identity: FileIdentity{Device: 1, Inode: 50, UID: 1000}, SHA256: syntheticDigest(fixtureBytes(a.FixtureNonce))}
 	a.Request = hostRequest(a)
 	a.Command = command(a, path)
 	a.Launch = launch(a, path)
@@ -59,7 +59,7 @@ func TestFD1CapturedLegacyEncodings(t *testing.T) {
 		if string(b) != `{"version":1,"run_id":"0123456789abcdef","request_id":"fedcba9876543210","case":"inventory","max_duration_ms":1500,"max_bytes":4096}` {
 			t.Fatal("old request encoding changed", string(b))
 		}
-		i := Injection{Version: 1, Attempt: a.ID, Invocation: strings.Repeat("b", 32), Process: fixtureProcess(100, a.Snapshots["driver"].Identity, "/owned/service"), Boundary: Boundary{"/owned/service", FileIdentity{1, 90, 1000}}, Fixture: a.Fixture, Descriptors: expectedDescriptors(a), Profile: a.Profile, RunID: a.Config.RunID, RequestID: a.Config.RequestID, RoleID: a.Config.RoleID, DescriptorPolicy: tc.policy}
+		i := Injection{Version: 1, Attempt: a.ID, Invocation: strings.Repeat("b", 32), Process: fixtureProcess(100, a.Snapshots["driver"].Identity, "/owned/service"), Boundary: Boundary{Path: "/owned/service", Identity: FileIdentity{Device: 1, Inode: 90, UID: 1000}}, Fixture: a.Fixture, Descriptors: expectedDescriptors(a), Profile: a.Profile, RunID: a.Config.RunID, RequestID: a.Config.RequestID, RoleID: a.Config.RoleID, DescriptorPolicy: tc.policy}
 		a.Injector = &i
 		a.PlanSHA256 = tc.plan
 		b, _ = json.Marshal(i)
