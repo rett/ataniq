@@ -327,7 +327,8 @@ func run(args []string, d deps) int {
 			return exitLocked
 		}
 		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "start-failed"})
-		out.line("cannot start the agent: %v (%s)", err, staleStateNote)
+		// The error names the agent's path, which the journal has no need of.
+		out.line("cannot start the agent: %s (%s)", startReason(err), staleStateNote)
 		return exitFail
 	}
 	defer sess.Close()
@@ -405,6 +406,17 @@ func stopSignalPending(sigc <-chan os.Signal) *syscall.Signal {
 			return stop
 		}
 	}
+}
+
+// startReason is why the session could not start, as far as the operating
+// system says: the errno's text (no such file or directory, permission denied)
+// and nothing of the paths in the error.
+func startReason(err error) string {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno.Error()
+	}
+	return "the session did not start"
 }
 
 func signalName(s syscall.Signal) string {
