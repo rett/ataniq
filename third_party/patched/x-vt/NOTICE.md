@@ -36,11 +36,11 @@ Patches, applied in this order to the files of the module as released:
    reached the cap, or that has lost a rune, is neither reopened nor grown by
    the next write: the mark is dropped and counted, and the cluster stays the
    open one and capped. (`OpenCluster` reports the cluster's text only, so a
-   copy of the screen that continues it does not know that it is capped.) A
-   run of marks past the cap costs one segmentation of at most 68 bytes per
-   rune: linear time, no allocation. This patch also adds the `Counters`
-   struct and the `Counters` accessor on `Emulator` and `SafeEmulator` that
-   the later caps use.
+   copy of the screen that continues it does not know that it is capped;
+   `State`, patch 11, reports it.) A run of marks past the cap costs one
+   segmentation of at most 68 bytes per rune: linear time, no allocation.
+   This patch also adds the `Counters` struct and the `Counters` accessor on
+   `Emulator` and `SafeEmulator` that the later caps use.
 5. `vt: record only a fixed table of modes` (`mode.go`, `csi_mode.go`,
    `limits.go`, `mode_test.go`). The emulator kept every mode number a session
    set in a map, so a session could grow it without bound (100 000 distinct
@@ -136,6 +136,31 @@ Patches, applied in this order to the files of the module as released:
    screens and both saved cursors into the new size. Nothing changes for a
    sequence that did not index past the buffer, except that the cursor and
    the region it leaves are inside the screen.
+11. `vt: add State, SetState, Quiescent and ModeSettings` (`state.go`,
+   `safe_emulator.go`, `state_test.go`). The session pane hands the screen of
+   one emulator to another, which then follows the same output. `State`
+   returns a copy of everything of an emulator that later output can depend
+   on, and `SetState` replaces the whole state of an emulator, its size
+   included, with one, or refuses it and leaves the emulator as it was: the
+   sizes, the strings, the links (through the admission of the screen's link
+   table, so the cells share one copy of each), the modes, the cursors and the
+   open cluster are checked against the caps first. The state holds both
+   screens (cells, cursor, saved cursor, scroll region, link table), the
+   modes with a setting, the character sets and shifts, the pending wrap, the
+   tab stops, the last character, the colours the session set, and the open
+   cluster with whether it is capped (what `OpenCluster` leaves out). It does
+   not hold what the caller gives the emulator (callbacks, handlers, logger,
+   default colours), what only the API sets (the indexed colours, the
+   scrollback), what is derived (damage, counters, scratch buffers) or the
+   parser, which `SetState` returns to its ground state. `Quiescent` reports
+   whether the parser is at its ground state, which is when a state may be
+   taken: nothing is half received. `ModeSettings` and `RecordedModes` list
+   the settings and the table of modes. `SafeEmulator` has locked versions of
+   the first three and `ModeSettings`. The test of the pair is that an
+   emulator set from the state of another stays equal to it for every write
+   that follows; an inventory test lists every field of the emulator, its
+   screens and its cursors, with whether the state carries it, so that a field
+   added by a later version of the module is decided on.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
