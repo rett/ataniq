@@ -52,9 +52,15 @@ const (
 	// MaxOptions is how many distinct option tokens are kept.
 	MaxOptions = 16
 
-	// MaxNotes is how many notes a result carries. Further notes are
-	// replaced by one line saying so.
+	// MaxNotes is the most notes a result carries. Per-line notes stop
+	// short of it by reservedNotes, so the summary notes always fit; notes
+	// that did not fit are counted in one final line.
 	MaxNotes = 32
+
+	// reservedNotes is the room kept for notes that are not about one line:
+	// the "derived from" line, the other-keyword summary, the loopback and
+	// nameserver-cap summaries, and the overflow line.
+	reservedNotes = 5
 
 	// maxQuoted bounds how much of an untrusted token a note repeats.
 	maxQuoted = 48
@@ -170,13 +176,23 @@ type parsed struct {
 	options  []string
 	rejected int
 	notes    []string
+	dropped  int // per-line notes that did not fit
 	other    int // lines with a keyword that is not kept
 }
 
+// note keeps a per-line note while there is room beyond the reserve, and
+// counts it otherwise.
 func (p *parsed) note(format string, args ...any) {
-	if len(p.notes) < MaxNotes {
+	if len(p.notes) < MaxNotes-reservedNotes {
 		p.notes = append(p.notes, fmt.Sprintf(format, args...))
+		return
 	}
+	p.dropped++
+}
+
+// summary keeps a note about the file as a whole, in the reserved room.
+func (p *parsed) summary(format string, args ...any) {
+	p.notes = append(p.notes, fmt.Sprintf(format, args...))
 }
 
 // quote repeats an untrusted token in a note, escaped and truncated.
@@ -234,7 +250,7 @@ func parse(content []byte) (parsed, error) {
 		}
 	}
 	if p.other > 0 {
-		p.note("%d line(s) with other keywords ignored", p.other)
+		p.summary("%d line(s) with other keywords ignored", p.other)
 	}
 	return p, nil
 }
@@ -399,11 +415,11 @@ func validOption(o string) bool {
 // build turns a parsed file into the result, dropping loopback servers and
 // refusing when none is left.
 func build(src Source, p parsed, why string) (Result, error) {
+	// The notes of the parse leave room for the notes added here: at most the
+	// why line, the loopback and cap summaries and the overflow line.
 	res := Result{Source: src, Rejected: p.rejected, Notes: p.notes}
 	addNote := func(format string, args ...any) {
-		if len(res.Notes) < MaxNotes {
-			res.Notes = append(res.Notes, fmt.Sprintf(format, args...))
-		}
+		res.Notes = append(res.Notes, fmt.Sprintf(format, args...))
 	}
 	if why != "" {
 		res.Notes = append([]string{why}, res.Notes...)
@@ -420,15 +436,18 @@ func build(src Source, p parsed, why string) (Result, error) {
 	if res.DroppedLoopback > 0 {
 		addNote("%d loopback nameserver(s) dropped", res.DroppedLoopback)
 	}
+	if len(usable) > MaxNameservers {
+		addNote("%d nameserver(s) beyond the first %d ignored, as the resolver does", len(usable)-MaxNameservers, MaxNameservers)
+		usable = usable[:MaxNameservers]
+	}
+	if p.dropped > 0 {
+		addNote("%d further note(s) not shown", p.dropped)
+	}
 	if len(usable) == 0 {
 		if res.DroppedLoopback == 0 {
 			return res, &Refusal{Reason: fmt.Sprintf("the %s has no usable nameserver", src)}
 		}
 		return res, &Refusal{Reason: fmt.Sprintf("the %s has only loopback nameservers (%d dropped); there is no route from the sandbox to a host loopback service", src, res.DroppedLoopback)}
-	}
-	if len(usable) > MaxNameservers {
-		addNote("%d nameserver(s) beyond the first %d ignored, as the resolver does", len(usable)-MaxNameservers, MaxNameservers)
-		usable = usable[:MaxNameservers]
 	}
 	res.Nameservers = usable
 	res.Search = p.search

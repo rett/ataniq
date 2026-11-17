@@ -2,6 +2,7 @@ package sandboxnet
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/netip"
 	"strings"
@@ -374,6 +375,7 @@ func TestNotesAreBounded(t *testing.T) {
 	if len(res.Notes) > MaxNotes {
 		t.Errorf("%d notes", len(res.Notes))
 	}
+	notesContain(t, res, "further note(s) not shown")
 	for _, n := range res.Notes {
 		if len(n) > 200 {
 			t.Errorf("note of %d bytes", len(n))
@@ -382,6 +384,51 @@ func TestNotesAreBounded(t *testing.T) {
 	if res.Rejected != 100 {
 		t.Errorf("rejected %d", res.Rejected)
 	}
+}
+
+func TestNotesAreBoundedOnTheStubPath(t *testing.T) {
+	// Many bad lines in the upstream file must not crowd out the why line, the
+	// loopback summary or the nameserver-cap summary, and the bound holds.
+	var b strings.Builder
+	b.WriteString("nameserver 192.0.2.1\nnameserver 127.0.0.1\n")
+	for i := 0; i < 60; i++ {
+		b.WriteString("nameserver bad\n")
+	}
+	b.WriteString("nameserver 192.0.2.2\nnameserver 192.0.2.3\nnameserver 192.0.2.4\n")
+	b.WriteString(strings.Repeat("foo bar\n", 3))
+	res, err := Derive(Input{HostContent: []byte(stubFile), HostRealPath: SystemdStubPath, UpstreamPresent: true, UpstreamContent: []byte(b.String())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Notes) > MaxNotes {
+		t.Errorf("%d notes", len(res.Notes))
+	}
+	if !strings.Contains(res.Notes[0], "stub") {
+		t.Errorf("first note %q", res.Notes[0])
+	}
+	notesContain(t, res, "1 loopback nameserver(s) dropped")
+	notesContain(t, res, "1 nameserver(s) beyond the first 3 ignored")
+	notesContain(t, res, "3 line(s) with other keywords ignored")
+	// 60 bad lines, of which the per-line room holds MaxNotes-reservedNotes.
+	notesContain(t, res, fmt.Sprintf("%d further note(s) not shown", 60-(MaxNotes-reservedNotes)))
+	if res.Rejected != 60 {
+		t.Errorf("rejected %d", res.Rejected)
+	}
+}
+
+func TestNotesAreBoundedOnARefusal(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("nameserver 127.0.0.1\n")
+	for i := 0; i < 100; i++ {
+		b.WriteString("nameserver bad\n")
+	}
+	res, err := Derive(Input{HostContent: []byte(b.String())})
+	mustContain(t, refusalReason(t, err), "only loopback")
+	if len(res.Notes) > MaxNotes {
+		t.Errorf("%d notes", len(res.Notes))
+	}
+	notesContain(t, res, "1 loopback nameserver(s) dropped")
+	notesContain(t, res, "further note(s) not shown")
 }
 
 func TestRefusalMatchesSentinel(t *testing.T) {
