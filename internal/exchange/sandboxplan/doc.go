@@ -16,12 +16,15 @@
 // # What this package does not do
 //
 // It starts nothing: no process, no namespace, no service. It reads no file
-// and opens no network connection. The real launch plan is built elsewhere; this package only
-// defines how a caller asks for one.
+// and opens no network connection. The real launch plan is built elsewhere;
+// this package only defines how a caller asks for one.
 //
-// A caller that has no planner, or a planner with no sandbox for a request,
-// must refuse the request with [ErrNotConfigured] and never run the command
-// unsandboxed.
+// [Template] is a planner that fills in an argv the owner wrote. It is not a
+// statement that the argv is a sandbox. Nothing here checks that the command
+// confines anything: the owner writes the template, and qualification of the
+// sandbox is a separate step. A caller that has no planner, or a planner with
+// no template for a request, must refuse the request with [ErrNotConfigured]
+// and never run the command unsandboxed.
 //
 // The helpers [ShellQuote], [ParseMeasure] and [ValidName] are the checks the
 // callers share: quoting an argv for git's --upload-pack option, reading the
