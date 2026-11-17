@@ -153,7 +153,13 @@
 // After the sign-off the code runs as the owner, as any merged code does. The
 // review at intake is the boundary: what the owner signs is what enters
 // the history. A verification pass is evidence, not proof (see package
-// verify). This package cannot tell who typed the sign-off. The lead cannot
+// verify). Any passing record for the project and the tip counts, whatever
+// gates it ran: this package does not compare the record's plan (gates) with
+// the project's current gates or the record's lead ref with the review's. The
+// gates that were run are in the [IntakeRecord] that [Integrate] returns, in
+// its Verification field. The command that calls [Integrate] must show them
+// to the owner before the sign-off (with the review output) and after it (with
+// the result). This package cannot tell who typed the sign-off. The lead cannot
 // run it, because the mirror is read-only in its sandbox and the records
 // folder is not mounted there; that is a property of the sandbox plan and of
 // the command that calls this package, not something this package checks.

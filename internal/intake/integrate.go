@@ -86,7 +86,13 @@ type IntegrateRequest struct {
 //     [ErrMoved]; the error names the old and the new commit ids.
 //  3. [Review.CheckSignOff] must pass.
 //  4. The newest verification record of the store for this project and tip
-//     must be a clean pass, else [ErrNotVerified].
+//     must be a clean pass, else [ErrNotVerified]. Any passing record for
+//     the project and the tip counts, whatever gates it ran: the plan of
+//     the record is not compared with the project's gates. The gates that
+//     were run are in the returned record (Verification.Gates and
+//     Verification.PlanDigest), and the command that calls Integrate must
+//     show them to the owner before the sign-off, with the review output,
+//     and after it, with the result.
 //  5. The target is moved with one compare-and-swap, git update-ref with the
 //     old value being the base the review saw, in one transaction on standard
 //     input. No reflog message is written: the intake record is the record.
