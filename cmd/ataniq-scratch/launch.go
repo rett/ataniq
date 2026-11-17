@@ -81,6 +81,13 @@ func unitName(name string) string { return "ataniq-scratch-" + name }
 
 // agentEnv is the whole environment of the agent: TERM, HOME (the disposable
 // home), PATH, LANG and each --env. Nothing else is inherited.
+//
+// The holder builds the agent's environment from the --env list it is given
+// and from nothing else: exactly this list, and the holder must not pass its
+// own environment on. That matters in unit mode, where the holder itself runs
+// with the user manager's environment (the real HOME and whatever the session
+// imported), while with --direct it gets only PATH and LANG. The holder
+// command's task asserts this rule.
 func agentEnv(home, lang string, extra []string) []string {
 	env := []string{agentTerm, "HOME=" + home, agentPath, "LANG=" + lang}
 	return append(env, extra...)
@@ -115,14 +122,25 @@ func holderArgs(l layout, epoch uint64, intent string, cols, rows int, env, agen
 // systemdRunArgv is the command that runs the holder in a transient systemd
 // user unit (the lead-hosting design, section 1.1). It sets no other
 // hardening property: the design marks those for qualification.
+//
+// --expand-environment=no is not hardening. Without it the service manager
+// expands $VAR and ${VAR} in every word after "--" from the user manager's
+// environment (and turns $$ into $): in the holder's options, in each --env
+// value and in the agent's argv. That would hand the caller's real HOME and
+// session variables to the agent and rewrite the user's argv, and --direct
+// does neither. The option needs systemd 254 or newer.
+//
+// --collect is the same property as -p CollectMode=inactive-or-failed (the
+// systemd-run manual calls it a shortcut for it), so the property is not
+// given a second time.
 func systemdRunArgv(name, holder string, hArgs []string) []string {
 	argv := []string{
 		"systemd-run", "--user", "--unit=" + unitName(name), "--collect", "--quiet",
+		"--expand-environment=no",
 		"-p", "KillMode=control-group",
 		"-p", "Restart=no",
 		"-p", "TimeoutStopSec=2",
 		"-p", "NoNewPrivileges=yes",
-		"-p", "CollectMode=inactive-or-failed",
 		"--", holder,
 	}
 	return append(argv, hArgs...)

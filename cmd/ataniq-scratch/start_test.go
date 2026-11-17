@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,6 +77,54 @@ func (r *rig) epochFile() string {
 	return string(b)
 }
 
+// TestStartUnitModeKeepsDollarSignsInTheVector checks that $VAR and ${VAR} in
+// the agent's argv and in an --env value reach the systemd-run vector
+// unchanged, and that the vector tells the service manager not to expand them.
+func TestStartUnitModeKeepsDollarSignsInTheVector(t *testing.T) {
+	r := newRig(t, "demo")
+	a, _, errout := r.e.newApp(r.fl)
+	agent := []string{"sh", "-c", "echo $HOME ${X} $$"}
+	code := a.run(append([]string{"start", "demo", "--env", "P=$HOME/x", "--env", "Q=${X}", "--holder", r.e.holderFile(t), "--"}, agent...))
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr %q", code, errout.String())
+	}
+	runs := r.fl.runList()
+	if len(runs) != 1 {
+		t.Fatalf("runs %q", runs)
+	}
+	argv := runs[0]
+	expand, dash := -1, -1
+	for i, s := range argv {
+		if s == "--expand-environment=no" {
+			expand = i
+		}
+		if s == "--" && dash < 0 {
+			dash = i
+		}
+	}
+	if expand < 0 || dash < 0 || expand > dash {
+		t.Errorf("--expand-environment=no is not before --: %q", argv)
+	}
+	if tail := argv[len(argv)-len(agent):]; !reflect.DeepEqual(tail, agent) {
+		t.Errorf("agent argv %q, want %q", tail, agent)
+	}
+	var envs []string
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--env" {
+			envs = append(envs, argv[i+1])
+		}
+	}
+	for _, want := range []string{"P=$HOME/x", "Q=${X}"} {
+		found := false
+		for _, e := range envs {
+			found = found || e == want
+		}
+		if !found {
+			t.Errorf("--env %q missing from %q", want, envs)
+		}
+	}
+}
+
 func TestStartUnitMode(t *testing.T) {
 	r := newRig(t, "demo")
 	holder := r.e.holderFile(t)
@@ -95,8 +144,9 @@ func TestStartUnitMode(t *testing.T) {
 	home := r.l.home
 	want := []string{
 		"systemd-run", "--user", "--unit=ataniq-scratch-demo", "--collect", "--quiet",
+		"--expand-environment=no",
 		"-p", "KillMode=control-group", "-p", "Restart=no", "-p", "TimeoutStopSec=2",
-		"-p", "NoNewPrivileges=yes", "-p", "CollectMode=inactive-or-failed",
+		"-p", "NoNewPrivileges=yes",
 		"--", holder,
 		"--scratch", "--role", "scratch/demo", "--epoch", "1", "--launch-intent", argAfter(runs[0], "--launch-intent"),
 		"--runtime", "scratch", "--runtime-version", "0", "--profile-digest", "none",
@@ -192,7 +242,16 @@ func TestStartUsesTheHolderNextToTheExecutable(t *testing.T) {
 	if code := a.run([]string{"start", "demo", "--", "agent"}); code != exitOK {
 		t.Fatalf("exit %d %q", code, errout.String())
 	}
-	if got := r.fl.runList()[0][16]; got != holder {
+	// The holder is the word after the first "--" of the systemd-run vector.
+	vec := r.fl.runList()[0]
+	got := ""
+	for i, s := range vec {
+		if s == "--" {
+			got = vec[i+1]
+			break
+		}
+	}
+	if got != holder {
 		t.Errorf("holder %q, want %q", got, holder)
 	}
 }
@@ -224,6 +283,40 @@ func TestStartRefusesAHolderThatIsNotUsable(t *testing.T) {
 	if _, err := os.Stat(r.l.epochFile); err == nil {
 		t.Error("an epoch was taken for a start that could not begin")
 	}
+}
+
+// TestRuntimeErrorsNeverPrintTheHolderArgument gives --holder a path with a
+// control byte and a marker, and checks that no runtime error repeats it.
+func TestRuntimeErrorsNeverPrintTheHolderArgument(t *testing.T) {
+	const marker = "HOLDERARG"
+	r := newRig(t, "demo")
+	odd := filepath.Join(r.e.root, "\x1b[31m"+marker)
+	plain := odd + "-plain"
+	os.WriteFile(plain, []byte("x"), 0o644)
+	exe := odd + "-exe"
+	os.WriteFile(exe, []byte("x"), 0o755)
+	check := func(what string, args []string, setup func()) {
+		t.Helper()
+		if setup != nil {
+			setup()
+		}
+		a, _, errout := r.e.newApp(r.fl)
+		if code := a.run(append([]string{"start", "demo"}, append(args, "--", "agent")...)); code != exitFail {
+			t.Errorf("%s: exit %d, stderr %q", what, code, errout.String())
+		}
+		if strings.Contains(errout.String(), marker) || strings.Contains(errout.String(), "\x1b") {
+			t.Errorf("%s: stderr repeats the holder argument: %q", what, errout.String())
+		}
+		if errout.String() == "" {
+			t.Errorf("%s: no error printed", what)
+		}
+	}
+	check("missing", []string{"--holder", odd}, nil)
+	check("not executable", []string{"--holder", plain}, nil)
+	r.fl.startFn = func(argv, env []string) (child, error) {
+		return nil, &fs.PathError{Op: "fork/exec", Path: argv[0], Err: os.ErrPermission}
+	}
+	check("direct start fails", []string{"--direct", "--holder", exe}, nil)
 }
 
 func TestStartSystemdRunFailureGivesTheEpochBack(t *testing.T) {
@@ -583,5 +676,74 @@ func TestDirectWithASilentHolderIsEnded(t *testing.T) {
 	}
 	if !strings.Contains(errout.String(), "did not answer") {
 		t.Errorf("stderr %q", errout.String())
+	}
+}
+
+// stubbornChild is a direct holder that ignores every signal.
+type stubbornChild struct {
+	mu       sync.Mutex
+	signaled []os.Signal
+}
+
+func (c *stubbornChild) Wait() (int, error) { select {} }
+func (c *stubbornChild) Signal(s os.Signal) error {
+	c.mu.Lock()
+	c.signaled = append(c.signaled, s)
+	c.mu.Unlock()
+	return nil
+}
+
+// interruptedStart runs a --direct start whose holder never answers and whose
+// signal channel already holds a SIGINT, so that the interrupt arrives while
+// start waits for the holder.
+func interruptedStart(t *testing.T, r *rig, ch child) (code int, errout string) {
+	t.Helper()
+	r.fl.startFn = func(argv, env []string) (child, error) { return ch, nil }
+	a, _, eb := r.e.newApp(r.fl)
+	a.lim.termWait = 50 * time.Millisecond
+	sigs := make(chan os.Signal, 4)
+	sigs <- syscall.SIGINT
+	stopped := false
+	a.signals = func() (<-chan os.Signal, func()) { return sigs, func() { stopped = true } }
+	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"})
+	if !stopped {
+		t.Error("the signal subscription was not stopped")
+	}
+	return code, eb.String()
+}
+
+func TestStartDirectInterruptedSaysTheHolderWasEnded(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := newFakeChild(-1)
+	code, errout := interruptedStart(t, r, ch)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "the holder was ended and is not running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if len(ch.signaled) == 0 || ch.signaled[0] != syscall.SIGTERM {
+		t.Errorf("signals %v, want SIGTERM first", ch.signaled)
+	}
+	if r.epochFile() != "" {
+		t.Errorf("epoch kept after the holder ended: %q", r.epochFile())
+	}
+}
+
+func TestStartDirectInterruptedSaysTheHolderMayStillRun(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := &stubbornChild{}
+	code, errout := interruptedStart(t, r, ch)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "may still be running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[0] != syscall.SIGTERM || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "1\n" {
+		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
 	}
 }

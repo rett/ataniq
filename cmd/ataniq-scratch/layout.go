@@ -123,7 +123,7 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-var errLockTimeout = errors.New("timed out waiting for a lock held by another ataniq-scratch")
+var errLockTimeout = errors.New("timed out waiting for a lock: another ataniq-scratch command (for example a start) is in progress")
 
 // flockWait takes the flock how (unix.LOCK_SH or LOCK_EX) on f, waiting up to
 // wait for another holder to let go.
