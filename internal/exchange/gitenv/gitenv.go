@@ -362,14 +362,6 @@ var valuelessFlags = []string{
 	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
 }
 
-// separateValueFlags take exactly the next argument as their value and are
-// allowed in that form, because a caller needs it ("config --file /dev/stdin
-// --list"). The value must be a plain argument: if it starts with "-" the
-// command is refused, so the value can never be a terminator or an option.
-// Prefer "--name=value" in new code; add a flag here only when a caller
-// cannot.
-var separateValueFlags = []string{"--file"}
-
 // valueIn names, for flags of [valuelessFlags], the subcommands in which the
 // flag takes a value. There it is refused as a bare flag, because it would
 // take the end-of-options marker as its value and git would then read the
@@ -400,13 +392,6 @@ func checkOptions(sub string, args []string) error {
 		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
 			continue
-		}
-		if slices.Contains(separateValueFlags, a) {
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++ // the value; git reads it as the value of a
-				continue
-			}
-			return fmt.Errorf("gitenv: option %q needs its value as the next argument, and the value may not start with \"-\"", a)
 		}
 		name, _, hasValue := strings.Cut(a, "=")
 		if strings.HasPrefix(a, "--") && len(name) >= 5 {

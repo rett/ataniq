@@ -21,7 +21,6 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"fetch", []string{"--depth=1", "--no-tags", "--prune", "--end-of-options", "/srv/src"}},
 		{"fetch", []string{"-q", "--quiet", "--no-recurse-submodules", "--no-write-fetch-head", "--", "/srv/src"}},
 		{"log", []string{"--max-count=1", "--format=%H", "--first-parent", "--no-walk", "--end-of-options", "HEAD"}},
-		{"config", []string{"--file", "/dev/stdin", "--list", "-z"}},
 		{"config", []string{"--file=/dev/stdin", "--list", "-z"}},
 		{"for-each-ref", []string{"--count=5", "--format=%(refname)", "refs/heads/-x"}},
 		// A flag that takes a value in one subcommand is valueless in others.
@@ -62,7 +61,9 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"unknown long flag", "fetch", []string{"--force"}, `"--force"`},
 		{"a look-alike of a listed flag", "fetch", []string{"--prune-x"}, `"--prune-x"`},
 		{"a look-alike of the marker", "fetch", []string{"--end-of-options-x", "--end-of-options", "/abs/src"}, `"--end-of-options-x"`},
-		// A separate-value flag may not take an option or a marker.
+		// "--file" takes its value as "--file=PATH" only: with a separate
+		// value it would take a marker or an option, so it is refused bare.
+		{"--file with a separate value", "config", []string{"--file", "/dev/stdin", "--list", "-z"}, `"--file"`},
 		{"--file takes the marker", "config", []string{"--file", "--", "--list"}, `"--file"`},
 		{"--file takes an option", "config", []string{"--file", "--list"}, `"--file"`},
 		{"--file at the end", "config", []string{"--file"}, `"--file"`},
@@ -89,10 +90,10 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.msg) {
 			t.Errorf("%s: error %q does not hold %s", tc.name, err, tc.msg)
 		}
-		if tc.msg != "is refused" && tc.sub != "config" && !strings.Contains(err.Error(), `"="`) {
+		if tc.msg != "is refused" && !strings.Contains(err.Error(), `"="`) {
 			t.Errorf("%s: error %q does not say to write the value with =", tc.name, err)
 		}
-		if tc.msg != "is refused" && tc.sub != "config" && !strings.Contains(err.Error(), "ask for the flag") {
+		if tc.msg != "is refused" && !strings.Contains(err.Error(), "ask for the flag") {
 			t.Errorf("%s: error %q does not say how to get a flag added", tc.name, err)
 		}
 	}
