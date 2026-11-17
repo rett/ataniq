@@ -70,6 +70,22 @@ func (m *Manager) call(ctx context.Context, argv []string) (string, error) {
 	return m.run.Run(cctx, argv)
 }
 
+// validUnitName is [leadunit.ValidateUnitName] and a refusal of a name that
+// starts with "-". The name is the one caller-supplied word that reaches a
+// command line besides the command's own arguments, and a leading dash would
+// let a tool read it as an option wherever the "--" terminators are missed.
+// The terminators are in place; this is the second guard, and it runs before
+// any call.
+func validUnitName(name string) error {
+	if err := leadunit.ValidateUnitName(name); err != nil {
+		return err
+	}
+	if name[0] == '-' {
+		return fmt.Errorf("%w: unit name %q starts with a dash", leadunit.ErrInvalidSpec, name)
+	}
+	return nil
+}
+
 func lost(what string, cause error) error {
 	return fmt.Errorf("%w: %s: %w", leadunit.ErrReplyLost, what, cause)
 }
@@ -104,6 +120,9 @@ func (m *Manager) Start(ctx context.Context, spec leadunit.Spec) (leadunit.State
 		return leadunit.State{}, err
 	}
 	if err := spec.Validate(); err != nil {
+		return leadunit.State{}, err
+	}
+	if err := validUnitName(spec.Unit); err != nil {
 		return leadunit.State{}, err
 	}
 	argv, err := startArgv(spec, m.timeout)
@@ -155,7 +174,7 @@ func (m *Manager) Inspect(ctx context.Context, unit string) (leadunit.State, err
 	if err := ctx.Err(); err != nil {
 		return leadunit.State{}, err
 	}
-	if err := leadunit.ValidateUnitName(unit); err != nil {
+	if err := validUnitName(unit); err != nil {
 		return leadunit.State{}, err
 	}
 	out, err := m.call(ctx, showArgv(unit))
@@ -296,7 +315,7 @@ func (m *Manager) Signal(ctx context.Context, st leadunit.State, sig syscall.Sig
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := leadunit.ValidateUnitName(st.Unit); err != nil {
+	if err := validUnitName(st.Unit); err != nil {
 		return err
 	}
 	var name string
@@ -358,7 +377,7 @@ func (m *Manager) Empty(ctx context.Context, st leadunit.State) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if err := leadunit.ValidateUnitName(st.Unit); err != nil {
+	if err := validUnitName(st.Unit); err != nil {
 		return false, err
 	}
 	cur, err := m.Inspect(ctx, st.Unit)

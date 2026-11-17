@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ func TestStartArgvGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"busctl", "--user", "--timeout=5s", "call",
+		"busctl", "--user", "--timeout=5s", "--", "call",
 		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
 		"StartTransientUnit", "ssa(sv)a(sa(sv))", unitName, "fail", "10",
 		"Type", "s", "exec",
@@ -38,6 +39,71 @@ func TestStartArgvGolden(t *testing.T) {
 
 // The command's arguments reach the call as single elements and the
 // expansion of $VAR is switched off with the flag, in the rendered arguments.
+// Caller text that starts with a dash never reaches a tool as an option: the
+// options of busctl end with "--" before the verb, whatever the command's
+// arguments, the environment, the working directory or the intent hold.
+func TestStartArgvDashLeadingWordsFollowTheTerminator(t *testing.T) {
+	s := validSpec()
+	s.Argv = []string{"/usr/bin/lead", "--ignore-term", "-q", "--system", "--address=unix:path=/x", "-H", "host", "--", "--expect-reply=no", "--json=short"}
+	s.Intent = "-intent"
+	got, err := startArgv(s, DefaultTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing of the caller stands before the terminator: the first
+	// terminator is the one after busctl's own options, and the command's
+	// words, dash-leading as they are, arrive whole and after it.
+	mustEqual(t, got[:5], []string{"busctl", "--user", "--timeout=5s", "--", "call"})
+	if indexOf(got, "--") != 3 {
+		t.Fatalf("the first terminator is not at 3: %q", got)
+	}
+	mustEqual(t, got[len(got)-len(s.Argv)-3:len(got)-3], s.Argv)
+	if !containsRun(got, []string{"Description", "s", "ataniq lead epoch=3 intent=-intent"}) {
+		t.Fatalf("description with a dash-leading intent: %q", got)
+	}
+}
+
+// The systemctl calls put the unit after "--", and the unit is the only caller
+// text in them.
+func TestSystemctlArgvGolden(t *testing.T) {
+	mustEqual(t, showArgv(unitName),
+		[]string{"systemctl", "--user", "show", "--all", "--property=" + showProperties, "--", unitName})
+	mustEqual(t, killArgv(unitName, "SIGKILL"),
+		[]string{"systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", "--", unitName})
+	mustEqual(t, userManagerGroupArgv(),
+		[]string{"systemctl", "--user", "show", "--all", "--property=ControlGroup", "--", "-.slice"})
+}
+
+// A unit name that starts with a dash is refused by every entry point before
+// any tool is run.
+func TestUnitNameWithALeadingDashIsRefusedBeforeAnyCall(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	for _, name := range []string{"-x.service", "--user.service", "-.service", "-ataniq-lead-demo.service"} {
+		s := validSpec()
+		s.Unit = name
+		if _, err := r.m.Start(ctx, s); !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("Start %q: %v", name, err)
+		}
+		if _, err := r.m.Inspect(ctx, name); !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("Inspect %q: %v", name, err)
+		}
+		st := leadunit.State{Unit: name, InvocationID: inv1, ControlGroup: cgUnit, ControlGroupID: groupID(idA)}
+		if err := r.m.Signal(ctx, st, syscall.SIGTERM); !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("Signal %q: %v", name, err)
+		}
+		if ok, err := r.m.Empty(ctx, st); ok || !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("Empty %q: %v %v", name, ok, err)
+		}
+		if ok, err := r.m.Empty(ctx, leadunit.State{Unit: name}); ok || !errors.Is(err, leadunit.ErrInvalidSpec) {
+			t.Errorf("Empty (case 3) %q: %v %v", name, ok, err)
+		}
+	}
+	if n := len(r.run.recorded()); n != 0 {
+		t.Fatalf("%d tool calls for a name with a leading dash: %v", n, r.run.recorded())
+	}
+}
+
 func TestStartArgvExecStartExDisablesExpansion(t *testing.T) {
 	argv, err := startArgv(validSpec(), DefaultTimeout)
 	if err != nil {
@@ -91,8 +157,9 @@ func TestStartArgvCarriesEveryFixedProperty(t *testing.T) {
 	// Exactly the fixed ones, plus Description, WorkingDirectory, Environment
 	// and ExecStartEx.
 	n := 4 + len(leadunit.FixedProperties())
-	if argv[11] != fmt.Sprint(n) {
-		t.Fatalf("property count %q, want %d", argv[11], n)
+	i := indexOf(argv, "fail")
+	if i < 0 || argv[i+1] != fmt.Sprint(n) {
+		t.Fatalf("property count after the mode: %q, want %d", argv[i+1:i+2], n)
 	}
 }
 

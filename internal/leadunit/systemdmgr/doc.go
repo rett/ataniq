@@ -47,7 +47,9 @@
 // systemctl output formats, the error texts above, ExecStartEx and its flag,
 // which need systemd 243 or newer, the cgroup placement of a unit) are written
 // from the documentation and from the existing qualification host code, not
-// from a run; tests check them against canned output. The process of the unit
+// from a run (that includes the "--" that ends busctl's options before the
+// verb, so that no argument of the command is read as an option: whether
+// busctl accepts it as written is for the qualification run to show); tests check them against canned output. The process of the unit
 // gets, besides the explicit environment, what systemd adds (the environment
 // block of the user manager, HOME, LOGNAME, USER, SHELL, INVOCATION_ID and
 // the like); the explicit entries win on the same name. Signal checks the

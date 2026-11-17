@@ -43,8 +43,12 @@ func killArgv(unit, signal string) []string {
 // startArgv renders the StartTransientUnit call as busctl takes it: the
 // signature "ssa(sv)a(sa(sv))", the unit name, the mode "fail", the number of
 // properties and each as name, variant signature and value (an array as its
-// length and elements, a struct flattened), and 0 auxiliary units. busctl
-// stops reading options at the verb, so no value is taken for an option.
+// length and elements, a struct flattened), and 0 auxiliary units. Every word
+// after busctl's own options is a positional word of the command, and some of
+// them are caller text (the command's arguments, which may start with "-"). A
+// parser that permutes would read such a word as an option wherever it stands,
+// so "--" ends the options before the verb: the terminator is harmless to a
+// parser that stops at the verb and protects against one that does not.
 func startArgv(spec leadunit.Spec, timeout time.Duration) ([]string, error) {
 	var props []string
 	n := 0
@@ -70,7 +74,7 @@ func startArgv(spec leadunit.Spec, timeout time.Duration) ([]string, error) {
 	exec = append(exec, "1", "no-env-expand")
 	add(exec...)
 
-	argv := []string{toolBusctl, "--user", timeoutArg(timeout), "call",
+	argv := []string{toolBusctl, "--user", timeoutArg(timeout), "--", "call",
 		"org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
 		"StartTransientUnit", "ssa(sv)a(sa(sv))", spec.Unit, "fail", strconv.Itoa(n)}
 	argv = append(argv, props...)
