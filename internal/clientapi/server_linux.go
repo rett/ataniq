@@ -468,9 +468,11 @@ func (s *server) call(ctx context.Context, op string) (result any, ok bool) {
 		r := s.handler.Hello(ctx)
 		r.Protocols = SupportedProtocols()
 		r.Limits = Limits{
-			MaxRequestBytes:    MaxRequestBytes,
-			MaxResponseBytes:   MaxResponseBytes,
-			IdleTimeoutSeconds: int(s.idle / time.Second),
+			MaxRequestBytes:  MaxRequestBytes,
+			MaxResponseBytes: MaxResponseBytes,
+			// Rounded up: a timeout under a second must not read as 0, which a
+			// client could take for "no limit".
+			IdleTimeoutSeconds: int((s.idle + time.Second - 1) / time.Second),
 			MaxConnections:     s.maxConns,
 		}
 		r.Operations = Operations()

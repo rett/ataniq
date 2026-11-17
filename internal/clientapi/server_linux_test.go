@@ -641,3 +641,28 @@ func TestClientCloseInterruptsACallInFlight(t *testing.T) {
 		t.Fatalf("second Close = %v", err)
 	}
 }
+
+func TestHelloAdvertisesTheIdleTimeoutRoundedUp(t *testing.T) {
+	for idle, want := range map[time.Duration]int{
+		500 * time.Millisecond:  1,
+		time.Second:             1,
+		1500 * time.Millisecond: 2,
+		7 * time.Second:         7,
+		30 * time.Second:        30,
+		0:                       int(DefaultIdleTimeout / time.Second), // the default
+	} {
+		ts := startServer(t, &stubHandler{}, Options{IdleTimeout: idle})
+		c, err := Dial(context.Background(), ts.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.Hello(context.Background())
+		c.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Limits.IdleTimeoutSeconds != want {
+			t.Errorf("idle %v advertised as %d s, want %d", idle, got.Limits.IdleTimeoutSeconds, want)
+		}
+	}
+}
