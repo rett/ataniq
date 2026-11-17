@@ -182,6 +182,7 @@ branches through the template, with the default limits.
 | `s16-fetch.lead-refs` | The lead's refs in the mirror `before` and `after`. |
 | `s16-fetch.mirror-size` | The mirror folder's allocated bytes and entries before and after. |
 | `s16-fetch.canaries` | `before` and `after`: which planted canary names exist on the host (`present`), other names in the canary folder, and the number of entries. |
+| `s16-fetch.control` | The control. After the facts above are taken, the harness runs plain `git status` (its own explicit environment, not through the template, no sandbox) in a second clone made the same way, planted the same way, with a canary folder of its own, in the fixture folder. The harness made it before any sandbox served the lead's clone. `result` and `error` of that git; `present`: the canaries that fired; the other names in the control's canary folder. |
 
 ### Case `oversize`
 

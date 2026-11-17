@@ -173,5 +173,29 @@ func (r *runner) caseFetch(ctx context.Context) error {
 		map[string]any{"before": before.Size, "after": after.Size})
 	cs.fact("canaries", "Which canary files exist on the host before and after the fetch. The canary folder is outside the lead's clone, under the scratch state root.",
 		map[string]any{"before": pre, "after": post, "canary_folder": "canary (below the scratch state root)"})
+
+	// The control comes last, after every fact about the fetch is taken.
+	// It runs plain git in the control clone, which no sandbox served.
+	ctl, err := r.controlFacts(ctx, c, planted)
+	if err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	cs.fact("control", "Plain git status, run by the harness in a copy of the hostile clone that no sandbox served, in the fixture folder, with an explicit environment and not through the template. The copy has its own canary folder. It shows whether the planted canaries fire on this host when git runs in a clone: `present` is the canaries that fired. Without it, an absent canary in s16-fetch.canaries could also mean that the fixture is not armed.",
+		ctl)
 	return ctx.Err()
+}
+
+// controlFacts runs git status in the control clone and reports which of the
+// planted canaries exist afterwards in the control's own canary folder. A
+// failed git status is a fact, not an error of the harness.
+func (r *runner) controlFacts(ctx context.Context, c *caseEnv, planted []string) (map[string]any, error) {
+	_, serr := r.fx.run(ctx, c.control, "status", "--porcelain")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cf, err := canaryFacts(c.ccanary, planted)
+	if err != nil {
+		return nil, err
+	}
+	return merge(errorFacts(serr), cf), nil
 }

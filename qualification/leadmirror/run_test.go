@@ -1,6 +1,7 @@
 package leadmirror
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,6 +120,94 @@ func TestFetchFactsFromAHostileClone(t *testing.T) {
 	}
 	if other := canaries["other_entries"].([]string); len(other) != 0 {
 		t.Errorf("other entries: %v", other)
+	}
+}
+
+// TestPlantedCanariesAreArmed is the positive control of the S16 canaries:
+// git porcelain that runs in a planted clone writes them. It runs plain git in
+// a clone in a test folder, with an explicit environment and no sandbox. The
+// absent canaries of the other tests mean something only because of it.
+func TestPlantedCanariesAreArmed(t *testing.T) {
+	fx := fixtures{git: needGit(t)}
+	ctx := context.Background()
+	dir := t.TempDir()
+	up, tree, canary := filepath.Join(dir, "up"), filepath.Join(dir, "tree"), filepath.Join(dir, "canary")
+	if err := os.Mkdir(canary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.buildUpstream(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.buildLead(ctx, up, tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := plantHostile(tree, canary, tree); err != nil {
+		t.Fatal(err)
+	}
+	exists := func(name string) bool {
+		_, err := os.Lstat(filepath.Join(canary, name))
+		return err == nil
+	}
+	for _, n := range canaryNames() {
+		if exists(n) {
+			t.Fatalf("canary %s exists before git ran in the clone", n)
+		}
+	}
+	// git status runs the configured fsmonitor and the post-index-change hook
+	// of core.hooksPath.
+	_, _ = fx.run(ctx, tree, "status")
+	for _, n := range []string{"config-fsmonitor", "hookspath-post-index-change"} {
+		if !exists(n) {
+			t.Errorf("git status did not write canary %s: the fixture is not armed", n)
+		}
+	}
+	// git commit runs the hooks of core.hooksPath. The hooks of .git/hooks
+	// do not run while core.hooksPath is set.
+	if _, err := fx.run(ctx, tree, "commit", "--quiet", "--no-gpg-sign", "--allow-empty", "-m", "x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"hookspath-pre-commit", "hookspath-prepare-commit-msg", "hookspath-commit-msg", "hookspath-post-commit", "hookspath-reference-transaction"} {
+		if !exists(n) {
+			t.Errorf("git commit did not write canary %s: the fixture is not armed", n)
+		}
+	}
+	for _, n := range []string{"hook-pre-commit", "hook-post-commit"} {
+		if exists(n) {
+			t.Errorf("canary %s was written although core.hooksPath is set", n)
+		}
+	}
+}
+
+// TestControlFact: the report holds the control. Plain git status in the
+// control clone fires the same fixture, and the control writes into a canary
+// folder of its own, so the S16 canary folder stays empty.
+func TestControlFact(t *testing.T) {
+	rep, o := runFake(t, fakePlanner(t))
+	c := findFact(t, rep, "s16-fetch.control").Observed
+	if c["result"] != "ok" {
+		t.Fatalf("control: %v", c)
+	}
+	present, _ := c["present"].([]string)
+	for _, n := range []string{"config-fsmonitor", "hookspath-post-index-change"} {
+		if !contains(present, n) {
+			t.Errorf("control: canary %s did not fire: %v", n, present)
+		}
+	}
+	// The report names the control after the fetch facts.
+	var ids []string
+	for _, c := range rep.Cases {
+		if c.ID == "s16-fetch" {
+			for _, f := range c.Facts {
+				ids = append(ids, f.ID)
+			}
+		}
+	}
+	if last := ids[len(ids)-1]; last != "s16-fetch.control" {
+		t.Errorf("s16-fetch facts end with %s", last)
+	}
+	entries, err := os.ReadDir(filepath.Join(o.StateRoot, "canary"))
+	if err != nil || len(entries) != 0 {
+		t.Errorf("the S16 canary folder holds %v, %v", entries, err)
 	}
 }
 
