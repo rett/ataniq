@@ -45,8 +45,11 @@ const (
 	ProbSize         ProblemKind = "size"             // the command line is above the cap
 )
 
-// Problem is one thing wrong with a plan. Detail never holds the value of an
-// environment variable or an agent argument.
+// Problem is one thing wrong with a plan. Detail says what is wrong with
+// names, kinds, positions and counts, and with values the profile or the
+// options give; it never repeats text taken from the plan's own arguments (an
+// environment name or value, a mount path, the agent argv, a token that is not
+// an option the plan uses), because a tampered plan may hold a secret there.
 type Problem struct {
 	Kind   ProblemKind
 	Detail string
@@ -127,7 +130,8 @@ type mount struct {
 // the arguments.
 func Verify(p *Plan, in profile.Inputs, opt Options) []Problem {
 	v := &verifier{}
-	if err := in.Validate(); err != nil {
+	f, err := derive(in)
+	if err != nil {
 		v.add(ProbInputs, "%s", err)
 		return v.out
 	}
@@ -135,7 +139,7 @@ func Verify(p *Plan, in profile.Inputs, opt Options) []Problem {
 		v.add(ProbShape, "there is no plan")
 		return v.out
 	}
-	workDir, err := opt.check(in)
+	workDir, err := opt.check(in, f)
 	if err != nil {
 		v.add(ProbOptions, "%s", err)
 		return v.out
@@ -151,8 +155,8 @@ func Verify(p *Plan, in profile.Inputs, opt Options) []Problem {
 	if bad := forbiddenIn(join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner)); bad != "" && forbiddenIn(p.Argv) == "" {
 		v.add(ProbForbidden, "%s appears in a part of the plan", bad)
 	}
-	v.bwrap(p, in, opt, workDir)
-	v.rest(p, in, opt, workDir)
+	v.bwrap(p, in, opt, f, workDir)
+	v.rest(p, in, opt, f, workDir)
 	return v.out
 }
 
@@ -298,17 +302,17 @@ func (v *verifier) parse(args []string) []item {
 		if !ok {
 			n = 0
 			if bad := forbiddenIn([]string{a}); bad == "" {
-				v.add(ProbUnknown, "the bubblewrap option %q is not one the plan uses", clip(a))
+				v.add(ProbUnknown, "argument %d of bubblewrap is not an option the plan uses", i+1)
 			}
 		}
 		if i+n >= len(args) {
-			v.add(ProbMalformed, "%s is missing an operand", a)
+			v.add(ProbMalformed, "%s is missing an operand", optName(a))
 			return items
 		}
 		it := item{opt: a, args: args[i+1 : i+1+n]}
 		for _, o := range it.args {
 			if strings.HasPrefix(o, "--") {
-				v.add(ProbOptionLike, "%s has an operand that starts with --", a)
+				v.add(ProbOptionLike, "%s has an operand that starts with --", optName(a))
 			}
 		}
 		items = append(items, it)
@@ -319,7 +323,7 @@ func (v *verifier) parse(args []string) []item {
 }
 
 // bwrap parses and checks the bubblewrap arguments.
-func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, workDir string) {
+func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, f *facts, workDir string) {
 	if len(p.Bwrap) == 0 {
 		return
 	}
@@ -338,7 +342,7 @@ func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, workDir string
 		sec := sectionOf(it.opt)
 		if sec < last && ordered {
 			ordered = false
-			v.add(ProbOrder, "%s comes after a later section (order: flags, --setenv, --seccomp, mounts, --chdir, --remount-ro)", it.opt)
+			v.add(ProbOrder, "%s comes after a later section (order: flags, --setenv, --seccomp, mounts, --chdir, --remount-ro)", optName(it.opt))
 		}
 		if sec > last {
 			last = sec
@@ -369,22 +373,19 @@ func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, workDir string
 		}
 	}
 
-	want, err := in.Flags()
-	if err == nil && !equal(flags, want) {
-		v.add(ProbFlags, "the flag set is %q, the profile's is %q", strings.Join(flags, " "), strings.Join(want, " "))
+	want := f.flags
+	if !equal(flags, want) {
+		v.add(ProbFlags, "the flag set (%d arguments) is not the profile's %q", len(flags), strings.Join(want, " "))
 	}
-	v.env(p, in, setenv)
+	v.env(p, f, setenv)
 	v.seccomp(in, opt, seccomp)
-	v.mounts(in, opt, mounts)
+	v.mounts(in, opt, f, mounts)
 	v.workDir(p, workDir, chdir)
 	v.remount(remount, items)
 }
 
-func (v *verifier) env(p *Plan, in profile.Inputs, setenv []profile.EnvVar) {
-	want, err := in.Environment()
-	if err != nil {
-		return
-	}
+func (v *verifier) env(p *Plan, f *facts, setenv []profile.EnvVar) {
+	want := f.env
 	if !equalEnv(p.Env, want) {
 		v.add(ProbEnv, "Env of the plan is not the allowlist")
 	}
@@ -397,14 +398,16 @@ func (v *verifier) env(p *Plan, in profile.Inputs, setenv []profile.EnvVar) {
 		names[e.Name] = e.Value
 	}
 	seen := map[string]bool{}
-	for _, e := range setenv {
+	for n, e := range setenv {
+		// The plan's names and values are not repeated: a tampered plan may
+		// hold a secret there. The position says which one.
 		switch w, ok := names[e.Name]; {
 		case seen[e.Name]:
-			v.add(ProbEnv, "%q is set twice", clip(e.Name))
+			v.add(ProbEnv, "--setenv number %d sets a name that an earlier one set", n+1)
 		case !ok:
-			v.add(ProbEnv, "%q is set and is not in the allowlist", clip(e.Name))
+			v.add(ProbEnv, "--setenv number %d sets a name that is not in the allowlist", n+1)
 		case w != e.Value:
-			v.add(ProbEnv, "%q has a value other than the allowlist's", clip(e.Name))
+			v.add(ProbEnv, "--setenv number %d has a value other than the allowlist's", n+1)
 		}
 		seen[e.Name] = true
 	}
@@ -444,11 +447,8 @@ type expect struct {
 	index int
 }
 
-func (v *verifier) mounts(in profile.Inputs, opt Options, got []mount) {
-	table, err := in.Binds()
-	if err != nil {
-		return
-	}
+func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount) {
+	table := f.table
 	byInside := map[string]expect{}
 	for i, b := range table {
 		if b.Kind != profile.KindRemountRO {
@@ -459,42 +459,52 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, got []mount) {
 	otherInside := profile.ConfigInside(other)
 	otherHost := in.OtherConfigDir()
 
+	// Paths of the plan are not repeated, only paths of the bind table: a
+	// mount that is not a row is named by its position.
 	seen := map[string]bool{}
 	lastIndex := -1
 	ordered := true
-	for _, m := range got {
+	for n, m := range got {
+		e, inTable := byInside[m.inside]
+		label := fmt.Sprintf("mount number %d (a path outside the table)", n+1)
+		if inTable {
+			label = e.row.Inside
+		}
 		if seen[m.inside] {
-			v.add(ProbMountTwice, "%s is mounted twice", m.inside)
+			v.add(ProbMountTwice, "%s is mounted twice", label)
 		}
 		seen[m.inside] = true
 
 		if m.source != "" {
 			if err := in.CheckSource(m.source); err != nil {
-				v.add(ProbNever, "the source of %s: %s", m.inside, reason(err))
+				v.add(ProbNever, "the source of %s is a never-mounted path, lies in or around one, or is not a clean absolute path", label)
 			}
 		}
 		if otherInside != "" && (m.inside == otherInside || strings.HasPrefix(m.inside, otherInside+"/")) {
-			v.add(ProbOtherRuntime, "%s is the %s config folder, which is never mounted", m.inside, other)
+			v.add(ProbOtherRuntime, "%s lies in the %s config folder, which is never mounted", label, other)
 		}
 		if otherHost != "" && m.source != "" && (m.source == otherHost || strings.HasPrefix(m.source, otherHost+"/") || strings.HasPrefix(otherHost, m.source+"/")) {
-			v.add(ProbOtherRuntime, "the source of %s is in or around the %s config folder", m.inside, other)
+			v.add(ProbOtherRuntime, "the source of %s is in or around the %s config folder", label, other)
 		}
 
-		e, ok := byInside[m.inside]
-		if !ok {
-			v.add(ProbMountExtra, "%s is mounted and the bind table has no such row", m.inside)
+		if !inTable {
+			v.add(ProbMountExtra, "%s is mounted and the bind table has no such row", label)
 			continue
 		}
 		if e.index < lastIndex && ordered {
 			ordered = false
-			v.add(ProbOrder, "%s is mounted before a row that the table puts earlier", m.inside)
+			v.add(ProbOrder, "%s is mounted before a row that the table puts earlier", label)
 		}
 		if e.index > lastIndex {
 			lastIndex = e.index
 		}
-		if m.kind != e.row.Kind || m.source != e.row.Source || m.target != e.row.Target {
-			v.add(ProbMountDiffers, "%s: the table has a %s row from %q (link %q), the plan a %s mount from %q (link %q)",
-				m.inside, e.row.Kind, e.row.Source, e.row.Target, m.kind, m.source, m.target)
+		switch {
+		case m.kind != e.row.Kind:
+			v.add(ProbMountDiffers, "%s: the table has a %s row, the plan a %s mount", label, e.row.Kind, m.kind)
+		case m.source != e.row.Source:
+			v.add(ProbMountDiffers, "%s: the source is not the table's", label)
+		case m.target != e.row.Target:
+			v.add(ProbMountDiffers, "%s: the link target is not the table's", label)
 		}
 	}
 	for _, b := range table {
@@ -537,24 +547,20 @@ func (v *verifier) remount(got []item, all []item) {
 }
 
 // rest checks the digest, the terminal flag and the notes.
-func (v *verifier) rest(p *Plan, in profile.Inputs, opt Options, workDir string) {
-	if d, err := in.Digest(); err == nil && p.Digest != d {
+func (v *verifier) rest(p *Plan, in profile.Inputs, opt Options, f *facts, workDir string) {
+	if p.Digest != f.digest {
 		v.add(ProbDigest, "the digest is not the profile's")
 	}
 	if p.SetControllingTerminal {
 		v.add(ProbTerminal, "SetControllingTerminal is true: the probe makes the session")
 	}
-	v.notes(p, in, opt, workDir)
+	v.notes(p, in, opt, f, workDir)
 }
 
 // notes compares the notes with the exact set the inputs and the options give.
-func (v *verifier) notes(p *Plan, in profile.Inputs, opt Options, workDir string) {
-	table, err := in.Binds()
-	if err != nil {
-		return
-	}
+func (v *verifier) notes(p *Plan, in profile.Inputs, opt Options, f *facts, workDir string) {
 	want := map[string]int{}
-	for _, n := range notes(in, opt, workDir, leftOut(table, opt)) {
+	for _, n := range notes(in, opt, workDir, leftOut(f.table, opt)) {
 		want[n]++
 	}
 	have := map[string]int{}
@@ -577,11 +583,13 @@ func (v *verifier) notes(p *Plan, in profile.Inputs, opt Options, workDir string
 	}
 }
 
-func reason(err error) string {
-	if r, ok := err.(*profile.Refusal); ok {
-		return r.Reason
+// optName is a bubblewrap option as the plan uses it, or a placeholder for any
+// other token, so that a problem never repeats text of the plan.
+func optName(a string) string {
+	if _, ok := bwrapArity[a]; ok {
+		return a
 	}
-	return err.Error()
+	return "an unknown option"
 }
 
 func equal(a, b []string) bool {

@@ -451,10 +451,10 @@ func TestRefusals(t *testing.T) {
 		{"workdir work root", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/work" }, "working folder", "outside"},
 		{"workdir tmp", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/tmp" }, "working folder", "outside"},
 		{"workdir beside the home", func(_ *profile.Inputs, o *Options) { o.WorkDir = "/home/lead2" }, "working folder", "outside"},
-		{"environment value read as an option", func(in *profile.Inputs, _ *Options) { in.Term = "--weird" }, "bubblewrap argument", "option"},
+		{"environment value read as an option", func(in *profile.Inputs, _ *Options) { in.Term = "--weird" }, "bubblewrap argument", "starts with --"},
 		{"extra variable read as an option", func(in *profile.Inputs, _ *Options) {
 			in.ExtraEnv = []profile.EnvVar{{Name: "EXAMPLE", Value: "--x"}}
-		}, "bubblewrap argument", "option"},
+		}, "bubblewrap argument", "starts with --"},
 		{"agent too long", func(_ *profile.Inputs, o *Options) {
 			o.AgentArgv = append(o.AgentArgv, long, long, long)
 		}, "agent argv", "cap"},
@@ -500,6 +500,15 @@ func TestReportPathBoundaries(t *testing.T) {
 		if _, err := Build(in, o); err != nil {
 			t.Errorf("%s: %v", path, err)
 		}
+	}
+}
+
+func TestRefusalDoesNotRepeatTheOperand(t *testing.T) {
+	in := fixture(profile.Claude)
+	in.Term = "--hunter2-term"
+	_, err := Build(in, options(in, nil))
+	if err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error = %v", err)
 	}
 }
 

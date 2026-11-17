@@ -194,29 +194,15 @@ type Plan struct {
 // *profile.Refusal for a bad input and a *Refusal for a bad option or a plan
 // that cannot be made.
 func Build(in profile.Inputs, opt Options) (*Plan, error) {
-	if err := in.Validate(); err != nil {
-		return nil, err
-	}
-	workDir, err := opt.check(in)
+	f, err := derive(in)
 	if err != nil {
 		return nil, err
 	}
-	flags, err := in.Flags()
+	workDir, err := opt.check(in, f)
 	if err != nil {
 		return nil, err
 	}
-	env, err := in.Environment()
-	if err != nil {
-		return nil, err
-	}
-	binds, err := in.Binds()
-	if err != nil {
-		return nil, err
-	}
-	digest, err := in.Digest()
-	if err != nil {
-		return nil, err
-	}
+	flags, env, binds, digest := f.flags, f.env, f.table, f.digest
 
 	e := &emitter{}
 	e.raw(flags...)
@@ -297,9 +283,38 @@ func probeCommand(opt Options) []string {
 	return append([]string{profile.ProbeInside, "--spec", profile.SpecFileInside, ProbeReportFD, strconv.Itoa(opt.ReportFD), "--"}, opt.AgentArgv...)
 }
 
+// facts are what the profile derives from the inputs: each call validates the
+// inputs, so the plan asks once.
+type facts struct {
+	table  []profile.Bind
+	flags  []string
+	env    []profile.EnvVar
+	digest string
+}
+
+// derive validates the inputs and derives their facts. The error is the
+// profile's own refusal.
+func derive(in profile.Inputs) (*facts, error) {
+	var f facts
+	var err error
+	if f.table, err = in.Binds(); err != nil {
+		return nil, err
+	}
+	if f.flags, err = in.Flags(); err != nil {
+		return nil, err
+	}
+	if f.env, err = in.Environment(); err != nil {
+		return nil, err
+	}
+	if f.digest, err = in.Digest(); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
 // check validates the options against the inputs and returns the working
 // folder.
-func (o Options) check(in profile.Inputs) (string, error) {
+func (o Options) check(in profile.Inputs, f *facts) (string, error) {
 	if err := checkPath("pasta executable", o.PastaPath); err != nil {
 		return "", err
 	}
@@ -312,14 +327,10 @@ func (o Options) check(in profile.Inputs) (string, error) {
 	if err := o.checkSeccomp(in); err != nil {
 		return "", err
 	}
-	if err := o.checkReport(in); err != nil {
+	if err := o.checkReport(in, f.table); err != nil {
 		return "", err
 	}
-	env, err := in.Environment()
-	if err != nil {
-		return "", err
-	}
-	for _, e := range env {
+	for _, e := range f.env {
 		if e.Name == "PWD" {
 			return "", refuse("environment", "PWD is in the allowlist; bubblewrap sets PWD itself, to the working folder")
 		}
@@ -376,7 +387,7 @@ func (o Options) checkSeccomp(in profile.Inputs) error {
 }
 
 // checkReport checks the report channel: its descriptor and its path.
-func (o Options) checkReport(in profile.Inputs) error {
+func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 	switch {
 	case o.ReportFD == 0:
 		return refuse("report descriptor", "missing: the report channel is always present, so the descriptor number is required")
@@ -386,10 +397,6 @@ func (o Options) checkReport(in profile.Inputs) error {
 		return refuse("report descriptor", "%d is the seccomp descriptor; they must differ", o.ReportFD)
 	}
 	if err := checkPath("report path", o.ReportPath); err != nil {
-		return err
-	}
-	table, err := in.Binds()
-	if err != nil {
 		return err
 	}
 	for _, b := range table {

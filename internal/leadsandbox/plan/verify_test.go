@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -528,17 +529,93 @@ func TestVerifyTamperedPartsThatAgree(t *testing.T) {
 	}
 }
 
-func TestVerifyProblemsDoNotCarryValues(t *testing.T) {
-	p, in, o := basePlan(t)
-	i := find(t, p, "--setenv", "HOME")
-	insert(p, i, "--setenv", "EXAMPLE_NAME", "hunter2-value")
-	resync(p)
-	p.Inner = append(p.Inner, "hunter2-argument")
-	resync(p)
-	for _, pr := range Verify(p, in, o) {
-		if strings.Contains(pr.String(), "hunter2") {
-			t.Errorf("a problem carries a value: %s", pr)
+// sample returns the indexes of a list to try: all of them, except that of the
+// bubblewrap arguments only the first occurrence of each option and operand
+// slot is kept (the same code reads the others).
+func sample(name string, list []string) []int {
+	if name != "bwrap" {
+		idx := make([]int, len(list))
+		for i := range idx {
+			idx[i] = i
 		}
+		return idx
+	}
+	var idx []int
+	seen := map[string]bool{}
+	for i := 1; i < len(list); {
+		w := width(list[i])
+		for j := 0; j < w && i+j < len(list); j++ {
+			if key := fmt.Sprintf("%s/%d", list[i], j); !seen[key] {
+				seen[key] = true
+				idx = append(idx, i+j)
+			}
+		}
+		i += w
+	}
+	return append(idx, 0, len(list)-1)
+}
+
+// canary is text that no valid plan holds and no problem may repeat.
+const canary = "hunter2-canary"
+
+// A problem never repeats text from the plan's own arguments: each token of
+// every list of the plan is replaced by the canary, and the canary is also
+// inserted before each token, so that the parse sees an unknown option, an
+// operand out of place, a name, a value, a path, a link target and an agent
+// argument that is not the options'.
+func TestVerifyProblemsDoNotCarryPlanText(t *testing.T) {
+	for _, withSeccompFile := range []bool{false, true} {
+		in := fixture(profile.Claude)
+		if withSeccompFile {
+			in = withSeccomp(in)
+		}
+		o := options(in, allPresent(t, in))
+		base := mustBuild(t, in, o)
+		parts := map[string]func(p *Plan) *[]string{
+			"pasta":   func(p *Plan) *[]string { return &p.Pasta },
+			"passfds": func(p *Plan) *[]string { return &p.PassFDs },
+			"bwrap":   func(p *Plan) *[]string { return &p.Bwrap },
+			"inner":   func(p *Plan) *[]string { return &p.Inner },
+			"notes":   func(p *Plan) *[]string { return &p.Notes },
+		}
+		check := func(what string, p *Plan) {
+			t.Helper()
+			resync(p)
+			for _, pr := range Verify(p, in, o) {
+				if strings.Contains(pr.String(), "hunter2") || strings.Contains(pr.String(), canary) {
+					t.Errorf("%s: a problem repeats text of the plan: %s", what, pr)
+				}
+			}
+		}
+		for name, part := range parts {
+			if withSeccompFile && (name == "pasta" || name == "bwrap") {
+				continue // the same tokens as the plain plan, but for --seccomp
+			}
+			for _, i := range sample(name, *part(base)) {
+				p := clonePlan(base)
+				(*part(p))[i] = canary
+				check(fmt.Sprintf("%s[%d] replaced", name, i), p)
+
+				p = clonePlan(base)
+				l := part(p)
+				*l = append((*l)[:i], append([]string{canary}, (*l)[i:]...)...)
+				check(fmt.Sprintf("%s[%d] preceded", name, i), p)
+			}
+		}
+		// The environment and the descriptors of the plan.
+		for i := range base.Env {
+			p := clonePlan(base)
+			p.Env[i].Name, p.Env[i].Value = canary, canary
+			check(fmt.Sprintf("Env[%d]", i), p)
+		}
+		for i := range base.Files {
+			p := clonePlan(base)
+			p.Files[i].Path, p.Files[i].SHA256, p.Files[i].Purpose = canary, canary, canary
+			check(fmt.Sprintf("Files[%d]", i), p)
+		}
+		p := clonePlan(base)
+		p.Digest, p.WorkDir = canary, canary
+		check("digest and working folder", p)
 	}
 }
 

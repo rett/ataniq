@@ -7,8 +7,10 @@ import (
 )
 
 // emitter builds the bubblewrap arguments. Every operand it is given is
-// checked: bubblewrap reads an argument that starts with "--" as an option in
-// some positions, and a host path is absolute, so a refusal costs nothing.
+// checked. bubblewrap reads operands by position, so an operand that starts
+// with "--" would be taken as a value, not as an option; the plan refuses it
+// anyway so that its parse and its rendering stay unambiguous, and a host path
+// is absolute, so the refusal costs nothing.
 type emitter struct {
 	args []string
 	err  error
@@ -22,7 +24,7 @@ func (e *emitter) opt(name string, operands ...string) {
 	e.args = append(e.args, name)
 	for _, o := range operands {
 		if strings.HasPrefix(o, "--") && e.err == nil {
-			e.err = refuse("bubblewrap argument", "%q would start with -- and be read as an option", clip(o))
+			e.err = refuse("bubblewrap argument", "an operand of %s starts with --, which the plan refuses so that its parse stays unambiguous", name)
 		}
 		e.args = append(e.args, o)
 	}
@@ -50,8 +52,7 @@ func (e *emitter) bind(b profile.Bind) {
 	}
 }
 
-// clip shortens a value for a refusal or a problem and quotes nothing: the
-// caller formats it with %q.
+// clip shortens a note for a problem; the caller formats it with %q.
 func clip(s string) string {
 	const max = 64
 	if len(s) > max {
