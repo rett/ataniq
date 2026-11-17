@@ -252,7 +252,7 @@ own text follows the same rule. A cell holding more than 64 bytes also becomes
 a placeholder, in either mode.
 
 Use over SSH is not qualified. The SSH use checked by hand so far is
-`ssh localhost` and SSH from another machine: see
+`ssh localhost`, SSH from another machine and SSH through two hops: see
 [Qualification](#qualification).
 
 ## Qualification
@@ -263,9 +263,9 @@ Use over SSH, terminal restoration after a startup error and any live control
 are not qualified. The automated tests check keys, layout, the replay and the
 input handling. They do not qualify the console in a real terminal.
 
-One person made one attended check, on 2026-11-16, in one terminal (Ghostty),
-on one machine, with fixture recordings only. It is not a qualification. The
-check ran locally, over `ssh localhost` and over SSH from another machine,
+One person made an attended check, on 2026-11-16, in one terminal (Ghostty),
+with fixture recordings only. It is not a qualification. The check ran in a
+local terminal, over `ssh localhost` and over SSH from another machine,
 including with `TERM=xterm-256color`. It passed for the layout, focus and the
 return key (with CapsLock and NumLock), F12 zoom, Ctrl+K, a resize across the
 100x30 boundary, the ended state, emoji alignment, the `mouse-held.jsonl`
@@ -274,6 +274,12 @@ selection was not confined to the session pane, because the terminal's own
 selection spans the window. The console now confines it (see
 [Selecting and copying](#selecting-and-copying)); that change has not been
 checked by hand yet.
+
+A second attended check, also with fixture recordings only, went through two
+SSH hops: an SSH session from one remote machine to another, both with the
+outer terminal's terminfo entry. Every case passed. The console's first output
+was the width query (mode 2027), and every mode it set was restored on quit.
+It is not a qualification either.
 
 The pane does not track the kitty keyboard flags a session may set. The
 console sets no keyboard enhancement of its own. Bubble Tea always asks the
