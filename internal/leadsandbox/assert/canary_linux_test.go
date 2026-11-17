@@ -360,3 +360,121 @@ func TestCanaryListensOnIPv6Loopback(t *testing.T) {
 		t.Errorf("a closed canary: %+v", r)
 	}
 }
+
+// dialAndClose connects and closes at once, without waiting for the canary to
+// accept: the connection is complete in the kernel and may still be in the
+// backlog. It is what the probe's dial does.
+func dialAndClose(t *testing.T, network, addr string) {
+	t.Helper()
+	c, err := net.DialTimeout(network, addr, 10*time.Second)
+	if err != nil {
+		t.Fatalf("dial %s %s: %v", network, addr, err)
+	}
+	c.Close()
+}
+
+// A connection that reached a listener before CheckCanary is read as a hit at
+// once, with no wait of the test: CheckCanary settles the canary first. Without
+// it the count was short in about one of ten rounds.
+func TestCheckCanaryCountsAConnectionStillInTheBacklog(t *testing.T) {
+	const rounds = 300
+	wrong := 0
+	for i := 0; i < rounds; i++ {
+		c, err := NewCanary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch i % 3 {
+		case 0:
+			dialAndClose(t, "tcp", c.TCP)
+		case 1:
+			dialAndClose(t, "unix", "@"+c.Abstract)
+		default:
+			if c.TCP2 != "" {
+				dialAndClose(t, "tcp", c.TCP2)
+			} else {
+				dialAndClose(t, "tcp", c.TCP)
+			}
+		}
+		if r := CheckCanary(c); r.Status != StatusFailed {
+			wrong++
+		}
+		if c.Hits() != 1 {
+			t.Fatalf("round %d: %d hits, want 1 (a connection went uncounted, or a marker was counted)", i, c.Hits())
+		}
+		c.Close()
+	}
+	if wrong != 0 {
+		t.Errorf("%d of %d reached canaries were not failed", wrong, rounds)
+	}
+}
+
+func TestCanarySettleDoesNotCountItsMarkers(t *testing.T) {
+	c := testCanary(t)
+	for i := 0; i < 3; i++ {
+		if err := c.Settle(10 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.Hits() != 0 || c.TCPHits() != 0 || c.TCP2Hits() != 0 || c.AbstractHits() != 0 {
+		t.Errorf("hits after settling: %d %d %d %d", c.Hits(), c.TCPHits(), c.TCP2Hits(), c.AbstractHits())
+	}
+	if r := CheckCanary(c); r.Status != StatusOK {
+		t.Errorf("a settled canary nobody reached: %+v", r)
+	}
+	// A real connection between two settles is counted, once, and a marker
+	// does not hide it.
+	dialAndClose(t, "tcp", c.TCP)
+	if err := c.Settle(10 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if c.TCPHits() != 1 || c.Hits() != 1 {
+		t.Errorf("hits after one connection and a settle: %d %d", c.TCPHits(), c.Hits())
+	}
+	if c.AcceptErrors() != 0 || c.Stopped() {
+		t.Errorf("accept errors %d, stopped %v", c.AcceptErrors(), c.Stopped())
+	}
+}
+
+func TestCanarySettleRefusals(t *testing.T) {
+	c := testCanary(t)
+	if err := c.Settle(0); err == nil {
+		t.Error("a zero timeout")
+	}
+	if err := (&Canary{done: make(chan struct{})}).Settle(time.Second); err == nil || !strings.Contains(err.Error(), "no listener") {
+		t.Errorf("a canary without listeners: %v", err)
+	}
+	c.Close()
+	if err := c.Settle(time.Second); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Errorf("a stopped canary: %v", err)
+	}
+}
+
+// A listener whose accept loop does not run cannot count its marker: Settle
+// fails within its timeout, and CheckCanary says not-checked, not ok.
+func TestCanarySettleTimesOut(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	c := &Canary{TCP: l.Addr().String(), done: make(chan struct{}), targets: []settleTarget{{"tcp", l.Addr().String()}}}
+	if err := c.Settle(50 * time.Millisecond); err == nil || !strings.Contains(err.Error(), "not accepted") {
+		t.Fatalf("Settle: %v", err)
+	}
+	if len(c.markers) != 0 {
+		t.Errorf("a marker is left behind: %v", c.markers)
+	}
+	old := checkCanarySettle
+	checkCanarySettle = 50 * time.Millisecond
+	defer func() { checkCanarySettle = old }()
+	r := CheckCanary(c)
+	if r.Status != StatusNotChecked || !strings.Contains(r.Detail, "could not be settled") {
+		t.Errorf("a canary that cannot settle: %+v", r)
+	}
+	// A hit that is already counted is failed whether or not settling worked.
+	c.tcpHits.Add(1)
+	if r := CheckCanary(c); r.Status != StatusFailed {
+		t.Errorf("a counted hit with a settle that failed: %+v", r)
+	}
+}

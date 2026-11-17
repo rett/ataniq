@@ -48,9 +48,15 @@
 //     classifies the failure, and after the probe's report [CheckCanary] says
 //     the canary accepted nothing. That count is the evidence independent of
 //     the probe's own judgement, and a timeout, which is weaker evidence than
-//     a refusal, rests on it. The accept loops survive a transient error of
-//     accept (counted, with a bounded back-off); a count taken after such an
-//     error, or after the canary stopped, is not-checked.
+//     a refusal, rests on it. A connection the kernel has completed may
+//     still be in the backlog when the count is read, so [CheckCanary] first
+//     settles the canary ([Canary.Settle]): one marker connection to each
+//     listener, accepted after everything that was queued before it (accept
+//     queues are first in, first out), and not counted as a hit. A canary that
+//     cannot be settled is not-checked, unless a hit is already counted. The
+//     accept loops survive a transient error of accept (counted, with a
+//     bounded back-off); a count taken after such an error, or after the
+//     canary stopped, is not-checked.
 //   - The stop rule of the design as constants ([StopTermWait] and the
 //     others). The holder implements it.
 //
