@@ -325,6 +325,68 @@ func TestFinalScreenIsCapped(t *testing.T) {
 	}
 }
 
+// The temporary file has a random name and is created exclusively: a name the
+// lead planted in the state folder (here a hard link to a file elsewhere) is
+// never written through.
+func TestFinalRecordIsWrittenThroughAnExclusiveTemporaryFile(t *testing.T) {
+	e := newEnv(t)
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"final.json.tmp", ".final-1.tmp"} {
+		if err := os.Link(victim, filepath.Join(e.stateDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := e.start("exit 0")
+	waitDone(t, s)
+	if _, err := s.Final(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "precious" {
+		t.Errorf("the planted link was written through: %q", b)
+	}
+	st, err := os.Stat(filepath.Join(e.stateDir, FinalName))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("final.json: %v, %v", st, err)
+	}
+	ents, err := os.ReadDir(e.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, en := range ents {
+		names = append(names, en.Name())
+	}
+	if got := strings.Join(names, " "); got != ".final-1.tmp final.json final.json.tmp" {
+		t.Errorf("the state folder holds %q", got)
+	}
+}
+
+// A failure leaves no temporary file behind.
+func TestAFailedFinalRecordLeavesNoTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty folder named final.json: the rename cannot replace it.
+	if err := os.MkdirAll(filepath.Join(dir, FinalName, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFinal(dir, &FinalRecord{Version: FinalVersion}); err == nil {
+		t.Fatal("writeFinal replaced a folder")
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != FinalName {
+		t.Errorf("the folder holds %v after the failure", ents)
+	}
+	// No folder at all: the creation fails.
+	if err := writeFinal(filepath.Join(dir, "nope"), &FinalRecord{}); err == nil {
+		t.Error("writeFinal to a missing folder succeeded")
+	}
+}
+
 func TestAddCountIsBounded(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("exit 0")

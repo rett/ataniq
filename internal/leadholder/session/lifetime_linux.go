@@ -292,34 +292,37 @@ func (s *Session) finalScreen() FinalScreen {
 }
 
 // writeFinal writes the record to dir/final.json (mode 0600) through a
-// temporary name, syncs it and renames it into place, then syncs the folder.
+// temporary file, syncs it and renames it into place, then syncs the folder.
+// The temporary file is created exclusively, under a random name
+// (os.CreateTemp), so that a name the lead planted in the folder is never
+// written through; it is removed when anything fails.
 func writeFinal(dir string, rec *FinalRecord) error {
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("session: encode the final record: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := filepath.Join(dir, FinalName+".tmp")
-	fd, err := unix.Open(tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	f, err := os.CreateTemp(dir, ".final-*.tmp")
 	if err != nil {
 		return fmt.Errorf("session: write the final record: %w", err)
 	}
-	f := os.NewFile(uintptr(fd), tmp)
-	_ = f.Chmod(0o600)
-	_, werr := f.Write(data)
+	tmp := f.Name()
+	werr := f.Chmod(0o600)
+	if werr == nil {
+		_, werr = f.Write(data)
+	}
 	if werr == nil {
 		werr = f.Sync()
 	}
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
+	if werr == nil {
+		werr = os.Rename(tmp, filepath.Join(dir, FinalName))
+	}
 	if werr != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("session: write the final record: %w", werr)
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, FinalName)); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("session: write the final record: %w", err)
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
