@@ -58,7 +58,7 @@ func TestBoundaryOfIdentity(t *testing.T) {
 
 func TestBoundaryOfRefusals(t *testing.T) {
 	root := tree(t)
-	group(t, root, "/real", "")
+	group(t, root, "/real/sub", "")
 	if err := os.WriteFile(filepath.Join(root, "file"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestBoundaryOfRefusals(t *testing.T) {
 		"missing":           "/missing",
 		"regular file":      "/file",
 		"final symlink":     "/link",
-		"component symlink": "/link/..",
+		"component symlink": "/link/sub",
 	} {
 		if b, err := BoundaryOf(path); err == nil {
 			t.Errorf("%s: accepted %+v", name, b)
@@ -90,6 +90,15 @@ func TestBoundaryOfRefusals(t *testing.T) {
 	}
 	if _, err := BoundaryOf("/link"); err == nil {
 		t.Fatal("symlink followed")
+	}
+	// The same path through the real directory is accepted, so the refusal of
+	// "/link/sub" comes from the symlink in the middle of the path, which is
+	// clean, absolute and short, and reaches the no-follow open.
+	if _, err := BoundaryOf("/real/sub"); err != nil {
+		t.Fatalf("real path refused: %v", err)
+	}
+	if _, err := BoundaryOf("/link/sub"); err == nil {
+		t.Fatal("component symlink followed")
 	}
 }
 
