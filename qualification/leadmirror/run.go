@@ -232,6 +232,8 @@ func prepareStateRoot(root string) error {
 type caseEnv struct {
 	root     string // the state root of the case
 	canary   string // the canary folder, beside the clone's parents
+	control  string // the control clone in the fixture folder, or "" when the clone is not planted
+	ccanary  string // the canary folder of the control clone
 	upstream string // the fixture upstream repository
 	tree     string // the lead's clone
 	inside   string // the clone as the serving half sees it, or the host path when unknown
@@ -272,6 +274,24 @@ func (r *runner) newCase(ctx context.Context, root string, lead func(ctx context
 			return nil, err
 		}
 	}
+	if plant {
+		// The control clone is made the same way as the lead's clone, in
+		// the fixture folder, before any sandbox serves the lead's clone.
+		// It has a canary folder of its own, so that the control does not
+		// write into the lead's.
+		c.control, c.ccanary = filepath.Join(root, "fixture", "control"), filepath.Join(root, "fixture", "control-canary")
+		if err := mkdirPrivate(c.ccanary); err != nil {
+			return nil, err
+		}
+		if err := r.fx.buildLead(ctx, c.upstream, c.control); err != nil {
+			return nil, err
+		}
+		if lead != nil {
+			if err := lead(ctx, c.control); err != nil {
+				return nil, err
+			}
+		}
+	}
 	tree, err := mirror.LeadTree(root, role)
 	if err != nil {
 		return nil, err
@@ -289,6 +309,9 @@ func (r *runner) newCase(ctx context.Context, root string, lead func(ctx context
 	}
 	if plant {
 		if err := plantHostile(tree, c.canary, c.inside); err != nil {
+			return nil, err
+		}
+		if err := plantHostile(c.control, c.ccanary, c.control); err != nil {
 			return nil, err
 		}
 	}

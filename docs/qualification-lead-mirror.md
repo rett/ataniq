@@ -51,7 +51,14 @@ The command refuses to run, with exit status 2 and nothing created, when:
 - the scratch state root exists and holds anything, is a symlink, is not a
   folder, or can be written by group or others;
 - the output file exists, its folder does not exist, or it lies inside the
-  scratch state root.
+  scratch state root. The command follows the symlinks of the output file's
+  folder and of the state root's parent folder before it compares, so a link
+  into the state root is refused too.
+
+If the run is interrupted (SIGINT) after it has started, the command writes the
+report it has made so far, then says that the run did not finish and exits with
+status 1. The report then holds the facts of the cases that ran, and the case
+that was running may hold fewer facts than a finished run.
 
 ## The config
 
@@ -138,9 +145,13 @@ mirror run. `tools.go` is the Go version the harness was built with.
 
 Text that a lead wrote (ref names, paths, commit subjects, gate output) is
 passed through `leadtext.Escape` before it is written. Error texts come from
-the packages, which put no output of git and no lead text in them. The harness
-puts no scratch path in a fact of its own; the text of an error from a package
-may name a folder.
+the packages, which put no output of git and no lead text in them; the one
+exception is the error of `s16-fetch.control`, which holds the first line of
+git's own message. The harness puts no scratch path in a fact of its own,
+except `repository_inside` in `s16-fetch.clone`, which is the template's own
+value for the clone's path as the serving half sees it, and that value is a
+host path when the template uses `{tree}` there. The text of an error from a
+package or from the control's git may name a folder.
 
 A fact never says that something is good. Where a fact compares two values it
 says whether they are `identical`, and nothing more.
@@ -182,6 +193,7 @@ branches through the template, with the default limits.
 | `s16-fetch.lead-refs` | The lead's refs in the mirror `before` and `after`. |
 | `s16-fetch.mirror-size` | The mirror folder's allocated bytes and entries before and after. |
 | `s16-fetch.canaries` | `before` and `after`: which planted canary names exist on the host (`present`), other names in the canary folder, and the number of entries. |
+| `s16-fetch.control` | The control. After the facts above are taken, the harness runs plain `git status` (its own explicit environment, not through the template, no sandbox) in a second clone made the same way, planted the same way, with a canary folder of its own, in the fixture folder. The harness made it before any sandbox served the lead's clone. `result` and `error` of that git; `present`: the canaries that fired; the other names in the control's canary folder. |
 
 ### Case `oversize`
 
@@ -198,13 +210,16 @@ Three fetches run, in this order, on one mirror:
 ### Case `planted`
 
 A fresh clone under `<state_root>/cases/planted`, fetched through the template
-once as it is, then with a plant, then once more after the plants are taken
-away. The owner-side check of the clone refuses the three plants before the
+once as it is, then one fetch for each plant, then once more with a new clone
+made as the first one was. Each plant is made in a new clone before anything
+serves it, and that clone is put in the place of the lead's clone; a clone that
+the template has served is moved away whole and the harness writes nothing into
+it. The owner-side check of the clone refuses the three plants before the
 planner is asked, so these facts show `serve_requests` of 0.
 
 | Fact | What runs |
 | --- | --- |
-| `planted.control-before`, `planted.control-after` | A fetch of the clone as made. |
+| `planted.control-before`, `planted.control-after` | A fetch of a clone as made: the first clone, and a new one made the same way after the plants. |
 | `planted.alternates` | A fetch with `.git/objects/info/alternates` present. |
 | `planted.git-symlink` | A fetch with `.git` replaced by a symlink to the real folder. |
 | `planted.tree-symlink` | A fetch with `leads/<role>/tree` replaced by a symlink to the real folder. |
@@ -255,18 +270,34 @@ tip, it holds `verification.not-run`.
   one run, on one host, with one template file (named by its digest), one git
   and one Go version. A different template, kernel, git or run can give other
   facts.
-- A canary that does not exist shows that no write reached that path by the
-  commands the harness planted. It does not show that a hook or a configured
-  command was started and then blocked, or never started. `git-upload-pack`
-  does not run these hooks or these configured commands in ordinary use, and
-  the harness does not claim that it does. The planted files only give an
-  escape a place to show itself. A template that does not bind the canary
-  folder makes the write fail for a plain reason, and that is the intended
-  reading: nothing reached the host.
+- The S16 canaries show that owner-side git ran nothing from the clone: no
+  hook and no configured command of the clone was started by the fetch. They
+  show nothing about the sandbox. A serving command that runs only
+  `git-upload-pack` gives the same S16 canary facts with a sandbox and without
+  one, because `git-upload-pack` does not run these hooks or these configured
+  commands in ordinary use. The harness does not claim otherwise. A canary
+  that does not exist does not show that a hook or a command was started and
+  then blocked, or never started.
+- What the harness holds as controls: `s16-fetch.control` is the control of the
+  S16 canaries. It runs plain `git status` in a second clone, made the same
+  way and planted the same way, in the fixture folder with its own canary
+  folder, with no sandbox. The canaries it lists in `present` are the ones that
+  fire when git runs in a clone on this host, so a reader can tell that the
+  fixture was armed. Without a fired canary in the control, an absent canary in
+  `s16-fetch.canaries` means little. The package's tests also run `git status`
+  and `git commit` in a planted clone and require the canaries, and require the
+  canary of the verification gate to be written when there is no sandbox. The
+  control of the verification canary is in the tests only; the report holds no
+  control for it.
+- What does show something about the sandbox: the verification canary
+  (`verification.canary-gate`, with `canary_exists_on_host`), the environment
+  facts (`verification.environment-gate`), and the review of the template file
+  itself, which a person does by reading what each section binds, hides and
+  sets.
 - A canary that exists is a real finding: something wrote outside the places
-  the template gave. With the fake planner (no sandbox) the verification gate
-  does write its canary; that is the control that shows the check can see a
-  write.
+  the template gave. A template that does not bind the canary folder makes a
+  write fail for a plain reason, and that is the intended reading of the
+  verification canary: nothing reached the host.
 - `canary-write-failed` in the output of the canary gate is the sandbox's own
   statement. The fact `canary_exists_on_host` is the harness's check.
 - `identical` upstream refs show that the refs `refs/heads/*` and

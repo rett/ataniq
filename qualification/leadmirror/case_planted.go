@@ -2,6 +2,7 @@ package leadmirror
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -21,9 +22,56 @@ func (r *runner) plantedLead(ctx context.Context, dir string) error {
 	return err
 }
 
+// plantedCase makes the clones of the planted case. The plants are made in a
+// clone no sandbox has served, and only then is that clone put in place of the
+// lead's clone. A clone that a sandbox has served is moved away whole and never
+// written to by path: a sandbox that could write it may have left a symlink in
+// it, and a write by path would follow that.
+type plantedCase struct {
+	r    *runner
+	c    *caseEnv
+	root string
+	n    int
+}
+
+// fresh makes a new clone at name below the fixture folder, with the lead's
+// work, and returns its path. Nothing has served it.
+func (p *plantedCase) fresh(ctx context.Context, name string) (string, error) {
+	dir := filepath.Join(p.root, "fixture", name)
+	if err := p.r.fx.buildLead(ctx, p.c.upstream, dir); err != nil {
+		return "", err
+	}
+	if err := p.r.plantedLead(ctx, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// next returns a name for a new folder in the fixture folder.
+func (p *plantedCase) next(prefix string) string {
+	p.n++
+	return fmt.Sprintf("%s-%d", prefix, p.n)
+}
+
+// retire moves what is at the lead's clone path aside, whole, to the fixture
+// folder. It writes nothing into it.
+func (p *plantedCase) retire() error {
+	return os.Rename(p.c.tree, filepath.Join(p.root, "fixture", p.next("retired")))
+}
+
+// install puts dir where the lead's clone is. What was there is moved aside.
+func (p *plantedCase) install(dir string) error {
+	if err := p.retire(); err != nil {
+		return err
+	}
+	return os.Rename(dir, p.c.tree)
+}
+
 // casePlanted looks at what the owner-side check of the clone refuses before
 // any sandbox is asked: an alternates file, a ".git" that is a symlink, and a
-// clone folder that is a symlink.
+// clone folder that is a symlink. Each plant is made in a clone of its own
+// before anything serves it; the first clone, which the control served, is
+// moved away.
 func (r *runner) casePlanted(ctx context.Context) error {
 	cs := r.add("planted", "A lead's clone with an alternates file, with a .git that is a symlink, and with a clone folder that is a symlink.")
 	root := filepath.Join(r.opts.StateRoot, "cases", "planted")
@@ -31,6 +79,7 @@ func (r *runner) casePlanted(ctx context.Context) error {
 	if err != nil {
 		return cs.harnessError(ctx, err)
 	}
+	p := &plantedCase{r: r, c: c, root: root}
 	moved := filepath.Join(root, "fixture", "moved")
 	if err := os.Mkdir(moved, 0o700); err != nil {
 		return cs.harnessError(ctx, err)
@@ -59,64 +108,67 @@ func (r *runner) casePlanted(ctx context.Context) error {
 		return cs.harnessError(ctx, err)
 	}
 
-	// An alternates file in the clone.
-	alt := filepath.Join(c.tree, ".git", "objects", "info", "alternates")
+	// An alternates file in the clone. The clone is new and unserved.
+	dir, err := p.fresh(ctx, p.next("lead"))
+	if err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	alt := filepath.Join(dir, ".git", "objects", "info", "alternates")
 	if err := os.MkdirAll(filepath.Dir(alt), 0o700); err != nil {
 		return cs.harnessError(ctx, err)
 	}
 	if err := os.WriteFile(alt, []byte(filepath.Join(root, "fixture", "no-such-objects")+"\n"), 0o600); err != nil {
 		return cs.harnessError(ctx, err)
 	}
-	aerr := attempt("alternates", "A fetch with .git/objects/info/alternates present in the clone.")
-	if err := os.Remove(alt); err != nil {
+	if err := p.install(dir); err != nil {
 		return cs.harnessError(ctx, err)
 	}
-	if aerr != nil {
-		return cs.harnessError(ctx, aerr)
+	if err := attempt("alternates", "A fetch with .git/objects/info/alternates present in the clone."); err != nil {
+		return cs.harnessError(ctx, err)
 	}
 
-	// .git replaced by a symlink to the real folder.
-	dotGit := filepath.Join(c.tree, ".git")
+	// .git replaced by a symlink to the real folder, in a new unserved clone.
+	if dir, err = p.fresh(ctx, p.next("lead")); err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	dotGit := filepath.Join(dir, ".git")
 	if err := os.Rename(dotGit, filepath.Join(moved, "dotgit")); err != nil {
 		return cs.harnessError(ctx, err)
 	}
 	if err := os.Symlink(filepath.Join(moved, "dotgit"), dotGit); err != nil {
-		_ = os.Rename(filepath.Join(moved, "dotgit"), dotGit)
 		return cs.harnessError(ctx, err)
 	}
-	gerr := attempt("git-symlink", "A fetch with .git of the clone replaced by a symlink to the real folder.")
-	rerr := os.Remove(dotGit)
-	if rerr == nil {
-		rerr = os.Rename(filepath.Join(moved, "dotgit"), dotGit)
+	if err := p.install(dir); err != nil {
+		return cs.harnessError(ctx, err)
 	}
-	if rerr != nil {
-		return cs.harnessError(ctx, rerr)
-	}
-	if gerr != nil {
-		return cs.harnessError(ctx, gerr)
+	if err := attempt("git-symlink", "A fetch with .git of the clone replaced by a symlink to the real folder."); err != nil {
+		return cs.harnessError(ctx, err)
 	}
 
-	// The clone's own folder replaced by a symlink.
-	if err := os.Rename(c.tree, filepath.Join(moved, "tree")); err != nil {
+	// The clone's own folder replaced by a symlink: the real clone is new, in
+	// the moved folder, and the link is made where the clone is. What was
+	// there is moved aside whole.
+	if _, err := p.fresh(ctx, filepath.Join("moved", "tree")); err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	if err := p.retire(); err != nil {
 		return cs.harnessError(ctx, err)
 	}
 	if err := os.Symlink(filepath.Join(moved, "tree"), c.tree); err != nil {
-		_ = os.Rename(filepath.Join(moved, "tree"), c.tree)
 		return cs.harnessError(ctx, err)
 	}
-	terr := attempt("tree-symlink", "A fetch with the clone's folder (leads/<role>/tree) replaced by a symlink to the real folder.")
-	rerr = os.Remove(c.tree)
-	if rerr == nil {
-		rerr = os.Rename(filepath.Join(moved, "tree"), c.tree)
-	}
-	if rerr != nil {
-		return cs.harnessError(ctx, rerr)
-	}
-	if terr != nil {
-		return cs.harnessError(ctx, terr)
+	if err := attempt("tree-symlink", "A fetch with the clone's folder (leads/<role>/tree) replaced by a symlink to the real folder."); err != nil {
+		return cs.harnessError(ctx, err)
 	}
 
-	if err := attempt("control-after", "A fetch after the plants were taken away again. It shows that the refusals above came from the plants."); err != nil {
+	// The control after: a new clone as it is made, put in place of the link.
+	if dir, err = p.fresh(ctx, p.next("lead")); err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	if err := p.install(dir); err != nil {
+		return cs.harnessError(ctx, err)
+	}
+	if err := attempt("control-after", "A fetch of a new clone, made as the first one was, after the plants. It shows that the refusals above came from the plants."); err != nil {
 		return cs.harnessError(ctx, err)
 	}
 	return ctx.Err()

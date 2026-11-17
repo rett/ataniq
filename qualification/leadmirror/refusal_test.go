@@ -205,32 +205,37 @@ func TestRunRefusals(t *testing.T) {
 	})
 }
 
-// kindPlanner stands for a template with no sandbox for fetches. It answers
-// every serve request with ErrNotConfigured and fails the test when it is
-// asked for any other kind of request.
-type kindPlanner struct {
-	t      *testing.T
-	mu     sync.Mutex
-	serves int
+// noSandboxPlanner stands for a template with no sandbox for fetches. It
+// answers every serve request with ErrNotConfigured and counts the requests of
+// each kind.
+type noSandboxPlanner struct {
+	mu               sync.Mutex
+	serves, verifies int
 }
 
-func (p *kindPlanner) Serve(sandboxplan.ServeRequest) (sandboxplan.ServePlan, error) {
+func (p *noSandboxPlanner) Serve(sandboxplan.ServeRequest) (sandboxplan.ServePlan, error) {
 	p.mu.Lock()
 	p.serves++
 	p.mu.Unlock()
 	return sandboxplan.ServePlan{}, fmt.Errorf("%w for serve", sandboxplan.ErrNotConfigured)
 }
 
-func (p *kindPlanner) Verify(r sandboxplan.VerifyRequest) (sandboxplan.VerifyPlan, error) {
-	p.t.Errorf("unexpected request kind: verify %+v", r)
-	return sandboxplan.VerifyPlan{}, errors.New("unexpected")
+func (p *noSandboxPlanner) Verify(sandboxplan.VerifyRequest) (sandboxplan.VerifyPlan, error) {
+	p.mu.Lock()
+	p.verifies++
+	p.mu.Unlock()
+	return sandboxplan.VerifyPlan{}, errors.New("unexpected verify request")
 }
 
-// TestNothingRunsWithoutASandbox: a planner that has no sandbox ends every
-// fetch with ErrNotConfigured, and the library asks it for nothing else and
-// starts nothing in its place.
+// TestNothingRunsWithoutASandbox: a planner that has no sandbox for fetches
+// ends every fetch with ErrNotConfigured, so no lead ref arrives and no canary
+// is written, and the library starts nothing in its place. It also asks for no
+// verification, because no fetch gave a tip to verify. That last check can
+// fire: a case that asked for a verification without a tip would count here.
+// What the library asks the planner in other runs is checked by
+// TestOnlyTheGivenPlannerIsAsked and TestNoVerifySection.
 func TestNothingRunsWithoutASandbox(t *testing.T) {
-	p := &kindPlanner{t: t}
+	p := &noSandboxPlanner{}
 	rep, o := runFake(t, p)
 	for _, id := range []string{"s16-fetch.fetch", "oversize.measure", "oversize.staged", "oversize.control", "planted.control-before", "s19-review.fetch"} {
 		f := findFact(t, rep, id).Observed
@@ -244,6 +249,9 @@ func TestNothingRunsWithoutASandbox(t *testing.T) {
 	}
 	if p.serves == 0 {
 		t.Error("the planner was never asked")
+	}
+	if p.verifies != 0 {
+		t.Errorf("a verification was asked for %d times without a fetched tip", p.verifies)
 	}
 	// No lead ref arrived, and no canary file was written.
 	for _, id := range []string{"s16-fetch.lead-refs"} {
