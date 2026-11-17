@@ -2,6 +2,7 @@ package wire_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -806,6 +807,132 @@ func TestFormatCharactersRefusedOnEncode(t *testing.T) {
 		}
 		if got := wire.Sanitize(text, 64, false); got != text {
 			t.Errorf("Sanitize changed %s: %q", name, got)
+		}
+	}
+}
+
+// edit applies f to the object that holds the last key of path in a sample
+// payload (the earlier parts are object keys) and returns the new payload.
+func edit(t *testing.T, p []byte, f func(obj map[string]any, key string), path ...string) []byte {
+	t.Helper()
+	var tree map[string]any
+	if err := json.Unmarshal(p, &tree); err != nil {
+		t.Fatal(err)
+	}
+	obj := tree
+	for _, k := range path[:len(path)-1] {
+		obj = obj[k].(map[string]any)
+	}
+	last := path[len(path)-1]
+	if _, ok := obj[last]; !ok {
+		t.Fatalf("%s lacks %s", p, last)
+	}
+	f(obj, last)
+	out, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func without(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { delete(o, k) }, path...)
+}
+
+func nulled(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { o[k] = nil }, path...)
+}
+
+func zeroed(t *testing.T, p []byte, path ...string) []byte {
+	return edit(t, p, func(o map[string]any, k string) { o[k] = float64(0) }, path...)
+}
+
+// A field that a payload must carry is refused when it is missing or null:
+// it is never read as its zero value.
+func TestRequiredFields(t *testing.T) {
+	for _, c := range []struct {
+		codec string
+		path  []string
+	}{
+		{"hello", []string{"version"}},
+		{"hello", []string{"ticket"}},
+		{"welcome", []string{"version"}},
+		{"welcome", []string{"epoch"}},
+		{"role", []string{"writer_name"}},
+		{"role", []string{"writer_pid"}},
+		{"check", []string{"position"}},
+		{"check", []string{"digest"}},
+		{"request", []string{"op"}},
+		{"request", []string{"epoch"}},
+		{"response status", []string{"status", "epoch"}},
+		{"response status", []string{"status", "writer_present"}},
+		{"response status", []string{"status", "viewer_present"}},
+	} {
+		cd := codecNamed(t, c.codec)
+		good, err := cd.encode(cd.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := c.codec + " " + strings.Join(c.path, ".")
+		missing := without(t, good, c.path...)
+		if _, err := cd.decode(missing); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "missing required field") {
+			t.Errorf("%s missing: err = %v", name, err)
+		}
+		null := nulled(t, good, c.path...)
+		if _, err := cd.decode(null); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "missing required field") {
+			t.Errorf("%s null: err = %v", name, err)
+		}
+	}
+	// The cases that motivated the rule, written out.
+	if r, err := wire.DecodeRequest([]byte(`{"op":"stop"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a request without an epoch decoded as %+v", r)
+	}
+	if c, err := wire.DecodeCheck([]byte(`{"digest":"` + strings.Repeat("0", 64) + `"}`)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("a check without a position decoded as %+v", c)
+	}
+	if c, err := wire.DecodeCheck([]byte(`{"position":0,"digest":"` + strings.Repeat("0", 64) + `"}`)); err != nil || c.Position != 0 {
+		t.Errorf("a check at position 0: %+v, %v", c, err)
+	}
+	// An optional field may be left out: Hello colours, an exit status.
+	if _, err := wire.DecodeHello([]byte(`{"version":1,"ticket":"` + ticket64 + `","name":"n","columns":80,"rows":24}`)); err != nil {
+		t.Errorf("hello without colours: %v", err)
+	}
+}
+
+// Epochs are numbered from 1: zero is refused wherever an epoch is carried.
+func TestEpochZeroIsInvalid(t *testing.T) {
+	if _, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop}); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("request with epoch 0: %v", err)
+	}
+	w := wire.Welcome{Version: 1, Role: wire.RoleViewer, Lead: "l", Runtime: "claude", Caps: wire.DefaultCaps()}
+	if _, err := wire.EncodeWelcome(w); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("welcome with epoch 0: %v", err)
+	}
+	st := sampleStatus
+	st.Epoch = 0
+	if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: &st}); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("status with epoch 0: %v", err)
+	}
+	// Written as a peer would send it, the key present and the value zero.
+	for _, c := range []struct {
+		codec string
+		path  []string
+	}{{"request", []string{"epoch"}}, {"welcome", []string{"epoch"}}, {"response status", []string{"status", "epoch"}}} {
+		cd := codecNamed(t, c.codec)
+		good, _ := cd.encode(cd.sample)
+		zero := zeroed(t, good, c.path...)
+		if _, err := cd.decode(zero); !errors.Is(err, wire.ErrInvalid) || !strings.Contains(err.Error(), "epoch is 0") {
+			t.Errorf("%s epoch 0: err = %v", c.codec, err)
+		}
+	}
+	// Epoch 1 is the first valid one, and the largest value round-trips.
+	for _, n := range []uint64{1, 1<<64 - 1} {
+		p, err := wire.EncodeRequest(wire.Request{Op: wire.OpStop, Epoch: n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := wire.DecodeRequest(p); err != nil || got.Epoch != n {
+			t.Errorf("epoch %d: %+v, %v", n, got, err)
 		}
 	}
 }

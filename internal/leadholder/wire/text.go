@@ -341,6 +341,25 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 	return m
 }
 
+// requiredFields lists the JSON names of the fields of a struct type that
+// carry the tag wire:"required": a payload that lacks one (or has it null) is
+// refused, so that a missing field is never read as its zero value.
+func requiredFields(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Tag.Get("wire") != "required" || !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" {
+			name = f.Name
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
 // checkKeys walks a decoded JSON tree beside the type it was decoded into and
 // refuses a key that is not the exact, case-sensitive JSON name of a field
 // (encoding/json would accept a different case).
@@ -355,6 +374,11 @@ func checkKeys(path string, t reflect.Type, node any) error {
 			return nil
 		}
 		fields := jsonFields(t)
+		for _, name := range requiredFields(t) {
+			if v, ok := obj[name]; !ok || v == nil {
+				return invalidf("missing required field %q%s", name, atPath(path))
+			}
+		}
 		for k, v := range obj {
 			ft, ok := fields[k]
 			if !ok {

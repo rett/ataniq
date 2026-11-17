@@ -117,8 +117,8 @@ func (c Colors) validate() error {
 // ticket that it was given for this role and epoch; a Version other than
 // [ProtocolVersion] decodes, so that the holder can refuse it with a Notice.
 type Hello struct {
-	Version int    `json:"version"`
-	Ticket  string `json:"ticket"`
+	Version int    `json:"version" wire:"required"`
+	Ticket  string `json:"ticket" wire:"required"`
 	Name    string `json:"name"`
 	Columns int    `json:"columns"`
 	Rows    int    `json:"rows"`
@@ -211,12 +211,22 @@ func (c Caps) validate() error {
 	return nil
 }
 
+// checkEpoch refuses epoch 0. Epochs are numbered from 1, so that a request
+// or a frame that lacks one, and decodes as zero, can never match a holder's
+// epoch.
+func checkEpoch(n uint64) error {
+	if n == 0 {
+		return invalidf("epoch is 0, want 1 or more")
+	}
+	return nil
+}
+
 // Welcome answers an accepted Hello.
 type Welcome struct {
-	Version        int    `json:"version"`
+	Version        int    `json:"version" wire:"required"`
 	Role           Role   `json:"role"`
 	Lead           string `json:"lead"`
-	Epoch          uint64 `json:"epoch"`
+	Epoch          uint64 `json:"epoch" wire:"required"`
 	Runtime        string `json:"runtime"`
 	RuntimeVersion string `json:"runtime_version"`
 	Caps           Caps   `json:"caps"`
@@ -225,6 +235,9 @@ type Welcome struct {
 func (w *Welcome) validate() error {
 	if w.Version < 1 || w.Version > MaxDimension {
 		return invalidf("version is %d", w.Version)
+	}
+	if err := checkEpoch(w.Epoch); err != nil {
+		return err
 	}
 	if err := w.Role.check("role"); err != nil {
 		return err
@@ -400,8 +413,8 @@ func DecodeState(payload []byte) (State, error) {
 // name and the pid of its process; both empty or zero when there is none) and
 // the role of the client that receives the frame.
 type RoleInfo struct {
-	WriterName string `json:"writer_name"`
-	WriterPID  int    `json:"writer_pid"`
+	WriterName string `json:"writer_name" wire:"required"`
+	WriterPID  int    `json:"writer_pid" wire:"required"`
 	Role       Role   `json:"role"`
 }
 
@@ -433,8 +446,8 @@ const DigestLen = 2 * sha256.Size
 // and title; the pane defines the bytes), as 64 lower-case hexadecimal
 // characters.
 type Check struct {
-	Position uint64 `json:"position"`
-	Digest   string `json:"digest"`
+	Position uint64 `json:"position" wire:"required"`
+	Digest   string `json:"digest" wire:"required"`
 }
 
 func (c *Check) validate() error { return checkHex("digest", c.Digest, DigestLen) }

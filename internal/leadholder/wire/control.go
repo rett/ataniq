@@ -38,16 +38,19 @@ const (
 )
 
 // Request is the payload of a control request. Every request carries the
-// epoch it is meant for; the holder refuses another. Role is the role wanted
+// epoch it is meant for (1 or more; the holder refuses another). Role is the role wanted
 // and is set for a ticket only.
 type Request struct {
-	Op    Operation `json:"op"`
-	Epoch uint64    `json:"epoch"`
+	Op    Operation `json:"op" wire:"required"`
+	Epoch uint64    `json:"epoch" wire:"required"`
 	Role  Role      `json:"role,omitempty"`
 }
 
 func (r *Request) validate() error {
 	if err := r.Op.check(); err != nil {
+		return err
+	}
+	if err := checkEpoch(r.Epoch); err != nil {
 		return err
 	}
 	if r.Op == OpTicket {
@@ -72,17 +75,20 @@ func DecodeRequest(payload []byte) (Request, error) {
 // Status is the holder's answer to a status request.
 type Status struct {
 	Lead          string            `json:"lead"`
-	Epoch         uint64            `json:"epoch"`
+	Epoch         uint64            `json:"epoch" wire:"required"`
 	Runtime       string            `json:"runtime"`
 	Size          Size              `json:"size"`
 	Caps          Caps              `json:"caps"`
-	WriterPresent bool              `json:"writer_present"`
-	ViewerPresent bool              `json:"viewer_present"`
+	WriterPresent bool              `json:"writer_present" wire:"required"`
+	ViewerPresent bool              `json:"viewer_present" wire:"required"`
 	Counters      map[string]uint64 `json:"counters"`
 	Facts         Facts             `json:"facts"`
 }
 
 func (s *Status) validate() error {
+	if err := checkEpoch(s.Epoch); err != nil {
+		return err
+	}
 	if err := checkText("lead", s.Lead, 1, MaxLead, false); err != nil {
 		return err
 	}

@@ -35,4 +35,16 @@
 // escaped U+FFFD itself is fine). The Encode functions apply the same checks,
 // so a well-behaved sender cannot produce what the decoder refuses. Input, Paste,
 // Output and Snapshot are binary and have helpers to build and split them.
+//
+// A field whose zero value could be read as a real answer (an epoch, an
+// output position, a presence flag, the writer's name and pid, the op of a
+// request, the version of a Hello and of a Welcome, the ticket of a Hello,
+// the digest of a Check) is required: a payload that lacks it, or has it
+// null, is refused, not decoded as zero.
+//
+// # Epochs
+//
+// Epochs are numbered from 1. Epoch 0 is invalid wherever an epoch is
+// carried (a control request, a Welcome, a Status), on encode and on decode,
+// so a payload that lacks an epoch can never match a holder's.
 package wire
