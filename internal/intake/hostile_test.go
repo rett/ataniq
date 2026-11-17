@@ -243,3 +243,33 @@ func TestInspectHooksAndConfigOfTheRepositoryAreNotRun(t *testing.T) {
 		t.Error("a program of the repository ran")
 	}
 }
+
+// TestInspectCommitTextHasATotalBudget: every field of a commit may be long,
+// but the whole log has a budget that does not grow with the longest field.
+// Five commits with three fields of 30000 bytes are 450 KB of text, far over
+// the budget of five commits.
+func TestInspectCommitTextHasATotalBudget(t *testing.T) {
+	s := newScene(t)
+	long := strings.Repeat("x", 30000)
+	for i := 0; i < 5; i++ {
+		s.put("src/f"+string(rune('a'+i))+".go", "package main\n")
+		s.authorName, s.committerName = long, long
+		s.commit(long + "\n")
+	}
+	s.finish()
+	req := s.request()
+	req.Limits.MaxCommits = 5
+	if _, err := Inspect(context.Background(), s.source(), req); !errors.Is(err, ErrLimit) {
+		t.Fatalf("a log of 450 KB for 5 commits: error = %v", err)
+	}
+	// One commit with one very long subject still fits.
+	s2 := newScene(t)
+	s2.put("src/a.go", "package main\n")
+	s2.commit(long + "\n")
+	s2.finish()
+	req = s2.request()
+	req.Limits.MaxCommits = 1
+	if r, err := Inspect(context.Background(), s2.source(), req); err != nil || len(r.Commits) != 1 {
+		t.Fatalf("one commit with a long subject: %v", err)
+	}
+}

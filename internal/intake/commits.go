@@ -19,6 +19,14 @@ const commitFormat = "--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce%x00%at%x00%c
 
 const commitFields = 9
 
+// commitBudget is the output git log may write for each commit on average:
+// two ids, the times, four names and a subject. Every field may be as long as
+// maxCommitField, but the whole log may not: it has this budget for each
+// commit plus one maximal field, so a branch of many commits with long text
+// is ErrLimit and the owner never holds gigabytes of lead text. With the
+// default limit of 5000 commits it is about 20 MiB.
+const commitBudget = 4096
+
 // commits lists base..tip with git log. The commit count is checked first
 // with rev-list --count, so a branch over the limit is refused before its
 // text is read.
@@ -42,7 +50,7 @@ func (r *runner) commits(ctx context.Context, base, tip string, lim Limits) ([]C
 		"log", "-z", commitFormat, "--encoding=UTF-8",
 		"--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature",
 		"--end-of-options", base + ".." + tip,
-	}, nil, capFor(int64(n)*commitFields*maxCommitField), sink)
+	}, nil, capFor(int64(n)*commitBudget+maxCommitField), sink)
 	if err != nil {
 		return nil, err
 	}
