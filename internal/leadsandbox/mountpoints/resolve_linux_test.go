@@ -291,6 +291,20 @@ func TestResolveSourcesStateFoldersOnRealPaths(t *testing.T) {
 		{"the folder of the other leads", "leads"},
 		{"another project's mirror", "mirrors/other.git"},
 		{"the folder of the mirrors", "mirrors"},
+		{"the lead's holder folder", "leads/arc-lead/holder"},
+		{"below the lead's holder folder", "leads/arc-lead/holder/state"},
+		{"another role's mailbox", "mailbox/other-lead"},
+		{"the folder of the mailboxes", "mailbox"},
+		{"the lead's own mailbox, as another row", "mailbox/arc-lead"},
+		{"below the lead's own mailbox", "mailbox/arc-lead/a-message"},
+		{"another project's published folder", "pub/other"},
+		{"the project's own published folder, as another row", "pub/ataniq"},
+		{"below the project's own published folder", "pub/ataniq/a-feature/out"},
+		{"a coordinator's tree", "coords/ataniq/a-feature/tree"},
+		{"a coordinator's home", "coords/other/a-feature/home"},
+		{"the folder of the coordinators", "coords"},
+		{"the coordinators' login", "coord-login/ataniq/claude"},
+		{"the folder of the coordinators' logins", "coord-login"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -304,6 +318,42 @@ func TestResolveSourcesStateFoldersOnRealPaths(t *testing.T) {
 			wantProblem(t, f.resolve().Report, ErrNeverMounted, f.in.LeadSkills)
 		})
 	}
+	// A row of the host may resolve through the host's own links, so its real
+	// path is the only place these rules can catch it.
+	for _, target := range []string{"coords/ataniq/a-feature/home", "coord-login/ataniq/codex", "leads/arc-lead/holder", "mailbox/other-lead", "pub/other/a-feature/out"} {
+		t.Run("a row of the host that resolves to "+target, func(t *testing.T) {
+			f := newFixture(t, profile.Codex)
+			f.mkdir(f.state+"/"+target, 0o700)
+			base := f.resolver()
+			res, err := ResolveSources(f.in, func(p string) (string, error) {
+				if p == "/etc/localtime" {
+					return f.state + "/" + target, nil
+				}
+				return base(p)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantProblem(t, res.Report, ErrNeverMounted, "/etc/localtime")
+		})
+	}
+	t.Run("the mailbox and the published folder are fine as their own rows", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		res := f.resolve()
+		if !res.OK() {
+			t.Fatal(res.Err())
+		}
+		got := map[string]string{}
+		for _, s := range res.Sources {
+			got[s.Inside] = s.Real
+		}
+		l := f.layout()
+		for inside, real := range map[string]string{"/ataniq/mailbox": l.Mailbox(), "/coord": l.Published(), "/ataniq/requests": l.Requests(), "/ataniq/mail": l.Mail()} {
+			if got[inside] != real {
+				t.Errorf("%s resolves to %q, want %q", inside, got[inside], real)
+			}
+		}
+	})
 	t.Run("the lead's own folders and the project's mirror are fine", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.mkdir(f.home+"/mine", 0o755) // below the lead's own state: not this check's business

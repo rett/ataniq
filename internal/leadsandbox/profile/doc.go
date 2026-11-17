@@ -84,6 +84,21 @@
 // runtimes, whether or not the lead has coordinators. The package says where
 // the folders lie and how they are bound, and nothing about what is in them.
 //
+// # Other state under the state root
+//
+// The profile knows the state root, so it refuses, whatever the caller lists
+// as never-mounted, a bind source that lies in or above: another lead's state;
+// the lead's own holder folder ([Layout.Holder]); another project's mirror;
+// another role's mailbox; another project's published folder; and any
+// coordinator's tree, home or login ([Layout.CoordsDir],
+// [Layout.CoordLoginDir]). The lead's own mailbox and the project's own
+// published folder are each the source of exactly one row: a source may be
+// that folder only as that row, and no source may lie inside it.
+// [StateFolders.Reason] holds these rules, [Inputs.Validate] applies them to
+// every row, and [Inputs.CheckSource] applies them to a path that is no row
+// of the table. They are lexical, like every check here: the mountpoints
+// package runs them again on real paths.
+//
 // # What the digest covers
 //
 // Digest is the SHA-256 of a canonical, versioned encoding of:

@@ -96,9 +96,9 @@
 //     (mountpoints.Resolution.HostSources makes the map). [Build] requires an
 //     entry for every host row it emits and refuses one for any other key or
 //     for an optional row the host lacks; the path is checked like any other
-//     source (never-mounted paths, the other runtime's config folder, other
-//     leads' state and other projects' mirror folders, the folders a lead
-//     writes). [Verify] compares each mount with the table as these options
+//     source (never-mounted paths, the other runtime's config folder, the
+//     profile's rules about other state under the state root, the folders a
+//     lead writes). [Verify] compares each mount with the table as these options
 //     give it, so a plan that binds the name of a host row where the options
 //     give a real path is reported ([ProbMountDiffers]), and options that give
 //     no real path for an emitted host row are reported ([ProbOptions]).
@@ -134,7 +134,8 @@
 // the same twice), a report path that is not a clean absolute path or that
 // lies in or below a lead-writable host folder or a never-mounted path, that
 // is, lies below or lies above any source of the bind table or the state
-// root's leads or mirrors folder, or that is not directly inside
+// root's leads, mirrors, mailbox, pub, coords or coord-login folder, or that
+// is not directly inside
 // [Options.ReportDir], the folder the holder names as its own (required), host
 // sources that are missing for an emitted host row or given for another key, a
 // working folder outside the tree and the home, an operand of bubblewrap that

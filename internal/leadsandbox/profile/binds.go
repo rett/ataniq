@@ -337,6 +337,7 @@ func (in Inputs) checkTable() error {
 		return err
 	}
 	never := in.neverMounted()
+	state := in.Layout().StateFolders()
 	var rwSrc []Bind
 	for _, b := range t {
 		if b.Source == "" {
@@ -346,9 +347,11 @@ func (in Inputs) checkTable() error {
 			return refuse("bind "+b.Inside, "%s", reasonOf(err))
 		}
 		// The profile knows the state root: a source in another lead's
-		// state (its login, its home, its tree) or in another project's
-		// mirror is never right, whatever the caller lists as never-mounted.
-		if why := in.otherStateReason(b.Source); why != "" {
+		// state (its login, its home, its tree), in the lead's holder folder,
+		// in another project's mirror, in another role's mailbox, in another
+		// project's published folder or in a coordinator's tree, home or login
+		// is never right, whatever the caller lists as never-mounted.
+		if why := state.Reason(b.Source, b.SourceRole); why != "" {
 			return refuse("bind "+b.Inside, "the source %s %s", b.Source, why)
 		}
 		if b.Kind == KindRwBind {

@@ -45,8 +45,10 @@
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
-//     the profile's never-mounted, other-runtime, other-lead and
-//     other-project checks again on the real paths, so that a link cannot
+//     the profile's never-mounted and other-runtime checks and its rules
+//     about other state (another lead, the holder folder, another project's
+//     mirror and published folder, another role's mailbox, the coordinators'
+//     trees, homes and logins) again on the real paths, so that a link cannot
 //     hide a never-mounted folder. It refuses, for every row that is not a row
 //     of the host, a source whose real path differs from its lexical one (a
 //     link anywhere on it): a source Ataniq supplies must be given as its real

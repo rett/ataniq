@@ -281,6 +281,53 @@ func TestInputsRefusals(t *testing.T) {
 		}, "bind /ataniq/assignment", "another project's mirror"},
 		{"assignment folder is the mirrors folder", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/mirrors" },
 			"bind /ataniq/assignment", "another project's mirror"},
+		// The holder's folder, other roles' mailboxes, other projects'
+		// published folders and the coordinators' trees, homes and logins.
+		{"agent install is the lead's holder folder", Claude, func(in *Inputs) { in.AgentInstall = "/srv/state/leads/arc-lead/holder" },
+			"bind /ataniq/agent", "holder folder"},
+		{"spec folder below the lead's holder folder", Codex, func(in *Inputs) { in.SpecDir = "/srv/state/leads/arc-lead/holder/spec" },
+			"bind /ataniq/spec", "holder folder"},
+		{"resolv.conf in the holder folder", Claude, func(in *Inputs) { in.ResolvConf = "/srv/state/leads/arc-lead/holder/resolv.conf" },
+			"bind /etc/resolv.conf", "holder folder"},
+		{"assignment folder is another role's mailbox", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/mailbox/other-lead" },
+			"bind /ataniq/assignment", "another role's mailbox"},
+		{"skills folder below another role's mailbox", Codex, func(in *Inputs) { in.LeadSkills = "/srv/state/mailbox/other-lead/skills" },
+			"bind /home/lead/.codex/skills", "another role's mailbox"},
+		{"qargi install is the folder of the mailboxes", Claude, func(in *Inputs) { in.QargiInstall = "/srv/state/mailbox" },
+			"bind /ataniq/qargi", "another role's mailbox"},
+		{"projection folder is the lead's own mailbox", Claude, func(in *Inputs) { in.ProjectionDir = "/srv/state/mailbox/arc-lead" },
+			"bind /ataniq/projection", "the lead's own mailbox"},
+		{"agent install inside the lead's own mailbox", Claude, func(in *Inputs) { in.AgentInstall = "/srv/state/mailbox/arc-lead/agent" },
+			"bind /ataniq/agent", "the lead's own mailbox"},
+		{"qargi install is another project's published folder", Claude, func(in *Inputs) { in.QargiInstall = "/srv/state/pub/other" },
+			"bind /ataniq/qargi", "another project's published folder"},
+		{"assignment folder below another project's published folder", Codex, func(in *Inputs) {
+			in.AssignmentDir = "/srv/state/pub/other/a-feature/out"
+		}, "bind /ataniq/assignment", "another project's published folder"},
+		{"spec folder is the folder of the published folders", Claude, func(in *Inputs) { in.SpecDir = "/srv/state/pub" },
+			"bind /ataniq/spec", "another project's published folder"},
+		{"assignment folder is the project's own published folder", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/pub/ataniq" },
+			"bind /ataniq/assignment", "the project's own published folder"},
+		{"skills folder inside the project's own published folder", Claude, func(in *Inputs) {
+			in.LeadSkills = "/srv/state/pub/ataniq/a-feature/out"
+		}, "bind /home/lead/.claude/skills", "the project's own published folder"},
+		{"agent install is a coordinator's tree", Claude, func(in *Inputs) { in.AgentInstall = "/srv/state/coords/ataniq/a-feature/tree" },
+			"bind /ataniq/agent", "coordinator's tree or home"},
+		{"skills folder in a coordinator's home", Codex, func(in *Inputs) {
+			in.LeadSkills = "/srv/state/coords/other/a-feature/home/skills"
+		}, "bind /home/lead/.codex/skills", "coordinator's tree or home"},
+		{"qargi install is the folder of the coordinators", Claude, func(in *Inputs) { in.QargiInstall = "/srv/state/coords" },
+			"bind /ataniq/qargi", "coordinator's tree or home"},
+		{"agent install is the coordinators' login", Claude, func(in *Inputs) { in.AgentInstall = "/srv/state/coord-login/ataniq/claude" },
+			"bind /ataniq/agent", "coordinators' login"},
+		{"instruction file in the coordinators' login", Codex, func(in *Inputs) {
+			in.InstructionFile = "/srv/state/coord-login/ataniq/codex/AGENTS.md"
+		}, "bind /home/lead/.codex/AGENTS.md", "coordinators' login"},
+		{"projection folder is the folder of the coordinators' logins", Claude, func(in *Inputs) { in.ProjectionDir = "/srv/state/coord-login" },
+			"bind /ataniq/projection", "coordinators' login"},
+		{"a placeholder source in a coordinator's tree", Claude, func(in *Inputs) {
+			in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/srv/state/coords/ataniq/a-feature/tree/.envrc"}}
+		}, "bind /work/ataniq/.envrc", "coordinator's tree or home"},
 		// Never-mounted paths.
 		{"agent install is the owner's .ssh", Claude, func(in *Inputs) { in.AgentInstall = "/home/owner/.ssh" },
 			"bind /ataniq/agent", "never-mounted"},

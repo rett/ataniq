@@ -467,8 +467,10 @@ func (o Options) applyHostSources(in profile.Inputs, f *facts) error {
 			return err
 		}
 		// A real path is held to the rules of any other source: never-mounted
-		// paths, the other runtime's config folder, other leads' state and
-		// other projects' mirror folders. (Verify checks every mount again.)
+		// paths, the other runtime's config folder and the rules about other
+		// state (other leads, the holder folder, other projects' mirrors and
+		// published folders, the mailboxes, the coordinators' trees, homes and
+		// logins). (Verify checks every mount again.)
 		if err := in.CheckSource(o.HostSources[k]); err != nil {
 			var r *profile.Refusal
 			if errors.As(err, &r) {
@@ -572,9 +574,9 @@ func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 		}
 	}
 	l := in.Layout()
-	for _, d := range []string{path.Join(l.StateRoot, "leads"), l.MirrorsDir()} {
+	for _, d := range []string{path.Join(l.StateRoot, "leads"), l.MirrorsDir(), l.MailboxesDir(), l.PublishedDir(), l.CoordsDir(), l.CoordLoginDir()} {
 		if within(o.ReportPath, d) || within(d, o.ReportPath) {
-			return refuse("report path", "is, lies below or lies above the state folder %s, which holds leads' and projects' files", d)
+			return refuse("report path", "is, lies below or lies above the state folder %s, which holds leads', roles', coordinators' and projects' files", d)
 		}
 	}
 	if o.ReportPath == o.ReportDir || path.Dir(o.ReportPath) != o.ReportDir {
