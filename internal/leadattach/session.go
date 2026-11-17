@@ -317,10 +317,10 @@ func (s *session) handshake(f wire.Frame) *outcome {
 		c.st.Runtime, c.st.Version = w.Runtime, w.RuntimeVersion
 		c.st.Role = terminalconsole.LiveRole(w.Role)
 		c.role, c.caps = w.Role, w.Caps
-		if !s.resync {
-			c.st.Conn = terminalconsole.LiveAttached
-			c.st.Reason = ""
-		}
+		// The state stays connecting (or resyncing) until the first
+		// snapshot of the connection is applied: until then the pane shows
+		// another screen and the modes are not the holder's, so input
+		// would go to a screen the user cannot see.
 		if want := wire.Role(c.cfg.Mode); want != w.Role {
 			c.addNoticeLocked(terminalconsole.LiveNotice{Code: "role-granted", Text: "Asked to attach as " + string(want) + "; the holder granted " + string(w.Role) + "."})
 		}
@@ -370,7 +370,7 @@ func (s *session) snapshot(payload []byte) *outcome {
 		if !s.modesSeen {
 			c.modes, c.st.Modes = fallback, fallback.Modes()
 		}
-		if c.st.Conn == terminalconsole.LiveResyncing {
+		if c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveAttached, ""
 		}
 	})

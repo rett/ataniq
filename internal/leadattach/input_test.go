@@ -447,3 +447,30 @@ func TestWakeNeverRunsUnderTheStatusLock(t *testing.T) {
 		t.Error("no wake")
 	}
 }
+
+func TestNoInputBeforeTheFirstSnapshot(t *testing.T) {
+	// The Welcome comes first and the snapshot only at a quiet point: until it
+	// is applied the pane shows another screen and the modes are not known,
+	// so a key is dropped and counted, never sent.
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.h.accept()
+	hc.welcome(wire.RoleWriter)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	hc.modes([]int{1}, nil)
+	e.barrier(hc)
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	e.sink.Paste("text")
+	e.sink.Mouse(uv.MouseClickEvent{X: 1, Y: 1, Button: uv.MouseLeft})
+	st := e.c.Status()
+	if st.Conn != terminalconsole.LiveConnecting || st.RefusedInput != 3 {
+		t.Errorf("before the snapshot: state %v, refused %d, want connecting and 3", st.Conn, st.RefusedInput)
+	}
+
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	e.sink.Key(key(uv.KeyUp, 0, ""))
+	if got := hc.input(3); got != "\x1bOA" { // the first frame the holder reads is this key
+		t.Errorf("after the snapshot: %q", got)
+	}
+}

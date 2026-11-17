@@ -36,7 +36,14 @@ func TestHandshakeAndWelcomeReachTheStatus(t *testing.T) {
 	}
 
 	hc.welcome(wire.RoleWriter)
-	st := e.untilConn(terminalconsole.LiveAttached)
+	// The Welcome fills the status, but the client is attached only once the
+	// first snapshot is applied.
+	st := e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	if st.Conn != terminalconsole.LiveConnecting {
+		t.Errorf("state after the welcome alone: %v", st.Conn)
+	}
+	hc.snapshot()
+	st = e.untilConn(terminalconsole.LiveAttached)
 	if st.Role != terminalconsole.LiveWriter || st.Lead != "lead-one" || st.Epoch != 3 || st.Runtime != "claude" || st.Version != "1.2.3" {
 		t.Errorf("status after welcome: %+v", st)
 	}
@@ -74,6 +81,7 @@ func TestWaitingForATicketPollsEveryHalfSecond(t *testing.T) {
 	e.tickets.give(1)
 	hc := e.h.accept()
 	hc.welcome(wire.RoleWriter)
+	hc.snapshot()
 	e.untilConn(terminalconsole.LiveAttached)
 }
 
@@ -516,6 +524,7 @@ func TestRefusals(t *testing.T) {
 			e.tickets.give(1)
 			hc2 := e.h.accept()
 			hc2.welcome(wire.RoleWriter)
+			hc2.snapshot()
 			e.untilConn(terminalconsole.LiveAttached)
 		})
 	}
@@ -560,6 +569,7 @@ func TestHostileHolders(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name  string
+		early bool            // send after the Welcome alone, before any snapshot
 		after func(hc *hconn) // sent after the Welcome
 		raw   func(hc *hconn) // raw bytes, instead of a Welcome
 		want  string
@@ -576,7 +586,7 @@ func TestHostileHolders(t *testing.T) {
 		{name: "a bad snapshot", after: func(hc *hconn) {
 			hc.send(wire.TypeSnapshot, enc(hc.t)(wire.EncodeSnapshot(0, []byte("not a snapshot"))))
 		}, want: "snapshot the pane refused"},
-		{name: "output before a snapshot", after: func(hc *hconn) {
+		{name: "output before a snapshot", early: true, after: func(hc *hconn) {
 			hc.send(wire.TypeOutput, enc(hc.t)(wire.EncodeOutput(0, []byte("x"))))
 		}, want: "before a snapshot"},
 		{name: "a short Output", after: func(hc *hconn) { hc.nc.Write(append(header(wire.TypeOutput, 3), 1, 2, 3)) }, want: "too short"},
@@ -597,7 +607,12 @@ func TestHostileHolders(t *testing.T) {
 				c.raw(hc)
 			} else if c.after != nil {
 				hc.welcome(wire.RoleWriter)
-				e.untilConn(terminalconsole.LiveAttached)
+				if c.early {
+					e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+				} else {
+					hc.snapshot()
+					e.untilConn(terminalconsole.LiveAttached)
+				}
 				c.after(hc)
 			} else {
 				return
@@ -612,6 +627,7 @@ func TestHostileHolders(t *testing.T) {
 			e.tickets.give(1)
 			hc2 := e.h.accept()
 			hc2.welcome(wire.RoleWriter)
+			hc2.snapshot()
 			e.untilConn(terminalconsole.LiveAttached)
 		})
 	}
