@@ -54,6 +54,13 @@ func TestSpecValidateRefuses(t *testing.T) {
 		{"unit non-ascii", func(s *Spec) { s.Unit = "ä.service" }},
 		{"unit too long", func(s *Spec) { s.Unit = long + unitSuffix }},
 		{"unit trailing newline", func(s *Spec) { s.Unit = "a.service\n" }},
+		{"unit leading dash", func(s *Spec) { s.Unit = "-x.service" }},
+		{"unit option-like", func(s *Spec) { s.Unit = "--user.service" }},
+		{"parent invalid suffix", func(s *Spec) { s.Parent = "ataniq-lead-demo" }},
+		{"parent space", func(s *Spec) { s.Parent = "a b.service" }},
+		{"parent leading dash", func(s *Spec) { s.Parent = "-x.service" }},
+		{"parent too long", func(s *Spec) { s.Parent = long + unitSuffix }},
+		{"parent is the unit itself", func(s *Spec) { s.Parent = s.Unit }},
 		{"epoch zero", func(s *Spec) { s.Epoch = 0 }},
 		{"intent empty", func(s *Spec) { s.Intent = "" }},
 		{"intent space", func(s *Spec) { s.Intent = "a b" }},
@@ -103,6 +110,66 @@ func TestValidateUnitName(t *testing.T) {
 	}
 	if err := ValidateUnitName("x.timer"); !errors.Is(err, ErrInvalidSpec) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestValidateUnitNameRefusesALeadingDash(t *testing.T) {
+	for _, name := range []string{"-x.service", "--user.service", "-.service", "-ataniq-lead-demo.service"} {
+		if err := ValidateUnitName(name); !errors.Is(err, ErrInvalidSpec) {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+	// A dash anywhere after the first character is allowed.
+	for _, name := range []string{"a-.service", "a-b-c.service", "ataniq-lead-x.service"} {
+		if err := ValidateUnitName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+}
+
+func TestSpecParent(t *testing.T) {
+	s := validSpec()
+	s.Parent = "ataniq-lead-other.service"
+	if err := s.Validate(); err != nil {
+		t.Fatalf("a spec with a parent: %v", err)
+	}
+	if got := s.clone(); got.Parent != s.Parent {
+		t.Fatalf("clone lost the parent: %q", got.Parent)
+	}
+	// The parent is not part of the description: the unit reads back as ours
+	// by its epoch and intent alone.
+	if s.Description() != validSpec().Description() {
+		t.Fatalf("the parent changed the description %q", s.Description())
+	}
+	// The error names the parent and wraps ErrInvalidSpec.
+	s.Parent = "bad name.service"
+	err := s.Validate()
+	if !errors.Is(err, ErrInvalidSpec) || !strings.Contains(err.Error(), "parent") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBoundProperties(t *testing.T) {
+	want := []Property{
+		{"BindsTo", "ataniq-lead-demo.service"},
+		{"PartOf", "ataniq-lead-demo.service"},
+		{"After", "ataniq-lead-demo.service"},
+	}
+	got := BoundProperties("ataniq-lead-demo.service")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+	got[0].Value = "changed"
+	if BoundProperties("ataniq-lead-demo.service")[0].Value != "ataniq-lead-demo.service" {
+		t.Fatal("BoundProperties shares its slice between calls")
+	}
+	// The fixed properties do not change with the parent.
+	for _, p := range FixedProperties() {
+		for _, b := range want {
+			if p.Name == b.Name {
+				t.Errorf("%s is both fixed and bound", p.Name)
+			}
+		}
 	}
 }
 

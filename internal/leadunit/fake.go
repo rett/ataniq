@@ -261,12 +261,19 @@ func (f *Fake) LandLateStart(unit string) (State, error) {
 	return st, err
 }
 
-// ReuseNextControlGroup scripts the next start of unit, whether by Start or by
-// [Fake.LandLateStart], to run in the control group of the unit's previous
-// invocation: same path and same identity, as when a new invocation starts
-// while leftover processes of the old one remain in the group. Without it every
-// invocation gets a control group of a new identity. It has no effect on the
-// first start of a unit or after a reboot.
+// ReuseNextControlGroup scripts the next start of unit that launches a unit,
+// whether by Start or by [Fake.LandLateStart], to give the new invocation the
+// control group identity of the unit's previous invocation: the same path, as
+// every invocation of a unit has, and the same identity, so that nothing shows
+// the old group gone. The fake models no process left over from the old
+// invocation: the new unit holds only its own scripted processes, and the only
+// effect is the identity, which makes [Fake.Empty] answer false for a State of
+// the old invocation. Without it every invocation gets a control group of a new
+// identity. The script is spent by the start that launches, also when it has no
+// effect, which is the first start of a unit and the first start after a
+// reboot (the fake remembers no previous group then); a start that launches
+// nothing (a refused name, a dropped, failed or held request) leaves it for
+// the next one.
 func (f *Fake) ReuseNextControlGroup(unit string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

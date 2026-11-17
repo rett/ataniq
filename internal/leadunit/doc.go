@@ -11,7 +11,10 @@
 // unit gets, in one place for the real manager and for the documentation. A
 // [State] is what an inspection or a start returns, with the invocation id and
 // the control group identity that tie a later signal or proof to one run of
-// the unit.
+// the unit. A [Spec] may name a Parent, the unit this one is bound to (the
+// coordinator of a lead is bound to the lead's unit): [BoundProperties] lists
+// the three properties that binding sets, and [State] reads the parent back
+// where the manager can.
 //
 // The package holds no systemd call, no process, no file and no socket. The
 // real manager lives elsewhere and implements [Manager]; [Fake] is an
