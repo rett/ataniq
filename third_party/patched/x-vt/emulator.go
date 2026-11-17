@@ -149,6 +149,7 @@ func (e *Emulator) Touched() []*uv.LineData {
 
 // String returns a string representation of the underlying screen buffer.
 func (e *Emulator) String() string {
+	e.scr.flushAll()
 	s := e.scr.buf.String()
 	return uv.TrimSpace(s)
 }
@@ -156,6 +157,7 @@ func (e *Emulator) String() string {
 // Render renders a snapshot of the terminal screen as a string with styles and
 // links encoded as ANSI escape codes.
 func (e *Emulator) Render() string {
+	e.scr.flushAll()
 	return e.scr.buf.Render()
 }
 
@@ -312,6 +314,9 @@ func (e *Emulator) Write(p []byte) (n int, err error) {
 	if e.closed {
 		return 0, io.ErrClosedPipe
 	}
+	// Lines that a sequence blanked are written by the time Write returns, so
+	// that a reader never finds one that is not (see blank.go).
+	defer e.flushScreens()
 
 	for i := range p {
 		e.parser.Advance(p[i])

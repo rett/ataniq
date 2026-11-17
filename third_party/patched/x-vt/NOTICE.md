@@ -252,6 +252,70 @@ Patches, applied in this order to the files of the module as released:
    (scroll by the screen, a count over the lines left) writes every cell of
    it, which takes about a millisecond on the largest screen whatever the
    code, so 64 KiB of those take several seconds.
+14. `vt: mark the lines a sequence blanks and write them later` (`blank.go`,
+   `screen.go`, `handlers.go`, `csi_screen.go`, `csi_cursor.go`, `emulator.go`,
+   `links.go`, `state.go`, `erase_test.go`). A cell of the
+   buffer is 112 bytes, so a line of 500 cells is 56 KB and a screen of 500 by
+   200 cells 11 MB, and writing all of it takes about a millisecond whatever
+   the code. Erase in display (all three forms), erase in line, erase
+   characters, the full reset (RIS, which clears both screens), the switch of
+   the alternate screen and a scroll that blanks the whole region wrote every
+   cell, through the buffer's `SetCell` one cell at a time (2 to 3 ms), and
+   64 KiB of them kept the emulator, and the pane's lock with it, for 6 to 54
+   seconds (the full reset the longest, two bytes that clear two screens).
+   A program that clears the screen in a loop is enough. Measured on the
+   largest screen (500 by 200, no scrollback, the screen full of text, a
+   machine with a load of about 4 on 8 cores), 64 KiB of each sequence,
+   before and after; the figures before are those of 2 KiB times 32:
+
+   | sequence | before | after |
+   | --- | --- | --- |
+   | `ESC c` | 54 s | 0.36 s |
+   | `ESC[2J` | 33 s | 0.03 s |
+   | `ESC[J` | 29 s | 0.04 s |
+   | `ESC[3J` | 23 s | 0.03 s |
+   | `ESC[H ESC[2J ESC[3J` (the clear of curses) | 26 s | 0.02 s |
+   | `ESC[44m ESC[2J` | 18 s | 0.015 s |
+   | the same with the background changing between two clears | 15 s | 0.015 s |
+   | a line of text, then `ESC[H ESC[2J` | 10 s | 0.025 s |
+   | `ESC[?1049h ESC[?1049l` | 5.9 s | 0.03 s |
+   | `ESC[200T` and `ESC[200S` | 7.3 s and 6.8 s | 0.03 s and 0.045 s |
+   | `x ESC[2147483646b` (patch 12) | 3.2 s | 0.4 s |
+   | line feeds, for comparison | 0.31 s | 0.17 s |
+
+   A line now has a mark: the cell that every one of its cells holds. A mark
+   is written (the cells are that cell, which is all the mark says) or stale
+   (the cells are not written yet, and the line is that cell all the same).
+   Those sequences set the mark of the lines they blank, to the blank cell
+   with the pen's background that they used, and write nothing; a line that
+   already holds that cell is left as it is, so a loop that clears the screen
+   costs the lines that changed since the last clear, and a blank screen
+   costs nothing. A scroll of the region (line feed at the bottom, index,
+   reverse index, insert line, delete line, scroll up and down) moves the marks
+   with the lines, and its new lines are marked; a repeat of the last
+   character (patch 12) marks the lines it fills. A stale line is written when
+   something reads or changes it, and the lines that are still stale are
+   written when `Write` returns: no reader, which may be several under
+   `SafeEmulator`'s read lock, ever finds a stale line, and no read changes
+   anything. A change of some cells of a line (`SetCell`, insert and delete of
+   characters, a fill of part of a line) writes the line and drops its mark;
+   a resize and `SetState` start with no marks. What a sequence costs is
+   the lines it changes (about 5 us a line to write), not the cells of the
+   screen. The result is the same, field by field: the cells, with the pen's background in the blank ones; the cursor; both
+   screens; the link tables (an erase of the whole screen empties the table as
+   before; the recount of the links skips a line marked blank, which has no
+   link); the lines that go to the scrollback (a scrollback that keeps nothing
+   is not given the lines, nor read); and the lines marked as touched. The
+   test of the patch compares every one of these sequences with the code it
+   replaced, kept in the test file, on the screens the property streams make,
+   with every region, cursor, count and pen, on both screens and with three
+   sizes of scrollback, and checks after every write that what each mark says
+   is what its line holds; a second test runs the streams with the marks
+   dropped before every sequence and compares the states. One thing a caller
+   must not do: write a cell through the pointer `CellAt` returns, which is
+   the way to read it; `SetCell` is the way to change it. Nothing in the module
+   does, and `State` and `SetState` do not carry the marks (the inventory test
+   lists them).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

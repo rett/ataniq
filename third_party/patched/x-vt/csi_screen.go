@@ -15,7 +15,7 @@ func (e *Emulator) eraseCharacter(n int) {
 	// the fill loop over it.
 	n = min(n, max(e.Width()-x, 1))
 	rect := uv.Rect(x, y, n, 1)
-	e.scr.FillArea(e.scr.blankCell(), rect)
+	e.scr.eraseArea(rect)
 	e.atPhantom = false
 	// ECH does not move the cursor.
 }

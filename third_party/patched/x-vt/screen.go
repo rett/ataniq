@@ -1,8 +1,6 @@
 package vt
 
 import (
-	"slices"
-
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/ordered"
 )
@@ -21,6 +19,13 @@ type Screen struct {
 	scrollback *Scrollback
 	// links bounds the distinct hyperlinks of the cells of the screen.
 	links linkTable
+	// marks has the mark of each line, which can say that the line is one
+	// cell wide of the same cell, written or not (see blank.go); stale counts
+	// the lines that are not written, and lastFill is the cell that the last
+	// erase or fill marked its lines with.
+	marks    []lineMark
+	stale    int
+	lastFill *uv.Cell
 }
 
 // NewScreen creates a new screen.
@@ -30,6 +35,11 @@ func NewScreen(w, h int) *Screen {
 		scrollback: NewScrollback(DefaultScrollbackSize),
 	}
 	s.scroll = s.buf.Bounds()
+	// Every cell of a new screen is blank.
+	s.marks = make([]lineMark, h)
+	for y := range s.marks {
+		s.marks[y].cell = &blankFill
+	}
 	return &s
 }
 
@@ -37,7 +47,7 @@ func NewScreen(w, h int) *Screen {
 // It clears the screen, sets the cursor to the top left corner, reset the
 // cursor styles, and resets the scroll region.
 func (s *Screen) Reset() {
-	s.buf.Clear()
+	s.fillBlank(nil, s.buf.Bounds())
 	s.cur = Cursor{}
 	s.saved = Cursor{}
 	s.scroll = s.buf.Bounds()
@@ -63,12 +73,17 @@ func (s *Screen) ClearTouched() {
 }
 
 // CellAt returns the cell at the given x, y position.
+//
+// The cell is not to be written through the pointer (see blank.go): SetCell
+// changes a cell.
 func (s *Screen) CellAt(x int, y int) *uv.Cell {
+	s.flush(y)
 	return s.buf.CellAt(x, y)
 }
 
 // SetCell sets the cell at the given x, y position.
 func (s *Screen) SetCell(x, y int, c *uv.Cell) {
+	s.forget(y)
 	s.buf.SetCell(x, y, c)
 }
 
@@ -79,6 +94,8 @@ func (s *Screen) Height() int {
 
 // Resize resizes the screen.
 func (s *Screen) Resize(width int, height int) {
+	s.flushAll()
+	s.marks, s.stale = nil, 0
 	if s.buf == nil {
 		s.buf = uv.NewRenderBuffer(width, height)
 	} else {
@@ -102,9 +119,15 @@ func (s *Screen) Clear() {
 // This is used for operations like ED 2 (erase screen) where content should
 // be preserved in history.
 func (s *Screen) ClearWithScrollback() {
-	if s.scrollback != nil {
+	// A scrollback that keeps nothing is not given the lines, and a line
+	// marked blank has no text: neither is read.
+	if s.scrollback != nil && s.scrollback.maxLines > 0 {
 		// Save all lines that have content before clearing
 		for y := 0; y < s.buf.Height(); y++ {
+			if s.markedBlank(y) {
+				continue
+			}
+			s.flush(y)
 			line := s.buf.Line(y)
 			if line != nil && !s.isLineEmpty(line) {
 				s.scrollback.Push(line)
@@ -126,7 +149,7 @@ func (s *Screen) isLineEmpty(line uv.Line) bool {
 
 // ClearArea clears the given area.
 func (s *Screen) ClearArea(area uv.Rectangle) {
-	s.buf.ClearArea(area)
+	s.fillBlank(nil, area)
 	if area.Min.X <= 0 && area.Min.Y <= 0 && area.Max.X >= s.Width() && area.Max.Y >= s.Height() {
 		// Nothing of the screen references a link now.
 		clear(s.links.set)
@@ -142,7 +165,15 @@ func (s *Screen) Fill(c *uv.Cell) {
 
 // FillArea fills the given area with the given cell.
 func (s *Screen) FillArea(c *uv.Cell, area uv.Rectangle) {
+	s.forgetRows(area.Min.Y, area.Max.Y)
 	s.buf.FillArea(c, area)
+	s.touchArea(area)
+}
+
+// eraseArea fills the area with the cursor's blank cell, which is what the
+// erase sequences do (erase in display and in line, erase characters).
+func (s *Screen) eraseArea(area uv.Rectangle) {
+	s.fillBlank(s.blankCell(), area)
 	s.touchArea(area)
 }
 
@@ -292,6 +323,7 @@ func (s *Screen) InsertCell(n int) {
 	}
 
 	x, y := s.cur.X, s.cur.Y
+	s.forget(y)
 	s.buf.InsertCellArea(x, y, n, s.blankCell(), s.scroll)
 }
 
@@ -303,6 +335,7 @@ func (s *Screen) DeleteCell(n int) {
 	}
 
 	x, y := s.cur.X, s.cur.Y
+	s.forget(y)
 	s.buf.DeleteCellArea(x, y, n, s.blankCell(), s.scroll)
 }
 
@@ -346,7 +379,7 @@ func (s *Screen) InsertLine(n int) bool {
 	if s.scroll.Min.X == 0 && s.scroll.Max.X == s.buf.Width() {
 		s.moveLines(y, n, false)
 	} else {
-		s.buf.InsertLineArea(y, n, s.blankCell(), s.scroll)
+		s.moveColumns(y, n, false)
 	}
 
 	return true
@@ -379,13 +412,17 @@ func (s *Screen) DeleteLine(n int) bool {
 		scroll.Min.X == 0 && scroll.Max.X == s.buf.Width() {
 		// Save lines that will be deleted
 		linesToSave := min(n, scroll.Max.Y-y)
+		if s.scrollback.maxLines > 0 {
+			// A scrollback that keeps nothing reads no line.
+			s.flushRows(y, y+linesToSave)
+		}
 		s.scrollback.PushN(s.buf, y, linesToSave)
 	}
 
 	if scroll.Min.X == 0 && scroll.Max.X == s.buf.Width() {
 		s.moveLines(y, n, true)
 	} else {
-		s.buf.DeleteLineArea(y, n, s.blankCell(), scroll)
+		s.moveColumns(y, n, true)
 	}
 
 	return true
@@ -397,14 +434,17 @@ func (s *Screen) DeleteLine(n int) bool {
 // time by the buffer's own insert and delete, which on a screen of 500 by 200
 // cells is 11 MB for every line feed at the bottom (1.1 ms; 64 KiB of line
 // feeds took over a minute). The result is the same: the lines of the region
-// from y on move n lines up (or down), the n lines that leave are lost (they
-// were saved to the scrollback before), and the n lines that come in are
-// blank, in the cell the buffer would have used. The lines of the region are
-// all touched, as the buffer's own functions do.
+// from y on move n lines up (or down), with their marks, the n lines that
+// leave are lost (they were saved to the scrollback before), and the n lines
+// that come in are blank, in the cell the buffer would have used, which is
+// marked and not written (see blank.go): a scroll by the whole region, which
+// blanks every line, writes nothing. The lines of the region are all touched,
+// as the buffer's own functions do.
 func (s *Screen) moveLines(y, n int, up bool) {
 	region := s.scroll
 	n = min(n, region.Max.Y-y)
 	lines := s.buf.Lines[y:region.Max.Y]
+	marks := s.marksTable()[y:region.Max.Y]
 	from, to := len(lines)-n, len(lines)
 	if !up {
 		from, to = 0, n
@@ -413,16 +453,24 @@ func (s *Screen) moveLines(y, n int, up bool) {
 	if !up {
 		k = len(lines) - n
 	}
-	slices.Reverse(lines[:k])
-	slices.Reverse(lines[k:])
-	slices.Reverse(lines)
-	blank := uv.EmptyCell
-	if c := s.blankCell(); c != nil {
-		blank = *c
-	}
-	s.blankLines(lines[from:to], &blank)
+	rotateLeft(lines, k)
+	rotateLeft(marks, k)
+	s.setLines(y+from, y+to, s.fillCell(s.blankCell()))
 	for i := region.Min.Y; i < region.Max.Y; i++ {
 		s.buf.TouchLine(0, i, s.buf.Width())
+	}
+}
+
+// moveColumns is InsertLine or, with up set, DeleteLine for a scroll region
+// that is narrower than the screen: the buffer's own insert and delete move
+// the cells of the region, one at a time, after the lines are written and
+// their marks dropped.
+func (s *Screen) moveColumns(y, n int, up bool) {
+	s.forgetRows(y, s.scroll.Max.Y)
+	if up {
+		s.buf.DeleteLineArea(y, n, s.blankCell(), s.scroll)
+	} else {
+		s.buf.InsertLineArea(y, n, s.blankCell(), s.scroll)
 	}
 }
 
@@ -439,24 +487,12 @@ func (s *Screen) blankCell() *uv.Cell {
 	return &c
 }
 
-// blankLines sets every cell of the lines to the cell, which is one cell
-// wide: no wide cell is left half over.
-func (s *Screen) blankLines(lines []uv.Line, c *uv.Cell) {
-	for _, line := range lines {
-		for i := range line {
-			line[i] = *c
-		}
-	}
-}
-
-// fillLine sets every cell of line y to a copy of c, which is one cell wide:
-// no wide cell of the line is left half over.
+// fillLine sets every cell of line y to the cell c, which fillCell returned
+// and is one cell wide: no wide cell of the line is left half over. The cells
+// are not written (see blank.go).
 func (s *Screen) fillLine(y int, c *uv.Cell) {
-	line := s.buf.Lines[y]
-	for i := range line {
-		line[i] = *c
-	}
-	s.buf.TouchLine(0, y, len(line))
+	s.setLines(y, y+1, c)
+	s.buf.TouchLine(0, y, s.buf.Width())
 }
 
 // touchArea marks all lines in the given area as touched.
