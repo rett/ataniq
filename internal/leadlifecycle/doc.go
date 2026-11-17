@@ -83,7 +83,8 @@
 // of that gap named. When the lead's own stop failed (so that it may still be
 // live and a coordinator may still be admitted under it) the result is an
 // error in any case, and the listing is done on the caller's context if that
-// still runs. Stop of a
+// still runs. A listing that fails partway (the caller's context ended, or the
+// registry failed) still returns, in the error, the coordinators it had named. Stop of a
 // coordinator stops only that coordinator. Because the units are bound, a
 // coordinator may be stopping already when it is signalled; the manager's
 // not-loaded and invocation-changed answers lead to the proof as for a lead.

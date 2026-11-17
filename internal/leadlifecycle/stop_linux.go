@@ -84,8 +84,11 @@ import (
 // context makes the result an error that says the coordinators were not all
 // listed and stopped; the error of the lead's stop is part of the result
 // anyway, and a lead whose own stop failed before it left its live states may
-// still admit a coordinator, which the next Stop finds. A context that has ended on entry returns its error before anything
-// is read or changed.
+// still admit a coordinator, which the next Stop finds. A listing that fails
+// partway (the caller's context ended, or the registry failed) does not drop
+// the coordinators it had already named: the error holds the *CoordinatorsError
+// of those, for either listing. A context that has ended on entry returns its
+// error before anything is read or changed.
 //
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.
@@ -108,15 +111,14 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 			return e, err
 		}
 		if first, err = c.stopCoordinators(ctx, role, nil); err != nil {
+			// The lead's own stop did not begin; the coordinators the listing
+			// named before it failed are part of the result.
 			e, _ := c.reg.Get(role)
-			return e, err
+			return e, errors.Join(err, namedError(first))
 		}
 	}
 	e, err := c.stopOne(ctx, role)
-	var cerr error
-	if first != nil {
-		cerr = first
-	}
+	cerr := namedError(first)
 	if role.Kind() == leadrole.KindLead {
 		// The lead is no longer live (or no coordinator is admitted under it
 		// any more): list the coordinators again, see Stop. Once the lead
@@ -130,16 +132,14 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 			lctx = settleCtx(ctx)
 		}
 		all, lerr := c.stopCoordinators(lctx, role, first)
-		switch {
-		case lerr != nil:
+		// The second listing is the whole truth: what it does not name is
+		// proven stopped, a stale instance of the first pass too. When it
+		// failed partway it still holds every coordinator named so far,
+		// those of the first pass included.
+		cerr = namedError(all)
+		if lerr != nil {
 			lerr = fmt.Errorf("leadlifecycle: stop %s: the coordinators were not all listed and stopped after the lead's stop: %w", role, lerr)
 			return e, errors.Join(err, cerr, lerr)
-		case all != nil:
-			cerr = all
-		default:
-			// The second listing is the whole truth: what it does not name
-			// is proven stopped, a stale instance of the first pass too.
-			cerr = nil
 		}
 	}
 	switch {
@@ -182,25 +182,36 @@ func (e *CoordinatorsError) Unwrap() []error {
 	return append([]error{ErrCoordinatorNotStopped}, e.Errs...)
 }
 
+// namedError is the coordinators a listing named as an error, and nil when it
+// named none (a nil *CoordinatorsError must not become a non-nil error).
+func namedError(named *CoordinatorsError) error {
+	if named == nil {
+		return nil
+	}
+	return named
+}
+
 // stopCoordinators stops each coordinator of the lead that is not proven
 // stopped, one after the other in the registry's order, each by the whole
 // sequence of Stop. A coordinator that cannot be proven stopped is shown
 // unknown by its own stop, or left as recorded when the manager or the registry
 // did not answer its stop, and is named in the first result (nil when there is
-// none); the second result is for a failure that ends the lead's stop too (the
-// context). The instances that named holds (the result of an earlier pass over
-// the same lead) are not stopped again and stay in the result; a later
-// instance of the same role replaces the entry of the earlier one. The lead's
-// lock is held by the caller; a coordinator's stop takes only its own, and no
-// operation on a coordinator takes the lead's.
+// none). The second result is for a failure that ends the lead's stop too (the
+// context ended, or the registry failed); the first result is then not dropped:
+// it holds every coordinator named until the failure, those of named included,
+// and the caller returns it with the error. The instances that named holds (the
+// result of an earlier pass over the same lead) are not stopped again and stay
+// in the result; a later instance of the same role replaces the entry of the
+// earlier one. The lead's lock is held by the caller; a coordinator's stop
+// takes only its own, and no operation on a coordinator takes the lead's.
 func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, named *CoordinatorsError) (unproven *CoordinatorsError, err error) {
-	coords, err := c.reg.Coordinators(lead)
-	if err != nil {
-		return nil, err
-	}
 	var out *CoordinatorsError
 	if named != nil {
 		out = &CoordinatorsError{Roles: slices.Clone(named.Roles), Errs: slices.Clone(named.Errs), epochs: slices.Clone(named.epochs)}
+	}
+	coords, err := c.reg.Coordinators(lead)
+	if err != nil {
+		return nonEmpty(out), err
 	}
 	for _, co := range coords {
 		if co.Manager != leadregistry.ManagerAtaniq || co.Epoch == 0 {
@@ -222,7 +233,7 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 		}
 		done, err := c.reg.CoordinatorStopped(co.Role, co.Epoch)
 		if err != nil {
-			return nil, err
+			return nonEmpty(out), err
 		}
 		if done {
 			continue
@@ -230,7 +241,7 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 		if _, err := c.Stop(ctx, co.Role); err == nil {
 			continue
 		} else if ctx.Err() != nil {
-			return nil, err
+			return nonEmpty(out), err
 		} else {
 			if out == nil {
 				out = &CoordinatorsError{}
@@ -240,11 +251,17 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, n
 			out.epochs = append(out.epochs, co.Epoch)
 		}
 	}
+	return nonEmpty(out), nil
+}
+
+// nonEmpty is what a listing returns as named: nil when it names none, which
+// is the case when every entry of an earlier pass was a stale instance and the
+// later ones are proven.
+func nonEmpty(out *CoordinatorsError) *CoordinatorsError {
 	if out != nil && len(out.Roles) == 0 {
-		// Every entry was a stale instance and the later ones are proven.
-		return nil, nil
+		return nil
 	}
-	return out, nil
+	return out
 }
 
 // stopOne stops one role: the sequence of Stop for a role whose lock the

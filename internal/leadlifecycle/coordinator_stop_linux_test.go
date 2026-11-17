@@ -575,3 +575,134 @@ func TestStopLeadSecondListingDropsAStaleNamedInstanceThatIsReplacedAndStops(t *
 	r.expectState(coord, leadregistry.StateStopped, "")
 	r.auditClean()
 }
+
+// gapRig is a running lead whose own stop fails (its processes survive
+// SIGKILL, so it is not proven stopped) and the two coordinators aaa and bbb
+// of its project, which are defined and not running. When the lead is stopped,
+// its Quiesce starts both: they are started in the gap, so the first listing
+// names none of them and the second one finds both. Their processes survive
+// SIGKILL, so each is named when it is stopped. The second listing runs on the
+// caller's context, because the lead's own stop failed.
+func gapRig(t *testing.T) (r *rig, lead, ca, cb leadrole.Role) {
+	t.Helper()
+	r = newRig(t)
+	lead = r.define("alpha")
+	ca = r.defineCoord("alpha", "aaa")
+	cb = r.defineCoord("alpha", "bbb")
+	for _, u := range []string{unitOf(lead), unitOf(ca), unitOf(cb)} {
+		r.fake.SetProcs(u, leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	}
+	r.mustStart(lead)
+	r.quiet.hook = func(role leadrole.Role, _ uint64) error {
+		if role != lead {
+			return nil
+		}
+		for _, co := range []leadrole.Role{ca, cb} {
+			if _, err := r.ctl.Start(context.Background(), co); err != nil {
+				t.Errorf("Start of %s in the gap: %v", co, err)
+			}
+		}
+		return nil
+	}
+	return r, lead, ca, cb
+}
+
+// namesOnly checks that err holds a *CoordinatorsError that names exactly want.
+func namesOnly(t *testing.T, err error, want ...leadrole.Role) {
+	t.Helper()
+	var ce *CoordinatorsError
+	if !errors.As(err, &ce) {
+		t.Fatalf("no *CoordinatorsError in %v", err)
+	}
+	if len(ce.Roles) != len(want) || len(ce.Errs) != len(want) {
+		t.Fatalf("the error names %v (%d errors), want %v: %v", ce.Roles, len(ce.Errs), want, err)
+	}
+	for i, r := range want {
+		if ce.Roles[i] != r {
+			t.Fatalf("the error names %v, want %v: %v", ce.Roles, want, err)
+		}
+	}
+	isErr(t, err, ErrCoordinatorNotStopped)
+}
+
+// TestStopLeadSecondListingEndedByTheContextKeepsWhatItNamed: the lead's own
+// stop fails, so the second listing runs on the caller's context. It names the
+// coordinator aaa, and the context ends while it handles bbb. The result is an
+// error that still names aaa, which is shown unknown.
+func TestStopLeadSecondListingEndedByTheContextKeepsWhatItNamed(t *testing.T) {
+	r, lead, ca, cb := gapRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.aud.afterSignal = func(st leadunit.State, sig syscall.Signal) {
+		if st.Unit == unitOf(cb) {
+			cancel()
+		}
+	}
+	var e leadregistry.Entry
+	var err error
+	r.drive(func() { e, err = r.ctl.Stop(ctx, lead) })
+	if ctx.Err() == nil {
+		t.Fatal("the context was not cancelled: the second listing did not reach bbb")
+	}
+	if err == nil {
+		t.Fatalf("Stop(lead) returned nil with the lead %+v", e)
+	}
+	isErr(t, err, context.Canceled)
+	isErr(t, err, ErrStopUnproven)
+	namesOnly(t, err, ca)
+	r.expectState(ca, leadregistry.StateUnknown, "stop-unproven")
+}
+
+// TestStopLeadSecondListingEndedByTheRegistryKeepsWhatItNamed: the same, with
+// the registry failing (it is closed) while the second listing goes from aaa
+// to bbb.
+func TestStopLeadSecondListingEndedByTheRegistryKeepsWhatItNamed(t *testing.T) {
+	r, lead, ca, cb := gapRig(t)
+	r.aud.afterSignal = func(st leadunit.State, sig syscall.Signal) {
+		if st.Unit == unitOf(ca) {
+			r.reg.Close()
+		}
+	}
+	var err error
+	r.drive(func() { _, err = r.ctl.Stop(context.Background(), lead) })
+	if err == nil {
+		t.Fatal("Stop(lead) returned nil")
+	}
+	isErr(t, err, leadregistry.ErrClosed)
+	namesOnly(t, err, ca)
+	for _, c := range r.fake.CallsOf(leadunit.MethodSignal) {
+		if c.Unit == unitOf(cb) && !c.Implied {
+			t.Fatalf("bbb was signalled after the registry failed: %+v", c)
+		}
+	}
+}
+
+// TestStopLeadFirstListingEndedByTheContextKeepsWhatItNamed: the first
+// listing names aaa (it survives SIGKILL) and the context ends while it
+// handles bbb. The lead is not stopped, and the result still names aaa.
+func TestStopLeadFirstListingEndedByTheContextKeepsWhatItNamed(t *testing.T) {
+	r, lead, ca, cb := twoCoordinators(t,
+		leadunit.ProcScript{Behavior: leadunit.SurviveKill}, leadunit.ProcScript{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.aud.afterSignal = func(st leadunit.State, sig syscall.Signal) {
+		if st.Unit == unitOf(cb) {
+			cancel()
+		}
+	}
+	var e leadregistry.Entry
+	var err error
+	r.drive(func() { e, err = r.ctl.Stop(ctx, lead) })
+	if ctx.Err() == nil {
+		t.Fatal("the context was not cancelled: the first listing did not reach bbb")
+	}
+	if err == nil {
+		t.Fatalf("Stop(lead) returned nil with the lead %+v", e)
+	}
+	isErr(t, err, context.Canceled)
+	namesOnly(t, err, ca)
+	if e.Shown.State == leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	r.expectState(ca, leadregistry.StateUnknown, "stop-unproven")
+}

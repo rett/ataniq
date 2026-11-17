@@ -848,7 +848,10 @@ the fake have it:
   coordinator is stopped with proof or the owner decides. Once the lead is
   proven stopped, the second listing runs on a context of its own, which the
   caller's cannot end, so the result is nil only when that listing was done.
-  When the lead's own stop failed, the result is an error in any case.
+  When the lead's own stop failed, the result is an error in any case. A
+  listing that fails partway, because the caller's context ended or the
+  registry failed, does not drop the coordinators it had already named: the
+  error still holds them.
 - **Reconcile** judges a coordinator as it judges a lead, and also against its
   parent, which it settles first in the same call. When the parent's epoch is
   not the one the coordinator recorded, or the parent is not live, the
