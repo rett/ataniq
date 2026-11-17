@@ -157,61 +157,93 @@ func TestParseTemplateRefusals(t *testing.T) {
 
 	big := `{"version":1,"serve":{"upload_pack":["/sb","` + strings.Repeat("a", MaxTemplateBytes) + `"],"repository":"/r","measure":["/du"]}}`
 	cases := map[string]string{
-		"empty file":             ``,
-		"not json":               `version`,
-		"null":                   `null`,
-		"array":                  `[]`,
-		"no version":             `{"serve":null}`,
-		"wrong version":          `{"version":2}`,
-		"zero version":           `{"version":0}`,
-		"string version":         `{"version":"1"}`,
-		"unknown top field":      `{"version":1,"extra":1}`,
-		"unknown serve field":    `{"version":1,"serve":{"upload_pack":["/sb"],"repository":"/r","measure":["/du"],"bogus":1}}`,
-		"unknown verify field":   `{"version":1,"verify":{"prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h","bogus":1}}`,
-		"trailing object":        `{"version":1}{"version":1}`,
-		"trailing junk":          `{"version":1} x`,
-		"trailing null":          `{"version":1} null`,
-		"over 64 KiB":            big,
-		"empty serve":            `{"version":1,"serve":{}}`,
-		"empty verify":           `{"version":1,"verify":{}}`,
-		"empty upload argv":      serve("upload_pack", `[]`),
-		"null upload argv":       serve("upload_pack", `null`),
-		"relative upload":        serve("upload_pack", `["sb","{tree}"]`),
-		"placeholder first":      serve("upload_pack", `["{tree}/sb"]`),
-		"empty first element":    serve("upload_pack", `[""]`),
-		"empty measure argv":     serve("measure", `[]`),
-		"relative measure":       serve("measure", `["du"]`),
-		"nul in upload":          serve("upload_pack", `["/sb","a\u0000b"]`),
-		"nul in first":           serve("upload_pack", `["/s\u0000b"]`),
-		"nul in env":             serve("measure_env", `["A=b\u0000"]`),
-		"env not key value":      serve("measure_env", `["PATH"]`),
-		"relative repository":    serve("repository", `"r"`),
-		"unclean repository":     serve("repository", `"/r/../x"`),
-		"empty repository":       serve("repository", `""`),
-		"unknown placeholder":    serve("upload_pack", `["/sb","{nope}"]`),
-		"verify ph in serve":     serve("upload_pack", `["/sb","{mirror}"]`),
-		"serve ph in verify":     verify("prefix", `["/sb","{tree}"]`),
-		"role in verify":         verify("prefix", `["/sb","{role}"]`),
-		"empty placeholder":      serve("upload_pack", `["/sb","{}"]`),
-		"spaced placeholder":     serve("upload_pack", `["/sb","{ tree }"]`),
-		"upper placeholder":      serve("upload_pack", `["/sb","{TREE}"]`),
-		"literal open brace":     serve("upload_pack", `["/sb","a{b"]`),
-		"literal close brace":    serve("upload_pack", `["/sb","a}b"]`),
-		"brace pair":             serve("upload_pack", `["/sb","{{tree}}"]`),
-		"brace in env":           serve("measure_env", `["A={x}"]`),
-		"brace in repository":    serve("repository", `"/r/{"`),
-		"unterminated":           serve("upload_pack", `["/sb","{tree"]`),
-		"empty prefix":           verify("prefix", `[]`),
-		"relative prefix":        verify("prefix", `["sb"]`),
-		"relative mirror":        verify("mirror", `"m"`),
-		"unclean scratch":        verify("scratch", `"/s/"`),
-		"empty home":             verify("home", `""`),
-		"missing mirror":         `{"version":1,"verify":{"prefix":["/sb"],"scratch":"/s","home":"/h"}}`,
-		"missing repository":     `{"version":1,"serve":{"upload_pack":["/sb"],"measure":["/du"]}}`,
-		"missing measure":        `{"version":1,"serve":{"upload_pack":["/sb"],"repository":"/r"}}`,
-		"verify env no equals":   verify("env", `["A"]`),
-		"verify nul":             verify("home", `"/h\u0000"`),
-		"serve field wrong type": serve("repository", `["/r"]`),
+		"empty file":              ``,
+		"not json":                `version`,
+		"null":                    `null`,
+		"array":                   `[]`,
+		"no version":              `{"serve":null}`,
+		"wrong version":           `{"version":2}`,
+		"zero version":            `{"version":0}`,
+		"string version":          `{"version":"1"}`,
+		"unknown top field":       `{"version":1,"extra":1}`,
+		"unknown serve field":     `{"version":1,"serve":{"upload_pack":["/sb"],"repository":"/r","measure":["/du"],"bogus":1}}`,
+		"unknown verify field":    `{"version":1,"verify":{"prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h","bogus":1}}`,
+		"trailing object":         `{"version":1}{"version":1}`,
+		"trailing junk":           `{"version":1} x`,
+		"trailing null":           `{"version":1} null`,
+		"over 64 KiB":             big,
+		"empty serve":             `{"version":1,"serve":{}}`,
+		"empty verify":            `{"version":1,"verify":{}}`,
+		"empty upload argv":       serve("upload_pack", `[]`),
+		"null upload argv":        serve("upload_pack", `null`),
+		"relative upload":         serve("upload_pack", `["sb","{tree}"]`),
+		"placeholder first":       serve("upload_pack", `["{tree}/sb"]`),
+		"empty first element":     serve("upload_pack", `[""]`),
+		"tree in first":           serve("upload_pack", `["/{tree}/sb"]`),
+		"role in first":           serve("upload_pack", `["/srv/{role}/sb"]`),
+		"project in first":        serve("measure", `["/srv/{project}/du"]`),
+		"unclean first":           serve("upload_pack", `["//sb"]`),
+		"dot first":               serve("upload_pack", `["/srv/../sb"]`),
+		"slash end first":         serve("measure", `["/sb/"]`),
+		"project in verify first": verify("prefix", `["/srv/{project}/sb"]`),
+		"mirror in verify first":  verify("prefix", `["/{mirror}/sb"]`),
+		"unclean verify first":    verify("prefix", `["/srv//sb"]`),
+		"brace in first":          serve("upload_pack", `["/sb{"]`),
+		"tree below":              serve("upload_pack", `["/sb","{tree}/.git/objects"]`),
+		"tree before":             serve("upload_pack", `["/sb","/x{tree}"]`),
+		"tree after":              serve("upload_pack", `["/sb","{tree}x"]`),
+		"tree twice":              serve("upload_pack", `["/sb","{tree}{tree}"]`),
+		"tree option":             serve("upload_pack", `["/sb","--ro={tree}"]`),
+		"tree in measure":         serve("measure", `["/du","{tree}/x"]`),
+		"tree in measure env":     serve("measure_env", `["KEY={tree}"]`),
+		"whole tree in env":       serve("measure_env", `["{tree}"]`),
+		"tree in repository":      serve("repository", `"{tree}"`),
+		"tree below repository":   serve("repository", `"{tree}/x"`),
+		"mirror below":            verify("prefix", `["/sb","{mirror}/x"]`),
+		"mirror before":           verify("prefix", `["/sb","x{mirror}"]`),
+		"scratch below":           verify("prefix", `["/sb","--bind","{scratch}/out","/o"]`),
+		"scratch before":          verify("prefix", `["/sb","/x{scratch}"]`),
+		"home below":              verify("prefix", `["/sb","{home}/.cache"]`),
+		"home after":              verify("prefix", `["/sb","{home}.d"]`),
+		"home twice":              verify("prefix", `["/sb","{home}{home}"]`),
+		"scratch in verify env":   verify("env", `["KEY={scratch}"]`),
+		"home in verify env":      verify("env", `["HOME={home}"]`),
+		"mirror in mirror field":  verify("mirror", `"{mirror}"`),
+		"scratch in scratch":      verify("scratch", `"{scratch}"`),
+		"home in home field":      verify("home", `"{home}"`),
+		"empty measure argv":      serve("measure", `[]`),
+		"relative measure":        serve("measure", `["du"]`),
+		"nul in upload":           serve("upload_pack", `["/sb","a\u0000b"]`),
+		"nul in first":            serve("upload_pack", `["/s\u0000b"]`),
+		"nul in env":              serve("measure_env", `["A=b\u0000"]`),
+		"env not key value":       serve("measure_env", `["PATH"]`),
+		"relative repository":     serve("repository", `"r"`),
+		"unclean repository":      serve("repository", `"/r/../x"`),
+		"empty repository":        serve("repository", `""`),
+		"unknown placeholder":     serve("upload_pack", `["/sb","{nope}"]`),
+		"verify ph in serve":      serve("upload_pack", `["/sb","{mirror}"]`),
+		"serve ph in verify":      verify("prefix", `["/sb","{tree}"]`),
+		"role in verify":          verify("prefix", `["/sb","{role}"]`),
+		"empty placeholder":       serve("upload_pack", `["/sb","{}"]`),
+		"spaced placeholder":      serve("upload_pack", `["/sb","{ tree }"]`),
+		"upper placeholder":       serve("upload_pack", `["/sb","{TREE}"]`),
+		"literal open brace":      serve("upload_pack", `["/sb","a{b"]`),
+		"literal close brace":     serve("upload_pack", `["/sb","a}b"]`),
+		"brace pair":              serve("upload_pack", `["/sb","{{tree}}"]`),
+		"brace in env":            serve("measure_env", `["A={x}"]`),
+		"brace in repository":     serve("repository", `"/r/{"`),
+		"unterminated":            serve("upload_pack", `["/sb","{tree"]`),
+		"empty prefix":            verify("prefix", `[]`),
+		"relative prefix":         verify("prefix", `["sb"]`),
+		"relative mirror":         verify("mirror", `"m"`),
+		"unclean scratch":         verify("scratch", `"/s/"`),
+		"empty home":              verify("home", `""`),
+		"missing mirror":          `{"version":1,"verify":{"prefix":["/sb"],"scratch":"/s","home":"/h"}}`,
+		"missing repository":      `{"version":1,"serve":{"upload_pack":["/sb"],"measure":["/du"]}}`,
+		"missing measure":         `{"version":1,"serve":{"upload_pack":["/sb"],"repository":"/r"}}`,
+		"verify env no equals":    verify("env", `["A"]`),
+		"verify nul":              verify("home", `"/h\u0000"`),
+		"serve field wrong type":  serve("repository", `["/r"]`),
 	}
 	for name, in := range cases {
 		if tm, err := ParseTemplate([]byte(in)); err == nil {
@@ -259,6 +291,7 @@ func TestTemplateRefusesBadValues(t *testing.T) {
 		"tree open brace": func(r *ServeRequest) { r.Tree = "/t/{x" },
 		"tree brace pair": func(r *ServeRequest) { r.Tree = "/t/{role}" },
 		"tree close":      func(r *ServeRequest) { r.Tree = "/t}" },
+		"root tree":       func(r *ServeRequest) { r.Tree = "/" },
 	} {
 		r := okServe
 		mod(&r)
@@ -282,6 +315,9 @@ func TestTemplateRefusesBadValues(t *testing.T) {
 		"home nul":        func(r *VerifyRequest) { r.Home = "/h\x00" },
 		"home brace":      func(r *VerifyRequest) { r.Home = "/h/{project}" },
 		"mirror dot":      func(r *VerifyRequest) { r.Mirror = "/m/." },
+		"root mirror":     func(r *VerifyRequest) { r.Mirror = "/" },
+		"home in scratch": func(r *VerifyRequest) { r.Home = r.Scratch + "/h" },
+		"same scratch":    func(r *VerifyRequest) { r.Scratch = r.Mirror },
 	} {
 		r := okVerify
 		mod(&r)
@@ -302,5 +338,83 @@ func TestTemplateSubstitutionIsNotRescanned(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Prefix, []string{"/sb", "ab-ab"}) || p.Mirror != "/m/ab" {
 		t.Fatalf("got %#v", p)
+	}
+}
+
+func TestTemplatePathPlaceholdersAreWholeElements(t *testing.T) {
+	// Each path placeholder is allowed as a whole argv element, anywhere in
+	// the argv after the first element, and names may sit inside a longer
+	// string.
+	tm := mustParse(t, `{"version":1,
+	  "serve":{"upload_pack":["/sb","{tree}","--r={role}-{project}","{tree}"],"repository":"/work/{role}/{project}","measure":["/du","{tree}"],"measure_env":["R={role}"]},
+	  "verify":{"prefix":["/sb","{mirror}","{scratch}","{home}","{mirror}"],"env":["P={project}"],"mirror":"/m/{project}","scratch":"/s/{project}","home":"/h"}}`)
+	sp, err := tm.Serve(ServeRequest{Role: "r1", Project: "p1", Tree: "/srv/t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/sb", "/srv/t", "--r=r1-p1", "/srv/t"}; !reflect.DeepEqual(sp.UploadPack, want) {
+		t.Errorf("upload pack %q, want %q", sp.UploadPack, want)
+	}
+	vp, err := tm.Verify(VerifyRequest{Project: "p1", Mirror: "/a/m", Scratch: "/a/s", Home: "/a/h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/sb", "/a/m", "/a/s", "/a/h", "/a/m"}; !reflect.DeepEqual(vp.Prefix, want) {
+		t.Errorf("prefix %q, want %q", vp.Prefix, want)
+	}
+}
+
+func TestParseTemplateIsStrictAboutKeys(t *testing.T) {
+	const (
+		sv = `"upload_pack":["/sb"],"repository":"/r","measure":["/du"]`
+		vf = `"prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h"`
+	)
+	// The same templates written with exact, single keys are accepted.
+	for name, in := range map[string]string{
+		"serve":  `{"version":1,"serve":{` + sv + `}}`,
+		"verify": `{"version":1,"verify":{` + vf + `}}`,
+		"escape": `{"version":1}`,
+	} {
+		if _, err := ParseTemplate([]byte(in)); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
+	}
+	for name, in := range map[string]string{
+		"upper version":        `{"VERSION":1}`,
+		"title version":        `{"Version":1}`,
+		"upper serve":          `{"version":1,"Serve":{` + sv + `}}`,
+		"upper verify":         `{"version":1,"VERIFY":{` + vf + `}}`,
+		"mixed serve field":    `{"version":1,"serve":{"Upload_Pack":["/sb"],"repository":"/r","measure":["/du"]}}`,
+		"upper serve field":    `{"version":1,"serve":{"upload_pack":["/sb"],"REPOSITORY":"/r","measure":["/du"]}}`,
+		"upper measure env":    `{"version":1,"serve":{` + sv + `,"Measure_Env":["A=b"]}}`,
+		"upper verify field":   `{"version":1,"verify":{"Prefix":["/sb"],"mirror":"/m","scratch":"/s","home":"/h"}}`,
+		"upper verify home":    `{"version":1,"verify":{"prefix":["/sb"],"mirror":"/m","scratch":"/s","HOME":"/h"}}`,
+		"upper env":            `{"version":1,"verify":{` + vf + `,"ENV":["A=b"]}}`,
+		"duplicate version":    `{"version":1,"version":1}`,
+		"duplicate serve":      `{"version":1,"serve":{` + sv + `},"serve":null}`,
+		"duplicate serve null": `{"version":1,"serve":null,"serve":{` + sv + `}}`,
+		"duplicate verify":     `{"version":1,"verify":{` + vf + `},"verify":{` + vf + `}}`,
+		"duplicate in serve":   `{"version":1,"serve":{` + sv + `,"repository":"/r"}}`,
+		"duplicate in verify":  `{"version":1,"verify":{` + vf + `,"home":"/h"}}`,
+		"duplicate escaped":    `{"version":1,"version":1}`,
+		"duplicate list key":   `{"version":1,"serve":{` + sv + `,"measure_env":["A=b"],"measure_env":[]}}`,
+		"case twin":            `{"version":1,"Version":1}`,
+		"duplicate in value":   `{"version":{"a":1,"a":2}}`,
+	} {
+		if tm, err := ParseTemplate([]byte(in)); err == nil {
+			t.Errorf("%s: accepted (%v)", name, tm)
+		}
+	}
+	// A duplicate key in the first object is refused whatever follows it.
+	if _, err := ParseTemplate([]byte(`{"version":1,"serve":null,"serve":null}`)); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("duplicate serve: %v", err)
+	}
+	if _, err := ParseTemplate([]byte(`{"VERSION":1}`)); err == nil || !strings.Contains(err.Error(), "VERSION") {
+		t.Errorf("wrong case: %v", err)
+	}
+	// A key error does not hide as a plain syntax error: a truncated file is
+	// still refused.
+	if _, err := ParseTemplate([]byte(`{"version":1,"serve":{`)); err == nil {
+		t.Error("truncated file accepted")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,7 +28,7 @@ const TemplateVersion = 1
 //	  "serve": {
 //	    "upload_pack": ["/abs/sandbox", "{tree}", "/usr/bin/git-upload-pack"],
 //	    "repository": "/work/{project}",
-//	    "measure": ["/abs/sandbox", "/usr/bin/du", "-s", "-B1", "/work/{project}/.git/objects"],
+//	    "measure": ["/abs/sandbox", "{tree}", "/usr/bin/du", "-s", "-B1", "/work/{project}/.git/objects"],
 //	    "measure_env": ["PATH=/usr/bin:/bin"]
 //	  },
 //	  "verify": {
@@ -40,17 +41,43 @@ const TemplateVersion = 1
 //	}
 //
 // In "serve" the placeholders are {role}, {project} and {tree}. In "verify"
-// they are {project}, {mirror}, {scratch} and {home}. They work in every
-// string of their section. Any other brace is refused, so a literal brace
-// cannot be written. The first element of each argv is an absolute path
-// written out in full.
+// they are {project}, {mirror}, {scratch} and {home}. Any other brace is
+// refused, so a literal brace cannot be written.
+//
+// {role} and {project} stand for a name. A name has no slash and no dot, so
+// it cannot add a path component. They work in every string of their
+// section, inside a longer string too.
+//
+// {tree}, {mirror}, {scratch} and {home} each stand for a root folder that
+// the caller vouches for (see [ServeRequest] and [VerifyRequest]). Each must
+// be a whole argv element: the element is exactly the placeholder, with
+// nothing before or after it. A template can then never name a path below a
+// root or around it, because the launcher resolves such a path as the owner,
+// over folders that a sandbox may have changed. The launcher takes the root
+// as a separate argument. A path placeholder is refused in "measure_env", in
+// "env" and in the inside-path fields "repository", "mirror", "scratch" and
+// "home". Those fields are paths as the sandbox sees them: they hold only
+// {role}, {project} and fixed text.
+//
+// The first element of each argv is the launcher, which runs as the owner:
+// it is an absolute, clean path written out in full, with no placeholder and
+// no brace.
+//
+// "upload_pack" has no environment list. Git starts the upload-pack command,
+// through sh, with the environment of the process that fetches, and that
+// environment may hold owner credentials or SSH_AUTH_SOCK. The argv itself
+// must clear the environment it is started with (for example bwrap with
+// --clearenv, or env -i). Nothing in this package can do it for the owner.
 //
 // Either section may be absent. The matching method then returns
 // [ErrNotConfigured].
 //
-// A value is checked before it is put in. A role or a project must pass
-// [ValidName]. A path must be absolute and clean and hold no NUL byte,
-// newline or brace.
+// A request is checked before a value is put in, with
+// [ServeRequest.Validate] and [VerifyRequest.Validate]. A role or a project
+// must pass [ValidName]. A path must be absolute and clean, hold no NUL byte,
+// newline or brace, and not be the root of the file system. The verify
+// roots must not be the same folder or lie inside each other. The checks read
+// no file: the caller's precondition on each request type is its own to meet.
 type Template struct {
 	serve  *serveTemplate
 	verify *verifyTemplate
@@ -90,13 +117,21 @@ type verifyFile struct {
 	Home    string   `json:"home"`
 }
 
+// placeholders are the names a section knows. A name stands for a value
+// that cannot add a path component. A path stands for a root folder that the
+// caller vouches for: it may only be a whole argv element.
+type placeholders struct {
+	names, paths []string
+}
+
 var (
-	servePlaceholders  = []string{"role", "project", "tree"}
-	verifyPlaceholders = []string{"project", "mirror", "scratch", "home"}
+	servePlaceholders  = placeholders{names: []string{"role", "project"}, paths: []string{"tree"}}
+	verifyPlaceholders = placeholders{names: []string{"project"}, paths: []string{"mirror", "scratch", "home"}}
 )
 
 // ParseTemplate reads a template file. It refuses a file over
-// [MaxTemplateBytes], unknown fields, a version other than
+// [MaxTemplateBytes], unknown fields, a field name that differs in case from
+// the documented one, a field written twice in one object, a version other than
 // [TemplateVersion], trailing data, an empty argv, an argv whose first
 // element is not an absolute path, a NUL byte, a placeholder the section
 // does not have, and any other brace. It checks that the template builds
@@ -104,6 +139,9 @@ var (
 func ParseTemplate(data []byte) (*Template, error) {
 	if len(data) > MaxTemplateBytes {
 		return nil, fmt.Errorf("sandbox template: larger than %d bytes", MaxTemplateBytes)
+	}
+	if err := checkKeys(data); err != nil {
+		return nil, fmt.Errorf("sandbox template: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -141,13 +179,13 @@ func compileServe(f *serveFile) (*serveTemplate, error) {
 	if s.uploadPack, err = compileArgv("upload_pack", f.UploadPack, ph); err != nil {
 		return nil, err
 	}
-	if s.repository, err = compileWord("repository", f.Repository, ph); err != nil {
+	if s.repository, err = compileWord("repository", f.Repository, ph, false); err != nil {
 		return nil, err
 	}
 	if s.measure, err = compileArgv("measure", f.Measure, ph); err != nil {
 		return nil, err
 	}
-	if s.measureEnv, err = compileList("measure_env", f.MeasureEnv, ph); err != nil {
+	if s.measureEnv, err = compileList("measure_env", f.MeasureEnv, ph, false); err != nil {
 		return nil, err
 	}
 	// Build one plan from dummy values: this finds a template that can
@@ -168,16 +206,16 @@ func compileVerify(f *verifyFile) (*verifyTemplate, error) {
 	if v.prefix, err = compileArgv("prefix", f.Prefix, ph); err != nil {
 		return nil, err
 	}
-	if v.env, err = compileList("env", f.Env, ph); err != nil {
+	if v.env, err = compileList("env", f.Env, ph, false); err != nil {
 		return nil, err
 	}
-	if v.mirror, err = compileWord("mirror", f.Mirror, ph); err != nil {
+	if v.mirror, err = compileWord("mirror", f.Mirror, ph, false); err != nil {
 		return nil, err
 	}
-	if v.scratch, err = compileWord("scratch", f.Scratch, ph); err != nil {
+	if v.scratch, err = compileWord("scratch", f.Scratch, ph, false); err != nil {
 		return nil, err
 	}
-	if v.home, err = compileWord("home", f.Home, ph); err != nil {
+	if v.home, err = compileWord("home", f.Home, ph, false); err != nil {
 		return nil, err
 	}
 	dummy := map[string]string{"project": "x", "mirror": "/x/m", "scratch": "/x/s", "home": "/x/h"}
@@ -222,14 +260,8 @@ func (t *Template) Serve(r ServeRequest) (ServePlan, error) {
 	if t == nil || t.serve == nil {
 		return ServePlan{}, fmt.Errorf("%w for serve", ErrNotConfigured)
 	}
-	if !ValidName(r.Role) {
-		return ServePlan{}, errors.New("serve: role is not a valid name")
-	}
-	if !ValidName(r.Project) {
-		return ServePlan{}, errors.New("serve: project is not a valid name")
-	}
-	if err := validPath(r.Tree); err != nil {
-		return ServePlan{}, fmt.Errorf("serve: tree: %w", err)
+	if err := r.Validate(); err != nil {
+		return ServePlan{}, fmt.Errorf("serve: %w", err)
 	}
 	p, err := t.serve.plan(map[string]string{"role": r.Role, "project": r.Project, "tree": r.Tree})
 	if err != nil {
@@ -244,15 +276,8 @@ func (t *Template) Verify(r VerifyRequest) (VerifyPlan, error) {
 	if t == nil || t.verify == nil {
 		return VerifyPlan{}, fmt.Errorf("%w for verify", ErrNotConfigured)
 	}
-	if !ValidName(r.Project) {
-		return VerifyPlan{}, errors.New("verify: project is not a valid name")
-	}
-	for _, f := range []struct{ name, path string }{
-		{"mirror", r.Mirror}, {"scratch", r.Scratch}, {"home", r.Home},
-	} {
-		if err := validPath(f.path); err != nil {
-			return VerifyPlan{}, fmt.Errorf("verify: %s: %w", f.name, err)
-		}
+	if err := r.Validate(); err != nil {
+		return VerifyPlan{}, fmt.Errorf("verify: %w", err)
 	}
 	p, err := t.verify.plan(map[string]string{
 		"project": r.Project, "mirror": r.Mirror, "scratch": r.Scratch, "home": r.Home,
@@ -273,18 +298,21 @@ type segment struct {
 	ph  string // placeholder name
 }
 
-func compileWord(field, s string, allowed []string) (word, error) {
-	w, err := parseWord(s, allowed)
+// compileWord and compileList take argv true for the elements of an argv,
+// where a path placeholder may be a whole element. Everywhere else a path
+// placeholder is refused.
+func compileWord(field, s string, ph placeholders, argv bool) (word, error) {
+	w, err := parseWord(s, ph, argv)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", field, err)
 	}
 	return w, nil
 }
 
-func compileList(field string, in []string, allowed []string) ([]word, error) {
+func compileList(field string, in []string, ph placeholders, argv bool) ([]word, error) {
 	out := make([]word, 0, len(in))
 	for i, s := range in {
-		w, err := parseWord(s, allowed)
+		w, err := parseWord(s, ph, argv)
 		if err != nil {
 			return nil, fmt.Errorf("%s[%d]: %w", field, i, err)
 		}
@@ -294,18 +322,22 @@ func compileList(field string, in []string, allowed []string) ([]word, error) {
 }
 
 // compileArgv compiles an argv that must not be empty and whose first
-// element is an absolute path written out in full.
-func compileArgv(field string, in []string, allowed []string) ([]word, error) {
+// element is an absolute, clean path written out in full: no placeholder and
+// no brace. The first element is the launcher, which runs as the owner, so
+// no request value and no lead path may choose it.
+func compileArgv(field string, in []string, ph placeholders) ([]word, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("%s: empty argv", field)
 	}
-	if !strings.HasPrefix(in[0], "/") {
-		return nil, fmt.Errorf("%s[0]: not an absolute path written out in full", field)
+	first := in[0]
+	if !strings.HasPrefix(first, "/") || strings.ContainsAny(first, "{}") || filepath.Clean(first) != first {
+		return nil, fmt.Errorf("%s[0]: not an absolute, clean path written out in full", field)
 	}
-	return compileList(field, in, allowed)
+	return compileList(field, in, ph, true)
 }
 
-func parseWord(s string, allowed []string) (word, error) {
+func parseWord(s string, ph placeholders, argv bool) (word, error) {
+	whole := s
 	if strings.IndexByte(s, 0) >= 0 {
 		return nil, errors.New("NUL byte")
 	}
@@ -327,7 +359,13 @@ func parseWord(s string, allowed []string) (word, error) {
 			return nil, errors.New("unmatched { (a literal brace is not supported)")
 		}
 		name := s[i+1 : i+end]
-		if !contains(allowed, name) {
+		switch {
+		case contains(ph.names, name):
+		case contains(ph.paths, name):
+			if !argv || len(whole) != len(name)+2 || i != 0 {
+				return nil, fmt.Errorf("{%s} must be a whole argv element", name)
+			}
+		default:
 			return nil, fmt.Errorf("unknown placeholder {%s}", name)
 		}
 		w = append(w, segment{ph: name})
@@ -363,4 +401,83 @@ func renderList(ws []word, vals map[string]string) []string {
 		out[i] = w.render(vals)
 	}
 	return out
+}
+
+// keys is the set of field names an object may have, with the keys of the
+// objects below them. A nil entry is a value that is not an object.
+type keys map[string]keys
+
+var templateKeys = keys{
+	"version": nil,
+	"serve":   {"upload_pack": nil, "repository": nil, "measure": nil, "measure_env": nil},
+	"verify":  {"prefix": nil, "env": nil, "mirror": nil, "scratch": nil, "home": nil},
+}
+
+// checkKeys walks the first JSON value of data and refuses an object key that
+// is not exactly a documented field name, and a key repeated in one object.
+// The decoder of encoding/json matches names without regard to case and lets
+// a repeated key win, which would let a silently dropped section change what
+// the file means. A value that the walk cannot read is left to the decoder.
+func checkKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	err := walkKeys(dec, templateKeys)
+	if err != nil && !isSyntax(err) {
+		return err
+	}
+	return nil
+}
+
+// A key error from walkKeys is a plain error. A malformed value is one of
+// these, and the decoder reports it with a better message.
+type syntaxError struct{ error }
+
+func isSyntax(err error) bool {
+	var s syntaxError
+	return errors.As(err, &s)
+}
+
+func walkKeys(dec *json.Decoder, allowed keys) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return syntaxError{err}
+	}
+	d, ok := tok.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch d {
+	case '[':
+		for dec.More() {
+			if err := walkKeys(dec, nil); err != nil {
+				return err
+			}
+		}
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return syntaxError{err}
+			}
+			key, _ := kt.(string)
+			if seen[key] {
+				return fmt.Errorf("field %q is written twice", key)
+			}
+			seen[key] = true
+			var sub keys
+			if allowed != nil {
+				var known bool
+				if sub, known = allowed[key]; !known {
+					return fmt.Errorf("unknown field %q", key)
+				}
+			}
+			if err := walkKeys(dec, sub); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return syntaxError{err}
+	}
+	return nil
 }

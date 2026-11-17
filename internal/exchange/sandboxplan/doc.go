@@ -8,10 +8,18 @@
 // scratch clone taken from the bare mirror and the gates, with its own home,
 // no provider login and no lead credential.
 //
+// Git starts the upload-pack command with the environment of the process that
+// fetches, which may hold owner credentials. The plan has no environment for
+// it, so the upload-pack argv must clear the environment itself.
+//
 // A [Planner] answers two questions. [Planner.Serve] returns the argv that
 // runs git-upload-pack sandboxed and the command that measures the object
 // store. [Planner.Verify] returns the argv prefix that runs an inner command
 // sandboxed, with the folders it sees. The caller starts the processes.
+//
+// The paths in a request are roots that the caller vouches for: no sandbox
+// may write any component of them, and a plan only ever hands them over whole.
+// See [ServeRequest] and [VerifyRequest].
 //
 // # What this package does not do
 //

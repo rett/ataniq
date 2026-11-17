@@ -8,6 +8,6 @@
 // number the test chose, and a verify prefix can be /usr/bin/env. A test
 // that uses it checks the code under test, not a sandbox.
 //
-// The package starts no process and uses no network. [GitUploadPack] runs
-// git --exec-path only when git-upload-pack is not on PATH.
+// The package uses no network. It starts a process only in [GitUploadPack],
+// which may run git --exec-path.
 package plantest

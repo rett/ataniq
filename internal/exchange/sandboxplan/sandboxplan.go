@@ -78,27 +78,75 @@ func validPath(p string) error {
 	return nil
 }
 
+// validRoot is validPath for a root folder: the folder of the file system
+// itself is not a root.
+func validRoot(p string) error {
+	if err := validPath(p); err != nil {
+		return err
+	}
+	if p == "/" {
+		return errors.New("path is the root of the file system")
+	}
+	return nil
+}
+
+// within reports whether a is b or lies below b. Both are clean.
+func within(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/")
+}
+
 // ServeRequest asks for the sandboxed serving half of a git fetch.
+//
+// The caller vouches for Tree before it asks for a plan. Every component
+// of the path, its last name included, must be one that no sandbox can
+// write: no sandbox may create, replace or rename any folder on the way to
+// the clone or the entry of the clone itself. The one exception is that the
+// content of the clone is written by sandboxed code. A lead's clone under a
+// folder the lead can write fails this, because the lead can swap the clone's
+// entry for a symlink. The caller checks every component without following
+// symlinks. A plan cannot do it: this package reads no file.
 type ServeRequest struct {
 	// Role and Project are names that pass [ValidName].
 	Role, Project string
-	// Tree is the absolute host path of the lead's clone.
+	// Tree is the absolute host path of the lead's clone. See the
+	// precondition above.
 	Tree string
+}
+
+// Validate reports why the request cannot be planned: a role or a project
+// that fails [ValidName], or a Tree that is not an absolute, clean path
+// without a NUL byte, newline or brace, or that is the root of the file
+// system. It does not read any file, so it cannot check the precondition
+// above.
+func (r ServeRequest) Validate() error {
+	if !ValidName(r.Role) {
+		return errors.New("role is not a valid name")
+	}
+	if !ValidName(r.Project) {
+		return errors.New("project is not a valid name")
+	}
+	if err := validRoot(r.Tree); err != nil {
+		return fmt.Errorf("tree: %w", err)
+	}
+	return nil
 }
 
 // ServePlan is how to serve one lead's clone.
 type ServePlan struct {
 	// UploadPack is the complete argv that runs git-upload-pack sandboxed.
-	// Git appends the repository path as one more argument. The argv
-	// carries its own environment: the launcher's environment is not for
-	// it.
+	// Git appends the repository path as one more argument. Git starts the
+	// command, through sh, with the environment of the process that
+	// fetches, and the plan has no environment for it. So the argv must
+	// clear the environment itself, for example with bwrap --clearenv or
+	// env -i.
 	UploadPack []string
 	// Repository is the path of the lead's clone as the serving half
 	// sees it, inside the sandbox.
 	Repository string
 	// Measure prints the size of the clone's object store: the first
 	// whitespace-delimited token of the first output line is a decimal
-	// byte count. See [ParseMeasure].
+	// byte count. See [ParseMeasure]. The number is the lead side's
+	// statement and a first check only.
 	Measure Command
 }
 
@@ -119,8 +167,49 @@ func (p ServePlan) Validate() error {
 // VerifyRequest asks for the sandbox that verifies a lead branch. All
 // paths are absolute host paths. Scratch and Home are empty folders that the
 // caller made.
+//
+// The caller vouches for Mirror, Scratch and Home before it asks for a plan,
+// and again before each command of the same plan, as the sandbox writes
+// Scratch and Home in between. Every component of each path, its last name
+// included, must be one that no sandbox can write: no sandbox may create,
+// replace or rename any folder on the way to the path or its entry itself.
+// The exceptions are that Scratch and Home are folders whose content
+// sandboxed code writes. The verify sandbox must not write the mirror at
+// all. The caller checks every component without following symlinks. A plan
+// cannot do it: this package reads no file.
 type VerifyRequest struct {
-	Project, Mirror, Scratch, Home string
+	// Project is a name that passes [ValidName].
+	Project string
+	// Mirror, Scratch and Home are the host paths. See the precondition
+	// above.
+	Mirror, Scratch, Home string
+}
+
+// Validate reports why the request cannot be planned: a project that fails
+// [ValidName], a path that is not absolute and clean, holds a NUL byte,
+// newline or brace, or is the root of the file system, or two of Mirror,
+// Scratch and Home that are the same or one inside the other. It does not
+// read any file, so it cannot check the precondition above.
+func (r VerifyRequest) Validate() error {
+	if !ValidName(r.Project) {
+		return errors.New("project is not a valid name")
+	}
+	roots := []struct{ name, path string }{
+		{"mirror", r.Mirror}, {"scratch", r.Scratch}, {"home", r.Home},
+	}
+	for _, f := range roots {
+		if err := validRoot(f.path); err != nil {
+			return fmt.Errorf("%s: %w", f.name, err)
+		}
+	}
+	for i, a := range roots {
+		for _, b := range roots[i+1:] {
+			if within(a.path, b.path) || within(b.path, a.path) {
+				return fmt.Errorf("%s and %s are the same folder or one is inside the other", a.name, b.name)
+			}
+		}
+	}
+	return nil
 }
 
 // VerifyPlan is how to run commands in the verification sandbox.
