@@ -39,7 +39,8 @@ command exists. See [runtime](runtime.md) for the lead's `ready` state.
 
 The attach stream of a terminal-hosted lead is a terminal data plane, not a
 second command path. It carries terminal output to a console and the writer's
-typed input back, and nothing else. Every other mutation stays a typed command
+typed input back, and nothing else. A frame of an unknown type, or one over its
+size limit, closes the connection. Every other mutation stays a typed command
 with a command ID under the rules above. Ataniq admits nothing from the attach
 stream: no command, decision or grant, and its bytes reach only the hosted
 agent's terminal. Connecting grants no approval authority, as

@@ -59,11 +59,11 @@ and a lead whose recogniser, runtime or version is unqualified stays blocked
 from dispatch. After `ready`, each delivery is gated by the screen's current
 classification (idle, working, blocked or unknown), and only idle admits one; a
 working lead stays `ready` with its input queued. Losing the terminal stream, a
-holder for another epoch, or a runtime or version the recogniser is not
-qualified for ends `ready` like any lost connection, and readiness is unknown
-until reconciled. Nothing implements this amendment yet: the recogniser does
-not exist. A scratch-only holder and attach client, provisional and
-unqualified, are being built without it.
+holder for another epoch, a runtime version other than the pinned one, or a
+runtime or version the recogniser is not qualified for ends `ready` like any
+lost connection, and readiness is unknown until reconciled. Nothing implements
+this amendment yet: the recogniser does not exist. A scratch-only holder and
+attach client, provisional and unqualified, are being built without it.
 
 Bootstrap is a durable per-conversation/version operation: record its intent
 and identity before delivery and completion evidence afterward. Reconnect or
@@ -202,9 +202,9 @@ recorded as an Ataniq observation and not a provider report. Present to a lead
 that is not yet `ready` a dialog, a running task and an unknown screen, a
 closed terminal stream, a holder for another epoch and a runtime version other
 than the pinned one, and assert each is not `ready` and dispatches nothing.
-Then, on a `ready` lead, present a running task and a dialog and assert the
-lead stays `ready`, delivers nothing and keeps the input queued; present an
-unknown screen, a closed stream, a holder for another epoch and a version other
-than the pinned one and assert `ready` ends. Present an idle composer on a
+Then, on a `ready` lead, present a running task, a dialog and an unknown screen
+and assert the lead stays `ready`, delivers nothing and keeps the input queued;
+present a closed stream, a holder for another epoch and a version other than
+the pinned one and assert `ready` ends. Present an idle composer on a
 runtime or version without a qualified recogniser and assert it is not `ready`.
 These are specifications, not executed checks.
