@@ -1,0 +1,151 @@
+package main
+
+// usageText is the usage of the command. It is checked against
+// testdata/usage.golden.
+const usageText = `ataniq-intake: the owner's reviewed intake of a managed lead's work
+
+Usage:
+  ataniq-intake <subcommand> [flags]
+  ataniq-intake help [subcommand]
+
+Subcommands:
+  init      create the exchange mirror of a project
+  fetch     fetch a lead's branches from its clone into the mirror
+  branches  list the lead branches and the upstream branches
+  review    show what a lead branch changes and what needs your sign-off
+  verify    run gates on a lead branch in the verification sandbox
+  integrate move an upstream branch to a reviewed, verified lead tip
+
+Flags of every subcommand:
+  --state DIR      the Ataniq state root, an absolute path (required)
+  --project NAME   the project name (required)
+
+The steps, in order: init, fetch, review, verify, integrate. The mirror is the
+only way out of a lead. A lead's branches are untrusted: work enters the
+upstream branch only by integrate, which moves it fast-forward only. Your
+working checkout is never touched. It gets the commits by its own fetch from
+the mirror.
+
+Sign-off: the command never asks a question. You sign off by typing
+arguments to integrate: --accept-change for the change as a whole, and one
+--accept-path for each path that review lists under "Needs your sign-off".
+Paths and names from a lead are printed escaped. Type them as printed.
+
+Path rules: --path-rule adds a pattern to the execution-config set, and the
+same list must be given to review and to integrate. The review digest covers
+the rules. A different list makes the digest differ, and integrate refuses.
+
+Text from a lead is shown escaped, on indented lines, under a heading that
+says "unverified lead data". A line that starts in the first column is the
+command's own.
+
+Sandbox: fetch and verify run commands from a template file that you wrote
+(--sandbox FILE). The command ships no sandbox and does not check that the
+template confines anything. Without a usable template it refuses and runs
+nothing. The template must not be in the state root.
+
+Folders: --records and --work must be absolute, must exist, and must not be
+the state root or inside it. --state must be a real folder that you own.
+
+Exit status: 0 success; 1 a refusal you can act on (sign-off incomplete, not
+verified, moved, a limit, a hostile tree, busy, no usable sandbox); 2 usage;
+3 any other failure.
+
+Run 'ataniq-intake <subcommand> -h' for the flags of a subcommand.
+`
+
+// subUsage is the usage of each subcommand.
+var subUsage = map[string]string{
+	"init": `Usage: ataniq-intake init --state DIR --project NAME
+
+Create the exchange mirror of the project at DIR/mirrors/NAME.git. The folder
+DIR/mirrors is created, with mode 0700, if it is missing. No other folder is
+created. It refuses when the mirror exists.
+`,
+	"fetch": `Usage: ataniq-intake fetch --state DIR --project NAME --role ROLE --sandbox FILE
+                           [--timeout D] [--max-source N] [--max-staged N] [--max-mirror N]
+
+Fetch the branches of a lead from its clone, DIR/leads/ROLE/tree, into the
+lead's namespace of the mirror. The serving half of the fetch runs in the
+sandbox of the template FILE. Nothing runs in the lead's clone as you, and
+nothing runs without a usable template.
+
+  --role ROLE      the lead's role (required)
+  --sandbox FILE   the sandbox template file, written by you (required)
+  --timeout D      time limit of the whole fetch, such as 10m
+  --max-source N   most bytes the lead's object store may measure
+  --max-staged N   most bytes one fetch may add
+  --max-mirror N   most bytes the mirror may hold
+
+Prints the sizes, each ref update, and any ref outside the lead's namespace
+that changed meanwhile. Exit status 1 when a limit is passed, the clone is
+refused or another fetch is running.
+`,
+	"branches": `Usage: ataniq-intake branches --state DIR --project NAME [--role ROLE]
+
+List the lead branches (role, branch, commit) and the upstream branches of the
+mirror. Names from a lead are printed escaped.
+`,
+	"review": `Usage: ataniq-intake review --state DIR --project NAME --role ROLE --branch BRANCH
+                           --target TARGET [--path-rule PATTERN]... [--diff]
+
+Review the lead branch ROLE/BRANCH against the upstream branch TARGET. Nothing
+is checked out. It prints the base and tip commit ids, the review digest, the
+commits, the changed paths, and the section "Needs your sign-off": every path
+that needs its own sign-off, with its kind, its reason and the exact
+--accept-path argument to type.
+
+  --branch BRANCH     the lead's branch, as 'branches' prints it
+  --target TARGET     the upstream branch the work goes to
+  --path-rule PATTERN add a pattern to the execution-config set; may be
+                      repeated. Give the same list to integrate: the digest
+                      covers it, and a different list is refused there.
+  --diff              also print the sanitised patch of the change
+
+Names and paths are printed escaped, and the command unescapes what you type
+for --branch, --target and --accept-path, so that a name with odd bytes can be
+named exactly.
+`,
+	"verify": `Usage: ataniq-intake verify --state DIR --project NAME --role ROLE --branch BRANCH
+                           --gate NAME=COMMAND... --sandbox FILE --records DIR --work DIR
+                           [--timeout D]
+
+Run the gates on the tip of the lead branch in the verification sandbox of the
+template FILE, in a scratch clone taken from the mirror. Each COMMAND is run
+as /bin/sh -c COMMAND inside the verification sandbox, in the scratch clone,
+never as you and never in your checkout. The result is stored in the records
+folder and the outcome and the tail of the output are printed, escaped.
+
+  --gate NAME=COMMAND  a gate; may be repeated; they run in order and the
+                       first failure ends the run. NAME is lower-case letters,
+                       digits and dashes.
+  --sandbox FILE       the sandbox template file, written by you (required)
+  --records DIR        your records folder: absolute, mode 0700, outside the
+                       state root (required)
+  --work DIR           your work folder for the scratch folders: absolute,
+                       mode 0700, outside the state root (required)
+  --timeout D          time limit of the whole run, such as 30m
+
+Exit status 0 only for a pass. A pass is evidence, not proof.
+`,
+	"integrate": `Usage: ataniq-intake integrate --state DIR --project NAME --role ROLE --branch BRANCH
+                              --target TARGET --tip ID --digest DIGEST --accept-change
+                              [--accept-path PATH]... [--path-rule PATTERN]... --records DIR
+
+Move the upstream branch TARGET to the tip of the lead branch, fast-forward
+only, in the mirror. Your working checkout is not touched.
+
+  --tip ID            the full commit id that 'review' printed (required)
+  --digest DIGEST     the review digest that 'review' printed (required)
+  --accept-change     you accept the change as a whole (required)
+  --accept-path PATH  you accept one flagged path, as 'review' printed it;
+                      one for each path under "Needs your sign-off"
+  --path-rule PATTERN the same list that you gave to review
+  --records DIR       your records folder (required)
+
+It refuses, and lists everything missing with the exact arguments to add,
+when the sign-off is incomplete. It refuses when the tip or the upstream
+branch moved since the review, or when the newest verification of the tip is
+not a pass. Exit status 1 for a refusal.
+`,
+}
