@@ -230,7 +230,6 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 		{"nameserver 224.0.0.1", "multicast"},
 		{"nameserver ff02::1", "multicast"},
 		{"nameserver 255.255.255.255", "multicast or broadcast"},
-		{"nameserver 192.0.2.1;evil", "malformed address"},
 		{"nameserver 192.0.2.1\x01", "control or non-ASCII"},
 		{"nameserver \xc3\xa9", "control or non-ASCII"},
 	} {
@@ -250,6 +249,74 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 			t.Errorf("%q: passed on: %s", tc.line, res.Content)
 		}
 		notesContain(t, res, tc.note)
+	}
+}
+
+func TestHostResolverLineRules(t *testing.T) {
+	for _, tc := range []struct {
+		name, host string
+		want       []string
+	}{
+		{"trailing hash comment", "nameserver 192.0.2.1 # primary\n", []string{"192.0.2.1"}},
+		{"trailing semicolon comment", "nameserver 192.0.2.1;primary\n", []string{"192.0.2.1"}},
+		{"comment glued to the address", "nameserver 192.0.2.1#x\nnameserver\t192.0.2.2\t;y\n", []string{"192.0.2.1", "192.0.2.2"}},
+		{"leading space is ignored", " nameserver 192.0.2.1\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+		{"leading tab is ignored", "\tnameserver 192.0.2.1\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+		{"indented comment is not counted", "  # c\n \t\nnameserver 192.0.2.2\n", []string{"192.0.2.2"}},
+	} {
+		res, err := Derive(Input{HostContent: []byte(tc.host)})
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if !equalAddrs(res.Nameservers, addrs(t, tc.want...)) || res.Rejected != 0 {
+			t.Errorf("%s: %v rejected %d", tc.name, res.Nameservers, res.Rejected)
+		}
+		if strings.Count(string(res.Content), "#") != 1 { // the generated header only
+			t.Errorf("%s: comment passed on: %s", tc.name, res.Content)
+		}
+	}
+
+	res, err := Derive(Input{HostContent: []byte(" nameserver 192.0.2.1\n\tnameserver 192.0.2.3\n  # c\nnameserver 192.0.2.2\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notesContain(t, res, "2 line(s) starting with a blank ignored")
+
+	// A comment never lets a loopback address through, in either form.
+	for _, host := range []string{
+		"nameserver 127.0.0.1 # local\n",
+		"nameserver 127.0.0.1;x\n",
+		"nameserver ::1#x\n",
+		"nameserver ::ffff:127.0.0.1 ; x\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "only loopback")
+		if res.DroppedLoopback != 1 || res.Content != nil {
+			t.Errorf("%q: %+v", host, res)
+		}
+	}
+	// A comment cannot hide a second address, and an address cannot hide in one.
+	for _, host := range []string{
+		"nameserver 192.0.2.1 192.0.2.2 # two\n",
+		"nameserver # 192.0.2.1\n",
+		"nameserver ;192.0.2.1\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host + "nameserver 192.0.2.9\n")})
+		if err != nil {
+			t.Errorf("%q: %v", host, err)
+			continue
+		}
+		if res.Rejected != 1 || !equalAddrs(res.Nameservers, addrs(t, "192.0.2.9")) {
+			t.Errorf("%q: %+v", host, res)
+		}
+		notesContain(t, res, "exactly one address")
+	}
+	// A comment is not honoured on other lines: the text stays in the token,
+	// which is then malformed.
+	res, err = Derive(Input{HostContent: []byte("nameserver 192.0.2.1\nsearch a.test # c\n")})
+	if err != nil || res.Rejected != 1 || len(res.Search) != 0 {
+		t.Errorf("%+v %v", res, err)
 	}
 }
 

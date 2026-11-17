@@ -58,9 +58,10 @@ const (
 	MaxNotes = 32
 
 	// reservedNotes is the room kept for notes that are not about one line:
-	// the "derived from" line, the other-keyword summary, the loopback and
-	// nameserver-cap summaries, and the overflow line.
-	reservedNotes = 5
+	// the "derived from" line, the indented-line and other-keyword
+	// summaries, the loopback and nameserver-cap summaries, and the
+	// overflow line.
+	reservedNotes = 6
 
 	// maxQuoted bounds how much of an untrusted token a note repeats.
 	maxQuoted = 48
@@ -192,6 +193,7 @@ type parsed struct {
 	notes    []string
 	dropped  int // per-line notes that did not fit
 	other    int // lines with a keyword that is not kept
+	indented int // lines the host resolver ignores for a leading blank
 }
 
 // note keeps a per-line note while there is room beyond the reserve, and
@@ -248,13 +250,28 @@ func parse(content []byte) (parsed, error) {
 			p.note("line %d dropped: contains a control or non-ASCII byte", n)
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0][0] == '#' || fields[0][0] == ';' {
+		// As the host resolver reads a file, a keyword counts only at the
+		// start of a line; a line that begins with a blank is ignored.
+		if line == "" || line[0] == '#' || line[0] == ';' {
 			continue
 		}
+		if line[0] == ' ' || line[0] == '\t' {
+			if t := strings.TrimLeft(line, " \t"); t != "" && t[0] != '#' && t[0] != ';' {
+				p.indented++
+			}
+			continue
+		}
+		fields := strings.Fields(line)
 		switch fields[0] {
 		case "nameserver":
-			p.nameserver(n, fields[1:])
+			// As the resolver does, the address ends at the first '#' or
+			// ';': what follows is a comment. What is left is validated
+			// like any other address, so a loopback one is still dropped.
+			rest := strings.TrimPrefix(line, "nameserver")
+			if i := strings.IndexAny(rest, "#;"); i >= 0 {
+				rest = rest[:i]
+			}
+			p.nameserver(n, strings.Fields(rest))
 		case "search":
 			p.searchLine(n, fields[1:])
 		case "options":
@@ -262,6 +279,9 @@ func parse(content []byte) (parsed, error) {
 		default:
 			p.other++
 		}
+	}
+	if p.indented > 0 {
+		p.summary("%d line(s) starting with a blank ignored, as the host resolver does", p.indented)
 	}
 	if p.other > 0 {
 		p.summary("%d line(s) with other keywords ignored", p.other)
