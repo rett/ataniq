@@ -1024,6 +1024,32 @@ func TestStripPasteEnd(t *testing.T) {
 	}
 }
 
+// TestMouseHeldRecordingKeepsTheModesOnForTheLinger checks the recording an
+// attended check uses: the modes are still on seconds after the session set
+// them, so session focus can be entered by hand and asks for the mouse.
+func TestMouseHeldRecordingKeepsTheModesOnForTheLinger(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "mouse-held.jsonl", Linger: time.Minute})
+	r.play(10 * time.Second)
+	if m := r.m.rep.pane.Modes(); m.Mouse != uv.MouseModeMotion || m.MouseEncoding != uv.MouseEncodingSGR || !m.FocusEvents {
+		t.Fatalf("%+v", m)
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+		t.Fatalf("console focus asks for %v %v", v.MouseMode, v.ReportFocus)
+	}
+	r.focusSession()
+	if v := r.m.View(); v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus {
+		t.Fatalf("session focus asks for %v %v", v.MouseMode, v.ReportFocus)
+	}
+	// When the linger time is over the stream ends and nothing is asked.
+	r.play(2 * time.Minute)
+	if !r.m.sessionEnded() {
+		t.Fatal("the session did not end")
+	}
+	if v := r.m.View(); v.MouseMode != tea.MouseModeNone || v.ReportFocus {
+		t.Fatalf("an ended session asks for %v %v", v.MouseMode, v.ReportFocus)
+	}
+}
+
 func TestMouseFollowsTheSessionAndTheFocus(t *testing.T) {
 	r := newRig(t, 140, 45, Options{Recording: "modes.jsonl", Linger: time.Hour})
 	r.play(500 * time.Millisecond) // every mode is on

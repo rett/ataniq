@@ -49,6 +49,8 @@ const (
 	textMode        = "mode test"
 	textModeOn      = "modes enabled"
 	textModeOff     = "modes restored"
+	textMouseHeld   = "mouse test"
+	textMouseOn     = "mouse and focus reporting held"
 	textFrame       = "frame test"
 	textFrameOneA   = "frame one, line a"
 	textFrameOneB   = "frame one, line b"
@@ -95,6 +97,7 @@ var known = []string{
 	textTitle, textTitleSet, oscTitleTask, oscTitleDone, oscTitleSplit, oscTitleBoth,
 	oscTitleCheck, oscTitleStar,
 	textMode, textModeOn, textModeOff,
+	textMouseHeld, textMouseOn,
 	textFrame, textFrameOneA, textFrameOneB, textFrameTwoA, textFrameTwoB,
 	textFrameThreeA, textFrameThreeB, textHeldA, textHeldB,
 	textMultiOne, textMultiTwo, textMultiThree, textMultiFour, textMultiFive,
@@ -163,6 +166,7 @@ func Files() ([]File, error) {
 		"zwj-split.jsonl":    zwj,
 		"title.jsonl":        title(),
 		"modes.jsonl":        modes(),
+		"mouse-held.jsonl":   mouseHeld(), // sets 1000, 1003, 1006 and 1004 and never resets them
 		"sync-frames.jsonl":  syncFrames(),
 		"queries.jsonl":      queries(),
 		"clipboard.jsonl":    clipboard(),
@@ -244,6 +248,21 @@ func modes() *sessionreplay.Recording {
 	s.out(680, "\x1b[?1049l")
 	s.out(720, textModeOff+"\r\n")
 	return s.end(800, 0)
+}
+
+// mouseHeld asks for mouse reporting and focus events early and keeps them
+// until the end record, so that --linger keeps them on long enough to reach
+// session focus and see what the console asks of the outer terminal. The other
+// recordings reset their modes within a second.
+func mouseHeld() *sessionreplay.Recording {
+	s := newScript(80, 24)
+	s.out(0, clear+textMouseHeld+"\r\n")
+	s.out(40, "\x1b[?1000h")
+	s.out(80, "\x1b[?1003h")
+	s.out(120, "\x1b[?1006h")
+	s.out(160, "\x1b[?1004h")
+	s.out(200, textMouseOn+"\r\n")
+	return s.end(400, 0)
 }
 
 const (

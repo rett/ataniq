@@ -39,6 +39,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--linger DURATION` (default 30s) keeps the session open after its end
   so the keys can be tried. Still unqualified: use over SSH, a live session and
   any live control.
+- Add the fixture recording `mouse-held.jsonl` (`ataniq-console --demo
+  --recording mouse-held.jsonl`). It sets mouse reporting and focus events and
+  never resets them, so the linger time keeps them on while a person enters
+  session focus and tries the mouse by hand; `modes.jsonl` resets them within
+  a second.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 

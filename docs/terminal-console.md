@@ -165,8 +165,17 @@ queries, clipboard requests, frames for synchronized output, a grapheme
 cluster split across two writes, a resize record and the three kinds of exit
 (status 0, a non-zero status and an unknown status). Their names are
 `clipboard.jsonl`, `exit-nonzero.jsonl`, `exit-unknown.jsonl`,
-`exit-zero.jsonl`, `modes.jsonl`, `queries.jsonl`, `resize.jsonl`,
-`sync-frames.jsonl`, `title.jsonl` and `zwj-split.jsonl`.
+`exit-zero.jsonl`, `modes.jsonl`, `mouse-held.jsonl`, `queries.jsonl`,
+`resize.jsonl`, `sync-frames.jsonl`, `title.jsonl` and `zwj-split.jsonl`.
+
+`modes.jsonl` sets mouse reporting and focus events for about half a second
+and resets them, which is too short to reach session focus by hand.
+`mouse-held.jsonl` sets mouse reporting (modes 1000 and 1003, with the SGR
+encoding 1006) and focus events (1004) in its first 200 ms and never resets
+them. With the default linger they stay on for 30 seconds after the recording's
+end record, so you can enter session focus, where the console asks the outer
+terminal for the mouse and focus events, and leave it, where it asks for
+neither.
 
 Everything on screen is fixture data. The recording looks like a running
 session, which is why the header, the session frame and the help all say
