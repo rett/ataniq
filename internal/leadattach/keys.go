@@ -119,6 +119,9 @@ const (
 //     keys SS3 forms. DEC 67 makes Backspace send BS (and Ctrl+Backspace
 //     DEL). ANSI 20 makes Enter send CR LF.
 //   - Shift+Enter is the option's bytes; Shift+Tab is CSI Z.
+//   - F13 to F20 are the forms of Shift+F1 to Shift+F8 (CSI 1;2 P to S,
+//     CSI 15;2 ~ to CSI 19;2 ~), as xterm sends them; a held modifier adds to
+//     that Shift in the parameter.
 //   - Ctrl+Enter, Ctrl+Tab and Ctrl+Backspace cannot be told from Enter, Tab
 //     and BS in the legacy encoding; they send the same as the plain key
 //     (Ctrl+Backspace: BS).
@@ -180,8 +183,15 @@ var ss3Letter = map[rune]byte{uv.KeyF1: 'P', uv.KeyF2: 'Q', uv.KeyF3: 'R', uv.Ke
 var csiTilde = map[rune]int{
 	uv.KeyFind: 1, uv.KeyInsert: 2, uv.KeyDelete: 3, uv.KeySelect: 4, uv.KeyPgUp: 5, uv.KeyPgDown: 6,
 	uv.KeyF5: 15, uv.KeyF6: 17, uv.KeyF7: 18, uv.KeyF8: 19, uv.KeyF9: 20, uv.KeyF10: 21,
-	uv.KeyF11: 23, uv.KeyF12: 24, uv.KeyF13: 25, uv.KeyF14: 26, uv.KeyF15: 28, uv.KeyF16: 29,
-	uv.KeyF17: 31, uv.KeyF18: 32, uv.KeyF19: 33, uv.KeyF20: 34,
+	uv.KeyF11: 23, uv.KeyF12: 24,
+}
+
+// shiftedFn are F13 to F20 as xterm sends them (terminfo xterm-256color,
+// kf13 to kf20): the forms of Shift+F1 to Shift+F8, so the modifier
+// parameter of a held modifier adds to that Shift.
+var shiftedFn = map[rune]rune{
+	uv.KeyF13: uv.KeyF1, uv.KeyF14: uv.KeyF2, uv.KeyF15: uv.KeyF3, uv.KeyF16: uv.KeyF4,
+	uv.KeyF17: uv.KeyF5, uv.KeyF18: uv.KeyF6, uv.KeyF19: uv.KeyF7, uv.KeyF20: uv.KeyF8,
 }
 
 // keypadNav are the keypad keys a terminal with NumLock off reports as
@@ -212,6 +222,9 @@ func encodeBase(k uv.KeyPressEvent, m keyMods, ms ModeSet, o KeyOptions) (b []by
 	code := k.Code
 	if to, ok := keypadNav[code]; ok {
 		code = to
+	}
+	if to, ok := shiftedFn[code]; ok {
+		code, m.shift = to, true
 	}
 	switch code {
 	case uv.KeyEnter:
