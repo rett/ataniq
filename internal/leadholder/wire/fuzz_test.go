@@ -94,6 +94,7 @@ func FuzzDecoders(f *testing.F) {
 		`{"ok":false,"code":"disabled","text":"x"}`, "{\"name\":\"\\u001b\"}",
 		`{"facts":{"stream_ended":"yes","tui_exited":"no","tree_gone":"unknown"},"idle":"unknown","idle_signals":null,"title":""}`,
 		`{"facts":{"stream_ended":"yes","tui_exited":"no","tree_gone":"unknown"},"counters":{"a":1},"last_screen":"x\n"}`,
+		`{"name":"\ud800"}`, `{"name":"\ud83d\ude00"}`, "{\"name\":\"\xff\"}",
 		"\xff\xfe", `{"a":` + string(bytes.Repeat([]byte("["), 50)),
 	} {
 		f.Add([]byte(s))

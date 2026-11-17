@@ -25,8 +25,11 @@
 //
 // Structured payloads are JSON objects, decoded strictly: a field that the
 // struct does not have (also one that differs only in case), a repeated
-// key, trailing data, a value over its length cap and text with a control
-// character are all refused. The Encode functions apply the same checks, so a
-// well-behaved sender cannot produce what the decoder refuses. Input, Paste,
+// key, trailing data, a value over its length cap, text with a control
+// character and text that is not valid UTF-8 are all refused. Invalid UTF-8 is
+// refused as it comes: a raw invalid byte, and a \uD800 to \uDFFF escape that
+// is not half of a pair, are errors and are never replaced by U+FFFD (an
+// escaped U+FFFD itself is fine). The Encode functions apply the same checks,
+// so a well-behaved sender cannot produce what the decoder refuses. Input, Paste,
 // Output and Snapshot are binary and have helpers to build and split them.
 package wire

@@ -144,8 +144,14 @@ const maxDepth = 6
 // decodeMessage decodes a payload strictly into the struct that p points to
 // and validates it.
 func decodeMessage(p message, data []byte) error {
+	if !utf8.Valid(data) {
+		return invalidf("payload is not valid UTF-8")
+	}
 	end, err := scanObject(data)
 	if err != nil {
+		return err
+	}
+	if err := checkSurrogates(data[:end]); err != nil {
 		return err
 	}
 	for _, c := range data[end:] {
@@ -234,6 +240,72 @@ func scanObject(data []byte) (int, error) {
 			}
 		}
 	}
+}
+
+// hex4 returns the value of the four hexadecimal digits that start b.
+func hex4(b []byte) (rune, bool) {
+	if len(b) < 4 {
+		return 0, false
+	}
+	var r rune
+	for _, c := range b[:4] {
+		switch {
+		case c >= '0' && c <= '9':
+			c -= '0'
+		case c >= 'a' && c <= 'f':
+			c = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			c = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		r = r<<4 | rune(c)
+	}
+	return r, true
+}
+
+// checkSurrogates refuses a \uD800 to \uDFFF escape in a JSON string that is
+// not half of a pair. encoding/json turns such an escape into U+FFFD without
+// an error, which would let a payload say what its own encoder never writes.
+// It reads the raw bytes of an object that scanObject has accepted, so every
+// quote it finds is a real string delimiter.
+func checkSurrogates(data []byte) error {
+	inString := false
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		if !inString {
+			inString = c == '"'
+			continue
+		}
+		switch c {
+		case '"':
+			inString = false
+		case '\\':
+			i++
+			if i >= len(data) || data[i] != 'u' {
+				continue
+			}
+			r, ok := hex4(data[i+1:])
+			if !ok {
+				continue
+			}
+			i += 4
+			switch {
+			case r >= 0xd800 && r < 0xdc00:
+				// A high half must be followed by a low half.
+				if i+6 < len(data) && data[i+1] == '\\' && data[i+2] == 'u' {
+					if low, ok := hex4(data[i+3:]); ok && low >= 0xdc00 && low < 0xe000 {
+						i += 6
+						continue
+					}
+				}
+				return invalidf("a string has a lone surrogate escape")
+			case r >= 0xdc00 && r < 0xe000:
+				return invalidf("a string has a lone surrogate escape")
+			}
+		}
+	}
+	return nil
 }
 
 // jsonFields maps the JSON name of each field of a struct type to its type.

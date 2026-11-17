@@ -554,3 +554,97 @@ func TestSanitize(t *testing.T) {
 		}
 	}
 }
+
+// textFields lists every text field of the structured payloads: the codec
+// that carries it and the sample value to put bad text in place of.
+var textFields = []struct {
+	codec string
+	old   string
+}{
+	{"hello", `"name":"console"`},
+	{"welcome", `"lead":"project/lead"`},
+	{"welcome", `"runtime":"codex"`},
+	{"welcome", `"runtime_version":"1.2.3"`},
+	{"state", `"title":"claude — work"`},
+	{"role", `"writer_name":"console"`},
+	{"notice", `"text":"you were too slow"`},
+	{"exit", `"last_screen":"line one\nline <two> & \"three\"\n"`},
+	{"response status", `"lead":"project/lead"`},
+	{"response status", `"runtime":"claude"`},
+	{"response refusal", `"text":"inject is disabled"`},
+}
+
+func codecNamed(t *testing.T, name string) codec {
+	t.Helper()
+	for _, c := range codecs {
+		if c.name == name {
+			return c
+		}
+	}
+	t.Fatalf("no codec %q", name)
+	return codec{}
+}
+
+// A peer's payload is checked as strictly as an encoder's: encoding/json
+// would turn an invalid byte or a lone surrogate escape into U+FFFD without
+// an error, so the decoder has to look at the raw bytes.
+func TestDecodeRefusesInvalidText(t *testing.T) {
+	for _, f := range textFields {
+		c := codecNamed(t, f.codec)
+		good, err := c.encode(c.sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _, _ := strings.Cut(f.old, ":")
+		for name, val := range map[string]string{
+			"invalid byte":          "a\xffb",
+			"truncated sequence":    "a\xe2\x82",
+			"encoded surrogate":     "a\xed\xa0\x80b", // CESU-8 of U+D800
+			"lone high escape":      `a\ud800b`,
+			"lone low escape":       `a\udc00b`,
+			"high then ordinary":    `a\ud800Ab`,
+			"high then high":        `a\ud800𐀀`,
+			"low then high":         `a\udc00\ud800`,
+			"high at the end":       `a\ud800`,
+			"upper-case lone high":  `a\uD800b`,
+			"lone high before text": `\ud83dx`,
+		} {
+			bad := repl(t, good, f.old, key+`:"`+val+`"`)
+			if _, err := c.decode(bad); !errors.Is(err, wire.ErrInvalid) {
+				t.Errorf("%s %s %s: err = %v, want ErrInvalid", f.codec, key, name, err)
+			}
+		}
+	}
+}
+
+// What the decoder must keep accepting: a real pair, an escaped U+FFFD and
+// the escaped quote and backslash that precede a u.
+func TestDecodeAcceptsValidEscapes(t *testing.T) {
+	hello := func(name string) string {
+		return `{"version":1,"ticket":"` + ticket64 + `","name":"` + name + `","columns":80,"rows":24,"colors":{}}`
+	}
+	for name, c := range map[string]struct{ in, want string }{
+		"pair":            {`a😀b`, "a\U0001F600b"},
+		"upper-case pair": {`😀`, "\U0001F600"},
+		"replacement":     {`a�b`, "a�b"},
+		"raw replacement": {"a�b", "a�b"},
+		"backslash u":     {`a\\ud800`, `a\ud800`},
+		"quote then u":    {`a\"\\ud800`, `a"\ud800`},
+		"two pairs":       {`😀😁`, "\U0001F600\U0001F601"},
+		"BMP escape":      {`é`, "é"},
+	} {
+		got, err := wire.DecodeHello([]byte(hello(c.in)))
+		if err != nil || got.Name != c.want {
+			t.Errorf("%s: name %q, err %v; want %q", name, got.Name, err, c.want)
+		}
+	}
+	// A surrogate escape in a key is as bad as one in a value.
+	bad := `{"version":1,"ticket":"` + ticket64 + `","na\ud800me":"x","columns":80,"rows":24,"colors":{}}`
+	if _, err := wire.DecodeHello([]byte(bad)); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("surrogate in a key: %v", err)
+	}
+	// Invalid UTF-8 outside a string is refused too.
+	if _, err := wire.DecodeSize([]byte("{\"columns\":80,\"rows\":24}\xff")); !errors.Is(err, wire.ErrInvalid) {
+		t.Errorf("invalid byte after the object: %v", err)
+	}
+}
