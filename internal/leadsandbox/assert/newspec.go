@@ -18,9 +18,11 @@ type HostFacts struct {
 	// paths and the holder paths are added to them, so a bind that leaks one
 	// shows in the table of the sandbox, where a bind source is its root.
 	MountSubstrings []string
-	// LoopbackTCP and AbstractSocket are the canary's addresses
-	// (Canary.TCP and Canary.Abstract).
+	// LoopbackTCP, LoopbackTCP2 and AbstractSocket are the canary's addresses
+	// (Canary.TCP, Canary.TCP2, which is empty when the host has no IPv6
+	// loopback, and Canary.Abstract).
 	LoopbackTCP    string
+	LoopbackTCP2   string
 	AbstractSocket string
 	// ProviderHost is the provider host name that must resolve.
 	ProviderHost string
@@ -57,6 +59,7 @@ func NewSpec(in profile.Inputs, h HostFacts) (Spec, error) {
 		MountSubstrings:  dedupe(h.MountSubstrings, in.NeverMounted, h.HolderPaths),
 		OtherConfigDir:   profile.ConfigInside(in.Runtime.Other()),
 		LoopbackTCP:      h.LoopbackTCP,
+		LoopbackTCP2:     h.LoopbackTCP2,
 		AbstractSocket:   h.AbstractSocket,
 		ProviderHost:     h.ProviderHost,
 		SeccompExpected:  in.SeccompEnabled(),

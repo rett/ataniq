@@ -235,14 +235,19 @@ func dialEvidence(err error) (how string, proves bool) {
 // the canary count after the probe has run decides (CheckCanary).
 const timedOut = "timed out (weaker than a refusal: the canary count decides)"
 
-// 3. One host loopback port and one host abstract socket are unreachable.
+// 3. One host loopback port (two when the spec has a second address) and one
+// host abstract socket are unreachable.
 func (c *checker) loopback() Result {
 	var t tally
 	var shown []string
-	for _, target := range []struct{ what, network, addr string }{
+	targets := []struct{ what, network, addr string }{
 		{"host loopback port", "tcp", c.spec.LoopbackTCP},
-		{"host abstract socket", "unix", "@" + c.spec.AbstractSocket},
-	} {
+	}
+	if c.spec.LoopbackTCP2 != "" {
+		targets = append(targets, struct{ what, network, addr string }{"second host loopback port", "tcp", c.spec.LoopbackTCP2})
+	}
+	targets = append(targets, struct{ what, network, addr string }{"host abstract socket", "unix", "@" + c.spec.AbstractSocket})
+	for _, target := range targets {
 		err := c.sys.Dial(target.network, target.addr, c.spec.ConnectTimeout())
 		if err == nil {
 			t.fail("%s %s is reachable: a connection was made", target.what, target.addr)

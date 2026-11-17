@@ -55,6 +55,11 @@ func TestCanaryCountsConnections(t *testing.T) {
 		t.Fatalf("hits before any connection: %d", c.Hits())
 	}
 	hit(t, "tcp", c.TCP)
+	if c.TCP2 != "" {
+		if !strings.HasPrefix(c.TCP2, "[::1]:") || c.TCP2 == c.TCP {
+			t.Errorf("TCP2 %q", c.TCP2)
+		}
+	}
 	if c.TCPHits() != 1 || c.AbstractHits() != 0 || c.Hits() != 1 {
 		t.Errorf("after a tcp connection: %d %d", c.TCPHits(), c.AbstractHits())
 	}
@@ -305,5 +310,38 @@ func TestCanaryCloseWaitsForTheLoops(t *testing.T) {
 	<-closed
 	if !c.Stopped() {
 		t.Error("the loop did not end")
+	}
+}
+
+// The canary also listens on ::1 when the host has it, and counts there; a
+// host without it is no failure and TCP2 stays empty.
+func TestCanaryListensOnIPv6Loopback(t *testing.T) {
+	c := testCanary(t)
+	if c.TCP2 == "" {
+		t.Skip("this host has no IPv6 loopback")
+	}
+	hit(t, "tcp", c.TCP2)
+	if c.TCP2Hits() != 1 || c.TCPHits() != 0 || c.AbstractHits() != 0 || c.Hits() != 1 {
+		t.Errorf("hits after a ::1 connection: %d %d %d", c.TCP2Hits(), c.TCPHits(), c.AbstractHits())
+	}
+	if r := CheckCanary(c); r.Status != StatusFailed || !strings.Contains(r.Detail, "1 on loopback") {
+		t.Errorf("a ::1 connection: %+v", r)
+	}
+	// The probe, with the second address in its spec, fails on the open
+	// canary, and passes on a closed one.
+	s := testSpec("claude")
+	s.LoopbackTCP, s.LoopbackTCP2, s.AbstractSocket = c.TCP, c.TCP2, c.Abstract
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ck := &checker{spec: s, sys: HostSystem{}}
+	if r := ck.loopback(); r.Status != StatusFailed || !strings.Contains(r.Detail, "second host loopback port") {
+		t.Errorf("an open canary: %+v", r)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r := ck.loopback(); r.Status != StatusOK || !strings.Contains(r.Detail, "second host loopback port") {
+		t.Errorf("a closed canary: %+v", r)
 	}
 }

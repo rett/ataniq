@@ -85,8 +85,11 @@ type Spec struct {
 
 	// LoopbackTCP is one host loopback address (ip:port) and AbstractSocket
 	// one host abstract socket name (without the leading @) that must be
-	// unreachable (assertion 3).
+	// unreachable (assertion 3). LoopbackTCP2 is an optional second loopback
+	// address, normally the canary's "[::1]:port" when the host has IPv6
+	// loopback; it must differ from the first.
 	LoopbackTCP    string `json:"loopback_tcp"`
+	LoopbackTCP2   string `json:"loopback_tcp_2,omitempty"`
 	AbstractSocket string `json:"abstract_socket"`
 
 	// ProviderHost is a provider host name that must resolve (assertion 4).
@@ -369,6 +372,15 @@ func (s Spec) checkNet() error {
 	ap, err := netip.ParseAddrPort(s.LoopbackTCP)
 	if err != nil || !ap.Addr().IsLoopback() || ap.Port() == 0 {
 		return refuse("loopback_tcp", "must be a loopback ip:port with a non-zero port")
+	}
+	if s.LoopbackTCP2 != "" {
+		ap2, err := netip.ParseAddrPort(s.LoopbackTCP2)
+		if err != nil || !ap2.Addr().IsLoopback() || ap2.Port() == 0 {
+			return refuse("loopback_tcp_2", "must be empty or a loopback ip:port with a non-zero port")
+		}
+		if ap2 == ap {
+			return refuse("loopback_tcp_2", "is the same address as loopback_tcp")
+		}
 	}
 	if !validAbstractName(s.AbstractSocket) {
 		return refuse("abstract_socket", "must be 1 to %d bytes of [A-Za-z0-9._-], without the leading @", MaxAbstractBytes)

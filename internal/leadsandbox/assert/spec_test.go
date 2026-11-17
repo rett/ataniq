@@ -37,6 +37,26 @@ func TestSpecRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSpecSecondLoopbackAddress(t *testing.T) {
+	for _, second := range []string{"[::1]:40124", "127.0.0.2:40123", "127.0.0.1:40124"} {
+		s := testSpec(profile.Claude)
+		s.LoopbackTCP2 = second
+		data, err := EncodeSpec(s)
+		if err != nil {
+			t.Fatalf("%s: %v", second, err)
+		}
+		back, err := DecodeSpecBytes(data)
+		if err != nil || back.LoopbackTCP2 != second {
+			t.Errorf("%s: %q, %v", second, back.LoopbackTCP2, err)
+		}
+	}
+	// The field is left out of the JSON when it is empty.
+	data, _ := EncodeSpec(testSpec(profile.Claude))
+	if bytes.Contains(data, []byte("loopback_tcp_2")) {
+		t.Error("an empty second address was written")
+	}
+}
+
 func TestSpecDefaultTimeouts(t *testing.T) {
 	s := testSpec(profile.Claude)
 	if s.ConnectTimeout().Milliseconds() != DefaultConnectMS || s.ResolveTimeout().Milliseconds() != DefaultResolveMS {
@@ -185,6 +205,10 @@ func TestSpecValidate(t *testing.T) {
 		{"claude without marker", func(s *Spec) { s.ManagedMarker = "" }, "managed_marker"},
 		{"marker long", func(s *Spec) { s.ManagedMarker = long(MaxMarkerBytes + 1) }, "managed_marker"},
 		{"marker control", func(s *Spec) { s.ManagedMarker = "a\tb" }, "managed_marker"},
+		{"second loopback not loopback", func(s *Spec) { s.LoopbackTCP2 = "192.0.2.1:80" }, "loopback_tcp_2"},
+		{"second loopback port zero", func(s *Spec) { s.LoopbackTCP2 = "[::1]:0" }, "loopback_tcp_2"},
+		{"second loopback is not an address", func(s *Spec) { s.LoopbackTCP2 = "localhost:80" }, "loopback_tcp_2"},
+		{"second loopback is the first", func(s *Spec) { s.LoopbackTCP2 = s.LoopbackTCP }, "loopback_tcp_2"},
 		{"optional outside", func(s *Spec) { s.Optional = []int{9} }, "optional"},
 		{"optional zero", func(s *Spec) { s.Optional = []int{0} }, "optional"},
 		{"optional twice", func(s *Spec) { s.Optional = []int{4, 4} }, "optional"},
@@ -295,6 +319,7 @@ func TestNewSpec(t *testing.T) {
 				OwnerPaths:      []string{"/home/owner/.claude", "/home/owner/extra"},
 				MountSubstrings: []string{"/run/example"},
 				LoopbackTCP:     "127.0.0.1:40123",
+				LoopbackTCP2:    "[::1]:40124",
 				AbstractSocket:  "example-canary-1",
 				ProviderHost:    "api.example.org",
 				ManagedMarker:   "example-guard-hook",
@@ -303,6 +328,9 @@ func TestNewSpec(t *testing.T) {
 			s, err := NewSpec(in, h)
 			if err != nil {
 				t.Fatalf("NewSpec: %v", err)
+			}
+			if s.LoopbackTCP2 != "[::1]:40124" {
+				t.Errorf("second loopback address %q", s.LoopbackTCP2)
 			}
 			digest, _ := in.Digest()
 			if s.Digest != digest || s.Runtime != rt {

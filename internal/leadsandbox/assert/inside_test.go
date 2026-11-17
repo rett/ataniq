@@ -92,6 +92,15 @@ func TestInsideAssertions(t *testing.T) {
 		{"2 an unexpected value is not quoted", profile.Claude, func(s *Spec, f *fakeSys) { f.env = append(f.env, "SECRET_THING=hunter2") }, 2, StatusFailed, "unexpected"},
 
 		// 3
+		{"3 second loopback address connects", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.LoopbackTCP2 = "[::1]:40124"
+			f.dialErr["tcp [::1]:40124"] = nil
+		}, 3, StatusFailed, "second host loopback port [::1]:40124 is reachable"},
+		{"3 second loopback address refused is ok and named", profile.Claude, func(s *Spec, f *fakeSys) { s.LoopbackTCP2 = "[::1]:40124" }, 3, StatusOK, "second host loopback port [::1]:40124 refused"},
+		{"3 second loopback address is not asked about", profile.Claude, func(s *Spec, f *fakeSys) {
+			s.LoopbackTCP2 = "[::1]:40124"
+			f.dialErr["tcp [::1]:40124"] = syscall.EMFILE
+		}, 3, StatusNotChecked, "[::1]:40124"},
 		{"3 tcp connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = nil }, 3, StatusFailed, "host loopback port 127.0.0.1:40123 is reachable"},
 		{"3 abstract connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = nil }, 3, StatusFailed, "host abstract socket @example-canary-1 is reachable"},
 		{"3 network unreachable is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.ENETUNREACH }, 3, StatusOK, ""},

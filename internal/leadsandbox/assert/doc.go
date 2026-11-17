@@ -35,8 +35,10 @@
 //     results 1 to 8, each once, and no other. [Failed] and [Problems] judge
 //     a report against its spec. The report has no field that says the
 //     sandbox as a whole passed or is supported.
-//   - The [Canary] (Linux): a loopback TCP listener and an abstract socket
-//     owned by the caller, which count the connections they accept. Assertion
+//   - The [Canary] (Linux): a loopback TCP listener, a second on ::1 when the
+//     host has IPv6 loopback (no failure when it has not: [Canary.TCP2] is
+//     then empty, and the spec's second address, [Spec.LoopbackTCP2], is
+//     left out), and an abstract socket owned by the caller, which count the connections they accept. Assertion
 //     3 is checked on both sides: the probe dials the addresses and
 //     classifies the failure, and after the probe's report [CheckCanary] says
 //     the canary accepted nothing. That count is the evidence independent of
