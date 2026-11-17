@@ -177,12 +177,16 @@ func attachModel(cfg config) *terminalconsole.Model {
 		mode = leadattach.ModeViewer
 	}
 	o := cfg.options
+	// The presence check keeps the console from dialling the holder while the
+	// ticket file is empty.
+	tickets, ready := leadattach.FileTicketSource(a.ticketFile)
 	o.Live = leadattach.New(leadattach.Config{
-		Socket:     a.socket,
-		Mode:       mode,
-		Name:       clientName,
-		Tickets:    leadattach.FileTickets(a.ticketFile),
-		ShiftEnter: a.shiftEnter,
+		Socket:      a.socket,
+		Mode:        mode,
+		Name:        clientName,
+		Tickets:     tickets,
+		TicketReady: ready,
+		ShiftEnter:  a.shiftEnter,
 	})
 	return terminalconsole.NewWithOptions(nil, o)
 }

@@ -69,6 +69,18 @@ type Config struct {
 	// waits (the connection is closed meanwhile). FileTickets is the one the
 	// console uses.
 	Tickets func() (string, error)
+	// TicketReady says, without taking a ticket or changing anything, whether
+	// Tickets would have one: a presence check. The client calls it on its own
+	// goroutine before each dial, at once and then every 500 ms while it
+	// waits, and dials only when it says yes; while it says no, the client
+	// makes no connection at all, so that a console that waits for a ticket
+	// does not show the holder a connection that closes with no Hello (which
+	// the holder counts and logs as a refused handshake). It may be wrong
+	// either way: a ticket that is gone by the time of the read is a
+	// connection that is closed again, and a ticket that it does not see is
+	// seen on a later poll. Nil means always dial, for a source with no
+	// probe. FileTicketSource gives the one for a ticket file.
+	TicketReady func() bool
 	// Dial connects to Socket. Nil dials the unix socket.
 	Dial DialFunc
 	// Clock times the wait for a ticket. Nil is the real clock.

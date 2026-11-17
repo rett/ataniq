@@ -90,6 +90,91 @@ func TestWaitingForATicketPollsEveryHalfSecond(t *testing.T) {
 	e.untilConn(terminalconsole.LiveAttached)
 }
 
+// With a presence check the client makes no connection at all while there is
+// no ticket: a connection that closes with no Hello would be counted by the
+// holder as a refused handshake. Once the file holds a ticket the client
+// dials, takes it, and attaches.
+func TestWaitingForATicketFileMakesNoConnection(t *testing.T) {
+	leakCheck(t)
+	path := filepath.Join(t.TempDir(), "ticket")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tickets, ready := leadattach.FileTicketSource(path)
+	var polls atomic.Int64
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
+		c.Tickets = tickets
+		c.TicketReady = func() bool { polls.Add(1); return ready() }
+	}})
+	e.start()
+	st := e.untilConn(terminalconsole.LiveWaitingTicket)
+	if st.Reason != "waiting for a ticket" {
+		t.Errorf("reason %q", st.Reason)
+	}
+	// Many polls go by, each on the poll interval, and nothing is dialled.
+	e.until("many polls", func(terminalconsole.LiveStatus) bool { return polls.Load() >= 20 })
+	for _, d := range e.clock.asked() {
+		if d != 500*time.Millisecond {
+			t.Fatalf("waited %v between polls, want 500ms", d)
+		}
+	}
+	if n := e.h.accepts.Load(); n != 0 {
+		t.Fatalf("the holder took %d connections while the file was empty", n)
+	}
+
+	// The daemon writes a ticket: a new file renamed over the old one.
+	tk := newTicketString(t)
+	tmp := path + ".new"
+	if err := os.WriteFile(tmp, []byte(tk+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+	hc := e.h.accept()
+	if hc.hello.Ticket != tk {
+		t.Errorf("the hello carries %q, want %q", hc.hello.Ticket, tk)
+	}
+	hc.welcome(wire.RoleWriter)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	if n := e.h.accepts.Load(); n != 1 {
+		t.Errorf("the holder took %d connections, want 1", n)
+	}
+	if b, err := os.ReadFile(path); err != nil || len(b) != 0 {
+		t.Errorf("the ticket file holds %q (%v) after it was taken", b, err)
+	}
+}
+
+// A check that says no is not a failure of the source: Tickets is not called,
+// and a source with no check (nil) is asked as before, after the dial.
+func TestTicketReadyNoMeansNoDialAndNoTicketRead(t *testing.T) {
+	leakCheck(t)
+	var yes atomic.Bool
+	var polls atomic.Int64
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true, mutate: func(c *leadattach.Config) {
+		c.TicketReady = func() bool { polls.Add(1); return yes.Load() }
+	}})
+	e.tickets.give(1)
+	e.start()
+	e.until("a few polls", func(terminalconsole.LiveStatus) bool { return polls.Load() >= 5 })
+	e.untilConn(terminalconsole.LiveWaitingTicket)
+	if n := e.tickets.callCount(); n != 0 {
+		t.Errorf("the ticket source was called %d times while the check said no", n)
+	}
+	if n := e.h.accepts.Load(); n != 0 {
+		t.Errorf("the holder took %d connections while the check said no", n)
+	}
+	yes.Store(true)
+	hc := e.h.accept()
+	if hc.hello.Ticket != e.tickets.ticket(0) {
+		t.Errorf("the hello carries %q", hc.hello.Ticket)
+	}
+	hc.welcome(wire.RoleWriter)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+}
+
 func TestATicketSourceThatFailsShowsWhy(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter, noStart: true})
@@ -1037,4 +1122,13 @@ func TestRepeatedResyncsBackOffUntilACheckMatches(t *testing.T) {
 	if w := waits(); len(w) != 3 || w[2] != 2*leadattach.TicketPoll {
 		t.Errorf("waits %v, want the back-off to start again at 1s", w)
 	}
+}
+
+func newTicketString(t *testing.T) string {
+	t.Helper()
+	tk, err := wire.NewTicket()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tk
 }

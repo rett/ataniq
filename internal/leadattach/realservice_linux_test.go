@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,5 +272,76 @@ func TestTheClientAgainstTheRealHolderService(t *testing.T) {
 	}
 	if len(st.Counters) == 0 {
 		t.Error("no counters")
+	}
+}
+
+// A client that waits for a ticket makes no connection to the real service:
+// the holder counts and logs a connection that closes with no Hello as a
+// refused handshake, and that counter stays zero for as long as the file is
+// empty. When a ticket is written the client attaches, still with none refused.
+func TestWaitingForATicketIsNotARefusedHandshakeAtTheRealHolder(t *testing.T) {
+	leakCheck(t)
+	h := newRealHolder(t, "raw; say READY; echo; wait")
+	file := filepath.Join(t.TempDir(), "ticket")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tickets, ready := leadattach.FileTicketSource(file)
+	// Asks of either function: a client that ignored the check would ask the
+	// source after each dial, and show the holder a connection each time.
+	var polls atomic.Int64
+	pane := sessionpane.New(80, 24, sessionpane.Options{})
+	t.Cleanup(pane.Close)
+	c := leadattach.New(leadattach.Config{
+		Socket: filepath.Join(h.dir, serve.AttachSocket), Mode: leadattach.ModeViewer, Name: "test console",
+		Tickets:     func() (string, error) { polls.Add(1); return tickets() },
+		TicketReady: func() bool { polls.Add(1); return ready() },
+		// A fast clock: the polls are 500 ms by the client's own count, 5 ms here.
+		Clock: &scaledClock{},
+	})
+	t.Cleanup(c.Close)
+	if _, err := c.Start(terminalconsole.LiveStart{
+		Pane: pane, Cols: 80, Rows: 24, Colours: sessionpane.NeutralColours,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	until := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(wait)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s; status %+v", what, c.Status())
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	until("many polls", func() bool { return polls.Load() >= 30 })
+	if st := c.Status(); st.Conn != terminalconsole.LiveWaitingTicket {
+		t.Errorf("state %v, want waiting for a ticket", st.Conn)
+	}
+	counters := h.sess.Counters()
+	for _, name := range []string{"attach_refused_handshake", "attach_refused_ticket", "attach_refused_uid", "attach_refused_busy"} {
+		if counters[name] != 0 {
+			t.Errorf("the holder counted %s = %d while the client waited", name, counters[name])
+		}
+	}
+
+	tk, err := h.ticket(wire.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := file + ".new"
+	if err := os.WriteFile(tmp, []byte(tk+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, file); err != nil {
+		t.Fatal(err)
+	}
+	until("the attach", func() bool {
+		st := c.Status()
+		return st.Conn == terminalconsole.LiveAttached && strings.Contains(paneText(pane), "READY")
+	})
+	if n := h.sess.Counters()["attach_refused_handshake"]; n != 0 {
+		t.Errorf("the holder counted %d refused handshakes", n)
 	}
 }
