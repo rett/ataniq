@@ -293,6 +293,20 @@ func TestLetterCase(t *testing.T) {
 	mustNotMatch(t, s, "MAKEFİLE")  // dotted capital I is not I
 }
 
+// The lists have no rule per spelling: matching ignores case, so "makefile"
+// is covered by "Makefile" and needs no rule of its own.
+func TestNoRuleForASpelling(t *testing.T) {
+	s := Default()
+	for _, r := range s.Rules() {
+		if r.Pattern == "makefile" {
+			t.Errorf("rule %q duplicates %q", r.Pattern, "Makefile")
+		}
+	}
+	for _, p := range []string{"makefile", "MAKEFILE", "a/makeFILE"} {
+		mustMatch(t, s, p, "Makefile")
+	}
+}
+
 func TestWith(t *testing.T) {
 	base := Default()
 	for _, tc := range []struct {
