@@ -43,6 +43,14 @@ import (
 // stopped: the error wraps ErrCoordinatorNotStopped and
 // leadregistry.ErrLaunchCoordinator, and nothing is changed.
 //
+// The registry applies those rules again when the launch intent is journaled,
+// and the lead or the coordinators may have changed since the pre-check (their
+// locks are not held): the registry's refusal is mapped to the same errors,
+// ErrParentNotLive and ErrCoordinatorNotStopped, and the desired state that
+// the call set is put back, so that the refusal leaves the role as it was. The
+// two journal lines of the desired state (set, then restored) remain in the
+// registry's journal; the role's record is as before.
+//
 // Once the proof is in hand it sets the desired state to running, journals the
 // launch intent (new epoch, intent id, unit name, and the boot identity the
 // manager reported, so that a later reboot settles an intent that never got a
@@ -117,7 +125,10 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	}
 	boot := st.BootID
 
-	// From here the registry changes.
+	// From here the registry changes. The desired state is recorded before the
+	// launch intent, as every intent is recorded before its action, and is put
+	// back when the registry refuses the launch (see refuseLaunch).
+	wasDesired := e.Desired
 	if e.Desired != leadregistry.DesiredRunning {
 		if _, err := c.reg.SetDesired(role, leadregistry.DesiredRunning); err != nil {
 			return e, err
@@ -125,7 +136,7 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	}
 	intent, err := c.reg.BeginLaunchWith(role, leadregistry.LaunchOptions{BootIdentity: boot})
 	if err != nil {
-		return e, err
+		return c.refuseLaunch(e, wasDesired, err)
 	}
 	e, err = c.reg.Get(role)
 	if err != nil {
@@ -164,6 +175,40 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	default:
 		return c.nothingStarted(ctx, e, intent, boot, leadregistry.OutcomeFailed, "launch-failed", err)
 	}
+}
+
+// refuseLaunch handles the registry's refusal of the launch after the
+// pre-checks passed: the parent lead stopped being live, or a coordinator of the
+// lead stopped being proven stopped, between the pre-check and the launch (the
+// lock of the role does not cover the other roles). The registry's named
+// errors are mapped to the lifecycle's, as admitUnderParent maps them, and the
+// desired state that this Start set is put back, so that a refused Start leaves
+// the role as it was.
+//
+// Restoring and not setting the desired state only after the launch is
+// admitted keeps the order of every intent: what is wanted is journaled before
+// the action, and a launch intent never exists with a desired state of stopped
+// beside a unit that may run, which a crash between the two lines would leave.
+// It is crash-safe because the restoring line is the only write after the
+// refusal and it adds no state that was not possible already: a crash before
+// it leaves the desired state running with no launch intent, exactly what a
+// crash between the setting and the launch leaves, and nothing in this package
+// starts or signals a unit on the desired state alone.
+func (c *Controller) refuseLaunch(e leadregistry.Entry, was leadregistry.Desired, err error) (leadregistry.Entry, error) {
+	switch {
+	case errors.Is(err, leadregistry.ErrLaunchNoParent), errors.Is(err, leadregistry.ErrLaunchParentManager), errors.Is(err, leadregistry.ErrLaunchParentState):
+		err = fmt.Errorf("%w: %s: %w", ErrParentNotLive, e.Role.Parent(), err)
+	case errors.Is(err, leadregistry.ErrLaunchCoordinator):
+		err = fmt.Errorf("%w: %w", ErrCoordinatorNotStopped, err)
+	}
+	if was != leadregistry.DesiredRunning {
+		cur, derr := c.reg.SetDesired(e.Role, was)
+		if derr != nil {
+			return e, errors.Join(err, fmt.Errorf("restore the desired state %s: %w", was, derr))
+		}
+		return cur, err
+	}
+	return e, err
 }
 
 // settleCtx is the context for the calls that follow a failed Start. The

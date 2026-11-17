@@ -362,3 +362,72 @@ func TestLeadIsNotStartedWhileACoordinatorIsNotProvenStopped(t *testing.T) {
 		t.Fatal("a refused start changed the registry")
 	}
 }
+
+func TestStartRefusedByTheRegistryAfterThePreCheck(t *testing.T) {
+	// The pre-checks of the controller passed; between them and the launch
+	// (the preflight is the moment) another operation changed another role.
+	// The registry's refusal is mapped, and the role stays as it was.
+	unchanged := func(t *testing.T, r *rig, role leadrole.Role, before leadregistry.Entry) {
+		t.Helper()
+		got := r.get(role)
+		if got.Desired != before.Desired || got.Epoch != before.Epoch || got.Shown != before.Shown || (got.Intent == nil) != (before.Intent == nil) {
+			t.Fatalf("a refused start changed the role: %+v, was %+v", got, before)
+		}
+		if r.callsOf(leadunit.MethodStart) != 1 {
+			t.Fatalf("%d Start calls", r.callsOf(leadunit.MethodStart))
+		}
+	}
+	t.Run("the parent stops being live", func(t *testing.T) {
+		r, lead, coord := coordRig(t)
+		before := r.get(coord)
+		if before.Desired != leadregistry.DesiredStopped {
+			t.Fatalf("a coordinator is defined wanted %s", before.Desired)
+		}
+		r.pre.hook = func(rl leadrole.Role) {
+			if rl == coord {
+				r.setShown(lead, leadregistry.StateUnknown)
+			}
+		}
+		_, err := r.start(coord)
+		isErr(t, err, ErrParentNotLive)
+		isErr(t, err, leadregistry.ErrLaunchParentState)
+		isErr(t, err, leadregistry.ErrLaunchRefused)
+		unchanged(t, r, coord, before)
+		// The parent is unknown now, and the pre-check refuses without any
+		// write.
+		r.pre.hook = nil
+		rev := r.revision()
+		_, err = r.start(coord)
+		isErr(t, err, ErrParentNotLive)
+		if r.revision() != rev {
+			t.Fatal("the refusal at the pre-check wrote")
+		}
+		r.auditClean()
+	})
+	t.Run("a coordinator of the lead stops being proven stopped", func(t *testing.T) {
+		r, lead, coord := coordRig(t)
+		r.mustStart(coord)
+		_, err := r.stop(lead)
+		noErr(t, err)
+		before := r.get(lead)
+		before.Desired = leadregistry.DesiredStopped
+		r.pre.hook = func(rl leadrole.Role) {
+			if rl == lead {
+				r.setShown(coord, leadregistry.StateUnknown)
+			}
+		}
+		starts := r.callsOf(leadunit.MethodStart)
+		_, err = r.start(lead)
+		isErr(t, err, ErrCoordinatorNotStopped)
+		isErr(t, err, leadregistry.ErrLaunchCoordinator)
+		isErr(t, err, leadregistry.ErrLaunchRefused)
+		got := r.get(lead)
+		if got.Desired != leadregistry.DesiredStopped || got.Epoch != before.Epoch || got.Shown.State != leadregistry.StateStopped {
+			t.Fatalf("lead %+v", got)
+		}
+		if r.callsOf(leadunit.MethodStart) != starts {
+			t.Fatal("a unit was started")
+		}
+		r.auditClean()
+	})
+}

@@ -167,13 +167,21 @@ type fakePreflight struct {
 	mu    sync.Mutex
 	err   error
 	calls int
+	// hook, when set, runs for every check after it is counted, without the
+	// mutex held: the moment between the controller's pre-checks and the
+	// registry's launch.
+	hook func(role leadrole.Role)
 }
 
 func (p *fakePreflight) Check(ctx context.Context, role leadrole.Role, e leadregistry.Entry) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.calls++
-	return p.err
+	err, hook := p.err, p.hook
+	p.mu.Unlock()
+	if hook != nil {
+		hook(role)
+	}
+	return err
 }
 
 type fakeHolder struct {
