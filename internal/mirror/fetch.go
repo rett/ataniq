@@ -134,8 +134,9 @@ const maxWatchFailures = 3
 var watchMeasureHook func() (safefs.Size, error)
 
 // fetchHook is called by a fetch right before each of the steps 3 to 10, with
-// the number of the step. It is nil outside the tests, which use it to stop
-// a fetch at a given step, for example with a panic.
+// the number of the step, and once more, with 90, right after the listing that
+// step 9 makes. It is nil outside the tests, which use it to stop a fetch at a
+// given step, for example with a panic.
 var fetchHook func(step int)
 
 func hook(step int) {
@@ -360,6 +361,7 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	if err != nil {
 		return err
 	}
+	hook(90)
 	updates, outside := compareSnapshots(snapBefore, snapAfter, prefix)
 	if bad := stagedRefs(outside, newTips); len(bad) > 0 {
 		return m.rollback(move, prefix, snapBefore, snapAfter, upstreamChanged(bad))
@@ -715,8 +717,11 @@ func upstreamChanged(names []string) error {
 
 // rollback puts the lead's namespace back as it was in before, after a check
 // of step 9 failed with cause, and returns cause. If that fails too, the
-// returned error holds both.
+// returned error holds both. The restore does not share the time of the move,
+// which may be spent: ctx gives it its values and not its deadline or its
+// cancellation, and each git run of the restore has the mirror's own limit.
 func (m *Mirror) rollback(ctx context.Context, prefix string, before, after []record, cause error) error {
+	ctx = context.WithoutCancel(ctx)
 	if err := m.restoreNamespace(ctx, prefix, before, after); err != nil {
 		return errors.Join(cause, fmt.Errorf("mirror: the lead's refs could not be put back as they were: %w", err))
 	}

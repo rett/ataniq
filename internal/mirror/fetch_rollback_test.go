@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // rollbackEnv is the fixture mirror, where the lead "coder" has the branches
@@ -143,6 +144,37 @@ func TestFetchSaysWhenTheLeadRefsCannotBePutBack(t *testing.T) {
 	}
 	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
+	}
+	noLeftovers(t, r.m)
+}
+
+func TestFetchRestoreHasItsOwnTimeLimit(t *testing.T) {
+	// The move may use up the time it has: a run of git is limited to 600 ms
+	// here, and the move to three times that. A check of step 9 then fails
+	// after the deadline of the move, and the restore must still run, with
+	// the limit of a git run of its own.
+	r := newRollbackEnv(t)
+	r.m.limits = Limits{Timeout: 600 * time.Millisecond}
+	before := r.leadRefs(t)
+	alt := filepath.Join(r.m.Path(), "objects", "info", "alternates")
+	atStep(t, 90, func() {
+		time.Sleep(4 * r.m.limits.Timeout)
+		if err := os.WriteFile(alt, []byte(t.TempDir()+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, err := r.m.Fetch(context.Background(), r.req())
+	if err == nil || !strings.Contains(err.Error(), "alternates") {
+		t.Fatalf("Fetch = %v, want the alternates error", err)
+	}
+	if strings.Contains(err.Error(), "put back") {
+		t.Errorf("the restore failed: %v", err)
+	}
+	if err := os.Remove(alt); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.leadRefs(t); !reflect.DeepEqual(got, before) {
+		t.Errorf("the lead's refs after the failure:\n%q\nbefore:\n%q", got, before)
 	}
 	noLeftovers(t, r.m)
 }
