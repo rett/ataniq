@@ -28,7 +28,7 @@ const TemplateVersion = 1
 //	  "serve": {
 //	    "upload_pack": ["/abs/sandbox", "{tree}", "/usr/bin/git-upload-pack"],
 //	    "repository": "/work/{project}",
-//	    "measure": ["/abs/sandbox", "/usr/bin/du", "-s", "-B1", "/work/{project}/.git/objects"],
+//	    "measure": ["/abs/sandbox", "{tree}", "/usr/bin/du", "-s", "-B1", "/work/{project}/.git/objects"],
 //	    "measure_env": ["PATH=/usr/bin:/bin"]
 //	  },
 //	  "verify": {
@@ -41,11 +41,27 @@ const TemplateVersion = 1
 //	}
 //
 // In "serve" the placeholders are {role}, {project} and {tree}. In "verify"
-// they are {project}, {mirror}, {scratch} and {home}. They work in every
-// string of their section. Any other brace is refused, so a literal brace
-// cannot be written. The first element of each argv is the launcher, which
-// runs as the owner: it is an absolute, clean path written out in full, with
-// no placeholder and no brace.
+// they are {project}, {mirror}, {scratch} and {home}. Any other brace is
+// refused, so a literal brace cannot be written.
+//
+// {role} and {project} stand for a name. A name has no slash and no dot, so
+// it cannot add a path component. They work in every string of their
+// section, inside a longer string too.
+//
+// {tree}, {mirror}, {scratch} and {home} each stand for a root folder that
+// the caller vouches for (see [ServeRequest] and [VerifyRequest]). Each must
+// be a whole argv element: the element is exactly the placeholder, with
+// nothing before or after it. A template can then never name a path below a
+// root or around it, because the launcher resolves such a path as the owner,
+// over folders that a sandbox may have changed. The launcher takes the root
+// as a separate argument. A path placeholder is refused in "measure_env", in
+// "env" and in the inside-path fields "repository", "mirror", "scratch" and
+// "home". Those fields are paths as the sandbox sees them: they hold only
+// {role}, {project} and fixed text.
+//
+// The first element of each argv is the launcher, which runs as the owner:
+// it is an absolute, clean path written out in full, with no placeholder and
+// no brace.
 //
 // Either section may be absent. The matching method then returns
 // [ErrNotConfigured].
@@ -92,9 +108,16 @@ type verifyFile struct {
 	Home    string   `json:"home"`
 }
 
+// placeholders are the names a section knows. A name stands for a value
+// that cannot add a path component. A path stands for a root folder that the
+// caller vouches for: it may only be a whole argv element.
+type placeholders struct {
+	names, paths []string
+}
+
 var (
-	servePlaceholders  = []string{"role", "project", "tree"}
-	verifyPlaceholders = []string{"project", "mirror", "scratch", "home"}
+	servePlaceholders  = placeholders{names: []string{"role", "project"}, paths: []string{"tree"}}
+	verifyPlaceholders = placeholders{names: []string{"project"}, paths: []string{"mirror", "scratch", "home"}}
 )
 
 // ParseTemplate reads a template file. It refuses a file over
@@ -143,13 +166,13 @@ func compileServe(f *serveFile) (*serveTemplate, error) {
 	if s.uploadPack, err = compileArgv("upload_pack", f.UploadPack, ph); err != nil {
 		return nil, err
 	}
-	if s.repository, err = compileWord("repository", f.Repository, ph); err != nil {
+	if s.repository, err = compileWord("repository", f.Repository, ph, false); err != nil {
 		return nil, err
 	}
 	if s.measure, err = compileArgv("measure", f.Measure, ph); err != nil {
 		return nil, err
 	}
-	if s.measureEnv, err = compileList("measure_env", f.MeasureEnv, ph); err != nil {
+	if s.measureEnv, err = compileList("measure_env", f.MeasureEnv, ph, false); err != nil {
 		return nil, err
 	}
 	// Build one plan from dummy values: this finds a template that can
@@ -170,16 +193,16 @@ func compileVerify(f *verifyFile) (*verifyTemplate, error) {
 	if v.prefix, err = compileArgv("prefix", f.Prefix, ph); err != nil {
 		return nil, err
 	}
-	if v.env, err = compileList("env", f.Env, ph); err != nil {
+	if v.env, err = compileList("env", f.Env, ph, false); err != nil {
 		return nil, err
 	}
-	if v.mirror, err = compileWord("mirror", f.Mirror, ph); err != nil {
+	if v.mirror, err = compileWord("mirror", f.Mirror, ph, false); err != nil {
 		return nil, err
 	}
-	if v.scratch, err = compileWord("scratch", f.Scratch, ph); err != nil {
+	if v.scratch, err = compileWord("scratch", f.Scratch, ph, false); err != nil {
 		return nil, err
 	}
-	if v.home, err = compileWord("home", f.Home, ph); err != nil {
+	if v.home, err = compileWord("home", f.Home, ph, false); err != nil {
 		return nil, err
 	}
 	dummy := map[string]string{"project": "x", "mirror": "/x/m", "scratch": "/x/s", "home": "/x/h"}
@@ -275,18 +298,21 @@ type segment struct {
 	ph  string // placeholder name
 }
 
-func compileWord(field, s string, allowed []string) (word, error) {
-	w, err := parseWord(s, allowed)
+// compileWord and compileList take argv true for the elements of an argv,
+// where a path placeholder may be a whole element. Everywhere else a path
+// placeholder is refused.
+func compileWord(field, s string, ph placeholders, argv bool) (word, error) {
+	w, err := parseWord(s, ph, argv)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", field, err)
 	}
 	return w, nil
 }
 
-func compileList(field string, in []string, allowed []string) ([]word, error) {
+func compileList(field string, in []string, ph placeholders, argv bool) ([]word, error) {
 	out := make([]word, 0, len(in))
 	for i, s := range in {
-		w, err := parseWord(s, allowed)
+		w, err := parseWord(s, ph, argv)
 		if err != nil {
 			return nil, fmt.Errorf("%s[%d]: %w", field, i, err)
 		}
@@ -299,7 +325,7 @@ func compileList(field string, in []string, allowed []string) ([]word, error) {
 // element is an absolute, clean path written out in full: no placeholder and
 // no brace. The first element is the launcher, which runs as the owner, so
 // no request value and no lead path may choose it.
-func compileArgv(field string, in []string, allowed []string) ([]word, error) {
+func compileArgv(field string, in []string, ph placeholders) ([]word, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("%s: empty argv", field)
 	}
@@ -307,10 +333,11 @@ func compileArgv(field string, in []string, allowed []string) ([]word, error) {
 	if !strings.HasPrefix(first, "/") || strings.ContainsAny(first, "{}") || filepath.Clean(first) != first {
 		return nil, fmt.Errorf("%s[0]: not an absolute, clean path written out in full", field)
 	}
-	return compileList(field, in, allowed)
+	return compileList(field, in, ph, true)
 }
 
-func parseWord(s string, allowed []string) (word, error) {
+func parseWord(s string, ph placeholders, argv bool) (word, error) {
+	whole := s
 	if strings.IndexByte(s, 0) >= 0 {
 		return nil, errors.New("NUL byte")
 	}
@@ -332,7 +359,13 @@ func parseWord(s string, allowed []string) (word, error) {
 			return nil, errors.New("unmatched { (a literal brace is not supported)")
 		}
 		name := s[i+1 : i+end]
-		if !contains(allowed, name) {
+		switch {
+		case contains(ph.names, name):
+		case contains(ph.paths, name):
+			if !argv || len(whole) != len(name)+2 || i != 0 {
+				return nil, fmt.Errorf("{%s} must be a whole argv element", name)
+			}
+		default:
 			return nil, fmt.Errorf("unknown placeholder {%s}", name)
 		}
 		w = append(w, segment{ph: name})

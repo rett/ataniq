@@ -189,6 +189,28 @@ func TestParseTemplateRefusals(t *testing.T) {
 		"mirror in verify first":  verify("prefix", `["/{mirror}/sb"]`),
 		"unclean verify first":    verify("prefix", `["/srv//sb"]`),
 		"brace in first":          serve("upload_pack", `["/sb{"]`),
+		"tree below":              serve("upload_pack", `["/sb","{tree}/.git/objects"]`),
+		"tree before":             serve("upload_pack", `["/sb","/x{tree}"]`),
+		"tree after":              serve("upload_pack", `["/sb","{tree}x"]`),
+		"tree twice":              serve("upload_pack", `["/sb","{tree}{tree}"]`),
+		"tree option":             serve("upload_pack", `["/sb","--ro={tree}"]`),
+		"tree in measure":         serve("measure", `["/du","{tree}/x"]`),
+		"tree in measure env":     serve("measure_env", `["KEY={tree}"]`),
+		"whole tree in env":       serve("measure_env", `["{tree}"]`),
+		"tree in repository":      serve("repository", `"{tree}"`),
+		"tree below repository":   serve("repository", `"{tree}/x"`),
+		"mirror below":            verify("prefix", `["/sb","{mirror}/x"]`),
+		"mirror before":           verify("prefix", `["/sb","x{mirror}"]`),
+		"scratch below":           verify("prefix", `["/sb","--bind","{scratch}/out","/o"]`),
+		"scratch before":          verify("prefix", `["/sb","/x{scratch}"]`),
+		"home below":              verify("prefix", `["/sb","{home}/.cache"]`),
+		"home after":              verify("prefix", `["/sb","{home}.d"]`),
+		"home twice":              verify("prefix", `["/sb","{home}{home}"]`),
+		"scratch in verify env":   verify("env", `["KEY={scratch}"]`),
+		"home in verify env":      verify("env", `["HOME={home}"]`),
+		"mirror in mirror field":  verify("mirror", `"{mirror}"`),
+		"scratch in scratch":      verify("scratch", `"{scratch}"`),
+		"home in home field":      verify("home", `"{home}"`),
 		"empty measure argv":      serve("measure", `[]`),
 		"relative measure":        serve("measure", `["du"]`),
 		"nul in upload":           serve("upload_pack", `["/sb","a\u0000b"]`),
@@ -312,5 +334,28 @@ func TestTemplateSubstitutionIsNotRescanned(t *testing.T) {
 	}
 	if !reflect.DeepEqual(p.Prefix, []string{"/sb", "ab-ab"}) || p.Mirror != "/m/ab" {
 		t.Fatalf("got %#v", p)
+	}
+}
+
+func TestTemplatePathPlaceholdersAreWholeElements(t *testing.T) {
+	// Each path placeholder is allowed as a whole argv element, anywhere in
+	// the argv after the first element, and names may sit inside a longer
+	// string.
+	tm := mustParse(t, `{"version":1,
+	  "serve":{"upload_pack":["/sb","{tree}","--r={role}-{project}","{tree}"],"repository":"/work/{role}/{project}","measure":["/du","{tree}"],"measure_env":["R={role}"]},
+	  "verify":{"prefix":["/sb","{mirror}","{scratch}","{home}","{mirror}"],"env":["P={project}"],"mirror":"/m/{project}","scratch":"/s/{project}","home":"/h"}}`)
+	sp, err := tm.Serve(ServeRequest{Role: "r1", Project: "p1", Tree: "/srv/t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/sb", "/srv/t", "--r=r1-p1", "/srv/t"}; !reflect.DeepEqual(sp.UploadPack, want) {
+		t.Errorf("upload pack %q, want %q", sp.UploadPack, want)
+	}
+	vp, err := tm.Verify(VerifyRequest{Project: "p1", Mirror: "/a/m", Scratch: "/a/s", Home: "/a/h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/sb", "/a/m", "/a/s", "/a/h", "/a/m"}; !reflect.DeepEqual(vp.Prefix, want) {
+		t.Errorf("prefix %q, want %q", vp.Prefix, want)
 	}
 }
