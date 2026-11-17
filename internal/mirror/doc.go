@@ -64,22 +64,44 @@
 // The limits of a fetch are in [FetchLimits], a type of its own: a time limit
 // for the whole fetch, a size cap for the lead's object store as measured in
 // the sandbox, for what one fetch adds, for the whole mirror and for the
-// number of files, and a cap on the lead's branches. The [Limits] of a
-// [Mirror] are another thing: the time limit of each git run and the cap of a
-// listing. The size of the mirror after the move is a check and not a quota.
+// number of files, and a cap on the lead's branches that is at most 20 000
+// (the move names each new tip in the arguments of one git run). The [Limits]
+// of a [Mirror] are another thing: the time limit of each git run and the cap
+// of a listing. The size of the mirror after the move is a check and not a quota.
 //
 // # A failed fetch
 //
 // A failure before the move leaves the refs and the objects of the mirror as
-// they were. A move that fails leaves no ref changed: the first transaction
-// deletes and the second creates and updates, and a failure of the second puts
-// back what the first deleted (the error says so if that fails too). If a
-// check after the move fails, or the listing after it, the lead's namespace is
-// put back as it was before the move, in the same two transactions the other
-// way (what the move created is deleted first), and the error is returned; if
-// that fails too, the error says so. A restore has a time limit of its own. The objects that the move brought stay, with
-// no ref that reaches them, and are the business of the owner's garbage
-// collection, which this package does not run.
+// they were. A move that ends with an error leaves no ref changed: the first
+// transaction deletes and the second creates and updates, and a failure of the
+// second puts back what the first deleted (the error says so if that fails
+// too). If a check after the move fails, or the listing after it, the lead's
+// namespace is put back as it was before the move, in the same two
+// transactions the other way (what the move created is deleted first), and the
+// error is returned; if that fails too, the error says so. A restore has a
+// time limit of its own. The objects that the move brought stay, with no ref
+// that reaches them, and are the business of the owner's garbage collection,
+// which this package does not run.
+//
+// That holds for a failure that this package sees. A crash of the owner
+// process (a kill, a power loss, a panic) is another matter, because the
+// namespace is changed in two git runs, and nothing makes the two one step. A
+// crash between the two transactions of a move leaves the namespace half
+// changed: the refs that the move was to delete are gone, and the ones it was
+// to create or update still have their old values or are missing. A crash in
+// the middle of a restore leaves the refs that the failed fetch created gone,
+// the refs that it updated at their new values, and the refs that it deleted
+// still gone. The next fetch takes the namespace as it finds it and brings it
+// to the lead's refs as they are then. It does not repair or notice the
+// half-done state, and its [FetchReport.Updates] is relative to what it
+// found, so a report can miss changes: a delete that the crashed fetch made,
+// or an update that its restore did not undo, appears in no report. A reader
+// that does not hold the fetch's lock can see a part of the namespace while a
+// fetch runs, and the whole of it only when no fetch is running. A git that
+// is killed in the middle of a transaction (by the time limit of a run, for
+// example) can leave a stale "<ref>.lock" file in the mirror. Every later
+// move that writes that ref then fails until the owner removes the file by
+// hand; this package does not remove it.
 //
 // After the move, a ref outside the lead's namespace may differ from the
 // snapshot taken before, because another owner process, such as an intake or a

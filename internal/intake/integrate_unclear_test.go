@@ -80,16 +80,25 @@ func (g *rig) requireMovedAndRecorded(rec IntakeRecord) {
 
 // TestIntegrateUpdateEndsUnclearAfterTheMove: git runs the real update and
 // then the call does not end cleanly. The target is at the tip, so the move
-// happened and must be recorded; the error is nil.
+// happened and must be recorded. The record comes back with an error that
+// matches ErrRecovered and keeps the error of the update.
 func TestIntegrateUpdateEndsUnclearAfterTheMove(t *testing.T) {
 	cases := map[string]struct {
 		after   string
 		timeout time.Duration
 		cancel  bool
+		check   func(err error) bool
 	}{
-		"status 1 after the update": {after: "exit 1"},
-		"killed by the time limit":  {after: "sleep 20", timeout: 1500 * time.Millisecond},
-		"cancelled context":         {after: ": > \"$flag\"; sleep 20", cancel: true},
+		"status 1 after the update": {after: "exit 1", check: func(err error) bool {
+			var ge *gitExit
+			return errors.As(err, &ge) && ge.sub == "update-ref" && ge.exit == 1
+		}},
+		"killed by the time limit": {after: "sleep 20", timeout: 1500 * time.Millisecond, check: func(err error) bool {
+			return errors.Is(err, ErrLimit)
+		}},
+		"cancelled context": {after: ": > \"$flag\"; sleep 20", cancel: true, check: func(err error) bool {
+			return errors.Is(err, context.Canceled)
+		}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -121,8 +130,14 @@ func TestIntegrateUpdateEndsUnclearAfterTheMove(t *testing.T) {
 			}
 			start := time.Now()
 			rec, err := Integrate(ctx, src, req)
-			if err != nil {
-				t.Fatalf("Integrate: %v", err)
+			if !errors.Is(err, ErrRecovered) {
+				t.Fatalf("Integrate: %v, want ErrRecovered", err)
+			}
+			if errors.Is(err, ErrMoved) || errors.Is(err, ErrRecordMissing) || errors.Is(err, ErrOutcomeUnknown) {
+				t.Errorf("a recovered move has the wrong kind: %v", err)
+			}
+			if tc.check != nil && !tc.check(err) {
+				t.Errorf("the error of the update is not kept: %v", err)
 			}
 			if time.Since(start) > 15*time.Second {
 				t.Errorf("the call took %v", time.Since(start))
@@ -196,7 +211,10 @@ func TestIntegrateUpdateEndsUnclearAndTheTargetCannotBeRead(t *testing.T) {
 	if err == nil {
 		t.Fatal("no error")
 	}
-	if errors.Is(err, ErrMoved) || strings.Contains(err.Error(), "nothing was changed") {
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Errorf("the error is not ErrOutcomeUnknown: %v", err)
+	}
+	if errors.Is(err, ErrMoved) || errors.Is(err, ErrRecovered) || strings.Contains(err.Error(), "nothing was changed") {
 		t.Errorf("the error says that nothing changed: %v", err)
 	}
 	for _, want := range []string{"outcome is unknown", "may have moved", "update-ref"} {
@@ -208,10 +226,11 @@ func TestIntegrateUpdateEndsUnclearAndTheTargetCannotBeRead(t *testing.T) {
 
 // TestIntegrateTargetAtTheTipAfterTheChecks: the target is put at the tip by
 // someone else after the fresh inspection and before the update. The update
-// fails its compare, and the target is at the tip: that cannot be told from a
-// committed update of this call, so the call records the move and returns no
-// error. A target that was at the tip before the call is refused earlier, as
-// an empty review (TestIntegrateRefusesWhatIsNotFastForward).
+// is refused at its prepare step: git exits with a status and prints no
+// "prepare: ok". This call moved nothing, so it writes no record and the
+// error is ErrMoved, although the target is at the tip. A target that was at
+// the tip before the call is refused earlier, as an empty review
+// (TestIntegrateRefusesWhatIsNotFastForward).
 func TestIntegrateTargetAtTheTipAfterTheChecks(t *testing.T) {
 	s := flaggedScene(t)
 	g := newRig(t, s)
@@ -219,8 +238,104 @@ func TestIntegrateTargetAtTheTipAfterTheChecks(t *testing.T) {
 	req := g.req(s.inspect())
 	req.afterChecks = func() { g.publish(upstreamRef, s.tip) }
 	rec, err := Integrate(context.Background(), s.source(), req)
-	if err != nil {
-		t.Fatalf("Integrate: %v", err)
+	if !errors.Is(err, ErrMoved) || errors.Is(err, ErrRecovered) {
+		t.Fatalf("Integrate = %v, want ErrMoved", err)
 	}
-	g.requireMovedAndRecorded(rec)
+	if rec.Tip != "" {
+		t.Errorf("a record came back: %+v", rec)
+	}
+	for _, want := range []string{s.tip, "moved nothing", "no record"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %q: %v", want, err)
+		}
+	}
+	if g.id(upstreamRef) != s.tip {
+		t.Error("the target is not at the tip")
+	}
+	if n := len(g.intakes()); n != 0 {
+		t.Errorf("%d intake records, want none", n)
+	}
+}
+
+// TestIntegrateTwoIntegrationsOfOneSignOff: a whole second Integrate of the
+// same sign-off runs in the hook of the first, between its checks and its
+// update, as a double submit would. The inner one moves the branch and
+// records it. The outer update is refused, so the outer call returns ErrMoved
+// and writes nothing: one move, one record.
+func TestIntegrateTwoIntegrationsOfOneSignOff(t *testing.T) {
+	s := flaggedScene(t)
+	g := newRig(t, s)
+	g.record(nil)
+	outer := g.req(s.inspect())
+	var innerRec IntakeRecord
+	var innerErr error
+	outer.afterChecks = func() {
+		inner := g.req(s.inspect())
+		innerRec, innerErr = Integrate(context.Background(), s.source(), inner)
+	}
+	rec, err := Integrate(context.Background(), s.source(), outer)
+	if innerErr != nil {
+		t.Fatalf("the inner call: %v", innerErr)
+	}
+	if !errors.Is(err, ErrMoved) {
+		t.Fatalf("the outer call = %v, want ErrMoved", err)
+	}
+	if rec.Tip != "" {
+		t.Errorf("the outer call returned a record: %+v", rec)
+	}
+	g.requireMovedAndRecorded(innerRec)
+}
+
+// wrapPrintsPrepared is a git whose update-ref prints what a transaction that
+// was prepared prints, "start: ok" and "prepare: ok", and then fails with
+// status 1 without running the real one.
+func wrapPrintsPrepared(t *testing.T, real gitenv.Git) gitenv.Git {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do if [ \"$a\" = update-ref ]; then echo 'start: ok'; echo 'prepare: ok'; exit 1; fi; done\n" +
+		"exec '" + real.Path + "' \"$@\"\n"
+	path := filepath.Join(dir, "git")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	g, err := gitenv.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// TestIntegrateStatusAfterPrepareIsUnclear: git prints "prepare: ok" and then
+// exits with a status, so the commit may have happened. The target is read
+// again. At the base: the original error, no record. At the tip, put there
+// meanwhile: the record and ErrRecovered.
+func TestIntegrateStatusAfterPrepareIsUnclear(t *testing.T) {
+	t.Run("target at the base", func(t *testing.T) {
+		s := flaggedScene(t)
+		g := newRig(t, s)
+		g.record(nil)
+		src := Source{Git: wrapPrintsPrepared(t, s.git), GitDir: s.bare}
+		_, err := Integrate(context.Background(), src, g.req(s.inspect()))
+		var ge *gitExit
+		if !errors.As(err, &ge) || errors.Is(err, ErrMoved) || errors.Is(err, ErrRecovered) {
+			t.Errorf("error = %v", err)
+		}
+		if g.id(upstreamRef) != s.base || len(g.intakes()) != 0 {
+			t.Error("something changed")
+		}
+	})
+	t.Run("target at the tip", func(t *testing.T) {
+		s := flaggedScene(t)
+		g := newRig(t, s)
+		g.record(nil)
+		src := Source{Git: wrapPrintsPrepared(t, s.git), GitDir: s.bare}
+		req := g.req(s.inspect())
+		req.afterChecks = func() { g.publish(upstreamRef, s.tip) }
+		rec, err := Integrate(context.Background(), src, req)
+		if !errors.Is(err, ErrRecovered) {
+			t.Fatalf("error = %v, want ErrRecovered", err)
+		}
+		g.requireMovedAndRecorded(rec)
+	})
 }

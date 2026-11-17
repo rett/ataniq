@@ -58,8 +58,19 @@ func newRunner(src Source, lim Limits) *runner {
 
 // git runs one git subcommand with args (the subcommand first). The output
 // is returned unless sink is set, which then receives it as it arrives.
-// maxOut caps the bytes of standard output.
+// maxOut caps the bytes of standard output. On an error it returns no output.
 func (r *runner) git(ctx context.Context, args []string, stdin io.Reader, maxOut int64, sink io.Writer) ([]byte, error) {
+	out, err := r.gitOut(ctx, args, stdin, maxOut, sink)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// gitOut is [runner.git] that also returns the standard output that was read
+// before an error, which the caller may look at but must not show: git wrote
+// it, and it may name lead data.
+func (r *runner) gitOut(ctx context.Context, args []string, stdin io.Reader, maxOut int64, sink io.Writer) ([]byte, error) {
 	c := gitenv.Cmd{GitDir: r.src.GitDir, Args: args}
 	argv, err := r.src.Git.Argv(c)
 	if err != nil {
@@ -85,15 +96,15 @@ func (r *runner) git(ctx context.Context, args []string, stdin io.Reader, maxOut
 		var ee *boundedexec.ExitError
 		switch {
 		case errors.As(err, &ee):
-			return nil, &gitExit{sub: args[0], exit: ee.Exit}
+			return res.Stdout, &gitExit{sub: args[0], exit: ee.Exit}
 		case errors.Is(err, ErrLimit):
-			return nil, err
+			return res.Stdout, err
 		case errors.Is(err, boundedexec.ErrOutputLimit):
-			return nil, fmt.Errorf("%w: the output of git %s is too large", ErrLimit, args[0])
+			return res.Stdout, fmt.Errorf("%w: the output of git %s is too large", ErrLimit, args[0])
 		case errors.Is(err, boundedexec.ErrTimeout):
-			return nil, errTimeout(err)
+			return res.Stdout, errTimeout(err)
 		}
-		return nil, fmt.Errorf("intake: git %s: %w", args[0], err)
+		return res.Stdout, fmt.Errorf("intake: git %s: %w", args[0], err)
 	}
 	return res.Stdout, nil
 }

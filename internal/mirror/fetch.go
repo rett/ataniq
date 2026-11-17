@@ -156,7 +156,9 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 // mirror, under refs/leads/<role>/heads/. It never touches refs/heads,
 // refs/tags or the namespace of another lead, and it fetches no tag. A
 // failure at any step leaves the refs and the objects of the mirror as they
-// were, with the exceptions that the last step names.
+// were, with the exceptions that the last step names. A crash of the owner
+// process is not a failure in that sense: the package comment says what it
+// leaves and what the next fetch does.
 //
 // The steps are, in this order:
 //  1. The request is checked and an exclusive, non-blocking lock beside the
@@ -194,7 +196,8 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //     backend refuses a delete of a/b and a create of a in one transaction,
 //     which is what a lead's rename of a branch across a "/" is. A failure of
 //     the second transaction puts back what the first deleted. A move that
-//     fails leaves no ref changed.
+//     fails leaves no ref changed; a crash between the two transactions does
+//     not (see the package comment).
 //  9. The refs of the mirror are listed again. A ref outside the lead's
 //     namespace that holds an object that this fetch staged is a bug or an
 //     attack ([ErrUpstreamChanged]), and so is an alternates file in the
@@ -780,7 +783,8 @@ var namespaceHook func(phase int)
 // that. If the second transaction fails, the refs that the first deleted are
 // created again, and the error from the second is returned; if that fails too,
 // the returned error holds both. In between, the namespace holds a subset of
-// its refs, under the lock of the fetch. A failure of the first transaction
+// its refs, under the lock of the fetch, which a reader of the namespace does
+// not hold, and a crash here leaves it so. A failure of the first transaction
 // leaves nothing changed. A symbolic ref under prefix, in either snapshot, is
 // refused before anything changes: the fetch makes none.
 //
@@ -855,7 +859,8 @@ func (m *Mirror) updateRefs(ctx context.Context, tx string) error {
 //
 // The other way, a refspec into a temporary namespace that this code deletes
 // again, was not chosen: it writes refs that a crash would leave behind, and
-// it needs a second change of refs. A want of an object id needs no ref and
+// it needs a second change of refs. The way chosen has a window of its own,
+// between its two transactions, which the package comment describes. A want of an object id needs no ref and
 // works here because gitenv selects protocol version 2, where upload-pack
 // serves any object that it has; the staging repository has every tip.
 func (m *Mirror) fetchObjects(ctx context.Context, st *staging, tips map[string]bool) error {

@@ -13,6 +13,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// stopSignals is the list that [StopSignals] returns on Linux.
+func stopSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+}
+
 func run(ctx context.Context, c Cmd) (Result, error) {
 	st := newStopper()
 	out := &stdoutWriter{max: c.MaxStdout, sink: c.Stdout, st: st}

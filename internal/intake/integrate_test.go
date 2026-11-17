@@ -584,7 +584,7 @@ func TestIntegrateRefusesWhatIsNotFastForward(t *testing.T) {
 	}
 	// A lead branch at the target: nothing to integrate.
 	g.publish(leadRef, s.tip)
-	if err := g.refuse("at the target", req); err == nil || !strings.Contains(err.Error(), "nothing to integrate") {
+	if err := g.refuse("at the target", req); !errors.Is(err, ErrNothingToIntegrate) || !strings.Contains(err.Error(), "nothing to integrate") {
 		t.Errorf("an empty integration: %v", err)
 	}
 }
