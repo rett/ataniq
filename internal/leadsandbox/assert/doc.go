@@ -131,11 +131,29 @@
 //     the mount table for the same paths, which a bind mount keeps as its
 //     root, and fails a mount whose root, source or mount point is a listed
 //     owner or holder path, lies below it, or is one of its ancestors
-//     (compared by component). A mount root is relative to its file system:
-//     a separate file system (a /home of its own) mounted above an owner
-//     path has the root "/" and is not found by either. The other runtime's
-//     config folder is ok only when it is absent, or an empty folder that is
-//     not a mount point and has nothing mounted below it.
+//     (compared by component). That comparison is by text, and a mount root
+//     is relative to its file system: a bind taken from any file system that
+//     is not mounted at / (a separate /home, a btrfs subvolume such as @home)
+//     has a root that does not start with the host path, and is found by
+//     neither check. So assertion 1 also compares by identity: the spec
+//     ([Spec.ForbiddenIdentities]) lists the device and inode pairs, as the
+//     holder saw them outside, of each owner and holder path that exists and
+//     of each of their ancestors up to but not including / (the holder makes
+//     the list with [CollectIdentities] and [IdentityPaths], and it goes to
+//     the spec in [HostFacts].Identities), and the probe fails the assertion
+//     when the identity of any mount point of the table (the first 2048), or
+//     of the lead's home, config folder or tree or one of their parents,
+//     equals one of them: a bind of an owner folder shows the identity of the
+//     folder it was taken from, whatever its path or root. With no identity
+//     listed the assertion is not-checked, never ok. The comparison relies on
+//     the device and inode numbers of a file being the same outside and
+//     inside the sandbox. They are not namespaced, but the device numbers of
+//     some file systems are per subvolume (btrfs) and are stable across mount
+//     namespaces on one boot only: whether they match between the holder's
+//     reading and the probe's on a given host, a subvolume layout in
+//     particular, is a qualification item that nothing here shows. The other
+//     runtime's config folder is ok only when it is absent, or an empty
+//     folder that is not a mount point and has nothing mounted below it.
 //   - Assertion 7 shows that each of the three paths, and the
 //     managed-settings file of assertion 8, is on a read-only mount (found by
 //     the mount ID that statx gives, not by the longest mount point above the

@@ -2,6 +2,7 @@ package assert
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"strings"
 	"syscall"
@@ -33,6 +34,12 @@ type fakeSys struct {
 	// top. noMountID makes every answer ErrNoMountID.
 	mountIDs  map[string]int
 	noMountID bool
+	// identities sets the answer of Identity for a path; any other path has
+	// the identity of device 4242 and an inode made of its text, so no two
+	// paths share one and none is in the spec's forbidden list.
+	identities   map[string]FileIdentity
+	identityErr  map[string]error
+	identityRead []string
 
 	dialed []string
 }
@@ -123,6 +130,19 @@ func (f *fakeSys) MountID(path string) (int, error) {
 	return best.ID, nil
 }
 
+func (f *fakeSys) Identity(path string) (FileIdentity, error) {
+	f.identityRead = append(f.identityRead, path)
+	if err := f.identityErr[path]; err != nil {
+		return FileIdentity{}, err
+	}
+	if id, ok := f.identities[path]; ok {
+		return id, nil
+	}
+	h := fnv.New64a()
+	h.Write([]byte(path))
+	return FileIdentity{Device: 4242, Inode: h.Sum64() | 1<<40}, nil
+}
+
 func (f *fakeSys) Writable(path string) (bool, error) {
 	if err := f.accessErr[path]; err != nil {
 		return false, err
@@ -159,6 +179,9 @@ func goodSystem(s Spec) *fakeSys {
 		accessErr: map[string]error{},
 		dirErr:    map[string]error{},
 		mountIDs:  map[string]int{},
+
+		identities:  map[string]FileIdentity{},
+		identityErr: map[string]error{},
 	}
 	for _, e := range s.Env {
 		f.env = append(f.env, e.Name+"="+e.Value)

@@ -196,8 +196,82 @@ func (c *checker) holderHidden() Result {
 			t.fail("mount %q has %s %q, which is at, above or below the path %q", m.Point, what, clipPath(m.value(what)), p)
 		}
 	}
-	return t.result(1, fmt.Sprintf("none of %d holder paths exists; none of %d mounts mentions any of %d substrings",
-		len(c.spec.HolderPaths), len(mounts), len(c.spec.MountSubstrings)))
+	checked := c.identities(&t, mounts)
+	return t.result(1, fmt.Sprintf("none of %d holder paths exists; none of %d mounts mentions any of %d substrings; %d identities of mount points and of the lead's folders are none of the %d forbidden",
+		len(c.spec.HolderPaths), len(mounts), len(c.spec.MountSubstrings), checked, len(c.spec.ForbiddenIdentities)))
+}
+
+// identities is the check of assertion 1 by identity: the identity of each
+// mount point of the table (at most maxIdentityMounts of them) and of the
+// lead's home, config folder and tree and of their parents is none of the
+// forbidden ones. A mount root is relative to its file system, so the text of
+// the table cannot see a bind of an owner folder that lies on a subvolume or a
+// file system of its own; the kernel's name for the folder can. With no
+// forbidden identity the check cannot be made, and that is not-checked, never
+// ok. It returns how many identities it compared.
+func (c *checker) identities(t *tally, mounts []Mount) int {
+	forbidden := make(map[FileIdentity]bool, len(c.spec.ForbiddenIdentities))
+	for _, id := range c.spec.ForbiddenIdentities {
+		forbidden[id] = true
+	}
+	if len(forbidden) == 0 {
+		t.skip("the spec lists no forbidden file identity: the mounts cannot be compared by identity")
+		return 0
+	}
+	checked := 0
+	type answer struct {
+		id  FileIdentity
+		err error
+	}
+	asked := map[string]answer{}
+	compare := func(what, p string, mustExist bool) {
+		a, ok := asked[p]
+		if !ok {
+			a.id, a.err = c.sys.Identity(p)
+			asked[p] = a
+			if a.err == nil {
+				checked++
+			}
+		}
+		switch {
+		case a.err != nil && absent(a.err) && !mustExist:
+			return // a mount point that cannot be reached cannot be used
+		case a.err != nil:
+			t.skip("%s %q: identity: %v", what, p, a.err)
+			return
+		}
+		if forbidden[a.id] {
+			t.fail("%s %q has the identity %s of an owner or holder path or of one of their ancestors", what, p, a.id)
+		}
+	}
+	seen, folders := map[string]bool{}, map[string]bool{}
+	for i, m := range mounts {
+		if i >= maxIdentityMounts {
+			t.skip("the mount table has %d mounts: the identity of the last %d was not read", len(mounts), len(mounts)-i)
+			break
+		}
+		if !seen[m.Point] {
+			seen[m.Point] = true
+			compare("mount point", m.Point, false)
+		}
+	}
+	for _, folder := range []struct{ what, path string }{
+		{"the lead's home", profile.HomeInside},
+		{"the lead's config folder", profile.ConfigInside(c.spec.Runtime)},
+		{"the lead's tree", c.spec.Tree},
+	} {
+		for _, p := range ancestors(folder.path) {
+			what := folder.what
+			if p != folder.path {
+				what = "a parent of " + folder.what
+			}
+			if !folders[p] {
+				folders[p] = true
+				compare(what, p, true)
+			}
+		}
+	}
+	return checked
 }
 
 // mentions returns the first substring that the root, the mount point or the
@@ -218,8 +292,10 @@ func mentions(m Mount, subs []string) (string, bool) {
 // no listed text appears in the table. It names which of the three fields
 // matched. The root "/" of a file system, the source of a mount that is not a
 // path ("tmpfs") and the mount point "/" are related to nothing. A mount root
-// is relative to its file system: a separate file system mounted at an
-// ancestor of an owner path, with its own root "/", is not found here.
+// is relative to its file system, so a bind taken from a file system that is
+// not mounted at "/" (a separate /home, a btrfs subvolume) has a root that is
+// not related to the host path: it is not found here, and the comparison by
+// identity (identities) is the one that finds it.
 func relatedMount(m Mount, lists ...[]string) (what, listed string, ok bool) {
 	for _, field := range []string{"root", "source", "mount point"} {
 		v := m.value(field)

@@ -18,6 +18,11 @@ type HostFacts struct {
 	// paths and the holder paths are added to them, so a bind that leaks one
 	// shows in the table of the sandbox, where a bind source is its root.
 	MountSubstrings []string
+	// Identities are the identities of the owner and holder paths that exist
+	// and of their ancestors, as the holder saw them outside: the output of
+	// CollectIdentities on the spec's owner and holder paths. Without them
+	// assertion 1 is not-checked and no start is accepted.
+	Identities []FileIdentity
 	// LoopbackTCP, LoopbackTCP2 and AbstractSocket are the canary's addresses
 	// (Canary.TCP, Canary.TCP2, which is empty when the host has no IPv6
 	// loopback, and Canary.Abstract).
@@ -40,7 +45,9 @@ type HostFacts struct {
 // inside is expected to have and the host's facts: the digest, the runtime,
 // the other runtime's config folder inside, the tree and its three read-only
 // git paths, the managed-settings path and whether a seccomp filter is
-// expected come from the inputs. The result is validated.
+// expected come from the inputs. The result is validated. The owner and holder
+// paths whose identities the caller collected are the spec's OwnerPaths and
+// HolderPaths: collect them from the same lists (see CollectIdentities).
 //
 // The expected environment is the caller's, not derived from the inputs
 // alone: bubblewrap keeps and sets PWD, from --chdir, even with --clearenv, so
@@ -56,24 +63,26 @@ func NewSpec(in profile.Inputs, env []profile.EnvVar, h HostFacts) (Spec, error)
 		return Spec{}, err
 	}
 	s := Spec{
-		Version:          SpecVersion,
-		Digest:           digest,
-		Runtime:          in.Runtime,
-		HolderPaths:      append([]string(nil), h.HolderPaths...),
-		OwnerPaths:       dedupe(in.NeverMounted, h.OwnerPaths),
-		MountSubstrings:  dedupe(h.MountSubstrings, in.NeverMounted, h.HolderPaths),
-		OtherConfigDir:   profile.ConfigInside(in.Runtime.Other()),
-		LoopbackTCP:      h.LoopbackTCP,
-		LoopbackTCP2:     h.LoopbackTCP2,
-		AbstractSocket:   h.AbstractSocket,
-		ProviderHost:     h.ProviderHost,
-		SeccompExpected:  in.SeccompEnabled(),
-		Tree:             profile.TreeInside(in.Project),
-		ManagedSettings:  in.ManagedInside(),
-		ManagedMarker:    h.ManagedMarker,
-		Optional:         append([]int(nil), h.Optional...),
-		ConnectTimeoutMS: h.ConnectTimeoutMS,
-		ResolveTimeoutMS: h.ResolveTimeoutMS,
+		Version:         SpecVersion,
+		Digest:          digest,
+		Runtime:         in.Runtime,
+		HolderPaths:     append([]string(nil), h.HolderPaths...),
+		OwnerPaths:      dedupe(in.NeverMounted, h.OwnerPaths),
+		MountSubstrings: dedupe(h.MountSubstrings, in.NeverMounted, h.HolderPaths),
+
+		ForbiddenIdentities: dedupeIdentities(h.Identities),
+		OtherConfigDir:      profile.ConfigInside(in.Runtime.Other()),
+		LoopbackTCP:         h.LoopbackTCP,
+		LoopbackTCP2:        h.LoopbackTCP2,
+		AbstractSocket:      h.AbstractSocket,
+		ProviderHost:        h.ProviderHost,
+		SeccompExpected:     in.SeccompEnabled(),
+		Tree:                profile.TreeInside(in.Project),
+		ManagedSettings:     in.ManagedInside(),
+		ManagedMarker:       h.ManagedMarker,
+		Optional:            append([]int(nil), h.Optional...),
+		ConnectTimeoutMS:    h.ConnectTimeoutMS,
+		ResolveTimeoutMS:    h.ResolveTimeoutMS,
 	}
 	for _, e := range env {
 		s.Env = append(s.Env, EnvEntry{Name: e.Name, Value: e.Value})
@@ -100,4 +109,25 @@ func dedupe(lists ...[]string) []string {
 		}
 	}
 	return out
+}
+
+// dedupeIdentities returns the list without repeats, in order.
+func dedupeIdentities(list []FileIdentity) []FileIdentity {
+	var out []FileIdentity
+	seen := map[FileIdentity]bool{}
+	for _, id := range list {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// IdentityPaths are the paths whose identities and whose ancestors' the holder
+// collects with CollectIdentities for the spec NewSpec makes from the same
+// inputs and facts: the owner's paths (the inputs' never-mounted paths and the
+// facts') and the holder's.
+func IdentityPaths(in profile.Inputs, h HostFacts) []string {
+	return dedupe(in.NeverMounted, h.OwnerPaths, h.HolderPaths)
 }
