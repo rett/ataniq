@@ -15,11 +15,57 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and its control keys only explain why live controls are unavailable. Live
   control, provider integration, use over SSH and terminal restoration after a
   startup error remain unqualified.
+- Turn `ataniq-console --demo` into a fixture cockpit. A window of 100x30 or
+  more shows three panes (projects and leads with a context block; a session
+  block, an embedded session terminal and a focus bar; evidence and approvals
+  with the attachment contract, the pending gate and the lead's binding), a
+  timeline and a key bar, on the alternate screen. Below that size it keeps the
+  single-column pages. The terminal pane replays a synthetic recording through
+  the embedded emulator and is labelled "fixture recording, not a live
+  session" in every state; nothing typed reaches a process. Tab cycles the
+  panes and Enter on the session focuses it. In session focus every key goes
+  to the session, `q` and Ctrl+C included, except the return key (Ctrl+\ by
+  default, read from the byte 0x1c and from `CSI 92;5u`; set with
+  `--return-key ctrl+KEY`; without the kitty keyboard protocol Ctrl+4 sends the
+  same byte and returns too) and F12, which zooms the pane to the window in
+  either focus. Ctrl+Enter is never bound. A recording that ends shows its last
+  screen, dimmed, under a banner with the exit status or "unknown", saying that
+  the terminal stream ended, not necessarily the agent; any key returns to the
+  console, and `r` replays it. Ctrl+K lists the controls (approve, deny, full
+  attach, send, interrupt, detach), all unavailable, each with its reason. The
+  console asks the outer terminal for mode 2027 at start, also over SSH, and
+  asks for mouse reporting and focus events only in session focus and only
+  when the session asked. `--recording NAME` picks a fixture recording and
+  `--linger DURATION` (default 30s) keeps the session open after its end
+  so the keys can be tried. Still unqualified: use over SSH, a live session and
+  any live control.
+- Add the fixture recording `mouse-held.jsonl` (`ataniq-console --demo
+  --recording mouse-held.jsonl`). It sets mouse reporting and focus events and
+  never resets them, so the linger time keeps them on while a person enters
+  session focus and tries the mouse by hand; `modes.jsonl` resets them within
+  a second.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module
   dependencies, and preserve their dependency notices.
 
 ### Changed
 
+- The fixture console's `s` and `i` keys no longer exist: the unavailable
+  controls are listed under Ctrl+K, and `a` still says why full attach is
+  unavailable. In the single-column pages Ctrl+K lists them too.
+- The terminal console's toolkit now uses patched, in-tree copies of
+  `charmbracelet/x/vt` v0.1.0 and `charmbracelet/x/ansi` v0.11.9 under
+  `third_party/patched`, selected by `replace` lines in `go.mod`. The patches
+  keep a grapheme cluster whole when it arrives in two writes, keep a UTF-8
+  character such as U+2733 from ending a window title early, and keep no
+  scrollback for the alternate screen, whose default of 10000 lines let a
+  full-screen program grow memory by hundreds of megabytes; `x/vt`,
+  the terminal emulator the console's session pane is built on, is a new
+  dependency. Each copy has a `NOTICE.md`; it is dropped once an upstream
+  release contains the fixes. `go mod verify` does not cover directory
+  replacements, so the doctor says so and git protects the copies, and
+  `make test` now also runs their own tests (`make test-patched` runs only
+  those; it covers x/vt and x/ansi with its parser, kitty and iterm2
+  subpackages, not the sixel subpackage, which needs an uncached module).
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a
@@ -68,6 +114,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fixed there. It also checks that `grep` is installed, which the Go helper
   uses. When it is not, doctor prints `missing: grep` and skips the Go checks,
   and bootstrap, test and build stop with `missing: grep`.
+
+### Fixed
+
+- The fixture console's return key and F12 now work with CapsLock, NumLock or
+  ScrollLock on. A terminal that reports lock states with a key (the kitty
+  keyboard protocol does for chords and function keys) made Ctrl+\ and F12
+  match nothing, so a person in session focus could not leave it. Ctrl with
+  another modifier is still not the return key, and F12 with another modifier
+  still does not zoom.
+- The fixture console no longer redraws the whole window 30 times a second
+  for the whole recording and the linger time. It asks for a tick only while
+  output is queued or the session pane holds a frame, and at the time of the
+  next recorded event or of the end of the linger time, so a cockpit with
+  nothing to show is idle. In a very large window that used to keep the
+  process busy and make keys wait behind redraws.
+- `ataniq-console --help` now shows the default return key as
+  `(default ctrl+\)`. It showed `(default "ctrl+\\")`, which the flag refuses
+  when copied.
+- The fixture console's key bar in console focus no longer loses `? help` and
+  `q quit` at the narrowest cockpit. It was 114 cells long and was cut with an
+  ellipsis in a window of 100 to 113 columns. It is now shorter and drops the
+  F12 zoom entry, which the focus bar and the help still show.
 
 ## [0.0.8] - 2026-11-15
 

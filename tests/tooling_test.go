@@ -196,7 +196,7 @@ func TestToolchainResolution(t *testing.T) {
 func TestDoctorModuleChecks(t *testing.T) {
 	dir, pin := fixture(t)
 	for _, tc := range []struct{ failing, want string }{
-		{"none", "ok: module dependencies available and unmodified offline"},
+		{"none", "ok: module dependencies available and unmodified offline (go mod verify does not cover the directory replacements in third_party/patched; git protects those copies)\n"},
 		{"list", "fail: packages or module dependencies do not load offline (diagnostic above); for a missing module run make bootstrap, for a checksum mismatch restore go.sum, or run chmod -R u+w on the named module directory in the module cache, remove it and run make bootstrap; otherwise fix the failing package"},
 		{"mod", "fail: cached module dependencies modified"},
 	} {
