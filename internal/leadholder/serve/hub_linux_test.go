@@ -106,3 +106,87 @@ func TestSnapshotHoldIsNotRestartedByANonQuiescentPoint(t *testing.T) {
 		t.Errorf("snapshots taken %d", n)
 	}
 }
+
+// checkDigests returns the digests of the Check frames queued for c and
+// empties the queue.
+func (r *hubRig) checkDigests(c *client) []string {
+	r.t.Helper()
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	var out []string
+	for _, it := range c.q {
+		if it.typ != wire.TypeCheck {
+			continue
+		}
+		ck, err := wire.DecodeCheck(it.data)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		out = append(out, ck.Digest)
+	}
+	c.q, c.qBytes = nil, 0
+	return out
+}
+
+// An idle screen is digested once for every client and every interval: the
+// digest is kept by position, and a resize, which changes the screen without
+// moving the position, clears it. The pane is changed behind the hub's back
+// here, which a position that stands still never does, to show that the kept
+// digest is the one that is sent.
+func TestDigestIsKeptByPositionAndClearedByAResize(t *testing.T) {
+	r := newHubRig(t, func(c *Config) { c.CheckInterval = time.Second })
+	r.p.Write([]byte("hello"))
+	digest := func() string { return wire.DigestHex(r.p.Digest()) }
+	c := r.client()
+	r.s.mu.Lock()
+	c.wantSnap, c.streaming = false, true // streaming from a snapshot taken before
+	r.s.mu.Unlock()
+
+	r.point(100)
+	first := digest()
+	if got := r.checkDigests(c); len(got) != 1 || got[0] != first {
+		t.Fatalf("the first check %v, want %s", got, first)
+	}
+
+	// The same position, the screen changed behind the hub: the kept digest.
+	r.p.Write([]byte(" and more"))
+	changed := digest()
+	if changed == first {
+		t.Fatal("the pane did not change")
+	}
+	r.clock.advance(2 * time.Second)
+	r.point(100)
+	if got := r.checkDigests(c); len(got) != 1 || got[0] != first {
+		t.Errorf("the same position was digested again: %v, want the kept %s", got, first)
+	}
+
+	// Another position: digested again.
+	r.clock.advance(2 * time.Second)
+	r.point(101)
+	if got := r.checkDigests(c); len(got) != 1 || got[0] != changed {
+		t.Errorf("a new position: %v, want %s", got, changed)
+	}
+
+	// A resize at the same position clears the kept digest.
+	r.p.Resize(60, 20)
+	resized := digest()
+	if resized == changed {
+		t.Fatal("the resize did not change the digest")
+	}
+	r.clock.advance(2 * time.Second)
+	r.point(101)
+	if got := r.checkDigests(c); len(got) != 1 || got[0] != resized {
+		t.Errorf("after a resize: %v, want %s", got, resized)
+	}
+
+	// Two clients at one point share one digest.
+	c2 := r.client()
+	r.s.mu.Lock()
+	c2.wantSnap, c2.streaming = false, true
+	r.s.mu.Unlock()
+	r.clock.advance(2 * time.Second)
+	r.point(101)
+	if a, b := r.checkDigests(c), r.checkDigests(c2); len(a) != 1 || len(b) != 1 || a[0] != resized || b[0] != resized {
+		t.Errorf("two clients: %v %v", a, b)
+	}
+}

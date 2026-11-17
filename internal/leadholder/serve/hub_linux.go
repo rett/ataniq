@@ -294,7 +294,13 @@ func (s *Server) pointLocked(p *sessionpane.Pane, end uint64, now time.Time) {
 	var digest string
 	getDigest := func() string {
 		if digest == "" {
-			digest = wire.DigestHex(p.Digest())
+			// The screen of one position is the same screen until it is
+			// resized, so an idle pane is digested once, not again for every
+			// client and every interval.
+			if !s.digestValid || s.digestPos != end {
+				s.digestHex, s.digestPos, s.digestValid = wire.DigestHex(p.Digest()), end, true
+			}
+			digest = s.digestHex
 		}
 		return digest
 	}
@@ -390,6 +396,7 @@ func (s *Server) syncSizeLocked(p *sessionpane.Pane) {
 	}
 	first := s.sizePayload == nil
 	s.lastSize, s.sizePayload = sz, payload
+	s.digestValid = false // a resize changes the screen without moving the position
 	if first {
 		return
 	}

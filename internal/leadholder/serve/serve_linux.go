@@ -280,6 +280,11 @@ type Server struct {
 	exitStatus   *int
 	nextFacts    time.Time
 	snapHint     int
+	// The digest of the screen at digestPos, when digestValid: it is cleared
+	// when the size changes, as a resize does not move the position.
+	digestHex   string
+	digestPos   uint64
+	digestValid bool
 
 	stop         chan struct{}
 	stopOnce     sync.Once
