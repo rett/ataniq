@@ -515,3 +515,38 @@ func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {
 		t.Errorf("frames from a viewer: %q, want only a detach", types)
 	}
 }
+
+func TestAHolderResyncNoticeStopsInputUntilTheNextSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	hc := e.attach(wire.RoleWriter)
+	e.sink.Key(keyA)
+	if got := hc.input(1); got != "a" {
+		t.Fatalf("before the notice: %q", got)
+	}
+
+	hc.notice(wire.ReasonResync, "a new snapshot follows")
+	st := e.untilConn(terminalconsole.LiveResyncing)
+	if st.Reason == "" {
+		t.Error("no reason while resyncing")
+	}
+	e.sink.Key(keyA)
+	e.sink.Paste("x")
+	e.sink.Mouse(uv.MouseClickEvent{X: 1, Y: 1, Button: uv.MouseLeft})
+	if st := e.c.Status(); st.RefusedInput != 3 {
+		t.Errorf("refused input %d, want 3", st.RefusedInput)
+	}
+	if ns := e.c.Notices(); len(ns) != 1 || ns[0].Code != "resync" {
+		t.Errorf("notices %+v", ns)
+	}
+
+	hc.snapshot()
+	st = e.until("attached again", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveAttached })
+	if st.Resyncs != 1 || st.Reason != "" {
+		t.Errorf("resyncs %d, reason %q", st.Resyncs, st.Reason)
+	}
+	e.sink.Key(key('b', 0, "b"))
+	if got := hc.input(1); got != "b" {
+		t.Errorf("after the snapshot: %q", got)
+	}
+}

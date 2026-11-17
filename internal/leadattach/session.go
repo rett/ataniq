@@ -520,7 +520,7 @@ func (s *session) notice(payload []byte) *outcome {
 	}
 	text := shorten(n.Text, wire.MaxNoticeText)
 	out := terminalconsole.LiveNotice{Code: string(n.Reason), Text: text}
-	refused := false
+	refused, resyncing := false, false
 	switch n.Reason {
 	case wire.ReasonKeyHeldSuspend, wire.ReasonKeyHeldSignal:
 		out.Code = terminalconsole.NoticeHeldKey
@@ -529,6 +529,11 @@ func (s *session) notice(payload []byte) *outcome {
 	case wire.ReasonWriterChanged:
 		// The cockpit's own text names the writer.
 		out.Code, out.Text, out.Client = terminalconsole.NoticeWriterChanged, "", s.writer
+	case wire.ReasonResync:
+		// The holder dropped output this client could not take and sends a
+		// new snapshot on this connection: the screen is behind until it
+		// is applied, so input is not sent meanwhile.
+		resyncing = true
 	case wire.ReasonTooSlow:
 		out.Code = terminalconsole.NoticeTooSlow
 		s.hint = "too slow"
@@ -538,6 +543,9 @@ func (s *session) notice(payload []byte) *outcome {
 	c.mutate(func() {
 		if refused {
 			c.st.RefusedInput++
+		}
+		if resyncing && c.st.Conn == terminalconsole.LiveAttached {
+			c.st.Conn, c.st.Reason = terminalconsole.LiveResyncing, "the holder is sending a new snapshot"
 		}
 		c.addNoticeLocked(out)
 	})
