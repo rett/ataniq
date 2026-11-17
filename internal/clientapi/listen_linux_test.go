@@ -188,6 +188,25 @@ func TestListenRefusesPathTooLongForASocketAddress(t *testing.T) {
 	}
 }
 
+// TestCheckSocketPath: the helper agrees with Listen on the edge (107 bytes
+// fit, 108 do not) and touches nothing.
+func TestCheckSocketPath(t *testing.T) {
+	dir := "/" + strings.Repeat("e", maxSocketPath-len("/"+SocketName)-1)
+	if len(SocketPath(dir)) != maxSocketPath {
+		t.Fatalf("test arithmetic: %d", len(SocketPath(dir)))
+	}
+	if err := CheckSocketPath(dir); err != nil {
+		t.Fatalf("the longest path that fits was refused: %v", err)
+	}
+	err := CheckSocketPath(dir + "e")
+	if err == nil || !strings.Contains(err.Error(), "108 bytes") {
+		t.Fatalf("a 108-byte path: %v", err)
+	}
+	if _, statErr := os.Lstat(dir); statErr == nil {
+		t.Fatal("the helper made a folder")
+	}
+}
+
 func TestListenDoesNotRemoveAnExistingSocket(t *testing.T) {
 	dir := socketDir(t)
 	l1, path, err := Listen(dir)
