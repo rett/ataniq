@@ -543,7 +543,8 @@ func TestLiveModesFromTheStatusDriveTheOuterTerminal(t *testing.T) {
 	})
 	r.pump()
 	v = r.m.View()
-	if v.MouseMode != tea.MouseModeAllMotion || !v.ReportFocus || v.DisableBracketedPasteMode {
+	// Focus reports are not asked for: the sink has no way to take them.
+	if v.MouseMode != tea.MouseModeAllMotion || v.ReportFocus || v.DisableBracketedPasteMode {
 		t.Fatalf("view does not follow the status: mouse %v focus %v paste off %v", v.MouseMode, v.ReportFocus, v.DisableBracketedPasteMode)
 	}
 	// Console focus asks for none of it, and keeps bracketed paste on so that

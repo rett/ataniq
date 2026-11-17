@@ -32,8 +32,10 @@ import (
 //     holder's size, cut or padded at the pane area's top left corner.
 //   - What the pane sends (keys, paste, mouse) goes to the sink that Start
 //     returned. A viewer's input is not sent at all.
-//   - Mouse, paste and focus requests to the outer terminal follow
-//     LiveStatus.Modes, never the pane's own emulator.
+//   - Mouse and paste requests to the outer terminal follow LiveStatus.Modes,
+//     never the pane's own emulator. Focus reports are not asked for in live
+//     mode: InputSink has no focus method, so there is nothing to forward
+//     them to. That comes with a sink method later.
 
 // LiveSource is a live session the cockpit shows. An implementation needs
 // nothing from this package but the types named here, and sessionpane's
@@ -174,10 +176,13 @@ type LiveStatus struct {
 	// Cols and Rows are the holder's screen size; zero when unknown.
 	Cols, Rows int
 	// Modes are the modes of the session as the holder reports them (its
-	// Modes frame). In live mode the cockpit takes its mouse, paste and focus
+	// Modes frame). In live mode the cockpit takes its mouse and paste
 	// decisions for the outer terminal from these, and not from the pane's
-	// emulator. An ended or read-only session asks for none, whatever these
-	// say.
+	// emulator; it does not ask for focus reports whatever FocusEvents says
+	// (see the top of this file). An ended or read-only session asks for
+	// none, whatever these say. The holder's full mode set is larger than
+	// this type (cursor keys, keypad, alternate screen, synchronized output):
+	// a source that encodes keys keeps its own copy of it.
 	Modes sessionpane.Modes
 	// Conn is the connection state. Reason says why when the state is
 	// LiveWaitingTicket or LiveDisconnected.
