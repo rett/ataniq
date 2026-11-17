@@ -86,10 +86,16 @@ func resolveTool(dirs []string, tool string) (string, error) {
 // not one of the two.
 func (r *ExecRunner) Path(tool string) string { return r.paths[tool] }
 
-// Run implements [Runner]. It refuses any tool but the two, returns the
-// context's error at once when ctx is done, and otherwise returns at the
-// context's end even if the tool outlives it (the tool itself is cut off at
-// the deadline, at most [systemd.MaxCall] after the start).
+// Run implements [Runner]. It refuses any tool but the two and returns the
+// context's error at once when ctx is done before the tool starts. Once the
+// tool runs, Run does not return before the tool has ended, even when ctx
+// ends first: the tool is cut off at the deadline it was given (ctx's
+// deadline, at most [systemd.MaxCall] after the start) plus one second for
+// its output pipes, so the wait is bounded by that. A caller that sees the
+// context's error from a tool that had started therefore knows that the tool
+// is gone and cannot send anything any more. A message that the tool had
+// already written to the bus can still be processed by the manager after the
+// tool has ended; that window belongs to the bus and is not closed here.
 func (r *ExecRunner) Run(ctx context.Context, argv []string) (string, error) {
 	if len(argv) == 0 || r.paths[argv[0]] == "" {
 		return "", fmt.Errorf("%w: unknown tool", ErrNotLaunched)
@@ -117,6 +123,12 @@ func (r *ExecRunner) Run(ctx context.Context, argv []string) (string, error) {
 		}
 		return res.out, res.err
 	case <-ctx.Done():
+		// The tool may still deliver its request. Wait until it has ended,
+		// bounded by the deadline that systemd.Run was given, so that a
+		// caller that inspects after the lost reply sees the outcome and not
+		// a request that lands afterwards. The error stays the context's, and
+		// never wraps ErrNotLaunched: the request may have been sent.
+		<-done
 		return "", ctx.Err()
 	}
 }

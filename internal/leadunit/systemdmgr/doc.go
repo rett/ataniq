@@ -33,6 +33,14 @@
 // the bus error message, not its name), so a changed message degrades to
 // [leadunit.ErrReplyLost], which is the safe direction. Start never retries.
 //
+// Start returns only after its tool has ended, even when the caller's context
+// ends first (the wait is bounded by the per-call deadline plus one second),
+// so busctl never sends the request after ErrReplyLost was returned. A message
+// that busctl had already written to the bus can still be processed by the
+// manager after that, a window of broker latency that this package cannot
+// close: after a lost reply the caller inspects, and treats "not loaded" as
+// final only after a short settle time and a second inspection.
+//
 // # What it does not prove
 //
 // The parts that need systemd (the argument rendering, the busctl and

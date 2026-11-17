@@ -83,7 +83,13 @@ func lost(what string, cause error) error {
 // manager ([leadunit.ErrUnavailable]) and a refusal because the name is taken
 // ([leadunit.ErrUnitExists]) mean nothing was started. Any other failure,
 // once the request may have been sent, wraps [leadunit.ErrReplyLost] and
-// returns a zero State. After an accepted job the state of the unit is
+// returns a zero State. Start does not return before the tool has ended, even
+// when ctx ends first (bounded by the per-call deadline, see [ExecRunner.Run]),
+// so the request is never sent after Start returned. What the tool had
+// already written to the bus can still be processed by the manager after it
+// returned: a caller that inspects right after a lost reply and finds the unit
+// not loaded should wait a short settle time and inspect again before it
+// treats that as final. After an accepted job the state of the unit is
 // returned as it is, including Loaded false for a unit that already ended and
 // was collected.
 //

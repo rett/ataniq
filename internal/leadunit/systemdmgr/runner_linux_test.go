@@ -7,7 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
+
+	"ataniq/internal/leadunit"
 )
 
 // None of these tests runs a tool: they resolve files in temporary
@@ -123,5 +128,119 @@ func TestSnippetIsBoundedAndPrintable(t *testing.T) {
 	long := snippet(string(make([]byte, 5000)))
 	if len(long) > 210 {
 		t.Fatal(len(long))
+	}
+}
+
+// toolScript is a stand-in for a tool that the test itself writes under
+// t.TempDir(): a shell script, named neither busctl nor systemctl, that waits
+// for a line on a named pipe and then creates a marker file, so that "the tool
+// delivered its request" is a fact the test can read. It is run through an
+// ExecRunner built with the script as the path of its "busctl", which is the
+// only way the real tools could be named here; nothing from the host is run
+// but /bin/sh.
+type toolScript struct {
+	runner   *ExecRunner
+	marker   string
+	released atomic.Bool
+	fifo     *os.File
+}
+
+func newToolScript(t *testing.T) *toolScript {
+	t.Helper()
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "gate")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Read and write, so that opening it never blocks and the bytes written
+	// before the script opens it are kept.
+	f, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	script := filepath.Join(dir, "fake-tool.sh")
+	body := "#!/bin/sh\nread line < \"$GATE\"\n: > \"$MARKER\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ts := &toolScript{marker: filepath.Join(dir, "delivered"), fifo: f}
+	ts.runner = &ExecRunner{
+		paths: map[string]string{toolBusctl: script},
+		env:   []string{"LANG=C", "GATE=" + fifo, "MARKER=" + ts.marker},
+	}
+	return ts
+}
+
+// releaseAfter lets the script go on after d.
+func (ts *toolScript) releaseAfter(d time.Duration) {
+	time.AfterFunc(d, func() {
+		ts.released.Store(true)
+		_, _ = ts.fifo.WriteString("go\n")
+	})
+}
+
+func (ts *toolScript) delivered() bool {
+	_, err := os.Stat(ts.marker)
+	return err == nil
+}
+
+// A context that is cancelled while the tool runs must not let Run return
+// before the tool has ended: the tool could still deliver its request after
+// the caller was told the reply was lost.
+func TestExecRunnerWaitsForTheToolWhenTheContextIsCancelled(t *testing.T) {
+	ts := newToolScript(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(100*time.Millisecond, cancel)
+	ts.releaseAfter(400 * time.Millisecond)
+	_, err := ts.runner.Run(ctx, []string{toolBusctl, "--user"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v", err)
+	}
+	if errors.Is(err, ErrNotLaunched) {
+		t.Fatalf("a context that ends mid-call is classified as nothing started: %v", err)
+	}
+	if !ts.released.Load() || !ts.delivered() {
+		t.Fatalf("Run returned before the tool ended: released=%v delivered=%v", ts.released.Load(), ts.delivered())
+	}
+}
+
+// The wait is bounded by the deadline the tool was given, not by the tool.
+func TestExecRunnerWaitIsBoundedByTheDeadline(t *testing.T) {
+	ts := newToolScript(t) // never released
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := ts.runner.Run(ctx, []string{toolBusctl, "--user"})
+	if err == nil || errors.Is(err, ErrNotLaunched) {
+		t.Fatalf("error %v", err)
+	}
+	if d := time.Since(start); d > 4*time.Second {
+		t.Fatalf("Run took %s for a deadline of 300ms", d)
+	}
+	if ts.delivered() {
+		t.Fatal("the tool was not cut off")
+	}
+}
+
+// Start over a context that ends while the tool runs is a lost reply, never
+// "nothing was started", and it returns only after the tool has ended.
+func TestStartContextEndsMidCallIsALostReplyAfterTheToolEnded(t *testing.T) {
+	ts := newToolScript(t)
+	m := newManager(ts.runner, newFakeKernel(), 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(100*time.Millisecond, cancel)
+	ts.releaseAfter(400 * time.Millisecond)
+	st, err := m.Start(ctx, validSpec())
+	if !errors.Is(err, leadunit.ErrReplyLost) || st != (leadunit.State{}) {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if errors.Is(err, leadunit.ErrUnavailable) || errors.Is(err, leadunit.ErrUnitExists) || errors.Is(err, ErrNotLaunched) {
+		t.Fatalf("wrong class: %v", err)
+	}
+	if !ts.released.Load() || !ts.delivered() {
+		t.Fatalf("Start returned before the tool ended: released=%v delivered=%v", ts.released.Load(), ts.delivered())
 	}
 }
