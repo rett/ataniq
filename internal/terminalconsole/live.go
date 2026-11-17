@@ -276,7 +276,8 @@ type liveState struct {
 	prevRole           LiveRole
 	// prevUp is whether the connection was up at the last wake-up.
 	prevUp bool
-	// noted is true once the read-only notice was shown.
+	// noted is true once the read-only notice was shown since the role last
+	// changed.
 	noted bool
 	// noticeLive is true while m.notice is a live notice.
 	noticeLive bool
@@ -399,6 +400,12 @@ func (m *Model) onLive() tea.Cmd {
 		// as the writer, asks for the size it wants at once, when that is
 		// not the holder's: the window may have changed while it could not
 		// ask, and another writer may have changed the holder's size.
+		if role != m.live.prevRole {
+			// The read-only notice is due again after each change of role:
+			// the keys of a client that lost the writer role are dropped
+			// again.
+			m.live.noted = false
+		}
 		m.live.prevRole, m.live.prevUp = role, up
 		if cmd := m.syncLive(false); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -483,8 +490,8 @@ func (m *Model) addNote(n LiveNotice) {
 	m.notice, m.live.noticeLive = note.text, true
 }
 
-// noteReadOnly says once that input is not sent, because the client is not
-// the writer.
+// noteReadOnly says that input is not sent, because the client is not the
+// writer: once for each role the client holds.
 func (m *Model) noteReadOnly() {
 	if m.live.noted {
 		return
@@ -495,6 +502,25 @@ func (m *Model) noteReadOnly() {
 		n.Text = "Not attached as the writer: keys are not sent."
 	}
 	m.addNote(n)
+}
+
+// liveInputStop says why keys typed in session focus are not sent, and what
+// a key does then: "" when they are sent. The key bar and the focus bar say
+// it, in the order sessionKey acts: an ended session and a connection that is
+// down return to the console on any key, a viewer or a client with no role
+// is told once and stays.
+func (m *Model) liveInputStop() (why string, anyKeyReturns bool) {
+	switch {
+	case m.sessionEnded():
+		return "the session has ended", true
+	case m.liveDown():
+		return "not connected", true
+	case m.live.st.Role == LiveViewer:
+		return "read-only viewer", false
+	case m.live.st.Role != LiveWriter:
+		return "no role yet", false
+	}
+	return "", false
 }
 
 // liveWriter reports whether input and a size may go to the source: the role

@@ -435,6 +435,17 @@ func (m *Model) drawKeys(p *painter, l layout) {
 	}
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
+		if m.live.on() {
+			// Say what keys do here: a viewer's are dropped, and on an ended
+			// session or a connection that is down any key returns.
+			if why, anyKey := m.liveInputStop(); why != "" {
+				ret := m.opts.ReturnKey.String() + " returns"
+				if anyKey {
+					ret = "any key returns"
+				}
+				s = "SESSION FOCUS · " + why + ": keys are not sent · " + ret + " · F12 zoom"
+			}
+		}
 	}
 	p.text(0, l.keys.Min.Y, l.keys.Dx(), s, p.style(lnDim))
 }

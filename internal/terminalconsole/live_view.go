@@ -78,11 +78,12 @@ func (m *Model) drawLiveMeta(p *painter, l layout) {
 func (m *Model) drawLiveFocusBar(p *painter, in uv.Rectangle) {
 	first := m.focusName() + " · return key " + m.opts.ReturnKey.String() + " · F12 zoom"
 	second := "Enter focuses the session · " + m.liveRoleText()
+	why, _ := m.liveInputStop()
 	switch {
 	case m.sessionEnded():
 		second = "The session has ended"
-	case m.live.st.Role != LiveWriter:
-		second = "Keys typed in session focus are not sent: " + m.liveRoleText()
+	case why != "":
+		second = "Keys typed in session focus are not sent: " + why
 	case m.focus == sessionFocus:
 		second = "Every key goes to the session; q and Ctrl+C do not quit"
 	}

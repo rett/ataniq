@@ -403,6 +403,128 @@ func TestLiveKeysWithoutARoleAreNotSent(t *testing.T) {
 	}
 }
 
+// keyBar returns the bottom row of the window and the focus bar's second row.
+func (r *liveRig) keyBar() (keys, focus string) {
+	rows := r.rows()
+	l := r.m.layout()
+	return rows[len(rows)-1], rows[l.focus.Min.Y+2]
+}
+
+func TestLiveKeyBarIsHonestInSessionFocus(t *testing.T) {
+	const everyKey = "every key goes to the session"
+	for _, tc := range []struct {
+		name string
+		f    func() *fakeLive
+		then func(*fakeLive)
+		keys []string
+		bar  string
+	}{
+		{"writer", func() *fakeLive { return newFake(LiveWriter) }, nil,
+			[]string{everyKey, "Ctrl+\\ returns"}, "Every key goes to the session"},
+		{"viewer", func() *fakeLive { return newFake(LiveViewer) }, nil,
+			[]string{"read-only viewer: keys are not sent", "Ctrl+\\ returns"}, "not sent: read-only viewer"},
+		{"no role", func() *fakeLive { f := newFake(""); f.st.Conn = LiveConnecting; return f }, nil,
+			[]string{"no role yet: keys are not sent", "Ctrl+\\ returns"}, "not sent: no role yet"},
+		{"ended", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.End = LiveEnd{Stream: FactYes} }) },
+			[]string{"the session has ended: keys are not sent", "any key returns"}, "The session has ended"},
+		{"disconnected", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.Conn = LiveDisconnected }) },
+			[]string{"not connected: keys are not sent", "any key returns"}, "not sent: not connected"},
+		{"waiting for a ticket", func() *fakeLive { return newFake(LiveWriter) },
+			func(f *fakeLive) { f.set(func(s *LiveStatus) { s.Conn = LiveWaitingTicket }) },
+			[]string{"not connected: keys are not sent", "any key returns"}, "not sent: not connected"},
+	} {
+		f := tc.f()
+		r := newLiveRig(t, 140, 45, f, Options{})
+		if tc.then != nil {
+			tc.then(f)
+			r.pump()
+		}
+		r.focus()
+		keys, focus := r.keyBar()
+		for _, want := range tc.keys {
+			if !strings.Contains(keys, want) {
+				t.Fatalf("%s: key bar %q lacks %q", tc.name, keys, want)
+			}
+		}
+		if !strings.Contains(focus, tc.bar) {
+			t.Fatalf("%s: focus bar %q lacks %q", tc.name, focus, tc.bar)
+		}
+		// The bar says what the keys then do.
+		r.typ("x")
+		if tc.name == "writer" {
+			if r.m.focus != sessionFocus || len(f.sink.keys) != 1 {
+				t.Fatalf("writer: focus %v keys %v", r.m.focus.name(), f.sink.keys)
+			}
+			continue
+		}
+		if len(f.sink.keys) != 0 {
+			t.Fatalf("%s: sent %v", tc.name, f.sink.keys)
+		}
+		anyKey := strings.Contains(keys, "any key returns")
+		if anyKey != (r.m.focus == consoleFocus) {
+			t.Fatalf("%s: bar %q, focus after a key %v", tc.name, keys, r.m.focus.name())
+		}
+		if !anyKey && r.m.focus != sessionFocus {
+			t.Fatalf("%s: a key left the session focus", tc.name)
+		}
+		if strings.Contains(keys, everyKey) || strings.Contains(focus, "Every key") {
+			t.Fatalf("%s: a bar says every key is sent: %q, %q", tc.name, keys, focus)
+		}
+	}
+}
+
+func TestLiveTheReadOnlyNoticeIsShownAfterEachLossOfTheWriterRole(t *testing.T) {
+	f := newFake(LiveViewer)
+	r := newLiveRig(t, 140, 45, f, Options{})
+	r.focus()
+	readOnly := func() int {
+		n := 0
+		for _, note := range r.m.live.notices {
+			if note.code == noticeReadOnly {
+				n++
+			}
+		}
+		return n
+	}
+	r.typ("a")
+	if readOnly() != 1 || !strings.Contains(r.m.notice, "Read-only viewer") {
+		t.Fatalf("first: %d notices, notice %q", readOnly(), r.m.notice)
+	}
+	r.m.notice = ""
+	r.typ("b")
+	if readOnly() != 1 || r.m.notice != "" {
+		t.Fatalf("repeated within one role: %d notices", readOnly())
+	}
+	// The client becomes the writer and types, then loses the role.
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	r.typ("c")
+	if got := f.sink.keys; len(got) != 1 || got[0] != "c" {
+		t.Fatalf("keys %v", got)
+	}
+	f.set(func(s *LiveStatus) { s.Role = LiveViewer })
+	r.pump()
+	r.m.notice = ""
+	r.typ("d")
+	if readOnly() != 2 || !strings.Contains(r.m.notice, "Read-only viewer") {
+		t.Fatalf("second loss of the role: %d notices, notice %q", readOnly(), r.m.notice)
+	}
+	if len(f.sink.keys) != 1 {
+		t.Fatalf("a viewer sent %v", f.sink.keys)
+	}
+	// Once more, for a paste, after losing the role again.
+	f.set(func(s *LiveStatus) { s.Role = LiveWriter })
+	r.pump()
+	f.set(func(s *LiveStatus) { s.Role = "" })
+	r.pump()
+	r.m.onPaste("p")
+	if readOnly() != 3 || len(f.sink.pastes) != 0 {
+		t.Fatalf("third: %d notices, pastes %v", readOnly(), f.sink.pastes)
+	}
+}
+
 func TestLiveModesFromTheStatusDriveTheOuterTerminal(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 140, 45, f, Options{})
