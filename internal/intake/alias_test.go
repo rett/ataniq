@@ -365,3 +365,61 @@ func TestAliasChainLinkThatCannotBeFollowed(t *testing.T) {
 		})
 	}
 }
+
+// TestAliasChangedAndRevertedInTheBranch: a hook is put into a path that a
+// symlink of the base stands for, and taken out again. The commit with the
+// hook enters upstream history, so it is flagged history-only, with a reason
+// that names the symlink.
+func TestAliasChangedAndRevertedInTheBranch(t *testing.T) {
+	s := aliasScene(t)
+	s.symlink(".claude", "cfg")
+	s.commit("link in upstream\n")
+	s.publish(upstreamRef, s.cur)
+	s.put("cfg/settings.json", `{"hooks":1}`+"\n")
+	s.put("cfgx/y.json", `{"hooks":1}`+"\n")
+	s.commit("hook\n")
+	s.put("cfg/settings.json", "{}\n")
+	s.put("cfgx/y.json", "{}\n")
+	s.commit("revert\n")
+	s.put("src/x.go", "package main\n// x\n")
+	s.commit("other\n")
+	s.finish()
+	r := s.inspect()
+	if len(r.Changes) != 1 || r.Changes[0].Path != "src/x.go" {
+		t.Fatalf("changes: %+v", r.Changes)
+	}
+	if len(r.Flagged) != 1 {
+		t.Fatalf("Flagged: %+v", r.Flagged)
+	}
+	f := flagFor(t, r.Flagged, FlagHistory, "cfg/settings.json")
+	if !strings.Contains(f.Reason, ".claude") || !strings.Contains(f.Reason, "cfg") || f.Pattern == "" {
+		t.Errorf("flag: %+v", f)
+	}
+}
+
+// TestAliasChangedAndRevertedThroughAChain: the same, through a chain of
+// links and for a folder that stands for the whole repository.
+func TestAliasChangedAndRevertedThroughAChain(t *testing.T) {
+	s := chainScene(t, ".claude", "a/cfg", "a", "b")
+	s.put("b/cfg/settings.json", `{"hooks":1}`+"\n")
+	s.commit("hook\n")
+	s.put("b/cfg/settings.json", "{}\n")
+	s.commit("revert\n")
+	s.finish()
+	r := s.inspect()
+	if len(r.Changes) != 0 {
+		t.Fatalf("changes: %+v", r.Changes)
+	}
+	flagFor(t, r.Flagged, FlagHistory, "b/cfg/settings.json")
+
+	s = aliasScene(t)
+	s.symlink(".claude", ".")
+	s.commit("link to the root\n")
+	s.publish(upstreamRef, s.cur)
+	s.put("other/z.json", `{"hooks":1}`+"\n")
+	s.commit("change\n")
+	s.put("other/z.json", "{}\n")
+	s.commit("revert\n")
+	s.finish()
+	flagFor(t, s.inspect().Flagged, FlagHistory, "other/z.json")
+}

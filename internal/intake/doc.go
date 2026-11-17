@@ -27,9 +27,12 @@
 //     the repository, at an absolute path, or through too long a chain of
 //     symlinks, is flagged on its own path.
 //   - history-only: a path that is execution config, a symlink or a
-//     submodule in the change of some commit of the branch, but that is not
-//     in the net change. It was added and removed again inside the branch. It
-//     enters upstream history, so it needs a sign-off too.
+//     submodule, or that lies in a folder an aliasing symlink stands for, in
+//     the change of some commit of the branch, but that is not in the net
+//     change. It was added and removed again (or changed and changed back)
+//     inside the branch. It enters upstream history, so it needs a sign-off
+//     too. For a merge commit only the paths that differ from every parent
+//     count: a path that equals one parent was brought in by that parent.
 //
 // The flags are collected in [Review.Flagged], one for each kind and path.
 // [Review.Digest] is a hash over what the owner is asked to sign off, so a

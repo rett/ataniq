@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
+	"ataniq/internal/exchange/leadtext"
 	"ataniq/internal/intake/execconfig"
 )
 
@@ -19,6 +21,9 @@ type seen struct {
 	match     *execconfig.Match
 	symlink   bool
 	submodule bool
+	// aliases are the symlinks that make the path an execution-config path
+	// under another name.
+	aliases []link
 }
 
 // historyFlags returns the history-only flags. It lists the change of every
@@ -33,8 +38,10 @@ type seen struct {
 // upstream history although not the tip's tree, so it needs a sign-off. A
 // path that is in the net change gets the flag too when it was a symlink or a
 // submodule entry in a commit and is neither at the tip: the net change then
-// does not show it.
-func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, commits []Commit, changes []Change, lim Limits) ([]Flag, error) {
+// does not show it. A path that lies at or below the target of an aliasing
+// symlink of the tip (see aliasFlags) counts as execution config too, and the
+// reason names the symlink.
+func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, aliases *aliasSet, commits []Commit, changes []Change, lim Limits) ([]Flag, error) {
 	if len(commits) == 0 {
 		return nil, nil
 	}
@@ -73,6 +80,9 @@ func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, commits
 		if m, ok := rules.Match(rec.path); ok && s.match == nil {
 			s.match = &m
 		}
+		if s.aliases == nil {
+			s.aliases = aliases.reaching(rec.path)
+		}
 		if rec.oldMode == modeSymlink || rec.newMode == modeSymlink {
 			s.symlink = true
 		}
@@ -92,7 +102,7 @@ func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, commits
 	var flags []Flag
 	for _, p := range paths {
 		s := hist[p]
-		if !(s.match != nil || s.symlink || s.submodule) {
+		if !(s.match != nil || s.symlink || s.submodule || len(s.aliases) > 0) {
 			continue
 		}
 		var parts []string
@@ -100,6 +110,13 @@ func (r *runner) historyFlags(ctx context.Context, rules execconfig.Set, commits
 		if s.match != nil {
 			f.Pattern = s.match.Pattern
 			parts = append(parts, "execution config ("+s.match.Reason+")")
+		}
+		for _, l := range s.aliases {
+			if f.Pattern == "" {
+				f.Pattern = l.pattern
+			}
+			parts = append(parts, fmt.Sprintf("reached through the symlink %s (%s), which points at %s",
+				leadtext.Escape(l.path), l.reason, leadtext.Escape(l.targetText())))
 		}
 		if s.symlink {
 			parts = append(parts, "a symlink entry")

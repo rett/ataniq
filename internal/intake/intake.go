@@ -244,10 +244,11 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	for i := range rev.Changes {
 		rev.Changes[i].Flags = entryFlags(req.Rules, rev.Changes[i])
 	}
-	if _, err := r.aliasFlags(ctx, req.Rules, tip, rev.Changes, lim); err != nil {
+	aliases, err := r.aliasFlags(ctx, req.Rules, tip, rev.Changes, lim)
+	if err != nil {
 		return nil, err
 	}
-	hist, err := r.historyFlags(ctx, req.Rules, rev.Commits, rev.Changes, lim)
+	hist, err := r.historyFlags(ctx, req.Rules, aliases, rev.Commits, rev.Changes, lim)
 	if err != nil {
 		return nil, err
 	}
