@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -268,6 +269,55 @@ func TestManagedSettingsPaths(t *testing.T) {
 		c.ManagedSettingsInside = p
 		if err := c.Validate(); err != nil {
 			t.Errorf("codex %s: %v", p, err)
+		}
+	}
+}
+
+func TestListBounds(t *testing.T) {
+	placeholders := func(n int) []Placeholder {
+		var ph []Placeholder
+		for i := 0; i < n; i++ {
+			ph = append(ph, Placeholder{Rel: fmt.Sprintf("p%d", i), Source: fmt.Sprintf("/srv/owned/ph/p%d", i)})
+		}
+		return ph
+	}
+	never := func(n int) []string {
+		list := []string{"/home/owner/.ssh"}
+		for i := 1; i < n; i++ {
+			list = append(list, fmt.Sprintf("/home/owner/n%d", i))
+		}
+		return list
+	}
+	// The limits themselves are accepted, one more is refused.
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Inputs, int)
+		limit  int
+		field  string
+	}{
+		{"extra placeholders", func(in *Inputs, n int) { in.ExtraPlaceholders = placeholders(n) }, maxExtras, "extra placeholders"},
+		{"never-mounted paths", func(in *Inputs, n int) { in.NeverMounted = never(n) }, maxNever, "never-mounted paths"},
+		{"extra environment names", func(in *Inputs, n int) {
+			in.ExtraEnv = nil
+			for i := 0; i < n; i++ {
+				in.ExtraEnv = append(in.ExtraEnv, EnvVar{Name: fmt.Sprintf("V%d", i), Value: "1"})
+			}
+		}, maxExtraEnv, "extra environment"},
+	} {
+		in := fixture(Claude)
+		tt.mutate(&in, tt.limit)
+		if err := in.Validate(); err != nil {
+			t.Errorf("%s: %d accepted? %v", tt.name, tt.limit, err)
+		}
+		in = fixture(Claude)
+		tt.mutate(&in, tt.limit+1)
+		err := in.Validate()
+		if err == nil {
+			t.Errorf("%s: %d accepted", tt.name, tt.limit+1)
+			continue
+		}
+		if ref := refusalOf(t, err); ref.Field != tt.field || !strings.Contains(ref.Reason, "more than") {
+			t.Errorf("%s: refusal {%q, %q}", tt.name, ref.Field, ref.Reason)
 		}
 	}
 }
