@@ -307,3 +307,39 @@ func TestNoUnitTextInAnyCommandLine(t *testing.T) {
 		}
 	}
 }
+
+func TestPopulatedReadsTheGroupOfTheState(t *testing.T) {
+	r := newRig(t)
+	st := oldState()
+	r.k.populated[cgUnit] = true
+	if got, err := r.m.Populated(context.Background(), st); err != nil || !got {
+		t.Fatal(got, err)
+	}
+	r.k.populated[cgUnit] = false
+	if got, err := r.m.Populated(context.Background(), st); err != nil || got {
+		t.Fatal(got, err)
+	}
+	if len(r.run.recorded()) != 0 {
+		t.Fatal("Populated runs no tool")
+	}
+}
+
+func TestPopulatedFailsWithoutAReadableGroup(t *testing.T) {
+	r := newRig(t)
+	other := oldState()
+	other.ControlGroupID = groupID(idB) // another identity than the directory has
+	noGroup := oldState()
+	noGroup.ControlGroup = ""
+	badID := oldState()
+	badID.ControlGroupID = "x"
+	for name, st := range map[string]leadunit.State{"other identity": other, "no group": noGroup, "bad identity": badID} {
+		if got, err := r.m.Populated(context.Background(), st); got || err == nil {
+			t.Errorf("%s: %v %v", name, got, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := r.m.Populated(ctx, oldState()); got || !errors.Is(err, context.Canceled) {
+		t.Fatal(got, err)
+	}
+}

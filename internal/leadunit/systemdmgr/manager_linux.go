@@ -446,3 +446,23 @@ func (m *Manager) userManagerGroup(ctx context.Context) (string, error) {
 	}
 	return base, nil
 }
+
+// Populated reports whether the control group that st names holds a process
+// now. It is a reading for a qualification run, not a proof of emptiness: it
+// answers true or false for the instant of the read, only for the control
+// group of that path and identity, and says nothing of the unit or its
+// invocation. It fails when st names no control group, when the identity is
+// unreadable or no longer that of st, or when the group cannot be read.
+func (m *Manager) Populated(ctx context.Context, st leadunit.State) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if st.ControlGroup == "" || st.ControlGroupID == "" {
+		return false, errors.New("systemdmgr: state names no control group")
+	}
+	id, ok := parseGroupID(st.ControlGroupID)
+	if !ok {
+		return false, errors.New("systemdmgr: state has an unreadable control group identity")
+	}
+	return m.k.Populated(systemd.Boundary{Path: st.ControlGroup, Identity: id})
+}
