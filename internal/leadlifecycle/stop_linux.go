@@ -139,7 +139,7 @@ func (c *Controller) stopAbsent(ctx context.Context, e leadregistry.Entry, st le
 		return e, nil
 	}
 	var ab absence
-	why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
+	ok, why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
 		cur, ierr := c.mgr.Inspect(ctx, st.Unit)
 		if ierr != nil {
 			return false, "the unit could not be inspected: " + ierr.Error()
@@ -153,8 +153,8 @@ func (c *Controller) stopAbsent(ctx context.Context, e leadregistry.Entry, st le
 	if err != nil {
 		return e, err
 	}
-	if why != "" {
-		return c.unproven(e, notes, why, nil)
+	if !ok {
+		return c.unproven(e, notes, orNoReason(why), nil)
 	}
 	return c.proven(e, notes, "stop-completed", ab.text)
 }
@@ -197,7 +197,7 @@ func (c *Controller) terminate(ctx context.Context, e leadregistry.Entry, st lea
 
 	killSent := emptied
 	var proof string
-	why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
+	ok, why, err := c.pollUntil(ctx, func(ctx context.Context) (bool, string) {
 		if !killSent {
 			err := c.mgr.Signal(ctx, st, syscall.SIGKILL)
 			switch {
@@ -214,7 +214,8 @@ func (c *Controller) terminate(ctx context.Context, e leadregistry.Entry, st lea
 	if err != nil {
 		return e, err
 	}
-	if why != "" {
+	if !ok {
+		why = orNoReason(why)
 		if last != nil {
 			why += "; last manager error: " + last.Error()
 		}
@@ -271,4 +272,13 @@ func (c *Controller) unproven(e leadregistry.Entry, notes []string, why string, 
 		return e, errors.Join(out, err)
 	}
 	return e, out
+}
+
+// orNoReason is the reason text of an unproven stop whose last check gave
+// none.
+func orNoReason(why string) string {
+	if why == "" {
+		return "the proof was not established by the bound"
+	}
+	return why
 }

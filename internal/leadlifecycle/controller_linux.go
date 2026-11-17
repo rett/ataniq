@@ -346,25 +346,27 @@ func (c *Controller) proveGone(ctx context.Context, st leadunit.State, ev leadre
 }
 
 // pollUntil calls check until it reports ok or the bound has passed, waiting
-// the poll interval between calls on the injected clock. It returns the last
-// reason it was given. A context error stops it at once.
-func (c *Controller) pollUntil(ctx context.Context, check func(context.Context) (ok bool, why string)) (why string, err error) {
+// the poll interval between calls on the injected clock. Only a check that
+// reported ok gives ok true; a check that never did gives ok false with the
+// last reason it was given, which may be empty, so callers decide on ok and
+// never on the reason. A context error stops it at once and gives ok false.
+func (c *Controller) pollUntil(ctx context.Context, check func(context.Context) (ok bool, why string)) (ok bool, why string, err error) {
 	deadline := c.clock.Now().Add(c.bound)
 	for {
-		ok, w := check(ctx)
-		if ok {
-			return "", nil
+		passed, w := check(ctx)
+		if passed {
+			return true, "", nil
 		}
 		why = w
 		if err := ctx.Err(); err != nil {
-			return why, err
+			return false, why, err
 		}
 		left := deadline.Sub(c.clock.Now())
 		if left <= 0 {
-			return why, nil
+			return false, why, nil
 		}
 		if err := c.clock.Sleep(ctx, min(c.poll, left)); err != nil {
-			return why, err
+			return false, why, err
 		}
 	}
 }
