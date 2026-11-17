@@ -66,6 +66,11 @@
 //     a write is refused by access(W_OK). That the tree is the lead's own
 //     clone, and not below another repository, is the check of the
 //     mountpoints package; the probe checks that .git is a folder.
+//   - Assertion 8 shows that the managed-settings file is a regular file on a
+//     read-only mount and contains the marker text. It does not parse the
+//     file: a file that holds the text where it does not make the hook
+//     active passes. That the hook runs is for the qualification case that
+//     exercises it.
 //   - Assertion 5 accepts the sysctl dev.tty.legacy_tiocsti reading 0 and
 //     nothing else when the profile names no seccomp filter: a filter that
 //     something else loaded is not evidence that TIOCSTI is blocked. When the

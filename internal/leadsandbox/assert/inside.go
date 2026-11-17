@@ -439,7 +439,12 @@ func (c *checker) treeGit() Result {
 	return t.result(7, fmt.Sprintf("%q is a folder and its config, hooks and info are read-only", git))
 }
 
-// 8. The managed-settings file is present and read-only, and holds the marker.
+// 8. The managed-settings file is present and read-only, and contains the
+// marker text. The match is a plain search for the text: a file that holds it
+// in a place that does not make the guard hook active (inside a string, next
+// to a setting that disables hooks) passes, and the detail says only that the
+// file contains the text. That the hook runs is for the qualification case
+// that exercises it (S18).
 func (c *checker) managed() Result {
 	var t tally
 	p := c.spec.ManagedSettings
@@ -462,10 +467,10 @@ func (c *checker) managed() Result {
 	case err != nil:
 		t.skip("%q cannot be read: %v", p, err)
 	case c.spec.ManagedMarker != "" && !bytes.Contains(data, []byte(c.spec.ManagedMarker)):
-		t.fail("%q does not contain the marker %q", p, c.spec.ManagedMarker)
+		t.fail("%q does not contain the marker text %q", p, c.spec.ManagedMarker)
 	}
 	if c.spec.ManagedMarker == "" {
 		return t.result(8, fmt.Sprintf("%q is a regular file and read-only; no marker is required for %s", p, c.spec.Runtime))
 	}
-	return t.result(8, fmt.Sprintf("%q is a regular file, read-only, and contains the marker", p))
+	return t.result(8, fmt.Sprintf("%q is a regular file, read-only, and contains the marker text", p))
 }

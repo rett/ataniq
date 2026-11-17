@@ -97,8 +97,10 @@ type Spec struct {
 	GitReadOnly []string `json:"git_read_only"`
 
 	// ManagedSettings is the managed-settings file inside, and
-	// ManagedMarker text it must contain: for claude the guard hook
-	// (assertion 8). Required for claude.
+	// ManagedMarker text it must contain: for claude a name that is in the
+	// guard hook's entry (assertion 8). Required for claude. The check is a
+	// plain search for the text; it does not parse the file or show that the
+	// hook is active.
 	ManagedSettings string `json:"managed_settings"`
 	ManagedMarker   string `json:"managed_marker,omitempty"`
 
@@ -410,7 +412,7 @@ func (s Spec) checkManaged() error {
 			return refuse("managed_settings", "must be %s for claude, the only place it reads policy from", profile.ClaudeManagedInside)
 		}
 		if s.ManagedMarker == "" {
-			return refuse("managed_marker", "is required for claude: the guard hook the file must contain")
+			return refuse("managed_marker", "is required for claude: the text of the guard hook the file must contain")
 		}
 	}
 	if len(s.ManagedMarker) > MaxMarkerBytes || !cleanMarker(s.ManagedMarker) {

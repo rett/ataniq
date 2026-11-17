@@ -226,7 +226,10 @@ func TestInsideAssertions(t *testing.T) {
 		{"8 a folder", profile.Claude, func(s *Spec, f *fakeSys) { f.setDir(s.ManagedSettings) }, 8, StatusFailed, "a folder"},
 		{"8 writable mount", profile.Claude, func(s *Spec, f *fakeSys) { f.setMount(s.ManagedSettings, false) }, 8, StatusFailed, "writable mount"},
 		{"8 access says writable", profile.Claude, func(s *Spec, f *fakeSys) { f.writable[s.ManagedSettings] = true }, 8, StatusFailed, "access(W_OK)"},
-		{"8 marker missing", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(s.ManagedSettings, `{"hooks":{}}`) }, 8, StatusFailed, "does not contain the marker"},
+		{"8 marker missing", profile.Claude, func(s *Spec, f *fakeSys) { f.setFile(s.ManagedSettings, `{"hooks":{}}`) }, 8, StatusFailed, "does not contain the marker text"},
+		{"8 marker text in a disabled place passes and says only that it contains the text", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.setFile(s.ManagedSettings, `{"disableAllHooks":true,"note":"example-guard-hook"}`)
+		}, 8, StatusOK, "contains the marker text"},
 		{"8 too large", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.setFile(s.ManagedSettings, strings.Repeat("x", MaxManagedSettingsBytes+1))
 		}, 8, StatusFailed, "larger than"},
