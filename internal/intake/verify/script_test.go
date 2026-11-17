@@ -33,9 +33,9 @@ git fetch --quiet --no-tags -- '/in/mirror.git' '+refs/leads/lead/heads/main:ref
 git checkout --quiet --detach refs/verify/tip || { echo 'ataniq-verify: cannot check out the tip'; exit 92; }
 unset GIT_CONFIG_NOSYSTEM GIT_TERMINAL_PROMPT
 printf '%s\n' 'ataniq-verify: gate lint'
-'make' 'lint' || exit $?
+( cd "$tree" && exec 'make' 'lint' ) || exit $?
 printf '%s\n' 'ataniq-verify: gate unit-2'
-'/bin/sh' '-c' 'echo it'\''s $HOME' || exit $?
+( cd "$tree" && exec '/bin/sh' '-c' 'echo it'\''s $HOME' ) || exit $?
 `
 	if got != want {
 		t.Fatalf("script differs\n--- got\n%s\n--- want\n%s", got, want)
@@ -95,6 +95,19 @@ func TestScriptRefusals(t *testing.T) {
 		{"empty command", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{""}}}},
 		{"NUL in argument", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"x", "a\x00b"}}}},
 		{"newline in argument", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"x", "a\nb"}}}},
+		{"builtin cd", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"cd", "/"}}}},
+		{"builtin exit", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"exit", "0"}}}},
+		{"builtin exec", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"exec", "make"}}}},
+		{"builtin eval", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"eval", "true"}}}},
+		{"builtin dot", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{".", "./x"}}}},
+		{"builtin colon", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{":"}}}},
+		{"builtin source", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"source", "x"}}}},
+		{"builtin command", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"command", "make"}}}},
+		{"reserved word", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"if"}}}},
+		{"relative path", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"./run.sh"}}}},
+		{"path below a folder", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"bin/run"}}}},
+		{"command with a dash", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"-x"}}}},
+		{"second gate is a builtin", testRef, fullTip, "/m", "/s", []Gate{{Name: "a", Argv: []string{"true"}}, {Name: "g", Argv: []string{"trap"}}}},
 		{"repeated name", testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{"x"}}, {Name: "g", Argv: []string{"y"}}}},
 	}
 	for _, c := range cases {
@@ -190,6 +203,67 @@ func TestScriptStopsAtFirstFailingGate(t *testing.T) {
 	}
 	if want := MarkerPrefix + "one\n" + MarkerPrefix + "two\nfailing\n"; out != want {
 		t.Fatalf("output %q want %q", out, want)
+	}
+}
+
+func TestScriptAcceptsProgramsThatAlsoAreBuiltins(t *testing.T) {
+	for _, name := range []string{"true", "false", "echo", "printf", "test", "pwd", "make", "/bin/cd", "/usr/bin/env"} {
+		if _, err := Script(testRef, fullTip, "/m", "/s", []Gate{{Name: "g", Argv: []string{name}}}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A gate runs as a program and never inside the script's own shell. The names
+// that would break this are refused by validation, so the script is built
+// without it here.
+func TestScriptNeverRunsAGateInItsOwnShell(t *testing.T) {
+	m := newMirror(t)
+	cases := []struct {
+		name  string
+		first Gate
+	}{
+		{"cd", Gate{Name: "first", Argv: []string{"cd", "/"}}},
+		{"exit", Gate{Name: "first", Argv: []string{"exit", "0"}}},
+		{"exec", Gate{Name: "first", Argv: []string{"exec", "/bin/true"}}},
+		{"eval", Gate{Name: "first", Argv: []string{"eval", "echo", "ran"}}},
+		{"set", Gate{Name: "first", Argv: []string{"set", "+e"}}},
+	}
+	for _, c := range cases {
+		script, err := buildScript(testRef, m.Tip, m.Path, t.TempDir(), []Gate{
+			c.first,
+			{Name: "second", Argv: []string{"/bin/sh", "-c", "echo second ran in $(pwd)"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, exit := runScript(t, script)
+		// A builtin is no program: the shell cannot find it, and the script
+		// ends there. Before the fix cd moved the next gate, exit 0 ended
+		// the script as a pass, and exec replaced it.
+		if exit != 127 {
+			t.Errorf("%s: exit %d\n%s", c.name, exit, out)
+		}
+		if strings.Contains(out, MarkerPrefix+"second") {
+			t.Errorf("%s: a later gate ran:\n%s", c.name, out)
+		}
+	}
+}
+
+func TestScriptGateStateDoesNotReachTheNextGate(t *testing.T) {
+	m := newMirror(t)
+	scratch := t.TempDir()
+	script, err := Script(testRef, m.Tip, m.Path, scratch, []Gate{
+		{Name: "moves", Argv: []string{"/bin/sh", "-c", "cd / && export LEAK=yes && exit 0"}},
+		{Name: "where", Argv: []string{"/bin/sh", "-c", `pwd; echo "leak=${LEAK-none}"`}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, exit := runScript(t, script)
+	want := MarkerPrefix + "moves\n" + MarkerPrefix + "where\n" + filepath.Join(scratch, "tree") + "\nleak=none\n"
+	if exit != 0 || out != want {
+		t.Fatalf("exit %d\n%q\nwant\n%q", exit, out, want)
 	}
 }
 

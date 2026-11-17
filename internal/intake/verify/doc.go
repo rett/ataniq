@@ -15,6 +15,13 @@
 // part that varies is one single-quoted word, so a gate argument with quotes,
 // spaces or $(...) stays one word and is never run by the shell.
 //
+// Each gate runs as a program, in a subshell that changes to the tree's root
+// and execs it. A gate therefore cannot change the script's own shell (its
+// folder, variables or exit), and a failed gate ends the script. For the same
+// reason Gate.Argv[0] must be an absolute path or a plain command name
+// without a slash, and not a shell builtin or reserved word such as cd, exit,
+// exec or eval; a request with such a gate is refused when it is validated.
+//
 // Before each gate the script prints a line "ataniq-verify: gate <name>".
 // Gate output can contain the same line, so these lines can be imitated and
 // prove nothing; they only help a human read the output.

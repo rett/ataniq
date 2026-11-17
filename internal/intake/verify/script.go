@@ -44,10 +44,62 @@ type Gate struct {
 	// Name is [a-z0-9][a-z0-9-]{0,62}. It is printed in the marker line.
 	Name string
 	// Argv is the command and its arguments. Each element becomes one word:
-	// nothing is expanded by the shell. Argv[0] is looked up on the
-	// sandbox's PATH unless it holds a slash. No element holds a NUL byte
-	// or a newline.
+	// nothing is expanded by the shell. Argv[0] is an absolute path, or a
+	// plain command name (no slash) that is looked up on the sandbox's
+	// PATH. It is not a name the shell runs by itself: a shell builtin
+	// such as cd, exit or eval, or a reserved word, is refused when the
+	// request is validated. No element holds a NUL byte or a newline, and
+	// Argv[0] does not start with a dash.
 	Argv []string
+}
+
+// shellOwnNames are the names a POSIX shell runs by itself, with no program
+// behind them: the special builtins, the regular builtins that change or read
+// the shell's own state, common extensions of other shells, and the reserved
+// words. A gate runs as an external program (see [Script]), so such a name
+// could only fail with status 127 inside the sandbox; it is refused when the
+// request is validated instead. Builtins that also exist as a program (true,
+// false, echo, printf, test, pwd, kill) are not listed: they run as that
+// program.
+var shellOwnNames = map[string]bool{
+	// POSIX special builtins.
+	".": true, ":": true, "break": true, "continue": true, "eval": true,
+	"exec": true, "exit": true, "export": true, "readonly": true,
+	"return": true, "set": true, "shift": true, "times": true, "trap": true,
+	"unset": true,
+	// POSIX regular builtins that act on the shell itself.
+	"alias": true, "bg": true, "cd": true, "command": true, "fc": true,
+	"fg": true, "getopts": true, "hash": true, "jobs": true, "read": true,
+	"type": true, "ulimit": true, "umask": true, "unalias": true, "wait": true,
+	// Common extensions.
+	"source": true, "builtin": true, "local": true, "declare": true,
+	"typeset": true, "let": true, "shopt": true, "pushd": true, "popd": true,
+	"dirs": true, "disown": true, "enable": true, "history": true,
+	"bind": true, "caller": true, "compgen": true, "complete": true,
+	"mapfile": true, "readarray": true, "suspend": true, "logout": true,
+	"whence": true, "where": true, "functions": true, "autoload": true,
+	"integer": true, "float": true,
+	// Reserved words.
+	"!": true, "{": true, "}": true, "[[": true, "]]": true, "if": true,
+	"then": true, "elif": true, "else": true, "fi": true, "for": true,
+	"while": true, "until": true, "do": true, "done": true, "case": true,
+	"esac": true, "in": true, "select": true, "function": true, "time": true,
+	"coproc": true,
+}
+
+// checkCommand reports why name cannot be a gate's command.
+func checkCommand(name string) error {
+	switch {
+	case strings.HasPrefix(name, "-"):
+		return errors.New("the command starts with a dash")
+	case strings.HasPrefix(name, "/"):
+		return nil
+	case strings.Contains(name, "/"):
+		return errors.New("the command is neither an absolute path nor a plain name without a slash")
+	case shellOwnNames[name]:
+		return fmt.Errorf("%q is a shell builtin or reserved word, not a program", name)
+	}
+	return nil
 }
 
 func validateGates(gates []Gate) error {
@@ -68,6 +120,9 @@ func validateGates(gates []Gate) error {
 		seen[g.Name] = true
 		if len(g.Argv) == 0 || g.Argv[0] == "" {
 			return fmt.Errorf("verify: gate %q: empty command", g.Name)
+		}
+		if err := checkCommand(g.Argv[0]); err != nil {
+			return fmt.Errorf("verify: gate %q: %w", g.Name, err)
 		}
 		if len(g.Argv) > maxGateArgs {
 			return fmt.Errorf("verify: gate %q: more than %d arguments", g.Name, maxGateArgs)
@@ -172,8 +227,8 @@ func checkInsidePath(what, p string) error {
 // the mirror into refs/verify/tip with no tags and no shared objects, checks
 // that it is exactly tip (exit 90 if not), checks it out detached, and then,
 // for each gate in order, prints "ataniq-verify: gate <name>" and runs the
-// gate from the tree's root. The first gate that fails ends the script with
-// its status. Standard error is joined to standard output.
+// gate as a program, in a subshell, from the tree's root. The first gate that
+// fails ends the script with its status. Standard error is joined to standard output.
 func Script(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
 	if err := checkTipRef(tipRef); err != nil {
 		return "", err
@@ -190,6 +245,13 @@ func Script(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate
 	if err := validateGates(gates); err != nil {
 		return "", err
 	}
+	return buildScript(tipRef, tip, mirrorInside, scratchInside, gates)
+}
+
+// buildScript writes the text of [Script] for arguments that were checked.
+// It is separate so that a test can show what the script does with a gate
+// that validation would refuse.
+func buildScript(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate) (string, error) {
 	q := func(s string) string {
 		out, err := sandboxplan.ShellQuote([]string{s})
 		if err != nil {
@@ -228,7 +290,10 @@ func Script(tipRef, tip string, mirrorInside, scratchInside string, gates []Gate
 		if err != nil {
 			return "", fmt.Errorf("verify: gate %q: %w", g.Name, err)
 		}
-		b.WriteString(line + " || exit $?\n")
+		// A subshell that execs: a builtin or a function is never run in
+		// this shell, nothing a gate does changes this shell's state, and
+		// every gate starts in the tree's root.
+		b.WriteString(`( cd "$tree" && exec ` + line + " ) || exit $?\n")
 	}
 	return b.String(), nil
 }

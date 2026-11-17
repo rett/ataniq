@@ -388,6 +388,8 @@ func TestRunRefusesBeforeRunningAnything(t *testing.T) {
 		"short tip":        func(r *Request) { r.Tip = "abc" },
 		"no gates":         func(r *Request) { r.Gates = nil },
 		"bad gate":         func(r *Request) { r.Gates = []Gate{{Name: "x", Argv: []string{"a\nb"}}} },
+		"builtin gate":     func(r *Request) { r.Gates = []Gate{{Name: "x", Argv: []string{"exit", "0"}}} },
+		"relative gate":    func(r *Request) { r.Gates = []Gate{{Name: "x", Argv: []string{"./run.sh"}}} },
 		"no planner":       func(r *Request) { r.Planner = nil },
 		"negative timeout": func(r *Request) { r.Limits.Timeout = -1 },
 		"negative output":  func(r *Request) { r.Limits.MaxOutput = -1 },
