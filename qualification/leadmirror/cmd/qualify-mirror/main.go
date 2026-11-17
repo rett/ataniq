@@ -84,7 +84,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 // checkOut checks the output path before anything runs: absolute after
 // cleaning, its folder exists, it does not exist, and it is not inside the
-// scratch state root, which a sandbox may read.
+// scratch state root, which a sandbox may read. The folder of the output file
+// is resolved through its symlinks first, so a link into the state root is
+// refused too.
 func checkOut(path, stateRoot string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -98,10 +100,33 @@ func checkOut(path, stateRoot string) (string, error) {
 	if fi, err := os.Stat(filepath.Dir(abs)); err != nil || !fi.IsDir() {
 		return "", errors.New("the folder of the output file does not exist")
 	}
-	if abs == stateRoot || strings.HasPrefix(abs, stateRoot+"/") {
-		return "", errors.New("the output file must not be inside the scratch state root")
+	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	real := filepath.Join(dir, filepath.Base(abs))
+	for _, root := range rootNames(stateRoot) {
+		for _, p := range []string{abs, real} {
+			if p == root || strings.HasPrefix(p, root+"/") {
+				return "", errors.New("the output file must not be inside the scratch state root")
+			}
+		}
 	}
 	return abs, nil
+}
+
+// rootNames returns the names of the scratch state root to compare with: the
+// text as given, and the root with the symlinks of its parent folders
+// resolved when that folder exists. The root itself is not a symlink; the
+// library refuses that.
+func rootNames(stateRoot string) []string {
+	names := []string{stateRoot}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(stateRoot)); err == nil {
+		if real := filepath.Join(dir, filepath.Base(stateRoot)); real != stateRoot {
+			names = append(names, real)
+		}
+	}
+	return names
 }
 
 // writeReport writes the report as indented JSON to a new file with mode

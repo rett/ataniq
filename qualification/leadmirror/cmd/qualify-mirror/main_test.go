@@ -223,6 +223,42 @@ func TestRunRefusals(t *testing.T) {
 			t.Errorf("exit %d", code)
 		}
 	})
+	t.Run("output folder is a link into the scratch root", func(t *testing.T) {
+		p := newPaths(t, ack)
+		if err := os.Mkdir(p.root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(p.dir, "link")
+		if err := os.Symlink(p.root, link); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, stderr := call(t, "--config", p.config, "--out", filepath.Join(link, "report.json")); code != exitRefused || !strings.Contains(stderr, "scratch state root") {
+			t.Errorf("exit %d: %s", code, stderr)
+		}
+		if entries, _ := os.ReadDir(p.root); len(entries) != 0 {
+			t.Errorf("the scratch root holds %d entries", len(entries))
+		}
+	})
+	t.Run("scratch root reached through a link", func(t *testing.T) {
+		p := newPaths(t, ack)
+		real := filepath.Join(p.dir, "real")
+		if err := os.Mkdir(real, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(p.dir, "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		// The config names the root below the link; the output folder is the
+		// real folder of the same place.
+		write(t, p.config, fmt.Sprintf(`{"state_root": %q, "template": %q, "role": "coder", "project": "proj", "i_run_this_on_purpose": true}`, filepath.Join(link, "scratch"), p.template))
+		if err := os.Mkdir(filepath.Join(real, "scratch"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, _ := call(t, "--config", p.config, "--out", filepath.Join(real, "scratch", "report.json")); code != exitRefused {
+			t.Errorf("exit %d", code)
+		}
+	})
 	t.Run("output folder missing", func(t *testing.T) {
 		p := newPaths(t, ack)
 		if code, _, _ := call(t, "--config", p.config, "--out", filepath.Join(p.dir, "no", "report.json")); code != exitRefused {

@@ -51,7 +51,9 @@ The command refuses to run, with exit status 2 and nothing created, when:
 - the scratch state root exists and holds anything, is a symlink, is not a
   folder, or can be written by group or others;
 - the output file exists, its folder does not exist, or it lies inside the
-  scratch state root.
+  scratch state root. The command follows the symlinks of the output file's
+  folder and of the state root's parent folder before it compares, so a link
+  into the state root is refused too.
 
 If the run is interrupted (SIGINT) after it has started, the command writes the
 report it has made so far, then says that the run did not finish and exits with
