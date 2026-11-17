@@ -81,6 +81,13 @@ func unitName(name string) string { return "ataniq-scratch-" + name }
 
 // agentEnv is the whole environment of the agent: TERM, HOME (the disposable
 // home), PATH, LANG and each --env. Nothing else is inherited.
+//
+// The holder builds the agent's environment from the --env list it is given
+// and from nothing else: exactly this list, and the holder must not pass its
+// own environment on. That matters in unit mode, where the holder itself runs
+// with the user manager's environment (the real HOME and whatever the session
+// imported), while with --direct it gets only PATH and LANG. The holder
+// command's task asserts this rule.
 func agentEnv(home, lang string, extra []string) []string {
 	env := []string{agentTerm, "HOME=" + home, agentPath, "LANG=" + lang}
 	return append(env, extra...)
