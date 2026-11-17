@@ -21,7 +21,11 @@ type Cmd struct {
 	// It may be empty only for the subcommands that need none ("init",
 	// "version").
 	GitDir string
-	// Args is the git subcommand and its arguments.
+	// Args is the git subcommand and its arguments. Before the first "--"
+	// or "--end-of-options", an option must be written "--name=value" or be
+	// a flag that takes no value (see valuelessFlags in gitenv.go);
+	// [Git.Argv] refuses any other. The options that name a program are
+	// refused in every form.
 	Args []string
 	// Protocols lists the transports this command may use. The only name
 	// known is "file". Empty means no transport.
@@ -189,8 +193,8 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if opt := refusedOption(c.Args[1:]); opt != "" {
-		return nil, fmt.Errorf("gitenv: option %q is refused", opt)
+	if err := checkOptions(c.Args[1:]); err != nil {
+		return nil, err
 	}
 	uploadPack, err := uploadPackOption(c, sub, protocols)
 	if err != nil {
@@ -326,27 +330,83 @@ func cleanProtocols(in []string) ([]string, error) {
 	return out, nil
 }
 
-// refusedOption returns the first argument that is a refused option, or "".
-// It stops at "--" and "--end-of-options", after which git reads no options.
-func refusedOption(args []string) string {
-	for _, a := range args {
+// valuelessFlags are the options that may stand before the end of the
+// options without "=". Each one takes no value, in every subcommand that
+// accepts it here, so git never reads the next argument as its value. This
+// is the one list to extend: add a flag only when it takes no value in any
+// subcommand of [subcommands], and write every other option as
+// "--name=value". The flags come from the callers of this package (the
+// mirror, the intake check) and from its own tests.
+var valuelessFlags = []string{
+	// Fetch and update.
+	"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head",
+	"--no-auto-maintenance", "--no-auto-gc", "--all",
+	// Init.
+	"--bare",
+	// Output control.
+	"--quiet", "-q", "-v", "-z", "--raw", "--count",
+	// Diff and log.
+	"-r", "-m", "--root", "--no-renames", "--full-index", "--no-color",
+	"--no-ext-diff", "--no-textconv", "--no-mailmap", "--no-notes",
+	"--no-decorate", "--no-show-signature", "--first-parent", "--no-walk",
+	"--objects",
+	// Reading and checking.
+	"--verify", "--is-ancestor", "--is-bare-repository", "--no-deref",
+	"--stdin", "--list", "--local", "--batch-check", "--batch",
+	// Added for the callers and tests of this package. The "config" action
+	// flags name the key as a plain argument, not as their value.
+	"--get", "--get-all", "--unset", "--show-origin", "--oneline", "--stat",
+	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
+}
+
+// separateValueFlags take exactly the next argument as their value and are
+// allowed in that form, because a caller needs it ("config --file /dev/stdin
+// --list"). The value must be a plain argument: if it starts with "-" the
+// command is refused, so the value can never be a terminator or an option.
+// Prefer "--name=value" in new code; add a flag here only when a caller
+// cannot.
+var separateValueFlags = []string{"--file"}
+
+// checkOptions refuses what must not stand before the end of the options:
+// an option that names a program to run (also abbreviated), and any option
+// that git could let take the next argument as its value. It stops at the
+// first "--" or "--end-of-options", after which git reads no options.
+//
+// The rule is strict so that no argument depends on what git does with a
+// neighbour. An option such as "-o" takes the next argument as its value,
+// even when that is "--", and git then reads the argument after it as an
+// option. So before the end of the options an option is either written with
+// "=" (which holds its value), or is in [valuelessFlags].
+func checkOptions(args []string) error {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if a == "--" || a == "--end-of-options" {
-			return ""
+			return nil
 		}
-		if !strings.HasPrefix(a, "--") {
+		if !strings.HasPrefix(a, "-") || a == "-" {
 			continue
 		}
-		name, _, _ := strings.Cut(a, "=")
-		if len(name) < 5 {
-			continue
+		if slices.Contains(separateValueFlags, a) {
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++ // the value; git reads it as the value of a
+				continue
+			}
+			return fmt.Errorf("gitenv: option %q needs its value as the next argument, and the value may not start with \"-\"", a)
 		}
-		for _, r := range refusedOptions {
-			if strings.HasPrefix(r, name) {
-				return a
+		name, _, hasValue := strings.Cut(a, "=")
+		if strings.HasPrefix(a, "--") && len(name) >= 5 {
+			for _, r := range refusedOptions {
+				if strings.HasPrefix(r, name) {
+					return fmt.Errorf("gitenv: option %q is refused", a)
+				}
 			}
 		}
+		if hasValue || slices.Contains(valuelessFlags, a) {
+			continue
+		}
+		return fmt.Errorf("gitenv: option %q before the end of the options is not allowed: write its value with \"=\" (\"--name=value\"), or ask for the flag to be added to the list of valueless flags", a)
 	}
-	return ""
+	return nil
 }
 
 // settings returns the fixed -c settings as key=value strings.
