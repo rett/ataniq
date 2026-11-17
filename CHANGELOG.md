@@ -76,20 +76,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Add the coordinator to the design documents. A coordinator is an ephemeral
-  delegate of a project lead for exactly one feature: it holds no seat or
-  epoch, is never a handoff target, never talks to the owner except through its
-  lead and never approves. It may prepare, verify, apply and merge runs into
-  its own feature, sync it, run its feature verify (advisory under a seat; only
-  a host-run pass counts toward finishing) and clean any run of its feature;
-  finish, push, release, prune and every approval stay with the lead and the
-  owner. Its identity is a declared label that only narrows what it may do, and
-  real identity comes only from the bound file Ataniq writes. A lead quiesces
-  its coordinators before a handoff, and a stalled coordinator is confirmed
-  stopped before its runs are adopted. The approvals document states that no
-  approval, plan token or grant passes to or through a coordinator, and that a
-  delegation to one is not an approval. Specification only; nothing is
-  implemented.
+- Add the feature coordinator to the design documents. A coordinator is an
+  ephemeral delegate of a project lead for exactly one feature: it holds no
+  seat or lead assignment epoch, is never a handoff target and never approves.
+  Its questions go to its lead; the owner may watch it and type into it as its
+  single writer, with the lead notified and its powers unchanged. It may
+  prepare, verify, apply and merge runs into its own feature, sync it and clean
+  any run of its feature; the lead runs the whole-suite verify, and start and
+  finish of a feature, push, release, hotfix, prune and adoption of other
+  actors' runs stay with the lead, and approval with the owner. Its label only
+  narrows what it may do and is never identity; identity comes only from a
+  bound file Ataniq writes. A lead quiesces its coordinators before a handoff,
+  and a stalled coordinator is confirmed stopped before its runs are adopted.
+  The approvals document states that no approval, plan token or grant passes to
+  or through a coordinator, that a lead's feature delegation to one is neither a
+  grant nor an approval, and that the owner typing into one is not an approval.
+  Specification only; nothing is implemented.
 - Record the order of work in the design documents. Qualification comes first
   and sandbox qualification precedes any Ataniq-managed lead; a provider's
   remote control stays an optional launch profile during the transition; a
