@@ -68,6 +68,24 @@ func TestClientChecksProtocolAndRequestID(t *testing.T) {
 		"error with other id": func(r Request) []byte {
 			return []byte(`{"protocol":"` + Protocol + `","request_id":"zzz","ok":false,"error":{"code":"busy","message":"m"}}` + "\n")
 		},
+		"upper-case keys": func(r Request) []byte {
+			return []byte(`{"PROTOCOL":"` + Protocol + `","Request_ID":"` + r.RequestID + `","OK":true,"RESULT":{"protocols":["ataniq.client/1"],"mutations":false,"version":"v"}}` + "\n")
+		},
+		"mixed-case key beside the right ones": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":true,"Result":{"version":"v"}}` + "\n")
+		},
+		"upper-case error keys": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":false,"error":{"Code":"busy","Message":"m"}}` + "\n")
+		},
+		"empty id on unsupported-operation": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"unsupported-operation","message":"m"}}` + "\n")
+		},
+		"empty id on internal": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"internal","message":"m"}}` + "\n")
+		},
+		"empty id on unsupported-protocol": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"unsupported-protocol","message":"m"}}` + "\n")
+		},
 		"result of the wrong type": func(r Request) []byte {
 			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":true,"result":{"protocols":7}}` + "\n")
 		},
@@ -85,6 +103,26 @@ func TestClientChecksProtocolAndRequestID(t *testing.T) {
 			}
 			if _, err := c.Hello(context.Background()); !errors.Is(err, ErrClosed) {
 				t.Fatalf("after a bad response: %v", err)
+			}
+		})
+	}
+}
+
+func TestClientAcceptsEmptyIDOnlyOnRefusalCodes(t *testing.T) {
+	for _, code := range []ErrorCode{CodeUnauthorized, CodeBusy, CodeTooLarge, CodeInvalidRequest} {
+		t.Run(string(code), func(t *testing.T) {
+			path := fakeServer(t, func(r Request) []byte {
+				return []byte(`{"protocol":"` + Protocol + `","request_id":"","ok":false,"error":{"code":"` + string(code) + `","message":"m"}}` + "\n")
+			})
+			c, err := Dial(context.Background(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.Hello(context.Background())
+			var e *Error
+			if !errors.As(err, &e) || e.Code != code {
+				t.Fatalf("err = %v", err)
 			}
 		})
 	}
@@ -192,4 +230,61 @@ func TestClientReturnsTypedErrorForUnsupportedProtocol(t *testing.T) {
 	if !strings.Contains(e.Error(), "unsupported-protocol") {
 		t.Fatalf("Error() = %q", e.Error())
 	}
+}
+
+// hostile is text a faulty or impostor server could send to reach a terminal.
+const hostile = "x\x1b[31m\x1b]0;PWNED\a"
+
+func TestClientErrorTextsCarryNothingTheServerSent(t *testing.T) {
+	long := strings.Repeat("A", 500000)
+	cases := map[string]func(Request) []byte{
+		"hostile code": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":false,"error":{"code":"x\u001b[31m\u001b]0;PWNED\u0007` + long + `","message":"` + `m\u001b[31m` + `"}}` + "\n")
+		},
+		"hostile protocol": func(r Request) []byte {
+			return []byte(`{"protocol":"x\u001b]0;PWNED\u0007` + long + `","request_id":"` + r.RequestID + `","ok":true,"result":{}}` + "\n")
+		},
+		"hostile syntax": func(r Request) []byte { return []byte("{\x1b]0;PWNED\x07\n") },
+		"hostile type": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":"x\u001b]0;PWNED\u0007"}` + "\n")
+		},
+		"hostile result": func(r Request) []byte {
+			return []byte(`{"protocol":"` + Protocol + `","request_id":"` + r.RequestID + `","ok":true,"result":{"protocols":"x\u001b]0;PWNED\u0007"}}` + "\n")
+		},
+	}
+	for name, reply := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, err := Dial(context.Background(), fakeServer(t, reply))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_, err = c.Hello(context.Background())
+			if err == nil {
+				t.Fatal("no error")
+			}
+			text := err.Error()
+			if len(text) > 200 {
+				t.Errorf("error text is %d bytes", len(text))
+			}
+			for i := 0; i < len(text); i++ {
+				if text[i] < 0x20 || text[i] > 0x7e {
+					t.Fatalf("error text has the byte %#x: %q", text[i], text)
+				}
+			}
+			// The code is the one server text that is printed, escaped and cut.
+			if name != "hostile code" && (strings.Contains(text, "PWNED") || strings.Contains(text, "AAAA")) {
+				t.Errorf("error text echoes the server: %q", text)
+			}
+			if name == "hostile code" && !strings.Contains(text, `\x1b[31m`) {
+				t.Errorf("code is not printed escaped: %q", text)
+			}
+		})
+	}
+	t.Run("the fields stay available", func(t *testing.T) {
+		e := &Error{Code: CodeBusy, Message: hostile}
+		if e.Message != hostile || !strings.Contains(e.Error(), "busy") {
+			t.Fatalf("Error() = %q", e.Error())
+		}
+	})
 }

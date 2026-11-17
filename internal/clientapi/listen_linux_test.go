@@ -160,15 +160,26 @@ func TestListenRefusesPathTooLongForASocketAddress(t *testing.T) {
 	if _, statErr := os.Lstat(dir); statErr == nil {
 		t.Fatal("the folder was created for a path that cannot be bound")
 	}
-	// The edge: 107 bytes is the longest that fits.
+	// The edge: 107 bytes is the longest that fits. It is built under a short
+	// folder of its own, as t.TempDir's name grows with the test's name and
+	// TMPDIR and may leave no room.
+	short, err := os.MkdirTemp("", "ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(short) })
 	sock := "/" + SocketName
-	fit := base + "/" + strings.Repeat("e", maxSocketPath-len(base)-1-len(sock))
+	pad := maxSocketPath - len(short) - 1 - len(sock)
+	if pad < 1 {
+		t.Fatalf("TMPDIR leaves no room for the edge test: %q is %d bytes", short, len(short))
+	}
+	fit := short + "/" + strings.Repeat("e", pad)
 	if len(fit+sock) != maxSocketPath {
 		t.Fatalf("test arithmetic: %d", len(fit+sock))
 	}
 	l, _, err := Listen(fit)
 	if err != nil {
-		t.Skipf("longest path did not bind: %v", err)
+		t.Fatalf("the longest path that fits did not bind: %v", err)
 	}
 	l.Close()
 	_, _, err = Listen(fit + "e")

@@ -168,6 +168,15 @@ func TestEveryErrorCode(t *testing.T) {
 		`{"protocol":"ataniq.client/1","request_id":"a","op":null}`,
 		"{\"protocol\":\"ataniq.client/1\",\"request_id\":\"a\",\"op\":\"hel\xfflo\"}",
 		`{"Protocol":"ataniq.client/1","Request_ID":"a","Op":"hello"}`,
+		// a repeated top-level key, whichever way it would resolve
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"approve","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"approve"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op" : "hello", "op" : "status"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","\u006fp":"status"}`,
+		`{"protocol":"ataniq.client/1","protocol":"ataniq.client/2","request_id":"a","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","request_id":"b","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","extra":1,"extra":2}`,
 	} {
 		resp := r.ask(line)
 		wantError(t, resp, CodeInvalidRequest)
@@ -204,7 +213,7 @@ func TestEveryErrorCode(t *testing.T) {
 		t.Fatalf("resp = %+v", resp)
 	}
 	snap := ts.counters.Snapshot()
-	if snap.Invalid != 25 || snap.Unsupported != 8 {
+	if snap.Invalid != 33 || snap.Unsupported != 8 {
 		t.Fatalf("counters = %+v", snap)
 	}
 }
@@ -583,5 +592,77 @@ func TestClientHonoursContext(t *testing.T) {
 	}
 	if _, err := c.Hello(context.Background()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("after a failed call: %v", err)
+	}
+}
+
+func TestClientCloseInterruptsACallInFlight(t *testing.T) {
+	block := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	h := &stubHandler{onStatus: func(ctx context.Context) {
+		entered <- struct{}{}
+		<-block
+	}}
+	ts := startServer(t, h, Options{})
+	defer close(block)
+	c, err := Dial(context.Background(), ts.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The call has no deadline and the handler never answers.
+	callErr := make(chan error, 1)
+	go func() {
+		_, err := c.Status(context.Background())
+		callErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler was not reached")
+	}
+	closeErr := make(chan error, 1)
+	go func() { closeErr <- c.Close() }()
+	select {
+	case err := <-closeErr:
+		if err != nil {
+			t.Fatalf("Close = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close is blocked by the call in flight")
+	}
+	select {
+	case err := <-callErr:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("the call returned %v, want ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call did not return after Close")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close = %v", err)
+	}
+}
+
+func TestHelloAdvertisesTheIdleTimeoutRoundedUp(t *testing.T) {
+	for idle, want := range map[time.Duration]int{
+		500 * time.Millisecond:  1,
+		time.Second:             1,
+		1500 * time.Millisecond: 2,
+		7 * time.Second:         7,
+		30 * time.Second:        30,
+		0:                       int(DefaultIdleTimeout / time.Second), // the default
+	} {
+		ts := startServer(t, &stubHandler{}, Options{IdleTimeout: idle})
+		c, err := Dial(context.Background(), ts.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := c.Hello(context.Background())
+		c.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Limits.IdleTimeoutSeconds != want {
+			t.Errorf("idle %v advertised as %d s, want %d", idle, got.Limits.IdleTimeoutSeconds, want)
+		}
 	}
 }

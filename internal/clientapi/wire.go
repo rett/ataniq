@@ -309,10 +309,38 @@ func validRequestID(id string) bool {
 	return true
 }
 
+// repeatsKey reports whether the JSON object in raw, already known to be
+// valid, has a top-level key twice, compared after unescaping. A map decode
+// keeps the last of two equal keys, so a reader that kept the first, such as a
+// logger or a proxy, would see another request than the one that is served.
+func repeatsKey(raw []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil { // the opening brace
+		return true
+	}
+	seen := make(map[string]struct{})
+	for dec.More() {
+		tok, err := dec.Token()
+		key, ok := tok.(string)
+		if err != nil || !ok {
+			return true
+		}
+		if _, dup := seen[key]; dup {
+			return true
+		}
+		seen[key] = struct{}{}
+		var skip json.RawMessage
+		if dec.Decode(&skip) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // decodeRequest is the only gate to dispatch. It returns the request ID to echo
 // (valid or empty), the operation (only OpHello or OpStatus) and, on failure,
 // the error body to answer with. Fields are matched by exact name; unknown
-// fields are ignored.
+// fields are ignored; a top-level key that appears twice is invalid.
 func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
 	invalid := &ErrorBody{Code: CodeInvalidRequest, Message: msgInvalidRequest}
 	if !utf8.Valid(line) {
@@ -324,6 +352,9 @@ func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
+		return "", "", invalid
+	}
+	if repeatsKey(trimmed) {
 		return "", "", invalid
 	}
 	str := func(name string) (string, bool) {

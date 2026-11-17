@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -27,29 +29,47 @@ var ErrResponseTooLarge = errors.New("clientapi: response line over the response
 // the connection.
 var ErrBadResponse = errors.New("clientapi: bad response")
 
-// Error is the typed error for an error response.
+// maxErrorCodeText is the most of a server's code that [Error.Error] prints.
+const maxErrorCodeText = 64
+
+// Error is the typed error for an error response. Its fields are what the
+// server sent, and a faulty or impostor server can send anything: a caller
+// that shows Message must make it safe for its output first (a terminal,
+// above all, must not receive it raw).
 type Error struct {
-	// Code is the server's code.
+	// Code is the server's code, as received.
 	Code ErrorCode
-	// Message is the server's fixed text.
+	// Message is the server's text, as received and unchecked.
 	Message string
 	// SupportedProtocols is set with [CodeUnsupportedProtocol].
 	SupportedProtocols []string
 }
 
-// Error returns the code and the server's text.
+// Error returns the server's code, cut to a short length and quoted with
+// every control and non-ASCII character escaped, so that nothing the server
+// sent can reach a terminal or a log through it. It leaves out Message, which
+// stays available as a field.
 func (e *Error) Error() string {
-	return "clientapi: server answered " + string(e.Code) + ": " + e.Message
+	code := string(e.Code)
+	if len(code) > maxErrorCodeText {
+		code = code[:maxErrorCodeText] + "..."
+	}
+	return "clientapi: server answered " + strconv.QuoteToASCII(code)
 }
 
 // Client is one connection to the daemon. It is safe for concurrent use; calls
-// take turns on the connection.
+// take turns on the connection. Close may be called at any time, also while a
+// call is in flight.
 type Client struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	br     *bufio.Reader
-	seq    uint64
-	closed bool
+	mu   sync.Mutex // held by a call for its whole exchange
+	conn net.Conn
+	br   *bufio.Reader
+	seq  uint64
+
+	// closed is set when the connection is closed, by Close or by a failure;
+	// closeOnce closes the connection exactly once, without c.mu.
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
 
 // Dial connects to the socket at path.
@@ -62,15 +82,21 @@ func Dial(ctx context.Context, path string) (*Client, error) {
 	return &Client{conn: conn, br: bufio.NewReaderSize(conn, 4096)}, nil
 }
 
-// Close closes the connection.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	return c.conn.Close()
+// Close closes the connection. It does not wait for a call in flight: it
+// closes the connection under that call, which then returns [ErrClosed]. The
+// first Close returns the error of closing the connection; later ones return
+// nil.
+func (c *Client) Close() error { return c.closeConn() }
+
+// closeConn closes the connection once, without taking c.mu, and returns the
+// error of the first close to its first caller.
+func (c *Client) closeConn() error {
+	var err error
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		err = c.conn.Close()
+	})
+	return err
 }
 
 // Hello asks for the server's protocols, limits and operations.
@@ -94,7 +120,7 @@ func (c *Client) Status(ctx context.Context) (StatusResult, error) {
 func (c *Client) call(ctx context.Context, op string, result any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
@@ -109,10 +135,14 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 	defer stop()
 
 	fail := func(err error) error {
-		c.closed = true
-		c.conn.Close()
+		// A Close from another goroutine ended the call.
+		wasClosed := c.closed.Load()
+		c.closeConn()
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
+		}
+		if wasClosed {
+			return ErrClosed
 		}
 		// The connection's deadline is the context's and can fire a moment
 		// before the context reports it.
@@ -140,11 +170,16 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 		return fail(fmt.Errorf("%w: not UTF-8", ErrBadResponse))
 	}
 	var resp Response
+	// The errors below carry fixed texts: what the server sent, including the
+	// text of a decoder error that quotes it, stays out of them.
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return fail(fmt.Errorf("%w: %v", ErrBadResponse, err))
+		return fail(fmt.Errorf("%w: not a response object", ErrBadResponse))
+	}
+	if !exactKeys(raw, "protocol", "request_id", "ok", "result", "error") {
+		return fail(fmt.Errorf("%w: a key is not spelled exactly", ErrBadResponse))
 	}
 	if resp.Protocol != Protocol {
-		return fail(fmt.Errorf("%w: protocol %q", ErrBadResponse, resp.Protocol))
+		return fail(fmt.Errorf("%w: protocol does not match", ErrBadResponse))
 	}
 	if resp.OK {
 		if resp.RequestID != id {
@@ -154,26 +189,61 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 			return fail(fmt.Errorf("%w: result missing", ErrBadResponse))
 		}
 		if err := json.Unmarshal(resp.Result, result); err != nil {
-			return fail(fmt.Errorf("%w: %v", ErrBadResponse, err))
+			return fail(fmt.Errorf("%w: result does not fit the operation", ErrBadResponse))
 		}
 		return nil
 	}
 	if resp.Error == nil {
 		return fail(fmt.Errorf("%w: error missing", ErrBadResponse))
 	}
-	// A refusal of the connection ("unauthorized", "busy") or of an unreadable
-	// request carries no request id; any other error response must match.
-	if resp.RequestID != id && resp.RequestID != "" {
+	if !exactKeys(rawField(raw, "error"), "code", "message", "supported_protocols") {
+		return fail(fmt.Errorf("%w: a key is not spelled exactly", ErrBadResponse))
+	}
+	// A refusal of the connection ("unauthorized", "busy"), of an over-long
+	// line ("too-large") or of an unreadable request ("invalid-request")
+	// carries no request id when the server had none to echo. Every other
+	// error response must carry the request's.
+	emptyOK := resp.RequestID == "" && (resp.Error.Code == CodeUnauthorized || resp.Error.Code == CodeBusy ||
+		resp.Error.Code == CodeTooLarge || resp.Error.Code == CodeInvalidRequest)
+	if resp.RequestID != id && !emptyOK {
 		return fail(fmt.Errorf("%w: request id does not match", ErrBadResponse))
 	}
 	e := &Error{Code: resp.Error.Code, Message: resp.Error.Message, SupportedProtocols: resp.Error.SupportedProtocols}
 	switch e.Code {
 	case CodeUnauthorized, CodeBusy, CodeTooLarge:
 		// The server closes the connection after these.
-		c.closed = true
-		c.conn.Close()
+		c.closeConn()
 	}
 	return e
+}
+
+// exactKeys reports whether no key of the JSON object in raw is a different
+// spelling of one of known: encoding/json matches keys without regard to case,
+// and the protocol's keys are exact. A key that is not near any of known is
+// an unknown key and is ignored, as is anything raw is not an object.
+func exactKeys(raw []byte, known ...string) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return true
+	}
+	for key := range fields {
+		for _, k := range known {
+			if key != k && strings.EqualFold(key, k) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// rawField returns the value of the exact key name in the JSON object raw, or
+// nil.
+func rawField(raw []byte, name string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	return fields[name]
 }
 
 // readResponseLine reads one line of at most [MaxResponseBytes] bytes

@@ -193,7 +193,8 @@ func newServer(h Handler, opts Options) *server {
 // each with h. It takes ownership of l and closes it before it returns; a
 // socket file that [Listen] bound is unlinked by that close. Serve returns nil
 // when ctx ended, and the accept error otherwise. When it returns, every
-// connection goroutine has ended.
+// connection goroutine has ended; Serve waits for a handler call in flight, so
+// a [Handler] must return when its context ends, or Serve does not return.
 //
 // For each connection Serve reads the peer UID before it reads any byte. A
 // peer whose UID differs from the server's effective UID gets one
@@ -468,9 +469,11 @@ func (s *server) call(ctx context.Context, op string) (result any, ok bool) {
 		r := s.handler.Hello(ctx)
 		r.Protocols = SupportedProtocols()
 		r.Limits = Limits{
-			MaxRequestBytes:    MaxRequestBytes,
-			MaxResponseBytes:   MaxResponseBytes,
-			IdleTimeoutSeconds: int(s.idle / time.Second),
+			MaxRequestBytes:  MaxRequestBytes,
+			MaxResponseBytes: MaxResponseBytes,
+			// Rounded up: a timeout under a second must not read as 0, which a
+			// client could take for "no limit".
+			IdleTimeoutSeconds: int((s.idle + time.Second - 1) / time.Second),
 			MaxConnections:     s.maxConns,
 		}
 		r.Operations = Operations()
