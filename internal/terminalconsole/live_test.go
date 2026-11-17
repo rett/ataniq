@@ -1127,11 +1127,20 @@ func TestLiveShowsNoFixtureProjectionEvenWithASnapshot(t *testing.T) {
 			t.Fatalf("evidence lacks %q:\n%s", want, ev)
 		}
 	}
-	// The tree has nothing to select.
-	m.Update(tabKey)
+	// The tree has nothing to select: its cursor, the selected project and
+	// lead, the focus and the picture stay what they were.
+	before := ansiStrip(m.View().Content)
+	cursor, project, lead := m.treeCursor, m.project, m.lead
+	m.pane = paneTree
 	m.Update(enterKey)
 	m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
-	_ = m.View()
+	m.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	if m.treeCursor != cursor || m.project != project || m.lead != lead || m.focus != consoleFocus {
+		t.Fatalf("the tree moved: cursor %d project %d lead %d focus %v", m.treeCursor, m.project, m.lead, m.focus.name())
+	}
+	if after := ansiStrip(m.View().Content); after != before {
+		t.Fatalf("the tree changed the picture:\n%s\n--- was:\n%s", after, before)
+	}
 }
 
 func TestLiveCountersAndStatusAreShown(t *testing.T) {
@@ -1288,22 +1297,33 @@ func TestLiveHeldFrameIsRedrawnAtItsDeadline(t *testing.T) {
 	f.start.Pane.Write([]byte("\x1b[2J\x1b[Hbefore"))
 	f.emit("\x1b[?2026h\x1b[Hduring")
 	r.pump()
-	found := false
+	var delays []time.Duration
 	for _, s := range r.sched {
 		if _, ok := s.fn(r.t0).(holdMsg); ok {
-			found = true
+			delays = append(delays, s.d)
 		}
 	}
-	if !found {
-		t.Fatalf("no redraw scheduled for the held frame: %v", r.sched)
+	if len(delays) != 1 {
+		t.Fatalf("redraws scheduled for the held frame: %v, timers %v", delays, r.sched)
+	}
+	// The delay is measured on the live clock, which the pane's hold limit
+	// reads: at most the hold limit from now. On the model's own tick time,
+	// which stays zero in live mode, it would be centuries.
+	if d := delays[0]; d < 0 || d > sessionpane.MaxFrameHold {
+		t.Fatalf("the held frame is redrawn after %v, want at most %v", d, sessionpane.MaxFrameHold)
 	}
 }
 
+// TestLiveConcurrentFeedAndDraw runs the source's goroutine against the
+// program's: the data race detector (the suite runs with -race) is what fails
+// it on a race. The checks after it are for the result, which holds without
+// the detector too: nothing the source wrote is lost or unbounded.
 func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 	f := newFake(LiveWriter)
 	r := newLiveRig(t, 140, 45, f, Options{})
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	var lines uint64
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1316,6 +1336,7 @@ func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 			f.start.Pane.Write([]byte(fmt.Sprintf("line %d\r\n", i)))
 			f.set(func(s *LiveStatus) { s.Resyncs++ })
 			f.notify(LiveNotice{Code: NoticeTooSlow})
+			lines = uint64(i) + 1
 		}
 	}()
 	for range 50 {
@@ -1327,6 +1348,19 @@ func TestLiveConcurrentFeedAndDraw(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	if lines == 0 {
+		t.Fatal("the source wrote nothing")
+	}
+	r.m.onLive()
+	if got := r.m.live.st.Resyncs; got != lines {
+		t.Fatalf("status shows %d resyncs, the source made %d", got, lines)
+	}
+	if n := len(r.m.live.notices); n != LiveNoticeLimit {
+		t.Fatalf("%d notices kept", n)
+	}
+	if v := r.view(); !strings.Contains(v, fmt.Sprintf("line %d\n", lines-1)) && !strings.Contains(v, fmt.Sprintf("line %d ", lines-1)) {
+		t.Fatalf("the last line (%d) is not shown:\n%s", lines-1, v)
+	}
 }
 
 func TestLiveFixtureModeStaysTheFixture(t *testing.T) {
