@@ -67,6 +67,14 @@ type Bind struct {
 	// Within is the inside path of the lead-writable read-write bind that
 	// holds the target ("" when LeadWritable is false).
 	Within string
+	// Optional says the row is applied only if the host has it: for a
+	// read-only bind of a host path (RoleHost), only if the source exists;
+	// for a symlink, only if the host has a path of the same name as Inside.
+	// It is set for exactly the host rows that do not exist on every
+	// distribution (see the table), never for a source Ataniq makes. The plan
+	// package decides how to emit it (for bubblewrap, --ro-bind-try). It is
+	// part of the digest.
+	Optional bool
 }
 
 // Binds validates the inputs and returns the bind table of the epoch's
@@ -88,6 +96,12 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 	host := func(p string, dir bool) Bind {
 		return Bind{Kind: KindRoBind, Inside: p, Source: p, SourceRole: RoleHost, IsDir: dir}
 	}
+	// hostTry is a host row that does not exist on every distribution.
+	hostTry := func(p string, dir bool) Bind {
+		b := host(p, dir)
+		b.Optional = true
+		return b
+	}
 	ro := func(inside, src, role string, dir bool) Bind {
 		return Bind{Kind: KindRoBind, Inside: inside, Source: src, SourceRole: role, IsDir: dir}
 	}
@@ -97,17 +111,21 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 
 	t := []Bind{{Kind: KindTmpfs, Inside: rootInsidePath, IsDir: true}}
 	t = append(t, host("/usr", true))
-	for _, l := range [][2]string{{"/bin", "usr/bin"}, {"/lib", "usr/lib"}, {"/lib64", "usr/lib64"}, {"/sbin", "usr/sbin"}} {
-		t = append(t, Bind{Kind: KindSymlink, Inside: l[0], Target: l[1]})
+	// /lib64 and /sbin are links to /usr only on some distributions.
+	for _, l := range []struct {
+		inside, target string
+		optional       bool
+	}{{"/bin", "usr/bin", false}, {"/lib", "usr/lib", false}, {"/lib64", "usr/lib64", true}, {"/sbin", "usr/sbin", true}} {
+		t = append(t, Bind{Kind: KindSymlink, Inside: l.inside, Target: l.target, Optional: l.optional})
 	}
 	t = append(t,
-		host("/etc/ssl", true),
-		host("/etc/ca-certificates", true),
+		hostTry("/etc/ssl", true),
+		hostTry("/etc/ca-certificates", true),
 		host("/etc/hosts", false),
-		host("/etc/nsswitch.conf", false),
+		hostTry("/etc/nsswitch.conf", false),
 		host("/etc/passwd", false),
 		host("/etc/group", false),
-		host("/etc/localtime", false),
+		hostTry("/etc/localtime", false),
 		ro(ResolvConfInside, in.ResolvConf, RoleResolv, false),
 		Bind{Kind: KindDev, Inside: "/dev", IsDir: true},
 		Bind{Kind: KindProc, Inside: "/proc", IsDir: true},
@@ -217,6 +235,9 @@ func ValidateTable(t []Bind) error {
 func checkRow(field string, i, n int, b Bind) error {
 	if err := CheckPath(field, b.Inside); err != nil {
 		return err
+	}
+	if b.Optional && !(b.Kind == KindSymlink || b.Kind == KindRoBind && b.SourceRole == RoleHost) {
+		return refuse(field, "only a host read-only bind or a symlink can be optional")
 	}
 	switch b.Kind {
 	case KindTmpfs, KindDev, KindProc, KindRemountRO:

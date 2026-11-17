@@ -53,8 +53,8 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "aa3db2e74c12597088109a9e6cf4228cae7fac38cb27f60fe85720359dd65932"
-	goldenCodex  = "2b4f4fd58d9e9059e1a8c9bcbc99d63de23ea644df334df1637283fd82192d73"
+	goldenClaude = "7116a3541c80f4e80e00b1093505c42eb86815ec948ae3616ccf02ca888ab7e4"
+	goldenCodex  = "8c1b13d393a8ce47cd6525df5029bb39fb816578a4c105bddde21541b2079bff"
 )
 
 func TestDigestGolden(t *testing.T) {
@@ -245,6 +245,8 @@ func TestDigestChangesWithEveryPartOfTheDefinition(t *testing.T) {
 		{"a bind source role", func(d *definition) { d.Binds[1].SourceRole = RoleHome }},
 		{"a link target", func(d *definition) { d.Binds[2].Target = "usr/sbin" }},
 		{"a bind is a folder", func(d *definition) { d.Binds[1].IsDir = !d.Binds[1].IsDir }},
+		{"a bind is optional", func(d *definition) { d.Binds[6].Optional = !d.Binds[6].Optional }},
+		{"a link is optional", func(d *definition) { d.Binds[4].Optional = !d.Binds[4].Optional }},
 		{"a bind is lead-writable", func(d *definition) { d.Binds[1].LeadWritable = true }},
 		{"a bind's holder", func(d *definition) { d.Binds[1].Within = "/home/lead" }},
 		{"a bind added", func(d *definition) {

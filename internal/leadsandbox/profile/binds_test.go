@@ -14,15 +14,15 @@ var goldenRows = []string{
 	"ro-bind /usr src=host",
 	"symlink /bin -> usr/bin",
 	"symlink /lib -> usr/lib",
-	"symlink /lib64 -> usr/lib64",
-	"symlink /sbin -> usr/sbin",
-	"ro-bind /etc/ssl src=host",
-	"ro-bind /etc/ca-certificates src=host",
+	"symlink /lib64 -> usr/lib64 optional",
+	"symlink /sbin -> usr/sbin optional",
+	"ro-bind /etc/ssl src=host optional",
+	"ro-bind /etc/ca-certificates src=host optional",
 	"ro-bind /etc/hosts src=host",
-	"ro-bind /etc/nsswitch.conf src=host",
+	"ro-bind /etc/nsswitch.conf src=host optional",
 	"ro-bind /etc/passwd src=host",
 	"ro-bind /etc/group src=host",
-	"ro-bind /etc/localtime src=host",
+	"ro-bind /etc/localtime src=host optional",
 	"ro-bind /etc/resolv.conf src=resolv-conf",
 	"dev /dev",
 	"proc /proc",
@@ -324,6 +324,31 @@ func TestValidateTableRefusals(t *testing.T) {
 			c[index("/ataniq/qargi")].Inside = "/"
 			return c
 		}(), "root"},
+		{"an optional row that is not a host row", func() []Bind {
+			c := clone()
+			c[index("/ataniq/qargi")].Optional = true
+			return c
+		}(), "optional"},
+		{"an optional read-write bind", func() []Bind {
+			c := clone()
+			c[index("/home/lead")].Optional = true
+			return c
+		}(), "optional"},
+		{"an optional tmpfs", func() []Bind {
+			c := clone()
+			c[index("/tmp")].Optional = true
+			return c
+		}(), "optional"},
+		{"an optional proc", func() []Bind {
+			c := clone()
+			c[index("/proc")].Optional = true
+			return c
+		}(), "optional"},
+		{"an optional mount over the probe", func() []Bind {
+			c := clone()
+			c[index("/ataniq/probe")].Optional = true
+			return c
+		}(), "optional"},
 		{"remount in the middle", func() []Bind {
 			c := clone()
 			c[index("/ataniq/qargi")] = Bind{Kind: KindRemountRO, Inside: "/"}
@@ -366,5 +391,39 @@ func TestReadOnlyOverBindsFollowTheirReadWriteParent(t *testing.T) {
 				t.Errorf("%s: its read-write parent %s is at %d, the row at %d", b.Inside, b.Within, p, i)
 			}
 		}
+	}
+}
+
+func TestOptionalRows(t *testing.T) {
+	// Exactly the host rows that do not exist on every distribution.
+	want := []string{
+		"/lib64", "/sbin", "/etc/ssl", "/etc/ca-certificates", "/etc/nsswitch.conf", "/etc/localtime",
+	}
+	for _, rt := range Runtimes() {
+		var got []string
+		for _, b := range mustBinds(t, fixture(rt)) {
+			if b.Optional {
+				got = append(got, b.Inside)
+				if b.Kind == KindRoBind && (b.SourceRole != RoleHost || b.Source != b.Inside) {
+					t.Errorf("%s: optional bind %s has source %q (%s)", rt, b.Inside, b.Source, b.SourceRole)
+				}
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: optional rows %v, want %v", rt, got, want)
+		}
+	}
+	// A row that the profile needs stays required.
+	for _, b := range mustBinds(t, fixture(Claude)) {
+		switch b.Inside {
+		case "/usr", "/bin", "/lib", "/etc/hosts", "/etc/passwd", "/etc/group", ResolvConfInside, ProbeInside:
+			if b.Optional {
+				t.Errorf("%s is optional", b.Inside)
+			}
+		}
+	}
+	// A valid optional symlink and host bind pass the table check.
+	if err := ValidateTable(mustBinds(t, fixture(Codex))); err != nil {
+		t.Error(err)
 	}
 }

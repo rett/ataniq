@@ -78,6 +78,9 @@ func row(b Bind) string {
 	if b.LeadWritable {
 		s += " writable-in=" + b.Within
 	}
+	if b.Optional {
+		s += " optional"
+	}
 	return s
 }
 

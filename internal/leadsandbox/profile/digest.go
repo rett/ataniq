@@ -13,7 +13,8 @@ import (
 //
 //	1  first version
 //	2  the digest carries the values of the variables the profile defines,
-//	   the digest of the managed-settings file and the pasta arguments
+//	   the digest of the managed-settings file, the pasta arguments and the
+//	   optional flag of a row
 const Version = 2
 
 const (
@@ -113,6 +114,7 @@ func (d definition) encode() []byte {
 		flag(bind.IsDir)
 		flag(bind.LeadWritable)
 		str(bind.Within)
+		flag(bind.Optional)
 	}
 	num(len(d.EnvNames))
 	for _, n := range d.EnvNames {
