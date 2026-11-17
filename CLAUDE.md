@@ -10,5 +10,5 @@
 ## Rules
 
 - Branches follow git-flow: `master` (releases, tagged), `develop` (integration), feature branches merged into `develop` with `--no-ff`, `release/<version>` from `develop`, `hotfix/<version>` from `master`. Never commit to `master` or `develop` directly except by merging a branch.
-- Every user-visible change gets a changelog entry under `[Unreleased]`, in the same commit.
+- Every user-visible change gets a changelog fragment, `changelog.d/<section>-<slug>.md`, in the same commit, not an edit of `CHANGELOG.md`. The release branch's first commit folds the fragments into `[Unreleased]` with `make changelog-fold`, and `make changelog-check` must pass before the release pull request. See `changelog.d/README.md`.
 - No private names (hosts, users, home paths, secrets) in files or commit messages.
