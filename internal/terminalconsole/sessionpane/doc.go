@@ -17,7 +17,9 @@
 // session sets is recorded.
 // Nothing the session writes reaches the outer terminal except as cells:
 // the pane draws cells, never escape sequences, drops hyperlinks from them
-// and draws no cell content longer than [MaxCellBytes].
+// and draws no cell content longer than [MaxCellBytes]. [Pane.Text] returns
+// the text of a part of the screen, up to a limit the caller gives, for the
+// caller to copy where it decides.
 //
 // The pane is push-only. The caller writes output with [Pane.Write], sets the
 // size with [Pane.Resize] and reports the end of the session with [Pane.End].
