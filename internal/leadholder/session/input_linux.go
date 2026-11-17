@@ -353,8 +353,9 @@ type AgentWriter interface {
 	// draws again looks stalled for the whole section. A fence that waits
 	// for the screen to settle calls FlushReplies between its steps, so that
 	// such an agent goes on. It breaks the input like any write when it
-	// fails, and returns ErrInputBroken when the input is already broken
-	// (the queued replies are then dropped and counted in "input_refused").
+	// fails, and returns ErrInputBroken when the input is already broken,
+	// also when no reply is queued (the queued replies are then dropped and
+	// counted in "input_refused").
 	FlushReplies() (int, error)
 }
 
@@ -376,6 +377,14 @@ func (w *lockedWriter) FlushReplies() (int, error) {
 	}
 	batch := w.s.replies.take()
 	if len(batch) == 0 {
+		// Nothing waits, but a fence that checks between its steps must still
+		// learn that the input broke (or that the session ended).
+		switch {
+		case w.s.isOver():
+			return 0, ErrClosed
+		case w.s.inputBroken.Load():
+			return 0, ErrInputBroken
+		}
 		return 0, nil
 	}
 	return w.s.writeAgent(batch, "reply", &w.s.cnt.replyWriteErrors)

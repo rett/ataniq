@@ -407,6 +407,11 @@ func TestAFailedWriteBreaksTheInputForEverySource(t *testing.T) {
 			var w AgentWriter
 			err := s.WithInputLock(func(aw AgentWriter) error {
 				w = aw
+				// The fence learns of the break between its steps, whether or
+				// not a reply is queued.
+				if n, err := aw.FlushReplies(); n != 0 || !errors.Is(err, ErrInputBroken) {
+					t.Errorf("FlushReplies on a broken input = %d, %v", n, err)
+				}
 				n, err := aw.Write([]byte("Q"))
 				if n != 0 {
 					t.Errorf("the section wrote %d bytes after the break", n)
