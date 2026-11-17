@@ -29,7 +29,9 @@
 //     text. The Enter is written only after a second check, made after the
 //     paste has settled, found the state idle, the composer on screen with the
 //     cursor in it, and the header (or the runtime's pasted-text marker, where
-//     there was none before) in it.
+//     there was none before) in it. Both checks refuse an idle that rests on the
+//     OSC 7501 report alone (idle.Classification.ReportOnly); the second accepts
+//     it only with the new marker.
 //   - When the guard cannot tell, the answer is "not idle". A screen the
 //     recogniser does not know, a stale or foreign report, a parser in the
 //     middle of a sequence, an open synchronized-output frame, bracketed paste
@@ -55,9 +57,15 @@
 // and its stale flag, the quiet times, and the reply rule. The terminal's
 // replies (the OSC 7501 query reply, DA1) travel the same serialised path as
 // every other write: Settle writes the replies that the output it applied
-// caused, before it returns and in order; Frozen applies no output and so
+// caused, before it returns and in order, so replies land between the paste
+// and the Enter and never inside the paste; Frozen applies no output and so
 // makes none; and no goroutine of the holder that carries replies may wait for
-// the lock while Settle waits for it.
+// the lock while Settle waits for it. The holder also keeps reading the PTY
+// into a buffer it does not apply while a Frozen function runs, bounds the
+// write by the deadline Frozen is given (an error once the bound passes), and
+// answers View.Pending: true while output of the agent is unread in the PTY or
+// held in that buffer. The fence reads Pending last, directly before each
+// write, and writes nothing while it is true.
 //
 // # What the fence leaves to the daemon
 //
@@ -66,7 +74,9 @@
 // for a lead that stays not idle, the confirmation of delivery from the
 // agent's conversation file, the operator's decisions, and the deadline and
 // the fence timeout that must agree (the deadline shorter than the command
-// machine's fence timeout). A Result of outcome submitted is not delivery.
+// machine's fence timeout). The daemon must always set Options.Deadline: a
+// zero Deadline is refused, with nothing written (not idle, "no deadline
+// given"). A Result of outcome submitted is not delivery.
 //
 // The daemon maps a Result to the command machine's FenceResult in a few
 // lines. The spellings of Written and Outcome are those of command.Written and
@@ -98,18 +108,42 @@
 // The fence narrows a window and cannot close it. The agent can open a dialog
 // on its own after the last reading and before the Enter lands, for example
 // when a background task finishes; then the Enter answers that dialog with its
-// default. Treating a background task as not idle narrows it. Input that
+// default. Output the agent has already written is seen (Pending refuses the
+// write); what remains is output the agent has not written yet when Pending is
+// read. Treating a background task as not idle narrows it. Input that
 // reaches the agent without passing the holder (Remote Control) cannot be seen
 // or held. That a paste into an open dialog does nothing rests on one
 // observation per agent, so it is a live case per version, not an assumption.
 // The recognisers read the screen as it was recorded for one version of each
 // runtime; a different layout is unknown, and unknown is not idle.
 //
+// # Not shown by the recordings
+//
+// What the tests assume and no recording shows:
+//
+//   - No recording shows a multi-line paste displayed in either composer, in
+//     the production form (a header, a carriage return and a body inside one
+//     bracketed paste). The fake's collapse threshold for claude (over 1000
+//     bytes or over 10 lines become a marker) and its inline display of a short
+//     multi-line paste are assumptions. If they are wrong the fence fails safe
+//     with not submitted, but case I-1 (an idle composer gets the paste and
+//     then Enter) does not then hold live: it needs a live check with a real
+//     multi-line message for each runtime.
+//   - "Enter at a dialog approves its default" comes from the earlier
+//     injection runs, not from the fenced runs. The fake models it so that an
+//     approval is detected.
+//   - Holds proves that the header is in the composer, not that the body
+//     arrived whole: a truncated or partly echoed paste with the header intact
+//     passes.
+//   - On the marker path nothing ties the marker to this message: the
+//     marker's count of lines or characters is not compared with the text.
+//
 // The tests drive the fence with a deterministic fake session in test files:
 // no sleeps, a fake clock, a model of each agent's screen laid out as the
 // recorded fixtures of package screen are, and scripted events at every step
 // of the fence. They check on every scenario that the writes are a prefix of
 // the paste and the Enter, that Enter follows a passed second check, that no
-// approval is ever recorded outside the window above, and that Written matches
-// the write log.
+// approval is ever recorded outside the window above, and that Written is
+// exact for every scenario whose writes all succeeded (unknown only when a
+// write or the session failed).
 package inject

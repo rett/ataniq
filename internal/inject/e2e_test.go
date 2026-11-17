@@ -240,7 +240,7 @@ func TestOperatorResolutions(t *testing.T) {
 	t.Run("send again", func(t *testing.T) {
 		each(t, func(t *testing.T, rt string) {
 			d := newDaemon(t)
-			f := newFake(t, rt).at(stepFrozen1, evOpenDialog)
+			f := newFake(t, rt).at(stepPaste, evOpenDialog)
 			d.submit("m1", "the message")
 			disp, res, _ := d.dispatch(f)
 			wantResult(t, res, WrittenPaste, OutcomeNotSubmitted)

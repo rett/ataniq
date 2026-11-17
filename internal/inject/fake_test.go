@@ -28,7 +28,8 @@ import (
 // changes at once when an event fires. What the emulator shows changes only
 // when a Settle reads the output that the change put in the PTY buffer
 // (frames, each with the time it arrives). Frozen reads the emulator and
-// applies nothing.
+// applies nothing, and Pending says whether a frame has already arrived that
+// no Settle has read.
 
 const (
 	screenCols = 120
@@ -148,6 +149,9 @@ type fake struct {
 	settleArg [][3]time.Duration
 	deadline  time.Time
 	earlier   int
+
+	// frozenDeadlines are the deadlines Frozen was given, in order.
+	frozenDeadlines []time.Time
 }
 
 // newFake makes an idle agent of the runtime, in the state of a session that
@@ -473,8 +477,9 @@ func (f *fake) Settle(ctx context.Context, min, quiet, max time.Duration) (bool,
 	return drained, nil
 }
 
-func (f *fake) Frozen(fn func(View, func([]byte) error) error) error {
+func (f *fake) Frozen(deadline time.Time, fn func(View, func([]byte) error) error) error {
 	f.frozens++
+	f.frozenDeadlines = append(f.frozenDeadlines, deadline)
 	switch f.frozens {
 	case 1:
 		f.fire(stepFrozen1)
@@ -534,6 +539,18 @@ func (f *fake) ScreenQuiet() time.Duration {
 	return f.clock.Sub(f.emu.changed)
 }
 func (f *fake) Ended() bool { return f.ended || f.dead }
+
+// Pending is true when the agent has already written output (a frame whose
+// time has come) that no Settle has read: it sits in the PTY. A frame that
+// arrives later is output the agent has not written yet.
+func (f *fake) Pending() bool {
+	for _, fr := range f.pty {
+		if !fr.at.After(f.clock) {
+			return true
+		}
+	}
+	return false
+}
 
 // nextFence resets what belongs to one fence, for a test that runs several on
 // the same session. The writes and what reached the agent of the earlier

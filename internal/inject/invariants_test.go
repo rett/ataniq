@@ -95,7 +95,9 @@ func checkInvariants(t *testing.T, f *fake, m Message, res Result, inv invariant
 	}
 
 	// 5. Written matches the write log, and the pair is one the command
-	// machine accepts.
+	// machine accepts. Written is exact for every scenario whose writes all
+	// succeeded; it is unknown only when a write or the session failed (the
+	// outcome is then died).
 	var attempted, okCount int
 	for _, w := range f.writes {
 		attempted++
@@ -112,6 +114,9 @@ func checkInvariants(t *testing.T, f *fake, m Message, res Result, inv invariant
 		if res.Written != WrittenPaste && res.Written != WrittenUnknown {
 			t.Errorf("only the paste was written but Written is %q", res.Written)
 		}
+		if res.Outcome != OutcomeDied && res.Written != WrittenPaste {
+			t.Errorf("only the paste was written, nothing failed, but Written is %q", res.Written)
+		}
 	case attempted == 1 && okCount == 0:
 		if res.Written != WrittenUnknown {
 			t.Errorf("the paste write failed but Written is %q", res.Written)
@@ -119,6 +124,9 @@ func checkInvariants(t *testing.T, f *fake, m Message, res Result, inv invariant
 	case attempted == 2 && okCount == 2:
 		if res.Written != WrittenPasteAndEnter && res.Written != WrittenUnknown {
 			t.Errorf("paste and Enter were written but Written is %q", res.Written)
+		}
+		if res.Outcome != OutcomeDied && res.Written != WrittenPasteAndEnter {
+			t.Errorf("paste and Enter were written, nothing failed, but Written is %q", res.Written)
 		}
 	case attempted == 2:
 		if res.Written != WrittenUnknown {

@@ -64,6 +64,10 @@ type Reading struct {
 	State idle.State
 	// Signals are the signals that said so, in the fixed order of idle.
 	Signals []idle.Signal
+	// ReportOnly is the classification's ReportOnly: true when the idle rests
+	// on the OSC 7501 report alone because the screen hides the state. A
+	// second check that passed with it true accepted that.
+	ReportOnly bool
 	// Term, OwnerQuiet and ScreenQuiet are what the view said.
 	Term        TermState
 	OwnerQuiet  time.Duration
@@ -82,6 +86,7 @@ func (r *Reading) Passed() bool { return r != nil && len(r.Failed) == 0 }
 func newReading(v View, cl idle.Classification, rep osc7501.Status, header string) *Reading {
 	r := &Reading{
 		State:       cl.State,
+		ReportOnly:  cl.ReportOnly,
 		Term:        v.Term(),
 		OwnerQuiet:  v.OwnerQuiet(),
 		ScreenQuiet: v.ScreenQuiet(),
@@ -145,6 +150,9 @@ func (r *Reading) String() string {
 			}
 		}
 		b.WriteString(")")
+	}
+	if r.ReportOnly {
+		b.WriteString(", idle from the report alone")
 	}
 	fmt.Fprintf(&b, ", parser ground %t, frame open %t, bracketed paste %t", r.Term.ParserGround, r.Term.FrameOpen, r.Term.BracketedPaste)
 	fmt.Fprintf(&b, ", owner quiet %s, screen quiet %s", r.OwnerQuiet.Round(time.Millisecond), r.ScreenQuiet.Round(time.Millisecond))
