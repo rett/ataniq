@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -81,7 +82,14 @@ var escapeCases = []struct {
 	{"cjk", "\u65e5\u672c\u8a9e", "\u65e5\u672c\u8a9e"},
 	{"emoji", "\U0001f600", "\U0001f600"},
 	{"combining mark", "e\u0301", "e\u0301"},
-	{"variation selector", "\u2764\ufe0f", "\u2764\ufe0f"},
+	{"variation selector", "\u2764\ufe0f", "\u2764" + `\u{FE0F}`},
+	{"variation selector supplement", "main\U000e0100", `main\u{E0100}`},
+	{"variation selector supplement last", "\U000e01ef", `\u{E01EF}`},
+	{"mongolian free variation selectors", "\u180b\u180c\u180d\u180f", `\u{180B}\u{180C}\u{180D}\u{180F}`},
+	{"khmer invisible vowels", "\u17b4\u17b5", `\u{17B4}\u{17B5}`},
+	{"reserved default ignorable U+2065", "\u2065", `\u{2065}`},
+	{"reserved default ignorable U+FFF0", "\ufff0\ufff8", `\u{FFF0}\u{FFF8}`},
+	{"hidden bytes in a name", "main\U000e0100\U000e0101\U000e0102", `main\u{E0100}\u{E0101}\u{E0102}`},
 	{"mixed", "ok\x1b[2J\u202e\xff\\", `ok\x1b[2J\u{202E}\xff\\`},
 }
 
@@ -123,7 +131,7 @@ func TestEscapeEveryRune(t *testing.T) {
 		in := string(r)
 		got := Escape(in)
 		checkSafeLine(t, got)
-		if got == in && r >= 0x80 && !safeRune(r) {
+		if got == in && dangerousRune(r) {
 			t.Fatalf("U+%04X passed unescaped", r)
 		}
 		back, err := Unescape(got)
@@ -131,6 +139,18 @@ func TestEscapeEveryRune(t *testing.T) {
 			t.Fatalf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
 		}
 	}
+}
+
+// dangerousRune is the oracle of the safety tests. It decides from Unicode
+// categories and properties and does not call the code under test. A rune
+// below 0x80 is never dangerous here: the byte checks cover it.
+func dangerousRune(r rune) bool {
+	if r < 0x80 {
+		return false
+	}
+	return !unicode.IsPrint(r) ||
+		unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp,
+			unicode.Bidi_Control, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point)
 }
 
 // checkSafeLine fails if s could do harm on a terminal or break a line.
@@ -145,7 +165,7 @@ func checkSafeLine(t *testing.T, s string) {
 		}
 	}
 	for _, r := range s {
-		if r >= 0x80 && !safeRune(r) {
+		if dangerousRune(r) {
 			t.Fatalf("output holds dangerous rune U+%04X: %q", r, s)
 		}
 	}
@@ -375,7 +395,7 @@ func TestWriterOutputIsSafe(t *testing.T) {
 			}
 		}
 		for _, r := range out {
-			if r >= 0x80 && !safeRune(r) {
+			if dangerousRune(r) {
 				t.Fatalf("output for %q holds dangerous rune U+%04X", in, r)
 			}
 		}
@@ -503,6 +523,12 @@ func TestWriterPassesErrors(t *testing.T) {
 		t.Fatalf("short write error = %v", err)
 	}
 
+	// On a downstream error Write returns 0, even when it held a partial rune.
+	w = NewWriter(&failWriter{err: boom})
+	if n, err := w.Write([]byte("a\xe2")); n != 0 || !errors.Is(err, boom) {
+		t.Fatalf("Write with a held rune = %d, %v; want 0 and the error", n, err)
+	}
+
 	w = NewWriter(&failWriter{err: boom})
 	if _, err := w.Write([]byte("\xe2")); err != nil { // held back, nothing written yet
 		t.Fatal(err)
@@ -528,4 +554,33 @@ func ExampleNewWriter() {
 	w.Write([]byte("line\x1b[2J\n"))
 	w.Close()
 	// Output: line\x1b[2J
+}
+
+// defaultIgnorableRanges lists the Default_Ignorable_Code_Point ranges of the
+// Unicode Character Database, written out here so that the test does not
+// depend on the tables the code uses. Code points in these ranges print as
+// nothing.
+var defaultIgnorableRanges = [][2]rune{
+	{0x00ad, 0x00ad}, {0x034f, 0x034f}, {0x061c, 0x061c},
+	{0x115f, 0x1160}, {0x17b4, 0x17b5}, {0x180b, 0x180f},
+	{0x200b, 0x200f}, {0x202a, 0x202e}, {0x2060, 0x206f},
+	{0x3164, 0x3164}, {0xfe00, 0xfe0f}, {0xfeff, 0xfeff},
+	{0xffa0, 0xffa0}, {0xfff0, 0xfff8}, {0x1bca0, 0x1bca3},
+	{0x1d173, 0x1d17a}, {0xe0000, 0xe0fff},
+}
+
+func TestEscapeDefaultIgnorable(t *testing.T) {
+	for _, rg := range defaultIgnorableRanges {
+		for r := rg[0]; r <= rg[1]; r++ {
+			in := "a" + string(r) + "b"
+			got := Escape(in)
+			if strings.ContainsRune(got, r) {
+				t.Fatalf("U+%04X passed unescaped: %q", r, got)
+			}
+			back, err := Unescape(got)
+			if err != nil || back != in {
+				t.Fatalf("U+%04X: Escape %q, Unescape %q, %v", r, got, back, err)
+			}
+		}
+	}
 }

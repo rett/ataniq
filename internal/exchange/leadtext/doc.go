@@ -4,9 +4,12 @@
 // paths, commit subjects, author names, diff content and command output.
 // Owner-side code must not print that text as it is. The danger is terminal
 // control sequences, text that imitates the tool's own output lines,
-// bidirectional overrides and invisible characters. This package rewrites such
+// bidirectional overrides and invisible characters, such as zero-width
+// characters and variation selectors. This package rewrites such
 // text so that every dangerous byte or rune becomes visible escape text, and
-// the result can be turned back into the original with Unescape.
+// the result can be turned back into the original with Unescape. The escaping
+// prefers an unambiguous line over a pretty one: an emoji with a variation
+// selector shows the selector as escape text.
 //
 // Escape and Line work on one line. Writer wraps an io.Writer and cleans a
 // stream of many lines, such as a diff or command output. Label names what the
@@ -19,4 +22,7 @@
 // instruction or as a status line, and that stays readable. Callers must keep
 // the label near it and must not put escaped text where a reader would take it
 // for the tool's own words.
+//
+// Escaped text can start with a combining mark. Put a space or a delimiter
+// before it, so that the mark does not join the caller's own text.
 package leadtext
