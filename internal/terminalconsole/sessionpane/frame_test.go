@@ -158,7 +158,11 @@ func TestSyncFrameSplitAtEveryByte(t *testing.T) {
 		refs[j] = reference(t, rec.Cols, rec.Rows, out[:j])
 		return refs[j]
 	}
-	for k := 0; k <= len(out); k++ {
+	step := 1
+	if raceEnabled {
+		step = 4 // every fourth byte: the race detector is slow
+	}
+	for k := 0; k <= len(out); k += step {
 		// The clock never moves, so no frame times out.
 		p := sessionpane.New(rec.Cols, rec.Rows, sessionpane.Options{Clock: newClock().Now})
 		p.Write(out[:k])

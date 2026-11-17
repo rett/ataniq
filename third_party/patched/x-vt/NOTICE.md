@@ -131,8 +131,21 @@ Patches, applied in this order to the files of the module as released:
    stop or a character indexed past a smaller screen. The bottom and right
    margins are now cut to the screen's last line and column, and a region
    that starts below the last line (or beyond the last column) is ignored, as
-   an empty one was. A region of one line on the last line, which the tests of
-   the released module use, still works. A resize moves the cursor of both
+   an empty one was. The margins are first tested as they were sent: a top
+   margin that is not above the bottom margin (`CSI 5;5 r`) is ignored, as it
+   was. Then the bottom margin is cut, and a region the cut leaves with one
+   line is set, and the cursor goes home: on a screen of five lines `CSI 5;99 r`
+   and `CSI 5;6 r` set a scroll region of the last line alone (and, with
+   `CSI ? 69 h`, `CSI 10;99 s` on ten columns one of the last column). The
+   tests of the released module use such a region (`CSI 2;3 r` on a screen of
+   two lines), so it stays. **This differs from xterm**, which cuts the bottom
+   margin first and then ignores a region whose bottom is not below its top,
+   so it ignores these sequences (reasoned from xterm's rule for DECSTBM, not
+   run against xterm); it is also not consistent inside this emulator, which
+   ignores `CSI 5;5 r`. No operation can index past the buffer with such a
+   region, and a test pins the behaviour, so that a change to it, if xterm's
+   rule is wanted (the cut before the test, and the four tests of the released
+   module that rely on the present one changed), is a decision. A resize moves the cursor of both
    screens and both saved cursors into the new size. Nothing changes for a
    sequence that did not index past the buffer, except that the cursor and
    the region it leaves are inside the screen.
@@ -144,7 +157,16 @@ Patches, applied in this order to the files of the module as released:
    included, with one, or refuses it and leaves the emulator as it was: the
    sizes, the strings, the links (through the admission of the screen's link
    table, so the cells share one copy of each), the modes, the cursors and the
-   open cluster are checked against the caps first. The state holds both
+   open cluster are checked against the caps first. A cell is at most
+   `MaxCellWidth` (2) wide: output draws a cluster in one or two cells (a
+   placeholder has width 0), and ultraviolet's `Line.Set` rewrites the whole
+   span of a wide cell it overwrites without looking at the end of the line,
+   so a cell of width 3 or more made a later write panic. `SetState` does not
+   check a cell against its neighbours: output makes a wide cell in the last
+   column (a resize cuts a line), a cell of width 0 with no wide cell before
+   it (a lone combining mark) and a wide cell with no placeholder after it,
+   and a snapshot of such a screen must restore; with a width of 2 at most,
+   none of them makes `Line.Set` index past the line. The state holds both
    screens (cells, cursor, saved cursor, scroll region, link table), the
    modes with a setting, the character sets and shifts, the pending wrap, the
    tab stops, the last character, the colours the session set, and the open
@@ -162,19 +184,74 @@ Patches, applied in this order to the files of the module as released:
    screens and its cursors, with whether the state carries it, so that a field
    added by a later version of the module is decided on.
 12. `vt: bound the sequences that loop by a parameter` (`csi_cursor.go`,
-   `csi_screen.go`, `limits.go`, `loops_test.go`). A parameter is a number of
-   up to two billion, and four sequences looped that many times: `CSI n I`
-   and `CSI n Z` (tab forward and backward) went on after the last tab stop,
-   `CSI n X` (erase characters) filled past the right edge, and `CSI n b`
-   (repeat the last character) printed it n times. A single sequence of
-   eight bytes kept the process busy for minutes (a count of 100 million took
-   40 seconds), and the pane's lock with it. The two tab loops now stop where
-   the cursor cannot move on, and the erase is cut at the right edge: both
-   give the result they gave. A repeat is cut to the number of cells of the
-   screen and `Counters().RepeatsCut` counts the sequences that were cut; the
-   screen then holds what a repeat of exactly that many gives, which is not
-   what a terminal that printed two billion characters would show (the
-   cursor column and the last line depend on the count).
+   `csi_screen.go`, `screen.go`, `limits.go`, `loops_test.go`). A parameter is
+   a number of up to two billion, and four sequences looped that many times:
+   `CSI n I` and `CSI n Z` (tab forward and backward) went on after the last
+   tab stop, `CSI n X` (erase characters) filled past the right edge, and
+   `CSI n b` (repeat the last character) printed it n times. A single sequence
+   of eight bytes kept the process busy for minutes (a count of 100 million
+   took 40 seconds), and the pane's lock with it. The two tab loops now stop
+   where the cursor cannot move on, and the erase is cut at the right edge:
+   both give the result they gave.
+
+   A repeat is the character typed n times. A count of up to two lines and two
+   characters (twice the width, and two) is still printed one character at a
+   time. A larger one is done a line at a time where that gives exactly the
+   state the prints would (`repeatInBulk`): the cursor's line is printed to
+   its end, every further line is a wrap and a full line (the lines above the
+   bottom of the region are filled one by one; the lines that scroll are
+   replaced, as many as the region has lines, by lines full of the character,
+   and the rest would only scroll those, so they are skipped), and the
+   remainder of less than a line is printed; with autowrap off the draws
+   after the last column are draws in the last column again and are cut. The
+   state is every field of `State` (the cells, the cursor, the pending wrap,
+   the open cluster, the link table), and a test compares it with the
+   character typed n times on small screens in every state the property
+   streams reach, for counts up to eight screens. What is not the same: a
+   callback sees fewer moves of the cursor, the counters of the caps
+   (`LinksOverLimit`, `ClusterBytesDropped`) count the prints that were done,
+   and the count of the first version of this patch, which cut a repeat to the
+   cells of the screen and so changed the result for every count over them
+   (the cursor column and the last line depend on the count), is gone.
+   The bulk needs a printable ASCII character (it is, for a repeat after
+   output), no hyperlink on the pen (a refused link counts down the table's
+   wait on every print), no scrollback (the lines that scroll off would have to
+   be kept), and with autowrap on a cursor inside a scroll region as wide as the
+   screen. In any other state a count over two lines and two characters is cut
+   to it: the screen then holds what a repeat of exactly that many gives, which
+   is not what a terminal that printed two billion characters would show. That
+   is the documented difference, and `Counters().RepeatsCut` counts every
+   repeat that was not printed one character at a time, bulk or cut. The
+   cost of a repeat is a few screens whatever the count: a repeat that fills
+   the screen of 500 by 200 cells writes all of its 11 MB of cells, which takes
+   about a millisecond, and 64 KiB of the longest repeat (5041 repeats of 13
+   bytes) took 4.8 s of CPU on a busy machine (a load of 15 on 8 cores). The
+   first version took 17 ms for the first repeat of that size and 0.25 s for
+   each one after it with the cursor at the bottom (25 s for 1000 bytes), so
+   64 KiB of them would have taken half an hour. Like the sequences that clear
+   the screen (erase display, scroll by the screen; patch 13), a repeat is
+   bounded by the time it takes to write every cell, and 64 KiB of them take
+   several seconds on the largest screen. A buffer that did not store every
+   blank cell would take less; this patch does not change the buffer.
+13. `vt: move the lines of a scroll region as wide as the screen`
+   (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
+   an index, a reverse index, insert line, delete line, scroll up and scroll
+   down copied every cell of the region one at a time, through the buffer's
+   own insert and delete: 11 MB and 1.1 ms for each of them on a screen of 500
+   by 200 cells, so that 64 KiB of line feeds kept the emulator, and the
+   pane's lock, for more than a minute. When the region is as wide as the
+   screen (the usual case), `Screen.InsertLine` and `Screen.DeleteLine` now
+   rotate the lines of the region and blank the lines that come in, which
+   costs the lines and the blanked cells (64 KiB of line feeds take 0.45 s). The
+   result is the buffer's: the same cells, the same blank cell (the pen's
+   background), the lines saved to the scrollback before, and every line of the
+   region marked as touched, as the buffer's own functions do. A region
+   narrower than the screen still uses the buffer's functions. A test compares
+   the two on screens the property streams make, with every region, cursor,
+   count and pen. What stays: a scroll that blanks the whole region
+   (scroll by the screen, a count over the lines left) writes every cell of
+   it, which takes about a millisecond on the largest screen whatever the
+   code, so 64 KiB of those take several seconds.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

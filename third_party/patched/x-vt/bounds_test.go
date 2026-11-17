@@ -43,6 +43,46 @@ func TestScrollMarginsStayInsideTheScreen(t *testing.T) {
 	}
 }
 
+// A region that the cut leaves with one line (or one column), on the last
+// line, is set and sends the cursor home. That is what the released module
+// does, and four of its tests rely on it (CSI 2;3 r on a screen of two lines).
+// It differs from xterm, which cuts the bottom margin first and ignores a
+// region whose bottom is not below its top (reasoned from its rule for
+// DECSTBM, not run), and it is not consistent inside this emulator, which
+// ignores CSI 5;5 r because the margins as they were sent are not ordered.
+// NOTICE.md, patch 10, says so; the test pins the behaviour so that a change
+// to it is a decision.
+func TestOneLineRegionOnTheLastLineIsSetUnlikeXterm(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		input  string
+		region uv.Rectangle
+		home   uv.Position
+	}{
+		{"CSI 5;99 r", "\x1b[5;99r", uv.Rect(0, 4, 10, 1), uv.Pos(0, 0)},
+		{"CSI 5;6 r", "\x1b[5;6r", uv.Rect(0, 4, 10, 1), uv.Pos(0, 0)},
+		{"CSI 5;5 r is ignored", "\x1b[5;5r", uv.Rect(0, 0, 10, 5), uv.Pos(4, 2)},
+		{"CSI ? 69 h CSI 10;99 s", "\x1b[?69h\x1b[10;99s", uv.Rect(9, 0, 1, 5), uv.Pos(0, 0)},
+		{"CSI ? 69 h CSI 10;10 s is ignored", "\x1b[?69h\x1b[10;10s", uv.Rect(0, 0, 10, 5), uv.Pos(4, 2)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEmulator(10, 5)
+			e.Write([]byte("\x1b[3;5H"))
+			e.Write([]byte(tc.input))
+			if got := e.scr.ScrollRegion(); got != tc.region {
+				t.Errorf("scroll region %v, want %v", got, tc.region)
+			}
+			if got := e.CursorPosition(); got != tc.home {
+				t.Errorf("cursor %v, want %v", got, tc.home)
+			}
+			e.Write([]byte("\x1b[3L\x1b[2M\x1b[2S\x1b[2T\x1bM\x1bD\x1bD\nabc\n\n"))
+			if pos := e.CursorPosition(); pos.X < 0 || pos.X >= 10 || pos.Y < 0 || pos.Y >= 5 {
+				t.Errorf("the cursor left the screen: %v", pos)
+			}
+		})
+	}
+}
+
 // The cursor of the screen that is not active, and the saved cursors, were
 // left where they were by a resize, so a smaller screen could be left with a
 // cursor outside it; setting a tab stop or printing there indexed past the

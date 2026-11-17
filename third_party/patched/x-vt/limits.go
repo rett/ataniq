@@ -52,7 +52,9 @@ type Counters struct {
 	// the first byte was dropped.
 	StringsTruncated uint64
 	// RepeatsCut is the number of REP sequences (CSI n b) whose count was
-	// over the number of cells of the screen and was cut to it.
+	// over two lines and two characters (twice the width of the screen, and
+	// two), and so was not printed one character at a time: it was done a line
+	// at a time where that gives the same state, and else cut to that count.
 	RepeatsCut uint64
 }
 

@@ -42,7 +42,7 @@ var frameTypes = []struct {
 var directions = []wire.Direction{wire.ToHolder, wire.ToClient, wire.ControlRequests, wire.ControlResponses}
 
 func TestCapsAreTheContract(t *testing.T) {
-	if wire.MaxClientPayload != 64<<10 || wire.MaxHolderPayload != 1<<20 || wire.MaxSnapshotPayload != 16<<20 {
+	if wire.MaxClientPayload != 64<<10 || wire.MaxHolderPayload != 1<<20 || wire.MaxSnapshotPayload != 19<<20 {
 		t.Fatalf("caps: %d %d %d", wire.MaxClientPayload, wire.MaxHolderPayload, wire.MaxSnapshotPayload)
 	}
 	if wire.ProtocolVersion != 1 {
@@ -320,7 +320,7 @@ func TestRefusedFrameAllocatesNothingProportional(t *testing.T) {
 	if limit := uint64(rounds * 1024); spent > limit {
 		t.Errorf("over-cap refusals allocated %d bytes in %d rounds, limit %d", spent, rounds, limit)
 	}
-	// Under the cap but never sent: a Snapshot that declares 16 MiB and
+	// Under the cap but never sent: a Snapshot that declares 19 MiB and
 	// delivers 10 bytes allocates one chunk at most.
 	spent = allocated(func() {
 		for i := 0; i < rounds; i++ {
@@ -331,7 +331,7 @@ func TestRefusedFrameAllocatesNothingProportional(t *testing.T) {
 		}
 	})
 	if limit := uint64(rounds * 80 << 10); spent > limit {
-		t.Errorf("a declared 16 MiB that never came allocated %d bytes in %d rounds, limit %d", spent, rounds, limit)
+		t.Errorf("a declared 19 MiB that never came allocated %d bytes in %d rounds, limit %d", spent, rounds, limit)
 	}
 }
 
@@ -494,8 +494,8 @@ func TestWriterRefusalDoesNotBreakItButAWriteErrorDoes(t *testing.T) {
 	}
 }
 
-// A payload is kept in a buffer of exactly its size: a Snapshot of 16 MiB is
-// not held in 20 MiB, and reading it does not allocate many times its size.
+// A payload is kept in a buffer of exactly its size: a Snapshot of 19 MiB is
+// not held in 32 MiB, and reading it does not allocate many times its size.
 func TestPayloadCapacityIsExact(t *testing.T) {
 	for _, n := range []int{8, 100, 64 << 10, 64<<10 + 1, 128 << 10, 200000, 1<<20 + 7, wire.MaxSnapshotPayload} {
 		var f wire.Frame
@@ -525,7 +525,7 @@ func TestPayloadCapacityIsExact(t *testing.T) {
 			}
 		})
 		if limit := uint64(4*got + 192<<10); spent > limit {
-			t.Errorf("%d bytes of a declared 16 MiB: allocated %d, limit %d", got, spent, limit)
+			t.Errorf("%d bytes of a declared 19 MiB: allocated %d, limit %d", got, spent, limit)
 		}
 	}
 }

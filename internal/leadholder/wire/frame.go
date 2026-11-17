@@ -16,15 +16,24 @@ const ProtocolVersion = 1
 const HeaderLen = 5
 
 // Payload caps. The caps of the two attach directions are the contract of
-// the lead-hosting design (section 1.3); the control cap is this package's.
+// the lead-hosting design (section 1.3), except that the Snapshot cap is
+// 19 MiB where the design says 16 MiB (see MaxSnapshotPayload); the control
+// cap is this package's.
 const (
 	// MaxClientPayload is the largest payload from a client to the holder.
 	MaxClientPayload = 64 << 10
 	// MaxHolderPayload is the largest payload from the holder to a client,
 	// except a Snapshot.
 	MaxHolderPayload = 1 << 20
-	// MaxSnapshotPayload is the largest Snapshot payload.
-	MaxSnapshotPayload = 16 << 20
+	// MaxSnapshotPayload is the largest Snapshot payload: 19 MiB, the 8
+	// bytes of position and the largest snapshot of the session pane,
+	// sessionpane.MaxSnapshotBytes, which is the bound of the snapshot
+	// format for the largest pane (18.11 MiB: both screens, a cluster of 64
+	// bytes in every cell, a style of its own for every cell, 256 links of
+	// the longest size on each screen). The lead-hosting design's figure of
+	// 16 MiB counted one screen. A test of the session pane checks that the
+	// two constants agree.
+	MaxSnapshotPayload = 19 << 20
 	// MaxControlPayload is the largest payload on the control socket, in both
 	// directions.
 	MaxControlPayload = 64 << 10

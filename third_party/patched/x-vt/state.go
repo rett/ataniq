@@ -26,6 +26,14 @@ import (
 // which bounds the cursor styles DECSCUSR can select.
 const maxParam = 1<<31 - 1
 
+// MaxCellWidth is the widest cell [Emulator.SetState] accepts: the emulator
+// draws a cluster in one or two cells, and the placeholder of a wide cell has
+// width 0. A cell of a larger width is one that output never makes, and that a
+// later write indexes past the line with: ultraviolet's Line.Set, when it
+// overwrites a wide cell, rewrites the cell's whole span without looking at
+// the end of the line.
+const MaxCellWidth = 2
+
 // CharSetID names one of the three character sets a G0 to G3 slot can hold.
 type CharSetID int
 
@@ -269,7 +277,7 @@ func invalid(format string, args ...any) error {
 //
 // A state that does not fit the caps of the emulator is refused and leaves
 // the emulator as it was: the cells must be Width by Height, a cell keeps at
-// most [MaxClusterBytes] bytes, a table holds at most [MaxLiveLinks] links
+// most [MaxClusterBytes] bytes and is at most [MaxCellWidth] wide, a table holds at most [MaxLiveLinks] links
 // of at most [MaxLinkURL] and [MaxLinkParams] bytes, every link a cell
 // references (or whose URL is not empty) must be in the table of its screen,
 // and the modes must be in the table of recorded modes. The links go through
@@ -451,7 +459,7 @@ func newScreenFromState(st *ScreenState, w, h int) (*Screen, error) {
 		line := s.buf.Lines[y]
 		for x := range line {
 			c := st.Cells[y*w+x]
-			if len(c.Content) > MaxClusterBytes || c.Width < 0 || c.Width > MaxClusterBytes {
+			if len(c.Content) > MaxClusterBytes || c.Width < 0 || c.Width > MaxCellWidth {
 				return nil, invalid("cell %d,%d of %d bytes and width %d", x, y, len(c.Content), c.Width)
 			}
 			if len(c.Link.Params) > MaxLinkParams || len(c.Link.URL) > MaxLinkURL {
