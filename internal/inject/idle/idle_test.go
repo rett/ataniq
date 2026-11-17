@@ -112,6 +112,8 @@ type tableCase struct {
 	state  State
 	// empty is the wanted ComposerEmpty.
 	empty bool
+	// reportOnly is the wanted ReportOnly (default false).
+	reportOnly bool
 	// says maps a source to the word it must say, when the case checks it.
 	says map[string]string
 }
@@ -122,6 +124,12 @@ func claudeCase(name, fixture string, rep osc7501.Status, state State, empty boo
 
 func codexCase(name, fixture string, rep osc7501.Status, state State, empty bool, with ...override) tableCase {
 	return tableCase{name: name, runtime: "codex", fixture: fixture, report: rep, with: with, state: state, empty: empty}
+}
+
+// onReportAlone marks a case whose idle rests on the report alone.
+func (c tableCase) onReportAlone() tableCase {
+	c.reportOnly = true
+	return c
 }
 
 func (c tableCase) withSays(kv ...string) tableCase {
@@ -209,18 +217,27 @@ var tableCases = []tableCase{
 	claudeCase("claude owner draft and a blocked report", "typed-one-row", ccBlock, StateBlocked, false),
 	claudeCase("claude faint ghost without style data is text", "idle-ghost-suggestion", ccIdle, StateIdle, false, noFaint()),
 	// The collapsed-paste footer: the state is not on screen.
-	claudeCase("claude paste footer, report idle", "collapsed-paste-footer-c", ccIdle, StateIdle, false),
-	claudeCase("claude paste footer, report done", "collapsed-paste-footer-c", ccDone, StateIdle, false),
+	claudeCase("claude paste footer, report idle", "collapsed-paste-footer-c", ccIdle, StateIdle, false).onReportAlone(),
+	claudeCase("claude paste footer, report done", "collapsed-paste-footer-c", ccDone, StateIdle, false).onReportAlone(),
 	claudeCase("claude paste footer, no report is unknown", "collapsed-paste-footer-c", none, StateUnknown, false).withSays("screen", "composer"),
 	claudeCase("claude paste footer, stale status", "collapsed-paste-footer-c", stale(ccIdle), StateUnknown, false),
 	claudeCase("claude paste footer, report working", "collapsed-paste-footer-c", ccWork, StateWorking, false),
 	claudeCase("claude paste footer, report blocked", "collapsed-paste-footer-c", ccBlock, StateBlocked, false),
 	claudeCase("claude paste footer, report error", "collapsed-paste-footer-c", ccError, StateUnknown, false),
 	claudeCase("claude paste footer, report clear", "collapsed-paste-footer-c", ccClear, StateUnknown, false),
-	claudeCase("claude paste footer is not a mode mismatch", "collapsed-paste-footer-c", ccIdle, StateIdle, false, mode("")),
+	claudeCase("claude paste footer is not a mode mismatch", "collapsed-paste-footer-c", ccIdle, StateIdle, false, mode("")).onReportAlone(),
 	claudeCase("claude paste footer, report from another app", "collapsed-paste-footer-c", otherApp, StateUnknown, false),
 	claudeCase("claude paste footer, busy title", "collapsed-paste-footer-c", ccIdle, StateWorking, false, withTitle("◐ topic")),
+	claudeCase("claude paste footer, busy title and working report", "collapsed-paste-footer-c", ccWork, StateWorking, false, withTitle("◐ topic")),
+	claudeCase("claude paste footer, busy title and no report", "collapsed-paste-footer-c", none, StateWorking, false, withTitle("◐ topic")),
+	claudeCase("claude paste footer, idle title and working report", "collapsed-paste-footer-c", ccWork, StateWorking, false, withTitle("✳ topic")),
+	claudeCase("claude paste footer, idle title, report idle", "collapsed-paste-footer-c", ccIdle, StateIdle, false, withTitle("✳ topic")).onReportAlone(),
+	// The recorded title of -a and -b is a capture defect (the emulator's
+	// title leak, the 0x9C byte inside an OSC string: row1 checklist item a);
+	// the real title began with the idle glyph. The replacement character
+	// reads as an unrecorded glyph, which is busy, so this is not idle.
 	claudeCase("claude paste footer with a recorded broken title reads busy", "collapsed-paste-footer-a", ccIdle, StateWorking, false),
+	claudeCase("claude paste footer with the real title is idle on the report alone", "collapsed-paste-footer-a", ccIdle, StateIdle, false, withTitle("✳ topic")).onReportAlone(),
 
 	// codex: the report is required, the second signal must agree.
 	codexCase("codex idle screen, report idle", "idle-after-turn", cxIdle, StateIdle, true),
@@ -267,6 +284,12 @@ var tableCases = []tableCase{
 	codexCase("codex owner draft at an idle prompt", "typed-two-rows", cxIdle, StateIdle, false),
 	codexCase("codex pasted content at an idle prompt", "tall-composer-a", cxIdle, StateIdle, false),
 	codexCase("codex faint hint without style data is text", "idle-after-turn", cxIdle, StateIdle, false, noFaint()),
+	// codex: the cursor must be in the composer, as for claude.
+	codexCase("codex cursor hidden", "typed-two-rows", cxIdle, StateUnknown, false, cursorHidden()),
+	codexCase("codex cursor outside the composer", "typed-two-rows", cxIdle, StateUnknown, false, cursorAt(0, 0)),
+	codexCase("codex cursor hidden, empty composer", "idle-after-turn", cxIdle, StateUnknown, false, cursorHidden()),
+	codexCase("codex slash popup, cursor in the composer", "typed-slash-popup", cxIdle, StateIdle, false),
+	codexCase("codex slash popup, cursor hidden", "typed-slash-popup", cxIdle, StateUnknown, false, cursorHidden()),
 	codexCase("codex start animation, no report yet", "start-animation", none, StateUnknown, true),
 }
 
@@ -294,6 +317,9 @@ func TestClassifyTable(t *testing.T) {
 			}
 			if cl.ComposerEmpty != cl.Screen.ComposerEmpty {
 				t.Errorf("ComposerEmpty %v is not the screen's %v", cl.ComposerEmpty, cl.Screen.ComposerEmpty)
+			}
+			if cl.ReportOnly != tc.reportOnly {
+				t.Errorf("ReportOnly %v, want %v", cl.ReportOnly, tc.reportOnly)
 			}
 			for src, want := range tc.says {
 				got, ok := signal(cl, src)

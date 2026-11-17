@@ -15,6 +15,26 @@ type replayCase struct {
 	state  State
 }
 
+// replayExtra holds what a few rows need beyond replayCase.
+type replayExtra struct {
+	// title, when set, replaces the title of the recording.
+	title string
+	// reportOnly is the wanted Classification.ReportOnly.
+	reportOnly bool
+}
+
+// replayExtras is by runtime and fixture name. A fixture without an entry
+// keeps its recorded title and must not be ReportOnly.
+var replayExtras = map[string]replayExtra{
+	// The recorded title of -a and -b is U+FFFD: a capture defect of the
+	// emulator (the title leak, row1 checklist item a), not claude's title,
+	// which began with the idle glyph. The replay gives them that title and a
+	// topic; the broken title is a case of the table in idle_test.go.
+	"claude/collapsed-paste-footer-a": {"✳ topic", true},
+	"claude/collapsed-paste-footer-b": {"✳ topic", true},
+	"claude/collapsed-paste-footer-c": {"", true},
+}
+
 const noReport = osc7501.State("")
 
 // replayWant is the table of the replay, by runtime and fixture name. A
@@ -24,8 +44,8 @@ var replayWant = map[string]replayCase{
 	"claude/background-shell-a":         {osc7501.StateIdle, "", StateWorking},
 	"claude/background-shell-b":         {osc7501.StateIdle, "", StateWorking},
 	"claude/blank-main-screen":          {noReport, "", StateUnknown},
-	"claude/collapsed-paste-footer-a":   {osc7501.StateIdle, "", StateWorking}, // the recorded title is a replacement character, which reads busy
-	"claude/collapsed-paste-footer-b":   {osc7501.StateIdle, "", StateWorking}, // same
+	"claude/collapsed-paste-footer-a":   {osc7501.StateIdle, "", StateIdle}, // title overridden, see replayExtras
+	"claude/collapsed-paste-footer-b":   {osc7501.StateIdle, "", StateIdle}, // same
 	"claude/collapsed-paste-footer-c":   {osc7501.StateIdle, "", StateIdle},
 	"claude/dialog-write-after-paste":   {osc7501.StateBlocked, "", StateBlocked},
 	"claude/dialog-write-before-paste":  {osc7501.StateBlocked, "", StateBlocked},
@@ -96,7 +116,15 @@ func TestReplay(t *testing.T) {
 				mode = "manual"
 			}
 			c := lookup(t, rec.runtime, rec.version)
-			cl := c.Classify(replayInput(rec, want.report, mode))
+			in := replayInput(rec, want.report, mode)
+			extra := replayExtras[key]
+			if extra.title != "" {
+				in.Screen.Title = extra.title
+			}
+			cl := c.Classify(in)
+			if cl.ReportOnly != extra.reportOnly {
+				t.Errorf("ReportOnly %v, want %v", cl.ReportOnly, extra.reportOnly)
+			}
 			if cl.State != want.state {
 				t.Fatalf("state %q, want %q\nscreen: %+v\ntitle: %+v\nsignals: %+v", cl.State, want.state, cl.Screen, cl.Title, cl.Signals)
 			}
@@ -202,7 +230,7 @@ func TestClaudeNoReportEqualsIdleReport(t *testing.T) {
 		rd := readScreen(rec, t)
 		withIdle := c.Classify(replayInput(rec, osc7501.StateIdle, "manual"))
 		without := c.Classify(replayInput(rec, noReport, "manual"))
-		hidden := rd.PastedMarker && rd.Mode == ""
+		hidden := rd.StateHidden
 		switch {
 		case hidden && withIdle.State == StateIdle:
 			if without.State != StateUnknown {

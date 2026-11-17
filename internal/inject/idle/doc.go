@@ -35,7 +35,7 @@
 // codex requires the report. Idle or done says idle, working says working,
 // and none, clear or error give unknown. The second signal is required for
 // idle: a title that is neither busy nor "Action Required", and a screen with
-// the composer and no dialog. When the report says idle and the title or the
+// the composer, the cursor in it, and no dialog. When the report says idle and the title or the
 // screen says otherwise, the state is unknown, not the other signal's state.
 //
 // claude requires the recogniser: the composer at its place, the cursor in it,
@@ -44,10 +44,13 @@
 // task and no working line. A busy title and a working report give working;
 // a report of error or clear gives unknown; idle, done or no report at all
 // leave the screen's answer. While a collapsed paste is in the composer
-// (PastedMarker with an empty Mode, the footer "paste again to expand") the
-// screen shows neither the working line nor the shell count and no mode, so
-// the state comes from the report: without an idle or done report it is
-// unknown.
+// (screen.Reading.StateHidden, the footer "paste again to expand") the screen
+// shows neither the working line nor the shell count and no mode, so the
+// state comes from the report: without an idle or done report it is unknown.
+// That idle sets Classification.ReportOnly. It rests on the report alone and
+// does not rule out a background task: only the fence's check after its own
+// paste may accept it, and every other consumer (status, notices, the check
+// before a paste) must treat ReportOnly as not idle.
 //
 // The state does not say whether the composer is empty. Classification.
 // ComposerEmpty is copied from the screen reading and is separate: a composer

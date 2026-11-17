@@ -21,6 +21,9 @@ func checkProperty(t testing.TB, runtime string, in Input, cl Classification, wh
 	if in.Ended && cl.State != StateEnded {
 		t.Errorf("%s: Ended gave %q", where, cl.State)
 	}
+	if cl.ReportOnly && cl.State != StateIdle {
+		t.Errorf("%s: ReportOnly with state %q", where, cl.State)
+	}
 	if cl.State != StateIdle {
 		return
 	}
@@ -48,10 +51,18 @@ func checkProperty(t testing.TB, runtime string, in Input, cl Classification, wh
 		t.Errorf("%s: codex idle with Action Required", where)
 	case runtime == "claude" && !sr.CursorInComposer:
 		t.Errorf("%s: claude idle without the cursor in the composer", where)
-	case runtime == "claude" && sr.PastedMarker && sr.Mode == "" &&
+	case runtime == "claude" && sr.StateHidden && !cl.ReportOnly:
+		t.Errorf("%s: claude idle under the paste footer without ReportOnly", where)
+	case runtime == "claude" && sr.StateHidden &&
 		!(st.Has && (st.Report.State == osc7501.StateIdle || st.Report.State == osc7501.StateDone)):
-		t.Errorf("%s: claude idle under the paste footer without an idle report", where)
-	case runtime == "claude" && !(sr.PastedMarker && sr.Mode == "") && (in.ExpectedMode == "" || sr.Mode != in.ExpectedMode):
+		t.Errorf("%s: claude ReportOnly idle without an idle or done report", where)
+	case !sr.StateHidden && cl.ReportOnly:
+		t.Errorf("%s: ReportOnly idle with the state shown on screen", where)
+	case runtime == "codex" && cl.ReportOnly:
+		t.Errorf("%s: codex idle with ReportOnly", where)
+	case runtime == "codex" && !sr.CursorInComposer:
+		t.Errorf("%s: codex idle without the cursor in the composer", where)
+	case runtime == "claude" && !sr.StateHidden && (in.ExpectedMode == "" || sr.Mode != in.ExpectedMode):
 		t.Errorf("%s: claude idle with mode %q, expected %q", where, sr.Mode, in.ExpectedMode)
 	}
 }
