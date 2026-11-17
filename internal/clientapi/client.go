@@ -27,19 +27,32 @@ var ErrResponseTooLarge = errors.New("clientapi: response line over the response
 // the connection.
 var ErrBadResponse = errors.New("clientapi: bad response")
 
-// Error is the typed error for an error response.
+// maxErrorCodeText is the most of a server's code that [Error.Error] prints.
+const maxErrorCodeText = 64
+
+// Error is the typed error for an error response. Its fields are what the
+// server sent, and a faulty or impostor server can send anything: a caller
+// that shows Message must make it safe for its output first (a terminal,
+// above all, must not receive it raw).
 type Error struct {
-	// Code is the server's code.
+	// Code is the server's code, as received.
 	Code ErrorCode
-	// Message is the server's fixed text.
+	// Message is the server's text, as received and unchecked.
 	Message string
 	// SupportedProtocols is set with [CodeUnsupportedProtocol].
 	SupportedProtocols []string
 }
 
-// Error returns the code and the server's text.
+// Error returns the server's code, cut to a short length and quoted with
+// every control and non-ASCII character escaped, so that nothing the server
+// sent can reach a terminal or a log through it. It leaves out Message, which
+// stays available as a field.
 func (e *Error) Error() string {
-	return "clientapi: server answered " + string(e.Code) + ": " + e.Message
+	code := string(e.Code)
+	if len(code) > maxErrorCodeText {
+		code = code[:maxErrorCodeText] + "..."
+	}
+	return "clientapi: server answered " + strconv.QuoteToASCII(code)
 }
 
 // Client is one connection to the daemon. It is safe for concurrent use; calls
@@ -140,11 +153,13 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 		return fail(fmt.Errorf("%w: not UTF-8", ErrBadResponse))
 	}
 	var resp Response
+	// The errors below carry fixed texts: what the server sent, including the
+	// text of a decoder error that quotes it, stays out of them.
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return fail(fmt.Errorf("%w: %v", ErrBadResponse, err))
+		return fail(fmt.Errorf("%w: not a response object", ErrBadResponse))
 	}
 	if resp.Protocol != Protocol {
-		return fail(fmt.Errorf("%w: protocol %q", ErrBadResponse, resp.Protocol))
+		return fail(fmt.Errorf("%w: protocol does not match", ErrBadResponse))
 	}
 	if resp.OK {
 		if resp.RequestID != id {
@@ -154,7 +169,7 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 			return fail(fmt.Errorf("%w: result missing", ErrBadResponse))
 		}
 		if err := json.Unmarshal(resp.Result, result); err != nil {
-			return fail(fmt.Errorf("%w: %v", ErrBadResponse, err))
+			return fail(fmt.Errorf("%w: result does not fit the operation", ErrBadResponse))
 		}
 		return nil
 	}
