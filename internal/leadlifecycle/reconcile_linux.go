@@ -69,8 +69,9 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 // identity changed): that role is left as it is. A role shown unknown for that
 // reason is then never resolved by Reconcile, since the registry may have lost
 // what happened to it; only a pending launch intent of it is closed (adopted
-// when its unit is running, abandoned when the late-start window and its margin have passed),
-// so that the owner's decision is not refused, and the owner's ResolveUnknown
+// when its unit is running, abandoned at once when the boot changed or once
+// the late-start window and its margin have passed), so that the owner's
+// decision is not refused, and the owner's ResolveUnknown
 // moves it on. Stop also moves it on. When the pass has acted on every role
 // (the manager answered for each) Reconcile then acknowledges the cut to the
 // registry, with a note saying what it did, and the report says so
@@ -83,8 +84,9 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 //     between the intent and the outcome): the unit is inspected. A unit with
 //     exactly this epoch and intent is adopted. With no unit and its control
 //     group proven empty the role is unknown (reason launch-unsettled) until
-//     the late-start window and its margin since the intent have passed, then the intent is
-//     abandoned and the role stopped, with a proof text naming the facts used.
+//     the late-start window and its margin since the intent have passed, then
+//     the intent is abandoned and the role stopped, with a proof text naming
+//     the facts used.
 //     With no unit loaded on another boot than the one journaled with the
 //     intent, the intent is abandoned and the role stopped at once: the boot
 //     changed, so no start request of the intent can land.
