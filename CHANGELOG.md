@@ -118,6 +118,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   match nothing, so a person in session focus could not leave it. Ctrl with
   another modifier is still not the return key, and F12 with another modifier
   still does not zoom.
+- The fixture console no longer redraws the whole window 30 times a second
+  for the whole recording and the linger time. It asks for a tick only while
+  output is queued or the session pane holds a frame, and at the time of the
+  next recorded event or of the end of the linger time, so a cockpit with
+  nothing to show is idle. In a very large window that used to keep the
+  process busy and make keys wait behind redraws.
 
 ## [0.0.8] - 2026-11-15
 

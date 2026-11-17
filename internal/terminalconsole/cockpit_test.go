@@ -43,6 +43,8 @@ func (s *recSink) Mouse(m uv.MouseEvent) {
 type scheduled struct {
 	d  time.Duration
 	fn func(time.Time) tea.Msg
+	// at is when the timer is due on the rig's clock.
+	at time.Time
 }
 
 // rig drives a model with a clock of its own: it replaces tea.Tick, records
@@ -53,6 +55,9 @@ type rig struct {
 	sink  *recSink
 	sched []scheduled
 	t0    time.Time
+	// clock is the rig's own time: the time of the last message it sent or of
+	// the timer it ran. Timers are due at clock plus their delay.
+	clock time.Time
 }
 
 func newRig(t *testing.T, w, h int, o Options) *rig {
@@ -61,11 +66,12 @@ func newRig(t *testing.T, w, h int, o Options) *rig {
 		o.Theme = "dark"
 	}
 	r := &rig{t: t, sink: &recSink{}, t0: time.Unix(1_000_000, 0)}
+	r.clock = r.t0
 	o.Input = r.sink
 	r.m = NewWithOptions(Fixture{}, o)
 	t.Cleanup(r.m.Close)
 	r.m.after = func(d time.Duration, fn func(time.Time) tea.Msg) tea.Cmd {
-		r.sched = append(r.sched, scheduled{d, fn})
+		r.sched = append(r.sched, scheduled{d: d, fn: fn, at: r.clock.Add(d)})
 		return nil
 	}
 	if w > 0 {
@@ -86,7 +92,35 @@ func (r *rig) play(d time.Duration) {
 	}
 }
 
+// run is a clock for the timers the model schedules: it runs the earliest due
+// timer, at its due time, until none is due within d of the start, and returns
+// the time of every tick message it delivered, as a duration from the start.
+// A model that schedules no timer is idle.
+func (r *rig) run(d time.Duration) []time.Duration {
+	var ticks []time.Duration
+	for {
+		next := -1
+		for i, s := range r.sched {
+			if s.at.Sub(r.t0) <= d && (next < 0 || s.at.Before(r.sched[next].at)) {
+				next = i
+			}
+		}
+		if next < 0 {
+			return ticks
+		}
+		s := r.sched[next]
+		r.sched = append(r.sched[:next:next], r.sched[next+1:]...)
+		r.clock = s.at
+		msg := s.fn(s.at)
+		if _, ok := msg.(tickMsg); ok {
+			ticks = append(ticks, s.at.Sub(r.t0))
+		}
+		r.m.Update(msg)
+	}
+}
+
 func (r *rig) tick(at time.Duration) {
+	r.clock = r.t0.Add(at)
 	r.m.Update(tickMsg{at: r.t0.Add(at), gen: r.m.rep.gen})
 }
 
@@ -632,6 +666,92 @@ func TestLingerKeepsTheSessionOpen(t *testing.T) {
 	r.play(6 * time.Second)
 	if !strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
 		t.Fatal("did not end after the linger time")
+	}
+}
+
+// TestReplayTicksOnlyWhenSomethingIsDue runs the exit-zero recording (output
+// at 0, 40, 80 and 120 ms, its end at 300 ms) on the rig's clock and checks
+// every tick the model asked for. There is none while nothing is due: the
+// wait for the next event and the linger time are one timer each.
+func TestReplayTicksOnlyWhenSomethingIsDue(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl", Linger: 5 * time.Second})
+	ticks := r.run(time.Minute)
+	ms := time.Millisecond
+	// The first tick only sets the replay's start; then one tick per event,
+	// the end's, and the one that applies the end when the linger time is over.
+	want := []time.Duration{tickInterval, tickInterval + 40*ms, tickInterval + 80*ms, tickInterval + 120*ms, tickInterval + 300*ms, tickInterval + 5300*ms}
+	if fmt.Sprint(ticks) != fmt.Sprint(want) {
+		t.Fatalf("ticks at %v, want %v", ticks, want)
+	}
+	if !r.m.sessionEnded() || !strings.Contains(r.view(), "TERMINAL STREAM ENDED") {
+		t.Fatal("the session did not end")
+	}
+	// Idle: the ended session and the cockpit schedule no tick for a key, a
+	// redraw or a window size.
+	r.key(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	r.key(tabKey)
+	r.size(150, 50)
+	_ = r.view()
+	if got := r.run(time.Hour); len(got) != 0 {
+		t.Fatalf("an idle cockpit ticked at %v", got)
+	}
+}
+
+func TestReplayWithNoRecordingSchedulesNoTick(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "no-such.jsonl"})
+	if got := r.run(time.Hour); len(got) != 1 {
+		t.Fatalf("ticks at %v", got)
+	}
+	if got := r.run(2 * time.Hour); len(got) != 0 {
+		t.Fatalf("ticks at %v", got)
+	}
+}
+
+// TestReplayTicksAtOnceWhileOutputIsQueued checks that a tick that leaves
+// output queued asks for the next tick in 33 ms, and that once the queue is
+// empty the wait is for the next event again.
+func TestReplayTicksAtOnceWhileOutputIsQueued(t *testing.T) {
+	ms := time.Millisecond
+	r := newRig(t, 140, 45, Options{Recording: "exit-zero.jsonl", Linger: time.Hour})
+	r.run(tickInterval + 130*ms) // the first tick is at 33 ms: this is after the last output
+	r.m.rep.queue = append(r.m.rep.queue, sessionreplayOut(strings.Repeat("x", 2*tickBudget+1)))
+	// Three ticks write the queue; the base of the replay is the first tick.
+	for i, at := range []time.Duration{tickInterval + 140*ms, tickInterval + 150*ms, tickInterval + 160*ms} {
+		r.sched = nil
+		r.tick(at)
+		if len(r.sched) != 1 {
+			t.Fatalf("tick %d scheduled %+v", i, r.sched)
+		}
+		wantDelay := tickInterval
+		if i == 2 {
+			// Drained, the wait is for the end at 300 ms: 160 ms after the tick.
+			wantDelay = 300*ms - 160*ms
+		}
+		queued := len(r.m.rep.queue) > 0
+		if got := r.sched[0].d; got != wantDelay || queued != (i < 2) {
+			t.Fatalf("tick %d: delay %v, want %v, queued %v", i, got, wantDelay, queued)
+		}
+	}
+}
+
+// TestReplayTicksWhileAFrameIsHeld checks that ticks come every 33 ms while
+// the pane holds a frame for synchronized output, and not between the
+// release and the next event. sync-frames.jsonl opens a frame at 480 ms that
+// closes at 720 ms.
+func TestReplayTicksWhileAFrameIsHeld(t *testing.T) {
+	r := newRig(t, 140, 45, Options{Recording: "sync-frames.jsonl", Linger: time.Hour})
+	base := tickInterval // the first tick sets the start of the replay
+	held, quiet := 0, 0
+	for _, at := range r.run(base + 800*time.Millisecond) {
+		switch e := at - base; {
+		case e > 480*time.Millisecond && e < 480*time.Millisecond+sessionpane.MaxFrameHold:
+			held++
+		case e > 480*time.Millisecond+sessionpane.MaxFrameHold+tickInterval && e < 720*time.Millisecond:
+			quiet++
+		}
+	}
+	if held < 3 || quiet != 0 {
+		t.Fatalf("%d ticks while the frame was held, %d between its release and the next event", held, quiet)
 	}
 }
 
