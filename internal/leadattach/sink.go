@@ -55,14 +55,19 @@ func (c *Client) pushed(res queueResult) {
 
 var noticeInputDropped = liveNotice("input-dropped", "The holder is not taking input fast enough: input was dropped.")
 
-// Key encodes the key for the session's modes as the holder reports them and
-// queues it as input.
+// Key encodes the key for the modes of the client's own pane at this moment
+// and queues it as input. The pane is restored from the snapshot and fed the
+// bytes the holder's pane was fed, so its modes are those of the screen the
+// user sees; the holder's Modes frame for the same output can still be on its
+// way. The pane is read outside the client's lock.
 func (s *inputSink) Key(k uv.KeyPressEvent) {
 	c := s.c
-	cn, ms := c.writerConn()
+	cn, _ := c.writerConn()
 	if cn == nil {
 		return
 	}
+	set := c.pane.ModeSet()
+	ms := ModeSet{DEC: set.DEC, ANSI: set.ANSI}
 	b := EncodeKey(k, ms, KeyOptions{ShiftEnter: c.cfg.ShiftEnter})
 	if len(b) == 0 {
 		c.mu.Lock()

@@ -42,7 +42,8 @@ type Client struct {
 	wantCols, wantRows int
 
 	st terminalconsole.LiveStatus
-	// modes is the full mode set the holder reported; st.Modes is derived.
+	// modes is the full mode set the holder reported, for the mouse encoding;
+	// st.Modes is derived. Keys are encoded for the pane's own modes.
 	modes ModeSet
 	// role is the role the holder granted, caps its limits.
 	role wire.Role

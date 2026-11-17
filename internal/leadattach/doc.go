@@ -52,7 +52,7 @@
 // cockpit made and gave to Start: Snapshot to Restore, Output to Write (its
 // start position must be the position the client has reached), Size to
 // Resize, Exit to End. The mode set of the holder's Modes frame is kept in
-// full for the key encoding, and the mouse, paste and focus part of it is
+// full for the mouse encoding, and the mouse, paste and focus part of it is
 // LiveStatus.Modes: the cockpit decides what to ask of the outer terminal from
 // that and not from the pane. Until a Modes frame comes on a connection, the
 // modes of its first snapshot stand in. State fills the end facts, the idle
@@ -82,8 +82,12 @@
 // The sink that Start returns sends input only while the state is attached and
 // the client both wants to write (Config.Mode) and was granted the writer
 // role; otherwise the input is dropped and counted. A key is encoded for the
-// modes in the last Modes frame ([EncodeKey]), a mouse event likewise
-// ([EncodeMouse]), and both go in Input frames; a paste goes in a Paste frame
+// modes of the client's own pane when it is encoded ([EncodeKey]): the pane is
+// restored from the snapshot and fed the same bytes as the holder's, so it is
+// the screen the user sees, and the holder's Modes frame for the same output
+// can still be on its way. A mouse event is encoded for the modes of the last
+// Modes frame ([EncodeMouse]), as is LiveStatus.Modes (the lead-hosting design,
+// section 2.4). Both go in Input frames; a paste goes in a Paste frame
 // whole (the holder wraps it for the session's paste mode), or is refused with
 // a notice when it is over the 64 KiB a frame holds, because several frames
 // would be several pastes. Resize sends the newest size only, as a Resize
