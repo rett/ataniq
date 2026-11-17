@@ -121,7 +121,7 @@ func (m *Model) onKey(v tea.KeyPressMsg) tea.Cmd {
 	if !m.layout().cockpit {
 		return m.handleFallbackKey(v)
 	}
-	if v.Code == zoomKey && v.Mod == 0 {
+	if v.Code == zoomKey && withoutLocks(v.Mod) == 0 {
 		m.zoom = !m.zoom
 		m.overlay = ""
 		return m.syncPane(false)

@@ -236,7 +236,8 @@ func TestFallbackBelowTheMinimum(t *testing.T) {
 }
 
 func TestReturnKeyInBothEncodings(t *testing.T) {
-	for _, enc := range []struct{ name, bytes string }{{"legacy", "\x1c"}, {"kitty", "\x1b[92;5u"}, {"kitty with event type", "\x1b[92;5:1u"}} {
+	for _, enc := range []struct{ name, bytes string }{{"legacy", "\x1c"}, {"kitty", "\x1b[92;5u"}, {"kitty with event type", "\x1b[92;5:1u"},
+		{"kitty with NumLock", "\x1b[92;133u"}, {"kitty with CapsLock", "\x1b[92;69u"}, {"kitty with both locks", "\x1b[92;197u"}} {
 		r := newRig(t, 140, 45, Options{})
 		r.focusSession()
 		r.key(decodeKey(t, enc.bytes))
@@ -245,6 +246,44 @@ func TestReturnKeyInBothEncodings(t *testing.T) {
 		}
 		if len(r.sink.keys) != 0 {
 			t.Fatalf("%s: the return key reached the session: %v", enc.name, r.sink.keys)
+		}
+	}
+}
+
+// TestOtherChordsDoNotReturn checks that only Ctrl, with or without a lock
+// state, returns: Ctrl with another modifier, and Ctrl with text, are not the
+// return key.
+func TestOtherChordsDoNotReturn(t *testing.T) {
+	for _, enc := range []string{"\x1b[92;7u", "\x1b[92;6u", "\x1b[92;8u", "\x1b[92;135u", "\x1b[92;71u", "\x1b[92;3u", "\x1b[92;2u", "\x1b[92;1u"} {
+		r := newRig(t, 140, 45, Options{})
+		r.focusSession()
+		r.key(decodeKey(t, enc))
+		if r.m.focus != sessionFocus || len(r.sink.keys) != 1 {
+			t.Fatalf("%q: focus %v keys %v", enc, r.m.focus, r.sink.keys)
+		}
+	}
+	// A press that carries text is a typed character, not the chord.
+	r := newRig(t, 140, 45, Options{})
+	r.focusSession()
+	r.key(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl, Text: "\\"})
+	if r.m.focus != sessionFocus || len(r.sink.keys) != 1 {
+		t.Fatalf("focus %v keys %v", r.m.focus, r.sink.keys)
+	}
+}
+
+// TestEveryLockStateIsIgnored builds the presses directly, because a terminal
+// does not report ScrollLock in the kitty form.
+func TestEveryLockStateIsIgnored(t *testing.T) {
+	for _, lock := range []tea.KeyMod{tea.ModCapsLock, tea.ModNumLock, tea.ModScrollLock, tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock} {
+		r := newRig(t, 140, 45, Options{})
+		r.focusSession()
+		r.key(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl | lock})
+		if r.m.focus != consoleFocus {
+			t.Fatalf("lock %v: did not return", lock)
+		}
+		r.key(tea.KeyPressMsg{Code: tea.KeyF12, Mod: lock})
+		if !r.m.zoom {
+			t.Fatalf("lock %v: did not zoom", lock)
 		}
 	}
 }
@@ -337,6 +376,45 @@ func TestQAndCtrlCDoNotQuitInSessionFocus(t *testing.T) {
 	r = newRig(t, 140, 45, Options{})
 	if cmd := r.key(ctrlC); cmd == nil {
 		t.Fatal("ctrl+c does not quit in console focus")
+	}
+}
+
+// TestZoomKeyIgnoresLockStatesOnly checks F12 with CapsLock and NumLock on,
+// which a terminal reports with the key, and that F12 with any other modifier
+// is left alone.
+func TestZoomKeyIgnoresLockStatesOnly(t *testing.T) {
+	for _, enc := range []string{"\x1b[24~", "\x1b[24;129~", "\x1b[24;65~", "\x1b[24;193~"} {
+		for _, f := range []focusState{consoleFocus, sessionFocus} {
+			r := newRig(t, 140, 45, Options{})
+			if f == sessionFocus {
+				r.focusSession()
+			}
+			r.key(decodeKey(t, enc))
+			if !r.m.zoom {
+				t.Fatalf("%q focus %v: F12 did not zoom", enc, f)
+			}
+			if len(r.sink.keys) != 0 {
+				t.Fatalf("%q: F12 reached the session: %v", enc, r.sink.keys)
+			}
+			r.key(decodeKey(t, enc))
+			if r.m.zoom {
+				t.Fatalf("%q focus %v: F12 did not leave zoom", enc, f)
+			}
+		}
+	}
+	for _, enc := range []string{"\x1b[24;2~", "\x1b[24;3~", "\x1b[24;5~", "\x1b[24;130~"} {
+		r := newRig(t, 140, 45, Options{})
+		r.key(decodeKey(t, enc))
+		if r.m.zoom {
+			t.Fatalf("%q zoomed", enc)
+		}
+	}
+	// In session focus a modified F12 goes to the session.
+	r := newRig(t, 140, 45, Options{})
+	r.focusSession()
+	r.key(decodeKey(t, "\x1b[24;2~"))
+	if r.m.zoom || len(r.sink.keys) != 1 || r.sink.keys[0] != "shift+f12" {
+		t.Fatalf("zoom %v keys %v", r.m.zoom, r.sink.keys)
 	}
 }
 
