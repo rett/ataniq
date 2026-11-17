@@ -15,9 +15,12 @@ import (
 const ReportVersion = 1
 
 // ReportPrefix starts the one line of a report (the space is part of it): the
-// prefix, one JSON object and a newline. The probe writes the line to a
-// descriptor, or to the terminal when none survives, so a reader finds the
-// line by its prefix.
+// prefix, one JSON object and a newline. The probe writes the line to its
+// report descriptor, which the holder owns the other end of. The prefix does
+// not authenticate the line: a line with the prefix that is seen anywhere else
+// (the terminal the lead also writes to, say) is display only, and no input
+// to Failed or FailedAll. See the package documentation, "The probe and the
+// holder".
 const ReportPrefix = "ATANIQ-PROBE-REPORT "
 
 // Bounds on a report.
@@ -214,6 +217,36 @@ func ParseLine(line []byte) (Report, error) {
 	return r, nil
 }
 
+// ParseProbeLine is ParseLine for the line a probe writes: the report holds
+// the result of the inside half of every assertion that has one, 1 to 8, each
+// once and no other. A result that only the holder makes (9, 10 and the
+// outside halves) is refused, so a line that carries one cannot stand in for
+// the holder's own checks, and a report that lacks an inside result is
+// refused, not judged. ParseLine stays for the full report, which holds both.
+func ParseProbeLine(line []byte) (Report, error) {
+	r, err := ParseLine(line)
+	if err != nil {
+		return Report{}, err
+	}
+	seen := map[string]bool{}
+	for i, res := range r.Results {
+		a, ok := ByNumber(res.Number)
+		if !ok || !a.HasInside() || res.ID != a.ID {
+			return Report{}, refuse(fmt.Sprintf("results[%d]", i), "id %s is not a result the probe makes", clipQuote(res.ID))
+		}
+		if seen[res.ID] {
+			return Report{}, refuse(fmt.Sprintf("results[%d]", i), "id %s appears twice", res.ID)
+		}
+		seen[res.ID] = true
+	}
+	for _, a := range assertions {
+		if a.HasInside() && !seen[a.ID] {
+			return Report{}, refuse("results", "assertion %d (%s) has no result", a.Number, a.ID)
+		}
+	}
+	return r, nil
+}
+
 func (r Report) validate() error {
 	if r.Version != ReportVersion {
 		return refuse("version", "is %d, want %d", r.Version, ReportVersion)
@@ -283,8 +316,9 @@ const (
 // optional); when its digest is not the spec's; when a required result is
 // missing; when any result it holds is failed; and when a result is
 // not-checked and the spec does not mark its assertion optional. A
-// not-checked result is never counted as ok. Problems does not check that the
-// report is well formed beyond that: ParseLine does.
+// not-checked result is never counted as ok; and when one ID has more than one
+// result. Problems does not check that the report is well formed beyond that:
+// ParseLine and ParseProbeLine do.
 func Problems(r Report, s Spec, req Require) []string {
 	var out []string
 	if err := s.Validate(); err != nil {
@@ -299,6 +333,9 @@ func Problems(r Report, s Spec, req Require) []string {
 	}
 	have := map[string]Result{}
 	for _, res := range r.Results {
+		if _, dup := have[res.ID]; dup {
+			out = append(out, fmt.Sprintf("assertion %d (%s): more than one result", res.Number, res.ID))
+		}
 		have[res.ID] = res
 	}
 	optional := map[int]bool{}

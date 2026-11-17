@@ -500,3 +500,100 @@ func allResultIDs() []string {
 	}
 	return ids
 }
+
+func TestParseProbeLine(t *testing.T) {
+	s := testSpec("claude")
+	good := insideReport(s)
+	line := EncodeLine(good)
+	back, err := ParseProbeLine(line)
+	if err != nil {
+		t.Fatalf("a probe's line: %v", err)
+	}
+	if Failed(back, s) || len(back.Results) != 8 {
+		t.Errorf("round trip: %d results, %v", len(back.Results), Problems(back, s, RequireInside))
+	}
+	// A report that failed is still a probe's report: it is judged, not refused.
+	bad := insideReport(s)
+	bad.Results[2].Status = StatusFailed
+	if back, err := ParseProbeLine(EncodeLine(bad)); err != nil || !Failed(back, s) {
+		t.Errorf("a failed probe report: %v", err)
+	}
+
+	with := func(extra ...Result) []byte { return EncodeLine(good.With(extra...)) }
+	without := func(i int) []byte {
+		r := good
+		r.Results = append(append([]Result(nil), good.Results[:i]...), good.Results[i+1:]...)
+		return EncodeLine(r)
+	}
+	for _, tc := range []struct {
+		name  string
+		line  []byte
+		check string
+	}{
+		{"a forged outside half of 1", with(Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
+		{"a forged outside half of 5", with(Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
+		{"a forged assertion 9", with(Result{9, IDRoleLockLingering, StatusOK, ""}), "not a result the probe makes"},
+		{"a forged assertion 10", with(Result{10, IDQualificationRecord, StatusOK, ""}), "not a result the probe makes"},
+		{"an inside id twice", with(Result{2, IDEnvironment, StatusOK, ""}), "twice"},
+		{"the first assertion missing", without(0), "assertion 1"},
+		{"the last assertion missing", without(7), "assertion 8"},
+		{"no results", EncodeLine(Report{Version: ReportVersion, Digest: s.Digest}), "has no result"},
+		{"not a report", []byte("hello\n"), "does not start"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseProbeLine(tc.line)
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if r := refusalOf(t, err); !strings.Contains(r.Field+" "+r.Reason, tc.check) {
+				t.Errorf("refusal %q does not mention %q", err, tc.check)
+			}
+		})
+	}
+	// ParseLine still reads the full report, which holds both halves.
+	full := good.With(Result{9, IDRoleLockLingering, StatusOK, ""})
+	if _, err := ParseLine(EncodeLine(full)); err != nil {
+		t.Errorf("ParseLine of a full report: %v", err)
+	}
+}
+
+// The forged line of the review: ok results for the outside half and for 9
+// and 10 in a probe's line must not let a holder that forgot its own checks
+// pass the start.
+func TestForgedOutsideResultsDoNotPassTheStart(t *testing.T) {
+	s := testSpec("claude")
+	forged := insideReport(s).With(
+		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
+		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
+	)
+	line := EncodeLine(forged)
+	if _, err := ParseProbeLine(line); err == nil {
+		t.Error("ParseProbeLine took a probe line with outside results")
+	}
+	// What the holder takes from the descriptor, then, holds inside results
+	// only, and the holder's own checks are required by FailedAll.
+	probe, err := ParseProbeLine(EncodeLine(insideReport(s)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !FailedAll(probe, s) {
+		t.Error("FailedAll passed a report without the holder's own results")
+	}
+}
+
+func TestProblemsRefusesARepeatedID(t *testing.T) {
+	s := testSpec("claude")
+	rep := insideReport(s)
+	rep.Results = append(rep.Results, Result{2, IDEnvironment, StatusOK, ""})
+	p := Problems(rep, s, RequireInside)
+	if len(p) != 1 || !strings.Contains(p[0], "more than one result") {
+		t.Errorf("a repeated ID: %v", p)
+	}
+	// The first result being failed and the second ok must not pass.
+	rep = insideReport(s)
+	rep.Results[1].Status = StatusFailed
+	rep.Results = append(rep.Results, Result{2, IDEnvironment, StatusOK, ""})
+	if !Failed(rep, s) {
+		t.Error("a failed result followed by an ok one passed")
+	}
+}

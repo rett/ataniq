@@ -30,14 +30,44 @@
 //     is built here.
 //   - The [Report]: [Result]s with a status ([StatusOK], [StatusFailed] or
 //     [StatusNotChecked]) and a bounded, escaped detail. [EncodeLine] and
-//     [ParseLine] write and read it as one line after [ReportPrefix].
-//     [Failed] and [Problems] judge a report against its spec. The report has
+//     [ParseLine] write and read it as one line after [ReportPrefix];
+//     [ParseProbeLine] reads the line of a probe, which holds the inside
+//     results 1 to 8, each once, and no other. [Failed] and [Problems] judge
+//     a report against its spec. The report has
 //     no field that says the sandbox as a whole passed or is supported.
 //   - The [Canary] (Linux): a loopback TCP listener and an abstract socket
 //     owned by the caller, which count the connections they accept, for
 //     assertion 3.
 //   - The stop rule of the design as constants ([StopTermWait] and the
 //     others). The holder implements it.
+//
+// # The probe and the holder
+//
+// The contract of the report line, which the probe command and the holder are
+// written against:
+//
+//   - The probe ALWAYS writes its report line to its report descriptor, on
+//     success too, before it execs the agent. A probe whose report is
+//     [Failed] exits without exec (status 97). The descriptor is
+//     close-on-exec, so the exec of the agent closes it.
+//   - The holder owns the other end of that descriptor. It judges a start
+//     only by what it reads there and by the probe's exit status: a line that
+//     [ParseProbeLine] accepts, followed by end-of-file while the process is
+//     still alive (the exec happened), and no [Problems] for the line with the
+//     holder's own results added; or the probe's exit status, which is a
+//     start that did not happen. A missing line, end-of-file without a line,
+//     or a line that is refused, is not a start.
+//   - A line that is seen anywhere else, the terminal in particular, is
+//     display only and never input to [Failed] or [FailedAll]. The lead
+//     writes to the same terminal after the exec and can print a line with
+//     [ReportPrefix]; the report carries the digest of the spec, which the
+//     lead can read, so the prefix and the digest authenticate nothing.
+//   - The probe makes the results 1 to 8, the inside half of each assertion
+//     that has one, once each. The holder makes the others (the outside half
+//     of 1, 3 and 5, then 9 and 10) with [RunOutside], adds them with
+//     [Report.With] and judges the whole with [FailedAll], after the probe's
+//     report and before it accepts the start. [ParseLine] reads a full report;
+//     the probe's line is read with [ParseProbeLine].
 //
 // # Not-checked is not ok
 //
