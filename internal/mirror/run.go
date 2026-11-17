@@ -169,18 +169,27 @@ func (e *gitExit) Error() string {
 // runGit runs one git command through gitenv and boundedexec. Standard error
 // is dropped from the error text.
 func runGit(ctx context.Context, g gitenv.Git, c gitenv.Cmd, stdin io.Reader, timeout time.Duration, maxStdout int64) ([]byte, error) {
+	return runGitWatch(ctx, g, c, stdin, timeout, maxStdout, nil, 0)
+}
+
+// runGitWatch is [runGit] with a watchdog that boundedexec calls every
+// interval while git runs (zero means its default). An error from the
+// watchdog stops git and comes back wrapped, so errors.As finds it.
+func runGitWatch(ctx context.Context, g gitenv.Git, c gitenv.Cmd, stdin io.Reader, timeout time.Duration, maxStdout int64, watch func() error, interval time.Duration) ([]byte, error) {
 	argv, err := g.Argv(c)
 	if err != nil {
 		return nil, fmt.Errorf("mirror: %w", err)
 	}
 	res, err := boundedexec.Run(ctx, boundedexec.Cmd{
-		Argv:      argv,
-		Env:       g.Env(c),
-		Dir:       c.Dir,
-		Stdin:     stdin,
-		Timeout:   timeout,
-		MaxStdout: maxStdout,
-		MaxStderr: maxStderr,
+		Argv:          argv,
+		Env:           g.Env(c),
+		Dir:           c.Dir,
+		Stdin:         stdin,
+		Timeout:       timeout,
+		MaxStdout:     maxStdout,
+		MaxStderr:     maxStderr,
+		Watch:         watch,
+		WatchInterval: interval,
 	})
 	if err != nil {
 		var ee *boundedexec.ExitError
@@ -190,4 +199,27 @@ func runGit(ctx context.Context, g gitenv.Git, c gitenv.Cmd, stdin io.Reader, ti
 		return nil, fmt.Errorf("mirror: git %s: %w", c.Args[0], err)
 	}
 	return res.Stdout, nil
+}
+
+// runLimit returns the time limit for one git run of the mirror: the limit of
+// a git run, or the time that is left in ctx when that is shorter.
+func (m *Mirror) runLimit(ctx context.Context) (time.Duration, error) {
+	d := m.limits.timeout()
+	if dl, ok := ctx.Deadline(); ok {
+		left := time.Until(dl)
+		if left <= 0 {
+			return 0, context.DeadlineExceeded
+		}
+		d = min(d, left)
+	}
+	return d, nil
+}
+
+// run runs one git command with the limit that [Mirror.runLimit] gives.
+func (m *Mirror) run(ctx context.Context, c gitenv.Cmd, stdin io.Reader, maxStdout int64) ([]byte, error) {
+	d, err := m.runLimit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return runGit(ctx, m.git, c, stdin, d, maxStdout)
 }

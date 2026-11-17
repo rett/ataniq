@@ -51,7 +51,9 @@ const listFormat = "--format=%(objectname) %(objecttype)%00%(refname)%00%(symref
 // they hold none of the characters that for-each-ref reads as a glob.
 // accept decides whether a listed name fits the layout.
 func (m *Mirror) list(ctx context.Context, patterns []string, max int, accept func(name string) bool) ([]Ref, error) {
-	args := append([]string{"for-each-ref", listFormat, "--count=" + strconv.Itoa(max)}, patterns...)
+	// "--end-of-options" comes before the patterns, so that git reads none
+	// of them as an option.
+	args := append([]string{"for-each-ref", listFormat, "--count=" + strconv.Itoa(max), "--end-of-options"}, patterns...)
 	out, err := runGit(ctx, m.git, gitenv.Cmd{GitDir: m.path, Args: args}, nil,
 		m.limits.timeout(), int64(max)*recordMax)
 	if err != nil {
@@ -60,8 +62,18 @@ func (m *Mirror) list(ctx context.Context, patterns []string, max int, accept fu
 	return parseRefs(out, accept)
 }
 
-// parseRefs reads the output of for-each-ref with [listFormat].
-func parseRefs(out []byte, accept func(name string) bool) ([]Ref, error) {
+// record is one ref as for-each-ref prints it with [listFormat], before any
+// check of the name.
+type record struct {
+	Ref
+	// Symref is the target of a symbolic ref, and empty for any other ref.
+	Symref string
+}
+
+// parseRecords reads the output of for-each-ref with [listFormat]. It checks
+// the shape of the output and the object id and type of each ref, and nothing
+// about the names.
+func parseRecords(out []byte) ([]record, error) {
 	text, ok := strings.CutSuffix(string(out), "\n")
 	if !ok && len(out) != 0 {
 		return nil, ErrBadRef
@@ -76,7 +88,7 @@ func parseRefs(out []byte, accept func(name string) bool) ([]Ref, error) {
 	if len(fields)%3 != 1 || fields[len(fields)-1] != "" {
 		return nil, ErrBadRef
 	}
-	var refs []Ref
+	var recs []record
 	for i := 0; i+2 < len(fields); i += 3 {
 		head := fields[i]
 		if i > 0 {
@@ -86,11 +98,28 @@ func parseRefs(out []byte, accept func(name string) bool) ([]Ref, error) {
 			}
 		}
 		id, typ, found := strings.Cut(head, " ")
-		name, symref := fields[i+1], fields[i+2]
-		if !found || !gitenv.IsObjectID(id) || !knownType(typ) || symref != "" || !accept(name) {
+		if !found || !gitenv.IsObjectID(id) || !knownType(typ) {
 			return nil, ErrBadRef
 		}
-		refs = append(refs, Ref{Name: name, ID: id, Type: typ})
+		recs = append(recs, record{Ref: Ref{Name: fields[i+1], ID: id, Type: typ}, Symref: fields[i+2]})
+	}
+	return recs, nil
+}
+
+// parseRefs reads the output of for-each-ref with [listFormat] and accepts
+// only the refs that fit the layout: no symbolic ref, and a name that accept
+// allows. The result is sorted by name.
+func parseRefs(out []byte, accept func(name string) bool) ([]Ref, error) {
+	recs, err := parseRecords(out)
+	if err != nil {
+		return nil, err
+	}
+	var refs []Ref
+	for _, r := range recs {
+		if r.Symref != "" || !accept(r.Name) {
+			return nil, ErrBadRef
+		}
+		refs = append(refs, r.Ref)
 	}
 	slices.SortFunc(refs, func(a, b Ref) int { return strings.Compare(a.Name, b.Name) })
 	return refs, nil

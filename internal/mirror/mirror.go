@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/exchange/safefs"
@@ -57,9 +58,10 @@ var settings = [][2]string{
 // check is a snapshot: the methods do not repeat it. A Mirror is safe for
 // concurrent use.
 type Mirror struct {
-	git    gitenv.Git
-	path   string
-	limits Limits
+	git     gitenv.Git
+	path    string
+	project string
+	limits  Limits
 }
 
 // Path returns the absolute path of the mirror's folder.
@@ -249,24 +251,9 @@ func Open(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mi
 	} else if reason != "" {
 		return nil, notMirror(reason)
 	}
-	config, err := root.ReadFile("config", maxConfig)
-	if err != nil {
-		return nil, notMirror("the config file cannot be read")
-	}
-	// The listing needs no repository: --git-dir names a path that is not
-	// one, so that git does not read the folder's own config.
-	listing, err := runGit(ctx, git, gitenv.Cmd{
-		GitDir: "/dev/null",
-		Args:   []string{"config", "--file", "/dev/stdin", "--list", "-z"},
-	}, bytes.NewReader(config), lim.timeout(), maxConfig*2)
-	if err != nil {
-		var ge *gitExit
-		if errors.As(err, &ge) {
-			return nil, notMirror("the config file is malformed")
-		}
+	if reason, err := checkConfigFile(ctx, git, root, lim.timeout()); err != nil {
 		return nil, err
-	}
-	if reason := checkConfig(listing); reason != "" {
+	} else if reason != "" {
 		return nil, notMirror(reason)
 	}
 	out, err := runGit(ctx, git, gitenv.Cmd{
@@ -283,7 +270,31 @@ func Open(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mi
 	if strings.TrimSpace(string(out)) != "true" {
 		return nil, notMirror("the repository is not bare")
 	}
-	return &Mirror{git: git, path: path, limits: lim}, nil
+	return &Mirror{git: git, path: path, project: project, limits: lim}, nil
+}
+
+// checkConfigFile reads the file "config" of the repository folder that root
+// names, once, through safefs, and has git parse that copy. It returns the
+// reason for a refusal ("" when the config is fine), or an error for a failure
+// that is not a refusal. The listing needs no repository: --git-dir names a
+// path that is not one, so that git does not read the folder's own config.
+func checkConfigFile(ctx context.Context, git gitenv.Git, root *safefs.Root, timeout time.Duration) (string, error) {
+	config, err := root.ReadFile("config", maxConfig)
+	if err != nil {
+		return "the config file cannot be read", nil
+	}
+	listing, err := runGit(ctx, git, gitenv.Cmd{
+		GitDir: "/dev/null",
+		Args:   []string{"config", "--file=/dev/stdin", "--list", "-z"},
+	}, bytes.NewReader(config), timeout, maxConfig*2)
+	if err != nil {
+		var ge *gitExit
+		if errors.As(err, &ge) {
+			return "the config file is malformed", nil
+		}
+		return "", err
+	}
+	return checkConfig(listing), nil
 }
 
 // checkFolder runs the checks that need only the folder handle. It returns a
