@@ -107,6 +107,7 @@ type Fake struct {
 	units       map[string]*fakeUnit
 	late        map[string][]Spec
 	leftover    map[string]bool
+	lastCG      map[string]string
 	scripts     map[string]*unitScript
 	unavailable map[Method]int
 	calls       []Call
@@ -148,8 +149,9 @@ type startOutcome struct {
 }
 
 type unitScript struct {
-	starts []startOutcome
-	procs  []ProcScript
+	starts  []startOutcome
+	procs   []ProcScript
+	reuseCG bool
 }
 
 var _ Manager = (*Fake)(nil)
@@ -163,6 +165,7 @@ func NewFake(clock Clock) *Fake {
 		units:       map[string]*fakeUnit{},
 		late:        map[string][]Spec{},
 		leftover:    map[string]bool{},
+		lastCG:      map[string]string{},
 		scripts:     map[string]*unitScript{},
 		unavailable: map[Method]int{},
 	}
@@ -256,6 +259,18 @@ func (f *Fake) LandLateStart(unit string) (State, error) {
 	call.Err = err
 	f.calls = append(f.calls, call)
 	return st, err
+}
+
+// ReuseNextControlGroup scripts the next start of unit, whether by Start or by
+// [Fake.LandLateStart], to run in the control group of the unit's previous
+// invocation: same path and same identity, as when a new invocation starts
+// while leftover processes of the old one remain in the group. Without it every
+// invocation gets a control group of a new identity. It has no effect on the
+// first start of a unit or after a reboot.
+func (f *Fake) ReuseNextControlGroup(unit string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.script(unit).reuseCG = true
 }
 
 // LeaveControlGroup says whether a control group is left at the fixed path of
@@ -385,6 +400,7 @@ func (f *Fake) Reboot() string {
 	f.units = map[string]*fakeUnit{}
 	f.late = map[string][]Spec{}
 	f.leftover = map[string]bool{}
+	f.lastCG = map[string]string{}
 	f.bootN++
 	return f.bootID()
 }
@@ -591,7 +607,15 @@ func (f *Fake) launch(spec Spec) State {
 	if len(procs) == 0 {
 		procs = []ProcScript{{}}
 	}
-	f.units[spec.Unit] = f.newUnit(spec.Unit, spec.Description(), procs)
+	script := f.script(spec.Unit)
+	prev := f.lastCG[spec.Unit]
+	u := f.newUnit(spec.Unit, spec.Description(), procs)
+	if script.reuseCG && prev != "" {
+		u.cgroupID = prev
+	}
+	script.reuseCG = false
+	f.lastCG[spec.Unit] = u.cgroupID
+	f.units[spec.Unit] = u
 	f.specs = append(f.specs, spec.clone())
 	return f.state(spec.Unit)
 }
@@ -717,15 +741,23 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	return nil
 }
 
-// Empty implements [Manager]. It is true when the unit is not loaded, when it
-// has another invocation than st, or when it has the invocation and control
-// group of st and the group holds no process (which cannot be seen on a loaded
-// unit of the fake, because it unloads an empty one). For a unit that is not
-// loaded it is false, without an error, while [Fake.LeaveControlGroup] says a
-// control group is left. A start request that [Fake.LateNextStart] holds is
-// not seen: the answer says nothing about it, as the interface says. It is
-// false with [ErrUnavailable] when scripted so, and false with an error when st
-// names no invocation of a loaded unit, or a control group of another identity.
+// Empty implements [Manager]. It is true in three cases:
+//
+//   - the unit is not loaded, unless [Fake.LeaveControlGroup] says a control
+//     group is left (then false, without an error);
+//   - the unit has another invocation than st and st names a control group
+//     identity that is not the one the unit's control group has: the old group
+//     is gone. When st names no identity, or the new invocation runs in the old
+//     control group (see [Fake.ReuseNextControlGroup]), the answer is false;
+//   - the unit has the invocation and control group of st and the group holds no
+//     process, which a loaded unit of the fake never shows, because it unloads
+//     an empty one.
+//
+// A start request that [Fake.LateNextStart] holds is not seen: the answer says
+// nothing about it, as the interface says. The answer is false with
+// [ErrUnavailable] when scripted so, and false with an error when st names no
+// invocation of a loaded unit, or a control group of another identity than the
+// unit's for the same invocation.
 func (f *Fake) Empty(ctx context.Context, st State) (empty bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -749,7 +781,10 @@ func (f *Fake) Empty(ctx context.Context, st State) (empty bool, err error) {
 		return false, ErrInvocationChanged
 	}
 	if st.InvocationID != u.invocation {
-		return true, nil
+		// The old control group is gone only when this invocation runs in
+		// another one. The fake gives every invocation its own, unless a
+		// test scripted the reuse.
+		return st.ControlGroupID != "" && st.ControlGroupID != u.cgroupID, nil
 	}
 	if st.ControlGroupID != u.cgroupID || st.ControlGroup != u.cgroup {
 		return false, ErrControlGroupMismatch

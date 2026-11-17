@@ -65,9 +65,12 @@ type Manager interface {
 
 	// Empty reports whether the control group of the invocation that st names
 	// is positively proven to hold no process: it is gone together with a unit
-	// that is not loaded or that has another invocation, or it is present
-	// with the same identity and not populated. In every case of doubt it
-	// returns false, with an error or without, never true.
+	// that is not loaded, it is gone because the unit has another invocation
+	// in a control group of another identity than the one st names, or it is
+	// present with the same identity and not populated. A new invocation that
+	// runs in the control group of the old one, with or without leftover
+	// processes, proves nothing. In every case of doubt it returns false, with
+	// an error or without, never true.
 	//
 	// When st names no invocation (the answer of an Inspect that found the
 	// unit not loaded, or a State holding only the unit name), a true answer

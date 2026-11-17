@@ -1026,3 +1026,59 @@ func TestFakeEmptyNotLoadedWithControlGroupLeft(t *testing.T) {
 		t.Fatalf("log: %+v", last)
 	}
 }
+
+// TestFakeEmptyOtherInvocationChecksControlGroup: another invocation is not
+// proof by itself; the old control group must be gone, which means the new one
+// has another identity.
+func TestFakeEmptyOtherInvocationChecksControlGroup(t *testing.T) {
+	r := newRig(t)
+	old := r.start(unitA, 1)
+	r.signal(old, syscall.SIGKILL)
+	cur := r.start(unitA, 2)
+	if cur.InvocationID == old.InvocationID || cur.ControlGroupID == old.ControlGroupID {
+		t.Fatalf("expected a new invocation in a new group: %+v %+v", old, cur)
+	}
+	if !r.empty(old) {
+		t.Fatal("another invocation in another control group is not proof")
+	}
+	// A state that names no control group identity proves nothing.
+	noID := old
+	noID.ControlGroupID = ""
+	if e, err := r.fake.Empty(r.ctx, noID); e || err != nil {
+		t.Fatalf("no identity: %v %v", e, err)
+	}
+	if e, _ := r.fake.Empty(r.ctx, State{Unit: unitA, InvocationID: "stale"}); e {
+		t.Fatal("no identity, stale invocation")
+	}
+
+	// A new invocation that runs in the old control group.
+	r.signal(cur, syscall.SIGKILL)
+	r.fake.ReuseNextControlGroup(unitA)
+	reused := r.start(unitA, 3)
+	if reused.InvocationID == cur.InvocationID || reused.ControlGroupID != cur.ControlGroupID || reused.ControlGroup != cur.ControlGroup {
+		t.Fatalf("the group was not reused: %+v %+v", cur, reused)
+	}
+	if e, err := r.fake.Empty(r.ctx, cur); e || err != nil {
+		t.Fatalf("reused control group: %v %v", e, err)
+	}
+	// An older invocation than the one before is still in another group.
+	if !r.empty(old) {
+		t.Fatal("older invocation")
+	}
+	// The script is used up, and the next start has a group of its own.
+	r.signal(reused, syscall.SIGKILL)
+	next := r.start(unitA, 4)
+	if next.ControlGroupID == reused.ControlGroupID {
+		t.Fatal("the reuse script was not used up")
+	}
+	if !r.empty(reused) {
+		t.Fatal("not proof once the group changed")
+	}
+	// After a reboot there is nothing to reuse.
+	r.fake.Reboot()
+	r.fake.ReuseNextControlGroup(unitA)
+	first := r.start(unitA, 5)
+	if first.ControlGroupID == next.ControlGroupID {
+		t.Fatal("reused a control group across a reboot")
+	}
+}
