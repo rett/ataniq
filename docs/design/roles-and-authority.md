@@ -32,18 +32,18 @@ lead for exactly one feature, not an assignable role and not the internal
 dispatch coordinator of [runtime](runtime.md). It holds no seat (the qargi
 lease by which a lead holds the project) and no lead assignment epoch of its
 own, ends with its lead and is never a handoff target. Its questions go to its
-lead, never to the owner directly. The owner may watch a coordinator and type
-into it as its single writer, and the lead is notified each time; this changes
-none of the coordinator's powers. Nothing it says is an approval (see
-[approvals](approvals.md)).
+lead, never to the owner directly. The owner may watch a managed coordinator
+and type into it as its single writer, and the lead is notified each time;
+this changes none of the coordinator's powers. Nothing it says is an approval
+(see [approvals](approvals.md)).
 
 Within its own feature a coordinator may prepare runs, verify, apply and merge
 them into the feature and sync the feature. The lead runs the feature's
 whole-suite verify; a pass a coordinator reports never counts toward finishing
 the feature by itself. It may clean any run of its own feature, including a
 stopped predecessor's, and never a run of another feature. Starting or
-finishing a feature, push, release, hotfix, takeover, the orphan sweep, prune
-and adoption of another actor's runs stay with the lead. Approval stays with
+finishing a feature, push, release, hotfix, the orphan sweep, prune and
+adoption of another actor's runs stay with the lead. Approval stays with
 the owner, as [approvals](approvals.md) states; the lead relays the
 coordinator's questions.
 

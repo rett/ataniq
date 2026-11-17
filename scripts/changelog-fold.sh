@@ -1,8 +1,9 @@
 #!/bin/sh
 # Fold the changelog fragments in changelog.d into the [Unreleased] section of
-# CHANGELOG.md, or check that none are left.
+# CHANGELOG.md, or into the dated section of a release, or check that none are
+# left.
 #
-#   sh scripts/changelog-fold.sh [--dry-run] [--root DIR]
+#   sh scripts/changelog-fold.sh [--dry-run] [--into VERSION] [--root DIR]
 #   sh scripts/changelog-fold.sh --check [--root DIR]
 #
 # A fragment is changelog.d/<section>-<slug>.md, where <section> is one of
@@ -15,21 +16,33 @@
 # (the heading is created in the Keep a Changelog order when the section is
 # missing), fragments in a section sorted by file name, and removes the folded
 # fragments. A fragment whose whole text (every line) is already an entry in
-# [Unreleased] is not added again but is removed, so a run that stopped between
+# that section is not added again but is removed, so a run that stopped between
 # writing CHANGELOG.md and removing the fragments can be repeated. A fragment
 # that only starts like an existing entry is folded. Nothing is changed unless
 # every fragment is valid. CHANGELOG.md is replaced by one rename of a
-# temporary file made beside it (mktemp, so the rename is atomic and the file
-# mode is kept), so an interrupted run leaves it intact. --dry-run only
-# reports what would happen: it writes no file at all.
+# temporary file made beside it (created exclusively with noclobber, so an
+# existing file or symbolic link of that name is never written through; the
+# rename is atomic and the file mode is kept), so an interrupted run leaves it
+# intact. --dry-run only reports what would happen: it writes no file at all.
+#
+# --into VERSION folds into the section "## [VERSION] - DATE" instead, the
+# release section that "qargi release start VERSION" makes when it dates the
+# changelog, with a new empty [Unreleased] above it; a fold into [Unreleased]
+# at that point would put the entries above the release. The heading must
+# exist, with a date, exactly once; otherwise the run is refused (exit 2) and
+# nothing is changed. Everything else, the headings, the order, the refusals,
+# the repeat and --dry-run, is as for [Unreleased]. A section ends at the next
+# "## [" heading or at the link reference definitions ("[1.0.0]: URL") that
+# close a changelog.
 #
 # --check changes nothing and fails while any fragment is left, which the
 # release flow runs after the fold.
 #
 # Exit status: 0 success; 1 --check found fragments, or a file could not be
 # written (CHANGELOG.md is then unchanged); 2 refused (invalid fragment,
-# missing CHANGELOG.md or [Unreleased]) or usage error; 129, 130 or 143 when
-# interrupted by HUP, INT or TERM, with CHANGELOG.md unchanged.
+# missing CHANGELOG.md, [Unreleased] or the --into section) or usage error;
+# 129, 130 or 143 when interrupted by HUP, INT or TERM, with CHANGELOG.md
+# unchanged.
 # Uses only POSIX shell and utilities that are always present with it.
 #
 # Test hook: when CHANGELOG_FOLD_TEST_HOLD names an existing file, a fold
@@ -43,21 +56,35 @@ SECTIONS="Added Changed Deprecated Removed Fixed Security"
 
 usage() {
 	cat <<'EOF'
-usage: changelog-fold.sh [--dry-run | --check] [--root DIR]
+usage: changelog-fold.sh [--dry-run] [--into VERSION] [--root DIR]
+       changelog-fold.sh --check [--root DIR]
 
 Fold changelog.d/<section>-<slug>.md into [Unreleased] in CHANGELOG.md and
-remove them. --dry-run reports without changing anything. --check fails when
-any fragment is left. --root DIR selects the repository root (default: the
-parent of this script's directory).
+remove them. --into VERSION folds into the dated "## [VERSION] - DATE" section
+instead and refuses when it does not exist. --dry-run reports without
+changing anything. --check fails when any fragment is left. --root DIR selects
+the repository root (default: the parent of this script's directory).
 EOF
 }
 
 mode='fold'
 root=''
+into=''
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) mode=dry ;;
 	--check) mode=check ;;
+	--into)
+		[ $# -ge 2 ] || { echo "error: --into needs a version" >&2; exit 2; }
+		into=$2
+		case $into in
+		'' | *[!0-9A-Za-z.+-]*)
+			echo "error: --into needs a version of letters, digits, dots, hyphens and plus signs: $into" >&2
+			exit 2
+			;;
+		esac
+		shift
+		;;
 	--root)
 		[ $# -ge 2 ] || { echo "error: --root needs a directory" >&2; exit 2; }
 		root=$2
@@ -75,6 +102,11 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+if [ "$mode" = check ] && [ -n "$into" ]; then
+	echo "error: --into does not apply to --check" >&2
+	exit 2
+fi
 
 if [ -z "$root" ]; then
 	root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -218,15 +250,43 @@ fi
 
 [ -f "$changelog" ] || { echo "error: $changelog not found" >&2; exit 2; }
 
-# What [Unreleased] already holds, to recognise a fragment that is folded.
+# The section the fragments go into: [Unreleased], or with --into the one
+# dated heading of that version.
+target='## [Unreleased]'
+label='[Unreleased]'
+if [ -n "$into" ]; then
+	label="[$into]"
+	target=
+	found=0
+	while IFS= read -r line || [ -n "$line" ]; do
+		case $line in
+		"## [$into] - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] | "## [$into] - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "*)
+			found=$((found + 1))
+			target=$line
+			;;
+		esac
+	done <"$changelog"
+	if [ "$found" -eq 0 ]; then
+		echo "error: CHANGELOG.md has no dated \"## [$into] - DATE\" section" >&2
+		echo "refused: nothing was changed" >&2
+		exit 2
+	fi
+	if [ "$found" -gt 1 ]; then
+		echo "error: CHANGELOG.md has $found \"## [$into] - DATE\" sections" >&2
+		echo "refused: nothing was changed" >&2
+		exit 2
+	fi
+fi
+
+# What the section already holds, to recognise a fragment that is folded.
 unrel=
 state=before
 while IFS= read -r line || [ -n "$line" ]; do
 	case $state in
-	before) [ "$line" != "## [Unreleased]" ] || state=in ;;
+	before) [ "$line" != "$target" ] || state=in ;;
 	in)
 		case $line in
-		"## ["*) break ;;
+		"## ["* | "["*"]: "*) break ;;
 		esac
 		unrel="$unrel
 $line"
@@ -234,7 +294,7 @@ $line"
 	esac
 done <"$changelog"
 if [ "$state" = before ]; then
-	echo "error: CHANGELOG.md has no \"## [Unreleased]\" section" >&2
+	echo "error: CHANGELOG.md has no \"$target\" section" >&2
 	exit 2
 fi
 unrel="$unrel
@@ -285,7 +345,7 @@ for sec in $SECTIONS; do
 		# entry there does not go on with a continuation line.
 		case $unrel in
 		*"$nl$text" | *"$nl$text"[!\ ]*)
-			actions="$actions${actions:+$nl}skip changelog.d/$name: already in [Unreleased]"
+			actions="$actions${actions:+$nl}skip changelog.d/$name: already in $label"
 			continue
 			;;
 		esac
@@ -308,7 +368,14 @@ trap '[ -z "$tmp" ] || rm -f "$tmp"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-tmp=$(mktemp "$changelog.fold.XXXXXX") || {
+# The name is recorded before the file is made, so a signal that arrives just
+# after the create still removes it; a refusal clears it again, so a file that
+# was already there is never removed. Noclobber makes the redirection an
+# exclusive create: it fails when the name exists, even as a dangling symbolic
+# link.
+tmp=$changelog.fold.$$
+( set -C; : >"$tmp" ) 2>/dev/null || {
+	tmp=
 	echo "error: cannot create a temporary file beside CHANGELOG.md" >&2
 	exit 1
 }
@@ -372,11 +439,11 @@ flush_before() {
 		case $state in
 		before)
 			printf '%s\n' "$line"
-			[ "$line" != "## [Unreleased]" ] || state=in
+			[ "$line" != "$target" ] || state=in
 			;;
 		in)
 			case $line in
-			"## ["*)
+			"## ["* | "["*"]: "*)
 				close_cur
 				flush_before 100
 				state=after
