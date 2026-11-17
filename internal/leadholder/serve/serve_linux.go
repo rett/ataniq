@@ -63,7 +63,9 @@
 // done with that mutex held as well. So when release-writer has answered ok no
 // byte of the released client has reached the PTY or will, and a client that
 // was released during its handshake sets neither the colours nor the size. A
-// release waits for a write in flight, at most one PTY write deadline.
+// release waits for a write in flight: one PTY write deadline, plus any
+// section that holds the session's input lock (WithInputLock) at that time,
+// because the writer's frame holds the input mutex while it waits for that lock.
 //
 // A write to the agent that failed part-way breaks the session's input for
 // good ([session.Session.InputBroken]). A writer whose Input or Paste then
