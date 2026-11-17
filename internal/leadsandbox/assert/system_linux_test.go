@@ -330,3 +330,75 @@ func TestHostSystemDirEmpty(t *testing.T) {
 		t.Error("DirEmpty followed a link")
 	}
 }
+
+func TestHostSystemIdentity(t *testing.T) {
+	dir := t.TempDir()
+	h := HostSystem{}
+	file, other, link, hard := dir+"/file", dir+"/other", dir+"/link", dir+"/hard"
+	for _, p := range []string{file, other} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(file, hard); err != nil {
+		t.Fatal(err)
+	}
+	a, err := h.Identity(file)
+	if err != nil || a.Inode == 0 {
+		t.Fatalf("Identity: %v %v", a, err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(file, &st); err != nil || a != (FileIdentity{Device: uint64(st.Dev), Inode: st.Ino}) {
+		t.Errorf("identity %v is not the device and inode of stat: %+v %v", a, st, err)
+	}
+	if b, err := h.Identity(hard); err != nil || b != a {
+		t.Errorf("one file under two names: %v %v, want %v", b, err, a)
+	}
+	if b, err := h.Identity(other); err != nil || b == a {
+		t.Errorf("another file: %v %v", b, err)
+	}
+	// A link at the end is not followed.
+	if b, err := h.Identity(link); err != nil || b == a {
+		t.Errorf("the link has the identity of its target: %v %v", b, err)
+	}
+	if d1, err := h.Identity(dir); err != nil || d1 == a || d1.Device != a.Device {
+		t.Errorf("the folder: %v %v", d1, err)
+	}
+	if _, err := h.Identity(dir + "/none"); !absent(err) {
+		t.Errorf("a missing path: %v", err)
+	}
+	if _, err := h.Identity(file + "/below"); !absent(err) {
+		t.Errorf("below a file: %v", err)
+	}
+	if s := a.String(); !strings.Contains(s, ":") {
+		t.Errorf("String %q", s)
+	}
+}
+
+// A stat that reads the real file system, through the System the probe uses:
+// the same pair for one file under two names, and not for a link or a sibling.
+func TestCollectIdentitiesAndHostIdentity(t *testing.T) {
+	dir := t.TempDir()
+	h := HostSystem{}
+	got, err := CollectIdentities([]string{dir + "/none", dir}, h.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("the folder and its parents: %v", got)
+	}
+	self, err := h.Identity(dir)
+	if err != nil || got[0] != self {
+		t.Errorf("first identity %v, want the folder's %v (%v)", got[0], self, err)
+	}
+	if root, err := h.Identity("/"); err == nil {
+		for _, id := range got {
+			if id == root && self != root {
+				t.Error("the root's identity was collected")
+			}
+		}
+	}
+}

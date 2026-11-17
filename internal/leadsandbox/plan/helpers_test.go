@@ -84,6 +84,7 @@ func options(in profile.Inputs, present map[string]bool) Options {
 		AgentArgv:   []string{"/ataniq/agent/bin/" + string(in.Runtime), "--model", "example"},
 		HostPresent: present,
 		ReportPath:  "/opt/ataniq/run/arc-lead/report.fifo",
+		ReportDir:   "/opt/ataniq/run/arc-lead",
 		ReportFD:    3,
 	}
 	if in.SeccompEnabled() {

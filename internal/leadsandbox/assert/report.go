@@ -306,7 +306,7 @@ const (
 	// assertion that has one (1 to 8): what a probe's report holds.
 	RequireInside Require = iota
 	// RequireAll also demands the outside results: 9, 10, and the outside
-	// halves of 1 and 5. The holder judges a start with it.
+	// halves of 1, 3 and 5. The holder judges a start with it.
 	RequireAll
 )
 
@@ -367,7 +367,11 @@ func Problems(r Report, s Spec, req Require) []string {
 			out = append(out, fmt.Sprintf("assertion %d (%s): failed: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 		case StatusNotChecked:
 			// Only the inside half of an assertion can be optional: the
-			// outside half of 1 or 5 is the holder's own check.
+			// outside half of 1, 3 or 5 is the holder's own check. Validate
+			// allows only assertion 4, which has no outside half, so the ID
+			// test is defence in depth for a result that carries the number of
+			// an optional assertion and the ID of an outside half; a test
+			// builds such a result by hand.
 			if !(optional[res.Number] && res.ID == idOf(res.Number)) {
 				out = append(out, fmt.Sprintf("assertion %d (%s): not checked: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 			}

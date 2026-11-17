@@ -85,6 +85,16 @@ func (HostSystem) MountID(path string) (int, error) {
 	return int(stx.Mnt_id), nil
 }
 
+// Identity is the device and inode of lstat: the path itself, not what a link
+// at its end points to.
+func (HostSystem) Identity(path string) (FileIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Lstat(path, &st); err != nil {
+		return FileIdentity{}, &fs.PathError{Op: "lstat", Path: path, Err: err}
+	}
+	return FileIdentity{Device: uint64(st.Dev), Inode: uint64(st.Ino)}, nil
+}
+
 // DirEmpty opens the folder without following a link and reads one entry.
 func (HostSystem) DirEmpty(path string) (bool, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)

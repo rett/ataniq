@@ -16,8 +16,9 @@ func testSpec(rt profile.Runtime) Spec {
 		Env: []EnvEntry{
 			{"HOME", "/home/lead"}, {"PATH", "/usr/bin:/bin"}, {"TERM", "xterm-256color"},
 		},
-		HolderPaths:     []string{"/run/example/holder.sock", "/run/example/control.sock", "/var/lib/example/holder"},
-		MountSubstrings: []string{"/run/example", "/home/owner"},
+		HolderPaths:         []string{"/run/example/holder.sock", "/run/example/control.sock", "/var/lib/example/holder"},
+		MountSubstrings:     []string{"/run/example", "/home/owner"},
+		ForbiddenIdentities: []FileIdentity{{Device: 7, Inode: 70}, {Device: 7, Inode: 71}},
 		OwnerPaths: []string{
 			"/home/owner/.claude", "/home/owner/.claude.json", "/home/owner/.codex",
 			"/home/owner/.ssh", "/home/owner/work/ataniq",

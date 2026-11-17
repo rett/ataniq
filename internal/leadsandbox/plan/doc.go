@@ -41,11 +41,16 @@
 //
 // The seccomp file, when the inputs name one, is --read FD=PATH, and
 // bubblewrap gets --seccomp FD. The report channel is always present:
-// [Options.ReportPath] is a path the holder made (a FIFO or a file it owns)
-// outside every lead-writable folder, opened --write at [Options.ReportFD],
-// and the probe inside gets --report-fd FD. Whether bubblewrap keeps an
-// inherited descriptor open for its child is a qualification item; every plan
-// says so in a note.
+// [Options.ReportPath] is a path the holder made (a FIFO or a file it owns),
+// directly inside [Options.ReportDir] and outside every lead-writable folder,
+// opened --write at [Options.ReportFD],
+// and the probe inside gets --report-fd FD. The holder takes one accepted
+// probe line (assert.ReadProbeReport) as the positive signal and does not wait
+// for end-of-file, because bubblewrap's own processes may keep the descriptor
+// open; a second line or any further byte after the line is a failure of the
+// start (assert.CheckNoMore). Whether the descriptor reaches the probe inside,
+// and which other processes hold it, are qualification items; every plan says
+// so in a note.
 //
 // --share-net is there because bubblewrap runs inside the network namespace
 // that pasta made: it does not share the host's network. The probe, not
@@ -86,7 +91,10 @@
 // executable or agent paths, an agent argument with a NUL, a seccomp
 // descriptor or report descriptor that is missing, below 3 or above 1023 (or
 // the same twice), a report path that is not a clean absolute path or that
-// lies in or below a lead-writable host folder or a never-mounted path, a
+// lies in or below a lead-writable host folder or a never-mounted path, that
+// is, lies below or lies above any source of the bind table or the state
+// root's leads or mirrors folder, or that is not directly inside
+// [Options.ReportDir], the folder the holder names as its own (required), a
 // working folder outside the tree and the home, an operand of bubblewrap that
 // starts with --, an agent argument that equals a forbidden option, and a
 // command line above [MaxArgvBytes]. It asserts that no option of

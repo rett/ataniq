@@ -3,9 +3,13 @@
 package mountpoints
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"ataniq/internal/leadsandbox/profile"
 )
@@ -17,6 +21,14 @@ type Resolver func(path string) (string, error)
 
 // RealResolver is the resolver of the real file system: filepath.EvalSymlinks.
 func RealResolver(path string) (string, error) { return filepath.EvalSymlinks(path) }
+
+// Readlinker reads the target of a symbolic link without following it, as
+// os.Readlink does. It reports a path that is not a link, or is missing, with
+// an error that matches syscall.EINVAL, fs.ErrNotExist or syscall.ENOTDIR.
+type Readlinker func(path string) (string, error)
+
+// maxLinkHops bounds the dangling links realOf follows for one path.
+const maxLinkHops = 40
 
 // ResolvedSource is one host bind source and its real path.
 type ResolvedSource struct {
@@ -57,10 +69,25 @@ type Resolution struct {
 //     are the exception);
 //   - a .git row whose source is reached through a symbolic link.
 //
-// It reads no file and creates nothing. The error is set only when the inputs
-// are refused or resolve is nil (a *Problem of kind ErrInvalid).
+// A never-mounted path that does not exist and is a dangling link (its
+// target does not exist either) is resolved through the link: its target is
+// resolved by its longest existing prefix in turn, so a folder the owner
+// creates there later is already known by its real path. A link that cannot be
+// read, a chain of more than 40 links, or a target whose ".." follows another
+// component (which a clean would resolve differently from the kernel) is a
+// problem of kind ErrUnreadable, never the lexical path alone.
+//
+// It reads no file and creates nothing; it reads the target of a link with
+// os.Readlink. The error is set only when the inputs are refused or resolve is
+// nil (a *Problem of kind ErrInvalid).
 func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
-	if resolve == nil {
+	return ResolveSourcesWith(in, resolve, os.Readlink)
+}
+
+// ResolveSourcesWith is ResolveSources with the reader of links given, for a
+// caller whose resolver is not the real file system.
+func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker) (Resolution, error) {
+	if resolve == nil || readlink == nil {
 		return Resolution{}, problem(ErrInvalid, "", "no resolver given")
 	}
 	t, err := in.Binds()
@@ -75,7 +102,7 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		never = append(never, other)
 	}
 	for _, n := range append([]string(nil), never...) {
-		r, err := realOf(resolve, n)
+		r, err := realOf(resolve, readlink, n)
 		switch {
 		case err != nil:
 			res.add(problem(ErrUnreadable, n, "the never-mounted path cannot be resolved: %v", err))
@@ -97,7 +124,7 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		dst  *string
 		path string
 	}{{&st.leads, path.Join(l.StateRoot, "leads")}, {&st.lead, l.LeadDir()}, {&st.mirrors, l.MirrorsDir()}, {&st.mirror, l.Mirror()}} {
-		r, err := realOf(resolve, d.path)
+		r, err := realOf(resolve, readlink, d.path)
 		if err == nil {
 			err = profile.CheckPath("resolved path", r)
 		}
@@ -163,8 +190,12 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 
 // realOf resolves p through resolve. A path that does not exist is resolved by
 // its longest existing prefix, with the rest appended unchanged, so that a
-// link above an absent path is still evaluated. The result is not checked.
-func realOf(resolve Resolver, p string) (string, error) {
+// link above an absent path is still evaluated. A prefix that does not exist
+// but is a link (dangling) is followed to its target the same way, at most
+// maxLinkHops times: bubblewrap and the owner would both create the target
+// when they next write through the link. The result is not checked.
+func realOf(resolve Resolver, readlink Readlinker, p string) (string, error) {
+	hops := 0
 	rest := ""
 	for q := p; ; {
 		r, err := resolve(q)
@@ -177,6 +208,25 @@ func realOf(resolve Resolver, p string) (string, error) {
 		if !isNotExist(err) {
 			return "", err
 		}
+		target, lerr := readlink(q)
+		switch {
+		case lerr == nil:
+			// q is a dangling link: continue with its target and the rest.
+			if hops++; hops > maxLinkHops {
+				return "", fmt.Errorf("more than %d symbolic links on the way to %s", maxLinkHops, p)
+			}
+			next, err := linkTarget(resolve, q, target)
+			if err != nil {
+				return "", err
+			}
+			// Resolve the target; the rest is appended to its real path.
+			q = next
+			continue
+		case isNotExist(lerr) || errors.Is(lerr, syscall.EINVAL):
+			// Not a link: strip a component as before.
+		default:
+			return "", fmt.Errorf("cannot read %s as a link: %w", q, lerr)
+		}
 		parent := path.Dir(q)
 		if parent == q {
 			return "", err
@@ -184,6 +234,36 @@ func realOf(resolve Resolver, p string) (string, error) {
 		rest = "/" + path.Base(q) + rest
 		q = parent
 	}
+}
+
+// linkTarget makes the target of the dangling link at q absolute: a relative
+// target is taken from the real folder that holds the link. A ".." that
+// follows another component is refused, because a clean would drop the
+// component without looking at what it is.
+func linkTarget(resolve Resolver, q, target string) (string, error) {
+	if target == "" {
+		return "", fmt.Errorf("the link %s has an empty target", q)
+	}
+	seenName := false
+	for _, c := range strings.Split(target, "/") {
+		switch c {
+		case "", ".":
+		case "..":
+			if seenName {
+				return "", fmt.Errorf("the target %q of the link %s has a \"..\" after another component", target, q)
+			}
+		default:
+			seenName = true
+		}
+	}
+	if path.IsAbs(target) {
+		return path.Clean(target), nil
+	}
+	dir, err := resolve(path.Dir(q))
+	if err != nil {
+		return "", fmt.Errorf("the folder of the link %s cannot be resolved: %w", q, err)
+	}
+	return path.Join(dir, target), nil
 }
 
 func reason(err error) string {

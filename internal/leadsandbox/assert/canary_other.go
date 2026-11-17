@@ -2,7 +2,10 @@
 
 package assert
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Canary is the target of assertion 3. It is implemented on Linux only: on
 // another system NewCanary fails with errors.ErrUnsupported.
@@ -32,6 +35,12 @@ func (c *Canary) AcceptErrors() int64 { return 0 }
 
 // Stopped is always true: nothing runs.
 func (c *Canary) Stopped() bool { return true }
+
+// Settle fails with errors.ErrUnsupported.
+func (c *Canary) Settle(time.Duration) error { return errors.ErrUnsupported }
+
+// DefaultSettleTimeout is how long CheckCanary waits for the canary to settle.
+const DefaultSettleTimeout = 5 * time.Second
 
 // Close does nothing.
 func (c *Canary) Close() error { return nil }

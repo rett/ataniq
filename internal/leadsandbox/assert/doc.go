@@ -48,9 +48,15 @@
 //     classifies the failure, and after the probe's report [CheckCanary] says
 //     the canary accepted nothing. That count is the evidence independent of
 //     the probe's own judgement, and a timeout, which is weaker evidence than
-//     a refusal, rests on it. The accept loops survive a transient error of
-//     accept (counted, with a bounded back-off); a count taken after such an
-//     error, or after the canary stopped, is not-checked.
+//     a refusal, rests on it. A connection the kernel has completed may
+//     still be in the backlog when the count is read, so [CheckCanary] first
+//     settles the canary ([Canary.Settle]): one marker connection to each
+//     listener, accepted after everything that was queued before it (accept
+//     queues are first in, first out), and not counted as a hit. A canary that
+//     cannot be settled is not-checked, unless a hit is already counted. The
+//     accept loops survive a transient error of accept (counted, with a
+//     bounded back-off); a count taken after such an error, or after the
+//     canary stopped, is not-checked.
 //   - The stop rule of the design as constants ([StopTermWait] and the
 //     others). The holder implements it.
 //
@@ -61,15 +67,33 @@
 //
 //   - The probe ALWAYS writes its report line to its report descriptor, on
 //     success too, before it execs the agent. A probe whose report is
-//     [Failed] exits without exec (status 97). The descriptor is
-//     close-on-exec, so the exec of the agent closes it.
+//     [Failed] exits without exec (status 97). The probe marks its own copy of
+//     the descriptor close-on-exec, so the exec of the agent closes it there.
 //   - The holder owns the other end of that descriptor. It judges a start
-//     only by what it reads there and by the probe's exit status: a line that
-//     [ParseProbeLine] accepts, followed by end-of-file while the process is
-//     still alive (the exec happened), and no [Problems] for the line with the
-//     holder's own results added; or the probe's exit status, which is a
-//     start that did not happen. A missing line, end-of-file without a line,
-//     or a line that is refused, is not a start.
+//     only by what it reads there and by the probe's exit status: ONE line
+//     that [ParseProbeLine] accepts, read with [ReadProbeReport], and no
+//     [Problems] for the line with the holder's own results added; or the
+//     probe's exit status, which is a start that did not happen. A missing
+//     line, end-of-file without a line, or a line that is refused, is not a
+//     start.
+//   - The holder does not wait for end-of-file. The descriptor is not
+//     close-on-exec where the pass-fds step opens it, because bubblewrap must
+//     inherit it, and bubblewrap's own processes (its monitor process, which
+//     stays for the life of the sandbox) may keep a copy open: no end-of-file
+//     comes while the sandbox lives, so waiting for one would never accept a
+//     start, or would be dropped in an ad-hoc way. The accepted line is the
+//     positive signal. A second line, or any further byte on the channel
+//     after the line, is a failure of the start: [CheckNoMore] reports bytes
+//     that the caller offers after [ReadProbeReport], and the holder offers
+//     the channel before it accepts the start and for as long as it keeps the
+//     read end open. [ReadProbeReport] reads one byte at a time and stops at
+//     the newline, so nothing after the line is consumed by it.
+//   - Two questions about the descriptor are qualification items, and nothing
+//     here shows either: whether the descriptor reaches the probe inside the
+//     sandbox (bubblewrap's own init may close descriptors it was not told
+//     about, so the report descriptor must survive to the probe), and which
+//     other processes hold a copy of it (bubblewrap's, and the pass-fds
+//     step's).
 //   - A line that is seen anywhere else, the terminal in particular, is
 //     display only and never input to [Failed] or [FailedAll]. The lead
 //     writes to the same terminal after the exec and can print a line with
@@ -107,11 +131,29 @@
 //     the mount table for the same paths, which a bind mount keeps as its
 //     root, and fails a mount whose root, source or mount point is a listed
 //     owner or holder path, lies below it, or is one of its ancestors
-//     (compared by component). A mount root is relative to its file system:
-//     a separate file system (a /home of its own) mounted above an owner
-//     path has the root "/" and is not found by either. The other runtime's
-//     config folder is ok only when it is absent, or an empty folder that is
-//     not a mount point and has nothing mounted below it.
+//     (compared by component). That comparison is by text, and a mount root
+//     is relative to its file system: a bind taken from any file system that
+//     is not mounted at / (a separate /home, a btrfs subvolume such as @home)
+//     has a root that does not start with the host path, and is found by
+//     neither check. So assertion 1 also compares by identity: the spec
+//     ([Spec.ForbiddenIdentities]) lists the device and inode pairs, as the
+//     holder saw them outside, of each owner and holder path that exists and
+//     of each of their ancestors up to but not including / (the holder makes
+//     the list with [CollectIdentities] and [IdentityPaths], and it goes to
+//     the spec in [HostFacts].Identities), and the probe fails the assertion
+//     when the identity of any mount point of the table (the first 2048), or
+//     of the lead's home, config folder or tree or one of their parents,
+//     equals one of them: a bind of an owner folder shows the identity of the
+//     folder it was taken from, whatever its path or root. With no identity
+//     listed the assertion is not-checked, never ok. The comparison relies on
+//     the device and inode numbers of a file being the same outside and
+//     inside the sandbox. They are not namespaced, but the device numbers of
+//     some file systems are per subvolume (btrfs) and are stable across mount
+//     namespaces on one boot only: whether they match between the holder's
+//     reading and the probe's on a given host, a subvolume layout in
+//     particular, is a qualification item that nothing here shows. The other
+//     runtime's config folder is ok only when it is absent, or an empty
+//     folder that is not a mount point and has nothing mounted below it.
 //   - Assertion 7 shows that each of the three paths, and the
 //     managed-settings file of assertion 8, is on a read-only mount (found by
 //     the mount ID that statx gives, not by the longest mount point above the

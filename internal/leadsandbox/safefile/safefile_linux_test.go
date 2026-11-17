@@ -1136,3 +1136,37 @@ func TestErrorText(t *testing.T) {
 		t.Errorf("long path not bounded: %d bytes", len(long.Error()))
 	}
 }
+
+// classify maps the errno of a failed call to the package's refusals. EXDEV is
+// what RESOLVE_NO_XDEV gives for a mount crossed below the handle's folder, and
+// it must be refused as an escape: the flag-recording test shows the flag is
+// passed, this one shows what the result means.
+func TestClassifyErrnos(t *testing.T) {
+	for _, c := range []struct {
+		errno unix.Errno
+		want  error
+	}{
+		{unix.EXDEV, ErrEscapes},
+		{unix.ELOOP, ErrSymlink},
+		{unix.ENOSYS, ErrUnsupported},
+		{unix.EPERM, ErrUnsupported},
+		{unix.EISDIR, ErrNotRegular},
+		{unix.ENXIO, ErrNotRegular},
+		{unix.ENOTDIR, ErrNotDirectory},
+	} {
+		err := classify("open", "x", c.errno)
+		var e *Error
+		if !errors.As(err, &e) || e.Op != "open" || e.Path != "x" {
+			t.Errorf("classify(%v): %v is not an *Error for the call", c.errno, err)
+		}
+		if !errors.Is(err, c.want) || !errors.Is(err, c.errno) {
+			t.Errorf("classify(%v) = %v, want %v and the errno", c.errno, err, c.want)
+		}
+	}
+	// An errno with no meaning of its own is reported as it is, and is not
+	// taken for a refusal.
+	err := classify("open", "x", unix.EACCES)
+	if !errors.Is(err, unix.EACCES) || errors.Is(err, ErrEscapes) || errors.Is(err, ErrUnsupported) {
+		t.Errorf("classify(EACCES) = %v", err)
+	}
+}

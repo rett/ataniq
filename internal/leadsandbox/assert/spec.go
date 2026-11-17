@@ -26,14 +26,15 @@ const (
 	MaxEnvEntries      = 128
 	MaxPathEntries     = 64
 	MaxMountSubstrings = 64
-	MaxOptional        = 1
-	MaxPathBytes       = 4096
-	MaxEnvNameBytes    = 64
-	MaxEnvValueBytes   = 4096
-	MaxSubstringBytes  = 256
-	MaxHostNameBytes   = 253
-	MaxMarkerBytes     = 256
-	MaxAbstractBytes   = 100
+	// MaxIdentities is declared in identity.go.
+	MaxOptional       = 1
+	MaxPathBytes      = 4096
+	MaxEnvNameBytes   = 64
+	MaxEnvValueBytes  = 4096
+	MaxSubstringBytes = 256
+	MaxHostNameBytes  = 253
+	MaxMarkerBytes    = 256
+	MaxAbstractBytes  = 100
 
 	// The limits of the optional time limits, in milliseconds, and their
 	// defaults when the spec leaves them out (zero).
@@ -74,6 +75,16 @@ type Spec struct {
 	// MountSubstrings must not appear in the mount table, in a mount point,
 	// a root or a source (assertion 1).
 	MountSubstrings []string `json:"mount_substrings"`
+
+	// ForbiddenIdentities are the identities (device and inode, as the holder
+	// saw them outside) of each owner and holder path that exists and of each
+	// of their ancestors up to, and not including, "/" (CollectIdentities).
+	// Assertion 1 fails a mount point, or the lead's home, config folder or
+	// tree or one of their parents, that has one of them: a bind of an owner
+	// folder is recognised by what it is, not by the text of a path, which a
+	// subvolume or a file system of its own does not show. An empty list
+	// makes assertion 1 not-checked, never ok.
+	ForbiddenIdentities []FileIdentity `json:"forbidden_identities,omitempty"`
 
 	// OwnerPaths must not exist inside: the owner's real provider folders,
 	// .ssh, the owner's checkout (assertion 6).
@@ -216,7 +227,7 @@ func EncodeSpec(s Spec) ([]byte, error) {
 
 // Validate refuses a spec the probe cannot use: a wrong version, an invalid
 // runtime or digest, an empty list that would make an assertion vacuous, an
-// entry or list over its bound, an optional assertion other than 4, a relative or unclean path, a control
+// entry or list over its bound, an identity with inode 0, an optional assertion other than 4, a relative or unclean path, a control
 // character, an address that is not loopback, a host name that is an address,
 // an other-runtime folder that is not the profile's, git paths that are not
 // the tree's three, and a claude spec without a marker or with another
@@ -241,6 +252,9 @@ func (s Spec) Validate() error {
 		return err
 	}
 	if err := checkSubstrings(s.MountSubstrings); err != nil {
+		return err
+	}
+	if err := checkIdentities(s.ForbiddenIdentities); err != nil {
 		return err
 	}
 	if want := profile.ConfigInside(s.Runtime.Other()); s.OtherConfigDir != want {
@@ -363,6 +377,18 @@ func checkSubstrings(list []string) error {
 	for i, v := range list {
 		if v == "" || len(v) > MaxSubstringBytes || hasControl(v) || !utf8.ValidString(v) {
 			return refuse(fmt.Sprintf("mount_substrings[%d]", i), "must be 1 to %d bytes of text without control characters", MaxSubstringBytes)
+		}
+	}
+	return nil
+}
+
+func checkIdentities(list []FileIdentity) error {
+	if len(list) > MaxIdentities {
+		return refuse("forbidden_identities", "more than %d entries", MaxIdentities)
+	}
+	for i, id := range list {
+		if id.Inode == 0 {
+			return refuse(fmt.Sprintf("forbidden_identities[%d]", i), "has inode 0, which no file has")
 		}
 	}
 	return nil

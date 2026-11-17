@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,8 +112,17 @@ type Options struct {
 	// It is required. The pass-through step opens it write-only without
 	// creating it; the probe inside writes its report line to it. It is
 	// refused when it lies in or below a read-write source of the bind table
-	// (a folder the lead writes) or a never-mounted path.
+	// (a folder the lead writes) or a never-mounted path, when it is, lies
+	// below or lies above any source of the bind table or the state root's
+	// leads or mirrors folder, and when it is not directly inside ReportDir.
 	ReportPath string
+	// ReportDir is the folder the holder owns for report channels, an
+	// absolute clean host path. It is required, and ReportPath must be a
+	// direct child of it: a path that is not below a folder the holder named
+	// as its own is refused, so a holder bug cannot point the step at a file
+	// that the sandbox or another lead owns. This package does not look at the
+	// folder.
+	ReportDir string
 	// ReportFD is the descriptor number of the report channel, from
 	// MinReportFD to MaxReportFD and different from SeccompFD. It is required.
 	ReportFD int
@@ -443,6 +453,12 @@ func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 	if err := checkPath("report path", o.ReportPath); err != nil {
 		return err
 	}
+	if o.ReportDir == "" {
+		return refuse("report folder", "missing: the report path must be directly inside a folder the holder owns, and the caller names it")
+	}
+	if err := checkPath("report folder", o.ReportDir); err != nil {
+		return err
+	}
 	for _, d := range writableSources(table) {
 		if within(o.ReportPath, d) {
 			return refuse("report path", "lies in or below %s, a folder the lead can write", d)
@@ -456,6 +472,23 @@ func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 		if within(o.ReportPath, n) {
 			return refuse("report path", "lies in or below the never-mounted path %s", n)
 		}
+	}
+	// The step opens the path write-only: a path that is, lies below or lies
+	// above a source of the table is a file the sandbox sees (the spec, the
+	// managed settings, the probe) or a folder it is built from.
+	for _, b := range table {
+		if b.Source != "" && (within(o.ReportPath, b.Source) || within(b.Source, o.ReportPath)) {
+			return refuse("report path", "is, lies below or lies above the source of the bind at %s", b.Inside)
+		}
+	}
+	l := in.Layout()
+	for _, d := range []string{path.Join(l.StateRoot, "leads"), l.MirrorsDir()} {
+		if within(o.ReportPath, d) || within(d, o.ReportPath) {
+			return refuse("report path", "is, lies below or lies above the state folder %s, which holds leads' and projects' files", d)
+		}
+	}
+	if o.ReportPath == o.ReportDir || path.Dir(o.ReportPath) != o.ReportDir {
+		return refuse("report path", "is not directly inside the report folder %s that the holder owns", o.ReportDir)
 	}
 	return nil
 }
@@ -567,7 +600,7 @@ func InsideEnvironment(p *Plan) []profile.EnvVar {
 
 // noteReport is the note about the report channel.
 func noteReport(fd int) string {
-	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows", fd, fd)
+	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; the holder takes one accepted probe line as the positive signal and does not wait for end-of-file, because bubblewrap's own processes may keep the descriptor open, and a second line or any further byte after the line is a failure of the start; whether the descriptor reaches the probe inside and which other processes hold it are qualification items that nothing here shows", fd, fd)
 }
 
 func notes(in profile.Inputs, opt Options, workDir string, left []string) []string {

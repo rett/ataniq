@@ -141,17 +141,27 @@ func CheckHolderBinds(binds []profile.Bind, holderPaths []string) Result {
 	return r
 }
 
+// checkCanarySettle is how long CheckCanary settles the canary; a test lowers
+// it.
+var checkCanarySettle = DefaultSettleTimeout
+
 // CheckCanary is the outside half of assertion 3: after the probe has run, the
 // canary the spec's loopback and abstract addresses point to has accepted no
 // connection. It is the only evidence independent of how the probe classified
 // its own failed dials, so a count above 0 is failed whatever the probe
-// reported. A canary that is missing, that has stopped (a connection after
-// that is not counted) or whose accept loops met errors (the count may be
-// short) gives not-checked, never ok. Read it before Close.
+// reported. It first settles the canary ([Canary.Settle]), so that a
+// connection the kernel completed but the accept loop has not yet taken is
+// counted: without that a reached canary would read as untouched. A canary
+// that is missing, that has stopped (a connection after that is not counted),
+// that cannot be settled, or whose accept loops met errors (the count may be
+// short) gives not-checked, never ok, unless the count is already above 0.
+// Read it before Close.
 func CheckCanary(c *Canary) Result {
-	switch {
-	case c == nil:
+	if c == nil {
 		return outside(3, true, StatusNotChecked, "no canary to read the connection count of")
+	}
+	settleErr := c.Settle(checkCanarySettle)
+	switch {
 	case c.Hits() > 0:
 		return outside(3, true, StatusFailed, "the canary accepted %d connections (%d on loopback, %d on the abstract socket): something reached the host",
 			c.Hits(), c.Hits()-c.AbstractHits(), c.AbstractHits())
@@ -159,6 +169,8 @@ func CheckCanary(c *Canary) Result {
 		return outside(3, true, StatusNotChecked, "the canary met %d errors of accept: a connection may have gone uncounted", c.AcceptErrors())
 	case c.Stopped():
 		return outside(3, true, StatusNotChecked, "the canary was stopped before the count was read: a later connection would not be counted")
+	case settleErr != nil:
+		return outside(3, true, StatusNotChecked, "the canary could not be settled, so a connection in its backlog may be uncounted: %v", settleErr)
 	}
 	return outside(3, true, StatusOK, "the canary accepted no connection")
 }

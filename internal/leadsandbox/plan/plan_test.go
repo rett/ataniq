@@ -566,22 +566,103 @@ func TestRefusals(t *testing.T) {
 }
 
 func TestReportPathBoundaries(t *testing.T) {
-	// A path that only shares a prefix with a lead-writable or never-mounted
-	// path is not in or below it.
+	// A path that only shares a prefix with a lead-writable, never-mounted or
+	// state path is not in or below it.
 	in := fixture(profile.Claude)
 	for _, path := range []string{
-		"/state/leads/arc-lead/homework",
-		"/state/leads/arc-lead/run/report",
-		"/state/leads/arc-lead2/home/report",
+		"/state/leadsx/report",
+		"/state/mirrorsx/report",
 		"/home/owner/.sshd/report",
 		"/home/owner/work/demo2/report",
 		"/run/ataniq/arc-lead/report",
+		"/opt/ataniq/specs/report",
+		"/opt/ataniq/binary/report",
 	} {
 		o := options(in, nil)
 		o.ReportPath = path
+		o.ReportDir = pathDir(path)
 		if _, err := Build(in, o); err != nil {
 			t.Errorf("%s: %v", path, err)
 		}
+	}
+}
+
+func pathDir(p string) string { return p[:strings.LastIndex(p, "/")] }
+
+// The step opens the report path write-only. A path that the sandbox sees, or
+// that another lead owns, or that is not in the holder's own folder, is
+// refused: Build and Verify refuse the same options.
+func TestReportPathRefusals(t *testing.T) {
+	in := fixture(profile.Claude)
+	cases := []struct {
+		name string
+		path string
+		dir  string // "" keeps the default folder
+		want string
+	}{
+		// Each of the paths the second review built a plan with.
+		{"inside the spec bind", "/opt/ataniq/spec/arc-lead/spec.json", "/opt/ataniq/spec/arc-lead", "source of the bind"},
+		{"the probe binary", "/opt/ataniq/bin/probe", "/opt/ataniq/bin", "source of the bind"},
+		{"the managed settings", "/opt/ataniq/managed/arc-lead/settings.json", "/opt/ataniq/managed/arc-lead", "source of the bind"},
+		{"the state root", "/state", "/", "source of the bind"},
+		{"the lead's own state folder", "/state/leads/arc-lead", "/state/leads", "source of the bind"},
+		{"the leads folder", "/state/leads", "/state", "source of the bind"},
+		{"another lead's file", "/state/leads/other-lead/home/x", "/state/leads/other-lead/home", "state folder"},
+		{"another project's mirror", "/state/mirrors/other.git/report", "/state/mirrors/other.git", "state folder"},
+		{"the project's mirror", "/state/mirrors/demo.git/report", "/state/mirrors/demo.git", "source of the bind"},
+		{"the mirrors folder", "/state/mirrors", "/state", "source of the bind"},
+		{"a system file the sandbox sees", "/etc/passwd", "/etc", "source of the bind"},
+		{"a system file outside the folder", "/etc/hostname", "", "not directly inside"},
+		// A bind source that is the folder itself, or lies below the path.
+		{"a source itself", "/opt/ataniq/qargi", "/opt/ataniq", "source of the bind"},
+		{"above a source", "/opt/ataniq/spec", "/opt/ataniq", "source of the bind"},
+		{"above a system source", "/usr", "/", "source of the bind"},
+		// The folder.
+		{"not directly inside the folder", "/opt/ataniq/run/arc-lead/sub/report", "", "not directly inside"},
+		{"another folder", "/opt/ataniq/run/other/report", "", "not directly inside"},
+		{"the folder itself", "/opt/ataniq/run/arc-lead", "", "not directly inside"},
+		{"the folder above", "/opt/ataniq/run/report", "", "not directly inside"},
+		{"a folder that only shares a prefix", "/opt/ataniq/run/arc-lead2/report", "", "not directly inside"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := options(in, allPresent(t, in))
+			o.ReportPath = c.path
+			if c.dir != "" {
+				o.ReportDir = c.dir
+			}
+			_, err := Build(in, o)
+			if err == nil || !strings.Contains(err.Error(), "report path") || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("Build(%s): %v, want a report path refusal with %q", c.path, err, c.want)
+			}
+			// Verify checks the same: a plan built for the default options
+			// does not verify against these.
+			good := mustBuild(t, in, options(in, allPresent(t, in)))
+			if !hasKind(Verify(good, in, o), ProbOptions) {
+				t.Errorf("Verify accepted the options with report path %s", c.path)
+			}
+		})
+	}
+}
+
+func TestReportDirRefusals(t *testing.T) {
+	in := fixture(profile.Claude)
+	for name, dir := range map[string]string{
+		"missing":   "",
+		"relative":  "opt/run",
+		"unclean":   "/opt/ataniq/run/../run/arc-lead",
+		"a newline": "/opt/ataniq/run/a\nb",
+	} {
+		o := options(in, nil)
+		o.ReportDir = dir
+		_, err := Build(in, o)
+		if err == nil || !strings.Contains(err.Error(), "report folder") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// The default folder and path are fine.
+	if _, err := Build(in, options(in, nil)); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -658,5 +739,27 @@ func TestVerifyReportsInvalidInputs(t *testing.T) {
 	}
 	if got := Verify(nil, fixture(profile.Claude), Options{}); len(got) != 1 || got[0].Kind != ProbShape {
 		t.Errorf("nil plan: %v", got)
+	}
+}
+
+// The note about the report channel states the contract of assert: one
+// accepted line is the signal, end-of-file is not awaited, and both
+// descriptor questions are qualification items.
+func TestReportChannelNote(t *testing.T) {
+	in := fixture(profile.Claude)
+	p := mustBuild(t, in, options(in, allPresent(t, in)))
+	var note string
+	for _, n := range p.Notes {
+		if strings.HasPrefix(n, "report channel") {
+			note = n
+		}
+	}
+	for _, want := range []string{
+		"one accepted probe line", "does not wait for end-of-file", "a second line or any further byte",
+		"whether the descriptor reaches the probe inside", "which other processes hold it", "qualification items",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the report channel note does not say %q: %q", want, note)
+		}
 	}
 }

@@ -2,6 +2,7 @@ package assert
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"strconv"
@@ -51,6 +52,20 @@ func (i FileInfo) Describe() string {
 	return "a special file"
 }
 
+// FileIdentity names a file by the pair the kernel gives it: the number of the
+// device that holds it (st_dev) and its inode number (st_ino). Neither number
+// belongs to a mount namespace, so a bind of a folder shows the pair of the
+// folder it was taken from, whatever the path or the mount root says. See the
+// package documentation, "Limits stated", for what that does and does not
+// rely on.
+type FileIdentity struct {
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
+// String writes the identity as "device:inode".
+func (id FileIdentity) String() string { return fmt.Sprintf("%d:%d", id.Device, id.Inode) }
+
 // System is what the inside checks may do: ask about files, the mount table
 // and the environment, dial and resolve with a deadline, and ask the kernel
 // whether a path is writable without writing. It has no way to create a file,
@@ -85,6 +100,12 @@ type System interface {
 	// one a process sees. An error that wraps ErrNoMountID says the kernel
 	// does not give it.
 	MountID(path string) (int, error)
+	// Identity returns the identity of the file at the path (lstat), without
+	// following a link at the end of the path. For a mount point it is the
+	// identity of what is mounted there, the root of the mounted file system
+	// or the folder that was bound: that is what makes a bind of a folder
+	// recognisable by identity.
+	Identity(path string) (FileIdentity, error)
 	// DirEmpty says whether the folder at the path holds no entry. It does
 	// not follow a link at the path, and it reads at most one entry. An error
 	// (the path is not a folder, or cannot be read) is a question that could

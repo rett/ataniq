@@ -4,6 +4,7 @@ package mountpoints
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -348,4 +349,87 @@ func TestRealResolverEvaluatesLinks(t *testing.T) {
 	if _, err := os.Lstat(f.out + "/link"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A never-mounted path that is a dangling link (its target is not there yet)
+// is resolved through the link: the owner may create the target later, and the
+// folder then appears under its real name.
+func TestResolveSourcesDanglingNeverMountedLink(t *testing.T) {
+	cases := []struct {
+		name   string
+		target func(f *fixture) string // the target of the link at the owner's .codex
+	}{
+		{"absolute", func(f *fixture) string { return f.base + "/data/codex" }},
+		{"relative", func(f *fixture) string { return "../data/codex" }},
+		{"through a second dangling link", func(f *fixture) string {
+			f.symlink(f.base+"/data/codex", f.base+"/data/hop")
+			return f.base + "/data/hop"
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, profile.Claude)
+			f.mkdir(f.base+"/data", 0o755)
+			f.mkdir(f.base+"/owner", 0o755)
+			f.symlink(c.target(f), f.base+"/owner/.codex")
+			// A source that is a link to the folder that will hold the real
+			// .codex.
+			f.remove(f.in.QargiInstall)
+			f.symlink(f.base+"/data", f.in.QargiInstall)
+			if err := f.in.Validate(); err != nil {
+				t.Fatalf("the lexical check must not see the link: %v", err)
+			}
+			wantProblem(t, f.resolve().Report, ErrNeverMounted, f.in.QargiInstall)
+		})
+	}
+}
+
+func TestRealOfDanglingLinks(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	f.mkdir(f.base+"/data", 0o755)
+	f.symlink("../data/codex", f.out+"/rel")
+	f.symlink(f.base+"/data/codex", f.out+"/abs")
+	f.symlink("loop2", f.out+"/loop1")
+	f.symlink("loop1", f.out+"/loop2")
+	for i := 0; i < maxLinkHops+5; i++ {
+		f.symlink(fmt.Sprintf("chain%d", i+1), fmt.Sprintf("%s/chain%d", f.out, i))
+	}
+	f.symlink("a/../b", f.out+"/dotdot")
+	for _, c := range []struct {
+		name, path, want string
+	}{
+		{"relative target", f.out + "/rel", f.base + "/data/codex"},
+		{"absolute target", f.out + "/abs", f.base + "/data/codex"},
+		{"a path below the dangling link", f.out + "/abs/sub/x", f.base + "/data/codex/sub/x"},
+		{"no link at all", f.out + "/absent/x", f.out + "/absent/x"},
+	} {
+		got, err := realOf(f.resolver(), os.Readlink, c.path)
+		if err != nil || got != c.want {
+			t.Errorf("%s: realOf = %q, %v; want %q", c.name, got, err, c.want)
+		}
+	}
+	for _, c := range []struct{ name, path, want string }{
+		{"a loop of links", f.out + "/loop1", "too many links"},
+		{"a chain of dangling links", f.out + "/chain0", "symbolic links"},
+		{"a \"..\" after a component", f.out + "/dotdot", "\"..\""},
+	} {
+		if got, err := realOf(f.resolver(), os.Readlink, c.path); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: realOf = %q, %v; want an error naming %q", c.name, got, err, c.want)
+		}
+	}
+	// A link that cannot be read is an error, not the lexical path.
+	boom := errors.New("boom")
+	if got, err := realOf(f.resolver(), func(string) (string, error) { return "", boom }, f.out+"/rel"); !errors.Is(err, boom) {
+		t.Errorf("a link that cannot be read: %q, %v", got, err)
+	}
+}
+
+// A dangling link that cannot be followed is reported, not resolved by its
+// lexical path.
+func TestResolveSourcesDanglingNeverMountedLinkUnreadable(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	f.mkdir(f.base+"/owner", 0o755)
+	f.symlink("x/../y", f.base+"/owner/.codex")
+	res := f.resolve()
+	wantProblem(t, res.Report, ErrUnreadable, f.base+"/owner/.codex")
 }
