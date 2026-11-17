@@ -1,6 +1,8 @@
 package vt
 
 import (
+	"slices"
+
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/ordered"
 )
@@ -341,7 +343,11 @@ func (s *Screen) InsertLine(n int) bool {
 		return false
 	}
 
-	s.buf.InsertLineArea(y, n, s.blankCell(), s.scroll)
+	if s.scroll.Min.X == 0 && s.scroll.Max.X == s.buf.Width() {
+		s.moveLines(y, n, false)
+	} else {
+		s.buf.InsertLineArea(y, n, s.blankCell(), s.scroll)
+	}
 
 	return true
 }
@@ -376,9 +382,48 @@ func (s *Screen) DeleteLine(n int) bool {
 		s.scrollback.PushN(s.buf, y, linesToSave)
 	}
 
-	s.buf.DeleteLineArea(y, n, s.blankCell(), scroll)
+	if scroll.Min.X == 0 && scroll.Max.X == s.buf.Width() {
+		s.moveLines(y, n, true)
+	} else {
+		s.buf.DeleteLineArea(y, n, s.blankCell(), scroll)
+	}
 
 	return true
+}
+
+// moveLines is InsertLine or, with up set, DeleteLine for a scroll region as
+// wide as the screen: it moves the lines of the region, not their cells, and
+// blanks the n lines that come in. The cells of a line are copied one at a
+// time by the buffer's own insert and delete, which on a screen of 500 by 200
+// cells is 11 MB for every line feed at the bottom (1.1 ms; 64 KiB of line
+// feeds took over a minute). The result is the same: the lines of the region
+// from y on move n lines up (or down), the n lines that leave are lost (they
+// were saved to the scrollback before), and the n lines that come in are
+// blank, in the cell the buffer would have used. The lines of the region are
+// all touched, as the buffer's own functions do.
+func (s *Screen) moveLines(y, n int, up bool) {
+	region := s.scroll
+	n = min(n, region.Max.Y-y)
+	lines := s.buf.Lines[y:region.Max.Y]
+	from, to := len(lines)-n, len(lines)
+	if !up {
+		from, to = 0, n
+	}
+	k := n // rotate the lines left by k: up moves them n lines, down len-n
+	if !up {
+		k = len(lines) - n
+	}
+	slices.Reverse(lines[:k])
+	slices.Reverse(lines[k:])
+	slices.Reverse(lines)
+	blank := uv.EmptyCell
+	if c := s.blankCell(); c != nil {
+		blank = *c
+	}
+	s.blankLines(lines[from:to], &blank)
+	for i := region.Min.Y; i < region.Max.Y; i++ {
+		s.buf.TouchLine(0, i, s.buf.Width())
+	}
 }
 
 // blankCell returns the cursor blank cell with the background color set to the
@@ -392,6 +437,16 @@ func (s *Screen) blankCell() *uv.Cell {
 	c := uv.EmptyCell
 	c.Style.Bg = s.cur.Pen.Bg
 	return &c
+}
+
+// blankLines sets every cell of the lines to the cell, which is one cell
+// wide: no wide cell is left half over.
+func (s *Screen) blankLines(lines []uv.Line, c *uv.Cell) {
+	for _, line := range lines {
+		for i := range line {
+			line[i] = *c
+		}
+	}
 }
 
 // touchArea marks all lines in the given area as touched.

@@ -184,6 +184,25 @@ Patches, applied in this order to the files of the module as released:
    screen then holds what a repeat of exactly that many gives, which is not
    what a terminal that printed two billion characters would show (the
    cursor column and the last line depend on the count).
+13. `vt: move the lines of a scroll region as wide as the screen`
+   (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
+   an index, a reverse index, insert line, delete line, scroll up and scroll
+   down copied every cell of the region one at a time, through the buffer's
+   own insert and delete: 11 MB and 1.1 ms for each of them on a screen of 500
+   by 200 cells, so that 64 KiB of line feeds kept the emulator, and the
+   pane's lock, for more than a minute. When the region is as wide as the
+   screen (the usual case), `Screen.InsertLine` and `Screen.DeleteLine` now
+   rotate the lines of the region and blank the lines that come in, which
+   costs the lines and the blanked cells (64 KiB of line feeds take 0.45 s). The
+   result is the buffer's: the same cells, the same blank cell (the pen's
+   background), the lines saved to the scrollback before, and every line of the
+   region marked as touched, as the buffer's own functions do. A region
+   narrower than the screen still uses the buffer's functions. A test compares
+   the two on screens the property streams make, with every region, cursor,
+   count and pen. What stays: a scroll that blanks the whole region
+   (scroll by the screen, a count over the lines left) writes every cell of
+   it, which takes about a millisecond on the largest screen whatever the
+   code, so 64 KiB of those take several seconds.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
