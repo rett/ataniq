@@ -147,6 +147,27 @@ type File struct {
 	SHA256 string
 }
 
+// Mount is one emitted row of the bind table.
+type Mount struct {
+	// Kind is the row's kind (tmpfs, dev, proc, ro-bind, rw-bind, symlink).
+	Kind profile.Kind
+	// Inside is the path inside the sandbox.
+	Inside string
+	// Source is the host path of a bind row; empty for the other kinds.
+	Source string
+	// LeadWritable says the source lies below a host folder the lead can
+	// write (the source of a read-write bind row): the lead could replace the
+	// source with a symbolic link, which bubblewrap follows, so the holder
+	// re-checks these rows right before it starts the command. It is not the
+	// profile's Bind.LeadWritable, which says the mount point (the target)
+	// lies in such a folder. A read-write bind's own source is not marked: the
+	// lead cannot replace the folder it is bound to.
+	LeadWritable bool
+	// Optional says the row is optional in the table; the plan emitted it
+	// because the options say the host has it.
+	Optional bool
+}
+
 // Plan is a launch plan. Argv is Pasta, PassFDs, Bwrap and Inner joined.
 type Plan struct {
 	// Argv is the whole command: pasta, its arguments, "--", the pass-through
@@ -175,6 +196,10 @@ type Plan struct {
 	Files []File
 	// Digest is the profile digest (profile.Inputs.Digest).
 	Digest string
+	// Mounts lists the rows of the bind table the plan emits, in order (not
+	// the final read-only remount), with what the holder needs to re-check
+	// them right before it starts the command.
+	Mounts []Mount
 	// Notes say what the plan does not show by itself: the R17 surface, the
 	// seccomp state, the network arrangement and each optional row left out.
 	Notes []string
@@ -212,6 +237,8 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	if in.SeccompEnabled() {
 		e.opt("--seccomp", strconv.Itoa(opt.SeccompFD))
 	}
+	var mounts []Mount
+	writable := writableSources(binds)
 	for _, b := range binds {
 		if b.Kind == profile.KindRemountRO {
 			continue // last, after --chdir
@@ -220,6 +247,7 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 			continue
 		}
 		e.bind(b)
+		mounts = append(mounts, Mount{Kind: b.Kind, Inside: b.Inside, Source: b.Source, LeadWritable: belowAny(b.Source, writable), Optional: b.Optional})
 	}
 	e.opt("--chdir", workDir)
 	e.opt("--remount-ro", "/")
@@ -235,6 +263,7 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		Bwrap:   append([]string{opt.BwrapPath}, e.args...),
 		Inner:   probeCommand(opt),
 		Env:     env,
+		Mounts:  mounts,
 		Files:   files,
 		Digest:  digest,
 		WorkDir: workDir,
@@ -399,9 +428,9 @@ func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 	if err := checkPath("report path", o.ReportPath); err != nil {
 		return err
 	}
-	for _, b := range table {
-		if b.Kind == profile.KindRwBind && within(o.ReportPath, b.Source) {
-			return refuse("report path", "lies in or below %s, a folder the lead can write", b.Source)
+	for _, d := range writableSources(table) {
+		if within(o.ReportPath, d) {
+			return refuse("report path", "lies in or below %s, a folder the lead can write", d)
 		}
 	}
 	never := append([]string(nil), in.NeverMounted...)
@@ -426,6 +455,29 @@ func checkPath(field, p string) error {
 		return err
 	}
 	return nil
+}
+
+// writableSources are the host folders the lead can write: the sources of the
+// read-write rows of the table.
+func writableSources(table []profile.Bind) []string {
+	var dirs []string
+	for _, b := range table {
+		if b.Kind == profile.KindRwBind {
+			dirs = append(dirs, b.Source)
+		}
+	}
+	return dirs
+}
+
+// belowAny reports whether p lies strictly below one of dirs. An empty p (a
+// row without a source) lies below none.
+func belowAny(p string, dirs []string) bool {
+	for _, d := range dirs {
+		if p != "" && strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // within reports whether p is dir or lies below it (both clean and absolute).

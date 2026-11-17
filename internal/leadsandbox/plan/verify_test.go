@@ -287,6 +287,25 @@ func TestVerifyMutations(t *testing.T) {
 			p.Notes = n
 		}},
 
+		// The list of mounts.
+		{"Mounts dropped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = nil }},
+		{"Mounts row dropped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = append(p.Mounts[:3], p.Mounts[4:]...) }},
+		{"Mounts row added", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts = append(p.Mounts, Mount{Kind: profile.KindTmpfs, Inside: "/x"}) }},
+		{"Mounts rows swapped", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[2], p.Mounts[3] = p.Mounts[3], p.Mounts[2] }},
+		{"Mounts source changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Source = "/usr/share" }},
+		{"Mounts kind changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Kind = profile.KindRwBind }},
+		{"Mounts lead-writable flag cleared", ProbMountList, false, func(t *testing.T, p *Plan) {
+			for i := range p.Mounts {
+				if p.Mounts[i].LeadWritable {
+					p.Mounts[i].LeadWritable = false
+					return
+				}
+			}
+			t.Fatal("no lead-writable row in the plan")
+		}},
+		{"Mounts lead-writable flag set", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
+		{"Mounts optional flag changed", ProbMountList, false, func(t *testing.T, p *Plan) { p.Mounts[1].Optional = true }},
+
 		// The rest.
 		{"digest changed", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = strings.Repeat("0", 64) }},
 		{"digest empty", ProbDigest, false, func(t *testing.T, p *Plan) { p.Digest = "" }},
@@ -355,7 +374,7 @@ func TestVerifyMutations(t *testing.T) {
 	for _, k := range []ProblemKind{ProbShape, ProbExecutable, ProbPasta, ProbForbidden, ProbUnknown, ProbMalformed,
 		ProbOptionLike, ProbOrder, ProbFlags, ProbEnv, ProbSeccomp, ProbMountMissing, ProbMountExtra, ProbMountDiffers,
 		ProbMountTwice, ProbNever, ProbOtherRuntime, ProbWorkDir, ProbRemount, ProbInner, ProbDigest, ProbNotes,
-		ProbTerminal, ProbSize, ProbPassFDs, ProbReport, ProbAgent} {
+		ProbTerminal, ProbSize, ProbPassFDs, ProbReport, ProbAgent, ProbMountList} {
 		if !seen[k] {
 			t.Errorf("no mutation raises %q", k)
 		}
@@ -612,6 +631,11 @@ func TestVerifyProblemsDoNotCarryPlanText(t *testing.T) {
 			p := clonePlan(base)
 			p.Files[i].Path, p.Files[i].SHA256, p.Files[i].Purpose = canary, canary, canary
 			check(fmt.Sprintf("Files[%d]", i), p)
+		}
+		for i := range base.Mounts {
+			p := clonePlan(base)
+			p.Mounts[i].Inside, p.Mounts[i].Source, p.Mounts[i].Kind = canary, canary, canary
+			check(fmt.Sprintf("Mounts[%d]", i), p)
 		}
 		p := clonePlan(base)
 		p.Digest, p.WorkDir = canary, canary

@@ -119,6 +119,7 @@ func clonePlan(p *Plan) *Plan {
 	c.Inner = append([]string(nil), p.Inner...)
 	c.Env = append([]profile.EnvVar(nil), p.Env...)
 	c.Files = append([]File(nil), p.Files...)
+	c.Mounts = append([]Mount(nil), p.Mounts...)
 	c.Notes = append([]string(nil), p.Notes...)
 	return &c
 }
@@ -156,6 +157,20 @@ func render(p *Plan) string {
 	b.WriteString("# env\n")
 	for _, e := range p.Env {
 		line(e.Name + "=" + e.Value)
+	}
+	b.WriteString("# mounts\n")
+	for _, m := range p.Mounts {
+		cols := []string{string(m.Kind), m.Inside}
+		if m.Source != "" {
+			cols = append(cols, m.Source)
+		}
+		if m.LeadWritable {
+			cols = append(cols, "[lead-writable]")
+		}
+		if m.Optional {
+			cols = append(cols, "[optional]")
+		}
+		line(cols...)
 	}
 	b.WriteString("# files\n")
 	for _, f := range p.Files {

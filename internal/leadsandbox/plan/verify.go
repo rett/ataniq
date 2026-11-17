@@ -33,6 +33,7 @@ const (
 	ProbMountExtra   ProblemKind = "mount-unexpected" // a mount that is not in the table
 	ProbMountDiffers ProblemKind = "mount-differs"    // a row with another kind, source or target
 	ProbMountTwice   ProblemKind = "mount-twice"      // one inside path mounted twice
+	ProbMountList    ProblemKind = "mount-list"       // Plan.Mounts is not what the arguments mount
 	ProbNever        ProblemKind = "never-mounted"    // a source in or around a never-mounted path
 	ProbOtherRuntime ProblemKind = "other-runtime"    // the other runtime's config folder
 	ProbWorkDir      ProblemKind = "workdir"          // --chdir missing, outside the tree and home
@@ -119,7 +120,7 @@ type mount struct {
 // host rows exist. Verify parses the bubblewrap arguments back into flags,
 // environment and mounts and compares everything with the profile and the
 // options: every part of the plan (the pasta, pass-through, bubblewrap and
-// probe command lines, Argv, Env, Files, Digest, Notes, WorkDir and
+// probe command lines, Argv, Env, Mounts, Files, Digest, Notes, WorkDir and
 // SetControllingTerminal) is compared with what the inputs and the options
 // give. It returns no problem for a plan that agrees with them. An optional
 // row is present exactly when the options say the host has it; a row that is
@@ -380,6 +381,7 @@ func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, f *facts, work
 	v.env(p, f, setenv)
 	v.seccomp(in, opt, seccomp)
 	v.mounts(in, opt, f, mounts)
+	v.mountList(p, f, mounts)
 	v.workDir(p, workDir, chdir)
 	v.remount(remount, items)
 }
@@ -518,6 +520,30 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 			v.add(ProbMountMissing, "%s (%s) is not mounted", b.Inside, b.Kind)
 		case !want && seen[b.Inside]:
 			v.add(ProbMountExtra, "%s is mounted and the options say the host has no such optional path", b.Inside)
+		}
+	}
+}
+
+// mountList checks Plan.Mounts against the mounts parsed from the arguments:
+// the same rows in the same order, with the lead-writable flag worked out from
+// the table's read-write sources and the optional flag from the table.
+func (v *verifier) mountList(p *Plan, f *facts, got []mount) {
+	writable := writableSources(f.table)
+	optional := map[string]bool{}
+	for _, b := range f.table {
+		optional[b.Inside] = b.Optional
+	}
+	want := make([]Mount, 0, len(got))
+	for _, m := range got {
+		want = append(want, Mount{Kind: m.kind, Inside: m.inside, Source: m.source, LeadWritable: belowAny(m.source, writable), Optional: optional[m.inside]})
+	}
+	if len(p.Mounts) != len(want) {
+		v.add(ProbMountList, "Mounts lists %d rows, the arguments mount %d", len(p.Mounts), len(want))
+		return
+	}
+	for i := range want {
+		if p.Mounts[i] != want[i] {
+			v.add(ProbMountList, "row %d of Mounts is not the row the arguments mount", i+1)
 		}
 	}
 }

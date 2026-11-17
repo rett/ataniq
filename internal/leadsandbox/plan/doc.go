@@ -52,6 +52,16 @@
 // bubblewrap, gives the agent its session and controlling terminal (variant B
 // of the spike), so --new-session is never passed.
 //
+// # Mounts
+//
+// [Plan.Mounts] lists each row of the bind table the plan emits, in order, with
+// whether its source lies below a host folder the lead can write
+// ([Mount.LeadWritable]): the three .git rows of the tree. bubblewrap follows
+// symbolic links in a bind source, so a lead that replaced one of those sources
+// with a link to a file of the owner would have that file bound at the next
+// start. The plan treats a host path as a string; the holder re-checks the
+// flagged rows right before it starts the command.
+//
 // # The environment inside
 //
 // The allowlist ([Plan.Env]) is set with --clearenv and --setenv. bubblewrap
@@ -90,7 +100,7 @@
 // pasta arguments, the pass-through step, the list of descriptors with their
 // numbers and paths, the bubblewrap arguments (flag set, allowlist, bind
 // table, never-mounted paths, the other runtime's config folder, the working
-// folder), exactly which optional rows are present, the probe command line
+// folder), the list of mounts, exactly which optional rows are present, the probe command line
 // with the agent argv, the digest, the terminal flag and the exact set of
 // notes. A plan that agrees with the inputs and the options says the text of
 // the plan is the one they describe; it does not say what bubblewrap, pasta or

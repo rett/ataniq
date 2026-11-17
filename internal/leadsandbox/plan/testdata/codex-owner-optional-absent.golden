@@ -86,6 +86,35 @@ XDG_CACHE_HOME=/home/lead/.cache
 XDG_CONFIG_HOME=/home/lead/.config
 XDG_DATA_HOME=/home/lead/.local/share
 XDG_STATE_HOME=/home/lead/.local/state
+# mounts
+tmpfs /
+ro-bind /usr /usr
+symlink /bin
+symlink /lib
+ro-bind /etc/hosts /etc/hosts
+ro-bind /etc/passwd /etc/passwd
+ro-bind /etc/group /etc/group
+ro-bind /etc/resolv.conf /opt/ataniq/resolv/arc-lead/resolv.conf
+dev /dev
+proc /proc
+tmpfs /tmp
+ro-bind /ataniq/probe /opt/ataniq/bin/probe
+ro-bind /ataniq/spec /opt/ataniq/spec/arc-lead
+ro-bind /ataniq/agent /opt/agent/codex/2.1.0
+ro-bind /etc/codex/managed-config.toml /opt/ataniq/managed/arc-lead/settings.json
+rw-bind /home/lead /state/leads/arc-lead/home
+rw-bind /home/lead/.codex /state/leads/arc-lead/config/codex
+ro-bind /home/lead/.codex/skills /opt/ataniq/skills/arc-lead
+ro-bind /home/lead/.codex/AGENTS.md /opt/ataniq/instructions/arc-lead/AGENTS.md
+ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+rw-bind /work/demo /state/leads/arc-lead/tree
+ro-bind /work/demo/.git/config /state/leads/arc-lead/tree/.git/config [lead-writable]
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/tree/.git/hooks [lead-writable]
+ro-bind /work/demo/.git/info /state/leads/arc-lead/tree/.git/info [lead-writable]
+ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
+ro-bind /ataniq/qargi /opt/ataniq/qargi
+ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
+ro-bind /ataniq/projection /opt/ataniq/projection/demo
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
 # digest

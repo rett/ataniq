@@ -351,6 +351,88 @@ func TestOptionalRows(t *testing.T) {
 	}
 }
 
+func TestMounts(t *testing.T) {
+	in := fixture(profile.Claude)
+	present := allPresent(t, in)
+	full := mustBuild(t, in, options(in, present))
+	some := mustBuild(t, in, options(in, without(present, absent...)))
+
+	table, _ := in.Binds()
+	// One Mount per emitted row of the table, in order, the final remount not
+	// included.
+	var want []string
+	for _, b := range table {
+		if b.Kind != profile.KindRemountRO {
+			want = append(want, b.Inside)
+		}
+	}
+	var got []string
+	for _, m := range full.Mounts {
+		got = append(got, m.Inside)
+	}
+	if !equal(got, want) {
+		t.Errorf("Mounts = %q, want the table's rows %q", got, want)
+	}
+	// A row left out is not listed.
+	for _, m := range some.Mounts {
+		for _, r := range absent {
+			if m.Inside == r {
+				t.Errorf("%s listed though left out", r)
+			}
+		}
+	}
+	if len(some.Mounts) != len(full.Mounts)-len(absent) {
+		t.Errorf("%d rows, %d expected", len(some.Mounts), len(full.Mounts)-len(absent))
+	}
+
+	byInside := map[string]Mount{}
+	for _, m := range full.Mounts {
+		byInside[m.Inside] = m
+	}
+	// Exactly the three rows of the lead's .git are sourced inside a folder
+	// the lead writes, and none of the folders themselves.
+	writable := map[string]bool{
+		"/work/demo/.git/config": true,
+		"/work/demo/.git/hooks":  true,
+		"/work/demo/.git/info":   true,
+	}
+	for _, m := range full.Mounts {
+		if m.LeadWritable != writable[m.Inside] {
+			t.Errorf("%s: LeadWritable = %v", m.Inside, m.LeadWritable)
+		}
+	}
+	if m := byInside["/work/demo/.git/hooks"]; m.Kind != profile.KindRoBind || m.Source != "/state/leads/arc-lead/tree/.git/hooks" {
+		t.Errorf("hooks row = %+v", m)
+	}
+	if m := byInside["/work/demo"]; m.Kind != profile.KindRwBind || m.Source != "/state/leads/arc-lead/tree" || m.LeadWritable {
+		t.Errorf("tree row = %+v", m)
+	}
+	if m := byInside["/lib64"]; m.Kind != profile.KindSymlink || m.Source != "" || !m.Optional {
+		t.Errorf("lib64 row = %+v", m)
+	}
+	if m := byInside["/etc/ssl"]; m.Kind != profile.KindRoBind || m.Source != "/etc/ssl" || !m.Optional || m.LeadWritable {
+		t.Errorf("ssl row = %+v", m)
+	}
+	if m := byInside["/"]; m.Kind != profile.KindTmpfs || m.Source != "" || m.Optional {
+		t.Errorf("root row = %+v", m)
+	}
+
+	// With the records folder and a placeholder the lead-writable rows follow
+	// the table, not a fixed list.
+	in = fixture(profile.Codex)
+	in.QargiRecords, in.QargiRecordsInside = "/state/leads/arc-lead/records", "/home/lead/.qargi"
+	in.ExtraPlaceholders = []profile.Placeholder{{Rel: ".envrc", Source: "/opt/ataniq/placeholders/envrc"}}
+	p := mustBuild(t, in, options(in, nil))
+	for _, m := range p.Mounts {
+		if m.Inside == "/home/lead/.qargi" && (m.Kind != profile.KindRwBind || m.LeadWritable) {
+			t.Errorf("records row = %+v", m)
+		}
+		if m.Inside == "/work/demo/.envrc" && m.LeadWritable {
+			t.Errorf("placeholder row = %+v: its source is Ataniq's", m)
+		}
+	}
+}
+
 func TestDeterministic(t *testing.T) {
 	in := withSeccomp(fixture(profile.Codex))
 	a := render(mustBuild(t, in, options(in, nil)))
