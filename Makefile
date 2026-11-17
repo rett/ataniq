@@ -29,9 +29,11 @@ qualification-host-build: doctor
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-qualify ./qualification/host/cmd/qualify
 
 # Changelog fragments: changelog.d/<section>-<slug>.md are folded into
-# CHANGELOG.md by the release or hotfix branch (in its first commit, and again
-# after a fix that adds a fragment), and the release checks that none are
-# left. ARGS=--dry-run previews the fold. Neither target needs the Go
+# CHANGELOG.md by the release or hotfix branch, as its first fix commit after
+# the changelog is dated (ARGS='--into VERSION' folds into the dated section;
+# without it the fold writes to [Unreleased]), and again after a fix that adds
+# a fragment, and the release checks that none are left. ARGS=--dry-run
+# previews the fold. Neither target needs the Go
 # toolchain.
 changelog-fold:
 	@sh scripts/changelog-fold.sh $(ARGS)

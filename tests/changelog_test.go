@@ -507,3 +507,278 @@ func entriesOf(t *testing.T, dir string) []string {
 	}
 	return names
 }
+
+// What "qargi release start 0.0.2" leaves behind: the changelog dated, with a
+// fresh empty [Unreleased] above the release's section and one older release
+// below it.
+const changelogDated = `# Changelog
+
+Intro.
+
+## [Unreleased]
+
+## [0.0.2] - 2026-02-02
+
+### Added
+
+- Dated added.
+
+### Fixed
+
+- Dated fixed.
+
+## [0.0.1] - 2026-01-01
+
+### Added
+
+- Released.
+`
+
+func TestChangelogFoldIntoDatedSection(t *testing.T) {
+	// The entries go to the end of their headings in the release's section,
+	// a missing heading is created in order (Changed between Added and
+	// Fixed, Security after Fixed), and [Unreleased] and the older release are
+	// left alone.
+	dir := changelogRoot(t, changelogDated, map[string]string{
+		"added-a.md":    "- A added.\n",
+		"changed-c.md":  "- C changed.\n",
+		"fixed-f.md":    "- F fixed.\n",
+		"security-s.md": "- S security.\n",
+	})
+	out, code := runFold(t, dir, "--into", "0.0.2")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	want := `# Changelog
+
+Intro.
+
+## [Unreleased]
+
+## [0.0.2] - 2026-02-02
+
+### Added
+
+- Dated added.
+- A added.
+
+### Changed
+
+- C changed.
+
+### Fixed
+
+- Dated fixed.
+- F fixed.
+
+### Security
+
+- S security.
+
+## [0.0.1] - 2026-01-01
+
+### Added
+
+- Released.
+`
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != want {
+		t.Errorf("CHANGELOG.md:\n%s\nwant:\n%s", got, want)
+	}
+	if names := fragmentNames(t, dir); len(names) != 0 {
+		t.Errorf("fragments left: %v", names)
+	}
+	if out, code := runFold(t, dir, "--check"); code != 0 {
+		t.Errorf("check after the fold: exit %d: %s", code, out)
+	}
+}
+
+func TestChangelogFoldIntoCreatesHeadingsInOrder(t *testing.T) {
+	// The dated section has no headings yet, or only a later one, and is the
+	// last one in the file, followed by link reference definitions.
+	base := "# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - 2026-02-02\n\n### Fixed\n\n- Old.\n\n[Unreleased]: https://example.invalid/compare/0.0.2...HEAD\n[0.0.2]: https://example.invalid/releases/0.0.2\n"
+	dir := changelogRoot(t, base, map[string]string{
+		"added-a.md":    "- A.\n",
+		"removed-r.md":  "- R.\n",
+		"security-s.md": "- S.\n",
+	})
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	want := "# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - 2026-02-02\n\n### Added\n\n- A.\n\n### Removed\n\n- R.\n\n### Fixed\n\n- Old.\n\n### Security\n\n- S.\n\n[Unreleased]: https://example.invalid/compare/0.0.2...HEAD\n[0.0.2]: https://example.invalid/releases/0.0.2\n"
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != want {
+		t.Errorf("CHANGELOG.md:\n%s\nwant:\n%s", got, want)
+	}
+
+	empty := "# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - 2026-02-02\n"
+	dir = changelogRoot(t, empty, map[string]string{"changed-c.md": "- C.\n"})
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 0 {
+		t.Fatalf("empty section: exit %d: %s", code, out)
+	}
+	want = "# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - 2026-02-02\n\n### Changed\n\n- C.\n"
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != want {
+		t.Errorf("CHANGELOG.md:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestChangelogFoldIntoRefusesMissingSection(t *testing.T) {
+	cases := map[string]struct {
+		changelog string
+		version   string
+	}{
+		"absent version":    {changelogDated, "0.0.3"},
+		"prefix only":       {changelogDated, "0.0"},
+		"undated heading":   {"# Changelog\n\n## [Unreleased]\n\n## [0.0.2]\n\n### Added\n\n- X.\n", "0.0.2"},
+		"unreleased":        {changelogDated, "Unreleased"},
+		"heading twice":     {changelogDated + "\n## [0.0.2] - 2026-02-03\n", "0.0.2"},
+		"bad date":          {"# Changelog\n\n## [Unreleased]\n\n## [0.0.2] - soon\n", "0.0.2"},
+		"version in a body": {"# Changelog\n\n## [Unreleased]\n\n- See ## [0.0.2] - 2026-02-02 here.\n", "0.0.2"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := changelogRoot(t, c.changelog, map[string]string{"added-a.md": "- A.\n"})
+			out, code := runFold(t, dir, "--into", c.version)
+			if code != 2 {
+				t.Fatalf("exit %d, want 2: %s", code, out)
+			}
+			if !strings.Contains(out, "nothing was changed") {
+				t.Errorf("no refusal in the output: %s", out)
+			}
+			if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != c.changelog {
+				t.Errorf("CHANGELOG.md changed:\n%s", got)
+			}
+			if names := fragmentNames(t, dir); len(names) != 1 {
+				t.Errorf("fragments changed: %v", names)
+			}
+			if got := entriesOf(t, dir); len(got) != 3 {
+				t.Errorf("files left in the root: %v", got)
+			}
+			// A dry run refuses the same way.
+			if out, code := runFold(t, dir, "--into", c.version, "--dry-run"); code != 2 {
+				t.Errorf("dry run: exit %d, want 2: %s", code, out)
+			}
+		})
+	}
+}
+
+func TestChangelogFoldIntoRefusesBadArguments(t *testing.T) {
+	dir := changelogRoot(t, changelogDated, map[string]string{"added-a.md": "- A.\n"})
+	for _, args := range [][]string{
+		{"--into"},
+		{"--into", ""},
+		{"--into", "0.0.*"},
+		{"--into", "[0.0.2]"},
+		{"--into", "0.0.2", "--check"},
+	} {
+		if out, code := runFold(t, dir, args...); code != 2 {
+			t.Errorf("%q: exit %d, want 2: %s", args, code, out)
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != changelogDated {
+		t.Errorf("CHANGELOG.md changed:\n%s", got)
+	}
+	if names := fragmentNames(t, dir); len(names) != 1 {
+		t.Errorf("fragments changed: %v", names)
+	}
+}
+
+func TestChangelogFoldIntoRefusesInvalidFragment(t *testing.T) {
+	dir := changelogRoot(t, changelogDated, map[string]string{
+		"added-a.md":   "- A.\n",
+		"unknown-b.md": "- B.\n",
+	})
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 2 {
+		t.Fatalf("exit %d, want 2: %s", code, out)
+	}
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != changelogDated {
+		t.Errorf("CHANGELOG.md changed:\n%s", got)
+	}
+	if names := fragmentNames(t, dir); len(names) != 2 {
+		t.Errorf("fragments changed: %v", names)
+	}
+}
+
+func TestChangelogFoldIntoIsIdempotent(t *testing.T) {
+	frags := map[string]string{"added-a.md": "- A added.\n", "fixed-f.md": "- F fixed.\n"}
+	dir := changelogRoot(t, changelogDated, frags)
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	once := readFile(t, filepath.Join(dir, "CHANGELOG.md"))
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 0 {
+		t.Fatalf("second run exit %d: %s", code, out)
+	}
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != once {
+		t.Errorf("second run changed CHANGELOG.md:\n%s", got)
+	}
+
+	// A run that stopped before removing the fragments is repeated without
+	// duplicating the entries, and says it skipped them.
+	for name, content := range frags {
+		if err := os.WriteFile(filepath.Join(dir, "changelog.d", name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, code := runFold(t, dir, "--into", "0.0.2")
+	if code != 0 {
+		t.Fatalf("repeat exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "skip changelog.d/added-a.md: already in [0.0.2]") {
+		t.Errorf("output: %s", out)
+	}
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != once {
+		t.Errorf("repeat changed CHANGELOG.md:\n%s", got)
+	}
+	if names := fragmentNames(t, dir); len(names) != 0 {
+		t.Errorf("fragments left: %v", names)
+	}
+
+	// An entry that is only in [Unreleased] is not "already folded" into the
+	// release.
+	base := strings.Replace(changelogDated, "## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- A added.\n", 1)
+	dir = changelogRoot(t, base, map[string]string{"added-a.md": "- A added.\n"})
+	if out, code := runFold(t, dir, "--into", "0.0.2"); code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	got := readFile(t, filepath.Join(dir, "CHANGELOG.md"))
+	if want := strings.Replace(base, "- Dated added.\n", "- Dated added.\n- A added.\n", 1); got != want {
+		t.Errorf("CHANGELOG.md:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestChangelogFoldIntoDryRun(t *testing.T) {
+	dir := changelogRoot(t, changelogDated, map[string]string{
+		"added-a.md": "- A added.\n",
+		"fixed-f.md": "- F fixed.\n",
+	})
+	out, code := runFold(t, dir, "--into", "0.0.2", "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	want := "would fold changelog.d/added-a.md into Added\nwould fold changelog.d/fixed-f.md into Fixed\n"
+	if out != want {
+		t.Errorf("output:\n%s\nwant:\n%s", out, want)
+	}
+	if got := readFile(t, filepath.Join(dir, "CHANGELOG.md")); got != changelogDated {
+		t.Errorf("dry run changed CHANGELOG.md:\n%s", got)
+	}
+	if names := fragmentNames(t, dir); len(names) != 2 {
+		t.Errorf("dry run removed fragments: %v", names)
+	}
+	if got := entriesOf(t, dir); len(got) != 3 {
+		t.Errorf("the dry run left files in the root: %v", got)
+	}
+}
+
+// The Makefile target passes ARGS through, so the release flow's command is
+// the one that is tested.
+func TestMakeChangelogFoldPassesInto(t *testing.T) {
+	cmd := exec.Command("make", "-n", "changelog-fold", "ARGS=--into 0.0.2")
+	cmd.Dir = root(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "sh scripts/changelog-fold.sh --into 0.0.2") {
+		t.Errorf("--into not passed on: %s", out)
+	}
+}
