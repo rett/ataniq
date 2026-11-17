@@ -455,6 +455,12 @@ func TestStuckServerIsReportedAndNothingIsClosedUnderIt(t *testing.T) {
 		t.Fatal("the server did not reach the peer check")
 	}
 
+	journal := filepath.Join(e.state, RegistryDirName, leadregistry.FileName)
+	before := openDescriptors(t, journal)
+	if before == 0 {
+		t.Fatalf("the daemon holds no descriptor to %s while it runs; the check below would prove nothing", journal)
+	}
+
 	err = d.stop()
 	se := mustFail(t, err, StepShutdown, ExitShutdown)
 	for _, want := range []string{"did not stop within 100ms", "registry is left open", "daemon lock held", "end with this process"} {
@@ -462,14 +468,37 @@ func TestStuckServerIsReportedAndNothingIsClosedUnderIt(t *testing.T) {
 			t.Errorf("error %q does not say %q", se, want)
 		}
 	}
-	if !strings.Contains(e.log.String(), "did not stop within") {
-		t.Errorf("log:\n%s", e.log)
+	// The message is in the returned error, which the command prints; the
+	// daemon does not log it as well, so that standard error has it once.
+	if strings.Contains(e.log.String(), "did not stop within") {
+		t.Errorf("the message is also in the log:\n%s", e.log)
 	}
-	// The lock is still held, and the registry was not closed.
+	// The registry is still open: no descriptor to its journal was closed.
+	if after := openDescriptors(t, journal); after != before {
+		t.Errorf("descriptors to the registry journal: %d before the stop, %d after; the registry was closed under a server that may still run", before, after)
+	}
+	// The lock is still held.
 	if l, err := leadlock.Acquire(leadlock.DaemonPath(e.state)); err == nil {
 		l.Release()
 		t.Fatal("the daemon lock was released under a server that may still run")
 	} else if !errors.Is(err, leadlock.ErrHeld{}) {
 		t.Fatal(err)
 	}
+}
+
+// openDescriptors counts the descriptors of this process whose target is path.
+func openDescriptors(t *testing.T, path string) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		// An entry can be gone by now (the directory read holds one itself).
+		if target, err := os.Readlink(filepath.Join("/proc/self/fd", e.Name())); err == nil && target == path {
+			n++
+		}
+	}
+	return n
 }

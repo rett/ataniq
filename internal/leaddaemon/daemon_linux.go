@@ -290,7 +290,6 @@ func Run(ctx context.Context, cfg Config) error {
 			serveErr = &StartupError{Step: StepShutdown, Err: fmt.Errorf(
 				"the server did not stop within %s; its goroutine and the connections it holds may still be running, the registry is left open and the daemon lock held, and both end with this process",
 				d.ShutdownGrace)}
-			d.logf("%v", serveErr)
 		}
 	case err := <-done:
 		d.step(StepShutdown)
@@ -304,7 +303,9 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	// The registry and the lock are released by the deferred calls, in that
-	// order: the lock last, unless the server is left running.
+	// order: the lock last, unless the server is left running. A server that is
+	// left running is reported by the returned error alone, which the command
+	// prints once.
 	return serveErr
 }
 
