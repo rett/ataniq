@@ -120,6 +120,25 @@ func TestSelectionCopiesAStreamOfRows(t *testing.T) {
 	}
 }
 
+// TestSelectionReplacesReverseVideo selects text the session wrote in
+// reverse video: the selected cells are drawn in the selection colours, not
+// swapped by the reverse attribute, and the cells outside keep it.
+func TestSelectionReplacesReverseVideo(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, "\x1b[7mhello world\x1b[m")
+	wantCopy(t, r.dragPane(0, 0, 4, 0), "hello")
+	buf := r.drawnPane()
+	for x := 0; x <= 4; x++ {
+		wx, wy := r.win(x, 0)
+		if c := buf.CellAt(wx, wy); !r.selected(buf, x, 0) || c.Style.Attrs&uv.AttrReverse != 0 {
+			t.Fatalf("selected cell %d: %+v", x, c.Style)
+		}
+	}
+	wx, wy := r.win(6, 0)
+	if c := buf.CellAt(wx, wy); r.selected(buf, 6, 0) || c.Style.Attrs&uv.AttrReverse == 0 {
+		t.Fatalf("cell after the selection: %+v", c.Style)
+	}
+}
+
 func TestSelectionBackwardsCopiesTheSameText(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, selText)
 	wantCopy(t, r.dragPane(4, 2, 6, 0), "world\nsecond row\nthird")
@@ -234,7 +253,7 @@ func TestSelectionStartsOnlyInThePane(t *testing.T) {
 }
 
 // TestSelectionRefusesMoreThanTheCap fills the pane with clusters of
-// combining marks until its text is over maxCopy: the release copies nothing
+// combining marks until its text is over 1 MiB: the release copies nothing
 // and says why.
 func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	r := selRig(t, 140, 45, Options{}, "")
@@ -250,22 +269,40 @@ func TestSelectionRefusesMoreThanTheCap(t *testing.T) {
 	}
 }
 
+// mib is the cap on a copy the guide and the changelog state. The tests use
+// it, not maxCopy, so that a change of the constant fails them.
+const mib = 1 << 20
+
 // fillOverCap fills the session pane with clusters of combining marks until
-// its text is over maxCopy, and returns the cluster.
+// its text is over 1 MiB, and returns the cluster.
 func (r *rig) fillOverCap() string {
 	r.t.Helper()
-	cols, rows := r.paneSize()
 	cluster := "a" + strings.Repeat("́", 700)
-	cells := maxCopy/len(cluster) + 1
-	if cells > cols*rows {
-		r.t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, cells)
-	}
-	var b strings.Builder
-	for i := 0; i < cells; i++ {
-		b.WriteString(cluster)
-	}
-	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + b.String()))
+	r.fillClusters(cluster, mib/len(cluster)+1)
 	return cluster
+}
+
+// fillClusters clears the session pane and writes n copies of cluster.
+func (r *rig) fillClusters(cluster string, n int) {
+	r.t.Helper()
+	if cols, rows := r.paneSize(); n > cols*rows {
+		r.t.Fatalf("a %dx%d pane cannot hold %d clusters", cols, rows, n)
+	}
+	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + strings.Repeat(cluster, n)))
+}
+
+// TestSelectionJustUnderTheCapIsCopied fills the pane with as many clusters
+// as fit in 1 MiB with the row newlines: all of it is copied.
+func TestSelectionJustUnderTheCapIsCopied(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, "")
+	_, rows := r.paneSize()
+	cluster := "a" + strings.Repeat("́", 700)
+	n := (mib - rows) / len(cluster)
+	r.fillClusters(cluster, n)
+	r.dragAll(false)
+	if len(r.m.sel.text) <= mib-len(cluster) || len(r.m.sel.text) > mib {
+		t.Fatalf("copied %d bytes, want just under %d", len(r.m.sel.text), mib)
+	}
 }
 
 // dragAll selects the whole pane and fails the test unless that copied
@@ -368,6 +405,29 @@ func TestSessionMouseGoesToTheSessionAndSelectsNothing(t *testing.T) {
 	wantCopy(t, r.dragPane(1, 0, 5, 1), "ello world\nsecond")
 	if len(r.sink.mouse) != 3 {
 		t.Fatal("the selection reached the session")
+	}
+}
+
+// TestSessionTakingTheMouseEndsADrag starts a drag in session focus before
+// the session asks for the mouse: once it asks, the next event goes to the
+// session, the drag ends and the release copies nothing.
+func TestSessionTakingTheMouseEndsADrag(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	r.focusSession()
+	x0, y0 := r.win(0, 0)
+	x1, y1 := r.win(4, 1)
+	r.mouse(tea.MouseClickMsg{X: x0, Y: y0, Button: tea.MouseLeft})
+	r.mouse(tea.MouseMotionMsg{X: x1, Y: y1, Button: tea.MouseLeft})
+	r.m.rep.pane.Write([]byte("\x1b[?1002h"))
+	r.mouse(tea.MouseMotionMsg{X: x1 + 1, Y: y1, Button: tea.MouseLeft})
+	if r.m.sel.drag || r.m.sel.shown() {
+		t.Fatalf("the session took the mouse and the drag went on: %+v", r.m.sel)
+	}
+	if msg := r.mouse(tea.MouseReleaseMsg{X: x1 + 1, Y: y1, Button: tea.MouseLeft}); msg != nil {
+		t.Fatalf("the release copied %#v", msg)
+	}
+	if len(r.sink.mouse) != 2 {
+		t.Fatalf("%d mouse events reached the session, want the motion and the release", len(r.sink.mouse))
 	}
 }
 
@@ -490,6 +550,28 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	}
 	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + selText))
 	clears("a replay", func() { r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}) })
+}
+
+// TestSelectionIsCheckedWhenAHeldFrameTimesOut changes the selected text
+// inside a synchronized update that never ends: the pane shows the held
+// frame, so the selection stays until the frame stops being shown, and then
+// the hold timer's message alone clears it.
+func TestSelectionIsCheckedWhenAHeldFrameTimesOut(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.rep.pane.Write([]byte("\x1b[?2026h\x1b[1;1Hjello"))
+	deadline, ok := r.m.rep.pane.HoldDeadline()
+	if !ok {
+		t.Fatal("the pane holds no frame")
+	}
+	r.m.Update(holdMsg{at: deadline.Add(-time.Millisecond)})
+	if !r.m.sel.shown() {
+		t.Fatal("the held frame's text was taken for a change")
+	}
+	r.m.Update(holdMsg{at: deadline})
+	if r.m.sel.shown() {
+		t.Fatal("the end of the held frame kept the selection")
+	}
 }
 
 // TestDragIsClearedByOutputUnderIt checks a drag whose release has not
