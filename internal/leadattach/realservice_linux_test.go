@@ -185,8 +185,11 @@ func (h *realHolder) waitRX(want string) {
 // with the session.
 func TestTheClientAgainstTheRealHolderService(t *testing.T) {
 	leakCheck(t)
-	// DECCKM (1) is set before the agent reads.
-	h := newRealHolder(t, "raw; mode 1; say READY; echo; wait")
+	// DECCKM (1) and a mouse mode are set before the agent reads. The holder
+	// reports the modes in a Modes frame at a quiet point, after the output
+	// that set them, so the test waits for the mouse mode in the status
+	// before it types.
+	h := newRealHolder(t, "raw; mode 1 mouse1000; say READY; echo; wait")
 	pane := sessionpane.New(80, 24, sessionpane.Options{})
 	t.Cleanup(pane.Close)
 	wake := make(chan struct{}, 1)
@@ -226,7 +229,7 @@ func TestTheClientAgainstTheRealHolderService(t *testing.T) {
 	}
 
 	st := until("attached with the agent's screen", func(st terminalconsole.LiveStatus) bool {
-		return st.Conn == terminalconsole.LiveAttached && strings.Contains(paneText(pane), "READY")
+		return st.Conn == terminalconsole.LiveAttached && st.Modes.Mouse != 0 && strings.Contains(paneText(pane), "READY")
 	})
 	if st.Role != terminalconsole.LiveWriter || st.Lead != "proj-lead" || st.Runtime != "fake" || st.Epoch != realEpoch {
 		t.Errorf("status %+v", st)
