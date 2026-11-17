@@ -16,10 +16,19 @@
 // The command runs in its own process group. When the time limit passes, the
 // context ends, standard output grows past its cap, or the watchdog returns an
 // error, the whole group gets SIGKILL. [Run] returns only after the command
-// has been reaped. It does not wait for a grandchild that still holds a pipe:
-// the group is killed first, and a short, fixed wait for the pipes follows.
-// When the command ends by itself, the rest of its group is killed too, so a
-// background process cannot outlive the run.
+// has been reaped. It does not wait for a grandchild that still holds a pipe,
+// nor for the caller's reader and writer: the group is killed first, and a
+// fixed wait of two seconds for the pipes follows, so Run returns within
+// [Cmd.Timeout] plus two seconds in every case. When the command ends by
+// itself, the rest of its group is killed too, so a background process cannot
+// outlive the run.
+//
+// The package makes the pipes itself and copies in goroutines of its own. A
+// [Cmd.Stdin] that is not an *os.File and a [Cmd.Stdout] are caller code. If
+// their Read or Write blocks for ever, that goroutine cannot be stopped: it
+// is left behind, blocked in the caller's Read or Write, until the call
+// returns. Run does not wait for it, and the [Result] holds what was copied
+// so far.
 //
 // The error says which bound stopped the command: [ErrTimeout],
 // [ErrOutputLimit], a [*WatchError], or the context's error. The [Result]

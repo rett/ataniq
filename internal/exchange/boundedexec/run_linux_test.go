@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -570,5 +571,181 @@ func TestWatchdogCallRunningAtTheExitCannotWin(t *testing.T) {
 	}
 	if res.Exit != 0 {
 		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+}
+
+// within runs Run in a goroutine and fails the test if it has not returned
+// after limit. A Run that hangs is left behind; the test still ends.
+func within(t *testing.T, limit time.Duration, c Cmd) (Result, error, time.Duration) {
+	t.Helper()
+	type outcome struct {
+		res Result
+		err error
+	}
+	ch := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		res, err := Run(context.Background(), c)
+		ch <- outcome{res, err}
+	}()
+	select {
+	case o := <-ch:
+		return o.res, o.err, time.Since(start)
+	case <-time.After(limit):
+		t.Fatalf("Run had not returned after %v (Timeout %v)", limit, c.Timeout)
+		return Result{}, nil, 0
+	}
+}
+
+// hardLimit is far past Timeout plus the pipe wait; only a hang reaches it.
+const hardLimit = 8 * time.Second
+
+// blockingReader blocks in Read until release is closed, then reports EOF.
+type blockingReader struct{ release chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+// blockingSink blocks in Write until release is closed.
+type blockingSink struct {
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingSink) Write(p []byte) (int, error) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return len(p), nil
+}
+
+func newBlockingSink(t *testing.T) *blockingSink {
+	b := &blockingSink{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	t.Cleanup(func() { close(b.release) })
+	return b
+}
+
+func TestBlockedStdinDoesNotHoldRunPastTheTimeout(t *testing.T) {
+	t.Parallel()
+	rel := make(chan struct{})
+	t.Cleanup(func() { close(rel) })
+	c := script("echo up; sleep 30")
+	c.Stdin = blockingReader{rel}
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v", took)
+	}
+	if string(res.Stdout) != "up\n" || res.Exit != -1 {
+		t.Errorf("Result = %+v", res)
+	}
+}
+
+func TestBlockedStdinDoesNotHoldRunAfterAnOrdinaryExit(t *testing.T) {
+	t.Parallel()
+	rel := make(chan struct{})
+	t.Cleanup(func() { close(rel) })
+	c := script("echo hello")
+	c.Stdin = blockingReader{rel}
+	res, err, took := within(t, hardLimit, c)
+	if err != nil || string(res.Stdout) != "hello\n" {
+		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+	if took > time.Second {
+		t.Errorf("Run took %v for a command that ended at once", took)
+	}
+}
+
+func TestStdinFromAnIOPipeThatNeverEnds(t *testing.T) {
+	t.Parallel()
+	// An io.Pipe whose writer never writes or closes: the usual way a
+	// producer goes missing.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	c := script("sleep 30")
+	c.Stdin = pr
+	c.Timeout = 200 * time.Millisecond
+	_, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) || took > c.Timeout+pipeWait+time.Second {
+		t.Fatalf("err %v after %v", err, took)
+	}
+}
+
+func TestBlockedStdoutSinkDoesNotHoldRunPastTheTimeout(t *testing.T) {
+	t.Parallel()
+	sink := newBlockingSink(t)
+	c := script("echo x; sleep 30")
+	c.Stdout = sink
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v", took)
+	}
+	if len(res.Stdout) != 0 || res.Exit != -1 {
+		t.Errorf("Result = %+v", res)
+	}
+	select {
+	case <-sink.entered:
+	default:
+		t.Error("the sink was never written to")
+	}
+}
+
+func TestBlockedStdoutSinkAfterAnOrdinaryExitIsPipeHeld(t *testing.T) {
+	t.Parallel()
+	sink := newBlockingSink(t)
+	c := script("echo x")
+	c.Stdout = sink
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+}
+
+func TestCommandEndsWhenTheStdinFeedStopsReading(t *testing.T) {
+	t.Parallel()
+	// The command never reads its input and ends; a large input must not
+	// keep Run waiting for the feed.
+	c := script("echo done")
+	c.Stdin = strings.NewReader(strings.Repeat("z", 1<<20))
+	res, err, took := within(t, hardLimit, c)
+	if err != nil || string(res.Stdout) != "done\n" || took > 2*time.Second {
+		t.Fatalf("%q, %v after %v", res.Stdout, err, took)
+	}
+}
+
+func TestStdinFileIsHandedOn(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("from file\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := script("read x; echo \"$x\"")
+	c.Stdin = f
+	res, err := Run(context.Background(), c)
+	if err != nil || string(res.Stdout) != "from file\n" {
+		t.Fatalf("%q, %v", res.Stdout, err)
 	}
 }

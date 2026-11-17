@@ -33,14 +33,32 @@ type Cmd struct {
 	Env []string
 	// Dir is the working folder. Empty means "/". Otherwise it is absolute.
 	Dir string
-	// Stdin is the standard input. Nil means no input (/dev/null).
+	// Stdin is the standard input. Nil means no input (/dev/null). An
+	// *os.File is handed to the command as it is. Any other reader is copied
+	// to the command in a goroutine of Run's own, and Run never waits for
+	// that goroutine. If Read blocks (an io.Pipe that nobody writes to or
+	// closes), the goroutine is left behind, blocked in the caller's Read,
+	// until Read returns; Run still returns in time.
 	Stdin io.Reader
 	// Stdout, when set, receives standard output as it arrives, and
 	// Result.Stdout stays empty. MaxStdout still counts the bytes and stops
 	// the command. If a write to Stdout fails, the command is stopped and
 	// Run returns that error.
+	//
+	// Run copies from the command's pipe to Stdout in a goroutine of its own
+	// and, after the command has ended, waits for it only for a fixed two
+	// seconds. If Write blocks past that, Run gives up on the goroutine and
+	// returns; the goroutine is left behind, blocked in the caller's Write,
+	// until Write returns. Result then holds what was copied so far (the
+	// sink has the bytes written to it; Result.Stdout is empty). When the
+	// command had not been stopped, Run returns ErrPipeHeld. Because that
+	// Write can still be running after Run has returned, the writer must be
+	// safe to use then, and the caller must not treat it as idle.
 	Stdout io.Writer
 	// Timeout is how long the command may run. It is required and positive.
+	// Run returns within Timeout plus the fixed two-second wait for the
+	// pipes described at Stdout and ErrPipeHeld, whatever the command, its
+	// descendants, Stdin and Stdout do.
 	Timeout time.Duration
 	// MaxStdout is how many bytes of standard output are accepted. It is
 	// required and positive. Output of exactly this size is accepted; one
@@ -63,7 +81,8 @@ type Cmd struct {
 }
 
 // Result is what a run produced. It is filled in even when Run returns an
-// error.
+// error. When Run gave up waiting for the pipes, it holds what was copied
+// until then.
 type Result struct {
 	// Stdout is the standard output read, up to MaxStdout bytes. It is empty
 	// when Cmd.Stdout was set.
@@ -84,8 +103,13 @@ var (
 	// ErrOutputLimit means the command wrote more than Cmd.MaxStdout bytes of
 	// standard output and was killed.
 	ErrOutputLimit = errors.New("boundedexec: standard output limit reached")
-	// ErrPipeHeld means the command ended but a process outside its group
-	// still held an output pipe, so the output may be incomplete.
+	// ErrPipeHeld means the command ended by itself with status 0, but its
+	// output was not fully read within the two-second wait for the pipes.
+	// Either a process outside its group (one that called setsid) still held
+	// an output pipe, or Cmd.Stdout did not return from Write. The output may
+	// be incomplete. The Result then has Exit 0, so a zero exit alone does
+	// not mean a clean run. A stop or a non-zero exit is reported by its own
+	// error instead.
 	ErrPipeHeld = errors.New("boundedexec: an output pipe was still held after the command ended")
 	// ErrUnsupported is returned on systems other than Linux.
 	ErrUnsupported = errors.New("boundedexec: unsupported on this system")
@@ -262,6 +286,9 @@ type stdoutWriter struct {
 	dead bool
 }
 
+// Write is called by one goroutine only, the one that copies the pipe. It
+// holds mu while it writes to the sink, which can block for ever, so nothing
+// else may take mu when a sink is set; see bytes.
 func (w *stdoutWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -296,7 +323,12 @@ func (w *stdoutWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// bytes returns what was kept. It never waits for a Write that is stuck in the
+// sink: with a sink nothing is kept, and sink does not change.
 func (w *stdoutWriter) bytes() []byte {
+	if w.sink != nil {
+		return nil
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]byte(nil), w.buf...)
