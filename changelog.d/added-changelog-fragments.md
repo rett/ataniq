@@ -5,7 +5,9 @@
   changelog-fold`) folds the fragments into `[Unreleased]` under their
   headings in the Keep a Changelog order, each section's fragments sorted by
   name, and removes them; it refuses an unknown section or a malformed
-  fragment without changing anything, is safe to repeat, and `--dry-run`
-  reports without changing. `make changelog-check` fails while any fragment is
-  left, and the release branch's first commit folds them before it dates the
-  changelog. Entries already in `CHANGELOG.md` stay where they are.
+  fragment (including one with Windows line ends) without changing anything,
+  replaces `CHANGELOG.md` in one rename so an interrupted run leaves it
+  intact, is safe to repeat, and `--dry-run` writes nothing. `make
+  changelog-check` fails while any fragment is left, and the release or hotfix
+  branch folds them before its pull request, where CI runs the check. Entries
+  already in `CHANGELOG.md` stay where they are.
