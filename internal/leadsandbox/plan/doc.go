@@ -43,9 +43,13 @@
 // bubblewrap gets --seccomp FD. The report channel is always present:
 // [Options.ReportPath] is a path the holder made (a FIFO or a file it owns)
 // outside every lead-writable folder, opened --write at [Options.ReportFD],
-// and the probe inside gets --report-fd FD. Whether bubblewrap keeps an
-// inherited descriptor open for its child is a qualification item; every plan
-// says so in a note.
+// and the probe inside gets --report-fd FD. The holder takes one accepted
+// probe line (assert.ReadProbeReport) as the positive signal and does not wait
+// for end-of-file, because bubblewrap's own processes may keep the descriptor
+// open; a second line or any further byte after the line is a failure of the
+// start (assert.CheckNoMore). Whether the descriptor reaches the probe inside,
+// and which other processes hold it, are qualification items; every plan says
+// so in a note.
 //
 // --share-net is there because bubblewrap runs inside the network namespace
 // that pasta made: it does not share the host's network. The probe, not

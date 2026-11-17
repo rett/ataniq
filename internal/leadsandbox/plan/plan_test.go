@@ -660,3 +660,25 @@ func TestVerifyReportsInvalidInputs(t *testing.T) {
 		t.Errorf("nil plan: %v", got)
 	}
 }
+
+// The note about the report channel states the contract of assert: one
+// accepted line is the signal, end-of-file is not awaited, and both
+// descriptor questions are qualification items.
+func TestReportChannelNote(t *testing.T) {
+	in := fixture(profile.Claude)
+	p := mustBuild(t, in, options(in, allPresent(t, in)))
+	var note string
+	for _, n := range p.Notes {
+		if strings.HasPrefix(n, "report channel") {
+			note = n
+		}
+	}
+	for _, want := range []string{
+		"one accepted probe line", "does not wait for end-of-file", "a second line or any further byte",
+		"whether the descriptor reaches the probe inside", "which other processes hold it", "qualification items",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the report channel note does not say %q: %q", want, note)
+		}
+	}
+}

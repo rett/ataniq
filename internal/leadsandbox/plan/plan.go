@@ -567,7 +567,7 @@ func InsideEnvironment(p *Plan) []profile.EnvVar {
 
 // noteReport is the note about the report channel.
 func noteReport(fd int) string {
-	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; whether bubblewrap keeps an inherited descriptor open for its child is a qualification item that nothing here shows", fd, fd)
+	return fmt.Sprintf("report channel: the pass-fds step opens the holder's report path write-only as descriptor %d after pasta, bubblewrap inherits it and the probe inside gets --report-fd %d; the holder takes one accepted probe line as the positive signal and does not wait for end-of-file, because bubblewrap's own processes may keep the descriptor open, and a second line or any further byte after the line is a failure of the start; whether the descriptor reaches the probe inside and which other processes hold it are qualification items that nothing here shows", fd, fd)
 }
 
 func notes(in profile.Inputs, opt Options, workDir string, left []string) []string {
