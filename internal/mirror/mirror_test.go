@@ -458,9 +458,16 @@ func TestOpenPathRefusals(t *testing.T) {
 		t.Errorf("Open(moved) = %v", err)
 	}
 	// Paths that are not a place for a mirror at all.
-	for _, p := range []string{"", "x.git", moved + "/", filepath.Join(state, "a b.git"), "/"} {
-		if _, err := Open(ctx, g, p); err == nil {
-			t.Errorf("Open(%q) succeeded", p)
+	for _, p := range []string{
+		"", "x.git", moved + "/", filepath.Join(state, "a b.git"), "/",
+		// The last element is not <project>.git, or the project is not valid.
+		filepath.Join(state, "proj"), filepath.Join(state, "proj.git.bak"),
+		filepath.Join(state, ".git"), filepath.Join(state, "Proj.git"),
+		filepath.Join(state, "-p.git"), filepath.Join(state, "a..git"),
+		filepath.Join(state, "a.b.git"),
+	} {
+		if _, err := Open(ctx, g, p); !errors.Is(err, ErrNotMirror) {
+			t.Errorf("Open(%q) = %v, want ErrNotMirror", p, err)
 		}
 	}
 }

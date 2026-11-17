@@ -196,6 +196,8 @@ func populate(ctx context.Context, git gitenv.Git, path, project string, lim Lim
 
 // Open checks the mirror at path and returns it. It refuses, with an error
 // that matches [ErrNotMirror] and says why:
+//   - a path that is not absolute and clean, or whose last element is not
+//     <project>.git with a valid project name;
 //   - a path that is a symlink, or not a folder, or missing;
 //   - a folder that does not belong to the calling user, or that group or
 //     others can write;
@@ -221,7 +223,8 @@ func populate(ctx context.Context, git gitenv.Git, path, project string, lim Lim
 func Open(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mirror, error) {
 	project, err := projectOf(path)
 	if err != nil {
-		return nil, err
+		// A path that cannot name a mirror is not a mirror.
+		return nil, fmt.Errorf("%w: %w", ErrNotMirror, err)
 	}
 	lim, err := applyOptions(opts)
 	if err != nil {
