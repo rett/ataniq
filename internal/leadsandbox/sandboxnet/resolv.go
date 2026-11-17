@@ -44,8 +44,10 @@ const (
 	// MaxNameservers that remain are kept.
 	MaxNameservers = 3
 
-	// MaxSearchDomains and MaxSearchBytes are the resolver's limits on the
-	// search list: at most six domains in at most 256 bytes.
+	// MaxSearchDomains and MaxSearchBytes bound the search list: at most six
+	// domains in at most 256 bytes. They are bounds chosen here, after the
+	// historical resolver limits (MAXDNSRCH and its 256 bytes), which current
+	// resolvers no longer apply.
 	MaxSearchDomains = 6
 	MaxSearchBytes   = 256
 
@@ -381,7 +383,7 @@ func (p *parsed) searchLine(n int, keyword string, args []string) {
 			return
 		}
 		if len(kept) >= MaxSearchDomains || size+len(d)+1 > MaxSearchBytes {
-			p.note("line %d: search list cut at %d domain(s), as the resolver does", n, len(kept))
+			p.note("line %d: search list cut at %d domain(s)", n, len(kept))
 			break
 		}
 		kept = append(kept, d)
