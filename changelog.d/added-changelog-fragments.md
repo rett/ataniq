@@ -14,5 +14,5 @@
   `qargi release start VERSION`, then `make changelog-fold ARGS='--into
   VERSION'` as the first fix commit on the release branch, then `make
   changelog-check`, then `qargi release push`; a hotfix does the same before
-  its pull request, and CI runs the check on both. Entries already in
-  `CHANGELOG.md` stay where they are.
+  its pull request, and CI runs the check on both and on manual runs of those
+  branches. Entries already in `CHANGELOG.md` stay where they are.
