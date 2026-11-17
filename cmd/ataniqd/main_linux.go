@@ -83,11 +83,19 @@ func newApp(args []string) *app {
 func (a *app) systemdManager(context.Context) (leadunit.Manager, error) {
 	m, err := systemdmgr.New(systemdmgr.Options{})
 	if err != nil {
-		fmt.Fprintf(a.stderr, "ataniqd: the systemd tools are unavailable (%s); the reconcile will be shown as not completed\n",
-			leaddaemon.SafeText(err.Error()))
-		return leaddaemon.UnavailableManager(err), nil
+		return a.unavailable(err), nil
 	}
 	return m, nil
+}
+
+// unavailable is the manager of a daemon that cannot ask systemd: it says so
+// on standard error and answers every call with an error. The daemon shows its
+// reconcile as not completed for such a manager whatever the registry holds,
+// also an empty one, so what the line says is true in every case.
+func (a *app) unavailable(cause error) leadunit.Manager {
+	fmt.Fprintf(a.stderr, "ataniqd: the systemd tools are unavailable (%s); the reconcile will be shown as not completed\n",
+		leaddaemon.SafeText(cause.Error()))
+	return leaddaemon.UnavailableManager(cause)
 }
 
 func (a *app) run(args []string) int {

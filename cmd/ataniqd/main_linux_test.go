@@ -316,6 +316,37 @@ func TestStatusJSONFlag(t *testing.T) {
 	}
 }
 
+// TestUnavailableLineIsTrueForAnEmptyRegistry: the line the command prints
+// when the systemd tools are missing says the reconcile will be shown as not
+// completed, and it is, also when the registry holds no role to ask about.
+func TestUnavailableLineIsTrueForAnEmptyRegistry(t *testing.T) {
+	base := shortDir(t)
+	args := []string{"--state-dir", base + "/s", "--runtime-dir", base + "/r"}
+	ta := newTestApp(t, nil)
+	ta.newManager = func(context.Context) (leadunit.Manager, error) {
+		return ta.unavailable(errors.New("no busctl")), nil
+	}
+	done := startApp(t, ta, args, base+"/r/daemon.sock")
+	if got := ta.err.String(); !strings.Contains(got, "the systemd tools are unavailable (no busctl); the reconcile will be shown as not completed\n") {
+		t.Fatalf("standard error:\n%s", got)
+	}
+	st := newTestApp(t, nil)
+	if code := st.run([]string{"status", "--socket", base + "/r/daemon.sock", "--json"}); code != 0 {
+		t.Fatalf("status: %d %q", code, st.err.String())
+	}
+	var res clientapi.StatusResult
+	if err := json.Unmarshal(st.out.Bytes(), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, st.out.String())
+	}
+	if len(res.Leads) != 0 || res.Daemon.LastReconcileCompleted {
+		t.Fatalf("the registry is empty and the reconcile is shown as completed: %+v", res)
+	}
+	ta.signals <- syscall.SIGINT
+	if code := <-done; code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+}
+
 func TestStatusWithNoDaemonExits20(t *testing.T) {
 	base := shortDir(t)
 	ta := newTestApp(t, nil)
