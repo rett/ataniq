@@ -44,6 +44,12 @@
 // supported, and the code that writes them has no such notion; a reader
 // draws conclusions from the facts.
 //
+// For rule G1 (case G1, which is not in the design's table) summary.json lists
+// every bind source of the plan with the fact from the check without following
+// links (no component of its path is a symbolic link), and the fact from
+// [plan.Verify] that no source lies in or below a read-write source. A fact the
+// run did not ask is absent, and the case's result for it is not-checked.
+//
 // The harness never judges the probe's report: the report's own statuses are
 // the record. A failed or refused report, a report that never comes and a
 // process that exits first are each recorded as such, and the run goes on to

@@ -205,7 +205,7 @@ example for a claude lead:
     "cols": 80
   },
   "time_limit_seconds": 120,
-  "cases": ["S1", "S2", "S3", "S4", "S7", "S11"]
+  "cases": ["S1", "S2", "S3", "S4", "S7", "S11", "G1"]
 }
 ```
 
@@ -228,7 +228,7 @@ managed-settings file with it and refuses a difference.
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
 | `terminal` | `term` (required), optional `colorterm`, `lang`, `tz`, and the size of the pseudo-terminal (`rows`, `cols`). These are the values the profile's environment takes from a terminal. |
 | `time_limit_seconds` | 1 to 3600. Bounds the wait for the report line and the wait for the exit, counted from the launch. |
-| `cases` | The automated cases to record, from `S1`, `S2`, `S3`, `S4`, `S7`, `S11`. |
+| `cases` | The automated cases to record, from `S1`, `S2`, `S3`, `S4`, `S7`, `S11`, `G1`. |
 
 The harness passes the launcher an empty environment: no variable of the
 caller's environment reaches pasta, bubblewrap or the probe, and the environment
@@ -298,7 +298,7 @@ the terminal output. Do not copy it into a repository.
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
 | `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
-| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, and the requested cases with the results each speaks to. |
+| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
@@ -329,7 +329,7 @@ A later start does not fill the folder again: it checks it, resolves the
 sources, and opens each source, last of all, with `check-bind-sources`. A row of
 the host whose own name is a link (`/etc/localtime` often is) is checked by its
 real path, because the plan cannot name another and no lead writes the host's
-folders. The check says what the path was at that moment: a lead that could write above a source could change it
+folders; the evidence names it as `checked_path`. The check says what the path was at that moment: a lead that could write above a source could change it
 afterwards, which is why every source and everything above it must be the
 caller's.
 
@@ -363,6 +363,7 @@ tree for example; its output goes to `terminal.log` as display only), or in the 
 | S4 | The probe's resolution of the provider host, and this run's resolv.conf derivation: its source, the nameservers kept and the loopback ones dropped. A derivation refused for lack of any non-loopback server ends the run before a launch, with the reason in the step; that is the second half of S4. |
 | S7 | The sysctl `dev.tty.legacy_tiocsti` as the probe and the harness read it, or the seccomp filter the probe finds loaded. The harness never issues TIOCSTI. |
 | S11 | Through the record interface: no store exists here, so the result is `not-checked` with "no qualification record store to ask". The stale-record start refusal belongs to the holder. |
+| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the path was opened from the root of the file system without following a link and no component of it, the last one included, is a link (`false` with the reason when one is, absent when the check could not say). `checked_path` is set for a row of the host whose own name is a link: the real path was checked. `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
 
 ### Attended cases
 
@@ -388,6 +389,69 @@ record, not a failure of the harness.
 | S18 | From inside, remove the guard hook, add an allow rule and raise the permission mode in the lead's own config; restart. Repeat on an account with server-delivered policy, if one is available. | Whether the managed settings still apply and the guard hook still runs, and any policy source that outranks the file. |
 | S19 | A lead commits each execution-config path of the design's list; run the documented intake up to the sign-off, and a plain pull in an owner checkout. | Which paths were marked, whether anything the lead wrote ran outside a sandbox, and whether the upstream branch moved without the sign-off. |
 | S20 | Run codex with `danger-full-access` and the `untrusted` approval policy inside the sandbox, and ask for a command outside its trusted set. | Whether it prompts, and what the holder would read. |
+
+### Case G1, attended variant
+
+The automated G1 records the facts about the plan's sources. The attended variant
+checks what a lead can do about them from inside, and what the next start then
+does. It needs two runs on the same scratch folders.
+
+1. The coordinator makes a canary under the campaign folder, never in a real
+   owner folder: a folder `g1-canary` with one file `canary` that holds the line
+   `ataniq-g1-canary-text`. It is on the host and is not bound into the sandbox, so
+   a link to it dangles inside; if a bind source were ever followed through a
+   link to it, its text would show inside.
+2. First run, normally (`no_lead_has_run` true), with a scratch command that
+   tries to replace `.git/config`, `.git/hooks`, `.git/info` and `.git` itself in
+   its tree, and the mount points in its config folder, with links to the canary,
+   and prints what each attempt did. The three `.git` entries and the config
+   folder's mount points are bound read-only, so a rename of those is expected to
+   be refused; renaming `.git` itself is allowed (the parent of a mount point
+   may be renamed). What is refused and what is not is a fact to record. This
+   script is an example for the coordinator's configuration, to be adapted to the
+   project and runtime of the scratch folders; nothing in this repository runs it:
+
+   ```sh
+   C=/owned/qualification/campaign/g1-canary
+   try() { if "$@"; then echo "done: $*"; else echo "refused: $*"; fi; }
+   cd /work/qualproj || exit 1
+   for p in .git/config .git/hooks .git/info; do
+     try mv "$p" "$p.old"
+     try ln -s "$C/canary" "$p"
+   done
+   try mv .git .git.old
+   try ln -s "$C" .git
+   cd /home/lead/.claude || exit 1   # codex: /home/lead/.codex, and AGENTS.md
+   for p in skills CLAUDE.md; do     # the mount points of the config folder
+     try mv "$p" "$p.old"
+     try ln -s "$C/canary" "$p"
+   done
+   ```
+
+   It goes into the configuration as `"scratch_command": ["/bin/sh", "-c", "<the script>"]`.
+3. Second run, on the same scratch folders, with a scratch command that looks for
+   the canary's text under the places the first run tried, and with
+   `"no_lead_has_run": false` (the lead has run: nothing is made, the folders are
+   only checked):
+
+   ```sh
+   if grep -rs ataniq-g1-canary-text /work/qualproj/.git /home/lead/.claude; then
+     echo canary-visible
+   else
+     echo canary-not-visible
+   fi
+   ```
+
+Record, for each run: the attempt name, the plan digest, the terminal output
+(`cat -v terminal.log`), the steps of `summary.json`, and what the lead's tree and
+config folder hold on the host afterwards (`ls -la`, never following the links).
+For the second run, record which of two things happened: the start proceeded and
+the canary's text was not visible inside; or the start was refused, at which step
+(`own-clone`, `check` and `check-bind-sources` are the ones that can refuse it)
+and with what reason. A start that proceeds with the canary's text visible
+inside is a finding against rule G1. A refusal is not a failure of the harness: a
+link where the tree's `.git` should be is not a clone, and the check of the mount
+points refuses a link at a mount point.
 
 ### The R17 note for S8
 

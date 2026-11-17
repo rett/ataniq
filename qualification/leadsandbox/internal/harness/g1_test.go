@@ -456,3 +456,232 @@ func stripAttempt(o *harness.Outcome) []string {
 	}
 	return out
 }
+
+func g1Case(o *harness.Outcome) (harness.CaseEvidence, bool) {
+	for _, c := range o.Summary.Cases {
+		if c.Case == "G1" {
+			return c, true
+		}
+	}
+	return harness.CaseEvidence{}, false
+}
+
+func g1Status(t *testing.T, o *harness.Outcome, id string) assert.Status {
+	t.Helper()
+	c, ok := g1Case(o)
+	if !ok {
+		t.Fatal("the summary has no case G1")
+	}
+	for _, r := range c.Results {
+		if r.ID == id {
+			return r.Status
+		}
+	}
+	t.Fatalf("case G1 has no result %s: %+v", id, c)
+	return ""
+}
+
+// The evidence of an attempt names every bind source of the plan, with the fact
+// from the check and the fact from the verifier, and the case G1 reads them.
+func TestEvidenceHasTheFactOfEveryBindSource(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var sum harness.Summary
+	readJSON(t, r.out.Dir+"/summary.json", &sum)
+	ev := sum.BindSources
+	if !ev.LinksChecked || ev.NoSourceInReadWriteSource == nil || !*ev.NoSourceInReadWriteSource {
+		t.Fatalf("bind_sources: %+v", ev)
+	}
+	want := map[string]string{}
+	for _, m := range r.out.Plan.Mounts {
+		if m.Source != "" {
+			want[m.Inside] = m.Source
+		}
+	}
+	if len(ev.Sources) != len(want) {
+		t.Fatalf("%d sources in the evidence, %d in the plan", len(ev.Sources), len(want))
+	}
+	for _, s := range ev.Sources {
+		if want[s.Inside] != s.Source {
+			t.Errorf("%s: source %q, the plan has %q", s.Inside, s.Source, want[s.Inside])
+		}
+		if s.NoSymbolicLinkComponent == nil || !*s.NoSymbolicLinkComponent || s.Problem != "" {
+			t.Errorf("%s: %+v", s.Inside, s)
+		}
+	}
+	for _, id := range []string{"bind-sources-no-symbolic-link", "no-bind-source-in-read-write-source"} {
+		if st := g1Status(t, r.out, id); st != assert.StatusOK {
+			t.Errorf("G1 %s is %s", id, st)
+		}
+	}
+	// The raw file carries the key.
+	data, err := os.ReadFile(r.out.Dir + "/summary.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"no_symbolic_link_component": true`, `"no_source_in_read_write_source": true`, `"links_checked": true`} {
+		if !strings.Contains(string(data), k) {
+			t.Errorf("summary.json does not hold %s", k)
+		}
+	}
+}
+
+func TestEvidenceNamesTheRealPathCheckedForAHostRow(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	zone := f.Owned + "/zoneinfo-real"
+	f.Write(zone, "zone", 0o644)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		base := o.Resolver
+		o.Resolver = func(p string) (string, error) {
+			if p == "/etc/localtime" {
+				return zone, nil
+			}
+			return base(p)
+		}
+	})
+	mustNoErr(t, r)
+	found := false
+	for _, s := range r.out.Summary.BindSources.Sources {
+		if s.Inside == "/etc/localtime" {
+			found = true
+			if s.Source != "/etc/localtime" || s.CheckedPath != zone {
+				t.Errorf("fact: %+v", s)
+			}
+		} else if s.CheckedPath != "" {
+			t.Errorf("%s has a checked path %s", s.Inside, s.CheckedPath)
+		}
+	}
+	if !found {
+		t.Error("no fact for /etc/localtime")
+	}
+}
+
+// A link found by the check is the fact for its source: false, with the reason,
+// and the case says failed. The other sources keep their fact.
+func TestEvidenceOfARefusedLaunchHasTheFactFalse(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	_, outside := plantOutside(t, f)
+	src := f.Config.Sources.AssignmentDir
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		base := o.CheckBindSources
+		o.CheckBindSources = func(srcs []string) mountpoints.Report {
+			if err := os.Rename(src, src+".moved"); err != nil {
+				t.Fatal(err)
+			}
+			mustLink(t, outside, src)
+			return base(srcs)
+		}
+	})
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepBindSources, harness.StepFailed)
+	var sum harness.Summary
+	readJSON(t, r.out.Dir+"/summary.json", &sum)
+	bad, good := 0, 0
+	for _, s := range sum.BindSources.Sources {
+		switch {
+		case s.NoSymbolicLinkComponent == nil:
+			t.Errorf("%s has no fact", s.Inside)
+		case *s.NoSymbolicLinkComponent:
+			good++
+		default:
+			bad++
+			if s.Inside != "/ataniq/assignment" || !strings.Contains(s.Problem, "symbolic link") {
+				t.Errorf("fact: %+v", s)
+			}
+		}
+	}
+	if bad != 1 || good != len(sum.BindSources.Sources)-1 {
+		t.Errorf("%d sources with a link, %d without", bad, good)
+	}
+	if st := g1Status(t, r.out, "bind-sources-no-symbolic-link"); st != assert.StatusFailed {
+		t.Errorf("G1 links result is %s", st)
+	}
+}
+
+// Nothing is claimed for a run that never reached the check: the list is empty,
+// the fact is absent and the case says not-checked, with the verifier's fact
+// when the plan was verified.
+func TestEvidenceOfARunThatNeverCheckedClaimsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T) *result
+	}{
+		{"dry run", func(t *testing.T) *result {
+			f := harnesstest.New(t, profile.Claude)
+			f.Config.NoLeadHasRun = true
+			return executeWith(t, f, newFake(nil), false, nil)
+		}},
+		{"recheck failed", func(t *testing.T) *result {
+			f := harnesstest.New(t, profile.Claude)
+			approved(f)
+			assignment := f.Config.Sources.AssignmentDir
+			other := f.Owned + "/assignment-elsewhere"
+			f.Mkdir(other, 0o755)
+			moved := false
+			return execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+				base := o.Resolver
+				o.Resolver = func(p string) (string, error) {
+					if moved && p == assignment {
+						return other, nil
+					}
+					return base(p)
+				}
+				made := o.NewCanary
+				o.NewCanary = func() (*assert.Canary, error) { moved = true; return made() }
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.run(t)
+			mustNoErr(t, r)
+			ev := r.out.Summary.BindSources
+			if ev.LinksChecked || len(ev.Sources) != 0 || ev.Sources == nil {
+				t.Errorf("bind_sources: %+v", ev)
+			}
+			if st := g1Status(t, r.out, "bind-sources-no-symbolic-link"); st != assert.StatusNotChecked {
+				t.Errorf("G1 links result is %s", st)
+			}
+			if ev.NoSourceInReadWriteSource == nil || !*ev.NoSourceInReadWriteSource {
+				t.Errorf("the verifier's fact: %v", ev.NoSourceInReadWriteSource)
+			}
+			if st := g1Status(t, r.out, "no-bind-source-in-read-write-source"); st != assert.StatusOK {
+				t.Errorf("G1 read-write result is %s", st)
+			}
+		})
+	}
+}
+
+// A run that fails before the plan is built has no verifier's fact either.
+func TestEvidenceOfARunWithoutAPlanSaysNotChecked(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	f.Config.CoordinatorReviewed = true // no statement: the check of the mount points fails
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.Summary.BindSources.NoSourceInReadWriteSource != nil {
+		t.Error("a fact without a plan")
+	}
+	for _, id := range []string{"bind-sources-no-symbolic-link", "no-bind-source-in-read-write-source"} {
+		if st := g1Status(t, r.out, id); st != assert.StatusNotChecked {
+			t.Errorf("G1 %s is %s", id, st)
+		}
+	}
+}
+
+func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
+	if !contains(harness.AutomatedCases, "G1") {
+		t.Fatal("G1 is not automated")
+	}
+	f := harnesstest.New(t, profile.Claude)
+	if _, err := harness.ParseConfig(mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G1", "S1"} })); err != nil {
+		t.Errorf("G1 with S1: %v", err)
+	}
+	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G1", "G1"} }), "listed twice")
+	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G2"} }), "not an automated case")
+}

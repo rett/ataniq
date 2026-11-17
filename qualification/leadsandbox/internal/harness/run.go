@@ -186,6 +186,7 @@ type attempt struct {
 	termEv      TerminalEvidence
 	termData    []byte
 	canaryEv    CanaryEvidence
+	bindEv      BindSourcesEvidence
 	files       []string
 	evidenceErr error
 }
@@ -560,7 +561,15 @@ func (a *attempt) buildPlan() error {
 // check fails, so the plan can be read).
 func (a *attempt) verifyPlan() error {
 	var errs []error
-	if probs := plan.Verify(a.pl, a.in, a.planOpt); len(probs) > 0 {
+	probs := plan.Verify(a.pl, a.in, a.planOpt)
+	noWritable := true
+	for _, p := range probs {
+		if p.Kind == plan.ProbLeadWritable {
+			noWritable = false
+		}
+	}
+	a.bindEv.NoSourceInReadWriteSource = &noWritable
+	if len(probs) > 0 {
 		show := probs
 		if len(show) > 5 {
 			show = show[:5]
@@ -713,7 +722,47 @@ func (a *attempt) checkBindSources() error {
 			paths = append(paths, s.Checked)
 		}
 	}
-	return a.opt.CheckBindSources(paths).Err()
+	rep := a.opt.CheckBindSources(paths)
+	a.recordBindSources(srcs, rep)
+	return rep.Err()
+}
+
+// recordBindSources puts the facts of the check into the evidence: each source
+// of the plan, with the problem the check found about its path, or the fact
+// that no component of it is a link. A report that was cut short does not say
+// about the sources it did not reach, so those have no fact.
+func (a *attempt) recordBindSources(srcs []bindSource, rep mountpoints.Report) {
+	byPath := map[string]*mountpoints.Problem{}
+	for _, p := range rep.Problems {
+		if _, ok := byPath[p.Path]; !ok {
+			byPath[p.Path] = p
+		}
+	}
+	a.bindEv.LinksChecked = true
+	a.bindEv.Sources = []BindSourceFact{}
+	for _, s := range srcs {
+		f := BindSourceFact{Inside: s.Inside, Source: s.Source}
+		if s.Checked != s.Source {
+			f.CheckedPath = s.Checked
+		}
+		switch p, bad := byPath[s.Checked]; {
+		case bad:
+			f.Problem = assert.EscapeDetail(p.Error())
+			if errors.Is(p, mountpoints.ErrSymlink) {
+				found := false
+				f.NoSymbolicLinkComponent = &found
+			}
+			// Any other problem (missing, unreadable) says nothing about
+			// links, so no fact is given either way.
+		case rep.Truncated:
+			// The report was cut short: this source may be among the problems
+			// that were not listed.
+		default:
+			none := true
+			f.NoSymbolicLinkComponent = &none
+		}
+		a.bindEv.Sources = append(a.bindEv.Sources, f)
+	}
 }
 
 func (a *attempt) writeEvidenceFile(name string, data []byte) error {
@@ -1012,6 +1061,10 @@ func (a *attempt) summary() Summary {
 	if a.outsideEv != nil {
 		results = append(results, a.outsideEv.Results...)
 	}
-	s.Cases = casesFor(a.cfg.Cases, results)
+	s.BindSources = a.bindEv
+	if s.BindSources.Sources == nil {
+		s.BindSources.Sources = []BindSourceFact{}
+	}
+	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources)})
 	return s
 }

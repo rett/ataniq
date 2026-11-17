@@ -97,7 +97,7 @@ func New(t *testing.T, rt profile.Runtime) *Fixture {
 		ProviderHost:     "api.example.test",
 		Terminal:         harness.Terminal{Term: "xterm-256color", Lang: "C.UTF-8", Rows: 24, Cols: 80},
 		TimeLimitSeconds: 30,
-		Cases:            []string{"S1", "S2", "S3", "S4", "S7", "S11"},
+		Cases:            []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1"},
 	}
 	if rt == profile.Codex {
 		cfg.Sources.ManagedSettingsInside = "/etc/codex/managed-config.toml"

@@ -50,7 +50,7 @@ func TestCasesForListsTheResultsAnAssertionMapsTo(t *testing.T) {
 		{Number: 10, ID: "qualification-record", Status: assert.StatusNotChecked},
 		{Number: 7, ID: "tree-git-readonly", Status: assert.StatusOK},
 	}
-	got := casesFor([]string{"S2", "S11", "S4"}, results)
+	got := casesFor([]string{"S2", "S11", "S4"}, results, nil)
 	if len(got) != 3 || len(got[0].Results) != 2 || got[0].Results[1].Status != assert.StatusFailed {
 		t.Fatalf("S2: %+v", got[0])
 	}

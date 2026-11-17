@@ -54,7 +54,9 @@ func DefaultScratchCommand() []string {
 
 // AutomatedCases are the cases of the design (section 7.3) that the probe and
 // the outside checks speak to. Every other case is attended (see the manual).
-var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11"}
+// G1 is not in the design's table: it is the case of rule G1 (no bind source a
+// sandbox can write, every bind source checked without following links).
+var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1"}
 
 // Config is the configuration file. Nothing in it is discovered or defaulted
 // from the environment or the home folder of the caller: every path is the
