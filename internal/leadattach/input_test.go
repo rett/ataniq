@@ -474,3 +474,44 @@ func TestNoInputBeforeTheFirstSnapshot(t *testing.T) {
 		t.Errorf("after the snapshot: %q", got)
 	}
 }
+
+func TestASizeAskedWhileConnectingIsSentAfterTheFirstSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.h.accept() // the Hello carried 80x24
+	hc.welcome(wire.RoleWriter)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	e.c.Resize(100, 30) // connecting: remembered, nothing to send to yet
+	e.barrier(hc)
+	hc.snapshot() // the holder's size is still 80x24
+	f := hc.next()
+	if f.typ != wire.TypeResize {
+		t.Fatalf("got a %s frame, want resize", wire.TypeName(f.typ))
+	}
+	if sz := enc2(t)(wire.DecodeResize(f.payload)); sz != (wire.Size{Columns: 100, Rows: 30}) {
+		t.Errorf("resize %+v", sz)
+	}
+
+	// The same size as the holder's: nothing is sent. A viewer sends nothing.
+	hc.size(100, 30)
+	e.until("the size", func(st terminalconsole.LiveStatus) bool { return st.Cols == 100 })
+	e.sink.Key(keyA)
+	if got := hc.input(1); got != "a" {
+		t.Errorf("after a size that is already the holder's: %q", got)
+	}
+}
+
+func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 1})
+	hc := e.h.accept()
+	hc.welcome(wire.RoleViewer)
+	e.until("the welcome", func(st terminalconsole.LiveStatus) bool { return st.Lead != "" })
+	e.c.Resize(100, 30)
+	hc.snapshot()
+	e.untilConn(terminalconsole.LiveAttached)
+	e.c.Close()
+	if types := hc.closed(); string(types) != string(wire.TypeDetach) {
+		t.Errorf("frames from a viewer: %q, want only a detach", types)
+	}
+}

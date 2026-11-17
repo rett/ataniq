@@ -364,6 +364,7 @@ func (s *session) snapshot(payload []byte) *outcome {
 		set := c.pane.ModeSet()
 		fallback = ModeSet{DEC: set.DEC, ANSI: set.ANSI}
 	}
+	var resize *wire.Size
 	c.mutate(func() {
 		c.cnt.snapshots++
 		if s.snaps > 1 {
@@ -378,7 +379,15 @@ func (s *session) snapshot(payload []byte) *outcome {
 		if c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveAttached, ""
 		}
+		// A size asked for while connecting was not in the Hello, or the
+		// holder kept another one: as the writer, ask for it now.
+		if s.snaps == 1 && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
+			resize = &wire.Size{Columns: c.wantCols, Rows: c.wantRows}
+		}
 	})
+	if resize != nil {
+		s.cn.q.setResize(*resize)
+	}
 	return nil
 }
 
