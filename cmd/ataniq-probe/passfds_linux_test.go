@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -224,5 +225,127 @@ func TestOpenFilesClosesWhatItOpenedOnError(t *testing.T) {
 			t.Errorf("descriptor %d is not close-on-exec before placement", o.fd)
 		}
 		unix.Close(o.fd)
+	}
+}
+
+// TestPassFDsRefusesTheRuntimesDescriptors starts the probe with a standard
+// stream that is non-blocking, as a pipe or a terminal that another process
+// set non-blocking is: the os package then registers it with the poller before
+// main runs, and the poller holds descriptors 3 and 4. Placing a file over one
+// of them would let the runtime use it before the execve.
+func TestPassFDsRefusesTheRuntimesDescriptors(t *testing.T) {
+	f := newPassFixture(t)
+	for _, c := range []struct {
+		name     string
+		nonblock []int
+		opts     []string
+		refused  bool
+	}{
+		{"stdin, 3 and 4", []int{0}, []string{"--read", "3=" + f.a, "--write", "4=" + f.b}, true},
+		{"stdin, 4 only", []int{0}, []string{"--write", "4=" + f.b}, true},
+		{"stdin, 3 only", []int{0}, []string{"--read", "3=" + f.a}, true},
+		{"stderr, 3 and 4", []int{2}, []string{"--read", "3=" + f.a, "--write", "4=" + f.b}, true},
+		{"stdout and stderr, 3", []int{1, 2}, []string{"--read", "3=" + f.a}, true},
+		{"stdin, a number the runtime does not hold", []int{0}, []string{"--read", "7=" + f.a, "--write", "9=" + f.b}, false},
+		{"stdin, no files", []int{0}, nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before, _ := os.ReadFile(f.b)
+			r := startPass(t, runOpts{mode: modeFake, nonblock: c.nonblock}, c.opts...)
+			code := r.wait()
+			if !c.refused {
+				if code != 0 {
+					t.Fatalf("exit %d: %s", code, r.stderr)
+				}
+				// (The command is a Go program too, and its own runtime
+				// holds descriptors 3 and 4: only the files are looked at.)
+				a := r.agent()
+				for _, w := range c.opts {
+					if num, path, ok := strings.Cut(w, "="); ok {
+						n, _ := strconv.Atoi(num)
+						if got, found := fdByNumber(a, n); !found || got.Link != path {
+							t.Errorf("descriptor %d: %+v, want %s", n, a.FDs, path)
+						}
+					}
+				}
+				os.WriteFile(f.b, before, 0o600)
+				return
+			}
+			if code != exitSetup {
+				t.Errorf("exit %d, want %d (stderr %s)", code, exitSetup, r.stderr)
+			}
+			oneLine(t, r.stderr.String())
+			if !strings.HasPrefix(r.stderr.String(), "ataniq-probe: pass-fds: descriptor ") || !strings.Contains(r.stderr.String(), "Go runtime") {
+				t.Errorf("stderr %q", r.stderr)
+			}
+			r.noAgent()
+			if after, _ := os.ReadFile(f.b); string(after) != string(before) {
+				t.Errorf("b.txt was %q, now %q", before, after)
+			}
+		})
+	}
+}
+
+// TestPassFDsRuntimeNumbersAreOnlyRefusedWhenTheRuntimeHoldsThem checks the
+// other side: with every standard stream blocking, the same numbers are the
+// caller's, and an inherited descriptor there is replaced.
+func TestPassFDsRuntimeNumbersAreOnlyRefusedWhenTheRuntimeHoldsThem(t *testing.T) {
+	f := newPassFixture(t)
+	r := startPass(t, runOpts{mode: modeFake, leak: 2}, "--read", "3="+f.a, "--write", "4="+f.b)
+	if code := r.wait(); code != 0 {
+		t.Fatalf("exit %d: %s", code, r.stderr)
+	}
+	a := r.agent()
+	if g3, ok3 := fdByNumber(a, 3); !ok3 || g3.Link != f.a {
+		t.Errorf("descriptor 3: %+v", a.FDs)
+	}
+	if g4, ok4 := fdByNumber(a, 4); !ok4 || g4.Link != f.b {
+		t.Errorf("descriptor 4: %+v", a.FDs)
+	}
+	os.WriteFile(f.b, []byte("beta"), 0o600)
+}
+
+func TestRuntimeOwned(t *testing.T) {
+	ep, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(ep)
+	ev, err := unix.Eventfd(0, unix.EFD_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(ev)
+	f := newPassFixture(t)
+	reg, err := unix.Open(f.a, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(reg)
+	var p [2]int
+	if err := unix.Pipe2(p[:], unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(p[0])
+	defer unix.Close(p[1])
+	closed, err := unix.Open(f.a, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(closed)
+	for _, c := range []struct {
+		name string
+		fd   int
+		want bool
+	}{
+		{"an eventpoll", ep, true},
+		{"an eventfd", ev, true},
+		{"a regular file", reg, false},
+		{"a pipe", p[0], false},
+		{"a descriptor that is not open", closed, false},
+	} {
+		if got := runtimeOwned(c.fd); got != c.want {
+			t.Errorf("%s (descriptor %d): %v, want %v", c.name, c.fd, got, c.want)
+		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,6 +33,14 @@ const (
 	// without "=" included.
 	modeRawEnv = "rawenv"
 	rawEnvVar  = "ATANIQ_PROBE_TEST_RAWENV"
+	// modeNonblock sets O_NONBLOCK on the standard streams that nonblockVar
+	// lists (comma separated numbers) and executes the test binary again in
+	// the mode of nextVar, so that the Go runtime of the second program
+	// starts with a non-blocking standard stream, as a terminal or a pipe
+	// that another process set non-blocking gives it.
+	modeNonblock = "nonblock"
+	nonblockVar  = "ATANIQ_PROBE_TEST_NONBLOCK"
+	nextVar      = "ATANIQ_PROBE_TEST_NEXT"
 )
 
 // testSpec is a valid spec of invented paths. For the fake system it is
@@ -277,6 +286,25 @@ func TestMain(m *testing.M) {
 	}
 	if mode == modeRawEnv {
 		env := strings.Split(os.Getenv(rawEnvVar), "\x1f")
+		exe, err := os.Executable()
+		if err == nil {
+			err = unix.Exec(exe, os.Args, env)
+		}
+		fmt.Fprintln(os.Stderr, "test wrapper:", err)
+		os.Exit(120)
+	}
+	if mode == modeNonblock {
+		for _, n := range strings.Split(os.Getenv(nonblockVar), ",") {
+			fd, err := strconv.Atoi(n)
+			if err == nil {
+				err = unix.SetNonblock(fd, true)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "test wrapper:", err)
+				os.Exit(120)
+			}
+		}
+		env := []string{modeEnv + "=" + os.Getenv(nextVar), "FOO=bar", "EMPTY="}
 		exe, err := os.Executable()
 		if err == nil {
 			err = unix.Exec(exe, os.Args, env)

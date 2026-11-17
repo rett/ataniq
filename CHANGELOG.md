@@ -92,7 +92,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   FIFOs, never created or truncated, links not followed), places each at exactly
   its number, makes every other descriptor above 2 close-on-exec and executes
   the command with the environment as Go reads it, as above; any error is exit
-  98 and nothing is executed.
+  98 and nothing is executed. Both modes refuse (exit 98, one line) a number
+  that is one of the Go runtime's own descriptors, which it holds when a
+  standard stream was non-blocking at start: a target number in the
+  pass-through mode, the report descriptor in the inside mode.
 
 ### Changed
 

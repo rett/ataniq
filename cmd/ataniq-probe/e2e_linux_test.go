@@ -39,13 +39,14 @@ func testExe(t *testing.T) string {
 
 // runOpts says how a test starts the probe.
 type runOpts struct {
-	mode    string   // modeFake or modeReal
-	tty     *os.File // the slave side of a PTY as descriptors 0 to 2; nil: /dev/null and buffers
-	setpgid bool     // the probe leads its process group
-	leak    int      // inherited extra descriptors from 4 up (descriptor 3 is the report pipe)
-	exit    int      // the agent's exit status
-	hold    bool     // the agent waits for a byte on descriptor 0 after READY
-	rawEnv  []string // when set, the probe is executed with exactly these entries, after baseEnv's (see modeRawEnv)
+	mode     string   // modeFake or modeReal
+	tty      *os.File // the slave side of a PTY as descriptors 0 to 2; nil: /dev/null and buffers
+	setpgid  bool     // the probe leads its process group
+	leak     int      // inherited extra descriptors from 4 up (descriptor 3 is the report pipe)
+	exit     int      // the agent's exit status
+	hold     bool     // the agent waits for a byte on descriptor 0 after READY
+	nonblock []int    // standard streams that are non-blocking when the probe starts (see modeNonblock)
+	rawEnv   []string // when set, the probe is executed with exactly these entries, after baseEnv's (see modeRawEnv)
 }
 
 // probeRun is a started probe.
@@ -84,6 +85,13 @@ func start(t *testing.T, o runOpts, args []string, out string, withReport bool) 
 		// the probe with the block as it is.
 		cmd.Env = []string{modeEnv + "=" + modeRawEnv, rawEnvVar + "=" + strings.Join(append(baseEnv(o.mode), o.rawEnv...), "\x1f")}
 	}
+	if len(o.nonblock) > 0 {
+		var nums []string
+		for _, n := range o.nonblock {
+			nums = append(nums, strconv.Itoa(n))
+		}
+		cmd.Env = []string{modeEnv + "=" + modeNonblock, nonblockVar + "=" + strings.Join(nums, ","), nextVar + "=" + o.mode}
+	}
 	var closeAfter []*os.File
 	if withReport {
 		rd, wr, err := os.Pipe()
@@ -102,6 +110,16 @@ func start(t *testing.T, o runOpts, args []string, out string, withReport bool) 
 		}
 		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 		closeAfter = append(closeAfter, f)
+	}
+	if slices.Contains(o.nonblock, 0) && o.tty == nil {
+		// A pipe, as a holder's own would be, and not /dev/null.
+		rd, wr, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Stdin = rd
+		closeAfter = append(closeAfter, rd)
+		t.Cleanup(func() { wr.Close() })
 	}
 	if o.tty != nil {
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = o.tty, o.tty, o.tty
@@ -621,4 +639,36 @@ func TestEnvironmentIsWhatGoReads(t *testing.T) {
 		}
 		check(t, r.agent())
 	})
+}
+
+// TestInsideRefusesARuntimeDescriptorAsTheReportChannel starts the probe with
+// a non-blocking standard input, so that the runtime's poller holds the
+// descriptors after the report pipe (here 4 and 5). A report written to one
+// of them would not reach the holder, and the runtime reads them too.
+func TestInsideRefusesARuntimeDescriptorAsTheReportChannel(t *testing.T) {
+	for _, fd := range []string{"4", "5"} {
+		t.Run(fd, func(t *testing.T) {
+			r := startInside(t, runOpts{mode: modeFake, nonblock: []int{0}}, writeSpec(t, testSpec(t)), fd)
+			if line := r.readReport(); len(line) != 0 {
+				t.Errorf("a report was written to the pipe: %q", line)
+			}
+			if code := r.wait(); code != exitSetup {
+				t.Errorf("exit %d, want %d (stderr %s)", code, exitSetup, r.stderr)
+			}
+			oneLine(t, r.stderr.String())
+			if !strings.Contains(r.stderr.String(), "report descriptor "+fd) || !strings.Contains(r.stderr.String(), "Go runtime") {
+				t.Errorf("stderr %q", r.stderr)
+			}
+			r.noAgent()
+		})
+	}
+	// The pipe itself, at 3, is the report channel and works.
+	r := startInside(t, runOpts{mode: modeFake, nonblock: []int{0}}, writeSpec(t, testSpec(t)), "3")
+	line := r.readReport()
+	if code := r.wait(); code != 0 {
+		t.Fatalf("exit %d: %s", code, r.stderr)
+	}
+	if _, err := assert.ParseProbeLine(line); err != nil {
+		t.Errorf("report %q: %v", line, err)
+	}
 }

@@ -52,6 +52,11 @@ func runInside(args []string, stderr io.Writer, d insideDeps) int {
 	if err != nil {
 		return fail(stderr, exitSetup, "usage: %v", err)
 	}
+	// A descriptor of the runtime's poller is no report channel: a write to it
+	// would not reach the holder, and the runtime reads it too.
+	if runtimeOwned(a.ReportFD) {
+		return fail(stderr, exitSetup, "cannot use the report descriptor %d: it is one of the Go runtime's own (a standard stream was non-blocking when the program started)", a.ReportFD)
+	}
 	// First, so that no later step, and no exec, can leak the descriptor.
 	if err := setCloexec(a.ReportFD); err != nil {
 		return fail(stderr, exitSetup, "cannot use the report descriptor %d: %v", a.ReportFD, err)

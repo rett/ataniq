@@ -19,7 +19,8 @@
 // order and each once. In order, the probe:
 //
 //  1. Marks descriptor N close-on-exec, before anything else, so that no later
-//     step and no exec can leak it. A descriptor that is not open is exit 98.
+//     step and no exec can leak it. A descriptor that is not open, or that is
+//     one of the Go runtime's own (see below), is exit 98.
 //  2. Reads the spec: opened without following a link at the last component,
 //     it must be a regular file, and assert.DecodeSpec reads at most
 //     assert.MaxSpecBytes and refuses anything else. A spec that is refused is
@@ -74,8 +75,9 @@
 // first. Each file is then placed at exactly its number without close-on-exec,
 // every other descriptor above 2 is made close-on-exec, and COMMAND is
 // executed, with ARGV (whose first element is COMMAND's own) and the
-// environment as Go reads it (see above). Any error is exit 98 with one line, and nothing is
-// executed.
+// environment as Go reads it (see above). Any error is exit 98 with one line,
+// and nothing is executed; so is a number that the Go runtime holds (see
+// below).
 //
 // # Descriptors are closed by the exec
 //
@@ -84,9 +86,21 @@
 // stays open in the probe until the execve, which closes it. Closing it at once
 // could pull a descriptor out from under the Go runtime, which may hold one of
 // its own, and the program that is executed sees the same descriptors either
-// way. Where the pass-through mode places a file at a number the runtime holds
-// itself, the runtime would lose it; the runtime holds none unless descriptor 0
-// is non-blocking when the program starts.
+// way.
+//
+// The runtime holds descriptors of its own (its poller's eventpoll and
+// eventfd, at the lowest free numbers, 3 and 4 when everything else is closed)
+// when any of descriptors 0 to 2 is non-blocking as the program starts: the os
+// package registers a non-blocking standard stream with the poller before main
+// runs. A file placed over one of them would be used by the runtime before the
+// execve (an epoll wait on a regular file makes the runtime throw, and its
+// wake-up writes eight bytes to whatever file it finds), and a report written
+// to one would not reach the holder. So the pass-through mode refuses, before
+// it opens anything, a number that is an eventpoll or an eventfd descriptor
+// (exit 98, one line), and the inside mode refuses such a number as the report
+// descriptor in the same way. The probe cannot tell the runtime's eventpoll or
+// eventfd from one that the caller passed, so it refuses both; any other
+// descriptor inherited at a target number is still replaced, as before.
 //
 // # Exit statuses and standard error
 //

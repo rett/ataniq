@@ -32,6 +32,12 @@ func runPassFDs(args []string, stderr io.Writer, d passDeps) int {
 	if err != nil {
 		return fail(stderr, exitSetup, "usage: pass-fds: %v", err)
 	}
+	// Before anything is opened or moved: see runtimeOwned.
+	for _, f := range a.Files {
+		if runtimeOwned(f.FD) {
+			return fail(stderr, exitSetup, "pass-fds: descriptor %d is one of the Go runtime's own (a standard stream was non-blocking when the program started); choose another number", f.FD)
+		}
+	}
 	files, err := openFiles(a.Files)
 	if err != nil {
 		return fail(stderr, exitSetup, "pass-fds: %v", err)
