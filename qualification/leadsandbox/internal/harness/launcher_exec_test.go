@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -48,6 +49,15 @@ func TestExecLauncherHelper(t *testing.T) {
 		os.Exit(7)
 	case "wait":
 		fmt.Println("waiting")
+		select {}
+	case "exit-0", "exit-5", "exit-201":
+		code, _ := strconv.Atoi(strings.TrimPrefix(mode, "exit-"))
+		os.Exit(code)
+	case "kill-term":
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {}
+	case "kill-kill":
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 		select {}
 	case "leader-with-child":
 		// The first process starts a member of its own group that waits, and
@@ -385,21 +395,26 @@ func TestExecLauncherStopOfAFinishedGroupSendsNothing(t *testing.T) {
 // TestExitOfInfoReadsTheStatusFromARealWaitid pins the offset of si_status
 // (siStatusAt) against the kernel: a child that exits with a known code, and
 // one that is ended by a known signal, are waited for with waitid and decoded
-// by exitOfInfo. It starts /bin/sh, with no pseudo-terminal, no namespace and
-// no sandbox tool.
+// by exitOfInfo. The child is the test binary itself (the helper above), with no
+// pseudo-terminal, no namespace, no shell and no sandbox tool.
 func TestExitOfInfoReadsTheStatusFromARealWaitid(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		script string
-		want   Exit
+		mode string
+		want Exit
 	}{
-		{"exit 5", Exit{Code: 5}},
-		{"exit 0", Exit{Code: 0}},
-		{"exit 201", Exit{Code: 201}},
-		{"kill -TERM $$", Exit{Code: -1, Signal: "SIGTERM"}},
-		{"kill -KILL $$", Exit{Code: -1, Signal: "SIGKILL"}},
+		{"exit-5", Exit{Code: 5}},
+		{"exit-0", Exit{Code: 0}},
+		{"exit-201", Exit{Code: 201}},
+		{"kill-term", Exit{Code: -1, Signal: "SIGTERM"}},
+		{"kill-kill", Exit{Code: -1, Signal: "SIGKILL"}},
 	} {
-		t.Run(tc.script, func(t *testing.T) {
-			cmd := exec.Command("/bin/sh", "-c", tc.script)
+		t.Run(tc.mode, func(t *testing.T) {
+			cmd := exec.Command(exe, "-test.run=^TestExecLauncherHelper$")
+			cmd.Env = []string{helperEnv + "=" + tc.mode}
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
