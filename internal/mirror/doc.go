@@ -26,7 +26,10 @@
 //     tested against git check-ref-format.
 //   - [Create] makes the repository with fixed settings and a marker file.
 //     [Open] checks that the folder is still what Create made.
-//   - [Mirror.Size] counts the whole mirror folder.
+//   - Reading: [Mirror.Upstream], [Mirror.LeadBranches], [Mirror.Roles],
+//     [Mirror.Resolve] and [Mirror.Size]. A listing is capped; more refs than
+//     the cap is an error, never a cut list. [Mirror.Resolve] takes exact full
+//     ref names and does no search.
 //
 // # How it is safe
 //
