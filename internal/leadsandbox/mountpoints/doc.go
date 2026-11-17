@@ -32,19 +32,26 @@
 //     tree, home and config folder are 0700 folders of the caller's user. A
 //     tree whose .git names alternates (objects of another repository) is
 //     refused. The file .git/config is not parsed.
-//   - [CheckBindSources] opens every bind source of a plan from the root of the
-//     file system with openat2 (no symbolic link, no magic link, on any
-//     component) and refuses a source that has a link anywhere on its path,
-//     naming it. It is the last check before a launch.
+//   - [CheckBindSources] takes the rows [ResolveSources] gave and opens, for
+//     each, the path bubblewrap will bind from the root of the file system with
+//     openat2 (no symbolic link, no magic link, on any component), refusing a
+//     path that has a link anywhere, naming the row by its inside path and the
+//     link. The path it opens is [ResolvedSource].Bound: the row's Source for
+//     every row that is not a row of the host, the real path for a row of the
+//     host. It is the last check before a launch.
 //   - [ResolveSources] is where lexical paths meet the file system: it
-//     resolves each host bind source with symbolic links evaluated (through an
+//     resolves each bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
 //     the profile's never-mounted, other-runtime, other-lead and
 //     other-project checks again on the real paths, so that a link cannot
-//     hide a never-mounted folder. A never-mounted path that is a dangling
-//     link is resolved through the link's target, or reported as unreadable;
-//     [ResolveSourcesWith] takes the reader of links where the resolver is not
-//     the real file system.
+//     hide a never-mounted folder. It refuses, for every row that is not a row
+//     of the host, a source whose real path differs from its lexical one (a
+//     link anywhere on it): a source Ataniq supplies must be given as its real
+//     path. A row of the host (/usr, the /etc files) may resolve through the
+//     host's own links, and its real path is reported. A never-mounted path
+//     that is a dangling link is resolved through the link's target, or
+//     reported as unreadable; [ResolveSourcesWith] takes the reader of links
+//     where the resolver is not the real file system.
 //
 // # The git metadata folder (rule G1)
 //
@@ -53,15 +60,25 @@
 // .git/info are bound read-only over the tree, so their sources must not be
 // the tree's own files: a link a lead planted there would be followed at the
 // next start. Their sources are the entries of an Ataniq-owned folder,
-// profile.Inputs.GitMeta (by default <state>/leads/<role>/gitmeta), which lies
-// outside the home, the config folder and the tree. The mount points in the
-// tree are still made and checked as before; they are only the targets.
+// profile.Inputs.GitMeta, which the profile requires to be the layout's folder
+// <state>/leads/<role>/gitmeta: outside the home, the config folder and the
+// tree, and below the state root, so the lookup from the state root without
+// links covers every component of its path. The mount points in the tree are
+// still made and checked as before; they are only the targets.
 //
-// [Prepare] fills the folder once, before the lead's first run, and makes it
-// exclusively with mode 0700 (its files 0600):
+// [Prepare] fills the folder once, before the lead's first run. It builds it
+// in a temporary sibling in the lead's state folder (<state>/leads/<role>/
+// gitmeta.tmp), exclusively with mode 0700 (its files 0600), syncs each file
+// and each folder, and then moves it into its place with renameat2 and
+// RENAME_NOREPLACE, so the place never holds a folder that is only partly
+// written and nothing is ever replaced:
 //
 //   - config is a copy of the clone's .git/config, read through the tree's
-//     handle: a regular file of at most 1 MiB, not hard-linked;
+//     handle: a regular file of at most 1 MiB, not hard-linked, and without an
+//     include or includeIf section. [Prepare] refuses ([ErrInclude]) a config
+//     that has one, found by a bounded scan of the section headers (any case,
+//     any subsection); no other key is interpreted, so core.hooksPath,
+//     core.fsmonitor and the like are copied as they are;
 //   - hooks/ is empty: the clone's own hooks are not copied, because a managed
 //     lead's tree has no hooks;
 //   - info/ holds a copy of each regular file directly in the clone's
@@ -71,20 +88,32 @@
 //     line each, now written in this copy.
 //
 // A folder that exists is kept and only checked, so a second [Prepare] changes
-// nothing, and a folder left incomplete by an interrupted one is refused: remove
-// it (nothing in it is the lead's) and call [Prepare] again before the first
-// run. [Check] makes sure on every start that the folder and its three entries
+// nothing. A [Prepare] that fails or is interrupted while it builds leaves the
+// temporary sibling and no folder in the place, so [Check] refuses the start
+// (the folder is missing), and the next [Prepare] refuses the leftover with a
+// reason that names it ([ErrIncomplete]), never reusing it: remove it (nothing
+// in it is the lead's) and call [Prepare] again before the first run. [Check]
+// makes sure on every start that the folder and its three entries
 // exist with the right types, modes and no link, and that info/exclude lists
 // every placeholder; what the lead does to the clone's own .git/config,
 // .git/hooks or .git/info does not change what is bound.
 //
-// What this changes for the lead: git inside the sandbox reads Ataniq's copy
-// of config and info, and cannot change them (they are bound read-only, and
-// the lead cannot write the folder); there are no hooks; and a change to the
-// clone's git configuration is made by Ataniq, outside, in the copy. The
-// lead-hosting design, section 3.3, leaves open whether Qargi's flow verbs
-// need to write git configuration (branch tracking): qualification case S5
-// settles it.
+// What this changes for the lead: the copies of config and info are bound
+// read-only and the lead cannot write the folder they come from, so the lead
+// cannot change the files that are bound; there are no hooks in the folder; and
+// a change to the clone's git configuration is made by Ataniq, outside, in the
+// copy. That is all it says. It does not say which configuration the lead's git
+// reads: a git inside the sandbox can still be pointed at configuration the
+// lead writes (through its environment, or through a .git it rebuilds in the
+// tree), and that lies inside the lead's own authority, as anything the lead
+// writes in its own folders does. The refusal of an include section keeps the
+// copy itself from naming a file the lead writes. The copy is never read as
+// configuration by a tool outside the sandbox (Ataniq writes it and no
+// owner-side tool uses a lead's tree: the primary rule of the design, section
+// 3.3, which this package does not enforce). The lead-hosting design, section
+// 3.3, leaves open
+// whether Qargi's flow verbs need to write git configuration (branch
+// tracking): qualification case S5 settles it.
 //
 // # What the holder must do
 //
@@ -100,22 +129,34 @@
 //     previous unit has gone and its control group is empty, and right before
 //     the launch, with nothing between them and the launch that runs a lead
 //     process: [Check] first, then [ResolveSources], then [CheckBindSources]
-//     on the sources it gives (the last step before the launch). Nested
+//     on the rows it gives (the last step before the launch). Nested
 //     sandboxes are allowed for now, so the sandbox's own process tree does
 //     not show that no lead process remains; only an empty control group
 //     does. A check made while a lead process remains says nothing.
-//  3. Pass the resolved real paths ([ResolvedSource].Real, or the source after
-//     checking that Real equals Source) to the plan, and the same paths, the
-//     plan's sources, to [CheckBindSources]. bubblewrap resolves a source by
-//     its path when it binds, so a source that is checked and a different one
-//     that is bound is a check that did not happen. A source with a link on
-//     its path is refused, so the real path is what a plan must carry. The
-//     probe's assertions from inside the sandbox stay the final check.
-//  4. Know the limits of the records folder. It lies outside the state root,
-//     so the lookup from the state root does not reach it: only its last
-//     component is opened without following a symbolic link, nothing above it
-//     is looked for, and its mode and owner are not checked. The holder must
-//     make and check that folder itself.
+//  3. Make the path that is bound the path that is checked, for every row.
+//     bubblewrap binds the path the plan names and follows a link in it, so a
+//     source that is checked and a different one that is bound is a check that
+//     did not happen. For a row Ataniq supplies (every row that is not a row of
+//     the host) the plan binds the Source the inputs name, and
+//     [ResolveSources] refuses a Source whose real path differs, so the holder
+//     gives real paths in the inputs, the plan binds them, and
+//     [CheckBindSources] checks them as they are, lexically, with no link. For
+//     a row of the host (/usr, /etc/hosts, /etc/localtime, ...), whose own name
+//     may be a link of the host that no lead writes, the plan binds the real
+//     path [ResolveSources] reported ([ResolvedSource].Real): the holder passes
+//     [Resolution.HostSources] as plan.Options.HostSources (and has
+//     plan.Options.HostPresent say which optional rows the resolution found),
+//     which plan.Build requires and plan.Verify checks, and [CheckBindSources]
+//     checks that real path. Each row is checked by [ResolvedSource].Bound, so
+//     the holder can compare it with the source of the matching mount of the
+//     plan. The probe's assertions from inside the sandbox stay the final
+//     check.
+//  4. Know the limits of the records folder. The profile requires it to be
+//     [profile.Layout.Records], <state>/leads/<role>/records, so the lookup
+//     from the state root without links covers every component of its path.
+//     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
+//     the home and the config folder only): the holder must make the folder
+//     with mode 0700 and check it, as it does for the other folders.
 //
 // # Limits
 //

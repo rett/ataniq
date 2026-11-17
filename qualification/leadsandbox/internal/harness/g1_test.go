@@ -83,7 +83,13 @@ func TestTheCheckIsMadeOnTheSourcesOfThePlan(t *testing.T) {
 	var checked []string
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
 		base := o.CheckBindSources
-		o.CheckBindSources = func(srcs []string) mountpoints.Report { checked = append([]string(nil), srcs...); return base(srcs) }
+		o.CheckBindSources = func(rows []mountpoints.ResolvedSource) mountpoints.Report {
+			checked = nil
+			for _, row := range rows {
+				checked = append(checked, row.Bound())
+			}
+			return base(rows)
+		}
 	})
 	mustNoErr(t, r)
 	want := map[string]bool{}
@@ -108,9 +114,9 @@ func TestTheCheckIsMadeOnTheSourcesOfThePlan(t *testing.T) {
 }
 
 // A row of the host whose name is a link of the host itself (as /etc/localtime
-// usually is) is checked by its real path: the plan cannot name another, and
-// the host's folders are not the lead's.
-func TestHostRowThatIsALinkIsCheckedByItsRealPath(t *testing.T) {
+// usually is) is bound from its real path, and checked by it: the path that is
+// bound is the path that is checked, and the host's folders are not the lead's.
+func TestHostRowThatIsALinkIsBoundAndCheckedByItsRealPath(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	approved(f)
 	zone := f.Owned + "/zoneinfo-real"
@@ -124,21 +130,43 @@ func TestHostRowThatIsALinkIsCheckedByItsRealPath(t *testing.T) {
 			}
 			return base(p)
 		}
-		o.CheckBindSources = func(srcs []string) mountpoints.Report {
-			checked = append([]string(nil), srcs...)
-			return f.CheckBindSources(srcs)
+		o.CheckBindSources = func(rows []mountpoints.ResolvedSource) mountpoints.Report {
+			checked = nil
+			for _, row := range rows {
+				checked = append(checked, row.Bound())
+			}
+			return f.CheckBindSources(rows)
 		}
 	})
 	mustNoErr(t, r)
 	if r.out.StepFailed {
 		t.Fatalf("steps: %+v", r.out.Summary.Steps)
 	}
-	if src, ok := mountSource(r.out, "/etc/localtime"); !ok || src != "/etc/localtime" {
-		t.Fatalf("the plan binds /etc/localtime from %q (%v)", src, ok)
+	if src, ok := mountSource(r.out, "/etc/localtime"); !ok || src != zone {
+		t.Fatalf("the plan binds /etc/localtime from %q (%v), want the real path %s", src, ok, zone)
 	}
 	if !contains(checked, zone) || contains(checked, "/etc/localtime") {
 		t.Errorf("checked %v: want the real path %s and not the name", checked, zone)
 	}
+	// For every row the path bound is the path checked.
+	for _, m := range r.out.Plan.Mounts {
+		if m.Source != "" && !contains(checked, m.Source) {
+			t.Errorf("%s is bound from %s, which is not among the checked paths", m.Inside, m.Source)
+		}
+	}
+	if len(checked) != len(sourcesOf(r.out)) {
+		t.Errorf("%d paths checked, the plan has %d sources", len(checked), len(sourcesOf(r.out)))
+	}
+}
+
+func sourcesOf(o *harness.Outcome) []string {
+	var out []string
+	for _, m := range o.Plan.Mounts {
+		if m.Source != "" {
+			out = append(out, m.Source)
+		}
+	}
+	return out
 }
 
 func TestGitMetaFolderIsMadeOnceAndBoundOverTheTree(t *testing.T) {
@@ -180,46 +208,15 @@ func TestGitMetaFolderIsMadeOnceAndBoundOverTheTree(t *testing.T) {
 	}
 }
 
-func TestGitMetaKeyNamesAnotherFolder(t *testing.T) {
+// The git metadata folder is the layout's own, <state>/leads/<role>/gitmeta:
+// the configuration has no key that names another one (rule G1: a folder
+// elsewhere could lie beside or above a folder the lead writes, and only its
+// last component would be looked at).
+func TestGitMetaHasNoKeyInTheConfiguration(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
-	approved(f)
 	f.Mkdir(f.Base+"/ataniq-owned", 0o700)
-	gm := f.Base + "/ataniq-owned/gitmeta"
-	f.Config.Sources.GitMeta = gm
-	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
-	mustNoErr(t, r)
-	if r.out.StepFailed {
-		t.Fatalf("steps: %+v", r.out.Summary.Steps)
-	}
-	if got := strings.Join(f.Names(gm), ","); got != "config,hooks,info" {
-		t.Errorf("the folder holds %s", got)
-	}
-	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
-		t.Errorf("the default folder was made: %v", err)
-	}
-	if src, _ := mountSource(r.out, profile.TreeInside(f.Project)+"/.git/config"); src != gm+"/config" {
-		t.Errorf("config is bound from %s", src)
-	}
-}
-
-func TestGitMetaKeyIsValidatedLikeASource(t *testing.T) {
-	f := harnesstest.New(t, profile.Claude)
-	l := f.Layout()
-	cfg, _ := l.ConfigDir(profile.Claude)
-	for _, tc := range []struct{ name, value, want string }{
-		{"relative", "gitmeta", "git metadata folder"},
-		{"unclean", f.Base + "/a/../gitmeta", "git metadata folder"},
-		{"in the tree", l.Tree() + "/gitmeta", "tree"},
-		{"in the home", l.Home() + "/gitmeta", "home"},
-		{"in the config folder", cfg + "/gitmeta", "config folder"},
-		{"is the tree", l.Tree(), "tree"},
-		{"above the tree", l.LeadDir(), "lead's"},
-		{"in the campaign", f.Campaign + "/gitmeta", "campaign"},
-		{"never mounted", f.Base + "/owner/work/gitmeta", "never-mounted"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["git_meta"] = tc.value }), tc.want)
-		})
+	for _, value := range []string{f.Base + "/ataniq-owned/gitmeta", f.Layout().GitMeta(), ""} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["git_meta"] = value }), `sources has the unknown key "git_meta"`)
 	}
 }
 
@@ -303,9 +300,9 @@ func TestLinkPlantedAtABindSourceRefusesTheLaunchAtTheNewStep(t *testing.T) {
 			_, outside := plantOutside(t, f)
 			r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
 				base := o.CheckBindSources
-				o.CheckBindSources = func(srcs []string) mountpoints.Report {
+				o.CheckBindSources = func(rows []mountpoints.ResolvedSource) mountpoints.Report {
 					tc.plant(t, f, outside)
-					return base(srcs)
+					return base(rows)
 				}
 			})
 			mustNoErr(t, r)
@@ -531,7 +528,7 @@ func TestEvidenceHasTheFactOfEveryBindSource(t *testing.T) {
 	}
 }
 
-func TestEvidenceNamesTheRealPathCheckedForAHostRow(t *testing.T) {
+func TestEvidenceNamesTheSamePathBoundAndCheckedForEveryRow(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	approved(f)
 	zone := f.Owned + "/zoneinfo-real"
@@ -550,11 +547,12 @@ func TestEvidenceNamesTheRealPathCheckedForAHostRow(t *testing.T) {
 	for _, s := range r.out.Summary.BindSources.Sources {
 		if s.Inside == "/etc/localtime" {
 			found = true
-			if s.Source != "/etc/localtime" || s.CheckedPath != zone {
+			if s.Source != zone || s.CheckedPath != zone {
 				t.Errorf("fact: %+v", s)
 			}
-		} else if s.CheckedPath != "" {
-			t.Errorf("%s has a checked path %s", s.Inside, s.CheckedPath)
+		}
+		if s.CheckedPath == "" || s.CheckedPath != s.Source {
+			t.Errorf("%s: the path bound is %q and the path checked %q", s.Inside, s.Source, s.CheckedPath)
 		}
 	}
 	if !found {
@@ -571,12 +569,12 @@ func TestEvidenceOfARefusedLaunchHasTheFactFalse(t *testing.T) {
 	src := f.Config.Sources.AssignmentDir
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
 		base := o.CheckBindSources
-		o.CheckBindSources = func(srcs []string) mountpoints.Report {
+		o.CheckBindSources = func(rows []mountpoints.ResolvedSource) mountpoints.Report {
 			if err := os.Rename(src, src+".moved"); err != nil {
 				t.Fatal(err)
 			}
 			mustLink(t, outside, src)
-			return base(srcs)
+			return base(rows)
 		}
 	})
 	mustNoErr(t, r)
@@ -684,4 +682,78 @@ func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
 	}
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G1", "G1"} }), "listed twice")
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G2"} }), "not an automated case")
+}
+
+// The lead's working Qargi records, when the configuration names an inside
+// path for them, are the layout's own folder (rule G1 across leads): the
+// configuration has no key for the host folder.
+func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	f.Mkdir(f.Base+"/elsewhere", 0o700)
+	for _, value := range []string{f.Base + "/elsewhere", f.Layout().Records(), ""} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records"] = value }), `sources has the unknown key "qargi_records"`)
+	}
+
+	f.Mkdir(f.Layout().Records(), 0o700)
+	f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var found bool
+	for _, m := range r.out.Plan.Mounts {
+		if m.Inside == "/ataniq/records" {
+			found = true
+			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().Records() {
+				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().Records())
+			}
+		}
+	}
+	if !found {
+		t.Error("the records are not bound")
+	}
+}
+
+// A clone whose .git/config has an include or includeIf section is not copied:
+// the step prepare fails with the reason, nothing is made and nothing starts.
+func TestACloneConfigWithAnIncludeSectionEndsTheRunAtPrepare(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	f.Write(f.Layout().Tree()+"/.git/config", "[core]\n\tbare = false\n[includeIf \"gitdir:/work/\"]\n\tpath = ../../x\n", 0o644)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepFailed)
+	if e := step(t, r.out, harness.StepPrepare).Error; !strings.Contains(e, "includeIf") || !strings.Contains(e, "line 3") {
+		t.Errorf("the step's error does not name the section and its line: %q", e)
+	}
+	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
+		t.Errorf("the folder was made: %v", err)
+	}
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}
+
+// A leftover of a Prepare that did not finish (the temporary folder the git
+// metadata folder is built in) ends the run at the step prepare, with a reason
+// that names it; nothing is reused and nothing starts.
+func TestALeftoverGitMetaFolderEndsTheRunAtPrepare(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	left := f.Layout().GitMeta() + ".tmp"
+	f.Mkdir(left, 0o700)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepFailed)
+	if e := step(t, r.out, harness.StepPrepare).Error; !strings.Contains(e, left) {
+		t.Errorf("the step's error does not name the leftover %s: %q", left, e)
+	}
+	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
+		t.Errorf("the folder was made: %v", err)
+	}
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
 }

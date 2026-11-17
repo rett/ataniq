@@ -34,8 +34,11 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    no lead has run, and checks them;
 5. derives the sandbox's `resolv.conf` from the host and writes it into a folder
    of its own;
-6. resolves every bind source to its real path and puts the real paths into the
-   profile inputs;
+6. resolves every bind source to its real path. A source the configuration
+   supplies must already be its real path: one with a symbolic link on it ends the
+   run here, naming the row and the real path. A row of the host (`/usr`,
+   `/etc/localtime`, ...) may resolve through the host's own links; its real path
+   is what the plan binds;
 7. makes the report channel (a FIFO in a folder of the attempt that holds nothing
    else, its reader opened first) and starts the canary (a loopback listener
    and an abstract socket that count connections);
@@ -128,10 +131,16 @@ caller's environment or home.
   mirrors/<project>.git
   ```
 
-  The run makes one more folder, `leads/<role>/gitmeta` (or the folder the
-  configuration names in `sources.git_meta`), when the configuration says no
-  lead has run. Do not make it by hand: its parent must exist and be the
-  caller's, and the folder itself must not exist before the first run.
+  The run makes one more folder, `leads/<role>/gitmeta`, when the configuration
+  says no lead has run. It is always that folder: the configuration has no key
+  for another one, because a folder elsewhere could lie beside or above a
+  folder the lead writes, and nothing would look at its parents. Do not make it
+  by hand: its parent (`leads/<role>`) must exist and be the caller's, and the
+  folder itself must not exist before the first run. The run builds it in a
+  sibling, `leads/<role>/gitmeta.tmp`, and moves it into place when it is
+  complete; a run that failed or was interrupted before the move leaves that
+  sibling, the next run refuses it in the step `prepare` and names it, and you
+  remove it by hand (nothing in it is the lead's) before you try again.
 
   The tree is a full clone (a `.git` folder, not a worktree, with no
   alternates), not below another repository. Create it with an ordinary
@@ -142,8 +151,13 @@ caller's environment or home.
   settings file and its SHA-256 (for claude it must contain the text named by
   `managed_marker`); the lead skills folder; the instruction file; the git
   identity file; the Qargi install; the assignment and projection folders.
-  Optional: a records folder (mode 0700, owned by the caller, a real path with no symbolic link in it) with the path it
-  appears at, extra tree placeholders, and a seccomp file with its SHA-256.
+  Optional: the lead's working Qargi records, named by the path they appear at
+  inside (`sources.qargi_records_inside`); their folder is always
+  `leads/<role>/records` in the state root, which you make (mode 0700, owned by
+  the caller, a real path with no symbolic link in it) before the run, and
+  there is no key for another place (rule G1: a folder a lead writes elsewhere
+  could be, or lie above, a source of another lead). Also optional: extra tree
+  placeholders, and a seccomp file with its SHA-256.
 - **Never-mounted paths**: the owner's checkout, the real provider folders, and
   `.ssh`, as real paths. Give the paths even if they do not exist on the host.
   The other runtime's config folder is added by the profile.
@@ -222,7 +236,7 @@ managed-settings file with it and refuses a difference.
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
 | `identity`, `owner_user` | `root` (the default) or `owner`, which needs the owner's login name; `owner_user` is given for `owner` only. |
-| `sources` | Every host source of the profile (see above). `git_meta` is optional: the Ataniq-owned folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info` (default `<state root>/leads/<role>/gitmeta`). It is checked like the other sources: the profile refuses a folder that is, lies in or lies above the lead's home, config folder, tree or records folder, or on a never-mounted path, and it must not overlap the campaign folder. Its parent folder must exist. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
+| `sources` | Every host source of the profile (see above). There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
 | `never_mounted` | Host paths no bind source may equal, lie below or lie above. At least one. |
 | `scratch_command` | The command run inside, as an absolute argv. Absent: `/bin/sh -c 'echo ataniq-leadsandbox-scratch-marker'`. |
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
@@ -298,7 +312,7 @@ the terminal output. Do not copy it into a repository.
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
 | `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
-| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about sources whose real path differs from their name, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
+| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
@@ -326,17 +340,29 @@ which the lead cannot write. The run fills it once, before the lead's first run
 `.git/info` with one anchored line in `exclude` for each tree placeholder. The
 mount points in the tree stay and are checked as before; they are only targets.
 A later start does not fill the folder again: it checks it, resolves the
-sources, and opens each source, last of all, with `check-bind-sources`. A row of
-the host whose own name is a link (`/etc/localtime` often is) is checked by its
-real path, because the plan cannot name another and no lead writes the host's
-folders; the evidence names it as `checked_path`. The check says what the path was at that moment: a lead that could write above a source could change it
+sources, and opens the path bound for each row, last of all, with
+`check-bind-sources`. For every row the path that is bound is the path that is
+checked: a source the configuration supplies is bound as it is given (its real
+path, which the resolution has found a link-free one), and a row of the host
+whose own name is a link (`/etc/localtime` often is) is bound from its real path,
+which no lead writes, and checked by it. The harness refuses to check a plan whose
+bound path is not the one the check would open, and the evidence says it as
+`checked_path`, equal to the source of every row. The check says what the path was
+at that moment: a lead that could write above a source could change it
 afterwards, which is why every source and everything above it must be the
 caller's.
 
-What changes for git inside the sandbox: it reads Ataniq's copy of `config` and
-`info`, which it cannot change (they are read-only binds of files the lead cannot
-write), and the hooks folder is empty, so no hook runs. A change to the clone's
-git configuration is made outside, in the copy, not by the lead. The lead can
+What changes for git inside the sandbox: the copies of `config` and `info` are
+read-only binds of files the lead cannot write, so the lead cannot change the
+files that are bound, and the hooks folder is empty, so no hook runs. A change
+to the clone's git configuration is made outside, in the copy, not by the lead.
+The run refuses a clone `.git/config` that has an `include` or `includeIf`
+section (the step `prepare` fails with the line), because git would read the file
+it names as configuration; no other key of it is interpreted. This does not say
+which configuration the lead's git reads: it can still be pointed at
+configuration the lead writes (through its environment, or through a `.git` it
+rebuilds in the tree), which is inside the lead's own authority, and the copy is
+never read as configuration by a tool outside the sandbox. The lead can
 still rename `.git` in its tree and build another: the binds keep their targets
 in the old one, the start-up check of the mount points refuses a link at them,
 and the rule that no owner-side tool uses a lead's tree is not enforced here.
@@ -363,7 +389,7 @@ tree for example; its output goes to `terminal.log` as display only), or in the 
 | S4 | The probe's resolution of the provider host, and this run's resolv.conf derivation: its source, the nameservers kept and the loopback ones dropped. A derivation refused for lack of any non-loopback server ends the run before a launch, with the reason in the step; that is the second half of S4. |
 | S7 | The sysctl `dev.tty.legacy_tiocsti` as the probe and the harness read it, or the seccomp filter the probe finds loaded. The harness never issues TIOCSTI. |
 | S11 | Through the record interface: no store exists here, so the result is `not-checked` with "no qualification record store to ask". The stale-record start refusal belongs to the holder. |
-| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the path was opened from the root of the file system without following a link and no component of it, the last one included, is a link (`false` with the reason when one is, absent when the check could not say). `checked_path` is set for a row of the host whose own name is a link: the real path was checked. `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
+| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the path was opened from the root of the file system without following a link and no component of it, the last one included, is a link (`false` with the reason when one is, absent when the check could not say). `checked_path` is the path the check opened, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
 
 ### Attended cases
 

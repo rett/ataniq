@@ -166,7 +166,9 @@ allowlist entry in name order, the optional `--seccomp FD`, the rows of the bind
 table in table order, `--chdir`, and `--remount-ro /` last. An optional host row
 is emitted, as `--ro-bind` or `--symlink`, only when the caller says the host has
 it; otherwise it is left out and a note in the plan says so. `--ro-bind-try` is
-never used, so the plan says exactly what is mounted. Every plan also carries
+never used, so the plan says exactly what is mounted. A row of the host is bound
+from the real path the caller resolved (in the golden files, a host without
+links, so each is its own path). Every plan also carries
 notes (the golden files list them) that state the choices below and what the
 plan does not show.
 
@@ -205,8 +207,11 @@ disable user namespaces.
 relative executable or agent paths; a descriptor number outside 3 to 1023 or used
 twice; a report path that is not directly inside the folder the holder names as
 its own, or that lies in a folder the lead can write, in a never-mounted path or
-above a bind source; a working folder outside the tree and the home; an operand
-of bubblewrap that starts with `--`; and a command line above a fixed cap. It
+above a bind source; host sources that are missing for a row of the host it
+emits (`/usr`, the `/etc` files: the plan binds the real path the holder
+resolved, see [the clone rules](#the-clone-rules-and-rule-g1)) or given for
+another row; a working folder outside the tree and the home; an operand of
+bubblewrap that starts with `--`; and a command line above a fixed cap. It
 then runs `Verify` on its own result. `Verify` is written apart from the code
 that builds the arguments: it parses the bubblewrap arguments back and compares
 each part with the inputs. A plan that verifies says the text is the one the
@@ -274,7 +279,7 @@ mounts keep their own access, so the read-write rows and `/tmp` stay writable.
 | extra placeholders in the tree, if the inputs name any | a host path Ataniq owns | read-only |
 | `/ataniq/mirror/<project>.git` | `<state>/mirrors/<project>.git` | read-only |
 | `/ataniq/qargi` | the Qargi install | read-only |
-| the Qargi records, if the inputs name a folder | that folder, at the inside path the inputs give | read-write |
+| the Qargi records, if the inputs name them | `<state>/leads/<role>/records` (the only host path the profile accepts for them), at the inside path the inputs give | read-write |
 | `/ataniq/assignment`, `/ataniq/projection` | folders written outside the sandbox | read-only |
 
 The managed-settings path is fixed for claude, `/etc/claude-code/managed-settings.json`.
@@ -289,8 +294,9 @@ adds the other runtime's config folder, and refuses a source in or above another
 lead's state or another project's mirror folder. The host's `/home`, the real
 provider folders and the owner's checkout are not in the table at all: the lead's
 home is its own folder under the state root. The check is on the text of the
-paths; the holder resolves symbolic links first and
-`mountpoints.ResolveSources` runs the same checks again on the real paths.
+paths, so a link could hide a folder: `mountpoints.ResolveSources` runs the same
+checks again on the real paths, and refuses a source Ataniq supplies that has a
+link on it (it must be given as its real path).
 
 **The per-lead home.** `/home/lead` is `<state>/leads/<role>/home`, the same
 inside path for every lead and both runtimes, because providers key their state by
@@ -327,17 +333,38 @@ link that brings a folder of the owner into the sandbox at the next start. So no
 row of the bind table has a source in or below a host folder the lead can write
 (the home, the config folder, the tree and the records folder). The profile
 refuses a table that breaks the rule, `plan.Build` checks it again, and
-`plan.Verify` reports a mount that does.
+`plan.Verify` reports a mount that does. The rule holds across leads too: every
+folder a lead writes lies in that lead's own state folder, so the rules about
+another lead's state keep the read-only sources of one lead out of the reach of
+every other. That is why the records folder, when the inputs name one, must be
+`<state>/leads/<role>/records` (`profile.Layout.Records`) and any other host path
+is refused, and why the git metadata folder must be `<state>/leads/<role>/gitmeta`
+(`profile.Layout.GitMeta`).
 
 **The `.git` rows.** The tree's `.git/config`, `.git/hooks` and `.git/info` are
 read-only inside, and are bound from an Ataniq-owned copy, not from the tree.
 The copy is `<state>/leads/<role>/gitmeta`, outside the home, the config folder
 and the tree, and `mountpoints.Prepare` fills it once, before the lead's first
 run: a copy of the clone's `.git/config`, an empty `hooks` folder (a managed
-lead's tree has no hooks) and a copy of the regular files of `.git/info`. For the
-lead this means that git inside reads Ataniq's copy of `config` and `info` and
-cannot change them, and that a change to the clone's git configuration is made
-by Ataniq, outside, in the copy.
+lead's tree has no hooks) and a copy of the regular files of `.git/info`. It
+builds the folder in a temporary sibling in the lead's state folder
+(`gitmeta.tmp`), syncs every file and folder, and moves it into place with
+`renameat2` and `RENAME_NOREPLACE`, so the place never holds a folder that is only
+partly written, and nothing is replaced. A `Prepare` that fails or is interrupted
+before the move leaves the sibling and no folder in the place: `Check` then
+refuses the start, and the next `Prepare` refuses the leftover with a reason that
+names it, until it is removed by hand.
+
+`Prepare` refuses a clone `.git/config` that has an `include` or `includeIf`
+section (any case; a bounded scan of the section headers, and no other key is
+interpreted), because git would read the file it names as configuration. For the
+lead this means that the copies are read-only binds of files it cannot write, so
+it cannot change the files that are bound, and that a change to the clone's git
+configuration is made by Ataniq, outside, in the copy. It does not mean that git
+inside reads only that configuration: a git in the sandbox can still be pointed
+at configuration the lead writes (through its environment, or through a `.git` it
+rebuilds in the tree), which is inside the lead's own authority. The copy is
+never read as configuration by a tool outside the sandbox.
 
 **Mount points inside folders the lead writes.** The targets of the `.git` rows,
 the skills folder and the instruction file of the config folder, and any extra
@@ -352,14 +379,27 @@ git treats as a pattern is refused.
 **Checks before every start.** `mountpoints.Check` finds missing or wrong mount
 points and a copy that is incomplete or has no exclude line for a placeholder;
 `ResolveSources` resolves each bind source to its real path and runs the
-never-mounted checks again; `CheckBindSources` opens every source of the plan
+never-mounted checks again; `CheckBindSources` opens the path bound for every row
 from the root of the file system with `openat2`, without following a symbolic
-link on any component, and refuses a source that has one. They run in that
-order, right before the launch, after the previous unit is gone and its control
-group is empty (the sandbox's own process tree does not show that no lead process
-remains, because nested sandboxes are allowed). The plan must carry the real
-paths, and `CheckBindSources` must check the plan's own sources: a source that is
-checked and a different one that is bound is a check that did not happen.
+link on any component, and refuses a path that has one, naming the row by its
+inside path. They run in that order, right before the launch, after the previous
+unit is gone and its control group is empty (the sandbox's own process tree does
+not show that no lead process remains, because nested sandboxes are allowed).
+
+**The path that is bound is the path that is checked.** bubblewrap binds the path
+the plan names and follows a link in it, so a source that is checked and a
+different one that is bound is a check that did not happen. For every row:
+
+- a source Ataniq supplies (every row but the host's own) must be given as its
+  real path. `ResolveSources` refuses a source whose real path differs from its
+  lexical one, a link anywhere on it, naming the row and the real path; the plan
+  binds the source as given, and `CheckBindSources` opens that path as it is, with
+  no link allowed on it;
+- a row of the host (`/usr`, `/etc/hosts`, `/etc/localtime` and the like), whose
+  own name may be a link of the host that no lead writes, is bound from the real
+  path that `ResolveSources` reported. The holder gives it to the plan
+  (`plan.Options.HostSources`, which `plan.Build` requires for every host row it
+  emits and `plan.Verify` checks), and `CheckBindSources` opens that real path.
 
 **What the read-only binds do not protect against.** They are defence in depth.
 A lead can rename `.git` (renaming the parent of a mount point is allowed) and
@@ -369,7 +409,9 @@ from the original. The primary rule is that no owner-side tool uses a lead's tre
 made at one moment: a lead that runs between a check and the start can change what
 it checked. The exclude check is textual, and a `.gitignore` of the tree can make
 git show a placeholder as untracked, which is cosmetic. The records folder lies
-outside the state root and the holder must make and check it itself.
+in the lead's state folder, so the lookup from the state root covers its path,
+but its mode and owner are not checked by `CheckOwnClone`: the holder makes it
+0700 and checks it.
 
 ## The environment allowlist
 
@@ -537,6 +579,11 @@ What the checks do and do not show, from the package:
   of the lead's home, config folder and tree. With no identity listed it is
   not-checked, never ok. Whether device numbers match between the holder's reading
   and the probe's, a btrfs subvolume layout in particular, is a qualification item.
+  The list holds those paths and their parents, not their descendants: a bind of
+  a folder below a listed path (say below the owner's `.ssh`) from a file system
+  not mounted at `/` (a separate `/home`, a btrfs subvolume) has a mount root the
+  text check cannot relate, and its identity is not listed, so neither comparison
+  finds it. That is a limit of the assertion and a qualification item.
 - **Assertion 3** is made on both sides. The probe dials the canary's addresses
   and classifies the failure. The canary is a loopback TCP listener (a second on
   `::1` when the host has IPv6 loopback) and an abstract socket, which the holder
@@ -582,8 +629,9 @@ access goes through `openat2` with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
 `RESOLVE_NO_MAGICLINKS` and `RESOLVE_NO_XDEV`, relative to that handle. It offers
 reads (a regular file up to a cap, a folder listing up to a count, `Lstat`) and
 the writes the mount-point work needs (`MkdirAll`, `WriteFileExclusive` which only
-creates, and `AppendFile` for an existing regular file), and no rename, remove or
-truncate.
+creates, and `AppendFile` for an existing regular file), `Sync` (fsync of a file
+or folder) and `RenameNoReplace` (one name to another in the handle's folder,
+which never replaces), and no replacing rename, remove or truncate.
 
 **What it guarantees.** A symbolic link is refused, even when it points back
 inside the folder or nowhere; a link in a parent component is refused by every
@@ -679,8 +727,8 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
 15. **The agent's exit 98 (Q).** A holder cannot tell an agent that exited 98 from
     a probe that failed to execute it after a good report.
 16. **Owner-side state (O).** The owner's state folders should lie on a file
-    system mounted `nodev`; the records folder lies outside the state root and the
-    holder makes and checks it.
+    system mounted `nodev`, and the holder makes the records folder (in the
+    lead's state folder) with mode 0700 and checks its mode and owner.
 
 ## Qualification
 

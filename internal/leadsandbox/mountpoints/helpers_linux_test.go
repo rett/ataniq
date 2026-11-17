@@ -262,3 +262,14 @@ func (f *fixture) handMadeGitMeta() {
 	f.write(f.gitMeta+"/config", "[core]\n")
 	f.write(f.gitMeta+"/info/exclude", "# comment\n")
 }
+
+// ownRows are rows of a host that is not the host's own: each is checked by
+// its own path (its Source, which equals its Real). The inside paths are
+// invented, "/row/<n>" with n from 1.
+func ownRows(paths ...string) []ResolvedSource {
+	rows := make([]ResolvedSource, len(paths))
+	for i, p := range paths {
+		rows[i] = ResolvedSource{Inside: fmt.Sprintf("/row/%d", i+1), Source: p, Real: p, Role: profile.RoleAgent}
+	}
+	return rows
+}

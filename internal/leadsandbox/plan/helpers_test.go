@@ -84,6 +84,7 @@ func options(in profile.Inputs, present map[string]bool) Options {
 		BwrapPath:   "/usr/bin/bwrap",
 		AgentArgv:   []string{"/ataniq/agent/bin/" + string(in.Runtime), "--model", "example"},
 		HostPresent: present,
+		HostSources: hostSources(in, present),
 		ReportPath:  "/opt/ataniq/run/arc-lead/report.fifo",
 		ReportDir:   "/opt/ataniq/run/arc-lead",
 		ReportFD:    3,
@@ -92,6 +93,22 @@ func options(in profile.Inputs, present map[string]bool) Options {
 		o.SeccompFD = 7
 	}
 	return o
+}
+
+// hostSources gives, for each row of the host the plan emits, the row's own
+// path as its real path: a host whose paths hold no link.
+func hostSources(in profile.Inputs, present map[string]bool) map[string]string {
+	binds, err := in.Binds()
+	if err != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, b := range binds {
+		if b.Kind == profile.KindRoBind && b.SourceRole == profile.RoleHost && (!b.Optional || present[b.Inside]) {
+			m[b.Inside] = b.Inside
+		}
+	}
+	return m
 }
 
 func mustBuild(t *testing.T, in profile.Inputs, o Options) *Plan {

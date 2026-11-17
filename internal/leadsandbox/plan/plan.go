@@ -59,7 +59,7 @@ const (
 	// NoteNestedUserns states owner decision R17.
 	NoteNestedUserns = "nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled"
 	// NoteBindSources states rule G1 of the sandbox plan.
-	NoteBindSources = "bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; this package checks the text of the sources, and the holder checks each source without following links right before the start (mountpoints.CheckBindSources)"
+	NoteBindSources = "bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; the path that is bound is the path that is checked: a source Ataniq supplies is its real path as the inputs name it, and a row of the host (/usr, the /etc files) is bound from the real path the holder resolved (Options.HostSources); this package checks the text of the sources, and the holder checks each bound path without following links right before the start (mountpoints.CheckBindSources)"
 	// NoteNoSeccomp is the note of a plan without a seccomp file.
 	NoteNoSeccomp = "no seccomp filter: none has been reviewed"
 	// NoteSession explains why bubblewrap does not make the session.
@@ -103,6 +103,23 @@ type Options struct {
 	// not present is left out of the plan and noted. A nil map means none is
 	// present.
 	HostPresent map[string]bool
+
+	// HostSources gives, for each row of the host that the plan emits (a
+	// read-only bind whose source role is profile.RoleHost: /usr, /etc/hosts,
+	// /etc/localtime and the like, whose path equals its inside path), the
+	// real path to bind in its place: the path the caller resolved with
+	// mountpoints.ResolveSources ([mountpoints.ResolvedSource].Real; the
+	// method Resolution.HostSources makes this map). The key is the row's
+	// inside path. bubblewrap binds the path the plan names and follows a
+	// link in it, and the check that no source has a link
+	// (mountpoints.CheckBindSources) opens the real path of such a row, so the
+	// plan must bind that path: for every row the path that is bound is the
+	// path that is checked. Every host row the plan emits must have an entry
+	// (a row that is not optional, or is optional and HostPresent says the
+	// host has it); an entry for any other key, or for an optional row the
+	// host lacks, is refused. A value is an absolute clean path, and is checked
+	// like any other source (never-mounted paths, lead-writable folders).
+	HostSources map[string]string
 
 	// SeccompFD is the descriptor number the pass-through step will open the
 	// seccomp file at, from MinSeccompFD to MaxSeccompFD. It is required when
@@ -171,7 +188,7 @@ type Mount struct {
 	// write (the source of a read-write bind row): the lead could replace the
 	// source with a symbolic link, which bubblewrap follows. Rule G1 says no
 	// source does, so it is false for every row of a valid plan: Build refuses
-	// a table with such a row and Verify reports one (ProbWritableSource). It
+	// a table with such a row and Verify reports one (ProbLeadWritable). It
 	// is not the profile's Bind.LeadWritable, which says the mount point (the
 	// target) lies in such a folder, and which stays true for the mount points
 	// the three .git rows have in the tree. A read-write bind's own source is
@@ -373,8 +390,13 @@ func derive(in profile.Inputs) (*facts, error) {
 }
 
 // check validates the options against the inputs and returns the working
-// folder.
+// folder. It also puts the host sources of the options into the table of f, so
+// that every later step (the report path check, the emitted mounts, Verify)
+// works on the paths that are bound.
 func (o Options) check(in profile.Inputs, f *facts) (string, error) {
+	if err := o.applyHostSources(in, f); err != nil {
+		return "", err
+	}
 	if err := checkPath("pasta executable", o.PastaPath); err != nil {
 		return "", err
 	}
@@ -407,6 +429,65 @@ func (o Options) check(in profile.Inputs, f *facts) (string, error) {
 		return "", refuse("working folder", "%s is outside the tree %s and the home %s", workDir, tree, profile.HomeInside)
 	}
 	return workDir, nil
+}
+
+// isHostRow says a row of the table is a bind of the host's own path.
+func isHostRow(b profile.Bind) bool {
+	return b.Kind == profile.KindRoBind && b.SourceRole == profile.RoleHost
+}
+
+// applyHostSources replaces, in the table of f, the source of each host row the
+// plan emits by the real path the options give for it, and refuses options
+// that give none for such a row, give one for a key that is not an emitted
+// host row, give a path that is not an absolute clean one, or give one a source
+// may not have (a never-mounted path and the like). The table of
+// the profile, which names the host rows by their own paths, is not changed.
+func (o Options) applyHostSources(in profile.Inputs, f *facts) error {
+	table := append([]profile.Bind(nil), f.table...)
+	index := map[string]int{}
+	for i, b := range table {
+		if isHostRow(b) {
+			index[b.Inside] = i
+		}
+	}
+	keys := make([]string, 0, len(o.HostSources))
+	for k := range o.HostSources {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		i, ok := index[k]
+		switch {
+		case !ok:
+			return refuse("host sources", "%q is not the inside path of a row of the host in the bind table", clip(k))
+		case table[i].Optional && !o.HostPresent[k]:
+			return refuse("host sources", "%s is an optional row that the options say the host lacks, and has a source", k)
+		}
+		if err := checkPath("host source of "+k, o.HostSources[k]); err != nil {
+			return err
+		}
+		// A real path is held to the rules of any other source: never-mounted
+		// paths, the other runtime's config folder, other leads' state and
+		// other projects' mirror folders. (Verify checks every mount again.)
+		if err := in.CheckSource(o.HostSources[k]); err != nil {
+			var r *profile.Refusal
+			if errors.As(err, &r) {
+				return refuse("host source of "+k, "%s", r.Reason)
+			}
+			return err
+		}
+		table[i].Source = o.HostSources[k]
+	}
+	for _, b := range table {
+		if !isHostRow(b) || b.Optional && !o.HostPresent[b.Inside] {
+			continue
+		}
+		if _, ok := o.HostSources[b.Inside]; !ok {
+			return refuse("host sources", "the row of the host at %s has no resolved source: bubblewrap binds the path the plan names and the check of the bind sources opens the real path, so the caller gives the real path it resolved", b.Inside)
+		}
+	}
+	f.table = table
+	return nil
 }
 
 func (o Options) checkAgent() error {

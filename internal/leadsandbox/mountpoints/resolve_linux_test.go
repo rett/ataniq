@@ -457,3 +457,138 @@ func TestResolveSourcesDanglingNeverMountedLinkUnreadable(t *testing.T) {
 	res := f.resolve()
 	wantProblem(t, res.Report, ErrUnreadable, f.base+"/owner/.codex")
 }
+
+// Rule G1: a row Ataniq supplies must name its real path, because bubblewrap
+// binds the path the plan names and follows a link in it. ResolveSources
+// refuses a row whose real path differs, naming the row, whatever the role.
+func TestResolveSourcesRefusesALinkOnAnAtaniqSource(t *testing.T) {
+	cases := []struct {
+		name   string
+		plant  func(f *fixture)
+		inside string // the row the problem names
+		source func(f *fixture) string
+	}{
+		{"agent install is a link", func(f *fixture) {
+			f.mkdir(f.base+"/real-agent", 0o755)
+			f.remove(f.in.AgentInstall)
+			f.symlink(f.base+"/real-agent", f.in.AgentInstall)
+		}, "/ataniq/agent", func(f *fixture) string { return f.in.AgentInstall }},
+		{"probe is a link to a file", func(f *fixture) {
+			f.write(f.base+"/real-probe", "x")
+			f.remove(f.in.ProbeBinary)
+			f.symlink(f.base+"/real-probe", f.in.ProbeBinary)
+		}, "/ataniq/probe", func(f *fixture) string { return f.in.ProbeBinary }},
+		{"a parent of the managed settings is a link", func(f *fixture) {
+			if err := os.Rename(f.owned+"/managed", f.base+"/managed-moved"); err != nil {
+				f.t.Fatal(err)
+			}
+			f.symlink(f.base+"/managed-moved", f.owned+"/managed")
+		}, "/etc/claude-code/managed-settings.json", func(f *fixture) string { return f.in.ManagedSettings }},
+		{"the state's mirrors folder is a link", func(f *fixture) {
+			if err := os.Rename(f.state+"/mirrors", f.base+"/mirrors-moved"); err != nil {
+				f.t.Fatal(err)
+			}
+			f.symlink(f.base+"/mirrors-moved", f.state+"/mirrors")
+		}, "/ataniq/mirror/ataniq.git", func(f *fixture) string { return f.state + "/mirrors/ataniq.git" }},
+		{"the home is a link", func(f *fixture) {
+			if err := os.Rename(f.home, f.base+"/home-moved"); err != nil {
+				f.t.Fatal(err)
+			}
+			f.symlink(f.base+"/home-moved", f.home)
+		}, "/home/lead", func(f *fixture) string { return f.home }},
+		{"the lead's state folder is a link", func(f *fixture) {
+			if err := os.Rename(f.state+"/leads/arc-lead", f.base+"/lead-moved"); err != nil {
+				f.t.Fatal(err)
+			}
+			f.symlink(f.base+"/lead-moved", f.state+"/leads/arc-lead")
+		}, "/work/ataniq/.git/config", func(f *fixture) string { return f.gitMeta + "/config" }},
+		{"an extra placeholder source is a link", func(f *fixture) {
+			f.write(f.base+"/real-envrc", "x")
+			f.remove(f.in.ExtraPlaceholders[0].Source)
+			f.symlink(f.base+"/real-envrc", f.in.ExtraPlaceholders[0].Source)
+		}, "/work/ataniq/.envrc", func(f *fixture) string { return f.in.ExtraPlaceholders[0].Source }},
+	}
+	for _, rt := range profile.Runtimes() {
+		for _, c := range cases {
+			t.Run(string(rt)+" "+c.name, func(t *testing.T) {
+				f := newFixture(t, rt)
+				f.handMadeGitMeta()
+				if err := f.in.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				c.plant(f)
+				if err := f.in.Validate(); err != nil {
+					t.Fatalf("the lexical check must not see the link: %v", err)
+				}
+				inside := c.inside
+				if rt == profile.Codex && inside == "/etc/claude-code/managed-settings.json" {
+					inside = "/etc/codex/managed-config.toml"
+				}
+				res := f.resolve()
+				var found *Problem
+				for _, p := range res.Problems {
+					if p.Kind == ErrSymlink && p.Inside == inside && p.Path == c.source(f) {
+						found = p
+					}
+				}
+				if found == nil {
+					t.Fatalf("no symbolic link problem for the row %s at %s: %v", inside, c.source(f), res.Err())
+				}
+				if !strings.Contains(found.Detail, "real path") || !strings.Contains(found.Detail, inside) {
+					t.Errorf("the problem does not name the row and the real path: %q", found.Detail)
+				}
+				// The row is still listed, with the real path it resolved to.
+				for _, s := range res.Sources {
+					if s.Inside == inside && (s.Real == s.Source || s.Real == "") {
+						t.Errorf("the row %s does not report its real path: %+v", inside, s)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A row of the host may resolve through a link of the host: its real path is
+// reported, with the role, and nothing is refused; a link is refused for any
+// other row.
+func TestResolveSourcesAllowsALinkOnARowOfTheHost(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	f.handMadeGitMeta()
+	f.mkdir(f.base+"/zoneinfo", 0o755)
+	f.write(f.base+"/zoneinfo/UTC", "tz")
+	base := f.resolver()
+	resolve := func(p string) (string, error) {
+		if p == "/etc/localtime" {
+			return f.base + "/zoneinfo/UTC", nil
+		}
+		return base(p)
+	}
+	res, err := ResolveSources(f.in, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK() {
+		t.Fatalf("%v", res.Err())
+	}
+	found := false
+	for _, s := range res.Sources {
+		if s.Inside != "/etc/localtime" {
+			continue
+		}
+		found = true
+		if s.Role != profile.RoleHost || s.Source != "/etc/localtime" || s.Real != f.base+"/zoneinfo/UTC" || s.Bound() != s.Real {
+			t.Errorf("the host row: %+v, bound %s", s, s.Bound())
+		}
+	}
+	if !found {
+		t.Fatal("no /etc/localtime row")
+	}
+	for _, s := range res.Sources {
+		if s.Role == "" {
+			t.Errorf("the row %s has no role", s.Inside)
+		}
+		if s.Role != profile.RoleHost && s.Bound() != s.Source {
+			t.Errorf("the row %s is bound from %s, not its source %s", s.Inside, s.Bound(), s.Source)
+		}
+	}
+}

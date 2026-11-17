@@ -32,11 +32,11 @@ func otherHost(rt Runtime) Inputs {
 	in.LeadSkills = "/opt/ataniq/skills"
 	in.InstructionFile = "/opt/ataniq/instructions.md"
 	in.GitIdentityFile = "/run/ataniq/gitconfig"
-	in.GitMeta = "/var/lib/other/gitmeta/second-lead"
 	in.QargiInstall = "/opt/qargi"
 	in.AssignmentDir = "/run/ataniq/assignment"
 	in.ProjectionDir = "/run/ataniq/projection"
 	in.ResolvConf = "/run/ataniq/resolv.conf"
+	in.GitMeta = in.Layout().GitMeta()
 	in.NeverMounted = []string{"/home/someone/checkout", "/home/someone/.ssh"}
 	in.Term, in.ColorTerm, in.Lang, in.TZ = "screen", "", "en_US.UTF-8", "Asia/Tokyo"
 	in.LeadIdentity = "another-project-lead"
@@ -97,7 +97,6 @@ func TestDigestIsIndependentOfHostAndLead(t *testing.T) {
 		{"role", func(in *Inputs) { in.Role = "other"; in.GitMeta = in.Layout().GitMeta() }},
 		{"project", func(in *Inputs) { in.Project = "other" }},
 		{"agent install", func(in *Inputs) { in.AgentInstall = "/a/b" }},
-		{"git metadata folder", func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/gitmeta-2" }},
 		{"never-mounted paths", func(in *Inputs) { in.NeverMounted = []string{"/x"} }},
 		{"TERM", func(in *Inputs) { in.Term = "linux" }},
 		{"COLORTERM unset", func(in *Inputs) { in.ColorTerm = "" }},
@@ -148,7 +147,9 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 		{"a seccomp file", withSeccomp(strings.Repeat("a", 64))},
 		{"an extra placeholder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc"}} }},
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
-		{"the Qargi records", func(in *Inputs) { in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi" }},
+		{"the Qargi records", func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.qargi"
+		}},
 		{"an environment name", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}} }},
 		{"the managed-settings digest", func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("d", 64) }},
 		{"PATH", func(in *Inputs) { in.Path = "/home/lead/.local/bin:/usr/bin" }},
@@ -352,7 +353,7 @@ func TestDigestWithRecordsIsIndependentOfTheProject(t *testing.T) {
 	for _, rt := range Runtimes() {
 		a, b := fixture(rt), fixture(rt)
 		for _, in := range []*Inputs{&a, &b} {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.qargi"
 		}
 		b.Project = "another-project"
 		if mustDigest(t, a) != mustDigest(t, b) {

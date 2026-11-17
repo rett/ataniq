@@ -71,10 +71,12 @@ type Options struct {
 	HostHas func(path string) bool
 	// CheckBindSources checks the bind sources of the plan, right before the
 	// launch, without following a link (rule G1); nil means
-	// mountpoints.CheckBindSources. The tests of the harness replace it so that
-	// the host's own folders (/usr, /etc/localtime and the like) are not looked
-	// at.
-	CheckBindSources func(sources []string) mountpoints.Report
+	// mountpoints.CheckBindSources. It gets the resolved row of every mount of
+	// the plan that has a source, in the order of the mounts; the path it is
+	// to open for a row is the row's Bound(), which the harness has checked is
+	// the path the plan binds. The tests of the harness replace it so that the
+	// host's own folders (/usr, /etc/localtime and the like) are not looked at.
+	CheckBindSources func(rows []mountpoints.ResolvedSource) mountpoints.Report
 	// System is what the outside checks read the sysctl through; nil means
 	// assert.HostSystem.
 	System assert.System
@@ -407,8 +409,11 @@ func (a *attempt) deriveResolv() error {
 	return writeFileMode(a.bound, "resolv.conf", res.Content, 0o644)
 }
 
-// resolveSources resolves every host source with its links evaluated and puts
-// the real paths into the inputs, as the plan must bind what was checked.
+// resolveSources resolves every bind source with its links evaluated. A source
+// Ataniq supplies must be a real path (mountpoints.ResolveSources refuses one
+// with a link on it), so what the plan binds is what is checked; a row of the
+// host (/usr, /etc/localtime and the like) may resolve through the host's own
+// links, and the plan binds its real path (see buildPlan).
 func (a *attempt) resolveSources() error {
 	res, err := mountpoints.ResolveSources(a.in, a.opt.Resolver)
 	if err != nil {
@@ -418,13 +423,9 @@ func (a *attempt) resolveSources() error {
 	if err := res.Report.Err(); err != nil {
 		return err
 	}
-	notes, err := applyReal(&a.in, res.Sources)
-	a.notes = append(a.notes, notes...)
-	if err != nil {
-		return err
-	}
+	a.notes = append(a.notes, hostRowNotes(res.Sources)...)
 	a.res = res
-	return a.in.Validate()
+	return nil
 }
 
 // allowUnmadeGitMeta drops, in a dry run of a configuration that states no lead
@@ -456,54 +457,16 @@ func (a *attempt) allowUnmadeGitMeta(res *mountpoints.Resolution) {
 	a.notes = append(a.notes, fmt.Sprintf("dry run: %d of the 3 entries of the git metadata folder %s do not exist yet; a run makes the folder (step %s) and checks every source again", dropped, a.in.GitMeta, StepPrepare))
 }
 
-// applyReal puts the real path of each input source into the inputs. A source
-// the profile derives from the state root cannot be changed: its real path
-// must be its name. A host row (/usr, /etc/hosts and the like) has no input to
-// change, and a difference is a note.
-func applyReal(in *profile.Inputs, srcs []mountpoints.ResolvedSource) ([]string, error) {
-	targets := map[string]*string{
-		profile.ProbeInside:                   &in.ProbeBinary,
-		profile.SpecDirInside:                 &in.SpecDir,
-		profile.AgentInside:                   &in.AgentInstall,
-		in.ManagedInside():                    &in.ManagedSettings,
-		profile.SkillsInside(in.Runtime):      &in.LeadSkills,
-		profile.InstructionInside(in.Runtime): &in.InstructionFile,
-		profile.GitIdentityInside:             &in.GitIdentityFile,
-		profile.QargiInside:                   &in.QargiInstall,
-		profile.AssignmentInside:              &in.AssignmentDir,
-		profile.ProjectionInside:              &in.ProjectionDir,
-		profile.ResolvConfInside:              &in.ResolvConf,
-	}
-	if in.QargiRecords != "" {
-		targets[in.QargiRecordsInside] = &in.QargiRecords
-	}
-	tree := profile.TreeInside(in.Project)
-	for i := range in.ExtraPlaceholders {
-		targets[tree+"/"+in.ExtraPlaceholders[i].Rel] = &in.ExtraPlaceholders[i].Source
-	}
-	state := map[string]bool{
-		profile.HomeInside: true, profile.ConfigInside(in.Runtime): true, tree: true,
-		profile.MirrorInside(in.Project): true,
-	}
-	for _, rel := range profile.GitReadOnlyRel() {
-		state[tree+"/"+rel] = true
-	}
+// hostRowNotes says, for each row of the host whose own name is a link of the
+// host, which real path the plan binds in its place.
+func hostRowNotes(srcs []mountpoints.ResolvedSource) []string {
 	var notes []string
 	for _, s := range srcs {
-		if s.Skipped || s.Real == s.Source {
-			continue
+		if !s.Skipped && s.Role == profile.RoleHost && s.Real != s.Source {
+			notes = append(notes, fmt.Sprintf("the host row %s is %s, which resolves to %s: the plan binds the real path, and the real path is what is checked", s.Inside, s.Source, s.Real))
 		}
-		if p, ok := targets[s.Inside]; ok {
-			*p = s.Real
-			notes = append(notes, fmt.Sprintf("the source of %s is %s, which resolves to %s: the real path is bound", s.Inside, s.Source, s.Real))
-			continue
-		}
-		if state[s.Inside] {
-			return notes, fmt.Errorf("the source of %s is reached through a symbolic link (%s resolves to %s): the state folders of a lead must be real folders", s.Inside, s.Source, s.Real)
-		}
-		notes = append(notes, fmt.Sprintf("the host source of %s is %s, which resolves to %s: bubblewrap binds the name, and the real path was checked", s.Inside, s.Source, s.Real))
 	}
-	return notes, nil
+	return notes
 }
 
 // hostPresent says which optional rows of the bind table the host has: a
@@ -541,7 +504,7 @@ func (a *attempt) buildPlan() error {
 	}
 	a.planOpt = plan.Options{
 		PastaPath: a.cfg.Executables.Pasta, BwrapPath: a.cfg.Executables.Bwrap,
-		AgentArgv: a.cfg.Command(), HostPresent: present,
+		AgentArgv: a.cfg.Command(), HostPresent: present, HostSources: a.res.HostSources(),
 		ReportPath: a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
 	}
 	if a.in.SeccompEnabled() {
@@ -663,89 +626,67 @@ func (a *attempt) recheck() error {
 	return nil
 }
 
-// bindSource is one bind source of the plan and the path it is checked by.
-type bindSource struct {
-	Inside, Source, Checked string
-}
-
-// planBindSources lists the bind sources of the plan, in the order of its
-// mounts. A source is checked by its own name. The one exception is a row of
-// the host (/etc/localtime, /etc/ssl and the like), whose name the plan cannot
-// change: when the last resolution says its real path differs, the real path
-// is what is checked, because the name of such a row is a link of the host
-// itself, which no lead can write, and a check by name would refuse every
-// host that has one.
-func (a *attempt) planBindSources() ([]bindSource, error) {
-	binds, err := a.in.Binds()
-	if err != nil {
-		return nil, err
-	}
-	role := map[string]string{}
-	for _, b := range binds {
-		role[b.Inside] = b.SourceRole
-	}
-	resolved := map[string]string{}
+// planBindRows pairs each mount of the plan that has a source with the row of
+// the last resolution it comes from, in the order of the mounts, and refuses a
+// plan that binds a path other than the one the check would open for the row
+// (the row's Bound()): for every row the path that is bound must be the path
+// that is checked. A row Ataniq supplies is bound from its Source, which the
+// resolution has found to be its real path; a row of the host from the real
+// path the plan was given.
+func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
+	byInside := map[string]mountpoints.ResolvedSource{}
 	for _, s := range a.res2.Sources {
-		if !s.Skipped {
-			resolved[s.Inside] = s.Real
-		}
+		byInside[s.Inside] = s
 	}
-	var out []bindSource
+	var rows []mountpoints.ResolvedSource
 	for _, m := range a.pl.Mounts {
 		if m.Source == "" {
 			continue
 		}
-		checked := m.Source
-		if r, ok := resolved[m.Inside]; ok && r != m.Source && role[m.Inside] == profile.RoleHost {
-			checked = r
+		row, ok := byInside[m.Inside]
+		switch {
+		case !ok || row.Skipped:
+			return nil, fmt.Errorf("the plan binds %s from %s and the last resolution has no source for that row", m.Inside, m.Source)
+		case m.Source != row.Bound():
+			return nil, fmt.Errorf("the plan binds %s from %s and the check would open %s: the path that is bound must be the path that is checked", m.Inside, m.Source, row.Bound())
 		}
-		out = append(out, bindSource{Inside: m.Inside, Source: m.Source, Checked: checked})
+		rows = append(rows, row)
 	}
-	return out, nil
+	return rows, nil
 }
 
-// checkBindSources is the last check before the launch (rule G1): every bind
-// source of the plan is opened from the root of the file system without
-// following a link, and a link anywhere on a path refuses the launch. It comes
-// after the second resolution and nothing that runs a lead process lies
-// between it and the launch.
+// checkBindSources is the last check before the launch (rule G1): the path
+// bound for every row of the plan is opened from the root of the file system
+// without following a link, and a link anywhere on a path refuses the launch.
+// It comes after the second resolution and nothing that runs a lead process
+// lies between it and the launch.
 func (a *attempt) checkBindSources() error {
-	srcs, err := a.planBindSources()
+	rows, err := a.planBindRows()
 	if err != nil {
 		return err
 	}
-	seen := map[string]bool{}
-	var paths []string
-	for _, s := range srcs {
-		if !seen[s.Checked] {
-			seen[s.Checked] = true
-			paths = append(paths, s.Checked)
-		}
-	}
-	rep := a.opt.CheckBindSources(paths)
-	a.recordBindSources(srcs, rep)
+	rep := a.opt.CheckBindSources(rows)
+	a.recordBindSources(rows, rep)
 	return rep.Err()
 }
 
 // recordBindSources puts the facts of the check into the evidence: each source
 // of the plan, with the problem the check found about its path, or the fact
-// that no component of it is a link. A report that was cut short does not say
-// about the sources it did not reach, so those have no fact.
-func (a *attempt) recordBindSources(srcs []bindSource, rep mountpoints.Report) {
-	byPath := map[string]*mountpoints.Problem{}
+// that no component of it is a link. The path checked is the path bound, for
+// every row. A report that was cut short does not say about the sources it did
+// not reach, so those have no fact.
+func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mountpoints.Report) {
+	byRow := map[string]*mountpoints.Problem{}
 	for _, p := range rep.Problems {
-		if _, ok := byPath[p.Path]; !ok {
-			byPath[p.Path] = p
+		if _, ok := byRow[p.Inside]; !ok {
+			byRow[p.Inside] = p
 		}
 	}
 	a.bindEv.LinksChecked = true
 	a.bindEv.Sources = []BindSourceFact{}
-	for _, s := range srcs {
-		f := BindSourceFact{Inside: s.Inside, Source: s.Source}
-		if s.Checked != s.Source {
-			f.CheckedPath = s.Checked
-		}
-		switch p, bad := byPath[s.Checked]; {
+	for _, row := range rows {
+		f := BindSourceFact{Inside: row.Inside, Source: row.Bound(), CheckedPath: row.Bound()}
+		switch p, bad := byRow[row.Inside]; {
 		case bad:
 			f.Problem = assert.EscapeDetail(p.Error())
 			if errors.Is(p, mountpoints.ErrSymlink) {

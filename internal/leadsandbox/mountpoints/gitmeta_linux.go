@@ -51,14 +51,24 @@ type infoFile struct {
 // most maxInfoEntries entries, maxInfoFile bytes each, maxInfoTotal in all,
 // none hard-linked). A link, a folder or another type in .git/info is not
 // copied. The clone's .git/hooks is never read: a managed lead's tree has no
-// hooks. Each placeholder of the tree outside .git that exclude does not list
-// is added to the copy of exclude as one anchored line (the file is made when
-// the clone has none).
+// hooks. A .git/config that has an include or includeIf section (any case,
+// found by a bounded scan of the section headers; no other key is
+// interpreted) is refused with ErrInclude, and nothing is copied. Each
+// placeholder of the tree outside .git that exclude does not list is added to
+// the copy of exclude as one anchored line (the file is made when the clone
+// has none).
 func readCloneMeta(tree *safefile.Root, treeDir string, placeholders []Point) (*metaCopy, *Problem) {
 	var m metaCopy
 	var err error
 	if m.config, err = tree.ReadFile(configRel, maxGitConfig, safefile.RefuseHardLinks()); err != nil {
 		return nil, fromErr(treeDir+"/"+configRel, err)
+	}
+	// The copy is read by git inside the sandbox. An include or includeIf
+	// section makes git read other files as configuration, and a relative
+	// path of one lies next to the copy's place in the lead's tree. No other
+	// key is interpreted here.
+	if line, name := findInclude(m.config); name != "" {
+		return nil, problem(ErrInclude, treeDir+"/"+configRel, "line %d has a [%s] section, which makes git read another file as configuration: remove it from the clone's .git/config and call Prepare again", line, name)
 	}
 	names, err := tree.ReadDirNames(infoRel, maxInfoEntries)
 	if err != nil {
@@ -124,30 +134,82 @@ func (m *metaCopy) addExclude(placeholders []Point) {
 	sort.Slice(m.info, func(i, j int) bool { return m.info[i].name < m.info[j].name })
 }
 
-// writeGitMeta makes the folder: exclusively, mode 0700, its files 0600, in
-// the folder parent. config is a copy of the clone's, hooks is empty and info
-// holds the copied files. It refuses to replace anything.
+// gitMetaTmpSuffix is added to the name of the git metadata folder to name the
+// folder it is built in, a sibling in the lead's state folder.
+const gitMetaTmpSuffix = ".tmp"
+
+// gitMetaTmp is the temporary sibling the git metadata folder is built in.
+func gitMetaTmp(gitMeta string) string { return path.Base(gitMeta) + gitMetaTmpSuffix }
+
+// beforeGitMetaMove is called after the folder is built, synced and closed in
+// its temporary place, and before it is moved into place. Nothing but a test
+// sets it: it stands in for a Prepare that is interrupted at that moment.
+var beforeGitMetaMove = func() error { return nil }
+
+// writeGitMeta makes the folder: it builds it in a temporary sibling in the
+// folder parent (the lead's state folder, which no sandbox binds and the lead
+// cannot reach), exclusively, mode 0700, its files 0600: config is a copy of
+// the clone's, hooks is empty and info holds the copied files. Each file and
+// each folder is synced, then the whole is moved into its place with
+// RENAME_NOREPLACE (nothing is ever replaced) and the folder that holds it is
+// synced. So the place never holds a folder that is only partly written, even
+// after an error part-way or a crash: it holds the whole folder or none. A
+// failure leaves the temporary sibling, which lookGitMeta refuses (naming it)
+// until it is removed by hand.
 func writeGitMeta(parent *safefile.Root, in profile.Inputs, m *metaCopy) *Problem {
-	name := path.Base(in.GitMeta)
-	if err := parent.MkdirAll(name, gitMetaDirMode); err != nil {
+	tmp, final := gitMetaTmp(in.GitMeta), path.Base(in.GitMeta)
+	tmpHost := path.Join(path.Dir(in.GitMeta), tmp)
+	if err := parent.MkdirAll(tmp, gitMetaDirMode); err != nil {
+		return fromErr(tmpHost, err)
+	}
+	if prob := fillGitMeta(tmpHost, m); prob != nil {
+		return prob
+	}
+	if err := beforeGitMetaMove(); err != nil {
+		return problem(ErrUnreadable, tmpHost, "the folder was built and not moved into place: %v", err)
+	}
+	if err := parent.RenameNoReplace(tmp, final); err != nil {
 		return fromErr(in.GitMeta, err)
 	}
-	gm, err := safefile.OpenRoot(in.GitMeta)
+	if err := parent.Sync("."); err != nil {
+		return fromErr(path.Dir(in.GitMeta), err)
+	}
+	return nil
+}
+
+// fillGitMeta writes the entries of the folder at dir (made empty by the
+// caller) and syncs every file and folder in it.
+func fillGitMeta(dir string, m *metaCopy) *Problem {
+	gm, err := safefile.OpenRoot(dir)
 	if err != nil {
-		return fromErr(in.GitMeta, err)
+		return fromErr(dir, err)
 	}
 	defer gm.Close()
-	if err := gm.WriteFileExclusive(profile.GitMetaConfig, m.config, gitMetaFileMode); err != nil {
-		return fromErr(profile.GitMetaSource(in.GitMeta, configRel), err)
+	write := func(rel string, data []byte) *Problem {
+		if err := gm.WriteFileExclusive(rel, data, gitMetaFileMode); err != nil {
+			return fromErr(dir+"/"+rel, err)
+		}
+		if err := gm.Sync(rel); err != nil {
+			return fromErr(dir+"/"+rel, err)
+		}
+		return nil
+	}
+	if prob := write(profile.GitMetaConfig, m.config); prob != nil {
+		return prob
 	}
 	for _, d := range []string{profile.GitMetaHooks, profile.GitMetaInfo} {
 		if err := gm.MkdirAll(d, gitMetaDirMode); err != nil {
-			return fromErr(in.GitMeta+"/"+d, err)
+			return fromErr(dir+"/"+d, err)
 		}
 	}
 	for _, f := range m.info {
-		if err := gm.WriteFileExclusive(profile.GitMetaInfo+"/"+f.name, f.data, gitMetaFileMode); err != nil {
-			return fromErr(in.GitMeta+"/"+profile.GitMetaInfo+"/"+f.name, err)
+		if prob := write(profile.GitMetaInfo+"/"+f.name, f.data); prob != nil {
+			return prob
+		}
+	}
+	for _, d := range []string{profile.GitMetaHooks, profile.GitMetaInfo, "."} {
+		if err := gm.Sync(d); err != nil {
+			return fromErr(dir+"/"+d, err)
 		}
 	}
 	return nil

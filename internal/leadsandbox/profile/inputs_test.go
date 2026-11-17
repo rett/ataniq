@@ -18,7 +18,7 @@ func TestValidFixtures(t *testing.T) {
 	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
 	in.SeccompFile = "/srv/owned/seccomp/reviewed.bpf"
 	in.SeccompSHA256 = strings.Repeat("ab", 32)
-	in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/q", "/home/lead/.qargi"
+	in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.qargi"
 	in.ExtraPlaceholders = []Placeholder{{Rel: "sub/.envrc", Source: "/srv/owned/p/envrc"}}
 	if err := in.Validate(); err != nil {
 		t.Errorf("full inputs: %v", err)
@@ -79,9 +79,9 @@ func TestInputsRefusals(t *testing.T) {
 			"bind /etc/ssl/m.toml", "below"},
 		{"codex managed settings in a writable folder under /etc", Codex, func(in *Inputs) {
 			in.ManagedSettingsInside = "/etc/lead/m.toml"
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/etc/lead"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/etc/lead"
 		}, "bind /etc/lead/m.toml", "before its parent /etc/lead"}, // the table puts the policy before every writable bind, so none can hold it
-		{"records without an inside path", Claude, func(in *Inputs) { in.QargiRecords = "/srv/state/q" }, "Qargi records inside path", "empty"},
+		{"records without an inside path", Claude, func(in *Inputs) { in.QargiRecords = "/srv/state/leads/arc-lead/records" }, "Qargi records inside path", "empty"},
 		{"records inside path without a folder", Claude, func(in *Inputs) { in.QargiRecordsInside = "/home/lead/q" }, "Qargi records folder", "empty"},
 		{"relative records folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "q", "/home/lead/q"
@@ -142,40 +142,40 @@ func TestInputsRefusals(t *testing.T) {
 			in.NeverMounted = []string{"/home/owner/.ssh", "/home/owner/../.ssh"}
 		}, "never-mounted path 1", "clean"},
 		{"records inside the work tree", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/ataniq/.qargi"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/work/ataniq/.qargi"
 		}, "Qargi records inside path", "work tree"},
 		{"records inside the work folder", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/work"
 		}, "Qargi records inside path", "work tree"},
 		{"records inside another project's tree", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/other/.qargi"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/work/other/.qargi"
 		}, "Qargi records inside path", "work tree"},
 		{"records inside path with the project token", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/<project>/q"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/<project>/q"
 		}, "Qargi records inside path", "'<'"},
 		{"records inside the other runtime's folder (claude)", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.codex"
 		}, "Qargi records inside path", "codex config folder"},
 		{"records below the other runtime's folder (claude)", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex/records"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.codex/records"
 		}, "Qargi records inside path", "codex config folder"},
 		{"records inside the other runtime's folder (codex)", Codex, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.claude/q"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.claude/q"
 		}, "Qargi records inside path", "claude config folder"},
 		{"records over the home", Codex, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead"
 		}, "bind /home/lead", "already used"},
 		{"relative records inside", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "q"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "q"
 		}, "Qargi records inside path", "absolute"},
 		{"records inside path used twice", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/ataniq/probe"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/ataniq/probe"
 		}, "bind /ataniq/probe", "already used"},
 		{"records bound over a parent of the home", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home"
 		}, "bind /home/lead", "before its parent"},
 		{"records below a read-only bind", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/ataniq/agent/records"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/ataniq/agent/records"
 		}, "bind /ataniq/agent/records", "below"},
 		// Overlaps with what the lead can write.
 		{"skills inside the lead's home", Claude, func(in *Inputs) { in.LeadSkills = "/srv/state/leads/arc-lead/home/skills" },
@@ -185,43 +185,68 @@ func TestInputsRefusals(t *testing.T) {
 		}, "bind /home/lead/.claude/CLAUDE.md", "overlaps"},
 		{"assignment folder inside the tree", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/leads/arc-lead/tree/a" },
 			"bind /ataniq/assignment", "overlaps"},
+		// The records folder is the layout's own (rule G1 across leads).
 		{"records inside the home folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/home/q", "/home/lead/.qargi"
-		}, "bind /home/lead/.qargi", "overlaps"},
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder outside the state root", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder is another source of the same lead", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = in.AgentInstall, "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder above a read-only source", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/opt/ataniq", "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder in another lead's state", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/other-lead/records", "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder in the lead's own tree", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/tree/records", "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
+		{"records folder is the lead's state folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead", "/home/lead/.qargi"
+		}, "Qargi records folder", "must be /srv/state/leads/arc-lead/records"},
 		// The git metadata folder.
 		{"no git metadata folder", Claude, func(in *Inputs) { in.GitMeta = "" }, "git metadata folder", "empty"},
 		{"relative git metadata folder", Claude, func(in *Inputs) { in.GitMeta = "gitmeta" }, "git metadata folder", "absolute"},
 		{"unclean git metadata folder", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/gitmeta/" }, "git metadata folder", "clean"},
 		{"git metadata folder is the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/home" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/home/gitmeta" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the config folder", Claude, func(in *Inputs) {
 			in.GitMeta = "/srv/state/leads/arc-lead/config/claude/gitmeta"
-		}, "git metadata folder", "lead can write"},
+		}, "git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the tree", Codex, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/tree/.git-meta" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder is the tree's .git", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead/tree/.git" },
-			"git metadata folder", "lead can write"},
-		{"git metadata folder in the records folder", Claude, func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/q", "/ataniq/records"
-			in.GitMeta = "/srv/state/leads/arc-lead/q/gitmeta"
-		}, "git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder above the tree", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/arc-lead" },
-			"git metadata folder", "lead can write"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder above the home", Claude, func(in *Inputs) { in.GitMeta = "/srv/state" },
-			"git metadata folder", "lead can write"},
-		{"git metadata folder in the other runtime's folder", Claude, func(in *Inputs) {
-			in.GitMeta = "/srv/state/leads/arc-lead/config/codex/gitmeta"
-		}, "git metadata folder", "never-mounted"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder outside the state root", Claude, func(in *Inputs) { in.GitMeta = "/var/lib/other/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder beside the lead's folders under a sibling name", Claude, func(in *Inputs) {
+			in.GitMeta = "/srv/state/leads/arc-lead/gitmeta2"
+		}, "git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in the owner's checkout", Claude, func(in *Inputs) { in.GitMeta = "/home/owner/work/ataniq/gitmeta" },
-			"git metadata folder", "never-mounted"},
-		{"git metadata folder above the owner's .ssh", Claude, func(in *Inputs) { in.GitMeta = "/home/owner" },
-			"git metadata folder", "never-mounted"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in another lead's state", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/leads/other-lead/gitmeta" },
-			"bind /work/ataniq/.git/config", "another lead's state"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
 		{"git metadata folder in another project's mirror", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/mirrors/other.git" },
-			"bind /work/ataniq/.git/config", "another project's mirror"},
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		// The places the review found accepted.
+		{"git metadata folder in this project's mirror", Claude, func(in *Inputs) { in.GitMeta = "/srv/state/mirrors/ataniq.git/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder in the agent install", Claude, func(in *Inputs) { in.GitMeta = in.AgentInstall + "/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder in the assignment folder", Claude, func(in *Inputs) { in.GitMeta = in.AssignmentDir + "/gitmeta" },
+			"git metadata folder", "must be /srv/state/leads/arc-lead/gitmeta"},
+		{"git metadata folder under a never-mounted path", Claude, func(in *Inputs) {
+			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/gitmeta")
+		}, "bind /work/ataniq/.git/config", "never-mounted"},
 		// Another lead's or another project's state.
 		{"agent install in another lead's claude login", Claude, func(in *Inputs) {
 			in.AgentInstall = "/srv/state/leads/other-lead/config/claude"
@@ -255,8 +280,10 @@ func TestInputsRefusals(t *testing.T) {
 			"bind /ataniq/probe", "above the never-mounted"},
 		{"resolv.conf is the file system root", Claude, func(in *Inputs) { in.ResolvConf = "/" },
 			"bind /etc/resolv.conf", "above the never-mounted"},
-		{"state root inside the owner's checkout", Claude, func(in *Inputs) { in.StateRoot = "/home/owner/work/ataniq/state" },
-			"bind /home/lead", "below the never-mounted"},
+		{"state root inside the owner's checkout", Claude, func(in *Inputs) {
+			in.StateRoot = "/home/owner/work/ataniq/state"
+			in.GitMeta = in.Layout().GitMeta()
+		}, "bind /home/lead", "below the never-mounted"},
 		{"never-mounted path inside a state folder", Claude, func(in *Inputs) {
 			in.NeverMounted = append(in.NeverMounted, "/srv/state/leads/arc-lead/tree/.git/hooks/x")
 		}, "bind /work/ataniq", "above the never-mounted"},
@@ -454,5 +481,41 @@ func TestFlagsAreNotShared(t *testing.T) {
 	b, _ := fixture(Claude).Flags()
 	if b[0] != "--die-with-parent" {
 		t.Error("Flags returns a shared slice")
+	}
+}
+
+// Rule G1 across leads: every folder a lead writes lies in that lead's own
+// state, so the rules about another lead's state keep each lead's read-only
+// sources out of every other lead's reach. The review's case: lead B names a
+// records folder that is a read-only source of lead A.
+func TestRecordsFolderOfAnotherLeadCannotBeASourceOfThisOne(t *testing.T) {
+	for _, rt := range Runtimes() {
+		a := fixture(rt)
+		b := fixture(rt)
+		b.Role = "second-lead"
+		b.GitMeta = b.Layout().GitMeta()
+		b.QargiRecordsInside = "/home/lead/.qargi"
+		b.AgentInstall = "/opt/ataniq/second-agent"
+
+		// B's records folder is a source of A: refused for B, whatever the
+		// place of A's source.
+		b.QargiRecords = a.AgentInstall
+		if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "must be "+b.Layout().Records()) {
+			t.Errorf("%s: lead B with A's agent install as its records folder: %v", rt, err)
+		}
+		// B's own records folder is accepted, and it is in B's state.
+		b.QargiRecords = b.Layout().Records()
+		if err := b.Validate(); err != nil {
+			t.Errorf("%s: lead B with its own records folder: %v", rt, err)
+		}
+		if !strings.HasPrefix(b.QargiRecords, b.Layout().LeadDir()+"/") {
+			t.Errorf("%s: B's records folder %s is not in B's state", rt, b.QargiRecords)
+		}
+		// A source of A in B's records folder is refused for A: the folder is
+		// in another lead's state.
+		a.AgentInstall = b.Layout().Records()
+		if err := a.Validate(); err == nil || !strings.Contains(err.Error(), "another lead's state") {
+			t.Errorf("%s: lead A with a source in B's records folder: %v", rt, err)
+		}
 	}
 }

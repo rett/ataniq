@@ -40,6 +40,14 @@ var (
 	// ErrNeverMounted: a real path is, or lies in or above, a never-mounted
 	// path or the other runtime's config folder.
 	ErrNeverMounted = errors.New("a never-mounted path")
+	// ErrIncomplete: a Prepare that failed or was interrupted left the
+	// temporary folder it builds the git metadata folder in. It is refused
+	// and never reused.
+	ErrIncomplete = errors.New("left by a Prepare that did not finish")
+	// ErrInclude: the clone's .git/config has an include or includeIf
+	// section, which makes git read another file as configuration; Prepare
+	// refuses to copy it.
+	ErrInclude = errors.New("the git configuration has an include or includeIf section")
 	// ErrOverlap: a real source overlaps a lead-writable folder, or two
 	// lead-writable folders overlap.
 	ErrOverlap = errors.New("overlaps a lead-writable folder")
@@ -55,18 +63,31 @@ const (
 // Problem is one thing a check or Prepare refused. Kind is one of the Err
 // values above; Path is the host path (or the profile path) it is about;
 // Detail says why; Err is the operating system or safefile error behind it,
-// when there is one. Names in Path and Detail come from the caller's layout,
-// not from the lead, except where the detail quotes an operating system error.
+// when there is one. Inside is the inside path of the bind row the problem is
+// about, for a problem found on a bind source ([ResolveSources],
+// [CheckBindSources]), and empty for any other. Names in Path and Detail come
+// from the caller's layout, not from the lead, except where the detail quotes
+// an operating system error.
 type Problem struct {
 	Kind   error
 	Path   string
 	Detail string
 	Err    error
+	Inside string
+}
+
+// at names the bind row the problem is about and returns the problem.
+func (p *Problem) at(inside string) *Problem {
+	p.Inside = inside
+	return p
 }
 
 // Error implements error.
 func (p *Problem) Error() string {
 	s := "mountpoints: " + p.Kind.Error()
+	if p.Inside != "" {
+		s += ": row " + p.Inside
+	}
 	if p.Path != "" {
 		s += ": " + p.Path
 	}

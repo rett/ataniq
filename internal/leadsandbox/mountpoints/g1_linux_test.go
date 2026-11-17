@@ -17,15 +17,24 @@ import (
 // inputs, so it needs both the profile and the plan.
 
 func (f *fixture) planOptions() plan.Options {
+	// The host rows are bound from the real paths the resolution gives (the
+	// fixture's resolver leaves the host's own paths as they are), and the
+	// optional ones are present when the resolution found them.
+	res := f.resolve()
+	hostSources := res.HostSources()
+	present := map[string]bool{}
+	for inside := range hostSources {
+		present[inside] = true
+	}
 	return plan.Options{
-		PastaPath:  "/usr/bin/pasta",
-		BwrapPath:  "/usr/bin/bwrap",
-		AgentArgv:  []string{"/ataniq/agent/bin/agent"},
-		ReportPath: f.base + "/run/report.fifo",
-		ReportDir:  f.base + "/run",
-		ReportFD:   3,
-		// HostPresent is nil: no optional host row is emitted, so the plan
-		// does not depend on the host's layout.
+		PastaPath:   "/usr/bin/pasta",
+		BwrapPath:   "/usr/bin/bwrap",
+		AgentArgv:   []string{"/ataniq/agent/bin/agent"},
+		HostPresent: present,
+		HostSources: hostSources,
+		ReportPath:  f.base + "/run/report.fifo",
+		ReportDir:   f.base + "/run",
+		ReportFD:    3,
 	}
 }
 
@@ -45,6 +54,19 @@ func ownedSources(f *fixture, p *plan.Plan) []string {
 	for _, m := range p.Mounts {
 		if m.Source != "" && strings.HasPrefix(m.Source, f.base+"/") {
 			out = append(out, m.Source)
+		}
+	}
+	return out
+}
+
+// ownedRows are the rows of the plan whose sources lie in the fixture's
+// folders, as the rows [ResolveSources] would give for them (none is a row of
+// the host): each is checked by its own source.
+func ownedRows(f *fixture, p *plan.Plan) []ResolvedSource {
+	var out []ResolvedSource
+	for _, m := range p.Mounts {
+		if m.Source != "" && strings.HasPrefix(m.Source, f.base+"/") {
+			out = append(out, ResolvedSource{Inside: m.Inside, Source: m.Source, Real: m.Source, Role: "owned"})
 		}
 	}
 	return out
@@ -149,13 +171,13 @@ func TestG1PlantedLinksInTheTreeNeverReachTheBindSources(t *testing.T) {
 						t.Errorf("the source %s resolves to %q (%v)", s, real, err)
 					}
 				}
-				var realSrcs []string
+				var rows []ResolvedSource
 				for _, s := range res.Sources {
 					if !s.Skipped && strings.HasPrefix(s.Real, f.base+"/") {
-						realSrcs = append(realSrcs, s.Real)
+						rows = append(rows, s)
 					}
 				}
-				if rep := CheckBindSources(realSrcs); !rep.OK() {
+				if rep := CheckBindSources(rows); !rep.OK() {
 					t.Fatalf("CheckBindSources: %v", rep.Err())
 				}
 			})
@@ -224,11 +246,12 @@ func TestG1ALinkAtABindSourceIsRefusedNamingTheRow(t *testing.T) {
 				f.prepare()
 				p := f.buildPlan()
 				srcs := ownedSources(f, p)
-				if rep := CheckBindSources(srcs); !rep.OK() {
+				rows := ownedRows(f, p)
+				if rep := CheckBindSources(rows); !rep.OK() {
 					t.Fatalf("before the plant: %v", rep.Err())
 				}
 				c.plant(f)
-				rep := CheckBindSources(srcs)
+				rep := CheckBindSources(rows)
 				row := c.row(f)
 				var found *Problem
 				for _, pr := range rep.Problems {
@@ -241,6 +264,9 @@ func TestG1ALinkAtABindSourceIsRefusedNamingTheRow(t *testing.T) {
 				}
 				if !strings.Contains(found.Detail, c.link(f)) {
 					t.Errorf("the problem does not name the link %s: %q", c.link(f), found.Detail)
+				}
+				if found.Inside == "" || !strings.Contains(found.Detail, found.Inside) {
+					t.Errorf("the problem does not name the row by its inside path: %+v", found)
 				}
 				// Every refusal is about a source of the plan, and nothing was followed.
 				for _, pr := range rep.Problems {
@@ -280,5 +306,79 @@ func TestG1NoSourceOfEitherRuntimeLiesInAFolderTheLeadWrites(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// For every row of the plan, the path bubblewrap is told to bind is the path
+// CheckBindSources opens: the Source for a row Ataniq supplies, the real path
+// the resolution reported for a row of the host whose own name is a link.
+func TestG1TheBoundPathIsTheCheckedPath(t *testing.T) {
+	for _, rt := range profile.Runtimes() {
+		t.Run(string(rt), func(t *testing.T) {
+			f := newFixture(t, rt)
+			f.prepare()
+			f.mkdir(f.base+"/zoneinfo", 0o755)
+			f.write(f.base+"/zoneinfo/UTC", "tz")
+			f.mkdir(f.base+"/sysroot/usr", 0o755)
+			base := f.resolver()
+			resolve := func(p string) (string, error) {
+				switch p {
+				case "/etc/localtime":
+					return f.base + "/zoneinfo/UTC", nil
+				case "/usr":
+					return f.base + "/sysroot/usr", nil
+				}
+				return base(p)
+			}
+			res, err := ResolveSources(f.in, resolve)
+			if err != nil || !res.OK() {
+				t.Fatalf("ResolveSources: %v, %v", err, res.Err())
+			}
+			opt := f.planOptions()
+			opt.HostSources = res.HostSources()
+			if opt.HostSources["/etc/localtime"] != f.base+"/zoneinfo/UTC" || opt.HostSources["/usr"] != f.base+"/sysroot/usr" {
+				t.Fatalf("HostSources = %v", opt.HostSources)
+			}
+			p, err := plan.Build(f.in, opt)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			rows := map[string]ResolvedSource{}
+			for _, s := range res.Sources {
+				rows[s.Inside] = s
+			}
+			checked := 0
+			for _, m := range p.Mounts {
+				if m.Source == "" {
+					continue
+				}
+				row, ok := rows[m.Inside]
+				if !ok {
+					t.Errorf("%s has a source and no resolved row", m.Inside)
+					continue
+				}
+				if m.Source != row.Bound() {
+					t.Errorf("%s: bound from %s, checked as %s", m.Inside, m.Source, row.Bound())
+				}
+				checked++
+			}
+			if checked < 20 {
+				t.Errorf("only %d rows compared", checked)
+			}
+			// The rows that lie in the fixture are all clean, and the check
+			// is made on the paths the plan binds.
+			var own []ResolvedSource
+			for _, s := range res.Sources {
+				if !s.Skipped && strings.HasPrefix(s.Bound(), f.base+"/") {
+					own = append(own, s)
+				}
+			}
+			if rep := CheckBindSources(own); !rep.OK() {
+				t.Fatalf("CheckBindSources: %v", rep.Err())
+			}
+			if len(own) < 22 {
+				t.Errorf("only %d rows are the fixture's", len(own))
+			}
+		})
 	}
 }

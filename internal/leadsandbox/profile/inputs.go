@@ -88,16 +88,23 @@ type Inputs struct {
 	// .git/hooks and .git/info are bound read-only over the tree from the
 	// entries of this folder, not from the tree itself, because bubblewrap
 	// follows a symbolic link in a bind source and the lead writes the tree.
-	// The default place is Layout.GitMeta. It is required, and must not be,
-	// lie in or lie above the lead's home, config folder, tree or records
-	// folder.
+	// It is required and must be Layout.GitMeta, <state>/leads/<role>/gitmeta:
+	// beside the lead's home, config folder and tree, which are never bound
+	// as a whole, so the lead cannot reach it, and below the state root, so
+	// the holder's lookup from the state root without links covers its whole
+	// path.
 	GitMeta string
 
 	// QargiInstall is the Qargi install, bound at QargiInside.
 	QargiInstall string
 
 	// QargiRecords is the lead's working Qargi records (optional): the host
-	// folder and the inside path it is bound at, read-write.
+	// folder and the inside path it is bound at, read-write. When present the
+	// host folder must be Layout.Records, <state>/leads/<role>/records: below
+	// the lead's own state folder, so that every rule about another lead's
+	// state covers it (a folder the lead writes at any other place could be,
+	// or lie above, a source that another lead's sandbox binds). The inside
+	// path is the caller's, under the rules below.
 	QargiRecords       string
 	QargiRecordsInside string
 
@@ -318,6 +325,14 @@ func (in Inputs) checkRecords() error {
 	if err := CheckPath("Qargi records inside path", in.QargiRecordsInside); err != nil {
 		return err
 	}
+	// Rule G1 holds across leads only if every folder a lead writes lies in
+	// that lead's own state: the other leads' checks refuse a source in or
+	// above it. A records folder at any other place could be, or lie above, a
+	// read-only source of another lead (its agent, its probe, its spec), and
+	// the lead that writes it could plant a link there.
+	if want := in.Layout().Records(); in.QargiRecords != want {
+		return refuse("Qargi records folder", "must be %s (Layout.Records): a folder the lead writes anywhere else could be, or lie above, a source another lead's sandbox binds (rule G1)", want)
+	}
 	// The digest is independent of the project and of the host: it replaces
 	// the project only in the rows it builds itself, so a caller-given path
 	// must not depend on the project, hold a token, or touch the other
@@ -337,24 +352,18 @@ func (in Inputs) checkRecords() error {
 	return nil
 }
 
-// checkGitMeta refuses a git metadata folder the lead can write or reach: one
-// that is, lies in or lies above the home, the runtime's config folder, the
-// tree or the records folder (above, because a bind of it would then hold a
-// folder the lead writes), or that a never-mounted path covers.
+// checkGitMeta refuses a git metadata folder that is not the layout's own,
+// <state>/leads/<role>/gitmeta. The folder is Ataniq's copy of the tree's
+// protected git files and is bound read-only by path, so it lies beside the
+// lead's folders under the lead's state folder, where the lookup from the
+// state root without links reaches every component of its path, and where the
+// rules about another lead's state apply to it. A place the caller chooses
+// could lie anywhere, above or below a folder the lead can write, and only its
+// last component could be looked at. A never-mounted path that covers it is
+// refused with the rows that bind it, like any source.
 func (in Inputs) checkGitMeta() error {
-	l := in.Layout()
-	cfg, _ := l.ConfigDir(in.Runtime)
-	writable := []struct{ what, dir string }{{"home", l.Home()}, {"config folder", cfg}, {"tree", l.Tree()}}
-	if in.QargiRecords != "" {
-		writable = append(writable, struct{ what, dir string }{"records folder", in.QargiRecords})
-	}
-	for _, w := range writable {
-		if related(in.GitMeta, w.dir) {
-			return refuse("git metadata folder", "%s is, lies in or lies above the lead's %s %s, a folder the lead can write", in.GitMeta, w.what, w.dir)
-		}
-	}
-	if err := in.CheckSource(in.GitMeta); err != nil {
-		return refuse("git metadata folder", "%s", reasonOf(err))
+	if want := in.Layout().GitMeta(); in.GitMeta != want {
+		return refuse("git metadata folder", "must be %s (Layout.GitMeta): a folder elsewhere could lie in, above or beside a folder the lead can write, or have a link above it that nothing looks for", want)
 	}
 	return nil
 }

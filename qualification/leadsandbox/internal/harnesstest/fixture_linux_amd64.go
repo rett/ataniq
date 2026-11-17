@@ -209,11 +209,11 @@ func (f *Fixture) resolve(p string) (string, error) {
 // CheckBindSources is the check of the bind sources against the real file
 // system for the sources that lie under the fixture, and nothing for the host's
 // own rows (/usr, /etc/localtime and the like), which a test never looks at.
-func (f *Fixture) CheckBindSources(sources []string) mountpoints.Report {
-	var own []string
-	for _, s := range sources {
-		if s == f.Base || strings.HasPrefix(s, f.Base+"/") {
-			own = append(own, s)
+func (f *Fixture) CheckBindSources(rows []mountpoints.ResolvedSource) mountpoints.Report {
+	var own []mountpoints.ResolvedSource
+	for _, r := range rows {
+		if b := r.Bound(); b == f.Base || strings.HasPrefix(b, f.Base+"/") {
+			own = append(own, r)
 		}
 	}
 	return mountpoints.CheckBindSources(own)

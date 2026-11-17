@@ -141,17 +141,12 @@ type Sources struct {
 	GitIdentityFile string `json:"git_identity_file"`
 	QargiInstall    string `json:"qargi_install"`
 
-	// GitMeta is the Ataniq-owned folder of the copy of the tree's .git/config,
-	// .git/hooks and .git/info (rule G1: the tree's own files are never a bind
-	// source). Absent means the layout's default, <state root>/leads/<role>/gitmeta.
-	// A value is checked like every other source: the profile refuses a folder
-	// that is, lies in or lies above the lead's home, config folder, tree or
-	// records folder, or on a never-mounted path, and the campaign must not
-	// overlap it. Its parent folder must exist and be the caller's: the run
-	// makes the folder itself, once (see no_lead_has_run).
-	GitMeta string `json:"git_meta,omitempty"`
-
-	QargiRecords       string `json:"qargi_records,omitempty"`
+	// QargiRecordsInside is where the lead's working Qargi records appear
+	// inside; absent means there are none. The host folder is not a key: it is
+	// the layout's own, <state root>/leads/<role>/records (rule G1: a folder
+	// the lead writes at any other place could be, or lie above, a source of
+	// another lead). It must exist, as a real folder of mode 0700 owned by the
+	// caller, like the lead's home.
 	QargiRecordsInside string `json:"qargi_records_inside,omitempty"`
 
 	AssignmentDir string `json:"assignment_dir"`
@@ -400,9 +395,8 @@ func (c *Config) checkCampaign(in profile.Inputs) error {
 		"sources.agent_install": c.Sources.AgentInstall, "sources.managed_settings": c.Sources.ManagedSettings,
 		"sources.lead_skills": c.Sources.LeadSkills, "sources.instruction_file": c.Sources.InstructionFile,
 		"sources.git_identity_file": c.Sources.GitIdentityFile, "sources.qargi_install": c.Sources.QargiInstall,
-		"sources.qargi_records": c.Sources.QargiRecords, "sources.assignment_dir": c.Sources.AssignmentDir,
+		"sources.assignment_dir": c.Sources.AssignmentDir,
 		"sources.projection_dir": c.Sources.ProjectionDir, "executables.probe": c.Executables.Probe,
-		"sources.git_meta": c.Sources.GitMeta,
 	} {
 		if p != "" && related(p, c.Campaign) {
 			return configErr(name, "overlaps the campaign folder")
@@ -428,8 +422,8 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 		ManagedSettingsSHA256: c.Sources.ManagedSettingsSHA256,
 		LeadSkills:            c.Sources.LeadSkills, InstructionFile: c.Sources.InstructionFile,
 		GitIdentityFile: c.Sources.GitIdentityFile, QargiInstall: c.Sources.QargiInstall,
-		QargiRecords: c.Sources.QargiRecords, QargiRecordsInside: c.Sources.QargiRecordsInside,
-		AssignmentDir: c.Sources.AssignmentDir, ProjectionDir: c.Sources.ProjectionDir,
+		QargiRecordsInside: c.Sources.QargiRecordsInside,
+		AssignmentDir:      c.Sources.AssignmentDir, ProjectionDir: c.Sources.ProjectionDir,
 		ResolvConf:   resolv,
 		NeverMounted: append([]string(nil), c.NeverMounted...),
 		Term:         c.Terminal.Term, ColorTerm: c.Terminal.ColorTerm, Lang: c.Terminal.Lang, TZ: c.Terminal.TZ,
@@ -440,6 +434,9 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 	} else if c.OwnerUser != "" {
 		return profile.Inputs{}, configErr("owner_user", "is given for the %q identity only", profile.IdentityOwner)
 	}
+	if c.Sources.QargiRecordsInside != "" {
+		in.QargiRecords = c.layout().Records()
+	}
 	if s := c.Sources.Seccomp; s != nil {
 		in.SeccompFile, in.SeccompSHA256 = s.File, s.SHA256
 	}
@@ -449,14 +446,14 @@ func (c *Config) inputs(resolv, specDir string) (profile.Inputs, error) {
 	return in, nil
 }
 
-// gitMeta is the git metadata folder: the configured one, else the layout's
-// default below the scratch state root.
-func (c *Config) gitMeta() string {
-	if c.Sources.GitMeta != "" {
-		return c.Sources.GitMeta
-	}
-	return profile.Layout{StateRoot: c.State.Root, Role: c.State.Role, Project: c.State.Project}.GitMeta()
+// layout is the host layout of the scratch lead.
+func (c *Config) layout() profile.Layout {
+	return profile.Layout{StateRoot: c.State.Root, Role: c.State.Role, Project: c.State.Project}
 }
+
+// gitMeta is the git metadata folder, the layout's own below the scratch state
+// root: the configuration has no key for it.
+func (c *Config) gitMeta() string { return c.layout().GitMeta() }
 
 func related(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")

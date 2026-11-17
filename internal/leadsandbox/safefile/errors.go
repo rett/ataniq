@@ -52,7 +52,7 @@ const maxErrPath = 200
 // the sentinel errors above, possibly joined with the system's errno, or the
 // errno itself.
 type Error struct {
-	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open"
+	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open", "sync", "rename"
 	Path string // the path as the caller gave it
 	Err  error
 }

@@ -483,7 +483,7 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 
 		if m.source != "" {
 			if err := in.CheckSource(m.source); err != nil {
-				v.add(ProbNever, "the source of %s is a never-mounted path, lies in or around one, or is not a clean absolute path", label)
+				v.add(ProbNever, "the source of %s is a never-mounted path, lies in or around one, lies in or above another lead's state or another project's mirror folder, or is not a clean absolute path", label)
 			}
 		}
 		if otherInside != "" && (m.inside == otherInside || strings.HasPrefix(m.inside, otherInside+"/")) {

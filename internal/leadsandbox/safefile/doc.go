@@ -21,8 +21,12 @@
 // reports the type and mode of an entry without following it. Writes, for
 // the mount-point work that runs before a lead's first run: [Root.MkdirAll],
 // [Root.WriteFileExclusive] (create only, never replace) and
-// [Root.AppendFile] (an existing regular file). There is deliberately no
-// rename, no remove and no truncate.
+// [Root.AppendFile] (an existing regular file). Two more make what was written
+// durable and put it in its place: [Root.Sync] (fsync of a regular file or
+// folder, "." for the handle's folder) and [Root.RenameNoReplace], the only
+// rename: one single name to another in the handle's own folder, with
+// RENAME_NOREPLACE, so it never replaces and looks nothing up. There is
+// deliberately no replacing rename, no remove and no truncate.
 //
 // # Rules every call follows
 //

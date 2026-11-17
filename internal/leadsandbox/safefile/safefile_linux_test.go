@@ -982,7 +982,10 @@ func TestEveryOpenCarriesFlags(t *testing.T) {
 	r.WriteFileExclusive("l", nil, 0o600)
 	r.AppendFile("f", []byte("y"))
 	r.ReadDirNames("d", 10)
-	if n < 12 || len(bad) != 0 {
+	r.Sync("f")
+	r.Sync("d")
+	r.Sync("l")
+	if n < 15 || len(bad) != 0 {
 		t.Fatalf("%d calls seen; without the flags: %v", n, bad)
 	}
 	for name, f := range map[string]uint64{
@@ -1168,5 +1171,91 @@ func TestClassifyErrnos(t *testing.T) {
 	err := classify("open", "x", unix.EACCES)
 	if !errors.Is(err, unix.EACCES) || errors.Is(err, ErrEscapes) || errors.Is(err, ErrUnsupported) {
 		t.Errorf("classify(EACCES) = %v", err)
+	}
+}
+
+func TestSync(t *testing.T) {
+	r, dir, outside := newRoot(t)
+	write(t, filepath.Join(dir, "d/f"), "x")
+	symlink(t, outside, filepath.Join(dir, "l"))
+	symlink(t, filepath.Join(outside, "secret"), filepath.Join(dir, "lf"))
+	if err := unix.Mkfifo(filepath.Join(dir, "fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{".", "d", "d/f"} {
+		if err := r.Sync(rel); err != nil {
+			t.Errorf("Sync(%q): %v", rel, err)
+		}
+	}
+	for _, tc := range []struct {
+		rel  string
+		want error
+	}{
+		{"l", ErrSymlink}, {"lf", ErrSymlink}, {"l/secret", ErrSymlink}, {"fifo", ErrNotRegular},
+		{"/etc", ErrEscapes}, {"../outside", ErrEscapes}, {"d//f", ErrInvalidArgument}, {"", ErrInvalidArgument},
+	} {
+		if err := r.Sync(tc.rel); !errors.Is(err, tc.want) {
+			t.Errorf("Sync(%q) = %v, want %v", tc.rel, err, tc.want)
+		}
+	}
+	if err := r.Sync("missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Sync(missing) = %v", err)
+	}
+	r.Close()
+	if err := r.Sync("d"); !errors.Is(err, ErrClosed) {
+		t.Errorf("Sync on a closed handle = %v", err)
+	}
+}
+
+func TestRenameNoReplace(t *testing.T) {
+	r, dir, outside := newRoot(t)
+	write(t, filepath.Join(dir, "a/inner"), "a")
+	write(t, filepath.Join(dir, "taken/inner"), "taken")
+	symlink(t, outside, filepath.Join(dir, "link"))
+	symlink(t, outside, filepath.Join(dir, "linkname"))
+
+	if err := r.RenameNoReplace("a", "b"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "b/inner")); err != nil || string(got) != "a" {
+		t.Errorf("b/inner = %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "a")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the old name is still there: %v", err)
+	}
+
+	// Anything at the new name, a link or a folder, is never replaced.
+	before := snapshot(t, dir)
+	for _, newName := range []string{"taken", "link", "linkname"} {
+		if err := r.RenameNoReplace("b", newName); !errors.Is(err, fs.ErrExist) {
+			t.Errorf("rename over %q = %v, want an error that matches fs.ErrExist", newName, err)
+		}
+	}
+	if after := snapshot(t, dir); !reflect.DeepEqual(before, after) {
+		t.Errorf("a refused rename changed the folder\nbefore %v\nafter  %v", before, after)
+	}
+
+	// A link at the old name is renamed as a link, not followed.
+	if err := r.RenameNoReplace("link", "link2"); err != nil {
+		t.Fatalf("rename of a link: %v", err)
+	}
+	if got, err := os.Readlink(filepath.Join(dir, "link2")); err != nil || got != outside {
+		t.Errorf("link2 -> %q, %v", got, err)
+	}
+
+	// Names, not paths.
+	for _, tc := range []struct{ oldName, newName string }{
+		{"b/inner", "x"}, {"b", "d/x"}, {"b", "../x"}, {"..", "x"}, {"b", "."}, {"", "x"}, {"b", ""}, {"/b", "x"}, {"b", "x/"},
+	} {
+		if err := r.RenameNoReplace(tc.oldName, tc.newName); err == nil {
+			t.Errorf("RenameNoReplace(%q, %q) was accepted", tc.oldName, tc.newName)
+		}
+	}
+	if err := r.RenameNoReplace("missing", "x"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("rename of a missing entry = %v", err)
+	}
+	r.Close()
+	if err := r.RenameNoReplace("b", "c"); !errors.Is(err, ErrClosed) {
+		t.Errorf("rename on a closed handle = %v", err)
 	}
 }

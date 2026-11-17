@@ -525,7 +525,11 @@ func TestWorktreeIsNotAnOwnClone(t *testing.T) {
 	}
 }
 
-func TestSourcesAreBoundByTheirRealPath(t *testing.T) {
+// A source Ataniq supplies must be given as its real path: one with a link on
+// it is refused by the resolution, naming the row and the real path, before
+// anything else is built or checked (the plan would bind the path it names,
+// and bubblewrap follows a link in it).
+func TestALinkOnASourceAtaniqSuppliesIsRefused(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	approved(f)
 	real := f.Config.Sources.AssignmentDir
@@ -536,17 +540,17 @@ func TestSourcesAreBoundByTheirRealPath(t *testing.T) {
 	f.Config.Sources.AssignmentDir = link
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
 	mustNoErr(t, r)
-	if r.out.StepFailed {
-		t.Fatalf("steps: %+v", r.out.Summary.Steps)
-	}
-	var bound string
-	for _, m := range r.out.Plan.Mounts {
-		if m.Inside == "/ataniq/assignment" {
-			bound = m.Source
+	wantStep(t, r.out, harness.StepResolve, harness.StepFailed)
+	e := step(t, r.out, harness.StepResolve).Error
+	for _, want := range []string{"/ataniq/assignment", "symbolic link", real} {
+		if !strings.Contains(e, want) {
+			t.Errorf("the error %q does not say %q", e, want)
 		}
 	}
-	if bound != real || len(r.out.Summary.Notes) == 0 {
-		t.Errorf("bound %q, want %q; notes %v", bound, real, r.out.Summary.Notes)
+	wantStep(t, r.out, harness.StepBuild, harness.StepSkipped)
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
 	}
 }
 
@@ -753,11 +757,40 @@ func TestNoLineMeansNothingIsAskedAboutTrailingBytes(t *testing.T) {
 	}
 }
 
-// A source that is reached through a symbolic link into the campaign folder
-// resolves to a path inside it: the lexical check of the configuration cannot
-// see that, and binding it would put the evidence or the report channel into
-// the sandbox. The plan check refuses it before any launch.
-func TestSourceLinkedIntoTheCampaignIsNeverBound(t *testing.T) {
+// A row of the host that is reached through a symbolic link into the campaign
+// folder resolves to a path inside it: the lexical check of the configuration
+// cannot see that, and binding it (the plan binds a host row's real path) would
+// put the evidence or the report channel into the sandbox. The plan check
+// refuses it before any launch. A source Ataniq supplies with such a link is
+// refused earlier, by the resolution (see TestALinkOnASourceAtaniqSuppliesIsRefused).
+func TestHostRowLinkedIntoTheCampaignIsNeverBound(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	stolen := f.Campaign + "/stolen"
+	f.Write(stolen, "evidence", 0o644)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		base := o.Resolver
+		o.Resolver = func(p string) (string, error) {
+			if p == "/etc/localtime" {
+				return stolen, nil
+			}
+			return base(p)
+		}
+	})
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepVerify, harness.StepFailed)
+	if e := step(t, r.out, harness.StepVerify).Error; !strings.Contains(e, "/etc/localtime") || !strings.Contains(e, "campaign") {
+		t.Errorf("the refusal does not say what it refused: %q", e)
+	}
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}
+
+// A source Ataniq supplies that is reached through a symbolic link into the
+// campaign folder is refused by the resolution, naming the real path.
+func TestSourceLinkedIntoTheCampaignIsRefusedByTheResolution(t *testing.T) {
 	f := harnesstest.New(t, profile.Claude)
 	approved(f)
 	inside := f.Campaign + "/stolen"
@@ -769,11 +802,10 @@ func TestSourceLinkedIntoTheCampaignIsNeverBound(t *testing.T) {
 	f.Config.Sources.AssignmentDir = link
 	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
 	mustNoErr(t, r)
-	wantStep(t, r.out, harness.StepVerify, harness.StepFailed)
-	if e := step(t, r.out, harness.StepVerify).Error; !strings.Contains(e, "/ataniq/assignment") || !strings.Contains(e, "campaign") {
+	wantStep(t, r.out, harness.StepResolve, harness.StepFailed)
+	if e := step(t, r.out, harness.StepResolve).Error; !strings.Contains(e, "/ataniq/assignment") || !strings.Contains(e, inside) {
 		t.Errorf("the refusal does not say what it refused: %q", e)
 	}
-	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
 	if r.fake.Launches() != 0 {
 		t.Error("launched")
 	}
