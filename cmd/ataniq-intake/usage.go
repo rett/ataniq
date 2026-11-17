@@ -177,6 +177,7 @@ is recorded, or the record was written but its folder could not be synced. Do
 not repeat the command. Exit status 3 when the update ended unclearly and the
 upstream branch could not be read afterwards: it may have moved and no record
 was written. Look at the branch with 'ataniq-intake branches' before you try
-again.
+again. If the target is at the tip, the branch moved and no intake record was
+written: keep the output of the command as the record of that intake.
 `,
 }

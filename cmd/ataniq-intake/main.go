@@ -15,8 +15,28 @@ import (
 // child is in a process group of its own, so a signal to this command does
 // not reach it. It is killed, and its scratch folders are removed, only when
 // the run returns, and a run returns early only when its context ends.
+//
+// A signal that was ignored when the command started (nohup, a background
+// job) does not kill the command, so it does not cancel the run either: the
+// owner chose to ignore it.
 func stopContext() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), boundedexec.StopSignals()...)
+	sigs := notIgnored(boundedexec.StopSignals(), signal.Ignored)
+	if len(sigs) == 0 {
+		// NotifyContext with no signals would catch every signal.
+		return context.WithCancel(context.Background())
+	}
+	return signal.NotifyContext(context.Background(), sigs...)
+}
+
+// notIgnored returns the signals of all for which ignored is false.
+func notIgnored(all []os.Signal, ignored func(os.Signal) bool) []os.Signal {
+	var out []os.Signal
+	for _, s := range all {
+		if !ignored(s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // main wires the real dependencies and exits. The work is in run.

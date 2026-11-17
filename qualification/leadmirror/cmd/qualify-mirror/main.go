@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ataniq/internal/exchange/boundedexec"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/qualification/leadmirror"
 )
@@ -24,10 +25,39 @@ const (
 	exitFailed  = 1 // the run could not be completed or the output could not be written
 )
 
+// stopContext returns a context that ends on every signal that
+// boundedexec.StopSignals lists: interrupt, terminate and hang-up. A sandboxed
+// child is in a process group of its own, so a signal to this command does
+// not reach it. It is killed, and its scratch folders are removed, only when
+// the run returns, and a run returns early only when its context ends.
+//
+// A signal that was ignored when the command started (nohup, a background
+// job) does not kill the command, so it does not cancel the run either.
+func stopContext() (context.Context, context.CancelFunc) {
+	sigs := notIgnored(boundedexec.StopSignals(), signal.Ignored)
+	if len(sigs) == 0 {
+		// NotifyContext with no signals would catch every signal.
+		return context.WithCancel(context.Background())
+	}
+	return signal.NotifyContext(context.Background(), sigs...)
+}
+
+// notIgnored returns the signals of all for which ignored is false.
+func notIgnored(all []os.Signal, ignored func(os.Signal) bool) []os.Signal {
+	var out []os.Signal
+	for _, s := range all {
+		if !ignored(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := stopContext()
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
 // run is main without the process: it returns the exit status.
