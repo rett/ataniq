@@ -287,7 +287,7 @@ func (s *Session) finalScreen() FinalScreen {
 		b.WriteString(line)
 	}
 	fs.Text, fs.Truncated = b.String(), true
-	s.AddCount("final_screen_truncated", 1)
+	s.addCount("final_screen_truncated", 1)
 	return fs
 }
 

@@ -60,6 +60,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -114,6 +115,9 @@ var (
 	// ErrInputBroken: an earlier write to the agent failed part-way (see
 	// Session.InputBroken); nothing more is written.
 	ErrInputBroken = errors.New("session: the agent's input is broken by an earlier failed write")
+	// ErrReservedCounter: the name given to AddCount is one of the session's
+	// own counters (see ReservedCounters).
+	ErrReservedCounter = errors.New("session: the counter name is reserved for the session's own counters")
 	// ErrNotOver: the session is not over, so there is no final record yet.
 	ErrNotOver = errors.New("session: not over yet")
 )
@@ -496,11 +500,62 @@ func (s *Session) Close() error {
 	return s.closeErr
 }
 
+// reservedCounters are the names of the session's own counters, the ones
+// Counters reports without AddCount plus the two the session keeps in the same
+// map: "extra_counters_dropped" and "final_screen_truncated".
+var reservedCounters = map[string]bool{
+	"pty_scan_truncated":     true,
+	"pty_scan_errors":        true,
+	"pty_cgroup_truncated":   true,
+	"pty_cgroup_errors":      true,
+	"pty_pidfd_failures":     true,
+	"reply_dropped_chunks":   true,
+	"reply_dropped_bytes":    true,
+	"reply_write_errors":     true,
+	"held_keys_suspend":      true,
+	"held_keys_signal":       true,
+	"input_write_errors":     true,
+	"input_refused":          true,
+	"input_broken":           true,
+	"termios_errors":         true,
+	"read_errors":            true,
+	"log_errors":             true,
+	"clipboard_blocked":      true,
+	"output_bytes":           true,
+	"extra_counters_dropped": true,
+	"final_screen_truncated": true,
+}
+
+// ReservedCounters returns, sorted, the counter names that AddCount refuses:
+// the session's own counters, which are evidence and must not be changed by
+// the service.
+func ReservedCounters() []string {
+	out := make([]string, 0, len(reservedCounters))
+	for n := range reservedCounters {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AddCount adds delta to a named counter that is written to the final record
-// and to the exit event, for the service to count its own caps. At most
-// MaxExtraCounters names of at most MaxCounterName bytes are kept; a name over
-// either is counted in "extra_counters_dropped".
-func (s *Session) AddCount(name string, delta uint64) {
+// and to the exit event, for the service to count its own caps. A name that is
+// one of the session's own counters (ReservedCounters) is refused with
+// ErrReservedCounter and nothing is counted. At most MaxExtraCounters names of
+// at most MaxCounterName bytes are kept; a name over either, or an empty one,
+// is not kept and is counted in "extra_counters_dropped" instead (the error is
+// nil).
+func (s *Session) AddCount(name string, delta uint64) error {
+	if reservedCounters[name] {
+		return fmt.Errorf("%w: %q", ErrReservedCounter, name)
+	}
+	s.addCount(name, delta)
+	return nil
+}
+
+// addCount is AddCount without the reserved-name check, for the session's own
+// counters kept in the same map.
+func (s *Session) addCount(name string, delta uint64) {
 	c := &s.cnt
 	c.mu.Lock()
 	defer c.mu.Unlock()

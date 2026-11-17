@@ -328,12 +328,19 @@ func TestFinalScreenIsCapped(t *testing.T) {
 func TestAddCountIsBounded(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("exit 0")
-	s.AddCount("service_thing", 2)
-	s.AddCount("service_thing", 3)
-	for i := range MaxExtraCounters + 5 {
-		s.AddCount("n"+strings.Repeat("x", i), 1)
+	for _, d := range []uint64{2, 3} {
+		if err := s.AddCount("service_thing", d); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.AddCount(strings.Repeat("y", MaxCounterName+1), 1)
+	for i := range MaxExtraCounters + 5 {
+		if err := s.AddCount("n"+strings.Repeat("x", i), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddCount(strings.Repeat("y", MaxCounterName+1), 1); err != nil {
+		t.Fatal(err)
+	}
 	c := s.Counters()
 	if c["service_thing"] != 5 || c["extra_counters_dropped"] == 0 {
 		t.Errorf("counters %v", c)
@@ -342,6 +349,51 @@ func TestAddCountIsBounded(t *testing.T) {
 	rec, _ := s.Final()
 	if rec.Counters["service_thing"] != 5 {
 		t.Errorf("final counters %v", rec.Counters)
+	}
+}
+
+// A service name never lands on one of the session's own counters.
+func TestAddCountRefusesTheSessionsOwnNames(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("exit 0")
+	waitDone(t, s)
+	before := s.Counters()
+	// The reserved set is the built-in counters, and the two the session
+	// keeps in the extra map.
+	reserved := map[string]bool{}
+	for _, n := range ReservedCounters() {
+		reserved[n] = true
+	}
+	for n := range before {
+		if !reserved[n] {
+			t.Errorf("built-in counter %q is not reserved", n)
+		}
+	}
+	for n := range reserved {
+		_, built := before[n]
+		if !built && n != "extra_counters_dropped" && n != "final_screen_truncated" {
+			t.Errorf("reserved name %q is not a counter of the session", n)
+		}
+	}
+	for _, n := range ReservedCounters() {
+		if err := s.AddCount(n, 7); !errors.Is(err, ErrReservedCounter) {
+			t.Errorf("AddCount(%q) = %v, want ErrReservedCounter", n, err)
+		}
+	}
+	after := s.Counters()
+	for n, v := range before {
+		if after[n] != v {
+			t.Errorf("counter %q changed from %d to %d", n, v, after[n])
+		}
+	}
+	for n, v := range after {
+		if _, ok := before[n]; !ok && v != 0 {
+			t.Errorf("counter %q appeared with %d", n, v)
+		}
+	}
+	// A name of the service's own still counts.
+	if err := s.AddCount("service_thing", 1); err != nil || s.Counters()["service_thing"] != 1 {
+		t.Errorf("service counter: %v, %v", err, s.Counters())
 	}
 }
 
