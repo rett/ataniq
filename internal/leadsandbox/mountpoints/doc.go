@@ -113,11 +113,12 @@
 //     that is bound is a check that did not happen. A source with a link on
 //     its path is refused, so the real path is what a plan must carry. The
 //     probe's assertions from inside the sandbox stay the final check.
-//  4. Know the limits of the records folder. It lies outside the state root,
-//     so the lookup from the state root does not reach it: only its last
-//     component is opened without following a symbolic link, nothing above it
-//     is looked for, and its mode and owner are not checked. The holder must
-//     make and check that folder itself.
+//  4. Know the limits of the records folder. The profile requires it to be
+//     [profile.Layout.Records], <state>/leads/<role>/records, so the lookup
+//     from the state root without links covers every component of its path.
+//     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
+//     the home and the config folder only): the holder must make the folder
+//     with mode 0700 and check it, as it does for the other folders.
 //
 // # Limits
 //

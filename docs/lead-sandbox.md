@@ -274,7 +274,7 @@ mounts keep their own access, so the read-write rows and `/tmp` stay writable.
 | extra placeholders in the tree, if the inputs name any | a host path Ataniq owns | read-only |
 | `/ataniq/mirror/<project>.git` | `<state>/mirrors/<project>.git` | read-only |
 | `/ataniq/qargi` | the Qargi install | read-only |
-| the Qargi records, if the inputs name a folder | that folder, at the inside path the inputs give | read-write |
+| the Qargi records, if the inputs name them | `<state>/leads/<role>/records` (the only host path the profile accepts for them), at the inside path the inputs give | read-write |
 | `/ataniq/assignment`, `/ataniq/projection` | folders written outside the sandbox | read-only |
 
 The managed-settings path is fixed for claude, `/etc/claude-code/managed-settings.json`.
@@ -369,7 +369,9 @@ from the original. The primary rule is that no owner-side tool uses a lead's tre
 made at one moment: a lead that runs between a check and the start can change what
 it checked. The exclude check is textual, and a `.gitignore` of the tree can make
 git show a placeholder as untracked, which is cosmetic. The records folder lies
-outside the state root and the holder must make and check it itself.
+in the lead's state folder, so the lookup from the state root covers its path,
+but its mode and owner are not checked by `CheckOwnClone`: the holder makes it
+0700 and checks it.
 
 ## The environment allowlist
 
@@ -679,8 +681,8 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
 15. **The agent's exit 98 (Q).** A holder cannot tell an agent that exited 98 from
     a probe that failed to execute it after a good report.
 16. **Owner-side state (O).** The owner's state folders should lie on a file
-    system mounted `nodev`; the records folder lies outside the state root and the
-    holder makes and checks it.
+    system mounted `nodev`, and the holder makes the records folder (in the
+    lead's state folder) with mode 0700 and checks its mode and owner.
 
 ## Qualification
 

@@ -654,3 +654,35 @@ func TestCaseG1IsAnAutomatedCaseOfTheConfiguration(t *testing.T) {
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G1", "G1"} }), "listed twice")
 	refused(t, f, mutate(t, f, func(m map[string]any) { m["cases"] = []string{"G2"} }), "not an automated case")
 }
+
+// The lead's working Qargi records, when the configuration names an inside
+// path for them, are the layout's own folder (rule G1 across leads): the
+// configuration has no key for the host folder.
+func TestRecordsFolderIsTheLayoutsOwnAndHasNoKey(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	f.Mkdir(f.Base+"/elsewhere", 0o700)
+	for _, value := range []string{f.Base + "/elsewhere", f.Layout().Records(), ""} {
+		refused(t, f, mutate(t, f, func(m map[string]any) { sub(m, "sources")["qargi_records"] = value }), `sources has the unknown key "qargi_records"`)
+	}
+
+	f.Mkdir(f.Layout().Records(), 0o700)
+	f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	if r.out.StepFailed {
+		t.Fatalf("steps: %+v", r.out.Summary.Steps)
+	}
+	var found bool
+	for _, m := range r.out.Plan.Mounts {
+		if m.Inside == "/ataniq/records" {
+			found = true
+			if m.Kind != string(profile.KindRwBind) || m.Source != f.Layout().Records() {
+				t.Errorf("the records are bound as %+v, want a read-write bind from %s", m, f.Layout().Records())
+			}
+		}
+	}
+	if !found {
+		t.Error("the records are not bound")
+	}
+}

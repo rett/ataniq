@@ -144,8 +144,13 @@ caller's environment or home.
   settings file and its SHA-256 (for claude it must contain the text named by
   `managed_marker`); the lead skills folder; the instruction file; the git
   identity file; the Qargi install; the assignment and projection folders.
-  Optional: a records folder (mode 0700, owned by the caller, a real path with no symbolic link in it) with the path it
-  appears at, extra tree placeholders, and a seccomp file with its SHA-256.
+  Optional: the lead's working Qargi records, named by the path they appear at
+  inside (`sources.qargi_records_inside`); their folder is always
+  `leads/<role>/records` in the state root, which you make (mode 0700, owned by
+  the caller, a real path with no symbolic link in it) before the run, and
+  there is no key for another place (rule G1: a folder a lead writes elsewhere
+  could be, or lie above, a source of another lead). Also optional: extra tree
+  placeholders, and a seccomp file with its SHA-256.
 - **Never-mounted paths**: the owner's checkout, the real provider folders, and
   `.ssh`, as real paths. Give the paths even if they do not exist on the host.
   The other runtime's config folder is added by the profile.

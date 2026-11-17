@@ -153,7 +153,7 @@ func TestLeadWritableFlags(t *testing.T) {
 		{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 		{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 	}
-	in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
+	in.QargiRecords = "/srv/state/leads/arc-lead/records"
 	in.QargiRecordsInside = "/home/lead/.qargi"
 	table := mustBinds(t, in)
 	flagged := map[string]string{}
@@ -203,7 +203,7 @@ func TestLeadWritableFlags(t *testing.T) {
 
 func TestOptionalRecordsOutsideTheHome(t *testing.T) {
 	in := fixture(Codex)
-	in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
+	in.QargiRecords = "/srv/state/leads/arc-lead/records"
 	in.QargiRecordsInside = "/ataniq/records"
 	table := mustBinds(t, in)
 	for _, b := range table {
@@ -376,7 +376,7 @@ func TestReadOnlyOverBindsFollowTheirReadWriteParent(t *testing.T) {
 	for _, rt := range Runtimes() {
 		in := fixture(rt)
 		in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/srv/owned/p/envrc"}}
-		in.QargiRecords = "/srv/state/leads/arc-lead/q"
+		in.QargiRecords = "/srv/state/leads/arc-lead/records"
 		in.QargiRecordsInside = "/home/lead/.qargi"
 		table := mustBinds(t, in)
 		pos := map[string]int{}
@@ -438,7 +438,7 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 			{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 			{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 		}
-		in.QargiRecords = "/srv/state/leads/arc-lead/qargi"
+		in.QargiRecords = "/srv/state/leads/arc-lead/records"
 		in.QargiRecordsInside = "/home/lead/.qargi"
 		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": in} {
 			table := mustBinds(t, in)

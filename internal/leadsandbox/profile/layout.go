@@ -11,10 +11,12 @@ const DirMode = 0o700
 //	<state>/leads/<role>/config/<runtime>
 //	<state>/leads/<role>/tree
 //	<state>/leads/<role>/gitmeta
+//	<state>/leads/<role>/records
 //	<state>/mirrors/<project>.git
 //
-// gitmeta is Ataniq's copy of the tree's protected git files (see GitMeta).
-// Every folder has mode DirMode and lies outside every repository. The
+// gitmeta is Ataniq's copy of the tree's protected git files (see GitMeta);
+// records is the lead's working Qargi records, when the inputs name them (see
+// Records). Every folder has mode DirMode and lies outside every repository. The
 // methods build strings only; call Validate first.
 type Layout struct {
 	StateRoot string
@@ -76,6 +78,13 @@ const (
 // inside. It lies outside the home, the config folder and the tree, so the
 // lead cannot write it. Inputs.GitMeta must be this path.
 func (l Layout) GitMeta() string { return path.Join(l.LeadDir(), "gitmeta") }
+
+// Records is the host folder of the lead's working Qargi records:
+// <state>/leads/<role>/records. It is the one folder the lead writes that is not
+// the home, the config folder or the tree, and it lies in the lead's own state
+// folder like them, so that the profile's rules about another lead's state
+// cover it. Inputs.QargiRecords, when present, must be this path.
+func (l Layout) Records() string { return path.Join(l.LeadDir(), "records") }
 
 // GitMetaSource is the source, below the folder gitMeta, of one path of
 // GitReadOnlyRel: the entry of the folder with the same last element.
