@@ -314,3 +314,47 @@ func TestParentEndedWithAnUnreadableRegistry(t *testing.T) {
 		t.Fatalf("answer %q", why)
 	}
 }
+
+// A parent shown starting whose launch outcome is failed or abandoned is not
+// live, as admitUnderParent and the registry judge it: a coordinator that was
+// launched while the lead's intent was pending has ended with it. A pending or
+// launched parent is live.
+func TestParentEndedByTheOutcomeOfTheParentsLaunch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome leadregistry.Outcome
+		ended   bool
+	}{
+		{"failed", leadregistry.OutcomeFailed, true},
+		{"abandoned", leadregistry.OutcomeAbandoned, true},
+		{"launched", leadregistry.OutcomeLaunched, false},
+		{"pending", leadregistry.OutcomePending, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			lead := r.define("alpha")
+			coord := r.defineCoord("alpha", "feat")
+			in, err := r.reg.BeginLaunch(lead)
+			noErr(t, err)
+			// The registry admits a coordinator under a parent whose launch
+			// is pending.
+			_, err = r.reg.BeginLaunch(coord)
+			noErr(t, err)
+			if tc.outcome != leadregistry.OutcomePending {
+				_, err = r.reg.RecordOutcome(lead, in.ID, in.Epoch, tc.outcome, leadregistry.UnitEvidence{})
+				noErr(t, err)
+			}
+			if got := r.get(lead); got.Shown.State != leadregistry.StateStarting || got.Intent.Outcome != tc.outcome {
+				t.Fatalf("lead %+v", got)
+			}
+			why, err := r.ctl.parentEnded(r.get(coord))
+			noErr(t, err)
+			if tc.ended != (why != "") {
+				t.Fatalf("parent ended: %q, want ended %v", why, tc.ended)
+			}
+			if tc.ended && !strings.Contains(why, string(tc.outcome)) {
+				t.Fatalf("the reason %q does not name the outcome", why)
+			}
+		})
+	}
+}

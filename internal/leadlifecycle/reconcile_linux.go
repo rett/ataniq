@@ -420,8 +420,10 @@ func (c *Controller) reconcileResolved(ctx context.Context, e leadregistry.Entry
 // parentEnded says why the coordinator e has ended with its parent lead, or
 // returns the empty string when its parent still runs the epoch the
 // coordinator recorded. The parent has ended when its epoch is no longer the
-// one the coordinator's launch recorded, or when it is not shown starting,
-// ready or degraded. The registry is read as it is now: leads are settled
+// one the coordinator's launch recorded, when it is not shown starting, ready
+// or degraded, or when it is shown starting but its own launch outcome is
+// failed or abandoned (the rule that admitUnderParent and the registry apply
+// to a start). The registry is read as it is now: leads are settled
 // before coordinators in one Reconcile. A failure to read the parent from the
 // registry (other than the parent not being defined, which is an answer) is an
 // error and not an answer: the caller cannot tell, and must not take it for a
@@ -442,6 +444,12 @@ func (c *Controller) parentEnded(e leadregistry.Entry) (string, error) {
 	}
 	switch p.Shown.State {
 	case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
+		// The rule of admitUnderParent and of the registry: a parent whose
+		// own launch failed or was given up never ran as that epoch, even
+		// while it is still shown starting, so it is not live.
+		if in := p.Intent; in != nil && (in.Outcome == leadregistry.OutcomeFailed || in.Outcome == leadregistry.OutcomeAbandoned) {
+			return fmt.Sprintf("the parent lead %s epoch %d is shown %s but its launch %s", pr, p.Epoch, p.Shown.State, in.Outcome), nil
+		}
 		return "", nil
 	}
 	return fmt.Sprintf("the parent lead %s epoch %d is shown %s", pr, p.Epoch, p.Shown.State), nil
