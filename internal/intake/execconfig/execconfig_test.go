@@ -2,6 +2,7 @@ package execconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -414,6 +415,40 @@ func TestWithRefusals(t *testing.T) {
 	if _, err := base.With([]string{strings.Repeat("a", 255)}); err != nil {
 		t.Errorf("255 bytes: %v", err)
 	}
+}
+
+// A caller that logs the error and keeps going must still have the
+// built-in rules.
+func TestFailedWithKeepsTheReceiver(t *testing.T) {
+	base := Default()
+	extra, err := base.With([]string{"deploy.sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, patterns := range map[string][]string{
+		"bad pattern":    {"ok", "bad["},
+		"too many":       make([]string, MaxAdditions+1),
+		"empty pattern":  {""},
+		"bad after good": {"fine", "a/../b"},
+	} {
+		if name == "too many" {
+			for i := range patterns {
+				patterns[i] = "p" + strings.Repeat("x", i%7) + string(rune('a'+i%26))
+			}
+		}
+		for _, recv := range []Set{base, extra} {
+			got, err := recv.With(patterns)
+			if !errors.Is(err, ErrPattern) {
+				t.Errorf("%s: error %v does not wrap ErrPattern", name, err)
+			}
+			if !reflect.DeepEqual(got.Rules(), recv.Rules()) {
+				t.Errorf("%s: a failed With changed the rules: %d, want %d", name, len(got.Rules()), len(recv.Rules()))
+			}
+			mustMatch(t, got, "Makefile", "Makefile")
+			mustMatch(t, got, ".claude/settings.json", ".claude/")
+		}
+	}
+	mustMatch(t, extra, "deploy.sh", "deploy.sh")
 }
 
 func TestWithLimitOnCount(t *testing.T) {
