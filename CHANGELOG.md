@@ -19,8 +19,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and terminal restoration after a startup error remain unqualified.
 - `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
   scratch session from a holder in the cockpit: one writer, one read-only
-  viewer, no takeover. It is provisional and unqualified, and for a scratch
-  agent only.
+  viewer, no takeover. A console that waits for a ticket does not connect, so
+  it does not touch the holder, and a refused ticket file shows its reason. It
+  is provisional and unqualified, and for a scratch agent only.
 - Show the console as a cockpit in a window of 100x30 or more, on the alternate
   screen: three panes (projects and leads with a context block; a session
   block, an embedded session terminal and a focus bar; evidence and approvals
@@ -94,7 +95,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (exit 2), because the sandbox is not built, so it hosts only a scratch agent;
   it also refuses to start when `dev.tty.legacy_tiocsti` is not 0, when a
   signal the agent needs is ignored, or when the state or runtime folder is not
-  a private directory of the user. A second holder for a held role exits 3 and
+  a private directory of the user. SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and
+  SIGUSR2 stop it with a final record, and the record of an earlier epoch is
+  kept as `final.json.previous`. A second holder for a held role exits 3 and
   changes nothing of the first. It is provisional and unqualified, and hosts no
   real lead; `ataniq-scratch` starts it.
 
