@@ -123,3 +123,20 @@ func EmulatorState(p *Pane) vt.State {
 func AppendSnapshotLimit(p *Pane, dst []byte, limit int) ([]byte, error) {
 	return p.appendSnapshot(dst, limit)
 }
+
+// Feed feeds the first slice of b, as Write does, and returns the rest.
+func Feed(p *Pane, b []byte) []byte {
+	rest, _ := p.feed(b)
+	return rest
+}
+
+// WriteSlice is the size of the slices Write feeds.
+const WriteSlice = writeSlice
+
+// FrameCaptured reports whether the pane ever copied the screen for a held
+// frame.
+func FrameCaptured(p *Pane) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.syncOut.frame.cells != nil
+}
