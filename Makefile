@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -27,6 +27,15 @@ qualification-host-build: doctor
 	@mkdir -p build
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-probe ./qualification/host/cmd/probe
 	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-qualify ./qualification/host/cmd/qualify
+
+# The opt-in lead sandbox harness and the static probe it launches. The probe
+# is the command in ./cmd/ataniq-probe. Building them runs nothing: the
+# harness is run only by a coordinator, on a host the coordinator chose (see
+# docs/qualification-lead-sandbox.md).
+qualification-leadsandbox-build: doctor
+	@mkdir -p build
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/ataniq-probe ./cmd/ataniq-probe
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -trimpath -o build/qualification-leadsandbox ./qualification/leadsandbox/cmd/qualify
 
 # Changelog fragments: changelog.d/<section>-<slug>.md are folded into
 # CHANGELOG.md by the release or hotfix branch, as its first fix commit after

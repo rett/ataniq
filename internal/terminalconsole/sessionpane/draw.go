@@ -17,12 +17,13 @@ const (
 
 // MaxCellBytes is the most bytes of content the pane draws in one cell. A
 // cell holding more is drawn as a placeholder of its width, keeping its
-// style. A grapheme cluster has no length limit, so a session can pile
-// combining marks onto one character until a single cell holds megabytes;
-// the limit keeps that from reaching the caller's buffer and the outer
-// terminal. 64 bytes is almost twice the longest emoji sequence Unicode
+// style. The emulator keeps at most the same number of bytes of a grapheme
+// cluster in a cell (vt.MaxClusterBytes), so a session cannot pile combining
+// marks onto one character until a single cell holds megabytes; this limit
+// stays as a second line, for a cell that did not come from the session's
+// output. 64 bytes is almost twice the longest emoji sequence Unicode
 // recommends (a kiss with two skin tones, 35 bytes), so no real text is
-// replaced. The emulator itself still keeps the whole cluster.
+// replaced.
 const MaxCellBytes = 64
 
 // cellSource is what Draw reads cells from: the emulator, or a held frame.

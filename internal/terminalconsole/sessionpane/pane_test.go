@@ -83,7 +83,11 @@ func TestReplyDrainDeliversToPolicy(t *testing.T) {
 }
 
 func TestReplyDrainNeverBlocksWriteOrResize(t *testing.T) {
-	queries := bytes.Repeat([]byte("\x1b[c\x1b[>c\x1b[6n\x1b[?2004$p"), 20000)
+	rounds, resizes := 20000, 5000
+	if raceEnabled {
+		rounds, resizes = 5000, 1500 // the race detector is slow
+	}
+	queries := bytes.Repeat([]byte("\x1b[c\x1b[>c\x1b[6n\x1b[?2004$p"), rounds)
 	var r replies
 	for _, o := range []struct {
 		name string
@@ -98,7 +102,7 @@ func TestReplyDrainNeverBlocksWriteOrResize(t *testing.T) {
 			// In-band resize reports (mode 2048) answer every resize.
 			p.Write([]byte("\x1b[?2048h"))
 			within(t, 30*time.Second, "Resize", func() {
-				for i := 0; i < 5000; i++ {
+				for i := 0; i < resizes; i++ {
 					p.Resize(40+i%50, 10+i%20)
 				}
 			})
@@ -255,32 +259,50 @@ func heapInUse() uint64 {
 }
 
 // TestBoundsScrollback scrolls many full-width lines off a pane, on the
-// main screen and on the alternate screen. The main screen keeps one line,
-// and the alternate screen none: the heap does not grow with the lines
-// scrolled off it. Unpatched x/vt kept 10000 lines there, which for the
-// lines written here is tens of megabytes. The pane is two rows high, which
-// keeps each scroll cheap.
+// main screen and on the alternate screen. Neither screen keeps any: the heap
+// does not grow with the lines scrolled off them. Unpatched x/vt kept 10000
+// lines on each, which for the lines written here is tens of megabytes. The
+// pane is two rows high, which keeps each scroll cheap.
 func TestBoundsScrollback(t *testing.T) {
 	p := newPane(t, sessionpane.MaxCols, 2, sessionpane.Options{})
 	line := strings.Repeat("x", sessionpane.MaxCols) + "\r\n"
-	lines := []byte(strings.Repeat(line, 1000))
+	count := 1000
+	if raceEnabled {
+		count = 400 // the race detector is slow
+	}
+	lines := []byte(strings.Repeat(line, count))
 
+	before := heapInUse()
 	p.Write(lines)
-	if n := sessionpane.ScrollbackLen(p); n != 1 {
-		t.Fatalf("main screen keeps %d lines of scrollback, want 1", n)
+	p.Write([]byte("\x1b[2J"))
+	if grew := int64(heapInUse()) - int64(before); grew > 4<<20 {
+		t.Fatalf("scrolling the main screen grew the heap by %d bytes", grew)
+	}
+	if n := sessionpane.ScrollbackLen(p); n != 0 {
+		t.Fatalf("main screen keeps %d lines of scrollback, want none", n)
 	}
 
 	p.Write([]byte("\x1b[?1049h"))
-	before := heapInUse()
+	before = heapInUse()
 	p.Write(lines)
 	p.Write([]byte("\x1b[2J"))
 	after := heapInUse()
 	runtime.KeepAlive(p)
-	if grew := int64(after) - int64(before); grew > 16<<20 {
-		t.Fatalf("scrolling the alternate screen grew the heap by %d MB", grew>>20)
+	if grew := int64(after) - int64(before); grew > 4<<20 {
+		t.Fatalf("scrolling the alternate screen grew the heap by %d bytes", grew)
 	}
-	if n := sessionpane.ScrollbackLen(p); n != 1 {
-		t.Fatalf("main screen keeps %d lines of scrollback after the alternate screen, want 1", n)
+	if n := sessionpane.ScrollbackLen(p); n != 0 {
+		t.Fatalf("main screen keeps %d lines of scrollback after the alternate screen, want none", n)
+	}
+
+	// The erase of the screen and a resize keep none either.
+	p.Write([]byte("\x1b[?1049l"))
+	p.Write(lines)
+	p.Resize(40, 10)
+	p.Write(lines)
+	p.Resize(sessionpane.MaxCols, 2)
+	if n := sessionpane.ScrollbackLen(p); n != 0 {
+		t.Fatalf("main screen keeps %d lines of scrollback after a resize, want none", n)
 	}
 }
 

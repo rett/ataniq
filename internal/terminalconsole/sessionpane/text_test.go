@@ -113,10 +113,18 @@ func TestTextStopsAtTheLimit(t *testing.T) {
 	if got, ok := b.Text(uv.Pos(0, 0), uv.Pos(9, 0), len("a   b")-1); ok {
 		t.Fatalf("blanks past the limit were taken: %q", got)
 	}
-	// A single cell whose cluster is longer than the limit is refused.
-	q := textPane(t, 10, 1, "a"+strings.Repeat("́", 600))
+	// A single cell whose cluster is longer than the limit is refused. The
+	// emulator keeps at most 64 bytes of a cluster, so the long cell is set
+	// as no output can.
+	q := textPane(t, 10, 1, "")
+	sessionpane.SetCell(q, 0, 0, &uv.Cell{Content: "a" + strings.Repeat("́", 600), Width: 1})
 	if _, ok := q.Text(uv.Pos(0, 0), uv.Pos(9, 0), 1000); ok {
 		t.Fatal("a 1201-byte cluster passed a 1000-byte limit")
+	}
+	// What a session can make of one cluster is cut at the emulator and fits.
+	c := textPane(t, 10, 1, "a"+strings.Repeat("́", 600))
+	if got, ok := c.Text(uv.Pos(0, 0), uv.Pos(9, 0), 1000); !ok || len(got) != 63 {
+		t.Fatalf("a long cluster from the session: %d bytes, %v", len(got), ok)
 	}
 }
 

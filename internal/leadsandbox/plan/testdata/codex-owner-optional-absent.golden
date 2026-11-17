@@ -1,0 +1,141 @@
+# pasta
+/usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw --
+# pass-fds
+/opt/ataniq/bin/probe pass-fds --write 3=/opt/ataniq/run/arc-lead/report.fifo --
+# bubblewrap
+/usr/bin/bwrap
+--die-with-parent
+--unshare-all
+--share-net
+--unshare-user
+--uid 1000
+--gid 1001
+--cap-drop ALL
+--clearenv
+--setenv CODEX_HOME /home/lead/.codex
+--setenv COLORTERM truecolor
+--setenv GIT_CEILING_DIRECTORIES /work
+--setenv GIT_CONFIG_GLOBAL /ataniq/git/config
+--setenv GOCACHE /home/lead/.cache/go-build
+--setenv GOMODCACHE /home/lead/go/pkg/mod
+--setenv HOME /home/lead
+--setenv LANG C.UTF-8
+--setenv LOGNAME owner
+--setenv PATH /ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
+--setenv QARGI_LEAD arc-lead
+--setenv SHELL /bin/bash
+--setenv TERM xterm-256color
+--setenv TMPDIR /tmp
+--setenv TZ UTC
+--setenv USER owner
+--setenv XDG_CACHE_HOME /home/lead/.cache
+--setenv XDG_CONFIG_HOME /home/lead/.config
+--setenv XDG_DATA_HOME /home/lead/.local/share
+--setenv XDG_STATE_HOME /home/lead/.local/state
+--tmpfs /
+--ro-bind /usr /usr
+--symlink usr/bin /bin
+--symlink usr/lib /lib
+--ro-bind /etc/hosts /etc/hosts
+--ro-bind /etc/passwd /etc/passwd
+--ro-bind /etc/group /etc/group
+--ro-bind /opt/ataniq/resolv/arc-lead/resolv.conf /etc/resolv.conf
+--dev /dev
+--proc /proc
+--tmpfs /tmp
+--ro-bind /opt/ataniq/bin/probe /ataniq/probe
+--ro-bind /opt/ataniq/spec/arc-lead /ataniq/spec
+--ro-bind /opt/agent/codex/2.1.0 /ataniq/agent
+--ro-bind /opt/ataniq/managed/arc-lead/settings.json /etc/codex/managed-config.toml
+--bind /state/leads/arc-lead/home /home/lead
+--bind /state/leads/arc-lead/config/codex /home/lead/.codex
+--ro-bind /opt/ataniq/skills/arc-lead /home/lead/.codex/skills
+--ro-bind /opt/ataniq/instructions/arc-lead/AGENTS.md /home/lead/.codex/AGENTS.md
+--ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config
+--bind /state/leads/arc-lead/tree /work/demo
+--ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
+--ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
+--ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
+--ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
+--ro-bind /opt/ataniq/qargi /ataniq/qargi
+--ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
+--ro-bind /opt/ataniq/projection/demo /ataniq/projection
+--chdir /home/lead
+--remount-ro /
+--
+# inner
+/ataniq/probe --spec /ataniq/spec/spec.json --report-fd 3 -- /ataniq/agent/bin/codex --model example
+# env
+CODEX_HOME=/home/lead/.codex
+COLORTERM=truecolor
+GIT_CEILING_DIRECTORIES=/work
+GIT_CONFIG_GLOBAL=/ataniq/git/config
+GOCACHE=/home/lead/.cache/go-build
+GOMODCACHE=/home/lead/go/pkg/mod
+HOME=/home/lead
+LANG=C.UTF-8
+LOGNAME=owner
+PATH=/ataniq/qargi/bin:/ataniq/agent/bin:/usr/local/bin:/usr/bin:/bin:/home/lead/.local/bin
+QARGI_LEAD=arc-lead
+SHELL=/bin/bash
+TERM=xterm-256color
+TMPDIR=/tmp
+TZ=UTC
+USER=owner
+XDG_CACHE_HOME=/home/lead/.cache
+XDG_CONFIG_HOME=/home/lead/.config
+XDG_DATA_HOME=/home/lead/.local/share
+XDG_STATE_HOME=/home/lead/.local/state
+# mounts
+tmpfs /
+ro-bind /usr /usr
+symlink /bin
+symlink /lib
+ro-bind /etc/hosts /etc/hosts
+ro-bind /etc/passwd /etc/passwd
+ro-bind /etc/group /etc/group
+ro-bind /etc/resolv.conf /opt/ataniq/resolv/arc-lead/resolv.conf
+dev /dev
+proc /proc
+tmpfs /tmp
+ro-bind /ataniq/probe /opt/ataniq/bin/probe
+ro-bind /ataniq/spec /opt/ataniq/spec/arc-lead
+ro-bind /ataniq/agent /opt/agent/codex/2.1.0
+ro-bind /etc/codex/managed-config.toml /opt/ataniq/managed/arc-lead/settings.json
+rw-bind /home/lead /state/leads/arc-lead/home
+rw-bind /home/lead/.codex /state/leads/arc-lead/config/codex
+ro-bind /home/lead/.codex/skills /opt/ataniq/skills/arc-lead
+ro-bind /home/lead/.codex/AGENTS.md /opt/ataniq/instructions/arc-lead/AGENTS.md
+ro-bind /ataniq/git/config /opt/ataniq/git/arc-lead/config
+rw-bind /work/demo /state/leads/arc-lead/tree
+ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
+ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
+ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
+ro-bind /ataniq/qargi /opt/ataniq/qargi
+ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
+ro-bind /ataniq/projection /opt/ataniq/projection/demo
+# files
+fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
+# digest
+ba048b0df9bdb361da772e73f4d1f6567b59c9e051fd3ae36156579962d938a7
+# workdir
+/home/lead
+# set-controlling-terminal
+false
+# notes
+- --share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network
+- nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled
+- bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; the path that is bound is the path that is checked: a source Ataniq supplies is its real path as the inputs name it, and a row of the host (/usr, the /etc files) is bound from the real path the holder resolved (Options.HostSources); this package checks the text of the sources, and the holder checks each bound path without following links right before the start (mountpoints.CheckBindSources)
+- no seccomp filter: none has been reviewed
+- identity: the owner's ids 1000:1001 inside (the fallback mode)
+- report channel: the pass-fds step opens the holder's report path write-only as descriptor 3 after pasta, bubblewrap inherits it and the probe inside gets --report-fd 3; the holder takes one accepted probe line as the positive signal and does not wait for end-of-file, because bubblewrap's own processes may keep the descriptor open, and a second line or any further byte after the line is a failure of the start; whether the descriptor reaches the probe inside and which other processes hold it are qualification items that nothing here shows
+- bubblewrap keeps and sets PWD under --clearenv: the agent's environment is the allowlist plus PWD=/home/lead, the working folder
+- network: pasta arguments of sandboxnet.PastaArgs (outbound NAT, no port forwarding); outbound traffic is not narrowed
+- bubblewrap does not make the session (--new-session is never passed): the probe gives the agent its session and controlling terminal, so the launcher does not set a controlling terminal
+- optional symlink /lib64 left out: the caller says the host has no such path
+- optional symlink /sbin left out: the caller says the host has no such path
+- optional read-only bind /etc/ssl left out: the caller says the host has no such path
+- optional read-only bind /etc/ca-certificates left out: the caller says the host has no such path
+- optional read-only bind /etc/nsswitch.conf left out: the caller says the host has no such path
+- optional read-only bind /etc/localtime left out: the caller says the host has no such path

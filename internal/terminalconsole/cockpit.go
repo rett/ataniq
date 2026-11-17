@@ -65,6 +65,8 @@ type cockpitState struct {
 	started   bool
 	// sel is the text selected with the mouse in the session pane.
 	sel selection
+	// live is the live session, when Options.Live is set.
+	live liveState
 }
 
 // resizeMsg applies a debounced window resize to the pane.
@@ -84,7 +86,11 @@ func (m *Model) onSize() tea.Cmd {
 	var cmds []tea.Cmd
 	if !m.started {
 		m.started = true
-		cmds = append(cmds, m.tickCmd())
+		if m.live.on() {
+			cmds = append(cmds, m.startLive())
+		} else {
+			cmds = append(cmds, m.tickCmd())
+		}
 	}
 	if cmd := m.syncPane(m.sized); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -95,6 +101,9 @@ func (m *Model) onSize() tea.Cmd {
 // syncPane makes the pane follow the layout: at once, or after the debounce
 // delay. A window that is too small for the cockpit leaves the pane alone.
 func (m *Model) syncPane(debounce bool) tea.Cmd {
+	if m.live.on() {
+		return m.syncLive(debounce)
+	}
 	l := m.layout()
 	if !l.cockpit || m.rep.pane == nil {
 		return nil
@@ -117,6 +126,12 @@ func (m *Model) syncPane(debounce bool) tea.Cmd {
 // under it moves.
 func (m *Model) onResize(v resizeMsg) {
 	if v.seq != m.resizeSeq || m.rep.pane == nil {
+		return
+	}
+	if m.live.on() {
+		// The source follows the holder's answer in the pane, so the pane's
+		// size says nothing here: ask for the size at once.
+		m.syncLive(false)
 		return
 	}
 	cols, rows := m.rep.pane.Size()
@@ -152,22 +167,33 @@ func (m *Model) sessionKey(v tea.KeyPressMsg) tea.Cmd {
 		m.focus = consoleFocus
 		return nil
 	}
+	if m.live.on() {
+		if m.liveDown() {
+			m.focus = consoleFocus
+			return nil
+		}
+		if !m.liveWriter() {
+			m.noteReadOnly()
+			return nil
+		}
+		if m.live.noticeLive {
+			m.notice, m.live.noticeLive = "", false
+		}
+	}
 	m.sel = selection{}
 	m.rep.pane.Key(uv.KeyPressEvent(v))
 	return nil
 }
 
 func (m *Model) sessionEnded() bool {
-	if m.rep.pane == nil {
-		return false
-	}
-	ended, _, _ := m.rep.pane.Ended()
+	ended, _, _ := m.paneEnded()
 	return ended
 }
 
 // consoleKey handles a key while the console has focus.
 func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 	m.notice = ""
+	m.live.noticeLive = false
 	key := v.String()
 	if key == "q" || key == "ctrl+c" {
 		return m.quit()
@@ -267,6 +293,15 @@ func (m *Model) move(delta int) {
 func (m *Model) onPaste(text string) {
 	if m.focus != sessionFocus || m.rep.pane == nil || !m.layout().cockpit {
 		return
+	}
+	if m.live.on() {
+		if m.liveDown() {
+			return
+		}
+		if !m.liveWriter() {
+			m.noteReadOnly()
+			return
+		}
 	}
 	if len(text) > maxPaste {
 		m.notice = "Paste not sent: it is longer than the console forwards."

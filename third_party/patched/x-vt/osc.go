@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"io"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -125,12 +126,34 @@ func (e *Emulator) handleWorkingDirectory(cmd int, data []byte) {
 }
 
 func (e *Emulator) handleHyperlink(cmd int, data []byte) {
-	parts := bytes.Split(data, []byte{';'})
-	if len(parts) != 3 || cmd != 8 {
+	if cmd != 8 {
 		// Invalid, ignore
+		return
+	}
+	// The data is "8;params;URL". A link whose URL or parameters are over the
+	// caps is dropped and counted: the pen gets no link, as if the link had
+	// been closed. The length of the whole decides before anything is split
+	// or copied, so that a long string costs nothing.
+	if len(data) > len("8;")+MaxLinkParams+len(";")+MaxLinkURL {
+		e.dropLink()
+		return
+	}
+	parts := bytes.Split(data, []byte{';'})
+	if len(parts) != 3 {
+		// Invalid, ignore
+		return
+	}
+	if len(parts[1]) > MaxLinkParams || len(parts[2]) > MaxLinkURL {
+		e.dropLink()
 		return
 	}
 
 	e.scr.cur.Link.Params = string(parts[1])
 	e.scr.cur.Link.URL = string(parts[2])
+}
+
+// dropLink counts a link that was over the caps and closes the open link.
+func (e *Emulator) dropLink() {
+	e.counters.LinksOverLength++
+	e.scr.cur.Link = uv.Link{}
 }

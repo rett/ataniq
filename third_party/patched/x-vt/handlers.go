@@ -549,11 +549,11 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 		case 0: // Erase screen below (from after cursor position)
 			rect1 := uv.Rect(x, y, width, 1)            // cursor to end of line
 			rect2 := uv.Rect(0, y+1, width, height-y-1) // next line onwards
-			e.scr.FillArea(e.scr.blankCell(), rect1)
-			e.scr.FillArea(e.scr.blankCell(), rect2)
+			e.scr.eraseArea(rect1)
+			e.scr.eraseArea(rect2)
 		case 1: // Erase screen above (including cursor)
 			rect := uv.Rect(0, 0, width, y+1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		case 2: // erase screen
 			// Save screen content to scrollback before clearing
 			e.scr.ClearWithScrollback()
@@ -583,10 +583,10 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 			e.eraseCharacter(w - x)
 		case 1: // Erase from start of line to cursor
 			rect := uv.Rect(0, y, x+1, 1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		case 2: // Erase entire line
 			rect := uv.Rect(0, y, w, 1)
-			e.scr.FillArea(e.scr.blankCell(), rect)
+			e.scr.eraseArea(rect)
 		default:
 			return false
 		}
@@ -870,10 +870,16 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 		if bottom < 1 {
 			bottom = height
 		}
-
 		if top >= bottom {
 			return false
 		}
+		// A region lies on the screen: a margin beyond its last line made
+		// the scrolling operations index past the buffer. The region ends at
+		// the last line at most, and one that starts below it is ignored.
+		if top > height {
+			return false
+		}
+		bottom = min(bottom, height)
 
 		// Rect is [x, y) which means y is exclusive. So the top margin
 		// is the top of the screen minus one.
@@ -903,10 +909,15 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 			if right < 1 {
 				right = width
 			}
-
 			if left >= right {
 				return false
 			}
+			// As for the vertical margins, the region ends at the last
+			// column at most, and one that starts beyond it is ignored.
+			if left > width {
+				return false
+			}
+			right = min(right, width)
 
 			e.scr.setHorizontalMargins(left-1, right)
 
