@@ -73,6 +73,18 @@ func TestCurrent(t *testing.T) {
 	if st, _ := Current(goodRecord(), profile.Claude, "2.1.0", "", t0); st != RecordStale {
 		t.Errorf("empty digest: %s", st)
 	}
+	// A record with an empty version or digest matches an empty request on
+	// every field, and still is not current: nothing was compared.
+	empty := goodRecord()
+	empty.Version = ""
+	if st, why := Current(empty, profile.Claude, "", digest, t0); st != RecordStale || !strings.Contains(why, "no version or profile digest") {
+		t.Errorf("empty version on both sides: %s %q", st, why)
+	}
+	empty = goodRecord()
+	empty.ProfileDigest = ""
+	if st, why := Current(empty, profile.Claude, "2.1.0", "", t0); st != RecordStale || !strings.Contains(why, "no version or profile digest") {
+		t.Errorf("empty digest on both sides: %s %q", st, why)
+	}
 }
 
 type fakeRecords struct {

@@ -12,7 +12,8 @@
 //     assertion is checked ([Inside] by the probe, [Outside] by the holder, or
 //     [Both]) and the qualification cases of the design (section 7) it maps to.
 //   - The [Spec]: JSON, versioned ([SpecVersion]), at most [MaxSpecBytes]
-//     (256 KiB), decoded strictly by [DecodeSpec] (an unknown field, trailing
+//     (256 KiB), decoded strictly by [DecodeSpec] (an unknown field, a key in
+//     another case or written twice, a byte that is not UTF-8, trailing
 //     data, an over-long list or a malformed entry is refused with the
 //     reason). [NewSpec] builds one from the profile inputs, the expected
 //     environment the caller passes (the plan's inside environment, which holds
@@ -33,7 +34,8 @@
 //     is built here.
 //   - The [Report]: [Result]s with a status ([StatusOK], [StatusFailed] or
 //     [StatusNotChecked]) and a bounded, escaped detail. [EncodeLine] and
-//     [ParseLine] write and read it as one line after [ReportPrefix];
+//     [ParseLine] write and read it as one line after [ReportPrefix], with
+//     the same strictness about keys;
 //     [ParseProbeLine] reads the line of a probe, which holds the inside
 //     results 1 to 8, each once, and no other. [Failed] and [Problems] judge
 //     a report against its spec. The report has no field that says the
