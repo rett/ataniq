@@ -68,5 +68,15 @@ type Manager interface {
 	// that is not loaded or that has another invocation, or it is present
 	// with the same identity and not populated. In every case of doubt it
 	// returns false, with an error or without, never true.
+	//
+	// When st names no invocation (the answer of an Inspect that found the
+	// unit not loaded, or a State holding only the unit name), a true answer
+	// means exactly this and no more: no unit of that name is loaded now AND
+	// no control group exists at the unit's fixed path. It says nothing about
+	// a start whose reply was lost and whose request has not yet been
+	// executed: that start can land after the answer, and the unit then
+	// appears with the epoch and intent of the lost start. A caller must not
+	// record a lost intent as ended, or stopped, on that answer alone; it
+	// treats a later unit with an older epoch as stale and stops it.
 	Empty(ctx context.Context, st State) (bool, error)
 }

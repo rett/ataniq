@@ -860,3 +860,169 @@ func TestFakeStartDelayWithinContext(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestFakeLateStartAfterNotLoaded is the race the Empty doc warns about: the
+// reply of a start is lost, an Inspect answers "not loaded", Empty answers true
+// for that state, and then the start lands.
+func TestFakeLateStartAfterNotLoaded(t *testing.T) {
+	r := newRig(t)
+	r.fake.LateNextStart(unitA)
+	if st, err := r.fake.Start(r.ctx, r.spec(unitA, 7)); !errors.Is(err, ErrReplyLost) || !reflect.DeepEqual(st, State{}) {
+		t.Fatalf("got %+v, %v", st, err)
+	}
+	notLoaded := r.inspect(unitA)
+	if notLoaded.Loaded {
+		t.Fatalf("loaded before the start landed: %+v", notLoaded)
+	}
+	// True, and nothing more: the answer does not cover the held request.
+	if !r.empty(notLoaded) || !r.empty(State{Unit: unitA}) {
+		t.Fatal("Empty not true for a unit that is not loaded")
+	}
+	if len(r.fake.StartedSpecs()) != 0 {
+		t.Fatal("spec recorded before the start landed")
+	}
+	if r.fake.Loaded(unitA) {
+		t.Fatal("loaded")
+	}
+
+	st, err := r.fake.LandLateStart(unitA)
+	if err != nil || !st.Live() || !st.Ours || st.Epoch != 7 {
+		t.Fatalf("landing: %+v, %v", st, err)
+	}
+	if got := r.inspect(unitA); got != st {
+		t.Fatalf("inspect %+v, landed %+v", got, st)
+	}
+	specs := r.fake.StartedSpecs()
+	if len(specs) != 1 || specs[0].Epoch != 7 || specs[0].Unit != unitA {
+		t.Fatalf("specs: %+v", specs)
+	}
+	// The unit is the lost start's, and the old not-loaded state proves
+	// nothing about it.
+	if e, _ := r.fake.Empty(r.ctx, notLoaded); e {
+		t.Fatal("Empty true for the not-loaded state while the late unit runs")
+	}
+	// The log shows the late start, after the Inspect and the Empty.
+	var late []Call
+	for _, c := range r.fake.Calls() {
+		if c.Late {
+			late = append(late, c)
+		}
+	}
+	calls := r.fake.Calls()
+	if len(late) != 1 || late[0].Method != MethodStart || late[0].Invocation != st.InvocationID || late[0].Err != nil || late[0].Seq != 5 {
+		t.Fatalf("late entries %+v in %+v", late, calls)
+	}
+	var starts int
+	for _, c := range r.fake.CallsOf(MethodStart) {
+		starts++
+		if c.Late != (starts == 2) {
+			t.Fatalf("start entry %d: %+v", starts, c)
+		}
+	}
+	if starts != 2 {
+		t.Fatalf("%d start entries", starts)
+	}
+	// Nothing more is held.
+	if _, err := r.fake.LandLateStart(unitA); !errors.Is(err, ErrNoLateStart) {
+		t.Fatalf("second landing: %v", err)
+	}
+}
+
+func TestFakeLateStartRefusedAndLost(t *testing.T) {
+	r := newRig(t)
+	r.fake.LateNextStart(unitA)
+	r.fake.LateNextStart(unitA)
+	for i := 0; i < 2; i++ {
+		if _, err := r.fake.Start(r.ctx, r.spec(unitA, uint64(i+1))); !errors.Is(err, ErrReplyLost) {
+			t.Fatalf("start %d: %v", i, err)
+		}
+	}
+	// The name is taken by the time the first request lands: refused, dropped.
+	if err := r.fake.AddForeign(unitA, "someone else"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.fake.LandLateStart(unitA); !errors.Is(err, ErrUnitExists) {
+		t.Fatalf("got %v", err)
+	}
+	if got := r.inspect(unitA); got.Ours || len(r.fake.StartedSpecs()) != 0 {
+		t.Fatalf("the refused request had an effect: %+v", got)
+	}
+	// The second is held in order. A reboot loses it.
+	r.fake.Reboot()
+	if _, err := r.fake.LandLateStart(unitA); !errors.Is(err, ErrNoLateStart) {
+		t.Fatalf("after reboot: %v", err)
+	}
+	if r.fake.Loaded(unitA) {
+		t.Fatal("loaded")
+	}
+	var refused []Call
+	for _, c := range r.fake.Calls() {
+		if c.Late {
+			refused = append(refused, c)
+		}
+	}
+	if len(refused) != 1 || !errors.Is(refused[0].Err, ErrUnitExists) || refused[0].Invocation != "" {
+		t.Fatalf("log: %+v", refused)
+	}
+}
+
+func TestFakeLateStartsLandInOrder(t *testing.T) {
+	r := newRig(t)
+	r.fake.LateNextStart(unitA)
+	r.fake.LateNextStart(unitA)
+	for i := 1; i <= 2; i++ {
+		if _, err := r.fake.Start(r.ctx, r.spec(unitA, uint64(i))); !errors.Is(err, ErrReplyLost) {
+			t.Fatal(err)
+		}
+	}
+	st, err := r.fake.LandLateStart(unitA)
+	if err != nil || st.Epoch != 1 {
+		t.Fatalf("first: %+v, %v", st, err)
+	}
+	r.signal(st, syscall.SIGKILL)
+	if st, err = r.fake.LandLateStart(unitA); err != nil || st.Epoch != 2 {
+		t.Fatalf("second: %+v, %v", st, err)
+	}
+}
+
+// TestFakeEmptyNotLoadedWithControlGroupLeft: the unit is not loaded, and no
+// call can prove that its control group is gone.
+func TestFakeEmptyNotLoadedWithControlGroupLeft(t *testing.T) {
+	r := newRig(t)
+	st := r.start(unitA, 1)
+	r.fake.LeaveControlGroup(unitA, true)
+	r.signal(st, syscall.SIGKILL)
+	if got := r.inspect(unitA); got.Loaded {
+		t.Fatalf("still loaded: %+v", got)
+	}
+	for _, s := range []State{st, {Unit: unitA}, r.inspect(unitA)} {
+		if e, err := r.fake.Empty(r.ctx, s); e || err != nil {
+			t.Fatalf("Empty(%+v): %v %v, want false and no error", s, e, err)
+		}
+	}
+	// A loaded unit is not affected by it.
+	st2 := r.start(unitA, 2)
+	if e, err := r.fake.Empty(r.ctx, st2); e || err != nil {
+		t.Fatalf("populated: %v %v", e, err)
+	}
+	r.signal(st2, syscall.SIGKILL)
+	if r.empty(st) {
+		t.Fatal("true while a control group is left")
+	}
+	r.fake.LeaveControlGroup(unitA, false)
+	if !r.empty(st) || !r.empty(State{Unit: unitA}) {
+		t.Fatal("not true once nothing is left")
+	}
+	// Another unit is not affected, and a reboot clears it.
+	r.fake.LeaveControlGroup(unitA, true)
+	if !r.empty(State{Unit: "ataniq-lead-b.service"}) {
+		t.Fatal("other unit")
+	}
+	r.fake.Reboot()
+	if !r.empty(st) {
+		t.Fatal("a reboot left a control group")
+	}
+	if last := r.fake.CallsOf(MethodEmpty); last[len(last)-1].Err != nil || !last[len(last)-1].Empty {
+		t.Fatalf("log: %+v", last)
+	}
+}
