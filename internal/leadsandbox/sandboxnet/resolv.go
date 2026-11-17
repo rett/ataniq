@@ -165,6 +165,20 @@ func Derive(in Input) (Result, error) {
 
 var stubAddr = netip.MustParseAddr(StubNameserver)
 
+// Address ranges that are never a usable nameserver. None of them reaches a
+// host loopback service, but none is routed to a resolver either, so a file
+// whose only servers are in them must be refused, not started with DNS that
+// cannot work.
+var (
+	// v4compat is the deprecated IPv4-compatible range (::127.0.0.1 and so
+	// on); "::" and "::1" in it are handled before and apart.
+	v4compat = netip.MustParsePrefix("::/96")
+	// siit is the IPv4-translated range (::ffff:0:127.0.0.1 and so on).
+	siit = netip.MustParsePrefix("::ffff:0:0:0/96")
+	// thisNet4 is the IPv4 "this network" block.
+	thisNet4 = netip.MustParsePrefix("0.0.0.0/8")
+)
+
 func refusal(format string, args ...any) error {
 	return &Refusal{Reason: fmt.Sprintf(format, args...)}
 }
@@ -296,6 +310,14 @@ func (p *parsed) nameserver(n int, args []string) {
 	case a.Is6() && a.IsLinkLocalUnicast():
 		p.rejected++
 		p.note("line %d dropped: link-local IPv6 address %s needs a scope", n, quote(tok))
+		return
+	case a.Is6() && !a.IsLoopback() && (v4compat.Contains(a) || siit.Contains(a)):
+		p.rejected++
+		p.note("line %d dropped: address %s embeds IPv4 in a form that is not routed", n, quote(tok))
+		return
+	case a.Is4() && thisNet4.Contains(a):
+		p.rejected++
+		p.note("line %d dropped: address %s is in 0.0.0.0/8, which is not routed", n, quote(tok))
 		return
 	}
 	for _, have := range p.servers {

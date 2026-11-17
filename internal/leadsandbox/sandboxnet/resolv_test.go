@@ -219,6 +219,14 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 		{"nameserver", "exactly one address"},
 		{"nameserver 0.0.0.0", "unspecified"},
 		{"nameserver ::", "unspecified"},
+		{"nameserver ::127.0.0.1", "embeds IPv4"},
+		{"nameserver ::1.2.3.4", "embeds IPv4"},
+		{"nameserver ::0102:0304", "embeds IPv4"},
+		{"nameserver ::ffff:0:127.0.0.1", "embeds IPv4"},
+		{"nameserver ::ffff:0:0:0", "embeds IPv4"},
+		{"nameserver 0.1.2.3", "0.0.0.0/8"},
+		{"nameserver 0.255.255.255", "0.0.0.0/8"},
+		{"nameserver ::ffff:0.1.2.3", "0.0.0.0/8"},
 		{"nameserver 224.0.0.1", "multicast"},
 		{"nameserver ff02::1", "multicast"},
 		{"nameserver 255.255.255.255", "multicast or broadcast"},
@@ -242,6 +250,36 @@ func TestScopedAndMalformedAddressesRejected(t *testing.T) {
 			t.Errorf("%q: passed on: %s", tc.line, res.Content)
 		}
 		notesContain(t, res, tc.note)
+	}
+}
+
+func TestNonRoutedFormsAreNotAccepted(t *testing.T) {
+	// A file whose only servers are in these ranges is refused, with the
+	// bad lines counted and none of them passed on.
+	for _, host := range []string{
+		"nameserver ::127.0.0.1\n",
+		"nameserver ::ffff:0:127.0.0.1\n",
+		"nameserver 0.1.2.3\n",
+	} {
+		res, err := Derive(Input{HostContent: []byte(host)})
+		mustContain(t, refusalReason(t, err), "no usable nameserver")
+		if res.Rejected != 1 || res.DroppedLoopback != 0 || res.Content != nil {
+			t.Errorf("%q: %+v", host, res)
+		}
+	}
+	// Addresses just outside the ranges stay usable.
+	res, err := Derive(Input{HostContent: []byte("nameserver 1.0.0.1\nnameserver ::1:0:0\nnameserver ::ffff:1:0:0:0\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Nameservers) != 3 || res.Rejected != 0 {
+		t.Errorf("%+v", res)
+	}
+	// ::1 is still loopback and still counted as such.
+	res, err = Derive(Input{HostContent: []byte("nameserver ::1\nnameserver ::127.0.0.1\n")})
+	mustContain(t, refusalReason(t, err), "only loopback", "(1 dropped)")
+	if res.DroppedLoopback != 1 || res.Rejected != 1 {
+		t.Errorf("%+v", res)
 	}
 }
 
