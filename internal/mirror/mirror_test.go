@@ -3,6 +3,7 @@ package mirror
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/exchange/boundedexec"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/exchange/safefs"
 )
@@ -364,6 +366,24 @@ func TestOpenRefusals(t *testing.T) {
 		{"remote bare section", appendConfig("[remote]\n\tpushDefault = origin\n"), "a remote"},
 		{"alias", appendConfig("[alias]\n\tpush = !sh -c x\n"), "an alias"},
 		{"alias upper", appendConfig("[ALIAS]\n\tx = y\n"), "an alias"},
+		{"extensions worktreeConfig", appendConfig("[extensions]\n\tworktreeConfig = true\n"), "an extension"},
+		{"extensions any key", appendConfig("[extensions]\n\tfoo = bar\n"), "an extension"},
+		{"extensions upper case", appendConfig("[EXTENSIONS]\n\tObjectFormat = sha1\n"), "an extension"},
+		{"config.worktree", writeFile("config.worktree", "[url \"/elsewhere/\"]\n\tinsteadOf = /x/\n"), "config.worktree file"},
+		{"config.worktree empty", writeFile("config.worktree", ""), "config.worktree file"},
+		{"config.worktree a symlink", replaceWithSymlink("config.worktree"), "config.worktree file"},
+		{"config.worktree with its extension", func(t *testing.T, g gitenv.Git, dir string) {
+			appendConfig("[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n")(t, g, dir)
+			writeFile("config.worktree", "[core]\n\thooksPath = /tmp/h\n")(t, g, dir)
+		}, "config.worktree file"},
+		{"commondir", writeFile("commondir", "../elsewhere\n"), "commondir file"},
+		{"commondir a folder", func(t *testing.T, g gitenv.Git, dir string) {
+			if err := os.Mkdir(filepath.Join(dir, "commondir"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, "commondir file"},
+		{"gitdir", writeFile("gitdir", "/elsewhere/.git\n"), "gitdir file"},
+		{"gitdir a symlink", replaceWithSymlink("gitdir"), "gitdir file"},
 		{"core.bare set twice, last false", appendConfig("[core]\n\tbare = false\n"), "not bare"},
 	}
 	for _, tc := range cases {
@@ -439,9 +459,16 @@ func TestOpenPathRefusals(t *testing.T) {
 		t.Errorf("Open(moved) = %v", err)
 	}
 	// Paths that are not a place for a mirror at all.
-	for _, p := range []string{"", "x.git", moved + "/", filepath.Join(state, "a b.git"), "/"} {
-		if _, err := Open(ctx, g, p); err == nil {
-			t.Errorf("Open(%q) succeeded", p)
+	for _, p := range []string{
+		"", "x.git", moved + "/", filepath.Join(state, "a b.git"), "/",
+		// The last element is not <project>.git, or the project is not valid.
+		filepath.Join(state, "proj"), filepath.Join(state, "proj.git.bak"),
+		filepath.Join(state, ".git"), filepath.Join(state, "Proj.git"),
+		filepath.Join(state, "-p.git"), filepath.Join(state, "a..git"),
+		filepath.Join(state, "a.b.git"),
+	} {
+		if _, err := Open(ctx, g, p); !errors.Is(err, ErrNotMirror) {
+			t.Errorf("Open(%q) = %v, want ErrNotMirror", p, err)
 		}
 	}
 }
@@ -544,6 +571,99 @@ func TestWithLimits(t *testing.T) {
 	}
 }
 
+func TestCreateAndOpenTakeLimits(t *testing.T) {
+	g := needGit(t)
+	ctx := context.Background()
+	lim := Limits{Timeout: 3 * time.Second, MaxRefs: 7}
+
+	state := t.TempDir()
+	path, err := Path(state, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Create(ctx, g, path, UseLimits(lim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != lim.Timeout || got.MaxRefs != lim.MaxRefs {
+		t.Errorf("Create: limits = %+v, want %+v", got, lim)
+	}
+	m, err = Open(ctx, g, path, UseLimits(lim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != lim.Timeout || got.MaxRefs != lim.MaxRefs {
+		t.Errorf("Open: limits = %+v, want %+v", got, lim)
+	}
+	// Without options the defaults stand, and a nil option is ignored.
+	m, err = Open(ctx, g, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Limits(); got.Timeout != DefaultTimeout || got.MaxRefs != DefaultMaxRefs {
+		t.Errorf("Open without limits: %+v", got)
+	}
+
+	// Negative limits are refused before anything is made or run.
+	bad := UseLimits(Limits{Timeout: -time.Second})
+	other, err := Path(state, "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(ctx, g, other, bad); err == nil {
+		t.Error("Create accepted a negative limit")
+	}
+	if _, err := os.Lstat(other); err == nil {
+		t.Error("Create with a bad limit made a folder")
+	}
+	if _, err := Open(ctx, g, path, bad); err == nil {
+		t.Error("Open accepted a negative limit")
+	}
+	if _, err := Open(ctx, g, path, UseLimits(Limits{MaxRefs: -1})); err == nil {
+		t.Error("Open accepted a negative ref cap")
+	}
+}
+
+func TestCreateAndOpenGitRunsUseTheLimit(t *testing.T) {
+	g := needGit(t)
+	ctx := context.Background()
+	slow := fakeGit(t, "exec sleep 30")
+	short := UseLimits(Limits{Timeout: 200 * time.Millisecond})
+
+	// Create: the first git run is "init", which the slow git never ends.
+	state := t.TempDir()
+	if err := os.Mkdir(filepath.Join(state, "mirrors"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path(state, "proj")
+	start := time.Now()
+	if _, err := Create(ctx, slow, path, short); !errors.Is(err, boundedexec.ErrTimeout) {
+		t.Errorf("Create with a slow git: err = %v, want ErrTimeout", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the limit did not stop git in Create")
+	}
+	if _, err := os.Lstat(path); err == nil {
+		t.Error("a failed Create left its folder")
+	}
+
+	// Open: the config listing is the first git run.
+	m, err := Create(ctx, g, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	if _, err := Open(ctx, slow, m.Path(), short); !errors.Is(err, boundedexec.ErrTimeout) {
+		t.Errorf("Open with a slow git: err = %v, want ErrTimeout", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the limit did not stop git in Open")
+	}
+}
+
 func TestSize(t *testing.T) {
 	_, m := newMirror(t)
 	ctx := context.Background()
@@ -604,5 +724,58 @@ func TestSize(t *testing.T) {
 	}
 	if _, err := m.Size(ctx, lim); !errors.Is(err, safefs.ErrEscape) {
 		t.Errorf("Size through a symlinked mirror: err = %v, want ErrEscape", err)
+	}
+}
+
+func TestFetchLimits(t *testing.T) {
+	d := DefaultLimits()
+	want := Limits{
+		Timeout: 10 * time.Minute, MaxSource: 2 << 30, MaxStaged: 1 << 30,
+		MaxMirror: 8 << 30, MaxEntries: 2_000_000, MaxRefs: 2000,
+	}
+	if d != want {
+		t.Errorf("DefaultLimits = %+v, want %+v", d, want)
+	}
+	if got := (Limits{}).forFetch(); got != d {
+		t.Errorf("zero limits for a fetch = %+v, want the defaults", got)
+	}
+	set := Limits{Timeout: 1, MaxSource: 2, MaxStaged: 3, MaxMirror: 4, MaxEntries: 5, MaxRefs: 6}
+	if got := set.forFetch(); got != set {
+		t.Errorf("set limits changed: %+v", got)
+	}
+	part := Limits{MaxStaged: 99}.forFetch()
+	if part.MaxStaged != 99 || part.Timeout != d.Timeout || part.MaxRefs != d.MaxRefs {
+		t.Errorf("partly set limits = %+v", part)
+	}
+	for i, l := range []Limits{
+		{Timeout: -1}, {MaxSource: -1}, {MaxStaged: -1}, {MaxMirror: -1}, {MaxEntries: -1}, {MaxRefs: -1},
+	} {
+		if l.check() == nil {
+			t.Errorf("case %d: a negative limit was accepted", i)
+		}
+	}
+	if err := d.check(); err != nil {
+		t.Errorf("the defaults are refused: %v", err)
+	}
+	// A mirror keeps only what it reads, and rejects a negative fetch field.
+	_, m := newMirror(t)
+	m2, err := m.WithLimits(Limits{MaxSource: 7})
+	if err != nil || m2.Limits() != m.Limits() {
+		t.Errorf("a fetch field changed the mirror: %+v, %v", m2.Limits(), err)
+	}
+	if _, err := m.WithLimits(Limits{MaxMirror: -1}); err == nil {
+		t.Error("WithLimits accepted a negative MaxMirror")
+	}
+}
+
+func TestLimitError(t *testing.T) {
+	var err error = &LimitError{What: "staged", Got: 12, Max: 10}
+	wrapped := fmt.Errorf("outer: %w", err)
+	var le *LimitError
+	if !errors.As(wrapped, &le) || le.What != "staged" || le.Got != 12 || le.Max != 10 {
+		t.Fatalf("errors.As = %+v", le)
+	}
+	if got := err.Error(); !strings.Contains(got, "staged") || !strings.Contains(got, "12") || !strings.Contains(got, "10") {
+		t.Errorf("Error() = %q", got)
 	}
 }

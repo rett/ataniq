@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/exchange/safefs"
@@ -57,9 +58,10 @@ var settings = [][2]string{
 // check is a snapshot: the methods do not repeat it. A Mirror is safe for
 // concurrent use.
 type Mirror struct {
-	git    gitenv.Git
-	path   string
-	limits Limits
+	git     gitenv.Git
+	path    string
+	project string
+	limits  Limits
 }
 
 // Path returns the absolute path of the mirror's folder.
@@ -79,7 +81,8 @@ func (m *Mirror) WithLimits(l Limits) (*Mirror, error) {
 	return &c, nil
 }
 
-// Limits returns the limits of the mirror, with the defaults filled in.
+// Limits returns the limits of the mirror, with the defaults filled in. Only
+// Timeout and MaxRefs are set: they are the two fields that a mirror reads.
 func (m *Mirror) Limits() Limits {
 	return Limits{Timeout: m.limits.timeout(), MaxRefs: m.limits.maxRefs()}
 }
@@ -109,9 +112,14 @@ func projectOf(path string) (string, error) {
 // the source and the marker file "ataniq-mirror", which holds the format
 // version and the project name taken from the folder name. When anything
 // fails, the folder is removed again. On success the result is the same as
-// [Open] returns.
-func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
+// [Open] returns. The options can set the limits of the git runs: see
+// [UseLimits].
+func Create(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mirror, error) {
 	project, err := projectOf(path)
+	if err != nil {
+		return nil, err
+	}
+	lim, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +144,7 @@ func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		return nil, fmt.Errorf("mirror: %w", err)
 	}
-	m, err := populate(ctx, git, path, project)
+	m, err := populate(ctx, git, path, project, lim)
 	if err != nil {
 		// The folder is new and ours, and the parent is the owner's.
 		_ = os.RemoveAll(path)
@@ -146,11 +154,10 @@ func Create(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 }
 
 // populate fills the new, empty folder and returns the checked mirror.
-func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirror, error) {
+func populate(ctx context.Context, git gitenv.Git, path, project string, lim Limits) (*Mirror, error) {
 	if err := os.Chmod(path, 0o700); err != nil {
 		return nil, fmt.Errorf("mirror: %w", err)
 	}
-	var lim Limits
 	if _, err := runGit(ctx, git, gitenv.Cmd{
 		Dir:  path,
 		Args: []string{"init", "--bare", "--quiet", "--template="},
@@ -187,19 +194,24 @@ func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirro
 	if werr != nil {
 		return nil, fmt.Errorf("mirror: %w", werr)
 	}
-	return Open(ctx, git, path)
+	return Open(ctx, git, path, UseLimits(lim))
 }
 
 // Open checks the mirror at path and returns it. It refuses, with an error
 // that matches [ErrNotMirror] and says why:
+//   - a path that is not absolute and clean, or whose last element is not
+//     <project>.git with a valid project name;
 //   - a path that is a symlink, or not a folder, or missing;
 //   - a folder that does not belong to the calling user, or that group or
 //     others can write;
 //   - a missing or malformed marker file, or one for another project;
 //   - a repository that is not bare, or that lacks HEAD, objects or refs;
 //   - a "hooks" folder that is not empty;
-//   - an objects/info/alternates or objects/info/http-alternates file;
-//   - a config file with an include or includeIf, or a setting of
+//   - an objects/info/alternates or objects/info/http-alternates file, or a
+//     commondir, gitdir or config.worktree file in the folder (each sends git
+//     to another repository or to more configuration);
+//   - a config file with an include or includeIf, an extensions section (any
+//     key), or a setting of
 //     core.hooksPath, core.fsmonitor, core.sshCommand,
 //     core.alternateRefsCommand, core.worktree, uploadpack.packObjectsHook,
 //     diff.external, or diff.<driver>.command or textconv, or any url.*,
@@ -208,9 +220,16 @@ func populate(ctx context.Context, git gitenv.Git, path, project string) (*Mirro
 // The mirror is Ataniq's own, so this is a consistency check that catches a
 // mirror somebody edited by hand. All file checks use safefs and follow no
 // symlink. The config is read once through safefs and parsed by git from that
-// copy; git does not read the repository before the config is accepted.
-func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
+// copy; git does not read the repository before the config is accepted. The
+// options can set the limits of the mirror and of the git runs of Open: see
+// [UseLimits].
+func Open(ctx context.Context, git gitenv.Git, path string, opts ...Option) (*Mirror, error) {
 	project, err := projectOf(path)
+	if err != nil {
+		// A path that cannot name a mirror is not a mirror.
+		return nil, fmt.Errorf("%w: %w", ErrNotMirror, err)
+	}
+	lim, err := applyOptions(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -232,25 +251,9 @@ func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	} else if reason != "" {
 		return nil, notMirror(reason)
 	}
-	config, err := root.ReadFile("config", maxConfig)
-	if err != nil {
-		return nil, notMirror("the config file cannot be read")
-	}
-	var lim Limits
-	// The listing needs no repository: --git-dir names a path that is not
-	// one, so that git does not read the folder's own config.
-	listing, err := runGit(ctx, git, gitenv.Cmd{
-		GitDir: "/dev/null",
-		Args:   []string{"config", "--file", "/dev/stdin", "--list", "-z"},
-	}, bytes.NewReader(config), lim.timeout(), maxConfig*2)
-	if err != nil {
-		var ge *gitExit
-		if errors.As(err, &ge) {
-			return nil, notMirror("the config file is malformed")
-		}
+	if reason, err := checkConfigFile(ctx, git, root, lim.timeout()); err != nil {
 		return nil, err
-	}
-	if reason := checkConfig(listing); reason != "" {
+	} else if reason != "" {
 		return nil, notMirror(reason)
 	}
 	out, err := runGit(ctx, git, gitenv.Cmd{
@@ -267,7 +270,31 @@ func Open(ctx context.Context, git gitenv.Git, path string) (*Mirror, error) {
 	if strings.TrimSpace(string(out)) != "true" {
 		return nil, notMirror("the repository is not bare")
 	}
-	return &Mirror{git: git, path: path}, nil
+	return &Mirror{git: git, path: path, project: project, limits: lim}, nil
+}
+
+// checkConfigFile reads the file "config" of the repository folder that root
+// names, once, through safefs, and has git parse that copy. It returns the
+// reason for a refusal ("" when the config is fine), or an error for a failure
+// that is not a refusal. The listing needs no repository: --git-dir names a
+// path that is not one, so that git does not read the folder's own config.
+func checkConfigFile(ctx context.Context, git gitenv.Git, root *safefs.Root, timeout time.Duration) (string, error) {
+	config, err := root.ReadFile("config", maxConfig)
+	if err != nil {
+		return "the config file cannot be read", nil
+	}
+	listing, err := runGit(ctx, git, gitenv.Cmd{
+		GitDir: "/dev/null",
+		Args:   []string{"config", "--file=/dev/stdin", "--list", "-z"},
+	}, bytes.NewReader(config), timeout, maxConfig*2)
+	if err != nil {
+		var ge *gitExit
+		if errors.As(err, &ge) {
+			return "the config file is malformed", nil
+		}
+		return "", err
+	}
+	return checkConfig(listing), nil
 }
 
 // checkFolder runs the checks that need only the folder handle. It returns a
@@ -334,7 +361,29 @@ func checkFolder(root *safefs.Root, project string) (string, error) {
 			return "the alternates file cannot be checked", nil
 		}
 	}
-	return "", nil
+	return checkRedirects(root), nil
+}
+
+// redirects are the files in a repository folder that send git to another
+// repository or make it read more configuration: commondir and gitdir name
+// another repository, and config.worktree is read when the extension
+// worktreeConfig is set. A repository that Ataniq made has none of them.
+var redirects = []string{"commondir", "gitdir", "config.worktree"}
+
+// checkRedirects returns the reason for a refusal when the repository folder
+// that root names has one of the [redirects] files, in any form, or when one
+// cannot be checked. It returns "" otherwise.
+func checkRedirects(root *safefs.Root) string {
+	for _, name := range redirects {
+		_, err := root.Lstat(name)
+		if err == nil {
+			return "the repository has a " + name + " file"
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "the " + name + " file cannot be checked"
+		}
+	}
+	return ""
 }
 
 // Size counts the allocated bytes and the entries of the whole mirror
