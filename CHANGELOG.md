@@ -78,17 +78,32 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   state folder that is the only way out of a lead. `init` creates the mirror,
   `fetch` brings a lead's branches into it, `branches` lists them, `review`
   shows the change and lists under "Needs your sign-off" each path that needs
-  its own approval (execution-config paths, symbolic links, submodules),
-  `verify` runs gates in a sandbox and stores the result, and `integrate`
-  moves an upstream branch to a reviewed, verified tip, fast-forward only. The
-  sign-off is typed as arguments (`--accept-change`, and one `--accept-path`
-  for each flagged path); the command never asks a question. Everything a lead
-  wrote is shown escaped and labelled "unverified lead data". The same
-  `--path-rule` list must be given to `review` and to `integrate`. The command
-  does not touch a working checkout, which gets the commits by its own fetch
-  from the mirror. No sandbox is shipped or qualified: `fetch` and `verify` run
-  the commands of a template file that the owner writes, and refuse without a
-  usable one. The guide is `docs/lead-intake.md`.
+  its own approval, with its flag kind: `exec-config` (a path in the
+  execution-config set), `symlink`, `submodule`, `aliased` (a path that a
+  changed symbolic link makes reachable under another name) and `history-only`
+  (a path of that kind that a commit of the branch adds and a later one
+  removes, so it is in the history and not in the net change), `verify` runs
+  gates in a sandbox and stores the result in the records folder, and
+  `integrate` moves an upstream branch to a reviewed, verified tip,
+  fast-forward only. The sign-off is typed as arguments (`--accept-change`,
+  and one `--accept-path` for each flagged path); the command never asks a
+  question. Everything a lead wrote is shown escaped and labelled "unverified
+  lead data". The same `--path-rule` list must be given to `review` and to
+  `integrate`. The command does not touch a working checkout, which gets the
+  commits by its own fetch from the mirror. No sandbox is shipped or
+  qualified: `fetch` and `verify` run the commands of a template file that the
+  owner writes, and refuse without a usable one. A verification pass is
+  evidence, not proof, and after the sign-off the code runs as the owner like
+  any merged code. See [the lead intake guide](docs/lead-intake.md).
+- Add `qualify-mirror`, an opt-in harness that records what a real sandbox
+  template does with a hostile lead clone: the fetch into the exchange mirror
+  and the review of a lead branch, and, if the template has a verification
+  section, two gates that probe it. It is run by hand with a config and a new
+  output file, is not part of `make test` and is not built by any Makefile
+  target. It works in a scratch state root and writes one JSON report of facts
+  with no pass, supported or qualified field: a person reads the facts and
+  decides. It qualifies no sandbox by itself. See
+  [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
 
 ### Changed
 
