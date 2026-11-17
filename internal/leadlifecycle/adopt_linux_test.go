@@ -3,7 +3,6 @@ package leadlifecycle
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadrole"
@@ -115,7 +114,7 @@ func TestAdoptionMatchesExactEpochAndIntent(t *testing.T) {
 				isErr(t, err, ErrLaunchUncertain)
 				noErr(t, r.fake.AddForeign(unitOf(role), imp.desc(2)))
 				if late {
-					r.advance(DefaultLateStartWindow + time.Second)
+					r.advance(pastTheWindow)
 				}
 				return r, role, signals
 			}
@@ -173,7 +172,7 @@ func TestAdoptionMatchesExactEpochAndIntent(t *testing.T) {
 				r.fake.DropNextStart(unitOf(role))
 				_, err := r.start(role)
 				isErr(t, err, ErrLaunchUncertain)
-				r.advance(DefaultLateStartWindow + time.Second)
+				r.advance(pastTheWindow)
 				rep := r.reconcile()
 				if rr, _ := rep.Find(role); rr.Action != ActionStopped {
 					t.Fatalf("report %+v", rr)

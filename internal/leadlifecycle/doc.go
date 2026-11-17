@@ -65,8 +65,8 @@
 //     an owner decision. The pending intent of a lost reply (the unit is not
 //     loaded) is therefore left pending, with the role shown unknown and the
 //     reason launch-reply-lost. Reconcile (or a later Stop) closes it as
-//     abandoned only once the late-start window has passed with the unit still
-//     not loaded and its control group empty; a unit that lands afterwards is
+//     abandoned only once the late-start window and its margin have passed
+//     with the unit still not loaded and its control group empty; a unit that lands afterwards is
 //     stale, is reported by Reconcile, and Reconcile never signals it. An
 //     explicit Stop does: it ends a stale unit of ours that has the
 //     record's epoch and intent or an older epoch, which is the owner's way
@@ -90,6 +90,17 @@
 // window only decides when Reconcile stops waiting for a start that may still
 // land; the stale-unit path (Reconcile reports it, Stop ends it) is what
 // handles a request that lands later.
+//
+// The window is counted from the time the registry stamped on the launch
+// intent and compared with the controller's clock, so the registry's Now and
+// [Options].Clock must be one time source; the package cannot check it, and
+// two sources that differ make the window shorter or longer than configured.
+// The registry stamps the intent before the holder command is built and the
+// request is sent, so the window counted from the send is shorter than
+// configured; [Options].LateStartMargin (default 10 s) is added to cover that
+// and a step of the wall clock. Across a restart only the wall clock exists,
+// so a step of it (a time adjustment, a suspend and resume) can still close
+// the window early or hold it open; the margin covers a small step only.
 //
 // # Status
 //

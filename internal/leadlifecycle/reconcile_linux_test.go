@@ -268,7 +268,7 @@ func TestReconcilePendingIntentWithoutStart(t *testing.T) {
 		if e.Intent.Outcome != leadregistry.OutcomePending || e.Intent.ID != in.ID {
 			t.Fatalf("entry %+v", e)
 		}
-		r.advance(DefaultLateStartWindow)
+		r.advance(DefaultLateStartWindow + DefaultLateStartMargin)
 		rep = r.reconcile()
 		rr, _ = rep.Find(role)
 		if rr.Action != ActionStopped || rr.After != leadregistry.StateStopped {
@@ -317,7 +317,7 @@ func TestReconcilePendingIntentWithoutStart(t *testing.T) {
 		if e := r.get(role); e.Intent.Outcome != leadregistry.OutcomePending {
 			t.Fatalf("entry %+v", e)
 		}
-		r.advance(DefaultLateStartWindow)
+		r.advance(DefaultLateStartWindow + DefaultLateStartMargin)
 		r.reconcile()
 		e := r.get(role)
 		if e.Intent.Outcome != leadregistry.OutcomeAbandoned || e.Shown.State != leadregistry.StateUnknown {
@@ -441,7 +441,7 @@ func TestReconcileRegistryCutWithPendingIntent(t *testing.T) {
 	}
 	// Pending intents block the owner's decision, so Reconcile closes it once
 	// the window has passed, without moving the role.
-	r.advance(DefaultLateStartWindow)
+	r.advance(DefaultLateStartWindow + DefaultLateStartMargin)
 	rep = r.reconcile()
 	rr, _ := rep.Find(role)
 	if rr.Action != ActionAbandoned || rr.After != leadregistry.StateUnknown {

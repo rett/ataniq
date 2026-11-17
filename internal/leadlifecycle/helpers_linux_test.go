@@ -415,3 +415,7 @@ func (r *rig) noSignals() {
 		r.t.Fatalf("%d Signal calls, want none: %+v", n, r.signalCalls())
 	}
 }
+
+// pastTheWindow is a step of the fake clock that takes a launch intent just
+// stamped to after the end of the late-start window and its margin.
+const pastTheWindow = DefaultLateStartWindow + DefaultLateStartMargin + time.Second

@@ -390,7 +390,7 @@ func TestStopSettlesAPendingIntent(t *testing.T) {
 		if e.Desired != leadregistry.DesiredStopped || e.Shown.State != leadregistry.StateUnknown || e.Intent.Outcome != leadregistry.OutcomePending {
 			t.Fatalf("entry %+v", e)
 		}
-		r.advance(DefaultLateStartWindow)
+		r.advance(DefaultLateStartWindow + DefaultLateStartMargin)
 		e, err = r.stop(role)
 		noErr(t, err)
 		if e.Shown.State != leadregistry.StateStopped || e.Intent.Outcome != leadregistry.OutcomeAbandoned {

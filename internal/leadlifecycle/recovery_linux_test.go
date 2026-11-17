@@ -123,8 +123,9 @@ func TestStartReplyLostAndNeverStarted(t *testing.T) {
 	_, err = r.start(role)
 	isErr(t, err, leadregistry.ErrLaunchRefused)
 
-	// Before the window: nothing is recorded as ended, the role stays unknown.
-	r.advance(DefaultLateStartWindow - time.Second)
+	// Before the end of the window and its margin: nothing is recorded as
+	// ended, the role stays unknown.
+	r.advance(DefaultLateStartWindow + DefaultLateStartMargin - time.Second)
 	rev := r.revision()
 	rep := r.reconcile()
 	rr, _ := rep.Find(role)
@@ -136,7 +137,8 @@ func TestStartReplyLostAndNeverStarted(t *testing.T) {
 		Reason: leadregistry.Reason{Code: "owner"}, Decision: "stop it"})
 	isErr(t, err, leadregistry.ErrOutcomePending)
 
-	// After the window with the unit not loaded and the group empty: abandoned, stopped.
+	// After the window and the margin with the unit not loaded and the group
+	// empty: abandoned, stopped.
 	r.advance(2 * time.Second)
 	rep = r.reconcile()
 	rr, _ = rep.Find(role)
@@ -196,7 +198,7 @@ func TestStartReplyLostLandingLate(t *testing.T) {
 		}
 		_, err := r.start(role)
 		isErr(t, err, ErrLaunchUncertain)
-		r.advance(DefaultLateStartWindow + time.Second)
+		r.advance(pastTheWindow)
 		rep := r.reconcile()
 		if rr, _ := rep.Find(role); rr.Action != ActionStopped {
 			t.Fatalf("report %+v", rr)
@@ -236,7 +238,7 @@ func TestStopEndsAStaleUnitOfAnOlderEpoch(t *testing.T) {
 	isErr(t, err, ErrLaunchUncertain)
 	first := r.get(role).Intent.ID
 	// The window passes with nothing loaded: the intent is abandoned.
-	r.advance(DefaultLateStartWindow + time.Second)
+	r.advance(pastTheWindow)
 	rep := r.reconcile()
 	if rr, _ := rep.Find(role); rr.Action != ActionStopped {
 		t.Fatalf("report %+v", rr)
