@@ -27,6 +27,8 @@ func TestCountersCountEveryCap(t *testing.T) {
 		{"mode ignored", "\x1b[?9999h\x1b[?9998l", func(c sessionpane.Counters) uint64 { return c.ModesIgnored }, 2},
 		{"link over length", "\x1b]8;;http://x/" + long + "\x1b\\", func(c sessionpane.Counters) uint64 { return c.LinksOverLength }, 1},
 		{"string truncated", "\x1b]777;" + strings.Repeat("x", 70000) + "\x07", func(c sessionpane.Counters) uint64 { return c.StringsTruncated }, 1},
+		{"repeat cut", "x\x1b[2147483646b", func(c sessionpane.Counters) uint64 { return c.RepeatsCut }, 1},
+		{"repeat not cut", "x\x1b[10b", func(c sessionpane.Counters) uint64 { return c.RepeatsCut }, 1},
 		{"clipboard write", "\x1b]52;c;aGk=\x1b\\", func(c sessionpane.Counters) uint64 { return c.ClipboardRequestsBlocked }, 1},
 		{"clipboard query", "\x1b]52;c;?\x07", func(c sessionpane.Counters) uint64 { return c.ClipboardRequestsBlocked }, 2},
 		{"title cut", "\x1b]2;" + strings.Repeat("t", 1000) + "\x07", func(c sessionpane.Counters) uint64 { return c.TitlesCut }, 1},
@@ -65,7 +67,7 @@ func TestCountersCountEveryCap(t *testing.T) {
 func TestCountersList(t *testing.T) {
 	c := sessionpane.Counters{
 		ClusterBytesDropped: 1, ModesIgnored: 2, LinksOverLength: 3, LinksOverLimit: 4,
-		StringsTruncated: 5, ClipboardRequestsBlocked: 6, TitlesCut: 7,
+		StringsTruncated: 5, RepeatsCut: 6, ClipboardRequestsBlocked: 7, TitlesCut: 8,
 	}
 	list := c.List()
 	var names []string
@@ -77,7 +79,7 @@ func TestCountersList(t *testing.T) {
 	}
 	want := []string{
 		"cluster_bytes_dropped", "modes_ignored", "links_over_length", "links_over_limit",
-		"strings_truncated", "clipboard_requests_blocked", "titles_cut",
+		"strings_truncated", "repeats_cut", "clipboard_requests_blocked", "titles_cut",
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("names %v, want %v", names, want)

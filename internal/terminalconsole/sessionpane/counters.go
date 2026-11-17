@@ -4,7 +4,7 @@ package sessionpane
 // hit is counted and never silent. The values only grow, and a restore does
 // not reset them: they count what this pane did with the bytes it was given.
 type Counters struct {
-	// The first five are the emulator's (the patched x/vt).
+	// The first six are the emulator's (the patched x/vt).
 
 	// ClusterBytesDropped is the number of bytes of grapheme clusters
 	// dropped because the cluster was already 64 bytes long.
@@ -21,6 +21,9 @@ type Counters struct {
 	// StringsTruncated is the number of OSC, DCS, SOS, PM and APC strings
 	// that were longer than 64 KiB and lost their end.
 	StringsTruncated uint64
+	// RepeatsCut is the number of REP sequences (CSI n b) whose count was
+	// over the number of cells of the screen and was cut to it.
+	RepeatsCut uint64
 
 	// The last two are the pane's own.
 
@@ -48,6 +51,7 @@ func (c Counters) List() []CounterValue {
 		{"links_over_length", c.LinksOverLength},
 		{"links_over_limit", c.LinksOverLimit},
 		{"strings_truncated", c.StringsTruncated},
+		{"repeats_cut", c.RepeatsCut},
 		{"clipboard_requests_blocked", c.ClipboardRequestsBlocked},
 		{"titles_cut", c.TitlesCut},
 	}
@@ -65,6 +69,7 @@ func (p *Pane) Counters() Counters {
 		LinksOverLength:          e.LinksOverLength,
 		LinksOverLimit:           e.LinksOverLimit,
 		StringsTruncated:         e.StringsTruncated,
+		RepeatsCut:               e.RepeatsCut,
 		ClipboardRequestsBlocked: uint64(p.clipboard),
 		TitlesCut:                p.titlesCut,
 	}
