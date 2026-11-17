@@ -429,11 +429,17 @@ func (s *Session) SetColours(c sessionpane.Colours) { s.pane.SetColours(c) }
 // Resize clamps the size to the holder's limits and resizes the PTY and the
 // pane together under the output lock, so that a snapshot never sees them
 // disagree. It returns the applied size, which on an error is the size before.
-// A resize that changes the size is logged.
+// A resize that changes the size is logged. After the output stream ended the
+// pane keeps its last screen and takes no resize, so the call changes nothing
+// (neither the PTY nor the pane, no event) and returns the current size.
 func (s *Session) Resize(cols, rows int) (appliedCols, appliedRows int, err error) {
 	cols, rows = clampSize(cols, rows)
 	s.omu.Lock()
 	curC, curR := s.pane.Size()
+	if ended, _, _ := s.pane.Ended(); ended {
+		s.omu.Unlock()
+		return curC, curR, nil
+	}
 	if cols == curC && rows == curR {
 		s.omu.Unlock()
 		return cols, rows, nil

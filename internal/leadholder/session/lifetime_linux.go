@@ -191,7 +191,11 @@ func (s *Session) lifecycle() {
 
 	if stream == Yes {
 		// The session's output is over: the pane keeps its last screen.
+		// Under the output lock, so that a Resize either sees the end or
+		// completes before it.
+		s.omu.Lock()
 		s.pane.End(st.Status, st.How != "unknown")
+		s.omu.Unlock()
 	}
 	end := time.Now().UTC()
 	method := s.host.TreeMethod()

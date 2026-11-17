@@ -357,6 +357,30 @@ func TestResizeClampsAndTheAgentSeesTheNewSize(t *testing.T) {
 	}
 }
 
+// After the stream ended the pane takes no resize, so the session changes
+// neither and reports the size the pane has.
+func TestResizeAfterTheStreamEndedChangesNothing(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("say HELLO; exit 0")
+	waitDone(t, s)
+	if got := s.Facts().StreamEnded; got != Yes {
+		t.Fatalf("the stream did not end: %v", got)
+	}
+	cols, rows, err := s.Resize(120, 40)
+	if err != nil || cols != 100 || rows != 30 {
+		t.Errorf("Resize after the end = %d, %d, %v; want 100, 30, nil", cols, rows, err)
+	}
+	if c, r := s.Size(); c != 100 || r != 30 {
+		t.Errorf("pane %dx%d after the end", c, r)
+	}
+	if n := len(eventsNamed(e.events(), eventlog.EventResize)); n != 0 {
+		t.Errorf("%d resize events after the end", n)
+	}
+	if rec, _ := s.Final(); rec.Screen.Cols != 100 || rec.Screen.Rows != 30 {
+		t.Errorf("final screen %dx%d", rec.Screen.Cols, rec.Screen.Rows)
+	}
+}
+
 func TestStartClampsTheInitialSize(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("size; wait", func(c *Config) { c.Cols, c.Rows = 1, 1 })
