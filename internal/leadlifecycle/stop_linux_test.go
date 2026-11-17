@@ -521,3 +521,64 @@ func TestOperationsOnOneRoleDoNotInterleave(t *testing.T) {
 	}
 	r.auditClean()
 }
+
+// holdsInvocation is a manager that, once a signal has been sent, keeps
+// answering Inspect with the unit loaded in the invocation that was signalled
+// while Empty says its control group is empty: a unit that has not let go of
+// the stopped invocation, whatever its group looks like.
+type holdsInvocation struct {
+	leadunit.Manager
+	mu       sync.Mutex
+	signaled *leadunit.State
+}
+
+func (h *holdsInvocation) Signal(ctx context.Context, st leadunit.State, sig syscall.Signal) error {
+	err := h.Manager.Signal(ctx, st, sig)
+	h.mu.Lock()
+	cp := st
+	cp.Loaded = true
+	h.signaled = &cp
+	h.mu.Unlock()
+	return err
+}
+
+func (h *holdsInvocation) Inspect(ctx context.Context, unit string) (leadunit.State, error) {
+	h.mu.Lock()
+	st := h.signaled
+	h.mu.Unlock()
+	if st != nil {
+		return *st, nil
+	}
+	return h.Manager.Inspect(ctx, unit)
+}
+
+func (h *holdsInvocation) Empty(ctx context.Context, st leadunit.State) (bool, error) {
+	h.mu.Lock()
+	held := h.signaled != nil
+	h.mu.Unlock()
+	if held {
+		return true, nil
+	}
+	return h.Manager.Empty(ctx, st)
+}
+
+func TestStopUnitStillHoldsTheStoppedInvocation(t *testing.T) {
+	r := newRig(t)
+	role := r.define("alpha")
+	r.mustStart(role)
+	ctl, err := New(Options{Registry: r.reg, Manager: &holdsInvocation{Manager: r.aud}, Clock: r.clock,
+		Preflight: r.pre, Holder: r.holder})
+	noErr(t, err)
+	var e leadregistry.Entry
+	r.drive(func() { e, err = ctl.Stop(context.Background(), role) })
+	isErr(t, err, ErrStopUnproven)
+	if !strings.Contains(err.Error(), "still holds the stopped invocation") {
+		t.Fatalf("error %v", err)
+	}
+	if e.Shown.State != leadregistry.StateUnknown || e.Shown.Reason.Code != "stop-unproven" {
+		t.Fatalf("entry %+v", e)
+	}
+	if got := r.get(role); got.Shown.State == leadregistry.StateStopped {
+		t.Fatalf("recorded stopped without the proof: %+v", got)
+	}
+}

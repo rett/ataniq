@@ -311,6 +311,55 @@ func TestStartBuildFailure(t *testing.T) {
 	})
 }
 
+// After a start that failed, the absence of the unit is proven again before
+// the role is recorded stopped. A control group left behind at the unit's
+// path must leave the role unknown, even though no unit is loaded.
+func TestStartFailedWithAControlGroupLeftBehind(t *testing.T) {
+	t.Run("the manager refused the start", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		failure := errors.New("the manager refused")
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			// The group appears after the proof Start needed to begin.
+			r.fake.LeaveControlGroup(unitOf(rl), true)
+			r.fake.FailNextStart(unitOf(rl), failure)
+		}
+		e, err := r.start(role)
+		isErr(t, err, ErrStartFailed)
+		isErr(t, err, failure)
+		if e.Intent.Outcome != leadregistry.OutcomeFailed {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(role, leadregistry.StateUnknown, "launch-failed-unproven")
+		if r.callsOf(leadunit.MethodStart) != 1 || len(r.fake.StartedSpecs()) != 0 {
+			t.Fatal("start calls or started units are not as scripted")
+		}
+		// Nothing starts while the group is left; once it is gone the owner
+		// or Reconcile can move the role on.
+		_, err = r.start(role)
+		isErr(t, err, leadregistry.ErrLaunchRefused)
+		r.noSignals()
+		r.auditClean()
+	})
+	t.Run("the holder command could not be built", func(t *testing.T) {
+		r := newRig(t)
+		role := r.define("alpha")
+		r.holder.err = errors.New("no holder binary")
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			r.fake.LeaveControlGroup(unitOf(rl), true)
+		}
+		e, err := r.start(role)
+		isErr(t, err, ErrStartFailed)
+		if e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(role, leadregistry.StateUnknown, "holder-command-failed-unproven")
+		if r.callsOf(leadunit.MethodStart) != 0 {
+			t.Fatal("Start called")
+		}
+	})
+}
+
 func TestStartL1ReplyLostUnitRunningIsAdopted(t *testing.T) {
 	r := newRig(t)
 	role := r.define("alpha")
