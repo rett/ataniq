@@ -101,7 +101,7 @@ func (s *Session) Paste(text string) Held {
 // writeFiltered filters b and writes it, with the input lock held.
 func (s *Session) writeFiltered(b []byte, paste bool) Held {
 	var h Held
-	if s.closed.Load() {
+	if s.isOver() {
 		h.Err = ErrClosed
 		return h
 	}
@@ -156,11 +156,16 @@ func (s *Session) writeFiltered(b []byte, paste bool) Held {
 // output goes on.
 func (s *Session) InputBroken() bool { return s.inputBroken.Load() }
 
+// isOver reports that nothing more goes to the agent: the lifetime path closed
+// the input before it took the final record's counters, or Close ran. Every
+// source is refused with ErrClosed from then on (see Session.Done).
+func (s *Session) isOver() bool { return s.over.Load() || s.closed.Load() }
+
 // writeAgent is the one place that writes to the agent, with the input lock
-// held. It refuses when the input is broken and breaks it when the write
-// fails; a failure is counted in errs.
+// held. It refuses when the session is over or the input is broken and breaks
+// the input when the write fails; a failure is counted in errs.
 func (s *Session) writeAgent(p []byte, source string, errs *atomic.Uint64) (int, error) {
-	if s.closed.Load() {
+	if s.isOver() {
 		return 0, ErrClosed
 	}
 	if s.inputBroken.Load() {
@@ -348,8 +353,9 @@ type AgentWriter interface {
 	// draws again looks stalled for the whole section. A fence that waits
 	// for the screen to settle calls FlushReplies between its steps, so that
 	// such an agent goes on. It breaks the input like any write when it
-	// fails, and returns ErrInputBroken when the input is already broken
-	// (the queued replies are then dropped and counted in "input_refused").
+	// fails, and returns ErrInputBroken when the input is already broken,
+	// also when no reply is queued (the queued replies are then dropped and
+	// counted in "input_refused").
 	FlushReplies() (int, error)
 }
 
@@ -371,6 +377,14 @@ func (w *lockedWriter) FlushReplies() (int, error) {
 	}
 	batch := w.s.replies.take()
 	if len(batch) == 0 {
+		// Nothing waits, but a fence that checks between its steps must still
+		// learn that the input broke (or that the session ended).
+		switch {
+		case w.s.isOver():
+			return 0, ErrClosed
+		case w.s.inputBroken.Load():
+			return 0, ErrInputBroken
+		}
 		return 0, nil
 	}
 	return w.s.writeAgent(batch, "reply", &w.s.cnt.replyWriteErrors)
@@ -391,7 +405,7 @@ func (w *lockedWriter) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
 func (s *Session) WithInputLock(f func(w AgentWriter) error) error {
 	s.imu.Lock()
 	defer s.imu.Unlock()
-	if s.closed.Load() {
+	if s.isOver() {
 		return ErrClosed
 	}
 	w := &lockedWriter{s: s, valid: true}

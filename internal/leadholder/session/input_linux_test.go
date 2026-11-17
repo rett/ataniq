@@ -288,6 +288,62 @@ func TestInputAfterCloseIsRefused(t *testing.T) {
 	}
 }
 
+// Once the session is over (the final record is written) input from every
+// source is refused with ErrClosed and nothing reaches the terminal, even while
+// a grandchild that never reads still holds it: a write would time out and
+// break the input after the record said it was whole.
+func TestInputAfterTheSessionIsOverIsRefused(t *testing.T) {
+	e := newEnv(t)
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	s := e.start("raw; say READY; spawn same "+pidFile+" ttl=60s; exit 0", func(c *Config) {
+		shortWriteTimeout(c)
+		c.StreamWait = 300 * time.Millisecond
+		c.TreeWait = 300 * time.Millisecond
+	})
+	waitDone(t, s)
+	if f := s.Facts(); f.TUIExited != Yes || f.StreamEnded != No {
+		t.Fatalf("facts %+v: the terminal should still be held by the grandchild", f)
+	}
+	if s.closed.Load() {
+		t.Fatal("the session is closed")
+	}
+
+	start := time.Now()
+	if h := s.Input([]byte(bigInput)); !errors.Is(h.Err, ErrClosed) || h.Written != 0 {
+		t.Errorf("Input after the end = %+v", h)
+	}
+	if h := s.Paste(bigInput); !errors.Is(h.Err, ErrClosed) || h.Written != 0 {
+		t.Errorf("Paste after the end = %+v", h)
+	}
+	called := false
+	if err := s.WithInputLock(func(AgentWriter) error { called = true; return nil }); !errors.Is(err, ErrClosed) || called {
+		t.Errorf("WithInputLock after the end: %v (called %v)", err, called)
+	}
+	// A reply that waits for the lock is dropped, not written. The write
+	// would block for the whole timeout, and break the input.
+	s.replies.push([]byte(bigInput))
+	poll(t, func() string { return "the reply queue to be taken" }, func() bool { return s.replies.pending() == 0 })
+	s.imu.Lock() // the reply goroutine has finished with the batch
+	s.imu.Unlock()
+	if time.Since(start) > 250*time.Millisecond {
+		t.Errorf("the refusals took %v: something was written", time.Since(start))
+	}
+
+	cnt := s.Counters()
+	if s.InputBroken() || cnt["input_broken"] != 0 || cnt["input_write_errors"] != 0 || cnt["reply_write_errors"] != 0 {
+		t.Errorf("the input broke after the end; counters %v", cnt)
+	}
+	rec, err := s.Final()
+	if err != nil || rec.Counters["input_broken"] != 0 {
+		t.Errorf("the final record: %v, counters %v", err, rec.Counters)
+	}
+	for _, ev := range eventsNamed(e.events(), eventlog.EventState) {
+		if ev.State == "input-broken" {
+			t.Errorf("an input-broken event after the end: %+v", ev)
+		}
+	}
+}
+
 // bigInput is more than the terminal's input buffer holds, so that a write to
 // an agent that does not read cannot finish.
 var bigInput = strings.Repeat("x", 64<<10)
@@ -330,6 +386,7 @@ func TestAFailedWriteBreaksTheInputForEverySource(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel() // each case has its own session, folders and lock file
 			e := newEnv(t)
 			s := e.start(c.script, shortWriteTimeout)
 			waitScreen(t, s, "READY")
@@ -351,6 +408,11 @@ func TestAFailedWriteBreaksTheInputForEverySource(t *testing.T) {
 			var w AgentWriter
 			err := s.WithInputLock(func(aw AgentWriter) error {
 				w = aw
+				// The fence learns of the break between its steps, whether or
+				// not a reply is queued.
+				if n, err := aw.FlushReplies(); n != 0 || !errors.Is(err, ErrInputBroken) {
+					t.Errorf("FlushReplies on a broken input = %d, %v", n, err)
+				}
 				n, err := aw.Write([]byte("Q"))
 				if n != 0 {
 					t.Errorf("the section wrote %d bytes after the break", n)
