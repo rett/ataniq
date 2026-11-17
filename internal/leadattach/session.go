@@ -393,12 +393,16 @@ func (s *session) snapshot(payload []byte) *outcome {
 		if !s.modesSeen {
 			c.modes, c.st.Modes = fallback, fallback.Modes()
 		}
-		if c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting {
+		became := c.st.Conn == terminalconsole.LiveResyncing || c.st.Conn == terminalconsole.LiveConnecting
+		if became {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveAttached, ""
 		}
-		// A size asked for while connecting was not in the Hello, or the
-		// holder kept another one: as the writer, ask for it now.
-		if s.snaps == 1 && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
+		// A size asked for while connecting or resyncing (the cockpit takes
+		// both as up, and asks once) was not in the Hello, or the holder
+		// kept another one: as the writer, ask for it whenever a snapshot
+		// moves the state to attached, the holder's own resync on this
+		// connection included.
+		if became && c.inputConnLocked() == s.cn && (c.wantCols != cols || c.wantRows != rows) {
 			resize = &wire.Size{Columns: c.wantCols, Rows: c.wantRows}
 		}
 	})

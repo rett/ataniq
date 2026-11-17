@@ -501,6 +501,25 @@ func TestASizeAskedWhileConnectingIsSentAfterTheFirstSnapshot(t *testing.T) {
 	}
 }
 
+func TestASizeAskedWhileTheHolderResyncsIsSentWithTheNextSnapshot(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter})
+	hc := e.attach(wire.RoleWriter)
+	hc.notice(wire.ReasonResync, "a new snapshot follows")
+	e.untilConn(terminalconsole.LiveResyncing)
+	e.c.Resize(100, 30) // resyncing: remembered, nothing is sent yet
+	e.barrier(hc)
+	hc.snapshot() // the holder's size is still 80x24
+	f := hc.next()
+	if f.typ != wire.TypeResize {
+		t.Fatalf("got a %s frame, want resize", wire.TypeName(f.typ))
+	}
+	if sz := enc2(t)(wire.DecodeResize(f.payload)); sz != (wire.Size{Columns: 100, Rows: 30}) {
+		t.Errorf("resize %+v", sz)
+	}
+	e.untilConn(terminalconsole.LiveAttached)
+}
+
 func TestAViewerDoesNotSendTheSizeItWants(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeViewer, tickets: 1})

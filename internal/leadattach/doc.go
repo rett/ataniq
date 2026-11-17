@@ -88,8 +88,9 @@
 // a notice when it is over the 64 KiB a frame holds, because several frames
 // would be several pastes. Resize sends the newest size only, as a Resize
 // frame, and not the size the holder already has. A size asked for while
-// connecting is sent as the writer when the first snapshot is applied, if it
-// differs from the holder's.
+// connecting or resyncing is sent as the writer whenever a snapshot moves the
+// state to attached (the first of a connection, and the one after the holder's
+// own resync Notice), if it differs from the holder's.
 //
 // Sending never blocks the cockpit: frames wait in a queue of at most 256, a
 // run of keys shares frames of up to 64 KiB, and what does not fit is dropped,
