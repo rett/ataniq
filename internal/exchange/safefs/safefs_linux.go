@@ -248,7 +248,9 @@ func fstatat(dirfd int, name string, st *unix.Stat_t) error {
 // with [ErrLimit]; the returned Size holds what was counted up to then. Folders
 // nested deeper than [MaxDepth] are [ErrLimit] too. Both limits must be
 // greater than zero. The walk returns the first error it meets, so a tree
-// that the lead changes during the walk can fail with ENOENT or ENOTDIR.
+// that the lead changes during the walk can fail with ENOENT or ENOTDIR. A
+// lead can also make the walk fail on purpose, for example with a folder it
+// made unreadable: any error is a refusal.
 func (r *Root) TreeSize(rel string, lim SizeLimits) (Size, error) {
 	if lim.MaxBytes <= 0 || lim.MaxEntries <= 0 {
 		return Size{}, pathError("treesize", rel, errors.New("safefs: both size limits must be greater than zero"))
