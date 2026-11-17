@@ -73,6 +73,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`make test-patched` runs only those; it covers x/vt and x/ansi with its
   parser, kitty and iterm2 subpackages, not the sixel subpackage, which needs
   an uncached module).
+- Add `ataniq-scratch`, a development launcher that hosts a scratch agent (no
+  project, no lead role, a disposable home) in a holder, in a transient systemd
+  user unit or as a direct child with `--direct`, and stands in for the daemon
+  to issue attach tickets over the holder's control socket. `start`, `ticket`,
+  `status`, `release-writer` and `stop` are its subcommands. It is provisional
+  and unqualified, and not for a real lead.
 
 ### Changed
 
