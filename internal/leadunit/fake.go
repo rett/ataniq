@@ -276,7 +276,10 @@ func (f *Fake) ReuseNextControlGroup(unit string) {
 // LeaveControlGroup says whether a control group is left at the fixed path of
 // unit when the unit is not loaded, so that nothing can prove it gone. While it
 // is set, [Fake.Empty] answers false, without an error, for a State of that
-// unit when the unit is not loaded. It is cleared by a reboot.
+// unit when the unit is not loaded, and a start of the unit, by Start or by
+// [Fake.LandLateStart], runs in that group, as with
+// [Fake.ReuseNextControlGroup]: same path and same identity. It is cleared by
+// a reboot.
 func (f *Fake) LeaveControlGroup(unit string, left bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -610,7 +613,7 @@ func (f *Fake) launch(spec Spec) State {
 	script := f.script(spec.Unit)
 	prev := f.lastCG[spec.Unit]
 	u := f.newUnit(spec.Unit, spec.Description(), procs)
-	if script.reuseCG && prev != "" {
+	if (script.reuseCG || f.leftover[spec.Unit]) && prev != "" {
 		u.cgroupID = prev
 	}
 	script.reuseCG = false
@@ -748,7 +751,8 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 //   - the unit has another invocation than st and st names a control group
 //     identity that is not the one the unit's control group has: the old group
 //     is gone. When st names no identity, or the new invocation runs in the old
-//     control group (see [Fake.ReuseNextControlGroup]), the answer is false;
+//     control group (see [Fake.ReuseNextControlGroup], and
+//     [Fake.LeaveControlGroup] while it is set), the answer is false;
 //   - the unit has the invocation and control group of st and the group holds no
 //     process, which a loaded unit of the fake never shows, because it unloads
 //     an empty one.
