@@ -8,10 +8,15 @@
 // # What a run guarantees
 //
 // The command gets exactly the argument vector, environment and working
-// folder in [Cmd]. Nothing is looked up in PATH, nothing is inherited from the
-// calling process, no shell is involved and no file descriptor except 0, 1 and
-// 2 is passed on. Standard input is /dev/null unless the caller gives a
-// reader.
+// folder in [Cmd]. Nothing is looked up in PATH, no environment variable is
+// inherited from the calling process, and no shell is involved. The package passes on no
+// descriptor of its own except 0, 1 and 2, and no descriptor that Go opened:
+// Go opens every file close-on-exec, so they close in the command. The
+// package does not close the others. A descriptor that the calling process
+// inherited or opened without close-on-exec (with a raw system call, or from
+// a parent that did not close it) stays open in the command, and the caller
+// must see to it that there is none. Standard input is /dev/null unless the
+// caller gives a reader.
 //
 // The command runs in its own process group. When the time limit passes, the
 // context ends, standard output grows past its cap, or the watchdog returns an

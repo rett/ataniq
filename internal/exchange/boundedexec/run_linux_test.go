@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const sh = "/bin/sh"
@@ -208,21 +210,59 @@ func TestNilStdinIsEmpty(t *testing.T) {
 	}
 }
 
+// openDescriptors lists the descriptors below 64 that a command run by Run has
+// open, found without opening one: a glob would open a directory of its own.
+func openDescriptors(t *testing.T) string {
+	t.Helper()
+	res, err := Run(context.Background(), script(`i=0; while [ $i -lt 64 ]; do [ -e /proc/$$/fd/$i ] && echo $i; i=$((i+1)); done`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(strings.Fields(string(res.Stdout)), " ")
+}
+
 func TestOnlyStandardDescriptorsArePassedOn(t *testing.T) {
+	// Descriptors that the test process holds, all close-on-exec as every
+	// descriptor that Go opens is. None may reach the command.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
 	defer w.Close()
-	res, err := Run(context.Background(), script(`i=0; while [ $i -lt 64 ]; do [ -e /proc/$$/fd/$i ] && echo $i; i=$((i+1)); done`))
+	f, err := os.Open("/dev/null")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Test the open descriptors without opening one: a glob would open a
-	// directory of its own.
-	if got := strings.Fields(string(res.Stdout)); strings.Join(got, " ") != "0 1 2" {
-		t.Errorf("open descriptors in the command: %q", res.Stdout)
+	defer f.Close()
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if got := openDescriptors(t); got != "0 1 2" {
+		t.Errorf("open descriptors in the command: %q", got)
+	}
+}
+
+// This test pins the limit that doc.go states: the package does not close a
+// descriptor that the calling process holds without close-on-exec. If the
+// package ever closes them, this test must change with the package comment.
+func TestDescriptorWithoutCloseOnExecIsInherited(t *testing.T) {
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatal(err)
+	}
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC != 0 {
+		t.Fatalf("descriptor %d is close-on-exec (flags %d, err %v)", fd, flags, err)
+	}
+	want := "0 1 2 " + strconv.Itoa(fd)
+	if got := openDescriptors(t); got != want {
+		t.Errorf("open descriptors in the command: %q, want %q", got, want)
 	}
 }
 
