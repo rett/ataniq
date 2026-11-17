@@ -32,12 +32,12 @@ integration. The list of what is not built is at the [end](#not-built).
 | [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
-| [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it, reads it, never writes a role. |
+| [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
 | [`internal/leadrole`](../internal/leadrole/doc.go) | Role names, unit names, lock paths, coordinator identity. | Reads names. |
 | [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock. Takes no role lock. |
 | [`internal/leadunit`](../internal/leadunit/doc.go) | The unit manager interface, the unit specification and an in-memory fake. | The interface only. |
 | [`internal/leadunit/systemdmgr`](../internal/leadunit/systemdmgr/doc.go) | The unit manager for the systemd user manager. | Reads units for the one reconcile at start. |
-| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles. | Calls reconcile once. Never start or stop. |
+| [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles. It does not handle coordinators (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start or stop. |
 | [`internal/pidfd`](../internal/pidfd/doc.go) | Process identity and boot identity primitives. | Reads the boot identity. |
 | [`internal/systemd`](../internal/systemd/doc.go) | Control group, `systemctl show` and bounded command helpers. | Used by the unit manager. |
 | [`qualification/leadunit/cmd/leadunit-qualify`](../qualification/leadunit/cmd/leadunit-qualify/doc.go) | An opt-in harness for the unit manager. | None. It is run by hand. |
@@ -94,6 +94,7 @@ path, `daemon.sock` included, must fit in 107 bytes.
 | `<state>/registry/` | 0700 | The registry folder. |
 | `<state>/registry/registry.jsonl` | 0600 | The registry journal. |
 | `<runtime>` | 0700 | Created if missing; its parent must exist. Checked as `<state>` is. |
+| `<runtime>/daemon.sock.lock` | 0600 | The runtime folder lock: one daemon serves a runtime folder. It is taken before a stale socket is removed and held until the listener is closed (see [Locks](#locks)). |
 | `<runtime>/daemon.sock` | 0600 | The client socket. Closing the listener at shutdown removes it. |
 
 `<state>/roles/<project>/lead.lock` and the other role lock paths are named in
@@ -116,15 +117,20 @@ fails, with one line on standard error:
    daemon still runs: it prints that the systemd tools are unavailable and
    uses a manager that answers nothing.
 6. **reconcile**: run the lifecycle's reconcile once, bounded to 30 s. It
-   starts nothing and signals nothing. A manager that does not answer, a
-   reconcile that runs out of time and an unacknowledged cut of the registry
-   are not fatal; they show the reconcile as not completed (see
+   starts nothing and signals nothing. It is shown as not completed when the
+   unit manager is known to be unavailable (also with an empty registry, when
+   nothing was asked of it), when any unit-manager call failed during it, when
+   it ran out of time, and while a cut of the registry is unacknowledged. None
+   of these is fatal; a failure of the registry is (see
    [Reconcile](#reconcile-and-what-starts-by-itself)). Reconcile does not
    run again on a timer.
-7. **stale socket**: only now, with the lock held, remove a socket file an
-   earlier daemon left. It removes a socket owned by the caller and refuses
-   anything else at that name.
-8. **socket**: bind `daemon.sock`.
+7. **runtime lock and stale socket**: take `daemon.sock.lock` in the runtime
+   folder. A second daemon on the same runtime folder fails here with exit
+   code 17 and a message that another daemon serves the folder. Only now, with
+   both locks held, remove a socket file an earlier daemon left. It removes a
+   socket owned by the caller and refuses anything else at that name.
+8. **socket**: bind `daemon.sock`. The runtime lock is held until the
+   listener is closed.
 9. **serve**, until SIGTERM or SIGINT.
 10. **shutdown**.
 
@@ -139,15 +145,16 @@ completed. It writes no log file.
 | 0 | Done: clean shutdown, or `status` was answered. |
 | 1 | A failure with no code of its own: a `status` call that timed out, or an unsupported platform. |
 | 2 | Usage: the command line is not valid. |
-| 10 | Config: root, a folder that is not a clean absolute path, or no default for one. |
+| 10 | Config: root, a folder that is not a clean absolute path, or no default for one (`run`; `status` without a default socket exits 2). |
 | 11 | State folder: cannot be made, not the caller's, or open to group or others. |
 | 12 | The daemon lock is held by another process. |
 | 13 | The daemon lock could not be taken for another reason. |
 | 14 | Registry: cannot be opened, corrupt, or locked by another writer. |
 | 15 | Manager: the boot identity cannot be read, or the manager or controller cannot be built. |
 | 16 | Reconcile: failed in the registry. |
-| 17 | Socket: the stale socket, the folder or the bind. |
+| 17 | Socket: another daemon serves the runtime folder (its lock is held), or the stale socket, the folder or the bind failed. |
 | 18 | The server stopped by itself. |
+| 19 | The server did not end within the shutdown grace (5 s). The registry is left open and the daemon lock held, and both end with the process. |
 | 20 | `status`: no daemon answers at the socket (missing or refused). |
 | 21 | `status`: the daemon refused this user. |
 | 22 | `status`: an answer that is not valid, or an error the daemon answered. |
@@ -155,10 +162,11 @@ completed. It writes no log file.
 ### What `status` prints
 
 `ataniqd status` calls `hello` and then `status`, and prints one line for the
-daemon and one per role. The values below are illustrative:
+daemon and one per role, with its times in UTC. The values below are
+synthetic:
 
 ```text
-daemon version=0.0.0-dev pid=4242 started=2026-11-17T11:42:16Z revision=6 boot=7c5f9c0b-62cc-499b-bbed-2c85f495fcc9 reconcile=completed reconcile_at=2026-11-17T11:42:16Z
+daemon version=0.0.0-dev pid=4242 started=2026-01-01T00:00:00Z revision=6 boot=00000000-0000-4000-8000-000000000000 reconcile=completed reconcile_at=2026-01-01T00:00:00Z
 role=demo/lead kind=lead state=starting reason=launch-intent epoch=1 desired=running manager=ataniq
 ```
 
@@ -171,14 +179,20 @@ after 10 s.
 
 ### What shutdown does and does not do
 
-On SIGTERM or SIGINT the daemon stops accepting, closes the connections and
+On SIGTERM or SIGINT the daemon stops accepting, closes the listener (which
+removes the socket and releases the runtime lock), closes the connections and
 waits for them for at most 5 s, closes the registry, and releases the daemon
-lock last. If the connections do not end in time it logs that and goes on.
+lock last.
+
+If the server has not ended within those 5 s, the daemon does not close the
+registry or release the daemon lock under a goroutine that may still use them.
+It logs what is left, leaves both to the end of the process and exits with
+code 19.
 
 It does not stop a lead or any unit, and it signals nothing. A lead that runs
 when the daemon goes away keeps running. A SIGKILL or a crash skips all of it;
 the kernel releases the locks, and a socket file may stay behind, which the
-next daemon removes after it holds the lock.
+next daemon removes after it holds both locks.
 
 ## The client socket and protocol
 
@@ -231,26 +245,29 @@ echoed. The answer to `hello`, in one line:
 A request with `"op":"status"` gets an answer of the same shape. The result
 below is one lead. The wire form is one line; it is broken across lines here
 to read it, and `observed` is cut to its first member (the full object has six,
-listed after the example):
+listed after the example). The values are synthetic. The daemon writes its
+times as RFC 3339 in its own local offset (`2026-01-01T02:00:00+02:00` for a
+daemon two hours east of UTC), with fractions of a second; they are shown in
+UTC here, as the status text prints them:
 
 ```json
 {"protocol":"ataniq.client/1","request_id":"r1","ok":true,"result":{
   "daemon":{
     "pid":4242,
-    "started_at":"2026-11-17T11:42:16Z",
+    "started_at":"2026-01-01T00:00:00Z",
     "registry_revision":6,
-    "boot_id":"7c5f9c0b-62cc-499b-bbed-2c85f495fcc9",
+    "boot_id":"00000000-0000-4000-8000-000000000000",
     "last_reconcile_completed":true,
-    "last_reconcile_at":"2026-11-17T11:42:16Z"},
+    "last_reconcile_at":"2026-01-01T00:00:00Z"},
   "leads":[{
     "role":"demo/lead","kind":"lead","project":"demo","manager":"ataniq",
     "epoch":1,"desired":"running","state":"starting",
     "reason_code":"launch-intent","reason_detail":"",
-    "evidence_kind":"ataniq-observation","since":"2026-11-17T11:42:16Z",
+    "evidence_kind":"ataniq-observation","since":"2026-01-01T00:00:00Z",
     "requested":{"provider":"claude","version":"2.1.0","model":"model-requested",
       "effort":"high","permission_mode":"default","access_mode":"workspace"},
     "observed":{"provider":{"observed":false}},
-    "launch_intent":{"id":"3d5e8daf9e6d52c8d6cc9dd5297763e8","epoch":1,
+    "launch_intent":{"id":"00000000000000000000000000000001","epoch":1,
       "unit":"ataniq-lead-demo.service","outcome":"launched"}}]}}
 ```
 
@@ -260,12 +277,20 @@ listed after the example):
 from the requested profile.
 
 An entry of `leads` is a lead, the supervisor or a coordinator, told apart by
-`kind`. A coordinator entry also carries `feature`, `parent`, `parent_epoch`,
-`instance` and `identity`; they are left out of the entry of a lead and of the
-supervisor. The shown states are `desired`, `starting`, `ready`, `degraded`,
-`stalled` (a coordinator only), `stopping`, `stopped`, `ended` and `unknown`.
-`last_reconcile_at` is `null` when no reconcile ran. Compare an `identity`
-whole; it is an identifier and never a path or ref component.
+`kind`. A coordinator entry also carries `feature`, `parent` and `instance`,
+and `parent_epoch` and `identity` once it has a launch intent; a coordinator
+that was defined and never launched has no intent, so it has neither. They are
+left out of the entry of a lead and of the supervisor. The shown states are
+`desired`, `starting`, `ready`, `degraded`, `stalled` (a coordinator only),
+`stopping`, `stopped`, `ended` and `unknown`. The wire allows `null` for
+`last_reconcile_at`; this daemon always sends a time, the time its one reconcile
+ended. Compare an `identity` whole; it is an identifier and never a path or
+ref component.
+
+The wire has no place for the proof text of a `stopped` or `ended` state, for
+the unit evidence (invocation, control group and boot identity) or for the
+launch intent's boot identity and times. They stay in the registry, so a client
+sees `stopped` or `ended` without the proof it rests on.
 
 An error:
 
@@ -284,8 +309,9 @@ An error:
 | Idle | A connection has 30 s to deliver a complete request line, counted from the end of the previous response; then it is closed without a response. |
 | Write | 5 s for one response. |
 
-`hello` advertises the first four. The server bounds connections, request size,
-idle time and write time. It does not bound what the handler does.
+`hello` advertises the request and response caps, the idle time and the
+connection cap. The server bounds connections, request size, idle time and
+write time. It does not bound what the handler does.
 
 ### Error codes
 
@@ -348,10 +374,20 @@ A last line without its newline is an append that never returned. `Open` cuts
 it off and journals the cut in a `recovered` record (lines, bytes, offset).
 Recovery reports every cut that no later `recovery-acknowledged` record
 follows, also after a reopen. Only `AcknowledgeRecovery`, which takes a
-required note, journals the acknowledgement. **Nothing in this build calls it.**
-A cut therefore keeps the reconcile shown as not completed, and the roles as
-shown unknown with the reason `registry-recovered`, until something
-acknowledges it.
+required note, journals the acknowledgement. In this build the one caller is
+the lifecycle's reconcile: it acknowledges a cut once it has acted on every
+role. A reconcile that stops before that, on a failure of the registry or
+because its context ended, acknowledges nothing, and the cut is reported again
+after a restart. While a cut is unacknowledged the daemon shows the reconcile
+as not completed.
+
+A cut shows every role run by ataniq as unknown with the reason
+`registry-recovered`, except a role recorded `desired`, `stopped` or `ended`
+whose unit is proven absent (not loaded, with its control group proven empty or
+the boot identity changed): that role is left as it is. A role run by the
+tmux-manager is never touched. Acknowledging the cut does not resolve a role
+shown unknown: that needs a stop with proof or the owner's decision (see
+[`unknown`](#unknown-and-how-a-role-leaves-it)).
 
 The limits, stated plainly:
 
@@ -361,10 +397,10 @@ The limits, stated plainly:
   detected or reported.
 - The cut and its `recovered` record are written before a single sync. A crash
   between them can lose the record, and then the cut is not reported.
-- The wire has no field for an unacknowledged recovery. The daemon shows the
-  reconcile as not completed and writes the reason to its log; a client cannot
-  tell that apart from an unavailable manager by the daemon block. The roles
-  themselves show the reason `registry-recovered`.
+- The wire has no field for a recovery. While one is unacknowledged the daemon
+  shows the reconcile as not completed and writes the reason to its log; a
+  client cannot tell that apart from an unavailable manager by the daemon
+  block. The roles themselves show the reason `registry-recovered`.
 
 ### What a record holds
 
@@ -379,8 +415,9 @@ For each role the registry keeps:
 - the epoch, the desired state (`running` or `stopped`), and the shown state
   with its reason code, reason detail, evidence kind and time, and a proof text
   where one is required;
-- the current launch intent and the unit evidence of the current epoch
-  (invocation id, control group path and identity, boot identity).
+- the current launch intent (with the boot identity it was made on) and the
+  unit evidence of the current epoch (invocation id, control group path and
+  identity, boot identity).
 
 ### Epochs and the launch intent
 
@@ -389,8 +426,8 @@ whether the launch failed or not and also after a reopen (apart from the loss a
 cut can cause, above). A call that names another epoch than the role's current
 one is refused as stale.
 
-The launch intent (a new epoch, a random 128-bit intent id and the unit name)
-is **journaled before any unit call**. A launch is admitted only from the shown
+The launch intent (a new epoch, a random 128-bit intent id, the unit name and
+the boot identity) is **journaled before any unit call**. A launch is admitted only from the shown
 states `desired`, `stopped` or `ended`, with no intent pending. The intent
 stays `pending` until an outcome (`launched`, `adopted`, `failed` or
 `abandoned`) is recorded; while it is pending, `stopped`, `ended` and an owner
@@ -499,8 +536,11 @@ The registry enforces two rules about them today. A coordinator is launched
 only under a parent lead that is defined, run by ataniq, shown `starting`,
 `ready` or `degraded`, and whose own launch did not fail and was not abandoned.
 And a new epoch of a lead is refused while a coordinator recorded under an
-earlier epoch of that lead is not stopped, ended or never launched. What the
-lifecycle does with coordinators is in [the next sections](#units-and-the-replacement-rule).
+earlier epoch of that lead is not stopped, ended or never launched. The
+registry does not stop a coordinator when its parent's epoch ends; it keeps the
+record and refuses those launches. What the lifecycle does with coordinators,
+which is nothing, is in
+[Coordinators in the lifecycle](#coordinators-in-the-lifecycle).
 
 ## Locks
 
@@ -512,9 +552,22 @@ open file description, so it is held as long as a descriptor of it is open
 anywhere; the kernel releases it when the last one closes, a SIGKILL included.
 The file is opened close-on-exec, and is never removed.
 
-Only the daemon lock is taken today. No role lock is taken: there is no holder
-in this build, so nothing takes one. The daemon never probes a role lock by
-taking and releasing it, and the package offers no such call.
+Only the daemon's own locks are taken today. No role lock is taken: there is no
+holder in this build, so nothing takes one. The daemon never probes a role lock
+by taking and releasing it, and the package offers no such call.
+
+The daemon takes two locks, which exclude different things:
+
+- `<state>/daemon.lock` enforces **one daemon per state folder**.
+- `<runtime>/daemon.sock.lock` enforces **one daemon per runtime folder**. The
+  daemon takes it before it removes a stale socket and holds it until the
+  listener is closed, so a second daemon cannot remove the socket of a live
+  one. A second daemon on the same runtime folder exits with code 17 and a
+  message that another daemon serves the folder.
+
+Neither lock covers two daemons of one user that have different state folders
+**and** different runtime folders. Nothing prevents that, and they would share
+unit names (see [the limits](#what-proven-empty-means)).
 
 **The pid text is a hint for display.** After the lock is taken, the holder
 writes its pid as decimal text and a newline. That text is written after the
@@ -545,10 +598,14 @@ back from it. The command is an absolute executable with its arguments, a
 working directory and an explicit environment. The manager sends the command
 with systemd's no-expand flag so that `$VAR` in an argument is not expanded.
 
-A coordinator's unit is also **bound** to its lead's unit: `BindsTo=`,
-`PartOf=` and `After=` the lead's unit, so that stopping the lead stops its
-coordinators. What systemd does with these three, in particular for a start
-under a parent that is missing or deactivating, is not confirmed (see
+A unit specification may name a parent unit. The unit is then also **bound** to
+it with `BindsTo=`, `PartOf=` and `After=`, so that stopping the parent stops
+it, and the fake and the systemd manager both do this. It is how a
+coordinator's unit is meant to be bound to its lead's unit, but the lifecycle
+does not set a parent: see
+[Coordinators in the lifecycle](#coordinators-in-the-lifecycle). What systemd
+does with these three, in particular for a start under a parent that is
+missing or deactivating, is not confirmed (see
 [the qualification harness](#the-qualification-harness)).
 
 ### Start
@@ -557,8 +614,8 @@ A start is one request, **never retried**. Before anything is journaled, the
 replacement rule applies: the unit name must not be loaded, and the control
 group of the previous epoch must be proven empty (a changed boot identity is
 proof in itself). Without that proof nothing starts: the start is refused and
-the role is left as it is. Only then does the lifecycle journal the launch intent and call
-`Start` once. It never waits for readiness, and it never sets `ready`.
+the role is left as it is. Only then does the lifecycle journal the launch
+intent, with the boot identity, and call `Start` once. It never waits for readiness, and it never sets `ready`.
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
@@ -605,9 +662,11 @@ Everything else is false, and a new invocation alone is never proof. The limits:
   compares the recorded invocation, but systemd does not vouch for the
   description.
 - **One installation per user is assumed.** Unit names do not include the state
-  folder, and the daemon lock lives in it, so two daemons with different state
-  folders of one user would use the same unit names and would not exclude each
-  other. Nothing checks this.
+  folder or the runtime folder. One daemon per runtime folder is enforced by
+  `daemon.sock.lock`, and one daemon per state folder by `daemon.lock`. Two
+  daemons of one user with different state folders **and** different runtime
+  folders are not prevented. They would use the same unit names and would not
+  exclude each other. Nothing checks this.
 - The control group file system is read at the fixed mount `/sys/fs/cgroup`;
   nothing proves that it is the manager's own beyond the identity checks.
 
@@ -626,7 +685,9 @@ the registry's table does not let it return to a live state.
 ### Reconcile and what starts by itself
 
 Reconcile compares the registry with the manager for every role the daemon
-runs, and **starts nothing and signals nothing**, ever. After a daemon restart:
+runs, and **starts nothing and signals nothing**, ever. A role run by the
+tmux-manager is never touched; the report says it was not managed. After a
+daemon restart:
 
 - a running unit of ours whose epoch and intent equal the journal's is adopted,
   and the shown state is kept, never raised to `ready`;
@@ -641,11 +702,22 @@ runs, and **starts nothing and signals nothing**, ever. After a daemon restart:
   or leftover unit, and the role is `unknown`;
 - when the manager does not answer, nothing changes for the role and the report
   says unavailable, since a role that runs should not look lost because the
-  daemon could not ask.
+  daemon could not ask;
+- after a cut of the registry journal, every role run by ataniq is shown
+  `unknown` with the reason `registry-recovered`, except a role recorded
+  `desired`, `stopped` or `ended` whose unit is proven absent, which is left as
+  it is. A pending launch intent of a role shown `unknown` for the cut is still
+  settled (adopted when its unit runs, abandoned once the late-start window has
+  passed). Once reconcile has acted on every role it acknowledges the cut; an
+  unacknowledged cut is reported again after a restart (see
+  [Recovery and its limit](#recovery-and-its-limit)).
+
+The daemon shows the reconcile as not completed when the unit manager is known
+to be unavailable (also with an empty registry), when any unit-manager call
+failed during it, when it ran out of time, and while a cut is unacknowledged.
 
 After a reboot every unit is gone, so reconcile shows a role that was live as
-`stopped`, with the reason `host-rebooted`. **No
-lead starts by itself, after a reboot or ever:** nothing in this build starts a
+`stopped`, with the reason `host-rebooted`. **No lead starts by itself, after a reboot or ever:** nothing in this build starts a
 unit, and there is no boot start.
 
 ### The late-start window
@@ -655,6 +727,15 @@ once. Reconcile waits until the **late-start window** (30 s) and a margin (10 s)
 have passed since the registry stamped the intent. Then, with the unit still not
 loaded and its control group empty, it closes the intent as abandoned and
 records the role as stopped, with a proof text naming the facts used.
+
+The launch intent carries the boot identity it was made on. A lost launch whose
+intent was made on another boot is settled at once, without the window: nothing
+that was on the bus before a reboot can land after it.
+
+The daemon reconciles once. An intent that is still inside its window at that
+moment leaves the role `unknown` with the reason `launch-unsettled`, the
+reconcile is shown as completed, and nothing settles the intent until the daemon
+is started again.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that
@@ -672,23 +753,30 @@ ours is never signalled.
 
 ### Coordinators in the lifecycle
 
-*Being completed in this feature.* The registry, the role package, the unit
-specification and the status result carry coordinators today. The lifecycle's
-handling of them is not final, and this guide states it only at the level of
-the contract:
+**`internal/leadlifecycle` does not handle coordinators.** What has them:
 
-- A coordinator is launched only under a live parent lead and records that
-  parent's epoch. It ends when its parent's epoch ends.
-- The replacement rule applies to it: a stalled or unknown coordinator is proven
-  stopped (`stopped` or `ended`, with proof) before instance `n+1` starts.
-  "Proven stopped" is also what a later adoption of its runs will ask for.
-- A new lead epoch is not launched while a coordinator recorded under an
-  earlier epoch of that lead is not proven stopped.
-- The coordinator's unit is bound to its lead's unit, and the lifecycle also
-  stops and proves each coordinator itself before it stops the lead.
+- the registry: the coordinator record, the instance number, the shown state
+  `stalled`, and the parent rules (a coordinator is launched only under a live
+  parent, and a new lead epoch is refused while a coordinator of an earlier one
+  is not proven stopped);
+- the role package: the role name, the unit name, the lock path and the identity;
+- the unit specification: the parent unit and the bound properties `BindsTo=`,
+  `PartOf=` and `After=` (see [Properties of a unit](#properties-of-a-unit));
+- the fake, and the systemd manager's rendering of those properties;
+- the status protocol: the entry of a coordinator and its members.
 
-The state `stalled` is part of the table and of the status vocabulary, but no
-stall detector exists (see [Not built](#not-built)).
+What the lifecycle does with a coordinator, today:
+
+- **Start** builds a unit with no parent. A coordinator started through it
+  would have an unbound unit.
+- **Stop** of a lead stops no coordinator and does not look for one.
+- **Reconcile** treats a coordinator record like any other role: it compares
+  its unit and record as it does for a lead.
+- Nothing marks or clears `stalled`. The state is part of the table and of the
+  status vocabulary, but no stall detector exists (see [Not built](#not-built)).
+- Nothing ends a coordinator when its parent's epoch ends, and nothing stops a
+  coordinator or proves it stopped on behalf of its lead. The registry only
+  refuses the launches that would need that proof.
 
 ## Runtime requirements
 
@@ -703,8 +791,9 @@ developer tools. `make doctor` does not check them, and
   folder and bus address derived from the real user id), and cuts each call
   off after 5 s. Starting a unit uses `ExecStartEx`, which the package
   documentation says needs systemd 243 or newer; that is from the
-  documentation and not from a run. Without the tools the daemon still serves,
-  with the reconcile shown as not completed.
+  documentation and not from a run. Without the tools the daemon still serves;
+  the reconcile is shown as not completed, also when the registry holds no
+  role, since the manager is known to be unavailable.
 - A unified control group hierarchy (cgroup v2) mounted at `/sys/fs/cgroup`.
 - The kernel's boot identity, `/proc/sys/kernel/random/boot_id`. This is all the
   daemon takes from the `pidfd` package today. That package also opens a pidfd
@@ -784,14 +873,17 @@ None of the following exists in this build:
 - delivery of instructions and the wait for an idle turn, and the quiesce of
   delivery before a stop (the interface exists, nothing implements it);
 - tickets;
-- any mutating command: nothing defines a role, starts, stops, resolves an
-  unknown role or acknowledges a registry recovery;
+- any mutating command: nothing defines a role, starts, stops or resolves an
+  unknown role. The one write the daemon makes is the reconcile's: it records
+  what it finds about a role, and acknowledges a registry recovery;
 - the assignment record and Qargi's side of it;
 - observation of the tmux-manager's leads;
 - start at boot, and a unit file for the daemon itself: `ataniqd run` is
   started by hand;
 - a coordinator's holder and sandbox;
-- the stall detector;
+- the lifecycle's handling of coordinators (a parent for Start, the stop of a
+  lead's coordinators, the end of a coordinator with its parent's epoch);
+- the stall detector, and anything that marks or clears `stalled`;
 - a periodic reconcile.
 
 A start also needs a qualification record and a command line for the holder.
