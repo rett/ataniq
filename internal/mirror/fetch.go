@@ -201,7 +201,9 @@ func (m *Mirror) lockPath() string { return m.path + ".lock" }
 //     mirror. In both cases the lead's namespace is put back as it was before
 //     the move, in the same two transactions in the other direction (what the
 //     move created is deleted first), and then the error is returned; if
-//     putting it back fails too, the error says both.
+//     putting it back fails too, the error says both. The same holds when the
+//     listing itself fails: the lead's namespace is then put back against the
+//     values that the move wrote, the refs of the staging repository.
 //     Any other ref outside the namespace that differs is listed in
 //     [FetchReport.OutsideChanged] and left alone.
 //  10. The staging repository is deleted, on every path and on a panic, and
@@ -369,7 +371,9 @@ func (m *Mirror) fetch(ctx context.Context, req FetchRequest, rep *FetchReport) 
 	hook(9)
 	snapAfter, err := m.snapshotMirror(move)
 	if err != nil {
-		return err
+		// Without the listing, the move is still known: the lead's namespace
+		// is what the staging repository held. Put it back against that.
+		return m.rollback(move, prefix, snapBefore, namespaceAfter(snapBefore, stagedRecs, prefix), err)
 	}
 	hook(90)
 	updates, outside := compareSnapshots(snapBefore, snapAfter, prefix)
@@ -717,6 +721,23 @@ func upstreamChanged(names []string) error {
 		more = ", and more"
 	}
 	return fmt.Errorf("%w: %d ref(s): %s%s", ErrUpstreamChanged, len(names), strings.Join(shown, ", "), more)
+}
+
+// namespaceAfter returns the snapshot that the mirror has after a move that
+// changed the namespace under prefix from its value in before to staged, the
+// refs of the staging repository, and nothing else: the refs of before outside
+// prefix, and staged, sorted by name. It is what the mirror holds if the move
+// did what it was asked, and it is known without a second listing.
+func namespaceAfter(before, staged []record, prefix string) []record {
+	after := make([]record, 0, len(before)+len(staged))
+	for _, r := range before {
+		if !strings.HasPrefix(r.Name, prefix) {
+			after = append(after, r)
+		}
+	}
+	after = append(after, staged...)
+	slices.SortFunc(after, func(a, b record) int { return strings.Compare(a.Name, b.Name) })
+	return after
 }
 
 // rollback puts the lead's namespace back as it was in before, after a check

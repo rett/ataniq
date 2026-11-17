@@ -180,6 +180,49 @@ func TestFetchRestoreHasItsOwnTimeLimit(t *testing.T) {
 	noLeftovers(t, r.m)
 }
 
+func TestFetchPutsTheLeadRefsBackWhenTheListingAfterTheMoveFails(t *testing.T) {
+	// The listing after the move fails: its time ran out, which stands for a
+	// killed run or a mirror with too many refs. The lead's refs are put
+	// back against the values that the move wrote, and the error is the
+	// listing's own.
+	r := newRollbackEnv(t)
+	r.m.limits = Limits{Timeout: 600 * time.Millisecond}
+	before := mirrorRefs(t, r.m)
+	atStep(t, 9, func() { time.Sleep((moveRuns + 1) * r.m.limits.Timeout) })
+	rep, err := r.m.Fetch(context.Background(), r.req())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Fetch = %v, want the failure of the listing", err)
+	}
+	if strings.Contains(err.Error(), "put back") {
+		t.Errorf("the restore failed: %v", err)
+	}
+	if got := mirrorRefs(t, r.m); !reflect.DeepEqual(got, before) {
+		t.Errorf("the refs after the failure:\n%q\nbefore:\n%q", got, before)
+	}
+	if len(rep.Updates) != 0 {
+		t.Errorf("a failed fetch reports updates %+v", rep.Updates)
+	}
+	noLeftovers(t, r.m)
+}
+
+func TestNamespaceAfter(t *testing.T) {
+	const prefix = "refs/leads/coder/heads/"
+	rec := func(name, id string) record { return record{Ref: Ref{Name: name, ID: id, Type: "commit"}} }
+	before := []record{
+		rec("refs/heads/main", "1"), rec(prefix+"a", "2"), rec(prefix+"b/c", "3"),
+		rec("refs/leads/other/heads/x", "4"),
+	}
+	staged := []record{rec(prefix+"b", "5"), rec(prefix+"a", "6")}
+	got := namespaceAfter(before, staged, prefix)
+	want := []record{
+		rec("refs/heads/main", "1"), rec(prefix+"a", "6"), rec(prefix+"b", "5"),
+		rec("refs/leads/other/heads/x", "4"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("namespaceAfter = %+v, want %+v", got, want)
+	}
+}
+
 func TestFetchMoveThatFailsPartwayChangesNoRef(t *testing.T) {
 	// The lead has main (a new ref in the mirror), aaa and zzz. A stale lock
 	// on zzz makes git fail while it takes the locks of the second

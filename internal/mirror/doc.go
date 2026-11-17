@@ -74,7 +74,7 @@
 // they were. A move that fails leaves no ref changed: the first transaction
 // deletes and the second creates and updates, and a failure of the second puts
 // back what the first deleted (the error says so if that fails too). If a
-// check after the move fails, the lead's namespace is
+// check after the move fails, or the listing after it, the lead's namespace is
 // put back as it was before the move, in the same two transactions the other
 // way (what the move created is deleted first), and the error is returned; if
 // that fails too, the error says so. A restore has a time limit of its own. The objects that the move brought stay, with
