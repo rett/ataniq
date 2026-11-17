@@ -162,6 +162,14 @@ func craft(t *testing.T, lines [][]byte, n int, seq uint64, kind string, role le
 	return line
 }
 
+// otherErrors are the named errors a corrupt journal must not match.
+var otherErrors = []error{
+	ErrInvalid, ErrNoRole, ErrTooManyRoles, ErrTooLarge, ErrStaleEpoch, ErrEpochExhausted,
+	ErrLaunchRefused, ErrLaunchState, ErrLaunchManager, ErrLaunchPending, ErrIntentMismatch, ErrIntentResolved,
+	ErrProofRequired, ErrStateTransition, ErrOutcomePending, ErrDecisionRequired,
+	ErrLocked, ErrInsecure, ErrClosed, ErrBroken,
+}
+
 func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 	data, _, _ := buildJournal(t)
 	lines := journalLines(data)
@@ -211,6 +219,8 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		{"owner decision outside unknown", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
 		{"owner decision without text", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}})), 4},
 		{"owner decision to a live state", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateReady, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
+		{"launch from a live state", assemble(8, craft(t, lines, 8, 8, kindLaunchBegin, alpha, &beginPayload{
+			IntentID: strings.Repeat("ab", 16), Epoch: 2, UnitName: alpha.UnitName(), ProfileDigest: goodProfile().Digest()})), 9},
 		{"record for an undefined role", assemble(3, craft(t, lines, 3, 3, kindDesired, lead(t, "ghost"), &desiredPayload{Desired: DesiredRunning})), 4},
 		{"record without a role", assemble(3, craft(t, lines, 3, 3, kindDesired, leadrole.Role{}, &desiredPayload{Desired: DesiredRunning})), 4},
 		{"line over the cap", assemble(3, append(bytes.Repeat([]byte("x"), MaxLineBytes+10), '\n')), 4},
@@ -227,6 +237,19 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "line ") {
 			t.Errorf("%s: message does not name the line: %v", c.name, err)
+		}
+		// A corrupt journal is ErrCorrupt and no other named error, whatever
+		// the record was refused for; its text is kept.
+		for _, other := range otherErrors {
+			if errors.Is(err, other) {
+				t.Errorf("%s: Open error also matches %v", c.name, other)
+			}
+		}
+		if errors.Unwrap(err) != nil {
+			t.Errorf("%s: Open error unwraps to %v", c.name, errors.Unwrap(err))
+		}
+		if ce.Reason == "" || !strings.Contains(err.Error(), ce.Reason) {
+			t.Errorf("%s: the reason is not in the message: %v", c.name, err)
 		}
 	}
 }

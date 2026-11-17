@@ -48,14 +48,17 @@ type Recovery struct {
 }
 
 // CorruptError is the error Open returns for a damaged journal. It names the
-// 1-based line of the file and matches ErrCorrupt.
+// 1-based line of the file and matches ErrCorrupt and nothing else: the error
+// of a refused record (a stale epoch, a refused launch, an undefined role) is
+// kept as text in Reason and its identity is not passed through, so a caller
+// that tests for one of those errors around Open does not take a corrupt
+// journal for it.
 type CorruptError struct {
 	// Line is the 1-based line number in the file.
 	Line int
-	// Reason says what is wrong with it.
+	// Reason says what is wrong with it. For a record the state does not
+	// admit it is the text of the refusal.
 	Reason string
-	// Err is the underlying error, if any.
-	Err error
 }
 
 // Error names the line and the damage.
@@ -65,9 +68,6 @@ func (e *CorruptError) Error() string {
 
 // Is makes errors.Is(err, ErrCorrupt) true.
 func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
-
-// Unwrap returns the underlying error.
-func (e *CorruptError) Unwrap() error { return e.Err }
 
 // Registry is the open, locked registry. Its methods are safe for concurrent
 // use. It is not safe to use after Close.
@@ -293,7 +293,7 @@ func (r *Registry) start(dirFD int) error {
 func (r *Registry) replayLine(n int, line []byte) error {
 	rec, sum, err := decodeLine(r.prev, uint64(n-1), line)
 	if err != nil {
-		return &CorruptError{Line: n, Reason: err.Error(), Err: err}
+		return &CorruptError{Line: n, Reason: err.Error()}
 	}
 	if (n == 1) != (rec.kind == kindHeader) {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
@@ -302,7 +302,7 @@ func (r *Registry) replayLine(n int, line []byte) error {
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, len(r.roles), rec)
 		if err != nil {
-			return &CorruptError{Line: n, Reason: err.Error(), Err: err}
+			return &CorruptError{Line: n, Reason: err.Error()}
 		}
 		r.roles[rec.role] = next
 	}
