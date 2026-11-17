@@ -1444,6 +1444,62 @@ func TestWalkCgroupListsTheParentAgainWhenAGroupVanishes(t *testing.T) {
 	}
 }
 
+// A group that cannot be opened and whose parent cannot be listed either may
+// have been renamed together with its parent, children included: the name is
+// not taken as removed, the walk is incomplete and counted, and a later walk
+// finds the process (the review of the follow-ups, finding 5). Only the walk
+// that saw the rename proves nothing.
+func TestWalkCgroupDoesNotTakeAGroupUnderARenamedAncestorAsRemoved(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cgroup.procs"), "10\n")
+	writeFile(t, filepath.Join(root, "a", "cgroup.procs"), "")
+	writeFile(t, filepath.Join(root, "a", "b", "cgroup.procs"), "4194000\n")
+	changed := false
+	s := walkCgroupHook(root, 100, 10, nil, func(dir string) {
+		if dir != filepath.Join(root, "a") || changed {
+			return
+		}
+		changed = true // after a was listed, before b is read
+		if err := os.Rename(filepath.Join(root, "a"), filepath.Join(root, "c")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !changed {
+		t.Fatal("the hook did not run")
+	}
+	if s.complete() || s.errs != 1 || s.err == nil {
+		t.Errorf("walk %+v: a group under a renamed ancestor must be one unreadable group, not a removed one", s)
+	}
+	if len(s.members) != 0 {
+		t.Errorf("members %+v: the walk saw none", s.members)
+	}
+
+	// The next walk starts from the top group and reads the group where it is.
+	s = walkCgroup(root, 100, 10, nil)
+	if !s.complete() || len(s.members) != 1 || s.members[0].pid != 4194000 {
+		t.Errorf("second walk %+v, want complete with the process in the renamed tree", s)
+	}
+
+	// The ancestors removed in the normal order, child first, are also not
+	// proof: the walk cannot tell that from a rename, and TreeGone is polled.
+	changed = false
+	s = walkCgroupHook(root, 100, 10, nil, func(dir string) {
+		if dir != filepath.Join(root, "c") || changed {
+			return
+		}
+		changed = true
+		if err := os.RemoveAll(filepath.Join(root, "c")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !changed || s.complete() || s.errs != 1 {
+		t.Errorf("walk %+v: want one unreadable group while the ancestor is gone", s)
+	}
+	if s = walkCgroup(root, 100, 10, nil); !s.complete() || len(s.members) != 0 {
+		t.Errorf("walk after the removal %+v, want complete and empty", s)
+	}
+}
+
 // With the cgroup method the tree is gone only when the walk and the session
 // scan are both empty, and the proof names both (finding 2b). The host is
 // built by hand over a fake proc root, with a number that stands for the

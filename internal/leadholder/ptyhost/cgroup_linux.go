@@ -194,10 +194,14 @@ func (s cgroupScan) complete() bool { return !s.truncated && s.errs == 0 }
 //
 // A child group that cannot be opened any more (ENOENT) may have been removed
 // or renamed since its parent was listed. The parent is listed again and every
-// name not seen before is queued; only a name that is gone from the parent's
-// listing counts as removed, and a name that is still listed but cannot be
-// read is an unreadable group. The walk is not atomic all the same (see the
-// package comment).
+// name not seen before is queued; only a name that is gone from a parent that
+// can still be listed counts as removed. A name that is still listed but
+// cannot be read is an unreadable group, and so is a name whose parent cannot
+// be listed either: the parent may have been renamed with its children, so
+// nothing is known about the name, and the walk proves nothing this time (it
+// is counted, and a later walk tries again). The top group missing is an
+// error as well. The walk is not atomic all the same (see the package
+// comment).
 func walkCgroup(dir string, limit, self int, ignore func(pid int) bool) cgroupScan {
 	return walkCgroupHook(dir, limit, self, ignore, nil)
 }
@@ -218,7 +222,8 @@ func walkCgroupHook(dir string, limit, self int, ignore func(pid int) bool, afte
 		}
 	}
 	// enqueue lists the children of parent and queues those not seen before.
-	// A parent that is gone has no children.
+	// A parent that cannot be listed queues nothing; the caller that needs the
+	// answer for a name asks stillListed.
 	enqueue := func(parent string) {
 		names, more, err := childGroups(parent, limit+walkEntrySlack)
 		if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENODEV) {
@@ -249,8 +254,9 @@ func walkCgroupHook(dir string, limit, self int, ignore func(pid int) bool, afte
 		switch {
 		case err != nil && cur != dir && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENODEV)):
 			// Removed or renamed? List the parent again: a new name is queued,
-			// a name that is gone is removed, a name still listed is a group
-			// that cannot be read.
+			// a name that is gone from a parent that can be listed is removed,
+			// and a name still listed, or a parent that cannot be listed, is a
+			// group that cannot be read.
 			parent := filepath.Dir(cur)
 			enqueue(parent)
 			if stillListed(parent, filepath.Base(cur), limit+walkEntrySlack) {
@@ -288,11 +294,12 @@ func walkCgroupHook(dir string, limit, self int, ignore func(pid int) bool, afte
 
 // stillListed reports whether the group directory parent lists a child group
 // of that name. A listing that fails or is cut short answers true: the name
-// cannot be called removed.
+// cannot be called removed. That includes a parent that is gone, which may
+// have been renamed with its children.
 func stillListed(parent, name string, limit int) bool {
 	names, more, err := childGroups(parent, limit)
 	if err != nil {
-		return !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENODEV)
+		return true
 	}
 	if slices.Contains(names, name) {
 		return true
