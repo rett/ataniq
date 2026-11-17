@@ -68,10 +68,16 @@ import (
 //
 // Stop of a lead never returns nil while the second listing was not done. When
 // the lead is proven stopped the second listing runs on a context of its own
-// that the caller's cannot end (it is bounded by the stop sequences, which are
-// bounded by TermWait and the proof bound), so a caller whose context ended
-// after the proof still gets the coordinator named, shown unknown, in the
-// result. When the stop of the lead returned an error, the second listing runs
+// that the caller's cannot end, so a caller whose context ended after the proof
+// still gets the coordinator named, shown unknown, in the result, and can no
+// longer shorten that wait. The wait is bounded by the stop sequences of the
+// coordinators (TermWait, the proof bound and the manager's call timeout, which
+// limits each call to the manager and is not counted by the injected clock, so
+// one sequence can run past the first two by a few of them), by the Quiesce's
+// own limit, and by the operation that holds a coordinator's lock when the
+// listing reaches it (a Start, a Reconcile, MarkStalled, ClearStalled or a Stop
+// of that coordinator, each under its own context). When the stop of the lead
+// returned an error, the second listing runs
 // on the caller's context, and a coordinator it could not stop for that
 // context makes the result an error that says the coordinators were not all
 // listed and stopped; the error of the lead's stop is part of the result
@@ -114,8 +120,9 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 		// any more): list the coordinators again, see Stop. Once the lead
 		// is proven stopped this is owed whatever became of the caller's
 		// context, so it runs on a context of its own, which only the
-		// bounds of the stop sequences end; after a failed stop of the lead
-		// it runs on the caller's context.
+		// bounds named in Stop's comment end (the stop sequences, the
+		// Quiesce's limit and the lock of a coordinator); after a failed stop
+		// of the lead it runs on the caller's context.
 		lctx := ctx
 		if err == nil {
 			lctx = settleCtx(ctx)
