@@ -870,6 +870,9 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 		if bottom < 1 {
 			bottom = height
 		}
+		// A region ends at the screen's last line at most: a margin beyond
+		// it made the scrolling operations index past the buffer.
+		bottom = min(bottom, height)
 
 		if top >= bottom {
 			return false
@@ -903,6 +906,9 @@ func (e *Emulator) registerDefaultCsiHandlers() {
 			if right < 1 {
 				right = width
 			}
+			// As for the bottom margin, the right margin is the last column
+			// at most.
+			right = min(right, width)
 
 			if left >= right {
 				return false

@@ -120,6 +120,21 @@ Patches, applied in this order to the files of the module as released:
    the screen and a resize add none. A negative number is ignored, as zero
    was, except that a screen without a scrollback buffer still gets one of the
    default size. A size above zero works as before.
+10. `vt: keep the scroll margins and the cursors inside the screen`
+   (`handlers.go`, `emulator.go`, `bounds_test.go`). A few bytes of output
+   could crash the process: `CSI 3;99 r` on a screen of five lines set a
+   scroll region that ended at line 99, and the next insert or delete line,
+   scroll or reverse index indexed past the buffer; `CSI ? 69 h` and
+   `CSI 2;99 s` did the same with the right margin on the next character. A
+   resize left the cursor of the screen that is not active, and the saved
+   cursors of both, where they were, so a later restore followed by a tab
+   stop or a character indexed past a smaller screen. The bottom and right
+   margins are now cut to the screen's last line and column, as in xterm, and
+   a region that is empty after the cut (the top margin on or below the last
+   line) is ignored, as an empty one was. A resize moves the cursor of both
+   screens and both saved cursors into the new size. Nothing changes for a
+   sequence that did not index past the buffer, except that the cursor and
+   the region it leaves are inside the screen.
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.
