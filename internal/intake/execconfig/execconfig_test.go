@@ -204,10 +204,9 @@ func TestDesignScenariosS19(t *testing.T) {
 func TestNearMisses(t *testing.T) {
 	s := Default()
 	for _, p := range []string{
-		"Makefile.txt", "myscripts/x", "scripts", "claude/settings.json",
+		"Makefile.txt", "myscripts/x", "claude/settings.json",
 		"go.mod.bak", "ago.mod", "x.github/workflows/ci.yml", ".githubx/ci.yml",
-		"my.github", ".github", "a/.github", ".claude", "src/.claude", "a/.codex",
-		".vscode", "README.md", "src/main.go", ".editorconfig", ".dockerignore",
+		"my.github", "README.md", "src/main.go", ".editorconfig", ".dockerignore",
 		"docs/.gitignore", ".gitignore", "env", ".environment", "a.env",
 		".envrc.bak", "Dockerfile.bak", "mk", "x.mkx", "package.json5",
 		"git~2/x", "gitt~1", ".gitx/y", "my.git", "docs/CLAUDE.mdx",
@@ -217,13 +216,38 @@ func TestNearMisses(t *testing.T) {
 	}
 }
 
-func TestFolderPatternNeedsAFolder(t *testing.T) {
+// The matcher sees no file modes, and a symbolic link or a submodule stands
+// for a folder. So a folder rule also matches a path whose last element is
+// the folder name.
+func TestFolderRuleMatchesALastElement(t *testing.T) {
 	s := Default()
-	mustNotMatch(t, s, ".claude")
-	mustNotMatch(t, s, "a/scripts")
-	mustMatch(t, s, "scripts/", "scripts/")
-	mustMatch(t, s, "a/scripts/", "scripts/")
-	mustMatch(t, s, ".claude/", ".claude/")
+	for path, pattern := range map[string]string{
+		".claude":          ".claude/",
+		"src/.claude":      ".claude/",
+		"a/.codex":         ".codex/",
+		".vscode":          ".vscode/",
+		"scripts":          "scripts/",
+		"a/scripts":        "scripts/",
+		"x/.devcontainer":  ".devcontainer/",
+		".github":          ".github/",
+		"a/.github":        ".github/",
+		"SCRIPTS":          "scripts/",
+		".claude.":         ".claude/",
+		"scripts/":         "scripts/",
+		"a/scripts/":       "scripts/",
+		".claude/":         ".claude/",
+		".claude/settings": ".claude/",
+	} {
+		mustMatch(t, s, path, pattern)
+	}
+	// A name that merely contains the rule name is not the rule name.
+	for _, p := range []string{
+		"myscripts", "myscripts/x", "scripts.d", "scripts.d/x", "claude",
+		"claude/settings.json", "x.claude", "a/x.claude/y", ".claudex",
+		"my.github", ".githubx", "a/.vscodes",
+	} {
+		mustNotMatch(t, s, p)
+	}
 }
 
 func TestNamePatternMatchesFolderToo(t *testing.T) {
@@ -276,14 +300,14 @@ func TestWith(t *testing.T) {
 		no      []string
 	}{
 		{"deploy.sh", []string{"deploy.sh", "a/deploy.sh", "x/DEPLOY.SH", "deploy.sh/y"}, []string{"deploy.sh.bak", "mydeploy.sh"}},
-		{"ci/", []string{"ci/a", "x/ci/a/b", "CI/a"}, []string{"ci", "x/ci", "ci.d/a", "mci/a"}},
+		{"ci/", []string{"ci/a", "x/ci/a/b", "CI/a", "ci", "x/ci"}, []string{"ci.d/a", "mci/a", "ci.d"}},
 		{"/ops", []string{"ops", "ops/x", "OPS/x"}, []string{"a/ops", "a/ops/x", "opsx"}},
-		{"/tools/", []string{"tools/x", "tools/a/b"}, []string{"a/tools/x", "tools", "tools.d/x"}},
+		{"/tools/", []string{"tools/x", "tools/a/b", "tools"}, []string{"a/tools/x", "a/tools", "tools.d/x"}},
 		{"*.gen.go", []string{"a.gen.go", "x/y/b.gen.go", ".gen.go"}, []string{"a.gen.go.txt", "agen.go", "x.gen_go"}},
 		{"build?", []string{"build1", "x/buildz", "buildé"}, []string{"build", "build12"}},
 		{"docs/*.sh", []string{"docs/a.sh", "x/docs/b.sh", "docs/a.sh/y"}, []string{"docs/a/b.sh", "docs.sh", "a.sh"}},
 		{"/a/b", []string{"a/b", "a/b/c"}, []string{"x/a/b", "a/x/b", "a"}},
-		{"a/b/", []string{"a/b/c", "x/a/b/c", "x/a/b/"}, []string{"a/b", "a/c/b/d"}},
+		{"a/b/", []string{"a/b/c", "x/a/b/c", "x/a/b/", "a/b", "x/a/b"}, []string{"a/c/b/d", "a/bc"}},
 		{"*", []string{"anything", "a/b"}, nil},
 	} {
 		s, err := base.With([]string{tc.pattern})
@@ -415,8 +439,8 @@ func TestWithLimitOnCount(t *testing.T) {
 
 func TestOddPaths(t *testing.T) {
 	s := Default()
-	// Matched conservatively: empty elements are skipped and a trailing slash
-	// makes the last element a folder.
+	// Matched conservatively: empty elements are skipped, and so is a
+	// trailing slash.
 	for path, pattern := range map[string]string{
 		"/Makefile":            "Makefile",
 		"//Makefile":           "Makefile",

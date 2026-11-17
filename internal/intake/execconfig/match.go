@@ -18,11 +18,11 @@ const (
 // ErrPattern is wrapped by every error that With returns.
 var ErrPattern = errors.New("execconfig: invalid pattern")
 
-// compiled is a pattern split into lower-case elements.
+// compiled is a pattern split into lower-case elements. A trailing "/" in
+// the pattern is dropped: "name/" and "name" match the same paths.
 type compiled struct {
 	elems    []string
 	anchored bool
-	folder   bool // the pattern ended in "/": the run must be a folder
 }
 
 // compile parses a pattern. It is strict: it is used for built-in rules and
@@ -49,7 +49,6 @@ func compile(p string) (compiled, error) {
 		body = body[1:]
 	}
 	if strings.HasSuffix(body, "/") {
-		c.folder = true
 		body = body[:len(body)-1]
 	}
 	if body == "" {
@@ -81,13 +80,11 @@ func lower(s string) string {
 // target is a path prepared for matching.
 type target struct {
 	cands [][]string // per element, the names it may match as
-	dir   bool       // the path ends in "/": the last element is a folder
 	odd   bool       // anchoring is ignored
 }
 
 func prepare(path string) target {
 	var t target
-	t.dir = strings.HasSuffix(path, "/")
 	parts := strings.Split(path, "/")
 	for i, e := range parts {
 		switch {
@@ -131,9 +128,6 @@ func (c compiled) matches(t target) bool {
 		last = 0
 	}
 	for i := 0; i <= last; i++ {
-		if c.folder && i+k == n && !t.dir {
-			continue // the run ends the path and the path is not a folder
-		}
 		if c.runAt(t, i) {
 			return true
 		}
