@@ -363,7 +363,7 @@ func fakeFD1Runtime(t *testing.T, a *Attempt) *FD1Runtime {
 	b.Regular.Size = pointer(int64(len(fixtureBytes(a.FixtureNonce))))
 	r := &FD1Runtime{Bindings: b, SourcesClosed: true}
 	for _, o := range fd1Objects(b) {
-		r.Endpoints = append(r.Endpoints, FD1Endpoint{o.FD, FileIdentity{o.Device, o.Inode, uint32(os.Getuid())}, fd1Kind(o.FD) | 0600, fd1ExpectedFlags(o.FD)})
+		r.Endpoints = append(r.Endpoints, FD1Endpoint{o.FD, FileIdentity{Device: o.Device, Inode: o.Inode, UID: uint32(os.Getuid())}, fd1Kind(o.FD) | 0600, fd1ExpectedFlags(o.FD)})
 	}
 	data, _ := json.Marshal(b)
 	path := filepath.Join(a.Config.Campaign, a.ID, "fixtures", FD1BindingName)

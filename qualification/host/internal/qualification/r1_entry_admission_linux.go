@@ -329,7 +329,7 @@ func (h hostIO) entryPolicyUnit(a *Attempt, system bool, path, name string) (ent
 			if err != nil {
 				return u, err
 			}
-			bound = Boundary{path, identity(fi)}
+			bound = Boundary{Path: path, Identity: identity(fi)}
 		} else {
 			bound, err = h.boundary(path)
 		}
@@ -343,7 +343,7 @@ func (h hostIO) entryPolicyUnit(a *Attempt, system bool, path, name string) (ent
 	return u, nil
 }
 
-func (u entryPolicy) boundary() Boundary { return Boundary{u.Path, u.FileIdentity} }
+func (u entryPolicy) boundary() Boundary { return Boundary{Path: u.Path, Identity: u.FileIdentity} }
 
 func (h hostIO) entryController(a *Attempt, root string) (entryController, error) {
 	p, err := h.process(os.Getpid())
