@@ -84,6 +84,20 @@
 // ref outside the namespace that holds a tip that this fetch staged (one that
 // the mirror lacked before) can only be a bug, and is [ErrUpstreamChanged].
 //
+// # What a lead's ref says
+//
+// A ref under refs/leads/<role>/ says that the role offered that commit. It
+// does not say that the role authored it, or that its objects came from that
+// role's clone. A lead can point a ref at any commit that is in the mirror,
+// for example the commit of another lead, because the staging repository has
+// the mirror's objects as its alternate and git treats them as already
+// there. No check is added, on purpose. The mirror is bound read-only into
+// every lead's sandbox, so a lead can read every object in it and could
+// fetch and offer those objects itself; a check would protect nothing. Commit
+// authorship is lead text in any case. A later step that treats a lead's
+// namespace as that lead's own work must not rely on the namespace for
+// authorship.
+//
 // # How it is safe
 //
 // The folder is checked with safefs: no symlink is followed, and a swap of

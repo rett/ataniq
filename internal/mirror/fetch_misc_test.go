@@ -322,3 +322,46 @@ func TestStagedRefsAndNames(t *testing.T) {
 		t.Errorf("the error names %d refs, want %d", n, maxReportedRefs)
 	}
 }
+
+func TestFetchLetsALeadOfferAnObjectThatIsOnlyInTheMirror(t *testing.T) {
+	// A stated limit, pinned so that a change is deliberate: a lead can point
+	// a ref at a commit that is in the mirror and that its own clone does
+	// not hold, for example the private commit of another lead. The staging
+	// repository has the mirror's objects as its alternate, so git takes the
+	// object as already there. The mirror is read-only in every lead's
+	// sandbox, so the lead could read the object and offer it itself: the
+	// ref says that the role offered the commit, not that it authored it.
+	e := newFetchEnv(t)
+	ctx := context.Background()
+	other := newLeadClone(t, e.g, e.state, "other")
+	secret := other.commit(t, "private.txt", "the other lead's own work\n", "private")
+	req := e.req()
+	req.Role = "other"
+	if _, err := e.m.Fetch(ctx, req); err != nil {
+		t.Fatalf("Fetch(other): %v", err)
+	}
+
+	// The coder's clone has the id in a ref and none of the objects.
+	if hasObject(t, e.g, e.lead.gitDir(), secret) {
+		t.Fatal("the fixture is wrong: the coder's clone holds the other lead's commit")
+	}
+	ref := filepath.Join(e.lead.gitDir(), "refs", "heads", "borrowed")
+	if err := os.WriteFile(ref, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := e.m.Fetch(ctx, e.req())
+	if err != nil {
+		t.Fatalf("Fetch(coder) = %v: the stated limit changed, and the package comment must change with it", err)
+	}
+	prefix, _ := LeadPrefix("coder")
+	if got, err := e.m.Resolve(ctx, prefix+"borrowed"); err != nil || got.ID != secret {
+		t.Errorf("Resolve = %+v, %v, want the other lead's commit %s", got, err, secret)
+	}
+	found := false
+	for _, u := range rep.Updates {
+		found = found || (u.Ref == prefix+"borrowed" && u.New == secret)
+	}
+	if !found {
+		t.Errorf("Updates = %+v, want the borrowed ref", rep.Updates)
+	}
+}
