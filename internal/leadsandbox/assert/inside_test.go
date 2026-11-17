@@ -3,6 +3,8 @@ package assert
 import (
 	"errors"
 	"io/fs"
+	"net"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -93,7 +95,16 @@ func TestInsideAssertions(t *testing.T) {
 		{"3 tcp connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = nil }, 3, StatusFailed, "host loopback port 127.0.0.1:40123 is reachable"},
 		{"3 abstract connects", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = nil }, 3, StatusFailed, "host abstract socket @example-canary-1 is reachable"},
 		{"3 network unreachable is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.ENETUNREACH }, 3, StatusOK, ""},
-		{"3 timeout is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = timeoutErr{} }, 3, StatusOK, ""},
+		{"3 timeout is ok and says so", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = timeoutErr{} }, 3, StatusOK, "timed out (weaker than a refusal: the canary count decides)"},
+		{"3 refusal is ok and says so", profile.Claude, func(s *Spec, f *fakeSys) {}, 3, StatusOK, "refused the connection"},
+		{"3 refused by policy is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EACCES }, 3, StatusOK, "refused by policy"},
+		{"3 refused by policy, EPERM, is ok", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = syscall.EPERM }, 3, StatusOK, "refused by policy"},
+		{"3 a full backlog is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["unix @"+s.AbstractSocket] = syscall.EAGAIN }, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 a full backlog wrapped as a timeout is not-checked", profile.Claude, func(s *Spec, f *fakeSys) {
+			f.dialErr["unix @"+s.AbstractSocket] = &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.EAGAIN)}
+		}, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 a reset is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.ECONNRESET }, 3, StatusNotChecked, "does not show it is unreachable"},
+		{"3 no free local port is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EADDRNOTAVAIL }, 3, StatusNotChecked, "does not show it is unreachable"},
 		{"3 out of descriptors is not-checked", profile.Claude, func(s *Spec, f *fakeSys) { f.dialErr["tcp "+s.LoopbackTCP] = syscall.EMFILE }, 3, StatusNotChecked, "does not show it is unreachable"},
 		{"3 one reachable and one not asked is failed", profile.Claude, func(s *Spec, f *fakeSys) {
 			f.dialErr["tcp "+s.LoopbackTCP] = nil

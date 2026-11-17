@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -158,14 +159,58 @@ func TestHostSystemDial(t *testing.T) {
 	addr := l.Addr().String()
 	l.Close()
 	err = h.Dial("tcp", addr, time.Second)
-	if err == nil || !unreachable(err) {
+	if _, proves := dialEvidence(err); err == nil || !proves {
 		t.Errorf("dial a closed port: %v", err)
 	}
 	if err := h.Dial("udp", addr, time.Second); err == nil {
 		t.Error("dial of udp allowed")
 	}
-	if err := h.Dial("unix", "@ataniq-no-such-socket-for-test", time.Second); err == nil || !unreachable(err) {
+	if err := h.Dial("unix", "@ataniq-no-such-socket-for-test", time.Second); err == nil {
+		t.Error("dial a missing abstract socket connected")
+	} else if _, proves := dialEvidence(err); !proves {
 		t.Errorf("dial a missing abstract socket: %v", err)
+	}
+}
+
+// A listener whose backlog is full fails a unix connect with EAGAIN, which
+// net.Error calls a timeout. A listener is there: that is not evidence that
+// the socket is unreachable, and assertion 3 is not-checked, not ok.
+func TestFullBacklogIsNotUnreachable(t *testing.T) {
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Skipf("no unix socket here: %v", err)
+	}
+	defer unix.Close(fd)
+	name := "ataniq-test-backlog-" + strings.ReplaceAll(t.Name(), "/", "-")
+	if err := unix.Bind(fd, &unix.SockaddrUnix{Name: "@" + name}); err != nil {
+		t.Skipf("no abstract socket here: %v", err)
+	}
+	if err := unix.Listen(fd, 0); err != nil {
+		t.Fatal(err)
+	}
+	h := HostSystem{}
+	var last error
+	for try := 0; try < 8 && last == nil; try++ {
+		last = h.Dial("unix", "@"+name, time.Second)
+	}
+	if last == nil {
+		t.Skip("the backlog never filled up on this kernel")
+	}
+	if !errors.Is(last, syscall.EAGAIN) {
+		t.Skipf("a full backlog gave %v, not EAGAIN", last)
+	}
+	if how, proves := dialEvidence(last); proves {
+		t.Errorf("EAGAIN counted as evidence of unreachability: %q", how)
+	}
+	s := testSpec("claude")
+	s.AbstractSocket = name
+	s.LoopbackTCP = "127.0.0.1:1"
+	r := (&checker{spec: s, sys: HostSystem{}}).loopback()
+	if r.Status == StatusOK {
+		t.Errorf("a reachable socket with a full backlog passed assertion 3: %+v", r)
+	}
+	if r.Status != StatusNotChecked || !strings.Contains(r.Detail, "does not show it is unreachable") {
+		t.Errorf("want not-checked for the full backlog: %+v", r)
 	}
 }
 

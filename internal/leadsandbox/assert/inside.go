@@ -195,42 +195,66 @@ func (c *checker) environment() Result {
 	return result(2, StatusOK, "the environment equals the allowlist of %d variables", len(want))
 }
 
-// unreachable says a failed dial is evidence that the address cannot be
-// reached: a refusal, a timeout, no route or no such socket. Another error
-// (out of descriptors, say) says the question was not asked.
-func unreachable(err error) bool {
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, os.ErrDeadlineExceeded) {
-		return true
+// dialEvidence says what a failed dial shows. proves is true when the error is
+// evidence that the address cannot be reached, and how names the evidence for
+// the detail. Any other error says the question was not asked: out of
+// descriptors, a listener whose backlog is full (EAGAIN: something is there to
+// accept), a reset, no free local port.
+func dialEvidence(err error) (how string, proves bool) {
+	if errors.Is(err, syscall.EAGAIN) {
+		// A unix connect to a listener with a full backlog fails with EAGAIN,
+		// which net.Error calls a timeout. A listener exists: not unreachable.
+		return "", false
 	}
-	for _, e := range []syscall.Errno{
-		syscall.ECONNREFUSED, syscall.ENOENT, syscall.ENETUNREACH, syscall.EHOSTUNREACH,
-		syscall.EADDRNOTAVAIL, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ETIMEDOUT,
-		syscall.EACCES, syscall.EPERM,
+	for _, e := range []struct {
+		errno syscall.Errno
+		how   string
+	}{
+		{syscall.ECONNREFUSED, "refused the connection"},
+		{syscall.ENOENT, "has no such socket"},
+		{syscall.ENETUNREACH, "is on an unreachable network"},
+		{syscall.EHOSTUNREACH, "is an unreachable host"},
+		{syscall.EACCES, "was refused by policy"},
+		{syscall.EPERM, "was refused by policy"},
+		{syscall.ETIMEDOUT, timedOut},
 	} {
-		if errors.Is(err, e) {
-			return true
+		if errors.Is(err, e.errno) {
+			return e.how, true
 		}
 	}
-	return false
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, os.ErrDeadlineExceeded) {
+		return timedOut, true
+	}
+	return "", false
 }
+
+// timedOut is the evidence of a dial that got no answer. It is weaker than a
+// refusal: something may have dropped the packets of a path that is routed, so
+// the canary count after the probe has run decides (CheckCanary).
+const timedOut = "timed out (weaker than a refusal: the canary count decides)"
 
 // 3. One host loopback port and one host abstract socket are unreachable.
 func (c *checker) loopback() Result {
 	var t tally
+	var shown []string
 	for _, target := range []struct{ what, network, addr string }{
 		{"host loopback port", "tcp", c.spec.LoopbackTCP},
 		{"host abstract socket", "unix", "@" + c.spec.AbstractSocket},
 	} {
 		err := c.sys.Dial(target.network, target.addr, c.spec.ConnectTimeout())
-		switch {
-		case err == nil:
+		if err == nil {
 			t.fail("%s %s is reachable: a connection was made", target.what, target.addr)
-		case !unreachable(err):
-			t.skip("%s %s: the dial failed in a way that does not show it is unreachable: %v", target.what, target.addr, err)
+			continue
 		}
+		how, proves := dialEvidence(err)
+		if !proves {
+			t.skip("%s %s: the dial failed in a way that does not show it is unreachable: %v", target.what, target.addr, err)
+			continue
+		}
+		shown = append(shown, fmt.Sprintf("%s %s %s", target.what, target.addr, how))
 	}
-	return t.result(3, "the host loopback port and the host abstract socket could not be reached")
+	return t.result(3, strings.Join(shown, "; "))
 }
 
 // 4. A provider host name resolves.
