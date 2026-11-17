@@ -90,9 +90,9 @@ func lost(what string, cause error) error {
 // The state is read once, right after the job was accepted, and the job
 // completes later: with Type=exec the unit can still be "activating", and what
 // systemd fills in at the exec (the invocation id, the control group, the main
-// pid) can still be empty. A caller that needs them inspects again; Signal and
-// Empty refuse a State without an invocation id, so a partial State is never
-// acted on.
+// pid) can still be empty. A caller that needs them inspects again. Signal
+// refuses a State without an invocation id, and Empty is false while the unit
+// is still loaded, so a partial State is never acted on.
 func (m *Manager) Start(ctx context.Context, spec leadunit.Spec) (leadunit.State, error) {
 	if err := ctx.Err(); err != nil {
 		return leadunit.State{}, err
