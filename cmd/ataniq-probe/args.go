@@ -20,14 +20,22 @@ const (
 
 // The command line.
 const (
+	// modePassFDs is the first argument of the pass-through mode. Anything
+	// else is the inside mode.
+	modePassFDs = "pass-fds"
+
 	optSpec     = "--spec"
 	optReportFD = "--report-fd"
+	optRead     = "--read"
+	optWrite    = "--write"
 	optEnd      = "--"
 
-	// minFD and maxFD bound a descriptor number given: 0 to 2 are the
+	// minFD and maxFD bound every descriptor number given: 0 to 2 are the
 	// standard streams, and the plan refuses a number above 1023.
 	minFD = 3
 	maxFD = 1023
+	// maxPassFDs is the most descriptors the pass-through mode places.
+	maxPassFDs = 8
 )
 
 // usageError is a refused command line. Its text is one line, without the
@@ -153,4 +161,85 @@ func parseFD(s string) (int, error) {
 		return 0, fmt.Errorf("is not a descriptor number from %d to %d", minFD, maxFD)
 	}
 	return n, nil
+}
+
+// fdFile is one file the pass-through mode opens: --read or --write FD=PATH.
+type fdFile struct {
+	FD    int
+	Path  string
+	Write bool
+}
+
+// passArgs is the command line of the pass-through mode.
+type passArgs struct {
+	Files []fdFile
+	// Command is the argument vector executed: Command[0] is an absolute
+	// path.
+	Command []string
+}
+
+// parsePassFDs reads the arguments after "pass-fds":
+//
+//	[--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...
+//
+// strictly. Options may come in any order. FD is 3 to 1023 and each at most
+// once; PATH is absolute; there are at most 8 files; COMMAND is an absolute
+// path. Anything else is a *usageError.
+func parsePassFDs(args []string) (passArgs, error) {
+	var a passArgs
+	seen := map[int]bool{}
+	end := -1
+	for i := 0; i < len(args) && end < 0; i++ {
+		switch args[i] {
+		case optEnd:
+			end = i
+		case optRead, optWrite:
+			opt := args[i]
+			if i+1 >= len(args) || args[i+1] == optEnd {
+				return a, usagef("%s needs a value of the form FD=PATH", opt)
+			}
+			i++
+			f, err := parseFDFile(opt, args[i])
+			if err != nil {
+				return a, err
+			}
+			if seen[f.FD] {
+				return a, usagef("descriptor %d is given twice", f.FD)
+			}
+			if len(a.Files) >= maxPassFDs {
+				return a, usagef("more than %d descriptors", maxPassFDs)
+			}
+			seen[f.FD] = true
+			a.Files = append(a.Files, f)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return a, usagef("unknown option %s", quote(args[i]))
+			}
+			return a, usagef("unexpected argument %s before %s", quote(args[i]), optEnd)
+		}
+	}
+	if end < 0 {
+		return a, usagef("%s and the command are required after the options", optEnd)
+	}
+	cmd := args[end+1:]
+	if err := checkProgram("command", cmd); err != nil {
+		return a, err
+	}
+	a.Command = append([]string(nil), cmd...)
+	return a, nil
+}
+
+func parseFDFile(opt, val string) (fdFile, error) {
+	num, path, ok := strings.Cut(val, "=")
+	if !ok {
+		return fdFile{}, usagef("%s %s: the form is FD=PATH", opt, quote(val))
+	}
+	fd, err := parseFD(num)
+	if err != nil {
+		return fdFile{}, usagef("%s %s: the descriptor %v", opt, quote(val), err)
+	}
+	if !absolute(path) {
+		return fdFile{}, usagef("%s %s: the path must be absolute", opt, quote(val))
+	}
+	return fdFile{FD: fd, Path: path, Write: opt == optWrite}, nil
 }

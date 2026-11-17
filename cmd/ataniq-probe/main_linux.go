@@ -9,10 +9,14 @@ import (
 	"ataniq/internal/leadsandbox/assert"
 )
 
-// execute runs the command in the inside mode. It returns the exit status;
-// where the agent is executed it does not return. Nothing here writes to
-// standard output.
+// execute runs the command: the pass-through mode when the first argument is
+// "pass-fds", the inside mode otherwise. It returns the exit status; where
+// the program is executed it does not return. Nothing here writes to standard
+// output.
 func execute(args []string, stderr io.Writer) int {
+	if len(args) > 1 && args[1] == modePassFDs {
+		return runPassFDs(args[2:], stderr, hostPassDeps())
+	}
 	if len(args) < 1 {
 		return fail(stderr, exitSetup, "usage: no program name")
 	}

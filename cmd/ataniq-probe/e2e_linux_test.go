@@ -368,6 +368,8 @@ func TestInsideUsageErrors(t *testing.T) {
 		{"--spec", "/x", "--report-fd", "3", "--", "true"},
 		{"--spec", "/x", "--report-fd", "3", "--"},
 		{"--spec", "/x", "--report-fd", "3", "--bogus", "--", "/bin/true"},
+		{"pass-fds"},
+		{"pass-fds", "--read", "2=/x", "--", "/bin/true"},
 	} {
 		var stderr, stdout bytes.Buffer
 		cmd := exec.Command(testExe(t), args...)

@@ -77,6 +77,79 @@ func TestParseInside(t *testing.T) {
 	}
 }
 
+func TestParsePassFDs(t *testing.T) {
+	got, err := parsePassFDs([]string{"--read", "5=/a/b", "--write", "6=/c=d", "--read", "3=/e", "--", "/bin/bwrap", "--x", "--", "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []fdFile{{5, "/a/b", false}, {6, "/c=d", true}, {3, "/e", false}}
+	if len(got.Files) != len(want) {
+		t.Fatalf("files %+v", got.Files)
+	}
+	for i := range want {
+		if got.Files[i] != want[i] {
+			t.Errorf("file %d: %+v, want %+v", i, got.Files[i], want[i])
+		}
+	}
+	if strings.Join(got.Command, " ") != "/bin/bwrap --x -- y" {
+		t.Errorf("command %q", got.Command)
+	}
+	if got, err := parsePassFDs([]string{"--", "/bin/true"}); err != nil || len(got.Files) != 0 {
+		t.Errorf("no files: %+v, %v", got, err)
+	}
+	many := []string{}
+	for fd := 3; fd < 3+maxPassFDs; fd++ {
+		many = append(many, "--read", itoa(fd)+"=/f")
+	}
+	if _, err := parsePassFDs(append(many, "--", "/bin/true")); err != nil {
+		t.Errorf("8 files: %v", err)
+	}
+
+	bad := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"nothing", nil, "required after the options"},
+		{"no command", []string{"--read", "4=/f", "--"}, "command is empty"},
+		{"no --", []string{"--read", "4=/f", "/bin/true"}, "unexpected argument"},
+		{"relative command", []string{"--", "true"}, "command path must be absolute"},
+		{"unknown option", []string{"--exec", "--", "/bin/true"}, "unknown option"},
+		{"value missing", []string{"--read"}, "needs a value"},
+		{"value is --", []string{"--write", "--", "/bin/true"}, "needs a value"},
+		{"no equals", []string{"--read", "4/f", "--", "/bin/true"}, "the form is FD=PATH"},
+		{"fd 2", []string{"--read", "2=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
+		{"fd 1024", []string{"--write", "1024=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
+		{"fd not a number", []string{"--read", "x=/f", "--", "/bin/true"}, "descriptor is not a descriptor number"},
+		{"relative path", []string{"--read", "4=f", "--", "/bin/true"}, "path must be absolute"},
+		{"empty path", []string{"--read", "4=", "--", "/bin/true"}, "path must be absolute"},
+		{"same fd twice", []string{"--read", "4=/f", "--write", "4=/g", "--", "/bin/true"}, "descriptor 4 is given twice"},
+		{"nine files", append(append([]string{}, many...), "--read", "99=/f", "--", "/bin/true"), "more than 8 descriptors"},
+	}
+	for _, tc := range bad {
+		_, err := parsePassFDs(tc.args)
+		var ue *usageError
+		if !errors.As(err, &ue) {
+			t.Errorf("%s: got %v, want a usage error", tc.name, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %q does not contain %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for ; n > 0; n /= 10 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+	}
+	return string(b)
+}
+
 func TestQuoteClips(t *testing.T) {
 	if got := quote(strings.Repeat("x", 100)); len(got) > 70 {
 		t.Errorf("quote did not clip: %d bytes", len(got))
@@ -87,6 +160,9 @@ func TestQuoteClips(t *testing.T) {
 // package that writes it.
 func TestAgreesWithThePlan(t *testing.T) {
 	for _, c := range []struct{ name, got, want string }{
+		{"mode", modePassFDs, plan.PassFDsMode},
+		{"read", optRead, plan.PassFDsRead},
+		{"write", optWrite, plan.PassFDsWrite},
 		{"report fd", optReportFD, plan.ProbeReportFD},
 	} {
 		if c.got != c.want {

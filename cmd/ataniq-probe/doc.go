@@ -1,7 +1,7 @@
 // Command ataniq-probe is the static helper of the lead sandbox proposal. It
-// is a proposal that awaits qualification and an owner decision: nothing here
-// says the sandbox is qualified, safe or supported, and nothing uses the
-// command yet. It states what it does and what it checks.
+// has two modes, and it is a proposal that awaits qualification and an owner
+// decision: nothing here says the sandbox is qualified, safe or supported, and
+// nothing uses the command yet. It states what it does and what it checks.
 // Only Linux is supported; on another system the command builds, says so on
 // standard error and exits 98. It is built without cgo (CGO_ENABLED=0) as a
 // static program, and imports only the standard library, golang.org/x/sys/unix
@@ -53,14 +53,36 @@
 // environment, that is what Go reads from the process (os.Environ): an entry
 // without "=" or a name that appears twice is not passed on.
 //
+// # Pass-through mode
+//
+//	ataniq-probe pass-fds [--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...
+//
+// The launch plan puts this step on the host between pasta and bubblewrap,
+// because pasta closes every descriptor it inherits before it starts its
+// command. FD is 3 to 1023, each at most once, PATH and COMMAND are absolute
+// paths, and at most 8 files are given. A --read file is opened read-only and
+// must be a regular file. A --write file is opened write-only, appending,
+// never created and never truncated, and must be a regular file or a FIFO. All
+// are opened with O_NOFOLLOW (a link at the last component is refused),
+// O_CLOEXEC and O_NOCTTY; a --read file is opened non-blocking while its type
+// is checked, and the flag is cleared afterwards. A FIFO opened write-only
+// blocks until a process has its reading end open: the holder opens its end
+// first. Each file is then placed at exactly its number without close-on-exec,
+// every other descriptor above 2 is made close-on-exec, and COMMAND is
+// executed, with ARGV (whose first element is COMMAND's own) and the
+// environment unchanged. Any error is exit 98 with one line, and nothing is
+// executed.
+//
 // # Descriptors are closed by the exec
 //
-// The probe closes descriptors by close_range(2) with CLOSE_RANGE_CLOEXEC (and
+// Both modes close descriptors by close_range(2) with CLOSE_RANGE_CLOEXEC (and
 // by listing /proc/self/fd where the kernel does not have it): the descriptor
 // stays open in the probe until the execve, which closes it. Closing it at once
 // could pull a descriptor out from under the Go runtime, which may hold one of
 // its own, and the program that is executed sees the same descriptors either
-// way.
+// way. Where the pass-through mode places a file at a number the runtime holds
+// itself, the runtime would lose it; the runtime holds none unless descriptor 0
+// is non-blocking when the program starts.
 //
 // # Exit statuses and standard error
 //
@@ -72,8 +94,9 @@
 //     K (ID): failed: DETAIL" (or "not checked", or "no result"), at most 40
 //     of them. Every line is escaped (assert.EscapeDetail) and at most 512
 //     bytes.
-//   - 98: a usage error, "ataniq-probe: usage: REASON", or any other failure
-//     to do what the command is for, "ataniq-probe: MESSAGE", always one line.
+//   - 98: a usage error, "ataniq-probe: usage: REASON" (inside mode) or
+//     "ataniq-probe: usage: pass-fds: REASON", or any other failure to do what
+//     the command is for, "ataniq-probe: MESSAGE", always one line.
 //
 // A parent that waited for the agent returns the agent's own status, which can
 // be 97 or 98 too.
