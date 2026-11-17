@@ -774,6 +774,68 @@ func TestTimingFieldsOneByOne(t *testing.T) {
 	if got := (Timing{PasteSettleMin: 2 * time.Second}).normalised(); got.PasteSettleMax != 2*time.Second {
 		t.Errorf("the maximum after the paste %s is below its minimum", got.PasteSettleMax)
 	}
+	// A maximum may be lower than the default: a lower maximum only makes the
+	// Settle give up sooner. Only the quiet and the minimum bound it below.
+	lower := Timing{FirstSettleMax: 200 * time.Millisecond, PasteSettleMax: 300 * time.Millisecond}.normalised()
+	if lower.FirstSettleMax != 200*time.Millisecond || lower.PasteSettleMax != 300*time.Millisecond {
+		t.Errorf("a maximum below the default was changed: %+v", lower)
+	}
+	// The maximum after the paste is floored at the check quiet as well as at
+	// the minimum: the quiet 500 ms is the largest of the three here.
+	got := Timing{CheckQuiet: 500 * time.Millisecond, PasteSettleMin: 150 * time.Millisecond, PasteSettleMax: 200 * time.Millisecond}.normalised()
+	if got.PasteSettleMax != 500*time.Millisecond || got.FirstSettleMax != time.Second {
+		t.Errorf("the maximum after the paste is %s, want 500ms (first %s)", got.PasteSettleMax, got.FirstSettleMax)
+	}
+}
+
+// No Settle is asked to wait past the deadline, so a large Timing value cannot
+// hold the input lock past it.
+func TestSettleBoundedByDeadline(t *testing.T) {
+	each(t, func(t *testing.T, rt string) {
+		t.Run("a large minimum after the paste does not settle", func(t *testing.T) {
+			f := newFake(t, rt)
+			o := testOptions(f)
+			o.Timing = Timing{PasteSettleMin: 10 * time.Minute}
+			res := Deliver(context.Background(), f, testMsg, o)
+			wantResult(t, res, WrittenPaste, OutcomeNotSubmitted)
+			if f.settles != 1 || f.frozens != 1 {
+				t.Errorf("%d settles and %d frozen calls, want 1 and 1", f.settles, f.frozens)
+			}
+			if f.clock.After(o.Deadline) {
+				t.Errorf("the clock %s passed the deadline %s", f.clock, o.Deadline)
+			}
+			if !strings.Contains(res.Detail, "too near") {
+				t.Errorf("detail %q", res.Detail)
+			}
+		})
+		t.Run("a near deadline does not settle the first check", func(t *testing.T) {
+			f := newFake(t, rt)
+			o := testOptions(f)
+			o.Deadline = f.clock.Add(10 * time.Millisecond)
+			res := Deliver(context.Background(), f, testMsg, o)
+			wantResult(t, res, WrittenNothing, OutcomeNotIdle)
+			if f.settles != 0 || f.frozens != 0 || len(f.writes) != 0 {
+				t.Errorf("%d settles, %d frozen calls, %d writes", f.settles, f.frozens, len(f.writes))
+			}
+			if !strings.Contains(res.Detail, "too near") {
+				t.Errorf("detail %q", res.Detail)
+			}
+		})
+		t.Run("a large maximum is cut to the time left", func(t *testing.T) {
+			f := newFake(t, rt)
+			f.at(stepFrozen1, func(f *fake) { f.clock = f.clock.Add(10 * time.Second) })
+			o := testOptions(f)
+			o.Timing = Timing{FirstSettleMax: time.Hour, PasteSettleMax: time.Hour}
+			res := Deliver(context.Background(), f, testMsg, o)
+			wantResult(t, res, WrittenPasteAndEnter, OutcomeSubmitted)
+			if got := f.settleArg[0][2]; got != 30*time.Second {
+				t.Errorf("first settle maximum %s, want the 30s left", got)
+			}
+			if got := f.settleArg[1][2]; got != 20*time.Second {
+				t.Errorf("settle maximum after the paste %s, want the 20s left", got)
+			}
+		})
+	})
 }
 
 // A partly set Timing does not drop the guards of design 4.4: with only the
@@ -935,7 +997,7 @@ func TestSessionMisbehaviour(t *testing.T) {
 // after the last reading and the check of the PTY, and before the Enter lands,
 // and then the Enter answers it. Output the agent has already written is in the
 // PTY and View.Pending sees it (TestPendingOutputRefuses); what remains is
-// output the agent has not written yet. This test states the limit; it does not
+// output not yet queued to the holder when Pending is read. This test states the limit; it does not
 // accept it. Every other step is covered by the table in table_test.go with no
 // approval allowed.
 func TestKnownLimitDialogAfterLastReading(t *testing.T) {
@@ -950,7 +1012,7 @@ func TestKnownLimitDialogAfterLastReading(t *testing.T) {
 	})
 }
 
-// Output the agent has already written but the holder has not read is seen: a
+// Output already queued to the holder but not applied is seen: a
 // dialog drawn after the last Settle refuses the write of either check, and no
 // key reaches the dialog.
 func TestPendingOutputRefuses(t *testing.T) {
@@ -1031,7 +1093,7 @@ func (l *repeatLocked) Frozen(deadline time.Time, fn func(View, func([]byte) err
 	return l.Locked.Frozen(deadline, func(v View, write func([]byte) error) error {
 		err := fn(v, write)
 		err2 := fn(v, write)
-		if err == nil || !l.swallow {
+		if !l.swallow {
 			err = err2
 		}
 		return err
