@@ -46,8 +46,51 @@ func TestCheckNeverMounted(t *testing.T) {
 	if err := CheckNeverMounted("/usr", []string{"/"}); err == nil {
 		t.Error("everything lies below a never-mounted root")
 	}
-	if err := CheckNeverMounted("/usr", nil); err != nil {
-		t.Errorf("no never-mounted path: %v", err)
+}
+
+func TestCheckNeverMountedFailsClosed(t *testing.T) {
+	// An empty list protects nothing: refuse.
+	for _, never := range [][]string{nil, {}} {
+		err := CheckNeverMounted("/usr", never)
+		if err == nil {
+			t.Fatalf("an empty list %#v accepted a source", never)
+		}
+		if ref := refusalOf(t, err); ref.Field != "never-mounted paths" || !strings.Contains(ref.Reason, "none given") {
+			t.Errorf("refusal = {%q, %q}", ref.Field, ref.Reason)
+		}
+	}
+	// An entry that is not clean never matches by equality or prefix, so the
+	// check refuses the entry itself, whatever the source is.
+	sources := []string{
+		"/home/owner/.ssh", "/home/owner/.ssh/id_ed25519", "/home/owner", "/srv/state/leads/a/home",
+	}
+	entries := []struct{ entry, reason string }{
+		{"/home/owner/.ssh/", "clean"},
+		{"/home/owner//.ssh", "clean"},
+		{"/home/owner/./.ssh", "clean"},
+		{"/home/owner/x/../.ssh", "clean"},
+		{"home/owner/.ssh", "absolute"},
+		{"", "empty"},
+		{"/home/owner/\x00.ssh", "control"},
+	}
+	for _, e := range entries {
+		for _, src := range sources {
+			// The unclean entry is listed after a good one: its index is 1, and
+			// it is refused before any entry is compared with the source.
+			err := CheckNeverMounted(src, []string{"/home/owner/work/ataniq", e.entry})
+			if err == nil {
+				t.Errorf("entry %q, source %q: accepted", e.entry, src)
+				continue
+			}
+			ref := refusalOf(t, err)
+			if ref.Field != "never-mounted path 1" || !strings.Contains(ref.Reason, e.reason) {
+				t.Errorf("entry %q, source %q: refusal {%q, %q}, want never-mounted path 1 with %q", e.entry, src, ref.Field, ref.Reason, e.reason)
+			}
+		}
+	}
+	// A clean list still works.
+	if err := CheckNeverMounted("/usr", []string{"/home/owner/.ssh"}); err != nil {
+		t.Errorf("clean list: %v", err)
 	}
 }
 

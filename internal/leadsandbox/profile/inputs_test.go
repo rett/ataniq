@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -60,11 +61,37 @@ func TestInputsRefusals(t *testing.T) {
 			"managed-settings path", "names no managed-settings path"},
 		{"relative managed-settings path", Codex, func(in *Inputs) { in.ManagedSettingsInside = "etc/m.toml" }, "managed-settings path", "absolute"},
 		{"unclean managed-settings path", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/etc//m.json" }, "managed-settings path", "clean"},
+		{"claude managed settings elsewhere", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/etc/other/managed.json" },
+			"managed-settings path", "only at /etc/claude-code/managed-settings.json"},
+		{"claude managed settings outside /etc", Claude, func(in *Inputs) { in.ManagedSettingsInside = "/tmp/managed.json" },
+			"managed-settings path", "only at"},
+		{"codex managed settings in the tmpfs", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/tmp/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings in the lead's home", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/home/lead/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings in the tree", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/work/ataniq/managed.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings are /etc", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etc" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings lookalike of /etc", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etcetera/m.toml" },
+			"managed-settings path", "under /etc"},
+		{"codex managed settings below a read-only host row", Codex, func(in *Inputs) { in.ManagedSettingsInside = "/etc/ssl/m.toml" },
+			"bind /etc/ssl/m.toml", "below"},
+		{"codex managed settings in a writable folder under /etc", Codex, func(in *Inputs) {
+			in.ManagedSettingsInside = "/etc/lead/m.toml"
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/etc/lead"
+		}, "bind /etc/lead/m.toml", "before its parent /etc/lead"}, // the table puts the policy before every writable bind, so none can hold it
 		{"records without an inside path", Claude, func(in *Inputs) { in.QargiRecords = "/srv/state/q" }, "Qargi records inside path", "empty"},
 		{"records inside path without a folder", Claude, func(in *Inputs) { in.QargiRecordsInside = "/home/lead/q" }, "Qargi records folder", "empty"},
 		{"relative records folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "q", "/home/lead/q"
 		}, "Qargi records folder", "absolute"},
+		{"no managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = "" }, "managed-settings digest", "hex"},
+		{"short managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = "abc" }, "managed-settings digest", "hex"},
+		{"long managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("a", 65) }, "managed-settings digest", "hex"},
+		{"upper-case managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("A", 64) }, "managed-settings digest", "hex"},
+		{"non-hex managed-settings digest", Claude, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("g", 64) }, "managed-settings digest", "hex"},
+		{"managed-settings digest with a newline", Codex, func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("a", 63) + "\n" }, "managed-settings digest", "hex"},
 		{"seccomp file without a digest", Claude, func(in *Inputs) { in.SeccompFile = "/srv/owned/a.bpf" }, "seccomp digest", "hex"},
 		{"seccomp digest without a file", Claude, func(in *Inputs) { in.SeccompSHA256 = strings.Repeat("a", 64) }, "seccomp file", "empty"},
 		{"short seccomp digest", Claude, func(in *Inputs) {
@@ -114,6 +141,30 @@ func TestInputsRefusals(t *testing.T) {
 		{"unclean never-mounted path", Claude, func(in *Inputs) {
 			in.NeverMounted = []string{"/home/owner/.ssh", "/home/owner/../.ssh"}
 		}, "never-mounted path 1", "clean"},
+		{"records inside the work tree", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/ataniq/.qargi"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside the work folder", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside another project's tree", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/work/other/.qargi"
+		}, "Qargi records inside path", "work tree"},
+		{"records inside path with the project token", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/<project>/q"
+		}, "Qargi records inside path", "'<'"},
+		{"records inside the other runtime's folder (claude)", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex"
+		}, "Qargi records inside path", "codex config folder"},
+		{"records below the other runtime's folder (claude)", Claude, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.codex/records"
+		}, "Qargi records inside path", "codex config folder"},
+		{"records inside the other runtime's folder (codex)", Codex, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead/.claude/q"
+		}, "Qargi records inside path", "claude config folder"},
+		{"records over the home", Codex, func(in *Inputs) {
+			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "/home/lead"
+		}, "bind /home/lead", "already used"},
 		{"relative records inside", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/q", "q"
 		}, "Qargi records inside path", "absolute"},
@@ -137,6 +188,30 @@ func TestInputsRefusals(t *testing.T) {
 		{"records inside the home folder", Claude, func(in *Inputs) {
 			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/home/q", "/home/lead/.qargi"
 		}, "bind /home/lead", "overlaps"},
+		// Another lead's or another project's state.
+		{"agent install in another lead's claude login", Claude, func(in *Inputs) {
+			in.AgentInstall = "/srv/state/leads/other-lead/config/claude"
+		}, "bind /ataniq/agent", "another lead's state"},
+		{"agent install in another lead's codex login", Codex, func(in *Inputs) {
+			in.AgentInstall = "/srv/state/leads/other-lead/config/codex/auth.json"
+		}, "bind /ataniq/agent", "another lead's state"},
+		{"spec folder is another lead's home", Claude, func(in *Inputs) { in.SpecDir = "/srv/state/leads/other-lead/home" },
+			"bind /ataniq/spec", "another lead's state"},
+		{"qargi install is another lead's folder", Codex, func(in *Inputs) { in.QargiInstall = "/srv/state/leads/other-lead" },
+			"bind /ataniq/qargi", "another lead's state"},
+		{"qargi install is a lead whose name starts like this one", Claude, func(in *Inputs) {
+			in.QargiInstall = "/srv/state/leads/arc-lead2/home"
+		}, "bind /ataniq/qargi", "another lead's state"},
+		{"projection folder is the folder of all leads", Claude, func(in *Inputs) { in.ProjectionDir = "/srv/state/leads" },
+			"bind /ataniq/projection", "above the never-mounted"},
+		{"assignment folder is another project's mirror", Claude, func(in *Inputs) {
+			in.AssignmentDir = "/srv/state/mirrors/other.git"
+		}, "bind /ataniq/assignment", "another project's mirror"},
+		{"assignment folder is below another project's mirror", Codex, func(in *Inputs) {
+			in.AssignmentDir = "/srv/state/mirrors/other.git/refs"
+		}, "bind /ataniq/assignment", "another project's mirror"},
+		{"assignment folder is the mirrors folder", Claude, func(in *Inputs) { in.AssignmentDir = "/srv/state/mirrors" },
+			"bind /ataniq/assignment", "another project's mirror"},
 		// Never-mounted paths.
 		{"agent install is the owner's .ssh", Claude, func(in *Inputs) { in.AgentInstall = "/home/owner/.ssh" },
 			"bind /ataniq/agent", "never-mounted"},
@@ -181,6 +256,75 @@ func TestInputsRefusals(t *testing.T) {
 				t.Error("Flags accepted the inputs")
 			}
 		})
+	}
+}
+
+func TestManagedSettingsPaths(t *testing.T) {
+	// Claude: empty means the fixed path, and the fixed path may be given.
+	in := fixture(Claude)
+	if got := in.ManagedInside(); got != ClaudeManagedInside {
+		t.Errorf("claude default = %q", got)
+	}
+	in.ManagedSettingsInside = ClaudeManagedInside
+	if err := in.Validate(); err != nil {
+		t.Errorf("the fixed claude path: %v", err)
+	}
+	// Codex: any clean path under /etc that no other bind covers.
+	for _, p := range []string{"/etc/codex/managed-config.toml", "/etc/codex.toml", "/etc/a/b/c/m.toml"} {
+		c := fixture(Codex)
+		c.ManagedSettingsInside = p
+		if err := c.Validate(); err != nil {
+			t.Errorf("codex %s: %v", p, err)
+		}
+	}
+}
+
+func TestListBounds(t *testing.T) {
+	placeholders := func(n int) []Placeholder {
+		var ph []Placeholder
+		for i := 0; i < n; i++ {
+			ph = append(ph, Placeholder{Rel: fmt.Sprintf("p%d", i), Source: fmt.Sprintf("/srv/owned/ph/p%d", i)})
+		}
+		return ph
+	}
+	never := func(n int) []string {
+		list := []string{"/home/owner/.ssh"}
+		for i := 1; i < n; i++ {
+			list = append(list, fmt.Sprintf("/home/owner/n%d", i))
+		}
+		return list
+	}
+	// The limits themselves are accepted, one more is refused.
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Inputs, int)
+		limit  int
+		field  string
+	}{
+		{"extra placeholders", func(in *Inputs, n int) { in.ExtraPlaceholders = placeholders(n) }, maxExtras, "extra placeholders"},
+		{"never-mounted paths", func(in *Inputs, n int) { in.NeverMounted = never(n) }, maxNever, "never-mounted paths"},
+		{"extra environment names", func(in *Inputs, n int) {
+			in.ExtraEnv = nil
+			for i := 0; i < n; i++ {
+				in.ExtraEnv = append(in.ExtraEnv, EnvVar{Name: fmt.Sprintf("V%d", i), Value: "1"})
+			}
+		}, maxExtraEnv, "extra environment"},
+	} {
+		in := fixture(Claude)
+		tt.mutate(&in, tt.limit)
+		if err := in.Validate(); err != nil {
+			t.Errorf("%s: %d accepted? %v", tt.name, tt.limit, err)
+		}
+		in = fixture(Claude)
+		tt.mutate(&in, tt.limit+1)
+		err := in.Validate()
+		if err == nil {
+			t.Errorf("%s: %d accepted", tt.name, tt.limit+1)
+			continue
+		}
+		if ref := refusalOf(t, err); ref.Field != tt.field || !strings.Contains(ref.Reason, "more than") {
+			t.Errorf("%s: refusal {%q, %q}", tt.name, ref.Field, ref.Reason)
+		}
 	}
 }
 

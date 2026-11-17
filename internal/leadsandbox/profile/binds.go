@@ -67,6 +67,14 @@ type Bind struct {
 	// Within is the inside path of the lead-writable read-write bind that
 	// holds the target ("" when LeadWritable is false).
 	Within string
+	// Optional says the row is applied only if the host has it: for a
+	// read-only bind of a host path (RoleHost), only if the source exists;
+	// for a symlink, only if the host has a path of the same name as Inside.
+	// It is set for exactly the host rows that do not exist on every
+	// distribution (see the table), never for a source Ataniq makes. The plan
+	// package decides how to emit it (for bubblewrap, --ro-bind-try). It is
+	// part of the digest.
+	Optional bool
 }
 
 // Binds validates the inputs and returns the bind table of the epoch's
@@ -88,6 +96,12 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 	host := func(p string, dir bool) Bind {
 		return Bind{Kind: KindRoBind, Inside: p, Source: p, SourceRole: RoleHost, IsDir: dir}
 	}
+	// hostTry is a host row that does not exist on every distribution.
+	hostTry := func(p string, dir bool) Bind {
+		b := host(p, dir)
+		b.Optional = true
+		return b
+	}
 	ro := func(inside, src, role string, dir bool) Bind {
 		return Bind{Kind: KindRoBind, Inside: inside, Source: src, SourceRole: role, IsDir: dir}
 	}
@@ -97,17 +111,21 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 
 	t := []Bind{{Kind: KindTmpfs, Inside: rootInsidePath, IsDir: true}}
 	t = append(t, host("/usr", true))
-	for _, l := range [][2]string{{"/bin", "usr/bin"}, {"/lib", "usr/lib"}, {"/lib64", "usr/lib64"}, {"/sbin", "usr/sbin"}} {
-		t = append(t, Bind{Kind: KindSymlink, Inside: l[0], Target: l[1]})
+	// /lib64 and /sbin are links to /usr only on some distributions.
+	for _, l := range []struct {
+		inside, target string
+		optional       bool
+	}{{"/bin", "usr/bin", false}, {"/lib", "usr/lib", false}, {"/lib64", "usr/lib64", true}, {"/sbin", "usr/sbin", true}} {
+		t = append(t, Bind{Kind: KindSymlink, Inside: l.inside, Target: l.target, Optional: l.optional})
 	}
 	t = append(t,
-		host("/etc/ssl", true),
-		host("/etc/ca-certificates", true),
+		hostTry("/etc/ssl", true),
+		hostTry("/etc/ca-certificates", true),
 		host("/etc/hosts", false),
-		host("/etc/nsswitch.conf", false),
+		hostTry("/etc/nsswitch.conf", false),
 		host("/etc/passwd", false),
 		host("/etc/group", false),
-		host("/etc/localtime", false),
+		hostTry("/etc/localtime", false),
 		ro(ResolvConfInside, in.ResolvConf, RoleResolv, false),
 		Bind{Kind: KindDev, Inside: "/dev", IsDir: true},
 		Bind{Kind: KindProc, Inside: "/proc", IsDir: true},
@@ -218,6 +236,9 @@ func checkRow(field string, i, n int, b Bind) error {
 	if err := CheckPath(field, b.Inside); err != nil {
 		return err
 	}
+	if b.Optional && !(b.Kind == KindSymlink || b.Kind == KindRoBind && b.SourceRole == RoleHost) {
+		return refuse(field, "only a host read-only bind or a symlink can be optional")
+	}
 	switch b.Kind {
 	case KindTmpfs, KindDev, KindProc, KindRemountRO:
 		if b.Source != "" || b.Target != "" || b.SourceRole != RoleNone {
@@ -271,6 +292,8 @@ func (in Inputs) checkTable() error {
 		return err
 	}
 	never := in.neverMounted()
+	l := in.Layout()
+	leads, mirrors := path.Join(l.StateRoot, "leads"), l.MirrorsDir()
 	var rwSrc []Bind
 	for _, b := range t {
 		if b.Source == "" {
@@ -278,6 +301,15 @@ func (in Inputs) checkTable() error {
 		}
 		if err := CheckNeverMounted(b.Source, never); err != nil {
 			return refuse("bind "+b.Inside, "%s", reasonOf(err))
+		}
+		// The profile knows the state root: a source in another lead's
+		// state (its login, its home, its tree) or in another project's
+		// mirror is never right, whatever the caller lists as never-mounted.
+		if related(b.Source, leads) && b.Source != l.LeadDir() && !below(b.Source, l.LeadDir()) {
+			return refuse("bind "+b.Inside, "the source %s lies in or above another lead's state", b.Source)
+		}
+		if related(b.Source, mirrors) && b.Source != l.Mirror() && !below(b.Source, l.Mirror()) {
+			return refuse("bind "+b.Inside, "the source %s lies in or above another project's mirror folder", b.Source)
 		}
 		if b.Kind == KindRwBind {
 			rwSrc = append(rwSrc, b)

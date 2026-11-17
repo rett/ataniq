@@ -59,11 +59,19 @@ type Inputs struct {
 	SpecDir string
 
 	// ManagedSettings is the managed-settings file written by Ataniq.
-	// ManagedSettingsInside is where it appears: for claude it defaults to
-	// ClaudeManagedInside; for codex it must be given, because the design
-	// names no path for codex's managed configuration.
+	// ManagedSettingsInside is where it appears: for claude it is
+	// ClaudeManagedInside (empty means that, and no other path is accepted,
+	// because claude reads its policy only there); for codex it must be
+	// given, because the design names no path for codex's managed
+	// configuration, and it must lie under /etc, outside every lead-writable
+	// folder.
 	ManagedSettings       string
 	ManagedSettingsInside string
+	// ManagedSettingsSHA256 is the SHA-256 (64 lower-case hex digits) of the
+	// managed-settings file's content: required, and part of the digest,
+	// because the file is the policy half of the profile. The package does
+	// not read the file or compare the digest.
+	ManagedSettingsSHA256 string
 
 	// LeadSkills is the Ataniq-owned folder bound over the skills folder of
 	// the config folder; InstructionFile is the Ataniq-owned instruction file
@@ -198,6 +206,9 @@ func (in Inputs) check() error {
 	if err := in.checkRecords(); err != nil {
 		return err
 	}
+	if err := checkSHA256("managed-settings digest", in.ManagedSettingsSHA256); err != nil {
+		return err
+	}
 	if err := in.checkSeccomp(); err != nil {
 		return err
 	}
@@ -268,7 +279,19 @@ func (in Inputs) checkManaged() error {
 	if inside == "" {
 		return refuse("managed-settings path", "the lead-hosting design names no managed-settings path for %s: the caller must give one", in.Runtime)
 	}
-	return CheckPath("managed-settings path", inside)
+	if err := CheckPath("managed-settings path", inside); err != nil {
+		return err
+	}
+	// The provider reads its policy only at its system path: a file bound
+	// anywhere else delivers nothing. The table binds the policy before
+	// every lead-writable folder, so ValidateTable refuses a path inside one.
+	if in.Runtime == Claude && inside != ClaudeManagedInside {
+		return refuse("managed-settings path", "claude reads its managed settings only at %s", ClaudeManagedInside)
+	}
+	if !below(inside, "/etc") {
+		return refuse("managed-settings path", "must lie under /etc, where the provider reads system policy")
+	}
+	return nil
 }
 
 func (in Inputs) checkRecords() error {
@@ -281,6 +304,22 @@ func (in Inputs) checkRecords() error {
 	if err := CheckPath("Qargi records inside path", in.QargiRecordsInside); err != nil {
 		return err
 	}
+	// The digest is independent of the project and of the host: it replaces
+	// the project only in the rows it builds itself, so a caller-given path
+	// must not depend on the project, hold a token, or touch the other
+	// runtime's config folder.
+	ri := in.QargiRecordsInside
+	switch {
+	case ri == WorkRootInside || below(ri, WorkRootInside):
+		return refuse("Qargi records inside path", "must not lie in %s (the work tree's path depends on the project)", WorkRootInside)
+	case strings.ContainsAny(ri, "<>"):
+		return refuse("Qargi records inside path", "must not hold '<' or '>' (the digest uses them for tokens)")
+	}
+	// An ancestor of that folder is refused by the table (a parent comes
+	// before what is bound over it, and no inside path is used twice).
+	if other := in.Runtime.Other(); other != "" && (ri == ConfigInside(other) || below(ri, ConfigInside(other))) {
+		return refuse("Qargi records inside path", "must not lie in the %s config folder %s", other, ConfigInside(other))
+	}
 	return nil
 }
 
@@ -291,13 +330,18 @@ func (in Inputs) checkSeccomp() error {
 	if err := CheckPath("seccomp file", in.SeccompFile); err != nil {
 		return err
 	}
-	if len(in.SeccompSHA256) != 64 {
-		return refuse("seccomp digest", "must be 64 lower-case hex digits")
+	return checkSHA256("seccomp digest", in.SeccompSHA256)
+}
+
+// checkSHA256 refuses a value that is not 64 lower-case hex digits.
+func checkSHA256(field, v string) error {
+	if len(v) != 64 {
+		return refuse(field, "must be 64 lower-case hex digits")
 	}
-	for i := 0; i < len(in.SeccompSHA256); i++ {
-		c := in.SeccompSHA256[i]
+	for i := 0; i < len(v); i++ {
+		c := v[i]
 		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return refuse("seccomp digest", "must be 64 lower-case hex digits")
+			return refuse(field, "must be 64 lower-case hex digits")
 		}
 	}
 	return nil

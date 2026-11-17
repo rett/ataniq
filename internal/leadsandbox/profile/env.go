@@ -37,6 +37,27 @@ const (
 
 const maxEnvNameLen = 64
 
+// maxLeadIdentityLen is the longest QARGI_LEAD value.
+const maxLeadIdentityLen = 64
+
+// validLeadIdentity reports whether s has the shape of a role name ([a-z0-9]
+// then [a-z0-9-]) and is at most 64 bytes.
+func validLeadIdentity(s string) bool {
+	if s == "" || len(s) > maxLeadIdentityLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Values of the fixed variables, in the lead's home.
 const (
 	GoCacheInside    = HomeInside + "/.cache/go-build"
@@ -69,10 +90,28 @@ var baseNames = []string{
 	EnvQargiLead,
 }
 
+// forbiddenSuffixes are name endings that mark a credential (compared in
+// upper case).
+var forbiddenSuffixes = []string{"_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY"}
+
+// forbiddenPrefixes are name beginnings a profile may not add (compared in
+// upper case): the loader's, git's configuration injection and the cloud
+// credentials of AWS.
+var forbiddenPrefixes = []string{"LD_", "GIT_CONFIG_", "AWS_"}
+
+// allowedPrefixed are names that start with a forbidden prefix and are
+// allowlisted. GIT_CONFIG_GLOBAL is a name the profile defines itself, so it
+// is refused as an extra on other grounds.
+var allowedPrefixed = map[string]bool{EnvGitConfig: true}
+
 // CheckEnvName refuses a name a profile may not add: a name that is not a
-// plain identifier, SSH_AUTH_SOCK, DBUS_SESSION_BUS_ADDRESS, XDG_RUNTIME_DIR,
-// ANTHROPIC_API_KEY, OPENAI_API_KEY, and any name that ends _API_KEY or
-// _TOKEN (in any letter case).
+// plain identifier (at most 64 bytes); SSH_AUTH_SOCK, DBUS_SESSION_BUS_ADDRESS,
+// XDG_RUNTIME_DIR, ANTHROPIC_API_KEY and OPENAI_API_KEY; any name that ends
+// _API_KEY, _TOKEN, _SECRET, _PASSWORD or _KEY; and any name that starts LD_,
+// GIT_CONFIG_ (other than GIT_CONFIG_GLOBAL) or AWS_. Names are compared in
+// upper case. The list is a starting point for the owner to review and
+// extend, not a complete list of what a credential or a loader override can be
+// called.
 func CheckEnvName(name string) error {
 	field := "environment name " + quoteName(name)
 	if name == "" || len(name) > maxEnvNameLen {
@@ -89,11 +128,20 @@ func CheckEnvName(name string) error {
 		}
 	}
 	up := strings.ToUpper(name)
-	switch {
-	case forbiddenEnv[up]:
+	if forbiddenEnv[up] {
 		return refuse(field, "a profile may not add it (no agent socket, session bus or provider key)")
-	case strings.HasSuffix(up, "_API_KEY"), strings.HasSuffix(up, "_TOKEN"):
-		return refuse(field, "a profile may not add a name that ends _API_KEY or _TOKEN")
+	}
+	for _, suffix := range forbiddenSuffixes {
+		if strings.HasSuffix(up, suffix) {
+			return refuse(field, "a profile may not add a name that ends %s (it looks like a credential)", strings.Join(forbiddenSuffixes, ", "))
+		}
+	}
+	if !allowedPrefixed[up] {
+		for _, prefix := range forbiddenPrefixes {
+			if strings.HasPrefix(up, prefix) {
+				return refuse(field, "a profile may not add a name that starts with %s (loader, git configuration or cloud credentials)", strings.Join(forbiddenPrefixes, ", "))
+			}
+		}
 	}
 	return nil
 }
@@ -110,9 +158,12 @@ func (in Inputs) checkEnv() error {
 	if in.Term == "" {
 		return refuse("TERM", "is required: the host terminal gives it")
 	}
+	if in.LeadIdentity != "" && !validLeadIdentity(in.LeadIdentity) {
+		return refuse("lead identity", "must be 1 to %d characters of [a-z0-9-], not starting with '-'", maxLeadIdentityLen)
+	}
 	for _, v := range []struct{ field, val string }{
 		{"TERM", in.Term}, {"COLORTERM", in.ColorTerm}, {"LANG", in.Lang},
-		{"TZ", in.TZ}, {"lead identity", in.LeadIdentity},
+		{"TZ", in.TZ},
 	} {
 		if err := CheckValue(v.field, v.val); err != nil {
 			return err
@@ -244,6 +295,28 @@ func (in Inputs) EnvNames() []string {
 	return sortedCopy(names)
 }
 
+// profileEnvValues is the name and value of every variable whose value the
+// profile defines, sorted by name: the fixed values, PATH, SHELL, the config
+// variable, the git and Go variables, USER and LOGNAME in root mode, and
+// every extra variable. It leaves out what the host terminal or the lead
+// gives: TERM, COLORTERM, LANG, TZ, QARGI_LEAD, and USER and LOGNAME in owner
+// mode. The digest encodes these values; the others it encodes by name only.
+func (in Inputs) profileEnvValues() []EnvVar {
+	var out []EnvVar
+	for _, e := range in.environment() {
+		switch e.Name {
+		case EnvTerm, EnvColorTerm, EnvLang, EnvTZ, EnvQargiLead:
+			continue
+		case EnvUser, EnvLogname:
+			if in.Identity == IdentityOwner {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // EnvDiffKind says how an observed variable differs from the allowlist.
 type EnvDiffKind string
 
@@ -258,11 +331,21 @@ const (
 	EnvDuplicate EnvDiffKind = "duplicate"
 	// EnvMalformed: an observed entry has no name or no '='.
 	EnvMalformed EnvDiffKind = "malformed"
+	// EnvTruncated: more differences than MaxEnvDiffs; its Name says how
+	// many are not listed.
+	EnvTruncated EnvDiffKind = "truncated"
 )
 
-// EnvDiff is one difference. Want and Got are set only for EnvChanged, whose
-// name is in the allowlist; the value of an unexpected variable is never kept,
-// because it may be a secret.
+// MaxEnvDiffs is the most differences DiffEnvironment returns, the
+// EnvTruncated one not counted.
+const MaxEnvDiffs = 64
+
+// maxDiffName is the longest name kept in a difference.
+const maxDiffName = 64
+
+// EnvDiff is one difference. Name is clipped to 64 bytes. Want and Got are
+// set only for EnvChanged, whose name is in the allowlist; the value of an
+// unexpected variable is never kept, because it may be a secret.
 type EnvDiff struct {
 	Kind EnvDiffKind
 	Name string
@@ -270,21 +353,28 @@ type EnvDiff struct {
 	Got  string
 }
 
-// String is the difference as a line for a report.
+// String is the difference as one line for a report. The name is quoted, so
+// an observed name with a newline or another control byte cannot forge or
+// split a line.
 func (d EnvDiff) String() string {
 	if d.Kind == EnvChanged {
-		return fmt.Sprintf("changed %s: want %q, got %q", d.Name, d.Want, d.Got)
+		return fmt.Sprintf("changed %q: want %q, got %q", d.Name, d.Want, d.Got)
 	}
-	return fmt.Sprintf("%s %s", d.Kind, d.Name)
+	return fmt.Sprintf("%s %q", d.Kind, d.Name)
 }
 
 // DiffEnvironment compares an observed environment, in the form of
 // os.Environ ("NAME=value"), with the allowlist exactly, names and values, and
-// returns the differences sorted by name and then kind. An empty result means
-// the two are equal.
-func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
+// returns the differences sorted by name and then kind, at most MaxEnvDiffs
+// of them followed by one EnvTruncated difference when there are more. An
+// empty result means the two are equal. It refuses an allowlist that lists a
+// name twice, because it would be ambiguous which value is wanted.
+func DiffEnvironment(want []EnvVar, observed []string) ([]EnvDiff, error) {
 	wantMap := make(map[string]string, len(want))
 	for _, w := range want {
+		if _, dup := wantMap[w.Name]; dup {
+			return nil, refuse("environment allowlist", "the name %s is listed twice", quoteName(w.Name))
+		}
 		wantMap[w.Name] = w.Value
 	}
 	var diffs []EnvDiff
@@ -302,10 +392,7 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 		}
 	}
 	for name, n := range count {
-		display := name
-		if len(display) > 64 {
-			display = display[:64] + "..."
-		}
+		display := clipName(name)
 		if n > 1 {
 			diffs = append(diffs, EnvDiff{Kind: EnvDuplicate, Name: display})
 		}
@@ -319,7 +406,7 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 	}
 	for _, w := range want {
 		if count[w.Name] == 0 {
-			diffs = append(diffs, EnvDiff{Kind: EnvMissing, Name: w.Name})
+			diffs = append(diffs, EnvDiff{Kind: EnvMissing, Name: clipName(w.Name)})
 		}
 	}
 	sort.Slice(diffs, func(i, j int) bool {
@@ -328,7 +415,18 @@ func DiffEnvironment(want []EnvVar, observed []string) []EnvDiff {
 		}
 		return diffs[i].Kind < diffs[j].Kind
 	})
-	return diffs
+	if len(diffs) > MaxEnvDiffs {
+		more := len(diffs) - MaxEnvDiffs
+		diffs = append(diffs[:MaxEnvDiffs:MaxEnvDiffs], EnvDiff{Kind: EnvTruncated, Name: fmt.Sprintf("(%d more)", more)})
+	}
+	return diffs, nil
+}
+
+func clipName(name string) string {
+	if len(name) > maxDiffName {
+		return name[:maxDiffName] + "..."
+	}
+	return name
 }
 
 func clip(s string) string {

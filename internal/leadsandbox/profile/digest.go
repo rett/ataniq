@@ -4,11 +4,19 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"sort"
+
+	"ataniq/internal/leadsandbox/sandboxnet"
 )
 
 // Version is the profile version. It is part of the digest: change it when
 // the profile's data changes in a way the digest must show.
-const Version = 1
+//
+//	1  first version
+//	2  the digest carries the values of the variables the profile defines,
+//	   the digest of the managed-settings file, the pasta arguments and the
+//	   optional flag of a row, and lists the extra placeholders sorted
+const Version = 2
 
 const (
 	digestMagic   = "ataniq-lead-sandbox-profile"
@@ -20,7 +28,7 @@ const (
 
 // definition is what defines the profile independent of the host and of the
 // lead: no state root, role, project or host path, no owner ids and no
-// environment value that comes from a host.
+// environment value that comes from a host or a lead.
 type definition struct {
 	Version        int
 	Runtime        Runtime
@@ -28,8 +36,17 @@ type definition struct {
 	Identity       IdentityMode
 	Flags          []string
 	Binds          []Bind
-	EnvNames       []string
-	Seccomp        string
+	// EnvNames is every name the profile defines, sorted. EnvValues holds
+	// the names and values of the variables whose value the profile defines
+	// (not the host-terminal ones, the lead identity and, in owner mode, the
+	// user name), sorted by name.
+	EnvNames  []string
+	EnvValues []EnvVar
+	Seccomp   string
+	// ManagedSettings is the SHA-256 of the managed-settings file the
+	// caller gave. Network is the argument vector for pasta.
+	ManagedSettings string
+	Network         []string
 }
 
 // definition builds the host-independent definition of the profile. The
@@ -39,6 +56,10 @@ func (in Inputs) definition() definition {
 	if in.Identity == IdentityOwner {
 		flags = flagSet(ownerUIDToken, ownerGIDToken)
 	}
+	// The placeholders are sorted by target, so the digest does not depend on
+	// the order the caller lists them in (they cannot overlap).
+	in.ExtraPlaceholders = append([]Placeholder(nil), in.ExtraPlaceholders...)
+	sort.Slice(in.ExtraPlaceholders, func(i, j int) bool { return in.ExtraPlaceholders[i].Rel < in.ExtraPlaceholders[j].Rel })
 	t := in.table(TreeInside(projectToken), MirrorInside(projectToken))
 	// A host path is replaced by its source role.
 	for i := range t {
@@ -49,14 +70,17 @@ func (in Inputs) definition() definition {
 		seccomp = in.SeccompSHA256
 	}
 	return definition{
-		Version:        Version,
-		Runtime:        in.Runtime,
-		RuntimeVersion: in.RuntimeVersion,
-		Identity:       in.Identity,
-		Flags:          flags,
-		Binds:          t,
-		EnvNames:       in.EnvNames(),
-		Seccomp:        seccomp,
+		Version:         Version,
+		Runtime:         in.Runtime,
+		RuntimeVersion:  in.RuntimeVersion,
+		Identity:        in.Identity,
+		Flags:           flags,
+		Binds:           t,
+		EnvNames:        in.EnvNames(),
+		EnvValues:       in.profileEnvValues(),
+		Seccomp:         seccomp,
+		ManagedSettings: in.ManagedSettingsSHA256,
+		Network:         sandboxnet.PastaArgs(),
 	}
 }
 
@@ -95,12 +119,23 @@ func (d definition) encode() []byte {
 		flag(bind.IsDir)
 		flag(bind.LeadWritable)
 		str(bind.Within)
+		flag(bind.Optional)
 	}
 	num(len(d.EnvNames))
 	for _, n := range d.EnvNames {
 		str(n)
 	}
+	num(len(d.EnvValues))
+	for _, e := range d.EnvValues {
+		str(e.Name)
+		str(e.Value)
+	}
 	str(d.Seccomp)
+	str(d.ManagedSettings)
+	num(len(d.Network))
+	for _, a := range d.Network {
+		str(a)
+	}
 	return b
 }
 
@@ -113,12 +148,18 @@ func (d definition) digest() string {
 // Digest validates the inputs and returns the SHA-256 (lower-case hex) of a
 // canonical, versioned encoding of what defines the profile: the profile
 // version, the runtime, the pinned version, the identity mode, the flag set,
-// the bind table with source roles in place of host paths, the environment
-// names and the seccomp file digest (or "none"). The state root, the role, the
-// project and every host path are not in it, so the same profile on two hosts,
-// for two roles or for two projects gives the same digest, and a changed flag,
-// bind, name or seccomp digest changes it. Environment values and the owner's
-// ids are not in it either.
+// the bind table with source roles in place of host paths, every environment
+// name, the value of every variable whose value the profile defines (the
+// fixed values, PATH, SHELL, the config variable, the git and Go variables,
+// every extra variable), the seccomp file digest (or "none"), the digest of
+// the managed-settings file, and the pasta arguments of sandboxnet.PastaArgs.
+// The state
+// root, the role, the project and every host path are not in it, nor are the
+// values the host terminal or the lead gives (TERM, COLORTERM, LANG, TZ,
+// QARGI_LEAD, and USER and LOGNAME in owner mode, which are in it by name
+// only) or the owner's ids, so the same profile on two hosts, for two roles
+// or for two projects gives the same digest, and a changed flag, bind, name,
+// profile-defined value or seccomp digest changes it.
 func (in Inputs) Digest() (string, error) {
 	if err := in.Validate(); err != nil {
 		return "", err
