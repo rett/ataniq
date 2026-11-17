@@ -1,7 +1,7 @@
 // Package leadlifecycle is the lead daemon's logic for starting, stopping and
-// reconciling lead roles and the coordinators of their features. It sits on three other packages: leadregistry, the
-// durable record; leadunit, the manager of one transient unit per role; and
-// leadrole, the role names.
+// reconciling lead roles and the coordinators of their features. It sits on
+// three other packages: leadregistry, the durable record; leadunit, the
+// manager of one transient unit per role; and leadrole, the role names.
 //
 // # What it does
 //
@@ -59,9 +59,9 @@
 // the missing parent is a lost reply like any other: the real manager cannot
 // tell a refusal from a request that may still land, so nothing is assumed, the
 // intent stays pending and the coordinator is unknown (ErrLaunchUncertain),
-// until Reconcile or Stop proves the absence after the late-start window. A lead is not started while a
-// coordinator recorded under an earlier epoch of it is not proven stopped
-// (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
+// until Reconcile or Stop proves the absence after the late-start window. A
+// lead is not started while a coordinator recorded under an earlier epoch of
+// it is not proven stopped (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
 // coordinators that is not proven stopped, one after the other, by the same
 // sequence as for a lead (SIGTERM, 2 s, SIGKILL, the proof), each recorded in
 // the registry, and then the lead itself. A coordinator that cannot be proven
@@ -101,8 +101,9 @@
 //
 // Reconcile treats a coordinator as it treats a lead, and also against its
 // parent, which it settles first in the same call. A coordinator whose parent's
-// epoch is no longer the one it recorded, or whose parent is not live, has
-// ended with its parent: with its unit proven absent it is ended (reason
+// epoch is no longer the one it recorded, or whose parent is not live (a
+// parent shown starting whose own launch failed or was given up is not live,
+// as for a start), has ended with its parent: with its unit proven absent it is ended (reason
 // parent-epoch-ended, with the proof); with the unit still loaded it is
 // reported orphan-coordinator and shown unknown, because Reconcile never
 // signals, and an explicit Stop ends it. A parent that cannot be read from the
@@ -179,26 +180,6 @@
 //     unit call; that is sound because one daemon process cannot outlive a
 //     reboot, so the boot cannot change between the read and the call within
 //     one process.
-//
-// # Coordinators
-//
-// The package does not handle coordinator roles yet. The registry, the unit
-// specification ([leadunit.Spec], which can name a parent unit) and the status
-// protocol do have coordinators, but this package does not use them:
-//
-//   - Start builds a unit with no parent: it never sets the parent of a
-//     [leadunit.Spec]. It has no parent check of its own; the registry's
-//     launch gate refuses a coordinator whose parent lead is not live, and
-//     Start returns that refusal.
-//   - Stop of a lead does not stop the coordinators of that lead. It handles
-//     the one role it is given.
-//   - Reconcile treats a coordinator record like any other role: it compares
-//     the record with the unit of that role and applies the same rules, with no
-//     regard for the parent lead.
-//   - There is no handling of the stalled state: this package never sets it
-//     and never returns a stalled role to a live state. Reconcile and Stop
-//     treat it like any other live state and may move it to stopped, ended or
-//     unknown.
 //
 // # What it does not prove
 //
