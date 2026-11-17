@@ -68,7 +68,8 @@ func pids(t *testing.T, out []byte) []int {
 // holderBody is a script prefix that starts a process outside the leader's
 // group (setsid) which holds the output pipes for six seconds and prints its
 // pid on the first line. A process group kill cannot reach it, so only the
-// bounded wait for the pipes ends a run that has it.
+// bounded wait for the pipes ends a run that has it. The script must pause
+// before it ends, so that the holder has called setsid by then.
 func holderBody(t *testing.T) string {
 	t.Helper()
 	return tool(t, "setsid") + " " + tool(t, "sleep") + " 6 & echo $!; "
@@ -747,5 +748,64 @@ func TestStdinFileIsHandedOn(t *testing.T) {
 	res, err := Run(context.Background(), c)
 	if err != nil || string(res.Stdout) != "from file\n" {
 		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+}
+
+func TestPipeHeldByAProcessOutsideTheGroup(t *testing.T) {
+	t.Parallel()
+	// The leader prints and exits 0. A process that left the group holds the
+	// pipes for six seconds; a group kill cannot reach it, so only the bound
+	// on the pipe wait ends Run.
+	c := script(holderBody(t) + "sleep 0.2; echo x")
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+	f := strings.Fields(string(res.Stdout))
+	if len(f) != 2 || f[1] != "x" {
+		t.Errorf("Stdout = %q, want the holder's pid and x", res.Stdout)
+	}
+}
+
+func TestPipeHeldAfterATimeoutKeepsTheTimeout(t *testing.T) {
+	t.Parallel()
+	c := script(holderBody(t) + "echo x; sleep 30")
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v, want at most Timeout plus the pipe wait", took)
+	}
+	if res.Exit != -1 || !strings.HasSuffix(string(res.Stdout), "x\n") {
+		t.Errorf("Result = %+v, stdout %q", res, res.Stdout)
+	}
+}
+
+func TestPipeHeldAfterANonZeroExitStaysAnExitError(t *testing.T) {
+	t.Parallel()
+	// The pause lets the holder leave the group before the leader exits; the
+	// group kill would reach it otherwise.
+	c := script(holderBody(t) + "echo bad >&2; sleep 0.2; exit 3")
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	var xe *ExitError
+	if !errors.As(err, &xe) || xe.Exit != 3 {
+		t.Fatalf("err = %v, want an *ExitError with status 3", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if string(res.Stderr) != "bad\n" {
+		t.Errorf("stderr %q", res.Stderr)
 	}
 }
