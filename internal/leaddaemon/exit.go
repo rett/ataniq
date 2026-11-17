@@ -23,13 +23,15 @@ const (
 	StepManager Step = "manager"
 	// StepReconcile reconciles the registry with the manager, once.
 	StepReconcile Step = "reconcile"
-	// StepStaleSocket removes a socket file an earlier daemon left.
+	// StepStaleSocket makes the runtime folder, takes the socket lock in it
+	// (another daemon with the same runtime folder holds it: refused), and
+	// removes a socket file an earlier daemon left.
 	StepStaleSocket Step = "stale-socket"
 	// StepSocket listens on the socket.
 	StepSocket Step = "socket"
 	// StepServe serves the client protocol.
 	StepServe Step = "serve"
-	// StepShutdown stops serving, closes the registry and releases the lock,
+	// StepShutdown stops serving, closes the registry and releases the locks,
 	// unless the server does not end within the grace.
 	StepShutdown Step = "shutdown"
 )
@@ -61,12 +63,14 @@ const (
 	ExitManager = 15
 	// ExitReconcile is a reconcile that failed in the registry.
 	ExitReconcile = 16
-	// ExitSocket is a socket that cannot be prepared or bound.
+	// ExitSocket is a socket that cannot be prepared or bound, the runtime
+	// folder unusable, or the socket lock held by another daemon that serves
+	// the same runtime folder.
 	ExitSocket = 17
 	// ExitServe is a server that stopped by itself.
 	ExitServe = 18
 	// ExitShutdown is a server that did not end within the shutdown grace;
-	// the registry and the lock are left to the end of the process.
+	// the registry and the locks are left to the end of the process.
 	ExitShutdown = 19
 	// ExitNoDaemon is, for status, no daemon at the socket (missing or
 	// refused).

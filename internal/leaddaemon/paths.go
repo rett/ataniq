@@ -47,3 +47,13 @@ func DefaultSocketPath(getenv func(string) string) (string, error) {
 	}
 	return clientapi.SocketPath(dir), nil
 }
+
+// SocketLockPath returns the path of the socket lock of a runtime folder,
+// <dir>/daemon.sock.lock. The daemon holds it from before it removes a stale
+// socket until after its listener is closed, so that two daemons with
+// different state folders and one runtime folder do not take each other's
+// socket. Like the daemon lock, the file stays after the daemon ends and
+// means nothing without the lock on it.
+func SocketLockPath(dir string) string {
+	return filepath.Join(dir, clientapi.SocketName+".lock")
+}

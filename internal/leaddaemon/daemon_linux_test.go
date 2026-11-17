@@ -187,7 +187,7 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 		}, StepStaleSocket, ExitSocket, "not a socket", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
 		{"socket path too long", func(e *env, cfg *Config) {
 			cfg.RuntimeDir = filepath.Join(e.base, strings.Repeat("r", 120))
-		}, StepSocket, ExitSocket, "socket path", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket, StepSocket}},
+		}, StepStaleSocket, ExitSocket, "socket path", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
 	}
 	seen := map[int]bool{}
 	for _, tt := range tests {
@@ -477,12 +477,14 @@ func TestStuckServerIsReportedAndNothingIsClosedUnderIt(t *testing.T) {
 	if after := openDescriptors(t, journal); after != before {
 		t.Errorf("descriptors to the registry journal: %d before the stop, %d after; the registry was closed under a server that may still run", before, after)
 	}
-	// The lock is still held.
-	if l, err := leadlock.Acquire(leadlock.DaemonPath(e.state)); err == nil {
-		l.Release()
-		t.Fatal("the daemon lock was released under a server that may still run")
-	} else if !errors.Is(err, leadlock.ErrHeld{}) {
-		t.Fatal(err)
+	// The daemon lock and the socket lock are still held.
+	for _, path := range []string{leadlock.DaemonPath(e.state), SocketLockPath(e.runtime)} {
+		if l, err := leadlock.Acquire(path); err == nil {
+			l.Release()
+			t.Fatalf("%s was released under a server that may still run", path)
+		} else if !errors.Is(err, leadlock.ErrHeld{}) {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -501,4 +503,172 @@ func openDescriptors(t *testing.T, path string) int {
 		}
 	}
 	return n
+}
+
+// holdLockInAnotherProcess starts a process that holds the lock at path and
+// returns its command, once it said it holds it. Its standard input closing
+// ends it; the test may kill it instead.
+func holdLockInAnotherProcess(t *testing.T, path string) (*exec.Cmd, io.Closer) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldLock$")
+	cmd.Env = append(os.Environ(), helperEnv+"="+path)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stdin.Close(); cmd.Process.Kill(); cmd.Wait() })
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || line != "locked\n" {
+		t.Fatalf("helper said %q, %v", line, err)
+	}
+	return cmd, stdin
+}
+
+// TestTwoDaemonsOneRuntimeFolder: a daemon with another state folder and the
+// same runtime folder is refused at the socket lock, and the first daemon's
+// socket is neither removed nor replaced; it still answers, and its shutdown
+// leaves nothing of either.
+func TestTwoDaemonsOneRuntimeFolder(t *testing.T) {
+	a := newEnv(t)
+	da := a.startDaemon(a.config())
+	if _, err := os.Lstat(a.socket()); err != nil {
+		t.Fatal(err)
+	}
+
+	b := newEnv(t)
+	b.runtime = a.runtime
+	err := b.runToEnd(b.config())
+	se := mustFail(t, err, StepStaleSocket, ExitSocket)
+	for _, want := range []string{"another daemon serves the runtime folder", "pid hint " + strconv.Itoa(os.Getpid()), "not proof"} {
+		if !strings.Contains(se.Error(), want) {
+			t.Errorf("message %q lacks %q", se.Error(), want)
+		}
+	}
+	if strings.ContainsAny(se.Error(), "\n\r") {
+		t.Errorf("message %q is more than one line", se.Error())
+	}
+	if strings.Contains(b.log.String(), "removed a stale socket") {
+		t.Errorf("B removed a socket:\n%s", b.log)
+	}
+	// B released what it held, and A's socket is the one in place and answers.
+	b.lockFree()
+	c, err := clientapi.Dial(context.Background(), a.socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	h, err := c.Hello(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Version != "9.9.9-test" {
+		t.Fatalf("hello %+v", h)
+	}
+	if got := status(t, a.socket()); got.Daemon.PID != os.Getpid() {
+		t.Fatalf("daemon block %+v", got.Daemon)
+	}
+	c.Close()
+
+	if err := da.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(a.socket()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("A's socket is still there: %v", err)
+	}
+	// With A gone, B starts on the same runtime folder.
+	b.order = &orderLog{}
+	db := b.startDaemon(b.config())
+	if err := db.stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestShutdownReleasesTheSocketLock: after a clean shutdown the socket is gone
+// and the socket lock can be taken; the lock file itself stays.
+func TestShutdownReleasesTheSocketLock(t *testing.T) {
+	e := newEnv(t)
+	d := e.startDaemon(e.config())
+	held, err := leadlock.Acquire(SocketLockPath(e.runtime))
+	if err == nil {
+		held.Release()
+		t.Fatal("the socket lock is free while the daemon serves")
+	} else if !errors.Is(err, leadlock.ErrHeld{}) {
+		t.Fatal(err)
+	}
+	if err := d.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(e.socket()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the socket is still there: %v", err)
+	}
+	held, err = leadlock.Acquire(SocketLockPath(e.runtime))
+	if err != nil {
+		t.Fatalf("the socket lock is not free after the shutdown: %v", err)
+	}
+	held.Release()
+	if fi, err := os.Lstat(SocketLockPath(e.runtime)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("lock file: %v, %v", fi, err)
+	}
+	e.lockFree()
+}
+
+// TestSocketLockHeldElsewhereLeavesTheSocketAlone: while a process that is not
+// a daemon of this state folder holds the socket lock, a socket in the
+// runtime folder is not removed as stale.
+func TestSocketLockHeldElsewhereLeavesTheSocketAlone(t *testing.T) {
+	e := newEnv(t)
+	if err := os.Mkdir(e.runtime, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := holdLockInAnotherProcess(t, SocketLockPath(e.runtime))
+	makeStaleSocket(t, e.socket())
+	err := e.runToEnd(e.config())
+	se := mustFail(t, err, StepStaleSocket, ExitSocket)
+	if !strings.Contains(se.Error(), "pid hint "+strconv.Itoa(cmd.Process.Pid)) || !strings.Contains(se.Error(), "not proof") {
+		t.Fatalf("message %q lacks the holder's pid as a hint", se.Error())
+	}
+	if _, err := os.Lstat(e.socket()); err != nil {
+		t.Fatalf("the socket was removed while the socket lock was held elsewhere: %v", err)
+	}
+	e.lockFree()
+}
+
+// TestCrashedDaemonLeftoversDoNotBlock: a daemon that was killed leaves its
+// socket and both lock files, the second with a pid in it; the next daemon
+// starts, removes the socket and takes the locks.
+func TestCrashedDaemonLeftoversDoNotBlock(t *testing.T) {
+	e := newEnv(t)
+	if err := os.Mkdir(e.runtime, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := holdLockInAnotherProcess(t, SocketLockPath(e.runtime))
+	makeStaleSocket(t, e.socket())
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	pid, err := leadlock.ReadHolder(SocketLockPath(e.runtime))
+	if err != nil || pid != cmd.Process.Pid {
+		t.Fatalf("the lock file the crash left: pid %d, %v", pid, err)
+	}
+	d := e.startDaemon(e.config())
+	if !strings.Contains(e.log.String(), "removed a stale socket") {
+		t.Fatalf("log:\n%s", e.log)
+	}
+	if got := status(t, d.socket); got.Daemon.PID != os.Getpid() {
+		t.Fatalf("daemon block %+v", got.Daemon)
+	}
+	if pid, err := leadlock.ReadHolder(SocketLockPath(e.runtime)); err != nil || pid != os.Getpid() {
+		t.Fatalf("the socket lock file holds pid %d, %v", pid, err)
+	}
+	if err := d.stop(); err != nil {
+		t.Fatal(err)
+	}
 }
