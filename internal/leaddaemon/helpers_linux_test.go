@@ -202,6 +202,23 @@ func (e *env) runToEnd(cfg Config) error {
 	}
 }
 
+// noSocketMade fails the test when a socket was bound or removed in the
+// runtime folder, or when the socket lock cannot be taken. The folder and the
+// lock file may be there: the daemon makes them before it opens the registry.
+func (e *env) noSocketMade() {
+	e.t.Helper()
+	if _, err := os.Lstat(e.socket()); err == nil || !errors.Is(err, os.ErrNotExist) {
+		e.t.Fatalf("a socket was made: %v", err)
+	}
+	l, err := leadlock.Acquire(SocketLockPath(e.runtime))
+	if err != nil {
+		e.t.Fatalf("the socket lock is not free: %v", err)
+	}
+	if err := l.Release(); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
 // lockFree fails the test unless the daemon lock can be taken, and releases it.
 func (e *env) lockFree() {
 	e.t.Helper()

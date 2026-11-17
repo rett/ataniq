@@ -17,11 +17,24 @@
 //  3. lock: take the daemon lock, <state>/daemon.lock (leadlock). A second
 //     daemon fails here, with the holder's pid shown as a hint and not as
 //     proof.
-//  4. registry: open <state>/registry/. A corrupt registry stops the daemon;
+//  4. socket lock: make the runtime folder (mode 0700, its parent must exist)
+//     and take the socket lock in it, <runtime>/daemon.sock.lock (leadlock),
+//     before the registry is opened. A socket path that does not fit in a Unix
+//     socket address is refused first, before the folder or the file is made.
+//     The daemon lock is per state folder, so it cannot tell a live socket
+//     from a stale one when two daemons with different state folders share a
+//     runtime folder; the socket lock is per runtime folder. A daemon that
+//     finds it held exits with the socket code ([ExitSocket]), says that
+//     another daemon serves the runtime folder and shows the pid in the lock
+//     as a hint. It has opened no registry and asked no manager by then, so a
+//     refused daemon writes nothing to its journal. A lock file that an
+//     earlier daemon left is no obstacle: the lock is the flock on it, not the
+//     file.
+//  5. registry: open <state>/registry/. A corrupt registry stops the daemon;
 //     nothing is repaired.
-//  5. manager: read the boot identity, build the unit manager (injected) and
+//  6. manager: read the boot identity, build the unit manager (injected) and
 //     the lifecycle controller.
-//  6. reconcile: call [leadlifecycle.Controller.Reconcile] once. It starts
+//  7. reconcile: call [leadlifecycle.Controller.Reconcile] once. It starts
 //     nothing and signals nothing. A manager that does not answer is not
 //     fatal: the daemon serves the roles as the registry has them and shows
 //     the reconcile as not completed. It does so whenever any call to the
@@ -31,28 +44,19 @@
 //     time (also in its last step), and for a manager that is known to be
 //     unavailable ([UnavailableManager]) when the registry holds nothing to
 //     ask it about, an empty one or one of tmux-managed roles only.
-//  7. stale socket: make the runtime folder (mode 0700, its parent must
-//     exist) and take the socket lock in it, <runtime>/daemon.sock.lock
-//     (leadlock); only then, with both locks held, remove a socket file an
-//     earlier daemon left (clientapi.RemoveStale). The daemon lock is per
-//     state folder, so it cannot tell a live socket from a stale one when two
-//     daemons with different state folders share a runtime folder; the socket
-//     lock is per runtime folder. A daemon that finds it held exits with the
-//     socket code ([ExitSocket]), says that another daemon serves the runtime
-//     folder and shows the pid in the lock as a hint. A lock file that an
-//     earlier daemon left is no obstacle: the lock is the flock on it, not the
-//     file.
-//  8. socket: listen on <runtime>/daemon.sock (clientapi.Listen).
-//  9. serve until the signal source delivers a signal (SIGTERM or SIGINT in
+//  8. stale socket: with both locks held, remove a socket file an earlier
+//     daemon left (clientapi.RemoveStale).
+//  9. socket: listen on <runtime>/daemon.sock (clientapi.Listen).
+//  10. serve until the signal source delivers a signal (SIGTERM or SIGINT in
 //     the binary) or the context ends.
-//  10. shutdown: stop accepting, wait for the connections for a bounded time
-//     (the listener is closed, which unlinks the socket, under the socket
-//     lock), then release the socket lock, close the registry, and release the
-//     daemon lock last. When the server has not ended within that time, [Run]
-//     returns a [StartupError] of [StepShutdown] ([ExitShutdown]) that says
-//     what is left, and closes the registry and releases both locks for no
-//     one: a goroutine that may still run could use them, and all end with
-//     the process.
+//  11. shutdown: stop accepting and wait for the connections for a bounded
+//     time (the listener is closed, which unlinks the socket, under the
+//     socket lock), then close the registry, release the socket lock, and
+//     release the daemon lock last. When the server has not ended within that
+//     time, [Run] returns a [StartupError] of [StepShutdown] ([ExitShutdown])
+//     that says what is left, and closes the registry and releases both locks
+//     for no one: a goroutine that may still run could use them, and all end
+//     with the process.
 //
 // The daemon never starts, signals or stops a unit, at start-up, while it
 // serves or at shutdown: it does not call Start or Stop of the controller,

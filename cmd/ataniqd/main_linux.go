@@ -27,8 +27,8 @@ const usage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
 This build is read-only. The daemon answers hello and status; it starts,
 stops and manages no unit and defines no lead, and no flag changes that.
 
-  run      take the daemon lock, open the registry, reconcile once and serve
-           until SIGTERM or SIGINT
+  run      take the daemon lock and the runtime folder lock, open the
+           registry, reconcile once and serve until SIGTERM or SIGINT
            --state-dir DIR    default $XDG_STATE_HOME/ataniq, else
                               $HOME/.local/state/ataniq
            --runtime-dir DIR  folder of daemon.sock; default

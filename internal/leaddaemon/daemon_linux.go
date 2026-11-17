@@ -103,8 +103,8 @@ func (d *daemon) step(s Step) {
 // ended within the shutdown grace makes it return a [StartupError] of
 // [StepShutdown] ([ExitShutdown]) that says what is left: the registry is then
 // left open, with the daemon lock and the socket lock held, not closed under a
-// goroutine that may still use them, and all end with the process. It starts, signals and stops
-// no unit.
+// goroutine that may still use them, and all end with the process. It starts,
+// signals and stops no unit.
 func Run(ctx context.Context, cfg Config) error {
 	d := &daemon{Config: cfg, log: cfg.Log}
 	if d.log == nil {
@@ -185,6 +185,35 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
+	// socket lock, before the registry is opened and reconciled, so that a
+	// daemon that is refused here has written nothing: another daemon with
+	// another state folder and the same runtime folder holds it. The daemon
+	// lock is per state folder and cannot tell a live socket from a stale one
+	// across state folders; this lock is per runtime folder. It is released
+	// after the registry is closed and before the daemon lock.
+	d.step(StepSocketLock)
+	if err := ensureRuntimeDir(d.RuntimeDir); err != nil {
+		return &StartupError{Step: StepSocketLock, Err: err}
+	}
+	sockLock, err := leadlock.Acquire(SocketLockPath(d.RuntimeDir))
+	if err != nil {
+		if errors.Is(err, leadlock.ErrHeld{}) {
+			return &StartupError{Step: StepSocketLock, Err: fmt.Errorf("another daemon serves the runtime folder %s (the pid in the lock is a hint, not proof): %w", d.RuntimeDir, err)}
+		}
+		return &StartupError{Step: StepSocketLock, Err: err}
+	}
+	defer func() {
+		if abandoned {
+			return
+		}
+		if err := sockLock.Release(); err != nil {
+			d.logf("release the socket lock: %v", err)
+		}
+	}()
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	// registry
 	d.step(StepRegistry)
 	reg, err := leadregistry.Open(filepath.Join(d.StateDir, RegistryDirName), leadregistry.Options{Now: d.Clock.Now})
@@ -244,30 +273,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// stale socket, only with both locks held: the daemon lock of this state
-	// folder, and the socket lock of the runtime folder, which another daemon
-	// with another state folder and the same runtime folder would hold. The
-	// socket lock is held until after the listener is closed, so that the
-	// removal of a stale socket and the unlink at close are both under it.
+	// stale socket, with both locks held (the socket lock was taken before the
+	// registry was opened). The listener is closed, which unlinks the socket,
+	// before the socket lock is released, so that the removal of a stale socket
+	// and the unlink at close are both under it.
 	d.step(StepStaleSocket)
-	if err := ensureRuntimeDir(d.RuntimeDir); err != nil {
-		return &StartupError{Step: StepStaleSocket, Err: err}
-	}
-	sockLock, err := leadlock.Acquire(SocketLockPath(d.RuntimeDir))
-	if err != nil {
-		if errors.Is(err, leadlock.ErrHeld{}) {
-			return &StartupError{Step: StepStaleSocket, Err: fmt.Errorf("another daemon serves the runtime folder %s (the pid in the lock is a hint, not proof): %w", d.RuntimeDir, err)}
-		}
-		return &StartupError{Step: StepStaleSocket, Err: err}
-	}
-	defer func() {
-		if abandoned {
-			return
-		}
-		if err := sockLock.Release(); err != nil {
-			d.logf("release the socket lock: %v", err)
-		}
-	}()
 	removed, err := clientapi.RemoveStale(d.RuntimeDir)
 	if err != nil {
 		return &StartupError{Step: StepStaleSocket, Err: err}
@@ -320,11 +330,12 @@ func Run(ctx context.Context, cfg Config) error {
 			serveErr = &StartupError{Step: StepServe, Err: err}
 		}
 	}
-	// The socket lock (the listener is closed by then), the registry and the
-	// daemon lock are released by the deferred calls, in that order: the daemon
-	// lock last, unless the server is left running. A server that is
-	// left running is reported by the returned error alone, which the command
-	// prints once.
+	// The registry, the socket lock and the daemon lock are released by the
+	// deferred calls, in that order, the daemon lock last, and the listener is
+	// closed (which unlinks the socket) by then, under the socket lock. A
+	// server that is left running leaves all three to the end of the process,
+	// and is reported by the returned error alone, which the command prints
+	// once.
 	return serveErr
 }
 

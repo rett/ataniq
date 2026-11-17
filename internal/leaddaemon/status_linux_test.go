@@ -417,9 +417,7 @@ func TestCorruptRegistryIsLeftAsItIs(t *testing.T) {
 	if err != nil || string(after) != string(b) {
 		t.Fatalf("the corrupt registry was changed: %v", err)
 	}
-	if _, err := os.Lstat(e.runtime); err == nil {
-		t.Fatal("a runtime folder was made")
-	}
+	e.noSocketMade()
 	e.lockFree()
 }
 

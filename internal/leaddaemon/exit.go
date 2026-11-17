@@ -16,6 +16,10 @@ const (
 	StepState Step = "state"
 	// StepLock takes the daemon lock.
 	StepLock Step = "lock"
+	// StepSocketLock makes the runtime folder and takes the socket lock in it
+	// (another daemon with the same runtime folder holds it: refused), before
+	// the registry is opened.
+	StepSocketLock Step = "socket-lock"
 	// StepRegistry opens the registry.
 	StepRegistry Step = "registry"
 	// StepManager reads the boot identity and builds the unit manager and
@@ -23,9 +27,8 @@ const (
 	StepManager Step = "manager"
 	// StepReconcile reconciles the registry with the manager, once.
 	StepReconcile Step = "reconcile"
-	// StepStaleSocket makes the runtime folder, takes the socket lock in it
-	// (another daemon with the same runtime folder holds it: refused), and
-	// removes a socket file an earlier daemon left.
+	// StepStaleSocket removes a socket file an earlier daemon left, under the
+	// socket lock.
 	StepStaleSocket Step = "stale-socket"
 	// StepSocket listens on the socket.
 	StepSocket Step = "socket"
@@ -65,12 +68,12 @@ const (
 	ExitReconcile = 16
 	// ExitSocket is a socket that cannot be prepared or bound, the runtime
 	// folder unusable, or the socket lock held by another daemon that serves
-	// the same runtime folder.
+	// the same runtime folder (refused before the registry is opened).
 	ExitSocket = 17
 	// ExitServe is a server that stopped by itself.
 	ExitServe = 18
 	// ExitShutdown is a server that did not end within the shutdown grace;
-	// the registry and the locks are left to the end of the process.
+	// the registry and both locks are left to the end of the process.
 	ExitShutdown = 19
 	// ExitNoDaemon is, for status, no daemon at the socket (missing or
 	// refused).
@@ -128,7 +131,7 @@ func ExitCode(err error) int {
 		return ExitManager
 	case StepReconcile:
 		return ExitReconcile
-	case StepStaleSocket, StepSocket:
+	case StepSocketLock, StepStaleSocket, StepSocket:
 		return ExitSocket
 	case StepServe:
 		return ExitServe
