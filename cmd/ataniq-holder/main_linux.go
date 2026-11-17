@@ -17,10 +17,16 @@
 // session.Start's final record final.json when the session is over. Before it
 // writes holder.json for a new epoch it renames a final.json that an earlier
 // epoch left to final.json.previous, replacing an older one, so that final.json
-// is never the record of an epoch other than the last one that ended. A start
-// that fails after holder.json was written leaves it in place, and says in its
-// diagnostic that holder.json names a holder that is gone; a reader tells that
-// from a running holder by the pid and its start ticks.
+// is never the record of an epoch other than the last one that ended. After a
+// start that was refused past that point, that failed or that a stop signal
+// ended, final.json is absent and the last record is in final.json.previous. A
+// start that fails after holder.json was written leaves it in place, and says
+// in its diagnostic that holder.json names a holder that is gone; a reader
+// tells that from a running holder by the pid and its start ticks.
+//
+// The role lock is taken once, early, and held until the holder exits: after
+// the session closes its descriptor, a duplicate stays until the service and
+// the event log are closed.
 package main
 
 import (
@@ -33,6 +39,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/ptyhost"
@@ -94,6 +102,11 @@ type deps struct {
 	// start-up checks have passed. It is for tests, which hold two holders
 	// there to make them take the lock together.
 	beforeRoleLock func()
+	// beforeLockRelease is called when the holder has closed its service and
+	// its event log and keeps the role lock only through the descriptor that
+	// it keeps for the end. It is for tests, which start a second holder
+	// there.
+	beforeLockRelease func()
 }
 
 func realDeps() deps {
@@ -244,6 +257,23 @@ func run(args []string, d deps) int {
 	defer func() {
 		if lock != nil {
 			lock.Close()
+		}
+	}()
+	// The lock belongs to the open file description, so a duplicate of the
+	// descriptor holds it as well: the session closes its own when it is
+	// closed, and this one stays until the holder ends, after the service
+	// and the event log are closed (a deferred call runs after those below,
+	// which are deferred later). A next holder then cannot take the role while
+	// this one still has the log open (the lead-hosting design, section 1.6).
+	// It is close-on-exec, so that the agent never has it.
+	keep, err := unix.FcntlInt(lock.Fd(), unix.F_DUPFD_CLOEXEC, 3)
+	if err != nil {
+		return refuse("cannot duplicate the role lock descriptor: %v", err)
+	}
+	defer unix.Close(keep)
+	defer func() {
+		if d.beforeLockRelease != nil {
+			d.beforeLockRelease()
 		}
 	}()
 
