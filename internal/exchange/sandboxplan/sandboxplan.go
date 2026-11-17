@@ -145,7 +145,8 @@ type ServePlan struct {
 	Repository string
 	// Measure prints the size of the clone's object store: the first
 	// whitespace-delimited token of the first output line is a decimal
-	// byte count. See [ParseMeasure].
+	// byte count. See [ParseMeasure]. The number is the lead side's
+	// statement and a first check only.
 	Measure Command
 }
 
