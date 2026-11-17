@@ -12,19 +12,19 @@ import (
 var (
 	// ErrSymlink: a component of the path is a symbolic link (or a magic
 	// link), a link that points inside the folder or nowhere included. For
-	// the last component: ReadFile, ReadFileInfo, AppendFile, ReadDirNames
-	// and SubRoot return it; WriteFileExclusive returns it, wrapping the
-	// errno of the create (so it also matches fs.ErrExist); MkdirAll returns
-	// it, as its walk opens every component; Lstat does not, it reports the
-	// link (see [Info.IsSymlink]). For a parent component every method
-	// returns it.
+	// the last component: ReadFile, ReadFileInfo, AppendFile, ReadDirNames,
+	// SubRoot, OpenDirHandle and OpenFileHandle return it; WriteFileExclusive
+	// returns it, wrapping the errno of the create (so it also matches
+	// fs.ErrExist); MkdirAll returns it, as its walk opens every component;
+	// Lstat does not, it reports the link (see [Info.IsSymlink]). For a
+	// parent component every method returns it.
 	ErrSymlink = errors.New("a component of the path is a symbolic link")
 	// ErrNotRegular: the entry is a FIFO, device, socket or folder where a
 	// regular file is required. A device is refused here only when its open
 	// succeeded and fstat saw it; see the package documentation.
 	ErrNotRegular = errors.New("not a regular file")
 	// ErrNotDirectory: a component that must be a folder is not one, the
-	// entry SubRoot was asked to open included.
+	// entry SubRoot or OpenDirHandle was asked to open included.
 	ErrNotDirectory = errors.New("a component that must be a folder is not one")
 	// ErrTooLarge: a file is larger than the cap, a file grew past the cap
 	// while it was read, or a folder holds more entries than the cap.
@@ -43,18 +43,18 @@ var (
 	// ErrInvalidArgument: an empty or unclean path, a NUL byte, a negative
 	// cap or a mode with bits other than permission bits.
 	ErrInvalidArgument = errors.New("invalid argument")
-	// ErrClosed: the Root was closed.
+	// ErrClosed: the Root or Handle was closed, or is the zero value.
 	ErrClosed = errors.New("folder handle is closed")
 )
 
 // maxErrPath bounds the path an error message repeats.
 const maxErrPath = 200
 
-// Error is the error type of every failure of a [Root] method. Err is one of
-// the sentinel errors above, possibly joined with the system's errno, or the
-// errno itself.
+// Error is the error type of every failure of a [Root] or [Handle] method
+// (the close of the descriptor itself excepted). Err is one of the sentinel
+// errors above, possibly joined with the system's errno, or the errno itself.
 type Error struct {
-	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open", "sync", "rename", "subroot", "close"
+	Op   string // the operation: "read", "lstat", "mkdir", "create", "append", "readdir", "open", "sync", "rename", "subroot", "handle", "close"
 	Path string // the path as the caller gave it
 	Err  error
 }

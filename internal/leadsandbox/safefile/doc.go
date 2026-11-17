@@ -8,9 +8,9 @@
 // even when it points back inside the folder or nowhere. A link
 // in a parent component is refused by every method. A link as the last
 // component is refused by [Root.ReadFile], [Root.ReadFileInfo],
-// [Root.AppendFile], [Root.ReadDirNames], [Root.MkdirAll] and
-// [Root.SubRoot]; by [Root.WriteFileExclusive], which refuses to create
-// anything there and
+// [Root.AppendFile], [Root.ReadDirNames], [Root.MkdirAll], [Root.SubRoot],
+// [Root.OpenDirHandle] and [Root.OpenFileHandle]; by
+// [Root.WriteFileExclusive], which refuses to create anything there and
 // reports [ErrSymlink] (the error also matches fs.ErrExist); and it is
 // reported, not refused, by [Root.Lstat], so a caller can see it. This is the
 // symlink-safe access of section 3.6 of the lead-hosting design, the code
@@ -44,6 +44,24 @@
 // handle, and nothing an earlier call found is reused. A sub-root has its own
 // descriptor and is closed on its own; every method works on it as on a Root
 // from OpenRoot, beneath its own folder.
+//
+// # An entry opened to hand on
+//
+// [Root.OpenDirHandle] and [Root.OpenFileHandle] open one entry below a Root
+// with O_PATH, in one lookup, check on the descriptor that it is a folder or
+// a regular file, and return an entry handle ([Handle]) that keeps the
+// descriptor. It is for a caller that passes the entry to something else (a
+// bind source given to a child process): what it checked is the descriptor
+// it passes, so the object checked is the object used, whatever a lead does
+// to the name in between. [Handle.Info] is fstat on the descriptor at the
+// time of the call, and [Handle.Fd] is the descriptor's number. "." is
+// accepted for a folder, so a Root is handed on as it is.
+//
+// The descriptor is close-on-exec, like every descriptor the package opens:
+// no child process gets it by inheritance, and passing it to one is the
+// caller's explicit act. The Handle keeps owning it until [Handle.Close]. An
+// entry handle on a file refuses neither a size nor a hard-linked file, as it
+// reads nothing; Info reports both for the caller to judge.
 //
 // # Rules every call follows
 //
@@ -83,7 +101,9 @@
 // CAP_MKNOD, but it can create the 0:0 whiteout character device, whose open
 // fails this way. Keep the owner's state folders on a file system mounted
 // nodev, so that no device node there is ever opened; the package does not
-// check it.
+// check it. [Root.SubRoot], [Root.OpenDirHandle] and [Root.OpenFileHandle]
+// open with O_PATH, as [Root.Lstat] does: that does not open the file itself,
+// so a device node is seen by fstat and refused without its open having run.
 //
 // Opens use O_NONBLOCK. Besides keeping a FIFO from blocking them, it keeps a
 // file lease from stalling the owner: a process with the lead's user (the
@@ -97,14 +117,15 @@
 // with [ErrEscapes] wrapping EXDEV, and is never read across. The handle's own
 // folder may itself be a mount root.
 //
-// [Root.SubRoot] keeps this rule and relaxes nothing: a folder that is a
-// mount point, or lies beyond one, is not opened as a sub-root, so a sub-root
-// is always on the mount of the Root it came from. What is mounted on a path
-// below the handle is another file system's folder and not an entry of the
-// folder the caller opened; walking into it would make "beneath the handle"
-// mean less than it says. A caller that means a mount's root opens it by name
-// with [OpenRoot], on a path whose parents no lead can change, and it is then
-// a Root like any other.
+// [Root.SubRoot], [Root.OpenDirHandle] and [Root.OpenFileHandle] keep this
+// rule and relax nothing: an entry that is a mount point, or lies beyond one,
+// is not opened as a sub-root or an entry handle, so both are always on the
+// mount of the Root they came from. What is mounted on a path below the handle
+// is another file system's folder and not an entry of the folder the caller
+// opened; walking into it would make "beneath the handle" mean less than it
+// says. A caller that means a mount's root opens it by name with [OpenRoot],
+// on a path whose parents no lead can change; it is then a Root like any
+// other, and "." hands it on.
 //
 // # When openat2 is not usable
 //
@@ -113,11 +134,12 @@
 // lacks it, a seccomp filter denies it with EPERM, which cannot be told apart
 // from a permission failure and is not guessed at, or the flags are refused),
 // so a start learns it before it has done other work. A call that later gets
-// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too, a call
-// of [Root.SubRoot] and a call on a sub-root included: a sub-root is not
-// probed again, it calls openat2 as the Root it came from does. There is
-// no fallback to a path-based open. The package's tests need a working
-// openat2 and fail, not skip, where there is none.
+// ENOSYS or EPERM from openat2 is refused with [ErrUnsupported] too, a call of
+// [Root.SubRoot], [Root.OpenDirHandle] or [Root.OpenFileHandle] and a call on
+// a sub-root included: a sub-root is not probed again, it calls openat2 as the
+// Root it came from does. There is no fallback to a path-based open. The
+// package's tests need a working openat2 and fail, not skip, where there is
+// none.
 //
 // # What it does not do
 //
