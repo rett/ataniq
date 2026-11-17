@@ -150,3 +150,81 @@ func TestSystemClock(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// TestFakeClockAbandonedAfterIsNotSleeper reproduces the lost wake-up: a
+// select that took its other branch leaves an After behind, and a BlockUntil
+// meant for a later Sleep must not count it.
+func TestFakeClockAbandonedAfterIsNotSleeper(t *testing.T) {
+	c := NewFakeClock(epoch0)
+	done := make(chan struct{})
+	close(done)
+	select {
+	case <-c.After(time.Hour):
+		t.Fatal("fired")
+	case <-done:
+	}
+	if c.Waiters() != 1 || c.Sleepers() != 0 {
+		t.Fatalf("waiters %d sleepers %d", c.Waiters(), c.Sleepers())
+	}
+	short, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := c.BlockUntil(short, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("BlockUntil counted the abandoned After: %v", err)
+	}
+
+	// The sleeper starts after the test has begun to wait for it.
+	release := make(chan struct{})
+	woke := make(chan error, 1)
+	go func() {
+		<-release
+		woke <- c.Sleep(context.Background(), time.Second)
+	}()
+	ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stop()
+	blocked := make(chan error, 1)
+	go func() { blocked <- c.BlockUntil(ctx, 1) }()
+	select {
+	case err := <-blocked:
+		t.Fatalf("BlockUntil returned before the sleeper was asleep: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-blocked; err != nil {
+		t.Fatal(err)
+	}
+	c.Advance(time.Second)
+	select {
+	case err := <-woke:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the sleeper missed its Advance")
+	}
+	// The abandoned After fires into its buffer and does no harm.
+	c.Advance(time.Hour)
+	if c.Waiters() != 0 || c.Sleepers() != 0 {
+		t.Fatalf("waiters %d sleepers %d", c.Waiters(), c.Sleepers())
+	}
+}
+
+func TestFakeClockSleepersCountsSleepOnly(t *testing.T) {
+	c := NewFakeClock(epoch0)
+	c.After(time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Sleep(ctx, time.Hour) }()
+	bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer bcancel()
+	if err := c.BlockUntil(bctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if c.Sleepers() != 1 || c.Waiters() != 2 {
+		t.Fatalf("sleepers %d waiters %d", c.Sleepers(), c.Waiters())
+	}
+	cancel()
+	<-done
+	if c.Sleepers() != 0 || c.Waiters() != 1 {
+		t.Fatalf("sleepers %d waiters %d", c.Sleepers(), c.Waiters())
+	}
+}
