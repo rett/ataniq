@@ -31,6 +31,31 @@ type Cmd struct {
 	// leave it by walking to a parent folder. Commands with a GitDir do not
 	// discover anything, so this matters for "init" and "version" only.
 	Dir string
+	// UploadPack, for "fetch" only, is the program git starts in place of
+	// git-upload-pack, as an argument vector. It is the only way to name
+	// one: "--upload-pack" in Args stays refused.
+	//
+	// [Git.Argv] refuses it for any other subcommand, refuses it unless
+	// Protocols is exactly ["file"], requires UploadPack[0] to be an
+	// absolute path, and refuses an empty element and a NUL or newline in
+	// any element. It requires Args to hold "--end-of-options" (or "--")
+	// with only options before it (values joined by "=", as in
+	// "--depth=1"), and the first argument after it, the source, to be an
+	// absolute local path with no "::" and no "://". Argv quotes every element as one
+	// POSIX shell word (single quotes, a quote written as '\'') and puts
+	// "--upload-pack=<the words joined by spaces>" right after "fetch".
+	//
+	// What git does with it: it runs the value through /bin/sh and appends
+	// the shell-quoted source path as one more word, so the program gets
+	// the elements as its first arguments and the source as its last. The
+	// -c settings and GIT_CONFIG_PARAMETERS do not reach the program, as
+	// git clears them for a local transport. The program gets this
+	// package's environment (plus GIT_EXEC_PATH, GIT_PROTOCOL and the git
+	// exec path at the front of PATH). A sandbox wrapper must therefore
+	// clear the environment itself and carry its own settings, such as
+	// fixed -c hardening for git-upload-pack. The checks of the fetched
+	// objects (fsck) run on the receiving side, here, in the owner's git.
+	UploadPack []string
 }
 
 // fixedPaths are the places Find looks for git. $PATH is never read.
@@ -167,6 +192,10 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if opt := refusedOption(c.Args[1:]); opt != "" {
 		return nil, fmt.Errorf("gitenv: option %q is refused", opt)
 	}
+	uploadPack, err := uploadPackOption(c, sub, protocols)
+	if err != nil {
+		return nil, err
+	}
 
 	argv := []string{g.Path}
 	for _, kv := range settings(protocols) {
@@ -176,6 +205,9 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 		argv = append(argv, "--git-dir="+c.GitDir)
 	}
 	argv = append(argv, sub)
+	if uploadPack != "" {
+		argv = append(argv, uploadPack)
+	}
 	if sub == "diff" {
 		// "git diff" runs diff.external and textconv programs by default,
 		// and an empty or dummy diff.external does not stop it: git
@@ -224,6 +256,59 @@ func (g Git) Env(c Cmd) []string {
 		"PATH=" + safePath,
 		"SSH_ASKPASS=",
 	}
+}
+
+// uploadPackOption checks c.UploadPack and returns the option for it, or ""
+// when it is unset.
+func uploadPackOption(c Cmd, sub string, protocols []string) (string, error) {
+	if len(c.UploadPack) == 0 {
+		return "", nil
+	}
+	if sub != "fetch" {
+		return "", fmt.Errorf("gitenv: UploadPack is only for fetch, not %q", sub)
+	}
+	if !slices.Equal(protocols, []string{"file"}) {
+		return "", errors.New(`gitenv: UploadPack needs Protocols to be exactly ["file"]`)
+	}
+	words := make([]string, len(c.UploadPack))
+	for i, w := range c.UploadPack {
+		switch {
+		case w == "":
+			return "", fmt.Errorf("gitenv: UploadPack element %d is empty", i)
+		case strings.ContainsAny(w, "\x00\n"):
+			return "", fmt.Errorf("gitenv: UploadPack element %d holds a NUL or a newline", i)
+		}
+		words[i] = shellQuote(w)
+	}
+	if !filepath.IsAbs(c.UploadPack[0]) {
+		return "", fmt.Errorf("gitenv: UploadPack program %q is not an absolute path", c.UploadPack[0])
+	}
+	// Git appends the source to the command, so the source must be a local
+	// path and must be named after the end of the options.
+	i := slices.IndexFunc(c.Args[1:], func(a string) bool { return a == "--" || a == "--end-of-options" })
+	if i < 0 || i+2 >= len(c.Args) {
+		return "", errors.New(`gitenv: UploadPack needs "--end-of-options" and then the source in Args`)
+	}
+	// Before the end of the options only options may stand, so that no
+	// other argument can be the repository git runs the program for. An
+	// option takes its value after "=" ("--depth=1", not "--depth 1").
+	for _, a := range c.Args[1 : i+1] {
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			return "", fmt.Errorf("gitenv: UploadPack allows only options before the end of options, not %q", a)
+		}
+	}
+	src := c.Args[i+2]
+	if !filepath.IsAbs(src) || strings.Contains(src, "::") || strings.Contains(src, "://") {
+		return "", fmt.Errorf("gitenv: UploadPack needs the source to be an absolute local path, not %q", src)
+	}
+	return "--upload-pack=" + strings.Join(words, " "), nil
+}
+
+// shellQuote returns s as one POSIX shell word: in single quotes, with each
+// single quote written as: close the quotes, a backslash and a quote, open
+// the quotes again (like git's sq_quote).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // cleanProtocols checks the names and returns them sorted, without repeats.

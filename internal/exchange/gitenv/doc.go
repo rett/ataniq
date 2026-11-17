@@ -38,7 +38,9 @@
 //     name, for example) places "--end-of-options" or a fully qualified ref
 //     before it. The options that name a program to run ("--upload-pack",
 //     "--receive-pack", "--exec", "--ext-diff") are refused, also in the
-//     abbreviated forms git accepts.
+//     abbreviated forms git accepts. The one way to name an upload-pack
+//     program is [Cmd.UploadPack], for a fetch from a local path; Argv
+//     quotes it, and the field comment says what the program receives.
 //   - It does not confine the process: no namespace, no file system limit, no
 //     network limit.
 package gitenv
