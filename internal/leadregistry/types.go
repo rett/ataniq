@@ -87,6 +87,9 @@ var (
 	ErrOutcomePending error = transition("stopped or ended while the launch intent is pending; record the outcome first")
 	// ErrDecisionRequired means an owner decision needs a non-empty decision text.
 	ErrDecisionRequired = errors.New("leadregistry: owner decision text required")
+	// ErrNoRecovery means AcknowledgeRecovery was called with no
+	// unacknowledged cut of the journal.
+	ErrNoRecovery = errors.New("leadregistry: no recovery to acknowledge")
 	// ErrCorrupt is matched by the error Open returns for a damaged journal.
 	ErrCorrupt = errors.New("leadregistry: corrupt journal")
 	// ErrLocked means another holder has the registry file locked.

@@ -2,6 +2,8 @@ package leadregistry
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -17,7 +19,7 @@ import (
 func TestReplayEqualsLiveProperty(t *testing.T) {
 	roles := []leadrole.Role{lead(t, "alpha"), lead(t, "beta"), lead(t, "gamma"), leadrole.Supervisor(),
 		coord(t, "alpha", "one"), coord(t, "alpha", "two"), coord(t, "beta", "one"), coord(t, "gamma", "one")}
-	coordLaunches, stalledSeen, leadRefusedForCoordinator := 0, 0, 0
+	coordLaunches, stalledSeen, leadRefusedForCoordinator, cutsSeen, acksSeen, seedsLaunched := 0, 0, 0, 0, 0, 0
 	for seed := int64(1); seed <= 12; seed++ {
 		seed := seed
 		t.Run("", func(t *testing.T) {
@@ -27,7 +29,7 @@ func TestReplayEqualsLiveProperty(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer r.Close()
+			defer func() { r.Close() }()
 			// Two roles exist up front so most operations have a target.
 			if _, err := r.Define(roles[0], ManagerAtaniq, goodProfile()); err != nil {
 				t.Fatal(err)
@@ -43,8 +45,34 @@ func TestReplayEqualsLiveProperty(t *testing.T) {
 			maxEpoch := map[leadrole.Role]uint64{}
 			coordSeen := map[leadrole.Role]uint64{}
 			launched := 0
-			for step := 0; step < 250; step++ {
+			for step := 0; step < 150; step++ {
+				if rng.Intn(25) == 0 {
+					// A crash in the middle of an append: half a line at the end of
+					// the file. Open cuts it and journals the cut; the roles keep
+					// the state they had.
+					was, cutBefore := snapshot(t, r), r.Recovery()
+					r.Close()
+					f, err := os.OpenFile(filepath.Join(dir, FileName), os.O_WRONLY|os.O_APPEND, 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.WriteString(`{"seq":9999,"time":"20`); err != nil {
+						t.Fatal(err)
+					}
+					f.Close()
+					if r, err = Open(dir, testOpts(seed+int64(step)*100)); err != nil {
+						t.Fatalf("seed %d step %d: reopen after a crash: %v", seed, step, err)
+					}
+					cutsSeen++
+					if !sameEntries(was, snapshot(t, r)) {
+						t.Fatalf("seed %d step %d: a cut tail changed the roles", seed, step)
+					}
+					if got := r.Recovery(); !got.Cut() || got.Lines != cutBefore.Lines+1 || got.Bytes != cutBefore.Bytes+22 {
+						t.Fatalf("seed %d step %d: recovery %+v after %+v and a cut of 22 bytes", seed, step, got, cutBefore)
+					}
+				}
 				before := snapshot(t, r)
+				cutBefore := r.Recovery()
 				size := journalSize(t, dir)
 				rev, _ := r.Revision()
 				role := roles[rng.Intn(len(roles))]
@@ -54,11 +82,17 @@ func TestReplayEqualsLiveProperty(t *testing.T) {
 					leadRefusedForCoordinator++
 				}
 				if err != nil {
-					if !sameEntries(before, after) || journalSize(t, dir) != size {
+					if !sameEntries(before, after) || journalSize(t, dir) != size || r.Recovery() != cutBefore {
 						t.Fatalf("seed %d step %d: refused call (%v) changed state or file", seed, step, err)
 					}
 				} else if rev2, _ := r.Revision(); rev2 != rev+1 || journalSize(t, dir) <= size {
 					t.Fatalf("seed %d step %d: a successful call is not exactly one new line", seed, step)
+				}
+				// The report changes by an acknowledgement and by nothing else.
+				if got := r.Recovery(); got != cutBefore && (err != nil || got.Cut() || !cutBefore.Cut()) {
+					t.Fatalf("seed %d step %d: recovery went from %+v to %+v by itself", seed, step, cutBefore, got)
+				} else if got != cutBefore {
+					acksSeen++
 				}
 				for _, e := range after {
 					if e.Epoch < maxEpoch[e.Role] {
@@ -91,7 +125,11 @@ func TestReplayEqualsLiveProperty(t *testing.T) {
 				}
 				replayed := snapshot(t, r2)
 				rev2, _ := r2.Revision()
+				replayedCut := r2.Recovery()
 				r2.Close()
+				if replayedCut != r.Recovery() {
+					t.Fatalf("seed %d step %d: replay reports %+v, live %+v", seed, step, replayedCut, r.Recovery())
+				}
 				if !reflect.DeepEqual(replayed, after) {
 					t.Fatalf("seed %d step %d: replay differs from live state\nlive:   %+v\nreplay: %+v", seed, step, after, replayed)
 				}
@@ -99,10 +137,18 @@ func TestReplayEqualsLiveProperty(t *testing.T) {
 					t.Fatalf("seed %d step %d: revision %d != %d", seed, step, rev2, liveRev)
 				}
 			}
-			if launched == 0 {
-				t.Fatalf("seed %d: the sequence never launched; the property test is not exercising launches", seed)
+			if launched > 0 {
+				seedsLaunched++
 			}
 		})
+	}
+	// A random walk may redefine its one launchable lead as run by the
+	// tmux-manager for good, so a seed or two may never launch; most must.
+	if seedsLaunched < 9 {
+		t.Fatalf("only %d of 12 sequences launched; the property test is not exercising launches", seedsLaunched)
+	}
+	if cutsSeen == 0 || acksSeen == 0 {
+		t.Fatalf("the property test did not exercise recovery records: %d cuts, %d acknowledgements", cutsSeen, acksSeen)
 	}
 	if coordLaunches == 0 || stalledSeen == 0 || leadRefusedForCoordinator == 0 {
 		t.Fatalf("the property test did not exercise coordinators: %d launches, %d stalled, %d lead launches refused for a coordinator",

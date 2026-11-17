@@ -33,7 +33,14 @@ const (
 	kindState         = "state"
 	kindObserved      = "observed"
 	kindOwnerDecision = "owner-decision"
+	kindRecovered     = "recovered"
+	kindRecoveryAck   = "recovery-acknowledged"
 )
+
+// roleless reports whether records of the kind belong to no role.
+func roleless(kind string) bool {
+	return kind == kindHeader || kind == kindRecovered || kind == kindRecoveryAck
+}
 
 // envelope is the content of one journal line, without its hash. The field
 // order is the on-disk order.
@@ -48,6 +55,18 @@ type envelope struct {
 type headerPayload struct {
 	Format  string `json:"format"`
 	Version int    `json:"version"`
+}
+
+// recoveredPayload says what Open cut off the end of the journal.
+type recoveredPayload struct {
+	Lines  int   `json:"lines"`
+	Bytes  int64 `json:"bytes"`
+	Offset int64 `json:"offset"`
+}
+
+// ackPayload is the acknowledgement of the recovery records before it.
+type ackPayload struct {
+	Note string `json:"note"`
 }
 
 type definePayload struct {
@@ -129,6 +148,23 @@ func (d *definePayload) validate() error { return d.Manager.validate() }
 // checkRole checks the profile for the kind of role.
 func (d *definePayload) checkRole(role leadrole.Role) error {
 	return d.Requested.validateFor(role)
+}
+
+func (p *recoveredPayload) validate() error {
+	if p.Lines != 1 {
+		return invalid("recovered record cuts %d lines, not 1", p.Lines)
+	}
+	if p.Bytes < 1 || p.Bytes > MaxLineBytes+1 {
+		return invalid("recovered record cuts %d bytes", p.Bytes)
+	}
+	if p.Offset < 0 {
+		return invalid("recovered record cuts at offset %d", p.Offset)
+	}
+	return nil
+}
+
+func (p *ackPayload) validate() error {
+	return validText("recovery note", p.Note, MaxProofBytes, true)
 }
 
 func (d *desiredPayload) validate() error { return d.Desired.validate() }
@@ -277,6 +313,10 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		p = &observedPayload{}
 	case kindOwnerDecision:
 		p = &decisionPayload{}
+	case kindRecovered:
+		p = &recoveredPayload{}
+	case kindRecoveryAck:
+		p = &ackPayload{}
 	default:
 		return record{}, zero, fmt.Errorf("unknown record kind %q", env.Kind)
 	}
@@ -286,11 +326,11 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	if err := p.validate(); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)
 	}
-	if env.Kind != kindHeader && rec.role.IsZero() {
+	if !roleless(env.Kind) && rec.role.IsZero() {
 		return record{}, zero, fmt.Errorf("%s record without a role", env.Kind)
 	}
-	if env.Kind == kindHeader && !rec.role.IsZero() {
-		return record{}, zero, fmt.Errorf("header names a role")
+	if roleless(env.Kind) && !rec.role.IsZero() {
+		return record{}, zero, fmt.Errorf("%s record names a role", env.Kind)
 	}
 	if err := checkRole(p, rec.role); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)

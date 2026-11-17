@@ -24,14 +24,14 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 	if rng.Intn(6) == 0 {
 		epoch = uint64(rng.Intn(5))
 	}
-	switch rng.Intn(15) {
+	switch rng.Intn(17) {
 	case 0:
 		p := goodProfile()
 		p.Model = pick(rng, "m1", "m2", "m3")
 		if rng.Intn(8) == 0 {
 			p.Model = ""
 		}
-		_, err := r.Define(role, pick(rng, ManagerAtaniq, ManagerAtaniq, ManagerTmux), p)
+		_, err := r.Define(role, pick(rng, ManagerAtaniq, ManagerAtaniq, ManagerAtaniq, ManagerAtaniq, ManagerTmux), p)
 		return err
 	case 1:
 		_, err := r.SetDesired(role, pick(rng, DesiredRunning, DesiredStopped))
@@ -71,6 +71,9 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 		return err
 	case 11, 12, 13, 14:
 		return guidedOp(r, rng, role, cur)
+	case 15:
+		_, err := r.AcknowledgeRecovery(pick(rng, "looked at it", "all roles shown unknown"))
+		return err
 	default:
 		f := func() Field {
 			if rng.Intn(2) == 0 {

@@ -9,7 +9,9 @@
 // the file is fsynced. The in-memory state is rebuilt only by replaying the
 // file when it is opened. Open takes an exclusive, non-blocking flock on the
 // file, so one process writes at a time. A final line without its newline is
-// an append that never returned: Open cuts it off and reports it. Any other
+// an append that never returned: Open cuts it off and journals the cut in a
+// recovered record, which Recovery reports until AcknowledgeRecovery journals
+// a recovery-acknowledged record after it, also across a reopen. Any other
 // damage makes Open fail with ErrCorrupt and nothing is repaired.
 //
 // The shown state changes by these rules only; a record that breaks them is
@@ -77,8 +79,10 @@
 // file from rewriting it. A cut anywhere is read as an unfinished append:
 // committed records after it are lost and their epochs may be reused, and a
 // cut exactly at a line boundary is not even reported. Recovery, available
-// after Open, says when a cut was made; the daemon should then show the roles
-// as unknown. After a failed write or sync the failed record may or may not be
+// after Open, says when a cut was made and has not been acknowledged; the
+// daemon should then show the roles as unknown. The cut and its recovered
+// record are written before a single sync, so a crash between them can lose
+// the record and then the cut is not reported. After a failed write or sync the failed record may or may not be
 // on disk (ErrBroken). The registry does not decide when a launch is safe
 // beyond the checks documented on BeginLaunch; the caller must still prove
 // that the previous unit is gone.

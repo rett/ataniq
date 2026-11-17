@@ -27,23 +27,32 @@ type Options struct {
 	Rand io.Reader
 }
 
-// Recovery reports what Open cut off the end of the journal. It is what the
-// daemon reads after Open to decide whether anything was lost: when Cut is
-// true, every role may have lost its newest records, so it should show every
-// role as unknown until it has looked at the unit.
+// Recovery reports the cuts Open has made that nobody has acknowledged. It is
+// what the daemon reads after Open to decide whether anything was lost: when
+// Cut is true, every role may have lost its newest records, so it should show
+// every role as unknown until it has looked at the unit.
+//
+// When Open cuts an unfinished tail it appends a recovered record to the
+// journal saying what was cut and where. Recovery reports the cuts of the
+// recovered records that no later recovery-acknowledged record follows, so
+// the report survives a reopen and goes away only with AcknowledgeRecovery.
+// With more than one unacknowledged cut Lines and Bytes are the sums and
+// Offset is that of the latest.
 //
 // Open reads a cut anywhere in the file as an append that never returned, not
 // only a cut inside the last line: a file truncated from outside inside an
 // earlier line, even in the middle of it, opens with the older state, the
 // records after the cut are lost, and their epochs may be given out again.
 // A cut exactly at a line boundary leaves a valid shorter journal and reports
-// nothing.
+// nothing, and so does a cut that was made but whose recovered record never
+// reached the disk (the cut and the record are written before one sync, so
+// a crash in between can lose the record).
 type Recovery struct {
-	// Lines is 1 when a final line without its newline was cut off, else 0.
+	// Lines is the number of unfinished final lines that were cut off.
 	Lines int
 	// Bytes is the number of bytes cut off.
 	Bytes int64
-	// Offset is the file size after the cut.
+	// Offset is the file size after the cut, where the cut was made.
 	Offset int64
 }
 
@@ -264,10 +273,6 @@ func (r *Registry) start(dirFD int) error {
 		if err := r.f.Truncate(offset); err != nil {
 			return fmt.Errorf("leadregistry: cut unfinished line: %w", err)
 		}
-		if err := r.f.Sync(); err != nil {
-			return fmt.Errorf("leadregistry: sync after cut: %w", err)
-		}
-		r.recovery = Recovery{Lines: 1, Bytes: int64(tail), Offset: offset}
 	}
 	if lines == 0 {
 		line, sum, err := encodeLine(genesis, 0, r.now(), kindHeader, leadrole.Role{},
@@ -278,15 +283,60 @@ func (r *Registry) start(dirFD int) error {
 		if _, err := r.f.Write(line); err != nil {
 			return fmt.Errorf("leadregistry: write header: %w", err)
 		}
-		if err := r.f.Sync(); err != nil {
-			return fmt.Errorf("leadregistry: sync header: %w", err)
+		r.prev = sum
+	}
+	if tail > 0 {
+		// The record of the cut is written before the one sync, so the cut and
+		// its record reach the disk together, or the old tail is still there
+		// and is cut again on the next Open.
+		if _, _, err := r.commitRecovered(&recoveredPayload{Lines: 1, Bytes: int64(tail), Offset: offset}); err != nil {
+			return err
 		}
+	}
+	if tail > 0 || lines == 0 {
+		if err := r.f.Sync(); err != nil {
+			return fmt.Errorf("leadregistry: sync after recovery: %w", err)
+		}
+	}
+	if lines == 0 {
 		if err := syncFD(dirFD); err != nil {
 			return fmt.Errorf("leadregistry: sync folder: %w", err)
 		}
-		r.prev = sum
 	}
 	return nil
+}
+
+// commitRecovered appends the record of a cut to the file, without a sync,
+// and applies it. Called by Open only.
+func (r *Registry) commitRecovered(p *recoveredPayload) (record, Recovery, error) {
+	rec, line, sum, err := r.prepare(kindRecovered, leadrole.Role{}, p)
+	if err != nil {
+		return record{}, Recovery{}, err
+	}
+	next, err := applyRecovery(r.recovery, rec)
+	if err != nil {
+		return record{}, Recovery{}, err
+	}
+	if _, err := r.f.Write(line); err != nil {
+		return record{}, Recovery{}, fmt.Errorf("leadregistry: write recovery record: %w", err)
+	}
+	r.recovery, r.seq, r.prev = next, rec.seq, sum
+	return rec, next, nil
+}
+
+// applyRecovery applies a recovered or recovery-acknowledged record to the
+// unacknowledged cuts.
+func applyRecovery(cur Recovery, rec record) (Recovery, error) {
+	switch p := rec.payload.(type) {
+	case *recoveredPayload:
+		return Recovery{Lines: cur.Lines + p.Lines, Bytes: cur.Bytes + p.Bytes, Offset: p.Offset}, nil
+	case *ackPayload:
+		if !cur.Cut() {
+			return Recovery{}, fmt.Errorf("a recovery acknowledgement with no recovery to acknowledge")
+		}
+		return Recovery{}, nil
+	}
+	return Recovery{}, invalid("record kind %q", rec.kind)
 }
 
 // replayLine applies the n-th line (1-based, newline removed) of the file.
@@ -298,7 +348,14 @@ func (r *Registry) replayLine(n int, line []byte) error {
 	if (n == 1) != (rec.kind == kindHeader) {
 		return &CorruptError{Line: n, Reason: "header line missing or repeated"}
 	}
-	if rec.kind != kindHeader {
+	switch {
+	case rec.kind == kindRecovered || rec.kind == kindRecoveryAck:
+		next, err := applyRecovery(r.recovery, rec)
+		if err != nil {
+			return &CorruptError{Line: n, Reason: err.Error()}
+		}
+		r.recovery = next
+	case rec.kind != kindHeader:
 		cur, ok := r.roles[rec.role]
 		next, err := reduce(cur, ok, r.roles, rec)
 		if err != nil {
@@ -314,9 +371,11 @@ func (r *Registry) replayLine(n int, line []byte) error {
 // Cut reports whether Open cut anything off the journal.
 func (r Recovery) Cut() bool { return r.Lines > 0 || r.Bytes > 0 }
 
-// Recovery returns what Open cut off the journal, if anything. The report is
-// fixed when Open returns and stays the same for the life of the registry,
-// whatever is written afterwards, and after Close.
+// Recovery returns the cuts of the journal that no one has acknowledged: what
+// Open cut off it just now, and what an earlier Open cut that was not
+// acknowledged since. It is fixed when Open returns and changes only by
+// AcknowledgeRecovery, whatever else is written, and it stays readable after
+// Close.
 func (r *Registry) Recovery() Recovery {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -346,12 +405,44 @@ func (r *Registry) usable() error {
 	return nil
 }
 
-// mutate journals one record and installs the resulting entry. The record is
-// validated, encoded, re-read through the replay path and reduced against the
-// current state before a byte is written, so a refused call writes nothing.
-// If the write or the sync fails the registry is broken and the call returns
-// an error, but the record may or may not be on disk: the bytes of a completed
-// write stay in the file when only the sync failed, and a reopen reads them.
+// prepare encodes a record on top of the journal, reads it back through the
+// replay path and returns it with its line and chain value, writing nothing.
+// Called with r.mu held, or by Open.
+func (r *Registry) prepare(kind string, role leadrole.Role, body payload) (record, []byte, [sha256.Size]byte, error) {
+	seq := r.seq + 1
+	line, sum, err := encodeLine(r.prev, seq, r.now(), kind, role, body)
+	if err != nil {
+		return record{}, nil, sum, err
+	}
+	rec, _, err := decodeLine(r.prev, seq, line[:len(line)-1])
+	if err != nil {
+		return record{}, nil, sum, fmt.Errorf("leadregistry: internal: record does not read back: %w", err)
+	}
+	return rec, line, sum, nil
+}
+
+// commit appends a prepared line and syncs it. If the write or the sync
+// fails the registry is broken: the record may or may not be on disk, since
+// the bytes of a completed write stay in the file when only the sync failed,
+// and a reopen reads them. Called with r.mu held.
+func (r *Registry) commit(rec record, line []byte, sum [sha256.Size]byte) error {
+	if _, err := r.f.Write(line); err != nil {
+		r.broken = err
+		return fmt.Errorf("leadregistry: append (the record may or may not be on disk): %w", err)
+	}
+	if err := r.f.Sync(); err != nil {
+		r.broken = err
+		return fmt.Errorf("leadregistry: sync (the record may or may not be on disk): %w", err)
+	}
+	r.seq = rec.seq
+	r.prev = sum
+	return nil
+}
+
+// mutate journals one record of a role and installs the resulting entry. The
+// record is validated, encoded, re-read through the replay path and reduced
+// against the current state before a byte is written, so a refused call
+// writes nothing. Failures of the write or the sync are those of commit.
 // Called with r.mu held.
 func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry, error) {
 	if err := r.usable(); err != nil {
@@ -366,32 +457,55 @@ func (r *Registry) mutate(kind string, role leadrole.Role, body payload) (Entry,
 	if err := checkRole(body, role); err != nil {
 		return Entry{}, err
 	}
-	seq := r.seq + 1
-	line, sum, err := encodeLine(r.prev, seq, r.now(), kind, role, body)
+	rec, line, sum, err := r.prepare(kind, role, body)
 	if err != nil {
 		return Entry{}, err
-	}
-	rec, _, err := decodeLine(r.prev, seq, line[:len(line)-1])
-	if err != nil {
-		return Entry{}, fmt.Errorf("leadregistry: internal: record does not read back: %w", err)
 	}
 	cur, ok := r.roles[role]
 	next, err := reduce(cur, ok, r.roles, rec)
 	if err != nil {
 		return Entry{}, err
 	}
-	if _, err := r.f.Write(line); err != nil {
-		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: append (the record may or may not be on disk): %w", err)
-	}
-	if err := r.f.Sync(); err != nil {
-		r.broken = err
-		return Entry{}, fmt.Errorf("leadregistry: sync (the record may or may not be on disk): %w", err)
+	if err := r.commit(rec, line, sum); err != nil {
+		return Entry{}, err
 	}
 	r.roles[role] = next
-	r.seq = seq
-	r.prev = sum
 	return next.clone(), nil
+}
+
+// AcknowledgeRecovery journals that the cuts Recovery reports have been
+// dealt with, with a note saying how (required, at most MaxProofBytes bytes,
+// no control character), and returns the cuts it acknowledged. From then on
+// Recovery reports no cut, also after a reopen, until Open cuts again. It is
+// refused with ErrNoRecovery, writing nothing, when no cut is unacknowledged,
+// and with ErrInvalid for a missing or malformed note.
+func (r *Registry) AcknowledgeRecovery(note string) (Recovery, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.usable(); err != nil {
+		return Recovery{}, err
+	}
+	body := &ackPayload{Note: note}
+	if err := body.validate(); err != nil {
+		return Recovery{}, err
+	}
+	if !r.recovery.Cut() {
+		return Recovery{}, ErrNoRecovery
+	}
+	rec, line, sum, err := r.prepare(kindRecoveryAck, leadrole.Role{}, body)
+	if err != nil {
+		return Recovery{}, err
+	}
+	next, err := applyRecovery(r.recovery, rec)
+	if err != nil {
+		return Recovery{}, err
+	}
+	if err := r.commit(rec, line, sum); err != nil {
+		return Recovery{}, err
+	}
+	acked := r.recovery
+	r.recovery = next
+	return acked, nil
 }
 
 func (r *Registry) existing(role leadrole.Role) (Entry, error) {
