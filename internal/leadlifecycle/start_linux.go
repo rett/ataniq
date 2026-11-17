@@ -33,11 +33,13 @@ import (
 // the lead's unit, so that it is bound to it, and everything else is as for a
 // lead: the replacement rule on the coordinator's own unit and evidence, the
 // intent (which records the parent's epoch and the identity of the instance),
-// the holder command, and the outcomes below. A start that the manager refuses
-// or accepts without a unit because the parent unit is not live (it died after
-// the registry was looked at) started nothing: the outcome failed is recorded
-// and the coordinator is stopped with the proof of the absent unit, or unknown
-// without it. A lead is not started while a coordinator of it is not proven
+// the holder command, and the outcomes below. A start that the manager accepts
+// without a unit because the parent unit is not live (it died after the
+// registry was looked at) started nothing: the outcome failed is recorded and
+// the coordinator is stopped with the proof of the absent unit, or unknown
+// without it. A start that the manager refuses with a lost reply that names the
+// missing parent is a lost reply (below), not a start that failed: the real
+// manager cannot tell the two apart. A lead is not started while a coordinator of it is not proven
 // stopped: the error wraps ErrCoordinatorNotStopped and
 // leadregistry.ErrLaunchCoordinator, and nothing is changed.
 //

@@ -52,10 +52,14 @@
 // coordinator's own unit and evidence exactly as to a lead's, and every reply
 // lost, unit exists and failure path of a lead is the coordinator's too. The
 // [HolderCommand] is the same interface; the role tells the kinds apart. A
-// start that the manager refuses, or takes without a unit ever being loaded,
-// because the parent unit is no longer live ends without a unit: the outcome
-// failed is recorded and the coordinator is stopped with the proof of the
-// absent unit, or unknown without it. A lead is not started while a
+// start that the manager takes without a unit ever being loaded because the
+// parent unit is no longer live ends without a unit: the outcome failed is
+// recorded and the coordinator is stopped with the proof of the absent unit, or
+// unknown without it. A start that the manager refuses with a lost reply naming
+// the missing parent is a lost reply like any other: the real manager cannot
+// tell a refusal from a request that may still land, so nothing is assumed, the
+// intent stays pending and the coordinator is unknown (ErrLaunchUncertain),
+// until Reconcile or Stop proves the absence after the late-start window. A lead is not started while a
 // coordinator recorded under an earlier epoch of it is not proven stopped
 // (ErrCoordinatorNotStopped). Stop of a lead first stops each of its
 // coordinators that is not proven stopped, one after the other, by the same

@@ -114,35 +114,119 @@ func TestCoordinatorStartIsRefusedWithoutALiveParent(t *testing.T) {
 func TestCoordinatorStartWithTheParentGoneBeforeTheUnitStart(t *testing.T) {
 	// The registry still shows the lead starting when the coordinator is
 	// looked at; the lead's unit dies before the coordinator's unit is
-	// started. How the manager answers is not known, so both are tried.
-	for name, outcome := range map[string]leadunit.MissingParent{
-		"never active": leadunit.MissingParentNeverActive,
-		"refused":      leadunit.MissingParentRefused,
-	} {
-		t.Run(name, func(t *testing.T) {
-			r, lead, coord := coordRig(t)
-			r.fake.SetMissingParentOutcome(outcome)
-			r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
-				if rl == coord {
-					r.fake.Crash(unitOf(lead))
-				}
+	// started. How the manager answers is not known to the lifecycle, so both
+	// are tried; they end differently, because only the first is an answer.
+	crashLead := func(r *rig, lead, coord leadrole.Role) {
+		r.holder.hook = func(rl leadrole.Role, _ leadregistry.Entry, _ leadregistry.Intent) {
+			if rl == coord {
+				r.fake.Crash(unitOf(lead))
 			}
-			e, err := r.start(coord)
-			isErr(t, err, ErrStartFailed)
-			if e.Intent.Outcome != leadregistry.OutcomeFailed {
-				t.Fatalf("entry %+v", e)
-			}
-			// No unit, and the absence is proven.
-			r.expectState(coord, leadregistry.StateStopped, "")
-			if r.fake.Loaded(unitOf(coord)) || len(r.fake.StartedSpecs()) != 1 {
-				t.Fatalf("a unit was started: %+v", r.fake.StartedSpecs())
-			}
-			if r.callsOf(leadunit.MethodStart) != 2 {
-				t.Fatalf("%d Start calls", r.callsOf(leadunit.MethodStart))
-			}
-			r.auditClean()
-		})
+		}
 	}
+	t.Run("never active", func(t *testing.T) {
+		// The manager accepts the request and the unit never becomes active:
+		// an answer, so nothing was started and the absence is proven.
+		r, lead, coord := coordRig(t)
+		r.fake.SetMissingParentOutcome(leadunit.MissingParentNeverActive)
+		crashLead(r, lead, coord)
+		e, err := r.start(coord)
+		isErr(t, err, ErrStartFailed)
+		if e.Intent.Outcome != leadregistry.OutcomeFailed {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(coord, leadregistry.StateStopped, "")
+		if r.fake.Loaded(unitOf(coord)) || len(r.fake.StartedSpecs()) != 1 {
+			t.Fatalf("a unit was started: %+v", r.fake.StartedSpecs())
+		}
+		if r.callsOf(leadunit.MethodStart) != 2 {
+			t.Fatalf("%d Start calls", r.callsOf(leadunit.MethodStart))
+		}
+		r.auditClean()
+	})
+	t.Run("refused", func(t *testing.T) {
+		// The manager's error is a lost reply that names the missing parent.
+		// The real manager cannot tell a refusal from a request that may still
+		// land, so the lifecycle must not either: the intent stays pending,
+		// the role is unknown, and the way forward is the one of every lost
+		// reply, a proof after the late-start window.
+		r, lead, coord := coordRig(t)
+		r.fake.SetMissingParentOutcome(leadunit.MissingParentRefused)
+		crashLead(r, lead, coord)
+		e, err := r.start(coord)
+		isErr(t, err, ErrLaunchUncertain)
+		isErr(t, err, leadunit.ErrReplyLost)
+		if errors.Is(err, ErrStartFailed) {
+			t.Fatalf("a lost reply was reported as a start that failed: %v", err)
+		}
+		if e.Intent == nil || e.Intent.Outcome != leadregistry.OutcomePending {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(coord, leadregistry.StateUnknown, "launch-reply-lost")
+		if r.fake.Loaded(unitOf(coord)) || len(r.fake.StartedSpecs()) != 1 {
+			t.Fatalf("a unit was started: %+v", r.fake.StartedSpecs())
+		}
+		if r.callsOf(leadunit.MethodStart) != 2 {
+			t.Fatalf("%d Start calls", r.callsOf(leadunit.MethodStart))
+		}
+
+		// Another Start is refused while the intent is pending, and nothing is
+		// retried.
+		_, err = r.start(coord)
+		isErr(t, err, leadregistry.ErrLaunchPending)
+		if r.callsOf(leadunit.MethodStart) != 2 {
+			t.Fatal("Start was retried")
+		}
+
+		// Before the window closes Reconcile and Stop prove nothing: the
+		// request could still land.
+		rep := r.reconcile()
+		if rr, _ := rep.Find(coord); rr.Action != ActionPending {
+			t.Fatalf("report %+v", rr)
+		}
+		// The lead's own unit is gone, and that pass ended it.
+		r.expectState(lead, leadregistry.StateEnded, "")
+		r.expectState(coord, leadregistry.StateUnknown, "launch-reply-lost")
+		_, err = r.stop(coord)
+		isErr(t, err, ErrIntentPending)
+		r.expectState(coord, leadregistry.StateUnknown, "launch-reply-lost")
+
+		// The parent is gone, the unit is not loaded: after the window the
+		// role reaches a proven state with the intent abandoned.
+		r.advance(pastTheWindow)
+		rep = r.reconcile()
+		rr, _ := rep.Find(coord)
+		if rr.Action != ActionStopped || rr.Reason != "launch-abandoned" {
+			t.Fatalf("report %+v", rr)
+		}
+		e = r.expectState(coord, leadregistry.StateStopped, "launch-abandoned")
+		if e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+			t.Fatalf("entry %+v", e)
+		}
+		// Nothing was started or signalled to get there, and the coordinator is
+		// not started again under an ended parent.
+		r.startsNothing(2)
+		_, err = r.start(coord)
+		isErr(t, err, ErrParentNotLive)
+		r.auditClean()
+	})
+	t.Run("refused, then Stop", func(t *testing.T) {
+		// The same lost reply, resolved by an explicit Stop after the window
+		// and not by Reconcile.
+		r, lead, coord := coordRig(t)
+		r.fake.SetMissingParentOutcome(leadunit.MissingParentRefused)
+		crashLead(r, lead, coord)
+		_, err := r.start(coord)
+		isErr(t, err, ErrLaunchUncertain)
+		r.advance(pastTheWindow)
+		e, err := r.stop(coord)
+		noErr(t, err)
+		if e.Shown.State != leadregistry.StateStopped || e.Intent.Outcome != leadregistry.OutcomeAbandoned {
+			t.Fatalf("entry %+v", e)
+		}
+		r.expectState(coord, leadregistry.StateStopped, "launch-abandoned")
+		r.startsNothing(2)
+		r.auditClean()
+	})
 }
 
 func TestCoordinatorStartFailurePaths(t *testing.T) {
