@@ -31,6 +31,11 @@ type selection struct {
 	// text is the selected text as copied, or as read at the last check. A
 	// change in it clears the selection.
 	text string
+	// While the button is held, read is true once text has been read with
+	// the head at readAt. The pointer moving on makes the next check read
+	// it again instead of comparing.
+	read   bool
+	readAt uv.Position
 }
 
 // shown reports whether there is a selection to draw.
@@ -192,17 +197,27 @@ func (m *Model) dropRefusal() {
 	}
 }
 
-// checkSelection clears a finished selection when the text it covers has
-// changed since it was copied: the session wrote over it, scrolled or
-// cleared the screen. It runs after output reaches the pane and when a
-// frame held for synchronized output stops being shown. A selection being
-// dragged is not checked: its text is read when it is released.
+// checkSelection clears a selection when the text it covers has changed: the
+// session wrote over it, scrolled or cleared the screen. It runs after output
+// reaches the pane and when a frame held for synchronized output stops being
+// shown. A finished selection is compared with the text it copied. A
+// selection being dragged is compared with the text read at the last check,
+// if the pointer has not moved since; so a drag whose release never arrives
+// does not stay over output that changes under it. A drag over more than
+// maxCopy is left for its release to refuse.
 func (m *Model) checkSelection() {
-	if !m.sel.shown() || m.sel.drag || m.rep.pane == nil {
+	if !m.sel.shown() || m.rep.pane == nil {
 		return
 	}
 	from, to := m.sel.span()
-	if text, ok := m.rep.pane.Text(from, to, maxCopy); !ok || text != m.sel.text {
+	text, ok := m.rep.pane.Text(from, to, maxCopy)
+	if m.sel.drag && (!m.sel.read || m.sel.readAt != m.sel.head) {
+		if ok {
+			m.sel.text, m.sel.read, m.sel.readAt = text, true, m.sel.head
+		}
+		return
+	}
+	if !ok || text != m.sel.text {
 		m.sel = selection{}
 	}
 }

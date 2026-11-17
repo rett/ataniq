@@ -492,6 +492,55 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	clears("a replay", func() { r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}) })
 }
 
+// TestDragIsClearedByOutputUnderIt checks a drag whose release has not
+// arrived: output that changes the text under it while the pointer stays
+// clears it, so a lost release leaves no highlight, and the release then
+// copies nothing. Output elsewhere, or a pointer that moved on, keeps it.
+func TestDragIsClearedByOutputUnderIt(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	press := func(x, y int) {
+		wx, wy := r.win(x, y)
+		r.mouse(tea.MouseClickMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	move := func(x, y int) {
+		wx, wy := r.win(x, y)
+		r.mouse(tea.MouseMotionMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	release := func(x, y int) tea.Msg {
+		wx, wy := r.win(x, y)
+		return r.mouse(tea.MouseReleaseMsg{X: wx, Y: wy, Button: tea.MouseLeft})
+	}
+	press(0, 0)
+	move(4, 1)
+	r.tick(time.Second)
+	r.m.rep.pane.Write([]byte("\x1b[5;1Hspinner"))
+	r.tick(2 * time.Second)
+	if !r.m.sel.drag || !r.m.sel.shown() {
+		t.Fatal("output outside the drag ended it")
+	}
+	// The text under the drag changes after the pointer moved on: read again.
+	r.m.rep.pane.Write([]byte("\x1b[1;1Hjello"))
+	move(5, 1)
+	r.tick(3 * time.Second)
+	if !r.m.sel.drag {
+		t.Fatal("a change before the pointer moved on ended the drag")
+	}
+	wantCopy(t, release(5, 1), "jello world\nsecond")
+
+	// The pointer stays and the text under it changes: the drag ends.
+	press(0, 0)
+	move(4, 1)
+	r.tick(4 * time.Second)
+	r.m.rep.pane.Write([]byte("\x1b[2;1Hthird"))
+	r.tick(5 * time.Second)
+	if r.m.sel.drag || r.m.sel.shown() {
+		t.Fatalf("output under a held drag kept it: %+v", r.m.sel)
+	}
+	if msg := release(4, 1); msg != nil {
+		t.Fatalf("the release of a cleared drag copied %#v", msg)
+	}
+}
+
 // TestReleaseUnderAnOverlayCopiesNothing opens help or the action list with
 // the keyboard while the button is held: the release ends the selection and
 // copies nothing.
