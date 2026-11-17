@@ -168,6 +168,15 @@ func TestEveryErrorCode(t *testing.T) {
 		`{"protocol":"ataniq.client/1","request_id":"a","op":null}`,
 		"{\"protocol\":\"ataniq.client/1\",\"request_id\":\"a\",\"op\":\"hel\xfflo\"}",
 		`{"Protocol":"ataniq.client/1","Request_ID":"a","Op":"hello"}`,
+		// a repeated top-level key, whichever way it would resolve
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"approve","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"approve"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op" : "hello", "op" : "status"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","\u006fp":"status"}`,
+		`{"protocol":"ataniq.client/1","protocol":"ataniq.client/2","request_id":"a","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","request_id":"b","op":"hello"}`,
+		`{"protocol":"ataniq.client/1","request_id":"a","op":"hello","extra":1,"extra":2}`,
 	} {
 		resp := r.ask(line)
 		wantError(t, resp, CodeInvalidRequest)
@@ -204,7 +213,7 @@ func TestEveryErrorCode(t *testing.T) {
 		t.Fatalf("resp = %+v", resp)
 	}
 	snap := ts.counters.Snapshot()
-	if snap.Invalid != 25 || snap.Unsupported != 8 {
+	if snap.Invalid != 33 || snap.Unsupported != 8 {
 		t.Fatalf("counters = %+v", snap)
 	}
 }
