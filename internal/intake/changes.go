@@ -27,6 +27,9 @@ type rawRecord struct {
 	oldID, newID     string
 	status           byte
 	path             string
+	// commit is the id of the commit the entry belongs to, from the header
+	// that stands before it. It is set only when parseRaw reads headers.
+	commit string
 }
 
 // changes lists the net change of tip's tree against base's tree. Rename
@@ -76,7 +79,8 @@ func (r *runner) changes(ctx context.Context, base, tip string, lim Limits) ([]C
 // one field ":<old mode> <new mode> <old id> <new id> <status>" and one with
 // the path. With headers set, the output comes from diff-tree --stdin, and a
 // field that is a full object id (the commit the entries belong to) may stand
-// before the entries of a commit; it is skipped.
+// before the entries of a commit; it is not an entry, and the entries after it
+// carry it in their commit field.
 func parseRaw(out []byte, headers bool) ([]rawRecord, error) {
 	bad := errors.New("intake: unexpected output of git diff-tree")
 	if len(out) == 0 {
@@ -87,9 +91,11 @@ func parseRaw(out []byte, headers bool) ([]rawRecord, error) {
 	}
 	fields := bytes.Split(out[:len(out)-1], []byte{0})
 	var recs []rawRecord
+	commit := ""
 	for i := 0; i < len(fields); {
 		f := string(fields[i])
 		if headers && gitenv.IsObjectID(f) {
+			commit = f
 			i++
 			continue
 		}
@@ -113,6 +119,7 @@ func parseRaw(out []byte, headers bool) ([]rawRecord, error) {
 			return nil, bad
 		}
 		rec.path = string(fields[i+1])
+		rec.commit = commit
 		if rec.path == "" {
 			return nil, bad
 		}

@@ -272,7 +272,13 @@ func TestInspectNotACommit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(s.bare, "refs", "heads", "tagged"), []byte(tag+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A symbolic ref would review the commit of another branch under the
+	// lead's name, or stand in for the upstream branch.
+	s.b("symbolic-ref", "refs/leads/role/heads/sym", upstreamRef)
+	s.b("symbolic-ref", "refs/heads/sym", upstreamRef)
 	for _, tc := range []struct{ name, base, tip string }{
+		{"symbolic tip", upstreamRef, "refs/leads/role/heads/sym"},
+		{"symbolic base", "refs/heads/sym", leadRef},
 		{"blob tip", upstreamRef, "refs/leads/role/heads/blob"},
 		{"tag tip", upstreamRef, "refs/leads/role/heads/tag"},
 		{"tag base", "refs/heads/tagged", leadRef},

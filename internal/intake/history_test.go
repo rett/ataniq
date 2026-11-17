@@ -187,3 +187,47 @@ func TestHistoryOnlyLimit(t *testing.T) {
 		t.Errorf("at the limit: %v", err)
 	}
 }
+
+// TestHistoryOnlyMergeOfUpstreamIsNotTheLeads: the lead merges the advanced
+// upstream into its branch, the normal way past a NotFastForwardError. The
+// upstream's own change (a Makefile) is in the merge's diff against the
+// lead's parent, but the merge equals the upstream parent there. It must not
+// be flagged as something the branch added and removed again.
+func TestHistoryOnlyMergeOfUpstreamIsNotTheLeads(t *testing.T) {
+	s := newScene(t)
+	s.put("src/lead.go", "package main\n")
+	lead := s.commit("lead work\n")
+	s.checkout(s.base)
+	s.put("Makefile", "all:\n")
+	up := s.commit("upstream adds a Makefile\n")
+	s.publish(upstreamRef, up)
+	s.checkout(lead)
+	s.put("Makefile", "all:\n")
+	s.commit("merge upstream\n", lead, up)
+	s.finish()
+	r := s.inspect()
+	if len(r.Changes) != 1 || r.Changes[0].Path != "src/lead.go" {
+		t.Errorf("changes: %+v", r.Changes)
+	}
+	if len(r.Flagged) != 0 {
+		t.Errorf("Flagged: %+v", r.Flagged)
+	}
+
+	// The same merge, when the lead's side added the Makefile itself and the
+	// merge then dropped it, is still flagged: the lead's own commit has it.
+	s = newScene(t)
+	s.put("Makefile", "all:\n")
+	lead = s.commit("lead adds a Makefile\n")
+	s.checkout(s.base)
+	s.put("docs/up.md", "up\n")
+	up = s.commit("upstream\n")
+	s.publish(upstreamRef, up)
+	s.checkout(lead)
+	s.remove("Makefile")
+	s.put("docs/up.md", "up\n")
+	s.commit("merge upstream, dropping the Makefile\n", lead, up)
+	s.finish()
+	r = s.inspect()
+	noChange(t, r, "Makefile")
+	flagFor(t, r.Flagged, FlagHistory, "Makefile")
+}
