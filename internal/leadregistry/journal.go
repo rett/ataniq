@@ -67,6 +67,8 @@ type beginPayload struct {
 	// ParentEpoch and Identity are set for a coordinator and only then.
 	ParentEpoch uint64 `json:"parent_epoch,omitempty"`
 	Identity    string `json:"identity,omitempty"`
+	// BootID is the boot identity the caller gave, if any.
+	BootID string `json:"boot_id,omitempty"`
 }
 
 type outcomePayload struct {
@@ -323,7 +325,7 @@ func (b *beginPayload) validate() error {
 	if b.Epoch == 0 {
 		return invalid("launch epoch 0")
 	}
-	return nil
+	return validText("boot identity", b.BootID, MaxBootIdentityBytes, false)
 }
 
 // checkRole checks that a coordinator's intent carries its parent's epoch and

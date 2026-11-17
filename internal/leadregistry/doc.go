@@ -56,6 +56,10 @@
 // parent's epoch ends; it only keeps the record and refuses the launches
 // above.
 //
+// A launch intent may also carry the boot identity the caller passed to
+// BeginLaunchWith (bounded text, stored as given and compared with nothing);
+// BeginLaunch records none.
+//
 // starting is never set by SetState; BeginLaunch sets it. So desired is
 // accepted only from desired, stopped or ended and cannot make a live or
 // unknown role launchable, and from unknown the only ways out are stopped or

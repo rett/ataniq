@@ -437,7 +437,8 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // ErrLaunchPending when an intent is pending, ErrLaunchManager unless the
 // manager is ataniq, and ErrLaunchState unless the shown state is desired,
 // stopped or ended; ErrEpochExhausted when the epoch cannot grow. The epoch
-// is consumed even if the launch later fails: an epoch is never reused.
+// is consumed even if the launch later fails: an epoch is never reused. It
+// records no boot identity; BeginLaunchWith does.
 //
 // A coordinator is admitted only under its parent lead: the parent lead of
 // the project must be defined, run by ataniq and shown starting, ready or
@@ -448,9 +449,31 @@ func (r *Registry) SetDesired(role leadrole.Role, desired Desired) (Entry, error
 // refused with ErrLaunchCoordinator while a coordinator of it that was
 // launched under one of its earlier epochs is not stopped, ended or desired.
 func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
+	return r.BeginLaunchWith(role, LaunchOptions{})
+}
+
+// LaunchOptions are the optional inputs of BeginLaunchWith. The zero value
+// is what BeginLaunch uses.
+type LaunchOptions struct {
+	// BootIdentity is the identity of the boot the launch is made in, as the
+	// caller knows it: at most MaxBootIdentityBytes bytes of valid UTF-8
+	// without a control character. It is journaled in the launch intent and
+	// stored as given, so a later reader can tell whether the host has
+	// restarted since. Empty records none.
+	BootIdentity string
+}
+
+// BeginLaunchWith is BeginLaunch with options: it records the boot identity
+// of the options in the intent. It is refused with ErrInvalid, writing
+// nothing, for a boot identity over the bound or with a control character;
+// every other rule is BeginLaunch's.
+func (r *Registry) BeginLaunchWith(role leadrole.Role, opts LaunchOptions) (Intent, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.usable(); err != nil {
+		return Intent{}, err
+	}
+	if err := validText("boot identity", opts.BootIdentity, MaxBootIdentityBytes, false); err != nil {
 		return Intent{}, err
 	}
 	e, err := r.existing(role)
@@ -480,6 +503,7 @@ func (r *Registry) BeginLaunch(role leadrole.Role) (Intent, error) {
 		ProfileDigest: e.Requested.Digest(),
 		ParentEpoch:   parentEpoch,
 		Identity:      identity,
+		BootID:        opts.BootIdentity,
 	})
 	if err != nil {
 		return Intent{}, err

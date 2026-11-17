@@ -560,6 +560,10 @@ type Intent struct {
 	// leadrole.Role.Identity); empty for every other role. It is an
 	// identifier only.
 	Identity string
+	// BootIdentity is the boot identity the caller recorded with the intent
+	// (BeginLaunchWith); empty when it recorded none. The registry stores it
+	// as given and does not compare it with anything.
+	BootIdentity string
 }
 
 // Entry is everything the registry holds for one role. Entries returned by

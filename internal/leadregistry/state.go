@@ -68,6 +68,7 @@ func reduce(cur Entry, exists bool, all map[leadrole.Role]Entry, rec record) (En
 			Outcome:       OutcomePending,
 			ParentEpoch:   p.ParentEpoch,
 			Identity:      p.Identity,
+			BootIdentity:  p.BootID,
 		}
 		e.Unit = UnitEvidence{}
 		e.Observed = Observed{}
