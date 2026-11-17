@@ -203,6 +203,21 @@
 // and the end of the window is cut at 100 years, so that a large option cannot
 // wrap around into the past and close the window at once.
 //
+// A unit is taken as the role's own from its description alone: the epoch and
+// the intent that [leadunit.State] reads back from it. Any process of the same
+// user can create a unit with such a description, so the description is not
+// proof of origin, and this package has no other. Unit names are derived from
+// the project (and feature) only, not from the Ataniq state folder, so two
+// state folders of one user would share unit names and each would see the
+// other's units as its own, with epochs that mean nothing to it. The daemon is
+// one per user by assumption; nothing in this package enforces that (the
+// daemon's own lock is another package's). An explicit Stop of a unit of ours
+// with an older epoch than the registry's, which is how a start request that
+// landed late is ended, therefore assumes one installation: with a second one a
+// running unit of the other installation can look like such a stale unit, and
+// Stop would signal it. The behaviour is as described; it is a limit, not a
+// guard.
+//
 // # Status
 //
 // The package is provisional and unqualified: its names and behaviour may
