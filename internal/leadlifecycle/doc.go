@@ -56,7 +56,9 @@
 // done), so that a later daemon does not show healthy roles unknown again. A
 // daemon that dies between acting and acknowledging, or that could not act on
 // every role because the manager did not answer, leaves the cut
-// unacknowledged, and the next daemon treats it again, conservatively.
+// unacknowledged, and the next daemon treats it again, conservatively. The
+// registry reports an unacknowledged cut also after it is reopened: the report
+// goes away only with the acknowledgement.
 //
 // # Where the registry's rules win
 //
@@ -80,14 +82,32 @@
 //     explicit Stop does: it ends a stale unit of ours that has the
 //     record's epoch and intent or an older epoch, which is the owner's way
 //     out when the window did not hold.
-//   - Every launch journals the boot identity the manager reported before the
-//     intent ([leadregistry.Registry.BeginLaunchWith]). A pending intent (a
-//     lost reply, or a daemon that died between the intent and the outcome)
-//     whose unit is not loaded on another boot than that one is closed as
-//     abandoned and the role stopped at once, without waiting for the window:
-//     the boot changed, which is the proof. An intent with no boot identity (one
-//     journaled by a registry caller that gave none) or with no boot identity
-//     from the manager is settled by the window only.
+//   - A launch intent carries the boot identity. Every launch journals the boot
+//     identity the manager reported before the intent
+//     ([leadregistry.Registry.BeginLaunchWith]), and the intent uses it for this:
+//     to tell whether the machine booted again since the intent. A pending
+//     intent (a lost reply, or a daemon that died between the intent and the
+//     outcome) whose unit is not loaded on another boot than that one is
+//     closed as abandoned and the role stopped at once, without waiting for
+//     the window: the boot changed, which is the proof. An intent with no boot
+//     identity (one journaled by a registry caller that gave none) or with no
+//     boot identity from the manager is settled by the window only.
+//
+// # Coordinators
+//
+// The package does not handle coordinator roles yet. The registry, the unit
+// specification ([leadunit.Spec], which can name a parent unit) and the status
+// protocol do have coordinators, but this package does not use them:
+//
+//   - Start builds a unit with no parent. It never sets the parent of a
+//     [leadunit.Spec], and it does not check that a parent lead is live.
+//   - Stop of a lead does not stop the coordinators of that lead. It handles
+//     the one role it is given.
+//   - Reconcile treats a coordinator record like any other role: it compares
+//     the record with the unit of that role and applies the same rules, with no
+//     regard for the parent lead.
+//   - There is no handling of the stalled state: this package never sets it and
+//     never clears it.
 //
 // # What it does not prove
 //
