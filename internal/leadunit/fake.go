@@ -317,8 +317,15 @@ func (f *Fake) DelayNextStart(unit string, d time.Duration) {
 
 // FailNextStart scripts the next Start of unit to return err without starting
 // anything. The caller of FailNextStart says by it that nothing was started, so
-// err must not wrap [ErrReplyLost].
+// err must not wrap [ErrReplyLost], and it must not wrap [context.Canceled] or
+// [context.DeadlineExceeded] either: the Start contract allows a context error
+// only from a call whose context was already done, or together with
+// [ErrReplyLost]. FailNextStart panics on such an err, as it is a test helper
+// and the script would model behaviour the contract forbids.
 func (f *Fake) FailNextStart(unit string, err error) {
+	if errors.Is(err, ErrReplyLost) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		panic(fmt.Sprintf("leadunit: FailNextStart: %v wraps ErrReplyLost or a context error, which a Start that started nothing cannot return; use ExpireNextStart, DelayNextStart or LateNextStart", err))
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s := f.script(unit)

@@ -3,7 +3,9 @@ package leadunit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -1130,5 +1132,38 @@ func TestFakeLeftControlGroupIsReusedByALateStart(t *testing.T) {
 	}
 	if e, err := r.fake.Empty(r.ctx, old); e || err != nil {
 		t.Fatalf("Empty(old) = %v, %v, want false", e, err)
+	}
+}
+
+// TestFakeFailNextStartRefusesLostReplyAndContextErrors: a start that started
+// nothing cannot return ErrReplyLost or a context error of its own.
+func TestFakeFailNextStartRefusesLostReplyAndContextErrors(t *testing.T) {
+	r := newRig(t)
+	for name, err := range map[string]error{
+		"reply lost":       ErrReplyLost,
+		"wrapped lost":     fmt.Errorf("start: %w", ErrReplyLost),
+		"canceled":         context.Canceled,
+		"deadline":         context.DeadlineExceeded,
+		"wrapped deadline": fmt.Errorf("start: %w", context.DeadlineExceeded),
+		"joined":           errors.Join(errors.New("x"), context.Canceled),
+	} {
+		func() {
+			defer func() {
+				v := recover()
+				msg, ok := v.(string)
+				if !ok || !strings.Contains(msg, "FailNextStart") || !strings.Contains(msg, "ErrReplyLost") {
+					t.Errorf("%s: recovered %v, want a clear panic message", name, v)
+				}
+			}()
+			r.fake.FailNextStart(unitA, err)
+		}()
+	}
+	// Nothing was scripted by the refused calls.
+	r.start(unitA, 1)
+	// Other errors, and nil, are still accepted.
+	r.signal(r.inspect(unitA), syscall.SIGKILL)
+	r.fake.FailNextStart(unitA, ErrUnavailable)
+	if _, err := r.fake.Start(r.ctx, r.spec(unitA, 2)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("got %v", err)
 	}
 }
