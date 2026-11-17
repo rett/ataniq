@@ -38,6 +38,13 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
+// Reset forgets what was written.
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Reset()
+}
+
 // env is the folders, the fake and the config of one test daemon.
 type env struct {
 	t       *testing.T

@@ -99,7 +99,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stops a lead or any unit. The reconcile reads the
   units and may write the registry's journal, the states stopped, ended or
   unknown with their proof or reason and the outcomes adopted or abandoned of
-  launch intents; it starts, stops and signals nothing. When systemd cannot be
+  launch intents, and, once it has acted on every role of a registry whose
+  journal was cut when it was opened, the acknowledgement of that cut, which
+  is a record of its own kind in the journal; it starts, stops and signals
+  nothing. A cut that was acknowledged shows no more in `status`; a cut that
+  stays unacknowledged (the manager did not answer for a role, or the
+  reconcile stopped first) shows as the reconcile not completed, and the next
+  start acts on it again. When systemd cannot be
   asked (also when the registry has no role to ask about), when any call to it
   failed during the reconcile, or when the reconcile ran out of time (also in
   its last step), the daemon still serves the roles as the registry has them,

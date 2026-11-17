@@ -74,8 +74,15 @@
 // as not completed while one is unacknowledged, which is the only place the
 // wire leaves, and writes the reason to its log. A client cannot tell that
 // reason from an unavailable manager by the daemon block; the roles
-// themselves are shown unknown with the reason registry-recovered. Nothing in
-// this build acknowledges a recovery.
+// themselves are shown unknown with the reason registry-recovered. The one
+// acknowledgement is the reconcile's: once it has acted on every role it
+// acknowledges the cut ([leadlifecycle.Controller.Reconcile]), and then the
+// reconcile is shown as completed unless something else made it incomplete. A
+// cut stays unacknowledged, and the reconcile not completed, when the manager
+// did not answer for a role, when a failure of the registry or the end of the
+// context stopped the reconcile first, or when the acknowledgement could not be
+// written. The next daemon start acts on the cut again and acknowledges it
+// when it can.
 //
 // The wire type has no place either for the proof text of a stopped or ended
 // state, for the unit evidence (invocation, control group and boot identity)
