@@ -468,6 +468,12 @@ func (m *Mirror) fetchStaging(ctx context.Context, st *staging, plan sandboxplan
 			// fine and the measure after the fetch decides. A walk that
 			// keeps failing would turn the limit off, so it stops the fetch.
 			if failures++; failures >= maxWatchFailures {
+				// The path of a failed walk is a ref file of the lead, whose
+				// name is the lead's text: keep the cause and drop the path.
+				var pe *fs.PathError
+				if errors.As(err, &pe) {
+					err = pe.Err
+				}
 				return fmt.Errorf("mirror: the staging folder could not be measured: %w", err)
 			}
 			return nil

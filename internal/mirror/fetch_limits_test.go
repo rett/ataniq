@@ -3,11 +3,13 @@ package mirror
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -307,6 +309,28 @@ func TestFetchWatchdogWhenTheMeasureFails(t *testing.T) {
 			t.Errorf("the fetch ran %v: the watchdog did not stop it", d)
 		}
 		e.unchanged(t, was)
+	})
+
+	t.Run("the error holds the cause and not the path", func(t *testing.T) {
+		// The path of a failed walk is a ref file whose name the lead
+		// chose, here with a bidi control. It must not reach the error.
+		const name = "refs/leads/coder/heads/evil\u202eexe"
+		e := newFetchEnv(t)
+		slowly(e)
+		hook(t, func(int) (safefs.Size, error) {
+			return safefs.Size{}, &fs.PathError{Op: "fstatat", Path: name, Err: syscall.EIO}
+		})
+		_, err := e.m.Fetch(context.Background(), e.req())
+		if err == nil || !strings.Contains(err.Error(), "staging folder could not be measured") || !errors.Is(err, syscall.EIO) {
+			t.Fatalf("Fetch = %v, want the cause of the failed measure", err)
+		}
+		if strings.Contains(err.Error(), "evil") || strings.ContainsRune(err.Error(), '\u202e') {
+			t.Errorf("the error holds a name from the lead: %q", err)
+		}
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			t.Errorf("the error still wraps a path error: %v", pe)
+		}
 	})
 
 	t.Run("failures with a success between them do not", func(t *testing.T) {
