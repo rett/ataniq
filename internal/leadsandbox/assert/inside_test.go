@@ -430,8 +430,8 @@ func TestProblemsRequireAll(t *testing.T) {
 	if !FailedAll(rep, s) {
 		t.Fatal("the inside report alone must not satisfy RequireAll")
 	}
-	if p := Problems(rep, s, RequireAll); len(p) != 4 {
-		t.Errorf("want 4 missing outside results, got %v", p)
+	if p := Problems(rep, s, RequireAll); len(p) != 5 {
+		t.Errorf("want 5 missing outside results, got %v", p)
 	}
 }
 

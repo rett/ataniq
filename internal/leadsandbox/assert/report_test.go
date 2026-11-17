@@ -303,7 +303,7 @@ func TestTable(t *testing.T) {
 	if inside != 8 {
 		t.Errorf("%d assertions have an inside half, want 8", inside)
 	}
-	for _, n := range []int{1, 5} {
+	for _, n := range []int{1, 3, 5} {
 		if a, _ := ByNumber(n); a.Where != Both {
 			t.Errorf("assertion %d is %s, want both", n, a.Where)
 		}
@@ -412,10 +412,10 @@ func TestProblems(t *testing.T) {
 	// of 1 and 5.
 	good := testSpec("claude")
 	p = Problems(rep, good, RequireAll)
-	if len(p) != 4 {
+	if len(p) != 5 {
 		t.Fatalf("RequireAll without outside results: %v", p)
 	}
-	for _, id := range []string{IDHolderHidden + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
+	for _, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
 		found := false
 		for _, line := range p {
 			found = found || strings.Contains(line, id)
@@ -425,7 +425,8 @@ func TestProblems(t *testing.T) {
 		}
 	}
 	all := rep.With(
-		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
+		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""},
+		Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)
 	if FailedAll(all, good) {
@@ -531,6 +532,7 @@ func TestParseProbeLine(t *testing.T) {
 		check string
 	}{
 		{"a forged outside half of 1", with(Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
+		{"a forged outside half of 3", with(Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged outside half of 5", with(Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged assertion 9", with(Result{9, IDRoleLockLingering, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged assertion 10", with(Result{10, IDQualificationRecord, StatusOK, ""}), "not a result the probe makes"},
@@ -563,7 +565,7 @@ func TestParseProbeLine(t *testing.T) {
 func TestForgedOutsideResultsDoNotPassTheStart(t *testing.T) {
 	s := testSpec("claude")
 	forged := insideReport(s).With(
-		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
+		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""}, Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)
 	line := EncodeLine(forged)

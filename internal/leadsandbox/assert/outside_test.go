@@ -218,12 +218,18 @@ func TestRunOutsideAndFailedAll(t *testing.T) {
 		Spec: s, Role: "arc-lead", User: "someone", Version: "2.1.0", Now: t0,
 		Binds:       []profile.Bind{{Kind: profile.KindRoBind, Inside: "/usr", Source: "/usr"}},
 		HolderPaths: s.HolderPaths,
+		Canary:      testCanary(t),
 		Sys:         f, Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
 		Records: fakeRecords{rec: func() *QualificationRecord { r := goodRecord(); r.ProfileDigest = s.Digest; return r }()},
 	}
 	out := RunOutside(in)
-	if len(out) != 4 {
+	if len(out) != 5 {
 		t.Fatalf("%d results", len(out))
+	}
+	for i, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
+		if out[i].ID != id {
+			t.Errorf("result %d is %s, want %s", i, out[i].ID, id)
+		}
 	}
 	for _, r := range out {
 		if r.Status != StatusOK {
@@ -278,6 +284,7 @@ func TestRunOutsideDefaultsHolderPaths(t *testing.T) {
 		Binds: []profile.Bind{{Kind: profile.KindRoBind, Inside: "/leak", Source: s.HolderPaths[2]}},
 		Sys:   goodSystem(s), Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
 	}
+	in.Canary = testCanary(t)
 	out := RunOutside(in)
 	if out[0].ID != IDHolderHidden+OutsideSuffix || out[0].Status != StatusFailed {
 		t.Errorf("a bind of a holder path with no HolderPaths given: %+v", out[0])
@@ -295,6 +302,7 @@ func TestOptionalNeverExcusesAnOutsideHalf(t *testing.T) {
 	s := testSpec(profile.Claude)
 	rep := insideReport(s).With(
 		CheckHolderBinds(nil, nil), // not-checked: no holder path
+		CheckCanary(nil),
 		CheckTIOCSTIOutside(nil, false),
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)

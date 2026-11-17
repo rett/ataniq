@@ -141,6 +141,28 @@ func CheckHolderBinds(binds []profile.Bind, holderPaths []string) Result {
 	return r
 }
 
+// CheckCanary is the outside half of assertion 3: after the probe has run, the
+// canary the spec's loopback and abstract addresses point to has accepted no
+// connection. It is the only evidence independent of how the probe classified
+// its own failed dials, so a count above 0 is failed whatever the probe
+// reported. A canary that is missing, that has stopped (a connection after
+// that is not counted) or whose accept loops met errors (the count may be
+// short) gives not-checked, never ok. Read it before Close.
+func CheckCanary(c *Canary) Result {
+	switch {
+	case c == nil:
+		return outside(3, true, StatusNotChecked, "no canary to read the connection count of")
+	case c.Hits() > 0:
+		return outside(3, true, StatusFailed, "the canary accepted %d connections (%d on loopback, %d on the abstract socket): something reached the host",
+			c.Hits(), c.Hits()-c.AbstractHits(), c.AbstractHits())
+	case c.AcceptErrors() > 0:
+		return outside(3, true, StatusNotChecked, "the canary met %d errors of accept: a connection may have gone uncounted", c.AcceptErrors())
+	case c.Stopped():
+		return outside(3, true, StatusNotChecked, "the canary was stopped before the count was read: a later connection would not be counted")
+	}
+	return outside(3, true, StatusOK, "the canary accepted no connection")
+}
+
 // CheckTIOCSTIOutside is the outside half of assertion 5: before the start,
 // the host's dev.tty.legacy_tiocsti is 0, or the profile names a seccomp
 // filter that the probe will then confirm is loaded. It reads the sysctl; it
@@ -215,6 +237,10 @@ type OutsideInput struct {
 	Binds       []profile.Bind
 	HolderPaths []string
 
+	// Canary is the canary whose addresses the spec holds, read for the
+	// outside half of assertion 3 after the probe has reported.
+	Canary *Canary
+
 	Sys     System
 	Lock    RoleLock
 	Linger  Lingering
@@ -222,7 +248,8 @@ type OutsideInput struct {
 }
 
 // RunOutside runs the outside checks and returns their results: the outside
-// half of 1, the outside half of 5, then 9 and 10. The holder adds them to the
+// half of 1, of 3 and of 5, then 9 and 10. Call it after the probe has
+// reported and before the canary is closed. The holder adds them to the
 // probe's report with Report.With and judges the whole with FailedAll.
 func RunOutside(in OutsideInput) []Result {
 	if len(in.HolderPaths) == 0 {
@@ -230,6 +257,7 @@ func RunOutside(in OutsideInput) []Result {
 	}
 	return []Result{
 		CheckHolderBinds(in.Binds, in.HolderPaths),
+		CheckCanary(in.Canary),
 		CheckTIOCSTIOutside(in.Sys, in.Spec.SeccompExpected),
 		CheckRoleLockAndLingering(in.Lock, in.Linger, in.Role, in.User),
 		CheckQualification(in.Records, in.Spec.Runtime, in.Version, in.Spec.Digest, in.Now),

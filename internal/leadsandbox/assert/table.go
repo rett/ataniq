@@ -54,7 +54,7 @@ const (
 var assertions = [NumAssertions]Assertion{
 	{1, IDHolderHidden, "The attach and control sockets and the holder's state are not visible inside.", Both, []string{"S1"}},
 	{2, IDEnvironment, "The environment inside equals the profile's allowlist.", Inside, []string{"S3"}},
-	{3, IDLoopbackUnreach, "One host loopback port and one host abstract socket are unreachable.", Inside, []string{"S2"}},
+	{3, IDLoopbackUnreach, "One host loopback port and one host abstract socket are unreachable.", Both, []string{"S2"}},
 	{4, IDProviderResolves, "A provider host name resolves.", Inside, []string{"S4"}},
 	{5, IDTIOCSTIBlocked, "dev.tty.legacy_tiocsti is 0, or the seccomp filter is loaded.", Both, []string{"S7"}},
 	{6, IDOwnerPathsAbsent, "The owner's real provider folders, ~/.ssh, the owner's checkout and the other runtime's config folder do not exist inside.", Inside, []string{"S1"}},

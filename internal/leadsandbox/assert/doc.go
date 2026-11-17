@@ -21,10 +21,10 @@
 //     kernel with access(W_OK) and read from the mount table's read-only flag,
 //     and both must say read-only. They never issue TIOCSTI, never send a byte
 //     on a connection, and start no process: the package imports no os/exec.
-//   - The outside checks (assertions 9 and 10, and the outside halves of 1 and
-//     5): [CheckRoleLockAndLingering], [CheckQualification],
-//     [CheckHolderBinds] and [CheckTIOCSTIOutside], and [RunOutside] to run
-//     them, behind the interfaces [RoleLock], [Lingering] and
+//   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3
+//     and 5): [CheckRoleLockAndLingering], [CheckQualification],
+//     [CheckHolderBinds], [CheckCanary] and [CheckTIOCSTIOutside], and
+//     [RunOutside] to run them, behind the interfaces [RoleLock], [Lingering] and
 //     [QualificationRecords], which the holder and the daemon implement.
 //     [QualificationRecord] and [Current] say when a record counts. No store
 //     is built here.
@@ -33,11 +33,17 @@
 //     [ParseLine] write and read it as one line after [ReportPrefix];
 //     [ParseProbeLine] reads the line of a probe, which holds the inside
 //     results 1 to 8, each once, and no other. [Failed] and [Problems] judge
-//     a report against its spec. The report has
-//     no field that says the sandbox as a whole passed or is supported.
+//     a report against its spec. The report has no field that says the
+//     sandbox as a whole passed or is supported.
 //   - The [Canary] (Linux): a loopback TCP listener and an abstract socket
-//     owned by the caller, which count the connections they accept, for
-//     assertion 3.
+//     owned by the caller, which count the connections they accept. Assertion
+//     3 is checked on both sides: the probe dials the addresses and
+//     classifies the failure, and after the probe's report [CheckCanary] says
+//     the canary accepted nothing. That count is the evidence independent of
+//     the probe's own judgement, and a timeout, which is weaker evidence than
+//     a refusal, rests on it. The accept loops survive a transient error of
+//     accept (counted, with a bounded back-off); a count taken after such an
+//     error, or after the canary stopped, is not-checked.
 //   - The stop rule of the design as constants ([StopTermWait] and the
 //     others). The holder implements it.
 //
@@ -64,9 +70,9 @@
 //     lead can read, so the prefix and the digest authenticate nothing.
 //   - The probe makes the results 1 to 8, the inside half of each assertion
 //     that has one, once each. The holder makes the others (the outside half
-//     of 1, 3 and 5, then 9 and 10) with [RunOutside], adds them with
-//     [Report.With] and judges the whole with [FailedAll], after the probe's
-//     report and before it accepts the start. [ParseLine] reads a full report;
+//     of 1, 3 and 5, then 9 and 10) with [RunOutside], which takes the
+//     canary, adds them with [Report.With] and judges the whole with
+//     [FailedAll], after the probe's report and before it accepts the start. [ParseLine] reads a full report;
 //     the probe's line is read with [ParseProbeLine].
 //
 // # Not-checked is not ok
