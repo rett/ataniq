@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ataniq/internal/leadsandbox/assert"
+	"ataniq/internal/leadsandbox/plan"
 	"ataniq/internal/leadsandbox/profile"
 	"ataniq/qualification/leadsandbox/internal/harness"
 	"ataniq/qualification/leadsandbox/internal/harnesstest"
@@ -730,5 +731,68 @@ func TestNoLineMeansNothingIsAskedAboutTrailingBytes(t *testing.T) {
 	wantStep(t, r.out, harness.StepTrailing, harness.StepSkipped)
 	if got := trailing(t, r.out.Dir); got != nil {
 		t.Errorf("report_trailing_bytes: %v", *got)
+	}
+}
+
+// A source that is reached through a symbolic link into the campaign folder
+// resolves to a path inside it: the lexical check of the configuration cannot
+// see that, and binding it would put the evidence or the report channel into
+// the sandbox. The plan check refuses it before any launch.
+func TestSourceLinkedIntoTheCampaignIsNeverBound(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	inside := f.Campaign + "/stolen"
+	f.Mkdir(inside, 0o755)
+	link := f.Owned + "/assignment-into-campaign"
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+	f.Config.Sources.AssignmentDir = link
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepVerify, harness.StepFailed)
+	if e := step(t, r.out, harness.StepVerify).Error; !strings.Contains(e, "/ataniq/assignment") || !strings.Contains(e, "campaign") {
+		t.Errorf("the refusal does not say what it refused: %q", e)
+	}
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}
+
+// The spec is built with the environment the sandbox shows inside, which is
+// the allowlist and the PWD that bubblewrap sets; without PWD a real probe
+// would report its environment check as failed.
+func TestSpecHoldsTheInsideEnvironment(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	data, err := os.ReadFile(r.out.Dir + "/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := assert.DecodeSpec(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := plan.InsideEnvironment(r.fake.Requests()[0].Plan)
+	if len(want) == 0 {
+		t.Fatal("the plan has no inside environment")
+	}
+	got := map[string]string{}
+	for _, e := range spec.Env {
+		got[e.Name] = e.Value
+	}
+	if got["PWD"] != profile.TreeInside(f.Project) {
+		t.Errorf("PWD in the spec is %q", got["PWD"])
+	}
+	for _, e := range want {
+		if got[e.Name] != e.Value {
+			t.Errorf("%s is %q in the spec, the plan says %q", e.Name, got[e.Name], e.Value)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("the spec holds %d variables, the plan %d", len(got), len(want))
 	}
 }
