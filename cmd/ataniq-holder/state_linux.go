@@ -129,6 +129,19 @@ func writeStateFile(dir string, st stateFile) error {
 	return unix.Fsync(dfd)
 }
 
+// removeStateFile removes holder.json from dir; a missing file is not an error.
+func removeStateFile(dir string) error {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dfd)
+	if err := unix.Unlinkat(dfd, StateFileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
+}
+
 // checkPrivateDir checks that path is a real directory (not a link) of this
 // user with mode 0700.
 func checkPrivateDir(path string) error {
