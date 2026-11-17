@@ -195,9 +195,17 @@ func TestChildIsSessionLeaderWithControllingTerminalAndExactEnvironment(t *testi
 			t.Errorf("descriptor %d is %q, want the terminal slave", fd, r.Fds[fd])
 		}
 	}
+	t.Logf("the child's descriptors: %v", r.Fds)
+	// Above 2 the child may hold only what its own runtime opened (the
+	// poller and the pipes of the standard library). Anything that names a
+	// file, a terminal or a socket was inherited: the master or the slave of
+	// this pair, or a descriptor the test binary holds.
 	for fd, target := range r.Fds {
-		if strings.Contains(target, "ptmx") {
-			t.Errorf("descriptor %d is the master (%q): it was inherited", fd, target)
+		if fd <= 2 {
+			continue
+		}
+		if !strings.HasPrefix(target, "anon_inode:") && !strings.HasPrefix(target, "pipe:") {
+			t.Errorf("descriptor %d is %q: the child inherited it", fd, target)
 		}
 	}
 	want, _ := filepath.EvalSymlinks(dir)
@@ -208,6 +216,29 @@ func TestChildIsSessionLeaderWithControllingTerminalAndExactEnvironment(t *testi
 	env = append(env, "FOO=bar", "EMPTY=")
 	if !reflect.DeepEqual(r.Env, env) {
 		t.Errorf("environment %q, want exactly %q", r.Env, env)
+	}
+}
+
+// A program that is not written in Go lists its own descriptors: the Go
+// runtime opens some of its own, a program like ls opens only the directory it
+// lists, so anything else above 2 would be inherited.
+func TestChildOfAnotherLanguageInheritsOnlyTheTerminal(t *testing.T) {
+	ls, err := exec.LookPath("ls")
+	if err != nil {
+		t.Skip("no ls binary")
+	}
+	h, tl := start(t, "", opts{mod: func(c *Config) { c.Argv = []string{ls, "-1", "/proc/self/fd"}; c.Env = nil }})
+	if e := waitExit(t, h); e.How != "exit" || e.Code != 0 {
+		t.Fatalf("exit %v", e)
+	}
+	tl.waitEOF(t)
+	var fds []string
+	for _, l := range strings.Split(strings.TrimSpace(string(tl.bytes())), "\n") {
+		fds = append(fds, strings.TrimSpace(l))
+	}
+	// 0, 1 and 2 are the slave; 3 is the directory ls itself opened.
+	if want := []string{"0", "1", "2", "3"}; !reflect.DeepEqual(fds, want) {
+		t.Errorf("ls saw descriptors %q, want %q", fds, want)
 	}
 }
 
