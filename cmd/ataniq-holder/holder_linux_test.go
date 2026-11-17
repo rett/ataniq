@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -179,6 +180,115 @@ func TestSecondHolderForTheSameRoleExits3(t *testing.T) {
 	}
 	if rec := r.readFinal(); rec.Facts.TUIExited != session.Yes {
 		t.Errorf("facts %+v", rec.Facts)
+	}
+}
+
+// Case H7, the interleaving: two holders for one role that start together. Both
+// are held where they are about to take the role lock; they are let go together.
+// Exactly one runs, the other exits 3 having changed nothing, and the state
+// file and the event log are the winner's, whichever of them wins. (With the
+// lock only looked at before the state file is written, both get that far, and
+// the loser's state file replaces the winner's.)
+func TestTwoHoldersStartedTogetherOnlyOneRuns(t *testing.T) {
+	r := newRig(t)
+	type holder struct {
+		epoch  uint64
+		errbuf *syncBuf
+		sigc   chan os.Signal
+		done   chan int
+	}
+	var atLock sync.WaitGroup
+	atLock.Add(2)
+	atSession := make(chan uint64, 2) // the epoch of a holder that got as far as the session
+	release := make(chan struct{})
+	launch := func(epoch uint64) *holder {
+		h := &holder{epoch: epoch, errbuf: &syncBuf{}, sigc: make(chan os.Signal, 8), done: make(chan int, 1)}
+		d := r.deps()
+		d.stderr = h.errbuf
+		d.signals = func() (<-chan os.Signal, func()) { return h.sigc, func() {} }
+		d.beforeRoleLock = func() { atLock.Done(); atLock.Wait() }
+		inner := d.tweakSession
+		d.tweakSession = func(c *session.Config) {
+			atSession <- epoch
+			<-release
+			inner(c)
+		}
+		args := r.spec("raw; say RUNNING; wait").
+			set("epoch", strconv.FormatUint(epoch, 10)).set("launch-intent", "intent-"+strconv.FormatUint(epoch, 10)).build()
+		go func() { h.done <- run(args, d) }()
+		return h
+	}
+	a, b := launch(11), launch(12)
+
+	// One of them is refused at the lock and ends; the other is held in the
+	// session's start-up, its state file written.
+	var loser, winner *holder
+	deadline := time.After(patience)
+	for loser == nil {
+		select {
+		case code := <-a.done:
+			loser, winner = a, b
+			if code != exitLocked {
+				t.Fatalf("holder %d exited %d, want %d; stderr: %s", a.epoch, code, exitLocked, a.errbuf.String())
+			}
+		case code := <-b.done:
+			loser, winner = b, a
+			if code != exitLocked {
+				t.Fatalf("holder %d exited %d, want %d; stderr: %s", b.epoch, code, exitLocked, b.errbuf.String())
+			}
+		case <-deadline:
+			t.Fatalf("neither holder was refused (%d reached the session); stderr: %s | %s", len(atSession), a.errbuf.String(), b.errbuf.String())
+		}
+	}
+	if got := <-atSession; got != winner.epoch || len(atSession) != 0 {
+		t.Fatalf("the holder that reached the session is %d, want the winner %d alone", got, winner.epoch)
+	}
+	if !strings.Contains(loser.errbuf.String(), "already held") {
+		t.Errorf("the refusal is not clear: %q", loser.errbuf.String())
+	}
+	if st := r.readState(); st.Epoch != winner.epoch || st.LaunchIntent != "intent-"+strconv.FormatUint(winner.epoch, 10) {
+		t.Errorf("the state file after the loser has gone is %+v, want the winner's (epoch %d)", st, winner.epoch)
+	}
+
+	close(release)
+	poll(t, func() string { return "the winner's ready line; stderr: " + winner.errbuf.String() }, func() bool {
+		select {
+		case code := <-winner.done:
+			t.Fatalf("the winner exited %d; stderr: %s", code, winner.errbuf.String())
+		default:
+		}
+		return strings.Contains(winner.errbuf.String(), "ready:")
+	})
+	if st := r.readState(); st.Epoch != winner.epoch {
+		t.Errorf("the state file of the running holder is %+v, want epoch %d", st, winner.epoch)
+	}
+	evs, err := eventlog.Read(r.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) == 0 {
+		t.Error("the winner's event log is empty")
+	}
+	for _, e := range evs {
+		if e.Epoch != "" && e.Epoch != strconv.FormatUint(winner.epoch, 10) {
+			t.Errorf("an event of epoch %q in the winner's log: %+v", e.Epoch, e)
+		}
+	}
+	if strings.Contains(loser.errbuf.String(), "ready:") {
+		t.Errorf("the loser says it is ready: %q", loser.errbuf.String())
+	}
+
+	winner.sigc <- syscall.SIGTERM
+	select {
+	case code := <-winner.done:
+		if code != exitOK {
+			t.Errorf("the winner exited %d; stderr: %s", code, winner.errbuf.String())
+		}
+	case <-time.After(patience):
+		t.Fatal("the winner did not stop")
+	}
+	if rec := r.readFinal(); rec.Epoch != strconv.FormatUint(winner.epoch, 10) {
+		t.Errorf("final record %+v", rec)
 	}
 }
 
@@ -368,6 +478,32 @@ func TestSigintStopsTheAgent(t *testing.T) {
 	}
 	if rec := r.readFinal(); rec.Facts.TUIExited != session.Yes || rec.Facts.TreeGone != session.Yes {
 		t.Errorf("facts %+v", rec.Facts)
+	}
+}
+
+// SIGQUIT, SIGUSR1 and SIGUSR2 stop the agent like SIGTERM does, in process:
+// the final record is written and the holder exits 0.
+func TestEveryStopSignalStopsTheAgent(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2} {
+		t.Run(signalName(sig), func(t *testing.T) {
+			r := newRig(t)
+			r.stopGrace = 300 * time.Millisecond
+			r.start(r.spec("raw; say UP; wait").build())
+			r.waitReady()
+			c := r.attach(wire.RoleViewer)
+			c.waitText("UP")
+			r.sigc <- sig
+			c.waitExit()
+			if code := r.wait(); code != exitOK {
+				t.Fatalf("exit %d; stderr: %s", code, r.errbuf.String())
+			}
+			if rec := r.readFinal(); rec.Facts.TUIExited != session.Yes || rec.Facts.TreeGone != session.Yes {
+				t.Errorf("facts %+v", rec.Facts)
+			}
+			if !strings.Contains(r.errbuf.String(), "stopping the agent ("+signalName(sig)+")") {
+				t.Errorf("stderr %q", r.errbuf.String())
+			}
+		})
 	}
 }
 

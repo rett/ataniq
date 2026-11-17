@@ -12,11 +12,19 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ataniq/internal/leadholder/session"
 )
 
 // StateFileName is the holder's state file in the state folder. It is written
 // before the agent starts (the lead-hosting design, section 1.1).
 const StateFileName = "holder.json"
+
+// PreviousFinalName is where a final record left by an earlier epoch is moved
+// before a new epoch writes its state file: final.json then always belongs to
+// the epoch that ended last, never to one that is still running. A record
+// already there is replaced.
+const PreviousFinalName = session.FinalName + ".previous"
 
 // stateFileVersion is the format version of the state file.
 const stateFileVersion = 1
@@ -129,6 +137,37 @@ func writeStateFile(dir string, st stateFile) error {
 	return unix.Fsync(dfd)
 }
 
+// retireFinalRecord moves a final record of an earlier epoch aside, to
+// PreviousFinalName, replacing an older one. Without a final record it does
+// nothing.
+func retireFinalRecord(dir string) error {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dfd)
+	if err := unix.Renameat(dfd, session.FinalName, dfd, PreviousFinalName); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	return unix.Fsync(dfd)
+}
+
+// removeStateFile removes holder.json from dir; a missing file is not an error.
+func removeStateFile(dir string) error {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dfd)
+	if err := unix.Unlinkat(dfd, StateFileName, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
+}
+
 // checkPrivateDir checks that path is a real directory (not a link) of this
 // user with mode 0700.
 func checkPrivateDir(path string) error {
@@ -154,22 +193,4 @@ func checkPrivateDir(path string) error {
 		return fmt.Errorf("has mode %04o, want 0700", m)
 	}
 	return nil
-}
-
-// roleLockHeld reports whether another process holds the exclusive lock on the
-// role lock file. It takes the lock and lets it go at once: it only looks, so a
-// holder that is refused has changed nothing in the state folder. The
-// authoritative lock is session.Start's; this check keeps a second holder from
-// writing the first one's state file before that lock refuses it.
-func roleLockHeld(path string) bool {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return false // session.Start reports it
-	}
-	defer unix.Close(fd)
-	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return errors.Is(err, unix.EWOULDBLOCK)
-	}
-	_ = unix.Flock(fd, unix.LOCK_UN)
-	return false
 }

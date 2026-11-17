@@ -159,10 +159,16 @@ type Config struct {
 	// 12 queries; nil entries are neutral. See Session.SetColours.
 	Colours sessionpane.Colours
 
-	// RoleLock is the path of the role's lock file. Start takes an exclusive
-	// non-blocking flock on it (creating it with mode 0600) before the PTY is
-	// opened, and holds it until Close.
+	// RoleLock is the path of the role's lock file. Unless HeldRoleLock is
+	// given, Start takes an exclusive non-blocking flock on it (creating it
+	// with mode 0600) before the PTY is opened, and holds it until Close.
 	RoleLock string
+	// HeldRoleLock is a role lock the caller has already taken with
+	// TakeRoleLock, so that it can be held before anything else is written
+	// (design 1.6). Start owns it from the call on: it is closed, and the lock
+	// released, by Close, or by Start itself when it fails. When it is set,
+	// RoleLock is not needed.
+	HeldRoleLock *os.File
 	// StateDir is an existing folder of the lead's state where final.json
 	// is written.
 	StateDir string
@@ -182,6 +188,10 @@ type Config struct {
 
 	// slowSlice replaces SlowSlice (tests).
 	slowSlice time.Duration
+	// betweenSlices is a test hook, set before the read loop starts: it is
+	// called with the slice's index after each slice of a chunk, with the
+	// output lock released.
+	betweenSlices func(i int)
 }
 
 // Session is one hosted terminal session. Its methods are safe for
@@ -203,11 +213,6 @@ type Session struct {
 	sub     func(pos uint64, chunk []byte)
 	subID   uint64
 	nextSub uint64
-
-	// betweenSlices is a test hook, set before any output flows: it is
-	// called with the slice's index after each slice of a chunk, with the
-	// output lock released.
-	betweenSlices func(i int)
 
 	// imu is the input lock (design 1.2).
 	imu       sync.Mutex
@@ -266,14 +271,21 @@ type counters struct {
 	extra map[string]uint64
 }
 
-// Start takes the role lock, creates the pane, starts the agent and logs
-// "start". On an error nothing is left open. A second session for the same
-// RoleLock fails with an error wrapping ErrRoleLocked.
-func Start(cfg Config) (*Session, error) {
+// Start takes the role lock (or uses cfg.HeldRoleLock), creates the pane,
+// starts the agent and logs "start". On an error nothing is left open, a
+// HeldRoleLock included. A second session for the same RoleLock fails with an
+// error wrapping ErrRoleLocked.
+func Start(cfg Config) (_ *Session, err error) {
+	lock := cfg.HeldRoleLock
+	defer func() {
+		if err != nil && lock != nil {
+			lock.Close()
+		}
+	}()
 	if cfg.Log == nil {
 		return nil, errors.New("session: Config.Log is required")
 	}
-	if cfg.RoleLock == "" {
+	if cfg.RoleLock == "" && lock == nil {
 		return nil, errors.New("session: Config.RoleLock is required")
 	}
 	if st, err := os.Stat(cfg.StateDir); err != nil || !st.IsDir() {
@@ -294,9 +306,10 @@ func Start(cfg Config) (*Session, error) {
 	cols, rows := clampSize(cfg.Cols, cfg.Rows)
 	cfg.Cols, cfg.Rows = cols, rows
 
-	lock, err := takeRoleLock(cfg.RoleLock)
-	if err != nil {
-		return nil, err
+	if lock == nil {
+		if lock, err = TakeRoleLock(cfg.RoleLock); err != nil {
+			return nil, err
+		}
 	}
 	s := &Session{
 		cfg:      cfg,
@@ -319,7 +332,6 @@ func Start(cfg Config) (*Session, error) {
 	host, err := ptyhost.Start(pc)
 	if err != nil {
 		s.pane.Close()
-		lock.Close()
 		return nil, fmt.Errorf("session: %w", err)
 	}
 	s.host = host
@@ -335,10 +347,13 @@ func clampSize(cols, rows int) (int, int) {
 	return min(max(cols, MinCols), MaxCols), min(max(rows, MinRows), MaxRows)
 }
 
-// takeRoleLock opens the lock file (created 0600; never a symlink) and takes
+// TakeRoleLock opens the lock file (created 0600; never a symlink) and takes
 // an exclusive non-blocking flock on it. The descriptor is close-on-exec, so
-// the agent never inherits the lock.
-func takeRoleLock(path string) (*os.File, error) {
+// the agent never inherits the lock. The lock is held until the returned file
+// is closed. When another process holds it, the error wraps ErrRoleLocked. A
+// holder takes it once, before it opens the event log or writes the state
+// file, and hands it to Start as Config.HeldRoleLock.
+func TakeRoleLock(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("session: open the role lock %s: %w", path, err)
@@ -409,8 +424,8 @@ func (s *Session) deliver(chunk []byte) {
 		n := min(len(chunk), OutputSlice)
 		s.deliverSlice(chunk[:n])
 		chunk = chunk[n:]
-		if s.betweenSlices != nil {
-			s.betweenSlices(i)
+		if s.cfg.betweenSlices != nil {
+			s.cfg.betweenSlices(i)
 		}
 	}
 }

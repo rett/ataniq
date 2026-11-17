@@ -258,6 +258,81 @@ func TestRoleLockRefusesASecondSessionAndIsFreeAfterClose(t *testing.T) {
 	waitDone(t, s2)
 }
 
+// A lock the caller took with TakeRoleLock is the one Start uses: it is held
+// the whole time (nobody else can take it, and Start does not take a second
+// one), it needs no RoleLock path, and Close releases it.
+func TestStartUsesAHeldRoleLockAndCloseReleasesIt(t *testing.T) {
+	e := newEnv(t)
+	held, err := TakeRoleLock(e.lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeRoleLock(e.lock); !errors.Is(err, ErrRoleLocked) {
+		t.Fatalf("TakeRoleLock of a held lock: %v, want ErrRoleLocked", err)
+	}
+	cfg := e.config("raw; say READY; wait")
+	cfg.HeldRoleLock = held
+	cfg.RoleLock = "" // the held lock is enough
+	s, err := Start(cfg)
+	if err != nil {
+		held.Close()
+		t.Fatalf("Start with a held lock: %v", err)
+	}
+	waitScreen(t, s, "READY")
+	if _, err := Start(e.config("say SECOND; wait")); !errors.Is(err, ErrRoleLocked) {
+		t.Fatalf("second Start: %v, want ErrRoleLocked", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := TakeRoleLock(e.lock)
+	if err != nil {
+		t.Fatalf("the lock is still held after Close: %v", err)
+	}
+	again.Close()
+}
+
+// A Start that fails closes the lock it was handed, so that the caller has
+// nothing to release and the role is free again.
+func TestAFailedStartReleasesAHeldRoleLock(t *testing.T) {
+	e := newEnv(t)
+	for name, mod := range map[string]func(*Config){
+		"no log":          func(c *Config) { c.Log = nil },
+		"no state folder": func(c *Config) { c.StateDir = filepath.Join(e.stateDir, "missing") },
+		"bad argv":        func(c *Config) { c.Argv = []string{"agent"} },
+		"missing program": func(c *Config) { c.Argv = []string{"/nonexistent/agent"} },
+	} {
+		held, err := TakeRoleLock(e.lock)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		cfg := e.config("exit 0")
+		cfg.HeldRoleLock = held
+		mod(&cfg)
+		if s, err := Start(cfg); err == nil {
+			s.Close()
+			t.Fatalf("%s: Start succeeded", name)
+		}
+		free, err := TakeRoleLock(e.lock)
+		if err != nil {
+			t.Fatalf("%s: the role is still locked after the failed Start: %v", name, err)
+		}
+		free.Close()
+	}
+}
+
+// Start still takes the lock itself when none is handed to it, and refuses a
+// start with neither a lock nor a path.
+func TestStartNeedsALockOrItsPath(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.config("exit 0")
+	cfg.RoleLock = ""
+	if s, err := Start(cfg); err == nil {
+		s.Close()
+		t.Fatal("Start without a lock or a path succeeded")
+	}
+}
+
 func TestStartRefusesWithoutWhatItNeeds(t *testing.T) {
 	e := newEnv(t)
 	for name, mod := range map[string]func(*Config){

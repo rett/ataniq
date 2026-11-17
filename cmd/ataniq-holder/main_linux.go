@@ -11,6 +11,16 @@
 // In this version it hosts only a scratch agent: there is no sandbox yet, so it
 // refuses to start without --scratch. It is provisional and unqualified, and it
 // hosts no real lead. The development launcher ataniq-scratch starts it.
+//
+// The state folder. The holder writes holder.json (its pid and start ticks, the
+// epoch and launch intent it was given) before the agent starts, and
+// session.Start's final record final.json when the session is over. Before it
+// writes holder.json for a new epoch it renames a final.json that an earlier
+// epoch left to final.json.previous, replacing an older one, so that final.json
+// is never the record of an epoch other than the last one that ended. A start
+// that fails after holder.json was written leaves it in place, and says in its
+// diagnostic that holder.json names a holder that is gone; a reader tells that
+// from a running holder by the pid and its start ticks.
 package main
 
 import (
@@ -52,6 +62,12 @@ Every flag is required except --env. The agent's environment is exactly the
 --env list, in order: nothing of the holder's own environment is passed on.
 ARGV[0] is an absolute path. The agent runs in --tree.
 
+Before a new epoch writes holder.json in --state-dir, a final.json that an
+earlier epoch left there is renamed to final.json.previous.
+
+SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and SIGUSR2 stop the agent and end the holder
+with its final record; SIGHUP and SIGPIPE change nothing.
+
 Exit status: 0 the session ended and its final record was written, 1 a holder
 failure after start, 2 wrong usage or a start-up refusal, 3 the role is held.
 `
@@ -65,8 +81,8 @@ type deps struct {
 	procRoot string
 	// now is the clock of the state file, the event log and the service.
 	now func() time.Time
-	// signals subscribes to SIGHUP, SIGINT, SIGTERM and SIGPIPE; stop gives
-	// the subscription up.
+	// signals subscribes to SIGHUP, SIGPIPE and the signals that stop the
+	// holder (see stopSignals); stop gives the subscription up.
 	signals func() (<-chan os.Signal, func())
 	// ignoredSignals lists the signals the process ignores.
 	ignoredSignals func() ([]syscall.Signal, error)
@@ -74,6 +90,10 @@ type deps struct {
 	// settings (timings, the cgroup switch). They are for tests.
 	tweakSession func(*session.Config)
 	tweakServe   func(*serve.Config)
+	// beforeRoleLock is called just before the role lock is taken, once the
+	// start-up checks have passed. It is for tests, which hold two holders
+	// there to make them take the lock together.
+	beforeRoleLock func()
 }
 
 func realDeps() deps {
@@ -84,7 +104,8 @@ func realDeps() deps {
 			c := make(chan os.Signal, 8)
 			// Notify, not Ignore: an ignored signal is inherited by the agent
 			// (see ptyhost), a handled one is reset to its default by exec.
-			signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
+			signal.Notify(c, syscall.SIGHUP, syscall.SIGPIPE)
+			signal.Notify(c, stopSignals...)
 			return c, func() { signal.Stop(c) }
 		},
 		ignoredSignals: ptyhost.IgnoredSignals,
@@ -93,9 +114,30 @@ func realDeps() deps {
 
 func main() { os.Exit(run(os.Args[1:], realDeps())) }
 
+// stopSignals are the signals that stop the agent and end the holder with its
+// final record. Besides SIGTERM and SIGINT they hold SIGQUIT, SIGUSR1 and
+// SIGUSR2, which would otherwise end the holder at once (the Go runtime dumps
+// its goroutines on SIGQUIT) with no final record: no signal a user can send
+// by accident ends the holder without one. SIGKILL cannot be handled.
+var stopSignals = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGUSR1, syscall.SIGUSR2}
+
+func isStopSignal(s os.Signal) bool {
+	for _, st := range stopSignals {
+		if s == st {
+			return true
+		}
+	}
+	return false
+}
+
 // signalsNeeded are the signals the agent must not inherit as ignored. The
 // holder refuses to start if it ignores any of them.
 var signalsNeeded = []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGPIPE, syscall.SIGTERM}
+
+// staleStateNote ends the diagnostic of a start that failed after the state
+// file was written: the file stays, and a reader must not take it for a
+// running holder. The pid and its start ticks show that it is gone.
+const staleStateNote = StateFileName + " names a holder that is gone"
 
 // holderOut writes the holder's own diagnostics to stderr. A failure to write
 // is ignored: the holder must not end because its journal is gone.
@@ -158,31 +200,52 @@ func run(args []string, d deps) int {
 		}
 		return refuse("dev.tty.legacy_tiocsti cannot be read as 0 or 1, so the TIOCSTI ioctl cannot be shown to be off")
 	}
-	for _, f := range []struct{ what, path string }{{"the state folder", cfg.stateDir}, {"the runtime folder", cfg.runtimeDir}} {
+	// A refusal names the flag, never the path it was given: the path is the
+	// caller's own, and the journal that takes stderr has no need of it.
+	for _, f := range []struct{ flag, path string }{{"--state-dir", cfg.stateDir}, {"--runtime-dir", cfg.runtimeDir}} {
 		if err := checkPrivateDir(f.path); err != nil {
-			return refuse("%s %q %v (it must be a real directory of this user with mode 0700)", f.what, f.path, err)
+			return refuse("%s %v (it must be a real directory of this user with mode 0700)", f.flag, err)
 		}
 	}
 	if fi, err := os.Stat(cfg.tree); err != nil || !fi.IsDir() {
-		return refuse("the work tree %q is not a directory", cfg.tree)
+		return refuse("--tree is not a directory")
 	}
 	ticks, err := selfStartTicks()
 	if err != nil {
 		return refuse("cannot read this process's start time: %v", err)
 	}
 
-	// A second holder for a role that is held changes nothing of the first's:
-	// look at the lock before anything is written. session.Start takes it for
-	// good below.
-	if roleLockHeld(cfg.roleLock) {
-		out.line("refused: the role is already held by another holder (%q is locked)", cfg.roleLock)
-		return exitLocked
-	}
-
-	// From here on SIGTERM and SIGINT end the agent, and SIGHUP changes
-	// nothing: the holder outlives its starter's terminal.
+	// From here on the stop signals end the agent, and SIGHUP changes
+	// nothing: the holder outlives its starter's terminal. One that comes
+	// before the agent starts is acted on just before it would (below).
 	sigc, stopSignals := d.signals()
 	defer stopSignals()
+
+	// The role lock is taken once, here, before anything is opened or written,
+	// and kept until the holder ends: a second holder for a held role is
+	// refused having changed nothing, and two that start together cannot both
+	// write the state file (the lead-hosting design, section 1.6). The lock
+	// belongs to session.Start from the call on.
+	if d.beforeRoleLock != nil {
+		d.beforeRoleLock()
+	}
+	lock, err := session.TakeRoleLock(cfg.roleLock)
+	if errors.Is(err, session.ErrRoleLocked) {
+		out.line("refused: the role is already held by another holder (--role-lock is locked)")
+		return exitLocked
+	} else if err != nil {
+		// The error names the path; its cause (an errno) does not.
+		reason := "it is not a regular file of this user"
+		if cause := errors.Unwrap(err); cause != nil {
+			reason = cause.Error()
+		}
+		return refuse("--role-lock cannot be taken as the role lock: %s", reason)
+	}
+	defer func() {
+		if lock != nil {
+			lock.Close()
+		}
+	}()
 
 	log, err := eventlog.Open(cfg.stateDir, eventlog.Options{Clock: d.now})
 	if err != nil {
@@ -190,6 +253,11 @@ func run(args []string, d deps) int {
 	}
 	defer log.Close()
 
+	// A final record of an earlier epoch is moved aside first, so that
+	// final.json never says "ended" for the agent that is about to run.
+	if err := retireFinalRecord(cfg.stateDir); err != nil {
+		return refuse("cannot move the final record of an earlier epoch aside: %v", err)
+	}
 	// The state file is written before the agent starts (design 1.1).
 	if err := writeStateFile(cfg.stateDir, stateFile{
 		Version: stateFileVersion, Role: cfg.role, Epoch: cfg.epoch, LaunchIntent: cfg.launchIntent,
@@ -203,19 +271,33 @@ func run(args []string, d deps) int {
 	scfg := session.Config{
 		Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10),
 		Argv: cfg.argv, Env: cfg.env, Dir: cfg.tree, Cols: cfg.cols, Rows: cfg.rows,
-		RoleLock: cfg.roleLock, StateDir: cfg.stateDir, Log: log,
+		RoleLock: cfg.roleLock, HeldRoleLock: lock, StateDir: cfg.stateDir, Log: log,
 	}
 	if d.tweakSession != nil {
 		d.tweakSession(&scfg)
 	}
+	// A stop signal that came during start-up ends the holder here,
+	// before the agent exists: there is nothing to stop and nothing to record
+	// but the refusal, and the state file, which names a holder that is going,
+	// is removed. SIGHUP and SIGPIPE change nothing.
+	if s := stopSignalPending(sigc); s != nil {
+		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "signal-before-start"})
+		if err := removeStateFile(cfg.stateDir); err != nil {
+			out.line("cannot remove the state file: %v", err)
+		}
+		out.line("stopped by %s before the agent was started", signalName(*s))
+		return exitRefuse
+	}
+	// Start owns the lock now, whether it succeeds or not.
+	lock = nil
 	sess, err := session.Start(scfg)
 	if err != nil {
 		if errors.Is(err, session.ErrRoleLocked) {
-			out.line("refused: the role is already held by another holder (%q is locked)", cfg.roleLock)
+			out.line("refused: the role is already held by another holder (--role-lock is locked)")
 			return exitLocked
 		}
 		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "start-failed"})
-		out.line("cannot start the agent: %v", err)
+		out.line("cannot start the agent: %v (%s)", err, staleStateNote)
 		return exitFail
 	}
 	defer sess.Close()
@@ -230,7 +312,7 @@ func run(args []string, d deps) int {
 	}
 	srv, err := serve.New(vcfg)
 	if err != nil {
-		out.line("cannot start the attach and control service: %v", err)
+		out.line("cannot start the attach and control service: %v (%s)", err, staleStateNote)
 		return exitFail
 	}
 	defer srv.Close()
@@ -245,7 +327,7 @@ wait:
 	for {
 		select {
 		case s := <-sigc:
-			if s == syscall.SIGTERM || s == syscall.SIGINT {
+			if isStopSignal(s) {
 				// Stop returns when the tree is gone; the lifetime path then
 				// writes the final record and the service sends the Exit.
 				stopOnce.Do(func() {
@@ -279,6 +361,22 @@ wait:
 	return code
 }
 
+// stopSignalPending takes every signal that is waiting in sigc and returns the
+// first one that ends the holder (see stopSignals), or nil.
+func stopSignalPending(sigc <-chan os.Signal) *syscall.Signal {
+	var stop *syscall.Signal
+	for {
+		select {
+		case s := <-sigc:
+			if sg, ok := s.(syscall.Signal); ok && isStopSignal(sg) && stop == nil {
+				stop = &sg
+			}
+		default:
+			return stop
+		}
+	}
+}
+
 func signalName(s syscall.Signal) string {
 	switch s {
 	case syscall.SIGHUP:
@@ -291,6 +389,10 @@ func signalName(s syscall.Signal) string {
 		return "SIGPIPE"
 	case syscall.SIGTERM:
 		return "SIGTERM"
+	case syscall.SIGUSR1:
+		return "SIGUSR1"
+	case syscall.SIGUSR2:
+		return "SIGUSR2"
 	}
 	return "signal " + strconv.Itoa(int(s))
 }

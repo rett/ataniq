@@ -31,39 +31,61 @@ func nothingStarted(t *testing.T, r *rig) {
 	}
 }
 
-// Each start-up refusal exits 2, says why on stderr, never echoes an argument,
-// and leaves nothing behind.
+// untouched checks that a folder holds nothing but the named files.
+func untouched(t *testing.T, dir string, allowed ...string) {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		ok := false
+		for _, a := range allowed {
+			ok = ok || e.Name() == a
+		}
+		if !ok {
+			t.Errorf("a refused start left %s in the other folder", filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// Each start-up refusal exits 2, says why on stderr, never echoes an argument
+// or a path, and leaves nothing behind (in the other folder, when one folder is
+// the wrong one).
 func TestStartUpRefusals(t *testing.T) {
 	const marker = "ARGMARKER-31337"
 	tests := []struct {
 		name  string
 		setup func(r *rig, a *argSpec)
 		want  string // in stderr
+		// folder is the folder that is wrong ("state" or "runtime"), when the
+		// case is about one: the other must be left untouched.
+		folder string
 	}{
-		{"no --scratch", func(r *rig, a *argSpec) { a.scratch = false }, "only a scratch agent"},
-		{"no --scratch and nothing else", func(r *rig, a *argSpec) { a.scratch = false; a.flags = nil }, "sandbox is not built"},
-		{"legacy_tiocsti is 1", func(r *rig, a *argSpec) { r.setTIOCSTI("1\n") }, "legacy_tiocsti is 1"},
-		{"legacy_tiocsti is unknown", func(r *rig, a *argSpec) { r.setTIOCSTI("2\n") }, "cannot be read as 0 or 1"},
-		{"legacy_tiocsti is missing", func(r *rig, a *argSpec) { r.setTIOCSTI("") }, "cannot be read as 0 or 1"},
-		{"state folder with a loose mode", func(r *rig, a *argSpec) { os.Chmod(r.state, 0o755) }, "state folder"},
-		{"state folder with a group mode", func(r *rig, a *argSpec) { os.Chmod(r.state, 0o770) }, "0770"},
-		{"runtime folder with a loose mode", func(r *rig, a *argSpec) { os.Chmod(r.runtime, 0o750) }, "runtime folder"},
-		{"state folder missing", func(r *rig, a *argSpec) { a.set("state-dir", filepath.Join(r.root, "absent")) }, "does not exist"},
+		{"no --scratch", func(r *rig, a *argSpec) { a.scratch = false }, "only a scratch agent", ""},
+		{"no --scratch and nothing else", func(r *rig, a *argSpec) { a.scratch = false; a.flags = nil }, "sandbox is not built", ""},
+		{"legacy_tiocsti is 1", func(r *rig, a *argSpec) { r.setTIOCSTI("1\n") }, "legacy_tiocsti is 1", ""},
+		{"legacy_tiocsti is unknown", func(r *rig, a *argSpec) { r.setTIOCSTI("2\n") }, "cannot be read as 0 or 1", ""},
+		{"legacy_tiocsti is missing", func(r *rig, a *argSpec) { r.setTIOCSTI("") }, "cannot be read as 0 or 1", ""},
+		{"state folder with a loose mode", func(r *rig, a *argSpec) { os.Chmod(r.state, 0o755) }, "--state-dir", "state"},
+		{"state folder with a group mode", func(r *rig, a *argSpec) { os.Chmod(r.state, 0o770) }, "0770", "state"},
+		{"runtime folder with a loose mode", func(r *rig, a *argSpec) { os.Chmod(r.runtime, 0o750) }, "--runtime-dir", "runtime"},
+		{"state folder missing", func(r *rig, a *argSpec) { a.set("state-dir", filepath.Join(r.root, "absent")) }, "does not exist", "state"},
 		{"runtime folder is a file", func(r *rig, a *argSpec) {
 			f := filepath.Join(r.root, "file")
 			os.WriteFile(f, nil, 0o700)
 			a.set("runtime-dir", f)
-		}, "not a real directory"},
+		}, "--runtime-dir is not a real directory", "runtime"},
 		{"state folder is a link", func(r *rig, a *argSpec) {
 			l := filepath.Join(r.root, "link")
 			os.Symlink(r.state, l)
 			a.set("state-dir", l)
-		}, "not a real directory"},
-		{"tree is not a directory", func(r *rig, a *argSpec) { a.set("tree", filepath.Join(r.root, "absent")) }, "work tree"},
-		{"a signal the agent needs is ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGPIPE} }, "ignores SIGPIPE"},
-		{"SIGHUP ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGUSR1, syscall.SIGHUP} }, "ignores SIGHUP"},
-		{"SIGINT ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGINT} }, "ignores SIGINT"},
-		{"SIGTERM ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGTERM} }, "ignores SIGTERM"},
+		}, "--state-dir is not a real directory", "state"},
+		{"tree is not a directory", func(r *rig, a *argSpec) { a.set("tree", filepath.Join(r.root, "absent")) }, "--tree is not a directory", ""},
+		{"a signal the agent needs is ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGPIPE} }, "ignores SIGPIPE", ""},
+		{"SIGHUP ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGUSR1, syscall.SIGHUP} }, "ignores SIGHUP", ""},
+		{"SIGINT ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGINT} }, "ignores SIGINT", ""},
+		{"SIGTERM ignored", func(r *rig, a *argSpec) { r.ignored = []syscall.Signal{syscall.SIGTERM} }, "ignores SIGTERM", ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,12 +103,70 @@ func TestStartUpRefusals(t *testing.T) {
 			if strings.Contains(r.errbuf.String(), marker) {
 				t.Errorf("stderr echoes an argument: %q", r.errbuf.String())
 			}
-			if strings.Contains(tc.name, "state folder") || strings.Contains(tc.name, "runtime folder") || strings.Contains(tc.name, "link") {
-				return // the folder itself is what is wrong
+			// No path the caller gave is echoed.
+			for _, p := range []string{r.root, r.state, r.runtime, r.tree, r.roleLock} {
+				if strings.Contains(r.errbuf.String(), p) {
+					t.Errorf("stderr names the path %q: %q", p, r.errbuf.String())
+				}
 			}
-			nothingStarted(t, r)
+			switch tc.folder {
+			case "":
+				nothingStarted(t, r)
+			case "state":
+				// The runtime folder is as it was: nothing was bound in it.
+				untouched(t, r.runtime)
+			case "runtime":
+				// The state folder holds only the daemon's lock file: no
+				// state file, event log, final record or role lock.
+				untouched(t, r.state, filepath.Base(r.daemonLock))
+			}
 		})
 	}
+}
+
+// A role lock file that cannot be taken is a refusal that names --role-lock and
+// not the path, and nothing is opened or written; a role lock that is held says
+// the same, with exit 3.
+func TestRoleLockRefusalsNameTheFlag(t *testing.T) {
+	t.Run("a folder", func(t *testing.T) {
+		r := newRig(t)
+		dir := filepath.Join(r.root, "lock-is-a-folder")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		code := r.runNow(r.spec("raw; wait").set("role-lock", dir).build())
+		checkRoleLockRefusal(t, r, code, exitRefuse, "cannot be taken")
+	})
+	t.Run("a link", func(t *testing.T) {
+		r := newRig(t)
+		link := filepath.Join(r.root, "lock-is-a-link")
+		if err := os.Symlink(filepath.Join(r.root, "elsewhere"), link); err != nil {
+			t.Fatal(err)
+		}
+		code := r.runNow(r.spec("raw; wait").set("role-lock", link).build())
+		checkRoleLockRefusal(t, r, code, exitRefuse, "cannot be taken")
+	})
+	t.Run("held", func(t *testing.T) {
+		r := newRig(t)
+		held, err := session.TakeRoleLock(r.roleLock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		code := r.runNow(r.spec("raw; wait").build())
+		checkRoleLockRefusal(t, r, code, exitLocked, "already held")
+	})
+}
+
+func checkRoleLockRefusal(t *testing.T, r *rig, code, want int, says string) {
+	t.Helper()
+	if code != want {
+		t.Fatalf("exit %d, want %d; stderr: %s", code, want, r.errbuf.String())
+	}
+	if e := r.errbuf.String(); !strings.Contains(e, "--role-lock") || !strings.Contains(e, says) || strings.Contains(e, r.root) {
+		t.Errorf("stderr %q: want it to name --role-lock, say %q and name no path", e, says)
+	}
+	nothingStarted(t, r)
 }
 
 // The usage errors: a wrong epoch, a relative ARGV[0], a missing flag. Each
