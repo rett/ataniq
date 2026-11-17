@@ -241,7 +241,7 @@ type Stats struct {
 	Invalid         uint64 // events refused for an unknown kind or name
 	Truncated       uint64 // string fields cut to their cap
 	Sanitized       uint64 // code-like strings with characters replaced
-	CountersDropped uint64 // counter entries dropped over MaxCounters
+	CountersDropped uint64 // counter entries dropped over MaxCounters or for a name that became an earlier one
 	GuardDropped    uint64 // guard readings dropped over MaxGuardCodes
 }
 
@@ -511,7 +511,13 @@ func (l *Log) bound(f Fields) Fields {
 				continue
 			}
 			ck := l.code(k, MaxCounterName)
-			out[ck] += f.Counters[k]
+			if _, dup := out[ck]; dup {
+				// Two names became one key. Summing could wrap and hide
+				// both: keep the first in sorted order and count the other.
+				l.stats.CountersDropped++
+				continue
+			}
+			out[ck] = f.Counters[k]
 		}
 		f.Counters = out
 	}

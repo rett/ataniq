@@ -693,6 +693,25 @@ func TestGuardListIsBoundedAndCounted(t *testing.T) {
 	}
 }
 
+func TestCounterNamesThatCollideKeepTheFirst(t *testing.T) {
+	dir := newDir(t)
+	l := openLog(t, dir, Options{})
+	p := strings.Repeat("p", MaxCounterName)
+	mustAppend(t, l, KindHolder, EventCounters, Fields{Counters: map[string]uint64{
+		"a b": 1<<64 - 1, "a_b": 5, // both are "a_b" once sanitised
+		p + "x": 7, p + "y": 9, // both are cut to the same 64 bytes
+		"other": 3,
+	}})
+	e := readAll(t, dir)[0]
+	want := map[string]uint64{"a_b": 1<<64 - 1, p: 7, "other": 3}
+	if !reflect.DeepEqual(e.Counters, want) {
+		t.Fatalf("counters %v, want %v", e.Counters, want)
+	}
+	if s := l.Stats(); s.CountersDropped != 2 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
 func TestCallerPointersAreCopied(t *testing.T) {
 	dir := newDir(t)
 	l := openLog(t, dir, Options{})
