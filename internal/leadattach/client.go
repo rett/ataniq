@@ -392,6 +392,13 @@ func (c *Client) run() {
 			c.setDisconnected(out.reason)
 			wait = TicketPoll * time.Duration(min(1<<min(fails, 6), maxBackoffPolls))
 		default:
+			if ended, _, _ := c.pane.Ended(); ended {
+				// The holder said the stream ended (a State frame) and the
+				// connection broke before its Exit: there is nothing to
+				// attach to again.
+				c.setDisconnected("session ended")
+				return
+			}
 			c.setDisconnected(out.reason)
 			wait = TicketPoll
 		}

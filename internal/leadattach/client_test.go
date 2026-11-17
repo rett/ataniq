@@ -337,6 +337,38 @@ func TestStateFrameSetsTheFactsWithoutEndingThePane(t *testing.T) {
 	e.sameScreen(hc)
 }
 
+func TestAStateThatSaysTheStreamEndedEndsThePane(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeViewer})
+	hc := e.attach(wire.RoleViewer)
+	status := 7
+	hc.send(wire.TypeState, enc(t)(wire.EncodeState(wire.State{
+		Facts:      wire.Facts{StreamEnded: wire.FactYes, TUIExited: wire.FactYes, TreeGone: wire.FactNo},
+		ExitStatus: &status, Idle: "idle",
+	})))
+	e.until("the pane ended", func(terminalconsole.LiveStatus) bool { ended, _, _ := e.pane.Ended(); return ended })
+	if _, got, known := e.pane.Ended(); got != 7 || !known {
+		t.Errorf("pane status %d known %v, want 7 true", got, known)
+	}
+	if st := e.c.Status(); st.End.Stream != terminalconsole.FactYes || st.End.ExitStatus != 7 {
+		t.Errorf("end %+v", st.End)
+	}
+
+	// The connection breaks before the Exit: the client does not go on asking
+	// for tickets for a session that ended.
+	hc.nc.Close()
+	st := e.until("disconnected", func(st terminalconsole.LiveStatus) bool { return st.Conn == terminalconsole.LiveDisconnected })
+	if st.Reason != "session ended" {
+		t.Errorf("reason %q", st.Reason)
+	}
+	calls := e.tickets.callCount()
+	e.tickets.give(1)
+	e.h.noConnection(60 * time.Millisecond)
+	if e.tickets.callCount() != calls {
+		t.Error("the client asked for a ticket after the session ended")
+	}
+}
+
 func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})

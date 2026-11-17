@@ -465,6 +465,16 @@ func (s *session) state(payload []byte) *outcome {
 	if err != nil {
 		return protocolError("the holder sent a bad state frame")
 	}
+	// A State that says the terminal stream ended ends the pane, as the Exit
+	// that follows it would: if the connection drops between the two, the
+	// pane must not stay live with nothing to feed it.
+	if st.Facts.StreamEnded == wire.FactYes {
+		status, known := 0, st.ExitStatus != nil
+		if known {
+			status = *st.ExitStatus
+		}
+		c.pane.End(status, known)
+	}
 	c.mutate(func() {
 		c.st.End = endFacts(st.Facts, st.ExitStatus)
 		c.st.Idle, c.st.Title = st.Idle, st.Title
