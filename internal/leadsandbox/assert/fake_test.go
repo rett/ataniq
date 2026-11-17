@@ -1,0 +1,160 @@
+package assert
+
+import (
+	"fmt"
+	"io/fs"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+type fakeNode struct {
+	info FileInfo
+	data []byte
+}
+
+// fakeSys is the fake System: every answer is data the test sets.
+type fakeSys struct {
+	nodes     map[string]fakeNode
+	lstatErr  map[string]error
+	readErr   map[string]error
+	mounts    []Mount
+	mountsErr error
+	env       []string
+	dialErr   map[string]error // "network address" -> error; nil value means connected
+	hosts     map[string][]string
+	lookupErr error
+	writable  map[string]bool
+	accessErr map[string]error
+
+	dialed []string
+}
+
+func (f *fakeSys) Lstat(path string) (FileInfo, error) {
+	if err := f.lstatErr[path]; err != nil {
+		return FileInfo{}, err
+	}
+	n, ok := f.nodes[path]
+	if !ok {
+		return FileInfo{}, &fs.PathError{Op: "lstat", Path: path, Err: syscall.ENOENT}
+	}
+	return n.info, nil
+}
+
+func (f *fakeSys) ReadFile(path string, limit int) ([]byte, error) {
+	if err := f.readErr[path]; err != nil {
+		return nil, err
+	}
+	n, ok := f.nodes[path]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOENT}
+	}
+	if !n.info.IsRegular() {
+		return nil, fmt.Errorf("read %s: %w", path, ErrNotRegular)
+	}
+	if len(n.data) > limit {
+		return nil, fmt.Errorf("read %s: %w", path, ErrTooLarge)
+	}
+	return n.data, nil
+}
+
+func (f *fakeSys) Mounts() ([]Mount, error) { return f.mounts, f.mountsErr }
+func (f *fakeSys) Environ() []string        { return f.env }
+
+func (f *fakeSys) Dial(network, address string, _ time.Duration) error {
+	key := network + " " + address
+	f.dialed = append(f.dialed, key)
+	if err, ok := f.dialErr[key]; ok {
+		return err
+	}
+	return syscall.ECONNREFUSED
+}
+
+func (f *fakeSys) LookupHost(host string, _ time.Duration) ([]string, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
+	return f.hosts[host], nil
+}
+
+func (f *fakeSys) Writable(path string) (bool, error) {
+	if err := f.accessErr[path]; err != nil {
+		return false, err
+	}
+	return f.writable[path], nil
+}
+
+func (f *fakeSys) setFile(path string, data string) {
+	f.nodes[path] = fakeNode{info: FileInfo{Mode: 0o644, Size: int64(len(data))}, data: []byte(data)}
+	delete(f.lstatErr, path)
+}
+
+func (f *fakeSys) setDir(path string) {
+	f.nodes[path] = fakeNode{info: FileInfo{Mode: fs.ModeDir | 0o755}}
+}
+
+func (f *fakeSys) setMount(point string, ro bool) {
+	opts := "rw,nosuid,nodev,relatime"
+	if ro {
+		opts = "ro,nosuid,nodev,relatime"
+	}
+	f.mounts = append(f.mounts, Mount{ID: 100 + len(f.mounts), Root: "/", Point: point, Options: opts, FSType: "tmpfs", Source: "tmpfs", SuperOptions: "rw"})
+}
+
+// goodSystem is a fake that passes every inside check of the spec.
+func goodSystem(s Spec) *fakeSys {
+	f := &fakeSys{
+		nodes:     map[string]fakeNode{},
+		lstatErr:  map[string]error{},
+		readErr:   map[string]error{},
+		dialErr:   map[string]error{},
+		hosts:     map[string][]string{s.ProviderHost: {"192.0.2.10", "2001:db8::10"}},
+		writable:  map[string]bool{},
+		accessErr: map[string]error{},
+	}
+	for _, e := range s.Env {
+		f.env = append(f.env, e.Name+"="+e.Value)
+	}
+	f.setFile(tiocstiSysctl, "0\n")
+	f.setFile(procStatus, "Name:\tprobe\nSeccomp:\t0\nSeccomp_filters:\t0\n")
+	f.setDir(s.Tree)
+	f.setDir(s.Tree + "/.git")
+	f.setFile(s.GitReadOnly[0], "[core]\n")
+	f.setDir(s.GitReadOnly[1])
+	f.setDir(s.GitReadOnly[2])
+	f.setFile(s.ManagedSettings, `{"hooks":{"PreToolUse":"`+s.ManagedMarker+`"}}`)
+	f.setMount("/", false)
+	f.setMount("/home/lead", false)
+	f.setMount(s.Tree, false)
+	for _, p := range s.GitReadOnly {
+		f.setMount(p, true)
+	}
+	f.setMount(s.ManagedSettings, true)
+	return f
+}
+
+// find returns the result of assertion n.
+func find(t *testing.T, r Report, n int) Result {
+	t.Helper()
+	for _, res := range r.Results {
+		if res.Number == n && !strings.HasSuffix(res.ID, OutsideSuffix) {
+			return res
+		}
+	}
+	t.Fatalf("no result for assertion %d in %+v", n, r.Results)
+	return Result{}
+}
+
+// want checks status and a substring of the detail of assertion n.
+func want(t *testing.T, r Report, n int, st Status, detail string) {
+	t.Helper()
+	res := find(t, r, n)
+	if res.Status != st {
+		t.Errorf("assertion %d: status %s (%s), want %s", n, res.Status, res.Detail, st)
+		return
+	}
+	if !strings.Contains(res.Detail, detail) {
+		t.Errorf("assertion %d: detail %q does not contain %q", n, res.Detail, detail)
+	}
+}
