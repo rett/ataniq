@@ -2,8 +2,35 @@
 // state machine of the lead injection protocol (design sections 4.1, 4.2 and
 // 4.5).
 //
-// This part holds the rules about who may send a message to whom and what a
-// message may look like: the typed sender and target, the edge policy, the
-// name grammar, the header line and the body rules that keep a body from
-// forging a header. It is pure: no I/O, no goroutine and no clock.
+// A message from the daemon, the supervisor or a project lead to a lead or the
+// supervisor becomes a command. This package decides whether the message may be
+// admitted (who may send to whom, the shape of the header, the characters of
+// the text, the size and rate caps), keeps the commands of each target in a
+// first-in first-out queue, and moves each command through the states
+// accepted, queued, dispatching, delivered, refused, uncertain and resolved.
+// Every move is first appended to a Journal and only then applied, so the
+// journal is the truth: Restore rebuilds the machine from its records.
+//
+// The package is pure. It does no I/O of its own, starts no goroutine and
+// reads no clock: each method that needs the time takes it as a parameter. A
+// Machine is not safe for concurrent use; the daemon owns one instance and
+// serialises calls to it.
+//
+// The package is not the fence and not the holder. It never writes to a
+// terminal, never reads a screen and never imports the fence: the daemon asks
+// BeginDispatch for the text to send, runs the fence, and reports the fence
+// result back as plain values with RecordFence. Delivery evidence (for example
+// a position in the conversation file) is likewise a value the daemon passes
+// to ConfirmDelivery. Nothing here retries: a command that is uncertain stays
+// uncertain, and freezes its queue, until an operator records a decision with
+// Resolve.
+//
+// Ended commands (delivered, refused, resolved) stay in memory, without their
+// text, so that a command id is never used twice; trimming that history is the
+// daemon's concern. Refusals at admission are journaled too and keep no command.
+//
+// A message is data. Its text is a header line, a newline and the body; the
+// header names the sender, which is never the owner (the owner speaks as the
+// writer). The rules that keep a body from forging a header are written on
+// CheckBody.
 package command
