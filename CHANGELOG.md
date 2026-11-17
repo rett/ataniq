@@ -106,12 +106,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cannot act on the terminal. Only `run` takes SIGTERM and SIGINT as the
   request to stop; they end `status` at once. `status` exits 0 when the daemon
   answered, 20 when no daemon answers, 21 when it refuses the user and 22 for
-  an answer that is not valid. The requested and the observed profile stay apart, and a field that was
-  not observed is shown as not observed. `ataniqd version` prints the version,
-  `0.0.0-dev` unless set with a linker flag, because the `VERSION` file cannot
-  be embedded from the command's folder. Leads, coordinators, the holder, the
-  sandbox and the console are not part of it, and nothing in it has run against
-  systemd.
+  an answer that is not valid. The requested and the observed profile stay
+  apart, and a field that was not observed is shown as not observed. The
+  protocol has no place for the proof of a stopped or ended state or for the
+  unit evidence, so `status` shows neither. `ataniqd version` prints the
+  version, `0.0.0-dev` unless set with a linker flag, because the `VERSION` file
+  cannot be embedded from the command's folder. Leads, coordinators, the holder,
+  the sandbox and the console are not part of it, and nothing in it has run
+  against systemd.
 
 ### Changed
 
