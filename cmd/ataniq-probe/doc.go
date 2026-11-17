@@ -64,8 +64,7 @@
 // The launch plan puts this step on the host between pasta and bubblewrap,
 // because pasta closes every descriptor it inherits before it starts its
 // command. FD is 3 to 1023 (decimal digits, no leading zero), each at most
-// once, PATH and COMMAND are absolute
-// paths, and at most 8 files are given. A --read file is opened read-only and
+// once, PATH and COMMAND are absolute paths, and at most 8 files are given. A --read file is opened read-only and
 // must be a regular file. A --write file is opened write-only, appending,
 // never created and never truncated, and must be a regular file or a FIFO. All
 // are opened with O_NOFOLLOW (a link at the last component is refused),
@@ -78,6 +77,19 @@
 // environment as Go reads it (see above). Any error is exit 98 with one line,
 // and nothing is executed; so is a number that the Go runtime holds (see
 // below).
+//
+// The checks on a path are not atomic with the open, and the probe does not
+// try to make them so. A --write path is looked at (lstat) before it is opened
+// and checked again on the descriptor it opened; a --read path is checked only
+// on the descriptor, after the open, so a device node at a --read path is
+// opened (without becoming a controlling terminal, and not blocking) before it
+// is refused. O_NOFOLLOW covers the last component only. Whoever can rename or
+// replace an entry in a folder on the path can change what the probe opens
+// between the look and the open. So every path given to the pass-through mode
+// must lie in a folder that only the holder can write, and nobody else may be
+// able to change a folder above it; the launch plan requires the report path
+// to lie directly in a folder the holder owns. The probe does not reopen the
+// descriptor through /proc to compare it with the first look.
 //
 // # Descriptors are closed by the exec
 //
