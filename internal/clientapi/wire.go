@@ -285,7 +285,11 @@ const (
 // coordinator, told apart by Kind. The fields Feature, Parent, ParentEpoch,
 // Instance and Identity belong to a coordinator; they are omitted from the
 // wire (not null, not empty) for a lead and the supervisor, and a client
-// reads an absent one as unset.
+// reads an absent one as unset. The server passes the entries of the handler
+// through and does not check them: the handler must leave those fields unset
+// for a lead and the supervisor, and must keep the invariants of a
+// coordinator's entry (Instance equals Epoch, Identity has the form that the
+// leadrole package gives).
 type LeadStatus struct {
 	// Role is the canonical role string: "<project>/lead", "supervisor" or,
 	// for a coordinator, "<project>/coord/<feature>".
