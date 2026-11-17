@@ -62,7 +62,8 @@ type HeldPiece struct {
 	At time.Time
 	// Detail is a bounded, safe rendering of the call: "late-evidence: " and the
 	// evidence, or "late-fence-result: " and what the fence wrote, its outcome
-	// and its readings.
+	// and its readings. It keeps line breaks, so whatever displays it must
+	// quote it.
 	Detail string
 }
 
@@ -98,8 +99,10 @@ type TargetView struct {
 	// first and at most eight, each with its counter value, its command, its
 	// time and a rendering of the call. A piece is shown even when its note was
 	// refused (a full note list, bad evidence), so an operator who shows
-	// HeldPieces up to HeldSeq has seen what a release covers. Older pieces are
-	// in the journal. A release ends them with the hold.
+	// HeldPieces up to HeldSeq has seen what a release covers only when the
+	// first piece shown has the counter the hold started at. Older pieces are
+	// only in the journal (hold records), and a release screen shows them from
+	// there. A release ends them with the hold.
 	Held       bool
 	HeldFor    string
 	HeldReason Reason
