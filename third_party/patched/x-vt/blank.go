@@ -14,7 +14,7 @@ import (
 // whatever the code. A sequence that blanks the whole screen (erase display,
 // the full reset, the switch of the alternate screen, a scroll by the whole
 // region) used to write all of it, cell by cell, and 64 KiB of them kept the
-// emulator, and the lock of whoever called it, for 10 to 70 seconds.
+// emulator, and the lock of whoever called it, for 6 to 54 seconds per 64 KiB.
 //
 // A line now carries a mark, the cell that every one of its cells holds (a
 // blank cell with the pen's background, for these sequences). A mark is
@@ -38,7 +38,7 @@ import (
 //   - A stale line has a mark, and its cells are not to be read.
 //   - Whatever changes cells of a line writes it first (flush) and drops the
 //     mark (forget), unless it sets the whole line, which sets the mark
-//     (setLines) or drops it (overwritten).
+//     (setLines).
 //   - The marks move with their lines (moveLines).
 //   - What reads the cells of a line from the buffer first writes it
 //     (CellAt, the state, the text and the recount of the links, which skips
@@ -148,20 +148,6 @@ func (s *Screen) forgetRows(y0, y1 int) {
 	for y := max(y0, 0); y < min(y1, len(s.marks)); y++ {
 		s.forget(y)
 	}
-}
-
-// overwritten is what a change of every cell of line y does: whatever the
-// line held is gone, so it needs no write and no mark.
-func (s *Screen) overwritten(y int) {
-	if y < 0 || y >= len(s.marks) {
-		return
-	}
-	m := &s.marks[y]
-	if m.stale {
-		m.stale = false
-		s.stale--
-	}
-	m.cell = nil
 }
 
 // setLines makes the lines from y0 up to y1 a line of the cell c, which
