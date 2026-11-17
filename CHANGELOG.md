@@ -82,24 +82,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   creates the state folder with mode 0700 and refuses one that is not the
   caller's or is open to group or others, takes `daemon.lock` there (a second
   daemon exits with its own code and names the lock as held, with the pid in
-  the file shown as a hint, not as proof), opens the registry journal in
+  the file shown as a hint, not as proof), takes a second lock,
+  `daemon.sock.lock` in the runtime folder, opens the registry journal in
   `registry/` (a corrupt one stops the daemon and nothing is repaired),
-  reconciles once, takes a second lock, `daemon.sock.lock` in the runtime
-  folder, removes a stale socket only once it holds both locks, and serves
-  `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. The runtime
-  folder lock keeps two daemons with different state folders and one runtime
-  folder from taking each other's socket: the second exits with code 17 and
-  says that another daemon serves that folder, with the pid in the lock shown
-  as a hint. A socket or lock file that a crashed daemon left does not block
+  reconciles once, removes a stale socket only once it holds both locks, and
+  serves `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. The
+  runtime folder lock keeps two daemons with different state folders and one
+  runtime folder from taking each other's socket: the second exits with code 17
+  and says that another daemon serves that folder, with the pid in the lock
+  shown as a hint. It is refused before it opens its registry, so it has
+  reconciled nothing and written nothing to its journal. A socket path that is
+  too long for a Unix socket is refused before the runtime folder or the lock
+  file is made. A socket or lock file that a crashed daemon left does not block
   the next start. At shutdown it stops accepting, waits for the connections for
   a bounded time, closes the listener (which removes the socket) under the
-  runtime folder lock, closes the registry and releases the daemon lock last;
+  runtime folder lock, closes the registry, releases the runtime folder lock
+  and releases the daemon lock last;
   when the server does not end in that time it exits with code 19, says what is
-  left and closes and releases nothing under it, the locks included. It never
-  stops a lead or any unit. The reconcile reads the
+  left and closes the listener; the registry and both locks are left to the end
+  of the process. It never stops a lead or any unit. The reconcile reads the
   units and may write the registry's journal, the states stopped, ended or
   unknown with their proof or reason and the outcomes adopted or abandoned of
-  launch intents; it starts, stops and signals nothing. When systemd cannot be
+  launch intents, and, once it has acted on every role of a registry whose
+  journal was cut when it was opened, the acknowledgement of that cut, which
+  is a record of its own kind in the journal; it starts, stops and signals
+  nothing. A cut that was acknowledged shows no more in `status`; a cut that
+  stays unacknowledged (the manager did not answer for a role, or the
+  reconcile stopped first) shows as the reconcile not completed, and the next
+  start acts on it again. When systemd cannot be
   asked (also when the registry has no role to ask about), when any call to it
   failed during the reconcile, or when the reconcile ran out of time (also in
   its last step), the daemon still serves the roles as the registry has them,

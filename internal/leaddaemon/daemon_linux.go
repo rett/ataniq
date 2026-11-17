@@ -103,8 +103,8 @@ func (d *daemon) step(s Step) {
 // ended within the shutdown grace makes it return a [StartupError] of
 // [StepShutdown] ([ExitShutdown]) that says what is left: the registry is then
 // left open, with the daemon lock and the socket lock held, not closed under a
-// goroutine that may still use them, and all end with the process. It starts, signals and stops
-// no unit.
+// goroutine that may still use them, and all end with the process. It starts,
+// signals and stops no unit.
 func Run(ctx context.Context, cfg Config) error {
 	d := &daemon{Config: cfg, log: cfg.Log}
 	if d.log == nil {
@@ -185,6 +185,35 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
+	// socket lock, before the registry is opened and reconciled, so that a
+	// daemon that is refused here has written nothing: another daemon with
+	// another state folder and the same runtime folder holds it. The daemon
+	// lock is per state folder and cannot tell a live socket from a stale one
+	// across state folders; this lock is per runtime folder. It is released
+	// after the registry is closed and before the daemon lock.
+	d.step(StepSocketLock)
+	if err := ensureRuntimeDir(d.RuntimeDir); err != nil {
+		return &StartupError{Step: StepSocketLock, Err: err}
+	}
+	sockLock, err := leadlock.Acquire(SocketLockPath(d.RuntimeDir))
+	if err != nil {
+		if errors.Is(err, leadlock.ErrHeld{}) {
+			return &StartupError{Step: StepSocketLock, Err: fmt.Errorf("another daemon serves the runtime folder %s (the pid in the lock is a hint, not proof): %w", d.RuntimeDir, err)}
+		}
+		return &StartupError{Step: StepSocketLock, Err: err}
+	}
+	defer func() {
+		if abandoned {
+			return
+		}
+		if err := sockLock.Release(); err != nil {
+			d.logf("release the socket lock: %v", err)
+		}
+	}()
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	// registry
 	d.step(StepRegistry)
 	reg, err := leadregistry.Open(filepath.Join(d.StateDir, RegistryDirName), leadregistry.Options{Now: d.Clock.Now})
@@ -244,30 +273,11 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
-	// stale socket, only with both locks held: the daemon lock of this state
-	// folder, and the socket lock of the runtime folder, which another daemon
-	// with another state folder and the same runtime folder would hold. The
-	// socket lock is held until after the listener is closed, so that the
-	// removal of a stale socket and the unlink at close are both under it.
+	// stale socket, with both locks held (the socket lock was taken before the
+	// registry was opened). The listener is closed, which unlinks the socket,
+	// before the socket lock is released, so that the removal of a stale socket
+	// and the unlink at close are both under it.
 	d.step(StepStaleSocket)
-	if err := ensureRuntimeDir(d.RuntimeDir); err != nil {
-		return &StartupError{Step: StepStaleSocket, Err: err}
-	}
-	sockLock, err := leadlock.Acquire(SocketLockPath(d.RuntimeDir))
-	if err != nil {
-		if errors.Is(err, leadlock.ErrHeld{}) {
-			return &StartupError{Step: StepStaleSocket, Err: fmt.Errorf("another daemon serves the runtime folder %s (the pid in the lock is a hint, not proof): %w", d.RuntimeDir, err)}
-		}
-		return &StartupError{Step: StepStaleSocket, Err: err}
-	}
-	defer func() {
-		if abandoned {
-			return
-		}
-		if err := sockLock.Release(); err != nil {
-			d.logf("release the socket lock: %v", err)
-		}
-	}()
 	removed, err := clientapi.RemoveStale(d.RuntimeDir)
 	if err != nil {
 		return &StartupError{Step: StepStaleSocket, Err: err}
@@ -320,11 +330,12 @@ func Run(ctx context.Context, cfg Config) error {
 			serveErr = &StartupError{Step: StepServe, Err: err}
 		}
 	}
-	// The socket lock (the listener is closed by then), the registry and the
-	// daemon lock are released by the deferred calls, in that order: the daemon
-	// lock last, unless the server is left running. A server that is
-	// left running is reported by the returned error alone, which the command
-	// prints once.
+	// The registry, the socket lock and the daemon lock are released by the
+	// deferred calls, in that order, the daemon lock last, and the listener is
+	// closed (which unlinks the socket) by then, under the socket lock. A
+	// server that is left running leaves all three to the end of the process,
+	// and is reported by the returned error alone, which the command prints
+	// once.
 	return serveErr
 }
 
@@ -358,8 +369,12 @@ func (d *daemon) checkConfig() error {
 // ensureRuntimeDir makes the runtime folder with mode 0700 when it is missing
 // (its parent must exist, as for [clientapi.Listen]) and checks it as Listen
 // does: a real folder, owned by the caller, with no access for group or
-// others. The socket lock is made in it, so it is checked before that.
+// others. The socket lock is made in it, so it is checked before that. A
+// socket path that cannot be bound is refused first, before anything is made.
 func ensureRuntimeDir(dir string) error {
+	if err := clientapi.CheckSocketPath(dir); err != nil {
+		return err
+	}
 	if err := os.Mkdir(dir, 0o700); err == nil {
 		// The umask can only narrow 0700; this sets it exactly.
 		if err := os.Chmod(dir, 0o700); err != nil {
@@ -412,10 +427,12 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 		completed = false
 		d.logf("the reconcile did not finish within %s; it is shown as not completed", d.ReconcileTimeout)
 	} else if rctx.Err() != nil && ctx.Err() == nil {
-		// The deadline ended inside the last role's call: Reconcile saw no later
-		// step that would have noticed it, and returned no error.
+		// The deadline had passed when Reconcile returned, without an error: it
+		// ended inside the last role's call, where no later step would have
+		// noticed it, or just after the reconcile finished. The two cannot be
+		// told apart here, and both are shown as not completed.
 		completed = false
-		d.logf("the reconcile ran out of time (%s) in its last step; it is shown as not completed", d.ReconcileTimeout)
+		d.logf("the reconcile's deadline (%s) had passed when it returned; it is shown as not completed", d.ReconcileTimeout)
 	}
 	unavailable := 0
 	for _, r := range rep.Roles {

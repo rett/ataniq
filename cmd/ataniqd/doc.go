@@ -5,10 +5,10 @@
 //	ataniqd status [--socket PATH] [--json]
 //	ataniqd version
 //
-// run takes the daemon lock in the state folder, opens the registry there,
-// reconciles it once against the systemd user manager, and answers the
-// client protocol's hello and status on a private socket until it gets
-// SIGTERM or SIGINT. The state folder defaults to $XDG_STATE_HOME/ataniq,
+// run takes the daemon lock in the state folder and the socket lock in the
+// runtime folder, opens the registry in the state folder, reconciles it once
+// against the systemd user manager, and answers the client protocol's hello
+// and status on a private socket until it gets SIGTERM or SIGINT. The state folder defaults to $XDG_STATE_HOME/ataniq,
 // else $HOME/.local/state/ataniq; the runtime folder, which holds
 // daemon.sock, to $XDG_RUNTIME_DIR/ataniq, with no default (and never a
 // shared folder) when XDG_RUNTIME_DIR is not set. It refuses to run as root.

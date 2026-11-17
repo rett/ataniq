@@ -54,6 +54,13 @@ func checkDir(dir string) (path string, err error) {
 	return path, nil
 }
 
+// CheckSocketPath reports whether the socket path of the folder dir fits in a
+// Unix socket address, which holds fewer bytes than a path can have. [Listen]
+// and [RemoveStale] refuse a longer one; a caller that makes the folder or a
+// file in it itself calls this first, so that nothing is made for a path that
+// is refused later. It looks at the text only and touches nothing.
+func CheckSocketPath(dir string) error { return checkPathLen(SocketPath(dir)) }
+
 func checkPathLen(path string) error {
 	if len(path) > maxSocketPath {
 		return fmt.Errorf("clientapi: socket path is %d bytes, over the %d a Unix socket address holds", len(path), maxSocketPath)
@@ -104,8 +111,8 @@ func ensureDir(dir string) (string, error) {
 //
 // Listen never removes an existing file. When daemon.sock already exists the
 // bind fails with an error that matches syscall.EADDRINUSE; a stale one is
-// removed by [RemoveStale], which the caller invokes after it holds the daemon
-// lock. Closing the returned listener unlinks the socket file.
+// removed by [RemoveStale], which the caller invokes after it holds the
+// runtime-folder lock. Closing the returned listener unlinks the socket file.
 func Listen(dir string) (net.Listener, string, error) {
 	path, err := ensureDir(dir)
 	if err != nil {
@@ -129,8 +136,10 @@ func Listen(dir string) (net.Listener, string, error) {
 // RemoveStale removes a socket file left in dir by an earlier daemon, and
 // reports whether it removed one. Listen never does this itself.
 //
-// Precondition: the caller holds the daemon lock (the exclusive lock that
-// lets only one daemon run). With it held, no other daemon can be serving on
+// Precondition: the caller holds the runtime-folder lock (the exclusive lock
+// on a file in dir that lets only one daemon serve that folder; a lock per
+// state folder does not, since two daemons with different state folders can
+// share one runtime folder). With it held, no other daemon can be serving on
 // this socket, so any socket file here is stale; RemoveStale does not probe
 // the socket and cannot tell a live one from a stale one. Calling it without
 // the lock can unlink a live daemon's socket.

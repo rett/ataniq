@@ -2,6 +2,7 @@ package leaddaemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,7 +38,7 @@ func TestStartupOrderAndCleanShutdown(t *testing.T) {
 	if err := d.stop(); err != nil {
 		t.Fatalf("Run returned %v after SIGTERM", err)
 	}
-	want := []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket, StepSocket, StepServe, StepShutdown}
+	want := []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket, StepSocket, StepServe, StepShutdown}
 	if got := e.order.get(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps %v, want %v", got, want)
 	}
@@ -152,7 +153,7 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 			if err := os.WriteFile(path, append(b, []byte("{}\n")...), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, StepRegistry, ExitRegistry, "corrupt", []Step{StepConfig, StepState, StepLock, StepRegistry}},
+		}, StepRegistry, ExitRegistry, "corrupt", []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry}},
 		{"registry locked by another writer", func(e *env, cfg *Config) {
 			if err := os.MkdirAll(e.state, 0o700); err != nil {
 				t.Fatal(err)
@@ -162,13 +163,13 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { reg.Close() })
-		}, StepRegistry, ExitRegistry, "locked", []Step{StepConfig, StepState, StepLock, StepRegistry}},
+		}, StepRegistry, ExitRegistry, "locked", []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry}},
 		{"boot identity unreadable", func(e *env, cfg *Config) {
 			cfg.BootID = func() (string, error) { return "", errors.New("no boot id") }
-		}, StepManager, ExitManager, "boot identity", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager}},
+		}, StepManager, ExitManager, "boot identity", []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry, StepManager}},
 		{"manager factory fails", func(e *env, cfg *Config) {
 			cfg.NewManager = func(context.Context) (leadunit.Manager, error) { return nil, errors.New("no tools") }
-		}, StepManager, ExitManager, "no tools", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager}},
+		}, StepManager, ExitManager, "no tools", []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry, StepManager}},
 		{"runtime folder open to the group", func(e *env, cfg *Config) {
 			if err := os.Mkdir(e.runtime, 0o700); err != nil {
 				t.Fatal(err)
@@ -176,7 +177,7 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 			if err := os.Chmod(e.runtime, 0o770); err != nil {
 				t.Fatal(err)
 			}
-		}, StepStaleSocket, ExitSocket, "group or others", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
+		}, StepSocketLock, ExitSocket, "group or others", []Step{StepConfig, StepState, StepLock, StepSocketLock}},
 		{"a file where the socket goes", func(e *env, cfg *Config) {
 			if err := os.Mkdir(e.runtime, 0o700); err != nil {
 				t.Fatal(err)
@@ -184,10 +185,10 @@ func TestFailuresAreDistinctAndFailClosed(t *testing.T) {
 			if err := os.WriteFile(e.socket(), []byte("mine"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}, StepStaleSocket, ExitSocket, "not a socket", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
+		}, StepStaleSocket, ExitSocket, "not a socket", []Step{StepConfig, StepState, StepLock, StepSocketLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
 		{"socket path too long", func(e *env, cfg *Config) {
 			cfg.RuntimeDir = filepath.Join(e.base, strings.Repeat("r", 120))
-		}, StepStaleSocket, ExitSocket, "socket path", []Step{StepConfig, StepState, StepLock, StepRegistry, StepManager, StepReconcile, StepStaleSocket}},
+		}, StepSocketLock, ExitSocket, "socket path", []Step{StepConfig, StepState, StepLock, StepSocketLock}},
 	}
 	seen := map[int]bool{}
 	for _, tt := range tests {
@@ -418,9 +419,7 @@ func TestSignalDuringStartupStopsBeforeServing(t *testing.T) {
 		t.Fatalf("steps %v", got)
 	}
 	e.lockFree()
-	if _, err := os.Lstat(e.runtime); err == nil {
-		t.Fatal("a runtime folder was made")
-	}
+	e.noSocketMade()
 }
 
 // TestStuckServerIsReportedAndNothingIsClosedUnderIt: a server that does not
@@ -542,10 +541,29 @@ func TestTwoDaemonsOneRuntimeFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// B has a role shown ready whose unit is gone, which a reconcile would
+	// write to its journal. B is refused before its registry is opened, so
+	// nothing is written and the manager is not asked.
 	b := newEnv(t)
 	b.runtime = a.runtime
-	err := b.runToEnd(b.config())
-	se := mustFail(t, err, StepStaleSocket, ExitSocket)
+	aReadyRoleWhoseUnitIsGone(t, b)
+	journal := filepath.Join(b.state, RegistryDirName, leadregistry.FileName)
+	before, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := len(b.fake.Calls())
+	err = b.runToEnd(b.config())
+	se := mustFail(t, err, StepSocketLock, ExitSocket)
+	if got, want := b.order.get(), []Step{StepConfig, StepState, StepLock, StepSocketLock}; !reflect.DeepEqual(got, want) {
+		t.Errorf("steps %v, want %v", got, want)
+	}
+	if after, err := os.ReadFile(journal); err != nil || !bytes.Equal(after, before) {
+		t.Errorf("the refused daemon wrote to its journal: %v", err)
+	}
+	if n := len(b.fake.Calls()); n != calls {
+		t.Errorf("the refused daemon made %d manager calls", n-calls)
+	}
 	for _, want := range []string{"another daemon serves the runtime folder", "pid hint " + strconv.Itoa(os.Getpid()), "not proof"} {
 		if !strings.Contains(se.Error(), want) {
 			t.Errorf("message %q lacks %q", se.Error(), want)
@@ -590,6 +608,37 @@ func TestTwoDaemonsOneRuntimeFolder(t *testing.T) {
 	}
 }
 
+// TestTooLongSocketPathLeavesNothingBehind: a runtime folder whose socket path
+// does not fit in a Unix socket address is refused before the folder or the
+// socket lock file is made, whether the folder is missing or already there.
+func TestTooLongSocketPathLeavesNothingBehind(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		exist bool
+	}{{"folder missing", false}, {"folder there", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			cfg := e.config()
+			cfg.RuntimeDir = filepath.Join(e.base, strings.Repeat("r", 120))
+			if tt.exist {
+				if err := os.Mkdir(cfg.RuntimeDir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mustFail(t, e.runToEnd(cfg), StepSocketLock, ExitSocket)
+			if !tt.exist {
+				if _, err := os.Lstat(cfg.RuntimeDir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("the runtime folder was made: %v", err)
+				}
+				return
+			}
+			if left, err := os.ReadDir(cfg.RuntimeDir); err != nil || len(left) != 0 {
+				t.Fatalf("the folder holds %d entries after the refusal: %v", len(left), err)
+			}
+		})
+	}
+}
+
 // TestShutdownReleasesTheSocketLock: after a clean shutdown the socket is gone
 // and the socket lock can be taken; the lock file itself stays.
 func TestShutdownReleasesTheSocketLock(t *testing.T) {
@@ -630,7 +679,7 @@ func TestSocketLockHeldElsewhereLeavesTheSocketAlone(t *testing.T) {
 	cmd, _ := holdLockInAnotherProcess(t, SocketLockPath(e.runtime))
 	makeStaleSocket(t, e.socket())
 	err := e.runToEnd(e.config())
-	se := mustFail(t, err, StepStaleSocket, ExitSocket)
+	se := mustFail(t, err, StepSocketLock, ExitSocket)
 	if !strings.Contains(se.Error(), "pid hint "+strconv.Itoa(cmd.Process.Pid)) || !strings.Contains(se.Error(), "not proof") {
 		t.Fatalf("message %q lacks the holder's pid as a hint", se.Error())
 	}
@@ -641,8 +690,9 @@ func TestSocketLockHeldElsewhereLeavesTheSocketAlone(t *testing.T) {
 }
 
 // TestCrashedDaemonLeftoversDoNotBlock: a daemon that was killed leaves its
-// socket and both lock files, the second with a pid in it; the next daemon
-// starts, removes the socket and takes the locks.
+// socket and the socket lock file with its pid in it; the next daemon starts,
+// removes the socket and takes the lock. A killed holder of the daemon lock is
+// covered by the leadlock tests.
 func TestCrashedDaemonLeftoversDoNotBlock(t *testing.T) {
 	e := newEnv(t)
 	if err := os.Mkdir(e.runtime, 0o700); err != nil {

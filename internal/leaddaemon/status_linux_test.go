@@ -304,10 +304,10 @@ func TestRebootShowsStoppedAndStartsNothing(t *testing.T) {
 	}
 }
 
-func TestUnacknowledgedRecoveryShowsTheReconcileIncomplete(t *testing.T) {
-	e := newEnv(t)
-	registryOfEveryKind(t, e)
-	// An append that never finished: a line with no end.
+// tearJournal appends an unfinished line to the registry's journal, as an
+// append that never finished would leave it.
+func tearJournal(t *testing.T, e *env) {
+	t.Helper()
 	path := filepath.Join(e.state, RegistryDirName, leadregistry.FileName)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
@@ -317,19 +317,86 @@ func TestUnacknowledgedRecoveryShowsTheReconcileIncomplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.Close()
+}
+
+// cutUnacknowledged reports whether the registry of the state folder, opened
+// afresh, still holds a cut that nobody acknowledged.
+func cutUnacknowledged(e *env) (cut bool) {
+	e.prepare(func(reg *leadregistry.Registry) { cut = reg.Recovery().Cut() })
+	return cut
+}
+
+// TestARecoveryActedOnIsAcknowledged: the reconcile acts on every role of a
+// registry that was cut and acknowledges the cut, so the daemon shows the
+// reconcile as completed, the roles stay unknown with the reason
+// registry-recovered, and a later start finds no cut.
+func TestARecoveryActedOnIsAcknowledged(t *testing.T) {
+	e := newEnv(t)
+	registryOfEveryKind(t, e)
+	tearJournal(t, e)
+	calls := len(e.fake.Calls())
 	d := e.startDaemon(e.config())
 	res := status(t, d.socket)
-	if res.Daemon.LastReconcileCompleted {
-		t.Fatal("the reconcile is shown as completed with an unacknowledged cut of the registry")
+	if !res.Daemon.LastReconcileCompleted {
+		t.Fatalf("a cut acted on for every role is shown as not completed\nlog:\n%s", e.log)
 	}
 	if a := find(t, res, "alpha/lead"); a.State != clientapi.StateUnknown || a.ReasonCode != "registry-recovered" {
 		t.Fatalf("lead %+v", a)
 	}
-	if !strings.Contains(e.log.String(), "cut when it was opened") {
+	if strings.Contains(e.log.String(), "not acknowledged") {
 		t.Fatalf("log:\n%s", e.log)
 	}
 	if err := d.stop(); err != nil {
 		t.Fatal(err)
+	}
+	noStartNoSignal(t, e.fake, calls)
+	if cutUnacknowledged(e) {
+		t.Fatal("the cut is still unacknowledged after a reconcile that acted on every role")
+	}
+}
+
+// TestACutIsNotAcknowledgedWhenTheManagerDoesNotAnswer: when the manager does
+// not answer for a role, the reconcile has not acted on it. The cut stays
+// unacknowledged and the reconcile is shown as not completed; the next daemon
+// start that can act acknowledges it.
+func TestACutIsNotAcknowledgedWhenTheManagerDoesNotAnswer(t *testing.T) {
+	e := newEnv(t)
+	registryOfEveryKind(t, e)
+	tearJournal(t, e)
+	e.fake.MakeUnavailable(leadunit.MethodInspect, 1000)
+	calls := len(e.fake.Calls())
+	d := e.startDaemon(e.config())
+	res := status(t, d.socket)
+	if res.Daemon.LastReconcileCompleted {
+		t.Fatal("the reconcile is shown as completed although the manager did not answer for a role")
+	}
+	if !strings.Contains(e.log.String(), "not acknowledged") {
+		t.Fatalf("log:\n%s", e.log)
+	}
+	if err := d.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if !cutUnacknowledged(e) {
+		t.Fatal("the cut was acknowledged without the manager having answered")
+	}
+
+	// The next start, with a manager that answers, acts and acknowledges.
+	e.fake.MakeUnavailable(leadunit.MethodInspect, 0)
+	e.log.Reset()
+	d = e.startDaemon(e.config())
+	res = status(t, d.socket)
+	if !res.Daemon.LastReconcileCompleted {
+		t.Fatalf("the reconcile of a manager that answers is shown as not completed\nlog:\n%s", e.log)
+	}
+	if a := find(t, res, "alpha/lead"); a.State != clientapi.StateUnknown || a.ReasonCode != "registry-recovered" {
+		t.Fatalf("lead %+v", a)
+	}
+	if err := d.stop(); err != nil {
+		t.Fatal(err)
+	}
+	noStartNoSignal(t, e.fake, calls)
+	if cutUnacknowledged(e) {
+		t.Fatal("the cut is still unacknowledged after a daemon that could act")
 	}
 }
 
@@ -350,9 +417,7 @@ func TestCorruptRegistryIsLeftAsItIs(t *testing.T) {
 	if err != nil || string(after) != string(b) {
 		t.Fatalf("the corrupt registry was changed: %v", err)
 	}
-	if _, err := os.Lstat(e.runtime); err == nil {
-		t.Fatal("a runtime folder was made")
-	}
+	e.noSocketMade()
 	e.lockFree()
 }
 
@@ -457,7 +522,7 @@ func TestFailedEmptyShowsTheReconcileIncomplete(t *testing.T) {
 			empty: func(context.Context, leadunit.State) (bool, error) {
 				return false, errors.New("read cgroup.events: permission denied")
 			}},
-		{name: "deadline in the last role", timeout: 200 * time.Millisecond, log: "ran out of time",
+		{name: "deadline in the last role", timeout: 200 * time.Millisecond, log: "had passed when it returned",
 			empty: func(ctx context.Context, _ leadunit.State) (bool, error) {
 				<-ctx.Done()
 				return false, ctx.Err()

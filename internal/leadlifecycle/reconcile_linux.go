@@ -2,6 +2,7 @@ package leadlifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"ataniq/internal/leadregistry"
@@ -36,6 +37,15 @@ type Report struct {
 	// Recovered is true when this call acted on a cut of the registry
 	// journal (the registry's Recovery said so and no earlier call had).
 	Recovered bool
+	// Acknowledged is true when this call, having acted on a cut for every
+	// role, journaled the registry's acknowledgement of it
+	// ([leadregistry.Registry.AcknowledgeRecovery]), so that a later daemon
+	// does not treat the cut again. It is false when there was no cut to act
+	// on, when a role could not be acted on (the manager did not answer),
+	// when the acknowledgement could not be written, and when a call at the
+	// same time acknowledged the cut first (that call reports it; this one
+	// returns no error for it).
+	Acknowledged bool
 }
 
 // Find returns the report of one role.
@@ -59,9 +69,14 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 // identity changed): that role is left as it is. A role shown unknown for that
 // reason is then never resolved by Reconcile, since the registry may have lost
 // what happened to it; only a pending launch intent of it is closed (adopted
-// when its unit is running, abandoned when the late-start window and its margin have passed),
-// so that the owner's decision is not refused, and the owner's ResolveUnknown
-// moves it on. Stop also moves it on.
+// when its unit is running, abandoned at once when the boot changed or once
+// the late-start window and its margin have passed), so that the owner's
+// decision is not refused, and the owner's ResolveUnknown
+// moves it on. Stop also moves it on. When the pass has acted on every role
+// (the manager answered for each) Reconcile then acknowledges the cut to the
+// registry, with a note saying what it did, and the report says so
+// (Acknowledged); otherwise the cut stays unacknowledged and the next daemon
+// treats it again. A crash between acting and acknowledging does the same.
 //
 // For every role run by ataniq, by its recorded state:
 //
@@ -69,12 +84,14 @@ func (r Report) Find(role leadrole.Role) (RoleReport, bool) {
 //     between the intent and the outcome): the unit is inspected. A unit with
 //     exactly this epoch and intent is adopted. With no unit and its control
 //     group proven empty the role is unknown (reason launch-unsettled) until
-//     the late-start window and its margin since the intent have passed, then the intent is
-//     abandoned and the role stopped, with a proof text naming the facts used.
+//     the late-start window and its margin since the intent have passed, then
+//     the intent is abandoned and the role stopped, with a proof text naming
+//     the facts used.
+//     With no unit loaded on another boot than the one journaled with the
+//     intent, the intent is abandoned and the role stopped at once: the boot
+//     changed, so no start request of the intent can land.
 //     A loaded unit that is not this launch's makes the role unknown, and the
-//     intent is abandoned once the window and margin have passed. The registry does not
-//     record the boot identity of an intent, so a reboot cannot settle one
-//     earlier than the window and margin do.
+//     intent is abandoned once the window and margin have passed.
 //   - Live (starting, ready, degraded, stopping) or unknown, with the intent
 //     resolved: the unit is inspected. A loaded unit of ours whose epoch and
 //     intent equal the journal's, launched or adopted, is adopted: the shown
@@ -107,47 +124,91 @@ func (c *Controller) Reconcile(ctx context.Context) (Report, error) {
 	rec := c.reg.Recovery()
 	c.mu.Lock()
 	cut := rec.Cut() && !c.recovered
+	ackDue := rec.Cut() && c.recovered && c.ackDue
 	c.mu.Unlock()
 	entries, err := c.reg.List()
 	if err != nil {
 		return Report{}, err
 	}
 	rep := Report{Recovered: cut}
+	undone := 0
 	for _, e := range entries {
-		rr, err := c.reconcileRole(ctx, e.Role, cut)
+		rr, left, err := c.reconcileRole(ctx, e.Role, cut)
 		rep.Roles = append(rep.Roles, rr)
 		if err != nil {
 			return rep, err
+		}
+		if left {
+			undone++
 		}
 	}
 	if cut {
 		c.mu.Lock()
 		c.recovered = true
+		c.ackDue = undone == 0
+		c.mu.Unlock()
+		ackDue = undone == 0
+	}
+	if ackDue {
+		_, err := c.reg.AcknowledgeRecovery(cutNote(rep))
+		switch {
+		case err == nil:
+			rep.Acknowledged = true
+		case errors.Is(err, leadregistry.ErrNoRecovery):
+			// A call at the same time acted on the cut and acknowledged it
+			// first. Each call that acknowledges has acted on every role
+			// itself, so the cut is done; this call did not write it.
+		default:
+			return rep, err
+		}
+		c.mu.Lock()
+		c.ackDue = false
 		c.mu.Unlock()
 	}
 	return rep, nil
 }
 
-func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut bool) (RoleReport, error) {
-	rr := RoleReport{Role: role, Action: ActionUnchanged}
+// cutNote is the note of the acknowledgement of a cut: what Reconcile did to
+// the roles it acted on.
+func cutNote(rep Report) string {
+	var unknown, left, other int
+	for _, r := range rep.Roles {
+		switch {
+		case r.Action == ActionNotManaged:
+		case r.Reason == "recovered-proven-absent":
+			left++
+		case r.Reason == codeRegistryRecov:
+			unknown++
+		default:
+			other++
+		}
+	}
+	return clip(fmt.Sprintf("lead reconcile acted on the cut journal for every role run by ataniq: %d shown unknown (registry-recovered), %d left as recorded with the unit proven absent, %d other",
+		unknown, left, other), leadregistry.MaxProofBytes)
+}
+
+// reconcileRole settles one role. left is true when the role could not be
+// acted on because the manager did not answer.
+func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut bool) (rr RoleReport, left bool, err error) {
+	rr = RoleReport{Role: role, Action: ActionUnchanged}
 	unlock, err := c.lock(ctx, role)
 	if err != nil {
-		return rr, err
+		return rr, false, err
 	}
 	defer unlock()
 	e, err := c.reg.Get(role)
 	if err != nil {
-		return rr, err
+		return rr, false, err
 	}
 	rr.Manager, rr.Epoch, rr.Before, rr.After = e.Manager, e.Epoch, e.Shown.State, e.Shown.State
 	if e.Manager != leadregistry.ManagerAtaniq {
 		rr.Action, rr.Reason, rr.Detail = ActionNotManaged, "not-managed", "the role is run by "+string(e.Manager)+" and was not touched"
-		return rr, nil
+		return rr, false, nil
 	}
 	var n note
 	switch {
 	case cut:
-		e, n, err = c.reconcileCut(ctx, e)
+		e, n, left, err = c.reconcileCut(ctx, e)
 	case e.Shown.State == leadregistry.StateUnknown && e.Shown.Reason.Code == codeRegistryRecov:
 		e, n, err = c.reconcileRecovered(ctx, e)
 	case e.Intent != nil && e.Intent.Outcome == leadregistry.OutcomePending:
@@ -157,37 +218,42 @@ func (c *Controller) reconcileRole(ctx context.Context, role leadrole.Role, cut 
 	}
 	rr.Action, rr.Reason, rr.Detail = n.action, n.reason, n.detail
 	if err != nil {
-		return rr, err
+		return rr, false, err
 	}
 	rr.After = e.Shown.State
-	return rr, nil
+	return rr, left, nil
 }
 
-// reconcileCut handles a role after the registry cut its journal.
-func (c *Controller) reconcileCut(ctx context.Context, e leadregistry.Entry) (leadregistry.Entry, note, error) {
+// reconcileCut handles a role after the registry cut its journal. left is true
+// when the manager did not answer for the role: the role is shown unknown all
+// the same, but what happened to its unit was not looked at.
+func (c *Controller) reconcileCut(ctx context.Context, e leadregistry.Entry) (leadregistry.Entry, note, bool, error) {
 	const lost = "the registry journal was cut when it was opened, so what happened to the role after the cut is not known"
+	left := false
 	switch e.Shown.State {
 	case leadregistry.StateDesired, leadregistry.StateStopped, leadregistry.StateEnded:
 		detail := lost
 		st, err := c.mgr.Inspect(ctx, e.Role.UnitName())
 		switch {
 		case err != nil:
+			left = true
 			detail += "; the unit could not be inspected: " + err.Error()
 		case st.Loaded:
 			detail += "; " + describeLoaded(st)
 		default:
 			ab := c.proveGone(ctx, st, e.Unit)
 			if ab.kind == proofDone {
-				return e, note{ActionUnchanged, "recovered-proven-absent", ab.text}, nil
+				return e, note{ActionUnchanged, "recovered-proven-absent", ab.text}, false, nil
 			}
+			left = ab.kind == proofUnavailable
 			detail += "; " + ab.why
 		}
 		e, err = c.setUnknown(e, codeRegistryRecov, detail)
-		return e, note{ActionUnknown, codeRegistryRecov, detail}, err
+		return e, note{ActionUnknown, codeRegistryRecov, detail}, left, err
 	}
 	e, err := c.setUnknown(e, codeRegistryRecov, lost)
 	if err != nil {
-		return e, note{ActionUnknown, codeRegistryRecov, lost}, err
+		return e, note{ActionUnknown, codeRegistryRecov, lost}, false, err
 	}
 	n := note{ActionUnknown, codeRegistryRecov, lost}
 	if e.Intent != nil && e.Intent.Outcome == leadregistry.OutcomePending {
@@ -196,8 +262,9 @@ func (c *Controller) reconcileCut(ctx context.Context, e leadregistry.Entry) (le
 		if sn.action == ActionAdopted || sn.action == ActionAbandoned {
 			n.detail += "; " + sn.detail
 		}
+		left = sn.action == ActionUnavailable
 	}
-	return e, n, err
+	return e, n, left, err
 }
 
 // reconcileRecovered keeps a role that an earlier Reconcile showed unknown

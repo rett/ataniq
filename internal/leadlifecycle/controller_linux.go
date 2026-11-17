@@ -126,8 +126,14 @@ type Options struct {
 	// the intent before the command is built and the request is sent, and
 	// across a restart only the wall clock is available, so a step of it
 	// (a time adjustment, a suspend and resume) can close the window early.
-	// The margin covers both; it is not a guarantee.
+	// The margin covers both; it is not a guarantee. Zero means the default;
+	// NoLateStartMargin asks for no margin at all.
 	LateStartMargin time.Duration
+	// NoLateStartMargin sets the margin to zero instead of the default. It
+	// cannot be combined with a LateStartMargin above zero. It is for a
+	// registry and a controller that share one monotonic time source and a
+	// request path that is not delayed between the intent and the send.
+	NoLateStartMargin bool
 }
 
 // Controller starts, stops and reconciles lead roles. Its methods are safe for
@@ -147,6 +153,7 @@ type Controller struct {
 	mu        sync.Mutex
 	locks     map[leadrole.Role]chan struct{}
 	recovered bool
+	ackDue    bool
 }
 
 // New returns a Controller. It fails when a required option is missing or a
@@ -163,6 +170,8 @@ func New(o Options) (*Controller, error) {
 		return nil, errors.New("leadlifecycle: Options.Holder is required")
 	case o.PollInterval < 0 || o.ProofBound < 0 || o.LateStartWindow < 0 || o.LateStartMargin < 0:
 		return nil, errors.New("leadlifecycle: a duration option is negative")
+	case o.NoLateStartMargin && o.LateStartMargin != 0:
+		return nil, errors.New("leadlifecycle: Options.NoLateStartMargin and Options.LateStartMargin are both set")
 	}
 	c := &Controller{
 		reg: o.Registry, mgr: o.Manager, clock: o.Clock, pre: o.Preflight,
@@ -181,7 +190,7 @@ func New(o Options) (*Controller, error) {
 	if c.window == 0 {
 		c.window = DefaultLateStartWindow
 	}
-	if c.margin == 0 {
+	if c.margin == 0 && !o.NoLateStartMargin {
 		c.margin = DefaultLateStartMargin
 	}
 	return c, nil
@@ -408,4 +417,29 @@ func (c *Controller) inspectRetry(ctx context.Context, unit string) (leadunit.St
 			return st, serr
 		}
 	}
+}
+
+// maxLateStartClose is how far past a launch intent the window can close at
+// the latest. A window and a margin that add up to more than this (or that
+// would overflow a duration, or the time) are cut to it: a role is then
+// never settled because of an arithmetic wrap.
+const maxLateStartClose = 100 * 365 * 24 * time.Hour
+
+// windowClosesAt is the time after which a launch intent whose start reply was
+// lost is closed as abandoned: the intent's time, the window, then the margin.
+// Each is added on its own and the result is clamped, so that a large option
+// cannot make the sum wrap into the past and close the window at once.
+func (c *Controller) windowClosesAt(in leadregistry.Intent) time.Time {
+	limit := in.At.Add(maxLateStartClose)
+	t := in.At
+	for _, d := range []time.Duration{c.window, c.margin} {
+		if d < 0 || d > maxLateStartClose {
+			return limit
+		}
+		t = t.Add(d)
+		if t.Before(in.At) || t.After(limit) {
+			return limit
+		}
+	}
+	return t
 }

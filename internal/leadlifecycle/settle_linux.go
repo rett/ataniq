@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"ataniq/internal/leadregistry"
+	"ataniq/internal/leadunit"
 )
 
 // Action says what Reconcile did to a role.
@@ -72,7 +73,7 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 	if err != nil {
 		return e, note{ActionUnavailable, "manager-unavailable", "inspect: " + err.Error()}, nil
 	}
-	closes := in.At.Add(c.window + c.margin)
+	closes := c.windowClosesAt(in)
 	late := !c.clock.Now().Before(closes)
 	if st.Loaded {
 		if matchesIntent(st, &in) {
@@ -89,6 +90,19 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 			e, err = c.setUnknown(e, n.reason, n.detail)
 		}
 		return e, n, err
+	}
+	if basis, ok := rebootedSince(in, st); ok {
+		// The boot identity changed since the intent was journaled and the unit
+		// is not loaded: a start request of the earlier boot is gone with it,
+		// so there is nothing to wait for.
+		if e, err = c.reg.RecordOutcome(e.Role, in.ID, in.Epoch, leadregistry.OutcomeAbandoned, leadregistry.UnitEvidence{BootID: st.BootID}); err != nil {
+			return e, note{}, err
+		}
+		if keep {
+			return e, note{ActionAbandoned, "launch-abandoned", basis}, nil
+		}
+		e, err = c.setProven(e, leadregistry.StateStopped, "launch-abandoned", "the launch intent was abandoned without a unit; the host rebooted", basis)
+		return e, note{ActionStopped, "launch-abandoned", basis}, err
 	}
 	ab := c.proveGone(ctx, st, leadregistry.UnitEvidence{})
 	switch ab.kind {
@@ -121,4 +135,16 @@ func (c *Controller) settlePending(ctx context.Context, e leadregistry.Entry, ke
 	}
 	e, err = c.setProven(e, leadregistry.StateStopped, "launch-abandoned", "the launch intent was abandoned without a unit", basis)
 	return e, note{ActionStopped, "launch-abandoned", basis}, err
+}
+
+// rebootedSince reports whether the intent was journaled on another boot than
+// the one the manager reports for a unit that is not loaded, and gives the
+// proof text. Without a boot identity on the intent, or one from the manager,
+// there is no such proof and only the window settles the intent.
+func rebootedSince(in leadregistry.Intent, st leadunit.State) (string, bool) {
+	if st.Loaded || in.BootIdentity == "" || st.BootID == "" || in.BootIdentity == st.BootID {
+		return "", false
+	}
+	return fmt.Sprintf("intent %s epoch %d journaled at %s on boot %s; the host now runs boot %s and unit %s is not loaded, so no start request of the intent can land",
+		in.ID, in.Epoch, in.At.UTC().Format(time.RFC3339), in.BootIdentity, st.BootID, st.Unit), true
 }

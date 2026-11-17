@@ -26,7 +26,9 @@ import (
 // unknown.
 //
 // Once the proof is in hand it sets the desired state to running, journals the
-// launch intent (new epoch, intent id, unit name) and only then builds the
+// launch intent (new epoch, intent id, unit name, and the boot identity the
+// manager reported, so that a later reboot settles an intent that never got a
+// unit) and only then builds the
 // command and calls the manager once:
 //
 //   - A State whose epoch and intent match the intent: the outcome launched is
@@ -99,7 +101,7 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 			return e, err
 		}
 	}
-	intent, err := c.reg.BeginLaunch(role)
+	intent, err := c.reg.BeginLaunchWith(role, leadregistry.LaunchOptions{BootIdentity: boot})
 	if err != nil {
 		return e, err
 	}

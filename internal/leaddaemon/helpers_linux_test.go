@@ -38,6 +38,13 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
+// Reset forgets what was written.
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Reset()
+}
+
 // env is the folders, the fake and the config of one test daemon.
 type env struct {
 	t       *testing.T
@@ -192,6 +199,23 @@ func (e *env) runToEnd(cfg Config) error {
 	case <-time.After(20 * time.Second):
 		e.t.Fatal("the daemon did not end in 20 s")
 		return nil
+	}
+}
+
+// noSocketMade fails the test when a socket was bound or removed in the
+// runtime folder, or when the socket lock cannot be taken. The folder and the
+// lock file may be there: the daemon makes them before it opens the registry.
+func (e *env) noSocketMade() {
+	e.t.Helper()
+	if _, err := os.Lstat(e.socket()); err == nil || !errors.Is(err, os.ErrNotExist) {
+		e.t.Fatalf("a socket was made: %v", err)
+	}
+	l, err := leadlock.Acquire(SocketLockPath(e.runtime))
+	if err != nil {
+		e.t.Fatalf("the socket lock is not free: %v", err)
+	}
+	if err := l.Release(); err != nil {
+		e.t.Fatal(err)
 	}
 }
 

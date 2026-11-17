@@ -43,16 +43,25 @@
 //
 // Nothing that would be lost in a crash. The only state besides the registry
 // is a lock per role, so that two operations on one role do not interleave
-// (operations on different roles run in parallel), and a flag that says the
-// registry's recovery report was already acted on in this process. Every
-// state change goes through the registry before the next unit call that
-// depends on it, and the launch intent is journaled before the first unit
-// call.
+// (operations on different roles run in parallel), and two flags: one says
+// the registry's recovery report was already acted on in this process, and
+// the other that the acknowledgement of it is still due, because the pass
+// acted on every role but the acknowledgement was not written, so that a
+// later pass in the same process writes it again without acting on the cut
+// again. Every state change goes through the registry before the next unit
+// call that depends on it, and the launch intent is journaled before the first
+// unit call.
 //
-// One limit: that flag is lost when the daemon dies before its first
-// Reconcile has marked every role registry-recovered, because the registry
-// reports a cut only to the Open that made it, so the next daemon reconciles
-// the roles not yet marked as if no cut had happened.
+// The flags are a convenience of one process. What outlives a crash is the
+// registry's own record: once Reconcile has acted on a cut of the journal for
+// every role it journals the acknowledgement of the cut
+// ([leadregistry.Registry.AcknowledgeRecovery], with a note saying what was
+// done), so that a later daemon does not show healthy roles unknown again. A
+// daemon that dies between acting and acknowledging, or that could not act on
+// every role because the manager did not answer, leaves the cut
+// unacknowledged, and the next daemon treats it again, conservatively. The
+// registry reports an unacknowledged cut also after it is reopened: the report
+// goes away only with the acknowledgement.
 //
 // # Where the registry's rules win
 //
@@ -71,16 +80,44 @@
 //     loaded) is therefore left pending, with the role shown unknown and the
 //     reason launch-reply-lost. Reconcile (or a later Stop) closes it as
 //     abandoned only once the late-start window and its margin have passed
-//     with the unit still not loaded and its control group empty; a unit that lands afterwards is
+//     with the unit still not loaded and its control group empty, or at once
+//     when the boot changed (the next bullet); a unit that lands afterwards is
 //     stale, is reported by Reconcile, and Reconcile never signals it. An
 //     explicit Stop does: it ends a stale unit of ours that has the
 //     record's epoch and intent or an older epoch, which is the owner's way
 //     out when the window did not hold.
-//   - A launch intent carries no boot identity: the registry records the boot
-//     only with the unit evidence of an outcome. A pending intent with no unit
-//     evidence therefore cannot be told apart by boot, and only the window
-//     resolves it. A change to leadregistry that records the boot identity at
-//     BeginLaunch would let a reboot settle such an intent at once.
+//   - A launch intent carries the boot identity. Every launch journals the boot
+//     identity the manager reported before the intent
+//     ([leadregistry.Registry.BeginLaunchWith]), and the intent uses it for
+//     this: to tell whether the machine booted again since the intent. A pending
+//     intent (a lost reply, or a daemon that died between the intent and the
+//     outcome) whose unit is not loaded on another boot than that one is
+//     closed as abandoned and the role stopped at once, without waiting for
+//     the window: the boot changed, which is the proof. (For a role shown
+//     unknown for a cut of the journal only the intent is closed, and the role
+//     stays unknown.) An intent with no boot identity (one journaled by a
+//     registry caller that gave none) or with no boot identity from the
+//     manager is settled by the window only.
+//
+// # Coordinators
+//
+// The package does not handle coordinator roles yet. The registry, the unit
+// specification ([leadunit.Spec], which can name a parent unit) and the status
+// protocol do have coordinators, but this package does not use them:
+//
+//   - Start builds a unit with no parent: it never sets the parent of a
+//     [leadunit.Spec]. It has no parent check of its own; the registry's
+//     launch gate refuses a coordinator whose parent lead is not live, and
+//     Start returns that refusal.
+//   - Stop of a lead does not stop the coordinators of that lead. It handles
+//     the one role it is given.
+//   - Reconcile treats a coordinator record like any other role: it compares
+//     the record with the unit of that role and applies the same rules, with no
+//     regard for the parent lead.
+//   - There is no handling of the stalled state: this package never sets it
+//     and never returns a stalled role to a live state. Reconcile and Stop
+//     treat it like any other live state and may move it to stopped, ended or
+//     unknown.
 //
 // # What it does not prove
 //
@@ -106,6 +143,10 @@
 // and a step of the wall clock. Across a restart only the wall clock exists,
 // so a step of it (a time adjustment, a suspend and resume) can still close
 // the window early or hold it open; the margin covers a small step only.
+// A margin of zero means the default; [Options].NoLateStartMargin asks for none.
+// The window and the margin are added to the intent's time one after the other
+// and the end of the window is cut at 100 years, so that a large option cannot
+// wrap around into the past and close the window at once.
 //
 // # Status
 //
