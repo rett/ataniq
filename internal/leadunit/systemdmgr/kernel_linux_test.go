@@ -112,6 +112,46 @@ func TestFindNamedBoundsTheDirectoriesBeforeTheQueueGrows(t *testing.T) {
 	}
 }
 
+// A directory is read in chunks and nothing is lost at a chunk boundary: the
+// answer is the same for every chunk size, a match is found wherever it falls
+// in a chunk, and the bound still stops a directory with very many children.
+func TestFindNamedReadsADirectoryInChunks(t *testing.T) {
+	old := findReadChunk
+	t.Cleanup(func() { findReadChunk = old })
+	root := treeMount(t)
+	for i := 0; i < 9; i++ {
+		mkdirs(t, root, fmt.Sprintf("/m/c%d", i))
+	}
+	mkdirs(t, root, "/m/c3/"+unitName, "/m/c8/"+unitName, "/m/c0/x/"+unitName, "/m/"+unitName)
+	for i := 0; i < 4; i++ { // files between the groups are skipped, in any chunk
+		if err := os.WriteFile(filepath.Join(root, "m", fmt.Sprintf("f%d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"/m/" + unitName, "/m/c0/x/" + unitName, "/m/c3/" + unitName, "/m/c8/" + unitName}
+	for _, chunk := range []int{1, 2, 3, 4, 13, 14, 256} {
+		findReadChunk = chunk
+		got, err := hostKernel{}.FindNamed("/m", unitName)
+		if err != nil {
+			t.Fatalf("chunk %d: %v", chunk, err)
+		}
+		sort.Strings(got)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("chunk %d: %q", chunk, got)
+		}
+	}
+
+	oldMax := findMaxDirs
+	t.Cleanup(func() { findMaxDirs = oldMax })
+	findMaxDirs = 6
+	for _, chunk := range []int{1, 2, 256} {
+		findReadChunk = chunk
+		if _, err := (hostKernel{}).FindNamed("/m", unitName); err == nil {
+			t.Fatalf("chunk %d: a directory with more children than the bound answered", chunk)
+		}
+	}
+}
+
 // Without the cgroup mount every path is absent, so ENOENT must not be taken
 // for "the group is gone": Lookup fails and says nothing was found.
 func TestLookupWithoutTheCgroupMountIsAnError(t *testing.T) {

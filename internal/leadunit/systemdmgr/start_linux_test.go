@@ -37,8 +37,6 @@ func TestStartArgvGolden(t *testing.T) {
 	mustEqual(t, got, want)
 }
 
-// The command's arguments reach the call as single elements and the
-// expansion of $VAR is switched off with the flag, in the rendered arguments.
 // Caller text that starts with a dash never reaches a tool as an option: the
 // options of busctl end with "--" before the verb, whatever the command's
 // arguments, the environment, the working directory or the intent hold.
@@ -104,6 +102,8 @@ func TestUnitNameWithALeadingDashIsRefusedBeforeAnyCall(t *testing.T) {
 	}
 }
 
+// The command's arguments reach the call as single elements and the
+// expansion of $VAR is switched off with the flag, in the rendered arguments.
 func TestStartArgvExecStartExDisablesExpansion(t *testing.T) {
 	argv, err := startArgv(validSpec(), DefaultTimeout)
 	if err != nil {
@@ -343,8 +343,6 @@ func TestStartUnitExists(t *testing.T) {
 	}
 }
 
-// A message about another unit, or with more text, is not recognised as the
-// refusal for this one and degrades to a lost reply.
 // The text of "nothing was started" is matched as its own, not as a phrase
 // anywhere in the output: a "Failed to connect to bus" that is not the start
 // of the output is one more failure after the request and a lost reply.
@@ -369,6 +367,8 @@ func TestStartUnreachableIsMatchedAsThePrefixOfTheOutput(t *testing.T) {
 	}
 }
 
+// A message about another unit, or with more text, is not recognised as the
+// refusal for this one and degrades to a lost reply.
 func TestStartUnitExistsOnlyForThisUnit(t *testing.T) {
 	for _, msg := range []string{
 		"Call failed: Unit other.service was already loaded or has a fragment file.\n",
