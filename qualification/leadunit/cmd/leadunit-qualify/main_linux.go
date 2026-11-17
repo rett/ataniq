@@ -120,12 +120,17 @@ With --run --state-dir %s it would:
   5. check: the arguments, among them one with $HOME and one with %%h, reach the child unchanged
   6. check: a second start with the same name is refused
   7. check: Inspect matches the start
-  8. check: SIGTERM to the child, which ignores it, leaves the control group populated
-  9. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
- 10. check: Empty is true for a fresh, never-used unit name (no invocation, no group)
- 11. always clean up: SIGKILL its own unit (never a unit whose description is not this run's
-     intent) and report what was and was not sent and whether the group was proven empty
- 12. print one JSON report with a line per check and a verdict; exit non-zero on any failure
+  8. start a second unit, ataniq-qualify-<random>-child.service, bound to the first (BindsTo, PartOf
+     and After), which runs "<this executable> child"; check: it is active and Inspect reads the
+     first unit back as its parent
+  9. check: SIGTERM to the first unit, whose process ignores it, leaves the control group populated
+ 10. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
+ 11. check: the bound child unit stops with its parent (it is not loaded, with no signal sent to it)
+     and Empty is true for its control group
+ 12. check: Empty is true for a fresh, never-used unit name (no invocation, no group)
+ 13. always clean up: SIGKILL its own units (never a unit whose description is not this run's
+     intent) and report what was and was not sent and whether the groups were proven empty
+ 14. print one JSON report with a line per check and a verdict; exit non-zero on any failure
 Not attempted: a lost start reply.
 `, dir, dir, dir, dir)
 }

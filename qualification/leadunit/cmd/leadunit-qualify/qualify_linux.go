@@ -88,6 +88,13 @@ type qualifier struct {
 	mayExist  bool
 	first     leadunit.State // what Start returned: it can be partial
 	started   leadunit.State // the settled state: active, with its invocation and control group
+
+	// The bound child unit: a second unit, bound to the first, that must stop
+	// when the first does.
+	childUnit     string
+	childIntent   string
+	childMayExist bool
+	childStarted  leadunit.State
 }
 
 func realSleep(ctx context.Context, d time.Duration) error {
@@ -138,6 +145,21 @@ func (q *qualifier) spec(intent string) leadunit.Spec {
 	}
 }
 
+// childSpec is the unit that is bound to the qualification unit: a plain child
+// that dies of SIGTERM (it does not ignore it), which is what systemd sends it
+// when its parent stops.
+func (q *qualifier) childSpec() leadunit.Spec {
+	return leadunit.Spec{
+		Unit:    q.childUnit,
+		Epoch:   1,
+		Intent:  q.childIntent,
+		Argv:    []string{q.exe, "child"},
+		WorkDir: q.stateDir,
+		Env:     []string{"LANG=C"},
+		Parent:  q.unit,
+	}
+}
+
 type step struct {
 	name string
 	fn   func(ctx context.Context) (detail string, err error)
@@ -161,6 +183,8 @@ func (q *qualifier) qualify(ctx context.Context) report {
 	q.unit = "ataniq-qualify-" + suffix + ".service"
 	q.readyPath = filepath.Join(q.stateDir, "ready-"+suffix)
 	q.argsPath = filepath.Join(q.stateDir, "args-"+suffix)
+	q.childUnit = "ataniq-qualify-" + suffix + "-child.service"
+	q.childIntent = "qc-" + suffix
 	intent := "q-" + suffix
 	q.intent = intent
 	rep.Unit, rep.Intent = q.unit, intent
@@ -182,12 +206,14 @@ func (q *qualifier) qualify(ctx context.Context) report {
 		{"arguments-reach-the-child-unchanged", func(ctx context.Context) (string, error) { return q.argumentsUnchanged(spec) }},
 		{"second-start-refused", func(ctx context.Context) (string, error) { return q.secondStart(ctx, spec) }},
 		{"inspect-matches", q.inspectMatches},
+		{"bound-child-started", q.startChild},
 		{"sigterm-leaves-group-populated", q.sigterm},
 		{"sigkill-sent", func(ctx context.Context) (string, error) {
 			return "SIGKILL sent to the control group", q.mgr.Signal(ctx, q.started, syscall.SIGKILL)
 		}},
 		{"empty-true", q.emptyTrue},
 		{"unit-not-loaded", q.notLoaded},
+		{"bound-child-stops-with-parent", q.childStops},
 		{"empty-true-for-a-fresh-name", q.emptyFreshName},
 	}
 	failed := false
@@ -214,19 +240,29 @@ func (q *qualifier) qualify(ctx context.Context) report {
 }
 
 func (q *qualifier) start(ctx context.Context, spec leadunit.Spec) (string, error) {
-	// From the call on the unit may exist, unless the manager says it refused.
-	q.mayExist = true
+	st, err := q.startUnit(ctx, spec, &q.mayExist)
+	if err != nil {
+		return "", err
+	}
+	q.first = st
+	return "the job was accepted and the unit is " + string(st.Active), nil
+}
+
+// startUnit starts spec and checks the state Start returned. It sets *mayExist
+// from the call on, unless the manager says it refused, so that the cleanup
+// knows whether to look for the unit.
+func (q *qualifier) startUnit(ctx context.Context, spec leadunit.Spec, mayExist *bool) (leadunit.State, error) {
+	*mayExist = true
 	st, err := q.mgr.Start(ctx, spec)
 	if err != nil {
 		switch {
 		case errors.Is(err, leadunit.ErrReplyLost):
-			return "", fmt.Errorf("start reply lost, the unit may be running (cleanup inspects it): %w", err)
+			return leadunit.State{}, fmt.Errorf("start reply lost, the unit may be running (cleanup inspects it): %w", err)
 		case errors.Is(err, leadunit.ErrUnitExists), errors.Is(err, leadunit.ErrUnavailable), errors.Is(err, leadunit.ErrInvalidSpec):
-			q.mayExist = false
+			*mayExist = false
 		}
-		return "", fmt.Errorf("start failed: %w", err)
+		return leadunit.State{}, fmt.Errorf("start failed: %w", err)
 	}
-	q.first = st
 	var bad []string
 	if !st.Loaded {
 		bad = append(bad, "not loaded")
@@ -238,19 +274,30 @@ func (q *qualifier) start(ctx context.Context, spec leadunit.Spec) (string, erro
 		bad = append(bad, "no boot id")
 	}
 	if len(bad) > 0 {
-		return "", errors.New("start returned a state that is " + strings.Join(bad, ", "))
+		return leadunit.State{}, errors.New("start returned a state that is " + strings.Join(bad, ", "))
 	}
-	return "the job was accepted and the unit is " + string(st.Active), nil
+	return st, nil
 }
 
 // settle waits for the unit to be active with its invocation id and control
 // group, which systemd fills in after the job is accepted, and keeps that
 // state as the one every later check compares with.
 func (q *qualifier) settle(ctx context.Context) (string, error) {
+	st, err := q.settleUnit(ctx, q.unit, q.first)
+	if err != nil {
+		return "", err
+	}
+	q.started = st
+	return "active, invocation " + st.InvocationID + ", control group " + st.ControlGroup, nil
+}
+
+// settleUnit waits for unit to be active with an invocation id and a control
+// group and returns that state. first is what Start returned for it.
+func (q *qualifier) settleUnit(ctx context.Context, unit string, first leadunit.State) (leadunit.State, error) {
 	var st leadunit.State
 	ok, err := q.poll(ctx, emptyBound, func() (bool, error) {
 		var err error
-		st, err = q.mgr.Inspect(ctx, q.unit)
+		st, err = q.mgr.Inspect(ctx, unit)
 		if err != nil {
 			return false, err
 		}
@@ -258,13 +305,53 @@ func (q *qualifier) settle(ctx context.Context) (string, error) {
 			st.ControlGroup != "" && st.ControlGroupID != "" && st.MainPID > 0, nil
 	})
 	if !ok {
-		return "", fmt.Errorf("the unit was not active with an invocation and a control group within %s (last error: %v; last state %+v)", emptyBound, err, st)
+		return leadunit.State{}, fmt.Errorf("%s was not active with an invocation and a control group within %s (last error: %v; last state %+v)", unit, emptyBound, err, st)
 	}
-	if q.first.InvocationID != "" && q.first.InvocationID != st.InvocationID {
-		return "", fmt.Errorf("invocation %s differs from the one Start returned, %s", st.InvocationID, q.first.InvocationID)
+	if first.InvocationID != "" && first.InvocationID != st.InvocationID {
+		return leadunit.State{}, fmt.Errorf("invocation %s differs from the one Start returned, %s", st.InvocationID, first.InvocationID)
 	}
-	q.started = st
-	return "active, invocation " + st.InvocationID + ", control group " + st.ControlGroup, nil
+	return st, nil
+}
+
+// startChild starts the unit that is bound to the qualification unit and checks
+// that Inspect reads the qualification unit back as its parent.
+func (q *qualifier) startChild(ctx context.Context) (string, error) {
+	spec := q.childSpec()
+	first, err := q.startUnit(ctx, spec, &q.childMayExist)
+	if err != nil {
+		return "", fmt.Errorf("bound child %s: %w", q.childUnit, err)
+	}
+	st, err := q.settleUnit(ctx, q.childUnit, first)
+	if err != nil {
+		return "", fmt.Errorf("bound child: %w", err)
+	}
+	q.childStarted = st
+	if st.Description != spec.Description() || !st.Ours || st.Epoch != spec.Epoch || st.Intent != spec.Intent {
+		return "", fmt.Errorf("bound child: description %q read back as ours=%v epoch=%d intent=%q", st.Description, st.Ours, st.Epoch, st.Intent)
+	}
+	if st.Parent != q.unit {
+		return "", fmt.Errorf("bound child: Inspect reads its parent as %q, it was started bound to %q", st.Parent, q.unit)
+	}
+	return q.childUnit + " is active and Inspect reads " + q.unit + " back as its parent", nil
+}
+
+// childStops checks, after the qualification unit is gone, that the unit bound
+// to it was stopped by systemd with it, and that its control group is proven
+// empty. Nothing here signals the child: the cleanup would, and a pass must
+// not owe anything to it.
+func (q *qualifier) childStops(ctx context.Context) (string, error) {
+	ok, err := q.poll(ctx, emptyBound, func() (bool, error) {
+		st, err := q.mgr.Inspect(ctx, q.childUnit)
+		return err == nil && !st.Loaded, err
+	})
+	if !ok {
+		return "", fmt.Errorf("the bound child %s is still loaded or cannot be inspected %s after its parent was gone (last error: %v)", q.childUnit, emptyBound, err)
+	}
+	ok, err = q.poll(ctx, emptyBound, func() (bool, error) { return q.mgr.Empty(ctx, q.childStarted) })
+	if !ok {
+		return "", fmt.Errorf("Empty did not become true for the bound child within %s (last error: %v)", emptyBound, err)
+	}
+	return "the bound child is not loaded and its control group is proven empty, with no signal sent to it", nil
 }
 
 func (q *qualifier) description(spec leadunit.Spec) (string, error) {
@@ -426,18 +513,38 @@ func (q *qualifier) poll(ctx context.Context, bound time.Duration, f func() (boo
 	}
 }
 
-// ours reports whether st is a unit that this run started: transient, with
-// this run's epoch and intent in its description.
-func (q *qualifier) ours(st leadunit.State) bool {
-	return st.Ours && st.Epoch == 1 && st.Intent == q.intent
+// ours reports whether st is a unit that this run started with that intent:
+// transient (the manager reads a description as ours only for a transient
+// unit), with this run's epoch and the intent in its description. A unit of
+// the same name that is not transient is not ours, whatever its description
+// says.
+func ours(st leadunit.State, intent string) bool {
+	return st.Ours && st.Epoch == 1 && st.Intent == intent
 }
 
-// cleanup always runs, on a context that outlives a cancelled run. It never
-// signals a unit whose description is not this run's own intent, signals the
-// unit it owns once its invocation is known, says what it did and did not do,
-// and proves the control group empty or says it could not.
+// cleanup always runs, on a context that outlives a cancelled run. It cleans up
+// the qualification unit and, when it was started, the unit bound to it, and
+// returns one check that passes only when both do.
 func (q *qualifier) cleanup(ctx context.Context) check {
-	if !q.mayExist {
+	main := q.cleanupUnit(ctx, q.unit, q.intent, q.mayExist, q.started)
+	if !q.childMayExist {
+		return main
+	}
+	child := q.cleanupUnit(ctx, q.childUnit, q.childIntent, true, q.childStarted)
+	res := resultPass
+	if main.Result != resultPass || child.Result != resultPass {
+		res = resultFail
+	}
+	return check{"cleanup", res, main.Detail + "; bound child: " + child.Detail}
+}
+
+// cleanupUnit cleans up one unit of the run. It never signals a unit whose
+// description is not the run's own intent for it, signals the unit it owns once
+// its invocation is known, says what it did and did not do, and proves the
+// control group empty or says it could not. started is the settled state of the
+// unit, when there is one.
+func (q *qualifier) cleanupUnit(ctx context.Context, unit, intent string, mayExist bool, started leadunit.State) check {
+	if !mayExist {
 		return check{"cleanup", resultPass, "nothing was started"}
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupBound)
@@ -447,25 +554,25 @@ func (q *qualifier) cleanup(ctx context.Context) check {
 	var cur leadunit.State
 	ok, err := q.poll(cctx, emptyBound, func() (bool, error) {
 		var ierr error
-		cur, ierr = q.mgr.Inspect(cctx, q.unit)
+		cur, ierr = q.mgr.Inspect(cctx, unit)
 		if ierr != nil {
 			return false, ierr
 		}
-		return !cur.Loaded || !q.ours(cur) || cur.InvocationID != "", nil
+		return !cur.Loaded || !ours(cur, intent) || cur.InvocationID != "", nil
 	})
 	if !ok {
 		if err != nil {
-			return check{"cleanup", resultFail, fmt.Sprintf("could not inspect %s, so it is not proven empty: %v", q.unit, err)}
+			return check{"cleanup", resultFail, fmt.Sprintf("could not inspect %s, so it is not proven empty: %v", unit, err)}
 		}
-		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: %s is loaded with no invocation id after %s, so it is not proven empty and ends by itself at the child's maximum life", q.unit, emptyBound)}
+		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: %s is loaded with no invocation id after %s, so it is not proven empty and ends by itself at the child's maximum life", unit, emptyBound)}
 	}
-	if cur.Loaded && !q.ours(cur) {
-		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: a unit named %s is loaded but its description %q is not this run's intent %q, so it was left alone and is not proven empty", q.unit, cur.Description, q.intent)}
+	if cur.Loaded && !ours(cur, intent) {
+		return check{"cleanup", resultFail, fmt.Sprintf("not signalled: a unit named %s is loaded but its description %q is not this run's intent %q, so it was left alone and is not proven empty", unit, cur.Description, intent)}
 	}
 	prove := cur
 	note := "the unit was already gone, nothing was sent"
-	if !cur.Loaded && q.started.ControlGroup != "" {
-		prove = q.started
+	if !cur.Loaded && started.ControlGroup != "" {
+		prove = started
 	}
 	if cur.Loaded {
 		switch serr := q.mgr.Signal(cctx, cur, syscall.SIGKILL); {
@@ -479,7 +586,7 @@ func (q *qualifier) cleanup(ctx context.Context) check {
 	}
 	ok, err = q.poll(cctx, cleanupBound-emptyBound-time.Second, func() (bool, error) { return q.mgr.Empty(cctx, prove) })
 	if !ok {
-		return check{"cleanup", resultFail, fmt.Sprintf("%s; the control group of %s could not be proven empty (last error: %v)", note, q.unit, err)}
+		return check{"cleanup", resultFail, fmt.Sprintf("%s; the control group of %s could not be proven empty (last error: %v)", note, unit, err)}
 	}
 	return check{"cleanup", resultPass, note + "; the control group is proven empty"}
 }
