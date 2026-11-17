@@ -1,0 +1,13 @@
+# Recorded OSC 7501 payloads of Q13 (claude 2.1.325, codex 0.169), one line per distinct payload.
+# Columns, tab separated: the recorded runs that sent it, raw payload, state, app, kind, msg, title.
+# msg and title are the decoded values as Go quoted strings; "-" means the field is empty.
+# The recorded msg named a work folder under a real home path; it was re-encoded with /home/user/work.
+t1-claude,t2-claude	state=idle:app=claude-code	idle	claude-code	-	-	-
+t1-claude,t2-claude	state=working:app=claude-code	working	claude-code	-	-	-
+t1-claude,t2-claude	state=done:app=claude-code	done	claude-code	-	-	-
+t1-claude,t2-claude	state=blocked:app=claude-code:kind=permission:msg=YXBwcm92ZSBXcml0ZTogL2hvbWUvdXNlci93b3JrL2FwcHJvdmFsLXRlc3QudHh0	blocked	claude-code	permission	"approve Write: /home/user/work/approval-test.txt"	-
+t1-claude,t2-claude,t2-codex	state=clear	clear	-	-	-	-
+t2-codex	state=idle:app=codex	idle	codex	-	-	-
+t2-codex	state=working:app=codex	working	codex	-	-	-
+t2-codex	state=done:app=codex	done	codex	-	-	-
+t2-codex	state=blocked:app=codex:kind=permission	blocked	codex	permission	-	-
