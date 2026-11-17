@@ -1,0 +1,74 @@
+# Every distinct window title recorded for claude 2.1.325 and codex 0.169:
+# the "title" of each screen dump and the OSC 0/2 sequences of the pty logs
+# of the row3 and q13 sessions.
+#
+# Fields, separated by one tab: runtime, busy, action required, title. The
+# title is the rest of the line and may be empty (a final tab is optional).
+# The expected readings come from what the sessions showed, not from the
+# package: a spinner glyph first means busy (claude: U+25D0 and U+25D1; codex:
+# U+2800 to U+28FF); for codex the words "Action Required" mean an open
+# approval prompt; claude never sets action required, and its U+2733 title
+# shows when idle and at an approval prompt, so it sets nothing.
+claude	false	false	
+claude	false	false	ACK message protocol
+claude	false	false	Claude Code
+claude	false	false	Numbers 1 to 80 listing
+claude	true	false	◐ Approval test file creation
+claude	true	false	◐ Claude Code
+claude	true	false	◐ ataniq-msg acknowledgment protocol
+claude	true	false	◑ Approval test file creation
+claude	true	false	◑ Claude Code
+claude	true	false	◑ ataniq-msg acknowledgment protocol
+claude	false	false	✳ Approval test file creation
+claude	false	false	✳ Claude Code
+claude	false	false	✳ ataniq-msg acknowledgment protocol
+codex	false	false	
+codex	false	false	Acknowledge tagged messages | work
+codex	false	false	Handle ataniq acknowledgments | work
+codex	false	false	Run approval test command | work
+codex	false	true	[ ! ] Action Required | Handle ataniq acknowledgments | work
+codex	false	true	[ ! ] Action Required | Run approval test command | work
+codex	false	true	[ ! ] Action Required | work
+codex	false	true	[ . ] Action Required | Handle ataniq acknowledgments | work
+codex	false	true	[ . ] Action Required | Run approval test command | work
+codex	false	false	work
+codex	true	false	⠇ Acknowledge tagged messages | work
+codex	true	false	⠇ Handle ataniq acknowledgments | work
+codex	true	false	⠇ Run approval test command | work
+codex	true	false	⠇ work
+codex	true	false	⠋ Acknowledge tagged messages | work
+codex	true	false	⠋ Handle ataniq acknowledgments | work
+codex	true	false	⠋ Run approval test command | work
+codex	true	false	⠋ work
+codex	true	false	⠏ Acknowledge tagged messages | work
+codex	true	false	⠏ Handle ataniq acknowledgments | work
+codex	true	false	⠏ Run approval test command | work
+codex	true	false	⠏ work
+codex	true	false	⠙ Acknowledge tagged messages | work
+codex	true	false	⠙ Handle ataniq acknowledgments | work
+codex	true	false	⠙ Run approval test command | work
+codex	true	false	⠙ work
+codex	true	false	⠦ Acknowledge tagged messages | work
+codex	true	false	⠦ Handle ataniq acknowledgments | work
+codex	true	false	⠦ Run approval test command | work
+codex	true	false	⠦ work
+codex	true	false	⠧ Acknowledge tagged messages | work
+codex	true	false	⠧ Handle ataniq acknowledgments | work
+codex	true	false	⠧ Run approval test command | work
+codex	true	false	⠧ work
+codex	true	false	⠴ Acknowledge tagged messages | work
+codex	true	false	⠴ Handle ataniq acknowledgments | work
+codex	true	false	⠴ Run approval test command | work
+codex	true	false	⠴ work
+codex	true	false	⠸ Acknowledge tagged messages | work
+codex	true	false	⠸ Handle ataniq acknowledgments | work
+codex	true	false	⠸ Run approval test command | work
+codex	true	false	⠸ work
+codex	true	false	⠹ Acknowledge tagged messages | work
+codex	true	false	⠹ Handle ataniq acknowledgments | work
+codex	true	false	⠹ Run approval test command | work
+codex	true	false	⠹ work
+codex	true	false	⠼ Acknowledge tagged messages | work
+codex	true	false	⠼ Handle ataniq acknowledgments | work
+codex	true	false	⠼ Run approval test command | work
+codex	true	false	⠼ work
