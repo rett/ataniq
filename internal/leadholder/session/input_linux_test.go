@@ -386,6 +386,7 @@ func TestAFailedWriteBreaksTheInputForEverySource(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel() // each case has its own session, folders and lock file
 			e := newEnv(t)
 			s := e.start(c.script, shortWriteTimeout)
 			waitScreen(t, s, "READY")
