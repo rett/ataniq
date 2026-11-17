@@ -33,7 +33,11 @@
 //  9. serve until the signal source delivers a signal (SIGTERM or SIGINT in
 //     the binary) or the context ends.
 //  10. shutdown: stop accepting, wait for the connections for a bounded time,
-//     close the registry, and release the lock last.
+//     close the registry, and release the lock last. When the server has not
+//     ended within that time, [Run] returns a [StartupError] of [StepShutdown]
+//     ([ExitShutdown]) that says what is left, and closes the registry and
+//     releases the lock for no one: a goroutine that may still run could use
+//     them, and both end with the process.
 //
 // The daemon never starts, signals or stops a unit, at start-up, while it
 // serves or at shutdown: it does not call Start or Stop of the controller,

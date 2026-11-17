@@ -29,7 +29,8 @@ const (
 	StepSocket Step = "socket"
 	// StepServe serves the client protocol.
 	StepServe Step = "serve"
-	// StepShutdown stops serving, closes the registry and releases the lock.
+	// StepShutdown stops serving, closes the registry and releases the lock,
+	// unless the server does not end within the grace.
 	StepShutdown Step = "shutdown"
 )
 
@@ -64,6 +65,9 @@ const (
 	ExitSocket = 17
 	// ExitServe is a server that stopped by itself.
 	ExitServe = 18
+	// ExitShutdown is a server that did not end within the shutdown grace;
+	// the registry and the lock are left to the end of the process.
+	ExitShutdown = 19
 	// ExitNoDaemon is, for status, no daemon at the socket (missing or
 	// refused).
 	ExitNoDaemon = 20
@@ -124,6 +128,8 @@ func ExitCode(err error) int {
 		return ExitSocket
 	case StepServe:
 		return ExitServe
+	case StepShutdown:
+		return ExitShutdown
 	}
 	return ExitFailure
 }

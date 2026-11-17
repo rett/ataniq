@@ -87,8 +87,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reconciles once, removes a stale socket only once it holds the lock, and
   serves `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. At
   shutdown it stops accepting, waits for the connections for a bounded time,
-  closes the registry and releases the lock last; it never stops a lead or
-  any unit. The reconcile reads the units and starts and signals nothing; when
+  closes the registry and releases the lock last; when the server does not end
+  in that time it exits with code 19, says what is left and closes and
+  releases nothing under it. It never stops a lead or any unit. The reconcile
+  reads the units and starts and signals nothing; when
   systemd cannot be asked (also when the registry has no role to ask about),
   the daemon still serves the roles as the registry has them, with the
   reconcile shown as not completed, which is also how an unacknowledged

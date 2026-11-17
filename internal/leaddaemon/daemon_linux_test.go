@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadlock"
@@ -237,6 +238,7 @@ func TestExitCodesAreDistinct(t *testing.T) {
 		{"reconcile", &StartupError{Step: StepReconcile, Err: errors.New("x")}},
 		{"socket", &StartupError{Step: StepSocket, Err: errors.New("x")}},
 		{"serve", &StartupError{Step: StepServe, Err: errors.New("x")}},
+		{"shutdown", &StartupError{Step: StepShutdown, Err: errors.New("x")}},
 	} {
 		code := ExitCode(c.err)
 		if code == ExitOK || code == ExitFailure || code == ExitUsage {
@@ -418,5 +420,56 @@ func TestSignalDuringStartupStopsBeforeServing(t *testing.T) {
 	e.lockFree()
 	if _, err := os.Lstat(e.runtime); err == nil {
 		t.Fatal("a runtime folder was made")
+	}
+}
+
+// TestStuckServerIsReportedAndNothingIsClosedUnderIt: a server that does not
+// end within the grace makes Run return its own error, which says what is
+// left, and Run neither closes the registry nor releases the lock.
+func TestStuckServerIsReportedAndNothingIsClosedUnderIt(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.config()
+	cfg.ShutdownGrace = 100 * time.Millisecond
+	// The server asks for the peer's user before it reads a request; it is
+	// stuck there until the test lets it go.
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	cfg.Server.PeerUID = func(net.Conn) (uint32, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return 0, errors.New("released by the test")
+	}
+	d := e.startDaemon(cfg)
+	defer close(release)
+	c, err := net.Dial("unix", d.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	select {
+	case <-entered:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the server did not reach the peer check")
+	}
+
+	err = d.stop()
+	se := mustFail(t, err, StepShutdown, ExitShutdown)
+	for _, want := range []string{"did not stop within 100ms", "registry is left open", "daemon lock held", "end with this process"} {
+		if !strings.Contains(se.Error(), want) {
+			t.Errorf("error %q does not say %q", se, want)
+		}
+	}
+	if !strings.Contains(e.log.String(), "did not stop within") {
+		t.Errorf("log:\n%s", e.log)
+	}
+	// The lock is still held, and the registry was not closed.
+	if l, err := leadlock.Acquire(leadlock.DaemonPath(e.state)); err == nil {
+		l.Release()
+		t.Fatal("the daemon lock was released under a server that may still run")
+	} else if !errors.Is(err, leadlock.ErrHeld{}) {
+		t.Fatal(err)
 	}
 }

@@ -41,8 +41,9 @@ stops and manages no unit and defines no lead, and no flag changes that.
 
 Exit codes: 0 done; 2 usage; 10-18 start-up refused (10 config or root, 11
 state folder, 12 daemon lock held, 13 lock, 14 registry, 15 unit manager,
-16 reconcile, 17 socket, 18 server); status: 20 no daemon, 21 unauthorized,
-22 protocol error; 1 anything else.
+16 reconcile, 17 socket, 18 server); 19 the server did not stop within the
+shutdown grace (the registry and the lock are left to the end of the process);
+status: 20 no daemon, 21 unauthorized, 22 protocol error; 1 anything else.
 `
 
 // app is the command with its surroundings, so that tests run it in process.

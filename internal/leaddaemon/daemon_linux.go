@@ -99,8 +99,12 @@ func (d *daemon) step(s Step) {
 // serves until the signal source delivers a signal or ctx ends, then shuts
 // down. It returns nil after a clean shutdown (also one that was asked for
 // before the daemon began to serve), a [StartupError] when a step failed, and
-// another error for a server that stopped by itself. It starts, signals and
-// stops no unit.
+// another error for a server that stopped by itself. A server that has not
+// ended within the shutdown grace makes it return a [StartupError] of
+// [StepShutdown] ([ExitShutdown]) that says what is left: the registry is then
+// left open and the daemon lock held, not closed under a goroutine that may
+// still use them, and both end with the process. It starts, signals and stops
+// no unit.
 func Run(ctx context.Context, cfg Config) error {
 	d := &daemon{Config: cfg, log: cfg.Log}
 	if d.log == nil {
@@ -124,6 +128,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if d.ShutdownGrace <= 0 {
 		d.ShutdownGrace = DefaultShutdownGrace
 	}
+
+	// abandoned is set when the server did not end within the grace: the
+	// registry and the lock are then left to the end of the process.
+	abandoned := false
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -165,6 +173,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return &StartupError{Step: StepLock, Err: err}
 	}
 	defer func() {
+		if abandoned {
+			return
+		}
 		if err := lock.Release(); err != nil {
 			d.logf("release the daemon lock: %v", err)
 		}
@@ -184,6 +195,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return &StartupError{Step: StepRegistry, Err: err}
 	}
 	defer func() {
+		if abandoned {
+			return
+		}
 		if err := reg.Close(); err != nil {
 			d.logf("close the registry: %v", err)
 		}
@@ -268,7 +282,13 @@ func Run(ctx context.Context, cfg Config) error {
 	case <-ctx.Done():
 		serveCancel()
 		d.step(StepShutdown)
-		d.awaitServe(done)
+		if !d.awaitServe(done) {
+			abandoned = true
+			serveErr = &StartupError{Step: StepShutdown, Err: fmt.Errorf(
+				"the server did not stop within %s; its goroutine and the connections it holds may still be running, the registry is left open and the daemon lock held, and both end with this process",
+				d.ShutdownGrace)}
+			d.logf("%v", serveErr)
+		}
 	case err := <-done:
 		d.step(StepShutdown)
 		// A server that returns because the context ended is the same as one
@@ -281,18 +301,20 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 	// The registry and the lock are released by the deferred calls, in that
-	// order: the lock last.
+	// order: the lock last, unless the server is left running.
 	return serveErr
 }
 
-// awaitServe waits for the server to end, up to the grace.
-func (d *daemon) awaitServe(done <-chan error) {
+// awaitServe waits for the server to end, up to the grace, and reports whether
+// it ended.
+func (d *daemon) awaitServe(done <-chan error) bool {
 	grace := time.NewTimer(d.ShutdownGrace)
 	defer grace.Stop()
 	select {
 	case <-done:
+		return true
 	case <-grace.C:
-		d.logf("connections did not end within %s; shutting down anyway", d.ShutdownGrace)
+		return false
 	}
 }
 
