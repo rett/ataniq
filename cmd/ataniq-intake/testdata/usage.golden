@@ -30,7 +30,9 @@ Paths and names from a lead are printed escaped. Type them as printed.
 
 Path rules: --path-rule adds a pattern to the execution-config set, and the
 same list must be given to review and to integrate. The review digest covers
-the rules. A different list makes the digest differ, and integrate refuses.
+the paths that the rules flag and the rule that flagged each. A list that
+flags other paths makes the digest differ, and integrate refuses. A rule that
+flags nothing changes nothing.
 
 Text from a lead is shown escaped, on indented lines, under a heading that
 says "unverified lead data". A line that starts in the first column is the
@@ -118,7 +120,9 @@ that needs its own sign-off, with its kind, its reason and the exact
   --target TARGET     the upstream branch the work goes to
   --path-rule PATTERN add a pattern to the execution-config set; may be
                       repeated. Give the same list to integrate: the digest
-                      covers it, and a different list is refused there.
+                      covers the paths that the rules flag, so a list that
+                      flags other paths is refused there. A rule that flags
+                      nothing changes nothing.
   --diff              also print the sanitised patch of the change
 
 Names and paths are printed escaped, and the command unescapes what you type

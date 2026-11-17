@@ -77,8 +77,8 @@ func TestUsageMentionsWhatTheOwnerMustKnow(t *testing.T) {
 	if !strings.Contains(strings.Join(strings.Fields(subUsage["verify"]), " "), "as /bin/sh -c COMMAND inside the verification sandbox, in the scratch clone") {
 		t.Error("the verify usage does not say where COMMAND runs")
 	}
-	if !strings.Contains(strings.Join(strings.Fields(subUsage["review"]), " "), "the digest covers it") {
-		t.Error("the review usage does not say that the digest covers the path rules")
+	if !strings.Contains(strings.Join(strings.Fields(subUsage["review"]), " "), "the digest covers the paths that the rules flag") {
+		t.Error("the review usage does not say that the digest covers the paths that the path rules flag")
 	}
 }
 
