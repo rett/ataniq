@@ -93,10 +93,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   units and may write the registry's journal, the states stopped, ended or
   unknown with their proof or reason and the outcomes adopted or abandoned of
   launch intents; it starts, stops and signals nothing. When systemd cannot be
-  asked (also when the registry has no role to ask about), the daemon still
-  serves the roles as the registry has them, with the reconcile shown as not
-  completed, which is also how an unacknowledged recovery of the registry shows,
-  as the protocol has no field for the reason. Reconcile runs at start only, not
+  asked (also when the registry has no role to ask about), when any call to it
+  failed during the reconcile, or when the reconcile ran out of time (also in
+  its last step), the daemon still serves the roles as the registry has them,
+  with the reconcile shown as not completed, which is also how an
+  unacknowledged recovery of the registry shows, as the protocol has no field
+  for the reason. An answer such as "not loaded" is not a failure. Reconcile runs at start only, not
   on a timer. Each start-up step that fails has its own exit code (10 to 18) and
   one line on standard error. The socket is mode 0600 in a 0700 folder, and a
   peer is accepted only when its user id equals the daemon's, which does not

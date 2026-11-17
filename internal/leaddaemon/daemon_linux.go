@@ -212,10 +212,13 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return &StartupError{Step: StepManager, Err: fmt.Errorf("read the boot identity: %w", err)}
 	}
-	mgr, err := d.NewManager(ctx)
+	built, err := d.NewManager(ctx)
 	if err != nil {
 		return &StartupError{Step: StepManager, Err: fmt.Errorf("build the unit manager: %w", err)}
 	}
+	// The lifecycle gets the counting wrapper, so that every call that fails
+	// is known to the reconcile's verdict.
+	mgr := &failureCounter{Manager: built}
 	ctl, err := leadlifecycle.New(leadlifecycle.Options{
 		Registry: reg, Manager: mgr, Clock: d.Clock,
 		Preflight: refusePreflight{}, Holder: refuseHolder{},
@@ -336,10 +339,12 @@ func cleanAbs(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == 
 
 // reconcile runs the one Reconcile and reports whether it completed. A
 // manager that is known to be unavailable (also with nothing in the registry
-// to ask it about), a manager that did not answer for some role, a reconcile
-// that ran out of time and an unacknowledged recovery of the registry make it
-// not completed and are not fatal; a failure of the registry is.
-func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, reg *leadregistry.Registry, mgr leadunit.Manager) (bool, error) {
+// to ask it about), a manager call that failed (Inspect, Empty or any other;
+// see [failureCounter] for the answers that are not failures), a reconcile
+// whose context ended (also inside the last role, where no later step would
+// see it) and an unacknowledged recovery of the registry make it not
+// completed and are not fatal; a failure of the registry is.
+func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, reg *leadregistry.Registry, mgr *failureCounter) (bool, error) {
 	rctx, rcancel := context.WithTimeout(ctx, d.ReconcileTimeout)
 	defer rcancel()
 	rep, err := ctl.Reconcile(rctx)
@@ -353,6 +358,11 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 		}
 		completed = false
 		d.logf("the reconcile did not finish within %s; it is shown as not completed", d.ReconcileTimeout)
+	} else if rctx.Err() != nil && ctx.Err() == nil {
+		// The deadline ended inside the last role's call: Reconcile saw no later
+		// step that would have noticed it, and returned no error.
+		completed = false
+		d.logf("the reconcile ran out of time (%s) in its last step; it is shown as not completed", d.ReconcileTimeout)
 	}
 	unavailable := 0
 	for _, r := range rep.Roles {
@@ -360,9 +370,13 @@ func (d *daemon) reconcile(ctx context.Context, ctl *leadlifecycle.Controller, r
 			unavailable++
 		}
 	}
-	if um, known := mgr.(unavailableManager); known {
+	if um, known := mgr.Manager.(unavailableManager); known {
 		completed = false
 		d.logf("the unit manager is unavailable (%s); the reconcile is shown as not completed and the roles as the registry has them", SafeText(fmt.Sprint(um.cause)))
+	}
+	if n := mgr.failures(); n > 0 {
+		completed = false
+		d.logf("%d unit manager call(s) failed during the reconcile; it is shown as not completed", n)
 	}
 	if unavailable > 0 {
 		completed = false

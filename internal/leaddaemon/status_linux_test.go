@@ -413,3 +413,86 @@ func TestConcurrentClientsAndShutdownWithAnOpenConnection(t *testing.T) {
 	}
 	e.lockFree()
 }
+
+// emptyOverride is a manager that answers like the fake except for Empty,
+// which it hands to fn.
+type emptyOverride struct {
+	leadunit.Manager
+	fn func(ctx context.Context, st leadunit.State) (bool, error)
+}
+
+func (m emptyOverride) Empty(ctx context.Context, st leadunit.State) (bool, error) {
+	return m.fn(ctx, st)
+}
+
+// aReadyRoleWhoseUnitIsGone prepares a registry with one role shown ready
+// whose unit crashed away, so that the reconcile has to prove its control
+// group empty.
+func aReadyRoleWhoseUnitIsGone(t *testing.T, e *env) {
+	t.Helper()
+	e.prepare(func(reg *leadregistry.Registry) {
+		alpha := lead(t, "alpha")
+		if _, err := reg.Define(alpha, leadregistry.ManagerAtaniq, profile()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.SetDesired(alpha, leadregistry.DesiredRunning); err != nil {
+			t.Fatal(err)
+		}
+		e.launch(reg, alpha, leadregistry.StateReady)
+	})
+	if !e.fake.Crash("ataniq-lead-alpha.service") {
+		t.Fatal("the unit was not running")
+	}
+}
+
+func TestFailedEmptyShowsTheReconcileIncomplete(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		empty   func(context.Context, leadunit.State) (bool, error)
+		timeout time.Duration
+		log     string
+		answers bool // the manager gave a defined answer, not a failure
+	}{
+		{name: "plain error", log: "1 unit manager call(s) failed",
+			empty: func(context.Context, leadunit.State) (bool, error) {
+				return false, errors.New("read cgroup.events: permission denied")
+			}},
+		{name: "deadline in the last role", timeout: 200 * time.Millisecond, log: "ran out of time",
+			empty: func(ctx context.Context, _ leadunit.State) (bool, error) {
+				<-ctx.Done()
+				return false, ctx.Err()
+			}},
+		{name: "control group of another identity is an answer", answers: true,
+			empty: func(context.Context, leadunit.State) (bool, error) {
+				return false, leadunit.ErrControlGroupMismatch
+			}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t)
+			aReadyRoleWhoseUnitIsGone(t, e)
+			cfg := e.config()
+			cfg.ReconcileTimeout = tt.timeout
+			cfg.NewManager = func(context.Context) (leadunit.Manager, error) {
+				return emptyOverride{Manager: e.fake, fn: tt.empty}, nil
+			}
+			calls := len(e.fake.Calls())
+			d := e.startDaemon(cfg)
+			res := status(t, d.socket)
+			a := find(t, res, "alpha/lead")
+			if a.State != clientapi.StateUnknown || a.ReasonCode != "control-group-not-proven-empty" {
+				t.Fatalf("lead %+v", a)
+			}
+			if res.Daemon.LastReconcileCompleted == !tt.answers {
+				t.Fatalf("LastReconcileCompleted = %v, the manager call %s", res.Daemon.LastReconcileCompleted,
+					map[bool]string{true: "answered", false: "failed"}[tt.answers])
+			}
+			if tt.log != "" && !strings.Contains(e.log.String(), tt.log) {
+				t.Fatalf("log has no %q:\n%s", tt.log, e.log)
+			}
+			if err := d.stop(); err != nil {
+				t.Fatal(err)
+			}
+			noStartNoSignal(t, e.fake, calls)
+		})
+	}
+}
