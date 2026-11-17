@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -37,7 +38,14 @@ func checkMarks(e *Emulator) string {
 			if m.cell == nil {
 				continue
 			}
-			for x := range s.buf.Lines[y] {
+			from, to := 0, len(s.buf.Lines[y])
+			if m.part {
+				from, to = m.from, m.to
+				if from < 0 || to > len(s.buf.Lines[y]) || from >= to {
+					return fmt.Sprintf("screen %d line %d: a part from %d to %d", i, y, from, to)
+				}
+			}
+			for x := from; x < to; x++ {
 				if !reflect.DeepEqual(&s.buf.Lines[y][x], m.cell) {
 					return fmt.Sprintf("screen %d line %d column %d: the mark says %#v, the cell is %#v", i, y, x, *m.cell, s.buf.Lines[y][x])
 				}
@@ -444,6 +452,93 @@ func TestBlankingLinesIsWhatWritingEveryCellGives(t *testing.T) {
 	}
 }
 
+// A scroll in a region that cuts off only the edges of the lines (margins in
+// the second column and the last but one, say) moves the lines and puts the
+// cells outside the region back (Screen.shiftColumns), which is what the
+// buffer's functions leave, wide characters cut by the edges of the region
+// included: the repair of a wide cell at an edge reads the cells the lines
+// that come in had before, and writes outside the region.
+func TestNarrowScrollKeepsWhatIsOutside(t *testing.T) {
+	glyphs := []string{"a", "b", "\u4e16", "\u754c", " ", "e\u0301", "\U0001f468"}
+	seeds := uint64(100)
+	if raceEnabled {
+		seeds = 25
+	}
+	compared := 0
+	for seed := uint64(1); seed <= seeds; seed++ {
+		rng := rand.New(rand.NewPCG(seed, 31))
+		w, h := 12+rng.IntN(20), 10+rng.IntN(25)
+		a := NewEmulator(w, h)
+		a.SetScrollbackSize(0)
+		var text strings.Builder
+		for i := 0; i < w*h; i++ {
+			text.WriteString(glyphs[rng.IntN(len(glyphs))])
+			if rng.IntN(3) == 0 {
+				text.WriteString(fmt.Sprintf("\x1b[%dm", []int{0, 1, 31, 42, 7}[rng.IntN(5)]))
+			}
+		}
+		a.Write([]byte(text.String()))
+		for try := 0; try < 12; try++ {
+			left := 1 + rng.IntN(3)  // 1-based, the edge cut off is 0 to 2 columns
+			right := w - rng.IntN(3) // 1-based, inclusive
+			top, bottom := 1+rng.IntN(2), h-rng.IntN(2)
+			a.Write([]byte(fmt.Sprintf("\x1b[?69h\x1b[%d;%ds\x1b[%d;%dr", left, right, top, bottom)))
+			if left == 1 && right == w {
+				continue // as wide as the screen: not the region under test
+			}
+			if rng.IntN(2) == 0 {
+				a.Write([]byte("\x1b[44m"))
+			}
+			b := NewEmulator(2, 2)
+			b.SetScrollbackSize(0)
+			if err := b.SetState(a.State()); err != nil {
+				t.Fatal(err)
+			}
+			// A count of a tenth of the lines or less is the one that moves the
+			// lines (Screen.moveColumns); a larger one moves the cells.
+			n := 1 + rng.IntN(h)
+			if rng.IntN(2) == 0 {
+				n = 1 + rng.IntN(max(1, h/10))
+			}
+			x, y := rng.IntN(w), rng.IntN(h)
+			a.scr.setCursor(x, y, false)
+			b.scr.setCursor(x, y, false)
+			for i := range a.scrs {
+				a.scrs[i].ClearTouched()
+				b.scrs[i].ClearTouched()
+			}
+			kind := rng.IntN(4)
+			seqs := []string{"L", "M", "S", "T"}
+			a.Write([]byte(fmt.Sprintf("\x1b[%d%s", n, seqs[kind])))
+			switch kind {
+			case 0:
+				refIL(b, n)
+			case 1:
+				refDL(b, n)
+			case 2:
+				refScrollUp(b.scr, n)
+			case 3:
+				refScrollDown(b.scr, n)
+			}
+			where := fmt.Sprintf("seed %d try %d: %d%s on %dx%d with margins %d-%d and lines %d-%d, cursor %d,%d", seed, try, n, seqs[kind], w, h, left, right, top, bottom, x, y)
+			if d := stateDiff(a.State(), b.State()); d != "" {
+				t.Fatalf("%s: %s", where, d)
+			}
+			if !reflect.DeepEqual(touchedOf(a.scr), touchedOf(b.scr)) {
+				t.Fatalf("%s: the touched lines differ", where)
+			}
+			if d := checkMarks(a); d != "" {
+				t.Fatalf("%s: %s", where, d)
+			}
+			compared++
+		}
+	}
+	t.Logf("%d scrolls compared", compared)
+	if compared < int(seeds)*4 {
+		t.Errorf("%d scrolls compared", compared)
+	}
+}
+
 // What the marks know never goes wrong, whatever follows what: a stream that
 // blanks lines and writes to them, and keeps the marks from one sequence to
 // the next, ends every write in the state of the same stream with the marks
@@ -537,6 +632,55 @@ func TestBlankingABlankLineWritesNothing(t *testing.T) {
 	}
 	if d := checkMarks(e); d != "" {
 		t.Fatal(d)
+	}
+
+	// A part of a line the same way: the erase of the region of a narrow scroll
+	// is skipped when the cells are blank already.
+	e = NewEmulator(20, 4)
+	e.Write([]byte(strings.Repeat("x", 80) + "\x1b[?69h\x1b[3;10s\x1b[4S"))
+	for y := range e.scr.buf.Lines {
+		if m := e.scr.marks[y]; !m.part || m.from != 2 || m.to != 10 {
+			t.Fatalf("line %d: mark %+v, want the part 2 to 10", y, m)
+		}
+		e.scr.buf.Lines[y][5].Content = "Z"
+		e.scr.buf.Lines[y][12].Content = "Y"
+	}
+	e.Write([]byte("\x1b[4S"))
+	for y := range e.scr.buf.Lines {
+		if e.scr.buf.Lines[y][5].Content != "Z" {
+			t.Errorf("line %d was written again", y)
+		}
+		e.scr.buf.Lines[y][5].Content = " " // what the marks say
+		e.scr.buf.Lines[y][12].Content = "x"
+	}
+	// A change of one cell of the part drops the mark, and the erase writes.
+	e.Write([]byte("\x1b[1;5Hq\x1b[4S"))
+	if c := e.scr.buf.Lines[0][5]; c.Content != " " {
+		t.Errorf("the erase did not write the line a character was printed in: %#v", c)
+	}
+	if d := checkMarks(e); d != "" {
+		t.Fatal(d)
+	}
+}
+
+// The recount of the links reads the cells of a line that has a part marked
+// blank, which has links outside the part, and skips the line that is marked
+// blank whole.
+func TestRecountSeesLinksOutsideAMarkedPart(t *testing.T) {
+	e := NewEmulator(20, 2)
+	e.Write([]byte("\x1b]8;;http://a.example/1\x1b\\" + strings.Repeat("x", 40) + "\x1b]8;;\x1b\\"))
+	e.Write([]byte("\x1b[?69h\x1b[3;10s\x1b[2S"))
+	if m := e.scr.marks[0]; !m.part {
+		t.Fatalf("mark %+v, want a part", m)
+	}
+	e.scr.recountLinks()
+	if len(e.scr.links.set) != 1 {
+		t.Errorf("the recount found %d links, want the 1 outside the part", len(e.scr.links.set))
+	}
+	e.Write([]byte("\x1b[?69l\x1b[2J"))
+	e.scr.recountLinks()
+	if len(e.scr.links.set) != 0 {
+		t.Errorf("the recount found %d links on a blank screen", len(e.scr.links.set))
 	}
 }
 

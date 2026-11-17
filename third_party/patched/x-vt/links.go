@@ -90,7 +90,7 @@ func (s *Screen) recountLinks() {
 	var prev uv.Link
 	for y, line := range s.buf.Lines {
 		if y < len(s.marks) {
-			if c := s.marks[y].cell; c != nil && c.Link.URL == "" {
+			if m := &s.marks[y]; m.cell != nil && !m.part && m.cell.Link.URL == "" {
 				// Every cell of the line is c, with no link.
 				continue
 			}

@@ -33,7 +33,8 @@ import (
 // the cell-by-cell code:
 //
 //   - A mark with a cell says: once the line is flushed, every cell of it is
-//     *cell. A line with no mark (cell nil) says nothing.
+//     *cell (with part set, every cell from from up to to, written). A line
+//     with no mark (cell nil) says nothing.
 //   - A stale line has a mark, and its cells are not to be read.
 //   - Whatever changes cells of a line writes it first (flush) and drops the
 //     mark (forget), unless it sets the whole line, which sets the mark
@@ -47,10 +48,16 @@ import (
 // through it: the marks would not know. Nothing in the emulator does, and
 // SetCell is the way to change a cell.
 
-// lineMark is the mark of one line.
+// lineMark is the mark of one line. With part set it says less: only the
+// cells from from up to to are the cell, and they are written (a part is never
+// stale), which is what an erase of a part of a line leaves behind (the
+// erase of a scroll region narrower than the screen), so that the same erase
+// of the same cells again does nothing.
 type lineMark struct {
-	cell  *uv.Cell
-	stale bool
+	cell     *uv.Cell
+	stale    bool
+	part     bool
+	from, to int
 }
 
 // blankFill is the cell of an erase with no background, the one the buffer's
@@ -164,10 +171,10 @@ func (s *Screen) setLines(y0, y1 int, c *uv.Cell) {
 	marks := s.marksTable()
 	for y := max(y0, 0); y < min(y1, len(marks)); y++ {
 		m := &marks[y]
-		if m.cell == c {
+		if m.cell == c && !m.part {
 			continue
 		}
-		m.cell = c
+		m.cell, m.part = c, false
 		if !m.stale {
 			m.stale = true
 			s.stale++
@@ -182,7 +189,7 @@ func (s *Screen) markedBlank(y int) bool {
 		return false
 	}
 	m := &s.marks[y]
-	return m.cell != nil && (m.cell.Content == "" || m.cell.Content == " ")
+	return m.cell != nil && !m.part && (m.cell.Content == "" || m.cell.Content == " ")
 }
 
 // fillBlank sets the cells of area to the cell c, which is a blank cell of
@@ -203,13 +210,19 @@ func (s *Screen) fillBlank(c *uv.Cell, area uv.Rectangle) {
 		return
 	}
 	marks := s.marksTable()
+	from, to := max(area.Min.X, 0), min(area.Max.X, w)
 	for y := y0; y < y1; y++ {
-		if marks[y].cell == fill {
-			// Every cell of the line is c, and so is every cell of the part.
+		m := &marks[y]
+		if m.cell == fill && (!m.part || (m.from <= from && to <= m.to)) {
+			// Every cell of the part is c already, whole cells of one column
+			// that the fill would leave as they are.
 			continue
 		}
 		s.forget(y)
 		s.buf.FillArea(c, uv.Rect(area.Min.X, y, area.Dx(), 1))
+		if from < to {
+			*m = lineMark{cell: fill, part: true, from: from, to: to}
+		}
 	}
 }
 

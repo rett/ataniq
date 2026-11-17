@@ -316,6 +316,43 @@ Patches, applied in this order to the files of the module as released:
    the way to read it; `SetCell` is the way to change it. Nothing in the module
    does, and `State` and `SetState` do not carry the marks (the inventory test
    lists them).
+15. `vt: erase the region of a scroll that is narrower than the screen`
+   (`blank.go`, `screen.go`, `links.go`, `erase_test.go`).
+   Insert line, delete line, scroll up and scroll down in a region as wide as
+   the screen blank their lines by mark (patch 14), and a count of the lines
+   left in the region or more is the erase of the region, which costs the
+   lines. A region narrower than the screen (left and right margins, mode 69)
+   still moved and filled cells one at a time through the buffer's functions,
+   and `ESC[?69h ESC[2;499s` and then `ESC[200S` over and over took 4.3
+   seconds per 64 KiB (the same with a count of one line, 20 s). Now:
+   - A count of the lines left in the region or more is the erase of the area
+     of the region from the cursor's line down, the buffer's fill of it (a
+     wide cell cut by an edge of the region is repaired as before, and the
+     cells outside the region that the repair writes are written), and the
+     lines it covers get a mark that says only that the cells of the region
+     are blank (a part of a line: the same erase again does nothing, which
+     costs the lines it checks: 64 KiB of such sequences take 0.013 s).
+     The lines of the region and the lines n above (or below) them are marked
+     as touched, as the buffer's functions did.
+   - A count of at most a tenth of the lines left, in a region that leaves at
+     most an eighth as many cells of a line outside it as inside it (margins
+     that cut off the edges), moves the lines of the region, as patch 13
+     does, and puts the cells outside it back where they were; the lines that
+     come in keep their own cells for the fill, since the repair of a wide cell
+     goes by what the cell was, one cell after another, and can write outside
+     the region. A scroll of one line in the margins 2 and 499 of the largest
+     screen took 1 ms and takes 50 us (64 KiB of `ESC[S`: 20 s before, 1.0 s
+     after). The tests compare it with the buffer's functions in every region,
+     wide characters at the edges of the region included.
+   - Any other count and region is moved by the buffer's functions, as it was.
+     This stays slow: a scroll of more than a tenth of the lines, or margins that cut
+     off more than an eighth of the line (100 to 400 of 500 columns), moves up
+     to 11 MB for each sequence, which takes 0.4 to 1.7 ms. 64 KiB of `ESC[S`
+     with margins 100 and 400 take 9 s; 64 KiB of `ESC[40S` with margins 2
+     and 499, 22 s. Nothing but a buffer that moves the lines of a region
+     narrower than the screen without moving their cells would bound this.
+     The pane feeds the emulator in slices of 4 KiB, so that no draw waits
+     for more than a slice of it (about 0.6 s of this).
 
 The patches were not part of v0.1.0 (the version copied); later releases were
 not checked when this copy was made.

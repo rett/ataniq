@@ -1,6 +1,8 @@
 package vt
 
 import (
+	"slices"
+
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/ordered"
 )
@@ -463,14 +465,98 @@ func (s *Screen) moveLines(y, n int, up bool) {
 
 // moveColumns is InsertLine or, with up set, DeleteLine for a scroll region
 // that is narrower than the screen: the buffer's own insert and delete move
-// the cells of the region, one at a time, after the lines are written and
-// their marks dropped.
+// the cells of the region, one at a time.
+//
+//   - A count of the lines left in the region or more moves nothing, and is
+//     the erase of the area of the region from line y down, which fillBlank
+//     does (the buffer's functions fill it with the blank cell, the cell at a
+//     time).
+//   - A region that leaves few cells of a line outside it (a few columns, as
+//     margins do that only cut off the edges), and a count of at most a tenth
+//     of the lines left, moves the lines of the region and puts back the
+//     cells outside it: 11 MB for a scroll of one line of the largest screen
+//     with margins in the second and the last but one column, 1 ms, becomes
+//     the cells outside the region and the lines that come in, 50 us a line
+//     (a larger count would copy more than it saves: 20 lines cost the 1 ms).
+//     The blank lines are
+//     then filled by the buffer's function, which repairs a wide cell one
+//     cell after another (a wide cell at the edge makes it write outside the
+//     region), so the lines that come in get their own cells back first.
+//   - Any other region is moved by the buffer's functions.
+//
+// Nothing is touched but what the buffer's functions touch: the lines of the
+// region, and the lines n above (or below) them.
 func (s *Screen) moveColumns(y, n int, up bool) {
-	s.forgetRows(y, s.scroll.Max.Y)
-	if up {
-		s.buf.DeleteLineArea(y, n, s.blankCell(), s.scroll)
-	} else {
-		s.buf.InsertLineArea(y, n, s.blankCell(), s.scroll)
+	area := s.scroll
+	x0, x1 := area.Min.X, area.Max.X
+	switch {
+	case n >= area.Max.Y-y:
+		s.fillBlank(s.blankCell(), uv.Rect(x0, y, area.Dx(), area.Max.Y-y))
+		s.touchColumns(n, up)
+	case (s.buf.Width()-(x1-x0))*8 <= x1-x0 && n*10 <= area.Max.Y-y:
+		s.forgetRows(y, area.Max.Y)
+		s.shiftColumns(y, n, up)
+		s.touchColumns(n, up)
+	default:
+		s.forgetRows(y, area.Max.Y)
+		if up {
+			s.buf.DeleteLineArea(y, n, s.blankCell(), area)
+		} else {
+			s.buf.InsertLineArea(y, n, s.blankCell(), area)
+		}
+	}
+}
+
+// touchColumns marks what the buffer's insert and delete of lines mark in the
+// scroll region: its lines, and the lines n above or below them.
+func (s *Screen) touchColumns(n int, up bool) {
+	area := s.scroll
+	for i := area.Min.Y; i < area.Max.Y; i++ {
+		s.buf.TouchLine(area.Min.X, i, area.Dx())
+		if up {
+			s.buf.TouchLine(area.Min.X, i+n, area.Dx())
+		} else {
+			s.buf.TouchLine(area.Min.X, i-n, area.Dx())
+		}
+	}
+}
+
+// shiftColumns moves the lines of the scroll region from line y n lines up
+// (or down), puts the cells outside the region back where they were, and
+// blanks the n lines that come in as the buffer's functions do, for a count
+// below the lines left. The lines of the region from y are written and
+// unmarked (forgetRows).
+func (s *Screen) shiftColumns(y, n int, up bool) {
+	area := s.scroll
+	x0, x1 := area.Min.X, area.Max.X
+	lines := s.buf.Lines[y:area.Max.Y]
+	from, k := len(lines)-n, n
+	if !up {
+		from, k = 0, len(lines)-n
+	}
+	// What is outside the region, line by line, and what is inside the lines
+	// that come in: the fill of a line reads the cells it overwrites (the
+	// repair of a wide cell goes by what a cell was, one cell after another),
+	// so it has to find its own.
+	outside := make([]uv.Cell, 0, len(lines)*(s.buf.Width()-(x1-x0)))
+	for _, line := range lines {
+		outside = append(outside, line[:x0]...)
+		outside = append(outside, line[x1:]...)
+	}
+	own := make([][]uv.Cell, n)
+	for i := range own {
+		own[i] = slices.Clone(lines[from+i][x0:x1])
+	}
+	rotateLeft(lines, k)
+	o := 0
+	for _, line := range lines {
+		o += copy(line[:x0], outside[o:])
+		o += copy(line[x1:], outside[o:])
+	}
+	blank := s.blankCell()
+	for i := range own {
+		copy(lines[from+i][x0:x1], own[i])
+		s.buf.Buffer.FillArea(blank, uv.Rect(x0, y+from+i, x1-x0, 1))
 	}
 }
 
