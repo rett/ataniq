@@ -607,6 +607,10 @@ number differs from the command's current number of late notes, so a decision
 never covers a note the operator has not seen. The same holds when a half
 written resend is completed by repeating the call: it goes through only with the
 current count, so late information that arrived in between is seen first.
+`SeenLate` counts stored notes only. For an uncertain command with no resend
+pending, a piece refused as `late-notes-full` or `bad-evidence` is stored
+nowhere and does not change the count, so a decision can cover it unseen; the
+daemon logs and shows such a refused piece itself.
 
 **No automatic retry.** Nothing in the package resends. A command that is
 `uncertain` stays so until an operator decides. `Tick` never dispatches and
@@ -659,7 +663,11 @@ The counter is never reset, not by a release either.
 for each, the counter value, the command id, the time and the rendering. It
 shows a piece even when its note was refused (a full note list, bad evidence),
 so a release covers what the operator has seen when the daemon shows
-`HeldPieces` up to `HeldSeq`. `Restore` rebuilds it from the hold records.
+`HeldPieces` up to `HeldSeq` and the first piece shown has the counter the
+hold started at; older pieces are only in the journal (hold records), and a
+release screen shows them from there. The rendering keeps line breaks, so
+whatever displays it must quote it. `Restore` rebuilds it from the hold
+records.
 
 The operator ends a hold, and only the operator:
 
@@ -697,7 +705,8 @@ could not have written: a hold that does not advance the counter by one, a hold
 for an unknown command or a command that calls for none, a release that does
 not carry the current counter or has no operator, a withdrawal from a queue that
 is not held, a dispatch while the queue is held, and a note for a decided
-command with no hold behind it.
+command with no hold behind it, a hold with no bounded, safe rendering, a hold
+with an invalid digest, and a hold that repeats the last piece of a held queue.
 
 **What the daemon must do.** The machine is told only what the daemon tells it.
 
@@ -912,6 +921,15 @@ bluntly as we can state them.
   `wrong-state` and is not journaled. The message may never have reached the
   lead, and the audit loses the result. Whether it should be kept as a note and
   also hold the queue is an open question for the owner.
+- **A refused piece can be covered unseen.** `Resolution.SeenLate` counts
+  stored notes only. For an uncertain command with no resend pending, a piece
+  refused as `late-notes-full` or `bad-evidence` is stored nowhere, so a
+  decision can cover it unseen. Open: storing such a piece as a hold record, as
+  is done for a decided command, would close it.
+- **A release can cover pieces not shown.** `HeldPieces` shows the last eight
+  pieces. A release covers what the operator has seen only when the first piece
+  shown has the counter the hold started at; older pieces are only in the
+  journal (hold records), and a release screen shows them from there.
 - **No live qualification.** This library has never been run against a real
   agent. Every test uses recorded screens and a fake session. The attended runs
   that the fixtures and the observations above come from used an earlier

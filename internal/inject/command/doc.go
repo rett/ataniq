@@ -133,6 +133,11 @@
 //     is about (Machine.Command, also for a command that has ended), and passes
 //     back HeldSeq to ReleaseHold and the number of notes it showed to Resolve
 //     (Resolution.SeenLate).
+//   - Open: SeenLate counts stored notes only. For an uncertain command with
+//     no resend pending, a piece refused as late-notes-full or bad-evidence is
+//     stored nowhere, so a decision can cover it unseen; the daemon logs and
+//     shows it itself. Storing such a piece as a hold record (as is done for a
+//     decided command) would close it.
 //   - The daemon repeats a late call (RecordFence or ConfirmDelivery for a
 //     decided command) that returned a journal error. The hold is written
 //     before the note: if the hold failed nothing changed, and if the note

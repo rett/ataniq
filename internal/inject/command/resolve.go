@@ -33,7 +33,11 @@ type Resolution struct {
 	Note string
 	// SeenLate is the number of late notes the operator was shown for the
 	// command (len(CommandView.Late)). The decision is refused when more, or
-	// fewer, are there now, so that it never covers a note nobody read.
+	// fewer, are there now, so that it never covers a stored note nobody read.
+	// Only stored notes count: for an uncertain command with no resend pending,
+	// a piece refused as late-notes-full or bad-evidence is stored nowhere and
+	// does not change the count, so a decision can cover it unseen. The daemon
+	// logs and shows such a piece itself.
 	SeenLate int
 }
 
