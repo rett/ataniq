@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -368,5 +369,117 @@ func TestNewSpecSeccompAndRefusals(t *testing.T) {
 	h.ManagedMarker = ""
 	if _, err := NewSpec(in, h); err == nil {
 		t.Error("a claude spec without a marker")
+	}
+}
+
+// A spec the encoder makes is read back equal, whatever the characters of its
+// strings: nothing may change in the JSON, or the probe checks other paths
+// than the holder wrote.
+func TestSpecRoundTripIsExact(t *testing.T) {
+	for _, rt := range profile.Runtimes() {
+		s := testSpec(rt)
+		s.OwnerPaths = append(s.OwnerPaths, "/home/owner/café", "/home/owner/日本", `/home/owner/a"b\c<d>&e`)
+		s.HolderPaths = append(s.HolderPaths, "/run/example/☃")
+		s.Env[0].Value = `/home/lead "quoted" <&> \ and café`
+		s.Optional = []int{4}
+		s.ConnectTimeoutMS, s.ResolveTimeoutMS = 250, 9000
+		data, err := EncodeSpec(s)
+		if err != nil {
+			t.Fatalf("%s: %v", rt, err)
+		}
+		back, err := DecodeSpecBytes(data)
+		if err != nil {
+			t.Fatalf("%s: %v", rt, err)
+		}
+		if !reflect.DeepEqual(s, back) {
+			t.Errorf("%s: the spec changed in a round trip:\n%+v\n%+v", rt, s, back)
+		}
+	}
+}
+
+// A string that is not valid UTF-8 changes in the JSON (encoding/json writes
+// U+FFFD), so Validate refuses it in every field that holds text.
+func TestSpecRefusesInvalidUTF8(t *testing.T) {
+	bad := "/home/owner/caf\xe9"
+	for _, tc := range []struct {
+		name   string
+		mutate func(s *Spec)
+		field  string
+	}{
+		{"holder path", func(s *Spec) { s.HolderPaths[1] = bad }, "holder_paths[1]"},
+		{"owner path", func(s *Spec) { s.OwnerPaths[2] = bad }, "owner_paths[2]"},
+		{"mount substring", func(s *Spec) { s.MountSubstrings[0] = bad }, "mount_substrings[0]"},
+		{"env value", func(s *Spec) { s.Env[1].Value = "/usr/caf\xe9" }, "env[1]"},
+		{"env name", func(s *Spec) { s.Env[1].Name = "P\xe9TH" }, "env[1]"},
+		{"tree", func(s *Spec) { s.Tree = bad }, "tree"},
+		{"managed settings of codex", func(s *Spec) {
+			s.Runtime = profile.Codex
+			s.OtherConfigDir = profile.ConfigInside(profile.Claude)
+			s.ManagedSettings = bad
+		}, "managed_settings"},
+		{"managed marker", func(s *Spec) { s.ManagedMarker = "hook\xe9" }, "managed_marker"},
+		{"provider host", func(s *Spec) { s.ProviderHost = "api.\xe9.org" }, "provider_host"},
+		{"abstract socket", func(s *Spec) { s.AbstractSocket = "a\xe9" }, "abstract_socket"},
+		{"digest", func(s *Spec) { s.Digest = strings.Repeat("a\xe9", 32) }, "digest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testSpec(profile.Claude)
+			tc.mutate(&s)
+			err := s.Validate()
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if r := refusalOf(t, err); r.Field != tc.field {
+				t.Errorf("field %q (%v), want %q", r.Field, err, tc.field)
+			}
+			if _, err := EncodeSpec(s); err == nil {
+				t.Error("EncodeSpec accepted")
+			}
+		})
+	}
+	// Raw bytes in a spec that was written by hand are refused whole.
+	good, _ := EncodeSpec(testSpec(profile.Claude))
+	raw := bytes.Replace(good, []byte("/home/owner/.ssh"), []byte("/home/owner/.ss\xe9"), 1)
+	if bytes.Equal(raw, good) {
+		t.Fatal("test input did not change")
+	}
+	if _, err := DecodeSpecBytes(raw); err == nil || !strings.Contains(err.Error(), "UTF-8") {
+		t.Errorf("a spec with a stray byte: %v", err)
+	}
+}
+
+// Keys are exact and case-sensitive and appear once: the decoder of
+// encoding/json would take another case and the last of two.
+func TestDecodeSpecKeysAreExact(t *testing.T) {
+	good, err := EncodeSpec(testSpec(profile.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := string(good)
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"another case", strings.Replace(g, `"seccomp_expected"`, `"SECCOMP_EXPECTED"`, 1)},
+		{"a key twice", strings.Replace(g, `"seccomp_expected": false,`, `"seccomp_expected": true, "seccomp_expected": false,`, 1)},
+		{"the same key in two cases", strings.Replace(g, `"seccomp_expected": false,`, `"seccomp_expected": true, "Seccomp_Expected": false,`, 1)},
+		{"another case in a list of objects", strings.Replace(g, `"name": "HOME"`, `"Name": "HOME"`, 1)},
+		{"a key twice in a list of objects", strings.Replace(g, `"name": "HOME",`, `"name": "HOME", "name": "OTHER",`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.input == g {
+				t.Fatal("test input did not change")
+			}
+			_, err := DecodeSpecBytes([]byte(tc.input))
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			refusalOf(t, err)
+		})
+	}
+	// Deep nesting is refused, not recursed into.
+	deep := `{"version":` + strings.Repeat("[", 100) + strings.Repeat("]", 100) + `}`
+	if _, err := DecodeSpecBytes([]byte(deep)); err == nil {
+		t.Error("a deeply nested spec was accepted")
 	}
 }

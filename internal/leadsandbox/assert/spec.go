@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"reflect"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -140,9 +141,12 @@ func (s Spec) OptionalSet(n int) bool {
 	return false
 }
 
+var specShape = shapeOf(reflect.TypeOf(Spec{}))
+
 // DecodeSpec reads a spec, strictly: at most MaxSpecBytes (a larger input is
-// refused, not truncated), one JSON object, no unknown field and no trailing
-// data, and then Validate. The error is a *Refusal.
+// refused, not truncated), valid UTF-8, one JSON object, keys that are exactly
+// the field names (no other case, no unknown key, no key twice) and no
+// trailing data, and then Validate. The error is a *Refusal.
 func DecodeSpec(r io.Reader) (Spec, error) {
 	data, err := io.ReadAll(io.LimitReader(r, MaxSpecBytes+1))
 	if err != nil {
@@ -155,6 +159,17 @@ func DecodeSpec(r io.Reader) (Spec, error) {
 func DecodeSpecBytes(data []byte) (Spec, error) {
 	if len(data) > MaxSpecBytes {
 		return Spec{}, refuse("spec", "is larger than %d bytes", MaxSpecBytes)
+	}
+	if !utf8.Valid(data) {
+		// encoding/json would replace an invalid byte with U+FFFD and go on:
+		// the probe would check another path than the holder wrote.
+		return Spec{}, refuse("spec", "is not valid UTF-8")
+	}
+	if err := checkKeys(data, specShape, "spec"); err != nil {
+		if _, ok := err.(*Refusal); ok {
+			return Spec{}, err
+		}
+		return Spec{}, refuse("spec", "is not a spec: %v", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -251,8 +266,8 @@ func (s Spec) checkEnv() error {
 		if !validEnvName(e.Name) {
 			return refuse(field, "name must match [A-Za-z_][A-Za-z0-9_]* and be at most %d bytes", MaxEnvNameBytes)
 		}
-		if len(e.Value) > MaxEnvValueBytes || hasControl(e.Value) {
-			return refuse(field, "value of %s is longer than %d bytes or holds a control character", e.Name, MaxEnvValueBytes)
+		if len(e.Value) > MaxEnvValueBytes || hasControl(e.Value) || !utf8.ValidString(e.Value) {
+			return refuse(field, "value of %s is longer than %d bytes, holds a control character or is not valid UTF-8", e.Name, MaxEnvValueBytes)
 		}
 		if seen[e.Name] {
 			return refuse(field, "name %s is listed twice", e.Name)
@@ -296,12 +311,25 @@ func checkPaths(field string, paths []string) error {
 		return refuse(field, "more than %d paths", MaxPathEntries)
 	}
 	for i, p := range paths {
-		if err := profile.CheckPath(fmt.Sprintf("%s[%d]", field, i), p); err != nil {
-			return refuse(fmt.Sprintf("%s[%d]", field, i), "%s", reasonOf(err))
+		if err := checkPath(fmt.Sprintf("%s[%d]", field, i), p); err != nil {
+			return err
 		}
 		if p == "/" {
 			return refuse(fmt.Sprintf("%s[%d]", field, i), "must not be the root")
 		}
+	}
+	return nil
+}
+
+// checkPath is profile.CheckPath that also refuses a path that is not valid
+// UTF-8: it would change in the JSON of the spec, and the probe would check
+// another path than the holder meant.
+func checkPath(field, p string) error {
+	if err := profile.CheckPath(field, p); err != nil {
+		return refuse(field, "%s", reasonOf(err))
+	}
+	if !utf8.ValidString(p) {
+		return refuse(field, "is not valid UTF-8 and would change in the JSON of the spec")
 	}
 	return nil
 }
@@ -385,8 +413,8 @@ func checkHostName(h string) error {
 }
 
 func (s Spec) checkTree() error {
-	if err := profile.CheckPath("tree", s.Tree); err != nil {
-		return refuse("tree", "%s", reasonOf(err))
+	if err := checkPath("tree", s.Tree); err != nil {
+		return err
 	}
 	if s.Tree == "/" {
 		return refuse("tree", "must not be the root")
@@ -404,8 +432,8 @@ func (s Spec) checkTree() error {
 }
 
 func (s Spec) checkManaged() error {
-	if err := profile.CheckPath("managed_settings", s.ManagedSettings); err != nil {
-		return refuse("managed_settings", "%s", reasonOf(err))
+	if err := checkPath("managed_settings", s.ManagedSettings); err != nil {
+		return err
 	}
 	if s.Runtime == profile.Claude {
 		if s.ManagedSettings != profile.ClaudeManagedInside {
