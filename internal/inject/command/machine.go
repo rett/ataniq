@@ -13,6 +13,7 @@ const (
 	maxEvidenceBytes = 512  // a piece of evidence
 	maxOperatorBytes = 128  // an operator name
 	maxLateNotes     = 8    // late annotations kept for one command, ended or not
+	maxHeldPieces    = 8    // pieces of late information a hold shows
 )
 
 // command is the machine's memory of one command. A command that has ended
@@ -50,7 +51,8 @@ type hold struct {
 	about  []string
 	reason Reason // of the first record
 	since  time.Time
-	last   string // piece digest of the newest hold record
+	last   string      // piece digest of the newest hold record
+	pieces []HeldPiece // the newest pieces of late information, oldest first
 }
 
 // has reports whether the hold is already about the command. It is safe on

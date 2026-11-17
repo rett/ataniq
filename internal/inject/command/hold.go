@@ -60,26 +60,40 @@ func validPiece(s string) bool {
 }
 
 // holdRecord is the record that holds the queue of c's target because late
-// information arrived about c. held is the counter it sets, and piece the
-// digest of the call.
-func holdRecord(c *command, reason Reason, held uint64, piece string, now time.Time) Record {
+// information arrived about c. held is the counter it sets, piece the digest of
+// the call, and what a rendering of the call: the operator is shown it
+// (TargetView.HeldPieces) even when the note for the call is refused. It is cut
+// to the detail bound and made safe.
+func holdRecord(c *command, reason Reason, held uint64, piece, what string, now time.Time) Record {
 	return Record{
 		At: now, Type: RecordHold, ID: c.id, Target: c.target.String(), Reason: reason,
-		Held: held, Piece: piece,
-		Detail: safeField("late information arrived for "+c.id+"; an operator looks at its late notes and releases the hold", maxDetailBytes),
+		Held: held, Piece: piece, Detail: safeField(what, maxDetailBytes),
 	}
 }
 
-// holdIfDecided records that a piece of late information (piece is the digest
-// of the call) arrived about c, when c is a command that calls for a hold: c is
-// resolved as sent again or dropped, or it is uncertain with its resend half
-// written. It writes a hold record, which holds the queue if it is not held and
-// advances the target's hold counter either way, unless the queue is held and
-// the call repeats the last piece byte for byte. It is called before anything
-// that can refuse the call (the evidence bounds, the repeat of a note, the note
-// cap), so the hold and the counter do not depend on whether the note can be
-// stored. When it returns an error nothing changed.
-func (m *Machine) holdIfDecided(c *command, piece string, now time.Time) error {
+// evidencePiece is the rendering of a call of late delivery evidence.
+func evidencePiece(evidence string) string {
+	return "late-evidence: " + evidence
+}
+
+// fencePiece is the rendering of a call of a late fence result: what the fence
+// says it wrote, its outcome and its readings.
+func fencePiece(written Written, outcome FenceOutcome, readings string) string {
+	return "late-fence-result: written " + safeField(string(written), 40) +
+		", outcome " + safeField(string(outcome), 40) + "; " + readings
+}
+
+// holdIfDecided records that a piece of late information arrived about c, when
+// c is a command that calls for a hold: c is resolved as sent again or
+// dropped, or it is uncertain with its resend half written. piece is the
+// digest of the call and what its rendering (evidencePiece, fencePiece). It
+// writes a hold record, which holds the queue if it is not held and advances
+// the target's hold counter either way, unless the queue is held and the call
+// repeats the last piece byte for byte. It is called before anything that can
+// refuse the call (the evidence bounds, the repeat of a note, the note cap), so
+// the hold, the counter and the rendering do not depend on whether the note can
+// be stored. When it returns an error nothing changed.
+func (m *Machine) holdIfDecided(c *command, piece, what string, now time.Time) error {
 	reason := m.holdReasonFor(c)
 	if reason == "" {
 		return nil
@@ -88,19 +102,19 @@ func (m *Machine) holdIfDecided(c *command, piece string, now time.Time) error {
 	if h := m.holds[key]; h != nil && h.last == piece {
 		return nil
 	}
-	return m.commit(holdRecord(c, reason, m.heldSeq[key]+1, piece, now))
+	return m.commit(holdRecord(c, reason, m.heldSeq[key]+1, piece, what, now))
 }
 
 // ReleaseHold ends the hold of a target's queue. operator names who decides:
 // it must be non-empty, printable and at most 128 bytes. seen is the hold
 // counter the operator looked at (TargetView.HeldSeq): the release covers only
 // the information up to it, so it is refused when more arrived since. The
-// release is journaled as an owner decision, with seen. It does nothing else: it does not decide
-// about an uncertain command (Resolve does), it does not withdraw a queued
-// command (Withdraw does), and the queue dispatches again unless an uncertain
-// command still freezes it. No timer, Tick or Restore ends a hold, and
-// releasing ends the hold for every command it was about. Late information that
-// arrives again after a release holds the queue again.
+// release is journaled as an owner decision, with seen. It does nothing else:
+// it does not decide about an uncertain command (Resolve does), it does not
+// withdraw a queued command (Withdraw does), and the queue dispatches again
+// unless an uncertain command still freezes it. No timer, Tick or Restore ends
+// a hold, and releasing ends the hold for every command it was about. Late
+// information that arrives again after a release holds the queue again.
 //
 // It refuses with a *Refusal, and journals nothing, when the queue is not held
 // (ReasonNotHeld), the operator is bad (ReasonBadOperator) or seen is not the

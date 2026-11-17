@@ -286,13 +286,13 @@ func (m *Machine) checkNew(r Record) error {
 
 // checkHold checks a hold record: a piece of late information about a command
 // an operator decided was not delivered, or is deciding. It sets the target's
-// hold counter to one more than it was, and is not a repeat of the newest piece
-// of a queue that is held. A record the live machine could not have written is
-// an error.
+// hold counter to one more than it was, carries the digest and a rendering of
+// the late call, and is not a repeat of the newest piece of a queue that is
+// held. A record the live machine could not have written is an error.
 func (m *Machine) checkHold(r Record) error {
 	if r.From != "" || r.To != "" || r.Sender != "" || r.Kind != "" || r.Text != "" || r.Of != "" || r.Replacement != "" ||
 		r.Operator != "" || r.EvidenceKind != "" || r.Evidence != "" {
-		return errors.New("a hold record names only the target, the command, the reason, the counter, the piece and the time")
+		return errors.New("a hold record names only the target, the command, the reason, the counter, the piece, its rendering and the time")
 	}
 	c := m.cmds[r.ID]
 	if c == nil {
@@ -313,6 +313,9 @@ func (m *Machine) checkHold(r Record) error {
 	}
 	if !validPiece(r.Piece) {
 		return errors.New("a hold record carries the digest of the late call")
+	}
+	if r.Detail == "" || safeField(r.Detail, maxDetailBytes) != r.Detail {
+		return errors.New("a hold record carries a bounded, safe rendering of the late call")
 	}
 	if h := m.holds[r.Target]; h != nil && h.last == r.Piece {
 		return fmt.Errorf("a hold of %s repeats the last piece of late information, which the machine does not journal", r.Target)
@@ -358,6 +361,10 @@ func (m *Machine) apply(r Record) {
 			h.about = append(h.about, r.ID)
 		}
 		h.last = r.Piece
+		h.pieces = append(h.pieces, HeldPiece{Held: r.Held, ID: r.ID, At: r.At, Detail: r.Detail})
+		if len(h.pieces) > maxHeldPieces {
+			h.pieces = append([]HeldPiece(nil), h.pieces[len(h.pieces)-maxHeldPieces:]...)
+		}
 		m.heldSeq[r.Target] = r.Held
 		return
 	case RecordRelease:

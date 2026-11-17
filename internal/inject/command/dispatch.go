@@ -230,7 +230,7 @@ func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUp
 	r.Detail = safeField("outcome: "+safeField(string(res.Outcome), 40)+"; "+res.Readings, maxDetailBytes)
 	r.EvidenceKind, r.Evidence = EvidenceObservation, string(written)
 	piece := pieceDigest("late-fence-result", c.id, string(res.Written), string(res.Outcome), res.Readings)
-	if err := m.late(c, r, piece, now); err != nil {
+	if err := m.late(c, r, piece, fencePiece(written, res.Outcome, res.Readings), now); err != nil {
 		return FenceUpdate{}, err
 	}
 	return FenceUpdate{ID: c.id, Target: c.target, State: c.state, Reason: c.reason}, nil
@@ -311,7 +311,7 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 		if bad != nil {
 			// Unusable evidence is still late information: the hold comes
 			// first, then the refusal.
-			if err := m.holdIfDecided(c, piece, now); err != nil {
+			if err := m.holdIfDecided(c, piece, evidencePiece(evidence), now); err != nil {
 				return err
 			}
 			return bad
@@ -319,7 +319,7 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 		r := base(c, now)
 		r.Reason = ReasonLateEvidence
 		r.EvidenceKind, r.Evidence = EvidenceProviderReport, safeField(evidence, maxEvidenceBytes)
-		return m.late(c, r, piece, now)
+		return m.late(c, r, piece, evidencePiece(evidence), now)
 	case c.state != StateDispatching:
 		return refusal(ReasonWrongState, id, "command %q is %s, not dispatching", id, c.state)
 	case !c.hasEnter:
@@ -428,11 +428,12 @@ func (c *command) hasNote(r Record) bool {
 
 // late journals the late note r (its reason, detail and evidence are set) for
 // c, which is uncertain or was resolved as sent again or dropped; piece is the
-// digest of the call. First it records the information with holdIfDecided; then
-// it skips a note that c already has, and refuses a different one when c holds
-// the most it keeps. See ConfirmDelivery for the rules.
-func (m *Machine) late(c *command, r Record, piece string, now time.Time) error {
-	if err := m.holdIfDecided(c, piece, now); err != nil {
+// digest of the call and what its rendering. First it records the information
+// with holdIfDecided; then it skips a note that c already has, and refuses a
+// different one when c holds the most it keeps. See ConfirmDelivery for the
+// rules.
+func (m *Machine) late(c *command, r Record, piece, what string, now time.Time) error {
+	if err := m.holdIfDecided(c, piece, what, now); err != nil {
 		return err
 	}
 	r.From, r.To = c.state, c.state

@@ -20,14 +20,18 @@ import (
 // A command left accepted, because its queued record was never written, is
 // queued. The rate windows are rebuilt from the times of the accepted records.
 //
-// Holds are rebuilt from their records, and Restore never writes or ends one:
-// only an operator's release does. A hold or release record, or a withdrawal,
-// that the live machine could not have written is refused: a hold about an
-// unknown command or about a command in a state that holds no queue, a hold for
-// a command the queue is already held for, a release of a queue that is not
-// held or with no operator, a withdrawal from a queue that is not held, a
-// dispatch while the queue is held, and a note for a decided command with no
-// hold behind it.
+// Holds are rebuilt from their records, with the hold counter and the last
+// pieces of late information, and Restore never writes or ends one: only an
+// operator's release does. A hold or release record, or a withdrawal, that the
+// live machine could not have written is refused: a hold about an unknown
+// command or about a command in a state that holds no queue; a hold whose
+// counter is not the last one plus one, whose digest is not valid, that repeats
+// the last piece of a queue that is held or that has no bounded, safe rendering
+// of the call (a hold for a command the queue is already held for is not
+// refused: the live machine writes one for every new piece); a release of a
+// queue that is not held, with no operator or with a counter that is not the
+// current one; a withdrawal from a queue that is not held, a dispatch while
+// the queue is held, and a note for a decided command with no hold behind it.
 //
 // The text cap of limits applies to every journaled text. A journal that holds
 // a text over the configured MaxTextBytes is refused as a whole, with a
