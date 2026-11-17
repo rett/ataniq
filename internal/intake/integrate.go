@@ -26,6 +26,10 @@ var (
 	// has been moved by the integration: the upstream branch was found at
 	// neither the base nor the tip, or is gone.
 	ErrMoved = errors.New("intake: a branch moved after the sign-off")
+	// ErrOutcomeUnknown means that the update of the upstream branch failed
+	// and the branch could not be read afterwards: it may have moved, and no
+	// record was written. The owner must look at the branch and decide.
+	ErrOutcomeUnknown = errors.New("intake: the update failed and the outcome is unknown")
 	// ErrNothingToIntegrate is matched by the error of an integration whose
 	// lead branch is at the target already.
 	ErrNothingToIntegrate = errors.New("nothing to integrate")
@@ -249,8 +253,8 @@ func (r *runner) moveTarget(ctx context.Context, target, base, tip string) (atTi
 	id, found, rerr := again.refID(rctx, target)
 	switch {
 	case rerr != nil:
-		return false, fmt.Errorf("intake: moving %s failed (%w) and its state could not be read, so the outcome is unknown and it may have moved: %v",
-			leadtext.Escape(target), err, rerr)
+		return false, fmt.Errorf("%w: moving %s failed (%w) and its state could not be read, so it may have moved: %v",
+			ErrOutcomeUnknown, leadtext.Escape(target), err, rerr)
 	case !found:
 		return false, fmt.Errorf("%w: %s no longer exists", ErrMoved, leadtext.Escape(target))
 	case id == tip:

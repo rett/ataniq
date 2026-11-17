@@ -196,6 +196,9 @@ func TestIntegrateUpdateEndsUnclearAndTheTargetCannotBeRead(t *testing.T) {
 	if err == nil {
 		t.Fatal("no error")
 	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Errorf("the error is not ErrOutcomeUnknown: %v", err)
+	}
 	if errors.Is(err, ErrMoved) || strings.Contains(err.Error(), "nothing was changed") {
 		t.Errorf("the error says that nothing changed: %v", err)
 	}
