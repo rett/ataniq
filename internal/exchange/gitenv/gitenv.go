@@ -422,10 +422,14 @@ func checkOptions(sub string, args []string) error {
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
 //     adds --no-ext-diff and --no-textconv to "diff" instead.
-//   - core.alternateRefsCommand is set to the empty string. The tests show
-//     that git then runs no command and that an alternate object store still
-//     works; without it a command from the repository's config runs when a
-//     fetch lists the refs of an alternate.
+//   - core.alternateRefsCommand is set to the empty string. git 2.56 does
+//     not skip an empty command: when a fetch lists the refs of an alternate
+//     it tries to start it, fails, prints "error: cannot run : No such file
+//     or directory" (once for each listing) and reads no alternate refs. The
+//     fetch still succeeds and the alternate's object store still works.
+//     The result is safe: no program starts. Without the setting a command
+//     from the repository's config runs. The tests show both, and that the
+//     error line is the expected sign.
 //   - core.protectNTFS and core.protectHFS are added, so the fsck checks of
 //     ".git" look-alikes do not depend on the platform.
 //   - uploadpack.packObjectsHook is not set. It is read from protected

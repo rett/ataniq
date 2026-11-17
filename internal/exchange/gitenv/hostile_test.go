@@ -669,6 +669,56 @@ func TestCommandsInConfigAreNotRun(t *testing.T) {
 		mustOwned(t, g, Cmd{GitDir: repo, Args: []string{"cat-file", "-e", tip + "^{commit}"}})
 	})
 
+	// The setting is the empty string. git does not skip an empty command: it
+	// tries to start it, fails, prints "error: cannot run : No such file or
+	// directory" for each use and goes on without the alternate's refs. The
+	// fetch succeeds and the alternate's objects still serve. This case pins
+	// that behaviour, so the comment in settings stays true: the error line
+	// is the expected, harmless sign that no command ran.
+	t.Run("alternateRefsCommand is an empty command", func(t *testing.T) {
+		script, mark := canary(t)
+		env := fixtureEnv(t, "GIT_ALLOW_PROTOCOL=file")
+		alt := bare(t, g)
+		if out, err := fetchAll(g, alt, src, "file"); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		// A commit that the alternate does not have yet.
+		fixture(t, g, env, src, "commit", "-q", "--allow-empty", "-m", "three")
+		stage := func() string {
+			repo := bare(t, g)
+			if err := os.WriteFile(filepath.Join(repo, "objects", "info", "alternates"), []byte(filepath.Join(alt, "objects")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			appendConfig(t, repo, "[core]\n\talternateRefsCommand = "+script+"\n")
+			return repo
+		}
+		const empty = "cannot run : "
+		control := stage()
+		out, err := run([]string{g.Path, "--git-dir=" + control, "fetch", "--end-of-options", src, "+refs/heads/*:refs/heads/*"}, env, "", "")
+		if err != nil {
+			t.Fatalf("control: %v\n%s", err, out)
+		}
+		mustFire(t, mark, "core.alternateRefsCommand with an alternate that has refs")
+		if strings.Contains(out, empty) {
+			t.Fatalf("control: plain git printed %q:\n%s", empty, out)
+		}
+
+		repo := stage()
+		out, err = fetchAll(g, repo, src, "file")
+		if err != nil {
+			t.Fatalf("fetch: %v\n%s", err, out)
+		}
+		mustNotFire(t, mark, "a fetch into a repository whose alternate has refs")
+		if !strings.Contains(out, "error: "+empty) {
+			t.Errorf("git did not try to start the empty command (the comment in settings says it does):\n%s", out)
+		}
+		tip := mustOwned(t, g, Cmd{GitDir: repo, Args: []string{"rev-parse", "--verify", "refs/heads/main"}})
+		want := fixture(t, g, env, src, "rev-parse", "main")
+		if tip != want {
+			t.Errorf("refs/heads/main = %s, want %s", tip, want)
+		}
+	})
+
 	t.Run("packObjectsHook", func(t *testing.T) {
 		script, mark := canary(t)
 		fixture(t, g, fixtureEnv(t), src, "config", "uploadpack.packObjectsHook", script)
