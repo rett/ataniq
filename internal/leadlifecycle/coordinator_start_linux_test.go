@@ -109,6 +109,45 @@ func TestCoordinatorStartIsRefusedWithoutALiveParent(t *testing.T) {
 		noErr(t, err)
 		refused(t, r, coord, leadregistry.ErrLaunchParentState)
 	})
+	// A lead whose own launch failed or was given up never ran as that epoch,
+	// even while the record still shows it starting: the pre-check applies the
+	// registry's rule, so the refusal costs no journal line.
+	for name, outcome := range map[string]leadregistry.Outcome{
+		"failed":    leadregistry.OutcomeFailed,
+		"abandoned": leadregistry.OutcomeAbandoned,
+	} {
+		t.Run("the launch of the lead "+name, func(t *testing.T) {
+			r := newRig(t)
+			lead := r.define("alpha")
+			coord := r.defineCoord("alpha", "feat")
+			in, err := r.reg.BeginLaunch(lead)
+			noErr(t, err)
+			_, err = r.reg.RecordOutcome(lead, in.ID, in.Epoch, outcome, leadregistry.UnitEvidence{})
+			noErr(t, err)
+			if got := r.get(lead); got.Shown.State != leadregistry.StateStarting || got.Intent.Outcome != outcome {
+				t.Fatalf("lead %+v", got)
+			}
+			refused(t, r, coord, leadregistry.ErrLaunchParentState)
+		})
+	}
+	t.Run("the launch of the lead is pending or launched", func(t *testing.T) {
+		// Only failed and abandoned make the parent not live.
+		r := newRig(t)
+		lead := r.define("alpha")
+		coord := r.defineCoord("alpha", "feat")
+		_, err := r.reg.BeginLaunch(lead)
+		noErr(t, err)
+		// The pre-check admits it and the registry journals the launch; no
+		// unit of the lead was started in this rig, so the manager's start
+		// under it comes to nothing, which is another case.
+		_, err = r.start(coord)
+		if errors.Is(err, ErrParentNotLive) {
+			t.Fatalf("refused as not live: %v", err)
+		}
+		if e := r.get(coord); e.Epoch != 1 || e.Intent == nil || e.Intent.ParentEpoch != 1 {
+			t.Fatalf("entry %+v", e)
+		}
+	})
 }
 
 func TestCoordinatorStartWithTheParentGoneBeforeTheUnitStart(t *testing.T) {

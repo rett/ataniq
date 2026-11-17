@@ -26,7 +26,9 @@ import (
 // unknown.
 //
 // A coordinator is started only under its parent lead: the lead must be
-// defined, run by ataniq and shown starting, ready or degraded, else nothing is
+// defined, run by ataniq, shown starting, ready or degraded and not have a launch
+// outcome of failed or abandoned (a lead whose own launch failed or was given
+// up never ran as that epoch, whatever it is shown as), else nothing is
 // changed and the error wraps ErrParentNotLive and the registry's refusal
 // (leadregistry.ErrLaunchNoParent, ErrLaunchParentManager or
 // ErrLaunchParentState). The unit is started with [leadunit.Spec].Parent set to
@@ -349,11 +351,16 @@ func (c *Controller) admitUnderParent(e leadregistry.Entry) (leadrole.Role, erro
 		case pe.Epoch == 0:
 			why = leadregistry.ErrLaunchParentState
 		default:
+			why = leadregistry.ErrLaunchParentState
 			switch pe.Shown.State {
 			case leadregistry.StateStarting, leadregistry.StateReady, leadregistry.StateDegraded:
-				return parent, nil
+				// A parent whose own launch failed or was given up never ran
+				// as that epoch, even while it is still shown starting: it is
+				// not live. The registry applies the same rule.
+				if in := pe.Intent; in == nil || (in.Outcome != leadregistry.OutcomeFailed && in.Outcome != leadregistry.OutcomeAbandoned) {
+					return parent, nil
+				}
 			}
-			why = leadregistry.ErrLaunchParentState
 		}
 		return leadrole.Role{}, fmt.Errorf("%w: %s: %w", ErrParentNotLive, parent, why)
 	case leadrole.KindLead:
