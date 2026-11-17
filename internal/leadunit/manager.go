@@ -35,6 +35,19 @@ var (
 // done before the call does anything; for [Manager.Start] the rule for a
 // context that ends later is its own, below. An implementation is safe for
 // concurrent use.
+//
+// Two obligations come from what [Spec.Validate] accepts, which is wider than
+// what is safe to hand to systemd:
+//
+//   - An implementation that talks to systemd passes the argument vector
+//     through ExecStartEx with the no-env-expand flag. Validate accepts a $ in
+//     an argument, and systemd would otherwise expand $VAR and ${VAR} in the
+//     arguments of ExecStart when it runs the command, so that a crafted
+//     argument could read the unit's environment.
+//   - Validate accepts any unit name of the allowed characters ending in
+//     .service, a template name such as x@.service included. The caller builds
+//     the unit names of the contract itself (ataniq-lead-PROJECT.service and
+//     ataniq-supervisor.service) and never takes a name from a request.
 type Manager interface {
 	// Start starts the unit the spec describes and returns its state. It
 	// returns [ErrUnitExists] when the unit name is loaded and an error
