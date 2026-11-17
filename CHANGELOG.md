@@ -58,9 +58,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   until the next press; in zoom the header does, which now shows every notice
   ahead of its keys and keeps the fixture label.
   The selection is cleared by a press, a key or paste sent to the session, a
-  resize, F12, `r`, or output that changes the selected text. A click alone
-  or a selection of blanks copies nothing, and a press outside the pane or
-  the wheel selects nothing.
+  resize (also when the pane follows it after the debounce), F12, `r`, or
+  output that changes the selected text. A click alone or a selection of
+  blanks copies nothing, and a press outside the pane or the wheel selects
+  nothing.
   Shift+drag gives the terminal's own selection in most terminals, Ghostty
   included. A terminal that refuses OSC 52 writes copies nothing.
 - Pin the Bubble Tea v2.1.1 terminal console toolkit and its module

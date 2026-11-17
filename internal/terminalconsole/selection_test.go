@@ -491,3 +491,30 @@ func TestSelectionIsClearedWhenItNoLongerApplies(t *testing.T) {
 	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + selText))
 	clears("a replay", func() { r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}) })
 }
+
+// TestSelectionIsClearedWhenThePaneFollowsTheWindow makes a selection after
+// the window size changed but before the pane follows it: the debounced
+// resize clears it. A debounced resize that leaves the pane's size as it was
+// keeps it.
+func TestSelectionIsClearedWhenThePaneFollowsTheWindow(t *testing.T) {
+	r := selRig(t, 140, 45, Options{}, selText)
+	cols, _ := r.paneSize()
+	r.size(120, 45)
+	if c, _ := r.paneSize(); c != cols {
+		t.Fatal("the pane followed the window at once")
+	}
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if c, _ := r.paneSize(); c == cols {
+		t.Fatal("the debounced resize left the pane as it was")
+	}
+	if r.m.sel.shown() {
+		t.Fatal("the pane's resize kept the selection")
+	}
+	r.m.rep.pane.Write([]byte("\x1b[2J\x1b[H" + selText))
+	wantCopy(t, r.dragPane(0, 0, 4, 1), "hello world\nsecon")
+	r.m.Update(resizeMsg{seq: r.m.resizeSeq})
+	if !r.m.sel.shown() {
+		t.Fatal("a resize to the pane's own size cleared the selection")
+	}
+}

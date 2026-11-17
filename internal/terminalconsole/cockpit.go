@@ -112,9 +112,17 @@ func (m *Model) syncPane(debounce bool) tea.Cmd {
 	return m.after(resizeDelay, func(time.Time) tea.Msg { return resizeMsg{seq: seq} })
 }
 
+// onResize applies the debounced resize. A selection made since the window
+// size changed is cleared when the pane takes its new size, because the text
+// under it moves.
 func (m *Model) onResize(v resizeMsg) {
-	if v.seq == m.resizeSeq {
-		m.syncPane(false)
+	if v.seq != m.resizeSeq || m.rep.pane == nil {
+		return
+	}
+	cols, rows := m.rep.pane.Size()
+	m.syncPane(false)
+	if c, r := m.rep.pane.Size(); c != cols || r != rows {
+		m.sel = selection{}
 	}
 }
 
