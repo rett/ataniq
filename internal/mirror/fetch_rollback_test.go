@@ -495,16 +495,41 @@ func TestRestoreNamespace(t *testing.T) {
 	}
 
 	// Another writer moved a ref since the snapshot: the restore fails and
-	// changes nothing.
-	f.updateRef(t, prefix+"new", f.second)
-	mid := mirrorRefs(t, f.m)
-	if err := f.m.restoreNamespace(ctx, prefix, before, after); err == nil {
-		t.Fatal("restoreNamespace succeeded against a ref that moved")
+	// changes nothing. It is each kind of command in turn: the restore
+	// deletes new, updates develop (back to its first value) and creates
+	// feature/x, and each of them checks the value that the ref has now.
+	for _, tc := range []struct {
+		what, ref, move string // move is the writer's value; empty deletes
+	}{
+		{"a ref that the restore deletes", prefix + "new", f.second},
+		{"a ref that the restore updates", prefix + "develop", f.second},
+		{"a ref that the restore creates", prefix + "feature/x", f.second},
+	} {
+		was := mirrorRefs(t, f.m)
+		restoreTo := ""
+		for _, line := range was {
+			if strings.HasPrefix(line, tc.ref+" ") {
+				restoreTo = line
+			}
+		}
+		f.updateRef(t, tc.ref, tc.move)
+		mid := mirrorRefs(t, f.m)
+		if err := f.m.restoreNamespace(ctx, prefix, before, after); err == nil {
+			t.Fatalf("restoreNamespace succeeded against %s that moved", tc.what)
+		}
+		if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, mid) {
+			t.Errorf("a failed restore changed refs (%s):\n%q\n%q", tc.what, got, mid)
+		}
+		// Back to the value of the snapshot, or gone where it was gone.
+		if restoreTo == "" {
+			fixtureGit(t, f.g, ".", "--git-dir="+f.m.Path(), "update-ref", "-d", tc.ref)
+		} else {
+			f.updateRef(t, tc.ref, strings.Fields(restoreTo)[1])
+		}
+		if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, was) {
+			t.Fatalf("the test did not put %s back:\n%q\n%q", tc.what, got, was)
+		}
 	}
-	if got := mirrorRefs(t, f.m); !reflect.DeepEqual(got, mid) {
-		t.Errorf("a failed restore changed refs:\n%q\n%q", got, mid)
-	}
-	f.updateRef(t, prefix+"new", f.first)
 
 	if err := f.m.restoreNamespace(ctx, prefix, before, after); err != nil {
 		t.Fatal(err)
