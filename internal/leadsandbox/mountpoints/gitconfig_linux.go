@@ -27,11 +27,14 @@ const (
 // unless a backslash before the newline continues it, a double quote hides a
 // comment character, and a "[" in a value is part of the value; a header is
 // "[", the name, then a subsection or the rest, up to "]". More than one
-// header on a line is read as git reads it. A line git would refuse as a bad
+// header on a line is read as git reads it, and a UTF-8 byte order mark at the
+// start of the text is skipped, as git skips it. A line git would refuse as a bad
 // line is scanned the same way and its "[include]" is still found, which
 // over-refuses and never the reverse.
 func findInclude(data []byte) (line int, name string) {
 	line = 1
+	// git skips a UTF-8 byte order mark at the start of the file.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	n := len(data)
 	for i := 0; i < n; {
 		switch c := data[i]; {
