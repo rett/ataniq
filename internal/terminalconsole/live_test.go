@@ -729,14 +729,21 @@ func TestLiveAWriterThatGetsTheRoleBackAsksForItsSize(t *testing.T) {
 		t.Fatalf("asked again for a size the holder has: %v", f.sizes())
 	}
 
-	// A holder that does not follow is asked again, with the same size, at
-	// each point of the rule, and nothing worse comes of it.
+	// A holder that does not follow (deaf: it keeps its own size) is asked
+	// again, with the same size, at each point of the rule, and nothing worse
+	// comes of it.
+	f.mu.Lock()
+	f.deaf = true
+	f.mu.Unlock()
 	f.set(func(s *LiveStatus) { s.Cols, s.Rows = 70, 25 })
 	r.key(zoomPress)
 	r.key(zoomPress)
 	got := f.sizes()
 	if len(got) != 3 || got[2] != area {
 		t.Fatalf("sizes %v", got)
+	}
+	if st := f.Status(); st.Cols != 70 || st.Rows != 25 {
+		t.Fatalf("the deaf holder changed its size to %dx%d", st.Cols, st.Rows)
 	}
 }
 
