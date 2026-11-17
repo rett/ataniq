@@ -7,6 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // fixtureLabel is on the header and on the session frame in every state: the
@@ -45,16 +47,42 @@ func (m *Model) cockpitView() tea.View {
 	v := m.newView(buf.Render())
 	v.MouseMode = tea.MouseModeCellMotion
 	if m.focus == sessionFocus && m.rep.pane != nil {
-		modes := m.rep.pane.Modes()
+		modes := m.sessionModes()
 		if modes.Mouse >= uv.MouseModeMotion {
 			v.MouseMode = tea.MouseModeAllMotion
 		}
 		v.ReportFocus = modes.FocusEvents
+		if m.live.on() && m.liveWriter() && !m.sessionEnded() {
+			// The outer terminal brackets a paste only when the session asked
+			// for that, as a terminal would.
+			v.DisableBracketedPasteMode = !modes.BracketedPaste
+		}
 		if pos, ok := m.rep.pane.Cursor(); ok && pos.X < l.inner.Dx() && pos.Y < l.inner.Dy() {
 			v.Cursor = tea.NewCursor(l.inner.Min.X+pos.X, l.inner.Min.Y+pos.Y)
 		}
 	}
 	return v
+}
+
+// sessionModes returns the modes the cockpit acts on for the outer terminal
+// and for forwarding: the pane's, or in live mode the holder's.
+func (m *Model) sessionModes() sessionpane.Modes {
+	if m.rep.pane == nil {
+		return sessionpane.Modes{}
+	}
+	if m.live.on() {
+		return m.liveModes()
+	}
+	return m.rep.pane.Modes()
+}
+
+// sessionLabel is on the header and on the session frame in every state: the
+// fixture label, or in live mode the live session's.
+func (m *Model) sessionLabel() string {
+	if m.live.on() {
+		return m.liveLabel()
+	}
+	return fixtureLabel
 }
 
 func (m *Model) focusName() string {
@@ -66,6 +94,9 @@ func (m *Model) focusName() string {
 
 func (m *Model) drawHeader(p *painter, l layout) {
 	left := "ATANIQ / DEMO FIXTURE · cockpit · " + fixtureLabel
+	if m.live.on() {
+		left = "ATANIQ / LIVE SCRATCH · cockpit · " + m.liveLabel() + " · through a holder"
+	}
 	n := p.text(0, 0, l.header.Dx(), left, p.style(lnHead))
 	if room := l.header.Dx() - n - 2; room >= ansi.StringWidth(tagline) {
 		p.text(l.header.Dx()-ansi.StringWidth(tagline), 0, room, tagline, p.style(lnDim))
@@ -81,7 +112,7 @@ func (m *Model) drawZoom(p *painter, l layout) {
 	if m.focus == consoleFocus {
 		keys = m.focusName() + " · Enter focuses the session · F12 leaves zoom"
 	}
-	label := " · " + fixtureLabel
+	label := " · " + m.sessionLabel()
 	w := l.header.Dx()
 	if m.notice == "" {
 		p.text(0, 0, w, keys+label, p.style(lnHead))
@@ -121,6 +152,10 @@ func (m *Model) treeRows() []treeRow {
 }
 
 func (m *Model) drawTree(p *painter, l layout) {
+	if m.live.on() {
+		m.drawLiveTree(p, l)
+		return
+	}
 	focused := m.pane == paneTree
 	p.box(l.tree, "Projects & leads", "", focused)
 	in := inset(l.tree)
@@ -183,6 +218,10 @@ func orNone(s string) string {
 }
 
 func (m *Model) drawContext(p *painter, l layout) {
+	if m.live.on() {
+		m.drawLiveContext(p, l)
+		return
+	}
 	p.box(l.context, "Context", "", false)
 	project, lead, s := m.selected()
 	p.lines(inset(l.context), []line{
@@ -192,6 +231,10 @@ func (m *Model) drawContext(p *painter, l layout) {
 }
 
 func (m *Model) drawMeta(p *painter, l layout) {
+	if m.live.on() {
+		m.drawLiveMeta(p, l)
+		return
+	}
 	p.box(l.meta, "Session", "", false)
 	project, lead, s := m.selected()
 	title, blocked := "none", 0
@@ -212,7 +255,7 @@ func (m *Model) drawSession(p *painter, l layout) {
 	if m.focus == sessionFocus {
 		title += " · SESSION FOCUS"
 	}
-	p.box(l.frame, title, fixtureLabel, m.pane == paneSession || m.focus == sessionFocus)
+	p.box(l.frame, title, m.sessionLabel(), m.pane == paneSession || m.focus == sessionFocus)
 	m.drawPane(p, l.inner)
 }
 
@@ -221,12 +264,23 @@ func (m *Model) drawSession(p *painter, l layout) {
 // not resized after it has ended, so a zoom or a window resize shows the old
 // size cut or padded under the banner.
 func (m *Model) drawPane(p *painter, area uv.Rectangle) {
+	if m.rep.pane == nil && m.live.on() {
+		ls := []line{{"The live session did not start.", lnWarn}}
+		if m.live.startErr != "" {
+			ls = append(ls, line{m.live.startErr + ".", lnText})
+		} else if !m.live.begun {
+			ls = []line{{"The live session starts when the window size is known.", lnWarn}}
+		}
+		p.centred(area, "LIVE SESSION UNAVAILABLE", ls)
+		return
+	}
 	if m.rep.pane == nil {
 		p.centred(area, "NO RECORDING", []line{{"No fixture recording named " + clean(m.opts.Recording) + ".", lnWarn}})
 		return
 	}
 	m.rep.pane.Draw(p.buf, area)
-	ended, status, known := m.rep.pane.Ended()
+	ended, status, known := m.paneEnded()
+	dim := ended || (m.live.on() && m.liveDown())
 	for y := area.Min.Y; y < area.Max.Y; y++ {
 		for x := area.Min.X; x < area.Max.X; x++ {
 			c := p.buf.CellAt(x, y)
@@ -239,12 +293,18 @@ func (m *Model) drawPane(p *painter, area uv.Rectangle) {
 			if c.Style.Bg == nil {
 				c.Style.Bg = p.pal.bg
 			}
-			if ended {
+			if dim {
 				c.Style.Attrs |= uv.AttrFaint
 			}
 		}
 	}
 	m.drawSelection(p, area)
+	if m.live.on() {
+		if title, ls, ok := m.liveBanner(ended); ok {
+			p.centred(area, title, ls)
+		}
+		return
+	}
 	if !ended {
 		return
 	}
@@ -266,6 +326,10 @@ func (m *Model) drawPane(p *painter, area uv.Rectangle) {
 func (m *Model) drawFocusBar(p *painter, l layout) {
 	p.box(l.focus, "", "", false)
 	in := inset(l.focus)
+	if m.live.on() {
+		m.drawLiveFocusBar(p, in)
+		return
+	}
 	first := m.focusName() + " · return key " + m.opts.ReturnKey.String() + " · F12 zoom"
 	second := "Enter focuses the session · a full attach (unavailable)"
 	if m.focus == sessionFocus {
@@ -291,6 +355,9 @@ func stateKind(state string) lineKind {
 // width: the attachment contract, the pending gate and the lead and its
 // delegates.
 func (m *Model) evidenceLines(width int) []line {
+	if m.live.on() {
+		return m.liveEvidenceLines(width)
+	}
 	var out []line
 	add := func(k lineKind, s string) {
 		for _, w := range wrapLines(s, width) {
@@ -339,6 +406,10 @@ func (m *Model) drawEvidence(p *painter, l layout) {
 func (m *Model) drawTimeline(p *painter, l layout) {
 	p.box(l.timeline, "Timeline", "", m.pane == paneTimeline)
 	in := inset(l.timeline)
+	if m.live.on() {
+		p.lines(in, []line{{"No timeline: a live scratch session has no daemon and no journal.", lnDim}})
+		return
+	}
 	if len(m.timeline) == 0 {
 		p.lines(in, []line{{"No events", lnDim}})
 		return
@@ -359,6 +430,9 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		return
 	}
 	s := "Tab pane · j/k move · Enter focus · a attach · Ctrl+K actions · r replay · ? help · q quit"
+	if m.live.on() {
+		s = "Tab pane · j/k move · Enter focus · F12 zoom · Ctrl+K actions · ? help · q quit"
+	}
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
 	}
@@ -367,6 +441,9 @@ func (m *Model) drawKeys(p *painter, l layout) {
 
 // overlayLines returns the title and wrapped lines of the open overlay.
 func (m *Model) overlayLines(width int) (string, []line) {
+	if m.live.on() && m.overlay != "actions" {
+		return m.liveHelpLines(width)
+	}
 	var out []line
 	add := func(k lineKind, s string) {
 		for _, w := range wrapLines(s, width) {

@@ -79,7 +79,7 @@ func (m *Model) paneArea(l layout) uv.Rectangle {
 // session focus, when the session asked for mouse reporting. An ended
 // session asks for none.
 func (m *Model) sessionTakesMouse() bool {
-	return m.focus == sessionFocus && m.rep.pane != nil && m.rep.pane.Modes().Mouse != uv.MouseModeNone
+	return m.focus == sessionFocus && m.rep.pane != nil && m.sessionModes().Mouse != uv.MouseModeNone
 }
 
 // onMouse handles a mouse event in the cockpit. Any press clears the
@@ -101,7 +101,11 @@ func (m *Model) onMouse(msg tea.MouseMsg) tea.Cmd {
 			m.sel = selection{}
 		}
 		if ev := uvMouse(msg); ev != nil {
-			m.rep.pane.Mouse(ev, l.inner)
+			if m.live.on() {
+				m.liveMouse(ev, l.inner)
+			} else {
+				m.rep.pane.Mouse(ev, l.inner)
+			}
 		}
 		return nil
 	}
