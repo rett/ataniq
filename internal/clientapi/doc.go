@@ -46,6 +46,22 @@
 // error: the server never sends a line over the cap, and the client refuses to
 // read one.
 //
+// # Status entries
+//
+// The status result lists entries of three kinds, told apart by "kind": a
+// lead ("<project>/lead"), the supervisor ("supervisor") and a coordinator
+// ("<project>/coord/<feature>"). The shown state is one of "desired",
+// "starting", "ready", "degraded", "stalled", "stopping", "stopped", "ended"
+// and "unknown"; "stalled" is shown for a coordinator only. A coordinator
+// entry also carries "feature", "parent" (its parent lead's role string),
+// "parent_epoch" (that lead's epoch at the coordinator's launch), "instance"
+// (the coordinator's own epoch) and "identity". Those five members are omitted
+// from the entry of a lead and of the supervisor; a client reads an absent
+// one as unset. The identity is an identifier: compare it whole, never use it
+// as a path or ref component, never match a prefix of it. A coordinator entry
+// is a record: it grants no seat, approval or handoff. Adding these members
+// and the kind is additive, so the protocol name stays "ataniq.client/1".
+//
 // # Peer check and its limit
 //
 // The server reads the peer credentials of every connection with SO_PEERCRED

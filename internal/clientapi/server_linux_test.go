@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -664,5 +665,95 @@ func TestHelloAdvertisesTheIdleTimeoutRoundedUp(t *testing.T) {
 		if got.Limits.IdleTimeoutSeconds != want {
 			t.Errorf("idle %v advertised as %d s, want %d", idle, got.Limits.IdleTimeoutSeconds, want)
 		}
+	}
+}
+
+func u64(v uint64) *uint64 { return &v }
+
+func sampleCoordinator(feature string, instance uint64, state string) LeadStatus {
+	at := time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC)
+	return LeadStatus{
+		Role: "demo/coord/" + feature, Kind: KindCoordinator, Project: "demo", Manager: "systemd-user",
+		Epoch: instance, Desired: "running", State: state, ReasonCode: "proof", ReasonDetail: "ok",
+		EvidenceKind: "unit", Since: at,
+		Requested:    RequestedProfile{Provider: "claude", Model: "fable"},
+		Observed:     ObservedProfile{Provider: Observe("claude"), Model: Observed{}},
+		LaunchIntent: &LaunchIntent{ID: "i-9", Epoch: instance, Unit: "ataniq-coord-demo_" + feature + ".service", Outcome: "started"},
+		Feature:      feature, Parent: "demo/lead", ParentEpoch: u64(3), Instance: u64(instance),
+		Identity: "demo-lead@e3:coord:" + feature + ":" + strconv.FormatUint(instance, 10),
+	}
+}
+
+func TestStatusMixesLeadSupervisorAndCoordinator(t *testing.T) {
+	st := sampleStatus() // a lead and the supervisor
+	st.Leads = append(st.Leads, sampleCoordinator("lead-daemon", 2, StateStalled), sampleCoordinator("console", 1, StateReady))
+	h := &stubHandler{version: "v", status: st}
+	ts := startServer(t, h, Options{})
+	ctx := context.Background()
+	c, err := Dial(ctx, ts.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got, err := c.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jsonEqual(t, got, st) || len(got.Leads) != 4 {
+		t.Fatalf("status = %+v", got)
+	}
+	lead, sup, coord := got.Leads[0], got.Leads[1], got.Leads[2]
+	if lead.Kind != KindLead || sup.Kind != KindSupervisor || coord.Kind != KindCoordinator {
+		t.Fatalf("kinds = %q %q %q", lead.Kind, sup.Kind, coord.Kind)
+	}
+	for _, e := range []LeadStatus{lead, sup} {
+		if e.Feature != "" || e.Parent != "" || e.ParentEpoch != nil || e.Instance != nil || e.Identity != "" {
+			t.Fatalf("a %s entry carries coordinator members: %+v", e.Kind, e)
+		}
+	}
+	if coord.State != StateStalled || coord.Feature != "lead-daemon" || coord.Parent != "demo/lead" ||
+		coord.ParentEpoch == nil || *coord.ParentEpoch != 3 || coord.Instance == nil || *coord.Instance != 2 ||
+		coord.Identity != "demo-lead@e3:coord:lead-daemon:2" || coord.Role != "demo/coord/lead-daemon" {
+		t.Fatalf("coordinator = %+v", coord)
+	}
+}
+
+func TestStatusWireOmitsCoordinatorMembersForLeadAndSupervisor(t *testing.T) {
+	st := sampleStatus()
+	st.Leads = append(st.Leads, sampleCoordinator("lead-daemon", 2, StateStalled))
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Leads []map[string]json.RawMessage `json:"leads"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil || len(raw.Leads) != 3 {
+		t.Fatalf("%v %s", err, b)
+	}
+	members := []string{"feature", "parent", "parent_epoch", "instance", "identity"}
+	for i, e := range raw.Leads {
+		for _, k := range members {
+			_, has := e[k]
+			if has != (i == 2) {
+				t.Errorf("entry %d: member %q present = %v", i, k, has)
+			}
+		}
+	}
+}
+
+func TestStatusZeroParentEpochSurvivesTheWire(t *testing.T) {
+	e := sampleCoordinator("x", 1, StateReady)
+	e.ParentEpoch = u64(0)
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back LeadStatus
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.ParentEpoch == nil || *back.ParentEpoch != 0 {
+		t.Fatalf("parent epoch = %v, want a present 0", back.ParentEpoch)
 	}
 }
