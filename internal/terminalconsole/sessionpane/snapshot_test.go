@@ -486,7 +486,7 @@ func TestRestoreSurvivesOutputAfterwards(t *testing.T) {
 }
 
 // Single-bit changes of a real snapshot (half the bits of every byte, and
-// those of every fourth byte under the race detector) are refused or taken,
+// those of every eighth byte under the race detector) are refused or taken,
 // never a panic; when one is taken the pane holds a state it can snapshot,
 // restore and follow, and when one is refused the pane is as it was.
 func TestRestoreSurvivesBitFlips(t *testing.T) {
@@ -499,7 +499,7 @@ func TestRestoreSurvivesBitFlips(t *testing.T) {
 	taken, refused := 0, 0
 	stride := 1
 	if raceEnabled {
-		stride = 4 // every fourth byte: the race detector is slow
+		stride = 8 // every eighth byte: the race detector is slow
 	}
 	for i := 0; i < len(real); i += stride {
 		for bit := 0; bit < 8; bit++ {

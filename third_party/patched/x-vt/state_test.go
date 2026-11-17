@@ -162,7 +162,11 @@ func stateDiff(a, b State) string {
 // follows, in every field of the state, whichever way the writes are split.
 func TestSetStateFollowsTheSource(t *testing.T) {
 	copies, maxWidth, compared := 0, 0, 0
-	for seed := uint64(1); seed <= 8; seed++ {
+	seeds := uint64(8)
+	if raceEnabled {
+		seeds = 4 // the race detector is slow
+	}
+	for seed := uint64(1); seed <= seeds; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 7))
 		w, h, ops := stateStream(rng, 300)
 		a := NewEmulator(w, h)
@@ -205,8 +209,8 @@ func TestSetStateFollowsTheSource(t *testing.T) {
 		}
 	}
 	t.Logf("%d copies, %d comparisons, widest cell %d", copies, compared, maxWidth)
-	if copies < 12 {
-		t.Errorf("only %d copies were made", copies)
+	if want := int(seeds) * 3 / 2; copies < want {
+		t.Errorf("only %d copies were made, want %d", copies, want)
 	}
 }
 
@@ -461,7 +465,11 @@ func TestSetStateSurvivesWritesAfterwards(t *testing.T) {
 	// Random widths of 0 to MaxCellWidth anywhere: every state that is taken
 	// is followed.
 	rng := rand.New(rand.NewPCG(5, 9))
-	for i := 0; i < 200; i++ {
+	states := 200
+	if raceEnabled {
+		states = 25 // the race detector is slow
+	}
+	for i := 0; i < states; i++ {
 		w, h := 2+rng.IntN(6), 1+rng.IntN(3)
 		st := NewEmulator(w, h).State()
 		for s := range st.Screens {

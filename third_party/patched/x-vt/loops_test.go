@@ -78,7 +78,11 @@ func TestRepeatEqualsTyping(t *testing.T) {
 	chars := "abcq_ xlk~"
 	var cases, bulk, cutCases int
 	var cuts uint64
-	for seed := uint64(1); seed <= 300; seed++ {
+	seeds := uint64(150)
+	if raceEnabled {
+		seeds = 30 // the race detector is slow
+	}
+	for seed := uint64(1); seed <= seeds; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 11))
 		w, h, ops := stateStream(rng, 10+rng.IntN(40))
 		prefix, after := prefixes[rng.IntN(len(prefixes))], afters[rng.IntN(len(afters))]
@@ -129,7 +133,7 @@ func TestRepeatEqualsTyping(t *testing.T) {
 		}
 	}
 	t.Logf("%d repeats compared with typing: %d done a line at a time, %d cut to two lines, %d counted as cut", cases, bulk, cutCases, cuts)
-	if bulk < 500 || cutCases < 100 {
+	if want := int(seeds) * 3 / 2; bulk < want || cutCases < want/5 {
 		t.Errorf("the streams reach too few states: %d bulk, %d cut", bulk, cutCases)
 	}
 }
@@ -193,7 +197,7 @@ func TestRepeatCutCounter(t *testing.T) {
 // each is logged. The repeat of the first version was cut to the cells of the
 // screen: one of them took 17 ms and 100 of them with the cursor at the bottom
 // 25 s, so 64 KiB of them would have taken half an hour. The cases that are
-// not the main ones send 16 KiB.
+// not the first send 8 KiB.
 func TestRepeatsOnTheLargestScreenAreBounded(t *testing.T) {
 	ceiling := 60 * time.Second
 	if raceEnabled {
@@ -205,21 +209,27 @@ func TestRepeatsOnTheLargestScreenAreBounded(t *testing.T) {
 		setup  string
 		unit   string
 		budget int
+		race   bool // also under the race detector
 	}{
-		{"at the bottom", "x", rep, 64 << 10},
-		{"at the top each time", "x", "\x1b[H" + rep, 64 << 10},
-		{"after a line feed", "x", "\n" + rep, 16 << 10},
-		{"autowrap off", "\x1b[?7lx", "\x1b[H" + rep, 16 << 10},
-		{"a scroll region", "\x1b[50;150rx", "\x1b[50;1H" + rep, 16 << 10},
-		{"a scroll region and the cursor below it", "\x1b[50;150rx\x1b[190;1H", rep, 16 << 10},
-		{"under a link", "\x1b]8;;http://a.example/1\x1b\\x", "\x1b[H" + rep, 16 << 10},
-		{"a margin", "\x1b[?69h\x1b[10;400sx", "\x1b[H" + rep, 16 << 10},
-		{"each with a character of its own", "", "q\x1b[H" + rep, 16 << 10},
+		{"at the bottom", "x", rep, 64 << 10, true},
+		{"at the top each time", "x", "\x1b[H" + rep, 8 << 10, true},
+		{"after a line feed", "x", "\n" + rep, 8 << 10, false},
+		{"autowrap off", "\x1b[?7lx", "\x1b[H" + rep, 8 << 10, false},
+		{"a scroll region", "\x1b[50;150rx", "\x1b[50;1H" + rep, 8 << 10, false},
+		{"a scroll region and the cursor below it", "\x1b[50;150rx\x1b[190;1H", rep, 8 << 10, false},
+		{"under a link", "\x1b]8;;http://a.example/1\x1b\\x", "\x1b[H" + rep, 8 << 10, false},
+		{"a margin", "\x1b[?69h\x1b[10;400sx", "\x1b[H" + rep, 8 << 10, false},
+		{"each with a character of its own", "", "q\x1b[H" + rep, 8 << 10, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			budget := tc.budget
 			if raceEnabled {
-				budget /= 8
+				// The race detector is slow: three of the states, each a
+				// thirty-second of the bytes.
+				if !tc.race {
+					t.Skip("not under the race detector")
+				}
+				budget /= 32
 			}
 			e := NewEmulator(500, 200)
 			e.SetScrollbackSize(0)

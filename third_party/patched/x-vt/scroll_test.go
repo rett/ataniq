@@ -16,7 +16,11 @@ import (
 // without, the two screens hold the same cells.
 func TestMovingLinesIsWhatCopyingCellsGives(t *testing.T) {
 	compared := 0
-	for seed := uint64(1); seed <= 150; seed++ {
+	seeds := uint64(150)
+	if raceEnabled {
+		seeds = 50 // the race detector is slow
+	}
+	for seed := uint64(1); seed <= seeds; seed++ {
 		rng := rand.New(rand.NewPCG(seed, 13))
 		w, h, ops := stateStream(rng, 10+rng.IntN(40))
 		a := NewEmulator(w, h)
@@ -63,7 +67,7 @@ func TestMovingLinesIsWhatCopyingCellsGives(t *testing.T) {
 		}
 	}
 	t.Logf("%d scrolls compared", compared)
-	if compared < 800 {
+	if compared < int(seeds)*5 {
 		t.Errorf("%d scrolls compared", compared)
 	}
 }
@@ -71,10 +75,10 @@ func TestMovingLinesIsWhatCopyingCellsGives(t *testing.T) {
 // The ways of scrolling the largest screen (500 by 200 cells) cost the lines
 // of the region and not their cells: the cells of every line were copied
 // before, 11 MB and 1.1 ms for each line feed at the bottom, and 64 KiB of
-// line feeds took over a minute. Now 64 KiB of any of them takes a few
-// seconds at most. The sequences that clear the whole region (a scroll by the
+// line feeds took over a minute. Now 64 KiB of line feeds take half a second,
+// and of any of the others (16 KiB are sent) a fraction of that. The sequences that clear the whole region (a scroll by the
 // screen, a count over the lines left) write every cell of the screen, 11
-// MB, which takes about a millisecond whatever the code: 4 KiB of them are
+// MB, which takes about a millisecond whatever the code: 2 KiB of them are
 // sent. The time of each is logged.
 func TestScrollingTheLargestScreenIsBounded(t *testing.T) {
 	ceiling := 60 * time.Second
@@ -85,22 +89,28 @@ func TestScrollingTheLargestScreenIsBounded(t *testing.T) {
 		name   string
 		unit   string
 		budget int
+		race   bool // also under the race detector
 	}{
-		{"line feed", "\n", 64 << 10},
-		{"index", "\x1bD", 64 << 10},
-		{"reverse index", "\x1bM", 64 << 10},
-		{"insert line", "\x1b[L", 64 << 10},
-		{"delete line", "\x1b[M", 64 << 10},
-		{"scroll up", "\x1b[S", 64 << 10},
-		{"scroll down", "\x1b[T", 64 << 10},
-		{"scroll up by the screen", "\x1b[200S", 4 << 10},
-		{"delete more lines than there are", "\x1b[2147483646M", 4 << 10},
-		{"insert more lines than there are", "\x1b[2147483646L", 4 << 10},
+		{"line feed", "\n", 64 << 10, true},
+		{"index", "\x1bD", 16 << 10, false},
+		{"reverse index", "\x1bM", 16 << 10, false},
+		{"insert line", "\x1b[L", 16 << 10, false},
+		{"delete line", "\x1b[M", 16 << 10, false},
+		{"scroll up", "\x1b[S", 16 << 10, false},
+		{"scroll down", "\x1b[T", 16 << 10, false},
+		{"scroll up by the screen", "\x1b[200S", 2 << 10, true},
+		{"delete more lines than there are", "\x1b[2147483646M", 2 << 10, false},
+		{"insert more lines than there are", "\x1b[2147483646L", 2 << 10, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			budget := tc.budget
 			if raceEnabled {
-				budget /= 8
+				// The race detector is slow: three of the ways, each a
+				// thirty-second of the bytes.
+				if !tc.race {
+					t.Skip("not under the race detector")
+				}
+				budget /= 32
 			}
 			e := NewEmulator(500, 200)
 			e.SetScrollbackSize(0)

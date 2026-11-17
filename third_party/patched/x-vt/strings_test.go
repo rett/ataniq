@@ -10,7 +10,10 @@ import (
 // reaches the screen, also when the cut or the rest holds a 0x9C byte that
 // belongs to a UTF-8 character (U+2733 is E2 9C B3).
 func TestStringsOverTheCapAreTruncated(t *testing.T) {
-	const over = 512 << 10
+	over := 512 << 10
+	if raceEnabled {
+		over = 160 << 10 // still over the cap of 64 KiB; the race detector is slow
+	}
 	for _, tc := range []struct {
 		name  string
 		body  string

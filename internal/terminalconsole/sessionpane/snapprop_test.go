@@ -418,8 +418,8 @@ func FuzzSnapshotFollows(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		cols, rows, ops := opsFromProgram(data)
-		if ops == nil || raceEnabled && len(data) > 600 {
-			return // a long seed takes minutes under the race detector
+		if ops == nil || raceEnabled && len(data) > 300 {
+			return // a long seed takes seconds under the race detector
 		}
 		// A mutated input grows without bound; the comparisons copy the
 		// screens, so only the first operations are followed.

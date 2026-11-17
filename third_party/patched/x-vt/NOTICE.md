@@ -222,14 +222,17 @@ Patches, applied in this order to the files of the module as released:
    is not what a terminal that printed two billion characters would show. That
    is the documented difference, and `Counters().RepeatsCut` counts every
    repeat that was not printed one character at a time, bulk or cut. The
-   cost of a repeat is a few screens whatever the count: on a screen of 500 by
-   200 cells, 64 KiB of the longest repeat take about a second (5041
-   repeats at the bottom, 4096 with the cursor sent to the top each time),
-   where the first version took 17 ms for the first, 0.25 s for each one
-   after it (patch 13 makes the scroll cheap), and about half an hour for
-   64 KiB. A repeat is the dearest sequence per byte that there was; after this
-   patch and 13 the dearest are the ones that write every cell of the screen
-   (erase the display, scroll by the screen), a millisecond each.
+   cost of a repeat is a few screens whatever the count: a repeat that fills
+   the screen of 500 by 200 cells writes all of its 11 MB of cells, which takes
+   about a millisecond, and 64 KiB of the longest repeat (5041 repeats of 13
+   bytes) took 4.8 s of CPU on a busy machine (a load of 15 on 8 cores). The
+   first version took 17 ms for the first repeat of that size and 0.25 s for
+   each one after it with the cursor at the bottom (25 s for 1000 bytes), so
+   64 KiB of them would have taken half an hour. Like the sequences that clear
+   the screen (erase display, scroll by the screen; patch 13), a repeat is
+   bounded by the time it takes to write every cell, and 64 KiB of them take
+   several seconds on the largest screen. A buffer that did not store every
+   blank cell would take less; this patch does not change the buffer.
 13. `vt: move the lines of a scroll region as wide as the screen`
    (`screen.go`, `scroll_test.go`). A line feed at the bottom of the screen,
    an index, a reverse index, insert line, delete line, scroll up and scroll

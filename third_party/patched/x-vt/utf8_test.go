@@ -91,7 +91,10 @@ func TestSingleShiftDoesNotLeakPastACluster(t *testing.T) {
 // load. Each time is the best of several runs, and the factor leaves room for
 // the noise that remains.
 func TestLongClusterRunStaysLinear(t *testing.T) {
-	const n = 8 * 1024
+	n := 8 * 1024
+	if raceEnabled {
+		n = 3 * 1024 // the race detector is slow
+	}
 	const factor = 10
 	for _, tc := range []struct {
 		name  string
@@ -454,7 +457,11 @@ func TestNonASCIIRunIsNotCutByTheClusterCap(t *testing.T) {
 // keeps MaxClusterBytes at most, and the counter rises by what was dropped.
 // That the time is linear is TestLongClusterRunStaysLinear.
 func TestMegabyteOfCombiningMarks(t *testing.T) {
-	marks := []byte("a" + strings.Repeat("\u0301", (1<<20)/2))
+	size := 1 << 20
+	if raceEnabled {
+		size = 1 << 18 // a quarter: the race detector is slow
+	}
+	marks := []byte("a" + strings.Repeat("\u0301", size/2))
 	for _, tc := range []struct {
 		name  string
 		input []byte
@@ -462,7 +469,7 @@ func TestMegabyteOfCombiningMarks(t *testing.T) {
 	}{
 		{"one write", marks, func(e *Emulator, b []byte) { e.Write(b) }},
 		// Writes that end between marks reopen the cluster each time.
-		{"4 KiB writes", marks[:1<<17-1], func(e *Emulator, b []byte) {
+		{"4 KiB writes", marks[:size/8-1], func(e *Emulator, b []byte) {
 			for i := 0; i < len(b); i += 4096 {
 				e.Write(b[i:min(i+4096, len(b))])
 			}

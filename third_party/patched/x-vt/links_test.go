@@ -151,8 +151,11 @@ func TestLiveLinksArePerScreen(t *testing.T) {
 // recounting stays proportional to the cells printed, and the screen, as a
 // snapshot would carry it, is far under 16 MiB.
 func TestWorstCaseScreen(t *testing.T) {
-	const cols, rows = 500, 200
-	const cells = cols * rows
+	cols, rows := 500, 200
+	if raceEnabled {
+		rows = 100 // half: the race detector is slow
+	}
+	cells := cols * rows
 	const longEvery = 5000
 	cluster := "e" + strings.Repeat("́", 31)
 	longURL := "http://x/" + strings.Repeat("u", 64<<10)
@@ -232,8 +235,11 @@ func TestWorstCaseScreen(t *testing.T) {
 // heap is the cells', the recounts are rate-limited, and the screen as a
 // snapshot would carry it is far under 16 MiB.
 func TestWorstCaseScreenMaxLengthLinks(t *testing.T) {
-	const cols, rows = 500, 200
-	const cells = cols * rows
+	cols, rows := 500, 200
+	if raceEnabled {
+		rows = 100 // half: the race detector is slow
+	}
+	cells := cols * rows
 	cluster := "e" + strings.Repeat("\u0301", 31)
 	distinct := func(prefix string, size, i int) string {
 		s := fmt.Sprintf("%s%06d/", prefix, i)

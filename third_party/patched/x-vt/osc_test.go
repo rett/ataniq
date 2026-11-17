@@ -139,7 +139,10 @@ func TestOverlongMalformedHyperlinkClosesTheLink(t *testing.T) {
 // A link over the cap costs nothing to refuse: 100 links of 64 KiB neither
 // grow the emulator nor give a cell a link, and each is counted once.
 func TestOverlongHyperlinksCostNothing(t *testing.T) {
-	const n = 100
+	n := 100
+	if raceEnabled {
+		n = 25 // the race detector is slow
+	}
 	long := []byte(link("", "http://x/"+strings.Repeat("u", 64<<10)))
 	term := NewEmulator(80, 24)
 	alloc := allocated(func() {
@@ -152,7 +155,7 @@ func TestOverlongHyperlinksCostNothing(t *testing.T) {
 	if alloc > 64<<10 {
 		t.Errorf("allocated %d bytes", alloc)
 	}
-	if got := term.Counters().LinksOverLength; got != n {
+	if got := term.Counters().LinksOverLength; got != uint64(n) {
 		t.Errorf("LinksOverLength = %d, want %d", got, n)
 	}
 	for x := 0; x < 24; x++ {

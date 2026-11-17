@@ -83,7 +83,11 @@ func TestReplyDrainDeliversToPolicy(t *testing.T) {
 }
 
 func TestReplyDrainNeverBlocksWriteOrResize(t *testing.T) {
-	queries := bytes.Repeat([]byte("\x1b[c\x1b[>c\x1b[6n\x1b[?2004$p"), 20000)
+	rounds, resizes := 20000, 5000
+	if raceEnabled {
+		rounds, resizes = 5000, 1500 // the race detector is slow
+	}
+	queries := bytes.Repeat([]byte("\x1b[c\x1b[>c\x1b[6n\x1b[?2004$p"), rounds)
 	var r replies
 	for _, o := range []struct {
 		name string
@@ -98,7 +102,7 @@ func TestReplyDrainNeverBlocksWriteOrResize(t *testing.T) {
 			// In-band resize reports (mode 2048) answer every resize.
 			p.Write([]byte("\x1b[?2048h"))
 			within(t, 30*time.Second, "Resize", func() {
-				for i := 0; i < 5000; i++ {
+				for i := 0; i < resizes; i++ {
 					p.Resize(40+i%50, 10+i%20)
 				}
 			})
@@ -262,7 +266,11 @@ func heapInUse() uint64 {
 func TestBoundsScrollback(t *testing.T) {
 	p := newPane(t, sessionpane.MaxCols, 2, sessionpane.Options{})
 	line := strings.Repeat("x", sessionpane.MaxCols) + "\r\n"
-	lines := []byte(strings.Repeat(line, 1000))
+	count := 1000
+	if raceEnabled {
+		count = 400 // the race detector is slow
+	}
+	lines := []byte(strings.Repeat(line, count))
 
 	before := heapInUse()
 	p.Write(lines)
