@@ -10,7 +10,7 @@ import (
 // reaches the screen, also when the cut or the rest holds a 0x9C byte that
 // belongs to a UTF-8 character (U+2733 is E2 9C B3).
 func TestStringsOverTheCapAreTruncated(t *testing.T) {
-	const over = 4 << 20
+	const over = 512 << 10
 	for _, tc := range []struct {
 		name  string
 		body  string
@@ -50,9 +50,9 @@ func TestStringsOverTheCapAreTruncated(t *testing.T) {
 			if got := strings.TrimRight(e.String(), "\n "); got != "after" {
 				t.Errorf("screen %q, want only the text after the string", got)
 			}
-			// A few copies of the capped string at most; the input is 64 times
+			// A few copies of the capped string at most; the input is 8 times
 			// the cap.
-			if alloc > 8*MaxStringBytes {
+			if alloc > 4*MaxStringBytes {
 				t.Errorf("allocated %d bytes for a string of %d", alloc, len(tc.body))
 			}
 		})
@@ -89,7 +89,7 @@ func TestManyLongStrings(t *testing.T) {
 	if got := e.Counters().StringsTruncated; got != n {
 		t.Errorf("StringsTruncated = %d, want %d", got, n)
 	}
-	if alloc > n*8*MaxStringBytes {
+	if alloc > n*3*MaxStringBytes {
 		t.Errorf("allocated %d bytes for %d strings of %d", alloc, n, len(str))
 	}
 }

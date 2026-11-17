@@ -32,7 +32,8 @@ func drainReplies(t *testing.T, e *Emulator) *replies {
 			}
 		}
 	}()
-	t.Cleanup(func() { e.Close() })
+	// The goroutine ends with the test binary: Close would race with the
+	// Read it is blocked in (the emulator's closed flag is not synchronised).
 	return r
 }
 

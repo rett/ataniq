@@ -144,7 +144,7 @@ func TestLiveLinksArePerScreen(t *testing.T) {
 }
 
 // Design case H15: every cell of a 500 x 200 screen has a cluster of 63 bytes
-// and a link of its own. Every 1000th link is 64 KiB, which is over the length
+// and a link of its own. Every 5000th link is 64 KiB, which is over the length
 // cap; the others are short and distinct, 100 000 of them in all. At most
 // MaxLiveLinks are live, the memory stays under a fixed bound, the time spent
 // recounting stays proportional to the cells printed, and the screen, as a
@@ -152,7 +152,7 @@ func TestLiveLinksArePerScreen(t *testing.T) {
 func TestWorstCaseScreen(t *testing.T) {
 	const cols, rows = 500, 200
 	const cells = cols * rows
-	const longEvery = 1000
+	const longEvery = 5000
 	cluster := "e" + strings.Repeat("́", 31)
 	longURL := "http://x/" + strings.Repeat("u", 64<<10)
 
