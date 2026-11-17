@@ -38,6 +38,8 @@ profile during the transition, and a Codex lead is an interactive `codex` in its
 own session. Codex is the first live provider target, subject to version-specific
 capability and security evidence; qargi integration is limited to qualified
 public APIs. Unknown or disconnected state must remain explicit.
+The [lead sandbox guide](lead-sandbox.md) describes the sandbox profile for a
+managed lead as a proposal, unqualified; nothing uses it yet.
 
 ## Roles and authority split
 

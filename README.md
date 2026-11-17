@@ -42,6 +42,8 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
+The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
+for the sandbox of a managed lead; nothing uses it yet.
 
 ## Architecture decisions
 
