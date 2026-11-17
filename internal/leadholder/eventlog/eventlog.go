@@ -32,8 +32,10 @@
 // process (the client's name and its command line). Role and Epoch come from
 // the holder's own configuration. The caller must take them only from those
 // sources: never from the terminal, the session's output or anything typed.
-// Every other string is a code. The package cannot check where a value came
-// from; the frozen field set above is what stops a new text field.
+// Every other string is a code: its characters and length are limited, which
+// keeps control bytes and long text out, but a word still fits, so the caller
+// must put only identifiers and codes there. The package cannot check where a
+// value came from; the frozen field set above is what stops a new text field.
 //
 // # Files and bounds
 //
@@ -213,8 +215,9 @@ type Fields struct {
 	Digest        string            `json:"digest,omitempty"` // digest of something, never the thing
 	// The record of an injection, design 1.7: the identity of the message
 	// in the lead's conversation, who sent it, what the guards read and
-	// what came of it. Each is a code, never the message text; the digest
-	// above stands for the text.
+	// what came of it. Each is a code, never the message text (the package
+	// limits characters and length, not meaning: the caller puts only
+	// identifiers and codes here); the digest above stands for the text.
 	MessageID string   `json:"message_id,omitempty"`
 	Sender    string   `json:"sender,omitempty"`
 	Outcome   string   `json:"outcome,omitempty"`
@@ -740,8 +743,9 @@ const MaxReadBytes = MaxMaxBytes
 // over-long line) are skipped and reported in the error, which wraps
 // ErrCorrupt; a file larger than MaxReadBytes is read up to that size and the
 // error wraps ErrTooLarge. A read error is returned as it is, with the events
-// read before it. The files are opened read-only, so Read works on a folder
-// that cannot be written.
+// read before it. The files are opened read-only, so Read needs no write
+// access and works on a read-only mount; the folder and file modes are still
+// checked as for Open (0700 and 0600).
 //
 // Read is for tests and the status command. It decodes each line and checks
 // that it has a sequence number, a kind and a name, but it does not check the
