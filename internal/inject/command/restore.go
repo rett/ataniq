@@ -14,13 +14,20 @@ import (
 // (so "owner" is refused), a text that does not match its header or breaks the
 // body rules, an id used twice, a dispatch that is not for the head of a queue.
 //
-// After the last record it makes three kinds of completion, each as a new record
+// After the last record it makes two kinds of completion, each as a new record
 // stamped now. A command left in dispatching, with or without Enter recorded,
 // becomes uncertain (holder or agent died): it is never sent again by itself.
 // A command left accepted, because its queued record was never written, is
-// queued. A command left queued after late evidence arrived for the command it
-// replaces, because the record that makes it uncertain was never written,
-// becomes uncertain (original evidence arrived). The rate windows are rebuilt from the times of the accepted records.
+// queued. The rate windows are rebuilt from the times of the accepted records.
+//
+// Holds are rebuilt from their records, and Restore never writes or ends one:
+// only an operator's release does. A hold or release record, or a withdrawal,
+// that the live machine could not have written is refused: a hold about an
+// unknown command or about a command in a state that holds no queue, a hold for
+// a command the queue is already held for, a release of a queue that is not
+// held or with no operator, a withdrawal from a queue that is not held, a
+// dispatch while the queue is held, and a note for a decided command with no
+// hold behind it.
 //
 // The text cap of limits applies to every journaled text. A journal that holds
 // a text over the configured MaxTextBytes is refused as a whole, with a
@@ -52,11 +59,6 @@ func Restore(limits Limits, journal Journal, records []Record, now time.Time) (*
 			switch c.state {
 			case StateAccepted:
 				r = queuedRecord(c, now)
-			case StateQueued:
-				if c.freezeFor == "" {
-					continue
-				}
-				r = freezeRecord(c, now)
 			case StateDispatching:
 				r = base(c, now)
 				r.From, r.To, r.Reason = StateDispatching, StateUncertain, ReasonHolderDied

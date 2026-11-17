@@ -49,17 +49,40 @@ const (
 	EvidenceOwnerDecision EvidenceKind = "owner-decision"
 )
 
-// Record is one journal entry: one transition of one command, or one refusal
-// at admission. It is plain data and encodes to JSON as it is. Text is set
-// only on the record that creates a command.
+// RecordType names the records that are not a transition of a command. The
+// type of a command transition or a refusal at admission is empty, and the
+// record is then read by its From and To states.
+type RecordType string
+
+const (
+	// RecordHold: late information arrived about a command an operator had
+	// decided was not delivered, or is deciding, and the target's queue is now
+	// held. The record names the target (Target), the command the information
+	// is about (ID), why it holds (Reason) and when (At). It changes no command.
+	RecordHold RecordType = "queue-hold"
+	// RecordRelease: an operator ended the hold of a target's queue. The record
+	// names the target (Target) and the operator (Operator), and carries the
+	// owner's decision as its evidence. It changes no command.
+	RecordRelease RecordType = "queue-release"
+)
+
+// Record is one journal entry: one transition of one command, one refusal at
+// admission, or one hold or release of a queue (Type). It is plain data and
+// encodes to JSON as it is. Text is set only on the record that creates a
+// command.
 type Record struct {
 	// Seq is the sequence number, 1 for the first record and one more for
 	// each next record.
 	Seq uint64 `json:"seq"`
 	// At is the time given to the call that made the record.
 	At time.Time `json:"at"`
+	// Type is empty for a command transition and for a refusal at admission,
+	// and RecordHold or RecordRelease for the records of a queue hold.
+	Type RecordType `json:"type,omitempty"`
 	// ID is the command id. On a refusal at admission it is the id the
-	// sender gave, cleaned and cut short, and may not be a valid id.
+	// sender gave, cleaned and cut short, and may not be a valid id. On a hold
+	// record it is the command the late information is about; on a release
+	// record it is empty.
 	ID string `json:"id"`
 	// Target and Sender are the rendered target and sender. On a refusal at
 	// admission they are cleaned and cut short.
@@ -78,7 +101,8 @@ type Record struct {
 	// EvidenceKind and Evidence say what the transition rests on.
 	EvidenceKind EvidenceKind `json:"evidence_kind,omitempty"`
 	Evidence     string       `json:"evidence,omitempty"`
-	// Operator is the operator who decided, on a resolution.
+	// Operator is the operator who decided, on a resolution, a withdrawal or a
+	// release.
 	Operator string `json:"operator,omitempty"`
 	// Of is, on the record that creates a command sent again, the id of
 	// the uncertain command it replaces.
@@ -86,6 +110,15 @@ type Record struct {
 	// Replacement is, on the resolution of an uncertain command sent again,
 	// the id of the new command.
 	Replacement string `json:"replacement,omitempty"`
+	// Held is the target's hold counter. On a hold record it is the value the
+	// record sets: one more than the last hold record of the target, counted
+	// over the whole journal and never reset by a release. On a release record
+	// it is the value the operator saw, which must be the current one.
+	Held uint64 `json:"held,omitempty"`
+	// Piece is, on a hold record, the digest of the late call that caused it
+	// (see pieceDigest), so that a call that repeats the last one byte for byte
+	// is told from a new piece of information.
+	Piece string `json:"piece,omitempty"`
 	// Text is the whole text to deliver, header included. It is only on the
 	// record that creates a command.
 	Text string `json:"text,omitempty"`

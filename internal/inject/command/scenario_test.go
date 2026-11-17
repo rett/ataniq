@@ -41,6 +41,12 @@ func scenario() []step {
 	resolve := func(r Resolution) {
 		add("resolve "+r.ID+" "+string(r.Decision), func(m *Machine, now time.Time) error { _, err := m.Resolve(r, now); return err })
 	}
+	release := func(target Target, operator string) {
+		add("release "+target.String(), func(m *Machine, now time.Time) error { return m.ReleaseHold(target, operator, seenOf(m, target), now) })
+	}
+	withdraw := func(id string) {
+		add("withdraw "+id, func(m *Machine, now time.Time) error { return m.Withdraw(id, "bob", now) })
+	}
 	tickAfter := func(d time.Duration) {
 		add("tick", func(m *Machine, now time.Time) error { _, err := m.Tick(now.Add(d)); return err })
 	}
@@ -58,6 +64,8 @@ func scenario() []step {
 	begin(leadA)
 	fence("m2", WrittenPaste, OutcomeNotSubmitted)
 	resolve(Resolution{ID: "m2", Decision: DecisionResend, Operator: "alice", NewID: "m2b", Note: "again"})
+	confirm("m2") // late evidence for the resent m2: the queue is held
+	release(leadA, "alice")
 	begin(leadA)
 	fence("m2b", WrittenNothing, OutcomeUntestedVersion)
 	begin(SupervisorTarget())
@@ -70,6 +78,11 @@ func scenario() []step {
 	begin(leadB)
 	fence("m5", WrittenUnknown, OutcomeDied)
 	resolve(Resolution{ID: "m5", Decision: DecisionDrop, Operator: "alice"})
+	submit("m9", Daemon(), leadB)
+	fence("m5", WrittenPasteAndEnter, OutcomeSubmitted) // late result for the dropped m5: held
+	confirm("m5")                                       // a second piece for the held queue: the counter advances
+	withdraw("m9")
+	release(leadB, "bob")
 	submit("m6", Daemon(), leadA)
 	submit("m7", Daemon(), SupervisorTarget())
 	begin(leadA)
@@ -182,13 +195,36 @@ func normalize(s snapshot) snapshot {
 
 func TestRestoreFromEveryPrefixMatchesTheLiveMachine(t *testing.T) {
 	steps := scenario()
-	m, j := newTest(t)
-	boundaries := map[int]snapshot{0: snap(m)}
+	// The journal keeps the state of the live machine before each record, so
+	// every prefix of the journal, and not only the end of each step, is compared.
+	j := &snapJournal{snaps: map[int]snapshot{}}
+	m, err := New(testLimits(), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.m = m
 	for _, s := range steps {
 		if err := s.do(m); err != nil {
 			t.Fatalf("%s: %v", s.name, err)
 		}
-		boundaries[len(j.recs)] = snap(m)
+	}
+	j.snaps[len(j.recs)] = snap(m)
+	boundaries := map[int]snapshot{}
+	holds := 0
+	for k, s := range j.snaps {
+		// A restore queues a command left accepted, which the live machine has
+		// not done yet between its two records.
+		if !hasAccepted(s) {
+			boundaries[k] = s
+		}
+	}
+	for _, r := range j.recs {
+		if r.Type == RecordHold || r.Type == RecordRelease || r.Reason == ReasonOperatorWithdrawn {
+			holds++
+		}
+	}
+	if holds < 4 {
+		t.Fatalf("the scenario has %d hold, release and withdrawal records", holds)
 	}
 	restoreAt := at(24 * time.Hour)
 	compared := 0
@@ -225,8 +261,8 @@ func TestRestoreFromEveryPrefixMatchesTheLiveMachine(t *testing.T) {
 			}
 		}
 	}
-	if compared < len(steps) {
-		t.Errorf("compared only %d boundaries of %d steps", compared, len(steps))
+	if compared < len(j.recs)*3/4 {
+		t.Errorf("compared only %d boundaries of %d records", compared, len(j.recs))
 	}
 }
 

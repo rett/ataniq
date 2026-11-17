@@ -12,7 +12,7 @@ const (
 	maxDetailBytes   = 1024 // a detail or a fence reading
 	maxEvidenceBytes = 512  // a piece of evidence
 	maxOperatorBytes = 128  // an operator name
-	maxLateNotes     = 8    // late annotations kept for one uncertain command
+	maxLateNotes     = 8    // late annotations kept for one command, ended or not
 )
 
 // command is the machine's memory of one command. A command that has ended
@@ -42,12 +42,29 @@ type command struct {
 
 	of          string
 	replacement string
+}
 
-	// freezeFor is set on a queued command when late evidence arrived for a
-	// command it replaces (directly or along a chain of resends): it is the
-	// id of that command. The command is then to become uncertain, and holds
-	// its queue until it does.
-	freezeFor string
+// hold is the hold on one target's queue: the commands that late information
+// arrived about, the first one first. It ends only with a release record.
+type hold struct {
+	about  []string
+	reason Reason // of the first record
+	since  time.Time
+	last   string // piece digest of the newest hold record
+}
+
+// has reports whether the hold is already about the command. It is safe on
+// the nil hold of a queue that is not held.
+func (h *hold) has(id string) bool {
+	if h == nil {
+		return false
+	}
+	for _, a := range h.about {
+		if a == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Machine is the durable command state machine of one daemon: the queues of
@@ -57,7 +74,9 @@ type command struct {
 // Every method that changes a command first appends a Record to the journal
 // and applies the change only when the append succeeded, so a failed append
 // leaves the state as it was. Two methods write more than one record and say
-// so: Submit (accepted, then queued) and Resolve with a resend.
+// so: Submit (accepted, then queued), Resolve with a resend, and the late calls
+// RecordFence and ConfirmDelivery for a command that an operator decided about
+// (the hold record of the queue, then the note).
 type Machine struct {
 	limits  Limits
 	journal Journal
@@ -65,6 +84,8 @@ type Machine struct {
 
 	cmds    map[string]*command
 	queues  map[string][]*command // by rendered target, first in first out
+	holds   map[string]*hold      // by rendered target; only a held queue has one
+	heldSeq map[string]uint64     // by rendered target; the hold counter, kept after a release
 	rates   map[string][]time.Time
 	blocked map[string]bool // a blocked spell has been announced for the target
 }
@@ -84,6 +105,8 @@ func New(limits Limits, journal Journal) (*Machine, error) {
 		journal: journal,
 		cmds:    map[string]*command{},
 		queues:  map[string][]*command{},
+		holds:   map[string]*hold{},
+		heldSeq: map[string]uint64{},
 		rates:   map[string][]time.Time{},
 		blocked: map[string]bool{},
 	}, nil
@@ -267,12 +290,10 @@ func countSince(times []time.Time, cut time.Time) int {
 	return n
 }
 
-// frozenBy returns the command that freezes a queue, or nil: an uncertain
-// command, or a queued one that late evidence for its predecessor has made
-// uncertain in everything but the record that says so.
+// frozenBy returns the uncertain command that freezes a queue, or nil.
 func frozenBy(q []*command) *command {
 	for _, c := range q {
-		if c.state == StateUncertain || (c.state == StateQueued && c.freezeFor != "") {
+		if c.state == StateUncertain {
 			return c
 		}
 	}

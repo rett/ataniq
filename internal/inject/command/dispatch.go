@@ -82,15 +82,19 @@ func refusal(reason Reason, id, format string, args ...any) *Refusal {
 }
 
 // BeginDispatch starts the dispatch of the head of a target's queue. It
-// refuses with a *Refusal when the queue is empty (ReasonQueueEmpty), frozen by
-// an uncertain command, or by a queued one that late evidence has made due to
-// become uncertain (ReasonQueueFrozen, naming that command), when the head
-// is already dispatching (ReasonAlreadyDispatching) or when the head is not
-// yet queued (ReasonHeadNotQueued). Otherwise it appends the dispatching
+// refuses with a *Refusal when the queue is held (ReasonQueueHeld, naming the
+// command the hold is about; checked first, so a held queue is refused even when
+// it is also frozen or empty), when the queue is empty (ReasonQueueEmpty),
+// frozen by an uncertain command (ReasonQueueFrozen, naming that command), when
+// the head is already dispatching (ReasonAlreadyDispatching) or when the head is
+// not yet queued (ReasonHeadNotQueued). Otherwise it appends the dispatching
 // record, which is the journaled intent, and only then returns the text. On a
 // journal error nothing changed and no text is returned: no byte may be
 // written without the intent.
 func (m *Machine) BeginDispatch(target Target, now time.Time) (Dispatch, error) {
+	if h := m.holds[target.String()]; h != nil {
+		return Dispatch{}, refusal(ReasonQueueHeld, h.about[0], "the queue of %s is held since %s: late information arrived for command %q; an operator releases the hold", target, h.since.UTC().Format(time.RFC3339), h.about[0])
+	}
 	q := m.queues[target.String()]
 	if len(q) == 0 {
 		return Dispatch{}, refusal(ReasonQueueEmpty, "", "the queue of %s is empty", target)
@@ -147,24 +151,21 @@ func (m *Machine) BeginDispatch(target Target, now time.Time) (Dispatch, error) 
 // values of Written, and anything else is recorded as unknown.
 //
 // The same holds for a command that an operator resolved as "not delivered,
-// send again" (state resolved): the late result is journaled as an annotation
-// on it (resolved to resolved), and when the newest replacement along its
-// resend chain is still queued, that replacement becomes uncertain (reason
-// ReasonOriginalEvidenceArrived), which freezes the queue until an operator
-// decides about it. When the replacement is already dispatching or has ended,
-// only the annotation is written. See ConfirmDelivery for the rules that both
-// late paths share (repeats, the cap, ended commands).
+// send again" or "not delivered, drop" (state resolved): the late result is
+// journaled as an annotation on it (resolved to resolved), and the queue of the
+// target is held first. See ConfirmDelivery for the hold and for the rules that
+// all late paths share (repeats, the cap, ended commands).
 //
 // Otherwise it refuses with ReasonWrongState unless the command is dispatching
-// and Enter has not been recorded. On a journal error nothing changed: the daemon retries
-// RecordFence with the same result, and never calls BeginDispatch again for
+// and Enter has not been recorded. On a journal error nothing changed: the
+// daemon retries RecordFence with the same result, and never calls BeginDispatch again for
 // the command, which stays dispatching and is refused as already dispatching.
 func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceUpdate, error) {
 	c := m.cmds[id]
 	switch {
 	case c == nil:
 		return FenceUpdate{}, refusal(ReasonNoCommand, id, "no command %q", safeField(id, 70))
-	case c.state == StateUncertain || m.resentAway(c):
+	case c.takesLate():
 		return m.lateFence(c, res, now)
 	case c.state != StateDispatching || c.hasEnter:
 		return FenceUpdate{}, refusal(ReasonWrongState, id, "command %q is %s and cannot take a fence result", id, c.state)
@@ -217,7 +218,8 @@ func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceU
 	return up, nil
 }
 
-// lateFence journals a fence result that arrived for an uncertain command.
+// lateFence journals a fence result that arrived for an uncertain command, or
+// for one an operator resolved as sent again or dropped.
 func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUpdate, error) {
 	written := res.Written
 	if !knownWritten(string(written)) {
@@ -227,7 +229,8 @@ func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUp
 	r.Reason = ReasonLateFenceResult
 	r.Detail = safeField("outcome: "+safeField(string(res.Outcome), 40)+"; "+res.Readings, maxDetailBytes)
 	r.EvidenceKind, r.Evidence = EvidenceObservation, string(written)
-	if err := m.late(c, r, now); err != nil {
+	piece := pieceDigest("late-fence-result", c.id, string(res.Written), string(res.Outcome), res.Readings)
+	if err := m.late(c, r, piece, now); err != nil {
 		return FenceUpdate{}, err
 	}
 	return FenceUpdate{ID: c.id, Target: c.target, State: c.state, Reason: c.reason}, nil
@@ -248,29 +251,47 @@ func (m *Machine) lateFence(c *command, res FenceResult, now time.Time) (FenceUp
 // (CommandView.Late) for the operator, and the command stays uncertain with
 // the queue frozen. The same bounds apply to the evidence.
 //
-// Evidence for a command an operator already resolved as "not delivered, send
-// again" is late too. It is journaled as an annotation on that command
-// (resolved to resolved) and not refused, and when the newest replacement along
-// the resend chain is still queued, that replacement becomes uncertain (reason
-// ReasonOriginalEvidenceArrived, written by the same call as a second record):
-// nothing is dispatched, the queue stays frozen, and an operator decides about
-// the replacement with the usual three decisions. When the replacement is
-// already dispatching or has ended, only the annotation is written. If the
-// second record fails to append, the replacement still holds its queue (it
-// cannot be dispatched) and becomes uncertain at the next Tick or Restore, or
-// when the same call is repeated.
+// Late information about a command that an operator decided was not delivered,
+// or is deciding, holds the target's queue. The cases are a command resolved as
+// "not delivered, send again" (state resolved, ReasonHoldAfterResend), one
+// resolved as "not delivered, drop" (ReasonHoldAfterDrop), and an uncertain
+// command whose resend is half written, that is, its replacement is queued and
+// the resolution that completes the resend is not journaled yet
+// (ReasonHoldDuringResend). The call journals a hold record (RecordHold) and
+// then the note (resolved to resolved, or uncertain to uncertain). While the
+// queue is held BeginDispatch refuses with ReasonQueueHeld; the hold changes no
+// command, whatever state a replacement is in: a replacement that is already
+// dispatching is not interrupted, and when its fence wrote nothing it returns
+// to queued and the hold keeps it there. Only ReleaseHold ends a hold; a queued
+// replacement the operator does not want sent is ended with Withdraw. Late
+// information for an uncertain command with no resend pending is a note only:
+// that command already freezes the queue.
 //
-// The rules for every late note, on an uncertain or on a resent command:
+// Every such call is a piece of late information and is decided before the
+// rules below, whatever else is wrong with it: evidence that is refused as bad
+// (ReasonBadEvidence) holds the queue first and is refused after, and neither a
+// repeated note nor a full note list suppresses it. The hold record is written
+// each time, not only for the first piece: it advances the target's hold
+// counter (TargetView.HeldSeq), which ReleaseHold must name, so that a release
+// never covers a piece the operator has not seen. The one call that writes no
+// hold record is a repeat, byte for byte, of the last piece of a queue that is
+// still held. If the hold record fails to append, nothing changed and the error
+// is returned: the daemon repeats the call. If the note then fails to append,
+// the hold stands and the error is returned: repeating the call writes the note
+// only. After a release, the same evidence for the same command holds the queue
+// again.
+//
+// The rules for every late note, on an uncertain or on a decided command:
 //
 //   - A note equal to one the command already has (same reason, detail,
-//     evidence kind and evidence) is skipped: no record is written and there is
+//     evidence kind and evidence) is skipped: no note is written and there is
 //     no error. The daemon should still pass each piece of evidence once; the
 //     skip is a safety net, not a way to poll.
 //   - At most eight notes are kept for a command. A different note after that
-//     is refused with ReasonLateNotesFull, and nothing is written, so it
-//     does not freeze a queued replacement either.
-//   - Evidence for a command that was delivered, refused, or resolved as dropped
-//     is refused with ReasonWrongState.
+//     is refused with ReasonLateNotesFull, and no note is written; the hold, if
+//     the command calls for one, was set first and stands.
+//   - Evidence for a command that was delivered, refused, or resolved by a
+//     withdrawal is refused with ReasonWrongState.
 //   - Notes stay with the command after it ends, for the audit (see the package
 //     documentation).
 func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
@@ -285,14 +306,20 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 	switch {
 	case c == nil:
 		return refusal(ReasonNoCommand, id, "no command %q", safeField(id, 70))
-	case c.state == StateUncertain || m.resentAway(c):
+	case c.takesLate():
+		piece := pieceDigest("late-evidence", c.id, evidence)
 		if bad != nil {
+			// Unusable evidence is still late information: the hold comes
+			// first, then the refusal.
+			if err := m.holdIfDecided(c, piece, now); err != nil {
+				return err
+			}
 			return bad
 		}
 		r := base(c, now)
 		r.Reason = ReasonLateEvidence
 		r.EvidenceKind, r.Evidence = EvidenceProviderReport, safeField(evidence, maxEvidenceBytes)
-		return m.late(c, r, now)
+		return m.late(c, r, piece, now)
 	case c.state != StateDispatching:
 		return refusal(ReasonWrongState, id, "command %q is %s, not dispatching", id, c.state)
 	case !c.hasEnter:
@@ -310,8 +337,6 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 // wrote. For each target, in order of name:
 //
 //   - a command left accepted (its queued record failed) is queued;
-//   - a queued command that late evidence for the command it replaces has made
-//     due to become uncertain (its record failed) becomes uncertain;
 //   - a dispatching command with no fence result (Enter not recorded) FenceTimeout
 //     after its dispatching record becomes uncertain (no-fence-result, which is
 //     not a reported death); the queue is then frozen and shows it. A fence
@@ -326,8 +351,9 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 //     chance to be dispatched before the next tick.
 //
 // Tick never dispatches and never resends, and it never moves an uncertain
-// command. It stops at the first journal error and returns it with the records
-// written so far.
+// command or ends a hold. A queue that is held keeps its queued head: the head
+// is not tried, so it is not refused as not idle. It stops at the first journal
+// error and returns it with the records written so far.
 func (m *Machine) Tick(now time.Time) ([]Record, error) {
 	var done []Record
 	step := func(r Record) error {
@@ -339,16 +365,10 @@ func (m *Machine) Tick(now time.Time) ([]Record, error) {
 	}
 	for _, key := range m.targetKeys() {
 		for _, c := range append([]*command(nil), m.queues[key]...) {
-			var r Record
-			switch {
-			case c.state == StateAccepted:
-				r = queuedRecord(c, now)
-			case c.state == StateQueued && c.freezeFor != "":
-				r = freezeRecord(c, now)
-			default:
+			if c.state != StateAccepted {
 				continue
 			}
-			if err := step(r); err != nil {
+			if err := step(queuedRecord(c, now)); err != nil {
 				return done, err
 			}
 		}
@@ -377,7 +397,7 @@ func (m *Machine) Tick(now time.Time) ([]Record, error) {
 			if err := step(r); err != nil {
 				return done, err
 			}
-		case head.state == StateQueued && frozenBy(q) == nil && now.Sub(head.admitted) > m.limits.QueueTimeLimit:
+		case head.state == StateQueued && frozenBy(q) == nil && m.holds[key] == nil && now.Sub(head.admitted) > m.limits.QueueTimeLimit:
 			r := base(head, now)
 			r.From, r.To, r.Reason = StateQueued, StateRefused, ReasonNotIdle
 			r.Detail = safeField("queue time limit passed; last reason: "+string(head.reason)+": "+head.detail, maxDetailBytes)
@@ -396,26 +416,6 @@ func (m *Machine) lastRecord(r Record) Record {
 	return r
 }
 
-// resentAway reports whether an operator resolved c as "not delivered, send
-// again". Late records are still taken for such a command.
-func (m *Machine) resentAway(c *command) bool {
-	return c.state == StateResolved && c.reason == ReasonOperatorResend
-}
-
-// newestReplacement follows the resend chain from c to its last command, the
-// one that is not itself resolved as sent again. It returns nil only when the
-// chain is broken, which a checked journal does not have.
-func (m *Machine) newestReplacement(c *command) *command {
-	x := c
-	for m.resentAway(x) {
-		x = m.cmds[x.replacement]
-		if x == nil {
-			return nil
-		}
-	}
-	return x
-}
-
 // hasNote reports whether c already has a late note equal to the one r says.
 func (c *command) hasNote(r Record) bool {
 	for _, n := range c.late {
@@ -426,37 +426,21 @@ func (c *command) hasNote(r Record) bool {
 	return false
 }
 
-// freezeRecord is the record that makes a queued command uncertain because late
-// evidence arrived for the command it replaces.
-func freezeRecord(c *command, now time.Time) Record {
-	r := base(c, now)
-	r.From, r.To, r.Reason = StateQueued, StateUncertain, ReasonOriginalEvidenceArrived
-	r.Detail = safeField("late evidence arrived for "+c.freezeFor+", which was sent again; see its late notes", maxDetailBytes)
-	return r
-}
-
 // late journals the late note r (its reason, detail and evidence are set) for
-// c, which is uncertain or was resolved as sent again, and for a resent command
-// makes its queued replacement uncertain. It skips a note that c already has,
-// and refuses a different one when c holds the most it keeps. See
-// ConfirmDelivery for the rules.
-func (m *Machine) late(c *command, r Record, now time.Time) error {
-	r.From, r.To = c.state, c.state
-	if !c.hasNote(r) {
-		if len(c.late) >= maxLateNotes {
-			return refusal(ReasonLateNotesFull, c.id, "command %q already has %d late notes", c.id, len(c.late))
-		}
-		if err := m.commit(r); err != nil {
-			return err
-		}
+// c, which is uncertain or was resolved as sent again or dropped; piece is the
+// digest of the call. First it records the information with holdIfDecided; then
+// it skips a note that c already has, and refuses a different one when c holds
+// the most it keeps. See ConfirmDelivery for the rules.
+func (m *Machine) late(c *command, r Record, piece string, now time.Time) error {
+	if err := m.holdIfDecided(c, piece, now); err != nil {
+		return err
 	}
-	if c.state != StateResolved {
+	r.From, r.To = c.state, c.state
+	if c.hasNote(r) {
 		return nil
 	}
-	// The annotation made the newest replacement due to become uncertain when
-	// it was still queued; a repeat after a failed append finds it still due.
-	if n := m.newestReplacement(c); n != nil && n.state == StateQueued && n.freezeFor != "" {
-		return m.commit(freezeRecord(n, now))
+	if len(c.late) >= maxLateNotes {
+		return refusal(ReasonLateNotesFull, c.id, "command %q already has %d late notes", c.id, len(c.late))
 	}
-	return nil
+	return m.commit(r)
 }
