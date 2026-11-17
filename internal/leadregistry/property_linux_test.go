@@ -24,14 +24,14 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 	if rng.Intn(6) == 0 {
 		epoch = uint64(rng.Intn(5))
 	}
-	switch rng.Intn(11) {
+	switch rng.Intn(17) {
 	case 0:
 		p := goodProfile()
 		p.Model = pick(rng, "m1", "m2", "m3")
 		if rng.Intn(8) == 0 {
 			p.Model = ""
 		}
-		_, err := r.Define(role, pick(rng, ManagerAtaniq, ManagerAtaniq, ManagerTmux), p)
+		_, err := r.Define(role, pick(rng, ManagerAtaniq, ManagerAtaniq, ManagerAtaniq, ManagerAtaniq, ManagerTmux), p)
 		return err
 	case 1:
 		_, err := r.SetDesired(role, pick(rng, DesiredRunning, DesiredStopped))
@@ -69,6 +69,11 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 		_, err := r.ResolveUnknown(role, OwnerDecision{Epoch: epoch, State: pick(rng, StateStopped, StateEnded),
 			Reason: Reason{Code: "owner-decision"}, Decision: pick(rng, "decision one", "decision two")})
 		return err
+	case 11, 12, 13, 14:
+		return guidedOp(r, rng, role, cur)
+	case 15:
+		_, err := r.AcknowledgeRecovery(pick(rng, "looked at it", "all roles shown unknown"))
+		return err
 	default:
 		f := func() Field {
 			if rng.Intn(2) == 0 {
@@ -79,4 +84,42 @@ func randomOp(t *testing.T, r *Registry, rng *rand.Rand, role leadrole.Role) err
 		_, err := r.SetObserved(role, epoch, Observed{Provider: f(), Version: f(), Model: f(), Effort: f(), PermissionMode: f(), AccessMode: f()})
 		return err
 	}
+}
+
+// guidedOp makes the move a well-behaved caller would make next, so that the
+// random walk gets past a launch into the live states and the stops: begin a
+// launch, record its outcome, and then change the shown state or stop with a
+// proof. A state it cannot move from is left to the other operations.
+func guidedOp(r *Registry, rng *rand.Rand, role leadrole.Role, cur Entry) error {
+	switch {
+	case cur.pending():
+		_, err := r.RecordOutcome(role, cur.Intent.ID, cur.Epoch, OutcomeLaunched, UnitEvidence{InvocationID: "inv"})
+		return err
+	case cur.Epoch == 0 || cur.Shown.State == StateDesired || cur.Shown.State == StateStopped || cur.Shown.State == StateEnded:
+		if rng.Intn(3) == 0 && cur.Epoch > 0 {
+			_, err := r.SetDesired(role, DesiredRunning)
+			return err
+		}
+		if cur.Epoch > 0 && rng.Intn(5) == 0 { // a role at rest may be set desired
+			_, err := r.SetState(role, setState(StateDesired, cur.Epoch))
+			return err
+		}
+		_, err := r.BeginLaunch(role)
+		return err
+	case cur.Shown.State == StateUnknown:
+		if rng.Intn(2) == 0 {
+			_, err := r.ResolveUnknown(role, OwnerDecision{Epoch: cur.Epoch, State: StateStopped, Reason: Reason{Code: "owner-decision"}, Decision: "checked"})
+			return err
+		}
+		_, err := r.SetState(role, stopProof(cur.Epoch))
+		return err
+	}
+	st := pick(rng, StateReady, StateDegraded, StateStalled, StateStopping, StateUnknown, StateStopped, StateStopped, StateEnded)
+	c := setState(st, cur.Epoch)
+	if st == StateStopped || st == StateEnded {
+		c = stopProof(cur.Epoch)
+		c.State = st
+	}
+	_, err := r.SetState(role, c)
+	return err
 }

@@ -33,6 +33,35 @@ func lead(t testing.TB, project string) leadrole.Role {
 	return r
 }
 
+func coord(t testing.TB, project, feature string) leadrole.Role {
+	t.Helper()
+	r, err := leadrole.Coordinator(project, feature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// liveLead defines the lead as run by ataniq, launches it and shows it ready,
+// and returns its epoch.
+func liveLead(t testing.TB, r *Registry, role leadrole.Role) uint64 {
+	t.Helper()
+	if _, err := r.Define(role, ManagerAtaniq, goodProfile()); err != nil {
+		t.Fatal(err)
+	}
+	in, err := r.BeginLaunch(role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RecordOutcome(role, in.ID, in.Epoch, OutcomeLaunched, UnitEvidence{InvocationID: "i"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.SetState(role, setState(StateReady, in.Epoch)); err != nil {
+		t.Fatal(err)
+	}
+	return in.Epoch
+}
+
 func goodProfile() Requested {
 	return Requested{
 		Provider:       ProviderClaude,

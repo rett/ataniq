@@ -3,6 +3,7 @@ package leadregistry
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,7 @@ func buildJournal(t *testing.T) ([]byte, []int64, [][]Entry) {
 	step()
 	ok(r.SetState(a, setState(StateReady, 1)))
 	step()
-	ok(r.SetState(a, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceOwner, Reason: Reason{Code: "stop", Detail: "café"}, Proof: "gone"}))
+	ok(r.SetState(a, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceProvider, Reason: Reason{Code: "stop", Detail: "café"}, Proof: "gone"}))
 	step()
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
 	if err != nil {
@@ -95,9 +96,26 @@ func TestCrashTruncationAtEveryOffset(t *testing.T) {
 		if got := snapshot(t, r); !sameEntries(got, want) {
 			t.Fatalf("cut %d: state is not that of record %d", cut, last)
 		}
-		// The unfinished tail is gone from the file.
-		if st := journalSize(t, dir); last >= 0 && st != keep {
-			t.Fatalf("cut %d: file is %d bytes after recovery, want %d", cut, st, keep)
+		// The unfinished tail is gone from the file and a recovered record
+		// stands where it was, naming what was cut and where.
+		if last >= 0 {
+			got, _ := os.ReadFile(filepath.Join(dir, FileName))
+			if !bytes.Equal(got[:keep], data[:keep]) {
+				t.Fatalf("cut %d: the records before the cut changed", cut)
+			}
+			rest := got[keep:]
+			if int64(cut) == keep && len(rest) != 0 {
+				t.Fatalf("cut %d: a boundary cut wrote %q", cut, rest)
+			}
+			if int64(cut) != keep {
+				wantRec := fmt.Sprintf(`"kind":"recovered","payload":{"lines":1,"bytes":%d,"offset":%d}`, int64(cut)-keep, keep)
+				if n := len(journalLines(rest)); n != 1 || !bytes.Contains(rest, []byte(wantRec)) {
+					t.Fatalf("cut %d: after the cut the file holds %q, want one line with %s", cut, rest, wantRec)
+				}
+				if rev, _ := r.Revision(); rev != uint64(last)+1 {
+					t.Fatalf("cut %d: revision %d, want %d", cut, rev, last+1)
+				}
+			}
 		}
 		if cut%7 == 0 || cut > len(data)-3 {
 			// The registry accepts a write and a second Open sees a clean file.
@@ -112,10 +130,25 @@ func TestCrashTruncationAtEveryOffset(t *testing.T) {
 			if _, err := r2.Get(lead(t, "gamma")); err != nil {
 				t.Fatalf("cut %d: %v", cut, err)
 			}
-			if r2.Recovery() != (Recovery{}) {
-				t.Fatalf("cut %d: second open recovered again", cut)
+			// The cut is still reported until it is acknowledged, and not
+			// cut again: the file has nothing unfinished the second time.
+			if r2.Recovery() != rec {
+				t.Fatalf("cut %d: second open reports %+v, want %+v", cut, r2.Recovery(), rec)
+			}
+			if rec.Cut() {
+				if got, err := r2.AcknowledgeRecovery("looked at it"); err != nil || got != rec {
+					t.Fatalf("cut %d: acknowledge: %+v %v", cut, got, err)
+				}
 			}
 			r2.Close()
+			r3, err := Open(dir, testOpts(1))
+			if err != nil {
+				t.Fatalf("cut %d: reopen after the acknowledgement: %v", cut, err)
+			}
+			if r3.Recovery().Cut() {
+				t.Fatalf("cut %d: still reported after the acknowledgement: %+v", cut, r3.Recovery())
+			}
+			r3.Close()
 		} else {
 			r.Close()
 		}
@@ -166,6 +199,7 @@ func craft(t *testing.T, lines [][]byte, n int, seq uint64, kind string, role le
 var otherErrors = []error{
 	ErrInvalid, ErrNoRole, ErrTooManyRoles, ErrTooLarge, ErrStaleEpoch, ErrEpochExhausted,
 	ErrLaunchRefused, ErrLaunchState, ErrLaunchManager, ErrLaunchPending, ErrIntentMismatch, ErrIntentResolved,
+	ErrLaunchNoParent, ErrLaunchParentManager, ErrLaunchParentState, ErrLaunchCoordinator,
 	ErrProofRequired, ErrStateTransition, ErrOutcomePending, ErrDecisionRequired,
 	ErrLocked, ErrInsecure, ErrClosed, ErrBroken,
 }
@@ -216,6 +250,7 @@ func TestCorruptionFailsOpenAndNamesTheLine(t *testing.T) {
 		{"stale epoch in a record", assemble(3, craft(t, lines, 3, 3, kindState, alpha, &statePayload{Epoch: 9, State: StateReady, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 4},
 		{"desired from a live state", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateDesired, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}})), 6},
 		{"stopped while the intent is pending", assemble(5, craft(t, lines, 5, 5, kindState, alpha, &statePayload{Epoch: 1, State: StateStopped, Evidence: EvidenceObservation, Reason: Reason{Code: "x"}, Proof: "p"})), 6},
+		{"stopped with owner evidence from a live state", assemble(8, craft(t, lines, 8, 8, kindState, alpha, &statePayload{Epoch: 1, State: StateStopped, Evidence: EvidenceOwner, Reason: Reason{Code: "x"}, Proof: "p"})), 9},
 		{"owner decision outside unknown", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}, Decision: "d"})), 4},
 		{"owner decision without text", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateStopped, Reason: Reason{Code: "x"}})), 4},
 		{"owner decision to a live state", assemble(3, craft(t, lines, 3, 3, kindOwnerDecision, alpha, &decisionPayload{Epoch: 0, State: StateReady, Reason: Reason{Code: "x"}, Decision: "d"})), 4},

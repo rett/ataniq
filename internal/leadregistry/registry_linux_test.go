@@ -523,7 +523,7 @@ func TestWorstCaseLinesFit(t *testing.T) {
 	}
 	ev := UnitEvidence{InvocationID: q(MaxInvocationIDBytes), ControlGroupPath: q(MaxControlGroupPathBytes), ControlGroupID: q(MaxControlGroupIdentityBytes), BootID: q(MaxBootIdentityBytes)}
 	ok(r.RecordOutcome(role, in.ID, 1, OutcomeLaunched, ev))
-	ok(r.SetState(role, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceOwner,
+	ok(r.SetState(role, StateChange{Epoch: 1, State: StateStopped, Evidence: EvidenceProvider,
 		Reason: Reason{Code: strings.Repeat("a", MaxReasonCodeBytes), Detail: q(MaxReasonDetailBytes)}, Proof: q(MaxProofBytes)}))
 	f := Seen(q(MaxFieldBytes))
 	ok(r.SetObserved(role, 1, Observed{Provider: f, Version: f, Model: f, Effort: f, PermissionMode: f, AccessMode: f}))

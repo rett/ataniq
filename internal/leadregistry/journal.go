@@ -33,7 +33,14 @@ const (
 	kindState         = "state"
 	kindObserved      = "observed"
 	kindOwnerDecision = "owner-decision"
+	kindRecovered     = "recovered"
+	kindRecoveryAck   = "recovery-acknowledged"
 )
+
+// roleless reports whether records of the kind belong to no role.
+func roleless(kind string) bool {
+	return kind == kindHeader || kind == kindRecovered || kind == kindRecoveryAck
+}
 
 // envelope is the content of one journal line, without its hash. The field
 // order is the on-disk order.
@@ -50,6 +57,18 @@ type headerPayload struct {
 	Version int    `json:"version"`
 }
 
+// recoveredPayload says what Open cut off the end of the journal.
+type recoveredPayload struct {
+	Lines  int   `json:"lines"`
+	Bytes  int64 `json:"bytes"`
+	Offset int64 `json:"offset"`
+}
+
+// ackPayload is the acknowledgement of the recovery records before it.
+type ackPayload struct {
+	Note string `json:"note"`
+}
+
 type definePayload struct {
 	Manager   Manager   `json:"manager"`
 	Requested Requested `json:"requested"`
@@ -64,6 +83,11 @@ type beginPayload struct {
 	Epoch         uint64 `json:"epoch"`
 	UnitName      string `json:"unit"`
 	ProfileDigest string `json:"profile_digest"`
+	// ParentEpoch and Identity are set for a coordinator and only then.
+	ParentEpoch uint64 `json:"parent_epoch,omitempty"`
+	Identity    string `json:"identity,omitempty"`
+	// BootID is the boot identity the caller gave, if any.
+	BootID string `json:"boot_id,omitempty"`
 }
 
 type outcomePayload struct {
@@ -96,6 +120,19 @@ type observedPayload struct {
 // payload is the typed payload of a journal record.
 type payload interface{ validate() error }
 
+// roleChecker is implemented by a payload that must be checked against the
+// role of its record as well.
+type roleChecker interface {
+	checkRole(role leadrole.Role) error
+}
+
+func checkRole(p payload, role leadrole.Role) error {
+	if c, ok := p.(roleChecker); ok {
+		return c.checkRole(role)
+	}
+	return nil
+}
+
 func (h *headerPayload) validate() error {
 	if h.Format != formatName {
 		return fmt.Errorf("not a lead registry (format %q)", h.Format)
@@ -106,11 +143,28 @@ func (h *headerPayload) validate() error {
 	return nil
 }
 
-func (d *definePayload) validate() error {
-	if err := d.Manager.validate(); err != nil {
-		return err
+func (d *definePayload) validate() error { return d.Manager.validate() }
+
+// checkRole checks the profile for the kind of role.
+func (d *definePayload) checkRole(role leadrole.Role) error {
+	return d.Requested.validateFor(role)
+}
+
+func (p *recoveredPayload) validate() error {
+	if p.Lines != 1 {
+		return invalid("recovered record cuts %d lines, not 1", p.Lines)
 	}
-	return d.Requested.validate()
+	if p.Bytes < 1 || p.Bytes > MaxLineBytes+1 {
+		return invalid("recovered record cuts %d bytes", p.Bytes)
+	}
+	if p.Offset < 0 {
+		return invalid("recovered record cuts at offset %d", p.Offset)
+	}
+	return nil
+}
+
+func (p *ackPayload) validate() error {
+	return validText("recovery note", p.Note, MaxProofBytes, true)
 }
 
 func (d *desiredPayload) validate() error { return d.Desired.validate() }
@@ -259,6 +313,10 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 		p = &observedPayload{}
 	case kindOwnerDecision:
 		p = &decisionPayload{}
+	case kindRecovered:
+		p = &recoveredPayload{}
+	case kindRecoveryAck:
+		p = &ackPayload{}
 	default:
 		return record{}, zero, fmt.Errorf("unknown record kind %q", env.Kind)
 	}
@@ -268,11 +326,14 @@ func decodeLine(prev [sha256.Size]byte, wantSeq uint64, line []byte) (record, [s
 	if err := p.validate(); err != nil {
 		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)
 	}
-	if env.Kind != kindHeader && rec.role.IsZero() {
+	if !roleless(env.Kind) && rec.role.IsZero() {
 		return record{}, zero, fmt.Errorf("%s record without a role", env.Kind)
 	}
-	if env.Kind == kindHeader && !rec.role.IsZero() {
-		return record{}, zero, fmt.Errorf("header names a role")
+	if roleless(env.Kind) && !rec.role.IsZero() {
+		return record{}, zero, fmt.Errorf("%s record names a role", env.Kind)
+	}
+	if err := checkRole(p, rec.role); err != nil {
+		return record{}, zero, fmt.Errorf("bad %s payload: %w", env.Kind, err)
 	}
 	rec.payload = p
 	return rec, got, nil
@@ -303,6 +364,24 @@ func (b *beginPayload) validate() error {
 	}
 	if b.Epoch == 0 {
 		return invalid("launch epoch 0")
+	}
+	return validText("boot identity", b.BootID, MaxBootIdentityBytes, false)
+}
+
+// checkRole checks that a coordinator's intent carries its parent's epoch and
+// its identity, and that every other role's carries neither.
+func (b *beginPayload) checkRole(role leadrole.Role) error {
+	if role.Kind() != leadrole.KindCoordinator {
+		if b.ParentEpoch != 0 || b.Identity != "" {
+			return invalid("a parent epoch or an identity in the launch of a role that is not a coordinator")
+		}
+		return nil
+	}
+	if b.ParentEpoch == 0 {
+		return invalid("coordinator launch without a parent epoch")
+	}
+	if want := role.Identity(b.ParentEpoch, b.Epoch); b.Identity != want {
+		return invalid("coordinator launch identity %q is not %q", b.Identity, want)
 	}
 	return nil
 }
