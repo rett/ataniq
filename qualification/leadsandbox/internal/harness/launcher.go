@@ -14,10 +14,11 @@ import (
 // launcher decides nothing: it starts what the plan says and reports what
 // happened.
 type Launcher interface {
-	// Launch starts plan.Argv with a pseudo-terminal as the terminal, in its
-	// own process group, and returns at once. It does not make the terminal
-	// the controlling terminal of the process: the probe inside does (the
-	// plan's SetControllingTerminal is false).
+	// Launch starts plan.Argv with a pseudo-terminal as its standard streams,
+	// in a session and process group of its own, and returns at once. The
+	// process has no controlling terminal, neither the coordinator's nor the
+	// pseudo-terminal: it is not made the controlling terminal here, the probe
+	// inside does it (the plan's SetControllingTerminal is false).
 	Launch(req LaunchRequest) (Process, error)
 	// ToolVersions asks each tool for its version and reads the kernel
 	// release. A tool that cannot be asked is recorded in Errors; no error is

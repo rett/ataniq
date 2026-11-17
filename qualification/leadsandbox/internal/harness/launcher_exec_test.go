@@ -34,7 +34,15 @@ func TestExecLauncherHelper(t *testing.T) {
 	case "report":
 		_, termErr := unix.IoctlGetTermios(0, unix.TCGETS)
 		ws, _ := unix.IoctlGetWinsize(0, unix.TIOCGWINSZ)
-		fmt.Printf("tty=%t rows=%d cols=%d pgid=%t env=%d\n", termErr == nil, ws.Row, ws.Col, syscall.Getpgrp() == os.Getpid(), len(os.Environ()))
+		// A controlling terminal is what /dev/tty opens: a new session has
+		// none until a session leader takes one.
+		tty, ctty := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		if ctty == nil {
+			tty.Close()
+		}
+		sid, _ := unix.Getsid(0)
+		fmt.Printf("tty=%t rows=%d cols=%d pgid=%t env=%d sid=%d pid=%d ctty=%t\n",
+			termErr == nil, ws.Row, ws.Col, syscall.Getpgrp() == os.Getpid(), len(os.Environ()), sid, os.Getpid(), ctty == nil)
 		os.Exit(7)
 	case "wait":
 		fmt.Println("waiting")
@@ -84,11 +92,46 @@ func TestExecLauncherRunsTheCommandOnAPseudoTerminalInItsOwnGroup(t *testing.T) 
 	out := string(p.Terminal().Data)
 	// The terminal is a terminal of the size given, the first process is its
 	// own group leader, and only the environment the request gave is there.
-	if !strings.Contains(out, "tty=true rows=40 cols=100 pgid=true env=1") {
+	if !strings.Contains(out, "tty=true rows=40 cols=100 pgid=true env=1 ") {
 		t.Errorf("terminal output %q", out)
 	}
 	if p.PID() <= 0 {
 		t.Errorf("pid %d", p.PID())
+	}
+}
+
+// The command starts in a session of its own: not the coordinator's, so that
+// nothing in the tree keeps the coordinator's controlling terminal, and not
+// one with the pseudo-terminal as its controlling terminal either.
+func TestExecLauncherStartsTheCommandInANewSessionWithoutAControllingTerminal(t *testing.T) {
+	p := launchHelper(t, "report")
+	select {
+	case <-p.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the helper did not exit")
+	}
+	var sid, pid int
+	var ctty bool
+	out := string(p.Terminal().Data)
+	i := strings.Index(out, "sid=")
+	if i < 0 {
+		t.Fatalf("terminal output %q", out)
+	}
+	if _, err := fmt.Sscanf(out[i:], "sid=%d pid=%d ctty=%t", &sid, &pid, &ctty); err != nil {
+		t.Fatalf("terminal output %q: %v", out, err)
+	}
+	parent, err := unix.Getsid(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid == parent {
+		t.Errorf("the command is in the coordinator's session %d", sid)
+	}
+	if pid != p.PID() || sid != pid {
+		t.Errorf("session %d, process %d, launcher says %d: the command is not the leader of a session of its own", sid, pid, p.PID())
+	}
+	if ctty {
+		t.Error("the command has a controlling terminal")
 	}
 }
 

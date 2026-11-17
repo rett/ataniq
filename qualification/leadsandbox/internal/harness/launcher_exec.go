@@ -32,7 +32,8 @@ const (
 )
 
 // ExecLauncher is the real [Launcher]. It starts the plan's command line with
-// a pseudo-terminal as the terminal, in a process group of its own, and keeps
+// a pseudo-terminal as its standard streams, in a session and process group of
+// its own with no controlling terminal, and keeps
 // the first MaxTerminalBytes of the output. It creates no systemd unit, no
 // cgroup and no namespace of its own: the namespaces are what the plan's
 // programs make. It exists to be run by a coordinator, on a host the
@@ -63,9 +64,13 @@ func (ExecLauncher) Launch(req LaunchRequest) (Process, error) {
 	cmd.Env = append([]string{}, req.Env...)
 	cmd.Dir = "/"
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	// Its own process group, and no new session and no controlling terminal:
-	// the probe inside makes the session and takes the terminal.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A session of its own, and with it a process group of its own (the group
+	// id is the process id, which the stop rule signals), and no controlling
+	// terminal: the pseudo-terminal is only the standard streams. Nothing in
+	// the tree keeps the coordinator's session or its terminal, which is how
+	// a holder under a unit runs it. The probe inside makes its own session
+	// and takes the pseudo-terminal; it is not a group leader, so it can.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		slave.Close()
 		master.Close()

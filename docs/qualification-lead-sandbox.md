@@ -39,7 +39,9 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    of their ancestors, and writes the probe spec with them;
 9. checks the mount points and sources again, right before the launch;
 10. launches pasta, bubblewrap, the probe and a scratch command through a
-    launcher, reads the probe's report line from the channel with a time limit
+    launcher (a session and process group of its own, with a pseudo-terminal as
+    its standard streams and no controlling terminal, as a holder under a unit
+    would run it), reads the probe's report line from the channel with a time limit
     (one line, taken as the start without waiting for end-of-file), and waits
     for the exit;
 11. runs the checks that can only be made outside (the canary's count, the
