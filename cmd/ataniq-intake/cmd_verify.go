@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"strings"
 	"time"
 
@@ -88,6 +89,9 @@ func (e *env) cmdVerify(args []string) int {
 	if err := owned("work", work, c.state); err != nil {
 		return e.fail("verify", err)
 	}
+	if err := separate("records", records, "work", work); err != nil {
+		return e.fail("verify", err)
+	}
 	planner, err := e.planner(sandbox, c.state)
 	if err != nil {
 		return e.fail("verify", err)
@@ -133,7 +137,13 @@ func (e *env) cmdVerify(args []string) int {
 		}
 		return e.fail("verify", runErr)
 	}
-	rec, putErr := store.PutVerification(c.project, res, plan)
+	rec, putErr := e.deps.putVerification(store, c.project, res, plan)
+	// A record that is written but whose folder could not be synced is
+	// there: a warning, not a failure.
+	notSynced := errors.Is(putErr, intake.ErrNotSynced)
+	if notSynced {
+		putErr = nil
+	}
 
 	p := &printer{w: e.stdout}
 	p.f("Verification of a lead branch")
@@ -163,6 +173,9 @@ func (e *env) cmdVerify(args []string) int {
 	}
 	if putErr != nil {
 		return e.fail("verify", putErr)
+	}
+	if notSynced {
+		fmt.Fprintf(e.stderr, "%s verify: warning: the record was written, but the records folder could not be synced to disk. The record is there, and it may not survive a crash of the machine. Do not repeat the command.\n", program)
 	}
 	if runErr != nil {
 		return e.fail("verify", runErr)

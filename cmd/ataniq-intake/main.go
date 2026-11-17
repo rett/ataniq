@@ -5,13 +5,23 @@ import (
 	"os"
 	"os/signal"
 
+	"ataniq/internal/exchange/boundedexec"
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/intake/verify"
 )
 
+// stopContext returns a context that ends on every signal that
+// boundedexec.StopSignals lists: interrupt, terminate and hang-up. A sandboxed
+// child is in a process group of its own, so a signal to this command does
+// not reach it. It is killed, and its scratch folders are removed, only when
+// the run returns, and a run returns early only when its context ends.
+func stopContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), boundedexec.StopSignals()...)
+}
+
 // main wires the real dependencies and exits. The work is in run.
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := stopContext()
 	d := deps{
 		LoadPlanner: loadTemplate,
 		Runner:      verify.ExecRunner{},

@@ -16,12 +16,21 @@ var allowedInternal = map[string]bool{
 	"ataniq/internal/intake":                        true,
 	"ataniq/internal/intake/verify":                 true,
 	"ataniq/internal/intake/execconfig":             true,
-	"ataniq/internal/exchange/boundedexec":          false, // run through the packages
+	"ataniq/internal/exchange/boundedexec":          false, // run through the packages; see allowedIn
 	"ataniq/internal/exchange/gitenv":               true,
 	"ataniq/internal/exchange/leadtext":             true,
 	"ataniq/internal/exchange/safefs":               true,
 	"ataniq/internal/exchange/sandboxplan":          true,
 	"ataniq/internal/exchange/sandboxplan/plantest": false, // for tests only
+}
+
+// allowedIn lets one file import a package that the rest of the command may
+// not: main.go reads boundedexec.StopSignals, the list of signals on which a
+// run is cancelled. It is the one call that the command makes into that
+// package. The command itself starts no process, and the list is the only
+// reason to import it.
+var allowedIn = map[string]map[string]bool{
+	"main.go": {"ataniq/internal/exchange/boundedexec": true},
 }
 
 // TestImportGuard keeps the command from starting processes or touching the
@@ -52,7 +61,7 @@ func TestImportGuard(t *testing.T) {
 			denied := p == "net" || p == "os/exec" || p == "syscall" || p == "unsafe" || p == "C" ||
 				strings.HasPrefix(p, "net/") || strings.HasPrefix(p, "golang.org/x/sys/") ||
 				strings.Contains(strings.Split(p, "/")[0], ".") && !strings.HasPrefix(p, "ataniq/") ||
-				(strings.HasPrefix(p, "ataniq/") && !allowedInternal[p])
+				(strings.HasPrefix(p, "ataniq/") && !allowedInternal[p] && !allowedIn[name][p])
 			if denied {
 				t.Errorf("%s imports %s", name, p)
 			}

@@ -10,6 +10,7 @@ import (
 	"ataniq/internal/exchange/leadtext"
 	"ataniq/internal/exchange/sandboxplan"
 	"ataniq/internal/intake"
+	"ataniq/internal/intake/verify"
 	"ataniq/internal/mirror"
 )
 
@@ -70,6 +71,34 @@ func (p *printer) f(format string, args ...any) {
 // utc formats a time as the output shows it.
 func utc(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+// gatesHeading is the heading of the gates that a pass stands for. They are
+// in the owner's records and are shown escaped.
+const gatesHeading = "Gates that the pass stands for (your records, shown escaped):"
+
+// maxGateBytes cuts the command of a gate in the output.
+const maxGateBytes = 400
+
+// gateCommand returns the command of a gate as one line of text. A gate that
+// verify made is /bin/sh -c COMMAND, and COMMAND is shown. Any other gate of a
+// record is shown as its words with spaces between them.
+func gateCommand(g verify.Gate) string {
+	if len(g.Argv) == 3 && g.Argv[0] == "/bin/sh" && g.Argv[1] == "-c" {
+		return g.Argv[2]
+	}
+	return strings.Join(g.Argv, " ")
+}
+
+// printGates prints the name and the command of each gate, escaped, on
+// indented lines. pad is the indent of the lines.
+func printGates(p *printer, pad string, gates []verify.Gate) {
+	for _, g := range gates {
+		p.f("%sgate %s: %s", pad, capLine(g.Name, maxNameBytes), capLine(gateCommand(g), maxGateBytes))
+	}
+	if len(gates) == 0 {
+		p.f("%s(no gates)", pad)
+	}
+}
+
 // fail prints an error to standard error and returns the exit status for it.
 func (e *env) fail(sub string, err error) int {
 	code := classify(err)
@@ -112,6 +141,7 @@ func classify(err error) int {
 		errors.Is(err, intake.ErrLimit),
 		errors.Is(err, intake.ErrNotVerified),
 		errors.Is(err, intake.ErrMoved),
+		errors.Is(err, intake.ErrNothingToIntegrate),
 		errors.Is(err, sandboxplan.ErrNotConfigured),
 		errors.As(err, &re):
 		return exitRefused

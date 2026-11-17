@@ -10,6 +10,7 @@ import (
 
 	"ataniq/internal/exchange/gitenv"
 	"ataniq/internal/exchange/sandboxplan"
+	"ataniq/internal/intake"
 	"ataniq/internal/intake/verify"
 )
 
@@ -35,6 +36,29 @@ type deps struct {
 	Runner verify.Runner
 	// Now gives the time of an intake record. Nil means time.Now.
 	Now func() time.Time
+	// Integrate moves the upstream branch. Nil means intake.Integrate. Tests
+	// give a wrapper that adds the warnings and errors that the real call
+	// returns only when something fails that a test cannot make fail.
+	Integrate func(context.Context, intake.Source, intake.IntegrateRequest) (intake.IntakeRecord, error)
+	// PutVerification stores a verification record. Nil means
+	// (*intake.Store).PutVerification. Tests use it as Integrate.
+	PutVerification func(*intake.Store, string, verify.Result, []verify.Gate) (intake.VerificationRecord, error)
+}
+
+// integrate calls the integration of the dependencies.
+func (d deps) integrate(ctx context.Context, src intake.Source, req intake.IntegrateRequest) (intake.IntakeRecord, error) {
+	if d.Integrate != nil {
+		return d.Integrate(ctx, src, req)
+	}
+	return intake.Integrate(ctx, src, req)
+}
+
+// putVerification stores a verification record through the dependencies.
+func (d deps) putVerification(st *intake.Store, project string, res verify.Result, gates []verify.Gate) (intake.VerificationRecord, error) {
+	if d.PutVerification != nil {
+		return d.PutVerification(st, project, res, gates)
+	}
+	return st.PutVerification(project, res, gates)
 }
 
 // env is what one call of run works with.

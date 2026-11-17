@@ -100,6 +100,30 @@ func owned(flagName, p, state string) error {
 	return notInState(flagName, p, state)
 }
 
+// separate refuses two owner folders that are the same or one inside the
+// other. The sandbox of a verify works in the work folder, and the records
+// folder must not be one that a lead's sandbox can reach. The check is made
+// on the names as given and on the names with their symlinks resolved. Both
+// paths must exist.
+func separate(recordsFlag, records, workFlag, work string) error {
+	realRecords, err := filepath.EvalSymlinks(records)
+	if err != nil {
+		return usagef("--%s: cannot resolve the path: %v", recordsFlag, err)
+	}
+	realWork, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		return usagef("--%s: cannot resolve the path: %v", workFlag, err)
+	}
+	for _, r := range []string{records, realRecords} {
+		for _, w := range []string{work, realWork} {
+			if within(r, w) || within(w, r) {
+				return usagef("--%s and --%s must be separate folders, neither inside the other: the sandbox works in --%s", recordsFlag, workFlag, workFlag)
+			}
+		}
+	}
+	return nil
+}
+
 // notInState refuses a path that is the state root or inside it. The path
 // must exist.
 func notInState(flagName, p, state string) error {

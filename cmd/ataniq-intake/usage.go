@@ -33,11 +33,16 @@ Paths and names from a lead are printed escaped. Type them as printed.
 
 Path rules: --path-rule adds a pattern to the execution-config set, and the
 same list must be given to review and to integrate. The review digest covers
-the rules. A different list makes the digest differ, and integrate refuses.
+the paths that the rules flag and the rule that flagged each. A list that
+flags other paths makes the digest differ, and integrate refuses. A rule that
+flags nothing changes nothing.
 
 Text from a lead is shown escaped, on indented lines, under a heading that
 says "unverified lead data". A line that starts in the first column is the
-command's own.
+command's own. There is one exception: the patch that review --diff prints. It
+follows its own heading, is not indented, and is written through the same
+escaping, but it keeps tabs. Every line of it starts with a diff marker or is
+diff content, so no line of it can pass for a heading of the command.
 
 Sandbox: fetch and verify run commands from a template file that you wrote
 (--sandbox FILE). The command ships no sandbox and does not check that the
@@ -45,11 +50,14 @@ template confines anything. Without a usable template it refuses and runs
 nothing. The template must not be in the state root.
 
 Folders: --records and --work must be absolute, must exist, and must not be
-the state root or inside it. --state must be a real folder that you own.
+the state root or inside it. verify also refuses --records and --work when they
+are the same folder or one is inside the other, with symlinks resolved. --state
+must be a real folder that you own.
 
-Exit status: 0 success; 1 a refusal you can act on (sign-off incomplete, not
-verified, moved, a limit, a hostile tree, busy, no usable sandbox); 2 usage;
-3 any other failure.
+Exit status: 0 success (also with a warning on standard error); 1 a refusal you
+can act on (sign-off incomplete, not verified, moved, nothing to integrate, a
+limit, a hostile tree, busy, no usable sandbox); 2 usage; 3 any other failure,
+among them an update whose outcome is unknown.
 
 Run 'ataniq-intake <subcommand> -h' for the flags of a subcommand.
 `
@@ -88,19 +96,29 @@ mirror. Names from a lead are printed escaped.
 `,
 	"review": `Usage: ataniq-intake review --state DIR --project NAME --role ROLE --branch BRANCH
                            --target TARGET [--path-rule PATTERN]... [--diff]
+                           [--records DIR]
 
 Review the lead branch ROLE/BRANCH against the upstream branch TARGET. Nothing
 is checked out. It prints the base and tip commit ids, the review digest, the
-commits, the changed paths, and the section "Needs your sign-off": every path
-that needs its own sign-off, with its kind, its reason and the exact
---accept-path argument to type.
+commits, the changed paths, the verification records of the tip when you give
+--records, and the section "Needs your sign-off": every path that needs its own
+sign-off, with its kind, its reason and the exact --accept-path argument to
+type.
 
   --branch BRANCH     the lead's branch, as 'branches' prints it
   --target TARGET     the upstream branch the work goes to
   --path-rule PATTERN add a pattern to the execution-config set; may be
                       repeated. Give the same list to integrate: the digest
-                      covers it, and a different list is refused there.
-  --diff              also print the sanitised patch of the change
+                      covers the paths that the rules flag, so a list that
+                      flags other paths is refused there. A rule that flags
+                      nothing changes nothing.
+  --records DIR       your records folder, as for verify. With it, review
+                      shows the gates (name and command) of the verification
+                      records of the tip before the sign-off, so that you see
+                      what a pass stands for, or says that none is recorded.
+  --diff              also print the sanitised patch of the change, after its
+                      own heading, not indented and with tabs kept (the one
+                      exception to the indented lead text)
 
 Names and paths are printed escaped, and the command unescapes what you type
 for --branch, --target and --accept-path, so that a name with odd bytes can be
@@ -137,15 +155,28 @@ only, in the mirror. Your working checkout is not touched.
 
   --tip ID            the full commit id that 'review' printed (required)
   --digest DIGEST     the review digest that 'review' printed (required)
-  --accept-change     you accept the change as a whole (required)
+  --accept-change     you accept the change as a whole; needed for the
+                      integration
   --accept-path PATH  you accept one flagged path, as 'review' printed it;
                       one for each path under "Needs your sign-off"
   --path-rule PATTERN the same list that you gave to review
   --records DIR       your records folder (required)
 
 It refuses, and lists everything missing with the exact arguments to add,
-when the sign-off is incomplete. It refuses when the tip or the upstream
-branch moved since the review, or when the newest verification of the tip is
-not a pass. Exit status 1 for a refusal.
+when the sign-off is incomplete. A missing --accept-change is such a refusal,
+not a usage error: exit status 1 lists everything that is missing, this flag
+among it. It refuses when the tip or the upstream branch moved since the
+review, or when the newest verification of the tip is not a pass. Exit status
+1 for a refusal, also when the lead branch is at the upstream branch already
+("nothing to integrate"). After a success it prints the gates of the
+verification that allowed it.
+
+Warnings are exit status 0, with the record printed and a line on standard
+error: the update ended unclearly but the branch is at the tip and the intake
+is recorded, or the record was written but its folder could not be synced. Do
+not repeat the command. Exit status 3 when the update ended unclearly and the
+upstream branch could not be read afterwards: it may have moved and no record
+was written. Look at the branch with 'ataniq-intake branches' before you try
+again.
 `,
 }

@@ -9,6 +9,10 @@ import (
 	"ataniq/internal/intake/execconfig"
 )
 
+// maxShownVerifications is the most verification records that review shows
+// for a tip, newest first.
+const maxShownVerifications = 3
+
 // Bounds for the commit lines of a review. Paths are never cut: the owner
 // types them back.
 const (
@@ -31,15 +35,16 @@ func (e *env) cmdReview(args []string) int {
 	var c common
 	c.bind(fs)
 	var (
-		role, branch, target string
-		rules                listFlag
-		diff                 bool
+		role, branch, target, records string
+		rules                         listFlag
+		diff                          bool
 	)
 	fs.StringVar(&role, "role", "", "")
 	fs.StringVar(&branch, "branch", "", "")
 	fs.StringVar(&target, "target", "", "")
 	fs.Var(&rules, "path-rule", "")
 	fs.BoolVar(&diff, "diff", false, "")
+	fs.StringVar(&records, "records", "", "")
 	if code, done := e.parse("review", fs, args); done {
 		return code
 	}
@@ -65,14 +70,41 @@ func (e *env) cmdReview(args []string) int {
 	if err != nil {
 		return e.fail("review", err)
 	}
+	// The records folder is optional here: with it, review shows which
+	// gates a verification of the tip stands for.
+	if records != "" {
+		if err := owned("records", records, c.state); err != nil {
+			return e.fail("review", err)
+		}
+	}
 	m, err := e.mirrorOf(c)
 	if err != nil {
 		return e.fail("review", err)
+	}
+	var store *intake.Store
+	if records != "" {
+		if store, err = intake.OpenStore(records); err != nil {
+			return e.fail("review", err)
+		}
+		defer store.Close()
 	}
 	src := sourceOf(e, m)
 	rev, err := intake.Inspect(e.ctx, src, intake.Request{BaseRef: baseRef, TipRef: tipRef, Rules: set})
 	if err != nil {
 		return e.fail("review", err)
+	}
+
+	var vers []intake.VerificationRecord
+	if store != nil {
+		all, err := store.Verifications(rev.Tip)
+		if err != nil {
+			return e.fail("review", err)
+		}
+		for _, v := range all {
+			if v.Project == c.project {
+				vers = append(vers, v)
+			}
+		}
 	}
 
 	p := &printer{w: e.stdout}
@@ -91,6 +123,9 @@ func (e *env) cmdReview(args []string) int {
 	}
 	printCommits(p, rev)
 	printChanges(p, rev)
+	if store != nil {
+		printVerifications(p, vers)
+	}
 	printSignOff(p, rev, rules)
 	if diff {
 		p.f("%s", heading("Patch of the change"))
@@ -129,6 +164,47 @@ func printChanges(p *printer, rev *intake.Review) {
 	if len(rev.Changes) == 0 {
 		p.f("%s(none)", indent)
 	}
+}
+
+// printVerifications prints the verification records of the tip, newest
+// first, with the gates that each stands for. The newest record decides
+// whether integrate accepts the tip. It is printed before the sign-off, so
+// that the owner sees which gates a pass stands for.
+func printVerifications(p *printer, vers []intake.VerificationRecord) {
+	if len(vers) == 0 {
+		p.f("Verification: no verification recorded for this tip")
+		return
+	}
+	p.f("%s", verificationsHeading)
+	shown := 0
+	for i := len(vers) - 1; i >= 0 && shown < maxShownVerifications; i-- {
+		v := vers[i]
+		shown++
+		note := ""
+		if i == len(vers)-1 {
+			note = ", the newest, which decides"
+		}
+		p.f("%s%s of %s, plan digest %s%s", indent, verdict(v), utc(v.Started), v.PlanDigest, note)
+		printGates(p, indent+indent, v.Gates)
+	}
+	if n := len(vers) - shown; n > 0 {
+		p.f("%d earlier records are not shown.", n)
+	}
+}
+
+// verificationsHeading is the heading of the verification records of a tip.
+const verificationsHeading = "Verification of this tip (your records, shown escaped):"
+
+// verdict says how a verification record ended. Only a clean pass allows an
+// integration.
+func verdict(v intake.VerificationRecord) string {
+	switch {
+	case v.Passed && v.Exit == 0 && v.Stopped == "" && !v.OutputCut:
+		return "pass"
+	case v.Passed:
+		return "not a clean pass"
+	}
+	return "fail"
 }
 
 // printSignOff prints the section of paths that need their own sign-off.
