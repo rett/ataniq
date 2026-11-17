@@ -444,3 +444,35 @@ func TestDigestCoversTheManagedSettingsAndTheNetwork(t *testing.T) {
 		t.Error("the definition shares the pasta argument slice")
 	}
 }
+
+func TestDigestIsIndependentOfThePlaceholderOrder(t *testing.T) {
+	a, b := fixture(Claude), fixture(Claude)
+	a.ExtraPlaceholders = []Placeholder{{Rel: ".a", Source: "/s/a"}, {Rel: ".b", Source: "/s/b", Dir: true}, {Rel: "sub/c", Source: "/s/c"}}
+	b.ExtraPlaceholders = []Placeholder{a.ExtraPlaceholders[2], a.ExtraPlaceholders[0], a.ExtraPlaceholders[1]}
+	if mustDigest(t, a) != mustDigest(t, b) {
+		t.Error("the order of the extra placeholders changes the digest")
+	}
+	// The caller's slice is not reordered.
+	if b.ExtraPlaceholders[0].Rel != "sub/c" {
+		t.Error("Digest reordered the caller's placeholders")
+	}
+	// The table the plan gets keeps the caller's order.
+	rowsB := rows(mustBinds(t, b))
+	rowsA := rows(mustBinds(t, a))
+	if reflect.DeepEqual(rowsA, rowsB) {
+		t.Error("Binds sorted the placeholders: the digest should, not the table")
+	}
+	// A different set of placeholders still differs.
+	c := a
+	c.ExtraPlaceholders = a.ExtraPlaceholders[:2]
+	if mustDigest(t, a) == mustDigest(t, c) {
+		t.Error("dropping a placeholder keeps the digest")
+	}
+	// Overlapping placeholders stay refused, so sorting cannot hide an
+	// order that bubblewrap needs.
+	d := fixture(Claude)
+	d.ExtraPlaceholders = []Placeholder{{Rel: "x/y", Source: "/s/y"}, {Rel: "x", Source: "/s/x", Dir: true}}
+	if _, err := d.Digest(); err == nil {
+		t.Error("a placeholder below another one is accepted")
+	}
+}

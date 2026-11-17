@@ -33,7 +33,8 @@
 //   - the bind table: every row's kind, inside path, source role, link target,
 //     folder flag, lead-writable flag, holder, and whether the row is applied
 //     only if the host has it (Bind.Optional), with the project replaced by a
-//     token and a host path by its source role;
+//     token and a host path by its source role; the extra placeholders in the
+//     order of their targets;
 //   - every environment name, and the value of every variable whose value the
 //     profile defines: the fixed values, PATH, SHELL, the config variable, the
 //     git and Go variables and every extra variable;

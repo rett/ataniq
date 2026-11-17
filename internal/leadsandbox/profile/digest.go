@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"sort"
 
 	"ataniq/internal/leadsandbox/sandboxnet"
 )
@@ -14,7 +15,7 @@ import (
 //	1  first version
 //	2  the digest carries the values of the variables the profile defines,
 //	   the digest of the managed-settings file, the pasta arguments and the
-//	   optional flag of a row
+//	   optional flag of a row, and lists the extra placeholders sorted
 const Version = 2
 
 const (
@@ -55,6 +56,10 @@ func (in Inputs) definition() definition {
 	if in.Identity == IdentityOwner {
 		flags = flagSet(ownerUIDToken, ownerGIDToken)
 	}
+	// The placeholders are sorted by target, so the digest does not depend on
+	// the order the caller lists them in (they cannot overlap).
+	in.ExtraPlaceholders = append([]Placeholder(nil), in.ExtraPlaceholders...)
+	sort.Slice(in.ExtraPlaceholders, func(i, j int) bool { return in.ExtraPlaceholders[i].Rel < in.ExtraPlaceholders[j].Rel })
 	t := in.table(TreeInside(projectToken), MirrorInside(projectToken))
 	// A host path is replaced by its source role.
 	for i := range t {
