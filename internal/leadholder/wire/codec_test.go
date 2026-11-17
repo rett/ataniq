@@ -39,7 +39,7 @@ func wrapCodec[T any](name string, typ byte, sample T, enc func(T) ([]byte, erro
 }
 
 var sampleStatus = wire.Status{
-	Lead: "project/lead", Epoch: 7, Runtime: "claude",
+	Lead: "project/lead", Epoch: 7, Runtime: "claude", Idle: wire.IdleUnknown, Title: "claude \u2014 work",
 	Size: wire.Size{Columns: 120, Rows: 40}, Caps: wire.DefaultCaps(),
 	WriterPresent: true, ViewerPresent: false,
 	Counters: map[string]uint64{"osc52_dropped": 3, "link_dropped": 0},
@@ -118,7 +118,7 @@ func TestRoundTripValuesCompare(t *testing.T) {
 	p, _ = wire.EncodeResponse(wire.Response{OK: true, Status: &sampleStatus})
 	r, err := wire.DecodeResponse(p)
 	if err != nil || r.Status == nil || r.Status.Epoch != 7 || r.Status.Counters["osc52_dropped"] != 3 ||
-		!r.Status.WriterPresent || r.Status.Size.Rows != 40 || r.Status.Caps != wire.DefaultCaps() {
+		!r.Status.WriterPresent || r.Status.Size.Rows != 40 || r.Status.Idle != wire.IdleUnknown || r.Status.Title != "claude \u2014 work" || r.Status.Caps != wire.DefaultCaps() {
 		t.Fatalf("%+v %v", r, err)
 	}
 	p, _ = wire.EncodeModes(wire.Modes{})
@@ -503,6 +503,13 @@ func TestExitRules(t *testing.T) {
 	}
 }
 
+// withStatus returns a copy of the sample status with f applied.
+func withStatus(f func(*wire.Status)) *wire.Status {
+	s := sampleStatus
+	f(&s)
+	return &s
+}
+
 func TestControlRules(t *testing.T) {
 	for _, op := range []wire.Operation{wire.OpStatus, wire.OpStop, wire.OpReleaseWriter, wire.OpInject} {
 		if _, err := wire.EncodeRequest(wire.Request{Op: op, Epoch: 1}); err != nil {
@@ -542,13 +549,19 @@ func TestControlRules(t *testing.T) {
 		}
 	}
 	for name, r := range map[string]wire.Response{
-		"ok with code":        {OK: true, Code: "x"},
-		"ok with text":        {OK: true, Text: "x"},
-		"refusal no code":     {Text: "x"},
-		"refusal with status": {Code: "x", Status: &sampleStatus},
-		"refusal long text":   {Code: "x", Text: strings.Repeat("t", 257)},
-		"refusal bad code":    {Code: "Not OK"},
-		"bad status":          {OK: true, Status: &wire.Status{}},
+		"ok with code":           {OK: true, Code: "x"},
+		"ok with text":           {OK: true, Text: "x"},
+		"refusal no code":        {Text: "x"},
+		"refusal with status":    {Code: "x", Status: &sampleStatus},
+		"refusal long text":      {Code: "x", Text: strings.Repeat("t", 257)},
+		"refusal bad code":       {Code: "Not OK"},
+		"bad status":             {OK: true, Status: &wire.Status{}},
+		"status no idle":         {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = "" })},
+		"status idle capital":    {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = "Unknown" })},
+		"status long idle":       {OK: true, Status: withStatus(func(s *wire.Status) { s.Idle = strings.Repeat("i", 65) })},
+		"status long title":      {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = strings.Repeat("t", 257) })},
+		"status title ESC":       {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "a\x1b]0;x\a" })},
+		"status title not UTF-8": {OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "a\xffb" })},
 	} {
 		if _, err := wire.EncodeResponse(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("response %s: err = %v", name, err)
@@ -556,6 +569,10 @@ func TestControlRules(t *testing.T) {
 	}
 	if _, err := wire.EncodeResponse(wire.Response{OK: true}); err != nil {
 		t.Errorf("a bare ok: %v", err)
+	}
+	// An empty title is fine: the lead may not have set one.
+	if _, err := wire.EncodeResponse(wire.Response{OK: true, Status: withStatus(func(s *wire.Status) { s.Title = "" })}); err != nil {
+		t.Errorf("empty title: %v", err)
 	}
 	st := sampleStatus
 	st.Counters = nil
@@ -617,6 +634,7 @@ var textFields = []struct {
 	{"exit", `"last_screen":"line one\nline <two> & \"three\"\n"`},
 	{"response status", `"lead":"project/lead"`},
 	{"response status", `"runtime":"claude"`},
+	{"response status", `"title":"claude — work"`},
 	{"response refusal", `"text":"inject is disabled"`},
 }
 
@@ -913,6 +931,8 @@ func TestRequiredFields(t *testing.T) {
 		{"response status", []string{"status", "epoch"}},
 		{"response status", []string{"status", "writer_present"}},
 		{"response status", []string{"status", "viewer_present"}},
+		{"response status", []string{"status", "idle"}},
+		{"response status", []string{"status", "title"}},
 	} {
 		cd := codecNamed(t, c.codec)
 		good, err := cd.encode(cd.sample)

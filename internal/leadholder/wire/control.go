@@ -114,11 +114,16 @@ func DecodeRequest(payload []byte) (Request, error) {
 	return pick(r, err)
 }
 
-// Status is the holder's answer to a status request.
+// Status is the holder's answer to a status request: what the cockpit shows
+// of a lead. Idle is the idle classification ([IdleUnknown] in this feature)
+// and Title the title of the lead's screen, as a [State] frame carries them;
+// Facts are the three lifetime facts.
 type Status struct {
 	Lead          string            `json:"lead"`
 	Epoch         uint64            `json:"epoch" wire:"required"`
 	Runtime       string            `json:"runtime"`
+	Idle          string            `json:"idle" wire:"required"`
+	Title         string            `json:"title" wire:"required"`
 	Size          Size              `json:"size"`
 	Caps          Caps              `json:"caps"`
 	WriterPresent bool              `json:"writer_present" wire:"required"`
@@ -135,6 +140,12 @@ func (s *Status) validate() error {
 		return err
 	}
 	if err := checkText("runtime", s.Runtime, 1, MaxRuntime, false); err != nil {
+		return err
+	}
+	if err := checkToken("idle", s.Idle, MaxToken); err != nil {
+		return err
+	}
+	if err := checkText("title", s.Title, 0, MaxTitle, false); err != nil {
 		return err
 	}
 	if err := s.Size.validate(); err != nil {
