@@ -39,6 +39,22 @@
 // count as present in the session scan (they run nothing, and a process that
 // adopts orphans reaps them on its own schedule).
 //
+// # What the proofs fit
+//
+// Both proofs fit a holder that starts the agent directly and alone in its
+// control group: the child of Start is the agent (or the process that stays
+// the leader of the agent's whole tree), the holder is the only other process
+// in its group, and the agent's tree stays in the child's session or in that
+// group. The sandbox layout of the lead-hosting design (section 1.1) is not
+// that. A network helper runs in the holder's group, so Start does not judge
+// the group "of its own" and the cgroup method is not chosen; and the probe
+// gives the agent a new session, so the session proof, which is keyed on the
+// direct child's pid, never sees the agent's session. The sandbox work must add
+// what this package does not have: the caller naming the group to judge and
+// the pids it expects to find there (the holder, the helper), or the session
+// id to scan. Until then neither proof is evidence about a sandboxed tree, and
+// the holder must not use them as such.
+//
 // # Signalling and pid reuse
 //
 // The kernel does not give a pid out again while some process still uses the
@@ -109,7 +125,10 @@ const (
 	ReadBufferSize = 64 << 10
 
 	// Terminal size limits, inclusive. Start and Resize refuse a size outside
-	// them; the caller clamps before it asks.
+	// them; the caller clamps before it asks. This layer is looser than the
+	// holder on purpose and keeps accepting a 2 by 1 terminal: the holder's own
+	// minimum is 20 by 5 (the lead-hosting design, section 1.3), and the
+	// holder's caller applies it before it calls Start or Resize.
 	MinCols = 2
 	MaxCols = 500
 	MinRows = 1
