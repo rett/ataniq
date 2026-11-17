@@ -321,6 +321,31 @@ func TestSignalKillFailures(t *testing.T) {
 	}
 }
 
+// "not loaded" from the kill is matched as the text for this very unit: the
+// same words about another unit, or the words alone, are a failure of the kill.
+func TestSignalNotLoadedTextIsMatchedExactly(t *testing.T) {
+	r := newRig(t)
+	st, _ := r.m.Inspect(context.Background(), unitName)
+	r.kill = func() (string, error) {
+		return "Failed to kill unit " + unitName + ": Unit " + unitName + " not loaded.\n", exitErr()
+	}
+	if err := r.m.Signal(context.Background(), st, syscall.SIGTERM); !errors.Is(err, leadunit.ErrNotLoaded) {
+		t.Fatal(err)
+	}
+	for name, out := range map[string]string{
+		"other unit":  "Failed to kill unit other.service: Unit other.service not loaded.\n",
+		"words alone": "not loaded\n",
+		"suffix name": "Unit x" + unitName + " not loaded.\n",
+		"no unit":     "Failed to kill unit " + unitName + ": not loaded.\n",
+	} {
+		r.kill = func() (string, error) { return out, exitErr() }
+		err := r.m.Signal(context.Background(), st, syscall.SIGTERM)
+		if err == nil || errors.Is(err, leadunit.ErrNotLoaded) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestSignalInspectFailure(t *testing.T) {
 	r := newRig(t)
 	st, _ := r.m.Inspect(context.Background(), unitName)

@@ -238,6 +238,30 @@ func TestStartUnitExists(t *testing.T) {
 
 // A message about another unit, or with more text, is not recognised as the
 // refusal for this one and degrades to a lost reply.
+// The text of "nothing was started" is matched as its own, not as a phrase
+// anywhere in the output: a "Failed to connect to bus" that is not the start
+// of the output is one more failure after the request and a lost reply.
+func TestStartUnreachableIsMatchedAsThePrefixOfTheOutput(t *testing.T) {
+	r := newRig(t)
+	r.start = func() (string, error) { return "  Failed to connect to bus: No such file or directory\n", exitErr() }
+	if _, err := r.m.Start(context.Background(), validSpec()); !errors.Is(err, leadunit.ErrUnavailable) || errors.Is(err, leadunit.ErrReplyLost) {
+		t.Fatalf("prefix: %v", err)
+	}
+	for name, out := range map[string]string{
+		"second line": "Call failed: Connection timed out\nFailed to connect to bus: x\n",
+		"inside":      "Call failed: Failed to connect to bus: x\n",
+		"lower case":  "failed to connect to bus: x\n",
+		"shorter":     "Failed to connect to\n",
+	} {
+		r := newRig(t)
+		r.start = func() (string, error) { return out, exitErr() }
+		_, err := r.m.Start(context.Background(), validSpec())
+		if !errors.Is(err, leadunit.ErrReplyLost) || errors.Is(err, leadunit.ErrUnavailable) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestStartUnitExistsOnlyForThisUnit(t *testing.T) {
 	for _, msg := range []string{
 		"Call failed: Unit other.service was already loaded or has a fragment file.\n",
