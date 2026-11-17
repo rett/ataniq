@@ -112,10 +112,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the profile; nothing starts a sandbox in ordinary use, and no command uses it
   yet. Add the opt-in qualification harness `qualify` for the proposal, with its
   guide `docs/qualification-lead-sandbox.md`, and the target `make
-  qualification-leadsandbox-build`, which builds the harness and `ataniq-probe`
-  and runs nothing. Both are unqualified infrastructure: the harness records
-  facts for a coordinator and says nothing about the sandbox being qualified,
-  safe or supported.
+  qualification-leadsandbox-build`, which runs the doctor and builds the harness
+  and `ataniq-probe`, and starts no sandbox and launches nothing. Both are
+  unqualified infrastructure: the harness records facts for a coordinator and
+  says nothing about the sandbox being qualified, safe or supported.
 
 ### Changed
 

@@ -559,10 +559,11 @@ terminal when there is one is exit 98.
 
 The ten assertions of the design (section 3.8) are the table in `assert`. The
 probe makes the inside half of each that has one, once each, before it executes
-the agent. The holder makes the outside half and the others (`assert.RunOutside`),
-after the probe has reported and before it accepts the start, adds them to the
-probe's results and judges the whole. The report has no field that says the
-sandbox as a whole passed or is supported.
+the agent. The holder would make the outside half and the others
+(`assert.RunOutside`; only the qualification harness calls it, and no holder
+exists yet), after the probe has reported and before it accepts the start, add
+them to the probe's results and judge the whole. The report has no field that
+says the sandbox as a whole passed or is supported.
 
 | No. | What is checked | Where |
 | --- | --- | --- |
@@ -614,8 +615,9 @@ What the checks do and do not show, from the package:
   A record counts when it is for this runtime, this version and this profile
   digest, has a recording time and a harness version, is not dated after now and
   has not expired. A missing or stale record fails the assertion, blocks the
-  start and shows in the console as unsupported. No store is built, so the
-  harness records the result as not-checked.
+  start and is meant to show in the console as unsupported
+  (`assert.ConsoleUnsupported`; no console view uses it yet). No store is
+  built, so the harness records the result as not-checked.
 
 **What `not-checked` means.** A check that cannot be made (a file that cannot be
 read, a mount table that does not parse, a dial that failed for a reason that does
