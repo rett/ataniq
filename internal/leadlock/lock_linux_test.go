@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,20 +26,24 @@ func TestHelperProcess(t *testing.T) {
 	if mode == "" {
 		t.Skip("helper process only")
 	}
+	var l *Lock
 	switch mode {
 	case "hold":
-		l, err := Acquire(os.Getenv("LEADLOCK_TEST_PATH"))
+		var err error
+		l, err = Acquire(os.Getenv("LEADLOCK_TEST_PATH"))
 		if err != nil {
 			os.Stdout.WriteString("error " + err.Error() + "\n")
 			os.Exit(3)
 		}
-		_ = l
 	case "idle":
 	default:
 		os.Exit(4)
 	}
 	os.Stdout.WriteString("ready\n")
 	time.Sleep(time.Minute)
+	// The Lock must stay reachable while the helper sleeps: its file closes
+	// itself when collected, which would drop the flock.
+	runtime.KeepAlive(l)
 	os.Exit(0)
 }
 
