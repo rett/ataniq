@@ -27,8 +27,10 @@
 //     (see below). It needs the caller's statement that no lead has run in
 //     these folders yet ([PrepareOptions]); without it, it refuses, because
 //     nothing is written into a folder a lead has run in. It is idempotent.
-//   - [Check] runs on every start. It is read-only: it creates and repairs
-//     nothing, and returns every problem it finds, typed and bounded.
+//   - [Check] runs on every start: the walk of rule B1 over every bind target
+//     in a folder the lead writes (see below). It is read-only: it creates and
+//     repairs nothing, and returns every problem it finds, typed and bounded,
+//     each naming the path it is about.
 //   - [CheckOwnClone] checks that the tree is the lead's own full clone, not a
 //     worktree, submodule or folder below another repository, and that the
 //     tree, home, config folder, records folder, requests folder and mail
@@ -82,6 +84,26 @@
 // opened again by its name, and what a lead does to the name between two steps
 // changes nothing: the folder that was checked is the folder that is used.
 // Nothing found by one call is kept for the next.
+//
+// The walk before each start ([Check]; [Prepare] makes the same walk before the
+// first) covers every bind target that lies in a folder the lead writes: the
+// runtime's config folder in the home (.claude or .codex), the places of the
+// skills and of the instruction file in the config folder, the tree's .git
+// itself and its config, hooks and info, the tree placeholders, and the place
+// of the records when it lies in the home. Each is looked up beneath the handle
+// of the folder it lies in, in one lookup that follows no link in any
+// component, and its type is decided on the descriptor the lookup returned. A
+// symbolic link (at the path or before it, dangling or not, pointing inside or
+// outside) and a wrong type (a file where a folder belongs, a folder where a
+// file belongs, a FIFO, a socket, a device) refuse the start with a problem
+// that names the path; a component on the way that is refused is named in the
+// detail. The design asks that each target be absent or of the expected type;
+// this package is stricter and wants each mount point present, as [Prepare]
+// made it, because bubblewrap would otherwise make it in a folder the lead
+// writes. The tree's .git is no mount point and may be absent (its three mount
+// points are then the missing ones). The walk is made for the runtime of the
+// inputs, so a start under the other runtime walks that runtime's places. It
+// is the unit-level ground of qualification case S21, which is not yet run.
 //
 // What these three still open by name is the state root alone: it is the
 // folder the walk starts from, and a link at or above it is the caller's to

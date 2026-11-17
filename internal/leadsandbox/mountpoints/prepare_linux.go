@@ -22,10 +22,12 @@ type PrepareOptions struct {
 // lead's first run, outside any sandbox.
 //
 // Mount points. For each one, through a [safefile.Root] of the folder it lies
-// in, it makes the folder (MkdirAll) or the empty file (created exclusively,
-// its parent made first) when it is absent; an existing entry of the right
-// type is kept; a symbolic link, at the mount point or in any component before
-// it, or a wrong type is refused. .git/config, .git/hooks and .git/info of the
+// in (opened from the state root's handle), it makes the folder (MkdirAll) or
+// the empty file (created exclusively, its parent made first) when it is
+// absent; an existing entry of the right type is kept; a symbolic link, at the
+// mount point or in any component before it, or a wrong type is refused. It
+// looks at the paths [Check] walks, the tree's .git folder itself included, and
+// the problem names the path. .git/config, .git/hooks and .git/info of the
 // tree must already exist, as a regular file and two folders, as a clone has
 // them: a missing one is refused and never invented, except .git/hooks, which
 // git may omit and which is made empty. The folders the mount points lie in
@@ -89,21 +91,22 @@ func Prepare(in profile.Inputs, opts PrepareOptions) error {
 	defer rs.close()
 	treeDir := in.Layout().Tree()
 
-	// Look first.
-	present := make([]bool, len(pts))
-	roots := make([]*safefile.Root, len(pts))
-	for i, p := range pts {
-		root, prob := rs.get(p.RootDir)
+	// Look first: the walk of every start, over the same paths.
+	list := walkList(pts)
+	present := make([]bool, len(list))
+	roots := make([]*safefile.Root, len(list))
+	for i, w := range list {
+		root, prob := rs.get(w.RootDir)
 		if prob != nil {
 			return prob
 		}
 		roots[i] = root
-		ok, prob := inspect(root, p)
+		ok, prob := inspect(root, w)
 		if prob != nil {
 			return prob
 		}
-		if !ok && p.Git && p.Rel != ".git/hooks" {
-			return problem(ErrMissing, p.HostPath, "a clone has it: it is never invented")
+		if !ok && w.Git && !w.holder && w.Rel != ".git/hooks" {
+			return problem(ErrMissing, w.HostPath, "a clone has it: it is never invented")
 		}
 		present[i] = ok
 	}
@@ -112,13 +115,14 @@ func Prepare(in profile.Inputs, opts PrepareOptions) error {
 		return prob
 	}
 
-	// Then write.
-	for i, p := range pts {
-		if present[i] {
+	// Then write. A folder that only holds mount points is never made on its
+	// own: making a mount point below it makes it.
+	for i, w := range list {
+		if present[i] || w.holder {
 			continue
 		}
-		if err := create(roots[i], p); err != nil {
-			return fromErr(p.HostPath, err)
+		if err := create(roots[i], w.Point); err != nil {
+			return fromErr(w.HostPath, err)
 		}
 	}
 	if copyOf == nil {
