@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -51,9 +52,17 @@ import (
 // coordinator. Because a coordinator's unit is bound to its lead's, it may
 // already be stopping when it is signalled: ErrNotLoaded and
 // ErrInvocationChanged from a signal lead to the proof as they do for a lead.
-// A coordinator started between the listing and the lead's stop is stopped
-// with the lead's unit (it is bound to it) and is left to Reconcile, which
-// ends it with its parent.
+// The lead's coordinators are listed again after the lead's own stop, and each
+// one found that is not proven stopped is stopped by the same sequence: a
+// coordinator started between the first listing and the lead's stop is thereby
+// stopped, or named in the result, and is never left running unnamed. This
+// holds because once the lead is stopping (or unknown, or stopped) the registry
+// admits no new coordinator launch, and a Start of a coordinator that began
+// earlier holds the coordinator's lock until it returns, so that the second
+// listing either sees its intent or waits for it. A coordinator named by the
+// first pass is not stopped a second time. The unit is bound to the lead's, so
+// it is also stopped by the lead's stop, but only the proof that Stop collects
+// says that it is gone.
 //
 // A unit with exactly the role's current epoch and intent counts as the role's
 // own even when the intent was abandoned: that is a start that landed late.
@@ -69,18 +78,33 @@ func (c *Controller) Stop(ctx context.Context, role leadrole.Role) (leadregistry
 	}
 	defer unlock()
 
-	var cerr error
+	var first *CoordinatorsError
 	if role.Kind() == leadrole.KindLead {
 		if _, err := c.load(role); err != nil {
 			e, _ := c.reg.Get(role)
 			return e, err
 		}
-		if cerr, err = c.stopCoordinators(ctx, role); err != nil {
+		if first, err = c.stopCoordinators(ctx, role, nil); err != nil {
 			e, _ := c.reg.Get(role)
 			return e, err
 		}
 	}
 	e, err := c.stopOne(ctx, role)
+	var cerr error
+	if first != nil {
+		cerr = first
+	}
+	if role.Kind() == leadrole.KindLead && ctx.Err() == nil {
+		// The lead is no longer live (or no coordinator is admitted under it
+		// any more): list the coordinators again, see Stop.
+		all, lerr := c.stopCoordinators(ctx, role, first)
+		switch {
+		case lerr != nil:
+			return e, errors.Join(err, cerr, lerr)
+		case all != nil:
+			cerr = all
+		}
+	}
 	switch {
 	case cerr == nil:
 		return e, err
@@ -121,16 +145,24 @@ func (e *CoordinatorsError) Unwrap() []error {
 // sequence of Stop. A coordinator that cannot be proven stopped is shown
 // unknown by its own stop and is named in the first result (nil when there is
 // none); the second result is for a failure that ends the lead's stop too (the
-// context). The lead's lock is held by the caller; a coordinator's stop takes
-// only its own, and no operation on a coordinator takes the lead's.
-func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role) (unproven, err error) {
+// context). The coordinators that named holds (the result of an earlier pass
+// over the same lead) are not stopped again and stay in the result. The lead's
+// lock is held by the caller; a coordinator's stop takes only its own, and no
+// operation on a coordinator takes the lead's.
+func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role, named *CoordinatorsError) (unproven *CoordinatorsError, err error) {
 	coords, err := c.reg.Coordinators(lead)
 	if err != nil {
 		return nil, err
 	}
 	var out *CoordinatorsError
+	if named != nil {
+		out = &CoordinatorsError{Roles: slices.Clone(named.Roles), Errs: slices.Clone(named.Errs)}
+	}
 	for _, co := range coords {
 		if co.Manager != leadregistry.ManagerAtaniq || co.Epoch == 0 {
+			continue
+		}
+		if out != nil && slices.Contains(out.Roles, co.Role) {
 			continue
 		}
 		done, err := c.reg.CoordinatorStopped(co.Role, co.Epoch)
@@ -151,9 +183,6 @@ func (c *Controller) stopCoordinators(ctx context.Context, lead leadrole.Role) (
 			out.Roles = append(out.Roles, co.Role)
 			out.Errs = append(out.Errs, err)
 		}
-	}
-	if out == nil {
-		return nil, nil
 	}
 	return out, nil
 }

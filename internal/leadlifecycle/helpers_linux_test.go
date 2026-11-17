@@ -203,13 +203,20 @@ type fakeQuiesce struct {
 	mu     sync.Mutex
 	err    error
 	epochs []uint64
+	// hook, when set, runs for every call, after it is recorded and without
+	// the mutex held, and its error is the call's result when q.err is nil.
+	hook func(role leadrole.Role, epoch uint64) error
 }
 
 func (q *fakeQuiesce) Stop(ctx context.Context, role leadrole.Role, epoch uint64) error {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.epochs = append(q.epochs, epoch)
-	return q.err
+	err, hook := q.err, q.hook
+	q.mu.Unlock()
+	if err == nil && hook != nil {
+		err = hook(role, epoch)
+	}
+	return err
 }
 
 // rig is one registry, one fake manager on a fake clock and a controller.

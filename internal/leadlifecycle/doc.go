@@ -67,7 +67,12 @@
 // the registry, and then the lead itself. A coordinator that cannot be proven
 // stopped is shown unknown and named in the error (a *[CoordinatorsError]); the
 // lead is stopped all the same, and a later Start of the lead is refused until
-// the coordinator is stopped with proof or the owner decides. Stop of a
+// the coordinator is stopped with proof or the owner decides. The coordinators
+// are listed once more after the lead's own stop, because one may have been
+// started in between (the lock of the lead does not serialise a Start of its
+// coordinator, which takes only its own); by then the registry admits no new
+// one, so the second listing is complete, and a coordinator found in it is
+// stopped, or named, like the others. Stop of a
 // coordinator stops only that coordinator. Because the units are bound, a
 // coordinator may be stopping already when it is signalled; the manager's
 // not-loaded and invocation-changed answers lead to the proof as for a lead.

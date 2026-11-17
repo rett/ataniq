@@ -1,6 +1,7 @@
 package leadlifecycle
 
 import (
+	"context"
 	"errors"
 	"syscall"
 	"testing"
@@ -256,4 +257,114 @@ func TestStopLeadWhoseCoordinatorHasAnUnsettledLaunch(t *testing.T) {
 	if e := r.mustStart(lead); e.Epoch != 2 {
 		t.Fatalf("epoch %d", e.Epoch)
 	}
+}
+
+// startInTheGap makes the lead's own stop start the coordinator: the Quiesce
+// hook of the lead runs in Stop after the coordinators were listed and before
+// the lead is shown stopping, which is the gap a Start of a coordinator (which
+// takes only its own lock) can fall into.
+func startInTheGap(t *testing.T, r *rig, lead, coord leadrole.Role) {
+	t.Helper()
+	r.quiet.hook = func(role leadrole.Role, _ uint64) error {
+		if role != lead {
+			return nil
+		}
+		e, err := r.ctl.Start(context.Background(), coord)
+		if err != nil || e.Intent == nil || e.Intent.Outcome != leadregistry.OutcomeLaunched {
+			t.Errorf("Start of the coordinator in the gap: %+v %v", e, err)
+		}
+		return nil
+	}
+}
+
+func TestStopLeadWithACoordinatorStartedInTheGapThatSurvivesKill(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	r.fake.SetProcs(unitOf(coord), leadunit.ProcScript{Behavior: leadunit.SurviveKill})
+	startInTheGap(t, r, lead, coord)
+	e, err := r.stop(lead)
+	// The result names the coordinator, which is shown unknown with its unit
+	// loaded; the lead itself is stopped.
+	isErr(t, err, ErrCoordinatorNotStopped)
+	isErr(t, err, ErrStopUnproven)
+	var ce *CoordinatorsError
+	if !errors.As(err, &ce) || len(ce.Roles) != 1 || ce.Roles[0] != coord {
+		t.Fatalf("error %v", err)
+	}
+	if e.Shown.State != leadregistry.StateStopped || r.fake.Loaded(unitOf(lead)) {
+		t.Fatalf("lead %+v", e)
+	}
+	ceE := r.expectState(coord, leadregistry.StateUnknown, "stop-unproven")
+	if !r.fake.Loaded(unitOf(coord)) {
+		t.Fatal("the unkillable unit is gone")
+	}
+	if ok, err := r.reg.CoordinatorStopped(coord, ceE.Epoch); err != nil || ok {
+		t.Fatalf("CoordinatorStopped %v %v", ok, err)
+	}
+	// Its own stop signalled it in the second listing: TERM and then KILL.
+	var sig []syscall.Signal
+	for _, c := range r.ownSignals() {
+		if c.Unit == unitOf(coord) {
+			sig = append(sig, c.Signal)
+		}
+	}
+	if len(sig) != 2 || sig[0] != syscall.SIGTERM || sig[1] != syscall.SIGKILL {
+		t.Fatalf("signals to the coordinator %v", sig)
+	}
+	// A later Start of the lead is refused until the owner resolves it.
+	_, err = r.start(lead)
+	isErr(t, err, ErrCoordinatorNotStopped)
+	r.auditClean()
+}
+
+func TestStopLeadWithACoordinatorStartedInTheGapThatExits(t *testing.T) {
+	r, lead, coord := coordRig(t)
+	startInTheGap(t, r, lead, coord)
+	e, err := r.stop(lead)
+	noErr(t, err)
+	if e.Shown.State != leadregistry.StateStopped {
+		t.Fatalf("lead %+v", e)
+	}
+	ce := r.expectState(coord, leadregistry.StateStopped, "")
+	if ok, err := r.reg.CoordinatorStopped(coord, ce.Epoch); err != nil || !ok {
+		t.Fatalf("CoordinatorStopped %v %v", ok, err)
+	}
+	if r.fake.Loaded(unitOf(coord)) {
+		t.Fatal("the coordinator's unit is loaded")
+	}
+	r.auditClean()
+}
+
+func TestStopLeadDoesNotStopANamedCoordinatorTwice(t *testing.T) {
+	r, lead, ca, cb := twoCoordinators(t,
+		leadunit.ProcScript{Behavior: leadunit.SurviveKill}, leadunit.ProcScript{})
+	// Another coordinator is started in the gap, so that the second listing
+	// runs a stop and has the unproven one to skip.
+	cc := r.defineCoord("alpha", "ccc")
+	startInTheGap(t, r, lead, cc)
+	_, err := r.stop(lead)
+	isErr(t, err, ErrCoordinatorNotStopped)
+	var ce *CoordinatorsError
+	if !errors.As(err, &ce) || len(ce.Roles) != 1 || ce.Roles[0] != ca {
+		t.Fatalf("error %v", err)
+	}
+	r.expectState(cb, leadregistry.StateStopped, "stopped")
+	r.expectState(cc, leadregistry.StateStopped, "")
+	count := map[string]int{}
+	for _, c := range r.ownSignals() {
+		if c.Signal == syscall.SIGTERM {
+			count[c.Unit]++
+		}
+	}
+	for _, co := range []leadrole.Role{ca, cb, lead} {
+		if count[unitOf(co)] != 1 {
+			t.Fatalf("%s was sent TERM %d times", co, count[unitOf(co)])
+		}
+	}
+	// The one started in the gap may be stopped by the manager with its
+	// parent before the daemon looks (when it does not depend on the
+	// moment), and is signalled at most once.
+	if count[unitOf(cc)] > 1 {
+		t.Fatalf("%s was sent TERM %d times", cc, count[unitOf(cc)])
+	}
+	r.auditClean()
 }
