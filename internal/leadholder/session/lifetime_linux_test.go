@@ -16,6 +16,7 @@ import (
 
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/fakeagent"
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // Case H10: the agent exits with status 3; the three facts, the status and the
@@ -57,6 +58,9 @@ func TestExitStatusThreeGivesTheThreeFactsAndTheFinalRecord(t *testing.T) {
 	}
 	if !strings.Contains(rec.Screen.Text, "LASTWORDS") || rec.Screen.Cols != 100 || rec.Screen.Rows != 30 {
 		t.Errorf("screen %+v", rec.Screen)
+	}
+	if rec.Screen.Position == 0 || rec.Screen.Position != rec.Counters["output_bytes"] {
+		t.Errorf("screen position %d, output bytes %d", rec.Screen.Position, rec.Counters["output_bytes"])
 	}
 	for _, name := range []string{"pty_scan_errors", "reply_dropped_bytes", "held_keys_suspend", "held_keys_signal", "clipboard_blocked", "output_bytes"} {
 		if _, ok := rec.Counters[name]; !ok {
@@ -325,15 +329,113 @@ func TestFinalScreenIsCapped(t *testing.T) {
 	}
 }
 
+// The temporary file has a random name and is created exclusively: a name the
+// lead planted in the state folder (here a hard link to a file elsewhere) is
+// never written through.
+func TestFinalRecordIsWrittenThroughAnExclusiveTemporaryFile(t *testing.T) {
+	e := newEnv(t)
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"final.json.tmp", ".final-1.tmp"} {
+		if err := os.Link(victim, filepath.Join(e.stateDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := e.start("exit 0")
+	waitDone(t, s)
+	if _, err := s.Final(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "precious" {
+		t.Errorf("the planted link was written through: %q", b)
+	}
+	st, err := os.Stat(filepath.Join(e.stateDir, FinalName))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("final.json: %v, %v", st, err)
+	}
+	ents, err := os.ReadDir(e.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, en := range ents {
+		names = append(names, en.Name())
+	}
+	if got := strings.Join(names, " "); got != ".final-1.tmp final.json final.json.tmp" {
+		t.Errorf("the state folder holds %q", got)
+	}
+}
+
+// A failure leaves no temporary file behind.
+func TestAFailedFinalRecordLeavesNoTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty folder named final.json: the rename cannot replace it.
+	if err := os.MkdirAll(filepath.Join(dir, FinalName, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFinal(dir, &FinalRecord{Version: FinalVersion}); err == nil {
+		t.Fatal("writeFinal replaced a folder")
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != FinalName {
+		t.Errorf("the folder holds %v after the failure", ents)
+	}
+	// No folder at all: the creation fails.
+	if err := writeFinal(filepath.Join(dir, "nope"), &FinalRecord{}); err == nil {
+		t.Error("writeFinal to a missing folder succeeded")
+	}
+}
+
+// The size and the text of the final screen come from one hold of the output
+// lock: while it is held elsewhere, the final screen waits.
+func TestFinalScreenIsReadUnderTheOutputLock(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("say HERE; wait")
+	waitScreen(t, s, "HERE")
+	held, release := make(chan struct{}), make(chan struct{})
+	go s.Screen(func(*sessionpane.Pane, uint64) {
+		close(held)
+		<-release
+	})
+	<-held
+	got := make(chan FinalScreen, 1)
+	go func() { got <- s.finalScreen() }()
+	select {
+	case <-got:
+		t.Fatal("the final screen was read while the output lock was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	fs := <-got
+	if fs.Cols != 100 || fs.Rows != 30 || fs.Position == 0 || !strings.Contains(fs.Text, "HERE") {
+		t.Errorf("final screen %+v", fs)
+	}
+	if fs.Position != position(s) {
+		t.Errorf("position %d, the session is at %d", fs.Position, position(s))
+	}
+}
+
 func TestAddCountIsBounded(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("exit 0")
-	s.AddCount("service_thing", 2)
-	s.AddCount("service_thing", 3)
-	for i := range MaxExtraCounters + 5 {
-		s.AddCount("n"+strings.Repeat("x", i), 1)
+	for _, d := range []uint64{2, 3} {
+		if err := s.AddCount("service_thing", d); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.AddCount(strings.Repeat("y", MaxCounterName+1), 1)
+	for i := range MaxExtraCounters + 5 {
+		if err := s.AddCount("n"+strings.Repeat("x", i), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddCount(strings.Repeat("y", MaxCounterName+1), 1); err != nil {
+		t.Fatal(err)
+	}
 	c := s.Counters()
 	if c["service_thing"] != 5 || c["extra_counters_dropped"] == 0 {
 		t.Errorf("counters %v", c)
@@ -342,6 +444,51 @@ func TestAddCountIsBounded(t *testing.T) {
 	rec, _ := s.Final()
 	if rec.Counters["service_thing"] != 5 {
 		t.Errorf("final counters %v", rec.Counters)
+	}
+}
+
+// A service name never lands on one of the session's own counters.
+func TestAddCountRefusesTheSessionsOwnNames(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("exit 0")
+	waitDone(t, s)
+	before := s.Counters()
+	// The reserved set is the built-in counters, and the two the session
+	// keeps in the extra map.
+	reserved := map[string]bool{}
+	for _, n := range ReservedCounters() {
+		reserved[n] = true
+	}
+	for n := range before {
+		if !reserved[n] {
+			t.Errorf("built-in counter %q is not reserved", n)
+		}
+	}
+	for n := range reserved {
+		_, built := before[n]
+		if !built && n != "extra_counters_dropped" && n != "final_screen_truncated" {
+			t.Errorf("reserved name %q is not a counter of the session", n)
+		}
+	}
+	for _, n := range ReservedCounters() {
+		if err := s.AddCount(n, 7); !errors.Is(err, ErrReservedCounter) {
+			t.Errorf("AddCount(%q) = %v, want ErrReservedCounter", n, err)
+		}
+	}
+	after := s.Counters()
+	for n, v := range before {
+		if after[n] != v {
+			t.Errorf("counter %q changed from %d to %d", n, v, after[n])
+		}
+	}
+	for n, v := range after {
+		if _, ok := before[n]; !ok && v != 0 {
+			t.Errorf("counter %q appeared with %d", n, v)
+		}
+	}
+	// A name of the service's own still counts.
+	if err := s.AddCount("service_thing", 1); err != nil || s.Counters()["service_thing"] != 1 {
+		t.Errorf("service counter: %v, %v", err, s.Counters())
 	}
 }
 

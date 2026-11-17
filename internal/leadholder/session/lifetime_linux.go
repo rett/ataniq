@@ -16,6 +16,7 @@ import (
 
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/ptyhost"
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // FinalName is the name of the final record in Config.StateDir.
@@ -83,6 +84,9 @@ type Facts struct {
 type FinalScreen struct {
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
+	// Position is the count of PTY bytes fed to the pane when the screen was
+	// read; Cols, Rows and Text are from the same moment.
+	Position uint64 `json:"position"`
 	// Text is Pane.Text of the whole screen, cut at a row boundary when it
 	// would be over MaxFinalScreenBytes; Truncated says so.
 	Text      string `json:"text"`
@@ -191,7 +195,11 @@ func (s *Session) lifecycle() {
 
 	if stream == Yes {
 		// The session's output is over: the pane keeps its last screen.
+		// Under the output lock, so that a Resize either sees the end or
+		// completes before it.
+		s.omu.Lock()
 		s.pane.End(st.Status, st.How != "unknown")
+		s.omu.Unlock()
 	}
 	end := time.Now().UTC()
 	method := s.host.TreeMethod()
@@ -263,59 +271,71 @@ func (s *Session) waitTree() (bool, string) {
 }
 
 // finalScreen reads the whole screen as text, cut at a row boundary at
-// MaxFinalScreenBytes.
+// MaxFinalScreenBytes. The size, the text and the position come from one
+// Screen call, under the output lock: while a grandchild still holds the
+// terminal the output goes on, and they must describe one moment.
 func (s *Session) finalScreen() FinalScreen {
-	cols, rows := s.pane.Size()
-	fs := FinalScreen{Cols: cols, Rows: rows}
-	if t, ok := s.pane.Text(uv.Pos(0, 0), uv.Pos(cols-1, rows-1), MaxFinalScreenBytes); ok {
-		fs.Text = t
-		return fs
-	}
-	var b strings.Builder
-	for y := 0; y < rows; y++ {
-		line, ok := s.pane.Text(uv.Pos(0, y), uv.Pos(cols-1, y), MaxFinalScreenBytes-b.Len()-1)
-		if !ok {
-			break
+	var fs FinalScreen
+	truncated := false
+	s.Screen(func(p *sessionpane.Pane, pos uint64) {
+		cols, rows := p.Size()
+		fs = FinalScreen{Cols: cols, Rows: rows, Position: pos}
+		if t, ok := p.Text(uv.Pos(0, 0), uv.Pos(cols-1, rows-1), MaxFinalScreenBytes); ok {
+			fs.Text = t
+			return
 		}
-		if y > 0 {
-			b.WriteByte('\n')
+		var b strings.Builder
+		for y := 0; y < rows; y++ {
+			line, ok := p.Text(uv.Pos(0, y), uv.Pos(cols-1, y), MaxFinalScreenBytes-b.Len()-1)
+			if !ok {
+				break
+			}
+			if y > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
 		}
-		b.WriteString(line)
+		fs.Text, fs.Truncated = b.String(), true
+		truncated = true
+	})
+	if truncated {
+		s.addCount("final_screen_truncated", 1)
 	}
-	fs.Text, fs.Truncated = b.String(), true
-	s.AddCount("final_screen_truncated", 1)
 	return fs
 }
 
 // writeFinal writes the record to dir/final.json (mode 0600) through a
-// temporary name, syncs it and renames it into place, then syncs the folder.
+// temporary file, syncs it and renames it into place, then syncs the folder.
+// The temporary file is created exclusively, under a random name
+// (os.CreateTemp), so that a name the lead planted in the folder is never
+// written through; it is removed when anything fails.
 func writeFinal(dir string, rec *FinalRecord) error {
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("session: encode the final record: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := filepath.Join(dir, FinalName+".tmp")
-	fd, err := unix.Open(tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	f, err := os.CreateTemp(dir, ".final-*.tmp")
 	if err != nil {
 		return fmt.Errorf("session: write the final record: %w", err)
 	}
-	f := os.NewFile(uintptr(fd), tmp)
-	_ = f.Chmod(0o600)
-	_, werr := f.Write(data)
+	tmp := f.Name()
+	werr := f.Chmod(0o600)
+	if werr == nil {
+		_, werr = f.Write(data)
+	}
 	if werr == nil {
 		werr = f.Sync()
 	}
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
+	if werr == nil {
+		werr = os.Rename(tmp, filepath.Join(dir, FinalName))
+	}
 	if werr != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("session: write the final record: %w", werr)
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, FinalName)); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("session: write the final record: %w", err)
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()

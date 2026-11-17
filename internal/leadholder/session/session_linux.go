@@ -27,7 +27,10 @@
 // package takes the lock with for a fence, and [Session.Inject] is a stub that
 // refuses and logs. The replies are queued (bounded to [ReplyQueueBytes], an
 // overflow is dropped and counted) and written by a goroutine of their own, so
-// the emulator never waits for the agent to read.
+// the emulator never waits for the agent to read. A write to the agent that
+// fails or times out breaks the input for good ([Session.InputBroken]): a
+// prefix may have been delivered, so nothing more is written, from any source,
+// and later input is refused with [ErrInputBroken].
 //
 // Writer input is filtered: Ctrl+Z is never forwarded, and while the terminal
 // has ISIG set the bytes for VINTR, VQUIT and VSUSP are held back too. The
@@ -57,6 +60,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,6 +112,12 @@ var (
 	ErrSubscribed = errors.New("session: there is a subscriber already")
 	// ErrInjectionDisabled: injection is not built in this version.
 	ErrInjectionDisabled = errors.New("session: injection is disabled")
+	// ErrInputBroken: an earlier write to the agent failed part-way (see
+	// Session.InputBroken); nothing more is written.
+	ErrInputBroken = errors.New("session: the agent's input is broken by an earlier failed write")
+	// ErrReservedCounter: the name given to AddCount is one of the session's
+	// own counters (see ReservedCounters).
+	ErrReservedCounter = errors.New("session: the counter name is reserved for the session's own counters")
 	// ErrNotOver: the session is not over, so there is no final record yet.
 	ErrNotOver = errors.New("session: not over yet")
 )
@@ -195,6 +205,10 @@ type Session struct {
 	closing  chan struct{} // closed when Close starts
 	stopOnce sync.Once
 
+	// inputBroken is set under imu by the first failed write to the agent
+	// and never cleared.
+	inputBroken atomic.Bool
+
 	closed    atomic.Bool
 	closeOnce sync.Once
 	closeErr  error
@@ -210,6 +224,7 @@ type counters struct {
 	heldSuspend        atomic.Uint64
 	heldSignal         atomic.Uint64
 	inputWriteErrors   atomic.Uint64
+	inputRefused       atomic.Uint64
 	termiosErrors      atomic.Uint64
 	readErrors         atomic.Uint64
 	logErrors          atomic.Uint64
@@ -418,11 +433,17 @@ func (s *Session) SetColours(c sessionpane.Colours) { s.pane.SetColours(c) }
 // Resize clamps the size to the holder's limits and resizes the PTY and the
 // pane together under the output lock, so that a snapshot never sees them
 // disagree. It returns the applied size, which on an error is the size before.
-// A resize that changes the size is logged.
+// A resize that changes the size is logged. After the output stream ended the
+// pane keeps its last screen and takes no resize, so the call changes nothing
+// (neither the PTY nor the pane, no event) and returns the current size.
 func (s *Session) Resize(cols, rows int) (appliedCols, appliedRows int, err error) {
 	cols, rows = clampSize(cols, rows)
 	s.omu.Lock()
 	curC, curR := s.pane.Size()
+	if ended, _, _ := s.pane.Ended(); ended {
+		s.omu.Unlock()
+		return curC, curR, nil
+	}
 	if cols == curC && rows == curR {
 		s.omu.Unlock()
 		return cols, rows, nil
@@ -479,11 +500,62 @@ func (s *Session) Close() error {
 	return s.closeErr
 }
 
+// reservedCounters are the names of the session's own counters, the ones
+// Counters reports without AddCount plus the two the session keeps in the same
+// map: "extra_counters_dropped" and "final_screen_truncated".
+var reservedCounters = map[string]bool{
+	"pty_scan_truncated":     true,
+	"pty_scan_errors":        true,
+	"pty_cgroup_truncated":   true,
+	"pty_cgroup_errors":      true,
+	"pty_pidfd_failures":     true,
+	"reply_dropped_chunks":   true,
+	"reply_dropped_bytes":    true,
+	"reply_write_errors":     true,
+	"held_keys_suspend":      true,
+	"held_keys_signal":       true,
+	"input_write_errors":     true,
+	"input_refused":          true,
+	"input_broken":           true,
+	"termios_errors":         true,
+	"read_errors":            true,
+	"log_errors":             true,
+	"clipboard_blocked":      true,
+	"output_bytes":           true,
+	"extra_counters_dropped": true,
+	"final_screen_truncated": true,
+}
+
+// ReservedCounters returns, sorted, the counter names that AddCount refuses:
+// the session's own counters, which are evidence and must not be changed by
+// the service.
+func ReservedCounters() []string {
+	out := make([]string, 0, len(reservedCounters))
+	for n := range reservedCounters {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AddCount adds delta to a named counter that is written to the final record
-// and to the exit event, for the service to count its own caps. At most
-// MaxExtraCounters names of at most MaxCounterName bytes are kept; a name over
-// either is counted in "extra_counters_dropped".
-func (s *Session) AddCount(name string, delta uint64) {
+// and to the exit event, for the service to count its own caps. A name that is
+// one of the session's own counters (ReservedCounters) is refused with
+// ErrReservedCounter and nothing is counted. At most MaxExtraCounters names of
+// at most MaxCounterName bytes are kept; a name over either, or an empty one,
+// is not kept and is counted in "extra_counters_dropped" instead (the error is
+// nil).
+func (s *Session) AddCount(name string, delta uint64) error {
+	if reservedCounters[name] {
+		return fmt.Errorf("%w: %q", ErrReservedCounter, name)
+	}
+	s.addCount(name, delta)
+	return nil
+}
+
+// addCount is AddCount without the reserved-name check, for the session's own
+// counters kept in the same map.
+func (s *Session) addCount(name string, delta uint64) {
 	c := &s.cnt
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -514,6 +586,11 @@ func (s *Session) Counters() map[string]uint64 {
 	out["held_keys_suspend"] = c.heldSuspend.Load()
 	out["held_keys_signal"] = c.heldSignal.Load()
 	out["input_write_errors"] = c.inputWriteErrors.Load()
+	out["input_refused"] = c.inputRefused.Load()
+	out["input_broken"] = 0
+	if s.inputBroken.Load() {
+		out["input_broken"] = 1
+	}
 	out["termios_errors"] = c.termiosErrors.Load()
 	out["read_errors"] = c.readErrors.Load()
 	out["log_errors"] = c.logErrors.Load()

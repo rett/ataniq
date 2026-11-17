@@ -5,7 +5,9 @@ package session
 import (
 	"bytes"
 	"errors"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ataniq/internal/leadholder/eventlog"
@@ -39,8 +41,10 @@ type Held struct {
 	Signal int
 	// Written is how many bytes were written to the agent.
 	Written int
-	// Err is why the write failed, or ErrClosed; nil when it succeeded. A
-	// failed write may have delivered a prefix.
+	// Err is why the write failed, ErrClosed, or ErrInputBroken (an earlier
+	// write failed part-way, so nothing is written any more); nil when it
+	// succeeded. A failed write may have delivered a prefix, and it breaks
+	// the input (see Session.InputBroken).
 	Err error
 }
 
@@ -101,6 +105,11 @@ func (s *Session) writeFiltered(b []byte, paste bool) Held {
 		h.Err = ErrClosed
 		return h
 	}
+	if s.inputBroken.Load() {
+		s.cnt.inputRefused.Add(1)
+		h.Err = ErrInputBroken
+		return h
+	}
 	kinds := s.heldTable()
 	body := make([]byte, 0, len(b))
 	for _, c := range b {
@@ -126,12 +135,57 @@ func (s *Session) writeFiltered(b []byte, paste bool) Held {
 	if len(out) == 0 {
 		return h
 	}
-	n, err := s.host.Write(out)
-	h.Written, h.Err = n, err
-	if err != nil {
-		s.cnt.inputWriteErrors.Add(1)
+	src := "writer"
+	if paste {
+		src = "paste"
 	}
+	h.Written, h.Err = s.writeAgent(out, src, &s.cnt.inputWriteErrors)
 	return h
+}
+
+// InputBroken reports whether the agent's input is broken: a write to the
+// agent from any source (writer input, paste, the emulator's replies, a
+// critical section) failed or timed out, so a prefix of it may have been
+// delivered and the stream may stop in the middle of an escape sequence or of
+// a bracketed paste. ptyhost's Write contract says the input must be treated
+// as broken then, so the session writes nothing more: later input from every
+// source is refused with ErrInputBroken and counted in "input_refused". The
+// state is one-way; it is logged once as a state event "input-broken" whose
+// reason names the source and the cause, and counted in "input_broken". The
+// attach service tells its clients, and may end the session. The agent's
+// output goes on.
+func (s *Session) InputBroken() bool { return s.inputBroken.Load() }
+
+// writeAgent is the one place that writes to the agent, with the input lock
+// held. It refuses when the input is broken and breaks it when the write
+// fails; a failure is counted in errs.
+func (s *Session) writeAgent(p []byte, source string, errs *atomic.Uint64) (int, error) {
+	if s.closed.Load() {
+		return 0, ErrClosed
+	}
+	if s.inputBroken.Load() {
+		s.cnt.inputRefused.Add(1)
+		return 0, ErrInputBroken
+	}
+	n, err := s.host.Write(p)
+	if err != nil {
+		errs.Add(1)
+		s.breakInput(source, err)
+	}
+	return n, err
+}
+
+// breakInput latches the broken state and logs it, once. A failure caused by
+// Close is not a break: the session is closed anyway.
+func (s *Session) breakInput(source string, err error) {
+	if s.closed.Load() || !s.inputBroken.CompareAndSwap(false, true) {
+		return
+	}
+	cause := "write-error"
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		cause = "write-timeout"
+	}
+	s.event(eventlog.EventState, eventlog.Fields{State: "input-broken", Reason: source + "-" + cause})
 }
 
 // heldTable returns for each byte 0 (forward), 1 (held as a suspend key) or 2
@@ -257,10 +311,9 @@ func (q *replyQueue) run() {
 			return
 		}
 		s.imu.Lock()
-		if batch := q.take(); len(batch) > 0 && !s.closed.Load() {
-			if _, err := s.host.Write(batch); err != nil {
-				s.cnt.replyWriteErrors.Add(1)
-			}
+		if batch := q.take(); len(batch) > 0 {
+			// A refusal (closed, or the input is broken) drops the batch.
+			s.writeAgent(batch, "reply", &s.cnt.replyWriteErrors)
 		}
 		s.imu.Unlock()
 	}
@@ -280,10 +333,24 @@ func (q *replyQueue) stop() {
 // critical section answers for them), and read the current screen. It is valid
 // only inside the function WithInputLock calls.
 type AgentWriter interface {
-	// Write sends all of p to the agent or returns an error.
+	// Write sends all of p to the agent or returns an error. A failed or
+	// timed-out write breaks the input (Session.InputBroken): every later
+	// write, from here or from any other source, returns ErrInputBroken
+	// and writes nothing, so the section must stop at the first error.
 	Write(p []byte) (int, error)
 	// Screen is Session.Screen: fn runs under the output lock.
 	Screen(fn func(p *sessionpane.Pane, pos uint64))
+	// FlushReplies writes the emulator's queued terminal replies to the agent
+	// now, in order, inside the critical section, and returns how many bytes
+	// it wrote (0 when none wait). The replies are otherwise written only
+	// when the section ends, so an agent that asked a terminal question (the
+	// device attributes, a colour query) and waits for the answer before it
+	// draws again looks stalled for the whole section. A fence that waits
+	// for the screen to settle calls FlushReplies between its steps, so that
+	// such an agent goes on. It breaks the input like any write when it
+	// fails, and returns ErrInputBroken when the input is already broken
+	// (the queued replies are then dropped and counted in "input_refused").
+	FlushReplies() (int, error)
 }
 
 type lockedWriter struct {
@@ -295,14 +362,18 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	if !w.valid {
 		return 0, errors.New("session: the agent writer is used outside its critical section")
 	}
-	if w.s.closed.Load() {
-		return 0, ErrClosed
+	return w.s.writeAgent(p, "section", &w.s.cnt.inputWriteErrors)
+}
+
+func (w *lockedWriter) FlushReplies() (int, error) {
+	if !w.valid {
+		return 0, errors.New("session: the agent writer is used outside its critical section")
 	}
-	n, err := w.s.host.Write(p)
-	if err != nil {
-		w.s.cnt.inputWriteErrors.Add(1)
+	batch := w.s.replies.take()
+	if len(batch) == 0 {
+		return 0, nil
 	}
-	return n, err
+	return w.s.writeAgent(batch, "reply", &w.s.cnt.replyWriteErrors)
 }
 
 func (w *lockedWriter) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
@@ -313,7 +384,8 @@ func (w *lockedWriter) Screen(fn func(p *sessionpane.Pane, pos uint64)) {
 
 // WithInputLock takes the input lock for the whole of f. Writer input and the
 // emulator's replies wait until f returns; nothing reaches the agent in
-// between except what f writes. A later injection package uses it for its
+// between except what f writes, and the replies f lets through with
+// AgentWriter.FlushReplies (a fence calls it between its steps). A later injection package uses it for its
 // fence. f must not call Input, Paste or WithInputLock (the lock is not
 // reentrant). It returns f's error, or ErrClosed.
 func (s *Session) WithInputLock(f func(w AgentWriter) error) error {
