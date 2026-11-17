@@ -125,11 +125,7 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 		return nil, nil
 	}
 	if role == wire.RoleWriter {
-		// The writer's colours answer the agent's colour queries, and its
-		// size is the session's.
-		s.sess.SetColours(helloColours(hello.Colors))
-		_, _, _ = s.sess.Resize(hello.Columns, hello.Rows)
-		s.syncAfterResize()
+		s.applyWriterHello(c, hello)
 	}
 	s.mu.Lock()
 	ok = s.registerLocked(c)
@@ -145,6 +141,27 @@ func (s *Server) handshake(conn *net.UnixConn, cred PeerCred) (*client, *wire.Re
 	_ = conn.SetReadDeadline(time.Time{})
 	_ = conn.SetWriteDeadline(time.Time{})
 	return c, rd
+}
+
+// applyWriterHello sets the colours and the size of the session from the Hello
+// of a client that claimed the writer slot. It runs with the input mutex held
+// and acts only when the client is still the writer then: one that was
+// released since the claim (release-writer made it the viewer, or took it out)
+// sets neither.
+func (s *Server) applyWriterHello(c *client, hello wire.Hello) {
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	s.mu.Lock()
+	still := s.writer == c && c.role == wire.RoleWriter && !c.removed
+	s.mu.Unlock()
+	if !still {
+		return
+	}
+	// The writer's colours answer the agent's colour queries, and its size is
+	// the session's.
+	s.sess.SetColours(helloColours(hello.Colors))
+	_, _, _ = s.sess.Resize(hello.Columns, hello.Rows)
+	s.syncAfterResize()
 }
 
 // ticketProblem reports whether a Hello payload that the strict decoder
@@ -260,17 +277,28 @@ func (s *Server) readLoop(c *client, rd *wire.Reader) string {
 		case wire.TypeDetach:
 			return "detach"
 		case wire.TypeInput, wire.TypePaste, wire.TypeResize:
-			if !s.isWriter(c) {
+			if code, ok := s.forwardWriterFrame(c, f); !ok {
 				s.refuseViewerInput(c, f.Type)
-				continue
-			}
-			if code := s.writerFrame(c, f); code != "" {
+			} else if code != "" {
 				return s.badFrame(c, code)
 			}
 		default: // a second Hello
 			return s.badFrame(c, "unexpected-frame")
 		}
 	}
+}
+
+// forwardWriterFrame hands a frame of c to the session when c is the writer,
+// with the input mutex held from the check to the end of the call (see the
+// package doc). It reports false, and does nothing, when c is not the writer;
+// else it returns the code of writerFrame.
+func (s *Server) forwardWriterFrame(c *client, f wire.Frame) (string, bool) {
+	s.inMu.Lock()
+	defer s.inMu.Unlock()
+	if !s.isWriter(c) {
+		return "", false
+	}
+	return s.writerFrame(c, f), true
 }
 
 func (s *Server) isWriter(c *client) bool {

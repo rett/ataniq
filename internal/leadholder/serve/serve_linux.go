@@ -52,6 +52,25 @@
 // a resync snapshot is waiting for its point is not queued: the snapshot
 // covers it.
 //
+// # Writer input and the order of locks
+//
+// Only the writer reaches the PTY. A writer frame (Input, Paste, Resize) is
+// handled with the input mutex held, from the check that the client is the
+// writer to the end of the session call, and every change of writer
+// (release-writer) and the writer's colours and size at its handshake are
+// done with that mutex held as well. So when release-writer has answered ok no
+// byte of the released client has reached the PTY or will, and a client that
+// was released during its handshake sets neither the colours nor the size. A
+// release waits for a write in flight, at most one PTY write deadline.
+//
+// The locks are taken in this order, and a lock is never taken while one that
+// comes later in the list is held: the input mutex (inMu), the session's
+// input lock, the session's output lock, the hub lock (mu), the pane's own
+// lock, the session's counter lock. The subscriber runs under the session's
+// output lock and takes mu, never inMu. Nothing that takes the session's
+// output lock or its input lock (Input, Paste, Resize, Screen, Counters,
+// SubscribeScreen) is called with mu held.
+//
 // # Events and counters
 //
 // Events go to the event log through a bounded queue and a goroutine of their
@@ -228,9 +247,15 @@ type Server struct {
 	controlLn *net.UnixListener
 	unsub     func()
 
-	// mu is the hub lock. Lock order: the session's output lock, then mu,
-	// then the pane's own lock. Nothing that takes the session's output lock
-	// (Screen, Resize, Counters, SubscribeScreen) is called with mu held.
+	// inMu is held around a writer frame, from the role check to the end of
+	// the session call, and around every change of writer. It is the first
+	// lock of the order in the package doc.
+	inMu sync.Mutex
+
+	// mu is the hub lock. Lock order: inMu, the session's input lock, the
+	// session's output lock, then mu, then the pane's own lock. Nothing that
+	// takes the session's output lock (Screen, Resize, Counters,
+	// SubscribeScreen) is called with mu held.
 	mu          sync.Mutex
 	clients     map[*client]struct{} // attached: after the Welcome
 	writer      *client              // the claimed slots, attached or not yet

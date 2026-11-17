@@ -67,6 +67,9 @@ func (s *Server) respond(conn *net.UnixConn, r wire.Response) {
 		p, err = wire.EncodeResponse(refusal(wire.CodeBadRequest, "the answer could not be made"))
 	}
 	if err == nil {
+		// A request may have waited (release-writer waits for a write in
+		// flight): the answer has a time of its own.
+		_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
 		_ = wire.Write(conn, wire.ControlResponses, wire.TypeResponse, p)
 	}
 }
@@ -105,9 +108,13 @@ func (s *Server) execute(req wire.Request) wire.Response {
 	case wire.OpReleaseWriter:
 		// The command is the daemon's, not an owner decision, so it is a
 		// holder event with the command id.
+		// The input mutex first: a writer frame in flight is written before
+		// the answer, and none follows it.
+		s.inMu.Lock()
 		s.mu.Lock()
 		s.releaseWriterLocked(req.CommandID)
 		s.mu.Unlock()
+		s.inMu.Unlock()
 		return wire.Response{OK: true}
 	case wire.OpInject:
 		// Injection is built elsewhere; the session logs the refusal.
