@@ -160,6 +160,14 @@
 //     Its mode and owner are not checked here (CheckOwnClone looks at the tree,
 //     the home and the config folder only): the holder must make the folder
 //     with mode 0700 and check it, as it does for the other folders.
+//  5. Use one state root for every lead on the host. Rule G1 holds across
+//     leads only then: the rules about another lead's state know the state
+//     root of their own inputs and no other, so a lead whose inputs name a
+//     different state root could be given a source in a folder that another
+//     lead writes, and every check here would accept it. Nothing in this
+//     package or in the profile checks that the roots are the same; it is the
+//     holder's to guarantee, with the sources and everything above them kept
+//     Ataniq's.
 //
 // # Limits
 //

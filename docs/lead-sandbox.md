@@ -188,8 +188,9 @@ inside, the lead is UID 0 and GID 0, mapped to the owner's own ids outside. The
 sandbox is not given the owner's ids as such. `USER` and `LOGNAME` are `root`.
 Tools that run as UID 0 are untested (an open point below). The fallback is the
 owner mode: `--uid` and `--gid` are the owner's own ids, which the inputs give
-(non-zero), and `USER` and `LOGNAME` are the owner's login name. The second
-golden file for codex (`codex-owner-optional-absent.golden`) is that mode.
+(non-zero), and `USER` and `LOGNAME` are the owner's login name. Two golden
+files use that mode: `claude-owner-seccomp.golden` and
+`codex-owner-optional-absent.golden`.
 
 **Capability drop.** `--cap-drop ALL`. What the lead can still do inside its user
 namespace is a question for qualification, not something this guide states.
@@ -333,10 +334,12 @@ link that brings a folder of the owner into the sandbox at the next start. So no
 row of the bind table has a source in or below a host folder the lead can write
 (the home, the config folder, the tree and the records folder). The profile
 refuses a table that breaks the rule, `plan.Build` checks it again, and
-`plan.Verify` reports a mount that does. The rule holds across leads too: every
-folder a lead writes lies in that lead's own state folder, so the rules about
-another lead's state keep the read-only sources of one lead out of the reach of
-every other. That is why the records folder, when the inputs name one, must be
+`plan.Verify` reports a mount that does. The rule holds across leads too, as long
+as every lead on the host uses the same state root (nothing here checks that; it
+is the holder's obligation, listed in `internal/leadsandbox/mountpoints/doc.go`):
+every folder a lead writes lies in that lead's own state folder, so the rules
+about another lead's state keep the read-only sources of one lead out of the
+reach of every other. That is why the records folder, when the inputs name one, must be
 `<state>/leads/<role>/records` (`profile.Layout.Records`) and any other host path
 is refused, and why the git metadata folder must be `<state>/leads/<role>/gitmeta`
 (`profile.Layout.GitMeta`).
@@ -367,8 +370,9 @@ rebuilds in the tree), which is inside the lead's own authority. The copy is
 never read as configuration by a tool outside the sandbox.
 
 **Mount points inside folders the lead writes.** The targets of the `.git` rows,
-the skills folder and the instruction file of the config folder, and any extra
-placeholder lie inside folders the lead writes. bubblewrap would make a missing
+the skills folder and the instruction file of the config folder, the inside path
+of the records folder (when the inputs name one), and any extra placeholder lie
+inside folders the lead writes. bubblewrap would make a missing
 one itself, in a folder where a planted link could redirect it. So Ataniq makes
 them before the lead's first run (`mountpoints.Prepare`, which refuses unless the
 caller states that no lead has run there yet, and never replaces what exists), and
@@ -500,7 +504,9 @@ Two limits of the derivation are stated and not detected:
 ## The probe
 
 `ataniq-probe` is a static program, built without cgo, with two modes. It exits 97
-or 98 and otherwise replaces itself with the command it was given.
+or 98 and otherwise replaces itself with the command it was given (or, when
+`setsid` is refused, runs it as a child and exits with its status, or 128 plus
+the signal number; see below).
 
 **Pass-through mode** (`pass-fds [--read FD=PATH]... [--write FD=PATH]... --
 COMMAND ARGV...`) runs on the host between pasta and bubblewrap. FD is 3 to 1023
@@ -729,6 +735,12 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
 16. **Owner-side state (O).** The owner's state folders should lie on a file
     system mounted `nodev`, and the holder makes the records folder (in the
     lead's state folder) with mode 0700 and checks its mode and owner.
+17. **One state root for every lead (Q).** Rule G1 across leads rests on every
+    lead on the host using the same state root, and on every source and
+    everything above it being Ataniq's. No code checks either: the rules about
+    another lead's state know only the state root of their own inputs, and the
+    other checks cover links and the lexical and real folder rules. The holder
+    has to guarantee both.
 
 ## Qualification
 
