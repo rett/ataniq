@@ -228,3 +228,60 @@ func TestFakeClockSleepersCountsSleepOnly(t *testing.T) {
 		t.Fatalf("sleepers %d waiters %d", c.Sleepers(), c.Waiters())
 	}
 }
+
+// A Sleep whose context has ended is not counted at once, before its
+// goroutine has run its cleanup.
+func TestFakeClockCancelledSleepNotCountedAtOnce(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		c := NewFakeClock(epoch0)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- c.Sleep(ctx, time.Hour) }()
+		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c.BlockUntil(bctx, 1); err != nil {
+			bcancel()
+			t.Fatal(err)
+		}
+		bcancel()
+		cancel()
+		if n := c.Sleepers(); n != 0 {
+			t.Fatalf("round %d: sleepers %d right after cancel", i, n)
+		}
+		<-done
+	}
+}
+
+// Cancelling one Sleep and then waiting for another must not let BlockUntil
+// return on the cancelled one, or the Advance would come before the second
+// sleeper is asleep and it would miss its wake-up.
+func TestFakeClockCancelledSleepDoesNotLoseWakeup(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		c := NewFakeClock(epoch0)
+		actx, acancel := context.WithCancel(context.Background())
+		adone := make(chan error, 1)
+		go func() { adone <- c.Sleep(actx, time.Hour) }()
+		bctx, bcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := c.BlockUntil(bctx, 1); err != nil {
+			bcancel()
+			t.Fatal(err)
+		}
+		acancel()
+		bdone := make(chan error, 1)
+		go func() { bdone <- c.Sleep(context.Background(), time.Second) }()
+		if err := c.BlockUntil(bctx, 1); err != nil {
+			bcancel()
+			t.Fatal(err)
+		}
+		bcancel()
+		c.Advance(time.Second)
+		select {
+		case err := <-bdone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("round %d: the second sleeper missed its Advance", i)
+		}
+		<-adone
+	}
+}

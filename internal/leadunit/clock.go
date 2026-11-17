@@ -66,7 +66,7 @@ type fakeWaiter struct {
 	id      uint64
 	at      time.Time
 	ch      chan time.Time
-	sleeper bool
+	sleeper context.Context // nil for After
 }
 
 // NewFakeClock returns a fake clock that reads start.
@@ -86,11 +86,11 @@ func (c *FakeClock) Now() time.Time {
 // the channel is ready at once. The wait cannot be cancelled and is not
 // counted by [FakeClock.BlockUntil] or [FakeClock.Sleepers].
 func (c *FakeClock) After(d time.Duration) <-chan time.Time {
-	ch, _ := c.wait(d, false)
+	ch, _ := c.wait(d, nil)
 	return ch
 }
 
-func (c *FakeClock) wait(d time.Duration, sleeper bool) (<-chan time.Time, func()) {
+func (c *FakeClock) wait(d time.Duration, sleeper context.Context) (<-chan time.Time, func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
@@ -119,7 +119,7 @@ func (c *FakeClock) Sleep(ctx context.Context, d time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ch, cancel := c.wait(d, true)
+	ch, cancel := c.wait(d, ctx)
 	defer cancel()
 	select {
 	case <-ch:
@@ -162,7 +162,7 @@ func (c *FakeClock) Sleepers() int {
 	defer c.mu.Unlock()
 	n := 0
 	for _, w := range c.waiters {
-		if w.sleeper {
+		if w.sleeper != nil && w.sleeper.Err() == nil {
 			n++
 		}
 	}
