@@ -55,7 +55,10 @@ type Client struct {
 	holderCounters []terminalconsole.LiveCounter
 	lastScreen     string
 	notices        []terminalconsole.LiveNotice
-	cnt            counters
+	// inputBrokenShown is set once the notice that the agent's input is
+	// broken was made: it is said once for the life of the client.
+	inputBrokenShown bool
+	cnt              counters
 }
 
 // counters are the client's own counters, shown with the holder's.

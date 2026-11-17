@@ -537,6 +537,14 @@ func (s *session) check(payload []byte) *outcome {
 	return &outcome{kind: outResync}
 }
 
+// reasonInputBroken is the reason token of the Notice the holder sends when
+// the agent's input is broken (the write to it failed for good). The wire
+// package has no constant for it yet.
+const reasonInputBroken wire.Reason = "input-broken"
+
+// inputBrokenText is what the cockpit says of it.
+const inputBrokenText = "the agent's input is broken: nothing more can be typed"
+
 func (s *session) notice(payload []byte) *outcome {
 	c := s.c
 	n, err := wire.DecodeNotice(payload)
@@ -545,7 +553,7 @@ func (s *session) notice(payload []byte) *outcome {
 	}
 	text := shorten(n.Text, wire.MaxNoticeText)
 	out := terminalconsole.LiveNotice{Code: string(n.Reason), Text: text}
-	refused, resyncing := false, false
+	refused, resyncing, once := false, false, false
 	switch n.Reason {
 	case wire.ReasonKeyHeldSuspend, wire.ReasonKeyHeldSignal:
 		out.Code = terminalconsole.NoticeHeldKey
@@ -554,6 +562,11 @@ func (s *session) notice(payload []byte) *outcome {
 	case wire.ReasonWriterChanged:
 		// The cockpit's own text names the writer.
 		out.Code, out.Text, out.Client = terminalconsole.NoticeWriterChanged, "", s.writer
+	case reasonInputBroken:
+		// The agent's input is broken for good: the cockpit says so once,
+		// in its own words, whatever text the holder gave.
+		out.Text = inputBrokenText
+		once = true
 	case wire.ReasonResync:
 		// The holder dropped output this client could not take and sends a
 		// new snapshot on this connection: the screen is behind until it
@@ -568,6 +581,12 @@ func (s *session) notice(payload []byte) *outcome {
 	c.mutate(func() {
 		if refused {
 			c.st.RefusedInput++
+		}
+		if once {
+			if c.inputBrokenShown {
+				return
+			}
+			c.inputBrokenShown = true
 		}
 		if resyncing && c.st.Conn == terminalconsole.LiveAttached {
 			c.st.Conn, c.st.Reason = terminalconsole.LiveResyncing, "the holder is sending a new snapshot"

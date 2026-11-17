@@ -405,6 +405,42 @@ func TestRoleChangeUpdatesTheStatusAndTheHoldersNoticeIsTheOnlyNotice(t *testing
 	}
 }
 
+func TestInputBrokenNoticeIsShownOnce(t *testing.T) {
+	leakCheck(t)
+	e := newEnv(t, setup{mode: leadattach.ModeWriter, tickets: 1})
+	hc := e.attach(wire.RoleWriter)
+	hc.notice(wire.Reason("input-broken"), "the write to the agent failed: broken pipe")
+	ns := e.notices(1)
+	want := terminalconsole.LiveNotice{Code: "input-broken", Text: "the agent's input is broken: nothing more can be typed"}
+	if len(ns) != 1 || ns[0] != want {
+		t.Fatalf("notices %+v, want %+v", ns, want)
+	}
+
+	// Again, even after the cockpit took the first: not twice. A marker
+	// notice shows the second was applied.
+	hc.notice(wire.Reason("input-broken"), "again")
+	hc.notice(wire.Reason("marker"), "")
+	ns = e.notices(1)
+	if len(ns) != 1 || ns[0].Code != "marker" {
+		t.Errorf("notices after a second input-broken: %+v", ns)
+	}
+
+	// A new connection of the same client does not say it again either.
+	hc.corrupt("A", "B")
+	hc.check()
+	hc.closed()
+	e.tickets.give(1)
+	hc2 := e.reattachAs(wire.RoleWriter)
+	hc2.notice(wire.Reason("input-broken"), "")
+	hc2.notice(wire.Reason("marker"), "")
+	ns = e.notices(2)
+	for _, n := range ns {
+		if n.Code == "input-broken" {
+			t.Errorf("input-broken said again: %+v", ns)
+		}
+	}
+}
+
 func TestNoticeReasonsAreMapped(t *testing.T) {
 	leakCheck(t)
 	e := newEnv(t, setup{mode: leadattach.ModeWriter})
@@ -806,10 +842,12 @@ func (hc *hconn) mismatch() {
 
 // reattach welcomes the connection the client made next, with a snapshot of
 // the holder's screen, and waits for the client to be attached.
-func (e *env) reattach() *hconn {
+func (e *env) reattach() *hconn { return e.reattachAs(wire.RoleViewer) }
+
+func (e *env) reattachAs(role wire.Role) *hconn {
 	e.t.Helper()
 	hc := e.h.accept()
-	hc.welcome(wire.RoleViewer)
+	hc.welcome(role)
 	hc.snapshot()
 	e.untilConn(terminalconsole.LiveAttached)
 	return hc
