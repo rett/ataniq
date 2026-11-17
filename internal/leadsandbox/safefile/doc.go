@@ -95,7 +95,9 @@
 // refuses with [ErrEscapes] when a folder on the path moved while the call
 // ran. Folders it made after such a move stay where the moved folder went,
 // outside the handle, in a place the lead could already write; it cannot
-// undo that.
+// undo that. A nil result holds only at the moment of that end check: a
+// folder moved afterwards is not seen, so a caller that uses the path later
+// (a bind by path) checks it again right before it does.
 //
 // It does not protect against the folder behind the handle being changed by
 // someone with owner rights, and it trusts the path given to [OpenRoot]: only
