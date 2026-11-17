@@ -34,7 +34,7 @@ integration. The list of what is not built is at the [end](#not-built).
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
 | [`internal/leadrole`](../internal/leadrole/doc.go) | Role names, unit names, lock paths, coordinator identity. | Reads names. |
-| [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock. Takes no role lock. |
+| [`internal/leadlock`](../internal/leadlock/doc.go) | The two kinds of file lock. | Takes the daemon lock and the runtime folder lock. Takes no role lock. |
 | [`internal/leadunit`](../internal/leadunit/doc.go) | The unit manager interface, the unit specification and an in-memory fake. | The interface only. |
 | [`internal/leadunit/systemdmgr`](../internal/leadunit/systemdmgr/doc.go) | The unit manager for the systemd user manager. | Reads units for the one reconcile at start. |
 | [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) | Start, stop and reconcile of roles. It does not handle coordinators (see [below](#coordinators-in-the-lifecycle)). | Calls reconcile once. Never start or stop. |
@@ -93,8 +93,8 @@ path, `daemon.sock` included, must fit in 107 bytes.
 | `<state>/daemon.lock` | 0600 | The daemon lock. It holds the daemon's pid as decimal text and a newline. It is never removed, so it stays after the daemon ends. |
 | `<state>/registry/` | 0700 | The registry folder. |
 | `<state>/registry/registry.jsonl` | 0600 | The registry journal. |
-| `<runtime>` | 0700 | Created if missing; its parent must exist. Checked as `<state>` is. |
-| `<runtime>/daemon.sock.lock` | 0600 | The runtime folder lock: one daemon serves a runtime folder. It is taken before a stale socket is removed and held until the listener is closed (see [Locks](#locks)). |
+| `<runtime>` | 0700 | Created if missing, right after the daemon lock is taken; its parent must exist. Checked as `<state>` is. The socket path must fit in 107 bytes, which is checked before the folder is made. |
+| `<runtime>/daemon.sock.lock` | 0600 | The runtime folder lock: one daemon serves a runtime folder. It is taken right after the daemon lock, before the registry is opened, and held to the end of shutdown (see [Locks](#locks)). |
 | `<runtime>/daemon.sock` | 0600 | The client socket. Closing the listener at shutdown removes it. |
 
 `<state>/roles/<project>/lead.lock` and the other role lock paths are named in
@@ -110,29 +110,35 @@ fails, with one line on standard error:
 2. **state**: create or check the state folder.
 3. **lock**: take `daemon.lock`. A second daemon fails here and the message
    shows the holder's pid text as a hint, not as proof.
-4. **registry**: open `<state>/registry/`. A corrupt registry stops the daemon.
+4. **runtime lock**: make the runtime folder and take `daemon.sock.lock` in
+   it, before the registry is opened. A socket path that is too long is
+   refused first, before the folder or the file is made. A second daemon on
+   the same runtime folder fails here with exit code 17 and a message that
+   another daemon serves the folder. It has opened no registry and asked the
+   manager nothing by then, so it writes nothing to its journal. A start that
+   fails at the registry, the manager or the reconcile step leaves the folder
+   and the lock file behind, and touches no socket.
+5. **registry**: open `<state>/registry/`. A corrupt registry stops the daemon.
    Nothing is repaired.
-5. **manager**: read the boot identity and build the unit manager and the
+6. **manager**: read the boot identity and build the unit manager and the
    lifecycle controller. When `busctl` or `systemctl` cannot be found, the
    daemon still runs: it prints that the systemd tools are unavailable and
    uses a manager that answers nothing.
-6. **reconcile**: run the lifecycle's reconcile once, bounded to 30 s. It
+7. **reconcile**: run the lifecycle's reconcile once, bounded to 30 s. It
    starts nothing and signals nothing. It is shown as not completed when the
    unit manager is known to be unavailable (also with an empty registry, when
    nothing was asked of it), when any unit-manager call failed during it, when
-   it ran out of time, and while a cut of the registry is unacknowledged. None
-   of these is fatal; a failure of the registry is (see
-   [Reconcile](#reconcile-and-what-starts-by-itself)). Reconcile does not
-   run again on a timer.
-7. **runtime lock and stale socket**: take `daemon.sock.lock` in the runtime
-   folder. A second daemon on the same runtime folder fails here with exit
-   code 17 and a message that another daemon serves the folder. Only now, with
-   both locks held, remove a socket file an earlier daemon left. It removes a
-   socket owned by the caller and refuses anything else at that name.
-8. **socket**: bind `daemon.sock`. The runtime lock is held until the
-   listener is closed.
-9. **serve**, until SIGTERM or SIGINT.
-10. **shutdown**.
+   the manager did not answer for a role, when it ran out of time, and while a
+   cut of the registry is unacknowledged. None of these is fatal; a failure of
+   the registry is (see [Reconcile](#reconcile-and-what-starts-by-itself)).
+   Reconcile does not run again on a timer.
+8. **stale socket**: with both locks held, remove a socket file an earlier
+   daemon left. It removes a socket owned by the caller and refuses anything
+   else at that name.
+9. **socket**: bind `daemon.sock`. The runtime lock stays held while the
+   daemon serves.
+10. **serve**, until SIGTERM or SIGINT.
+11. **shutdown**.
 
 The daemon writes a line to standard error when it listens, and when it
 removes a stale socket or finds a reason to show the reconcile as not
@@ -152,9 +158,9 @@ completed. It writes no log file.
 | 14 | Registry: cannot be opened, corrupt, or locked by another writer. |
 | 15 | Manager: the boot identity cannot be read, or the manager or controller cannot be built. |
 | 16 | Reconcile: failed in the registry. |
-| 17 | Socket: another daemon serves the runtime folder (its lock is held), or the stale socket, the folder or the bind failed. |
+| 17 | Socket: another daemon serves the runtime folder (its lock is held; refused before the registry is opened), or the socket path is too long, the folder is not usable, or the stale socket or the bind failed. |
 | 18 | The server stopped by itself. |
-| 19 | The server did not end within the shutdown grace (5 s). The registry is left open and the daemon lock held, and both end with the process. |
+| 19 | The server did not end within the shutdown grace (5 s). The registry is left open and both locks held, and all end with the process. |
 | 20 | `status`: no daemon answers at the socket (missing or refused). |
 | 21 | `status`: the daemon refused this user. |
 | 22 | `status`: an answer that is not valid, or an error the daemon answered. |
@@ -180,19 +186,21 @@ after 10 s.
 ### What shutdown does and does not do
 
 On SIGTERM or SIGINT the daemon stops accepting, closes the listener (which
-removes the socket and releases the runtime lock), closes the connections and
-waits for them for at most 5 s, closes the registry, and releases the daemon
-lock last.
+removes the socket, still under the runtime lock), closes the connections and
+waits for them for at most 5 s, then closes the registry, releases the runtime
+lock, and releases the daemon lock last.
 
 If the server has not ended within those 5 s, the daemon does not close the
-registry or release the daemon lock under a goroutine that may still use them.
-It logs what is left, leaves both to the end of the process and exits with
-code 19.
+registry or release either lock under a goroutine that may still use them. It
+says what is left, leaves all three (the registry, the runtime lock and the
+daemon lock) to the end of the process and exits with code 19. The listener
+was closed by then, so the socket is gone.
 
 It does not stop a lead or any unit, and it signals nothing. A lead that runs
 when the daemon goes away keeps running. A SIGKILL or a crash skips all of it;
 the kernel releases the locks, and a socket file may stay behind, which the
-next daemon removes after it holds both locks.
+next daemon removes after it holds both locks. A lock file that stays behind is
+no obstacle: the lock is the `flock`, not the file.
 
 ## The client socket and protocol
 
@@ -376,10 +384,25 @@ Recovery reports every cut that no later `recovery-acknowledged` record
 follows, also after a reopen. Only `AcknowledgeRecovery`, which takes a
 required note, journals the acknowledgement. In this build the one caller is
 the lifecycle's reconcile: it acknowledges a cut once it has acted on every
-role. A reconcile that stops before that, on a failure of the registry or
-because its context ended, acknowledges nothing, and the cut is reported again
-after a restart. While a cut is unacknowledged the daemon shows the reconcile
-as not completed.
+role, with the unit manager answering for each role it had to ask about. The
+cut is **not** acknowledged, and is reported again after a restart, in each of
+these cases:
+
+- the registry failed, in the reconcile or in writing the acknowledgement
+  itself (the daemon then exits with code 16);
+- the reconcile's context ended before it had been through every role: its 30 s
+  bound ran out, or the daemon was asked to stop;
+- the unit manager did not answer for a role. A cut asks the manager about a
+  role recorded `desired`, `stopped` or `ended`, and about a role with a
+  pending launch intent; a failed `Inspect`, a control group that could not be
+  read, or the systemd tools missing leaves such a role not acted on. A role
+  that is shown unknown without a question, and one run by the tmux-manager,
+  do not hold it back;
+- the daemon ended or crashed between acting on the roles and writing the
+  acknowledgement.
+
+The next daemon that can act on every role acknowledges it. While a cut is
+unacknowledged the daemon shows the reconcile as not completed.
 
 A cut shows every role run by ataniq as unknown with the reason
 `registry-recovered`, except a role recorded `desired`, `stopped` or `ended`
@@ -427,11 +450,11 @@ cut can cause, above). A call that names another epoch than the role's current
 one is refused as stale.
 
 The launch intent (a new epoch, a random 128-bit intent id, the unit name and
-the boot identity) is **journaled before any unit call**. A launch is admitted only from the shown
-states `desired`, `stopped` or `ended`, with no intent pending. The intent
-stays `pending` until an outcome (`launched`, `adopted`, `failed` or
-`abandoned`) is recorded; while it is pending, `stopped`, `ended` and an owner
-decision are refused.
+the boot identity) is **journaled before any unit call**. A launch is admitted
+only from the shown states `desired`, `stopped` or `ended`, with no intent
+pending. The intent stays `pending` until an outcome (`launched`, `adopted`,
+`failed` or `abandoned`) is recorded; while it is pending, `stopped`, `ended`
+and an owner decision are refused.
 
 ### Shown states and the transition table
 
@@ -552,18 +575,25 @@ open file description, so it is held as long as a descriptor of it is open
 anywhere; the kernel releases it when the last one closes, a SIGKILL included.
 The file is opened close-on-exec, and is never removed.
 
-Only the daemon's own locks are taken today. No role lock is taken: there is no
+Only the daemon's own locks are taken today: the daemon lock and the runtime
+folder lock, which use the same mechanism. No role lock is taken: there is no
 holder in this build, so nothing takes one. The daemon never probes a role lock
 by taking and releasing it, and the package offers no such call.
 
 The daemon takes two locks, which exclude different things:
 
-- `<state>/daemon.lock` enforces **one daemon per state folder**.
+- `<state>/daemon.lock` enforces **one daemon per state folder**. It is taken
+  first and released last.
 - `<runtime>/daemon.sock.lock` enforces **one daemon per runtime folder**. The
-  daemon takes it before it removes a stale socket and holds it until the
-  listener is closed, so a second daemon cannot remove the socket of a live
-  one. A second daemon on the same runtime folder exits with code 17 and a
-  message that another daemon serves the folder.
+  daemon takes it right after the daemon lock, before it opens the registry,
+  and holds it until after the listener and the registry are closed, so a
+  second daemon cannot remove the socket of a live one. A second daemon on the
+  same runtime folder exits with code 17 and a message that another daemon
+  serves the folder, and it is refused before it reconciles anything.
+
+At shutdown the locks are released in the reverse order of taking, the registry
+being closed before the runtime lock. After exit code 19 none of the three is
+released: the registry and both locks are left to the end of the process.
 
 Neither lock covers two daemons of one user that have different state folders
 **and** different runtime folders. Nothing prevents that, and they would share
@@ -615,7 +645,8 @@ replacement rule applies: the unit name must not be loaded, and the control
 group of the previous epoch must be proven empty (a changed boot identity is
 proof in itself). Without that proof nothing starts: the start is refused and
 the role is left as it is. Only then does the lifecycle journal the launch
-intent, with the boot identity, and call `Start` once. It never waits for readiness, and it never sets `ready`.
+intent, with the boot identity when the manager reported one, and call `Start`
+once. It never waits for readiness, and it never sets `ready`.
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
@@ -707,35 +738,48 @@ daemon restart:
   `unknown` with the reason `registry-recovered`, except a role recorded
   `desired`, `stopped` or `ended` whose unit is proven absent, which is left as
   it is. A pending launch intent of a role shown `unknown` for the cut is still
-  settled (adopted when its unit runs, abandoned once the late-start window has
-  passed). Once reconcile has acted on every role it acknowledges the cut; an
-  unacknowledged cut is reported again after a restart (see
+  settled: adopted when its unit runs, abandoned at once when the boot changed
+  (see [the late-start window](#the-late-start-window)), else abandoned once
+  the late-start window has passed. The role stays `unknown` in every case.
+  Once reconcile has acted on every role it acknowledges the cut; in the cases
+  where it does not, the cut is reported again after a restart (see
   [Recovery and its limit](#recovery-and-its-limit)).
 
 The daemon shows the reconcile as not completed when the unit manager is known
 to be unavailable (also with an empty registry), when any unit-manager call
-failed during it, when it ran out of time, and while a cut is unacknowledged.
+failed during it, when the manager did not answer for a role, when it ran out
+of time, and while a cut is unacknowledged.
 
 After a reboot every unit is gone, so reconcile shows a role that was live as
-`stopped`, with the reason `host-rebooted`. **No lead starts by itself, after a reboot or ever:** nothing in this build starts a
-unit, and there is no boot start.
+`stopped`, with the reason `host-rebooted`. **No lead starts by itself, after a
+reboot or ever:** nothing in this build starts a unit, and there is no boot
+start.
 
 ### The late-start window
 
 When a start's reply is lost and no unit is loaded, the intent is not closed at
-once. Reconcile waits until the **late-start window** (30 s) and a margin (10 s)
-have passed since the registry stamped the intent. Then, with the unit still not
-loaded and its control group empty, it closes the intent as abandoned and
-records the role as stopped, with a proof text naming the facts used.
+once, unless the boot changed (below). Reconcile waits until the **late-start
+window** (30 s) and a margin (10 s) have passed since the registry stamped the
+intent. Then, with the unit still not loaded and its control group empty, it
+closes the intent as abandoned and records the role as stopped, with a proof
+text naming the facts used.
 
-The launch intent carries the boot identity it was made on. A lost launch whose
-intent was made on another boot is settled at once, without the window: nothing
-that was on the bus before a reboot can land after it.
+The launch intent carries the boot identity the manager reported when the
+launch was journaled. A lost launch is settled at once, without the window,
+when all of these hold: no unit is loaded, the intent has a boot identity, the
+manager reports one now, and the two differ. Nothing that was on the bus
+before a reboot can land after it. An intent with no boot identity (the manager
+gave none), a manager that reports none now, or the same boot leave the
+decision to the window alone. For a role shown `unknown` for a cut of the
+registry, a changed boot closes the intent in the same way, and the role stays
+`unknown`.
 
 The daemon reconciles once. An intent that is still inside its window at that
 moment leaves the role `unknown` with the reason `launch-unsettled`, the
 reconcile is shown as completed, and nothing settles the intent until the daemon
-is started again.
+is started again. A role keeps the reason it already had when it was shown
+`unknown` with `launch-reply-lost`, or for a cut of the registry with
+`registry-recovered`; only another role is given `launch-unsettled`.
 
 **The window is a heuristic and not a bound.** The manager's call timeout limits
 how long the caller waits for a reply, not when systemd executes a request that
