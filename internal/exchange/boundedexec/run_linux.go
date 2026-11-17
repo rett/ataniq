@@ -80,8 +80,24 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 		// caller's reader, until Read returns. Nothing waits for it. When
 		// Run returns, pw is closed, so a Write into a pipe that nobody
 		// reads any more ends too.
+		//
+		// A read error (not EOF) stops the command and is returned by Run.
+		// The command is not given EOF then: truncated input must not look
+		// complete. Run kills the group and the deferred close ends pw. A
+		// write error (the command closed its input) is not an error.
 		stdinFeed = func() {
-			_, _ = io.Copy(pw, in)
+			var rerr error
+			_, _ = io.Copy(pw, readerFunc(func(p []byte) (int, error) {
+				n, err := in.Read(p)
+				if err != nil && err != io.EOF {
+					rerr = err
+				}
+				return n, err
+			}))
+			if rerr != nil {
+				st.stop(fmt.Errorf("boundedexec: read standard input: %w", rerr))
+				return
+			}
 			_ = pw.Close()
 		}
 	}
@@ -206,6 +222,12 @@ func run(ctx context.Context, c Cmd) (Result, error) {
 	}
 	return res, nil
 }
+
+// readerFunc makes a function a reader. It also hides any WriterTo of the
+// caller's reader from io.Copy, so every read goes through the function.
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
 
 // copyPipe copies r to w in a goroutine of its own and closes r when the
 // copy ends. The returned channel closes when the goroutine has ended.

@@ -849,3 +849,63 @@ func TestPipeHeldAfterANonZeroExitStaysAnExitError(t *testing.T) {
 		t.Errorf("stderr %q", res.Stderr)
 	}
 }
+
+// failingReader gives its data, then fails with err.
+type failingReader struct {
+	data string
+	err  error
+	read bool
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, r.err
+	}
+	r.read = true
+	return copy(p, r.data), nil
+}
+
+func TestStdinReadErrorStopsTheCommandAndIsReturned(t *testing.T) {
+	t.Parallel()
+	// The command would succeed: it prints "ok" when it reaches EOF. It must
+	// not reach it, and the error must come back.
+	broke := errors.New("source broke")
+	c := script("cat >/dev/null; echo ok")
+	c.Stdin = &failingReader{data: "line one\n", err: broke}
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, broke) {
+		t.Fatalf("err = %v, want it to wrap %v", err, broke)
+	}
+	if !strings.Contains(err.Error(), "boundedexec: read standard input: ") {
+		t.Errorf("err = %q", err)
+	}
+	if strings.Contains(string(res.Stdout), "ok") {
+		t.Errorf("the command was given EOF: stdout %q", res.Stdout)
+	}
+	if took > 2*time.Second {
+		t.Errorf("Run took %v", took)
+	}
+}
+
+func TestStdinReadErrorWithNoDataBeforeIt(t *testing.T) {
+	t.Parallel()
+	broke := errors.New("source broke")
+	c := script("cat; echo exit-by-itself")
+	c.Stdin = &failingReader{err: broke}
+	res, err, _ := within(t, hardLimit, c)
+	if !errors.Is(err, broke) {
+		t.Fatalf("err = %v, stdout %q", err, res.Stdout)
+	}
+}
+
+func TestStdinWriteErrorIsNotAnError(t *testing.T) {
+	t.Parallel()
+	// The command closes its input at once and ends well; the large input
+	// that cannot be written (EPIPE) is no error.
+	c := script("exec <&-; sleep 0.2; echo done")
+	c.Stdin = strings.NewReader(strings.Repeat("z", 1<<20))
+	res, err, _ := within(t, hardLimit, c)
+	if err != nil || string(res.Stdout) != "done\n" {
+		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+}

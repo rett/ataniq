@@ -41,7 +41,11 @@ type Cmd struct {
 	// Stdin is the standard input. Nil means no input (/dev/null). An
 	// *os.File is handed to the command as it is. Any other reader is copied
 	// to the command in a goroutine of Run's own, and Run never waits for
-	// that goroutine. If Read blocks (an io.Pipe that nobody writes to or
+	// that goroutine. If Read fails with an error other than io.EOF, the
+	// command is stopped (it is not given EOF, so it cannot take truncated
+	// input for the whole) and Run returns that error, wrapped. A write
+	// error towards the command, because it closed its input, is not an
+	// error. If Read blocks (an io.Pipe that nobody writes to or
 	// closes), the goroutine is left behind, blocked in the caller's Read,
 	// until Read returns; Run still returns in time.
 	Stdin io.Reader
