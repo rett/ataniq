@@ -290,6 +290,8 @@ func TestRestoreRefusesInvalidSnapshots(t *testing.T) {
 		{"cells missing", func(s *snapSpec) { s.screens[1].cells[0].run-- }},
 		{"cell content of 65 bytes", func(s *snapSpec) { s.screens[0].cells[0].content = enc("a", 65) }},
 		{"cell content not UTF-8", func(s *snapSpec) { s.screens[0].cells[0].content = "\xc3" }},
+		{"cell width 3", func(s *snapSpec) { s.screens[0].cells[0].width = 3 }},
+		{"cell width 3 in the alternate screen", func(s *snapSpec) { s.screens[1].cells[0].width = 3 }},
 		{"cell width 65", func(s *snapSpec) { s.screens[0].cells[0].width = 65 }},
 		{"cell style outside the table", func(s *snapSpec) { s.screens[0].cells[0].style = 1 }},
 		{"cell link outside the table", func(s *snapSpec) { s.screens[0].cells[0].link = 1 }},
@@ -371,6 +373,118 @@ func TestRestoreRefusesTruncatedOversizedAndNonMinimalInput(t *testing.T) {
 	}
 }
 
+// followsOutput writes, erases, inserts, deletes, scrolls and resizes the
+// pane the way a session does after the pane was restored, at the edges and
+// in the middle of the lines, with narrow and wide characters, under margins
+// and on both screens: a restored pane that the next bytes make panic is a
+// pane that crashes the client. Then it checks that the pane can still be
+// snapshotted and restored. It returns when the pane survived.
+func followsOutput(t testing.TB, p *sessionpane.Pane) {
+	t.Helper()
+	one := func() {
+		cols, rows := p.Size()
+		var b strings.Builder
+		for _, y := range []int{1, (rows + 1) / 2, rows} {
+			for _, x := range []int{cols, cols - 1, cols / 2, 2, 1} {
+				if x < 1 {
+					continue
+				}
+				fmt.Fprintf(&b, "\x1b[%d;%dHY\x1b[%d;%dH\u4e16\x1b[%d;%dH\x1b[3X\x1b[%d;%dH\x1b[2@",
+					y, x, y, x, y, x, y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[2P\x1b[%d;%dH\x1b[K\x1b[1K\x1b[3b\u0301", y, x, y, x)
+			}
+			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[L\x1b[M\x1b[2K", y)
+		}
+		b.WriteString("\x1b[2S\x1b[2T\x1b[I\x1b[Z\x1bD\x1bM\x1b[?1049h\u4e16a\x1b[2@\x1b[?1049l")
+		b.WriteString("\x1b[?69h\x1b[2;3s\x1b[1;2H\u4e16\u4e16\x1b[2P\x1b[?69l\x1b[r")
+		b.WriteString("\x1b[J\u4e16\u4e16\u4e16\x1b[1J\x1b[2J")
+		p.Write([]byte(b.String()))
+	}
+	cols, rows := p.Size()
+	one()
+	p.Resize(cols+3, rows+2)
+	one()
+	p.Resize(max(2, cols/2), max(1, rows/2))
+	one()
+	p.Resize(cols, rows)
+	one()
+	if !p.Quiescent() {
+		t.Fatal("the pane is not quiescent after the output")
+	}
+	snap, err := p.AppendSnapshot(nil)
+	if err != nil {
+		t.Fatalf("the snapshot after the output: %v", err)
+	}
+	q := sessionpane.New(2, 2, sessionpane.Options{})
+	defer q.Close()
+	if err := q.Restore(snap); err != nil {
+		t.Fatalf("the restore of the snapshot after the output: %v", err)
+	}
+}
+
+// touchesEveryCell restores data into p once for each cell of the first and
+// of the last row and, as the first thing that happens after the restore,
+// writes there, erases, inserts, deletes and repeats: a bad cell is only
+// found by the first write to it or to its neighbour, since the write makes
+// it good. A large screen is touched at a few cells only.
+func touchesEveryCell(t testing.TB, p *sessionpane.Pane, data []byte) {
+	t.Helper()
+	cols, rows := p.Size()
+	xs := []int{}
+	for x := 1; x <= cols; x++ {
+		if cols*rows <= 4000 || x <= 3 || x >= cols-2 {
+			xs = append(xs, x)
+		}
+	}
+	for _, y := range []int{1, rows} {
+		for _, x := range xs {
+			for _, seq := range []string{"Y", "\u4e16", "\x1b[2X", "\x1b[2@", "\x1b[2P", "\x1b[K", "\x1b[1K", "\x1b[2b", "\x1b[L", "\x1b[M", "\x1b[2J"} {
+				if err := p.Restore(data); err != nil {
+					t.Fatalf("Restore of what was restored: %v", err)
+				}
+				p.Write([]byte(fmt.Sprintf("\x1b[%d;%dH%s", y, x, seq)))
+			}
+		}
+	}
+}
+
+// A snapshot with the cells that output makes and that a careless reader of
+// snapshots could get wrong (a wide cell in the last column after a resize, a
+// placeholder with no wide cell before it, a wide cell with no placeholder
+// after it) is restored, and the writes, erases, inserts, deletes and resizes
+// that follow do not panic. The cells of every one of them were made by
+// output in a probe of the property streams; a snapshot of one of those
+// screens must restore, which is why the decoder checks the width of a cell
+// and not its neighbours.
+func TestRestoreSurvivesOutputAfterwards(t *testing.T) {
+	cell := func(content string, width int) specCell { return specCell{run: 1, content: content, width: width} }
+	wide, place, narrow := cell("\u4e16", 2), cell("", 0), cell("a", 1)
+	for name, row := range map[string][]specCell{
+		"wide cell in the last column":    {narrow, narrow, narrow, narrow, narrow, wide},
+		"wide cell with no placeholder":   {narrow, wide, narrow, narrow, narrow, narrow},
+		"placeholder at the start":        {place, narrow, narrow, narrow, narrow, narrow},
+		"placeholder after a narrow cell": {narrow, place, narrow, narrow, narrow, narrow},
+		"placeholders in a row":           {wide, place, place, place, narrow, narrow},
+		"wide cells in a row":             {wide, wide, wide, place, narrow, narrow},
+		"zero-width cell with content":    {cell("\u0301", 0), narrow, narrow, narrow, narrow, narrow},
+		"wide cell then a wide last":      {wide, place, narrow, narrow, narrow, wide},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := blankSpec(6, 3)
+			cells := append([]specCell(nil), row...)
+			cells = append(cells, specCell{run: 12, content: " ", width: 1})
+			s.screens[0].cells = cells
+			s.screens[1].cells = cells
+			data := s.bytes()
+			p := newPane(t, 2, 2, sessionpane.Options{})
+			must(t, p.Restore(data))
+			touchesEveryCell(t, p, data)
+			must(t, p.Restore(data))
+			followsOutput(t, p)
+		})
+	}
+}
+
 // Single-bit changes of a real snapshot (half the bits of every byte, and
 // those of every fourth byte under the race detector) are refused or taken,
 // never a panic; when one is taken the pane holds a state it can snapshot,
@@ -406,6 +520,9 @@ func TestRestoreSurvivesBitFlips(t *testing.T) {
 				continue
 			}
 			taken++
+			// Whatever was taken follows output without a panic.
+			followsOutput(t, target)
+			must(t, target.Restore(flipped))
 			again, err := target.AppendSnapshot(nil)
 			if err != nil {
 				t.Fatalf("byte %d bit %d: the snapshot of a restored pane: %v", i, bit, err)
@@ -914,9 +1031,13 @@ func FuzzRestore(f *testing.F) {
 	f.Add(blankSpec(2, 1).bytes())
 	f.Add([]byte{})
 	f.Add([]byte{1, 2, 1})
-	for seed := 0; seed < 3; seed++ {
+	for seed := 0; seed < 5; seed++ {
 		s := blankSpec(6, 2)
 		switch seed {
+		case 3: // a wide cell in the last column, and a placeholder after a narrow cell
+			s.screens[0].cells = []specCell{{run: 5, content: "a", width: 1}, {run: 1, content: "\u4e16", width: 2}, {run: 1, content: "", width: 0}, {run: 5, content: " ", width: 1}}
+		case 4: // a placeholder at the start of a line, and a wide cell with none after it
+			s.screens[1].cells = []specCell{{run: 1, content: "", width: 0}, {run: 1, content: "\u4e16", width: 2}, {run: 10, content: " ", width: 1}}
 		case 0:
 			s.open = &specOpen{x: 1, text: "e\u0301"}
 		case 1:
@@ -958,6 +1079,10 @@ func FuzzRestore(f *testing.F) {
 		if err != nil || !bytes.Equal(again, snap) {
 			t.Fatalf("the snapshot of a restored pane is not stable (%v)", err)
 		}
+		// A restored pane follows output without a panic.
+		touchesEveryCell(t, target, data)
+		must(t, target.Restore(data))
+		followsOutput(t, target)
 		// Back to the pane the fuzz function started from.
 		k.t = t
 		if err := target.Restore(k.snap); err != nil {

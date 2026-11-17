@@ -144,7 +144,16 @@ Patches, applied in this order to the files of the module as released:
    included, with one, or refuses it and leaves the emulator as it was: the
    sizes, the strings, the links (through the admission of the screen's link
    table, so the cells share one copy of each), the modes, the cursors and the
-   open cluster are checked against the caps first. The state holds both
+   open cluster are checked against the caps first. A cell is at most
+   `MaxCellWidth` (2) wide: output draws a cluster in one or two cells (a
+   placeholder has width 0), and ultraviolet's `Line.Set` rewrites the whole
+   span of a wide cell it overwrites without looking at the end of the line,
+   so a cell of width 3 or more made a later write panic. `SetState` does not
+   check a cell against its neighbours: output makes a wide cell in the last
+   column (a resize cuts a line), a cell of width 0 with no wide cell before
+   it (a lone combining mark) and a wide cell with no placeholder after it,
+   and a snapshot of such a screen must restore; with a width of 2 at most,
+   none of them makes `Line.Set` index past the line. The state holds both
    screens (cells, cursor, saved cursor, scroll region, link table), the
    modes with a setting, the character sets and shifts, the pending wrap, the
    tab stops, the last character, the colours the session set, and the open

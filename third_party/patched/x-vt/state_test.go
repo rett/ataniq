@@ -362,6 +362,126 @@ func TestSetStateInternsLinks(t *testing.T) {
 	}
 }
 
+// touchEveryCell sets st on a new emulator for every cell of the first and
+// the last row, and writes, erases, inserts and deletes there as the first
+// thing that happens after the restore: a bad cell is only found by the first
+// write to it or to its neighbour, as the write makes it good.
+func touchEveryCell(t *testing.T, st State) {
+	t.Helper()
+	e := NewEmulator(2, 2)
+	for _, y := range []int{1, st.Height} {
+		for x := 1; x <= st.Width; x++ {
+			for _, seq := range []string{"Y", "\u4e16", "\x1b[2X", "\x1b[2@", "\x1b[2P", "\x1b[K", "\x1b[1K", "\x1b[2b", "\x1b[L", "\x1b[M", "\x1b[2J"} {
+				if err := e.SetState(st); err != nil {
+					t.Fatalf("SetState: %v", err)
+				}
+				e.Write([]byte(fmt.Sprintf("\x1b[%d;%dH%s", y, x, seq)))
+			}
+		}
+	}
+}
+
+// followOutput is what a session does to a screen after a restore: it
+// writes, erases, inserts, deletes, scrolls and resizes, at the edges and in
+// the middle, with narrow and wide characters, under margins and on both
+// screens. It returns when the emulator survived (a panic fails the test).
+func followOutput(e *Emulator) {
+	one := func() {
+		w, h := e.Width(), e.Height()
+		var b strings.Builder
+		for _, y := range []int{1, (h + 1) / 2, h} {
+			for _, x := range []int{1, 2, w / 2, w - 1, w} {
+				if x < 1 {
+					continue
+				}
+				fmt.Fprintf(&b, "\x1b[%d;%dHY", y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\u4e16", y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[3X", y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[2@", y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[2P", y, x)
+				fmt.Fprintf(&b, "\x1b[%d;%dH\x1b[K\x1b[1K\x1b[3b\u0301", y, x)
+			}
+			fmt.Fprintf(&b, "\x1b[%d;1H\x1b[L\x1b[M\x1b[2K", y)
+		}
+		b.WriteString("\x1b[2S\x1b[2T\x1b[I\x1b[Z\x1bD\x1bM\x1b[?1049h\u4e16a\x1b[2@\x1b[?1049l")
+		b.WriteString("\x1b[?69h\x1b[2;3s\x1b[1;2H\u4e16\u4e16\x1b[2P\x1b[?69l\x1b[r")
+		b.WriteString("\x1b[J\u4e16\u4e16\u4e16\x1b[1J\x1b[2J")
+		e.Write([]byte(b.String()))
+	}
+	w, h := e.Width(), e.Height()
+	one()
+	e.Resize(w+3, h+2)
+	one()
+	e.Resize(max(2, w/2), max(1, h/2))
+	one()
+	e.Resize(w, h)
+	one()
+}
+
+// A state with cells that output can make but that a careless writer of
+// states could get wrong, or that output cannot make: a wide cell in the
+// last column, a placeholder with no wide cell before it, a wide cell with no
+// placeholder after it, a placeholder after a narrow cell, and every width
+// from 0 to the largest SetState takes. SetState takes each of them, and the
+// emulator survives the writes, erases, inserts, deletes and resizes that
+// follow. (The released module panics in Line.Set on a wide cell that does not
+// fit its line, as the owner of a cell of width 3 or more could make it.)
+func TestSetStateSurvivesWritesAfterwards(t *testing.T) {
+	const w, h = 7, 3
+	wide := func() uv.Cell { return uv.Cell{Content: "\u4e16", Width: 2} }
+	narrow := func() uv.Cell { return uv.Cell{Content: "a", Width: 1} }
+	place := func() uv.Cell { return uv.Cell{} }
+	for name, row := range map[string][]uv.Cell{
+		"wide cell in the last column":         {narrow(), narrow(), narrow(), narrow(), narrow(), narrow(), wide()},
+		"wide cell with no placeholder":        {narrow(), wide(), narrow(), narrow(), narrow(), narrow(), narrow()},
+		"placeholder at the start":             {place(), narrow(), narrow(), narrow(), narrow(), narrow(), narrow()},
+		"placeholder after a narrow cell":      {narrow(), place(), narrow(), narrow(), narrow(), narrow(), narrow()},
+		"placeholders in a row":                {wide(), place(), place(), place(), narrow(), narrow(), narrow()},
+		"wide cells in a row":                  {wide(), wide(), wide(), place(), narrow(), narrow(), narrow()},
+		"wide cell, then a wide cell last":     {wide(), place(), narrow(), narrow(), narrow(), narrow(), wide()},
+		"zero-width cell with content":         {{Content: "\u0301", Width: 0}, narrow(), narrow(), narrow(), narrow(), narrow(), narrow()},
+		"wide cell in the last column + place": {narrow(), narrow(), narrow(), narrow(), narrow(), wide(), place()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, rows := range []int{0, 1, 2} {
+				st := NewEmulator(w, h).State()
+				for s := range st.Screens {
+					copy(st.Screens[s].Cells[rows*w:], row)
+				}
+				e := NewEmulator(2, 2)
+				if err := e.SetState(st); err != nil {
+					t.Fatalf("SetState: %v", err)
+				}
+				followOutput(e)
+				touchEveryCell(t, st)
+			}
+		})
+	}
+
+	// Random widths of 0 to MaxCellWidth anywhere: every state that is taken
+	// is followed.
+	rng := rand.New(rand.NewPCG(5, 9))
+	for i := 0; i < 200; i++ {
+		w, h := 2+rng.IntN(6), 1+rng.IntN(3)
+		st := NewEmulator(w, h).State()
+		for s := range st.Screens {
+			for k := range st.Screens[s].Cells {
+				c := uv.Cell{Content: "x", Width: rng.IntN(MaxCellWidth + 1)}
+				if c.Width == 0 && rng.IntN(2) == 0 {
+					c.Content = ""
+				}
+				st.Screens[s].Cells[k] = c
+			}
+		}
+		e := NewEmulator(2, 2)
+		if err := e.SetState(st); err != nil {
+			t.Fatalf("state %d: %v", i, err)
+		}
+		followOutput(e)
+		touchEveryCell(t, st)
+	}
+}
+
 // A state that is refused leaves the emulator as it was.
 func TestSetStateRefusesAndKeepsTheEmulator(t *testing.T) {
 	good := func() State {
@@ -380,6 +500,8 @@ func TestSetStateRefusesAndKeepsTheEmulator(t *testing.T) {
 		{"cell content over the cap", func(s *State) { s.Screens[0].Cells[0].Content = strings.Repeat("e", MaxClusterBytes+1) }},
 		{"negative cell width", func(s *State) { s.Screens[0].Cells[0].Width = -1 }},
 		{"huge cell width", func(s *State) { s.Screens[0].Cells[0].Width = MaxClusterBytes + 1 }},
+		{"cell width 3", func(s *State) { s.Screens[0].Cells[0].Width = MaxCellWidth + 1 }},
+		{"cell width 3 in the last column", func(s *State) { s.Screens[1].Cells[len(s.Screens[1].Cells)-1].Width = 3 }},
 		{"cell link over the cap", func(s *State) { s.Screens[0].Cells[3].Link = uv.Link{URL: long} }},
 		{"cell link not in the table", func(s *State) { s.Screens[0].Cells[3].Link = uv.Link{URL: "http://other"} }},
 		{"table link without a URL", func(s *State) { s.Screens[1].Links = []uv.Link{{Params: "p"}} }},

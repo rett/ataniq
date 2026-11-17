@@ -42,13 +42,20 @@ import (
 //	                        ascending by URL and then parameters; then the
 //	                        number of refusals before the next recount
 //	  cells                 runs, until cols*rows cells: run length (at least 1),
-//	                        content string (at most 64 bytes), width, style index,
-//	                        link index (0 none, else 1 + the table index)
+//	                        content string (at most 64 bytes), width (0 to 2),
+//	                        style index, link index (0 none, else 1 + the table
+//	                        index)
 //
 // A style is: attributes byte, underline byte (0 to 5), then foreground,
 // background and underline colour. A colour is a tag byte and its value: 0
 // none; 1 basic, one byte (0 to 15); 2 indexed, one byte; 3 RGBA, four bytes;
 // 4 CMYK, four bytes; 5 alpha, two bytes big endian.
+//
+// A cell width is not checked against its neighbours: output makes a wide
+// cell at the last column (a resize cuts a line), a cell of width 0 with no
+// wide cell before it (a lone combining mark) and a wide cell with no
+// placeholder after it (an insert or a delete cuts a pair), and the emulator
+// survives each of them.
 //
 // A hyperlink with no URL is no hyperlink: the parameters of one are not
 // kept (OSC 8 sets both, so a lone parameter string never matters).
@@ -80,9 +87,12 @@ var (
 	ErrEnded = errors.New("sessionpane: the pane has ended or is closed")
 )
 
-// Cell widths: the emulator measures a cluster of at most 64 bytes, and none
-// is wider than that.
-const maxCellWidth = vt.MaxClusterBytes
+// maxCellWidth is the widest cell a snapshot carries. The emulator draws a
+// cluster in one or two cells and a placeholder of a wide cell has width 0;
+// a charset mapping gives 1. A wider cell is one that output cannot make, and
+// that a later write indexes past the line with (ultraviolet's Line.Set
+// rewrites the whole span of a wide cell it overwrites).
+const maxCellWidth = vt.MaxCellWidth
 
 // Colour tags.
 const (
