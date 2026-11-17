@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const sh = "/bin/sh"
@@ -62,6 +65,33 @@ func pids(t *testing.T, out []byte) []int {
 		ps = append(ps, n)
 	}
 	return ps
+}
+
+// holderBody is a script prefix that starts a process outside the leader's
+// group (setsid) which holds the output pipes for six seconds and prints its
+// pid on the first line. A process group kill cannot reach it, so only the
+// bounded wait for the pipes ends a run that has it. The script must pause
+// before it ends, so that the holder has called setsid by then.
+func holderBody(t *testing.T) string {
+	t.Helper()
+	return tool(t, "setsid") + " " + tool(t, "sleep") + " 6 & echo $!; "
+}
+
+// reapHolder kills the process holderBody started, whose pid is the first
+// field of out.
+func reapHolder(t *testing.T, out []byte) {
+	t.Helper()
+	f := strings.Fields(string(out))
+	if len(f) == 0 {
+		t.Errorf("no pid from the holder in %q", out)
+		return
+	}
+	pid, err := strconv.Atoi(f[0])
+	if err != nil {
+		t.Errorf("bad holder pid in %q", out)
+		return
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 }
 
 func TestSuccessWithOutput(t *testing.T) {
@@ -180,21 +210,59 @@ func TestNilStdinIsEmpty(t *testing.T) {
 	}
 }
 
+// openDescriptors lists the descriptors below 64 that a command run by Run has
+// open, found without opening one: a glob would open a directory of its own.
+func openDescriptors(t *testing.T) string {
+	t.Helper()
+	res, err := Run(context.Background(), script(`i=0; while [ $i -lt 64 ]; do [ -e /proc/$$/fd/$i ] && echo $i; i=$((i+1)); done`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(strings.Fields(string(res.Stdout)), " ")
+}
+
 func TestOnlyStandardDescriptorsArePassedOn(t *testing.T) {
+	// Descriptors that the test process holds, all close-on-exec as every
+	// descriptor that Go opens is. None may reach the command.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
 	defer w.Close()
-	res, err := Run(context.Background(), script(`i=0; while [ $i -lt 64 ]; do [ -e /proc/$$/fd/$i ] && echo $i; i=$((i+1)); done`))
+	f, err := os.Open("/dev/null")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Test the open descriptors without opening one: a glob would open a
-	// directory of its own.
-	if got := strings.Fields(string(res.Stdout)); strings.Join(got, " ") != "0 1 2" {
-		t.Errorf("open descriptors in the command: %q", res.Stdout)
+	defer f.Close()
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if got := openDescriptors(t); got != "0 1 2" {
+		t.Errorf("open descriptors in the command: %q", got)
+	}
+}
+
+// This test pins the limit that doc.go states: the package does not close a
+// descriptor that the calling process holds without close-on-exec. If the
+// package ever closes them, this test must change with the package comment.
+func TestDescriptorWithoutCloseOnExecIsInherited(t *testing.T) {
+	fd, err := syscall.Open("/dev/null", syscall.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		t.Fatal(err)
+	}
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil || flags&unix.FD_CLOEXEC != 0 {
+		t.Fatalf("descriptor %d is close-on-exec (flags %d, err %v)", fd, flags, err)
+	}
+	want := "0 1 2 " + strconv.Itoa(fd)
+	if got := openDescriptors(t); got != want {
+		t.Errorf("open descriptors in the command: %q, want %q", got, want)
 	}
 }
 
@@ -487,5 +555,297 @@ func TestFirstStopWins(t *testing.T) {
 	_, err := Run(ctx, c)
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestWatchdogErrorAfterTheCommandEndedDoesNotReplaceTheOutcome(t *testing.T) {
+	t.Parallel()
+	// The command exits 0 after 0.2s. A process outside its group holds the
+	// pipe, so Run is still draining for two seconds. The watchdog fails
+	// from 0.5s on; it must not be asked, and must not win, after the exit.
+	started := time.Now()
+	var late atomic.Int32
+	c := script(holderBody(t) + "sleep 0.2; echo done")
+	c.WatchInterval = 50 * time.Millisecond
+	c.Watch = func() error {
+		if time.Since(started) < 500*time.Millisecond {
+			return nil
+		}
+		late.Add(1)
+		return errors.New("lease lost")
+	}
+	res, err := Run(context.Background(), c)
+	reapHolder(t, res.Stdout)
+	var we *WatchError
+	if errors.As(err, &we) {
+		t.Fatalf("a watchdog error after the exit replaced the outcome: %v", err)
+	}
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+	if n := late.Load(); n != 0 {
+		t.Errorf("the watchdog was called %d times after the command ended", n)
+	}
+}
+
+func TestWatchdogCallRunningAtTheExitCannotWin(t *testing.T) {
+	t.Parallel()
+	// A call that began before the exit and returns an error after it, while
+	// Run drains the pipes, does not count.
+	var calls atomic.Int32
+	c := script(holderBody(t) + "sleep 0.3; echo done")
+	c.WatchInterval = 50 * time.Millisecond
+	c.Watch = func() error {
+		if calls.Add(1) > 1 {
+			return nil
+		}
+		time.Sleep(900 * time.Millisecond) // past the exit, inside the drain
+		return errors.New("lease lost")
+	}
+	res, err := Run(context.Background(), c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+}
+
+// within runs Run in a goroutine and fails the test if it has not returned
+// after limit. A Run that hangs is left behind; the test still ends.
+func within(t *testing.T, limit time.Duration, c Cmd) (Result, error, time.Duration) {
+	t.Helper()
+	type outcome struct {
+		res Result
+		err error
+	}
+	ch := make(chan outcome, 1)
+	start := time.Now()
+	go func() {
+		res, err := Run(context.Background(), c)
+		ch <- outcome{res, err}
+	}()
+	select {
+	case o := <-ch:
+		return o.res, o.err, time.Since(start)
+	case <-time.After(limit):
+		t.Fatalf("Run had not returned after %v (Timeout %v)", limit, c.Timeout)
+		return Result{}, nil, 0
+	}
+}
+
+// hardLimit is far past Timeout plus the pipe wait; only a hang reaches it.
+const hardLimit = 8 * time.Second
+
+// blockingReader blocks in Read until release is closed, then reports EOF.
+type blockingReader struct{ release chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+// blockingSink blocks in Write until release is closed.
+type blockingSink struct {
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingSink) Write(p []byte) (int, error) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return len(p), nil
+}
+
+func newBlockingSink(t *testing.T) *blockingSink {
+	b := &blockingSink{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	t.Cleanup(func() { close(b.release) })
+	return b
+}
+
+func TestBlockedStdinDoesNotHoldRunPastTheTimeout(t *testing.T) {
+	t.Parallel()
+	rel := make(chan struct{})
+	t.Cleanup(func() { close(rel) })
+	c := script("echo up; sleep 30")
+	c.Stdin = blockingReader{rel}
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v", took)
+	}
+	if string(res.Stdout) != "up\n" || res.Exit != -1 {
+		t.Errorf("Result = %+v", res)
+	}
+}
+
+func TestBlockedStdinDoesNotHoldRunAfterAnOrdinaryExit(t *testing.T) {
+	t.Parallel()
+	rel := make(chan struct{})
+	t.Cleanup(func() { close(rel) })
+	c := script("echo hello")
+	c.Stdin = blockingReader{rel}
+	res, err, took := within(t, hardLimit, c)
+	if err != nil || string(res.Stdout) != "hello\n" {
+		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+	if took > time.Second {
+		t.Errorf("Run took %v for a command that ended at once", took)
+	}
+}
+
+func TestStdinFromAnIOPipeThatNeverEnds(t *testing.T) {
+	t.Parallel()
+	// An io.Pipe whose writer never writes or closes: the usual way a
+	// producer goes missing.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	c := script("sleep 30")
+	c.Stdin = pr
+	c.Timeout = 200 * time.Millisecond
+	_, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) || took > c.Timeout+pipeWait+time.Second {
+		t.Fatalf("err %v after %v", err, took)
+	}
+}
+
+func TestBlockedStdoutSinkDoesNotHoldRunPastTheTimeout(t *testing.T) {
+	t.Parallel()
+	sink := newBlockingSink(t)
+	c := script("echo x; sleep 30")
+	c.Stdout = sink
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v", took)
+	}
+	if len(res.Stdout) != 0 || res.Exit != -1 {
+		t.Errorf("Result = %+v", res)
+	}
+	select {
+	case <-sink.entered:
+	default:
+		t.Error("the sink was never written to")
+	}
+}
+
+func TestBlockedStdoutSinkAfterAnOrdinaryExitIsPipeHeld(t *testing.T) {
+	t.Parallel()
+	sink := newBlockingSink(t)
+	c := script("echo x")
+	c.Stdout = sink
+	res, err, took := within(t, hardLimit, c)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+}
+
+func TestCommandEndsWhenTheStdinFeedStopsReading(t *testing.T) {
+	t.Parallel()
+	// The command never reads its input and ends; a large input must not
+	// keep Run waiting for the feed.
+	c := script("echo done")
+	c.Stdin = strings.NewReader(strings.Repeat("z", 1<<20))
+	res, err, took := within(t, hardLimit, c)
+	if err != nil || string(res.Stdout) != "done\n" || took > 2*time.Second {
+		t.Fatalf("%q, %v after %v", res.Stdout, err, took)
+	}
+}
+
+func TestStdinFileIsHandedOn(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("from file\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	c := script("read x; echo \"$x\"")
+	c.Stdin = f
+	res, err := Run(context.Background(), c)
+	if err != nil || string(res.Stdout) != "from file\n" {
+		t.Fatalf("%q, %v", res.Stdout, err)
+	}
+}
+
+func TestPipeHeldByAProcessOutsideTheGroup(t *testing.T) {
+	t.Parallel()
+	// The leader prints and exits 0. A process that left the group holds the
+	// pipes for six seconds; a group kill cannot reach it, so only the bound
+	// on the pipe wait ends Run.
+	c := script(holderBody(t) + "sleep 0.2; echo x")
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrPipeHeld) {
+		t.Fatalf("err = %v, want ErrPipeHeld", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if res.Exit != 0 {
+		t.Errorf("Exit = %d, want 0", res.Exit)
+	}
+	f := strings.Fields(string(res.Stdout))
+	if len(f) != 2 || f[1] != "x" {
+		t.Errorf("Stdout = %q, want the holder's pid and x", res.Stdout)
+	}
+}
+
+func TestPipeHeldAfterATimeoutKeepsTheTimeout(t *testing.T) {
+	t.Parallel()
+	c := script(holderBody(t) + "echo x; sleep 30")
+	c.Timeout = 200 * time.Millisecond
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if took > c.Timeout+pipeWait+time.Second {
+		t.Errorf("Run took %v, want at most Timeout plus the pipe wait", took)
+	}
+	if res.Exit != -1 || !strings.HasSuffix(string(res.Stdout), "x\n") {
+		t.Errorf("Result = %+v, stdout %q", res, res.Stdout)
+	}
+}
+
+func TestPipeHeldAfterANonZeroExitStaysAnExitError(t *testing.T) {
+	t.Parallel()
+	// The pause lets the holder leave the group before the leader exits; the
+	// group kill would reach it otherwise.
+	c := script(holderBody(t) + "echo bad >&2; sleep 0.2; exit 3")
+	res, err, took := within(t, hardLimit, c)
+	reapHolder(t, res.Stdout)
+	var xe *ExitError
+	if !errors.As(err, &xe) || xe.Exit != 3 {
+		t.Fatalf("err = %v, want an *ExitError with status 3", err)
+	}
+	if took < pipeWait-200*time.Millisecond || took > pipeWait+time.Second {
+		t.Errorf("Run took %v, want about the pipe wait %v", took, pipeWait)
+	}
+	if string(res.Stderr) != "bad\n" {
+		t.Errorf("stderr %q", res.Stderr)
 	}
 }
