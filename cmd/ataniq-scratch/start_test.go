@@ -693,6 +693,19 @@ func (c *stubbornChild) Signal(s os.Signal) error {
 	return nil
 }
 
+// killOnlyChild is a direct holder that ignores SIGTERM and ends on SIGKILL.
+type killOnlyChild struct{ *fakeChild }
+
+func (c *killOnlyChild) Signal(s os.Signal) error {
+	if s == syscall.SIGKILL {
+		return c.fakeChild.Signal(s)
+	}
+	c.mu.Lock()
+	c.signaled = append(c.signaled, s)
+	c.mu.Unlock()
+	return nil
+}
+
 // interruptedStart runs a --direct start whose holder never answers and whose
 // signal channel already holds a SIGINT, so that the interrupt arrives while
 // start waits for the holder.
@@ -719,8 +732,11 @@ func TestStartDirectInterruptedSaysTheHolderWasEnded(t *testing.T) {
 	if code != exitFail {
 		t.Fatalf("exit %d", code)
 	}
-	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "the holder was ended and is not running") {
+	if !strings.Contains(errout, "interrupted") || !strings.Contains(errout, "the holder was ended") {
 		t.Errorf("stderr %q", errout)
+	}
+	if strings.Contains(errout, "not running") || strings.Contains(errout, "outlive") {
+		t.Errorf("stderr %q claims too much or too little", errout)
 	}
 	if len(ch.signaled) == 0 || ch.signaled[0] != syscall.SIGTERM {
 		t.Errorf("signals %v, want SIGTERM first", ch.signaled)
@@ -745,5 +761,107 @@ func TestStartDirectInterruptedSaysTheHolderMayStillRun(t *testing.T) {
 	}
 	if r.epochFile() != "1\n" {
 		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
+	}
+}
+
+func TestStartDirectInterruptedAfterSigkillSaysTheAgentMayOutliveIt(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := &killOnlyChild{newFakeChild(-1)}
+	code, errout := interruptedStart(t, r, ch)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "the holder was ended") || !strings.Contains(errout, "agent may outlive it") {
+		t.Errorf("stderr %q", errout)
+	}
+	if strings.Contains(errout, "not running") {
+		t.Errorf("stderr %q says the holder is not running", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "" {
+		t.Errorf("epoch kept after the holder ended: %q", r.epochFile())
+	}
+}
+
+// stubbornStart runs a --direct start with a holder that ignores every signal
+// and either answers with a refusal (wrong epoch) or stays silent.
+func stubbornStart(t *testing.T, refuse bool) (r *rig, ch *stubbornChild, code int, errout string) {
+	t.Helper()
+	r = newRig(t, "demo")
+	ch = &stubbornChild{}
+	r.fl.startFn = func(argv, env []string) (child, error) {
+		if refuse {
+			h, err := startFakeHolder(r.l.controlSock, r.l.daemonLock, "scratch/demo", 99)
+			if err != nil {
+				t.Error(err)
+			}
+			r.mu.Lock()
+			r.h = h
+			r.mu.Unlock()
+		}
+		return ch, nil
+	}
+	a, _, eb := r.e.newApp(r.fl)
+	a.lim.termWait = 50 * time.Millisecond
+	a.lim.startWait = 100 * time.Millisecond
+	code = a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"})
+	return r, ch, code, eb.String()
+}
+
+func TestStartDirectRefusedWithAHolderThatWillNotEndKeepsTheEpoch(t *testing.T) {
+	r, ch, code, errout := stubbornStart(t, true)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "wrong-epoch") || !strings.Contains(errout, "not seen to end") || !strings.Contains(errout, "may still be running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if strings.Contains(errout, "another holder may be running") {
+		t.Errorf("stderr %q blames another holder", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[0] != syscall.SIGTERM || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "1\n" {
+		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
+	}
+}
+
+func TestStartDirectTimeoutWithAHolderThatWillNotEndKeepsTheEpoch(t *testing.T) {
+	r, ch, code, errout := stubbornStart(t, false)
+	if code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(errout, "did not answer") || !strings.Contains(errout, "not seen to end") || !strings.Contains(errout, "may still be running") {
+		t.Errorf("stderr %q", errout)
+	}
+	if strings.Contains(errout, "it was ended") {
+		t.Errorf("stderr %q says the holder was ended", errout)
+	}
+	if len(ch.signaled) != 2 || ch.signaled[0] != syscall.SIGTERM || ch.signaled[1] != syscall.SIGKILL {
+		t.Errorf("signals %v, want SIGTERM then SIGKILL", ch.signaled)
+	}
+	if r.epochFile() != "1\n" {
+		t.Errorf("epoch %q, want it kept while the holder may run", r.epochFile())
+	}
+}
+
+func TestStartDirectTimeoutAfterSigkillSaysTheAgentMayOutliveIt(t *testing.T) {
+	r := newRig(t, "demo")
+	ch := &killOnlyChild{newFakeChild(-1)}
+	r.fl.startFn = func(argv, env []string) (child, error) { return ch, nil }
+	a, _, eb := r.e.newApp(r.fl)
+	a.lim.termWait = 50 * time.Millisecond
+	a.lim.startWait = 100 * time.Millisecond
+	if code := a.run([]string{"start", "demo", "--direct", "--holder", r.e.holderFile(t), "--", "agent"}); code != exitFail {
+		t.Fatalf("exit %d", code)
+	}
+	if e := eb.String(); !strings.Contains(e, "it was ended") || !strings.Contains(e, "agent may outlive it") {
+		t.Errorf("stderr %q", e)
+	}
+	if r.epochFile() != "" {
+		t.Errorf("epoch kept after the holder ended: %q", r.epochFile())
 	}
 }

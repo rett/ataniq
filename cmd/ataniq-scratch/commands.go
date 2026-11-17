@@ -113,21 +113,31 @@ func (a *app) waitReady(l layout, epoch uint64, exited <-chan exitResult, sigs <
 
 // terminate ends a direct holder that this command started: SIGTERM, then
 // SIGKILL when it has not ended within lim.termWait. It reports whether the
-// holder was seen to end.
-func (a *app) terminate(c child, exited <-chan exitResult) bool {
+// holder was seen to end, and whether SIGKILL was needed for that. A holder
+// that needed SIGKILL did not get to end its agent, which may outlive it.
+func (a *app) terminate(c child, exited <-chan exitResult) (ended, killed bool) {
 	_ = c.Signal(syscall.SIGTERM)
 	select {
 	case <-exited:
-		return true
+		return true, false
 	case <-time.After(a.lim.termWait):
 	}
 	_ = c.Signal(syscall.SIGKILL)
 	select {
 	case <-exited:
-		return true
+		return true, true
 	case <-time.After(a.lim.termWait):
 	}
-	return false
+	return false, true
+}
+
+// killNote is added to what a failed start says when the holder had to be
+// killed to end it.
+func killNote(killed bool) string {
+	if killed {
+		return "; SIGKILL was needed, so its agent may outlive it"
+	}
+	return ""
 }
 
 func exitText(r exitResult) string {
@@ -211,22 +221,31 @@ func (a *app) cmdStart(cfg startConfig) int {
 		hold.Undo()
 		return a.fail("the holder ended before it answered (%s)", exitText(res.exit))
 	case readyInterrupted:
-		if a.terminate(proc, exited) {
+		ended, killed := a.terminate(proc, exited)
+		if ended {
 			hold.Undo()
-			return a.fail("interrupted before the holder answered; the holder was ended and is not running")
+			return a.fail("interrupted before the holder answered; the holder was ended%s", killNote(killed))
 		}
 		return a.fail("interrupted before the holder answered; the holder was told to end but was not seen to end, so it may still be running (epoch %d is kept)", hold.N)
 	case readyRefused:
+		note := ""
 		if cfg.direct {
-			a.terminate(proc, exited)
+			ended, killed := a.terminate(proc, exited)
+			if !ended {
+				return a.fail("the holder answered with a refusal (%s: %s) and was not seen to end, so it may still be running (epoch %d is kept)", res.resp.Code, res.resp.Text, hold.N)
+			}
 			hold.Undo()
+			note = killNote(killed)
 		}
-		return a.fail("the holder answered with a refusal (%s: %s); another holder may be running for this name", res.resp.Code, res.resp.Text)
+		return a.fail("the holder answered with a refusal (%s: %s); another holder may be running for this name%s", res.resp.Code, res.resp.Text, note)
 	case readyTimeout:
 		if cfg.direct {
-			a.terminate(proc, exited)
+			ended, killed := a.terminate(proc, exited)
+			if !ended {
+				return a.fail("the holder did not answer within %s (last: %v) and was not seen to end, so it may still be running (epoch %d is kept)", a.lim.startWait, res.last, hold.N)
+			}
 			hold.Undo()
-			return a.fail("the holder did not answer within %s (last: %v); it was ended", a.lim.startWait, res.last)
+			return a.fail("the holder did not answer within %s (last: %v); it was ended%s", a.lim.startWait, res.last, killNote(killed))
 		}
 		return a.fail("the holder did not answer within %s (last: %v); look at the journal of %s, or run: ataniq-scratch stop %s", a.lim.startWait, res.last, unitName(l.name), l.name)
 	}
