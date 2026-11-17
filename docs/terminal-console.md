@@ -214,8 +214,9 @@ cell. The columns after it then stay where the pane put them. The cockpit's
 own text follows the same rule. A cell holding more than 64 bytes also becomes
 a placeholder, in either mode.
 
-Use over SSH is not qualified. The only SSH use checked by hand so far is
-`ssh localhost`: see [Qualification](#qualification).
+Use over SSH is not qualified. The SSH use checked by hand so far is
+`ssh localhost` and SSH from another machine: see
+[Qualification](#qualification).
 
 ## Qualification
 
@@ -227,12 +228,12 @@ input handling. They do not qualify the console in a real terminal.
 
 One person made one attended check, on 2026-11-16, in one terminal (Ghostty),
 on one machine, with fixture recordings only. It is not a qualification. The
-check ran locally and over `ssh localhost`, including with
-`TERM=xterm-256color`. It passed for the layout, focus and the return key
-(with CapsLock and NumLock), F12 zoom, Ctrl+K, a resize across the 100x30
-boundary, the ended state, emoji alignment, the `mouse-held.jsonl` recording
-and restoring the terminal after quit. It found one problem: mouse selection
-is not confined to the session pane. The terminal's own selection spans the
+check ran locally, over `ssh localhost` and over SSH from another machine,
+including with `TERM=xterm-256color`. It passed for the layout, focus and the
+return key (with CapsLock and NumLock), F12 zoom, Ctrl+K, a resize across the
+100x30 boundary, the ended state, emoji alignment, the `mouse-held.jsonl`
+recording and restoring the terminal after quit. It found one problem: mouse
+selection is not confined to the session pane. The terminal's own selection spans the
 window. Confining it is planned.
 
 The pane does not track the kitty keyboard flags a session may set. The
