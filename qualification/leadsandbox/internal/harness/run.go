@@ -652,6 +652,7 @@ func (a *attempt) launchPhase(ctx context.Context) {
 	a.rec.run(StepOutside, func() (StepStatus, error) { return StepOK, a.outside() })
 	a.rec.run(StepStop, func() (StepStatus, error) {
 		a.stopEv = stopProcess(a.proc, a.opt.StopTermWait, a.opt.StopKillWait, a.opt.StopPoll)
+		a.recordEndAfterStop()
 		t := a.proc.Terminal()
 		a.termData = t.Data
 		a.termEv = TerminalEvidence{CapturedBytes: len(t.Data), TotalBytes: t.Total, DroppedBytes: t.Dropped}
@@ -665,6 +666,21 @@ func (a *attempt) launchPhase(ctx context.Context) {
 		return StepOK, nil
 	})
 	a.rec.run(StepTrailing, func() (StepStatus, error) { return a.checkTrailing() })
+}
+
+// recordEndAfterStop records how the first process ended when the wait for its
+// exit gave up at the time limit (or at an interruption) and the stop has ended
+// it since. A process that is still there leaves nothing to record.
+func (a *attempt) recordEndAfterStop() {
+	if a.exitEv.Exited {
+		return
+	}
+	select {
+	case <-a.proc.Done():
+		e := a.proc.Exit()
+		a.exitEv.AfterStop = &EndEvidence{Code: e.Code, Signal: e.Signal, Error: e.Err}
+	default:
+	}
 }
 
 // checkTrailing asks the report channel, after the stop (so the first process

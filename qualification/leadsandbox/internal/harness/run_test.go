@@ -340,8 +340,17 @@ func TestProbeNeverWritesHitsTheTimeLimit(t *testing.T) {
 	wantStep(t, o, harness.StepWaitExit, harness.StepTimeout)
 	wantStep(t, o, harness.StepOutside, harness.StepOK)
 	wantStep(t, o, harness.StepStop, harness.StepOK)
-	if o.Summary.Report != harness.ReportTimeLimit || o.Summary.Exit.Exited {
+	if o.Summary.Report != harness.ReportTimeLimit || o.Summary.Exit.Exited || o.Summary.Exit.Code != -1 {
 		t.Errorf("report %s, exit %+v", o.Summary.Report, o.Summary.Exit)
+	}
+	// The stop ended it, and the evidence says how.
+	if end := o.Summary.Exit.AfterStop; end == nil || end.Signal != "SIGTERM" || end.Code != -1 {
+		t.Errorf("after the stop: %+v", end)
+	}
+	var onDisk harness.Summary
+	readJSON(t, o.Dir+"/summary.json", &onDisk)
+	if onDisk.Exit.AfterStop == nil || onDisk.Exit.AfterStop.Signal != "SIGTERM" {
+		t.Errorf("summary.json after the stop: %+v", onDisk.Exit)
 	}
 	if o.Summary.Stop.State != harness.StopByTerm || !hasSignal(r.fake.Process(0).Signals(), syscall.SIGTERM) || hasSignal(r.fake.Process(0).Signals(), syscall.SIGKILL) {
 		t.Errorf("stop %+v, signals %v", o.Summary.Stop, r.fake.Process(0).Signals())
@@ -370,6 +379,9 @@ func TestStopEscalatesToKill(t *testing.T) {
 	if strings.Join(r.out.Summary.Stop.Signals, ",") != "SIGTERM,SIGKILL" {
 		t.Errorf("signals recorded: %v", r.out.Summary.Stop.Signals)
 	}
+	if end := r.out.Summary.Exit.AfterStop; end == nil || end.Signal != "SIGKILL" || r.out.Summary.Exit.Exited {
+		t.Errorf("exit %+v", r.out.Summary.Exit)
+	}
 }
 
 func TestStopOfAStuckGroupIsUnknown(t *testing.T) {
@@ -388,6 +400,10 @@ func TestStopOfAStuckGroupIsUnknown(t *testing.T) {
 	mustNoErr(t, r)
 	if r.out.Summary.Stop.State != harness.StopUnknown {
 		t.Errorf("stop %+v", r.out.Summary.Stop)
+	}
+	// The process was still there after the stop: there is nothing to record.
+	if r.out.Summary.Exit.AfterStop != nil || r.out.Summary.Exit.Exited {
+		t.Errorf("exit %+v", r.out.Summary.Exit)
 	}
 	wantStep(t, r.out, harness.StepStop, harness.StepFailed)
 }

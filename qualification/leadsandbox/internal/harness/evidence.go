@@ -154,8 +154,22 @@ type OutsideEvidence struct {
 // ExitEvidence is how the first process ended.
 type ExitEvidence struct {
 	Launched bool `json:"launched"`
-	// Exited is false when the process was still there at the time limit.
+	// Exited is false when the process was still there at the time limit (or
+	// the run was interrupted first); Code is then -1 and Signal and Error are
+	// empty, and AfterStop may say how the stop ended it.
 	Exited bool   `json:"exited"`
+	Code   int    `json:"code"`
+	Signal string `json:"signal,omitempty"`
+	Error  string `json:"error,omitempty"`
+	// AfterStop is how the first process ended when it was still there at the
+	// time limit and the stop rule ended it. It is absent when the process
+	// had ended before, and when it was still there after the stop.
+	AfterStop *EndEvidence `json:"after_stop,omitempty"`
+}
+
+// EndEvidence is how a process ended: its exit code, or the signal that ended
+// it (the code is then -1).
+type EndEvidence struct {
 	Code   int    `json:"code"`
 	Signal string `json:"signal,omitempty"`
 	Error  string `json:"error,omitempty"`

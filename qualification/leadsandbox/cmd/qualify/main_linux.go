@@ -120,6 +120,9 @@ func report(w io.Writer, o *harness.Outcome) {
 	if !o.DryRun {
 		fmt.Fprintf(w, "report: %s\n", o.Summary.Report)
 		fmt.Fprintf(w, "exit: launched %t, code %d, signal %q\n", o.Summary.Exit.Launched, o.Summary.Exit.Code, o.Summary.Exit.Signal)
+		if end := o.Summary.Exit.AfterStop; end != nil {
+			fmt.Fprintf(w, "ended by the stop: code %d, signal %q\n", end.Code, end.Signal)
+		}
 	}
 }
 
