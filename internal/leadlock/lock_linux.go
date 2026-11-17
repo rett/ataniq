@@ -62,6 +62,9 @@ func DaemonPath(stateDir string) string {
 	return filepath.Join(stateDir, "daemon.lock")
 }
 
+// afterFlock is a test hook run between the flock and the identity check.
+var afterFlock = func() {}
+
 // Lock is a held lock. It stays held until Release is called or the
 // descriptor is otherwise closed. Keep the Lock reachable for as long as the
 // lock must hold: the underlying os.File closes itself when collected.
@@ -125,6 +128,7 @@ func Acquire(path string) (*Lock, error) {
 
 	// The lock is held. Refuse if the path no longer names this file: a lock
 	// on an unlinked inode excludes nobody.
+	afterFlock()
 	var now unix.Stat_t
 	if err := unix.Lstat(path, &now); err != nil || now.Dev != st.Dev || now.Ino != st.Ino {
 		return nil, fmt.Errorf("%w: %s", ErrReplaced, path)

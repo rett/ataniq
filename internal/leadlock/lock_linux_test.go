@@ -452,3 +452,44 @@ func TestAcquireClearsNonblock(t *testing.T) {
 		t.Fatalf("lock descriptor still O_NONBLOCK (flags %#x)", flags)
 	}
 }
+
+// A path that stops naming the locked file between the flock and the identity
+// check gives ErrReplaced, and the replacement is left alone.
+func TestAcquireRefusesReplacedFile(t *testing.T) {
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	afterFlock = func() {
+		other := path + ".other"
+		if err := os.WriteFile(other, []byte("x"), 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Rename(other, path); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { afterFlock = func() {} })
+
+	l, err := Acquire(path)
+	if err == nil {
+		l.Release()
+	}
+	if !errors.Is(err, ErrReplaced) {
+		t.Fatalf("Acquire = %v, want ErrReplaced", err)
+	}
+	if l != nil {
+		t.Fatal("a Lock was returned with ErrReplaced")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "x" {
+		t.Fatalf("replacement was changed: %q", data)
+	}
+
+	afterFlock = func() {}
+	l2, err := Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire after the replacement: %v", err)
+	}
+	l2.Release()
+}
