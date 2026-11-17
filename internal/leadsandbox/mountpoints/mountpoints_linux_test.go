@@ -410,6 +410,30 @@ func TestExcludeFile(t *testing.T) {
 			t.Fatal(rep.Err())
 		}
 	})
+	t.Run("any later negation that could match un-lists the entry", func(t *testing.T) {
+		// git honours each of these negations of /.envrc; the check is
+		// textual, so it counts every later line that starts with "!".
+		for _, neg := range []string{"!/.envrc ", "!.envrc", "!*rc", "!/.env?rc", "!/.envrc/", "!/unrelated"} {
+			f := newFixture(t, profile.Claude)
+			f.write(f.tree+"/.git/info/exclude", "/.envrc\n"+neg+"\n/.vscode\n/tools/local/x.txt\n")
+			rep := f.check()
+			if got := problemPaths(rep, ErrNotExcluded); len(got) != 1 || got[0] != f.tree+"/.envrc" {
+				t.Errorf("%q: got %v", neg, got)
+			}
+			f.prepare()
+			if rep := f.check(); !rep.OK() {
+				t.Errorf("%q: %v", neg, rep.Err())
+			}
+		}
+	})
+	t.Run("a negation before the line does not un-list it", func(t *testing.T) {
+		f := newFixture(t, profile.Claude)
+		f.prepare()
+		f.write(f.tree+"/.git/info/exclude", "!*rc\n/.envrc\n/.vscode\n/tools/local/x.txt\n")
+		if rep := f.check(); !rep.OK() {
+			t.Fatal(rep.Err())
+		}
+	})
 	t.Run("a line that is not anchored does not count", func(t *testing.T) {
 		f := newFixture(t, profile.Claude)
 		f.write(f.tree+"/.git/info/exclude", ".envrc\n#/.vscode\n /tools/local/x.txt\n")

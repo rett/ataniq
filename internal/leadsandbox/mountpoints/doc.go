@@ -46,8 +46,8 @@
 // the state root is not looked for: the caller opens a state root it owns.
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
-// looks for the anchored line and for a later negation of the same line, and
-// does not evaluate every pattern git knows. The package does not start a
+// looks for the anchored line and takes any later line that starts with "!"
+// as un-listing it, and does not evaluate the patterns git knows. The package does not start a
 // process, run git, create a namespace, or read any provider folder. It
 // reads, bounded, the one file .git/info/exclude.
 //
