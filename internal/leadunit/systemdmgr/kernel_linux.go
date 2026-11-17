@@ -16,11 +16,12 @@ import (
 // below, which has no helper there, names it again. Tests replace it.
 var cgroupMount = "/sys/fs/cgroup"
 
-// Bounds of the search of [kernel.FindNamed].
-const (
-	findMaxDepth = 8
-	findMaxDirs  = 20000
-)
+// Bounds of the search of [kernel.FindNamed]: how deep it goes and how many
+// directories it will list or queue at most. findMaxDirs is a variable only so
+// that a test can lower it.
+const findMaxDepth = 8
+
+var findMaxDirs = 20000
 
 // kernel is the part of the host that the manager reads outside systemd: the
 // identity of a control group, its populated flag, the control groups below a
@@ -83,9 +84,6 @@ func (hostKernel) FindNamed(base, name string) ([]string, error) {
 		d := queue[0]
 		queue = queue[1:]
 		visited++
-		if visited > findMaxDirs {
-			return nil, errors.New("control group search is over its bound")
-		}
 		entries, err := os.ReadDir(cgroupMount + d.p)
 		if err != nil {
 			if d.depth > 0 && errors.Is(err, fs.ErrNotExist) {
@@ -103,6 +101,12 @@ func (hostKernel) FindNamed(base, name string) ([]string, error) {
 			}
 			if d.depth+1 > findMaxDepth {
 				return nil, errors.New("control group tree is deeper than the search bound")
+			}
+			// The bound is on the directories seen so far (visited and still
+			// queued), checked before the queue grows, so that one directory
+			// with very many child groups cannot grow it past the bound.
+			if visited+len(queue)+1 > findMaxDirs {
+				return nil, errors.New("control group search is over its bound")
 			}
 			queue = append(queue, dir{child, d.depth + 1})
 		}

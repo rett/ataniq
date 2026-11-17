@@ -1,11 +1,14 @@
 package systemdmgr
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
+
+	"ataniq/internal/systemd"
 )
 
 // treeMount points the search at a temporary tree for one test.
@@ -80,5 +83,53 @@ func TestFindNamedRefusesBadArguments(t *testing.T) {
 		if _, err := (hostKernel{}).FindNamed(c[0], c[1]); err == nil {
 			t.Errorf("%q accepted", c)
 		}
+	}
+}
+
+// The search stops before it queues more directories than its bound, even for
+// one directory with very many children, and a tree exactly at the bound is
+// still answered.
+func TestFindNamedBoundsTheDirectoriesBeforeTheQueueGrows(t *testing.T) {
+	old := findMaxDirs
+	findMaxDirs = 5
+	t.Cleanup(func() { findMaxDirs = old })
+	root := treeMount(t)
+	for i := 0; i < 4; i++ { // /m and four children: five directories
+		mkdirs(t, root, fmt.Sprintf("/m/c%d", i))
+	}
+	if got, err := (hostKernel{}).FindNamed("/m", unitName); err != nil || len(got) != 0 {
+		t.Fatalf("a tree at the bound: %q %v", got, err)
+	}
+	mkdirs(t, root, "/m/c4") // six
+	if _, err := (hostKernel{}).FindNamed("/m", unitName); err == nil {
+		t.Fatal("a tree over the bound answered")
+	}
+	// Over the bound by depth, not by one wide directory.
+	root2 := treeMount(t)
+	mkdirs(t, root2, "/m/a/b/c/d/e")
+	if _, err := (hostKernel{}).FindNamed("/m", unitName); err == nil {
+		t.Fatal("a chain over the bound answered")
+	}
+}
+
+// Without the cgroup mount every path is absent, so ENOENT must not be taken
+// for "the group is gone": Lookup fails and says nothing was found.
+func TestLookupWithoutTheCgroupMountIsAnError(t *testing.T) {
+	treeMount(t) // an empty folder: no cgroup.controllers
+	b, found, err := (hostKernel{}).Lookup("/ataniq-test-no-such-group")
+	if err == nil || found || b != (systemd.Boundary{}) {
+		t.Fatalf("%+v %v %v", b, found, err)
+	}
+}
+
+// With the mount present, a path that is not there is positively gone.
+func TestLookupOfAMissingGroupWithTheMountIsGone(t *testing.T) {
+	root := treeMount(t)
+	if err := os.WriteFile(filepath.Join(root, "cgroup.controllers"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, found, err := (hostKernel{}).Lookup("/ataniq-test-no-such-group")
+	if err != nil || found || b != (systemd.Boundary{}) {
+		t.Fatalf("%+v %v %v", b, found, err)
 	}
 }
