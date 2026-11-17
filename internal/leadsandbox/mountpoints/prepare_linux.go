@@ -34,8 +34,11 @@ type PrepareOptions struct {
 // The folders the mount points lie in (home, config folder, tree, records)
 // must exist too.
 //
-// Everything is looked at before anything is written, so a refusal leaves the
-// folders as they were. Prepare is idempotent: a second call changes nothing.
+// Everything is looked at before anything is written, so a refusal found while
+// looking leaves the folders as they were. An error while writing (permission,
+// space) can leave the earlier mount points made; a repeated Prepare, still
+// before the first run, completes them. Prepare is idempotent: a call after a
+// complete one changes nothing.
 // The error is a *Problem (errors.Is with the Err kinds); the first problem
 // found is returned.
 func Prepare(in profile.Inputs, opts PrepareOptions) error {

@@ -122,17 +122,22 @@ func checkExcludable(rel string) error {
 // excludeLine is the anchored line that lists a tree placeholder.
 func excludeLine(rel string) string { return "/" + rel }
 
-// listedIn reports whether the exclude file lists the line: the last of the
-// line itself and its negation decides. The check is textual.
+// listedIn reports whether the exclude file lists the line. The check is
+// textual and conservative: the anchored line must be there, and no later line
+// may start with "!". git lets a negation match by a pattern (a trailing
+// space it strips, no leading slash, a star), and this check does not
+// evaluate patterns, so any later negation that could match counts as
+// un-listing the entry; it can report a benign negation as a missing line,
+// never the reverse.
 func listedIn(data []byte, rel string) bool {
 	want := excludeLine(rel)
 	listed := false
 	for _, l := range strings.Split(string(data), "\n") {
 		l = strings.TrimSuffix(l, "\r")
-		switch l {
-		case want:
+		switch {
+		case l == want:
 			listed = true
-		case "!" + want:
+		case strings.HasPrefix(l, "!"):
 			listed = false
 		}
 	}

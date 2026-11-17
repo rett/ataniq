@@ -59,6 +59,18 @@ func TestOwnCloneRefusals(t *testing.T) {
 			f.write(f.tree+"/.git/refs", "x")
 		}, ErrWrongType, func(f *fixture) string { return f.tree + "/.git/refs" }},
 		{"commondir present", func(f *fixture) { f.write(f.tree+"/.git/commondir", "../..\n") }, ErrNotOwnClone, func(f *fixture) string { return f.tree + "/.git/commondir" }},
+		{"alternates present", func(f *fixture) {
+			f.mkdir(f.tree+"/.git/objects/info", 0o755)
+			f.write(f.tree+"/.git/objects/info/alternates", f.base+"/owner/work/.git/objects\n")
+		}, ErrNotOwnClone, func(f *fixture) string { return f.tree + "/.git/objects/info/alternates" }},
+		{"http-alternates present", func(f *fixture) {
+			f.mkdir(f.tree+"/.git/objects/info", 0o755)
+			f.write(f.tree+"/.git/objects/info/http-alternates", "http://example.invalid/objects\n")
+		}, ErrNotOwnClone, func(f *fixture) string { return f.tree + "/.git/objects/info/http-alternates" }},
+		{"alternates is a link", func(f *fixture) {
+			f.mkdir(f.tree+"/.git/objects/info", 0o755)
+			f.symlink(f.out, f.tree+"/.git/objects/info/alternates")
+		}, ErrNotOwnClone, func(f *fixture) string { return f.tree + "/.git/objects/info/alternates" }},
 		{"below a repository in the lead's folder", func(f *fixture) { f.mkdir(f.state+"/leads/arc-lead/.git", 0o755) }, ErrNotOwnClone, func(f *fixture) string { return f.state + "/leads/arc-lead/.git" }},
 		{"below a repository in leads", func(f *fixture) { f.mkdir(f.state+"/leads/.git", 0o755) }, ErrNotOwnClone, func(f *fixture) string { return f.state + "/leads/.git" }},
 		{"below a repository at the state root (a file)", func(f *fixture) { f.write(f.state+"/.git", "gitdir: x\n") }, ErrNotOwnClone, func(f *fixture) string { return f.state + "/.git" }},
@@ -102,6 +114,17 @@ func TestOwnCloneRefusals(t *testing.T) {
 				wantProblem(t, rep, c.kind, c.at(f))
 			}
 		})
+	}
+}
+
+func TestOwnCloneObjectsInfoWithoutAlternates(t *testing.T) {
+	// A clone has objects/info (and objects/pack); only the alternates files
+	// are refused.
+	f := newFixture(t, profile.Claude)
+	f.mkdir(f.tree+"/.git/objects/info", 0o755)
+	f.write(f.tree+"/.git/objects/info/packs", "\n")
+	if rep := f.ownClone(uint32(os.Getuid())); !rep.OK() {
+		t.Fatal(rep.Err())
 	}
 }
 

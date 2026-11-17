@@ -3,6 +3,7 @@
 package mountpoints
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -41,7 +42,13 @@ type Resolution struct {
 // ResolveSources resolves each host bind source of the table, and each
 // never-mounted path and the other runtime's config folder too, through
 // resolve, and runs the profile's never-mounted check (which covers the
-// other runtime's config folder) on the real paths. It also refuses:
+// other runtime's config folder) on the real paths. A never-mounted path that
+// does not exist is resolved by its longest existing prefix. A resolved path
+// that cannot be used (relative, not clean, too long, a control character) is
+// a problem, never dropped. The profile's state checks run again on the real
+// paths too: a source that resolves into or above another lead's state, or
+// another project's mirror folder, is refused (the folders are resolved the
+// same way). It also refuses:
 //
 //   - a source that is missing, unless its row is optional;
 //   - a real source that overlaps a read-write folder of another row, or a
@@ -68,15 +75,38 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		never = append(never, other)
 	}
 	for _, n := range append([]string(nil), never...) {
-		r, err := resolve(n)
+		r, err := realOf(resolve, n)
 		switch {
-		case err != nil && isNotExist(err):
-			// Nothing there for a link to hide.
 		case err != nil:
 			res.add(problem(ErrUnreadable, n, "the never-mounted path cannot be resolved: %v", err))
-		case r != n && profile.CheckPath("resolved path", r) == nil:
+		case r != n:
+			if cerr := profile.CheckPath("resolved path", r); cerr != nil {
+				res.add(problem(ErrUnreadable, n, "the never-mounted path resolves to a path that is not usable: %v", cerr))
+				continue
+			}
 			never = append(never, r)
 		}
+	}
+	// The state folders the profile knows, on their real paths: a source in
+	// another lead's state or in another project's mirror is refused whatever
+	// the link that leads there.
+	l := in.Layout()
+	var st struct{ leads, lead, mirrors, mirror string }
+	stateOK := true
+	for _, d := range []struct {
+		dst  *string
+		path string
+	}{{&st.leads, path.Join(l.StateRoot, "leads")}, {&st.lead, l.LeadDir()}, {&st.mirrors, l.MirrorsDir()}, {&st.mirror, l.Mirror()}} {
+		r, err := realOf(resolve, d.path)
+		if err == nil {
+			err = profile.CheckPath("resolved path", r)
+		}
+		if err != nil {
+			res.add(problem(ErrUnreadable, d.path, "the state folder cannot be resolved: %v", err))
+			stateOK = false
+			continue
+		}
+		*d.dst = r
 	}
 	realPaths := make([]string, len(t))
 	for i, b := range t {
@@ -103,6 +133,14 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		if cerr := profile.CheckNeverMounted(r, never); cerr != nil {
 			res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s: %s", b.Inside, r, reason(cerr)))
 		}
+		if stateOK {
+			if related(r, st.leads) && r != st.lead && !strings.HasPrefix(r, st.lead+"/") {
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another lead's state", b.Inside, r))
+			}
+			if related(r, st.mirrors) && r != st.mirror && !strings.HasPrefix(r, st.mirror+"/") {
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r))
+			}
+		}
 		if b.SourceRole == profile.RoleTreeGit && r != b.Source {
 			res.add(problem(ErrSymlink, b.Source, "the source of %s is reached through a symbolic link (real path %s)", b.Inside, r))
 		}
@@ -121,6 +159,31 @@ func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 		}
 	}
 	return res, nil
+}
+
+// realOf resolves p through resolve. A path that does not exist is resolved by
+// its longest existing prefix, with the rest appended unchanged, so that a
+// link above an absent path is still evaluated. The result is not checked.
+func realOf(resolve Resolver, p string) (string, error) {
+	rest := ""
+	for q := p; ; {
+		r, err := resolve(q)
+		if err == nil {
+			if r == "/" && rest != "" {
+				return rest, nil
+			}
+			return r + rest, nil
+		}
+		if !isNotExist(err) {
+			return "", err
+		}
+		parent := path.Dir(q)
+		if parent == q {
+			return "", err
+		}
+		rest = "/" + path.Base(q) + rest
+		q = parent
+	}
 }
 
 func reason(err error) string {
