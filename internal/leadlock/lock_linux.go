@@ -62,6 +62,9 @@ func DaemonPath(stateDir string) string {
 	return filepath.Join(stateDir, "daemon.lock")
 }
 
+// afterFlock is a test hook run between the flock and the identity check.
+var afterFlock = func() {}
+
 // Lock is a held lock. It stays held until Release is called or the
 // descriptor is otherwise closed. Keep the Lock reachable for as long as the
 // lock must hold: the underlying os.File closes itself when collected.
@@ -88,7 +91,7 @@ func Acquire(path string) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("leadlock: create folder: %w", err)
 	}
-	fd, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+	fd, err := openNoFollow(path, unix.O_RDWR|unix.O_CREAT|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +110,12 @@ func Acquire(path string) (*Lock, error) {
 	if err := checkFile(path, &st, uint32(os.Geteuid())); err != nil {
 		return nil, err
 	}
+	// O_NONBLOCK only kept the open from blocking on a device or FIFO. The
+	// file is regular now; clear the flag so it is not shared with whoever
+	// receives the descriptor.
+	if err := unix.SetNonblock(fd, false); err != nil {
+		return nil, fmt.Errorf("leadlock: clear nonblock %s: %w", path, err)
+	}
 
 	err = retry(func() error { return unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB) })
 	if errors.Is(err, unix.EWOULDBLOCK) {
@@ -119,6 +128,7 @@ func Acquire(path string) (*Lock, error) {
 
 	// The lock is held. Refuse if the path no longer names this file: a lock
 	// on an unlinked inode excludes nobody.
+	afterFlock()
 	var now unix.Stat_t
 	if err := unix.Lstat(path, &now); err != nil || now.Dev != st.Dev || now.Ino != st.Ino {
 		return nil, fmt.Errorf("%w: %s", ErrReplaced, path)
@@ -152,8 +162,9 @@ func (l *Lock) Held() bool {
 // File returns the open lock file so the daemon can pass the held descriptor
 // on, for example through exec.Cmd.ExtraFiles. It returns nil after Release.
 // The descriptor is close-on-exec; a process that receives a duplicate keeps
-// the lock until it too closes it, even after Release here. Do not write to
-// or truncate the file.
+// the lock until it too closes it, even after Release here. Do not write to,
+// truncate or close the file; call Release. Closing it drops the lock while
+// Held still reports true.
 func (l *Lock) File() *os.File {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -181,7 +192,7 @@ func (l *Lock) Release() error {
 // the socket), never by this value. It returns [ErrNoHolder] when the file
 // holds no decimal pid.
 func ReadHolder(path string) (pid int, err error) {
-	fd, err := openNoFollow(path, unix.O_RDONLY, 0)
+	fd, err := openNoFollow(path, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +217,9 @@ func ReadHolder(path string) (pid int, err error) {
 }
 
 // openNoFollow opens path with O_NOFOLLOW, O_CLOEXEC and O_NOCTTY and maps
-// the errors that mean an unsafe target to ErrUnsafeFile.
+// the errors that mean an unsafe target to ErrUnsafeFile. Callers add
+// O_NONBLOCK so that opening a FIFO or device cannot block before the type
+// check; it has no effect on reads or writes of a regular file.
 func openNoFollow(path string, flags int, mode uint32) (int, error) {
 	var fd int
 	err := retry(func() (e error) {

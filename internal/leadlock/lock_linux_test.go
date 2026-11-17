@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,20 +26,24 @@ func TestHelperProcess(t *testing.T) {
 	if mode == "" {
 		t.Skip("helper process only")
 	}
+	var l *Lock
 	switch mode {
 	case "hold":
-		l, err := Acquire(os.Getenv("LEADLOCK_TEST_PATH"))
+		var err error
+		l, err = Acquire(os.Getenv("LEADLOCK_TEST_PATH"))
 		if err != nil {
 			os.Stdout.WriteString("error " + err.Error() + "\n")
 			os.Exit(3)
 		}
-		_ = l
 	case "idle":
 	default:
 		os.Exit(4)
 	}
 	os.Stdout.WriteString("ready\n")
 	time.Sleep(time.Minute)
+	// The Lock must stay reachable while the helper sleeps: its file closes
+	// itself when collected, which would drop the flock.
+	runtime.KeepAlive(l)
 	os.Exit(0)
 }
 
@@ -402,6 +407,94 @@ func TestUnlinkedFileGivesFreshLock(t *testing.T) {
 	l2, err := Acquire(path)
 	if err != nil {
 		t.Fatalf("Acquire on a recreated file: %v", err)
+	}
+	l2.Release()
+}
+
+// ReadHolder on a FIFO with no writer returns an error and does not block in
+// open(2).
+func TestReadHolderFIFODoesNotBlock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fifo.lock")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReadHolder(p)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrUnsafeFile) {
+			t.Fatalf("ReadHolder on a FIFO: %v, want ErrUnsafeFile", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadHolder blocked on a FIFO")
+	}
+}
+
+// Acquire opens with O_NONBLOCK so a FIFO or device cannot block it, and
+// clears the flag once the file is known to be regular, so the descriptor
+// handed on does not carry it.
+func TestAcquireClearsNonblock(t *testing.T) {
+	l, err := Acquire(lockPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	rc, err := l.File().SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flags int
+	var ferr error
+	if err := rc.Control(func(fd uintptr) {
+		flags, ferr = unix.FcntlInt(fd, unix.F_GETFL, 0)
+	}); err != nil || ferr != nil {
+		t.Fatalf("fcntl: %v %v", err, ferr)
+	}
+	if flags&unix.O_NONBLOCK != 0 {
+		t.Fatalf("lock descriptor still O_NONBLOCK (flags %#x)", flags)
+	}
+}
+
+// A path that stops naming the locked file between the flock and the identity
+// check gives ErrReplaced, and the replacement is left alone.
+func TestAcquireRefusesReplacedFile(t *testing.T) {
+	path := lockPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	afterFlock = func() {
+		other := path + ".other"
+		if err := os.WriteFile(other, []byte("x"), 0o600); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Rename(other, path); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { afterFlock = func() {} })
+
+	l, err := Acquire(path)
+	if err == nil {
+		l.Release()
+	}
+	if !errors.Is(err, ErrReplaced) {
+		t.Fatalf("Acquire = %v, want ErrReplaced", err)
+	}
+	if l != nil {
+		t.Fatal("a Lock was returned with ErrReplaced")
+	}
+	if data, _ := os.ReadFile(path); string(data) != "x" {
+		t.Fatalf("replacement was changed: %q", data)
+	}
+
+	afterFlock = func() {}
+	l2, err := Acquire(path)
+	if err != nil {
+		t.Fatalf("Acquire after the replacement: %v", err)
 	}
 	l2.Release()
 }
