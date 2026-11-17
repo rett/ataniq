@@ -42,10 +42,17 @@ func RenderText(id string, from Sender, kind, body string) string {
 //     paragraph separators, no-break and other non-ASCII spaces, and the
 //     bidirectional and other format controls, because IsPrint refuses them;
 //   - the body has something besides spaces and newlines (ReasonEmptyBody);
-//   - no line, after its leading blanks, starts with "[ataniq-msg", compared
-//     without regard to ASCII case (ReasonForgedHeader). A body is split into
-//     lines at newlines only, and a newline is the only line break that
-//     passes the character rule.
+//   - the body does not contain the marker word "ataniq-msg" anywhere
+//     (ReasonForgedHeader). The body is compared in a folded form: every
+//     letter is lower-cased and every rune that is not a letter or a decimal
+//     digit is removed, newlines and all, and the fold of the body must not
+//     contain "ataniqmsg". So "ataniq-msg", "ATANIQ MSG", "ataniq\u2011msg",
+//     "[ataniq_msg", a marker split by a combining mark or by a line break, and
+//     a marker after any run of blank-looking runes all fold to "ataniqmsg"
+//     and are refused. That is stricter than a rule about the start of a
+//     line, on purpose: what looks blank or like a bracket on a screen is not
+//     decided by the code points. The rule is about the body only: the id
+//     and kind of a header are checked by the name grammar, not by this rule.
 //
 // CheckBody does not check the size; Submit does, on the whole text.
 func CheckBody(body string) (Reason, string) {
@@ -65,32 +72,30 @@ func CheckBody(body string) (Reason, string) {
 	if strings.Trim(body, " \n") == "" {
 		return ReasonEmptyBody, "body has no text"
 	}
-	for i, ln := range strings.Split(body, "\n") {
-		if startsWithMarker(ln) {
-			return ReasonForgedHeader, fmt.Sprintf("line %d starts with %s", i+1, headerMarker)
-		}
+	if containsMarker(body) {
+		return ReasonForgedHeader, "body contains " + markerWord
 	}
 	return "", ""
 }
 
-// startsWithMarker reports whether a line, after leading blanks, starts with
-// the header marker, ignoring ASCII case.
-func startsWithMarker(line string) bool {
-	line = strings.TrimLeftFunc(line, unicode.IsSpace)
-	if len(line) < len(headerMarker) {
-		return false
-	}
-	head := line[:len(headerMarker)]
-	return asciiOnly(head) && strings.EqualFold(head, headerMarker)
-}
+// markerWord is the marker word the body rule looks for, as it is written in
+// a header.
+const markerWord = "ataniq-msg"
 
-func asciiOnly(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= utf8.RuneSelf {
-			return false
+// foldedMarker is markerWord after fold: lower case, letters and digits only.
+const foldedMarker = "ataniqmsg"
+
+// containsMarker reports whether the fold of s contains the folded marker.
+// The fold keeps letters and decimal digits only, lower-cased, so every
+// separator, mark, blank and format rune between the letters is dropped.
+func containsMarker(s string) bool {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
 		}
 	}
-	return true
+	return strings.Contains(b.String(), foldedMarker)
 }
 
 // safeField makes text from a hostile source fit for a journal field: invalid

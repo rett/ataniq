@@ -137,7 +137,10 @@ func (m *Machine) BeginDispatch(target Target, now time.Time) (Dispatch, error) 
 //     result), which is safe because it freezes the queue.
 //
 // It refuses with ReasonWrongState unless the command is dispatching and Enter
-// has not been recorded. On a journal error nothing changed.
+// has not been recorded, which includes a command a Tick made uncertain after
+// FenceTimeout. On a journal error nothing changed: the daemon retries
+// RecordFence with the same result, and never calls BeginDispatch again for
+// the command, which stays dispatching and is refused as already dispatching.
 func (m *Machine) RecordFence(id string, res FenceResult, now time.Time) (FenceUpdate, error) {
 	c := m.cmds[id]
 	switch {
@@ -225,6 +228,11 @@ func (m *Machine) ConfirmDelivery(id, evidence string, now time.Time) error {
 // wrote. For each target, in order of name:
 //
 //   - a command left accepted (its queued record failed) is queued;
+//   - a dispatching command with no fence result (Enter not recorded) FenceTimeout
+//     after its dispatching record becomes uncertain (holder or agent died); the
+//     queue is then frozen and shows it, and a fence result that comes later is
+//     refused (ReasonWrongState). Like ConfirmTimeout, it is reached when the
+//     elapsed time equals it;
 //   - a submitted command with no evidence ConfirmTimeout after its Enter becomes
 //     uncertain (submitted, not confirmed);
 //   - a queued head that is not behind an uncertain command, and is past
@@ -259,6 +267,16 @@ func (m *Machine) Tick(now time.Time) ([]Record, error) {
 		}
 		head := q[0]
 		switch {
+		case head.state == StateDispatching && !head.hasEnter && now.Sub(head.updated) >= m.limits.FenceTimeout:
+			// No fence result was recorded in time: the holder or the agent
+			// died, or the result was lost. Whatever was written is unknown.
+			r := base(head, now)
+			r.From, r.To, r.Reason = StateDispatching, StateUncertain, ReasonHolderDied
+			r.Detail = fmt.Sprintf("no fence result %s after the dispatching record", now.Sub(head.updated).Round(time.Second))
+			r.EvidenceKind, r.Evidence = EvidenceObservation, string(WrittenUnknown)
+			if err := step(r); err != nil {
+				return done, err
+			}
 		case head.state == StateDispatching && head.hasEnter && now.Sub(head.enterAt) >= m.limits.ConfirmTimeout:
 			r := base(head, now)
 			r.From, r.To, r.Reason = StateDispatching, StateUncertain, ReasonSubmittedNotConfirmed

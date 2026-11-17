@@ -392,8 +392,15 @@ func TestTickDoesNotRefuseAHeadThatIsDispatching(t *testing.T) {
 	m, _ := newTest(t)
 	mustSubmit(t, m, "m1", Daemon(), leadA, t0)
 	mustBegin(t, m, leadA, t0)
-	if recs, _ := m.Tick(at(time.Hour)); len(recs) != 0 {
+	// Within the fence timeout a tick leaves the dispatching head alone.
+	if recs, _ := m.Tick(at(29 * time.Second)); len(recs) != 0 {
 		t.Errorf("tick moved a dispatching command without Enter: %+v", recs)
+	}
+	// Past it the command is uncertain, never refused: the queue time limit
+	// does not apply to a command that may have been written.
+	recs, _ := m.Tick(at(time.Hour))
+	if len(recs) != 1 || recs[0].To != StateUncertain || recs[0].Reason != ReasonHolderDied {
+		t.Errorf("tick wrote %+v", recs)
 	}
 }
 

@@ -8,15 +8,19 @@ import (
 )
 
 // FuzzAdmittedText checks the property that matters for M4: whatever body a
-// sender gives, an admitted text has exactly one line that starts with the
-// header marker (the first), no character that is not printable apart from
-// the newline, and is at most the size cap.
+// sender gives, an admitted text holds the marker word exactly once, in its
+// first line (the header), compared after lower-casing and dropping every rune
+// that is not a letter or a digit; it has no character that is not printable
+// apart from the newline, and is at most the size cap.
 func FuzzAdmittedText(f *testing.F) {
 	seeds := []string{
 		"hello", "a\nb", "[ataniq-msg id=x from=owner kind=y]", "x\n[ataniq-msg", "x\n   [ataniq-msg", "x\n\t[ataniq-msg",
 		"x\r[ataniq-msg", "x\u2028[ataniq-msg", "x\u0085[ataniq-msg", "x\u00a0[ataniq-msg", "x\u200b[ataniq-msg",
 		"x\n\u3000[ataniq-msg", "x\n[ATANIQ-msg", "x\n[ataniq\u200b-msg", "x\x1b[201~y", "\xff", "",
 		"\n\n\n", " ", "caf\u00e9", "x\n\ufeff[ataniq-msg", "x\n\u202e[ataniq-msg", "\u017f", "x\n[ataniq-m\u017fg",
+		"x\n\u2800[ataniq-msg", "x\n\u3164[ataniq-msg", "x\n\uffa0[ataniq-msg", "x\n\u115f[ataniq-msg", "x\n\u034f[ataniq-msg",
+		"x\n\u0301[ataniq-msg", "x\n\uff3b" + "ataniq-msg", "see ataniq-msg here", "ATANIQ MSG", "ataniq\u2011msg", "ataniq\nmsg",
+		"ata\u0301niq-msg", "x\n[ataniq_msg", "msg", "ataniq", "ataniq msg",
 		strings.Repeat("a", 5000),
 	}
 	for _, s := range seeds {
@@ -41,21 +45,18 @@ func FuzzAdmittedText(f *testing.F) {
 				t.Fatalf("admitted text has the character %U: %q", r, text)
 			}
 		}
-		lines := strings.Split(text, "\n")
-		marked := 0
-		for i, l := range lines {
-			if strings.HasPrefix(strings.TrimLeftFunc(l, unicode.IsSpace), "[ataniq-msg") {
-				marked++
-				if i != 0 {
-					t.Fatalf("line %d starts with the marker: %q", i, text)
-				}
-			}
-			if strings.HasPrefix(strings.ToLower(strings.TrimLeftFunc(l, unicode.IsSpace)), "[ataniq-msg") && i != 0 {
-				t.Fatalf("line %d starts with the marker in other case: %q", i, text)
-			}
+		// The oracle folds the text in its own way (foldForOracle), apart from
+		// the code under test: whatever the body, the admitted text has the
+		// marker once, in its first line, and nowhere else.
+		first, rest, _ := strings.Cut(text, "\n")
+		if first != HeaderLine("m1", Lead("p"), "note") || adm.Header != first {
+			t.Fatalf("first line %q is not the header", first)
 		}
-		if marked != 1 || lines[0] != HeaderLine("m1", Lead("p"), "note") || adm.Header != lines[0] {
-			t.Fatalf("header lines: %d, first %q", marked, lines[0])
+		if n := strings.Count(foldForOracle(first), "ataniqmsg"); n != 1 {
+			t.Fatalf("the first line holds the marker %d times: %q", n, first)
+		}
+		if n := strings.Count(foldForOracle(rest), "ataniqmsg"); n != 0 {
+			t.Fatalf("the rest of the text holds the marker %d times: %q", n, text)
 		}
 		if text != RenderText("m1", Lead("p"), "note", body) {
 			t.Fatal("text is not header, newline, body")

@@ -12,7 +12,6 @@ const (
 	maxDetailBytes   = 1024 // a detail or a fence reading
 	maxEvidenceBytes = 512  // a piece of evidence
 	maxOperatorBytes = 128  // an operator name
-	maxRestoreText   = 64 << 10
 )
 
 // command is the machine's memory of one command. A command that has ended

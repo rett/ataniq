@@ -29,6 +29,22 @@
 // text, so that a command id is never used twice; trimming that history is the
 // daemon's concern. Refusals at admission are journaled too and keep no command.
 //
+// This package is provisional and unqualified: it is built from recorded
+// sessions of one version per runtime and has no live qualification yet.
+//
+// Left to the daemon. These are known and not handled here:
+//
+//   - Refused submissions are journaled without a bound: a sender that submits
+//     refused messages in a loop writes a record for each, so the daemon must
+//     rate-limit requests before Submit.
+//   - Ended commands (delivered, refused, resolved) are kept in memory for the
+//     life of the Machine and Restore replays the whole journal; there is no
+//     compaction.
+//   - Whether the queue time limit should also end a command whose lead stays
+//     blocked is an open question for the owner. Today it does: a head that
+//     waits longer than QueueTimeLimit is refused as not idle, with the last
+//     reason "blocked" in its detail.
+//
 // A message is data. Its text is a header line, a newline and the body; the
 // header names the sender, which is never the owner (the owner speaks as the
 // writer). The rules that keep a body from forging a header are written on

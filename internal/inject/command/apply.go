@@ -54,6 +54,8 @@ func (m *Machine) check(r Record) error {
 			return fmt.Errorf("a command sent again must keep the sender, target and kind of %q", r.Of)
 		case !validOperator(r.Operator):
 			return errors.New("a command sent again names its operator")
+		case m.pendingResend(old) != nil:
+			return fmt.Errorf("command %q was already sent again", r.Of)
 		}
 		return nil
 	case r.From == "":
@@ -103,10 +105,12 @@ func (m *Machine) check(r Record) error {
 		if c.hasEnter || !in(r.Reason, ReasonNotIdle, ReasonBlocked) {
 			return errors.New("dispatching returns to queued only before Enter, as not idle or blocked")
 		}
+		return checkWritten(r, WrittenNothing)
 	case r.From == StateDispatching && r.To == StateDispatching:
 		if c.hasEnter || r.Reason != ReasonEnterWritten {
 			return errors.New("Enter is recorded once, as enter-written")
 		}
+		return checkWritten(r, WrittenPasteAndEnter)
 	case r.From == StateDispatching && r.To == StateDelivered:
 		if !c.hasEnter {
 			return errors.New("delivery needs Enter to have been written")
@@ -118,6 +122,7 @@ func (m *Machine) check(r Record) error {
 		if c.hasEnter || !in(r.Reason, ReasonUntestedVersion, ReasonNotIdle, ReasonTextRefused) {
 			return errors.New("dispatching is refused only before Enter, as untested, not idle or text refused")
 		}
+		return checkWritten(r, WrittenNothing)
 	case r.From == StateDispatching && r.To == StateUncertain:
 		switch r.Reason {
 		case ReasonNotSubmitted:
@@ -136,20 +141,43 @@ func (m *Machine) check(r Record) error {
 		if r.Reason != ReasonOperatorDelivered || !validOperator(r.Operator) || r.EvidenceKind != EvidenceOwnerDecision {
 			return errors.New("an operator resolves delivered with a named operator and an owner decision")
 		}
+		if p := m.pendingResend(c); p != nil {
+			return fmt.Errorf("command %q was already sent again as %q, which can only be completed", c.id, p.id)
+		}
 	case r.From == StateUncertain && r.To == StateResolved:
 		if !in(r.Reason, ReasonOperatorDrop, ReasonOperatorResend) || !validOperator(r.Operator) || r.EvidenceKind != EvidenceOwnerDecision {
 			return errors.New("an operator resolves with a named operator and an owner decision")
 		}
+		// A resend is written as the new command first and the resolution
+		// second, so a resolution is a resend only for the command queued to
+		// replace this one, and a drop only when none is.
+		p := m.pendingResend(c)
 		if r.Reason == ReasonOperatorResend {
-			n := m.cmds[r.Replacement]
-			if n == nil || n.of != c.id || n.target != c.target {
-				return fmt.Errorf("resend names replacement %q, which does not replace %q", r.Replacement, c.id)
+			if p == nil || r.Replacement != p.id {
+				return fmt.Errorf("resend names replacement %q, which is not the command queued to replace %q", r.Replacement, c.id)
 			}
-		} else if r.Replacement != "" {
-			return errors.New("a dropped command has no replacement")
+		} else {
+			if r.Replacement != "" {
+				return errors.New("a dropped command has no replacement")
+			}
+			if p != nil {
+				return fmt.Errorf("command %q was already sent again as %q, which can only be completed", c.id, p.id)
+			}
 		}
 	default:
 		return fmt.Errorf("no transition from %s to %s", r.From, r.To)
+	}
+	return nil
+}
+
+// checkWritten requires the evidence of a fence record to be the observation
+// of what the fence wrote, which is fixed by the transition: nothing for a
+// command that goes back to queued or is refused, paste and Enter for the
+// Enter record. Evidence that says more was written than the record's own
+// transition allows would let a pasted command be queued and dispatched again.
+func checkWritten(r Record, want Written) error {
+	if r.EvidenceKind != EvidenceObservation || r.Evidence != string(want) {
+		return fmt.Errorf("a fence record from dispatching to %s rests on the observation %q, not on %s %q", r.To, want, r.EvidenceKind, safeField(r.Evidence, 40))
 	}
 	return nil
 }
@@ -177,7 +205,10 @@ func (m *Machine) checkNew(r Record) error {
 		return fmt.Errorf("bad kind %q", safeField(r.Kind, 70))
 	}
 	header := HeaderLine(r.ID, from, r.Kind) + "\n"
-	if len(r.Text) > maxRestoreText || !strings.HasPrefix(r.Text, header) {
+	if len(r.Text) > m.limits.MaxTextBytes {
+		return fmt.Errorf("text is %d bytes, the limit is %d", len(r.Text), m.limits.MaxTextBytes)
+	}
+	if !strings.HasPrefix(r.Text, header) {
 		return errors.New("text does not start with the header of the command")
 	}
 	if reason, detail := CheckBody(r.Text[len(header):]); reason != "" {

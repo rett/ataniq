@@ -26,13 +26,17 @@ type Limits struct {
 	// ConfirmTimeout is how long after Enter a submitted command waits for
 	// evidence before it becomes uncertain (30 s).
 	ConfirmTimeout time.Duration
+	// FenceTimeout is how long a command may stay dispatching with no fence
+	// result recorded before a Tick makes it uncertain (holder or agent
+	// died). It counts from the dispatching record (30 s).
+	FenceTimeout time.Duration
 	// QueueTimeLimit is how long after admission a queued head may wait for
 	// an idle lead before it is refused as not idle. The design gives no
 	// number, so there is no default: the caller must set it.
 	QueueTimeLimit time.Duration
 }
 
-// DefaultLimits returns the design's caps and the 30 s confirmation limit.
+// DefaultLimits returns the design's caps and the 30 s confirmation and fence limits.
 // QueueTimeLimit is zero and must be set before the limits are used.
 func DefaultLimits() Limits {
 	return Limits{
@@ -42,6 +46,7 @@ func DefaultLimits() Limits {
 		MaxPerWindow:     6,
 		RateWindow:       time.Minute,
 		ConfirmTimeout:   30 * time.Second,
+		FenceTimeout:     30 * time.Second,
 	}
 }
 
@@ -59,6 +64,7 @@ func (l Limits) Validate() error {
 	check("MaxPerWindow", l.MaxPerWindow > 0)
 	check("RateWindow", l.RateWindow > 0)
 	check("ConfirmTimeout", l.ConfirmTimeout > 0)
+	check("FenceTimeout", l.FenceTimeout > 0)
 	check("QueueTimeLimit", l.QueueTimeLimit > 0)
 	return errors.Join(errs...)
 }
