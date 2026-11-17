@@ -412,34 +412,97 @@ func TestInsideUsageErrors(t *testing.T) {
 	}
 }
 
-func TestInsideAgentCannotBeExecuted(t *testing.T) {
-	spec := testSpec(t)
+// runInsideRaw runs the probe in the inside mode with the given agent
+// argument vector and a report pipe at descriptor 3, and returns the exit
+// status, the standard error and what was written to the report descriptor.
+func runInsideRaw(t *testing.T, agent ...string) (code int, stderr string, report []byte) {
+	t.Helper()
 	exe := testExe(t)
 	rd, wr, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rd.Close()
-	var stderr bytes.Buffer
-	cmd := exec.Command(exe, "--spec", writeSpec(t, spec), "--report-fd", "3", "--", "/nonexistent/agent")
+	var buf bytes.Buffer
+	args := append([]string{"--spec", writeSpec(t, testSpec(t)), "--report-fd", "3", "--"}, agent...)
+	cmd := exec.Command(exe, args...)
 	cmd.Env = baseEnv(modeFake)
 	cmd.ExtraFiles = []*os.File{wr}
-	cmd.Stderr = &stderr
+	cmd.Stderr = &buf
 	err = cmd.Run()
 	wr.Close()
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) || ee.ExitCode() != exitSetup {
-		t.Fatalf("got %v", err)
+	if !errors.As(err, &ee) {
+		t.Fatalf("got %v, want an exit status (stderr %s)", err, &buf)
 	}
-	// The report was written first and passes: the holder reads the status.
-	data, _ := io.ReadAll(rd)
-	if rep, err := assert.ParseProbeLine(data); err != nil || assert.Failed(rep, spec) {
-		t.Errorf("report %q: %v", data, err)
+	report, _ = io.ReadAll(rd)
+	return ee.ExitCode(), buf.String(), report
+}
+
+// TestInsideAgentIsCheckedBeforeTheReport: an agent path that cannot be
+// executed is found before the checks run, so that no report is written and
+// the holder sees the exit status alone, and not a good report followed by an
+// exit 98 that an agent could also have.
+func TestInsideAgentIsCheckedBeforeTheReport(t *testing.T) {
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "plain")
+	if err := os.WriteFile(plain, []byte("#!/bin/true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(plain, link); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, path, want string }{
+		{"missing", "/nonexistent/agent", "no such file"},
+		{"a folder", dir, "not a regular file"},
+		{"a FIFO", fifo, "not a regular file"},
+		{"a device", "/dev/null", "not a regular file"},
+		{"a file without an execute bit", plain, "not executable"},
+		{"a link to a file without an execute bit", link, "not executable"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, stderr, report := runInsideRaw(t, c.path)
+			if code != exitSetup {
+				t.Errorf("exit %d, want %d", code, exitSetup)
+			}
+			if len(report) != 0 {
+				t.Errorf("a report was written: %q", report)
+			}
+			oneLine(t, stderr)
+			if !strings.HasPrefix(stderr, "ataniq-probe: cannot use the agent ") || !strings.Contains(stderr, c.want) {
+				t.Errorf("stderr %q does not contain %q", stderr, c.want)
+			}
+		})
+	}
+}
+
+// TestInsideAgentThatCannotBeExecutedAfterAGoodReport is what the check cannot
+// find: an executable regular file that the kernel does not accept as a
+// program. The report is written and good, and then the exec fails with exit
+// 98: a holder cannot tell this from an agent that exited 98, and the doc says
+// so.
+func TestInsideAgentThatCannotBeExecutedAfterAGoodReport(t *testing.T) {
+	garbage := filepath.Join(t.TempDir(), "garbage")
+	if err := os.WriteFile(garbage, []byte("not a program\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, stderr, report := runInsideRaw(t, garbage)
+	if code != exitSetup {
+		t.Errorf("exit %d, want %d", code, exitSetup)
+	}
+	spec := testSpec(t)
+	if rep, err := assert.ParseProbeLine(report); err != nil || assert.Failed(rep, spec) {
+		t.Errorf("report %q: %v", report, err)
 	}
 	// stderr holds the not-a-terminal note, then the failure.
-	lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
+	lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[1], "cannot execute the agent") {
-		t.Errorf("stderr %q", &stderr)
+		t.Errorf("stderr %q", stderr)
 	}
 }
 

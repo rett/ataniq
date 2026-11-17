@@ -21,20 +21,24 @@
 //  1. Marks descriptor N close-on-exec, before anything else, so that no later
 //     step and no exec can leak it. A descriptor that is not open, or that is
 //     one of the Go runtime's own (see below), is exit 98.
-//  2. Reads the spec: opened without following a link at the last component,
+//  2. Checks that AGENT is an executable regular file (stat, following a
+//     link, and faccessat with X_OK for the effective ids), before the checks
+//     run. Otherwise it is exit 98 and no report is written: the holder sees
+//     the exit status alone.
+//  3. Reads the spec: opened without following a link at the last component,
 //     it must be a regular file, and assert.DecodeSpec reads at most
 //     assert.MaxSpecBytes and refuses anything else. A spec that is refused is
 //     exit 98 and no report is written: the holder sees the exit status.
-//  3. Runs assert.RunInside against the real system (assert.HostSystem) and
+//  4. Runs assert.RunInside against the real system (assert.HostSystem) and
 //     writes the one report line (assert.EncodeLine) to descriptor N, in full,
 //     on success and on failure. A write that fails, or that makes no
 //     progress, is exit 98; a partial write is continued until the line is
 //     whole.
-//  4. Judges the report with assert.Failed. When it says the report does not
+//  5. Judges the report with assert.Failed. When it says the report does not
 //     allow a start the probe exits 97 and executes nothing, after listing the
 //     problems on standard error (display only: the holder reads the
 //     descriptor and the exit status).
-//  5. When descriptor 0 is a terminal, gives the agent a new session with that
+//  6. When descriptor 0 is a terminal, gives the agent a new session with that
 //     terminal as its controlling terminal (variant B of the design): setsid,
 //     then TIOCSCTTY. When setsid is refused (the probe leads a process
 //     group) the agent is started as a child in a new session that has the
@@ -44,11 +48,15 @@
 //     closes the report descriptor after the child has started. When
 //     descriptor 0 is not a terminal it says so on standard error and skips
 //     this step. A failure to get the terminal when there is one is exit 98.
-//  6. Makes every descriptor above 2 close-on-exec, so that the execve closes
+//  7. Makes every descriptor above 2 close-on-exec, so that the execve closes
 //     it (the agent keeps none), and executes AGENT with the process's
 //     environment as Go reads it (see below). The agent starts as the probe's
 //     own process, so the report descriptor reaches end-of-file at the exec.
-//     A failure to execute is exit 98.
+//     A failure to execute is exit 98. The check of step 2 finds the usual
+//     causes (a missing, non-executable or non-regular file), but not all: a
+//     file that the kernel does not accept as a program, or one replaced since
+//     the check, fails here, after a good report. A holder cannot tell that
+//     exit 98 from an agent that started and exited 98.
 //
 // The probe never issues TIOCSTI, never creates or writes a file, never adds,
 // removes or changes an environment variable, and starts no program but the
