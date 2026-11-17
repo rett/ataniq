@@ -309,14 +309,17 @@ trap '[ -z "$tmp" ] || rm -f "$tmp"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-new=$changelog.fold.$$
-# Noclobber makes the redirection an exclusive create: it fails when the name
-# exists, even as a dangling symbolic link.
-( set -C; : >"$new" ) 2>/dev/null || {
+# The name is recorded before the file is made, so a signal that arrives just
+# after the create still removes it; a refusal clears it again, so a file that
+# was already there is never removed. Noclobber makes the redirection an
+# exclusive create: it fails when the name exists, even as a dangling symbolic
+# link.
+tmp=$changelog.fold.$$
+( set -C; : >"$tmp" ) 2>/dev/null || {
+	tmp=
 	echo "error: cannot create a temporary file beside CHANGELOG.md" >&2
 	exit 1
 }
-tmp=$new
 # The new file starts from CHANGELOG.md's mode, which the rename keeps.
 cp -p "$changelog" "$tmp"
 
