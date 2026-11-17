@@ -28,7 +28,7 @@ const (
 	ProbOrder        ProblemKind = "order"            // sections or rows out of order
 	ProbFlags        ProblemKind = "flags"            // the flag set differs from the profile's
 	ProbEnv          ProblemKind = "env"              // the environment is not the allowlist
-	ProbSeccomp      ProblemKind = "seccomp"          // --seccomp, its descriptor or Files
+	ProbSeccomp      ProblemKind = "seccomp"          // --seccomp or its descriptor in Files
 	ProbMountMissing ProblemKind = "mount-missing"    // a table row is not mounted
 	ProbMountExtra   ProblemKind = "mount-unexpected" // a mount that is not in the table
 	ProbMountDiffers ProblemKind = "mount-differs"    // a row with another kind, source or target
@@ -36,12 +36,12 @@ const (
 	ProbMountList    ProblemKind = "mount-list"       // Plan.Mounts is not what the arguments mount
 	ProbNever        ProblemKind = "never-mounted"    // a source in or around a never-mounted path
 	ProbOtherRuntime ProblemKind = "other-runtime"    // the other runtime's config folder
-	ProbWorkDir      ProblemKind = "workdir"          // --chdir missing, outside the tree and home
+	ProbWorkDir      ProblemKind = "workdir"          // --chdir or the plan's working folder is not the options'
 	ProbRemount      ProblemKind = "remount-ro"       // --remount-ro / missing or not last
 	ProbInner        ProblemKind = "inner"            // the probe command line
 	ProbAgent        ProblemKind = "agent"            // the agent argv differs from the options
 	ProbDigest       ProblemKind = "digest"           // not the profile digest
-	ProbNotes        ProblemKind = "notes"            // a required note is missing
+	ProbNotes        ProblemKind = "notes"            // the notes are not the exact set the inputs and options give
 	ProbTerminal     ProblemKind = "terminal"         // SetControllingTerminal is true
 	ProbSize         ProblemKind = "size"             // the command line is above the cap
 )
