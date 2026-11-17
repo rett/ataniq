@@ -418,20 +418,28 @@ func DecodeState(payload []byte) (State, error) {
 }
 
 // RoleInfo is the payload of a Role frame: who the writer is now (a client
-// name and the pid of its process; both empty or zero when there is none) and
-// the role of the client that receives the frame.
+// name, the pid of its process and its command line, as the client gave them;
+// all empty or zero when there is no writer) and the role of the client that
+// receives the frame. The change of writer is shown as a notice in every
+// attached pane with this record, so the command line is text like any other:
+// at most [MaxWriterCommand] bytes, one line, and made fit with [Sanitize] by
+// whoever puts the process's own arguments in it.
 type RoleInfo struct {
-	WriterName string `json:"writer_name" wire:"required"`
-	WriterPID  int    `json:"writer_pid" wire:"required"`
-	Role       Role   `json:"role"`
+	WriterName    string `json:"writer_name" wire:"required"`
+	WriterPID     int    `json:"writer_pid" wire:"required"`
+	WriterCommand string `json:"writer_command" wire:"required"`
+	Role          Role   `json:"role"`
 }
 
 func (r *RoleInfo) validate() error {
 	if err := checkText("writer_name", r.WriterName, 0, MaxClientName, false); err != nil {
 		return err
 	}
-	if r.WriterPID < 0 || (r.WriterName == "" && r.WriterPID != 0) {
-		return invalidf("writer_pid is %d with writer name %q", r.WriterPID, r.WriterName)
+	if err := checkText("writer_command", r.WriterCommand, 0, MaxWriterCommand, false); err != nil {
+		return err
+	}
+	if r.WriterPID < 0 || (r.WriterName == "" && (r.WriterPID != 0 || r.WriterCommand != "")) {
+		return invalidf("writer_pid is %d and writer_command is %d bytes with writer name %q", r.WriterPID, len(r.WriterCommand), r.WriterName)
 	}
 	return r.Role.check("role")
 }

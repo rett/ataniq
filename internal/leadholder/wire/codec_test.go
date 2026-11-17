@@ -62,7 +62,7 @@ var codecs = []codec{
 		Facts: sampleFacts, ExitStatus: intp(3), Idle: wire.IdleUnknown,
 		IdleSignals: []string{"spinner-visible", "prompt-visible"}, Title: "claude — work",
 	}, wire.EncodeState, wire.DecodeState),
-	wrapCodec("role", wire.TypeRole, wire.RoleInfo{WriterName: "console", WriterPID: 4242, Role: wire.RoleViewer}, wire.EncodeRole, wire.DecodeRole),
+	wrapCodec("role", wire.TypeRole, wire.RoleInfo{WriterName: "console", WriterPID: 4242, WriterCommand: "ataniq attach --lead project/lead", Role: wire.RoleViewer}, wire.EncodeRole, wire.DecodeRole),
 	wrapCodec("check", wire.TypeCheck, wire.Check{Position: 1 << 40, Digest: strings.Repeat("ab", 32)}, wire.EncodeCheck, wire.DecodeCheck),
 	wrapCodec("notice", wire.TypeNotice, wire.Notice{Reason: wire.ReasonTooSlow, Text: "you were too slow"}, wire.EncodeNotice, wire.DecodeNotice),
 	wrapCodec("exit", wire.TypeExit, wire.Exit{
@@ -348,11 +348,18 @@ func TestFieldRules(t *testing.T) {
 
 	// Role.
 	for name, r := range map[string]wire.RoleInfo{
-		"no role":         {},
-		"role owner":      {Role: "owner"},
-		"pid without who": {WriterPID: 5, Role: wire.RoleViewer},
-		"negative pid":    {WriterName: "c", WriterPID: -1, Role: wire.RoleViewer},
-		"long name":       {WriterName: strings.Repeat("c", 65), WriterPID: 1, Role: wire.RoleViewer},
+		"no role":                 {},
+		"role owner":              {Role: "owner"},
+		"pid without who":         {WriterPID: 5, Role: wire.RoleViewer},
+		"negative pid":            {WriterName: "c", WriterPID: -1, Role: wire.RoleViewer},
+		"long name":               {WriterName: strings.Repeat("c", 65), WriterPID: 1, Role: wire.RoleViewer},
+		"command without who":     {WriterCommand: "ataniq attach", Role: wire.RoleViewer},
+		"513 byte command":        {WriterName: "c", WriterPID: 1, WriterCommand: strings.Repeat("c", 513), Role: wire.RoleViewer},
+		"command of 257 two-byte": {WriterName: "c", WriterPID: 1, WriterCommand: strings.Repeat("\u00e9", 257), Role: wire.RoleViewer},
+		"command with ESC":        {WriterName: "c", WriterPID: 1, WriterCommand: "a\x1b[2Jb", Role: wire.RoleViewer},
+		"command with newline":    {WriterName: "c", WriterPID: 1, WriterCommand: "a\nb", Role: wire.RoleViewer},
+		"command with RTL":        {WriterName: "c", WriterPID: 1, WriterCommand: "a\u202eb", Role: wire.RoleViewer},
+		"command not UTF-8":       {WriterName: "c", WriterPID: 1, WriterCommand: "a\xffb", Role: wire.RoleViewer},
 	} {
 		if _, err := wire.EncodeRole(r); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("role %s: err = %v", name, err)
@@ -360,6 +367,27 @@ func TestFieldRules(t *testing.T) {
 	}
 	if _, err := wire.EncodeRole(wire.RoleInfo{Role: wire.RoleViewer}); err != nil {
 		t.Errorf("no writer: %v", err)
+	}
+	// A command line of exactly 512 bytes is the longest, and an empty one is
+	// allowed for a writer that gave none.
+	for _, cmd := range []string{"", strings.Repeat("c", 512), strings.Repeat("\u00e9", 256)} {
+		p, err := wire.EncodeRole(wire.RoleInfo{WriterName: "c", WriterPID: 1, WriterCommand: cmd, Role: wire.RoleWriter})
+		if err != nil {
+			t.Errorf("command of %d bytes: %v", len(cmd), err)
+			continue
+		}
+		if got, err := wire.DecodeRole(p); err != nil || got.WriterCommand != cmd {
+			t.Errorf("command of %d bytes: %v", len(cmd), err)
+		}
+	}
+	// What Sanitize makes of a hostile command line is accepted.
+	hostile := "evil \x1b]52;c;AAAA\a \u202e\u2028 \xff" + strings.Repeat("x", 600)
+	clean := wire.Sanitize(hostile, wire.MaxWriterCommand, false)
+	if len(clean) > wire.MaxWriterCommand {
+		t.Errorf("sanitized command is %d bytes", len(clean))
+	}
+	if _, err := wire.EncodeRole(wire.RoleInfo{WriterName: "c", WriterPID: 1, WriterCommand: clean, Role: wire.RoleWriter}); err != nil {
+		t.Errorf("sanitized command: %v", err)
 	}
 
 	// Welcome.
@@ -584,6 +612,7 @@ var textFields = []struct {
 	{"welcome", `"runtime_version":"1.2.3"`},
 	{"state", `"title":"claude — work"`},
 	{"role", `"writer_name":"console"`},
+	{"role", `"writer_command":"ataniq attach --lead project/lead"`},
 	{"notice", `"text":"you were too slow"`},
 	{"exit", `"last_screen":"line one\nline <two> & \"three\"\n"`},
 	{"response status", `"lead":"project/lead"`},
@@ -876,6 +905,7 @@ func TestRequiredFields(t *testing.T) {
 		{"welcome", []string{"epoch"}},
 		{"role", []string{"writer_name"}},
 		{"role", []string{"writer_pid"}},
+		{"role", []string{"writer_command"}},
 		{"check", []string{"position"}},
 		{"check", []string{"digest"}},
 		{"request", []string{"op"}},

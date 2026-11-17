@@ -16,6 +16,9 @@ import (
 const (
 	// MaxClientName is the longest client name in a Hello and a Role.
 	MaxClientName = 64
+	// MaxWriterCommand is the longest command line of the writer in a Role
+	// frame.
+	MaxWriterCommand = 512
 	// MaxNoticeText is the longest text of a Notice and of a refusal.
 	MaxNoticeText = 256
 	// MaxTitle is the longest title in a State frame.

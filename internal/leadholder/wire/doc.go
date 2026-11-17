@@ -59,9 +59,9 @@
 // # Control requests
 //
 // On the control socket the daemon sends requests and the holder answers
-// with responses. The daemon mints the attach ticket ([NewTicket]) and gives it to the holder in
-// an [OpTicket] request and to the console out of band; the holder never
-// returns a ticket. An [OpTicket] request names the attach role the ticket is
+// with responses. The daemon mints the attach ticket ([NewTicket]) and gives
+// it to the holder in an [OpTicket] request and to the console out of band;
+// the holder never returns a ticket. An [OpTicket] request names the attach role the ticket is
 // for, and the holder answers ok, or [CodeBusy] when that role is taken (a
 // writer ticket is accepted only while there is no writer). Any request may
 // carry a command id, which the holder records in its event log.
