@@ -94,7 +94,12 @@ func TestForKnowsOnlyRecordedVersions(t *testing.T) {
 		{"claude", "2.1", false},
 		{"claude", "", false},
 		{"claude", "0.169", false},
-		{"codex", "0.169.0", false},
+		{"codex", "0.169.0", true},
+		{"claude", "2.1.325.0", false},
+		{"codex", "0.169.1", false},
+		{"codex", "0.169.", false},
+		{"codex", "v0.169.0", false},
+		{"codex", "0.16", false},
 		{"codex", "0.170", false},
 		{"codex", "2.1.325", false},
 		{"", "", false},
@@ -129,10 +134,16 @@ func TestCodexRules(t *testing.T) {
 	}{
 		{"⠀ x", true, false, "first braille pattern U+2800"},
 		{"⣿ x", true, false, "last braille pattern U+28FF"},
-		{"⟿ x", false, false, "rune before the braille block"},
-		{"⤀ x", false, false, "rune after the braille block"},
+		{"⟿ x", true, false, "rune before the braille block is an unrecorded symbol"},
+		{"⤀ x", true, false, "rune after the braille block is an unrecorded symbol"},
 		{" ⠸ x", false, false, "braille not first"},
-		{"◐ x", false, false, "a claude spinner is not a codex spinner"},
+		{"◐ x", true, false, "a claude spinner is not a codex spinner, and an unrecorded symbol"},
+		{"✻ x", true, false, "an unrecorded star"},
+		{"\xff x", true, false, "invalid first byte cannot be told"},
+		{"\xe2\x97", true, false, "cut glyph cannot be told"},
+		{"", false, false, "empty title is unchanged"},
+		{"Codex work", false, false, "a letter"},
+		{"7 work", false, false, "a digit"},
 		{"[ . ] Action Required | x", false, true, "blink phase dot"},
 		{"⠸ Action Required | x", true, true, "busy and action required"},
 		{"action required", false, false, "the words are case sensitive"},
@@ -142,6 +153,12 @@ func TestCodexRules(t *testing.T) {
 		got := r.Read(c.title)
 		if got.Busy != c.busy || got.ActionRequired != c.action {
 			t.Errorf("%s: Read(%q) = busy %v action %v, want %v %v", c.name, c.title, got.Busy, got.ActionRequired, c.busy, c.action)
+		}
+		// Only a first rune that is neither a spinner nor plain text, and
+		// the cut-off or invalid ones, carry a note.
+		wantNote := c.busy && !isBraille([]rune(c.title)[0])
+		if (len(got.Notes) > 0) != wantNote {
+			t.Errorf("%s: Read(%q).Notes = %q, want notes: %v", c.name, c.title, got.Notes, wantNote)
 		}
 	}
 }
@@ -261,8 +278,14 @@ func TestHostileTitles(t *testing.T) {
 
 func TestZeroRules(t *testing.T) {
 	var r Rules
-	if got := r.Read("⠸ Action Required"); got.Busy || got.ActionRequired || got.Notes != nil {
-		t.Errorf("zero Rules read %+v", got)
+	got := r.Read("⠸ Action Required")
+	if !got.Busy || len(got.Notes) == 0 {
+		t.Errorf("zero Rules read %+v, want busy with a note", got)
+	}
+	for _, title := range []string{"", "Claude Code", "✳ x"} {
+		if got := r.Read(title); !got.Busy || len(got.Notes) == 0 {
+			t.Errorf("zero Rules read %q as %+v, want busy with a note", title, got)
+		}
 	}
 	if r.Runtime() != "" {
 		t.Errorf("zero Rules runtime = %q", r.Runtime())

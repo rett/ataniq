@@ -21,9 +21,10 @@ const claudeIdleGlyph = '✳'
 
 // Reading says what one title shows.
 type Reading struct {
-	// Busy is true when the title starts with a spinner. For claude it is
-	// also true when the first rune is a symbol that was not recorded (see
-	// Notes), because when the rules cannot tell, the answer is not idle.
+	// Busy is true when the title starts with a spinner. It is also true
+	// when the first rune is a symbol that was not recorded, or is not valid
+	// UTF-8 (see Notes), because when the rules cannot tell, the answer is
+	// not idle. The zero Rules reads every title as busy.
 	Busy bool
 	// ActionRequired is true when the title says an approval prompt is open.
 	// Only codex titles can set it.
@@ -33,20 +34,21 @@ type Reading struct {
 	Notes []string
 }
 
-// Rules reads titles for one runtime and version. The zero value is not
-// useful; get a Rules from For.
+// Rules reads titles for one runtime and version. The zero value has no
+// rules and reads every title as busy, with a note; get a Rules from For.
 type Rules struct {
 	runtime string
 	read    func(title string) Reading
 }
 
-// For returns the rules for a runtime and version. It knows claude 2.1.325
-// and codex 0.169 only; for anything else it returns false.
+// For returns the rules for a runtime and version. It knows claude 2.1.325,
+// and codex as 0.169 or as 0.169.0, the spelling codex reports itself with;
+// for anything else it returns false.
 func For(runtime, version string) (Rules, bool) {
 	switch {
 	case runtime == "claude" && version == "2.1.325":
 		return Rules{runtime: runtime, read: readClaude}, true
-	case runtime == "codex" && version == "0.169":
+	case runtime == "codex" && (version == "0.169" || version == "0.169.0"):
 		return Rules{runtime: runtime, read: readCodex}, true
 	}
 	return Rules{}, false
@@ -61,7 +63,7 @@ func (r Rules) Runtime() string { return r.runtime }
 // a reading with nothing set.
 func (r Rules) Read(title string) Reading {
 	if r.read == nil {
-		return Reading{}
+		return Reading{Busy: true, Notes: []string{"no rules for this runtime and version: treated as busy, because the rules cannot tell"}}
 	}
 	var notes []string
 	if len(title) > MaxTitleBytes {
@@ -75,11 +77,24 @@ func (r Rules) Read(title string) Reading {
 
 // readCodex reads a codex 0.169 title. While a turn runs the title starts
 // with one braille pattern glyph (U+2800 to U+28FF), a spinner. While an
-// approval prompt is open it contains "Action Required".
+// approval prompt is open it contains "Action Required". A first rune that is
+// a symbol other than a braille pattern, or is not valid UTF-8, was not
+// recorded: the title is busy with a note, because when the rules cannot
+// tell, the answer is not idle. Titles that start with a letter, a digit or
+// "[", and the empty title, are not busy.
 func readCodex(title string) Reading {
 	var rd Reading
-	if r, _ := utf8.DecodeRuneInString(title); isBraille(r) {
+	r, size := utf8.DecodeRuneInString(title)
+	switch {
+	case title == "":
+	case isBraille(r):
 		rd.Busy = true
+	case r == utf8.RuneError && size <= 1:
+		rd.Busy = true
+		rd.Notes = append(rd.Notes, "title does not start with valid text: treated as busy, because the rules cannot tell")
+	case unicode.IsSymbol(r):
+		rd.Busy = true
+		rd.Notes = append(rd.Notes, "first glyph was not recorded: treated as busy, because when the rules cannot tell, the answer is not idle")
 	}
 	if strings.Contains(title, actionRequired) {
 		rd.ActionRequired = true
