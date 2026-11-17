@@ -26,6 +26,9 @@ var (
 	// has been moved by the integration: the upstream branch was found at
 	// neither the base nor the tip, or is gone.
 	ErrMoved = errors.New("intake: a branch moved after the sign-off")
+	// ErrNothingToIntegrate is matched by the error of an integration whose
+	// lead branch is at the target already.
+	ErrNothingToIntegrate = errors.New("nothing to integrate")
 	// ErrRecordMissing is matched by a *[RecordError].
 	ErrRecordMissing = errors.New("intake: the branch moved but its record is missing")
 )
@@ -138,7 +141,7 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 		return IntakeRecord{}, err
 	}
 	if rev.Base == rev.Tip {
-		return IntakeRecord{}, errors.New("intake: the lead branch is at the target: nothing to integrate")
+		return IntakeRecord{}, fmt.Errorf("intake: the lead branch is at the target: %w", ErrNothingToIntegrate)
 	}
 	if rev.Tip != req.SignOff.Tip {
 		return IntakeRecord{}, fmt.Errorf("%w: the sign-off is for tip %s and %s is now at %s",
