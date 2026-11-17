@@ -114,8 +114,15 @@ func (c Colors) validate() error {
 }
 
 // Hello is the first frame of a client. The holder accepts it only with a
-// ticket that it was given for this role and epoch; a Version other than
-// [ProtocolVersion] decodes, so that the holder can refuse it with a Notice.
+// ticket that it was given for this role and epoch and a Version equal to
+// [ProtocolVersion].
+//
+// A Version other than ours decodes when the rest of the payload has the
+// fields of this package's Hello, but a later version may well add a field,
+// and the strict decoder refuses a payload with a field it does not know.
+// The holder therefore never judges the version by [DecodeHello] alone: when
+// that fails, or returns another version, it asks [HelloVersion] and, for a
+// version that is not [ProtocolVersion], refuses with [ReasonRefusedVersion].
 type Hello struct {
 	Version int    `json:"version" wire:"required"`
 	Ticket  string `json:"ticket" wire:"required"`
@@ -221,7 +228,8 @@ func checkEpoch(n uint64) error {
 	return nil
 }
 
-// Welcome answers an accepted Hello.
+// Welcome answers an accepted Hello. A client that cannot decode it asks
+// [WelcomeVersion] whether the holder is newer.
 type Welcome struct {
 	Version        int    `json:"version" wire:"required"`
 	Role           Role   `json:"role"`

@@ -42,6 +42,16 @@
 // the digest of a Check) is required: a payload that lacks it, or has it
 // null, is refused, not decoded as zero.
 //
+// # Versions
+//
+// Both sides send [ProtocolVersion] in Hello and Welcome. Any change to a
+// payload that an older decoder would refuse (a new field, a new required
+// field) is a new protocol version. Because the decoders are strict, a peer of
+// another version may fail to decode; [HelloVersion] and [WelcomeVersion]
+// read only the version from a payload that may have unknown fields, so that a
+// holder can answer a newer client with a refused-version notice and a client
+// can report a newer holder.
+//
 // # Epochs
 //
 // Epochs are numbered from 1. Epoch 0 is invalid wherever an epoch is

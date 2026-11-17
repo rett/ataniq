@@ -191,3 +191,40 @@ func FuzzSanitize(f *testing.F) {
 		}
 	})
 }
+
+// FuzzVersion checks that the lenient version helpers never panic, only ever
+// report a version in range, and agree with the strict decoders on what they
+// both accept.
+func FuzzVersion(f *testing.F) {
+	for _, s := range []string{
+		``, `{}`, `{"version":1}`, `{"version":2,"x":[1,{"y":2}]}`, `{"version":1,"version":1}`,
+		`{"version":"1"}`, `{"x":` + string(bytes.Repeat([]byte("["), 200)),
+	} {
+		f.Add([]byte(s))
+	}
+	for _, c := range codecs {
+		if c.name == "hello" || c.name == "welcome" {
+			p, _ := c.encode(c.sample)
+			f.Add(p)
+		}
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if v, ok := wire.HelloVersion(data); ok && (v < 1 || v > wire.MaxDimension) {
+			t.Fatalf("hello version %d", v)
+		}
+		v, ok := wire.WelcomeVersion(data)
+		if ok && (v < 1 || v > wire.MaxDimension) {
+			t.Fatalf("welcome version %d", v)
+		}
+		if w, err := wire.DecodeWelcome(data); err == nil {
+			if !ok || v != w.Version {
+				t.Fatalf("decoded version %d, helper %d %v for %q", w.Version, v, ok, data)
+			}
+		}
+		if h, err := wire.DecodeHello(data); err == nil {
+			if hv, hok := wire.HelloVersion(data); !hok || hv != h.Version {
+				t.Fatalf("decoded version %d, helper %d %v for %q", h.Version, hv, hok, data)
+			}
+		}
+	})
+}
