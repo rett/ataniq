@@ -182,6 +182,10 @@ type Counters struct {
 	// CgroupErrors counts control groups that could not be read during a
 	// walk (one that vanished is not an error).
 	CgroupErrors uint64
+	// PidfdFailures counts pidfd_open and pidfd_send_signal calls that failed
+	// for a reason other than the process being gone (ESRCH): a process that
+	// should have been signalled may not have been.
+	PidfdFailures uint64
 }
 
 // Host is one running child on a pseudo-terminal.
@@ -222,6 +226,7 @@ type Host struct {
 
 	cgroupTruncated atomic.Uint64
 	cgroupErrors    atomic.Uint64
+	pidfdFailures   atomic.Uint64
 
 	closeOnce sync.Once
 }
@@ -440,5 +445,6 @@ func (h *Host) Counters() Counters {
 		ScanErrors:      h.scanErrors.Load(),
 		CgroupTruncated: h.cgroupTruncated.Load(),
 		CgroupErrors:    h.cgroupErrors.Load(),
+		PidfdFailures:   h.pidfdFailures.Load(),
 	}
 }

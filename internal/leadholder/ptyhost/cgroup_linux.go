@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -23,6 +25,10 @@ const (
 
 	// maxWalkPids bounds how many process ids one walk keeps.
 	maxWalkPids = 1 << 16
+
+	// signalBatch is how many pidfds are open at once while the processes of
+	// the group are signalled.
+	signalBatch = 128
 )
 
 // privateCgroup decides, before the child exists, whether this process runs
@@ -236,4 +242,100 @@ func walkCgroup(dir string, limit, self int, ignore func(pid int) bool) cgroupSc
 		}
 	}
 	return s
+}
+
+// signalCgroup signals every process listed in the holder's control group and
+// the groups below it, except the holder: the processes that left the child's
+// session and process group but stayed in the unit. cgroup.kill cannot be
+// used, because the holder is in the same group. It does nothing when the
+// cgroup method is not in use.
+//
+// A pid read from a cgroup.procs may have been reused by the time it is
+// signalled. So each process is signalled through a pidfd opened first, and
+// only if the pid is listed again in the same cgroup.procs after the pidfd is
+// open: the pidfd names whichever process held the number when it was opened,
+// and that process is in the group if the number is still listed (a process
+// that took the number and is not in the group is not listed, and is skipped).
+// The processes are handled in batches, so the number of open descriptors is
+// bounded. A walk that could not be completed signals what it found; Stop
+// tries again.
+func (h *Host) signalCgroup(sig syscall.Signal) {
+	if h.cgroupProcs == "" {
+		return
+	}
+	h.mu.Lock()
+	s := h.scanCgroup()
+	h.mu.Unlock()
+	for members := s.members; len(members) > 0; {
+		n := min(len(members), signalBatch)
+		h.signalListed(members[:n], sig, relistProcs)
+		members = members[n:]
+	}
+}
+
+// relistProcs reads a cgroup.procs file again as a set; nil when it cannot be
+// read (a group that is gone lists nothing).
+func relistProcs(procs string) map[int]bool {
+	pids, truncated, err := readProcs(procs)
+	if err != nil || truncated {
+		return nil
+	}
+	set := make(map[int]bool, len(pids))
+	for _, p := range pids {
+		set[p] = true
+	}
+	return set
+}
+
+// signalListed signals the members through pidfds opened now, but only those
+// that relist (called once per cgroup.procs file, after every pidfd is open)
+// still shows in the file they came from. Failures other than a process that
+// is already gone are counted.
+func (h *Host) signalListed(members []cgroupMember, sig syscall.Signal, relist func(procs string) map[int]bool) {
+	type opened struct {
+		m  cgroupMember
+		fd int
+	}
+	var fds []opened
+	defer func() {
+		for _, o := range fds {
+			_ = unix.Close(o.fd)
+		}
+	}()
+	for _, m := range members {
+		fd, err := unix.PidfdOpen(m.pid, 0)
+		if err != nil {
+			h.pidfdFailed(err)
+			continue
+		}
+		fds = append(fds, opened{m, fd})
+	}
+	lists := map[string]map[int]bool{}
+	for _, o := range fds {
+		set, seen := lists[o.m.procs]
+		if !seen {
+			set = relist(o.m.procs)
+			lists[o.m.procs] = set
+		}
+		if set == nil {
+			h.cgroupErrors.Add(1) // cannot confirm the membership: not signalled
+			continue
+		}
+		if !set[o.m.pid] {
+			continue
+		}
+		if err := unix.PidfdSendSignal(o.fd, sig, nil, 0); err != nil {
+			h.pidfdFailed(err)
+		}
+	}
+}
+
+// pidfdFailed counts a pidfd_open or pidfd_send_signal that failed. ESRCH
+// means the process is gone, which is what the caller wanted, and is not a
+// failure; anything else (ENOSYS before Linux 5.3, EPERM, EMFILE) means a
+// process that should have been signalled may not have been.
+func (h *Host) pidfdFailed(err error) {
+	if err != unix.ESRCH {
+		h.pidfdFailures.Add(1)
+	}
 }

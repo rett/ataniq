@@ -716,8 +716,8 @@ func TestAStrangerThatReusedTheSessionIdIsNeverSignalled(t *testing.T) {
 		t.Fatal(err)
 	}
 	stranger := cmd.Process.Pid
+	t.Cleanup(func() { cmd.Wait() }) // runs after the kill below: cleanups run last in, first out
 	killAtCleanup(t, stranger)
-	t.Cleanup(func() { cmd.Wait() }) // after the kill above (cleanups run last in, first out)
 	h := &Host{
 		pid: stranger, procRoot: "/proc", scanMax: DefaultProcScanLimit, walkMax: 10,
 		cgroupNote: "fake", done: closedChan(), release: make(chan struct{}),
@@ -765,6 +765,136 @@ func TestCgroupProofIgnoresTheZombieAndReleasesIt(t *testing.T) {
 	gone, proof := h.TreeGone()
 	if gone || !strings.Contains(proof, "4242") {
 		t.Errorf("after the reap TreeGone = %v, %q: want the listed number to count", gone, proof)
+	}
+}
+
+// sleeper starts a process of its own session that stands for a member of the
+// tree, and kills it at the end of the test through a pidfd.
+func sleeper(t *testing.T) int {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	cmd := exec.Command(sleep, "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Wait() }) // runs after the kill below: cleanups run last in, first out
+	killAtCleanup(t, cmd.Process.Pid)
+	return cmd.Process.Pid
+}
+
+// With the cgroup method Stop reaches the processes that left the child's
+// session and process group but stayed in the unit, also in a child group, and
+// leaves alone a process the group does not list (the review of the package,
+// finding F4).
+func TestStopSignalsEveryProcessOfTheControlGroup(t *testing.T) {
+	self := strconv.Itoa(os.Getpid())
+	procRoot, cgroupRoot, procsFile := fakeCgroup(t, self+"\n")
+	dir := filepath.Dir(procsFile)
+	files := t.TempDir()
+	fileA, fileB := filepath.Join(files, "a"), filepath.Join(files, "b")
+	script := "spawn session " + fileA + " detach ttl=60s; spawn session " + fileB + " detach ttl=60s; say READY; wait"
+
+	for _, method := range []string{"session", "cgroup"} {
+		t.Run(method, func(t *testing.T) {
+			os.Remove(fileA)
+			os.Remove(fileB)
+			h, tl := start(t, script, opts{mod: func(c *Config) {
+				if method == "cgroup" {
+					c.NoCgroup, c.ProcRoot, c.CgroupRoot = false, procRoot, cgroupRoot
+				}
+			}})
+			if h.TreeMethod() != method {
+				t.Fatalf("method %q (note %q)", h.TreeMethod(), h.cgroupNote)
+			}
+			h.killFor = 300 * time.Millisecond
+			tl.waitFor(t, "READY")
+			a, b := pidFromFile(t, fileA), pidFromFile(t, fileB)
+			bystander := sleeper(t)
+			t.Cleanup(func() {
+				os.RemoveAll(filepath.Join(dir, "sub"))
+				writeFile(t, procsFile, self+"\n")
+			})
+			writeFile(t, procsFile, self+"\n"+strconv.Itoa(a)+"\n")
+			subGroup(t, dir, "sub", strconv.Itoa(b)+"\n")
+
+			h.Stop(0)
+			if method == "session" {
+				// Both left the session: out of reach of the weaker method.
+				if !staysRunning(t, a, 300*time.Millisecond) || !staysRunning(t, b, time.Millisecond) {
+					t.Error("the session method reached a process that left the session")
+				}
+				return
+			}
+			for name, pid := range map[string]int{"the one in the group": a, "the one in the child group": b} {
+				if staysRunning(t, pid, patience) {
+					t.Errorf("%s was not signalled", name)
+				}
+			}
+			if !staysRunning(t, bystander, 300*time.Millisecond) {
+				t.Error("a process the group does not list was signalled")
+			}
+			if c := h.Counters(); c.PidfdFailures != 0 {
+				t.Errorf("counters %+v", c)
+			}
+			// The fake group still lists them, so the proof says not gone.
+			if gone, proof := h.TreeGone(); gone {
+				t.Errorf("TreeGone = true, %q, with processes listed", proof)
+			}
+		})
+	}
+}
+
+// The membership is read again after the pidfd is open, from the file the pid
+// came from; a pid that is not listed any more, or from a file that cannot be
+// read again, is not signalled. A failing pidfd call is counted, a process
+// that is gone is not a failure.
+func TestSignalListedChecksMembershipAndCountsFailures(t *testing.T) {
+	listed, unlisted, unreadable, fatal := sleeper(t), sleeper(t), sleeper(t), sleeper(t)
+	exited := exec.Command("true")
+	if err := exited.Run(); err != nil {
+		t.Skip("no true binary")
+	}
+	h := &Host{}
+	relist := func(procs string) map[int]bool {
+		switch procs {
+		case "ok":
+			return map[int]bool{listed: true, fatal: true}
+		case "unreadable":
+			return nil
+		}
+		return map[int]bool{}
+	}
+	h.signalListed([]cgroupMember{
+		{listed, "ok"}, {unlisted, "ok-but-not-in-it"}, {unreadable, "unreadable"},
+		{exited.Process.Pid, "ok"}, // gone: not a failure
+	}, syscall.SIGKILL, relist)
+	if staysRunning(t, listed, patience) {
+		t.Error("a listed process was not signalled")
+	}
+	for name, pid := range map[string]int{"an unlisted process": unlisted, "one from an unreadable list": unreadable} {
+		if !staysRunning(t, pid, 100*time.Millisecond) {
+			t.Errorf("%s was signalled", name)
+		}
+	}
+	if c := h.Counters(); c.PidfdFailures != 0 || c.CgroupErrors != 1 {
+		t.Errorf("counters %+v, want no pidfd failure and one unreadable list", c)
+	}
+	// pidfd_open(0) and a signal number the kernel refuses fail for other
+	// reasons than a missing process: both are counted, and nothing is killed.
+	h.signalListed([]cgroupMember{{0, "ok"}}, syscall.SIGKILL, relist)
+	if c := h.Counters(); c.PidfdFailures != 1 {
+		t.Errorf("pidfd_open failure: counters %+v, want 1", c)
+	}
+	h.signalListed([]cgroupMember{{fatal, "ok"}}, syscall.Signal(999), relist)
+	if c := h.Counters(); c.PidfdFailures != 2 {
+		t.Errorf("pidfd_send_signal failure: counters %+v, want 2", c)
+	}
+	if !staysRunning(t, fatal, 100*time.Millisecond) {
+		t.Error("a refused signal killed the process")
 	}
 }
 

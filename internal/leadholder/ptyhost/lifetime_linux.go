@@ -152,11 +152,16 @@ func (h *Host) sessionGone() (bool, string) {
 // the tree is not gone. It returns when the tree is gone or that time has
 // passed; the caller reads Wait and TreeGone for the facts. A process that
 // left the session is out of reach here (TreeGone says so for the session
-// method). Stop signals by group or session id only while the direct child's
+// method). With the cgroup method Stop also signals every process listed in
+// the holder's group and the groups below it, except the holder, through
+// pidfds after checking the membership again (see signalCgroup), so a process
+// that left the session and the process group is reached too. Stop signals by
+// group or session id only while the direct child's
 // zombie still reserves that id, and session members through a pidfd after
 // their session id was read again. It may be called again and concurrently.
 func (h *Host) Stop(grace time.Duration) {
 	h.signalGroup(syscall.SIGTERM)
+	h.signalCgroup(syscall.SIGTERM)
 	if h.waitGone(grace) {
 		return
 	}
@@ -164,6 +169,7 @@ func (h *Host) Stop(grace time.Duration) {
 	for {
 		h.signalGroup(syscall.SIGKILL)
 		h.killSession(syscall.SIGKILL)
+		h.signalCgroup(syscall.SIGKILL)
 		step := 5 * pollEvery
 		if left := time.Until(deadline); left < step {
 			step = left
@@ -257,6 +263,7 @@ func (h *Host) killSession(sig syscall.Signal) {
 func (h *Host) signalMember(pid int, sig syscall.Signal) {
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
+		h.pidfdFailed(err)
 		return
 	}
 	defer unix.Close(fd)
@@ -266,7 +273,9 @@ func (h *Host) signalMember(pid int, sig syscall.Signal) {
 	if !ok || st.sid != h.pid || st.dead() {
 		return
 	}
-	_ = unix.PidfdSendSignal(fd, sig, nil, 0)
+	if err := unix.PidfdSendSignal(fd, sig, nil, 0); err != nil {
+		h.pidfdFailed(err)
+	}
 }
 
 // member is one process found in the session.
