@@ -1,0 +1,36 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   /home/user/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ For the rest of this session: when a message starts with [ataniq-msg id=N], reply with exactly ACK N and nothing
+  else, and use no tools for it.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on

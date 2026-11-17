@@ -1,0 +1,19 @@
+{
+ "source": "row1/claude-s2/screens/mark-018-holder",
+ "description": "claude 2.1.325 after two pastes, both collapsed into markers; the footer is the paste hint, no mode",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 75,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "�",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "paste one line alpha beta gamma[Pasted text #1 +20 lines][Pasted text #2]",
+  "cursor_in_composer": true,
+  "pasted_marker": true
+ }
+}

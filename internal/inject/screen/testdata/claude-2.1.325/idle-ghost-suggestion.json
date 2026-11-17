@@ -1,0 +1,26 @@
+{
+ "source": "row3/claude/screens/dump-i2-6-holder",
+ "description": "composer showing the faint ghost of the last prompt",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 2,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "✳ ataniq-msg acknowledgment protocol",
+ "faint": [
+  {
+   "row": 33,
+   "from": 2,
+   "to": 60
+  }
+ ],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_empty": true,
+  "cursor_in_composer": true,
+  "mode": "manual",
+  "placeholder": true
+ }
+}
