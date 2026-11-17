@@ -177,8 +177,12 @@ func (claude) Read(s Snapshot) Reading {
 		r.ComposerText = text
 	}
 	r.PastedMarker = strings.Contains(r.ComposerText, "[Pasted text #")
-	if pasteFooter && (r.ComposerEmpty || !r.PastedMarker) {
-		return unknown("paste footer without a pasted-text marker in the composer")
+	if pasteFooter {
+		if r.ComposerEmpty || !r.PastedMarker {
+			return unknown("paste footer without a pasted-text marker in the composer")
+		}
+		r.StateHidden = true
+		r.Notes = append(r.Notes, "paste footer: the working hint and the shell count are not shown, so Working and BackgroundTask are not observed; take the working state from the OSC 7501 report")
 	}
 	return r
 }

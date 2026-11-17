@@ -75,7 +75,9 @@ type Reading struct {
 	// but blanks with the cursor visible at the first input column of the
 	// prompt row, or only the runtime's faint hint text. Blanks with the
 	// cursor anywhere else are text the owner typed. It implies Composer,
-	// CursorInComposer and not Dialog.
+	// CursorInComposer and not Dialog. Known limit: blanks the owner typed,
+	// with the cursor then moved back to the first input column (Home), read
+	// as empty too, because the screen shows the same as an empty composer.
 	ComposerEmpty bool
 	// ComposerText is what the composer holds, rows joined by "\n", without
 	// the prompt glyph and without a faint hint. Empty for an empty
@@ -93,7 +95,9 @@ type Reading struct {
 	Dialog      bool
 	DialogMarks []string
 	// BackgroundTask is true when the screen shows a running background
-	// task (claude only).
+	// task (claude only). It is not observed when StateHidden is true: the
+	// shell count of the footer is not shown then, so false does not mean
+	// that no shell runs.
 	BackgroundTask bool
 	// Mode is the permission mode the footer shows, as a short name (claude
 	// only; empty for codex).
@@ -103,10 +107,22 @@ type Reading struct {
 	PastedMarker bool
 	// Notes says why a screen is unknown, or what was noticed.
 	Notes []string
+	// StateHidden is true exactly when the screen hides the working hint
+	// and the footer's shell count: claude's footer "paste again to
+	// expand" (a collapsed paste is in the composer) replaces the whole
+	// footer line, so neither can appear. Then Working and the footer part
+	// of BackgroundTask are not observed, and their false values are not
+	// observations. A consumer must take the working state from the
+	// runtime's own report (OSC 7501) and not from Working then. A Note
+	// says so as well.
+	StateHidden bool
 
 	// Working is true when the screen shows the runtime's working line:
 	// claude's footer "esc to interrupt", codex's "Working (... esc to
-	// interrupt)" line. It is a mark, not a verdict on idleness.
+	// interrupt)" line. It is a mark, not a verdict on idleness. It is not
+	// observed when StateHidden is true: false then does not mean that the
+	// agent is idle, and the consumer must take the working state from the
+	// OSC 7501 report.
 	Working bool
 	// Placeholder is true when the composer shows only the runtime's faint
 	// hint text, which ComposerEmpty counts as empty.

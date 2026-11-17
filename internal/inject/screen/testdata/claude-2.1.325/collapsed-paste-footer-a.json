@@ -14,6 +14,10 @@
   "composer": true,
   "composer_text": "paste one line alpha beta gamma[Pasted text #1 +20 lines]",
   "cursor_in_composer": true,
-  "pasted_marker": true
+  "pasted_marker": true,
+  "notes": [
+   "paste footer: the working hint and the shell count are not shown, so Working and BackgroundTask are not observed; take the working state from the OSC 7501 report"
+  ],
+  "state_hidden": true
  }
 }
