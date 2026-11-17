@@ -29,8 +29,13 @@
 // refusal of a signal for a stale invocation), but it is a model written from
 // the contract, not from systemd: it does not stop the other processes of a
 // control group when the main process exits, it has no unit that is only
-// activating, and it knows no signal but SIGTERM and SIGKILL. A passing test
-// against the fake says that the caller follows the contract, not that the
+// activating, and it knows no signal but SIGTERM and SIGKILL. Its model of a
+// unit bound to a parent is written from the documentation of BindsTo=,
+// PartOf= and TimeoutStopSec=, not from a run: it stops a bound unit when its
+// parent unloads and gives it the stop timeout of [FixedProperties], and as
+// systemd's answer to a start whose parent is not active is not known, it
+// offers both outcomes that could be ([Fake.SetMissingParentOutcome]). A
+// passing test against the fake says that the caller follows the contract, not that the
 // real manager keeps it.
 //
 // # Status

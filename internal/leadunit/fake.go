@@ -41,6 +41,29 @@ const (
 	SurviveKill
 )
 
+// MissingParent says what a start does when its parent is not loaded and live.
+// How systemd answers that is not known from the contract (it can refuse the
+// call at once, or accept the job and fail it as a dependency failure), which
+// is why the fake lets a test choose.
+type MissingParent int
+
+const (
+	// MissingParentNeverActive is the zero value: the start request is
+	// accepted and the unit never becomes active, so it is gone at once under
+	// CollectMode=inactive-or-failed. Start returns no error and the State of
+	// a unit that is not loaded, and nothing is started.
+	MissingParentNeverActive MissingParent = iota
+	// MissingParentRefused makes Start return an error wrapping
+	// [ErrParentNotLive], and nothing is started, as when the bus refuses the
+	// call.
+	MissingParentRefused
+)
+
+// ErrParentNotLive is what [Fake] returns for a start whose parent is not
+// loaded and live when [MissingParentRefused] is set. No real manager returns
+// it: it stands for whatever refusal systemd gives, which is not known.
+var ErrParentNotLive = errors.New("leadunit: parent unit is not loaded and live")
+
 // ProcScript describes one fake process of a control group.
 type ProcScript struct {
 	// Behavior is how the process answers SIGTERM and SIGKILL.
@@ -76,6 +99,14 @@ type Call struct {
 	// that was executed afterwards, by [Fake.LandLateStart]. The call that
 	// lost the reply has its own entry.
 	Late bool
+	// Implied is true for an entry that no caller made: the stop that the
+	// fake applies to a unit bound to a parent when the parent unloads (a
+	// [MethodSignal] entry for SIGTERM, and one for SIGKILL when the unit is
+	// still populated after its stop timeout). The entry is made when the
+	// call that observes the stop runs, or when a setup method does, and At
+	// is the time the stop took place, which can be earlier. A test that
+	// counts the signals its code sent skips these.
+	Implied bool
 }
 
 // Fake is an in-memory [Manager] for tests: units with invocation ids, control
@@ -97,6 +128,20 @@ type Call struct {
 // it is empty. The state is "active" while the main process (the first one of
 // the group) is alive and "deactivating" when it is gone and others remain;
 // the fake does not kill those by itself.
+//
+// A unit started with a [Spec.Parent] is bound to that unit, as with
+// [BoundProperties]. It can start only while the parent is loaded and live
+// (and not itself being stopped because of its own parent); otherwise it never
+// becomes active, in the way [Fake.SetMissingParentOutcome] says. When a
+// parent unloads, whatever the cause (its group emptied by a signal or by
+// processes exiting, [Fake.KillProcess], [Fake.Crash]), the units bound to it
+// are stopped at that moment of the fake clock, and their units' bound units
+// in turn: every process gets SIGTERM and follows its script, the unit is
+// deactivating from then on, and the processes that are still there
+// TimeoutStopSec later (2 s, the value in [FixedProperties]) get SIGKILL.
+// A process that survives SIGKILL stays. These stops are logged as calls with
+// [Call.Implied] set. A parent that is gone does not stop a bound unit that
+// was started while the parent was not live, because no such unit exists.
 type Fake struct {
 	mu          sync.Mutex
 	clock       Clock
@@ -112,6 +157,7 @@ type Fake struct {
 	unavailable map[Method]int
 	calls       []Call
 	specs       []Spec
+	missing     MissingParent
 }
 
 type fakeUnit struct {
@@ -122,6 +168,14 @@ type fakeUnit struct {
 	cgroupID   string
 	mainPID    int
 	procs      []*fakeProc
+	// parent is the unit this one is bound to ("" for none).
+	parent string
+	// stopping is set by the stop that follows the unload of the parent: the
+	// unit is deactivating until its group is empty.
+	stopping bool
+	// killAt is when the stop timeout sends SIGKILL to the whole group; zero
+	// when none is pending.
+	killAt time.Time
 }
 
 type fakeProc struct {
@@ -237,7 +291,7 @@ func (f *Fake) LandLateStart(unit string) (State, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.settle()
-	call := Call{Seq: len(f.calls) + 1, At: f.clock.Now(), Method: MethodStart, Unit: unit, Late: true}
+	call := Call{At: f.clock.Now(), Method: MethodStart, Unit: unit, Late: true}
 	held := f.late[unit]
 	if len(held) == 0 {
 		return State{}, ErrNoLateStart
@@ -250,14 +304,17 @@ func (f *Fake) LandLateStart(unit string) (State, error) {
 	}
 	var st State
 	var err error
-	if f.units[unit] != nil {
+	switch {
+	case f.units[unit] != nil:
 		err = ErrUnitExists
-	} else {
+	case !f.parentLive(spec.Parent):
+		st, err = f.orphan(spec)
+	default:
 		st = f.launch(spec)
 		call.Invocation = st.InvocationID
 	}
 	call.Err = err
-	f.calls = append(f.calls, call)
+	f.log(call)
 	return st, err
 }
 
@@ -295,6 +352,18 @@ func (f *Fake) LeaveControlGroup(unit string, left bool) {
 	} else {
 		delete(f.leftover, unit)
 	}
+}
+
+// SetMissingParentOutcome chooses what a start does when the unit has a
+// [Spec.Parent] that is not loaded and live: see [MissingParent]. The default
+// is [MissingParentNeverActive]. It applies to every later start, by Start or
+// by [Fake.LandLateStart], and is kept by a reboot. A scripted outcome that
+// loses the reply still does (and starts nothing); a scripted delay is not
+// applied, since nothing started.
+func (f *Fake) SetMissingParentOutcome(m MissingParent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.missing = m
 }
 
 // ExpireNextStart scripts the next Start of unit to start the unit and then
@@ -363,19 +432,23 @@ func (f *Fake) MakeUnavailable(method Method, n int) {
 
 // Crash makes the unit die by itself, as when its holder crashes: every
 // process of its control group is killed, even those that survive SIGKILL,
-// and the unit unloads. It reports whether the unit was loaded.
+// and the unit unloads, which stops the units bound to it. It reports whether
+// the unit was loaded.
 func (f *Fake) Crash(unit string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.settle()
-	_, ok := f.units[unit]
-	delete(f.units, unit)
+	u, ok := f.units[unit]
+	if ok {
+		u.procs = nil
+		f.unload(u, f.clock.Now())
+	}
 	return ok
 }
 
 // KillProcess removes one process from the control group of unit, as if it
-// had exited. When it was the last one the unit unloads. It reports whether
-// the process was there.
+// had exited. When it was the last one the unit unloads (and the units bound
+// to it are stopped). It reports whether the process was there.
 func (f *Fake) KillProcess(unit string, pid int) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -387,7 +460,7 @@ func (f *Fake) KillProcess(unit string, pid int) bool {
 	for i, p := range u.procs {
 		if p.pid == pid {
 			u.procs = append(u.procs[:i], u.procs[i+1:]...)
-			f.collect(u)
+			f.collect(u, f.clock.Now())
 			return true
 		}
 	}
@@ -523,29 +596,180 @@ func (f *Fake) newUnit(name, desc string, procs []ProcScript) *fakeUnit {
 	return u
 }
 
-// settle applies the exits that the clock has reached and collects units
-// whose control group is empty. The caller holds f.mu.
+// stopTimeout is TimeoutStopSec of the fixed properties: how long a unit that
+// is being stopped has to end before systemd sends SIGKILL to its group. A test
+// checks it against [FixedProperties].
+const stopTimeout = 2 * time.Second
+
+// settle applies, in time order, what the clock has reached since the last
+// call: the exits of processes that were told to end after a delay, the
+// SIGKILL of a stop timeout, the collection of units whose control group is
+// empty, and the stops of the units bound to a unit that unloaded. An event is
+// applied at its own time, not at the time of the call, so what follows from it
+// (the stop of a bound unit, its timeout) is as late as it would have been
+// had a call been made then. The caller holds f.mu.
 func (f *Fake) settle() {
 	now := f.clock.Now()
+	for {
+		t, ok := f.nextEvent(now)
+		if !ok {
+			return
+		}
+		f.runEvents(t)
+	}
+}
+
+// nextEvent returns the earliest time, not after now, at which a delayed exit
+// or a stop timeout is due.
+func (f *Fake) nextEvent(now time.Time) (time.Time, bool) {
+	var at time.Time
+	found := false
+	consider := func(x time.Time) {
+		if !x.After(now) && (!found || x.Before(at)) {
+			at, found = x, true
+		}
+	}
 	for _, u := range f.units {
+		for _, p := range u.procs {
+			if p.terminating {
+				consider(p.exitAt)
+			}
+		}
+		if !u.killAt.IsZero() {
+			consider(u.killAt)
+		}
+	}
+	return at, found
+}
+
+// runEvents applies every event due at t or earlier, unit by unit in name
+// order, and collects the units that it emptied.
+func (f *Fake) runEvents(t time.Time) {
+	names := make([]string, 0, len(f.units))
+	for n := range f.units {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		u := f.units[n]
+		if u == nil {
+			continue // unloaded by the stop of its parent meanwhile
+		}
 		kept := u.procs[:0]
 		for _, p := range u.procs {
-			if p.terminating && !now.Before(p.exitAt) {
+			if p.terminating && !p.exitAt.After(t) {
 				continue
 			}
 			kept = append(kept, p)
 		}
 		u.procs = kept
-		f.collect(u)
+		if !u.killAt.IsZero() && !u.killAt.After(t) {
+			u.killAt = time.Time{}
+			f.logImplied(u, syscall.SIGKILL, t)
+			f.deliver(u, syscall.SIGKILL, t)
+		}
+		f.collect(u, t)
 	}
 }
 
-// collect unloads the unit when its control group is empty
-// (CollectMode=inactive-or-failed).
-func (f *Fake) collect(u *fakeUnit) {
-	if len(u.procs) == 0 && f.units[u.name] == u {
-		delete(f.units, u.name)
+// deliver sends sig to every process of u at time at, each acting as its
+// script says. Only SIGTERM and SIGKILL do anything.
+func (f *Fake) deliver(u *fakeUnit, sig syscall.Signal, at time.Time) {
+	kept := u.procs[:0]
+	for _, p := range u.procs {
+		dies := false
+		switch sig {
+		case syscall.SIGTERM:
+			switch p.script.Behavior {
+			case ExitOnTerm:
+				dies = true
+			case ExitOnTermAfter:
+				if p.script.Delay <= 0 {
+					dies = true
+				} else if !p.terminating {
+					p.terminating = true
+					p.exitAt = at.Add(p.script.Delay)
+				}
+			}
+		case syscall.SIGKILL:
+			dies = p.script.Behavior != SurviveKill
+		}
+		if !dies {
+			kept = append(kept, p)
+		}
 	}
+	u.procs = kept
+}
+
+// logImplied appends the entry of a signal that the fake sent by itself.
+func (f *Fake) logImplied(u *fakeUnit, sig syscall.Signal, at time.Time) {
+	f.log(Call{Method: MethodSignal, Unit: u.name, Signal: sig, Invocation: u.invocation, At: at, Implied: true})
+}
+
+// log appends call to the call log and numbers it.
+func (f *Fake) log(call Call) {
+	call.Seq = len(f.calls) + 1
+	f.calls = append(f.calls, call)
+}
+
+// collect unloads the unit when its control group is empty
+// (CollectMode=inactive-or-failed). at is when that happened.
+func (f *Fake) collect(u *fakeUnit, at time.Time) {
+	if len(u.procs) == 0 && f.units[u.name] == u {
+		f.unload(u, at)
+	}
+}
+
+// unload removes the unit, which holds no process any more, and stops the
+// units that are bound to its name.
+func (f *Fake) unload(u *fakeUnit, at time.Time) {
+	delete(f.units, u.name)
+	var bound []string
+	for n, c := range f.units {
+		if c.parent == u.name {
+			bound = append(bound, n)
+		}
+	}
+	sort.Strings(bound)
+	for _, n := range bound {
+		if c := f.units[n]; c != nil {
+			f.impliedStop(c, at)
+		}
+	}
+}
+
+// impliedStop is the stop of a unit whose parent unloaded: SIGTERM to the
+// group now, SIGKILL after the stop timeout when something is left.
+func (f *Fake) impliedStop(u *fakeUnit, at time.Time) {
+	if u.stopping {
+		return
+	}
+	u.stopping = true
+	f.logImplied(u, syscall.SIGTERM, at)
+	f.deliver(u, syscall.SIGTERM, at)
+	if len(u.procs) > 0 {
+		u.killAt = at.Add(stopTimeout)
+	}
+	f.collect(u, at)
+}
+
+// parentLive reports whether a unit with that parent can start now: the parent
+// is loaded and live, and is not itself being stopped.
+func (f *Fake) parentLive(parent string) bool {
+	if parent == "" {
+		return true
+	}
+	p := f.units[parent]
+	return p != nil && !p.stopping && f.state(parent).Live()
+}
+
+// orphan is the result of a start whose parent is not live, by the scripted
+// [MissingParent] outcome. Nothing is started.
+func (f *Fake) orphan(spec Spec) (State, error) {
+	if f.missing == MissingParentRefused {
+		return State{}, fmt.Errorf("%w: %s", ErrParentNotLive, spec.Parent)
+	}
+	return f.state(spec.Unit), nil
 }
 
 func (f *Fake) state(unit string) State {
@@ -562,6 +786,10 @@ func (f *Fake) state(unit string) State {
 			st.MainPID = p.pid
 		}
 	}
+	if u.stopping {
+		st.Active = ActiveDeactivating
+	}
+	st.Parent = u.parent
 	st.InvocationID = u.invocation
 	st.ControlGroup = u.cgroup
 	st.ControlGroupID = u.cgroupID
@@ -569,11 +797,10 @@ func (f *Fake) state(unit string) State {
 	return st
 }
 
-// enter does what every call does first: it logs the call when it returns,
-// refuses on a done context and on a scripted unavailability, and settles the
-// clock. It returns the error to return, if any. The caller holds f.mu.
+// enter does what every call does first: it refuses on a done context and on a
+// scripted unavailability, and settles the clock (which can log the stops of
+// bound units, so a call is numbered when it is logged, after them). It returns the error to return, if any. The caller holds f.mu.
 func (f *Fake) enter(ctx context.Context, call *Call) error {
-	call.Seq = len(f.calls) + 1
 	call.At = f.clock.Now()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -599,7 +826,7 @@ func (f *Fake) Start(ctx context.Context, spec Spec) (State, error) {
 	if st.InvocationID != "" {
 		call.Invocation = st.InvocationID
 	}
-	f.calls = append(f.calls, call)
+	f.log(call)
 	idx := len(f.calls) - 1
 	f.mu.Unlock()
 	if delay <= 0 || err != nil {
@@ -627,6 +854,7 @@ func (f *Fake) launch(spec Spec) State {
 	script := f.script(spec.Unit)
 	prev := f.lastCG[spec.Unit]
 	u := f.newUnit(spec.Unit, spec.Description(), procs)
+	u.parent = spec.Parent
 	if (script.reuseCG || f.leftover[spec.Unit]) && prev != "" {
 		u.cgroupID = prev
 	}
@@ -669,6 +897,18 @@ func (f *Fake) start(ctx context.Context, call *Call, spec Spec) (State, time.Du
 			return State{}, 0, outcome.err
 		}
 	}
+	if !f.parentLive(spec.Parent) {
+		if outcome != nil {
+			switch outcome.kind {
+			case outcomeLoseReply:
+				return State{}, 0, ErrReplyLost
+			case outcomeExpire:
+				return State{}, 0, fmt.Errorf("%w: %w", ErrReplyLost, context.DeadlineExceeded)
+			}
+		}
+		st, err := f.orphan(spec)
+		return st, 0, err
+	}
 	st := f.launch(spec)
 	if outcome != nil {
 		switch outcome.kind {
@@ -695,7 +935,7 @@ func (f *Fake) Inspect(ctx context.Context, unit string) (st State, err error) {
 		if st.InvocationID != "" {
 			call.Invocation = st.InvocationID
 		}
-		f.calls = append(f.calls, call)
+		f.log(call)
 	}()
 	if err := f.enter(ctx, &call); err != nil {
 		return State{}, err
@@ -712,9 +952,12 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	call := Call{Method: MethodSignal, Unit: st.Unit, Signal: sig, Invocation: st.InvocationID}
+	logged := false
 	defer func() {
-		call.Err = err
-		f.calls = append(f.calls, call)
+		if !logged {
+			call.Err = err
+			f.log(call)
+		}
 	}()
 	if err := f.enter(ctx, &call); err != nil {
 		return err
@@ -729,32 +972,13 @@ func (f *Fake) Signal(ctx context.Context, st State, sig syscall.Signal) (err er
 	if st.InvocationID == "" || st.InvocationID != u.invocation {
 		return ErrInvocationChanged
 	}
+	// The call is logged before its effect, so that the stops it causes in
+	// bound units follow it in the log.
+	logged = true
+	f.log(call)
 	now := f.clock.Now()
-	kept := u.procs[:0]
-	for _, p := range u.procs {
-		dies := false
-		switch sig {
-		case syscall.SIGTERM:
-			switch p.script.Behavior {
-			case ExitOnTerm:
-				dies = true
-			case ExitOnTermAfter:
-				if p.script.Delay <= 0 {
-					dies = true
-				} else if !p.terminating {
-					p.terminating = true
-					p.exitAt = now.Add(p.script.Delay)
-				}
-			}
-		case syscall.SIGKILL:
-			dies = p.script.Behavior != SurviveKill
-		}
-		if !dies {
-			kept = append(kept, p)
-		}
-	}
-	u.procs = kept
-	f.collect(u)
+	f.deliver(u, sig, now)
+	f.collect(u, now)
 	return nil
 }
 
@@ -783,7 +1007,7 @@ func (f *Fake) Empty(ctx context.Context, st State) (empty bool, err error) {
 	defer func() {
 		call.Err = err
 		call.Empty = empty
-		f.calls = append(f.calls, call)
+		f.log(call)
 	}()
 	if err := f.enter(ctx, &call); err != nil {
 		return false, err
