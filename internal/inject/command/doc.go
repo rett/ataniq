@@ -49,4 +49,15 @@
 // header names the sender, which is never the owner (the owner speaks as the
 // writer). The rules that keep a body from forging a header are written on
 // CheckBody.
+//
+// Known limit. The check that keeps a body from carrying the header marker
+// folds the body to ASCII letters and digits, and it folds invisible fillers,
+// fullwidth forms and mathematical alphanumerics (see CheckBody). It does not
+// fold letters of other scripts that merely look like Latin letters: Cyrillic
+// and Greek look-alikes, the dotless i, modifier letters and small capitals. A
+// body that spells the marker with such letters is admitted, so a body can
+// still show a line that looks like a header to a human or a model. Closing
+// that needs a design decision, for example a fixed prefix on every body line
+// so that only the header line has none. That is an open question for the
+// owner.
 package command

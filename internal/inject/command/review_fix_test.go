@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 )
 
 // Tests for the findings of the review of the command package: what Restore
@@ -199,18 +198,6 @@ func TestRestoreAcceptsWhatTheLiveFenceWrites(t *testing.T) {
 			t.Errorf("%s/%s: the journal of the live machine is refused: %v", c.w, c.o, err)
 		}
 	}
-}
-
-// foldForOracle is the test's own fold of the marker rule: lower case, then
-// only letters and decimal digits. It does not call the code under test.
-func foldForOracle(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if unicode.In(r, unicode.Letter, unicode.Nd) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 func TestForgedHeaderLookAlikesAreRefused(t *testing.T) {

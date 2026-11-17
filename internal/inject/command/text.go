@@ -43,16 +43,37 @@ func RenderText(id string, from Sender, kind, body string) string {
 //     bidirectional and other format controls, because IsPrint refuses them;
 //   - the body has something besides spaces and newlines (ReasonEmptyBody);
 //   - the body does not contain the marker word "ataniq-msg" anywhere
-//     (ReasonForgedHeader). The body is compared in a folded form: every
-//     letter is lower-cased and every rune that is not a letter or a decimal
-//     digit is removed, newlines and all, and the fold of the body must not
-//     contain "ataniqmsg". So "ataniq-msg", "ATANIQ MSG", "ataniq\u2011msg",
-//     "[ataniq_msg", a marker split by a combining mark or by a line break, and
-//     a marker after any run of blank-looking runes all fold to "ataniqmsg"
-//     and are refused. That is stricter than a rule about the start of a
-//     line, on purpose: what looks blank or like a bracket on a screen is not
-//     decided by the code points. The rule is about the body only: the id
-//     and kind of a header are checked by the name grammar, not by this rule.
+//     (ReasonForgedHeader): the fold of the body, defined below, must not
+//     contain "ataniqmsg".
+//
+// The fold reads the body rune by rune and applies these steps in this order:
+//
+//  1. A rune with the Unicode property Other_Default_Ignorable_Code_Point
+//     (unicode.Other_Default_Ignorable_Code_Point: the Hangul fillers U+115F,
+//     U+1160, U+3164 and U+FFA0, U+034F, U+17B4 and U+17B5, U+2065, U+FFF0 to
+//     U+FFF8 and the tag and variation ranges) is dropped, even though some of
+//     them are letters, because they render as nothing.
+//  2. A fullwidth form U+FF01 to U+FF5E is replaced by the ASCII rune at the
+//     code point minus 0xFEE0 (so U+FF41 is "a").
+//  3. A mathematical alphanumeric letter U+1D400 to U+1D6A3 (the thirteen
+//     Latin alphabets of 52 letters, upper case first) is replaced by the ASCII
+//     letter at its offset from U+1D400 modulo 52, and a mathematical digit
+//     U+1D7CE to U+1D7FF by the ASCII digit at its offset from U+1D7CE, modulo
+//     ten. The rest of U+1D400 to U+1D7FF, which is Greek, is left as it is.
+//  4. The rune is kept, lower-cased with unicode.ToLower, when it is a letter
+//     (unicode.IsLetter) or a decimal digit (unicode.IsDigit), and dropped
+//     otherwise, so every separator, punctuation, symbol, mark, blank and the
+//     newline are gone.
+//
+// So "ataniq-msg", "ATANIQ MSG", "ataniq\u2011msg", "[ataniq_msg", a marker
+// split by a combining mark, a filler or a line break, a marker written in
+// fullwidth or mathematical letters, and a marker after any run of
+// blank-looking runes all fold to "ataniqmsg" and are refused. That is
+// stricter than a rule about the start of a line, on purpose: what looks blank
+// or like a bracket on a screen is not decided by the code points. Letters of
+// other scripts that only look like Latin letters are not folded (see "Known
+// limit" in the package documentation). The rule is about the body only: the
+// id and kind of a header are checked by the name grammar, not by this rule.
 //
 // CheckBody does not check the size; Submit does, on the whole text.
 func CheckBody(body string) (Reason, string) {
@@ -85,17 +106,39 @@ const markerWord = "ataniq-msg"
 // foldedMarker is markerWord after fold: lower case, letters and digits only.
 const foldedMarker = "ataniqmsg"
 
-// containsMarker reports whether the fold of s contains the folded marker.
-// The fold keeps letters and decimal digits only, lower-cased, so every
-// separator, mark, blank and format rune between the letters is dropped.
+// containsMarker reports whether the fold of s contains the folded marker. The
+// fold is the one written on CheckBody.
 func containsMarker(s string) bool {
 	var b strings.Builder
 	for _, r := range s {
+		if unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
+			continue
+		}
+		r = asciiLookAlike(r)
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(unicode.ToLower(r))
 		}
 	}
 	return strings.Contains(b.String(), foldedMarker)
+}
+
+// asciiLookAlike maps the two blocks written on CheckBody to ASCII and returns
+// any other rune as it is. The mappings are written by hand, not read from a
+// table, so the code is the whole rule.
+func asciiLookAlike(r rune) rune {
+	switch {
+	case r >= 0xFF01 && r <= 0xFF5E:
+		return r - 0xFEE0
+	case r >= 0x1D400 && r <= 0x1D6A3:
+		i := (r - 0x1D400) % 52
+		if i < 26 {
+			return 'A' + i
+		}
+		return 'a' + i - 26
+	case r >= 0x1D7CE && r <= 0x1D7FF:
+		return '0' + (r-0x1D7CE)%10
+	}
+	return r
 }
 
 // safeField makes text from a hostile source fit for a journal field: invalid

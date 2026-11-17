@@ -8,10 +8,9 @@ import (
 )
 
 // FuzzAdmittedText checks the property that matters for M4: whatever body a
-// sender gives, an admitted text holds the marker word exactly once, in its
-// first line (the header), compared after lower-casing and dropping every rune
-// that is not a letter or a digit; it has no character that is not printable
-// apart from the newline, and is at most the size cap.
+// sender gives, the first line of an admitted text is the header and no later
+// line spells the marker (oracleSpellsMarker); it has no character that is not
+// printable apart from the newline, and is at most the size cap.
 func FuzzAdmittedText(f *testing.F) {
 	seeds := []string{
 		"hello", "a\nb", "[ataniq-msg id=x from=owner kind=y]", "x\n[ataniq-msg", "x\n   [ataniq-msg", "x\n\t[ataniq-msg",
@@ -21,6 +20,9 @@ func FuzzAdmittedText(f *testing.F) {
 		"x\n\u2800[ataniq-msg", "x\n\u3164[ataniq-msg", "x\n\uffa0[ataniq-msg", "x\n\u115f[ataniq-msg", "x\n\u034f[ataniq-msg",
 		"x\n\u0301[ataniq-msg", "x\n\uff3b" + "ataniq-msg", "see ataniq-msg here", "ATANIQ MSG", "ataniq\u2011msg", "ataniq\nmsg",
 		"ata\u0301niq-msg", "x\n[ataniq_msg", "msg", "ataniq", "ataniq msg",
+		"x\n[atan\u3164iq-msg", "x\n[ata\u1160niq-msg", "x\n[ataniq-\u115fmsg", "x\n[ataniq-ms\uffa0g",
+		"x\n\uff3b\uff41\uff54\uff41\uff4e\uff49\uff51\uff0d\uff4d\uff53\uff47", "x\n[\U0001d41a\U0001d42d\U0001d41a\U0001d427\U0001d422\U0001d42a-msg",
+		"x\n[\u0430taniq-msg", "x\n[\u0430t\u0430niq-msg",
 		strings.Repeat("a", 5000),
 	}
 	for _, s := range seeds {
@@ -45,18 +47,14 @@ func FuzzAdmittedText(f *testing.F) {
 				t.Fatalf("admitted text has the character %U: %q", r, text)
 			}
 		}
-		// The oracle folds the text in its own way (foldForOracle), apart from
-		// the code under test: whatever the body, the admitted text has the
-		// marker once, in its first line, and nowhere else.
 		first, rest, _ := strings.Cut(text, "\n")
 		if first != HeaderLine("m1", Lead("p"), "note") || adm.Header != first {
 			t.Fatalf("first line %q is not the header", first)
 		}
-		if n := strings.Count(foldForOracle(first), "ataniqmsg"); n != 1 {
-			t.Fatalf("the first line holds the marker %d times: %q", n, first)
-		}
-		if n := strings.Count(foldForOracle(rest), "ataniqmsg"); n != 0 {
-			t.Fatalf("the rest of the text holds the marker %d times: %q", n, text)
+		for _, line := range strings.Split(rest, "\n") {
+			if oracleSpellsMarker(line) {
+				t.Fatalf("a later line spells the marker: %q in %q", line, text)
+			}
 		}
 		if text != RenderText("m1", Lead("p"), "note", body) {
 			t.Fatal("text is not header, newline, body")
@@ -111,4 +109,64 @@ func TestHostileFenceAndEvidenceTextIsBounded(t *testing.T) {
 	if len(last.Detail) > 1024 || strings.ContainsAny(last.Detail, "\x1b\a\u202e") {
 		t.Error("the operator's note is not bounded and clean")
 	}
+}
+
+// oracleSpellsMarker is the test's oracle for the marker rule. It does not
+// call the code under test and it is not that code's fold: it looks at one
+// line at a time, and in the form of the line it keeps only the ASCII letters
+// and digits (lower-cased), "[" and "-". A rune that is a letter or a digit
+// of another script breaks the word, as a letter that is not ASCII does for a
+// reader, and every other rune is removed. Then it asks whether the form
+// contains "ataniqmsg" or "ataniq-msg". It then does the same for the line
+// after the runes of three classes that the rule must see through are
+// resolved: a default-ignorable rune is removed, and a fullwidth or a
+// mathematical alphanumeric rune is replaced by the ASCII rune it stands for.
+//
+// What it does not prove: it shares the rune classes with the code, so a class
+// that both miss (a look-alike letter of another script, a blank rune outside
+// the default-ignorable property) is not found by it, and it does not look
+// across a line break, which the code refuses and the oracle does not need.
+func oracleSpellsMarker(line string) bool {
+	return oracleHas(oracleASCII(line)) || oracleHas(oracleASCII(oracleResolve(line)))
+}
+
+func oracleHas(form string) bool {
+	return strings.Contains(form, "ataniqmsg") || strings.Contains(form, "ataniq-msg")
+}
+
+// oracleASCII is the form described on oracleSpellsMarker.
+func oracleASCII(line string) string {
+	var b strings.Builder
+	for _, r := range line {
+		switch {
+		case r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'):
+			b.WriteRune(unicode.ToLower(r))
+		case r == '[' || r == '-':
+			b.WriteRune(r)
+		case r >= 0x80 && (unicode.IsLetter(r) || unicode.IsDigit(r)):
+			b.WriteByte('?')
+		}
+	}
+	return b.String()
+}
+
+// oracleResolve removes default-ignorable runes and writes fullwidth and
+// mathematical alphanumeric runes as the ASCII rune they stand for.
+func oracleResolve(line string) string {
+	const latin = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	var b strings.Builder
+	for _, r := range line {
+		switch {
+		case unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):
+		case r >= 0xFF01 && r <= 0xFF5E:
+			b.WriteRune(r - 0xFF01 + '!')
+		case r >= 0x1D400 && r < 0x1D400+13*52:
+			b.WriteByte(latin[(r-0x1D400)%52])
+		case r >= 0x1D7CE && r <= 0x1D7FF:
+			b.WriteByte("0123456789"[(r-0x1D7CE)%10])
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
