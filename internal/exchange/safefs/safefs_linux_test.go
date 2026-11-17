@@ -5,6 +5,7 @@ package safefs
 import (
 	"errors"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,6 +239,27 @@ func TestFIFORefusedWithoutBlocking(t *testing.T) {
 			t.Errorf("Open: %v", err)
 		}
 		if _, err := r.ReadFile("pipe2", 10); !errors.Is(err, ErrNotRegular) {
+			t.Errorf("ReadFile: %v", err)
+		}
+	})
+}
+
+func TestSocketRefused(t *testing.T) {
+	// A lead can bind a socket in its folder without privilege. open(2) of a
+	// socket fails with ENXIO, which must still read as "not a regular file".
+	dir := t.TempDir()
+	l, err := net.Listen("unix", filepath.Join(dir, "s"))
+	if err != nil {
+		t.Skip("no unix sockets:", err)
+	}
+	defer l.Close()
+	r := openRoot(t, dir)
+	withDeadline(t, func() {
+		_, err := r.Open("s")
+		if !errors.Is(err, ErrNotRegular) || !errors.Is(err, unix.ENXIO) {
+			t.Errorf("Open: want ErrNotRegular and ENXIO, got %v", err)
+		}
+		if _, err := r.ReadFile("s", 10); !errors.Is(err, ErrNotRegular) {
 			t.Errorf("ReadFile: %v", err)
 		}
 	})

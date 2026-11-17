@@ -126,7 +126,9 @@ func mapErrno(err error) error {
 // Open opens the regular file rel for reading. The open uses openat2 from the
 // root with no symlink followed anywhere in the name, and with O_NONBLOCK, so
 // it does not block on a FIFO. The file is then checked with fstat: anything
-// but a regular file is closed and refused with [ErrNotRegular].
+// but a regular file is closed and refused with [ErrNotRegular]. A socket, or
+// a device with no driver, cannot be opened at all: the kernel fails with ENXIO
+// or ENODEV, and the error then matches [ErrNotRegular] and the errno.
 //
 // rel must be relative with no ".." element, else [ErrEscape].
 func (r *Root) Open(rel string) (*os.File, error) {
@@ -138,6 +140,11 @@ func (r *Root) Open(rel string) (*os.File, error) {
 	err = r.withFd(func(fd int) error {
 		nfd, err := openat2(fd, rel, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY)
 		if err != nil {
+			if err == unix.ENXIO || err == unix.ENODEV {
+				// A socket, or a device with no driver: never a regular
+				// file. Opening a regular file does not fail this way.
+				return pathError("open", rel, fmt.Errorf("%w: %w", ErrNotRegular, err))
+			}
 			return wrapErrno("open", rel, err)
 		}
 		var st unix.Stat_t
