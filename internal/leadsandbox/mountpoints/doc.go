@@ -59,8 +59,12 @@
 // links covers every component of its path. The mount points in the tree are
 // still made and checked as before; they are only the targets.
 //
-// [Prepare] fills the folder once, before the lead's first run, and makes it
-// exclusively with mode 0700 (its files 0600):
+// [Prepare] fills the folder once, before the lead's first run. It builds it
+// in a temporary sibling in the lead's state folder (<state>/leads/<role>/
+// gitmeta.tmp), exclusively with mode 0700 (its files 0600), syncs each file
+// and each folder, and then moves it into its place with renameat2 and
+// RENAME_NOREPLACE, so the place never holds a folder that is only partly
+// written and nothing is ever replaced:
 //
 //   - config is a copy of the clone's .git/config, read through the tree's
 //     handle: a regular file of at most 1 MiB, not hard-linked, and without an
@@ -77,9 +81,12 @@
 //     line each, now written in this copy.
 //
 // A folder that exists is kept and only checked, so a second [Prepare] changes
-// nothing, and a folder left incomplete by an interrupted one is refused: remove
-// it (nothing in it is the lead's) and call [Prepare] again before the first
-// run. [Check] makes sure on every start that the folder and its three entries
+// nothing. A [Prepare] that fails or is interrupted while it builds leaves the
+// temporary sibling and no folder in the place, so [Check] refuses the start
+// (the folder is missing), and the next [Prepare] refuses the leftover with a
+// reason that names it ([ErrIncomplete]), never reusing it: remove it (nothing
+// in it is the lead's) and call [Prepare] again before the first run. [Check]
+// makes sure on every start that the folder and its three entries
 // exist with the right types, modes and no link, and that info/exclude lists
 // every placeholder; what the lead does to the clone's own .git/config,
 // .git/hooks or .git/info does not change what is bound.

@@ -334,7 +334,14 @@ read-only inside, and are bound from an Ataniq-owned copy, not from the tree.
 The copy is `<state>/leads/<role>/gitmeta`, outside the home, the config folder
 and the tree, and `mountpoints.Prepare` fills it once, before the lead's first
 run: a copy of the clone's `.git/config`, an empty `hooks` folder (a managed
-lead's tree has no hooks) and a copy of the regular files of `.git/info`.
+lead's tree has no hooks) and a copy of the regular files of `.git/info`. It
+builds the folder in a temporary sibling in the lead's state folder
+(`gitmeta.tmp`), syncs every file and folder, and moves it into place with
+`renameat2` and `RENAME_NOREPLACE`, so the place never holds a folder that is only
+partly written, and nothing is replaced. A `Prepare` that fails or is interrupted
+before the move leaves the sibling and no folder in the place: `Check` then
+refuses the start, and the next `Prepare` refuses the leftover with a reason that
+names it, until it is removed by hand.
 `Prepare` refuses a clone `.git/config` that has an `include` or `includeIf`
 section (any case; a bounded scan of the section headers, and no other key is
 interpreted), because git would read the file it names as configuration. For the
@@ -591,8 +598,9 @@ access goes through `openat2` with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
 `RESOLVE_NO_MAGICLINKS` and `RESOLVE_NO_XDEV`, relative to that handle. It offers
 reads (a regular file up to a cap, a folder listing up to a count, `Lstat`) and
 the writes the mount-point work needs (`MkdirAll`, `WriteFileExclusive` which only
-creates, and `AppendFile` for an existing regular file), and no rename, remove or
-truncate.
+creates, and `AppendFile` for an existing regular file), `Sync` (fsync of a file
+or folder) and `RenameNoReplace` (one name to another in the handle's folder,
+which never replaces), and no replacing rename, remove or truncate.
 
 **What it guarantees.** A symbolic link is refused, even when it points back
 inside the folder or nowhere; a link in a parent component is refused by every

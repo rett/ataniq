@@ -36,8 +36,13 @@ type PrepareOptions struct {
 // The git metadata folder (profile.Inputs.GitMeta) is Ataniq's copy of the
 // tree's protected git files, and the source of the three read-only .git
 // binds (the lead-hosting design, section 3.3; rule G1: no bind source lies in
-// a folder the lead can write). When it is absent, Prepare makes it
-// exclusively, mode 0700, and fills it with files of mode 0600:
+// a folder the lead can write). When it is absent, Prepare builds it in a
+// temporary sibling in the lead's state folder (the name of the folder and
+// ".tmp"), exclusively, mode 0700, filled with files of mode 0600; syncs each
+// file and each folder; and moves it into its place with renameat2 and
+// RENAME_NOREPLACE, then syncs the folder that holds it. The place never holds
+// a folder that is only partly written, even after an error part-way or a
+// crash. The folder holds:
 //
 //   - config: a copy of the clone's .git/config, read through the tree's
 //     handle, a regular file of at most 1 MiB that is not hard-linked. A config
@@ -57,9 +62,11 @@ type PrepareOptions struct {
 // When the folder already exists (an earlier Prepare made it), it is kept and
 // only checked, as [Check] checks it: nothing in it is written again, so a
 // placeholder added to the inputs after the first Prepare is reported as not
-// excluded, and a folder that an interrupted Prepare left incomplete is
-// refused with what is missing. Remove such a folder (nothing in it is the
-// lead's) and call Prepare again before the first run.
+// excluded. A temporary sibling that an earlier Prepare left (it failed or was
+// interrupted before the move) is never reused: Prepare refuses it with
+// ErrIncomplete and a reason that names it, whether the folder is in place or
+// not. Remove the leftover (nothing in it is the lead's) and call Prepare again
+// before the first run.
 //
 // Everything is looked at before anything is written, so a refusal found while
 // looking leaves the folders as they were. An error while writing (permission,
@@ -131,6 +138,16 @@ func lookGitMeta(rs *rootSet, in profile.Inputs, treeDir string, placeholders []
 	}
 	if parent == nil {
 		return nil, nil, problem(ErrUnreadable, path.Dir(in.GitMeta), "the folder that holds the git metadata folder is not usable")
+	}
+	// A temporary sibling that is still there is what a Prepare that failed
+	// or was interrupted left. It is never reused or removed here: what
+	// is in it is not known to be complete, and nothing in it is the lead's.
+	tmp := path.Join(path.Dir(in.GitMeta), gitMetaTmp(in.GitMeta))
+	switch _, err := parent.Lstat(gitMetaTmp(in.GitMeta)); {
+	case err == nil:
+		return nil, nil, problem(ErrIncomplete, tmp, "an earlier Prepare left this folder, built and not moved into place (it failed or was interrupted): nothing in it is the lead's and it is not reused; remove it and call Prepare again before the first run")
+	case !isNotExist(err):
+		return nil, nil, fromErr(tmp, err)
 	}
 	_, err := parent.Lstat(path.Base(in.GitMeta))
 	switch {

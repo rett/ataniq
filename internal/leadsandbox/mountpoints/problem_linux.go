@@ -40,6 +40,10 @@ var (
 	// ErrNeverMounted: a real path is, or lies in or above, a never-mounted
 	// path or the other runtime's config folder.
 	ErrNeverMounted = errors.New("a never-mounted path")
+	// ErrIncomplete: a Prepare that failed or was interrupted left the
+	// temporary folder it builds the git metadata folder in. It is refused
+	// and never reused.
+	ErrIncomplete = errors.New("left by a Prepare that did not finish")
 	// ErrInclude: the clone's .git/config has an include or includeIf
 	// section, which makes git read another file as configuration; Prepare
 	// refuses to copy it.

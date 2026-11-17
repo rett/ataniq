@@ -706,3 +706,25 @@ func TestACloneConfigWithAnIncludeSectionEndsTheRunAtPrepare(t *testing.T) {
 		t.Error("launched")
 	}
 }
+
+// A leftover of a Prepare that did not finish (the temporary folder the git
+// metadata folder is built in) ends the run at the step prepare, with a reason
+// that names it; nothing is reused and nothing starts.
+func TestALeftoverGitMetaFolderEndsTheRunAtPrepare(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	left := f.Layout().GitMeta() + ".tmp"
+	f.Mkdir(left, 0o700)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepFailed)
+	if e := step(t, r.out, harness.StepPrepare).Error; !strings.Contains(e, left) {
+		t.Errorf("the step's error does not name the leftover %s: %q", left, e)
+	}
+	if _, err := os.Lstat(f.Layout().GitMeta()); !os.IsNotExist(err) {
+		t.Errorf("the folder was made: %v", err)
+	}
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
+	}
+}

@@ -3,6 +3,7 @@
 package mountpoints
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"strings"
@@ -260,5 +261,116 @@ func TestCheckGitMetaIsAboutAtaniqsCopyNotTheClone(t *testing.T) {
 	f.write(f.tree+"/.git/hooks/post-checkout", "#!/bin/sh\n")
 	if rep := f.check(); !rep.OK() {
 		t.Fatalf("%v", rep.Err())
+	}
+}
+
+// setMoveHook stands in for a Prepare that is interrupted after it built the
+// git metadata folder and before it moved it into place.
+func setMoveHook(t *testing.T, fn func() error) {
+	t.Helper()
+	old := beforeGitMetaMove
+	beforeGitMetaMove = fn
+	t.Cleanup(func() { beforeGitMetaMove = old })
+}
+
+// A Prepare interrupted before the move leaves no git metadata folder in its
+// place (so every Check refuses the start), leaves the folder it built in a
+// temporary sibling, and the next Prepare refuses that sibling and names it
+// instead of reusing it. Once it is removed, Prepare makes the folder.
+func TestPrepareInterruptedBeforeTheMoveLeavesNoFolderInPlace(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	tmp := f.gitMeta + ".tmp"
+	crash := errors.New("interrupted")
+	setMoveHook(t, func() error {
+		// The whole folder is there, in the temporary place, and nothing is
+		// in the place of the folder.
+		for _, p := range []string{tmp + "/config", tmp + "/hooks", tmp + "/info/exclude"} {
+			if _, err := os.Lstat(p); err != nil {
+				t.Errorf("at the moment of the move %s is not there: %v", p, err)
+			}
+		}
+		if _, err := os.Lstat(f.gitMeta); err == nil {
+			t.Error("the folder is in its place before the move")
+		}
+		return crash
+	})
+	err := Prepare(f.in, PrepareOptions{NoLeadHasRun: true})
+	if err == nil || !errors.Is(err, ErrUnreadable) || !strings.Contains(err.Error(), tmp) {
+		t.Fatalf("Prepare after the interruption = %v, want an error that names %s", err, tmp)
+	}
+	if _, err := os.Lstat(f.gitMeta); err == nil {
+		t.Fatal("the folder is in its place after an interrupted Prepare")
+	}
+	if _, err := os.Lstat(tmp + "/config"); err != nil {
+		t.Errorf("the temporary folder holds no config: %v", err)
+	}
+	// Every start is refused: the folder is not there.
+	rep := f.check()
+	wantProblem(t, rep, ErrMissing, f.gitMeta)
+
+	// The next Prepare refuses the leftover, names it, and changes nothing.
+	setMoveHook(t, func() error { return nil })
+	before := listing(t, f.base)
+	err = Prepare(f.in, PrepareOptions{NoLeadHasRun: true})
+	wantKind(t, err, ErrIncomplete)
+	if !strings.Contains(err.Error(), tmp) {
+		t.Errorf("the refusal %q does not name %s", err, tmp)
+	}
+	sameListing(t, before, listing(t, f.base))
+	if _, err := os.Lstat(f.gitMeta); err == nil {
+		t.Error("the leftover was used")
+	}
+
+	// A leftover is refused whatever it holds, a link included.
+	f.remove(tmp)
+	f.mkdir(f.out+"/elsewhere", 0o755)
+	f.symlink(f.out+"/elsewhere", tmp)
+	wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrIncomplete)
+	if names, _ := os.ReadDir(f.out + "/elsewhere"); len(names) != 0 {
+		t.Errorf("something was written through the link: %v", names)
+	}
+
+	// Removed by hand, Prepare makes the folder, and nothing is left beside it.
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	f.prepare()
+	if rep := f.check(); !rep.OK() {
+		t.Fatalf("check after the repair: %v", rep.Err())
+	}
+	if _, err := os.Lstat(tmp); err == nil {
+		t.Error("the temporary folder is still there after the move")
+	}
+}
+
+// A leftover is refused when the folder is in place too: a Prepare that
+// finished never leaves one, so the two together are not a state to go on from.
+func TestPrepareRefusesALeftoverBesideAFinishedFolder(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	f.prepare()
+	f.mkdir(f.gitMeta+".tmp", 0o700)
+	before := listing(t, f.base)
+	wantKind(t, Prepare(f.in, PrepareOptions{NoLeadHasRun: true}), ErrIncomplete)
+	sameListing(t, before, listing(t, f.base))
+}
+
+// The move never replaces: a folder that appears in the place between the look
+// and the move is kept, and the Prepare fails.
+func TestPrepareMoveNeverReplaces(t *testing.T) {
+	f := newFixture(t, profile.Claude)
+	setMoveHook(t, func() error {
+		f.mkdir(f.gitMeta, 0o755)
+		f.write(f.gitMeta+"/marker", "other")
+		return nil
+	})
+	err := Prepare(f.in, PrepareOptions{NoLeadHasRun: true})
+	if err == nil || !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("Prepare = %v, want an error that matches fs.ErrExist", err)
+	}
+	if got, _ := os.ReadFile(f.gitMeta + "/marker"); string(got) != "other" {
+		t.Errorf("the folder in place was replaced or changed: %q", got)
+	}
+	if _, err := os.Lstat(f.gitMeta + "/config"); err == nil {
+		t.Error("the new folder was merged into the one in place")
 	}
 }

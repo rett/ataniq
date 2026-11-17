@@ -133,7 +133,11 @@ caller's environment or home.
   for another one, because a folder elsewhere could lie beside or above a
   folder the lead writes, and nothing would look at its parents. Do not make it
   by hand: its parent (`leads/<role>`) must exist and be the caller's, and the
-  folder itself must not exist before the first run.
+  folder itself must not exist before the first run. The run builds it in a
+  sibling, `leads/<role>/gitmeta.tmp`, and moves it into place when it is
+  complete; a run that failed or was interrupted before the move leaves that
+  sibling, the next run refuses it in the step `prepare` and names it, and you
+  remove it by hand (nothing in it is the lead's) before you try again.
 
   The tree is a full clone (a `.git` folder, not a worktree, with no
   alternates), not below another repository. Create it with an ordinary
