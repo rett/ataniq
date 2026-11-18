@@ -91,7 +91,10 @@ func TestCheck(t *testing.T) {
 		{"3 to 4", 3, false, Change{To: 4, Typed: true}, ""},
 		{"3 to 5", 3, false, Change{To: 5, Typed: true}, RaiseTooLarge},
 		{"second raise of the day", 18, true, Change{To: 19, Typed: true}, AlreadyRaised},
-		{"second raise of the day, too large", 18, true, Change{To: 28, Typed: true}, RaiseTooLarge},
+		{"second raise of the day, too large", 18, true, Change{To: 28, Typed: true}, AlreadyRaised},
+		{"second raise of the day, from a limit that cannot rise", 1, true, Change{To: 2, Typed: true}, AlreadyRaised},
+		{"second raise of the day, by one key", 18, true, Change{To: 19}, NotTyped},
+		{"second raise of the day, above the maximum", 39, true, Change{To: 41, Typed: true}, AboveMax},
 		{"present limit of zero", 0, false, Change{To: 1}, BadLimit},
 		{"present limit above the maximum", 41, false, Change{To: 40}, BadLimit},
 	} {

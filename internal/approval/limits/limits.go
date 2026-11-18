@@ -93,15 +93,18 @@ func Check(present int, raisedToday bool, c Change) error {
 	if !c.Typed {
 		return &Refusal{NotTyped, "one key only lowers the limit: a higher number has to be typed"}
 	}
+	// The day's raise is looked at before the size of this one: a reason
+	// that names the highest number a raise may reach would point at a
+	// number that cannot be taken today.
+	if raisedToday {
+		return &Refusal{AlreadyRaised, "the limit was already raised today: one raise a day"}
+	}
 	top := MaxRaise(present)
 	if top == present {
 		return &Refusal{CannotRaise, fmt.Sprintf("a limit of %d cannot be raised: a raise is by half at most, rounded down, and half of %d adds nothing", present, present)}
 	}
 	if c.To > top {
 		return &Refusal{RaiseTooLarge, fmt.Sprintf("a raise is by half at most, rounded down: from %d the limit rises to %d at most", present, top)}
-	}
-	if raisedToday {
-		return &Refusal{AlreadyRaised, "the limit was already raised today: one raise a day"}
 	}
 	return nil
 }
