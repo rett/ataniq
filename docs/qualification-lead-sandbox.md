@@ -23,11 +23,15 @@ not developer prerequisites.
 The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 `qualification/leadsandbox/internal/harness`) does, in order, for one attempt:
 
-1. validates the configuration and looks at the host for what it names;
+1. validates the configuration and looks at the host for what it names (the
+   git identity folder is bound whole, so it must hold the file `config` and
+   nothing else);
 2. makes an attempt folder with a random name under the campaign folder;
 3. records the versions of the tools (each question has a time limit, and does
    not wait for the output of a process the tool left behind longer than a
-   second after the tool has ended; such a case is recorded in the step);
+   second after the tool has ended; such a case is recorded in the step). A
+   bubblewrap older than 0.10.0 ends the run here, at the step `tool-versions`
+   (see [Prerequisites](#prerequisites)); a dry run asks no tool;
 4. checks that the lead's tree is its own full clone and that the six folders
    the lead writes are the caller's alone (the step `own-clone`), makes the
    mount points and Ataniq's copy of the tree's git files (the git metadata
@@ -44,13 +48,16 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 7. makes the report channel (a FIFO in a folder of the attempt that holds nothing
    else, its reader opened first) and starts the canary (a loopback listener
    and an abstract socket that count connections);
-8. builds the plan and checks it with the plan package's own verifier, collects
-   the identities (device and inode) of the owner's and the holder's paths and
-   of their ancestors, which assertion 1 needs, and of the coordinators' folders
-   under the state root and their ancestors, which assertion 11 needs (the two
-   roots `coords` and `coord-login`, and the folder, tree and home of every
-   coordinator and the folder of every shared login that exists below them at
-   that moment), and writes the probe spec with them;
+8. builds the plan, with the walk of every bind source Ataniq supplies, and
+   checks it with the plan package's own verifier (which pairs each `--bind-fd`
+   and `--ro-bind-fd` with its walk, and refuses a source Ataniq supplies that is
+   bound by path or a walk that differs), collects the identities (device and
+   inode) of the owner's and the holder's paths and of their ancestors, which
+   assertion 1 needs, and of the coordinators' folders under the state root and
+   their ancestors, which assertion 11 needs (the two roots `coords` and
+   `coord-login`, and the folder, tree and home of every coordinator and the
+   folder of every shared login that exists below them at that moment), and
+   writes the probe spec with them;
 9. checks the mount points and sources again, right before the launch (the step
    `recheck`; its walk of the mount points is the fact the outside half of
    assertion 7 is made from), and then, as a step of its own
@@ -59,14 +66,18 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    root beneath the state root's handle, any other from the root of the file
    system. For every source that is not a row of the host (`/usr`, the `/etc`
    files) it checks on the opened descriptor that the source is a folder or a
-   regular file, as the row binds. A link on any component, a source of another type and a mount
-   point below the state root refuse the launch, naming the row;
-10. launches pasta, bubblewrap, the probe and a scratch command through a
-    launcher (a session and process group of its own, with a pseudo-terminal as
-    its standard streams and no controlling terminal, as a holder under a unit
-    would run it), reads the probe's report line from the channel with a time limit
-    (one line, taken as the start without waiting for end-of-file), and waits
-    for the exit;
+   regular file, as the row binds. A link on any component, a source of another
+   type (a wrong type refuses too) and a mount point below the state root refuse
+   the launch, naming the row. This is the pre-check of the sources: the walk
+   that decides is made after the launch by the plan's pass-through step, which
+   walks to each source Ataniq supplies again, by handle, and the harness does
+   not see it (see [Rule G1](#rule-g1-and-git-inside-the-sandbox));
+10. launches pasta, the pass-through step, bubblewrap, the probe and a scratch
+    command through a launcher (a session and process group of its own, with a
+    pseudo-terminal as its standard streams and no controlling terminal, as a
+    holder under a unit would run it), reads the probe's report line from the
+    channel with a time limit (one line, taken as the start without waiting for
+    end-of-file), and waits for the exit;
 11. runs the checks that can only be made outside: the canary's count, the
     sysctl, the outside half of assertion 7, and the checks that need a role
     lock, lingering or a qualification record, which have no source here and
@@ -106,7 +117,20 @@ bootstrap installs neither and the doctor does not check them. Install the
 subject versions on the host the coordinator chose, record where they are, and
 name them in the configuration with absolute paths. Each must be a regular file
 that is not group- or other-writable; the harness records the SHA-256 of each,
-and of the probe, in `summary.json`. The probe is built from this checkout:
+and of the probe, in `summary.json`.
+
+The plan binds every source Ataniq supplies with `--bind-fd` or `--ro-bind-fd`,
+so the harness ends a run at the step `tool-versions` when the bubblewrap release
+it reads from the version line is older than 0.10.0. That release is an
+assumption: it is taken to be the first one that has the two options, which could
+not be confirmed offline, and qualification confirms it or changes it (it is one
+constant in the harness). A version line that gives no release decides nothing: a
+note in `summary.json` says so and the run goes on, and a bubblewrap without the
+options is then expected to refuse the plan's arguments as unknown options and to
+start nothing, which has not been observed. A dry run asks no tool and decides
+nothing about it.
+
+The probe is built from this checkout:
 
 ```sh
 make doctor
@@ -298,7 +322,7 @@ managed-settings file with it and refuses a difference.
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
 | `identity`, `owner_user` | `root` (the default) or `owner`, which needs the owner's login name; `owner_user` is given for `owner` only. |
-| `sources` | Every host source of the profile (see above). `git_identity_dir` is a folder that holds the file `config`; `qargi_records_inside` is required, and its host folder is `<state root>/leads/<role>/qargi`, which has no key. There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
+| `sources` | Every host source of the profile (see above). `git_identity_dir` is a folder that holds the file `config`; `qargi_records_inside` is required, and its host folder is `<state root>/leads/<role>/qargi`, which has no key. The earlier key `git_identity_file` is refused as an unknown key. There is no key for the folder that holds the copy of the tree's `.git/config`, `.git/hooks` and `.git/info`: it is `<state root>/leads/<role>/gitmeta`, and a `git_meta` key is refused as an unknown key. `managed_settings_inside` is required for codex, whose managed-configuration path the design does not name, and must be absent or the provider's own path for claude. `seccomp` is the optional object with `file`, `sha256` and `reviewed_bpf`. `extra_placeholders` lists extra tree bind targets (`rel`, `source`, `dir`). |
 | `never_mounted` | Host paths no bind source may equal, lie below or lie above. At least one. |
 | `scratch_command` | The command run inside, as an absolute argv. Absent: `/bin/sh -c 'echo ataniq-leadsandbox-scratch-marker'`. |
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
@@ -309,7 +333,11 @@ managed-settings file with it and refuses a difference.
 The harness passes the launcher an empty environment: no variable of the
 caller's environment reaches pasta, bubblewrap or the probe, and the environment
 inside is the profile's allowlist. The report channel uses descriptor 4, and the
-seccomp file, when named, descriptor 3.
+seccomp file, when named, descriptor 3. They are no longer the only descriptors
+the plan's pass-through step places: every bind source Ataniq supplies gets one
+of its own, chosen by the plan; the numbers start at 10 and follow the order of
+the bind table, passing over the seccomp and report descriptors of the options,
+so they never collide with those two.
 
 ## The dry run
 
@@ -329,8 +357,13 @@ sources in the folder do not exist yet, and a note in `summary.json` says so). I
 `bound` folder. When the configuration states that no lead has run, the dry run
 skips the mount-point check, because the run itself would make them. The
 coordinator reads the plan before any run: the argument vector, the binds with
-their sources, the descriptors and the notes (the R17 note, the seccomp state and
-the optional rows left out).
+their sources, the descriptors and the walks (for each bind source Ataniq
+supplies: the descriptor it is bound from, the folder the pass-through step opens
+without following a link, the path it walks beneath that folder and the type the
+source must have there, a folder or a regular file) and the notes (the R17 note,
+the note on descriptors, the seccomp state and the optional rows left out). The
+rows of the host (`/usr`, the `/etc` files) have no walk: they are bound by
+path.
 
 ## The real run
 
@@ -369,13 +402,20 @@ the terminal output. Do not copy it into a repository.
 
 | File | Content |
 | --- | --- |
-| `plan.json` | The plan: argument vector, the names of the environment allowlist, the mounts (kind, inside path, source, whether the source lies below a folder the lead can write, optional), the descriptors the pass-through step opens, the notes, and the profile digest. |
+| `plan.json` | The plan: argument vector, the names of the environment allowlist, the mounts (kind, inside path, source, `fd`, whether the source lies below a folder the lead can write, optional), the files the pass-through step opens (`files`: descriptor, path, mode and purpose), the walks it makes (`walks`: for each bind source Ataniq supplies, `fd`, `inside`, `root`, `rel` and `type`, `folder` or `file`), the notes, and the profile digest. `fd` of a mount is the descriptor the row is bound from (`--bind-fd`, `--ro-bind-fd`) and is the `fd` of its walk; it is absent for a row of the host, which is bound by path. |
 | `spec.json` | The probe's spec, as written for it (also bound read-only inside, in `bound/spec`). |
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. The results are the outside halves of assertions 1, 3, 5 and 7, then 9 and 10. The outside half of 7 (`tree-git-readonly.outside`) is made from the walk of the step `recheck`; its detail names the step and says that the harness has no unit and no control group, and whether the configuration states `no_lead_has_run`. Assertions 9 and 10 are `not-checked` here. |
 | `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
-| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
+| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name and, when the release of bubblewrap could not be read from its version line, a note that says so, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
+
+The files `plan.json`, `report.json`, `outside.json` and `summary.json` each have
+a key `format`, the version of the evidence files, now 2. Format 2 added the
+walks and the `fd` of a mount to `plan.json`, and the per-source keys
+`bound_by_descriptor`, `descriptor`, `walk_root`, `walk_rel`, `walk_type`,
+`has_expected_type` and `no_ataniq_source_bound_by_path` to `summary.json` (see
+case G1); no key of format 1 was removed or changed its meaning.
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
 channel's FIFO and its folder exist only during the run. The summary is written last; its own
@@ -389,36 +429,54 @@ and a test checks that no key of the evidence contains such a word. A result is
 ## Rule G1 and git inside the sandbox
 
 Rule G1: no bind source has a component that a sandbox can write, and every bind
-source is checked, before a start, without following a symbolic link.
-bubblewrap resolves a bind source on the host, outside every sandbox, and
-follows a link there, so a link that a lead planted in a folder it writes would
-bring a file or folder of the owner into the next start. The tree's
-`.git/config`, `.git/hooks` and `.git/info` are bound read-only over the tree, so
-their sources are not the tree's own files: they are the entries of the git
-metadata folder, which lies outside the lead's home, config folder and tree, and
-which the lead cannot write. The run fills it once, before the lead's first run
-(the configuration states `no_lead_has_run`): `config` is a copy of the clone's
-`.git/config`, `hooks` is empty, and `info` holds a copy of the clone's
-`.git/info` with one anchored line in `exclude` for each tree placeholder. The
-mount points in the tree stay and are checked as before; they are only targets.
-A later start does not fill the folder again: it checks it, resolves the
-sources, and walks to the path bound for each row, last of all, with
-`check-bind-sources`: by handle, beneath the state root's handle for a source
-below the state root and from the root of the file system for any other,
-without following a link, and with the type of every source that is not a row
-of the host (a folder or a regular file, as the row binds) decided on the
-opened descriptor. For every row the path that is bound is the path that is
-checked: a source the configuration supplies is bound as it is given (its real
-path, which the resolution has found a link-free one), and a row of the host
-whose own name is a link (`/etc/localtime` often is) is bound from its real path,
-which no lead writes, and checked by it. The harness refuses to check a plan whose
-bound path is not the one the check would open, and the evidence says it as
-`checked_path`, equal to the source of every row. The check says what the path was
-at that moment: a lead that could write above a source could change it
-afterwards, which is why every source and everything above it must be the
-caller's. The check closes its descriptors, and bubblewrap then resolves each
-source by path: passing the bind sources to bubblewrap by descriptor is not yet
-built.
+source is checked, before a start, without following a symbolic link. A bind
+source is resolved on the host, outside every sandbox: for a row of the host
+bubblewrap does the lookup by path and follows a link, and for a source Ataniq
+supplies the pass-through step's walk is the lookup, which follows none. A
+source in a folder the lead writes is a name the lead chose, and a lookup that
+followed a link there would bring a file or folder of the owner into the next
+start. The tree's `.git/config`, `.git/hooks` and `.git/info` are bound
+read-only over the tree, so their sources are not the tree's own files: they are
+the entries of the git metadata folder, which lies outside the lead's home,
+config folder and tree, and which the lead cannot write. The run fills it once,
+before the lead's first run (the configuration states `no_lead_has_run`):
+`config` is a copy of the clone's `.git/config`, `hooks` is empty, and `info`
+holds a copy of the clone's `.git/info` with one anchored line in `exclude` for
+each tree placeholder. The mount points in the tree stay and are checked as
+before; they are only targets. A later start does not fill the folder again: it
+checks it, resolves the sources, and walks to the path bound for each row, last
+of all, with `check-bind-sources`: by handle, beneath the state root's handle
+for a source below the state root and from the root of the file system for any
+other, without following a link, and with the type of every source that is not a
+row of the host (a folder or a regular file, as the row binds) decided on the
+opened descriptor. This is the pre-check.
+
+The walk that decides is the pass-through step's, made right before bubblewrap
+starts. The step walks to every bind source Ataniq supplies again, by handle
+(`--walk-dir`, `--walk-file`), and bubblewrap is given the descriptor that walk
+returned (`--bind-fd`, `--ro-bind-fd`), not a path. The harness does not see that
+walk. The step is stricter than the pre-check in one place: beneath the folder
+its walk starts from it crosses no mount point, for any row, where the pre-check
+crosses mount points for a source outside the state root. A source its walk
+refuses ends the step with exit 96 before bubblewrap starts. What the evidence of
+a real run then holds has not been observed: no report line can come, so the
+expectation is a first process that exited before a report, and how pasta passes
+on the step's exit status is not known here. Whether bubblewrap mounts the object
+behind a descriptor, and closes the descriptor before the command inside starts,
+is a qualification item that nothing in the evidence records [qualify].
+
+For every row the path the plan names is the path that is checked: a source the
+configuration supplies is named as it is given (its real path, which the
+resolution has found a link-free one), the plan's walk for it leads to exactly
+that path, and the pre-check opens it as it is; a row of the host whose own name
+is a link (`/etc/localtime` often is) is bound by path from its real path, which
+no lead writes, and checked by it. The harness refuses to check a plan that binds
+a source Ataniq supplies in any other way than by descriptor, or by another walk
+than the one the check made, and the evidence says it as `checked_path`, equal to
+the source of every row, and as the walk of each source. The check and the walk
+say what the path was at that moment: a lead that could write above a source
+could change it afterwards, which is why every source and everything above it
+must be the caller's. The pre-check closes its descriptors and passes none on.
 
 What changes for git inside the sandbox: the copies of `config` and `info` are
 read-only binds of files the lead cannot write, so the lead cannot change the
@@ -459,7 +517,7 @@ tree for example; its output goes to `terminal.log` as display only), or in the 
 | S4 | The probe's resolution of the provider host, and this run's resolv.conf derivation: its source, the nameservers kept and the loopback ones dropped. A derivation refused for lack of any non-loopback server ends the run before a launch, with the reason in the step; that is the second half of S4. |
 | S7 | The sysctl `dev.tty.legacy_tiocsti` as the probe and the harness read it, or the seccomp filter the probe finds loaded. The harness never issues TIOCSTI. |
 | S11 | Through the record interface: no store exists here, so the result is `not-checked` with "no qualification record store to ask". The stale-record start refusal belongs to the holder. |
-| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the check walked to the path by handle without following a link and no component of it, the last one included, is a link. A source below the state root is opened beneath the state root's handle, in one lookup that crosses no mount point, after the state root's own path was looked up from the root of the file system without following a link; any other source is looked up from the root of the file system. For every source that is not a row of the host, the check also decides on the opened descriptor that it is a folder or a regular file, as the row binds; the type of a row of the host is not checked. The fact is `false` when a link was found, and absent when the check found another problem with the source (it is missing, has another type, or lies at or beyond a mount point below the state root) or could not say; `problem` holds the check's reason. `checked_path` is the path the check walked to, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
+| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the check walked to the path by handle without following a link and no component of it, the last one included, is a link. A source below the state root is opened beneath the state root's handle, in one lookup that crosses no mount point, after the state root's own path was looked up from the root of the file system without following a link; any other source is looked up from the root of the file system. For every source that is not a row of the host, the check also decides on the opened descriptor that it is a folder or a regular file, as the row binds; the type of a row of the host is not checked. The fact is `false` when a link was found, and absent when the check found another problem with the source (it is missing, has another type, or lies at or beyond a mount point below the state root) or could not say; `problem` holds the check's reason. `checked_path` is the path the check walked to, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. Per source, `bound_by_descriptor` says how the plan binds it, from the plan: `true` for every source Ataniq supplies, which the plan binds from a descriptor (`--bind-fd`, `--ro-bind-fd`) that its pass-through step walks to by handle, `false` for a row of the host, which is bound by path. For a source bound by descriptor, `descriptor` is the number it is bound from, `walk_root` the folder the step opens without following a link, `walk_rel` the path it walks beneath that folder and `walk_type` the type the source must have there, `folder` or `file`; all four are absent for a row of the host. `has_expected_type` is the fact, read by the check on the descriptor it opened, that a source Ataniq supplies is what its row binds: `true`, or `false` when the check refused it as something else (a file for a folder, a folder for a file, a FIFO, a socket, a device, or a path below something that is no folder; `problem` says which); it is absent for a row of the host, whose type the check does not look at, and when the check found a link or another problem before it reached the type. `no_ataniq_source_bound_by_path` stands beside `no_source_in_read_write_source`: it is the fact, from `plan.Verify`, about the text of the plan that no source Ataniq supplies is bound by path, each being bound from a descriptor paired with a walk of the step that is the one the inputs give; it is `false` when the verifier found a source bound by path, a descriptor without its walk or used twice, or another walk. These facts are about the plan and about the check before the launch, not about what bubblewrap does with a descriptor. The new facts are not results of the case, which stay two: `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
 
 ### Attended cases
 
@@ -551,7 +609,11 @@ the canary's text was not visible inside; or the start was refused, at which ste
 and with what reason. A start that proceeds with the canary's text visible
 inside is a finding against rule G1. A refusal is not a failure of the harness: a
 link where the tree's `.git` should be is not a clone, and the check of the mount
-points refuses a link at a mount point.
+points refuses a link at a mount point. A source that the pass-through step's walk
+refuses after the launch has begun is not a step of the harness: the step exits 96
+before bubblewrap starts, and the first process is expected to end before any
+report (not observed; how pasta passes on the status is not known here). Record
+it as it happened.
 
 ### The R17 note for S8
 
