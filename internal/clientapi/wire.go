@@ -94,8 +94,13 @@ type Request struct {
 	// RequestID is chosen by the client, 1 to 64 printable ASCII characters,
 	// and echoed in the response.
 	RequestID string `json:"request_id"`
-	// Op is "hello" or "status".
+	// Op is "hello" or "status", or the name of an extension operation that
+	// the server's hello result lists.
 	Op string `json:"op"`
+	// Params is the operation's parameters: optional, and a JSON object when
+	// present. "hello" and "status" ignore it. It lies inside the request
+	// line cap.
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 // Response is a response as a client reads it. The server writes the same
@@ -135,7 +140,8 @@ type HelloResult struct {
 	Limits Limits `json:"limits"`
 	// Operations are the operations offered.
 	Operations []string `json:"operations"`
-	// Mutations is always false in version 1: no operation changes anything.
+	// Mutations is false unless a registered extension declares mutations; no
+	// release build registers one.
 	Mutations bool `json:"mutations"`
 	// Version is the daemon's version string.
 	Version string `json:"version"`
@@ -405,25 +411,37 @@ func repeatsKey(raw []byte) bool {
 	return false
 }
 
-// decodeRequest is the only gate to dispatch. It returns the request ID to echo
-// (valid or empty), the operation (only OpHello or OpStatus) and, on failure,
-// the error body to answer with. Fields are matched by exact name; unknown
-// fields are ignored; a top-level key that appears twice is invalid.
+// decodeRequest is the gate to dispatch for the two base operations. It
+// returns the request ID to echo (valid or empty), the operation (only OpHello
+// or OpStatus) and, on failure, the error body to answer with. Fields are
+// matched by exact name; unknown fields are ignored; a top-level key that
+// appears twice is invalid.
 func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
+	id, op, _, fail = decodeRequestExt(line, nil)
+	return id, op, fail
+}
+
+// decodeRequestExt is [decodeRequest] for a server with extensions: an
+// operation that exts has is dispatched too, with its params. For such an
+// operation the params member, when present, must be a JSON object without a
+// repeated top-level key, or the request is invalid; the returned params are
+// nil when the member is absent. For the base operations params is ignored and
+// returned nil, as any unknown field is.
+func decodeRequestExt(line []byte, exts *extensionSet) (id, op string, params json.RawMessage, fail *ErrorBody) {
 	invalid := &ErrorBody{Code: CodeInvalidRequest, Message: msgInvalidRequest}
 	if !utf8.Valid(line) {
-		return "", "", invalid
+		return "", "", nil, invalid
 	}
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return "", "", invalid
+		return "", "", nil, invalid
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
-		return "", "", invalid
+		return "", "", nil, invalid
 	}
 	if repeatsKey(trimmed) {
-		return "", "", invalid
+		return "", "", nil, invalid
 	}
 	str := func(name string) (string, bool) {
 		raw, ok := fields[name]
@@ -438,21 +456,30 @@ func decodeRequest(line []byte) (id, op string, fail *ErrorBody) {
 	}
 	rid, ok := str("request_id")
 	if !ok || !validRequestID(rid) {
-		return "", "", invalid
+		return "", "", nil, invalid
 	}
 	proto, ok := str("protocol")
 	if !ok {
-		return rid, "", invalid
+		return rid, "", nil, invalid
 	}
 	if proto != Protocol {
-		return rid, "", &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: SupportedProtocols()}
+		return rid, "", nil, &ErrorBody{Code: CodeUnsupportedProtocol, Message: msgUnsupportedProtocol, SupportedProtocols: SupportedProtocols()}
 	}
 	op, ok = str("op")
 	if !ok {
-		return rid, "", invalid
+		return rid, "", nil, invalid
 	}
-	if op != OpHello && op != OpStatus {
-		return rid, "", &ErrorBody{Code: CodeUnsupportedOperation, Message: msgUnsupportedOperation}
+	if op == OpHello || op == OpStatus {
+		return rid, op, nil, nil
 	}
-	return rid, op, nil
+	if !exts.has(op) {
+		return rid, "", nil, &ErrorBody{Code: CodeUnsupportedOperation, Message: msgUnsupportedOperation}
+	}
+	if raw, present := fields["params"]; present {
+		if len(raw) == 0 || raw[0] != '{' || repeatsKey(raw) {
+			return rid, "", nil, invalid
+		}
+		params = raw
+	}
+	return rid, op, params, nil
 }

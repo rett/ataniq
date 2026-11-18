@@ -79,6 +79,12 @@ type Options struct {
 	// Counters receives the server's counters; nil means the server keeps
 	// private ones nobody can read.
 	Counters *Counters
+	// Extra are the extensions whose operations the server serves besides
+	// "hello" and "status". With none the server answers exactly as without
+	// the field. [Serve] returns an error before it accepts when an operation
+	// name is not well-formed or collides with a base operation or another
+	// extension's.
+	Extra []Extension
 }
 
 // Counters count what a server did. The zero value is ready to use, and it is
@@ -95,6 +101,33 @@ type Counters struct {
 	idleTimeouts atomic.Uint64
 	servedHello  atomic.Uint64
 	servedStatus atomic.Uint64
+
+	extMu     sync.Mutex
+	servedExt map[string]uint64 // extension operation to its successful responses
+}
+
+// addServedExt counts one successful response of an extension operation.
+func (c *Counters) addServedExt(op string) {
+	c.extMu.Lock()
+	if c.servedExt == nil {
+		c.servedExt = map[string]uint64{}
+	}
+	c.servedExt[op]++
+	c.extMu.Unlock()
+}
+
+// registerExt makes the operations show in a snapshot, at zero until served.
+func (c *Counters) registerExt(ops []string) {
+	c.extMu.Lock()
+	defer c.extMu.Unlock()
+	for _, op := range ops {
+		if c.servedExt == nil {
+			c.servedExt = map[string]uint64{}
+		}
+		if _, ok := c.servedExt[op]; !ok {
+			c.servedExt[op] = 0
+		}
+	}
 }
 
 // CounterSnapshot is a copy of the counters at one moment.
@@ -120,13 +153,14 @@ type CounterSnapshot struct {
 	Internal uint64
 	// IdleTimeouts is the connections closed for idling.
 	IdleTimeouts uint64
-	// Served is the successful responses per operation.
+	// Served is the successful responses per operation, the operations of
+	// registered extensions included.
 	Served map[string]uint64
 }
 
 // Snapshot returns the current counts.
 func (c *Counters) Snapshot() CounterSnapshot {
-	return CounterSnapshot{
+	snap := CounterSnapshot{
 		Accepted:     c.accepted.Load(),
 		RefusedUID:   c.refusedUID.Load(),
 		PeerErrors:   c.peerErrors.Load(),
@@ -141,6 +175,12 @@ func (c *Counters) Snapshot() CounterSnapshot {
 			OpStatus: c.servedStatus.Load(),
 		},
 	}
+	c.extMu.Lock()
+	for op, n := range c.servedExt {
+		snap.Served[op] = n
+	}
+	c.extMu.Unlock()
+	return snap
 }
 
 type server struct {
@@ -151,6 +191,7 @@ type server struct {
 	peerUID  PeerUIDFunc
 	uid      uint32
 	counters *Counters
+	ext      *extensionSet // nil when no extension is registered
 
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{} // admitted connections, counted against the cap
@@ -190,7 +231,11 @@ func newServer(h Handler, opts Options) *server {
 }
 
 // Serve accepts connections on l until ctx ends, and answers the requests of
-// each with h. It takes ownership of l and closes it before it returns; a
+// each with h and the extensions of opts.Extra. Before it accepts, it checks
+// the extensions: when one is nil, or has an operation name that is not
+// lower-case letters, digits and dashes around exactly one dot, or that
+// collides with a base operation or another extension's, Serve closes l and
+// returns an error. It takes ownership of l and closes it before it returns; a
 // socket file that [Listen] bound is unlinked by that close. Serve returns nil
 // when ctx ended, and the accept error otherwise. When it returns, every
 // connection goroutine has ended; Serve waits for a handler call in flight, so
@@ -202,13 +247,24 @@ func newServer(h Handler, opts Options) *server {
 // A connection over the cap gets "busy" and is closed. Each admitted connection
 // has one goroutine, an idle read deadline per request line and a write
 // deadline per response. The handler runs in that goroutine, with a context
-// that ends with ctx; a panic in it becomes an "internal" response.
+// that ends with ctx; a panic in it becomes an "internal" response. A request
+// for an extension's operation passes the same peer check, caps, timeouts and
+// counters.
 //
 // The refusals are written by the accept loop, under the write deadline; a
 // refused connection is then drained for a moment so that the response is not
 // lost to a reset.
 func Serve(ctx context.Context, l net.Listener, h Handler, opts Options) error {
+	exts, err := newExtensionSet(opts.Extra)
+	if err != nil {
+		l.Close()
+		return err
+	}
 	s := newServer(h, opts)
+	if len(exts.ops) > 0 || exts.mutations {
+		s.ext = exts
+		s.counters.registerExt(exts.ops)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -425,7 +481,7 @@ func readLine(br *bufio.Reader, dst []byte, max int) (line []byte, tooLarge bool
 
 // respond answers one request line with one response line.
 func (s *server) respond(ctx context.Context, line []byte) []byte {
-	id, op, fail := decodeRequest(line)
+	id, op, params, fail := decodeRequestExt(line, s.ext)
 	if fail != nil {
 		switch fail.Code {
 		case CodeInvalidRequest:
@@ -434,6 +490,9 @@ func (s *server) respond(ctx context.Context, line []byte) []byte {
 			s.counters.unsupported.Add(1)
 		}
 		return encodeError(id, fail)
+	}
+	if s.ext.has(op) {
+		return s.respondExtension(ctx, id, op, params)
 	}
 	result, ok := s.call(ctx, op)
 	if !ok {
@@ -476,8 +535,8 @@ func (s *server) call(ctx context.Context, op string) (result any, ok bool) {
 			IdleTimeoutSeconds: int((s.idle + time.Second - 1) / time.Second),
 			MaxConnections:     s.maxConns,
 		}
-		r.Operations = Operations()
-		r.Mutations = false
+		r.Operations = s.ext.operations()
+		r.Mutations = s.ext.mutating()
 		return r, true
 	case OpStatus:
 		r, err := s.handler.Status(ctx)
@@ -490,6 +549,47 @@ func (s *server) call(ctx context.Context, op string) (result any, ok bool) {
 		return r, true
 	}
 	return nil, false
+}
+
+// respondExtension answers a request for an extension's operation. A panic in
+// Handle, a result that cannot be marshalled, one over the response cap, and a
+// fail that is not well-formed are answered "internal".
+func (s *server) respondExtension(ctx context.Context, id, op string, params json.RawMessage) []byte {
+	internal := func(msg string) []byte {
+		s.counters.internal.Add(1)
+		return encodeError(id, &ErrorBody{Code: CodeInternal, Message: msg})
+	}
+	result, fail, ok := s.handleExtension(ctx, op, params)
+	if !ok {
+		return internal(msgInternal)
+	}
+	if fail != nil {
+		if !validExtensionCode(fail.Code) || !validExtensionMessage(fail.Message) {
+			return internal(msgInternal)
+		}
+		// Only the code and the message are sent.
+		return encodeError(id, &ErrorBody{Code: fail.Code, Message: fail.Message})
+	}
+	out, err := marshalLine(successResponse{Protocol: Protocol, RequestID: id, OK: true, Result: result})
+	if err != nil {
+		return internal(msgInternal)
+	}
+	if len(out) > MaxResponseBytes {
+		return internal(msgResponseTooLarge)
+	}
+	s.counters.addServedExt(op)
+	return out
+}
+
+// handleExtension runs the extension's Handle; a panic is reported as not ok.
+func (s *server) handleExtension(ctx context.Context, op string, params json.RawMessage) (result any, fail *ErrorBody, ok bool) {
+	defer func() {
+		if recover() != nil {
+			result, fail, ok = nil, nil, false
+		}
+	}()
+	result, fail = s.ext.byOp[op].Handle(ctx, op, params)
+	return result, fail, true
 }
 
 type successResponse struct {

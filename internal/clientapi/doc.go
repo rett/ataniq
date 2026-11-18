@@ -10,10 +10,33 @@
 //
 // Version 1 is read-only. It has two operations, "hello" and "status". It has
 // no command, no command ID, no approval and no event stream, and it says so
-// on the wire: the hello result carries "mutations": false and lists the two
-// operations. Every other operation is answered with the code
-// "unsupported-operation". A later version that adds commands, approvals or
-// events is a different protocol name.
+// on the wire: without an extension, the hello result carries "mutations":
+// false and lists the two operations. Every other operation is answered with the code
+// "unsupported-operation". A server may register extension operations; hello
+// then lists them and says whether one mutates. No release build registers
+// one. A version that adds commands to every build is a different protocol
+// name.
+//
+// # Extensions
+//
+// A caller of [Serve] may pass [Extension] values in [Options].Extra. Each
+// names its operations, lower-case letters, digits and dashes around exactly
+// one dot, such as "canary.start", and serves them in Handle. Serve refuses a
+// name that is not of that form, or that repeats a base operation or another
+// extension's, before it accepts. With none the server answers as without the
+// field. With one or more, hello lists the base operations and then each
+// extension's, in order, and says "mutations": true only when a registered
+// extension's Mutating is true. A request names an extension operation in "op"
+// and may carry "params", one JSON object inside the request line cap that
+// hello and status ignore; for an extension operation a params member that is
+// not an object, or that repeats a top-level key, is "invalid-request". The
+// request passes the same peer check, caps, timeouts and counters as the base
+// operations. A panic in Handle, a result that cannot be marshalled, one over
+// the response cap, and an error body that is not well-formed are answered
+// "internal"; a well-formed error body is sent with its own code, which an
+// extension may choose (lower-case letters, digits and dashes, starting with a
+// letter) except the codes that end a connection. [Client.Call] is the client
+// side.
 //
 // # Wire
 //
@@ -32,7 +55,8 @@
 //
 //	{"protocol":"ataniq.client/1","request_id":"...","ok":false,"error":{"code":"...","message":"..."}}
 //
-// Unknown fields in a request are ignored. A line that is not valid UTF-8 and
+// Unknown fields in a request are ignored, "params" among them for the two base
+// operations. A line that is not valid UTF-8 and
 // JSON, is not an object, or lacks a field, is answered "invalid-request" (the
 // connection stays open); a line over the cap is answered "too-large" and the
 // connection is closed; a protocol name the server does not speak is answered
