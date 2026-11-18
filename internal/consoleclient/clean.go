@@ -19,7 +19,9 @@ const cutMark = "…"
 // format characters (direction marks and overrides, zero-width characters),
 // private-use and unassigned code points, and characters that print as
 // nothing or as a blank. Every kind of space becomes one ASCII space, so a
-// value stays on one line. A string that is cut ends in "…".
+// value stays on one line. A string that is over the bound once cleaned, or
+// longer than clean inspects, is cut and ends in "…"; with the mark it is at
+// most MaxText bytes.
 func clean(s string) string {
 	var b strings.Builder
 	cut := false
@@ -39,16 +41,22 @@ func clean(s string) string {
 		} else if !visible(r) {
 			continue
 		}
-		if b.Len()+n > MaxText-len(cutMark) {
+		if b.Len()+n > MaxText {
 			cut = true
 			break
 		}
 		b.WriteRune(r)
 	}
+	out := b.String()
 	if cut {
-		b.WriteString(cutMark)
+		// Make room for the mark, a whole character at a time.
+		for len(out)+len(cutMark) > MaxText {
+			_, n := utf8.DecodeLastRuneInString(out)
+			out = out[:len(out)-n]
+		}
+		out += cutMark
 	}
-	return b.String()
+	return out
 }
 
 // visible reports whether r is a character that shows as itself.

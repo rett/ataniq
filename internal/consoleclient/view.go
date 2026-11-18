@@ -6,7 +6,7 @@ import "time"
 // says so; it is never an error.
 const (
 	// MaxText is the most bytes a string of a view holds. A longer one is cut
-	// and ends in "…".
+	// and ends in "…", and is at most MaxText bytes with that mark.
 	MaxText = 256
 	// MaxProjects is the most projects a view holds.
 	MaxProjects = 32

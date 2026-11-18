@@ -62,12 +62,23 @@ func TestClean(t *testing.T) {
 }
 
 func TestCleanBoundsLength(t *testing.T) {
-	exact := strings.Repeat("a", MaxText-len(cutMark))
-	if got := clean(exact); got != exact {
-		t.Errorf("a string at the bound was changed: %d bytes", len(got))
+	// A string that fits the bound is kept whole, also when what follows it
+	// is dropped; one byte more and it is cut to the bound with its mark.
+	exact := strings.Repeat("a", MaxText)
+	for _, in := range []string{exact, exact + "\x1b\u202e", strings.Repeat("名", MaxText/3) + "a"} {
+		if got := clean(in); got != strings.TrimRight(in, "\x1b\u202e") {
+			t.Errorf("a string of %d bytes that fits the bound came out as %d bytes", len(in), len(got))
+		}
+	}
+	if got, want := clean(exact+"a"), exact[:MaxText-len(cutMark)]+cutMark; got != want {
+		t.Errorf("a string one byte over the bound = %d bytes %q, want %d bytes", len(got), got, len(want))
+	}
+	// The room for the mark is made a whole character at a time.
+	if got, want := clean(strings.Repeat("名", MaxText/3)+"ab"), strings.Repeat("名", MaxText/3-1)+cutMark; got != want {
+		t.Errorf("a cut after a wide character = %q, want %q", got, want)
 	}
 	for _, in := range []string{
-		strings.Repeat("a", MaxText),
+		strings.Repeat("a", MaxText+1),
 		strings.Repeat("a", 1<<20),
 		strings.Repeat("名", 1<<16),          // cut between characters, never inside one
 		strings.Repeat("\x1b[0m", 1<<16),    // mostly dropped, still bounded
