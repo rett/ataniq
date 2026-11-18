@@ -66,6 +66,17 @@
 // writer ticket is accepted only while there is no writer). Any request may
 // carry a command id, which the holder records in its event log.
 //
+// An [OpInject] request carries a message id and a text ([CheckMessageID],
+// [CheckInjectText]), both or neither, and no other operation has them. The
+// answer of a delivery that was tried is an ok [Response] with an
+// [InjectResult]: three words from closed sets ([InjectOutcome],
+// [InjectReason], [InjectWritten]), of which only the combinations listed on
+// [InjectResult] are valid, on encode and on decode, and a detail of printable
+// ASCII. A refusal ([CodeDisabled], [CodeWrongEpoch], [CodeBusy],
+// [CodeBadRequest]) always means that nothing was written. The package judges
+// the form only: whether a delivery may happen, and what the text says, are
+// the holder's affair.
+//
 // # Versions
 //
 // Both sides send [ProtocolVersion] in Hello and Welcome. Any change to a

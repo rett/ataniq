@@ -973,7 +973,17 @@ bluntly as we can state them.
   of it is built.
 - The control socket operation that carries an injection. The scratch-only
   holder's control socket has an `inject` request and always refuses it with
-  `disabled`.
+  `disabled`. The wire format of the operation exists (the `wire` package of
+  the holder): an `inject` request may carry a `message_id` (lower-case letters,
+  digits and `.` `_` `-`, 1 to 64 bytes, the first a letter or digit) and a
+  `text` (1 to 4096 bytes of valid UTF-8, each character a newline or a
+  printable one), both or neither, and no other request has them; the answer of
+  a delivery that was tried is an ok response with an `inject` result of an
+  outcome (`not-now`, `refused`, `submitted` or `uncertain`), a reason and how
+  much was written (`nothing`, `partial`, `whole` or `unknown`), of which only
+  the combinations of the package documentation are valid, and a detail of at
+  most 512 printable ASCII bytes. The holder neither reads the fields nor
+  answers with a result yet.
 - The notices to the owner, including "this lead is waiting for an approval".
 - The sandbox. [The lead sandbox guide](lead-sandbox.md) describes a proposal,
   unqualified, that nothing here runs in.
