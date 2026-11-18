@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -64,10 +65,12 @@ func injectUnknown(detail string) wire.InjectResult {
 //
 // Before the deliverer is called the answers are refusals, and a refusal means
 // nothing was written: a request with no message id or no text is bad-request,
-// and one that arrives while a delivery runs, or while the holder is closing,
+// and so is one whose text does not start "[ataniq-msg id=", the message id and
+// a space (the text is not logged, so the refusal says nothing of it). A
+// request that arrives while a delivery runs, or while the holder is closing,
 // is busy. Once the deliverer is called the answer is ok with a result and is
-// never a refusal. The two inject events carry the message id, the command id
-// and the SHA-256 of the text in hex, never the text.
+// never a refusal. The inject events carry the message id, the command id and
+// the SHA-256 of the text in hex, never the text.
 //
 // A deliverer that panics, or does not return within the delivery's time, is
 // answered uncertain, died, unknown. One that outlasts the time may still write,
@@ -81,6 +84,10 @@ func (s *Server) inject(req wire.Request) wire.Response {
 	}
 	if wire.CheckMessageID(req.MessageID) != nil || wire.CheckInjectText(req.Text) != nil {
 		return refusal(wire.CodeBadRequest, "an inject request needs a message id and a text")
+	}
+	if !strings.HasPrefix(req.Text, "[ataniq-msg id="+req.MessageID+" ") {
+		// The header is on the first line, and the prefix has no newline.
+		return refusal(wire.CodeBadRequest, "the text's header does not name the message id")
 	}
 	s.mu.Lock()
 	closing := s.closed || s.finishing
