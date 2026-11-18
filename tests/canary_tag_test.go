@@ -1235,6 +1235,15 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"internal/plain/p.go":        hdrPlusPlain + "\n\npackage a\n",
 			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
 		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
+		// Go's ./... skips folders that start with a dot or an underscore,
+		// such as a nested checkout under .claude/worktrees with its own go.mod.
+		{"folders Go skips", map[string]string{
+			"internal/leadcanary/a.go":                     hdrTagged + "\n\npackage a\n",
+			".claude/worktrees/w/go.mod":                   "module ataniq\n",
+			".claude/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
+			"internal/_old/a.go":                           hdrTagged + "\n\npackage a\n",
+			".hidden/a.go":                                 hdrTagged + "\n\npackage a\n",
+		}, "test -tags ataniq_canary ./internal/leadcanary ./tests/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)

@@ -25,11 +25,12 @@ test-patched: doctor
 # build constraint names it, found here by grep so that no list needs editing,
 # and over ./tests/, which holds the checks of the tag. The grep reads every
 # form Go builds with the tag: a go:build line or an old style plus build line,
-# indented or not, with a space or a tab after it. It skips no folder named
-# build, which Go does not skip either. With no such package the target runs
-# ./tests/ alone. It builds no binary and runs nothing but tests.
+# indented or not, with a space or a tab after it. It skips the folders that
+# ./... skips (testdata and those that start with a dot or an underscore, such
+# as a worktree under .claude) and no folder named build. With no such package
+# the target runs ./tests/ alone. It builds no binary and runs nothing but tests.
 test-canary: doctor
-	@pkgs=$$(grep -rl --include='*.go' --exclude-dir=.git --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	@pkgs=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
 
 test-dev: doctor
