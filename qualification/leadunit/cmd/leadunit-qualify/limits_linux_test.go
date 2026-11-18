@@ -210,7 +210,7 @@ func TestLimitChecksPassAndAreNamedInTheReport(t *testing.T) {
 		t.Fatalf("%+v", rep)
 	}
 	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches " +
-		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered runtime-folders-hold-the-unit lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back " +
+		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back runtime-folders-hold-the-unit " +
 		"bound-child-started sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded bound-child-stops-with-parent " +
 		"runtime-folders-clean-after-stop empty-true-for-a-fresh-name cleanup"
 	if got := checkNames(rep); got != want {
@@ -480,6 +480,8 @@ func TestRuntimeFoldersMustHoldTheRunningUnit(t *testing.T) {
 		"folders never hold it":    func(h *fakeHost) { h.neverHolds = true },
 		"listing fails":            func(h *fakeHost) { h.listErr = errors.New("permission denied") },
 		"set-property wrote where": func(h *fakeHost) { h.dropFolder = "systemd/elsewhere"; h.neverHolds = true },
+		// Only the unit's own file is in the folders: not the control.
+		"drop-in written elsewhere": func(h *fakeHost) { h.dropFolder = "systemd/elsewhere" },
 	}
 	for name, setup := range cases {
 		r, h := newLimitRig(t)
@@ -625,7 +627,7 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 	for _, want := range []string{
 		"--memory-max SIZE", "--swap-max SIZE", "--tasks-max N", "--memory-lowered SIZE",
 		"default " + defaultMemoryMax, "default " + defaultSwapMax, "default " + defaultTasksMax, "default " + defaultMemoryLowered,
-		"lowered", "control group files", "runtime folders", "must hold an entry for the running unit",
+		"lowered", "control group files", "runtime folders", "must hold the drop-in folder of the running unit",
 		"whole number of 4096-byte pages", "usage error",
 	} {
 		if !strings.Contains(help.String(), want) {
@@ -642,7 +644,7 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 		"set-property --runtime",
 		"memory.max, memory.swap.max and pids.max",
 		"nothing for the two units remains under systemd/transient and systemd/user.control",
-		"holds at least one entry for it",
+		"holds the drop-in folder <unit>.d that set-property wrote",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())
