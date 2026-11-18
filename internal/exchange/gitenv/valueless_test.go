@@ -121,9 +121,9 @@ func TestDetectorSeesAFlagThatTakesTheMarker(t *testing.T) {
 // TestDetectorSeesAMergeTreeFlagThatTakesTheMarker is the same control for
 // "merge-tree", which has flags of its own that take a value ("--merge-base",
 // "-X" and its long form). Plain git reads the argument after the marker as
-// an option there, and the detector sees it, so the test that asks git about
-// every listed flag can fail for a merge-tree flag. Argv refuses all three
-// when they are written without "=".
+// an option there, and the detector sees it. Argv refuses all three in
+// every form: "merge-tree" has one exact form (TestMergeTreeHasOneForm), so
+// the test that asks git about every listed flag does not ask about it.
 func TestDetectorSeesAMergeTreeFlagThatTakesTheMarker(t *testing.T) {
 	g := needGit(t)
 	env := fixtureEnv(t)

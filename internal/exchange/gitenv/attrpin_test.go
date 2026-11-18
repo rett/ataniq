@@ -33,10 +33,13 @@ func TestAttributePinIsOnTheseSubcommands(t *testing.T) {
 		t.Fatalf("emptyTree = %q, want %q", emptyTree, emptyTreeID)
 	}
 	g := Git{Path: "/usr/bin/git"}
-	for _, sub := range append(slices.Clone(subcommands), hashObject) {
+	for _, sub := range append(slices.Clone(subcommands), hashObject, mergeTree) {
 		c := Cmd{GitDir: "/srv/r.git", Args: []string{sub}}
-		if sub == hashObject {
+		switch sub {
+		case hashObject:
 			c.Args = append(c.Args, hashObjectArgs...)
+		case mergeTree:
+			c.Args = append(c.Args, "--write-tree", "--end-of-options", strings.Repeat("a", 40), strings.Repeat("b", 40))
 		}
 		argv, err := g.Argv(c)
 		if err != nil {
@@ -80,7 +83,7 @@ func TestAttributePinIsOnTheseSubcommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"diff", "--no-renames", "--end-of-options", "a", "b"},
 		{"diff-tree", "-r", "--stdin"},
-		{"merge-tree", "--write-tree", "--end-of-options", "a", "b"},
+		{"merge-tree", "--write-tree", "--name-only", "--end-of-options", strings.Repeat("a", 40), strings.Repeat("b", 40)},
 		{"log", "--max-count=1", "--", "attr.tree=HEAD"},
 	} {
 		argv, err := g.Argv(Cmd{GitDir: "/srv/r.git", Args: args})
@@ -106,7 +109,7 @@ func TestAttrSourceInArgsIsRefused(t *testing.T) {
 		"--attr-source=HEAD", "--attr-source=" + emptyTreeID, "--attr-source=", "--attr-source",
 		"--attr-sourc=HEAD", "--attr-s=HEAD", "--attr=HEAD", "--attr", "--att=HEAD", "--att",
 	}
-	for _, sub := range subcommands {
+	for _, sub := range append(slices.Clone(subcommands), hashObject, mergeTree) {
 		gitDir := ok
 		for _, form := range forms {
 			for _, args := range [][]string{

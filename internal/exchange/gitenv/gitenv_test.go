@@ -448,16 +448,25 @@ func TestArgvAccepts(t *testing.T) {
 		{"diff", "--exit-code", "a", "b"},
 		{"diff-tree", "-r", "--name-only", "a", "b"},
 		{"for-each-ref", "--format=%(refname)", "refs/heads/"},
-		{"merge-tree", "--write-tree", "--end-of-options", "a", "b"},
+		{"merge-tree", "--write-tree", "--end-of-options", strings.Repeat("a", 40), strings.Repeat("b", 40)},
 	} {
 		if _, err := g.Argv(Cmd{GitDir: ok, Args: args}); err != nil {
 			t.Errorf("%q: %v", args, err)
 		}
 	}
 	// The allowed list is exactly the one the task names.
-	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree", "merge-tree"}
+	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree"}
 	if !reflect.DeepEqual(subcommands, want) {
 		t.Errorf("subcommands = %q, want %q", subcommands, want)
+	}
+	// Two more are accepted, each in one exact form, by a rule of its own.
+	if len(exactForms) != 2 || exactForms["hash-object"] == nil || exactForms["merge-tree"] == nil {
+		t.Errorf("exactForms does not hold exactly hash-object and merge-tree: %d entries", len(exactForms))
+	}
+	for sub := range exactForms {
+		if slices.Contains(subcommands, sub) {
+			t.Errorf("%q is in subcommands and in exactForms", sub)
+		}
 	}
 	if !reflect.DeepEqual(noGitDir, []string{"init", "version"}) {
 		t.Errorf("noGitDir = %q", noGitDir)

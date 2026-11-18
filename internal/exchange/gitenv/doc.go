@@ -40,9 +40,17 @@
 //     The tests ask the installed git about each of these points.
 //   - It accepts only a short list of git subcommands, refuses options before
 //     the subcommand, and refuses a relative or missing repository path.
-//   - The list holds "merge-tree", so that the host can build a merge itself
-//     ("merge-tree --write-tree") in a bare repository it owns, with no
-//     working tree.
+//   - It accepts "merge-tree" in one form only, so that the host can build a
+//     merge itself in a bare repository it owns, with no working tree:
+//     "merge-tree --write-tree", then any of "--name-only", "--no-messages"
+//     and "-z", each at most once, then "--end-of-options" and exactly two
+//     full object ids. Every other form is refused, because other options
+//     change what the merge is: a strategy option ("--strategy-option",
+//     "-X") or a chosen merge base ("--merge-base") makes a conflicting
+//     merge end cleanly, "--allow-unrelated-histories" (which git also takes
+//     as "--all") merges commits that share no history, and "--stdin" reads
+//     the merges from standard input. A ref name in place of an id and a
+//     third id are refused too.
 //   - It accepts "hash-object" in one form only, "hash-object -tcommit -w
 //     --stdin", with exactly these arguments in this order, and refuses every
 //     other form. The host writes the commit of a merge with it, from a text
@@ -70,9 +78,10 @@
 //     repository, which reads that repository's config. Fetch from a
 //     repository Ataniq owns, not from a path the lead can change while the
 //     fetch runs.
-//   - It checks the options of a command, and nothing else in the arguments.
-//     Before the first "--" or "--end-of-options" every argument that starts
-//     with "-" must be written "--name=value" or be one of a short list of
+//   - Apart from the two subcommands with one exact form, it checks the
+//     options of a command, and nothing else in the arguments. Before the
+//     first "--" or "--end-of-options" every argument that starts with "-"
+//     must be written "--name=value" or be one of a short list of
 //     flags that take no value in that subcommand ("-m" takes one in
 //     "update-ref" and "symbolic-ref", "--count" in "for-each-ref", and are
 //     refused there). Any other option is refused: git lets an option such
