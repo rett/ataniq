@@ -30,6 +30,10 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"rev-list", []string{"--count", "--end-of-options", "HEAD"}},
 		{"update-ref", []string{"--no-deref", "--stdin", "-z"}},
 		{"rev-parse", []string{"--verify", "-", "x"}},
+		// The merge the host builds, and the same with the conflict list.
+		{"merge-tree", []string{"--write-tree", "--end-of-options", "a", "b"}},
+		{"merge-tree", []string{"--write-tree", "--name-only", "--no-messages", "-z", "--end-of-options", "a", "b"}},
+		{"merge-tree", []string{"--write-tree", "--merge-base=a", "--", "b", "c"}},
 		// After the end of the options git reads no options.
 		{"fetch", []string{"--end-of-options", "-o", "--depth", "1", "--upload-pack=x"}},
 		{"log", []string{"--", "-o", "--exec", "-"}},
@@ -58,6 +62,9 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"-n 1", "log", []string{"-n", "1"}, `"-n"`},
 		{"-1", "log", []string{"-1"}, `"-1"`},
 		{"-n1", "log", []string{"-n1"}, `"-n1"`},
+		{"--merge-base takes the marker", "merge-tree", []string{"--write-tree", "--merge-base", "--end-of-options", "--zz", "a", "b"}, `"--merge-base"`},
+		{"-X takes the marker", "merge-tree", []string{"--write-tree", "-X", "--", "--zz", "a", "b"}, `"-X"`},
+		{"--strategy-option takes the marker", "merge-tree", []string{"--strategy-option", "--", "--zz", "a", "b"}, `"--strategy-option"`},
 		{"joined short values", "fetch", []string{"-ofoo"}, `"-ofoo"`},
 		{"unknown long flag", "fetch", []string{"--force"}, `"--force"`},
 		{"a look-alike of a listed flag", "fetch", []string{"--prune-x"}, `"--prune-x"`},
@@ -189,6 +196,13 @@ func TestValuelessFlagsTakeNoValue(t *testing.T) {
 	for _, f := range []string{"--no-tags", "--prune", "--no-recurse-submodules", "--no-write-fetch-head", "--no-auto-maintenance", "--no-auto-gc", "--bare", "--quiet", "-q", "-z", "-r", "-m", "--raw", "--root", "--no-renames", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--verify", "--is-ancestor", "--no-deref", "--stdin", "--list", "--batch-check", "--batch", "--objects", "--no-walk", "--first-parent", "--no-mailmap", "--no-notes", "--no-decorate", "--no-show-signature", "-v", "--count", "--all", "--local", "--atomic"} {
 		if !seen[f] {
 			t.Errorf("valuelessFlags lacks %q", f)
+		}
+	}
+	// What "merge-tree" needs: the merge itself, the list of conflicting
+	// paths, no informational text, and NUL-separated output.
+	for _, f := range []string{"--write-tree", "--name-only", "--no-messages", "-z"} {
+		if !seen[f] {
+			t.Errorf("valuelessFlags lacks %q, which merge-tree needs", f)
 		}
 	}
 }

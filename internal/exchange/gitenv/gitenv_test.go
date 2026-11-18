@@ -374,6 +374,10 @@ func TestArgvRefuses(t *testing.T) {
 		{"empty GitDir for fetch", g, Cmd{Args: []string{"fetch"}}},
 		{"empty GitDir for config", g, Cmd{Args: []string{"config", "--list"}}},
 		{"empty GitDir for update-ref", g, Cmd{Args: []string{"update-ref", "refs/heads/a", "b"}}},
+		{"empty GitDir for merge-tree", g, Cmd{Args: []string{"merge-tree", "--write-tree", "a", "b"}}},
+		{"merge-tree with a separate merge base", g, Cmd{GitDir: ok, Args: []string{"merge-tree", "--write-tree", "--merge-base", "a", "b", "c"}}},
+		{"merge-tree with a strategy option", g, Cmd{GitDir: ok, Args: []string{"merge-tree", "--write-tree", "-X", "ours", "a", "b"}}},
+		{"merge-tree with a joined strategy option", g, Cmd{GitDir: ok, Args: []string{"merge-tree", "--write-tree", "-Xours", "a", "b"}}},
 		{"unknown protocol ext", g, Cmd{GitDir: ok, Args: []string{"fetch"}, Protocols: []string{"ext"}}},
 		{"unknown protocol http", g, Cmd{GitDir: ok, Args: []string{"fetch"}, Protocols: []string{"http"}}},
 		{"unknown protocol ssh", g, Cmd{GitDir: ok, Args: []string{"fetch"}, Protocols: []string{"ssh"}}},
@@ -444,13 +448,14 @@ func TestArgvAccepts(t *testing.T) {
 		{"diff", "--exit-code", "a", "b"},
 		{"diff-tree", "-r", "--name-only", "a", "b"},
 		{"for-each-ref", "--format=%(refname)", "refs/heads/"},
+		{"merge-tree", "--write-tree", "--end-of-options", "a", "b"},
 	} {
 		if _, err := g.Argv(Cmd{GitDir: ok, Args: args}); err != nil {
 			t.Errorf("%q: %v", args, err)
 		}
 	}
 	// The allowed list is exactly the one the task names.
-	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree"}
+	want := []string{"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list", "merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref", "symbolic-ref", "show-ref", "count-objects", "config", "check-ref-format", "ls-tree", "merge-tree"}
 	if !reflect.DeepEqual(subcommands, want) {
 		t.Errorf("subcommands = %q, want %q", subcommands, want)
 	}

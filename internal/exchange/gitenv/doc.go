@@ -23,6 +23,9 @@
 //   - It turns on object checking (fsck) for fetches.
 //   - It accepts only a short list of git subcommands, refuses options before
 //     the subcommand, and refuses a relative or missing repository path.
+//   - The list holds "merge-tree", so that the host can build a merge itself
+//     ("merge-tree --write-tree") in a bare repository it owns. No working
+//     tree is involved and no merge driver from the configuration is named.
 //
 // What it does not do:
 //   - It does not make git safe to run in a repository an attacker controls.

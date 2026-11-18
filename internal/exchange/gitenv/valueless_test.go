@@ -117,3 +117,26 @@ func TestDetectorSeesAFlagThatTakesTheMarker(t *testing.T) {
 		}
 	}
 }
+
+// TestDetectorSeesAMergeTreeFlagThatTakesTheMarker is the same control for
+// "merge-tree", which has flags of its own that take a value ("--merge-base",
+// "-X" and its long form). Plain git reads the argument after the marker as
+// an option there, and the detector sees it, so the test that asks git about
+// every listed flag can fail for a merge-tree flag. Argv refuses all three
+// when they are written without "=".
+func TestDetectorSeesAMergeTreeFlagThatTakesTheMarker(t *testing.T) {
+	g := needGit(t)
+	env := fixtureEnv(t)
+	for _, flag := range []string{"--merge-base", "-X", "--strategy-option"} {
+		for _, marker := range []string{"--", "--end-of-options"} {
+			repo := bare(t, g)
+			out, _ := run([]string{g.Path, "--git-dir=" + repo, "merge-tree", flag, marker, "--zzbogus"}, env, "", "")
+			if !optionRead.MatchString(out) {
+				t.Errorf("control: plain git merge-tree %s %s --zzbogus did not read --zzbogus as an option:\n%s", flag, marker, strings.TrimSpace(out))
+			}
+			if argv, err := g.Argv(Cmd{GitDir: repo, Args: []string{"merge-tree", flag, marker, "--zzbogus"}}); err == nil {
+				t.Errorf("Argv accepted %q", argv)
+			}
+		}
+	}
+}

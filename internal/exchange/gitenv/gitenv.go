@@ -84,12 +84,14 @@ const defaultCeilings = "/home:/root:/tmp:/var:/dev/shm:/run:/mnt:/srv:/opt"
 // protocolNames are the transports a command may allow.
 var protocolNames = []string{"file"}
 
-// subcommands are the git subcommands this feature uses.
+// subcommands are the git subcommands that follow the option rule of
+// [checkOptions]. "merge-tree" is here for the merge the host builds
+// ("merge-tree --write-tree").
 var subcommands = []string{
 	"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list",
 	"merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref",
 	"symbolic-ref", "show-ref", "count-objects", "config",
-	"check-ref-format", "ls-tree",
+	"check-ref-format", "ls-tree", "merge-tree",
 }
 
 // noGitDir are the subcommands that may run without --git-dir.
@@ -361,6 +363,8 @@ var valuelessFlags = []string{
 	// flags name the key as a plain argument, not as their value.
 	"--get", "--get-all", "--unset", "--show-origin", "--oneline", "--stat",
 	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
+	// Merge-tree: the host builds a merge with "merge-tree --write-tree".
+	"--write-tree", "--no-messages",
 }
 
 // valueIn names, for flags of [valuelessFlags], the subcommands in which the
