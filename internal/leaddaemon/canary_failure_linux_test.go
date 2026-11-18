@@ -75,8 +75,8 @@ func TestCanaryFailureCodes(t *testing.T) {
 				t.Fatalf("the error's text is in the answer %q", got.Message)
 			}
 			// The error itself is the log's.
-			if !strings.Contains(log.String(), "canary start: ") {
-				t.Fatalf("log %q", log.String())
+			if want := "canary start: " + SafeText(tc.err.Error()); !strings.Contains(log.String(), want) {
+				t.Fatalf("log %q, want %q in it", log.String(), want)
 			}
 		})
 	}
