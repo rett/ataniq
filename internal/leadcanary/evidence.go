@@ -161,6 +161,10 @@ func OpenEvidence(cfg Config, now func() time.Time) (*Evidence, error) {
 		return fail("leadcanary: the evidence file is not owned by the caller")
 	case st.Mode&07777 != 0o600:
 		return fail("leadcanary: the evidence file has mode %04o, want 0600", st.Mode&07777)
+	case st.Nlink != 1:
+		// A second link could make this append to a file that is also kept
+		// somewhere else.
+		return fail("leadcanary: the evidence file has more than one link")
 	}
 	return &Evidence{f: f, role: cfg.Role.String(), kind: string(cfg.Agent.Kind), now: now}, nil
 }
