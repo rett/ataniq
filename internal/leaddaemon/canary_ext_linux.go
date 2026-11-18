@@ -153,10 +153,13 @@ type canaryExt struct {
 	logf      func(format string, a ...any)
 	profile   leadregistry.Requested
 
-	mu         sync.Mutex
-	spentEpoch uint64 // the epoch whose one message is spent; 0 for none
-	inFlight   bool   // a message is being sent
-	commands   uint64 // counter of the command ids
+	mu sync.Mutex
+	// spent holds the epochs whose one message is spent. It starts from the
+	// inject-sent lines of the evidence (see spentEpochs), so that a restart of
+	// the daemon inside an epoch admits no second message.
+	spent    map[uint64]bool
+	inFlight bool   // a message is being sent
+	commands uint64 // counter of the command ids
 }
 
 var _ clientapi.Extension = (*canaryExt)(nil)
@@ -167,9 +170,13 @@ func newCanaryExt(m *canaryMode, ctl *leadlifecycle.Controller, reg *leadregistr
 	// cannot fail for this config.
 	holderDir, _ := cfg.HolderRuntimeDir()
 	adm, _ := leadcanary.NewAdmission(cfg.Role)
+	spent := make(map[uint64]bool, len(m.spent))
+	for epoch := range m.spent {
+		spent[epoch] = true
+	}
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: m.ev, adm: adm,
-		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf,
+		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -440,7 +447,9 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
 // second message, the holder's socket that cannot be dialled. Once the frame
-// is written the message is spent for the epoch whatever comes back, and only
+// is written the message is spent for the epoch whatever comes back (and
+// whatever becomes of the daemon: the inject-sent line of the evidence spends
+// it for a daemon that starts later, see spentEpochs), and only
 // an ok answer whose inject result decodes is a result: no answer within the
 // wait, a closed connection, an answer that does not decode, an ok answer
 // without a result and a refusal code the daemon does not know are all the
@@ -466,7 +475,7 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 	}
 	x.mu.Lock()
 	switch {
-	case x.spentEpoch == epoch:
+	case x.spent[epoch]:
 		x.mu.Unlock()
 		x.refuse(p.MessageID, epoch, "second-message")
 		return nil, refused(msgSecond)
@@ -482,7 +491,7 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 		x.mu.Lock()
 		x.inFlight = false
 		if wrote {
-			x.spentEpoch = epoch
+			x.spent[epoch] = true
 		}
 		x.mu.Unlock()
 	}()

@@ -3,6 +3,7 @@
 package leaddaemon
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -48,9 +49,11 @@ type CanaryConfig struct {
 // (the default roots, nesting, the marker, the prefix) and refuses to start on
 // any failure, at the config step. It then gives the lifecycle the canary
 // preflight, the canary holder command and a Limits seam that answers the
-// config's three limits for the config's role, opens the evidence file and, once
-// it listens, writes the daemon-start line and registers the canary extension
-// (see the operations in canary_ext_linux.go).
+// config's three limits for the config's role, opens the evidence file, reads
+// back from it the epochs whose one message was sent (an evidence file that
+// cannot be read back refuses the start, at the state step) and, once it
+// listens, writes the daemon-start line and registers the canary extension (see
+// the operations in canary_ext_linux.go).
 type Canary struct {
 	// Config is the canary config, as leadcanary.ReadConfig returns it.
 	Config leadcanary.Config
@@ -83,6 +86,9 @@ type canaryMode struct {
 	injectFor time.Duration
 	dialFor   time.Duration
 	ev        *leadcanary.Evidence
+	// spent is the epochs whose message the evidence shows as sent, read when
+	// the evidence is opened.
+	spent map[uint64]bool
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
@@ -124,16 +130,29 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	return m, nil
 }
 
-// openEvidence opens the evidence file in the state root.
+// openEvidence opens the evidence file in the state root and reads back the
+// epochs whose one message it shows as sent. Both locks are held, so nothing
+// else appends to the file. A file that cannot be read back line by line
+// refuses the start: the daemon admits no message it cannot rule out.
 func (m *canaryMode) openEvidence() error {
 	if m == nil {
 		return nil
 	}
+	// OpenEvidence judges the file (a regular file of the caller, mode 0600,
+	// one link) and makes it when it is not there.
 	ev, err := leadcanary.OpenEvidence(m.cfg, m.d.Clock.Now)
 	if err != nil {
 		return err
 	}
-	m.ev = ev
+	spent, err := spentEpochs(m.cfg.EvidencePath(), m.cfg.Role.String())
+	if err != nil {
+		_ = ev.Close()
+		return fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back, so set the file aside to start", err)
+	}
+	for epoch := range spent {
+		m.d.logf("canary: the evidence shows the message of epoch %d as sent; the epoch takes no other", epoch)
+	}
+	m.ev, m.spent = ev, spent
 	return nil
 }
 
