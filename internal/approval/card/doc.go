@@ -45,7 +45,8 @@
 //
 // [Card.MayApprove] is the one rule for when an approve may be offered. It
 // takes a [Reading], which is what the reader has done with the card, and
-// answers yes or no with a one-line reason.
+// answers yes or no with a one-line reason. [Card.ShownDigest] is the digest
+// of what the card showed.
 //
 // # What surfaces and backends share
 //
