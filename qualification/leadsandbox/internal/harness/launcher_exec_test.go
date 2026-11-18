@@ -24,14 +24,23 @@ import (
 // run once per test. They start no sandbox tool, no namespace and no unit:
 // nothing here names pasta, bubblewrap or the probe.
 
-const helperEnv = "HARNESS_EXEC_LAUNCHER_HELPER"
-
 // TestExecLauncherHelper is the command the launcher starts. It does nothing
-// in a normal test run.
+// in a normal test run. As a helper it has armed its guard before the test
+// framework started (launcher_exec_guard_test.go): it ends with the process
+// that started it and at its deadline, whatever the mode.
 func TestExecLauncherHelper(t *testing.T) {
 	mode := os.Getenv(helperEnv)
 	if mode == "" {
 		return
+	}
+	if sub, ok := strings.CutPrefix(mode, "parent-of-"); ok {
+		// Plays a test that starts a helper through the launcher and never
+		// reaches its cleanup: the test that started this process kills it.
+		if _, err := startHelper(sub); err != nil {
+			fmt.Println("launch:", err)
+			os.Exit(98)
+		}
+		select {}
 	}
 	switch mode {
 	case "report":
@@ -61,9 +70,11 @@ func TestExecLauncherHelper(t *testing.T) {
 		select {}
 	case "leader-with-child":
 		// The first process starts a member of its own group that waits, and
-		// ends: what is left is a group with a dead leader.
+		// ends: what is left is a group with a dead leader. The member must
+		// outlive this process, so it can take no parent-death signal from
+		// it: it watches the process that this one must not outlive.
 		child := exec.Command(os.Args[0], "-test.run=^TestExecLauncherHelper$")
-		child.Env = []string{helperEnv + "=wait"}
+		child.Env = helperEnvironFor("wait", helperOwnerEnv, armedGuard.keeper())
 		if err := child.Start(); err != nil {
 			fmt.Println("start:", err)
 			os.Exit(98)
@@ -74,16 +85,7 @@ func TestExecLauncherHelper(t *testing.T) {
 	os.Exit(99)
 }
 
-func helperPlan(t *testing.T) *plan.Plan {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &plan.Plan{Argv: []string{exe, "-test.run=^TestExecLauncherHelper$"}}
-}
-
-func launchHelper(t *testing.T, mode string) Process {
+func skipWithoutPTY(t *testing.T) {
 	t.Helper()
 	if m, s, err := openPTY(1, 1); err != nil {
 		t.Skipf("no pseudo-terminal here: %v", err)
@@ -91,15 +93,46 @@ func launchHelper(t *testing.T, mode string) Process {
 		m.Close()
 		s.Close()
 	}
-	p, err := ExecLauncher{}.Launch(LaunchRequest{Plan: helperPlan(t), Env: []string{helperEnv + "=" + mode}, Rows: 40, Cols: 100})
+}
+
+// startHelper starts a helper in the mode through the real launcher, with the
+// calling process as the parent it must not outlive.
+func startHelper(mode string) (Process, error) {
+	argv, err := helperArgv()
+	if err != nil {
+		return nil, err
+	}
+	return ExecLauncher{}.Launch(LaunchRequest{Plan: &plan.Plan{Argv: argv}, Env: helperEnviron(mode), Rows: 40, Cols: 100})
+}
+
+// launchHelper starts a helper for the test. When the test ends, whatever is
+// left of the helper's process group is killed and waited for.
+func launchHelper(t *testing.T, mode string) Process {
+	t.Helper()
+	skipWithoutPTY(t)
+	p, err := startHelper(mode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		p.Signal(syscall.SIGKILL)
-		p.Close()
-	})
+	t.Cleanup(func() { endGroup(t, p) })
 	return p
+}
+
+// endGroup kills the process group, waits until its first process has ended
+// and no member is left, and has the first process reaped. After a Close by
+// the test itself there is nothing left to do, and nothing is sent.
+func endGroup(t *testing.T, p Process) {
+	t.Helper()
+	p.Signal(syscall.SIGKILL)
+	select {
+	case <-p.Done():
+	case <-time.After(helperEndWait):
+		t.Errorf("the first process %d has not ended after SIGKILL", p.PID())
+	}
+	if !groupGone(p, helperEndWait, 5*time.Millisecond) {
+		t.Errorf("a process is left in the group %d after SIGKILL", p.PID())
+	}
+	p.Close()
 }
 
 func TestExecLauncherRunsTheCommandOnAPseudoTerminalInItsOwnGroup(t *testing.T) {
@@ -114,9 +147,11 @@ func TestExecLauncherRunsTheCommandOnAPseudoTerminalInItsOwnGroup(t *testing.T) 
 	}
 	out := string(p.Terminal().Data)
 	// The terminal is a terminal of the size given, the first process is its
-	// own group leader, and only the environment the request gave is there.
-	if !strings.Contains(out, "tty=true rows=40 cols=100 pgid=true env=1 ") {
-		t.Errorf("terminal output %q", out)
+	// own group leader, and only the environment the request gave is there
+	// (the mode of the helper and its guard).
+	want := fmt.Sprintf("tty=true rows=40 cols=100 pgid=true env=%d ", len(helperEnviron("report")))
+	if !strings.Contains(out, want) {
+		t.Errorf("terminal output %q, want %q in it", out, want)
 	}
 	if p.PID() <= 0 {
 		t.Errorf("pid %d", p.PID())
@@ -192,7 +227,7 @@ func TestExecLauncherRefusesWhatItCannotStart(t *testing.T) {
 		"missing executable": {Plan: &plan.Plan{Argv: []string{"/nonexistent/for/the/test"}}, Rows: 1, Cols: 1},
 	} {
 		if p, err := (ExecLauncher{}).Launch(req); err == nil {
-			p.Signal(syscall.SIGKILL)
+			endGroup(t, p)
 			t.Errorf("%s: started", name)
 		}
 	}
@@ -414,10 +449,20 @@ func TestExitOfInfoReadsTheStatusFromARealWaitid(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			cmd := exec.Command(exe, "-test.run=^TestExecLauncherHelper$")
-			cmd.Env = []string{helperEnv + "=" + tc.mode}
+			cmd.Env = helperEnviron(tc.mode)
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			// The child ends by itself in every mode here. Should the test end
+			// before the waitid below has reaped it, it is killed and waited
+			// for; once reaped, its id may be another process's.
+			reaped := false
+			t.Cleanup(func() {
+				if !reaped {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			})
 			var info unix.Siginfo
 			var err error
 			for {
@@ -426,6 +471,7 @@ func TestExitOfInfoReadsTheStatusFromARealWaitid(t *testing.T) {
 					break
 				}
 			}
+			reaped = err == nil
 			if got := exitOfInfo(&info, err); got != tc.want {
 				t.Errorf("exitOfInfo = %+v, want %+v", got, tc.want)
 			}
