@@ -15,7 +15,11 @@
 // "no-env-expand" flag, so that systemd does not expand "$VAR" in the
 // arguments. A spec with a Parent adds BindsTo, PartOf and After for it
 // ([leadunit.BoundProperties]), each as a list of that one unit name ("as"),
-// right after the fixed ones; a unit with no Parent gets none of them. A reply
+// right after the fixed ones; a unit with no Parent gets none of them. A spec
+// with Limits adds MemoryMax, MemorySwapMax and TasksMax
+// ([leadunit.LimitProperties]), each an unsigned 64-bit number ("t"), after
+// those; a spec without them gets none, and its call is exactly the call
+// without limits. A reply
 // that names a job is success, and Start then inspects the unit once; the job
 // completes later, so that state can be partial (see [Manager.Start]). Inspect
 // is one "systemctl --user show --all" with a fixed property list, which

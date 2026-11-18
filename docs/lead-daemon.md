@@ -654,6 +654,16 @@ back from it. The command is an absolute executable with its arguments, a
 working directory and an explicit environment. The manager sends the command
 with systemd's no-expand flag so that `$VAR` in an argument is not expanded.
 
+A unit specification may also carry three **limits**, `MemoryMax=`,
+`MemorySwapMax=` and `TasksMax=`. They come from configuration, never from a
+value in the code, and are absent when none is given: a specification with no
+limits sets none of the three and its start call is the call without them.
+When limits are given all three are set, each as an unsigned 64-bit number on
+the bus, and a swap limit of 0 means no swap (`MemorySwapMax=0`), not "not
+set". The specification refuses a memory limit outside 256 MiB to 64 GiB, a
+task limit outside 16 to 65,536 and a swap limit outside 0 to 64 GiB. The fake
+records the limits of a unit it starts.
+
 A unit specification may name a parent unit. The unit is then also **bound** to
 it with `BindsTo=`, `PartOf=` and `After=`, so that stopping the parent stops
 it, and the fake and the systemd manager both do this. It is how a
