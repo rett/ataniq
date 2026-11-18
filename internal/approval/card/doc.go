@@ -51,6 +51,7 @@
 // # What surfaces and backends share
 //
 // The package also holds the values a surface and a backend hand each other
-// ([Decision], [Outcome], [Listing], [Page]) and the "differs from" block
-// ([DiffersFrom]).
+// ([Decision], [Outcome], [Listing], [Page]), the "differs from" block
+// ([DiffersFrom]) and the input of the count from the first card
+// ([CountInput]).
 package card
