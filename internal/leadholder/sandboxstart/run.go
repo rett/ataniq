@@ -18,7 +18,7 @@
 //	validate-config   the inputs, the profile's own checks, the host
 //	tool-versions     the tools' versions; a bubblewrap too old for --bind-fd
 //	own-clone         the tree is the lead's own clone, the folders are its own
-//	prepare           the mount points are made (only with no_lead_has_run)
+//	prepare           the mount points are made (only with Inputs.NoLeadHasRun)
 //	check             the start walk of the bind destinations (assertion 7)
 //	resolv-conf       the resolv.conf derived from the host's, and the bound folder
 //	resolve-sources   every bind source with its links evaluated
@@ -179,7 +179,7 @@ func (a *attempt) execute() (Started, error) {
 		{StepOwnClone, nil, a.ownClone},
 		{StepPrepare, func() string {
 			if !a.in.NoLeadHasRun {
-				return "the inputs do not state that no lead has run: the mount points are checked, not made"
+				return "the holder does not state that no lead has run: the mount points are checked, not made"
 			}
 			return ""
 		}, a.prepare},
@@ -418,9 +418,9 @@ func (a *attempt) checkMountPoints(step string) error {
 // design wants the walk made with the previous instance proven stopped. This
 // sequence has no unit and no control group, so it proves nothing about a
 // process of an earlier lead: when the inputs state that no lead has run in
-// these folders (no_lead_has_run) there is no previous instance, and when they
-// state that the previous instance has stopped (previous_instance_stopped) the
-// caller proved it, and the fact says which. Without either statement the fact
+// these folders (Inputs.NoLeadHasRun) there is no previous instance, and when
+// they state that the previous instance has stopped (Inputs.PreviousInstanceStopped) the
+// holder proved it, and the fact says which. Without either statement the fact
 // says the previous instance is not proven stopped, and the result of a walk
 // that found nothing is not-checked.
 func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
@@ -438,11 +438,11 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 			w.Detail += " (and more problems than the check lists)"
 		}
 	case a.in.NoLeadHasRun:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that there is no previous instance is the inputs' statement that no lead has run in these folders (no_lead_has_run)", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that there is no previous instance is the holder's statement that no lead has run in these folders (NoLeadHasRun)", step)
 	case a.in.PreviousInstanceStopped:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that the previous instance has stopped is the inputs' statement (previous_instance_stopped)", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that the previous instance has stopped is the holder's statement (PreviousInstanceStopped)", step)
 	default:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the inputs state neither that no lead has run in these folders (no_lead_has_run) nor that the previous instance has stopped (previous_instance_stopped): it does not prove that no process of an earlier lead remains", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the holder states neither that no lead has run in these folders (NoLeadHasRun) nor that the previous instance has stopped (PreviousInstanceStopped): it does not prove that no process of an earlier lead remains", step)
 	}
 	a.walk = w
 }

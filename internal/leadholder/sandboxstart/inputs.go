@@ -43,7 +43,18 @@ const (
 // The file holds no argument vector and no environment of the agent. They come
 // on the holder's command line and reach Run in the last fields of the struct,
 // which no file can set (their tag is "-"): the holder fills them before it
-// calls Run.
+// calls Run. Two statements about the start itself, NoLeadHasRun and
+// PreviousInstanceStopped, are such fields too: the file is written once, and
+// they are true or false per epoch, so they are not keys, and ReadInputs
+// refuses a file that names either.
+//
+// With "canary": false the file is read and Run goes on: there is no root
+// check and no waiver, so the agent is launched and the start is refused only
+// at the step outside-checks, on assertion 10, for which no qualification
+// record exists. A start that cannot succeed therefore still launches the
+// agent briefly; the holder under --canary is to refuse such a file before
+// it calls Run. In canary mode the layout role must be "<project>-lead", which
+// Run checks before any step.
 //
 // Nothing here names a runtime, a vendor or a model: the runtime is the value
 // of "runtime", and so are the version, the provider host and every path.
@@ -56,12 +67,15 @@ const (
 //	                        the waiver of assertion 10; with false there is no
 //	                        root check and no waiver, and the start is refused at
 //	                        assertion 10, for which no qualification record
-//	                        exists.
+//	                        exists; that refusal comes only after the launch.
 //	project                 the project's name; in canary mode it carries the
 //	                        reserved prefix.
 //	layout_role             the role's name in the host layout, the "<role>" of
 //	                        <state>/leads/<role> (profile.Layout.Role), and of
-//	                        <runtime root>/leads/<role>.
+//	                        <runtime root>/leads/<role>. In canary mode it is
+//	                        "<project>-lead", which Run checks before any step.
+//	                        The role lock is asked about it, not about the
+//	                        daemon's role text (assertion 9).
 //	state_root              the state root, an absolute real path, below which
 //	                        profile.Layout puts the lead's folders. In canary
 //	                        mode it carries the marker.
@@ -85,23 +99,6 @@ const (
 //	                        the user lingering is asked about for assertion 9;
 //	                        when it is empty (the "root" identity) the user is
 //	                        System.Username.
-//	no_lead_has_run         the statement that no lead has run in the lead's
-//	                        folders yet. Only then does Run make the mount points
-//	                        (the step prepare, which is idempotent). It also means
-//	                        there is no previous instance, so the next key follows
-//	                        from it.
-//	previous_instance_stopped
-//	                        the statement that no process of an earlier instance of
-//	                        the lead remains: the start sequence has no unit and no
-//	                        control group to prove it, so the caller does (the
-//	                        daemon starts an epoch only after the unit of the last
-//	                        one is gone, and the holder holds the role lock). A
-//	                        walk of the bind destinations that finds nothing is
-//	                        "ok" for assertion 7 only with this key or with
-//	                        no_lead_has_run (the harness's rule); without both that
-//	                        walk is not-checked, and the start is refused. A start
-//	                        of a second epoch says no_lead_has_run false and this
-//	                        true.
 //	executables             "pasta", "bwrap" and "probe": absolute paths of three
 //	                        different regular files that group and others cannot
 //	                        write. The probe is the static probe (the plan's
@@ -131,8 +128,32 @@ type Inputs struct {
 	Identity  string `json:"identity,omitempty"`
 	OwnerUser string `json:"owner_user,omitempty"`
 
-	NoLeadHasRun            bool `json:"no_lead_has_run"`
-	PreviousInstanceStopped bool `json:"previous_instance_stopped"`
+	// NoLeadHasRun is the statement that no lead has run in the lead's
+	// folders yet. Only then does Run make the mount points (the step prepare,
+	// which is idempotent); it also means there is no previous instance. It is
+	// not a key of the file, and ReadInputs refuses a file that names it. The
+	// holder fills it before every Run from a durable mark, not from the epoch
+	// number: it is true only while the file "lead-has-run" is absent from the
+	// holder's state folder (--state-dir), and the holder writes that mark, by
+	// handle and exclusively, before it calls Run. (The epoch counter is not
+	// the history of the folders: a start that failed after the launch and is
+	// retried is epoch 1 again, over folders a lead has run in.) Seams note,
+	// section 8, "Per-epoch inputs".
+	NoLeadHasRun bool `json:"-"`
+	// PreviousInstanceStopped is the statement that no process of an earlier
+	// instance of the lead remains. The start sequence has no unit and no
+	// control group to prove it, so the holder does. It is not a key of the
+	// file, and ReadInputs refuses a file that names it. The holder sets it
+	// true only from its own observation: its control group (read from
+	// /proc/self/cgroup) holds no process but the holder itself. The unit name
+	// is fixed, so a new epoch cannot start while the last unit exists, and the
+	// daemon's stop proof stands behind that; the role lock proves only that no
+	// other holder runs, and is not this proof. A walk of the bind destinations
+	// that finds nothing is "ok" for assertion 7 only with this field or with
+	// NoLeadHasRun (the harness's rule); without both that walk is not-checked,
+	// and the start is refused. The start of a second epoch has NoLeadHasRun
+	// false and this true.
+	PreviousInstanceStopped bool `json:"-"`
 
 	Executables  Executables `json:"executables"`
 	Sources      Sources     `json:"sources"`
