@@ -69,14 +69,17 @@ func injectUnknown(detail string) wire.InjectResult {
 // a space (the text is not logged, so the refusal says nothing of it). A
 // request that arrives while a delivery runs, or while the holder is closing,
 // is busy. Once the deliverer is called the answer is ok with a result and is
-// never a refusal. The inject events carry the message id, the command id and
-// the SHA-256 of the text in hex, never the text.
+// never a refusal. The inject events (one when it starts, one with the answer,
+// and a third when a deliverer that the answer did not wait for returns) carry
+// the message id, the command id and the SHA-256 of the text in hex, never the
+// text.
 //
 // A deliverer that panics, or does not return within the delivery's time, is
 // answered uncertain, died, unknown. One that outlasts the time may still write,
 // so the gate stays shut for the rest of its run: a request that comes while it
-// runs is busy, and the next delivery can start only after it has returned. A
-// deliverer that never returns keeps injection busy until the holder ends.
+// runs is busy, and the next delivery can start only after it has returned, and
+// what it returned is logged as a late result. A deliverer that never returns
+// keeps injection busy until the holder ends.
 func (s *Server) inject(req wire.Request) wire.Response {
 	d := s.cfg.Deliverer
 	if d == nil {
@@ -110,8 +113,18 @@ func (s *Server) inject(req wire.Request) wire.Response {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	done := make(chan wire.InjectResult, 1)
-	go s.deliver(ctx, cancel, d, req.MessageID, req.Text, done)
+	var settled atomic.Bool
+	go s.deliver(ctx, cancel, d, req.MessageID, req.Text, ev, &settled, done)
 
+	// giveUp is the answer when the handler stops waiting: the result made up
+	// for it, or, when the deliverer has just returned, its own (it has then
+	// settled the delivery, and its result is on its way).
+	giveUp := func(made wire.InjectResult) wire.InjectResult {
+		if settled.CompareAndSwap(false, true) {
+			return made
+		}
+		return <-done
+	}
 	var res wire.InjectResult
 	select {
 	case res = <-done:
@@ -121,14 +134,14 @@ func (s *Server) inject(req wire.Request) wire.Response {
 		select {
 		case res = <-done:
 		default:
-			res = resultTimedOut
+			res = giveUp(resultTimedOut)
 		}
 	case <-s.stop:
 		cancel()
 		select {
 		case res = <-done:
 		default:
-			res = resultClosed
+			res = giveUp(resultClosed)
 		}
 	}
 	res = encodable(res)
@@ -145,15 +158,40 @@ func (s *Server) inject(req wire.Request) wire.Response {
 // start, when the deliverer has returned: the flag is cleared before the result
 // is sent, so a client that has its answer is never refused busy for this
 // delivery. A panic is recovered and its value dropped: it can hold the text.
-func (s *Server) deliver(ctx context.Context, cancel context.CancelFunc, d Deliverer, messageID, text string, done chan<- wire.InjectResult) {
+//
+// Whoever comes first, the handler giving up or the deliverer returning,
+// settles the delivery. A deliverer that returns after the handler has given
+// up (the answer was uncertain) has what it reported logged, as a third inject
+// event with the identity and the digest of the others ([lateEvent]).
+func (s *Server) deliver(ctx context.Context, cancel context.CancelFunc, d Deliverer, messageID, text string, ev eventlog.Fields, settled *atomic.Bool, done chan<- wire.InjectResult) {
 	res := resultPanicked
 	defer cancel() // after the result is sent, so the handler does not see an end before it
 	defer func() {
+		if !settled.CompareAndSwap(false, true) {
+			// Before the flag is cleared, so the event comes before that of
+			// the next delivery.
+			s.emit(eventlog.EventInject, lateEvent(ev, res))
+		}
 		s.inj.running.Store(false)
 		done <- res
 	}()
 	defer func() { _ = recover() }()
 	res = d.Deliver(ctx, messageID, text)
+}
+
+// lateEvent is the event for the result that a deliverer returned after the
+// handler had answered: ev (the message, command and digest) with the
+// outcome "late-" and the result's, its reason, and its written count as the
+// state. A result that the wire does not carry is "late-invalid", with
+// nothing else of it: its words are not trusted in the log.
+func lateEvent(ev eventlog.Fields, res wire.InjectResult) eventlog.Fields {
+	if encodable(res) != res {
+		ev.Outcome = "late-invalid"
+		return ev
+	}
+	ev.Outcome, ev.Reason = "late-"+string(res.Outcome), string(res.Reason)
+	ev.State = "written-" + string(res.Written)
+	return ev
 }
 
 // encodable returns res when the wire carries it, else the result for one that
