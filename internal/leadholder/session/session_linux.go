@@ -227,6 +227,10 @@ type Config struct {
 	// called with the slice's index after each slice of a chunk, with the
 	// output lock released.
 	betweenSlices func(i int)
+	// beforeDrainRelease is a test hook: the goroutine the end of a fence
+	// leaves (drainHeld) calls it each time it has applied what was held,
+	// before it tries to let the reader apply again, holding no lock.
+	beforeDrainRelease func()
 }
 
 // Session is one hosted terminal session. Its methods are safe for

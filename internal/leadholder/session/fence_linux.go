@@ -491,6 +491,9 @@ func (s *Session) drainHeld(done chan<- struct{}) {
 	defer close(done)
 	for {
 		s.applyHeld(nil)
+		if s.cfg.beforeDrainRelease != nil {
+			s.cfg.beforeDrainRelease()
+		}
 		if s.release(true) {
 			return
 		}

@@ -157,8 +157,11 @@ func TestTwoFencesInARowLeaveOneDrainAndKeepTheOrder(t *testing.T) {
 	}
 }
 
-// Close waits for the one drain: when it returns, the goroutine is over and
-// everything the fence held has been applied.
+// When Close returns, the goroutine a fence left is over and everything the
+// fence held has been applied. The lifetime path applies the backlog itself
+// when the agent is stopped, so this shows the outcome of a Close, not which
+// wait gave it: that Close waits for the goroutine is shown by
+// TestCloseBlocksUntilTheDrainIsLetGo.
 func TestCloseWaitsForTheDrain(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("raw; wait")
