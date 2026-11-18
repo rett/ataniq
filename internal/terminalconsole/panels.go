@@ -126,6 +126,10 @@ func (m *Model) drawZoom(p *painter, l layout) {
 	if m.focus == consoleFocus {
 		keys = m.focusName() + " · Enter focuses the session · F12 leaves zoom"
 	}
+	if m.labelled() {
+		// There is no session to focus in a labelled view.
+		keys = m.focusName() + " · F12 leaves zoom"
+	}
 	label := " · " + m.sessionLabel()
 	w := l.header.Dx()
 	if m.notice == "" {

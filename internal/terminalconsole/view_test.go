@@ -115,6 +115,11 @@ func TestLabelledViewHasNoSessionToFocusOrReplay(t *testing.T) {
 	if v := r.view(); r.m.focus != consoleFocus || !strings.Contains(v, "NO SESSION TERMINAL") || !strings.Contains(v, testLabel) {
 		t.Fatal(r.m.focus.name(), v)
 	}
+	// The zoom's header offers no session focus either.
+	r.key(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if first := r.rows()[0]; !strings.Contains(first, "CONSOLE FOCUS · F12 leaves zoom · "+testLabel) || strings.Contains(first, "Enter") {
+		t.Fatal(first)
+	}
 	r.key(tea.KeyPressMsg{Code: zoomKey})
 	if cmd := r.key(tea.KeyPressMsg{Code: 'r', Text: "r"}); cmd != nil {
 		t.Fatal("r scheduled something")
