@@ -68,16 +68,23 @@ func addLooked(s *Store, at time.Time) (Entry, error) {
 	return added[0], nil
 }
 
-// fill appends n looked entries and returns them.
+// fill appends n looked entries and returns them. They are made in one
+// write, so that a test that only needs entries to be there pays for one
+// synced write and not for n.
 func fill(t *testing.T, s *Store, n int) []Entry {
 	t.Helper()
-	var out []Entry
-	for i := 0; i < n; i++ {
-		e, err := addLooked(s, base.Add(time.Duration(i)*time.Second))
-		if err != nil {
-			t.Fatalf("append %d: %v", i, err)
+	first := int64(len(mustEntries(t, s)))
+	out, err := s.write(func(tx *txn) error {
+		for i := 0; i < n; i++ {
+			at := base.Add(time.Duration(first+int64(i)) * time.Second)
+			if _, err := tx.add(Entry{Kind: KindLooked, At: at, Body: []byte("{}")}); err != nil {
+				return err
+			}
 		}
-		out = append(out, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("appending %d entries: %v", n, err)
 	}
 	return out
 }
@@ -403,6 +410,9 @@ func TestAFileThatIsNotAStoreIsRefused(t *testing.T) {
 			if !bytes.Equal(before, readFile(t, path)) {
 				t.Fatal("the refused Open changed the file")
 			}
+			if c.name == "zero bytes" && !strings.Contains(err.Error(), "the file is empty") {
+				t.Fatalf("Open of an empty file: %v, want it to say that the file is empty", err)
+			}
 		})
 	}
 }
@@ -616,5 +626,70 @@ func TestTheLookedMarkOnlyMovesForward(t *testing.T) {
 	}
 	if err := s.AppendLooked(time.Time{}); err == nil {
 		t.Fatal("a look with no time was taken")
+	}
+}
+
+// rawInsert writes entries into the file past this package, each with a
+// digest that holds for the entry before it in the list.
+func rawInsert(t *testing.T, path string, entries ...Entry) {
+	t.Helper()
+	db := rawDB(t, path)
+	sum := zeroSum
+	for _, e := range entries {
+		sum = sumOf(sum, e)
+		if _, err := db.Exec("INSERT INTO entries (seq, kind, at, pending_id, project, ref, body, record, sum) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+			e.Seq, string(e.Kind), e.At.UnixNano(), e.PendingID, e.Project, e.Ref, e.Body, sum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The sequence numbers are checked by themselves, beside the digests: a
+// file whose digests all hold and whose numbers have a gap, or do not
+// start at 1, is refused.
+func TestAGapInTheSequenceIsFoundEvenWhenTheDigestsHold(t *testing.T) {
+	entry := func(seq int64) Entry {
+		return Entry{Seq: seq, Kind: KindLooked, At: base.Add(time.Duration(seq) * time.Second), Body: []byte("{}")}
+	}
+	cases := []struct {
+		name  string
+		seqs  []int64
+		whole bool
+	}{
+		{"1, 2, 3", []int64{1, 2, 3}, true},
+		{"1, 3", []int64{1, 3}, false},
+		{"2, 3", []int64{2, 3}, false},
+		{"1, 2, 4", []int64{1, 2, 4}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := newPath(t)
+			mustClose(t, mustOpen(t, path))
+			var entries []Entry
+			for _, seq := range c.seqs {
+				entries = append(entries, entry(seq))
+			}
+			rawInsert(t, path, entries...)
+			s, err := Open(path)
+			if c.whole {
+				if err != nil {
+					t.Fatalf("the test's own digests do not hold: %v", err)
+				}
+				if got := mustEntries(t, s); !reflect.DeepEqual(got, entries) {
+					t.Fatalf("the entries: %+v", got)
+				}
+				mustClose(t, s)
+				return
+			}
+			if !errors.Is(err, ErrDamaged) {
+				if err == nil {
+					s.Close()
+				}
+				t.Fatalf("Open: %v, want %v", err, ErrDamaged)
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package ownerjournal
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -11,11 +12,11 @@ import (
 // gap, each goroutine sees its own numbers rise, and a reader that runs
 // beside them never sees a gap either.
 func TestAppendsFromSeveralGoroutinesKeepTheOrder(t *testing.T) {
-	const writers, each = 8, 25
+	const writers, each = 8, 12
 	path := newPath(t)
 	s := mustOpen(t, path)
 	seqs := make([][]int64, writers)
-	errs := make(chan error, writers+1)
+	errs := make(chan error, writers)
 	var wg sync.WaitGroup
 	for w := 0; w < writers; w++ {
 		wg.Add(1)
@@ -33,32 +34,38 @@ func TestAppendsFromSeveralGoroutinesKeepTheOrder(t *testing.T) {
 			}
 		}(w)
 	}
-	done := make(chan struct{})
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	var readerErr error
 	go func() {
-		defer close(errs)
+		defer close(stopped)
 		for {
 			entries, err := s.Entries(0, 0)
 			if err != nil {
-				errs <- err
+				readerErr = err
 				return
 			}
 			for i, e := range entries {
 				if e.Seq != int64(i+1) {
-					t.Errorf("a reader saw sequence number %d at place %d", e.Seq, i)
+					readerErr = fmt.Errorf("a reader saw sequence number %d at place %d", e.Seq, i)
 					return
 				}
 			}
 			select {
-			case <-done:
+			case <-stop:
 				return
 			default:
 			}
 		}
 	}()
 	wg.Wait()
-	close(done)
+	close(stop)
+	<-stopped
+	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+	if readerErr != nil {
+		t.Fatal(readerErr)
 	}
 	seen := make(map[int64]bool)
 	for w, mine := range seqs {

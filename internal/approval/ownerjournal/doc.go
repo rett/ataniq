@@ -44,10 +44,11 @@
 // the group or by others; the same holds for the file, which is created
 // with mode 0600 when it is not there. A new file appears under its name
 // only once it is a whole, empty store, so a crash while a store is created
-// leaves no half-made store behind. A file of zero bytes, a file cut short
-// and a file of another kind are refused with [ErrDamaged]; the package
-// never repairs a store and never starts a new one over a file that is
-// there.
+// leaves no half-made store behind. (This needs a file system that can
+// rename a file without replacing another, as the usual ones of Linux can.)
+// A file of zero bytes, a file cut short and a file of another kind are
+// refused with [ErrDamaged]; the package never repairs a store and never
+// starts a new one over a file that is there.
 //
 // One process holds a store at a time. A second Open of the same file,
 // from this process or another, is refused at once with [ErrLocked]; it
