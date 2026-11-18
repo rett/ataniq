@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -309,6 +310,9 @@ var strictCases = []struct {
 	{"a high surrogate alone", `"feature finish"`, `"feature finish\ud83d"`, CodeRequestInvalid},
 	{"a low surrogate alone", `"feature finish"`, `"feature finish\ude00"`, CodeRequestInvalid},
 	{"two high surrogates", `"feature finish"`, `"feature finish\ud83d\ud83d"`, CodeRequestInvalid},
+	{"two low surrogates", `"feature finish"`, `"feature finish` + bs + `udc00` + bs + `udc00"`, CodeRequestInvalid},
+	{"a low surrogate before a high one", `"feature finish"`, `"feature finish` + bs + `ude00` + bs + `ud83d"`, CodeRequestInvalid},
+	{"a surrogate pair", `"feature finish"`, `"feature finish` + bs + `ud83d` + bs + `ude00"`, CodeVerbNotRequestable},
 	{"an unknown escape", `"feature finish"`, `"feature\ finish"`, CodeRequestInvalid},
 	{"a short \\u escape", `"feature finish"`, `"feature finish\u00e"`, CodeRequestInvalid},
 	{"bytes that are not UTF-8", `"feature finish"`, "\"feature finish\xff\"", CodeRequestInvalid},
@@ -386,6 +390,7 @@ func TestDecodingIsStrict(t *testing.T) {
 		{"an empty object", "{}"},
 		{"deep lists", strings.Repeat("[", 4000) + strings.Repeat("]", 4000)},
 		{"deep objects", strings.Repeat(`{"a":`, 1000) + "7" + strings.Repeat("}", 1000)},
+		{"lists one level too deep", strings.Repeat("[", maxDepth+1) + strings.Repeat("]", maxDepth+1)},
 	} {
 		_, err := DecodeRequest([]byte(tt.in))
 		wantCode(t, tt.name, err, CodeRequestInvalid)
@@ -393,6 +398,80 @@ func TestDecodingIsStrict(t *testing.T) {
 		wantCode(t, tt.name, err, CodeRecordInvalid)
 		_, err = DecodeDecision([]byte(tt.in))
 		wantCode(t, tt.name, err, CodeDecisionInvalid)
+	}
+}
+
+// The reader itself stops at the depth limit: it does not build a value of
+// any depth and leave the refusal to the form.
+func TestNestingStopsAtTheLimit(t *testing.T) {
+	// nested returns levels levels of nesting, opened by open and closed
+	// by end, each of which is per levels of nesting, around a 7.
+	nested := func(open, end string, per, levels int) string {
+		return strings.Repeat(open, levels/per) + "7" + strings.Repeat(end, levels/per)
+	}
+	lists := func(n int) string { return nested("[", "]", 1, n) }
+	objects := func(n int) string { return nested(`{"a":`, "}", 1, n) }
+	for _, nest := range []struct {
+		name      string
+		open, end string
+		per       int
+	}{{"lists", "[", "]", 1}, {"objects", `{"a":`, "}", 1}, {"lists and objects", `[{"a":`, "}]", 2}} {
+		if _, err := parse([]byte(nested(nest.open, nest.end, nest.per, maxDepth))); err != nil {
+			t.Errorf("%s of exactly the limit: %v", nest.name, err)
+		}
+		// The refusal is at the first level over the limit, not after
+		// the whole input was read.
+		want := "the record nests too deep at byte " + strconv.Itoa(len(nest.open)*maxDepth/nest.per)
+		for _, levels := range []int{maxDepth + nest.per, 4000} {
+			_, err := parse([]byte(nested(nest.open, nest.end, nest.per, levels)))
+			if err == nil || err.Error() != want {
+				t.Errorf("%s nested %d deep: %v, want %s", nest.name, levels, err, want)
+			}
+		}
+	}
+	for _, in := range []string{lists(maxDepth + 1), objects(maxDepth + 1)} {
+		_, err := DecodeRequest([]byte(in))
+		wantCode(t, "a record nested one level too deep", err, CodeRequestInvalid)
+		if err == nil || !strings.Contains(err.Error(), "nests too deep") {
+			t.Errorf("a record nested one level too deep: %v, want a refusal for the depth", err)
+		}
+	}
+}
+
+// An optional field that is empty is left out. Written as an empty string it
+// is refused, where the rules of the verb or the answer would let the empty
+// value pass: a prune has no feature_sha and a deny may have no reason.
+func TestEmptyOptionalFieldIsRefused(t *testing.T) {
+	prune := string(readVector(t, "request-valid-prune.json"))
+	const epoch = `"epoch":7,`
+	if !strings.Contains(prune, epoch) || strings.Contains(prune, "feature_sha") {
+		t.Fatal("the prune request is not the vector this test expects")
+	}
+	_, err := DecodeRequest([]byte(strings.Replace(prune, epoch, epoch+`"feature_sha":"",`, 1)))
+	wantCode(t, "a prune with an empty feature_sha", err, CodeRequestInvalid)
+
+	deny, err := DecodeDecision(readVector(t, "decision-valid-deny.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny.Reason = ""
+	data, err := EncodeDecision(deny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const project = `"project":`
+	if bytes.Contains(data, []byte(`"reason"`)) || !bytes.Contains(data, []byte(project)) {
+		t.Fatalf("a deny with no reason was written as %s", data)
+	}
+	_, err = DecodeDecision(data)
+	wantCode(t, "a deny with no reason", err, "")
+	_, err = DecodeDecision(bytes.Replace(data, []byte(project), []byte(`"reason":"",`+project), 1))
+	wantCode(t, "a deny with an empty reason", err, CodeDecisionInvalid)
+
+	for _, name := range []string{"request-invalid-empty-feature-sha.json", "decision-invalid-empty-reason.json"} {
+		if !bytes.Contains(readVector(t, name), []byte(`":""`)) {
+			t.Errorf("%s holds no empty field", name)
+		}
 	}
 }
 

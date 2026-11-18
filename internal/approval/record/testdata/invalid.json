@@ -15,6 +15,10 @@
     "code": "decision-invalid",
     "why": "one sign-off twice"
   },
+  "decision-invalid-empty-reason.json": {
+    "code": "decision-invalid",
+    "why": "a deny with reason written as an empty string; an optional field that is empty is left out"
+  },
   "decision-invalid-float.json": {
     "code": "decision-invalid",
     "why": "uses is a float"
@@ -138,6 +142,10 @@
   "request-invalid-control-character.json": {
     "code": "request-invalid",
     "why": "an escaped tab in a plain string"
+  },
+  "request-invalid-empty-feature-sha.json": {
+    "code": "request-invalid",
+    "why": "a prune with feature_sha written as an empty string; an optional field that is empty is left out"
   },
   "request-invalid-exponent.json": {
     "code": "request-invalid",
