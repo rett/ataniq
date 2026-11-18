@@ -532,7 +532,11 @@ once, so the holder opens its reading end first. Each file is placed at exactly
 its number, every other descriptor above 2 is made close-on-exec, and the command
 is executed. The checks on a path are not atomic with the open, so every path must
 lie in a folder only the holder can write. A number that is one of the Go
-runtime's own descriptors is refused.
+runtime's own descriptors is refused. The probe is built with the runtime's
+cgroup-aware `GOMAXPROCS` turned off (`containermaxprocs=0`), so that the
+runtime does not keep the cgroup's `cpu.max` open at the lowest free number when
+the probe runs in a cgroup that has the cpu controller; the only descriptors the
+runtime holds are the poller's.
 
 **Inside mode** (`--spec PATH --report-fd N -- AGENT ARGV...`) runs inside the
 sandbox as the program the plan starts last. In order, it marks the report

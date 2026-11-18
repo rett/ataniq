@@ -145,6 +145,17 @@
 // eventfd from one that the caller passed, so it refuses both; any other
 // descriptor inherited at a target number is still replaced, as before.
 //
+// The runtime's cgroup-aware default for GOMAXPROCS would add one more: in a
+// process whose cgroup has the cpu controller (a service of the system
+// manager has it, a login session often does not) it opens the cgroup's cpu.max
+// and keeps it open, close-on-exec, at the lowest free number, which is 3 when
+// the caller closed everything else. The probe could not tell that file from
+// one the caller passed, and a file placed over it would break the runtime's
+// next read of the limit. So the probe turns the feature off in the program
+// itself, with a go:debug directive (containermaxprocs=0), and holds no such
+// descriptor: its descriptors above 2 are the caller's, and the poller's
+// described above.
+//
 // # Exit statuses and standard error
 //
 //   - 0 is never returned by the command itself: a successful execve replaces
@@ -161,4 +172,6 @@
 //
 // A parent that waited for the agent returns the agent's own status, which can
 // be 97 or 98 too.
+//
+//go:debug containermaxprocs=0
 package main

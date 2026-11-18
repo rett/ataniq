@@ -1,5 +1,13 @@
 //go:build linux
 
+// The test binary is its own fake agent (see TestMain), and the tests count
+// the descriptors a child holds. So the binary turns off the Go runtime's
+// cgroup-aware default for GOMAXPROCS, as the holder does: with it on, a
+// runtime in a cgroup that has the cpu controller (a service on a CI runner)
+// opens that cgroup's cpu.max and keeps it open, as one more descriptor above
+// 2 in every child.
+//
+//go:debug containermaxprocs=0
 package ptyhost
 
 import (
