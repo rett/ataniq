@@ -16,4 +16,7 @@
   and includes no other file, and nowhere under `.github/` or `scripts/`;
   without the tag no command depends on those packages and `ataniqd` depends
   on nothing under `internal/inject`; tagged code uses no module that untagged
-  code does not; and the workflow names the make target, never the tag.
+  code does not; and no file under `.github/` names `canary-build` or the tag,
+  and no run line there names `qualification/canary/`, while the `test-canary`
+  job runs the make target, uses only `actions/checkout` and `actions/setup-go`
+  and has no `if` or `continue-on-error`.

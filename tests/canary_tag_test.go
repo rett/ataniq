@@ -9,11 +9,14 @@ package tests
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/build/constraint"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -516,10 +519,26 @@ func workflowUses(lines []string) []string {
 // canaryJobRuns are the only commands the test-canary job runs.
 var canaryJobRuns = []string{"make -n bootstrap", "make bootstrap", "make doctor", "make test-canary"}
 
-// checkCanaryWorkflow is check (5). Its input is the workflow files, by name
-// below .github/workflows. test.yml has a job test-canary that runs the make
-// target and never names the tag, uploads no artifact, saves no cache and has
-// read-only permissions; no workflow runs canary-build.
+// canaryJobUses are the only actions the test-canary job uses. Anything else,
+// a composite action of the repository included, could keep build output or
+// run a tagged build.
+var canaryJobUses = []string{"actions/checkout@", "actions/setup-go@"}
+
+// canaryRunKitPath is the folder of the canary run kit. A file there may build
+// with the tag, so no workflow run line may name it.
+var canaryRunKitPath = regexp.MustCompile(`qualification/canary($|[^A-Za-z0-9_.-])`)
+
+// checkCanaryWorkflow is check (5). Its input is every file under .github:
+// the workflow files directly below .github/workflows by their file name, and
+// every other file (composite actions, nested folders, anything else) by its
+// path. No file names the tag or canary-build outside a comment, and no run
+// line of any file names the run kit's folder. test.yml has a job test-canary
+// that runs the make target and never names the tag, uses only the actions of
+// canaryJobUses, has no if or continue-on-error that could keep it from
+// failing, and has read-only permissions.
+//
+// The limit no text check closes is a run line that assembles the text of the
+// tag or of canary-build at run time, for example from two shell variables.
 func checkCanaryWorkflow(files map[string]string) []string {
 	var problems []string
 	names := make([]string, 0, len(files))
@@ -537,13 +556,18 @@ func checkCanaryWorkflow(files map[string]string) []string {
 		if strings.Contains(strings.Join(kept, "\n"), "canary-build") {
 			problems = append(problems, name+": names canary-build")
 		}
+		if strings.Contains(files[name], canaryTag) {
+			problems = append(problems, name+": names the tag "+canaryTag)
+		}
+		for _, run := range workflowRunCommands(kept) {
+			if canaryRunKitPath.MatchString(run) {
+				problems = append(problems, fmt.Sprintf("%s: a run line names the canary run kit: %q", name, run))
+			}
+		}
 	}
 	text, ok := files["test.yml"]
 	if !ok {
 		return append(problems, "test.yml: missing")
-	}
-	if strings.Contains(text, canaryTag) {
-		problems = append(problems, "test.yml: names the tag "+canaryTag+" itself")
 	}
 	job, ok := workflowJobLines(text, "test-canary")
 	if !ok {
@@ -559,10 +583,14 @@ func checkCanaryWorkflow(files map[string]string) []string {
 		}
 	}
 	for _, use := range workflowUses(job) {
-		lower := strings.ToLower(use)
-		if strings.Contains(lower, "artifact") || strings.Contains(lower, "upload") ||
-			(strings.HasPrefix(lower, "actions/cache") && !strings.HasPrefix(lower, "actions/cache/restore")) {
-			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job uses %s, which can keep build output", use))
+		if !slices.ContainsFunc(canaryJobUses, func(prefix string) bool { return strings.HasPrefix(use, prefix) }) {
+			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job uses %s, and nothing but %s is allowed", use, strings.Join(canaryJobUses, ", ")))
+		}
+	}
+	for _, raw := range job {
+		key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripYAMLComment(raw)), "- "))
+		if strings.HasPrefix(key, "continue-on-error:") || strings.HasPrefix(key, "if:") {
+			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has %q, which could keep it from failing", key))
 		}
 	}
 	found, msg := workflowPermissions(job, 4)
@@ -576,6 +604,31 @@ func checkCanaryWorkflow(files map[string]string) []string {
 		problems = append(problems, "test.yml: the test-canary job is not read-only: "+msg)
 	}
 	return problems
+}
+
+// canaryGithubFiles reads every file under .github, the input of
+// checkCanaryWorkflow: a file directly below .github/workflows by its file
+// name, every other file by its path.
+func canaryGithubFiles(fsys fs.FS) (map[string]string, error) {
+	files := map[string]string{}
+	err := fs.WalkDir(fsys, ".github", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		if path.Dir(p) == ".github/workflows" {
+			p = path.Base(p)
+		}
+		files[p] = string(data)
+		return nil
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return files, nil
+	}
+	return files, err
 }
 
 // namesCanaryPackage reports whether a go list pattern names a wholly tagged
@@ -695,20 +748,9 @@ func TestCanaryTag(t *testing.T) {
 	})
 
 	t.Run("5_workflow", func(t *testing.T) {
-		files := map[string]string{}
-		entries, err := os.ReadDir(filepath.Join(dir, ".github", "workflows"))
+		files, err := canaryGithubFiles(repo)
 		if err != nil {
 			t.Fatal(err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dir, ".github", "workflows", entry.Name()))
-			if err != nil {
-				t.Fatal(err)
-			}
-			files[entry.Name()] = string(data)
 		}
 		reportCanaryProblems(t, checkCanaryWorkflow(files))
 	})
@@ -1059,7 +1101,29 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"an artifact upload", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: actions/upload-artifact@v4\n"), true},
 		{"a cache save", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: actions/cache@v4\n"), true},
 		{"a cache save action", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: actions/cache/save@v4\n"), true},
-		{"a cache restore", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: actions/cache/restore@v4\n"), false},
+		{"a cache restore is not on the list", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: actions/cache/restore@v4\n"), true},
+		{"an action that is not on the list", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: some-org/ship@v1\n"), true},
+		{"a composite action of the repository", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - uses: ./.github/actions/b\n"), true},
+		{"a reusable workflow as the job", edit("    timeout-minutes: 30\n    permissions", "    uses: ./.github/workflows/other.yml\n    permissions"), true},
+		{"the actions on the list at another version", edit("actions/setup-go@v5", "actions/setup-go@v6"), false},
+		{"an action that only starts like one on the list", edit("actions/setup-go@v5", "actions/setup-go-x@v5"), true},
+		{"an upload in a composite action that the job does not use", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: actions/upload-artifact@v4\n"}, false},
+		{"a composite action that runs canary-build", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: make canary-build\n      shell: sh\n"}, true},
+		{"a composite action that names the tag", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: go build -tags ataniq_canary ./...\n      shell: sh\n"}, true},
+		{"a composite action that only mentions canary-build in a comment", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "# not canary-build\nruns:\n  using: composite\n  steps: []\n"}, false},
+		{"a file that is not yaml names canary-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make canary-build\n"}, true},
+		{"another workflow names the tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "# ataniq_canary\n"}, true},
+		{"continue-on-error on the job", edit("    timeout-minutes: 30\n    permissions", "    continue-on-error: true\n    permissions"), true},
+		{"if on the job", edit("    timeout-minutes: 30\n    permissions", "    if: always()\n    permissions"), true},
+		{"if on a step of the job", edit("      - run: make test-canary\n", "      - if: always()\n        run: make test-canary\n"), true},
+		{"continue-on-error on a step of the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n        continue-on-error: true\n"), true},
+		{"if and continue-on-error in the first job are not this job's", edit("      - run: make test\n", "      - if: github.event_name == 'push'\n        continue-on-error: true\n        run: make test\n"), false},
+		{"a run line that runs a file of the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run: sh qualification/canary/build.sh\n"}, true},
+		{"a block run line that runs a file of the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run: |\n          cd .\n          ./qualification/canary/run/x\n"}, true},
+		{"a run line that enters the folder of the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run: cd qualification/canary\n"}, true},
+		{"a run line in a composite action that runs the run kit", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - run: sh qualification/canary/x.sh\n      shell: sh\n"}, true},
+		{"the run kit named in a comment or a path filter is not a run line", map[string]string{"test.yml": goodWorkflow, "other.yml": "# qualification/canary/x\non:\n  push:\n    paths:\n      - qualification/canary/**\n"}, false},
+		{"a folder that only starts like the run kit's", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run: sh qualification/canary-notes/x.sh\n"}, false},
 		{"an artifact upload in the first job is not this job's", edit("      - run: make test\n", "      - run: make test\n      - uses: actions/upload-artifact@v4\n"), false},
 		{"write permission", edit("      contents: read\n    steps", "      contents: write\n    steps"), true},
 		{"a second permission that writes", edit("      contents: read\n    steps", "      contents: read\n      packages: write\n    steps"), true},
@@ -1079,6 +1143,31 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 				t.Fatalf("problems %v, want bad=%v", problems, tc.bad)
 			}
 		})
+	}
+}
+
+func TestCanaryTagGithubFiles(t *testing.T) {
+	files, err := canaryGithubFiles(fstest.MapFS{
+		".github/workflows/test.yml":         {Data: []byte("a")},
+		".github/workflows/nested/other.yml": {Data: []byte("b")},
+		".github/actions/b/action.yml":       {Data: []byte("c")},
+		".github/CODEOWNERS":                 {Data: []byte("d")},
+		"docs/x.md":                          {Data: []byte("e")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"test.yml":                           "a",
+		".github/workflows/nested/other.yml": "b",
+		".github/actions/b/action.yml":       "c",
+		".github/CODEOWNERS":                 "d",
+	}
+	if !maps.Equal(files, want) {
+		t.Fatalf("files %v, want %v", files, want)
+	}
+	if files, err := canaryGithubFiles(fstest.MapFS{}); err != nil || len(files) != 0 {
+		t.Fatalf("no .github: %v, %v", files, err)
 	}
 }
 
