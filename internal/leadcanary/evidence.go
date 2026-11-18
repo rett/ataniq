@@ -188,6 +188,10 @@ func (e *Evidence) Append(en Entry) error {
 	if err := en.check(); err != nil {
 		return err
 	}
+	// The lock is held from before the time is read until the line is written,
+	// so that the times in the file never go back.
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	l := evidenceLine{
 		At: e.now().UTC().Format(time.RFC3339Nano), Event: en.Event, Role: e.role, Epoch: en.Epoch,
 		MessageID: en.MessageID, Outcome: en.Outcome, Reason: en.Reason, Written: en.Written,
@@ -209,8 +213,6 @@ func (e *Evidence) Append(en Entry) error {
 	if buf.Len() > maxEvidenceLine {
 		return fmt.Errorf("%w: the line is longer than %d bytes", ErrEntry, maxEvidenceLine)
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.f == nil {
 		return errors.New("leadcanary: the evidence file is closed")
 	}

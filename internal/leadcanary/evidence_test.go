@@ -459,8 +459,16 @@ func TestEvidenceConcurrentAppendsStayWholeLines(t *testing.T) {
 		t.Fatalf("%d lines, want %d", len(lines), n)
 	}
 	seen := map[string]bool{}
+	var last time.Time
 	for _, l := range lines {
 		seen[fmt.Sprint(l["epoch"])] = true
+		// The test clock moves one second a call, so the times in the file are
+		// in order only when each is taken while the line is written.
+		at, err := time.Parse(time.RFC3339Nano, l["at"].(string))
+		if err != nil || !at.After(last) {
+			t.Fatalf("time %v after %v (%v)", l["at"], last, err)
+		}
+		last = at
 	}
 	if len(seen) != n {
 		t.Fatalf("%d distinct epochs, want %d", len(seen), n)
