@@ -40,6 +40,10 @@ type injectState struct {
 	// timeout is the delivery's time when it is not zero (a test sets it; the
 	// default is [InjectTimeout]).
 	timeout atomic.Int64
+	// beforeGiveUp, when it is not nil, runs when the handler has decided to
+	// stop waiting and has not yet settled the delivery. Only a test sets it,
+	// before the first request, to let the deliverer return in that window.
+	beforeGiveUp func()
 }
 
 // The results the handler makes up when it has no valid one from the
@@ -114,12 +118,19 @@ func (s *Server) inject(req wire.Request) wire.Response {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	done := make(chan wire.InjectResult, 1)
 	var settled atomic.Bool
-	go s.deliver(ctx, cancel, d, req.MessageID, req.Text, ev, &settled, done)
+	// answered is closed when this handler returns, which is after its answer
+	// event: a deliverer that has a late result to log waits for it.
+	answered := make(chan struct{})
+	defer close(answered)
+	go s.deliver(ctx, cancel, d, req.MessageID, req.Text, ev, &settled, answered, done)
 
 	// giveUp is the answer when the handler stops waiting: the result made up
 	// for it, or, when the deliverer has just returned, its own (it has then
 	// settled the delivery, and its result is on its way).
 	giveUp := func(made wire.InjectResult) wire.InjectResult {
+		if hook := s.inj.beforeGiveUp; hook != nil {
+			hook()
+		}
 		if settled.CompareAndSwap(false, true) {
 			return made
 		}
@@ -162,14 +173,19 @@ func (s *Server) inject(req wire.Request) wire.Response {
 // Whoever comes first, the handler giving up or the deliverer returning,
 // settles the delivery. A deliverer that returns after the handler has given
 // up (the answer was uncertain) has what it reported logged, as a third inject
-// event with the identity and the digest of the others ([lateEvent]).
-func (s *Server) deliver(ctx context.Context, cancel context.CancelFunc, d Deliverer, messageID, text string, ev eventlog.Fields, settled *atomic.Bool, done chan<- wire.InjectResult) {
+// event with the identity and the digest of the others ([lateEvent]). It is
+// the third in the log too: the deliverer waits for answered, which the handler
+// closes when it has logged its answer. The handler does not block between
+// giving up and that, so the wait is short.
+func (s *Server) deliver(ctx context.Context, cancel context.CancelFunc, d Deliverer, messageID, text string, ev eventlog.Fields, settled *atomic.Bool, answered <-chan struct{}, done chan<- wire.InjectResult) {
 	res := resultPanicked
 	defer cancel() // after the result is sent, so the handler does not see an end before it
 	defer func() {
 		if !settled.CompareAndSwap(false, true) {
 			// Before the flag is cleared, so the event comes before that of
-			// the next delivery.
+			// the next delivery, and after the handler's answer event, so
+			// it is the last of this one.
+			<-answered
 			s.emit(eventlog.EventInject, lateEvent(ev, res))
 		}
 		s.inj.running.Store(false)

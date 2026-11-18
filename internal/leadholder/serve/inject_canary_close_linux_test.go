@@ -32,7 +32,12 @@ func TestInjectCloseWithStuckDeliverer(t *testing.T) {
 	case <-time.After(InjectTimeout / 3):
 		t.Fatal("Close waits for the deliverer")
 	}
-	if _, _, ctx := d.first(); ctx.Err() == nil {
+	// The handler ends the context when it sees the close, which can be a
+	// moment after Close has returned, and long before the delivery's time.
+	_, _, ctx := d.first()
+	select {
+	case <-ctx.Done():
+	case <-time.After(InjectTimeout / 3):
 		t.Error("the deliverer's context did not end at Close")
 	}
 	want := injectUnknown("the holder closed during the delivery")
