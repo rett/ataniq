@@ -4,9 +4,11 @@ package harness
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,6 +69,15 @@ func exitCode(t *testing.T, cmd *exec.Cmd) int {
 	return -1
 }
 
+func skipWithoutPidfd(t *testing.T) {
+	t.Helper()
+	fd, err := unix.PidfdOpen(os.Getpid(), 0)
+	if err != nil {
+		t.Skipf("no process descriptor here (%v): only the deadline ends a process that is not a child", err)
+	}
+	unix.Close(fd)
+}
+
 // A test that is killed runs no cleanup. A process plays such a test: it
 // starts a helper through the launcher as the tests do, and is killed with
 // SIGKILL while the helper waits. Nothing it started is left a short time
@@ -92,11 +103,7 @@ func TestExecLauncherHelpersEndWhenTheirParentIsKilled(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			skipWithoutPTY(t)
 			if tc.needsPidfd {
-				fd, err := unix.PidfdOpen(os.Getpid(), 0)
-				if err != nil {
-					t.Skipf("no process descriptor here (%v): only the deadline ends a process that is not a child", err)
-				}
-				unix.Close(fd)
+				skipWithoutPidfd(t)
 			}
 			life := newLifeline(t, t.TempDir())
 			parent, out := startGuarded(t, helperEnviron("parent-of-"+tc.mode, helperLifelineEnv+"="+life.path))
@@ -180,5 +187,76 @@ func TestExecLauncherHelperRefusesToRunUnguarded(t *testing.T) {
 				t.Errorf("exit code %d, want %d; it printed %q", code, tc.want, out)
 			}
 		})
+	}
+}
+
+// The process that a version tool leaves behind holds the tool's output open
+// until its test releases it. A test that is killed releases nothing: a
+// process plays such a test, asks the tool for its version and is killed, and
+// the process left behind is gone a short time later.
+func TestExecLauncherToolProcessEndsWhenItsTestIsKilled(t *testing.T) {
+	skipWithoutPidfd(t)
+	dir, _ := toolLinks(t, "good", "leaves-child")
+	life := newLifeline(t, dir)
+	parent, out := startGuarded(t, helperEnviron("tool-parent="+dir, helperLifelineEnv+"="+life.path))
+	// The parent, and the process its tool left behind.
+	pids, err := life.announced(2, 30*time.Second)
+	if err != nil {
+		t.Fatalf("%v; the parent printed %q", err, out)
+	}
+	if err := parent.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.Wait()
+	if err := life.gone(helperEndWait); err != nil {
+		t.Errorf("a process of %v is still there %v after the parent %d was killed: %v", pids, helperEndWait, parent.Process.Pid, err)
+	}
+}
+
+// With its owner alive and no release, the process that a version tool leaves
+// behind ends at its deadline, shortened through a file of the folder.
+func TestExecLauncherToolProcessEndsAtItsDeadline(t *testing.T) {
+	const deadline = 500 * time.Millisecond
+	dir, tools := toolLinks(t, "good", "leaves-child")
+	if err := os.WriteFile(filepath.Join(dir, toolDeadlineFile), []byte(deadline.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	life := newLifeline(t, dir)
+	start := time.Now()
+	v := ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: tools["leaves-child"], Pasta: tools["good"]})
+	if v.Bwrap != "tool 4.5.6" {
+		t.Fatalf("versions: %+v", v)
+	}
+	if _, err := life.announced(1, helperEndWait); err != nil {
+		t.Fatal(err)
+	}
+	if err := life.gone(helperEndWait); err != nil {
+		t.Fatalf("the process is still there: %v", err)
+	}
+	if lived := time.Since(start); lived < deadline {
+		t.Errorf("the process ended after %v, before its deadline of %v", lived, deadline)
+	}
+}
+
+// The process that a version tool leaves behind does nothing when the folder
+// does not say who owns it.
+func TestExecLauncherToolProcessRefusesToRunUnguarded(t *testing.T) {
+	dir, tools := toolLinks(t, "leaves-child")
+	if err := os.Remove(filepath.Join(dir, toolOwnerFile)); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(tools["leaves-child"], "--hold")
+	cmd.Env = []string{}
+	out := &bytes.Buffer{}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	if code := exitCode(t, cmd); code != helperExitUnguarded {
+		t.Errorf("exit code %d, want %d; it printed %q", code, helperExitUnguarded, out)
 	}
 }

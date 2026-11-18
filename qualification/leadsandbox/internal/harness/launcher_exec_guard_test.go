@@ -33,7 +33,8 @@ import (
 //     not, so the parent is the test binary.
 //   - The owner. The parent-death signal follows the direct parent only. A
 //     process that is started through one that ends first by design (the member
-//     that the mode leader-with-child leaves in its group) can take no signal
+//     that the mode leader-with-child leaves in its group, and the process
+//     that a stand-in for a version tool leaves behind) can take no signal
 //     from that parent: it watches the process it must not outlive through a
 //     process descriptor (pidfd) and ends when that process ends.
 //   - The deadline. Every helper ends by itself after helperDeadline, whatever
@@ -46,6 +47,10 @@ import (
 // thread, and that thread lives as long as the process. On the other side the
 // Go runtime ends a thread only when a goroutine that is locked to it ends, and
 // nothing in these tests locks one.
+//
+// A helper reads its guard from its environment. The launcher gives a version
+// tool an empty environment, so the process a tool leaves behind reads its
+// guard from files next to the program (toolGuard).
 
 const (
 	// helperEnv is the mode of the helper. The other variables are the guard
@@ -134,6 +139,50 @@ func helperGuardFromEnv() (helperGuard, error) {
 	}
 	g.lifeline = os.Getenv(helperLifelineEnv)
 	return g, nil
+}
+
+// The files of a guard in the folder of the version tools.
+const (
+	// toolOwnerFile holds the process id of the owner.
+	toolOwnerFile = "owner"
+	// toolDeadlineFile shortens the deadline, for the test of it.
+	toolDeadlineFile = "deadline"
+	// lifelineFile is the FIFO of a lifeline.
+	lifelineFile = "lifeline"
+)
+
+// toolGuard is the guard of the process a version tool leaves behind, read
+// from the folder of the tools. The process has no parent that stays: the
+// tool that started it ends at once, which is the point of it.
+func toolGuard(dir string) (helperGuard, error) {
+	var g helperGuard
+	data, err := os.ReadFile(filepath.Join(dir, toolOwnerFile))
+	if err != nil {
+		return g, err
+	}
+	if g.owner, err = strconv.Atoi(strings.TrimSpace(string(data))); err != nil || g.owner <= 0 {
+		return g, fmt.Errorf("the file %s does not hold a process id", toolOwnerFile)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, toolDeadlineFile)); err == nil {
+		if g.deadline, err = time.ParseDuration(strings.TrimSpace(string(data))); err != nil || g.deadline <= 0 {
+			return g, fmt.Errorf("the file %s does not hold a duration", toolDeadlineFile)
+		}
+	}
+	if path := filepath.Join(dir, lifelineFile); isThere(path) {
+		g.lifeline = path
+	}
+	return g, nil
+}
+
+func isThere(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// ownTools makes the calling process the owner of what the tools of the
+// folder leave behind.
+func ownTools(dir string) error {
+	return os.WriteFile(filepath.Join(dir, toolOwnerFile), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
 }
 
 // keeper is the process the helper must not outlive.
@@ -253,7 +302,7 @@ type lifeline struct {
 // newLifeline makes the FIFO in the folder and opens it.
 func newLifeline(t *testing.T, dir string) *lifeline {
 	t.Helper()
-	l := &lifeline{path: filepath.Join(dir, "lifeline")}
+	l := &lifeline{path: filepath.Join(dir, lifelineFile)}
 	if err := unix.Mkfifo(l.path, 0o600); err != nil {
 		t.Fatal(err)
 	}

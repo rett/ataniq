@@ -42,6 +42,16 @@ func TestExecLauncherHelper(t *testing.T) {
 		}
 		select {}
 	}
+	if dir, ok := strings.CutPrefix(mode, "tool-parent="); ok {
+		// Plays a test that asks a tool for its version, the tool leaving a
+		// process behind, and never reaches its cleanup.
+		if err := ownTools(dir); err != nil {
+			fmt.Println("own the tools:", err)
+			os.Exit(98)
+		}
+		ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: filepath.Join(dir, toolPrefix+"leaves-child"), Pasta: filepath.Join(dir, toolPrefix+"good")})
+		select {}
+	}
 	switch mode {
 	case "report":
 		_, termErr := unix.IoctlGetTermios(0, unix.TCGETS)
@@ -268,22 +278,26 @@ func init() {
 	os.Exit(0)
 }
 
-// holdUntilReleased waits for the file "release" next to the program, for at
-// most a minute, then ends. The test makes the file; the wait only keeps a
-// process alive and is not a synchronisation of the test.
+// holdUntilReleased waits for the file "release" next to the program, then
+// ends. The test makes the file; the wait only keeps a process alive and is
+// not a synchronisation of the test. The process has armed its guard first: it
+// ends with the owner of the folder and at its deadline, released or not.
 func holdUntilReleased() {
-	release := filepath.Join(filepath.Dir(os.Args[0]), "release")
-	for i := 0; i < 600; i++ {
-		if _, err := os.Lstat(release); err == nil {
-			break
-		}
+	dir := filepath.Dir(os.Args[0])
+	g, err := toolGuard(dir)
+	if err != nil {
+		unguarded(err)
+	}
+	g.arm()
+	for !isThere(filepath.Join(dir, "release")) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	os.Exit(0)
 }
 
 // toolLinks makes the tools in a temporary folder and returns the folder and
-// the path of each by name.
+// the path of each by name. The test is the owner of what a tool leaves
+// behind.
 func toolLinks(t *testing.T, names ...string) (string, map[string]string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -291,6 +305,9 @@ func toolLinks(t *testing.T, names ...string) (string, map[string]string) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	if err := ownTools(dir); err != nil {
+		t.Fatal(err)
+	}
 	out := map[string]string{}
 	for _, n := range names {
 		p := filepath.Join(dir, toolPrefix+n)
@@ -322,12 +339,23 @@ func TestExecLauncherToolVersions(t *testing.T) {
 // printed and the fact that the output was not closed.
 func TestExecLauncherVersionQuestionDoesNotWaitForAChildOfTheTool(t *testing.T) {
 	dir, tools := toolLinks(t, "good", "leaves-child")
+	life := newLifeline(t, dir)
 	release := func() {
 		if err := os.WriteFile(dir+"/release", nil, 0o600); err != nil {
 			t.Error(err)
 		}
 	}
-	t.Cleanup(release)
+	// The process left behind is released and waited for before the folder
+	// it reads is removed.
+	t.Cleanup(func() {
+		release()
+		if _, err := life.announced(1, helperEndWait); err != nil {
+			t.Errorf("the process the tool left behind: %v", err)
+		}
+		if err := life.gone(helperEndWait); err != nil {
+			t.Errorf("the process the tool left behind is still there after its release: %v", err)
+		}
+	})
 	got := make(chan ToolVersions, 1)
 	go func() {
 		got <- ExecLauncher{}.ToolVersions(context.Background(), ToolPaths{Bwrap: tools["leaves-child"], Pasta: tools["good"]})
