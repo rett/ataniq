@@ -13,6 +13,10 @@ import (
 // DefaultTimeout bounds [Read] when its context has no deadline.
 const DefaultTimeout = 10 * time.Second
 
+// defaultTimeout is DefaultTimeout as Read uses it. It is a variable so that
+// a test can lower it and not wait ten seconds.
+var defaultTimeout = DefaultTimeout
+
 // Read asks the daemon whose socket is in the folder dir for its leads, and
 // returns a view of them or a state that says why there is none. It never
 // returns an error: every failure is one of the states, with a text and a
@@ -26,7 +30,7 @@ const DefaultTimeout = 10 * time.Second
 func Read(ctx context.Context, dir string) Result {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
 	c, err := clientapi.Dial(ctx, clientapi.SocketPath(dir))

@@ -351,6 +351,27 @@ func TestSlowPeer(t *testing.T) {
 	wantState(t, Read(ctx, f.dir), StateSlow)
 }
 
+// A context without a deadline is still bounded: Read gives it the default
+// timeout. The test lowers the default; no test of the package runs in
+// parallel with it.
+func TestNoDeadlineGetsTheDefaultTimeout(t *testing.T) {
+	if defaultTimeout != DefaultTimeout || DefaultTimeout <= 0 {
+		t.Fatalf("Read's default is %v, want DefaultTimeout (%v)", defaultTimeout, DefaultTimeout)
+	}
+	defaultTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { defaultTimeout = DefaultTimeout })
+	f := startFake(t, func(clientapi.Request) []byte { return nil })
+	done := make(chan Result, 1)
+	go func() { done <- Read(context.Background(), f.dir) }()
+	select {
+	case r := <-done:
+		wantState(t, r, StateSlow)
+	case <-time.After(5 * time.Second):
+		// Left running, Read ends when the test's cleanup closes the fake.
+		t.Fatal("Read with a context without a deadline did not return")
+	}
+}
+
 func TestCancelledCaller(t *testing.T) {
 	f := startFake(t, func(clientapi.Request) []byte { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -672,6 +693,31 @@ func TestHostileStringsComeOutCleanAndBounded(t *testing.T) {
 	}
 	if v.Supervisor.Project != "" || v.Supervisor.Feature != "" || lead.Feature != "" || lead.Parent != "" {
 		t.Errorf("a field of another kind is set: supervisor %+v, lead %+v", v.Supervisor, lead)
+	}
+}
+
+// An entry of a kind the package does not know, and a lead without a
+// project, make no project and are counted as left out. Each is first to
+// name its project here, in a status far below the bounds, so that no other
+// rule leaves it out.
+func TestEntriesWithoutAKindOrAProjectMakeNoProject(t *testing.T) {
+	status := clientapi.StatusResult{Leads: []clientapi.LeadStatus{
+		{Role: "/lead", Kind: clientapi.KindLead, Project: "", State: clientapi.StateReady},
+		{Role: "solo/operator", Kind: "operator", Project: "solo", State: clientapi.StateReady},
+		{Role: "/coord", Kind: clientapi.KindCoordinator, Project: "", State: clientapi.StateReady},
+		{Role: "demo/lead", Kind: clientapi.KindLead, Project: "demo", State: clientapi.StateReady},
+	}}
+	dir := startServer(t, &handler{status: status}, clientapi.Options{})
+	r := read(t, dir)
+	if r.State != StateOK {
+		t.Fatalf("state = %q, want a view", r.State)
+	}
+	v := r.View
+	if len(v.Projects) != 1 || v.Projects[0].Name != "demo" || v.Projects[0].Lead.Name != "demo/lead" {
+		t.Errorf("projects = %+v, want the demo project alone", v.Projects)
+	}
+	if v.LeftOut != 3 || v.HasSupervisor {
+		t.Errorf("left out %d, supervisor %v, want 3 and none", v.LeftOut, v.HasSupervisor)
 	}
 }
 

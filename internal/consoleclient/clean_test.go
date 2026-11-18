@@ -28,6 +28,8 @@ func shownSafely(s string) string {
 			return "a zero-width character"
 		case r >= 0xe0000 && r <= 0xe0fff, r >= 0xfe00 && r <= 0xfe0f:
 			return "a tag or variation selector"
+		case r == 0x115f, r == 0x1160, r == 0x3164, r == 0xffa0, r == 0x034f, r == 0x17b4, r == 0x17b5:
+			return "a filler or another character that shows as nothing"
 		case r != ' ' && unicode.IsSpace(r):
 			return "a space that is not the ASCII one"
 		}
@@ -52,6 +54,7 @@ func TestClean(t *testing.T) {
 		{"invalid UTF-8", "a\xff\xfeb\xc3", "ab"},
 		{"tags and variation selectors", "a\U000e0041b\ufe0fc", "abc"},
 		{"private use and the blank braille", "a\ue000b\u2800c", "abc"},
+		{"hangul fillers and the grapheme joiner", "a\u3164b\u115fc\u034fd\u1160e\uffa0f\u17b4g", "abcdefg"},
 		{"a combining mark at the start", "\u0301x", "x"},
 		{"marks of every kind at the start", "\u0301\u20dd\u0903\u0300x\u0301y", "x\u0301y"},
 		{"a mark after dropped characters is at the start too", "\x1b\u200b\u0301x", "x"},
