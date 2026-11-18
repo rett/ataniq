@@ -4,7 +4,11 @@
 // lead-hosting design, section 1.2): it opens the pair, starts the agent as a
 // session leader with the slave as its controlling terminal, and keeps the
 // master. The holder is the only process that holds the master; nothing here
-// hands the descriptor out.
+// hands the descriptor out. With Config.NoControllingTerminal the child still
+// leads a new session and still has the slave as descriptors 0, 1 and 2, but
+// it is not given a controlling terminal: a sandbox probe that runs first
+// inside the child's session takes the terminal itself. The option is off by
+// default, and then the start is as described above.
 //
 // The package uses only golang.org/x/sys/unix and the standard library, and
 // only on Linux. No shell is involved: the child is executed directly from
@@ -178,6 +182,15 @@ type Config struct {
 	// by MinRows..MaxRows.
 	Cols, Rows int
 
+	// NoControllingTerminal starts the child in a new session (Setsid) but
+	// without making the slave its controlling terminal (no Setctty). The
+	// child still has the slave as descriptors 0, 1 and 2, leads its session
+	// and has no controlling terminal until it takes one itself (a sandbox
+	// probe does, with TIOCSCTTY on descriptor 0). The zero value keeps the
+	// start unchanged: a new session with the slave as its controlling
+	// terminal.
+	NoControllingTerminal bool
+
 	// WriteTimeout bounds one Write (see Host.Write); zero means
 	// DefaultWriteTimeout.
 	WriteTimeout time.Duration
@@ -346,14 +359,17 @@ func Start(cfg Config) (*Host, error) {
 		env = []string{}
 	}
 	// The slave is the child's descriptors 0, 1 and 2, and Setctty makes
-	// descriptor 0 its controlling terminal after Setsid. Every other
-	// descriptor of ours is close-on-exec (the master and the slave were
-	// opened so); descriptors a caller opened without it are the caller's.
+	// descriptor 0 its controlling terminal after Setsid, unless
+	// NoControllingTerminal is set (Setsid alone: the child leads a new
+	// session with no controlling terminal). Every other descriptor of ours
+	// is close-on-exec (the master and the slave were opened so); descriptors
+	// a caller opened without it are the caller's.
+	sys := &syscall.SysProcAttr{Setsid: true, Setctty: !cfg.NoControllingTerminal, Ctty: 0}
 	pid, err := syscall.ForkExec(cfg.Argv[0], cfg.Argv, &syscall.ProcAttr{
 		Dir:   cfg.Dir,
 		Env:   env,
 		Files: []uintptr{uintptr(slaveFd), uintptr(slaveFd), uintptr(slaveFd)},
-		Sys:   &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0},
+		Sys:   sys,
 	})
 	_ = unix.Close(slaveFd)
 	if err != nil {
