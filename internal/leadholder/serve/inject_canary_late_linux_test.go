@@ -4,6 +4,7 @@ package serve
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,7 +111,8 @@ func TestInjectLatePanicIsLogged(t *testing.T) {
 
 // A deliverer that returns in time has no late event, and one that returns as
 // the time ends has exactly one of the two: its result is the answer, or it is
-// logged late, never both and never neither.
+// logged late, never both and never neither. Each delivery has its own command
+// id, and a late event comes after the answer event of its delivery.
 func TestInjectLateEventOnlyWhenTheAnswerDidNotWait(t *testing.T) {
 	const timeout = 4 * time.Millisecond
 	const iterations = 200
@@ -124,7 +126,7 @@ func TestInjectLateEventOnlyWhenTheAnswerDidNotWait(t *testing.T) {
 	e.srv.inj.timeout.Store(int64(timeout))
 	var late, wantEvents int
 	for i := 0; i < iterations; i++ {
-		r := e.srv.inject(injectReq("inj-race"))
+		r := e.srv.inject(injectReq(fmt.Sprintf("inj-race-%d", i)))
 		if !r.OK || r.Inject == nil {
 			t.Fatalf("iteration %d: %+v", i, r)
 		}
@@ -148,6 +150,16 @@ func TestInjectLateEventOnlyWhenTheAnswerDidNotWait(t *testing.T) {
 	}
 	if got != late {
 		t.Errorf("%d late events, want %d", got, late)
+	}
+	// A late event follows its delivery's answer event.
+	answered := map[string]bool{}
+	for _, ev := range evs {
+		switch {
+		case ev.Outcome == "late-submitted" && !answered[ev.CommandID]:
+			t.Errorf("the late event of %s precedes its answer", ev.CommandID)
+		case ev.Outcome != "started":
+			answered[ev.CommandID] = true
+		}
 	}
 	// A deliverer that is far inside its time has none.
 	e.srv.inj.timeout.Store(0)
