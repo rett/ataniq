@@ -570,7 +570,7 @@ func (s *server) respondExtension(ctx context.Context, id, op string, params jso
 		// Only the code and the message are sent.
 		return encodeError(id, &ErrorBody{Code: fail.Code, Message: fail.Message})
 	}
-	out, err := marshalLine(successResponse{Protocol: Protocol, RequestID: id, OK: true, Result: result})
+	out, err := marshalResult(successResponse{Protocol: Protocol, RequestID: id, OK: true, Result: result})
 	if err != nil {
 		return internal(msgInternal)
 	}
@@ -615,6 +615,18 @@ func marshalLine(v any) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// marshalResult is marshalLine for a result an extension chose: its own
+// marshalling can panic (encoding/json re-raises a panic it did not raise),
+// and that is an error, answered "internal", not the end of the process.
+func marshalResult(v any) (out []byte, err error) {
+	defer func() {
+		if recover() != nil {
+			out, err = nil, errors.New("clientapi: a result panicked while it was marshalled")
+		}
+	}()
+	return marshalLine(v)
 }
 
 // encodeError encodes an error response line. id must be empty or a valid

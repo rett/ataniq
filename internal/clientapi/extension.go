@@ -28,8 +28,9 @@ type Extension interface {
 	// marshalled into the response; a non-nil fail is sent as the error
 	// instead. Handle is called concurrently from several connections, in the
 	// connection's goroutine, with a context that ends with the server's, and
-	// a panic in it is answered "internal". A fail's message must be a fixed
-	// text that echoes nothing the peer sent.
+	// a panic in it, or in the marshalling of its result, is answered
+	// "internal". A fail's message must be a fixed text that echoes nothing
+	// the peer sent.
 	Handle(ctx context.Context, op string, params json.RawMessage) (result any, fail *ErrorBody)
 }
 

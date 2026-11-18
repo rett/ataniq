@@ -435,6 +435,63 @@ func TestExtensionResultThatCannotBeMarshalledOrIsTooBigAnswersInternal(t *testi
 	}
 }
 
+// panicMarshaler is a result whose own marshalling panics.
+type panicMarshaler struct{}
+
+func (panicMarshaler) MarshalJSON() ([]byte, error) { panic("secret text of the marshal panic") }
+
+// holdsPanicMarshaler has one in a field.
+type holdsPanicMarshaler struct {
+	Name string
+	P    panicMarshaler
+}
+
+func TestExtensionResultThatPanicsWhileMarshalledAnswersInternal(t *testing.T) {
+	ext := &fakeExtension{ops: []string{"x.value", "x.nested", "x.field", "x.ok"}}
+	ext.handle = func(ctx context.Context, op string, params json.RawMessage) (any, *ErrorBody) {
+		switch op {
+		case "x.value":
+			return panicMarshaler{}, nil
+		case "x.nested":
+			return map[string]any{"a": []any{panicMarshaler{}}}, nil
+		case "x.field":
+			return &holdsPanicMarshaler{Name: "n"}, nil
+		}
+		return map[string]int{"n": 1}, nil
+	}
+	ts := startServer(t, &stubHandler{}, Options{Extra: []Extension{ext}})
+	r := dialRaw(t, ts.path)
+	for _, op := range []string{"x.value", "x.nested", "x.field"} {
+		r.send(extReq("m", op, "") + "\n")
+		line, err := r.readLine()
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		if strings.Contains(string(line), "secret") {
+			t.Fatalf("%s: the response echoes text: %s", op, line)
+		}
+		var resp Response
+		if err := json.Unmarshal(line, &resp); err != nil {
+			t.Fatal(err)
+		}
+		wantError(t, resp, CodeInternal)
+		if resp.Error.Message != msgInternal || resp.RequestID != "m" {
+			t.Fatalf("%s: resp = %+v", op, resp)
+		}
+	}
+	// The connection and the server go on, and a new connection is served.
+	if resp := r.ask(extReq("q", "x.ok", "")); !resp.OK {
+		t.Fatalf("after the panics: %+v", resp)
+	}
+	if resp := dialRaw(t, ts.path).ask(extReq("n", "x.ok", "")); !resp.OK {
+		t.Fatalf("new connection: %+v", resp)
+	}
+	snap := ts.counters.Snapshot()
+	if snap.Internal != 3 || snap.Served["x.ok"] != 2 {
+		t.Fatalf("counters = %+v", snap)
+	}
+}
+
 func TestExtensionFailIsSentWithItsCode(t *testing.T) {
 	var body *ErrorBody
 	var mu sync.Mutex
