@@ -24,6 +24,10 @@
 //     clock that then go into [Config].
 //   - [WireResult] is the one mapping from the library's result to the words
 //     of the control wire.
+//   - [Deliverer] delivers one message for the control server: it checks the
+//     header, runs the library's fence once and maps the result. Its method
+//     set is the control server's deliverer; this package does not import the
+//     server.
 //   - [Counts] reads the tracker's totals for the holder's counters.
 //
 // The package starts nothing and keeps no state beyond the tracker it is
