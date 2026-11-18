@@ -25,4 +25,5 @@
   run line there names `qualification/canary/`, no workflow uses a local action
   outside `.github/`, while the `test-canary` job runs the make target, uses
   only `actions/checkout` and `actions/setup-go` and has no `if` or
-  `continue-on-error`, quoted or not.
+  `continue-on-error`, every key of the workflow files read the same quoted or
+  not and with white space before its colon.

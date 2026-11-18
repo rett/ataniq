@@ -435,17 +435,21 @@ func checkCanaryModules(untagged, tagged string) []string {
 
 func yamlIndent(s string) int { return len(s) - len(strings.TrimLeft(s, " ")) }
 
-// stripYAMLComment drops a whole-line comment, and a trailing one that follows
-// a space. It is for the plain workflow files of this project, not for YAML in
-// general.
+// yamlKey finds a key at the start of a line, quoted or not and with or
+// without white space before its colon, so that it can be written plain.
+var yamlKey = regexp.MustCompile(`^(\s*(?:-\s+)?)["']?([A-Za-z0-9_-]+)["']?\s*:`)
+
+// stripYAMLComment drops a whole-line comment and a trailing one that follows
+// a space, and writes a quoted key plain, as YAML and GitHub read it. It is for
+// the plain workflow files of this project, not for YAML in general.
 func stripYAMLComment(s string) string {
 	if strings.HasPrefix(strings.TrimSpace(s), "#") {
 		return ""
 	}
 	if i := strings.Index(s, " #"); i >= 0 {
-		return strings.TrimRight(s[:i], " ")
+		s = strings.TrimRight(s[:i], " ")
 	}
-	return s
+	return yamlKey.ReplaceAllString(s, "$1$2:")
 }
 
 // workflowJobLines returns the lines of a job of a workflow file, the job key
@@ -1350,6 +1354,22 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"another workflow names the tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "# ataniq_canary\n"}, true},
 		{"a quoted if on the job", edit("    timeout-minutes: 30\n    permissions", "    'if': always()\n    permissions"), true},
 		{"a quoted continue-on-error on a step of the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n        \"continue-on-error\": true\n"), true},
+		// A quoted key is the plain key to YAML and to GitHub, and white space
+		// may come before the colon.
+		{"a quoted permissions key that writes", edit("    permissions:\n      contents: read\n    steps", "    'permissions': write-all\n    steps"), true},
+		{"a double quoted permissions key that writes", edit("    permissions:\n      contents: read\n    steps", "    \"permissions\": write-all\n    steps"), true},
+		{"a permissions key with a space before the colon that writes", edit("    permissions:\n      contents: read\n    steps", "    permissions : write-all\n    steps"), true},
+		{"a quoted permissions key that is read-only", edit("    permissions:\n      contents: read\n    steps", "    'permissions':\n      'contents': read\n    steps"), false},
+		{"a quoted permission that writes", edit("      contents: read\n    steps", "      'contents': write\n    steps"), true},
+		{"a quoted job key", edit("  test-canary:", "  \"test-canary\":"), false},
+		{"a quoted run key that runs the run kit in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'run': sh qualification/canary/run/build.sh\n"}, true},
+		{"a double quoted run key with a space before the colon", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - \"run\" : sh qualification/canary/run/build.sh\n"}, true},
+		{"a quoted run key with a block value that runs the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'run': |\n          sh qualification/canary/run/build.sh\n"}, true},
+		{"a quoted run key that is not the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'run': make test\n"}, false},
+		{"a quoted run key in the job that is not on the list", edit("      - run: make doctor\n", "      - run: make doctor\n      - \"run\": sh qualification/canary/run/ship.sh\n"), true},
+		{"a quoted run key in the job that is on the list", edit("      - run: make doctor\n", "      - 'run': make doctor\n"), false},
+		{"a quoted run key in a composite action that runs the run kit", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - 'run': sh qualification/canary/x.sh\n      shell: sh\n"}, true},
+		{"a quoted uses key for an action that is not on the list", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - 'uses': actions/cache@v4\n"), true},
 		{"a local action outside .github in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./tools/ship\n"}, true},
 		{"a local action at the root in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./\n"}, true},
 		{"a quoted local action outside .github under a quoted key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'uses': \"./tools/ship\"\n"}, true},
