@@ -251,8 +251,9 @@ lead runs in.
 ### Wire format
 
 One JSON object per line, in UTF-8, each line ended by one LF. Unknown fields
-in a request are ignored; a top-level key that appears twice makes the request
-invalid. A connection may carry several requests, answered in order.
+in a request are ignored, including `params` on `hello` and `status`; a
+top-level key that appears twice makes the request invalid. A connection may
+carry several requests, answered in order.
 
 A request:
 
@@ -345,7 +346,7 @@ write time. It does not bound what the handler does.
 | `invalid-request` | Not UTF-8, not a JSON object, a missing or mistyped field, a bad `request_id`, a repeated key. | Stays open. |
 | `too-large` | The request line is over the cap. | Closed. |
 | `unsupported-protocol` | Another protocol name; the error lists the supported ones. | Stays open. |
-| `unsupported-operation` | Any operation but `hello` and `status`. | Stays open. |
+| `unsupported-operation` | Any operation but `hello`, `status` and the operations of a registered extension (see below). | Stays open. |
 | `unauthorized` | The peer's user id differs, or cannot be read. | Closed. |
 | `busy` | The server is at its connection cap. | Closed. |
 | `internal` | The handler failed or panicked, or the response would be too large. | Stays open. |
@@ -355,10 +356,24 @@ in a response is the `request_id`, and only when it is valid.
 
 ### No mutation
 
-Version 1 is read-only. `hello` says `"mutations":false` and lists its two
-operations. There is no command, no command id, no approval and no event
-stream. Every other operation, whatever its name, gets `unsupported-operation`.
-A version that adds any of them would be a different protocol name.
+Version 1 is read-only. In every release build `hello` says
+`"mutations":false` and lists its two operations. There is no command, no
+command id, no approval and no event stream. Every other operation, whatever its
+name, gets `unsupported-operation`. A version that adds commands to every build
+would be a different protocol name.
+
+The server can carry extension operations that the program serving it
+registers (`Options.Extra`), each named with lower-case letters, digits and
+dashes around one dot. No release build registers one. When one is registered,
+`hello` lists the two base operations and then the extensions', and says
+`"mutations":true` only when a registered extension declares that it changes
+something. A request for such an operation may carry `params`, one JSON object
+inside the same line cap, and passes the same peer check, caps, timeouts and
+counters; a `params` that is not an object is `invalid-request`. An extension
+may answer with codes of its own, never `unauthorized`, `busy`, `too-large` or
+`unsupported-protocol`; a malformed error body from it is answered `internal`,
+and so is a panic in it, also while its result is marshalled. The protocol
+stays provisional.
 
 ## The registry
 
