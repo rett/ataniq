@@ -92,6 +92,8 @@ func TestParseLineRefusals(t *testing.T) {
 	good := string(EncodeLine(goodReport()))
 	body := strings.TrimSuffix(strings.TrimPrefix(good, ReportPrefix), "\n")
 	mk := func(s string) []byte { return []byte(ReportPrefix + s + "\n") }
+	// The version as the line writes it, and the same key in other shapes.
+	version := fmt.Sprintf(`"version":%d`, ReportVersion)
 	replace := func(old, new string) []byte {
 		if !strings.Contains(body, old) {
 			t.Fatalf("%q not in %s", old, body)
@@ -111,16 +113,17 @@ func TestParseLineRefusals(t *testing.T) {
 		{"embedded carriage return", []byte(ReportPrefix + "{\r}\n"), "more than one line"},
 		{"newline then data", []byte(good + "x"), "more than one line"},
 		{"oversized", append([]byte(ReportPrefix), bytes.Repeat([]byte("x"), MaxReportLineBytes)...), "longer than"},
-		{"unknown field", replace(`"version":1`, `"version":1,"sandbox_ok":true`), "sandbox_ok"},
+		{"unknown field", replace(version, version+`,"sandbox_ok":true`), "sandbox_ok"},
 		{"unknown result field", replace(`"detail":"fine"`, `"detail":"fine","extra":1`), "extra"},
-		{"key in another case", replace(`"version":1`, `"Version":1`), "case-sensitive"},
+		{"key in another case", replace(version, `"Version":1`), "case-sensitive"},
 		{"result key in another case", replace(`"status":"ok"`, `"STATUS":"ok"`), "case-sensitive"},
-		{"key twice", replace(`"version":1`, `"version":1,"version":1`), "twice"},
-		{"key twice in two cases", replace(`"version":1`, `"version":1,"VERSION":1`), "case-sensitive"},
+		{"key twice", replace(version, version+`,`+version), "twice"},
+		{"key twice in two cases", replace(version, version+`,"VERSION":1`), "case-sensitive"},
 		{"result key twice", replace(`"detail":"fine"`, `"detail":"fine","detail":"other"`), "twice"},
 		{"trailing data", mk(body + " {}"), "after the report"},
 		{"not json", mk("version=1"), "not a report"},
-		{"wrong version", replace(`"version":1`, `"version":2`), "version"},
+		{"wrong version", replace(version, fmt.Sprintf(`"version":%d`, ReportVersion+1)), "version"},
+		{"the version before", replace(version, fmt.Sprintf(`"version":%d`, ReportVersion-1)), "version"},
 		{"bad digest", replace(strings.Repeat("ab", 32), "xyz"), "digest"},
 		{"upper case digest", replace(strings.Repeat("ab", 32), strings.Repeat("AB", 32)), "digest"},
 		{"bad status", replace(`"status":"ok"`, `"status":"passed"`), "status"},
@@ -128,7 +131,8 @@ func TestParseLineRefusals(t *testing.T) {
 		{"unknown id", replace(IDHolderHidden, "something-else"), "not an assertion"},
 		{"number and id differ", replace(`"number":1`, `"number":2`), "not an assertion"},
 		{"number zero", replace(`"number":1`, `"number":0`), "not an assertion"},
-		{"number 11", replace(`"number":1`, `"number":11`), "not an assertion"},
+		{"number 11 with the id of 1", replace(`"number":1`, `"number":11`), "not an assertion"},
+		{"number 12", replace(`"number":1`, `"number":12`), "not an assertion"},
 		{"outside id of an inside-only assertion", replace(IDHolderHidden, IDEnvironment+OutsideSuffix), "not an assertion"},
 		{"control byte in detail", replace(`"detail":"fine"`, `"detail":"a\u001bb"`), "detail"},
 		{"newline in detail", replace(`"detail":"fine"`, `"detail":"a\nb"`), "detail"},
@@ -300,8 +304,11 @@ func TestTable(t *testing.T) {
 			t.Errorf("assertion %d maps to no case", a.Number)
 		}
 	}
-	if inside != 8 {
-		t.Errorf("%d assertions have an inside half, want 8", inside)
+	if inside != 9 {
+		t.Errorf("%d assertions have an inside half, want 9", inside)
+	}
+	if a, _ := ByNumber(11); a.Where != Inside || a.ID != IDParentFolders {
+		t.Errorf("assertion 11 is %s %s, want inside and %s", a.Where, a.ID, IDParentFolders)
 	}
 	for _, n := range []int{1, 3, 5} {
 		if a, _ := ByNumber(n); a.Where != Both {
@@ -314,7 +321,7 @@ func TestTable(t *testing.T) {
 		}
 	}
 	// The cases the task names.
-	wantCase := map[int]string{1: "S1", 2: "S3", 3: "S2", 4: "S4", 5: "S7", 6: "S1", 10: "S11"}
+	wantCase := map[int]string{1: "S1", 2: "S3", 3: "S2", 4: "S4", 5: "S7", 6: "S1", 10: "S11", 11: "S1"}
 	for n, c := range wantCase {
 		a, _ := ByNumber(n)
 		found := false
@@ -333,11 +340,15 @@ func TestTable(t *testing.T) {
 	if _, ok := ByNumber(0); ok {
 		t.Error("ByNumber(0)")
 	}
-	if _, ok := ByNumber(11); ok {
-		t.Error("ByNumber(11)")
+	if _, ok := ByNumber(12); ok {
+		t.Error("ByNumber(12)")
 	}
-	if idOf(0) != "" || idOf(11) != "" {
+	if idOf(0) != "" || idOf(12) != "" {
 		t.Error("idOf out of range")
+	}
+	// S21 is not a case of assertion 11.
+	if a, _ := ByNumber(11); len(a.Cases) != 1 {
+		t.Errorf("assertion 11 maps to %v, want S1 alone", a.Cases)
 	}
 }
 
@@ -385,7 +396,11 @@ func TestProblems(t *testing.T) {
 	}
 
 	// A result that is missing.
-	if p := Problems(Report{Version: ReportVersion, Digest: s.Digest, Results: rep.Results[:7]}, s, RequireInside); len(p) != 1 || !strings.Contains(p[0], "assertion 8") {
+	if p := Problems(Report{Version: ReportVersion, Digest: s.Digest, Results: rep.Results[:8]}, s, RequireInside); len(p) != 1 || !strings.Contains(p[0], "assertion 11") {
+		t.Errorf("missing result: %v", p)
+	}
+	without8 := append(append([]Result(nil), rep.Results[:7]...), rep.Results[8:]...)
+	if p := Problems(Report{Version: ReportVersion, Digest: s.Digest, Results: without8}, s, RequireInside); len(p) != 1 || !strings.Contains(p[0], "assertion 8") {
 		t.Errorf("missing result: %v", p)
 	}
 	if !Failed(Report{}, s) {
@@ -507,7 +522,7 @@ func TestLargestValidReportRoundTrips(t *testing.T) {
 // JSON writes in two bytes a character, fit one line.
 func TestReportLimitsAgree(t *testing.T) {
 	worstResult := len(`{"number":10,"id":"host-loopback-unreachable.outside","status":"not-checked","detail":""},`) + 2*MaxDetailBytes
-	header := len(ReportPrefix) + len(`{"version":1,"digest":"`) + 64 + len(`","results":[]}`) + 1
+	header := len(ReportPrefix) + len(fmt.Sprintf(`{"version":%d,"digest":"`, ReportVersion)) + 64 + len(`","results":[]}`) + 1
 	if got := header + MaxResults*worstResult; got > MaxReportLineBytes {
 		t.Errorf("%d results of the longest kind take %d bytes, over MaxReportLineBytes %d", MaxResults, got, MaxReportLineBytes)
 	}
@@ -535,7 +550,7 @@ func TestParseProbeLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a probe's line: %v", err)
 	}
-	if Failed(back, s) || len(back.Results) != 8 {
+	if Failed(back, s) || len(back.Results) != 9 {
 		t.Errorf("round trip: %d results, %v", len(back.Results), Problems(back, s, RequireInside))
 	}
 	// A report that failed is still a probe's report: it is judged, not refused.
@@ -563,7 +578,8 @@ func TestParseProbeLine(t *testing.T) {
 		{"a forged assertion 10", with(Result{10, IDQualificationRecord, StatusOK, ""}), "not a result the probe makes"},
 		{"an inside id twice", with(Result{2, IDEnvironment, StatusOK, ""}), "twice"},
 		{"the first assertion missing", without(0), "assertion 1"},
-		{"the last assertion missing", without(7), "assertion 8"},
+		{"assertion 8 missing", without(7), "assertion 8"},
+		{"the last assertion missing", without(8), "assertion 11"},
 		{"no results", EncodeLine(Report{Version: ReportVersion, Digest: s.Digest}), "has no result"},
 		{"not a report", []byte("hello\n"), "does not start"},
 	} {

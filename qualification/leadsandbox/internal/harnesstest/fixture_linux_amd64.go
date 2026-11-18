@@ -300,11 +300,37 @@ func (s sysctlSystem) Identity(path string) (assert.FileIdentity, error) {
 	return assert.FileIdentity{Device: 4242, Inode: binary.BigEndian.Uint64(h[:8]) | 1<<40}, nil
 }
 
+// DirNames lists a folder of the real file system, as the harness asks for the
+// coordinators' folders under the fixture's state root.
+func (s sysctlSystem) DirNames(path string, limit int) ([]string, error) {
+	ents, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(ents) > limit {
+		return nil, assert.ErrTooLarge
+	}
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
 func (s sysctlSystem) ReadFile(path string, limit int) ([]byte, error) {
 	if strings.HasSuffix(path, "legacy_tiocsti") {
 		return []byte(s.content), nil
 	}
 	return nil, errors.New("harnesstest: only the sysctl may be read")
+}
+
+// FailingDirNames wraps a System and makes every listing of a folder fail with
+// a reason other than a missing folder.
+type FailingDirNames struct{ assert.System }
+
+// DirNames implements assert.System.
+func (FailingDirNames) DirNames(string, int) ([]string, error) {
+	return nil, errors.New("harnesstest: the folder cannot be listed")
 }
 
 // FailingIdentity wraps a System and makes every identity question fail with a

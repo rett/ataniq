@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/fs"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -29,6 +30,8 @@ type fakeSys struct {
 	writable  map[string]bool
 	accessErr map[string]error
 	dirErr    map[string]error
+	// namesErr sets the error of DirNames for a path.
+	namesErr map[string]error
 	// mountIDs sets the answer of MountID for a path; otherwise it is the ID
 	// of the mount of the longest point above the path, the last of several on
 	// top. noMountID makes every answer ErrNoMountID.
@@ -111,6 +114,38 @@ func (f *fakeSys) DirEmpty(path string) (bool, error) {
 	return true, nil
 }
 
+// DirNames is the names of what lies directly in the folder, by the nodes.
+func (f *fakeSys) DirNames(path string, limit int) ([]string, error) {
+	if err := f.namesErr[path]; err != nil {
+		return nil, err
+	}
+	n, ok := f.nodes[path]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOENT}
+	}
+	if !n.info.IsDir() {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.ENOTDIR}
+	}
+	seen := map[string]bool{}
+	var names []string
+	for p := range f.nodes {
+		rest, ok := strings.CutPrefix(p, path+"/")
+		if !ok {
+			continue
+		}
+		name, _, _ := strings.Cut(rest, "/")
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	if len(names) > limit {
+		return nil, fmt.Errorf("list %s: %w", path, ErrTooLarge)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 func (f *fakeSys) MountID(path string) (int, error) {
 	if f.noMountID {
 		return 0, fmt.Errorf("statx %s: %w", path, ErrNoMountID)
@@ -178,6 +213,7 @@ func goodSystem(s Spec) *fakeSys {
 		writable:  map[string]bool{},
 		accessErr: map[string]error{},
 		dirErr:    map[string]error{},
+		namesErr:  map[string]error{},
 		mountIDs:  map[string]int{},
 
 		identities:  map[string]FileIdentity{},
@@ -201,6 +237,13 @@ func goodSystem(s Spec) *fakeSys {
 		f.setMount(p, true)
 	}
 	f.setMount(s.ManagedSettings, true)
+	// The four parent folders, each a bind of its own: the requests and the
+	// mail folder read-write, the mailbox and the published folder read-only.
+	for _, pf := range parentFolders() {
+		f.setDir(pf.path)
+		f.setMount(pf.path, !pf.writable)
+		f.writable[pf.path] = pf.writable
+	}
 	return f
 }
 

@@ -11,8 +11,10 @@ import (
 	"unicode/utf8"
 )
 
-// ReportVersion is the version of the report format.
-const ReportVersion = 1
+// ReportVersion is the version of the report format. Version 2 is the report
+// of the table with eleven assertions: a probe's line holds the result of
+// assertion 11 too.
+const ReportVersion = 2
 
 // ReportPrefix starts the one line of a report (the space is part of it): the
 // prefix, one JSON object and a newline. The probe writes the line to its
@@ -27,8 +29,8 @@ const ReportPrefix = "ATANIQ-PROBE-REPORT "
 const (
 	// MaxDetailBytes is the longest detail a result keeps.
 	MaxDetailBytes = 512
-	// MaxResults is the most results a report holds. The table allows 13
-	// distinct results at most (ten assertions and three outside halves).
+	// MaxResults is the most results a report holds. The table allows 14
+	// distinct results at most (eleven assertions and three outside halves).
 	MaxResults = 24
 	// MaxReportLineBytes is the longest line ParseLine accepts, terminator
 	// included. It holds MaxResults results with a detail of MaxDetailBytes
@@ -218,8 +220,8 @@ func ParseLine(line []byte) (Report, error) {
 }
 
 // ParseProbeLine is ParseLine for the line a probe writes: the report holds
-// the result of the inside half of every assertion that has one, 1 to 8, each
-// once and no other. A result that only the holder makes (9, 10 and the
+// the result of the inside half of every assertion that has one, 1 to 8 and
+// 11, each once and no other. A result that only the holder makes (9, 10 and the
 // outside halves) is refused, so a line that carries one cannot stand in for
 // the holder's own checks, and a report that lacks an inside result is
 // refused, not judged. ParseLine stays for the full report, which holds both.
@@ -303,7 +305,7 @@ type Require int
 
 const (
 	// RequireInside demands the result of the inside half of every
-	// assertion that has one (1 to 8): what a probe's report holds.
+	// assertion that has one (1 to 8 and 11): what a probe's report holds.
 	RequireInside Require = iota
 	// RequireAll also demands the outside results: 9, 10, and the outside
 	// halves of 1, 3 and 5. The holder judges a start with it.

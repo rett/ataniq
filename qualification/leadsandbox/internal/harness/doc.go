@@ -17,7 +17,9 @@
 // source to its real path, the report channel (a FIFO in a folder of the attempt
 // that holds nothing else, whose reader is opened first), the canary, the plan
 // ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
-// owner and holder paths and their ancestors, which assertion 1 needs), a
+// owner and holder paths and their ancestors, which assertion 1 needs, and of
+// the coordinators' folders under the state root and their ancestors, which
+// assertion 11 needs), a
 // second check right before the launch, the check of every bind source of the
 // plan without following a symbolic link (rule G1, a step of its own after the
 // second resolution; a problem refuses the launch), the launch through a

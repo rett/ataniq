@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ataniq/internal/leadsandbox/assert"
+	"ataniq/internal/leadsandbox/profile"
 )
 
 // insideHarness runs runInside in this process, with a fake system and a fake
@@ -137,6 +138,45 @@ func TestRunInsideEmptyMountTableFails(t *testing.T) {
 	drain(t, r, w)
 }
 
+// Assertion 11 is one of the inside checks: a parent folder that is missing,
+// or a coordinator's tree under the published folder, stops the start.
+func TestRunInsideParentFoldersAreChecked(t *testing.T) {
+	for name, mutate := range map[string]func(f *fakeSystem){
+		"the mailbox is missing":     func(f *fakeSystem) { delete(f.nodes, profile.MailboxInside) },
+		"the mail folder is refused": func(f *fakeSystem) { f.writable[profile.MailInside] = false },
+		"the published folder can be written": func(f *fakeSystem) {
+			f.writable[profile.CoordInside] = true
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			mutate(h.system)
+			r, w := pipe(t)
+			code, stderr := h.run(writeSpec(t, h.spec), w)
+			if code != exitFailed || h.launchN != 0 {
+				t.Fatalf("code %d launched %d", code, h.launchN)
+			}
+			rep, err := assert.ParseProbeLine(drain(t, r, w))
+			if err != nil || !assert.Failed(rep, h.spec) {
+				t.Fatalf("report: %v", err)
+			}
+			if !strings.Contains(stderr, "ataniq-probe:   assertion 11 ("+assert.IDParentFolders+"): failed") {
+				t.Errorf("assertion 11 is not listed as failed: %q", stderr)
+			}
+		})
+	}
+	// With no coordinator identity in the spec the check cannot be made, and
+	// that stops the start too.
+	h := newHarness(t)
+	h.spec.CoordinatorIdentities = nil
+	r, w := pipe(t)
+	code, stderr := h.run(writeSpec(t, h.spec), w)
+	drain(t, r, w)
+	if code != exitFailed || h.launchN != 0 || !strings.Contains(stderr, "assertion 11 ("+assert.IDParentFolders+"): not checked") {
+		t.Errorf("code %d launched %d stderr %q", code, h.launchN, stderr)
+	}
+}
+
 func TestRunInsideSetupFailures(t *testing.T) {
 	h := newHarness(t)
 	spec := writeSpec(t, h.spec)
@@ -195,8 +235,8 @@ func TestAfterReportListsAtMostTheCap(t *testing.T) {
 	if strings.ContainsRune(out.String(), 0x1b) {
 		t.Errorf("an escape reached standard error: %q", &out)
 	}
-	if n := strings.Count(out.String(), "\n"); n != 9 {
-		t.Errorf("%d lines, want a header and 8 problems: %q", n, &out)
+	if n := strings.Count(out.String(), "\n"); n != 10 {
+		t.Errorf("%d lines, want a header and 9 problems: %q", n, &out)
 	}
 	// A report of another digest is a failure too.
 	rep2 := assert.RunInside(spec, passSystem(spec))

@@ -85,7 +85,8 @@ func TestDecodeSpecStrict(t *testing.T) {
 		field string
 	}{
 		{"unknown field", withField("sandbox_passed", "true"), "spec"},
-		{"wrong version", withField("version", "2"), "version"},
+		{"wrong version", withField("version", fmt.Sprint(SpecVersion+1)), "version"},
+		{"the version before", withField("version", fmt.Sprint(SpecVersion-1)), "version"},
 		{"version as text", withField("version", `"1"`), "spec"},
 		{"trailing data", append(append([]byte(nil), good...), []byte(`{}`)...), "spec"},
 		{"not json", []byte("version: 1"), "spec"},

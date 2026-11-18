@@ -581,6 +581,19 @@ func (a *attempt) writeSpec() error {
 		return fmt.Errorf("collect the identities of the owner and holder paths: %w", err)
 	}
 	facts.Identities = ids
+	// Assertion 11 needs the identities of the coordinators' folders in the
+	// same way: the two roots of the layout and their ancestors, and the
+	// folder, tree and home of every coordinator and every shared login that
+	// exists under them now.
+	folders, err := assert.CoordinatorFolders(a.in, a.opt.System.DirNames)
+	if err != nil {
+		return fmt.Errorf("list the coordinators' folders: %w", err)
+	}
+	coordIDs, err := assert.CollectIdentities(append(assert.CoordinatorIdentityPaths(a.in, facts), folders...), a.opt.System.Identity)
+	if err != nil {
+		return fmt.Errorf("collect the identities of the coordinators' folders: %w", err)
+	}
+	facts.CoordinatorIdentities = coordIDs
 	spec, err := assert.NewSpec(a.in, plan.InsideEnvironment(a.pl), facts)
 	if err != nil {
 		return err
