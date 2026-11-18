@@ -17,7 +17,9 @@
 // With Options.Label set the cockpit shows a labelled, read-only view of its
 // source in place of the fixture: nothing in it is called a fixture, no
 // recording is replayed, and every control stays unavailable with its reason.
-// See view.go.
+// See view.go. A source that can change is asked again on a tick, from a
+// command, and a refresh that fails keeps the last view and shows its age.
+// See refresh.go.
 //
 // With a window of at least MinCols by MinRows the console draws the cockpit:
 // three panes, a timeline and a key bar. Below that it falls back to
@@ -39,8 +41,9 @@ import (
 )
 
 // Source supplies a snapshot, not an authority for commands or state changes.
-// The snapshot is taken once, when the model is made: there is no refresh path
-// yet.
+// The snapshot is taken when the model is made. It is taken again, on a
+// tick, only when Options.Refresh says so or the source is a Refresher: see
+// refresh.go.
 type Source interface{ Snapshot() Projection }
 
 // Projection describes display data and why live control is unavailable.
@@ -198,6 +201,7 @@ func NewWithOptions(source Source, o Options) *Model {
 		return m
 	}
 	m.apply(source.Snapshot())
+	m.initRefresh(source)
 	// A labelled view is not the fixture: no recording is replayed in it.
 	if !m.labelled() {
 		m.startSession()
@@ -206,7 +210,7 @@ func NewWithOptions(source Source, o Options) *Model {
 }
 
 // apply replaces the model's copy of the source's data with a sanitized,
-// bounded copy of in.
+// bounded copy of in. It does not touch the selection: see applyKeeping.
 func (m *Model) apply(in Projection) {
 	m.contract, m.timeline, m.controls, m.facts, m.projects, m.leadSelections = nil, nil, nil, nil, nil, nil
 	m.controlUnavailable = clean(in.ControlUnavailable)
@@ -288,6 +292,11 @@ type Options struct {
 	// goes to the sink the source returns, and nothing of the fixture is
 	// shown as if it were live data. See LiveSource.
 	Live LiveSource
+	// Refresh is how often the source is asked again. Zero means
+	// DefaultRefresh for a source that is a Refresher and never for any
+	// other, so the fixture is asked once; a negative value means never.
+	// It is not used with Live. See refresh.go.
+	Refresh time.Duration
 	// Label says what the cockpit shows, in the header and on the session
 	// frame, such as "a service's view, read-only". Empty means the demo
 	// fixture. With a label nothing is called a fixture and no recording is
@@ -326,6 +335,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onLive()
 	case liveGapMsg:
 		return m, m.waitLive()
+	case refreshTickMsg:
+		return m, m.onRefreshTick(v)
+	case refreshMsg:
+		m.onRefresh(v)
 	}
 	return m, nil
 }

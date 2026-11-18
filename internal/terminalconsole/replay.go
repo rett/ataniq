@@ -89,6 +89,9 @@ func (m *Model) startSession() {
 
 // Close stops the session pane's goroutine. It may be called more than once.
 func (m *Model) Close() {
+	if m.refresh.stop != nil {
+		m.refresh.stop()
+	}
 	if m.live.begun && !m.live.closed {
 		m.live.closed = true
 		close(m.live.done)

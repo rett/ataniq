@@ -108,6 +108,9 @@ func (m *Model) drawHeader(p *painter, l layout) {
 	} else if m.labelled() {
 		left = "ATANIQ · cockpit · " + m.viewLabel()
 	}
+	if age := m.ageText(); age != "" && !m.labelled() && !m.live.on() {
+		left += " · " + age
+	}
 	n := p.text(0, 0, l.header.Dx(), left, p.style(lnHead))
 	if room := l.header.Dx() - n - 2; room >= ansi.StringWidth(tagline) {
 		p.text(l.header.Dx()-ansi.StringWidth(tagline), 0, room, tagline, p.style(lnDim))
