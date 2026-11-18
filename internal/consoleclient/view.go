@@ -82,6 +82,8 @@ type View struct {
 	// HasSupervisor is true.
 	Supervisor Entry
 	// Projects are the projects, in the order the daemon first named each.
+	// Two projects whose names differ only in what cleaning drops are two
+	// projects here, with the same Name.
 	Projects []Project
 	// LeftOut counts the entries of the daemon's answer that are not in the
 	// view: those over a bound, those of a kind this package does not know,

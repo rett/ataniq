@@ -721,6 +721,35 @@ func TestCountsAreBounded(t *testing.T) {
 	}
 }
 
+// Two projects whose names clean to the same text stay two projects: the
+// second one's lead is not left out as a second lead of the first, and each
+// keeps its own coordinator.
+func TestProjectsThatShowAlikeStayApart(t *testing.T) {
+	const hidden = "a\u200b" // shows as "a"
+	status := clientapi.StatusResult{Leads: []clientapi.LeadStatus{
+		{Role: "first/lead", Kind: clientapi.KindLead, Project: hidden, State: clientapi.StateReady},
+		{Role: "second/lead", Kind: clientapi.KindLead, Project: "a", State: clientapi.StateReady},
+		{Role: "second/coord", Kind: clientapi.KindCoordinator, Project: "a", State: clientapi.StateReady},
+		{Role: "first/coord", Kind: clientapi.KindCoordinator, Project: hidden, State: clientapi.StateReady},
+	}}
+	dir := startServer(t, &handler{status: status}, clientapi.Options{})
+	r := read(t, dir)
+	if r.State != StateOK {
+		t.Fatalf("state = %q, want a view", r.State)
+	}
+	v := r.View
+	if len(v.Projects) != 2 || v.LeftOut != 0 {
+		t.Fatalf("%d projects, %d left out, want 2 and 0: %+v", len(v.Projects), v.LeftOut, v.Projects)
+	}
+	for i, want := range []string{"first", "second"} {
+		p := v.Projects[i]
+		if p.Name != "a" || !p.HasLead || p.Lead.Name != want+"/lead" || p.Lead.Project != "a" ||
+			len(p.Coordinators) != 1 || p.Coordinators[0].Name != want+"/coord" {
+			t.Errorf("project %d = %+v, want the %s project shown as \"a\"", i, p, want)
+		}
+	}
+}
+
 func TestSendsHelloAndStatusAndNothingElse(t *testing.T) {
 	status := clientapi.StatusResult{Leads: []clientapi.LeadStatus{
 		{Role: "demo/lead", Kind: clientapi.KindLead, Project: "demo", State: clientapi.StateReady},

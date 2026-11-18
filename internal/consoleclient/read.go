@@ -133,8 +133,12 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 	if status.Daemon.PID > 0 {
 		v.Daemon.PID = status.Daemon.PID
 	}
-	index := make(map[string]int) // project name to its place in v.Projects
+	// index maps a project's name as the daemon sent it to the project's
+	// place in v.Projects. The cleaned name is not the key: two names can
+	// clean to the same text and are still two projects.
+	index := make(map[string]int)
 	for i := range status.Leads {
+		raw := status.Leads[i].Project
 		e, ok := entry(&status.Leads[i])
 		if !ok {
 			v.LeftOut++
@@ -148,14 +152,14 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 			v.HasSupervisor, v.Supervisor = true, e
 			continue
 		}
-		at, known := index[e.Project]
+		at, known := index[raw]
 		if !known {
 			if e.Project == "" || len(v.Projects) >= MaxProjects {
 				v.LeftOut++
 				continue
 			}
 			at = len(v.Projects)
-			index[e.Project] = at
+			index[raw] = at
 			v.Projects = append(v.Projects, Project{Name: e.Project})
 		}
 		p := &v.Projects[at]
