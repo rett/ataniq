@@ -198,6 +198,63 @@ func (c *checker) binding(b *Binding) {
 	c.need(suite || !finish, at+".evidence has no suite record for a feature finish")
 	c.time(b.RequestedAt, at+".requested_at")
 	c.time(b.PendingExpiresAt, at+".pending_expires_at")
+	c.agree(b, at)
+}
+
+// agree checks the parts of a binding against each other, after each part
+// was checked alone. An approval allows the effects and nothing else, and
+// what the owner is shown is the merge and the summary, so the three must
+// say the same thing.
+//
+// A feature finish moves one branch from the target's tip to the merge the
+// host built, and nothing else: it has exactly one effect, whose old is the
+// merge's first parent and whose new is the merge commit, and its summary
+// compares those same two commits. A prune only deletes branches: every
+// effect of it has a new of all zeros, and so says where the branch was
+// merged. No effect of either verb is on a ref that is not a branch.
+//
+// Every consumer of a pending record reads it through the decoder, so the
+// rules are held here once and not by each of them.
+func (c *checker) agree(b *Binding, at string) {
+	finish := b.Verb == VerbFeatureFinish
+	for i := range b.Effects {
+		e, where := &b.Effects[i], at+".effects["+strconv.Itoa(i)+"]"
+		c.need(isBranch(e.Ref), where+".ref is not a branch under refs/heads/")
+		if finish {
+			c.need(!deletes(e), where+" deletes a ref, which a feature finish does not do")
+		} else {
+			c.need(deletes(e), where+" does not delete its ref, which is all a prune does")
+		}
+	}
+	if !finish {
+		return
+	}
+	c.need(len(b.Effects) == 1, at+".effects is not exactly one effect for a feature finish")
+	if len(b.Effects) != 1 || b.Merge == nil || len(b.Merge.Parents) != 2 || b.Summary == nil {
+		// One of the parts is missing or malformed, and that is
+		// refused already.
+		return
+	}
+	e := &b.Effects[0]
+	c.need(e.Old == b.Merge.Parents[0], at+".effects[0].old is not the first parent of the merge")
+	c.need(e.New == b.Merge.Commit, at+".effects[0].new is not the merge commit")
+	c.need(b.Summary.Base == b.Merge.Parents[0], at+".summary.base is not the first parent of the merge")
+	c.need(b.Summary.Tip == b.Merge.Commit, at+".summary.tip is not the merge commit")
+}
+
+// branchPrefix starts the full name of every branch.
+const branchPrefix = "refs/heads/"
+
+// isBranch reports whether ref is the full name of a branch: refs/heads/
+// and at least one more byte. It does not check the rest of the name
+// against git's rules for a ref name.
+func isBranch(ref string) bool {
+	return len(ref) > len(branchPrefix) && strings.HasPrefix(ref, branchPrefix)
+}
+
+// deletes reports whether e deletes its ref: its new is an id of all zeros.
+func deletes(e *Effect) bool {
+	return e.New != "" && strings.Trim(e.New, "0") == ""
 }
 
 // subject checks the fields a pending record and a decision share. The
@@ -215,11 +272,11 @@ func (c *checker) effect(e *Effect, where string) {
 	c.objectID(e.Old, where+".old")
 	c.objectID(e.New, where+".new")
 	c.need(len(e.Old) == len(e.New), where+".old and .new are ids of different lengths")
-	deletes := e.New != "" && strings.Trim(e.New, "0") == ""
+	gone := deletes(e)
 	switch {
-	case deletes && e.MergedInto == nil:
+	case gone && e.MergedInto == nil:
 		c.need(false, where+".merged_into is missing for a delete")
-	case !deletes && e.MergedInto != nil:
+	case !gone && e.MergedInto != nil:
 		c.need(false, where+".merged_into is given for an effect that deletes nothing")
 	case e.MergedInto != nil:
 		c.filled(e.MergedInto.Ref, where+".merged_into.ref")

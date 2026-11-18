@@ -31,6 +31,13 @@ func DecodeRequest(data []byte) (Request, error) {
 // not match its digest binding-mismatch; anything else record-invalid. The
 // verb and the feature name are checked by the rule a request is checked
 // by, so they are refused with the same two codes in both records.
+//
+// The parts of the binding are checked against each other as well, and a
+// binding whose parts disagree is record-invalid: the one effect of a
+// feature finish moves a branch from the merge's first parent to the merge
+// commit, which are also the two commits the summary compares; every effect
+// of a prune deletes a branch. So a caller that holds a decoded record need
+// not compare the effects with the merge and the summary again.
 func DecodePending(data []byte) (Pending, error) {
 	var p Pending
 	if err := decode(data, MaxPendingBytes, CodeRecordInvalid, "pending", &p); err != nil {

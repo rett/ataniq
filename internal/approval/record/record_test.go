@@ -685,6 +685,138 @@ func TestPendingContentRules(t *testing.T) {
 	}
 }
 
+// The parts of a binding are checked against each other: the effects are
+// what an approval allows, and the merge and the summary are what the owner
+// is shown.
+func TestBindingPartsAgree(t *testing.T) {
+	zeros := strings.Repeat("0", 40)
+	other := strings.Repeat("5c0de5c0", 5)
+	valid := validPending(t).Binding
+	target, feature, merge := valid.Merge.Parents[0], valid.Merge.Parents[1], valid.Merge.Commit
+	if target == feature || target == merge || feature == merge {
+		t.Fatal("the valid vector does not tell the three commits of a merge apart")
+	}
+	if e := valid.Effects[0]; e.Old != target || e.New != merge || valid.Summary.Base != target || valid.Summary.Tip != merge {
+		t.Fatal("the valid vector's effect and summary are not those of its merge")
+	}
+	mergedInto := &MergedInto{Ref: "refs/heads/develop", Tip: merge}
+	gone := Effect{Kind: EffectRef, Ref: "refs/heads/feature/sample-feature", Old: feature, New: zeros, MergedInto: mergedInto}
+
+	tests := []struct {
+		name   string
+		prune  bool
+		change func(*Binding)
+		want   Code
+	}{
+		{"a feature finish as it is", false, func(b *Binding) {}, ""},
+		{"a feature finish into another branch", false, func(b *Binding) { b.Effects[0].Ref = "refs/heads/release/1.2" }, ""},
+		{"a second effect that deletes the feature branch", false, func(b *Binding) {
+			b.Effects = append(b.Effects, gone)
+		}, CodeRecordInvalid},
+		{"a second effect that repeats the first", false, func(b *Binding) {
+			b.Effects = append(b.Effects, b.Effects[0])
+		}, CodeRecordInvalid},
+		{"an effect on a tag", false, func(b *Binding) { b.Effects[0].Ref = "refs/tags/v1" }, CodeRecordInvalid},
+		{"an effect on a pending ref", false, func(b *Binding) { b.Effects[0].Ref = "refs/ataniq/pending/k" }, CodeRecordInvalid},
+		{"an effect on a remote branch", false, func(b *Binding) { b.Effects[0].Ref = "refs/remotes/origin/develop" }, CodeRecordInvalid},
+		{"an effect on a short branch name", false, func(b *Binding) { b.Effects[0].Ref = "develop" }, CodeRecordInvalid},
+		{"an effect on HEAD", false, func(b *Binding) { b.Effects[0].Ref = "HEAD" }, CodeRecordInvalid},
+		{"an effect on refs/heads/ alone", false, func(b *Binding) { b.Effects[0].Ref = "refs/heads/" }, CodeRecordInvalid},
+		{"an effect on refs/heads without a slash", false, func(b *Binding) { b.Effects[0].Ref = "refs/heads" }, CodeRecordInvalid},
+		{"an effect on a ref in upper case", false, func(b *Binding) { b.Effects[0].Ref = "REFS/HEADS/develop" }, CodeRecordInvalid},
+		{"an old that is not the target's tip", false, func(b *Binding) { b.Effects[0].Old = other }, CodeRecordInvalid},
+		{"an old that is the feature's tip", false, func(b *Binding) { b.Effects[0].Old = feature }, CodeRecordInvalid},
+		{"a new that is not the merge", false, func(b *Binding) { b.Effects[0].New = other }, CodeRecordInvalid},
+		{"a new that is the feature's tip", false, func(b *Binding) { b.Effects[0].New = feature }, CodeRecordInvalid},
+		{"a merge commit that is not the effect's new", false, func(b *Binding) {
+			b.Merge.Commit, b.Summary.Tip = other, other
+		}, CodeRecordInvalid},
+		{"a first parent that is not the effect's old", false, func(b *Binding) {
+			b.Merge.Parents[0], b.Summary.Base = other, other
+		}, CodeRecordInvalid},
+		{"parents in the other order", false, func(b *Binding) {
+			b.Merge.Parents[0], b.Merge.Parents[1] = b.Merge.Parents[1], b.Merge.Parents[0]
+		}, CodeRecordInvalid},
+		{"a summary from another base", false, func(b *Binding) { b.Summary.Base = other }, CodeRecordInvalid},
+		{"a summary from the feature's tip", false, func(b *Binding) { b.Summary.Base = feature }, CodeRecordInvalid},
+		{"a summary of another tip", false, func(b *Binding) { b.Summary.Tip = other }, CodeRecordInvalid},
+		{"a summary of the feature's tip", false, func(b *Binding) { b.Summary.Tip = feature }, CodeRecordInvalid},
+		{"a feature finish that deletes the target", false, func(b *Binding) {
+			b.Merge.Commit, b.Summary.Tip = zeros, zeros
+			b.Effects[0].New, b.Effects[0].MergedInto = zeros, mergedInto
+		}, CodeRecordInvalid},
+		{"everything at once", false, func(b *Binding) {
+			b.Effects[0].Ref, b.Effects[0].New = "refs/heads/master", other
+			b.Summary.Base, b.Summary.Tip = feature, other
+			b.Effects = append(b.Effects, gone)
+		}, CodeRecordInvalid},
+
+		{"a prune as it is", true, func(b *Binding) {}, ""},
+		{"a prune of two branches", true, func(b *Binding) { b.Effects = append(b.Effects, gone) }, ""},
+		{"a prune that moves a branch", true, func(b *Binding) {
+			b.Effects[0].Ref, b.Effects[0].New, b.Effects[0].MergedInto = "refs/heads/master", other, nil
+		}, CodeRecordInvalid},
+		{"a prune whose second effect moves a branch", true, func(b *Binding) {
+			b.Effects = append(b.Effects, Effect{Kind: EffectRef, Ref: "refs/heads/master", Old: target, New: other})
+		}, CodeRecordInvalid},
+		{"a prune that does not say where a branch was merged", true, func(b *Binding) {
+			b.Effects[0].MergedInto = nil
+		}, CodeRecordInvalid},
+		{"a prune of a tag", true, func(b *Binding) { b.Effects[0].Ref = "refs/tags/v1" }, CodeRecordInvalid},
+		{"a prune whose second effect is on a tag", true, func(b *Binding) {
+			tag := gone
+			tag.Ref = "refs/tags/v1"
+			b.Effects = append(b.Effects, tag)
+		}, CodeRecordInvalid},
+	}
+	for _, tt := range tests {
+		p := validPending(t)
+		if tt.prune {
+			p = prunePending(t)
+		}
+		before, err := BindingDigest(p.Binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tt.change(&p.Binding)
+		p = sealed(t, p)
+		if tt.want != "" && p.BindingSHA256 == before {
+			t.Fatalf("%s: the case changes nothing", tt.name)
+		}
+		data, err := EncodePending(p)
+		wantCode(t, tt.name, err, tt.want)
+		if err == nil {
+			if _, err := DecodePending(data); err != nil {
+				t.Errorf("%s: encoded, and then refused: %v", tt.name, err)
+			}
+			continue
+		}
+		// The decoder holds the same rule on bytes another program wrote:
+		// the canonical form of the refused record, with its digests
+		// right, does not decode.
+		data, err = encode(&p, MaxPendingBytes, CodeRecordInvalid, "pending")
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		_, err = DecodePending(data)
+		wantCode(t, tt.name+", decoded", err, tt.want)
+	}
+
+	for _, tt := range []struct {
+		ref  string
+		want bool
+	}{
+		{"refs/heads/develop", true}, {"refs/heads/feature/sample-feature", true}, {"refs/heads/a", true},
+		{"", false}, {"refs/heads/", false}, {"refs/heads", false}, {"develop", false}, {"heads/develop", false},
+		{"refs/tags/v1", false}, {"refs/remotes/origin/develop", false}, {"Refs/heads/develop", false},
+		{" refs/heads/develop", false}, {"xrefs/heads/develop", false}, {"refs/headsx/develop", false},
+	} {
+		if got := isBranch(tt.ref); got != tt.want {
+			t.Errorf("isBranch(%q) = %v", tt.ref, got)
+		}
+	}
+}
+
 func prunePending(t testing.TB) Pending {
 	t.Helper()
 	p, err := DecodePending(readVector(t, "pending-valid-prune.json"))

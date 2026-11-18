@@ -140,6 +140,9 @@ type Binding struct {
 	// PlanSHA256 is [PlanDigest] of the pending record's plan text.
 	PlanSHA256 string `json:"plan_sha256"`
 	// Effects are the ref updates an approval allows, and nothing else.
+	// Each is on a branch (a ref under refs/heads/). A feature finish
+	// has exactly one, which moves the target from the first parent of
+	// Merge to its commit; a prune has only effects that delete.
 	Effects []Effect `json:"effects"`
 	// Merge is the merge commit the host built. A feature finish has one;
 	// a prune has none, and then the field is left out.
@@ -218,7 +221,9 @@ type Summary struct {
 	// ReviewDigest is the intake's digest of the whole review, which
 	// covers the full path list even when Paths is cut.
 	ReviewDigest string `json:"review_digest"`
-	// Base and Tip are the commits the review compares.
+	// Base and Tip are the commits the review compares: the first parent
+	// of the binding's merge and the merge commit, so that what is shown
+	// is what lands.
 	Base string `json:"base"`
 	Tip  string `json:"tip"`
 	// Files, Added, Removed and NewBytes are the totals of the change:

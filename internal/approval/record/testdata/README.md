@@ -221,7 +221,7 @@ An effect:
 | Field | Rule |
 | --- | --- |
 | `kind` | `ref` |
-| `ref` | A filled string |
+| `ref` | A branch: see the rules after the summary |
 | `old`, `new` | Object ids of the same length. A `new` of all zeros deletes the ref |
 | `merged_into` | *Optional.* An effect that deletes must have it: `ref`, a filled string, and `tip`, an object id. An effect that does not delete must not have it |
 
@@ -237,6 +237,20 @@ The summary:
 | `flagged` | A list of `{kind, path, pattern}`: `kind` is a flag kind, `path` a text, `pattern` a string that may be empty. No two entries have the same `kind` and `path` |
 | `binary`, `symlinks`, `mode_changes`, `submodules` | Lists of texts |
 | `exec_config_set` | `matcher`: a filled string. `sha256`: a digest. `additions`: a count |
+
+The parts of a binding must agree with each other. These are content rules
+(step 4), with the code `record-invalid`:
+
+- Every effect is on a branch: its `ref` starts with `refs/heads/` and has
+  at least one more byte.
+- A feature finish has exactly one effect. That effect does not delete: its
+  `new` is not all zeros. Its `old` is the first of `merge.parents` and its
+  `new` is `merge.commit`. `summary.base` is the first of `merge.parents`
+  and `summary.tip` is `merge.commit`. So the effect, the merge and the
+  summary name the same two commits: the target's tip and the merge the
+  host built.
+- A prune has only effects that delete: every `new` is all zeros, and so
+  every effect has `merged_into`.
 
 **Decision**, schema `ataniq.owner-decision/1`:
 

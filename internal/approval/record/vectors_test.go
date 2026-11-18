@@ -276,7 +276,14 @@ func TestInvalidVectorsAreRefusedWithTheirCode(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"request-invalid-feature-name.json", "pending-invalid-feature-name.json",
-		"pending-invalid-b64-plain.json", "decision-invalid-b64-plain.json"} {
+		"pending-invalid-b64-plain.json", "decision-invalid-b64-plain.json",
+		// One for each rule that holds the parts of a binding together.
+		"pending-invalid-finish-two-effects.json", "pending-invalid-effect-not-branch.json",
+		"pending-invalid-effect-old.json", "pending-invalid-effect-not-merge.json",
+		"pending-invalid-finish-deletes.json", "pending-invalid-summary-base.json",
+		"pending-invalid-summary-tip.json", "pending-invalid-built-by.json",
+		"pending-invalid-prune-move.json", "pending-invalid-prune-no-merged-into.json",
+		"pending-invalid-prune-not-branch.json"} {
 		if _, ok := expect[name]; !ok {
 			t.Errorf("no vector %s", name)
 		}
@@ -390,7 +397,7 @@ func TestReadmeStatesTheRules(t *testing.T) {
 	for _, word := range []string{SchemaRequest, SchemaPending, SchemaDecision, VerbFeatureFinish, VerbBranchPrune,
 		ClassRefMove, SubjectSeat, EffectRef, BuiltByHost, EvidenceSuite, DecisionApprove, DecisionDeny,
 		ConfirmedCode, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, "A", "M", "D", "T",
-		"rq-", "ap-", "b64", PlanDigest("")} {
+		"rq-", "ap-", "b64", PlanDigest(""), branchPrefix} {
 		need("the word", word)
 	}
 	for _, limit := range []int{MaxRequestBytes, MaxPendingBytes, MaxDecisionBytes, MaxNoteBytes, MaxReasonBytes, MaxEffects} {

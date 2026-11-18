@@ -75,13 +75,37 @@
     "code": "binding-mismatch",
     "why": "binding_sha256 is not the digest of the binding"
   },
+  "pending-invalid-built-by.json": {
+    "code": "record-invalid",
+    "why": "a merge that says another builder than the host"
+  },
   "pending-invalid-control-character.json": {
     "code": "record-invalid",
     "why": "an escaped U+001B in a plain string"
   },
+  "pending-invalid-effect-not-branch.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect is on a tag; every effect is on a ref under refs/heads/"
+  },
+  "pending-invalid-effect-not-merge.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect has a new that is not the merge commit"
+  },
+  "pending-invalid-effect-old.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect has an old that is not the first parent of the merge"
+  },
   "pending-invalid-feature-name.json": {
     "code": "feature-name",
     "why": "a feature name outside [a-z0-9-]{1,48}"
+  },
+  "pending-invalid-finish-deletes.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect deletes the target: the merge commit, the tip of the summary and the new of the effect are all zeros, and the effect says where it was merged; the effect of a feature finish does not delete"
+  },
+  "pending-invalid-finish-two-effects.json": {
+    "code": "record-invalid",
+    "why": "a feature finish with a second effect, which deletes the feature branch; a feature finish has exactly one effect"
   },
   "pending-invalid-flag-kind.json": {
     "code": "record-invalid",
@@ -115,6 +139,18 @@
     "code": "binding-mismatch",
     "why": "plan_sha256 is not the digest of plan_text"
   },
+  "pending-invalid-prune-move.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect moves a branch to another commit; every effect of a prune deletes"
+  },
+  "pending-invalid-prune-no-merged-into.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect deletes a branch and does not say where it was merged"
+  },
+  "pending-invalid-prune-not-branch.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect deletes a tag; every effect is on a ref under refs/heads/"
+  },
   "pending-invalid-repeated-key.json": {
     "code": "record-invalid",
     "why": "the key planner appears twice"
@@ -122,6 +158,14 @@
   "pending-invalid-schema.json": {
     "code": "record-invalid",
     "why": "another schema"
+  },
+  "pending-invalid-summary-base.json": {
+    "code": "record-invalid",
+    "why": "a summary whose base is the second parent of the merge, not the first"
+  },
+  "pending-invalid-summary-tip.json": {
+    "code": "record-invalid",
+    "why": "a summary whose tip is not the merge commit"
   },
   "pending-invalid-three-parents.json": {
     "code": "record-invalid",
