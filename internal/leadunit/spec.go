@@ -58,9 +58,10 @@ type Limits struct {
 	TasksMax uint64
 }
 
-// validate returns an error wrapping [ErrInvalidSpec] for a value outside the
-// bounds.
-func (l Limits) validate() error {
+// Validate returns an error wrapping [ErrInvalidSpec] for a value outside the
+// bounds: [Spec.Validate] holds Limits to it, and a caller that has limits
+// before it has a specification can ask the same question.
+func (l Limits) Validate() error {
 	if l.MemoryMax < MinMemoryMax || l.MemoryMax > MaxMemoryMax {
 		return fmt.Errorf("%w: memory limit %d is outside %d to %d bytes", ErrInvalidSpec, l.MemoryMax, MinMemoryMax, MaxMemoryMax)
 	}
@@ -309,7 +310,7 @@ func (s Spec) Validate() error {
 		}
 	}
 	if s.Limits != nil {
-		if err := s.Limits.validate(); err != nil {
+		if err := s.Limits.Validate(); err != nil {
 			return err
 		}
 	}

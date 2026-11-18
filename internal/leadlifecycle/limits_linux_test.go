@@ -2,6 +2,7 @@ package leadlifecycle
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -119,17 +120,79 @@ func TestStartWithoutTheSeamHasNoLimits(t *testing.T) {
 	}
 }
 
-func TestStartWithLimitsOutsideTheBoundsStartsNothing(t *testing.T) {
-	r, _ := limitsRig(t, func(leadrole.Role) *leadunit.Limits {
-		return &leadunit.Limits{MemoryMax: leadunit.MinMemoryMax - 1, SwapMax: 0, TasksMax: 64}
-	})
-	role := r.define("alpha")
-	_, err := r.start(role)
-	isErr(t, err, ErrStartFailed)
-	if !errors.Is(err, leadunit.ErrInvalidSpec) {
-		t.Fatalf("the refusal is not named: %v", err)
+func TestStartWithLimitsOutsideTheBoundsChangesNothing(t *testing.T) {
+	bad := map[string]leadunit.Limits{
+		"memory below": {MemoryMax: leadunit.MinMemoryMax - 1, SwapMax: 0, TasksMax: 64},
+		"memory above": {MemoryMax: leadunit.MaxMemoryMax + 1, SwapMax: 0, TasksMax: 64},
+		"swap above":   {MemoryMax: 1 << 30, SwapMax: leadunit.MaxSwapMax + 1, TasksMax: 64},
+		"tasks below":  {MemoryMax: 1 << 30, SwapMax: 0, TasksMax: leadunit.MinTasksMax - 1},
+		"tasks above":  {MemoryMax: 1 << 30, SwapMax: 0, TasksMax: leadunit.MaxTasksMax + 1},
 	}
-	if len(r.fake.StartedSpecs()) != 0 || r.fake.Loaded(unitOf(role)) {
-		t.Fatal("a unit was started with limits outside the bounds")
+	for name, l := range bad {
+		r, asked := limitsRig(t, func(leadrole.Role) *leadunit.Limits { c := l; return &c })
+		role := r.define("alpha")
+		before := r.get(role)
+		rev := r.revision()
+		for try := 0; try < 2; try++ {
+			_, err := r.start(role)
+			if !errors.Is(err, leadunit.ErrInvalidSpec) {
+				t.Fatalf("%s: the refusal is not named: %v", name, err)
+			}
+			if errors.Is(err, ErrStartFailed) {
+				t.Fatalf("%s: a refusal before the launch is a failed start: %v", name, err)
+			}
+			if got := r.get(role); !reflect.DeepEqual(got, before) || got.Epoch != before.Epoch || got.Desired != before.Desired ||
+				got.Intent != nil || got.Shown.Reason.Code == "launch-failed" {
+				t.Fatalf("%s: the refusal changed the role: %+v, was %+v", name, got, before)
+			}
+			if r.revision() != rev {
+				t.Fatalf("%s: the registry's revision moved %d to %d", name, rev, r.revision())
+			}
+		}
+		if n := len(asked()); n != 2 {
+			t.Fatalf("%s: asked %d times for two starts", name, n)
+		}
+		if len(r.fake.Calls()) != 0 || len(r.fake.StartedSpecs()) != 0 || r.fake.Loaded(unitOf(role)) || r.holder.calls != 0 {
+			t.Fatalf("%s: something was started or built", name)
+		}
+		r.auditClean()
+	}
+}
+
+func TestStartRefusesBadLimitsBeforeTheUnitIsLookedAt(t *testing.T) {
+	// The refusal comes before the replacement rule: no unit call at all.
+	r, _ := limitsRig(t, func(leadrole.Role) *leadunit.Limits { return &leadunit.Limits{MemoryMax: 1, TasksMax: 64} })
+	role := r.define("alpha")
+	if _, err := r.start(role); !errors.Is(err, leadunit.ErrInvalidSpec) {
+		t.Fatalf("%v", err)
+	}
+	if n := len(r.fake.Calls()); n != 0 {
+		t.Fatalf("%d unit calls before the refusal", n)
+	}
+	// And the preflight comes first: a refused preflight does not ask the seam.
+	r, asked := limitsRig(t, func(leadrole.Role) *leadunit.Limits { return &leadunit.Limits{MemoryMax: 1, TasksMax: 64} })
+	role = r.define("alpha")
+	r.pre.err = errors.New("no login")
+	_, err := r.start(role)
+	isErr(t, err, ErrPreflight)
+	if len(asked()) != 0 {
+		t.Fatalf("the seam was asked %v after a preflight refusal", asked())
+	}
+}
+
+func TestStartGivesTheSpecACopyOfTheAnswer(t *testing.T) {
+	var kept *leadunit.Limits
+	r, _ := limitsRig(t, func(leadrole.Role) *leadunit.Limits {
+		kept = &leadunit.Limits{MemoryMax: 1 << 30, SwapMax: 0, TasksMax: 64}
+		return kept
+	})
+	var seen *leadunit.Limits
+	r.aud.beforeStart = func(spec leadunit.Spec) { seen = spec.Limits }
+	r.mustStart(r.define("alpha"))
+	if seen == nil || *seen != *kept {
+		t.Fatalf("the spec had %+v, the seam answered %+v", seen, kept)
+	}
+	if seen == kept {
+		t.Fatal("the spec holds the pointer the seam answered, not a copy")
 	}
 }

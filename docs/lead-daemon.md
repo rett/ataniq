@@ -661,8 +661,17 @@ limits sets none of the three and its start call is the call without them.
 When limits are given all three are set, each as an unsigned 64-bit number on
 the bus, and a swap limit of 0 means no swap (`MemorySwapMax=0`), not "not
 set". The specification refuses a memory limit outside 256 MiB to 64 GiB, a
-task limit outside 16 to 65,536 and a swap limit outside 0 to 64 GiB. The fake
-records the limits of a unit it starts.
+task limit outside 16 to 65,536 and a swap limit outside 0 to 64 GiB, and
+`Limits.Validate` asks the same question of limits alone. The fake records the
+limits of a unit it starts.
+
+The lifecycle's options have an optional function that gives the limits of a
+role. Start asks it once, after the preflight and before the registry changes,
+checks the answer with `Limits.Validate` and puts a copy of it in the unit
+specification. With no function, or an answer of nil, the unit has no limits.
+Limits outside the bounds are refused like a preflight refusal: nothing is
+changed, no epoch is used, no launch intent is journaled and the error wraps
+`ErrInvalidSpec`.
 
 A unit specification may name a parent unit. The unit is then also **bound** to
 it with `BindsTo=`, `PartOf=` and `After=`, so that stopping the parent stops
@@ -683,12 +692,6 @@ proof in itself). Without that proof nothing starts: the start is refused and
 the role is left as it is. Only then does the lifecycle journal the launch
 intent, with the boot identity when the manager reported one, and call `Start`
 once. It never waits for readiness, and it never sets `ready`.
-
-The lifecycle's options have an optional function that gives the
-[limits](#properties-of-a-unit) of a role. Start asks it once per launch and
-puts the answer in the unit specification. With no function, or an answer of
-nil, the unit has no limits. Limits outside the bounds make the manager refuse
-the start, which is a start that failed.
 
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the

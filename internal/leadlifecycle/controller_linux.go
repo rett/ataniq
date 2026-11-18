@@ -151,8 +151,8 @@ type Options struct {
 	// [leadunit.Spec].Limits, so that the unit is created with those memory,
 	// swap and task limits. Nil, or an answer of nil, gives a unit with none,
 	// as before. The values come from the caller's configuration and are
-	// checked by [leadunit.Spec.Validate]: an answer outside the bounds is a
-	// start the manager refuses before it sends anything.
+	// checked by [leadunit.Limits.Validate] before the registry changes: an
+	// answer outside the bounds refuses the start, changing nothing.
 	Limits func(role leadrole.Role) *leadunit.Limits
 }
 
