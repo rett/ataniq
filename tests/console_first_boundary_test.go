@@ -108,18 +108,21 @@ var boundaryPure = []string{pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgOwner
 // the merge builder. No command imports one of them.
 var boundaryActing = []string{pkgDoor, pkgDoorTest, pkgOwnerChannel, pkgOwnerJournal, pkgMergeBuild}
 
-// boundaryWords is a small list of model and vendor words that no Go file
-// under internal/approval may hold. Remove this list, the rule that reads it
-// and its tests when a repository-wide word test exists: the new packages then
-// come under that test.
+// boundaryWords is a small list of model and vendor words that no file under
+// internal/approval may hold, sample data in a testdata folder included.
+// Remove this list, the rule that reads it and its tests when a
+// repository-wide word test exists: the new packages then come under that
+// test.
 var boundaryWords = []string{
 	"claude", "codex", "anthropic", "openai", "gemini", "gpt", "sonnet", "opus", "haiku", "fable",
 }
 
-// boundaryFile is one Go file as the rules see it.
+// boundaryFile is one file as the rules see it: a Go file, or a file under
+// internal/approval that is kept for its text alone.
 type boundaryFile struct {
 	path    string   // relative to the repository root, with slashes
 	test    bool     // the name ends in _test.go
+	textual bool     // read for the word rule only: not parsed, so it holds no imports
 	tagged  bool     // the build lines need boundaryTag: without it the file is not built
 	imports []string // the direct imports, unquoted
 	text    string   // the whole file
@@ -129,7 +132,8 @@ type boundaryFile struct {
 func (f boundaryFile) pkg() string { return path.Dir(f.path) }
 
 // imported reports whether the import rules read the file: they leave out test
-// files and files that need the owner channel's tag.
+// files and files that need the owner channel's tag. A file read for its text
+// alone holds no imports, so the import rules find nothing in it.
 func (f boundaryFile) imported() bool { return !f.test && !f.tagged }
 
 // needsBoundaryTag reports whether a build line cannot be met while the owner
@@ -223,7 +227,9 @@ func parseBoundaryFile(name, src string) (boundaryFile, error) {
 
 // loadBoundaryFiles reads every Go file below dir, test files and files of any
 // build line included. It leaves out hidden folders, testdata, vendored and
-// third-party code, and the build output folder at the top.
+// third-party code, and the build output folder at the top. For the word rule
+// it then adds the text of every other file under internal/approval, which
+// loadBoundaryTexts reads.
 func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 	t.Helper()
 	var files []boundaryFile
@@ -257,6 +263,50 @@ func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 			return err
 		}
 		files = append(files, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(files, loadBoundaryTexts(t, dir, files)...)
+}
+
+// loadBoundaryTexts walks internal/approval below dir a second time, for the
+// word rule only. It returns the text of every regular file there that is not
+// among the files already loaded, without parsing it: a file of any kind, in
+// any folder, a testdata folder included, since sample data and test vectors
+// are a likely place for a model's name. An absent folder gives nothing.
+func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []boundaryFile {
+	t.Helper()
+	have := map[string]bool{}
+	for _, f := range loaded {
+		have[f.path] = true
+	}
+	top := filepath.Join(dir, filepath.FromSlash(pkgApproval))
+	if _, err := os.Lstat(top); os.IsNotExist(err) {
+		return nil
+	}
+	var files []boundaryFile
+	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if have[rel] {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files = append(files, boundaryFile{path: rel, textual: true, text: string(src)})
 		return nil
 	})
 	if err != nil {
@@ -609,9 +659,11 @@ func ruleCommands(files []boundaryFile) []string {
 
 var boundaryWordPattern = regexp.MustCompile(`(?i)\b(?:` + strings.Join(boundaryWords, "|") + `)\b`)
 
-// ruleWords is rule 7: no Go file under internal/approval holds a word of the
+// ruleWords is rule 7: no file under internal/approval holds a word of the
 // list, as a whole word and without regard to case. It reads test files and
-// files of every build line, and the whole text, not only the imports.
+// files of every build line, and the whole text, not only the imports; it
+// also reads the files the loader keeps for their text alone, which are the
+// files in a testdata folder and the files that are not Go.
 func ruleWords(files []boundaryFile) []string {
 	var found []string
 	for _, f := range files {
@@ -1001,9 +1053,11 @@ func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 
 // TestConsoleFirstBoundaryLoader checks, in a temporary folder, which files
 // the loader reads: test files and files of any build line are read, and only
-// the imports have to be valid Go.
+// the imports have to be valid Go. Under internal/approval every other file
+// is read too, for its text alone, and the word rule finds a word in it.
 func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	dir := t.TempDir()
+	word := boundaryWords[0]
 	for name, src := range map[string]string{
 		"cmd/sample/main.go":                    boundarySource("/"+pkgDoor) + "\nfunc main() { this is not Go\n",
 		"cmd/sample/main_test.go":               boundarySource("/" + pkgDoorTest),
@@ -1018,6 +1072,16 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"build/a.go":                            "not Go at all\n",
 		"internal/build/a.go":                   boundarySource("strings"),
 		"internal/approval/card/third_party.go": boundarySource("strings"),
+		// Files the word rule alone reads. The Go file in testdata breaks
+		// the import rules as well, and they do not see it.
+		"internal/approval/card/testdata/vector.json":   "{\"model\": \"" + word + "-4\"}\n",
+		"internal/approval/card/testdata/sample.go":     "// Made for " + word + ".\n" + boundarySource("/"+pkgConsole, "example.org/module"),
+		"internal/approval/card/testdata/neutral.json":  "{\"model\": \"model-a\"}\n",
+		"internal/approval/card/testdata/below/deep.go": "not Go at all, and " + strings.ToUpper(word) + "\n",
+		"internal/approval/later/notes.txt":             "One.\nTwo " + word + ".\n",
+		"internal/approval/.hidden/a.txt":               word + "\n",
+		"internal/approvalx/testdata/vector.json":       word + "\n",
+		"internal/other/testdata/vector.json":           word + "\n",
 	} {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -1037,6 +1101,9 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		if f.tagged {
 			mark += " tagged"
 		}
+		if f.textual {
+			mark += " text"
+		}
 		got = append(got, f.path+mark)
 	}
 	sort.Strings(got)
@@ -1045,11 +1112,29 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"cmd/sample/main_test.go test",
 		"cmd/sample/other_windows.go",
 		"cmd/sample/tagged.go tagged",
+		"internal/approval/.hidden/a.txt text",
+		"internal/approval/card/testdata/below/deep.go text",
+		"internal/approval/card/testdata/neutral.json text",
+		"internal/approval/card/testdata/sample.go text",
+		"internal/approval/card/testdata/vector.json text",
 		"internal/approval/card/third_party.go",
+		"internal/approval/later/notes.txt text",
 		"internal/build/a.go",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("read %q, want %q", got, want)
 	}
 	expectFindings(t, ruleCommands, files, "cmd/sample/main.go", "cmd/sample/other_windows.go")
+	expectFindings(t, ruleWords, files,
+		"internal/approval/.hidden/a.txt", "internal/approval/card/testdata/below/deep.go",
+		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/vector.json",
+		"internal/approval/later/notes.txt")
+	// No import rule finds anything in a file that is kept for its text.
+	for _, rule := range []func([]boundaryFile) []string{ruleTable, rulePure, ruleApprovalHeadless} {
+		expectFindings(t, rule, files)
+	}
+	// A folder without internal/approval gives no text files.
+	if texts := loadBoundaryTexts(t, t.TempDir(), nil); len(texts) != 0 {
+		t.Errorf("read %d files in an empty folder", len(texts))
+	}
 }
