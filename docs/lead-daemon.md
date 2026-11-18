@@ -909,7 +909,13 @@ These are runtime requirements of the daemon, checked when it runs, and not
 developer tools. `make doctor` does not check them, and
 [the development environment](../AGENTS.md) lists the developer prerequisites.
 
-- Linux. The daemon and its packages build on Linux only.
+- Linux. The daemon runs on Linux only. For another system `ataniqd` builds as
+  a stub that prints one line and exits 1, and the packages of this guide
+  compile without their Linux files. What compiles there is what no system
+  decides, such as the socket name and path, the default folders and the exit
+  codes; the daemon, the listener and the server, the registry, the locks, the
+  lifecycle and the systemd calls are in the Linux files. No test and no CI job
+  builds for another system.
 - A systemd user manager of the calling user, with `busctl` and `systemctl`.
   The manager finds them in `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, never
   through `PATH`, runs them with a fixed environment (the user manager's runtime

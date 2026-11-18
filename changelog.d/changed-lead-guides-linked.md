@@ -6,4 +6,7 @@
   none of these parts calls another yet. `docs/lead-intake.md` adds that the
   owner's git reads a git bundle file found on the host at the template's
   `serve.repository` path, so that path must not exist on the host.
+  `docs/lead-daemon.md` no longer says that the daemon's packages build on
+  Linux only: the daemon runs on Linux only, and for another system `ataniqd`
+  builds as a stub and the packages compile without their Linux files.
   Documentation only.
