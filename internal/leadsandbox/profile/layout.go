@@ -5,19 +5,32 @@ import "path"
 // DirMode is the mode of every folder of the host layout.
 const DirMode = 0o700
 
-// Layout is the host layout of one lead of one project under a state root:
+// Layout is the host layout of one lead of one project under a state root
+// (the lead-hosting design, section 3.3):
 //
+//	<state>/leads/<role>/holder
 //	<state>/leads/<role>/home
 //	<state>/leads/<role>/config/<runtime>
 //	<state>/leads/<role>/tree
 //	<state>/leads/<role>/gitmeta
-//	<state>/leads/<role>/records
+//	<state>/leads/<role>/qargi
+//	<state>/leads/<role>/requests
+//	<state>/leads/<role>/mail
+//	<state>/mailbox/<role>
+//	<state>/pub/<project>
 //	<state>/mirrors/<project>.git
 //
-// gitmeta is Ataniq's copy of the tree's protected git files (see GitMeta);
-// records is the lead's working Qargi records, when the inputs name them (see
-// Records). Every folder has mode DirMode and lies outside every repository. The
-// methods build strings only; call Validate first.
+// <state>/leads/<role> itself is Ataniq's and is never bound, and neither is
+// holder, the holder's own state. home, the config folder of the runtime,
+// tree, qargi, requests and mail are bound read-write, each as a whole, so the
+// lead writes them. gitmeta is Ataniq's copy of the tree's protected git files
+// (see GitMeta); qargi is the lead's working Qargi records (see
+// QargiRecords). The mailbox and the published folder lie
+// outside the lead's folder and are bound read-only. The coordinators' trees
+// and homes (CoordsDir) and their shared login (CoordLoginDir) lie under the
+// same state root and are never bound into a lead's sandbox. Every folder has
+// mode DirMode and lies outside every repository. The methods build strings
+// only; call Validate first.
 type Layout struct {
 	StateRoot string
 	Role      string
@@ -41,6 +54,11 @@ func (l Layout) Validate() error {
 
 // LeadDir is <state>/leads/<role>.
 func (l Layout) LeadDir() string { return path.Join(l.StateRoot, "leads", l.Role) }
+
+// Holder is the folder of the holder's own state for the lead (its sockets
+// and what it records): <state>/leads/<role>/holder. It is never bound: no
+// bind source may lie in or above it.
+func (l Layout) Holder() string { return path.Join(l.LeadDir(), "holder") }
 
 // Home is the lead's home on the host.
 func (l Layout) Home() string { return path.Join(l.LeadDir(), "home") }
@@ -79,12 +97,48 @@ const (
 // lead cannot write it. Inputs.GitMeta must be this path.
 func (l Layout) GitMeta() string { return path.Join(l.LeadDir(), "gitmeta") }
 
-// Records is the host folder of the lead's working Qargi records:
-// <state>/leads/<role>/records. It is the one folder the lead writes that is not
-// the home, the config folder or the tree, and it lies in the lead's own state
-// folder like them, so that the profile's rules about another lead's state
-// cover it. Inputs.QargiRecords, when present, must be this path.
-func (l Layout) Records() string { return path.Join(l.LeadDir(), "records") }
+// QargiRecords is the host folder of the lead's working Qargi records:
+// <state>/leads/<role>/qargi. Every lead has it, bound read-write at the
+// inside path the inputs give (Inputs.QargiRecordsInside). It lies in the
+// lead's own state folder like the other folders the lead writes, so that the
+// profile's rules about another lead's state cover it. It is no input: a
+// caller cannot name another folder.
+func (l Layout) QargiRecords() string { return path.Join(l.LeadDir(), "qargi") }
+
+// Requests is the host folder bound read-write at RequestsInside:
+// <state>/leads/<role>/requests. In this version it is only a bound folder:
+// nothing in Ataniq reads it.
+func (l Layout) Requests() string { return path.Join(l.LeadDir(), "requests") }
+
+// Mail is the host folder bound read-write at MailInside:
+// <state>/leads/<role>/mail, with one subfolder per feature.
+func (l Layout) Mail() string { return path.Join(l.LeadDir(), "mail") }
+
+// MailboxesDir is the folder that holds one mailbox per role: <state>/mailbox.
+func (l Layout) MailboxesDir() string { return path.Join(l.StateRoot, "mailbox") }
+
+// Mailbox is the lead's mailbox on the host, <state>/mailbox/<role>, bound
+// read-only at MailboxInside. It is Ataniq's: the lead does not write it.
+func (l Layout) Mailbox() string { return path.Join(l.MailboxesDir(), l.Role) }
+
+// PublishedDir is the folder that holds one published folder per project:
+// <state>/pub.
+func (l Layout) PublishedDir() string { return path.Join(l.StateRoot, "pub") }
+
+// Published is the folder the project's coordinators publish under,
+// <state>/pub/<project>, bound read-only at CoordInside. It holds only
+// <feature>/qargi, <feature>/out and <feature>/archive.
+func (l Layout) Published() string { return path.Join(l.PublishedDir(), l.Project) }
+
+// CoordsDir is the folder of the coordinators' trees and homes:
+// <state>/coords, with <project>/<feature>/tree and <project>/<feature>/home
+// below it. Nothing in it is bound into a lead's sandbox.
+func (l Layout) CoordsDir() string { return path.Join(l.StateRoot, "coords") }
+
+// CoordLoginDir is the folder of the coordinators' shared logins:
+// <state>/coord-login, with <project>/<runtime> below it. Nothing in it is
+// bound into a lead's sandbox.
+func (l Layout) CoordLoginDir() string { return path.Join(l.StateRoot, "coord-login") }
 
 // GitMetaSource is the source, below the folder gitMeta, of one path of
 // GitReadOnlyRel: the entry of the folder with the same last element.

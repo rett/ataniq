@@ -165,7 +165,7 @@ func writeGitMeta(parent *safefile.Root, in profile.Inputs, m *metaCopy) *Proble
 	if err := parent.MkdirAll(tmp, gitMetaDirMode); err != nil {
 		return fromErr(tmpHost, err)
 	}
-	if prob := fillGitMeta(tmpHost, m); prob != nil {
+	if prob := fillGitMeta(parent, tmp, tmpHost, m); prob != nil {
 		return prob
 	}
 	if err := beforeGitMetaMove(); err != nil {
@@ -180,14 +180,17 @@ func writeGitMeta(parent *safefile.Root, in profile.Inputs, m *metaCopy) *Proble
 	return nil
 }
 
-// fillGitMeta writes the entries of the folder at dir (made empty by the
-// caller) and syncs every file and folder in it.
-func fillGitMeta(dir string, m *metaCopy) *Problem {
-	gm, err := safefile.OpenRoot(dir)
+// fillGitMeta writes the entries of the folder name in parent (made empty by
+// the caller; dir is its host path, for the messages) and syncs every file and
+// folder in it. The folder is opened from the handle of parent, not by name,
+// and everything is written beneath the descriptor that open returned.
+func fillGitMeta(parent *safefile.Root, name, dir string, m *metaCopy) *Problem {
+	gm, err := parent.SubRoot(name)
 	if err != nil {
 		return fromErr(dir, err)
 	}
 	defer gm.Close()
+	afterSubRoot(dir)
 	write := func(rel string, data []byte) *Problem {
 		if err := gm.WriteFileExclusive(rel, data, gitMetaFileMode); err != nil {
 			return fromErr(dir+"/"+rel, err)

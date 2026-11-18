@@ -14,7 +14,7 @@ func width(opt string) int {
 	switch opt {
 	case "--uid", "--gid", "--cap-drop", "--seccomp", "--chdir", "--remount-ro", "--tmpfs", "--dev", "--proc":
 		return 2
-	case "--setenv", "--ro-bind", "--bind", "--symlink":
+	case "--setenv", "--ro-bind", "--bind", "--symlink", "--ro-bind-fd", "--bind-fd":
 		return 3
 	}
 	return 1
@@ -120,19 +120,19 @@ func TestVerifyMutations(t *testing.T) {
 
 		// The mounts.
 		{"required row removed", ProbMountMissing, false, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--ro-bind", "/usr")) }},
-		{"probe row removed", ProbMountMissing, false, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--ro-bind", "/opt/ataniq/bin/probe")) }},
+		{"probe row removed", ProbMountMissing, false, func(t *testing.T, p *Plan) { cut(p, findBind(t, p, "/opt/ataniq/bin/probe")) }},
 		{"managed settings row removed", ProbMountMissing, false, func(t *testing.T, p *Plan) {
-			cut(p, find(t, p, "--ro-bind", "/opt/ataniq/managed/arc-lead/settings.json"))
+			cut(p, findBind(t, p, "/opt/ataniq/managed/arc-lead/settings.json"))
 		}},
 		{"tmpfs row removed", ProbMountMissing, false, func(t *testing.T, p *Plan) { cut(p, find(t, p, "--tmpfs", "/")) }},
 		{"read-only bind made writable", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--ro-bind", "/usr")] = "--bind"
 		}},
 		{"git config made writable", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")] = "--bind"
+			p.Bwrap[findBind(t, p, "/state/leads/arc-lead/gitmeta/config")] = "--bind-fd"
 		}},
 		{"source changed", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/tree")+1] = "/state/leads/other/tree"
+			resource(t, p, "/state/leads/arc-lead/tree", "/state/leads/other/tree")
 		}},
 		{"link target changed", ProbMountDiffers, false, func(t *testing.T, p *Plan) {
 			p.Bwrap[find(t, p, "--symlink", "usr/bin")+1] = "usr/sbin"
@@ -156,36 +156,76 @@ func TestVerifyMutations(t *testing.T) {
 			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/home/owner/.ssh", "/home/lead/.ssh")
 		}},
 		{"owner's checkout mounted", ProbNever, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/tree")+1] = "/home/owner/work/demo"
+			resource(t, p, "/state/leads/arc-lead/tree", "/home/owner/work/demo")
 		}},
 		{"folder below a never-mounted path", ProbNever, false, func(t *testing.T, p *Plan) {
 			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/home/owner/.claude/projects", "/x")
 		}},
+		// The rules about other state under the state root.
+		{"the holder folder mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/leads/arc-lead/holder", "/x")
+		}},
+		{"another role's mailbox as the mailbox", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/state/mailbox/arc-lead", "/state/mailbox/other-lead")
+		}},
+		{"the lead's own mailbox as another row", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/opt/ataniq/qargi", "/state/mailbox/arc-lead")
+		}},
+		{"the lead's own mailbox as a mount that is no row", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/mailbox/arc-lead", "/x")
+		}},
+		{"a folder of the lead's own mailbox", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/state/mailbox/arc-lead", "/state/mailbox/arc-lead/a-message")
+		}},
+		{"another project's published folder as the coordinator row", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/state/pub/demo", "/state/pub/other")
+		}},
+		{"the project's own published folder as another row", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/opt/ataniq/assignment/demo", "/state/pub/demo")
+		}},
+		{"a coordinator's tree mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/coords/demo/a-feature/tree", "/x")
+		}},
+		{"a coordinator's home as the mail folder", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/state/leads/arc-lead/mail", "/state/coords/demo/a-feature/home")
+		}},
+		{"the coordinators' login mounted", ProbNever, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/opt/ataniq/qargi", "/state/coord-login/demo/claude")
+		}},
 		// Rule G1: no source in or below a folder the lead can write.
+		{"a read-only source in the requests folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/opt/ataniq/qargi", "/state/leads/arc-lead/requests/qargi")
+		}},
+		{"a read-only source in the records folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/opt/ataniq/qargi", "/state/leads/arc-lead/qargi/install")
+		}},
+		{"a read-only source in the mail folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
+			resource(t, p, "/state/mailbox/arc-lead", "/state/leads/arc-lead/mail/a-feature")
+		}},
 		{"git config bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/config")+1] = "/state/leads/arc-lead/tree/.git/config"
+			resource(t, p, "/state/leads/arc-lead/gitmeta/config", "/state/leads/arc-lead/tree/.git/config")
 		}},
 		{"git hooks bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/hooks")+1] = "/state/leads/arc-lead/tree/.git/hooks"
+			resource(t, p, "/state/leads/arc-lead/gitmeta/hooks", "/state/leads/arc-lead/tree/.git/hooks")
 		}},
 		{"git info bound from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/info")+1] = "/state/leads/arc-lead/tree/.git/info"
+			resource(t, p, "/state/leads/arc-lead/gitmeta/info", "/state/leads/arc-lead/tree/.git/info")
 		}},
 		{"a read-only source in the home", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/state/leads/arc-lead/home/qargi"
+			resource(t, p, "/opt/ataniq/qargi", "/state/leads/arc-lead/home/qargi")
 		}},
 		{"a read-only source in the config folder", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/skills/arc-lead")+1] = "/state/leads/arc-lead/config/claude/skills"
+			resource(t, p, "/opt/ataniq/skills/arc-lead", "/state/leads/arc-lead/config/claude/skills")
 		}},
 		{"a read-write source made a parent of many sources", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/home")+1] = "/opt/ataniq"
+			resource(t, p, "/state/leads/arc-lead/home", "/opt/ataniq")
 		}},
 		{"a mount that is no row, from the tree", ProbLeadWritable, false, func(t *testing.T, p *Plan) {
 			insert(p, find(t, p, "--chdir", ""), "--ro-bind", "/state/leads/arc-lead/tree/.envrc", "/x")
 		}},
 		{"Mounts row says lead-writable", ProbLeadWritable, false, func(t *testing.T, p *Plan) { p.Mounts[1].LeadWritable = true }},
 		{"folder above a never-mounted path", ProbNever, false, func(t *testing.T, p *Plan) {
-			p.Bwrap[find(t, p, "--ro-bind", "/opt/ataniq/qargi")+1] = "/home/owner"
+			resource(t, p, "/opt/ataniq/qargi", "/home/owner")
 		}},
 		{"other runtime's config mounted", ProbOtherRuntime, false, func(t *testing.T, p *Plan) {
 			insert(p, find(t, p, "--chdir", ""), "--bind", "/state/leads/arc-lead/config/codex", "/home/lead/.codex")
@@ -198,7 +238,7 @@ func TestVerifyMutations(t *testing.T) {
 		}},
 		{"state of the other lead", ProbOtherRuntime, false, func(t *testing.T, p *Plan) {
 			// The whole config root holds both runtimes' folders.
-			p.Bwrap[find(t, p, "--bind", "/state/leads/arc-lead/config/claude")+1] = "/state/leads/arc-lead/config"
+			resource(t, p, "/state/leads/arc-lead/config/claude", "/state/leads/arc-lead/config")
 		}},
 
 		// The tail.

@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strconv"
 	"strings"
 
 	"ataniq/internal/leadsandbox/profile"
@@ -30,8 +31,11 @@ func (e *emitter) opt(name string, operands ...string) {
 	}
 }
 
-// bind appends the option of one row of the bind table.
-func (e *emitter) bind(b profile.Bind) {
+// bind appends the option of one row of the bind table. fd is the descriptor
+// a bind row is bound from, or zero for a row that is bound by path: a row
+// Ataniq supplies always has one (--ro-bind-fd FD DEST, --bind-fd FD DEST),
+// and a row of the host never has (--ro-bind SRC DEST).
+func (e *emitter) bind(b profile.Bind, fd int) {
 	switch b.Kind {
 	case profile.KindTmpfs:
 		e.opt("--tmpfs", b.Inside)
@@ -40,9 +44,17 @@ func (e *emitter) bind(b profile.Bind) {
 	case profile.KindProc:
 		e.opt("--proc", b.Inside)
 	case profile.KindRoBind:
-		e.opt("--ro-bind", b.Source, b.Inside)
+		if fd > 0 {
+			e.opt("--ro-bind-fd", strconv.Itoa(fd), b.Inside)
+		} else {
+			e.opt("--ro-bind", b.Source, b.Inside)
+		}
 	case profile.KindRwBind:
-		e.opt("--bind", b.Source, b.Inside)
+		if fd > 0 {
+			e.opt("--bind-fd", strconv.Itoa(fd), b.Inside)
+		} else {
+			e.opt("--bind", b.Source, b.Inside)
+		}
 	case profile.KindSymlink:
 		e.opt("--symlink", b.Target, b.Inside)
 	default:

@@ -10,6 +10,11 @@ import (
 // CollectIdentities returns.
 const MaxIdentities = 2048
 
+// MaxCoordinatorIdentities is the most identities of the coordinators' folders
+// a spec lists. It is lower than MaxIdentities so that both lists, full, fit a
+// spec of MaxSpecBytes.
+const MaxCoordinatorIdentities = 1024
+
 // maxIdentityMounts is the most mounts of the mount table whose identity the
 // probe reads. A table with more is not read to its end: the rest is counted
 // and assertion 1 is not-checked.

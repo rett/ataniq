@@ -70,13 +70,17 @@ func testSpec(t *testing.T) assert.Spec {
 		// The identity check cannot be made without a forbidden identity.
 		ForbiddenIdentities: []assert.FileIdentity{{Device: 7, Inode: 70}},
 		OtherConfigDir:      profile.ConfigInside(rt.Other()),
-		LoopbackTCP:         addr,
-		AbstractSocket:      fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
-		ProviderHost:        "localhost",
-		Tree:                "/work/ataniq",
-		GitReadOnly:         []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
-		ManagedSettings:     profile.ClaudeManagedInside,
-		ManagedMarker:       "example-guard-hook",
+		// The coordinators' roots of an invented state root, and one identity:
+		// without one assertion 11 cannot be made.
+		CoordinatorPaths:      []string{"/var/lib/example/state/coords", "/var/lib/example/state/coord-login"},
+		CoordinatorIdentities: []assert.FileIdentity{{Device: 9, Inode: 90}},
+		LoopbackTCP:           addr,
+		AbstractSocket:        fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
+		ProviderHost:          "localhost",
+		Tree:                  "/work/ataniq",
+		GitReadOnly:           []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
+		ManagedSettings:       profile.ClaudeManagedInside,
+		ManagedMarker:         "example-guard-hook",
 
 		ConnectTimeoutMS: 100,
 		ResolveTimeoutMS: 100,
@@ -107,6 +111,8 @@ type fakeSystem struct {
 	data   map[string]string
 	mounts []assert.Mount
 	ids    map[string]int
+	// writable are the paths access(W_OK) allows.
+	writable map[string]bool
 }
 
 func passSystem(s assert.Spec) *fakeSystem {
@@ -117,7 +123,8 @@ func passSystem(s assert.Spec) *fakeSystem {
 			"/proc/sys/dev/tty/legacy_tiocsti": "0\n",
 			s.ManagedSettings:                  `{"hooks":"` + s.ManagedMarker + `"}`,
 		},
-		ids: map[string]int{},
+		ids:      map[string]int{},
+		writable: map[string]bool{},
 	}
 	for _, e := range s.Env {
 		f.env = append(f.env, e.Name+"="+e.Value)
@@ -133,6 +140,24 @@ func passSystem(s assert.Spec) *fakeSystem {
 		id := 10 + i
 		f.mounts = append(f.mounts, assert.Mount{ID: id, ParentID: 1, Root: "/", Point: p, Options: "ro,nosuid", FSType: "tmpfs", Source: "tmpfs", SuperOptions: "rw"})
 		f.ids[p] = id
+	}
+	// The four parent folders of assertion 11, each a mount of its own: the
+	// requests and the mail folder read-write, the mailbox and the published
+	// folder read-only and empty.
+	for i, pf := range []struct {
+		path     string
+		writable bool
+	}{
+		{profile.RequestsInside, true}, {profile.MailboxInside, false}, {profile.MailInside, true}, {profile.CoordInside, false},
+	} {
+		id, opts := 20+i, "ro,nosuid"
+		if pf.writable {
+			opts = "rw,nosuid"
+		}
+		f.nodes[pf.path] = fs.ModeDir | 0o700
+		f.mounts = append(f.mounts, assert.Mount{ID: id, ParentID: 1, Root: "/", Point: pf.path, Options: opts, FSType: "tmpfs", Source: "tmpfs", SuperOptions: "rw"})
+		f.ids[pf.path] = id
+		f.writable[pf.path] = pf.writable
 	}
 	return f
 }
@@ -178,16 +203,41 @@ func (f *fakeSystem) Identity(p string) (assert.FileIdentity, error) {
 	return assert.FileIdentity{Device: 4242, Inode: h.Sum64() | 1<<40}, nil
 }
 func (f *fakeSystem) DirEmpty(string) (bool, error) { return true, nil }
-func (f *fakeSystem) Writable(string) (bool, error) { return false, nil }
 
-// agentFD is one descriptor above 2 as the test agent sees it.
+// DirNames is an empty folder for every folder of the fake.
+func (f *fakeSystem) DirNames(p string, _ int) ([]string, error) {
+	if mode, ok := f.nodes[p]; !ok || !mode.IsDir() {
+		return nil, &fs.PathError{Op: "open", Path: p, Err: syscall.ENOENT}
+	}
+	return nil, nil
+}
+func (f *fakeSystem) Writable(p string) (bool, error) { return f.writable[p], nil }
+
+// agentFD is one descriptor above 2 as the test agent sees it. Dev, Ino and
+// Mode are what fstat reports on the descriptor: the object it names, whatever
+// its name holds by then.
 type agentFD struct {
 	FD      int    `json:"fd"`
 	Flags   int    `json:"flags"`
 	Cloexec bool   `json:"cloexec"`
 	Link    string `json:"link"`
 	Head    string `json:"head,omitempty"`
+	Dev     uint64 `json:"dev"`
+	Ino     uint64 `json:"ino"`
+	Mode    uint32 `json:"mode"`
 }
+
+// The values of the agent's HOLD argument.
+const (
+	holdNone = "0"
+	// holdAfter: the agent says READY on descriptor 1 and waits for a byte on
+	// descriptor 0 after it has written what it sees.
+	holdAfter = "1"
+	// holdBefore: the agent makes the file OUT.ready and waits for the file
+	// OUT.go before it looks at anything, so that a test can change the file
+	// system between the probe's exec and the agent's look at its descriptors.
+	holdBefore = "2"
+)
 
 // agentReport is what the test agent writes about itself.
 type agentReport struct {
@@ -226,12 +276,23 @@ func rawEnviron() []string {
 // agentMain is the trivial agent: the test binary again. It writes what it
 // sees to the file OUT, with plain system calls only (no os.File, so no
 // descriptor of the runtime's own), then, when HOLD is "1", says READY on
-// descriptor 1 and waits for a byte on descriptor 0. It exits with EXIT. It
+// descriptor 1 and waits for a byte on descriptor 0. When HOLD is "2" it
+// waits before it looks instead (see holdBefore). It exits with EXIT. It
 // reads the files that the pass-through mode opened for reading and appends
 // "hi" to the ones opened for writing.
 func agentMain(args []string) int {
-	out, exit, hold := args[0], 0, args[2] == "1"
+	out, exit, hold := args[0], 0, args[2] == holdAfter
 	fmt.Sscan(args[1], &exit)
+	if args[2] == holdBefore {
+		if fd, err := unix.Open(out+".ready", unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o600); err == nil {
+			unix.Close(fd)
+		}
+		var st unix.Stat_t
+		for i := 0; i < 4000 && unix.Stat(out+".go", &st) != nil; i++ {
+			ts := unix.Timespec{Nsec: 5e6}
+			unix.Nanosleep(&ts, nil)
+		}
+	}
 	r := agentReport{PID: unix.Getpid(), PGID: unix.Getpgrp(), Env: os.Environ(), Args: args, TIOCGSID: -1}
 	r.EnvRaw = rawEnviron()
 	r.SID, _ = unix.Getsid(0)
@@ -250,8 +311,12 @@ func agentMain(args []string) int {
 		flags, _ := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
 		buf := make([]byte, 256)
 		n, _ := unix.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd), buf)
-		a := agentFD{FD: fd, Flags: flags, Cloexec: fdflags&unix.FD_CLOEXEC != 0, Link: string(buf[:n])}
-		if strings.HasPrefix(a.Link, "/") {
+		a := agentFD{FD: fd, Flags: flags, Cloexec: fdflags&unix.FD_CLOEXEC != 0, Link: string(buf[:max(n, 0)])}
+		var st unix.Stat_t
+		if unix.Fstat(fd, &st) == nil {
+			a.Dev, a.Ino, a.Mode = uint64(st.Dev), uint64(st.Ino), st.Mode
+		}
+		if strings.HasPrefix(a.Link, "/") && flags&unix.O_PATH == 0 {
 			switch flags & unix.O_ACCMODE {
 			case unix.O_RDONLY:
 				h := make([]byte, 64)

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"sort"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -111,6 +112,30 @@ func (HostSystem) DirEmpty(path string) (bool, error) {
 		return false, &fs.PathError{Op: "readdir", Path: path, Err: err}
 	}
 	return len(names) == 0, nil
+}
+
+// DirNames opens the folder without following a link and reads at most limit
+// names and one more: a folder that has the one more is refused with
+// ErrTooLarge, not cut short.
+func (HostSystem) DirNames(path string, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("assert: list %s: the limit must be positive", path)
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	names, err := f.Readdirnames(limit + 1)
+	if err != nil && err != io.EOF {
+		return nil, &fs.PathError{Op: "readdir", Path: path, Err: err}
+	}
+	if len(names) > limit {
+		return nil, fmt.Errorf("assert: list %s: %w (limit %d entries)", path, ErrTooLarge, limit)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // Mounts reads and parses the mount table, at most MaxMountTableBytes of it.

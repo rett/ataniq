@@ -47,6 +47,13 @@ type ResolvedSource struct {
 	// Skipped says the source does not exist and its row is optional (it is
 	// applied only if the host has it): Real is empty.
 	Skipped bool
+	// Walk says how the source of a row Ataniq supplies is reached by handle:
+	// the folder to open by name, the path beneath it and the type the source
+	// must have. [ResolveSources] sets it from the bind table for every row
+	// that is not a row of the host; for a row of the host it is the zero
+	// value. [CheckBindSources] refuses a row Ataniq supplies without it, or
+	// with one that does not lead to Source. See [SourceWalk].
+	Walk SourceWalk
 }
 
 // Bound is the path bubblewrap is to bind for the row, and the path
@@ -95,9 +102,13 @@ func (r Resolution) HostSources() map[string]string {
 // does not exist is resolved by its longest existing prefix. A resolved path
 // that cannot be used (relative, not clean, too long, a control character) is
 // a problem, never dropped. The profile's state checks run again on the real
-// paths too: a source that resolves into or above another lead's state, or
-// another project's mirror folder, is refused (the folders are resolved the
-// same way). It also refuses:
+// paths too: a source that resolves into or above another lead's state, the
+// lead's holder folder, another project's mirror folder, another role's
+// mailbox, another project's published folder, or a coordinator's tree, home
+// or login is refused, and so is one that resolves into the lead's own mailbox
+// or the project's own published folder and is not the row that binds exactly
+// that folder (the folders are resolved the same way; the rules are
+// profile.StateFolders.Reason). It also refuses:
 //
 //   - a source that is missing, unless its row is optional;
 //   - for every row that is not a row of the host (profile.RoleHost), a source
@@ -126,6 +137,17 @@ func (r Resolution) HostSources() map[string]string {
 // It reads no file and creates nothing; it reads the target of a link with
 // os.Readlink. The error is set only when the inputs are refused or resolve is
 // nil (a *Problem of kind ErrInvalid).
+//
+// It works on names, by design. Resolving a name (filepath.EvalSymlinks for
+// the real file system) is kept for two things: the real path of a row of the
+// host, which is what the plan binds for it, and the comparison on real paths
+// described above, which a walk by handle cannot make (a never-mounted path may
+// not exist, and a rule about a folder is a rule about its name). What it
+// resolved for a row Ataniq supplies is never opened or bound: such a row is
+// bound by the name the inputs give, which is refused here unless it is its own
+// real path, and the object behind that name is checked by [CheckBindSources],
+// by handle, at the moment of use. Each row Ataniq supplies carries the walk
+// for that check ([ResolvedSource].Walk).
 func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 	return ResolveSourcesWith(in, resolve, os.Readlink)
 }
@@ -161,25 +183,25 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 		}
 	}
 	// The state folders the profile knows, on their real paths: a source in
-	// another lead's state or in another project's mirror is refused whatever
-	// the link that leads there.
-	l := in.Layout()
-	var st struct{ leads, lead, mirrors, mirror string }
+	// another lead's state, in the lead's holder folder, in another project's
+	// mirror, in another role's mailbox, in another project's published folder
+	// or in a coordinator's tree, home or login is refused whatever the link
+	// that leads there (profile.StateFolders.Reason). A folder that does not
+	// exist is resolved by its longest existing prefix.
+	st := in.Layout().StateFolders()
 	stateOK := true
-	for _, d := range []struct {
-		dst  *string
-		path string
-	}{{&st.leads, path.Join(l.StateRoot, "leads")}, {&st.lead, l.LeadDir()}, {&st.mirrors, l.MirrorsDir()}, {&st.mirror, l.Mirror()}} {
-		r, err := realOf(resolve, readlink, d.path)
+	for _, dst := range st.Paths() {
+		lexical := *dst
+		r, err := realOf(resolve, readlink, lexical)
 		if err == nil {
 			err = profile.CheckPath("resolved path", r)
 		}
 		if err != nil {
-			res.add(problem(ErrUnreadable, d.path, "the state folder cannot be resolved: %v", err))
+			res.add(problem(ErrUnreadable, lexical, "the state folder cannot be resolved: %v", err))
 			stateOK = false
 			continue
 		}
-		*d.dst = r
+		*dst = r
 	}
 	realPaths := make([]string, len(t))
 	for i, b := range t {
@@ -202,7 +224,8 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 			continue
 		}
 		realPaths[i] = r
-		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r, Role: b.SourceRole})
+		walk, _ := sourceWalk(in.StateRoot, b)
+		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r, Role: b.SourceRole, Walk: walk})
 		// Rule G1: bubblewrap binds the path the plan names, and follows a
 		// link in it. A row Ataniq supplies must name its real path, so that
 		// the path that is checked is the path that is bound.
@@ -213,11 +236,8 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 			res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s: %s", b.Inside, r, reason(cerr)).at(b.Inside))
 		}
 		if stateOK {
-			if related(r, st.leads) && r != st.lead && !strings.HasPrefix(r, st.lead+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another lead's state", b.Inside, r).at(b.Inside))
-			}
-			if related(r, st.mirrors) && r != st.mirror && !strings.HasPrefix(r, st.mirror+"/") {
-				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, in or above another project's mirror folder", b.Inside, r).at(b.Inside))
+			if why := st.Reason(r, b.SourceRole); why != "" {
+				res.add(problem(ErrNeverMounted, b.Source, "the source of %s resolves to %s, which %s", b.Inside, r, why).at(b.Inside))
 			}
 		}
 	}

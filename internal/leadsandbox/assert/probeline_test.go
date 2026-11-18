@@ -25,7 +25,7 @@ func TestReadProbeReportTakesOneLineAndNothingMore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Results) != 8 {
+	if len(rep.Results) != 9 {
 		t.Errorf("results: %+v", rep.Results)
 	}
 	// Not a byte past the newline was taken.

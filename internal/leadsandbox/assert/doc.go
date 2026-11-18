@@ -1,10 +1,10 @@
-// Package assert holds the start-up assertions of the lead sandbox: the ten of
-// the lead-hosting design (section 3.8) as a table, the spec the holder writes
-// for the probe, the checks the probe makes inside the sandbox, the checks the
-// holder makes outside, and the report the probe writes. It is a proposal that
-// awaits qualification and an owner decision. Nothing here says the sandbox is
-// qualified, safe or supported: a report states facts about ten assertions,
-// and a reader decides what to do with them.
+// Package assert holds the start-up assertions of the lead sandbox: the eleven
+// of the lead-hosting design (revision 4, section 3.8) as a table, the spec the
+// holder writes for the probe, the checks the probe makes inside the sandbox,
+// the checks the holder makes outside, and the report the probe writes. It is a
+// proposal that awaits qualification and an owner decision. Nothing here says
+// the sandbox is qualified, safe or supported: a report states facts about
+// eleven assertions, and a reader decides what to do with them.
 //
 // # What it holds
 //
@@ -17,19 +17,27 @@
 //     data, an over-long list or a malformed entry is refused with the
 //     reason). [NewSpec] builds one from the profile inputs, the expected
 //     environment the caller passes (the plan's inside environment, which holds
-//     PWD) and the facts of the host.
-//   - The inside checks, assertions 1 to 8, in [RunInside], over a small
+//     PWD) and the facts of the host. The design lists the eleventh assertion
+//     between 7 and 8; the table keeps its number, and it comes last.
+//   - The inside checks, assertions 1 to 8 and 11, in [RunInside], over a small
 //     [System] interface. [HostSystem] is the real one (Linux); tests use a
 //     fake. The checks never create a file: writability is asked of the
 //     kernel with access(W_OK) and read from the read-only flag of the mount
-//     that statx names, and both must say read-only. They never issue
+//     that statx names, and both must say read-only (or, for the two parent
+//     folders the lead writes, both must say writable). They never issue
 //     TIOCSTI, never send a byte on a connection, and start no process: the
 //     package imports no os/exec.
-//   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3
-//     and 5): [CheckRoleLockAndLingering], [CheckQualification],
-//     [CheckHolderBinds], [CheckCanary] and [CheckTIOCSTIOutside], and
-//     [RunOutside] to run them, behind the interfaces [RoleLock], [Lingering] and
-//     [QualificationRecords], which the holder and the daemon implement.
+//   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3,
+//     5 and 7): [CheckRoleLockAndLingering], [CheckQualification],
+//     [CheckHolderBinds], [CheckCanary], [CheckTIOCSTIOutside] and
+//     [CheckStartWalk], and [RunOutside] to run them, behind the interfaces
+//     [RoleLock], [Lingering] and [QualificationRecords], which the holder and
+//     the daemon implement. The outside half of assertion 7 is the holder's
+//     walk of the bind destinations before the start. The walk is not made
+//     here: the holder makes it (the mountpoints package has it) and gives
+//     what it found as a fact, [StartWalk], which [CheckStartWalk] turns into
+//     the result. This package imports no package that walks the file system
+//     for it.
 //     [QualificationRecord] and [Current] say when a record counts. No store
 //     is built here.
 //   - The [Report]: [Result]s with a status ([StatusOK], [StatusFailed] or
@@ -37,7 +45,7 @@
 //     [ParseLine] write and read it as one line after [ReportPrefix], with
 //     the same strictness about keys;
 //     [ParseProbeLine] reads the line of a probe, which holds the inside
-//     results 1 to 8, each once, and no other. [Failed] and [Problems] judge
+//     results 1 to 8 and 11, each once, and no other. [Failed] and [Problems] judge
 //     a report against its spec. The report has no field that says the
 //     sandbox as a whole passed or is supported.
 //   - The [Canary] (Linux): a loopback TCP listener, a second on ::1 when the
@@ -99,12 +107,13 @@
 //     writes to the same terminal after the exec and can print a line with
 //     [ReportPrefix]; the report carries the digest of the spec, which the
 //     lead can read, so the prefix and the digest authenticate nothing.
-//   - The probe makes the results 1 to 8, the inside half of each assertion
-//     that has one, once each. The holder makes the others (the outside half
-//     of 1, 3 and 5, then 9 and 10) with [RunOutside], which takes the
-//     canary, adds them with [Report.With] and judges the whole with
-//     [FailedAll], after the probe's report and before it accepts the start. [ParseLine] reads a full report;
-//     the probe's line is read with [ParseProbeLine].
+//   - The probe makes the results 1 to 8 and 11, the inside half of each
+//     assertion that has one, once each. The holder makes the others (the
+//     outside half of 1, 3, 5 and 7, then 9 and 10) with [RunOutside], which
+//     takes the canary and the fact of the start walk, adds them with
+//     [Report.With] and judges the whole with [FailedAll], after the probe's
+//     report and before it accepts the start. [ParseLine] reads a full
+//     report; the probe's line is read with [ParseProbeLine].
 //
 // # Not-checked is not ok
 //
@@ -162,7 +171,15 @@
 //     owner path. The other
 //     runtime's config folder is ok only when it is absent, or an empty
 //     folder that is not a mount point and has nothing mounted below it.
-//   - Assertion 7 shows that each of the three paths, and the
+//   - Assertion 7 is checked on both sides. The outside half is a fact the
+//     holder gives ([StartWalk]): it is ok only for a walk that ran to its
+//     end, with the previous instance proven stopped, and found no problem;
+//     failed, with the first path, when the walk found one; and not-checked
+//     for a walk that was not made or was made while a process of the lead
+//     may remain, since such a walk says nothing about what the sandbox will
+//     find. The package takes the holder's word for both: it cannot see
+//     whether the walk was made or the instance stopped. The inside half
+//     shows that each of the three paths, and the
 //     managed-settings file of assertion 8, is on a read-only mount (found by
 //     the mount ID that statx gives, not by the longest mount point above the
 //     path, so a later bind that hides an earlier one is seen), that no
@@ -181,6 +198,35 @@
 //     something else loaded is not evidence that TIOCSTI is blocked. When the
 //     profile names a filter, the probe requires Seccomp: 2 and reports
 //     Seccomp_filters; it does not verify from inside which filter it is.
+//   - Assertion 11 shows that each of the four parent folders (the requests
+//     folder, the mailbox, the mail folder and the published folder, at their
+//     fixed inside paths) is a folder and a mount of its own, that the mailbox
+//     and the published folder are read-only in the way of assertion 7, and
+//     that the requests and the mail folder are on a mount that is not
+//     read-only and writable by access(W_OK). It says nothing about what is in
+//     them. That no coordinator's tree or home is visible is looked for in the
+//     ways of assertions 1 and 6, with the same limits: the spec
+//     ([Spec.CoordinatorPaths]) lists the two roots of the layout,
+//     <state>/coords and <state>/coord-login, which must not exist inside and
+//     which no mount may be related to by the text of its root, source or
+//     mount point; and it lists identities ([Spec.CoordinatorIdentities]),
+//     which no mount point (the first 2048), none of the four folders and no
+//     entry of the published folder may have. With no identity listed the
+//     assertion is not-checked, never ok. The list holds the paths the holder
+//     collected and their ancestors, at most 1024 identities
+//     ([MaxCoordinatorIdentities]): the roots ([CoordinatorIdentityPaths])
+//     and, when the holder lists them, the folder, tree and home of each
+//     coordinator and each shared login ([CoordinatorFolders], which refuses
+//     to list more folders than that; a holder of a host with more must
+//     choose which it lists). A coordinator that is made after the holder
+//     listed them is not in the list, and its tree or home, bound from a file
+//     system that is not mounted at /, is found by neither comparison. The probe also lists the published folder
+//     (at most 4096 entries, [MaxCoordEntries]; with more the assertion is
+//     not-checked) and fails an entry that holds "tree" or "home", which a
+//     coordinator's own folder holds and a published one does not. Because
+//     the comparison by text includes mount points, a state root that lies
+//     below a path that is a mount point inside (/tmp, say) fails the
+//     assertion: that is the same rule assertion 1 has for the holder's paths.
 //   - The checks run once, before the agent starts. They say nothing about
 //     what the agent does after it.
 package assert

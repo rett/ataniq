@@ -134,6 +134,14 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 				t.Fatalf("a step failed: %+v", o.Summary.Steps)
 			}
 			for _, s := range o.Summary.Steps {
+				if s.Name == harness.StepPlanted {
+					// Case S21 was not requested: the step says so, and no
+					// fact of it is in the evidence.
+					if s.Status != harness.StepSkipped || !strings.Contains(s.Error, "not requested") || o.Summary.PlantedPaths != nil {
+						t.Errorf("step %s: %+v (planted paths %+v)", s.Name, s, o.Summary.PlantedPaths)
+					}
+					continue
+				}
 				if s.Status != harness.StepOK {
 					t.Errorf("step %s is %s: %s", s.Name, s.Status, s.Error)
 				}
@@ -171,7 +179,7 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 			// The report is the probe's own, and the outside results join it.
 			var rep harness.ReportEvidence
 			readJSON(t, o.Dir+"/report.json", &rep)
-			if rep.Outcome != harness.ReportLineRead || len(rep.Results) != 8 || rep.DigestMatches == nil || !*rep.DigestMatches {
+			if rep.Outcome != harness.ReportLineRead || len(rep.Results) != 9 || rep.DigestMatches == nil || !*rep.DigestMatches {
 				t.Errorf("report: %+v", rep)
 			}
 			var out harness.OutsideEvidence
@@ -182,11 +190,22 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 			}
 			for id, want := range map[string]assert.Status{
 				"holder-hidden.outside": assert.StatusOK, "host-loopback-unreachable.outside": assert.StatusOK,
-				"tiocsti-blocked.outside": assert.StatusOK, "role-lock-lingering": assert.StatusNotChecked,
-				"qualification-record": assert.StatusNotChecked,
+				"tiocsti-blocked.outside": assert.StatusOK, "tree-git-readonly.outside": assert.StatusOK,
+				"role-lock-lingering": assert.StatusNotChecked, "qualification-record": assert.StatusNotChecked,
 			} {
 				if byID[id] != want {
 					t.Errorf("outside result %s is %q, want %q", id, byID[id], want)
+				}
+			}
+			if len(out.Results) != 6 {
+				t.Errorf("%d outside results, want 6: %+v", len(out.Results), out.Results)
+			}
+			// The outside half of assertion 7 is the check right before the
+			// launch, and it says on what the absence of a previous instance
+			// rests.
+			for _, res := range out.Results {
+				if res.ID == "tree-git-readonly.outside" && (res.Number != 7 || !strings.Contains(res.Detail, "step "+harness.StepRecheck) || !strings.Contains(res.Detail, "no_lead_has_run")) {
+					t.Errorf("the outside half of assertion 7: %+v", res)
 				}
 			}
 			if out.Canary.TCPHits+out.Canary.AbstractHits != 0 || out.Canary.Stopped {
@@ -205,8 +224,12 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 			if !contains(cases["S11"], "qualification-record=not-checked") {
 				t.Errorf("S11: %v", cases["S11"])
 			}
-			if len(o.Summary.Cases) != 7 || len(cases["S1"]) != 3 || len(cases["S2"]) != 2 || len(cases["S7"]) != 2 {
+			if len(o.Summary.Cases) != 7 || len(cases["S1"]) != 4 || len(cases["S2"]) != 2 || len(cases["S7"]) != 2 {
 				t.Errorf("cases: %+v", o.Summary.Cases)
+			}
+			// S1 lists the result of assertion 11, the four parent folders.
+			if !contains(cases["S1"], "parent-folders=ok") {
+				t.Errorf("S1: %v", cases["S1"])
 			}
 			if o.Summary.Terminal.MarkerSeen == nil || !*o.Summary.Terminal.MarkerSeen {
 				t.Errorf("terminal: %+v", o.Summary.Terminal)
@@ -582,6 +605,38 @@ func idsWithStatus(rs []harness.CaseResult, st assert.Status) []string {
 	return out
 }
 
+// Without the statement that no lead has run, the harness cannot say that the
+// previous instance is stopped: it has no unit and no control group. The walk
+// right before the launch found nothing, and the outside half of assertion 7
+// is still not-checked, never ok.
+func TestStartWalkWithoutTheStatementIsNotChecked(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	// The first run makes the mount points; the second only checks them.
+	mustNoErr(t, execute(t, f, okProbe(assert.StatusOK, 0, 0), nil))
+	f.Config.NoLeadHasRun = false
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepSkipped)
+	wantStep(t, r.out, harness.StepRecheck, harness.StepOK)
+	wantStep(t, r.out, harness.StepLaunch, harness.StepOK)
+	var out harness.OutsideEvidence
+	readJSON(t, r.out.Dir+"/outside.json", &out)
+	found := false
+	for _, res := range out.Results {
+		if res.ID != "tree-git-readonly.outside" {
+			continue
+		}
+		found = true
+		if res.Status != assert.StatusNotChecked || !strings.Contains(res.Detail, "not made with the previous instance proven stopped") || !strings.Contains(res.Detail, "no control group") {
+			t.Errorf("the outside half of assertion 7 without the statement: %+v", res)
+		}
+	}
+	if !found {
+		t.Errorf("no outside half of assertion 7: %+v", out.Results)
+	}
+}
+
 // A source that resolves differently right before the launch than it did when
 // the plan was built stops the run: the plan would bind something other than
 // what was checked.
@@ -662,6 +717,98 @@ func TestSpecListsTheIdentitiesOfTheOwnerAndHolderPaths(t *testing.T) {
 	}
 	if len(spec.ForbiddenIdentities) == 0 {
 		t.Fatal("the spec lists no identity: assertion 1 would not be checked")
+	}
+}
+
+// Assertion 11 is checked by identity only when the spec lists the identities
+// of the coordinators' folders, so the harness collects them: of the two roots
+// under the state root and their ancestors, and of the folder, tree and home of
+// every coordinator and of every shared login that exists.
+func TestSpecListsTheCoordinatorsPathsAndIdentities(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	l := f.Layout()
+	tree := l.CoordsDir() + "/" + f.Project + "/feature-a/tree"
+	home := l.CoordsDir() + "/" + f.Project + "/feature-a/home"
+	otherTree := l.CoordsDir() + "/another/feature-b/tree"
+	login := l.CoordLoginDir() + "/" + f.Project + "/claude"
+	for _, d := range []string{tree, home, otherTree, login} {
+		f.Mkdir(d, 0o700)
+	}
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepSpec, harness.StepOK)
+	data, err := os.ReadFile(r.out.Dir + "/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := assert.DecodeSpec(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.CoordinatorPaths) != 2 || spec.CoordinatorPaths[0] != l.CoordsDir() || spec.CoordinatorPaths[1] != l.CoordLoginDir() {
+		t.Errorf("coordinator paths %v, want the two roots of the layout", spec.CoordinatorPaths)
+	}
+	have := map[assert.FileIdentity]bool{}
+	for _, id := range spec.CoordinatorIdentities {
+		have[id] = true
+	}
+	sys := f.Options(nil).System
+	for _, p := range []string{l.CoordsDir(), l.CoordLoginDir(), f.State, tree, home, otherTree, login, filepath.Dir(tree)} {
+		id, err := sys.Identity(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !have[id] {
+			t.Errorf("the identity of %s is not among the coordinators'", p)
+		}
+	}
+	// The lead's own folders and what is published are not coordinators'.
+	for _, p := range []string{l.Home(), l.Tree(), l.Mail(), l.Requests(), l.Mailbox(), l.Published()} {
+		id, err := sys.Identity(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if have[id] {
+			t.Errorf("the identity of %s, which is bound, is among the coordinators'", p)
+		}
+	}
+}
+
+// With no coordinator at all the list still holds the ancestors of the two
+// roots (the state root), so assertion 11 can be made.
+func TestSpecListsCoordinatorIdentitiesWithoutCoordinators(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	data, err := os.ReadFile(r.out.Dir + "/spec.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := assert.DecodeSpec(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.CoordinatorIdentities) == 0 {
+		t.Fatal("the spec lists no coordinator identity: assertion 11 would not be checked")
+	}
+}
+
+func TestCoordinatorListingFailureStopsTheRunBeforeALaunch(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), func(o *harness.Options) {
+		o.System = harnesstest.FailingDirNames{System: o.System}
+	})
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepSpec, harness.StepFailed)
+	if s := step(t, r.out, harness.StepSpec); !strings.Contains(s.Error, "list the coordinators' folders") {
+		t.Errorf("step error %q", s.Error)
+	}
+	wantStep(t, r.out, harness.StepLaunch, harness.StepSkipped)
+	if r.fake.Launches() != 0 {
+		t.Error("launched")
 	}
 }
 

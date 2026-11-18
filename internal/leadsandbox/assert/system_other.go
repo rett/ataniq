@@ -32,4 +32,7 @@ func (HostSystem) Identity(string) (FileIdentity, error) {
 	return FileIdentity{}, errors.ErrUnsupported
 }
 func (HostSystem) DirEmpty(string) (bool, error) { return false, errors.ErrUnsupported }
+func (HostSystem) DirNames(string, int) ([]string, error) {
+	return nil, errors.ErrUnsupported
+}
 func (HostSystem) Writable(string) (bool, error) { return false, errors.ErrUnsupported }

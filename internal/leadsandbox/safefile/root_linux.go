@@ -30,15 +30,16 @@ type openat2Func func(dirfd int, path string, how *unix.OpenHow) (int, error)
 // mkdiratFunc is the mkdirat system call; a test replaces it on its own Root.
 type mkdiratFunc func(dirfd int, path string, mode uint32) error
 
-// Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot].
-// All access goes through it, and only a Root from OpenRoot works: the zero
-// value refuses every call (and Close) with [ErrClosed]. A Root is safe for
+// Root is a folder handle: an O_PATH descriptor opened once by [OpenRoot] or
+// [OpenRootNoLinks], or beneath another Root by [Root.SubRoot]. All access
+// goes through it, and only a Root from one of them works: the zero value
+// refuses every call (and Close) with [ErrClosed]. A Root is safe for
 // concurrent use. The caller closes it; Close does not wait for calls in
 // progress (see [Root.Close]).
 type Root struct {
 	mu      sync.Mutex
 	fd      int
-	opened  bool // set by OpenRoot; false for the zero value
+	opened  bool // set by OpenRoot, OpenRootNoLinks and SubRoot; false for the zero value
 	closed  bool
 	active  int // calls in progress; the descriptor stays open until they end
 	openat2 openat2Func
@@ -91,6 +92,88 @@ func openRoot(dir string, call openat2Func) (*Root, error) {
 	if err != nil {
 		unix.Close(fd)
 		return nil, &Error{Op: "open", Path: dir, Err: refuse(ErrUnsupported, err)}
+	}
+	unix.Close(probe)
+	return r, nil
+}
+
+// rootResolveFlags is what the one lookup of [OpenRootNoLinks] uses, from the
+// root of the file system: no symbolic link and no magic link on any
+// component. Mount points are crossed on purpose: the folder may be on any
+// mount, and the folders above it are the caller's.
+const rootResolveFlags = unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
+
+// OpenRootNoLinks opens the folder at dir as a handle, like [OpenRoot], and
+// follows no symbolic link in any component of dir, the last included: it
+// opens the root of the file system and looks dir up from there in one
+// openat2 with RESOLVE_NO_SYMLINKS and RESOLVE_NO_MAGICLINKS, O_PATH and
+// O_DIRECTORY, and the handle is the descriptor that lookup returned. So the
+// folder that was found without following a link is the folder every later
+// call is beneath; no second open by name lies in between. It is for a caller
+// that is given a path it expects to be a real path (a folder the walk of a
+// bind source starts from) and must not be sent elsewhere by a link above it.
+//
+// dir must be absolute and clean ("/" is accepted); anything else is refused
+// with [ErrInvalidArgument] before any system call. A link on the way is
+// refused with [ErrSymlink], a component that is not a folder (dir itself
+// included) with [ErrNotDirectory], and a missing one with an error that
+// matches fs.ErrNotExist. Mount points on the way are crossed, unlike in a
+// lookup below a handle: dir may lie on any mount. When openat2 does not work
+// the error is [ErrUnsupported], as for OpenRoot; there is no fallback to a
+// path-based open. The folders above dir can still be renamed by whoever can
+// write them: the call refuses a link, it does not make a path trusted.
+func OpenRootNoLinks(dir string) (*Root, error) {
+	return openRootNoLinks(dir, unix.Openat2)
+}
+
+// openRootNoLinks is OpenRootNoLinks with the openat2 call given.
+func openRootNoLinks(dir string, call openat2Func) (*Root, error) {
+	const op = "open"
+	if dir == "" || dir[0] != '/' || strings.IndexByte(dir, 0) >= 0 || len(dir) > maxRelPath || path.Clean(dir) != dir {
+		return nil, &Error{Op: op, Path: dir, Err: fmt.Errorf("%w: the folder must be an absolute, clean path", ErrInvalidArgument)}
+	}
+	var fsRoot int
+	var err error
+	for {
+		fsRoot, err = unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != unix.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		return nil, &Error{Op: op, Path: dir, Err: fmt.Errorf("the root of the file system: %w", err)}
+	}
+	defer unix.Close(fsRoot)
+	rel := strings.TrimPrefix(dir, "/")
+	if rel == "" {
+		rel = "."
+	}
+	how := unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: rootResolveFlags}
+	var fd int
+	for {
+		fd, err = call(fsRoot, rel, &how)
+		if err != unix.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		return nil, classify(op, dir, err)
+	}
+	// The open asked for a folder (O_DIRECTORY); the type is read from the
+	// descriptor as well, so the check does not rest on the open alone.
+	info, err := fstat(fd)
+	if err == nil {
+		err = checkDir(info)
+	}
+	if err != nil {
+		unix.Close(fd)
+		return nil, &Error{Op: op, Path: dir, Err: err}
+	}
+	r := &Root{fd: fd, opened: true, openat2: call, mkdirat: unix.Mkdirat}
+	probe, err := r.open(fd, ".", unix.O_PATH|unix.O_DIRECTORY, 0)
+	if err != nil {
+		unix.Close(fd)
+		return nil, &Error{Op: op, Path: dir, Err: refuse(ErrUnsupported, err)}
 	}
 	unix.Close(probe)
 	return r, nil

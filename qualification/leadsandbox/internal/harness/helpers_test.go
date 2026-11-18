@@ -29,8 +29,10 @@ type result struct {
 	canaries int
 }
 
+// newFake is a launcher that starts nothing. Its bubblewrap says it is the
+// oldest release the harness launches a plan with; no bubblewrap is asked.
 func newFake(b harness.FakeBehavior) *harness.FakeLauncher {
-	return &harness.FakeLauncher{Behavior: b, Versions: harness.ToolVersions{Kernel: "6.0-fake", Bwrap: "bubblewrap 0.0-fake", Pasta: "pasta fake"}}
+	return &harness.FakeLauncher{Behavior: b, Versions: harness.ToolVersions{Kernel: "6.0-fake", Bwrap: "bubblewrap " + harness.MinBwrapBindFD, Pasta: "pasta fake"}}
 }
 
 // execute runs a real (not dry) attempt against the fake world.

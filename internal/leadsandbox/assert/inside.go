@@ -27,12 +27,12 @@ const (
 	maxStatusBytes = 64 << 10
 )
 
-// RunInside runs the inside checks, assertions 1 to 8, in order, over the
-// system, and returns the report. It never panics on what a system returns and
-// it never writes: it asks, with Lstat, ReadFile, Mounts, Environ, Dial,
-// LookupHost and Writable. A check that cannot be made is not-checked, with
-// the reason. The probe never issues TIOCSTI: assertion 5 reads the sysctl and
-// the seccomp mode of the process.
+// RunInside runs the inside checks, assertions 1 to 8 and 11, in order, over
+// the system, and returns the report. It never panics on what a system returns
+// and it never writes: it asks, with Lstat, ReadFile, Mounts, MountID,
+// Identity, DirEmpty, DirNames, Environ, Dial, LookupHost and Writable. A check
+// that cannot be made is not-checked, with the reason. The probe never issues
+// TIOCSTI: assertion 5 reads the sysctl and the seccomp mode of the process.
 //
 // The spec should have passed Validate (DecodeSpec does it). If it has not,
 // every result is not-checked, with the refusal as the reason.
@@ -50,6 +50,7 @@ func RunInside(spec Spec, sys System) Report {
 	rep.Results = []Result{
 		c.holderHidden(), c.environment(), c.loopback(), c.provider(),
 		c.tiocsti(), c.ownerPaths(), c.treeGit(), c.managed(),
+		c.parentFolders(),
 	}
 	return rep
 }
@@ -61,6 +62,29 @@ type checker struct {
 	loaded    bool
 	mounts    []Mount
 	mountsErr error
+
+	// ids keeps the identity of each path that was asked for, so that two
+	// assertions that compare the same path read it once.
+	ids map[string]identityAnswer
+}
+
+// identityAnswer is what the system said about the identity of a path.
+type identityAnswer struct {
+	id  FileIdentity
+	err error
+}
+
+// identityOf reads the identity of a path, once.
+func (c *checker) identityOf(p string) (FileIdentity, error) {
+	a, ok := c.ids[p]
+	if !ok {
+		a.id, a.err = c.sys.Identity(p)
+		if c.ids == nil {
+			c.ids = map[string]identityAnswer{}
+		}
+		c.ids[p] = a
+	}
+	return a.id, a.err
 }
 
 // mountTable reads the mount table once.
@@ -210,51 +234,13 @@ func (c *checker) holderHidden() Result {
 // forbidden identity the check cannot be made, and that is not-checked, never
 // ok. It returns how many identities it compared.
 func (c *checker) identities(t *tally, mounts []Mount) int {
-	forbidden := make(map[FileIdentity]bool, len(c.spec.ForbiddenIdentities))
-	for _, id := range c.spec.ForbiddenIdentities {
-		forbidden[id] = true
-	}
-	if len(forbidden) == 0 {
+	ic := c.identityCheck(t, c.spec.ForbiddenIdentities, "an owner or holder path or of one of their ancestors")
+	if ic == nil {
 		t.skip("the spec lists no forbidden file identity: the mounts cannot be compared by identity")
 		return 0
 	}
-	checked := 0
-	type answer struct {
-		id  FileIdentity
-		err error
-	}
-	asked := map[string]answer{}
-	compare := func(what, p string, mustExist bool) {
-		a, ok := asked[p]
-		if !ok {
-			a.id, a.err = c.sys.Identity(p)
-			asked[p] = a
-			if a.err == nil {
-				checked++
-			}
-		}
-		switch {
-		case a.err != nil && absent(a.err) && !mustExist:
-			return // a mount point that cannot be reached cannot be used
-		case a.err != nil:
-			t.skip("%s %q: identity: %v", what, p, a.err)
-			return
-		}
-		if forbidden[a.id] {
-			t.fail("%s %q has the identity %s of an owner or holder path or of one of their ancestors", what, p, a.id)
-		}
-	}
-	seen, folders := map[string]bool{}, map[string]bool{}
-	for i, m := range mounts {
-		if i >= maxIdentityMounts {
-			t.skip("the mount table has %d mounts: the identity of the last %d was not read", len(mounts), len(mounts)-i)
-			break
-		}
-		if !seen[m.Point] {
-			seen[m.Point] = true
-			compare("mount point", m.Point, false)
-		}
-	}
+	ic.mountPoints(mounts)
+	folders := map[string]bool{}
 	for _, folder := range []struct{ what, path string }{
 		{"the lead's home", profile.HomeInside},
 		{"the lead's config folder", profile.ConfigInside(c.spec.Runtime)},
@@ -267,11 +253,76 @@ func (c *checker) identities(t *tally, mounts []Mount) int {
 			}
 			if !folders[p] {
 				folders[p] = true
-				compare(what, p, true)
+				ic.compare(what, p, true)
 			}
 		}
 	}
-	return checked
+	return ic.checked
+}
+
+// identityComparison compares the identities of paths inside with a list of
+// the spec: the forbidden identities of assertion 1, or the coordinators' of
+// assertion 11.
+type identityComparison struct {
+	c         *checker
+	t         *tally
+	forbidden map[FileIdentity]bool
+	// whose says what the listed identities are of, for a failure.
+	whose string
+	// checked counts the paths whose identity was read and compared.
+	checked int
+	counted map[string]bool
+}
+
+// identityCheck starts a comparison with a list. It is nil for an empty list:
+// the comparison cannot be made, and the caller says so.
+func (c *checker) identityCheck(t *tally, list []FileIdentity, whose string) *identityComparison {
+	if len(list) == 0 {
+		return nil
+	}
+	ic := &identityComparison{c: c, t: t, forbidden: make(map[FileIdentity]bool, len(list)), whose: whose, counted: map[string]bool{}}
+	for _, id := range list {
+		ic.forbidden[id] = true
+	}
+	return ic
+}
+
+// compare fails the path when its identity is one of the list. A path that is
+// not there is passed over unless it must exist (a mount point that cannot be
+// reached cannot be used); an identity that cannot be read is a question not
+// asked.
+func (ic *identityComparison) compare(what, p string, mustExist bool) {
+	id, err := ic.c.identityOf(p)
+	if err == nil && !ic.counted[p] {
+		ic.counted[p] = true
+		ic.checked++
+	}
+	switch {
+	case err != nil && absent(err) && !mustExist:
+		return
+	case err != nil:
+		ic.t.skip("%s %q: identity: %v", what, p, err)
+		return
+	}
+	if ic.forbidden[id] {
+		ic.t.fail("%s %q has the identity %s of %s", what, p, id, ic.whose)
+	}
+}
+
+// mountPoints compares each mount point of the table, once, at most
+// maxIdentityMounts of them: the rest is counted as not read.
+func (ic *identityComparison) mountPoints(mounts []Mount) {
+	seen := map[string]bool{}
+	for i, m := range mounts {
+		if i >= maxIdentityMounts {
+			ic.t.skip("the mount table has %d mounts: the identity of the last %d was not read", len(mounts), len(mounts)-i)
+			break
+		}
+		if !seen[m.Point] {
+			seen[m.Point] = true
+			ic.compare("mount point", m.Point, false)
+		}
+	}
 }
 
 // mentions returns the first substring that the root, the mount point or the
@@ -642,4 +693,185 @@ func (c *checker) managed() Result {
 		return t.result(8, fmt.Sprintf("%q is a regular file and read-only; no marker is required for %s", p, c.spec.Runtime))
 	}
 	return t.result(8, fmt.Sprintf("%q is a regular file, read-only, and contains the marker text", p))
+}
+
+// MaxCoordEntries is the most entries of the published folder (/coord, one per
+// feature) that assertion 11 lists. A folder with more is not looked at, and
+// the assertion is not-checked.
+const MaxCoordEntries = 4096
+
+// coordinatorPrivate are the names, in a coordinator's own folder on the host
+// (<state>/coords/<project>/<feature>), of what no lead may see: the
+// coordinator's tree and its home. A published folder
+// (<state>/pub/<project>/<feature>) holds neither.
+var coordinatorPrivate = []string{"tree", "home"}
+
+// parentFolder is one of the four parent folders of the design (section 3.3),
+// at its fixed inside path.
+type parentFolder struct {
+	what, path string
+	// writable says the lead writes it; the others are read-only.
+	writable bool
+}
+
+// parentFolders are the four, in the order of the bind table.
+func parentFolders() []parentFolder {
+	return []parentFolder{
+		{"the requests folder", profile.RequestsInside, true},
+		{"the mailbox", profile.MailboxInside, false},
+		{"the mail folder", profile.MailInside, true},
+		{"the published folder", profile.CoordInside, false},
+	}
+}
+
+// 11. The four parent folders are present, the mailbox and the published
+// folder are not writable (and the requests and the mail folder are), and no
+// coordinator's tree or home is visible.
+//
+// Present means a folder at the fixed inside path that is a mount of its own:
+// a bind cannot be added to a running sandbox, so a plain folder there, which
+// is not the bound one, never becomes it. Not writable is proved as assertion
+// 7 proves it (readOnly); writable is its mirror, and both the mount flag and
+// access(W_OK) must say so.
+func (c *checker) parentFolders() Result {
+	var t tally
+	for _, f := range parentFolders() {
+		info, err := c.sys.Lstat(f.path)
+		switch {
+		case absent(err):
+			t.fail("%s %q does not exist", f.what, f.path)
+			continue
+		case err != nil:
+			t.skip("%s %q: %v", f.what, f.path, err)
+			continue
+		case !info.IsDir():
+			t.fail("%s %q is %s, not a folder", f.what, f.path, info.Describe())
+			continue
+		}
+		c.ownMount(&t, f.what, f.path)
+		if f.writable {
+			c.readWrite(&t, f.what, f.path)
+		} else {
+			c.readOnly(&t, f.what, f.path)
+		}
+	}
+	mounts, entries, compared := c.coordinatorsHidden(&t)
+	return t.result(11, fmt.Sprintf("the four parent folders are present, each a mount of its own; %s and %s are writable, %s and %s read-only; "+
+		"none of %d coordinator paths exists or is at, above or below a root, source or mount point of %d mounts; "+
+		"%d identities are none of the %d of the coordinators' folders; none of %d entries of %s holds a tree or a home",
+		profile.RequestsInside, profile.MailInside, profile.MailboxInside, profile.CoordInside,
+		len(c.spec.CoordinatorPaths), mounts, compared, len(c.spec.CoordinatorIdentities), entries, profile.CoordInside))
+}
+
+// ownMount records whether the folder is a mount of its own: the mount that
+// statx names for it is mounted at the folder itself, not above it.
+func (c *checker) ownMount(t *tally, what, path string) {
+	mounts, err := c.mountTable()
+	if err != nil {
+		t.skip("%s %q: no mount table: %v", what, path, err)
+		return
+	}
+	id, err := c.sys.MountID(path)
+	if err != nil {
+		t.skip("%s %q: no mount ID (statx): %v", what, path, err)
+		return
+	}
+	m, ok := mountByID(mounts, id)
+	switch {
+	case !ok:
+		t.skip("%s %q: mount ID %d is not in the mount table", what, path, id)
+	case m.Point != path:
+		t.fail("%s %q is not a mount of its own: it is part of the mount at %q", what, path, m.Point)
+	}
+}
+
+// readWrite records whether path is on a mount that is not read-only and the
+// kernel says it is writable: the mirror of readOnly, and both must hold, for
+// the same reasons. Where the kernel gives no mount ID the result is
+// not-checked.
+func (c *checker) readWrite(t *tally, what, path string) {
+	mounts, err := c.mountTable()
+	if err != nil {
+		t.skip("%s %q: no mount table: %v", what, path, err)
+	} else if id, err := c.sys.MountID(path); err != nil {
+		t.skip("%s %q: no mount ID (statx): %v", what, path, err)
+	} else if m, ok := mountByID(mounts, id); !ok {
+		t.skip("%s %q: mount ID %d is not in the mount table", what, path, id)
+	} else if m.ReadOnly() {
+		t.fail("%s %q is on a read-only mount at %q", what, path, m.Point)
+	}
+	w, err := c.sys.Writable(path)
+	switch {
+	case err != nil:
+		t.skip("%s %q: access(W_OK): %v", what, path, err)
+	case !w:
+		t.fail("%s %q is not writable by access(W_OK)", what, path)
+	}
+}
+
+// coordinatorsHidden is the last part of assertion 11: no coordinator's tree
+// or home is visible. It looks in the ways assertions 1 and 6 look for the
+// owner's and the holder's paths: no coordinator path of the spec exists
+// inside; no mount has a root, a source or a mount point that is one of them,
+// lies below one or is an ancestor of one; and the identity of no mount point,
+// of none of the four parent folders and of no entry of the published folder
+// is one of the coordinators' (with no identity listed that cannot be asked,
+// and the assertion is not-checked, never ok). It also lists the published
+// folder, which holds one folder per feature, and fails an entry that holds a
+// tree or a home: a coordinator's own folder bound in the place of what it
+// publishes. It returns how many mounts and entries it looked at and how many
+// identities it compared.
+func (c *checker) coordinatorsHidden(t *tally) (mountCount, entryCount, compared int) {
+	for _, p := range c.spec.CoordinatorPaths {
+		c.mustBeAbsent(t, "coordinator path", p)
+	}
+	mounts, err := c.mountTable()
+	if err != nil {
+		t.skip("no mount table: %v", err)
+	}
+	for _, m := range mounts {
+		if what, p, ok := relatedMount(m, c.spec.CoordinatorPaths); ok {
+			t.fail("mount %q has %s %q, which is at, above or below the coordinator path %q", m.Point, what, clipPath(m.value(what)), p)
+		}
+	}
+	ic := c.identityCheck(t, c.spec.CoordinatorIdentities, "a coordinator's folder or of one of its ancestors")
+	if ic == nil {
+		t.skip("the spec lists no coordinator identity: the mounts and the parent folders cannot be compared by identity")
+	} else {
+		ic.mountPoints(mounts)
+		for _, f := range parentFolders() {
+			// One that is not there has failed already.
+			ic.compare(f.what, f.path, false)
+		}
+	}
+	names, err := c.sys.DirNames(profile.CoordInside, MaxCoordEntries)
+	switch {
+	case errors.Is(err, ErrTooLarge):
+		t.skip("%s %q holds more than %d entries: none was looked at", "the published folder", profile.CoordInside, MaxCoordEntries)
+	case absent(err):
+		// It is not a folder, or not there: failed already.
+	case err != nil:
+		t.skip("%s %q cannot be listed: %v", "the published folder", profile.CoordInside, err)
+	}
+	for _, name := range names {
+		entry := profile.CoordInside + "/" + name
+		for _, private := range coordinatorPrivate {
+			p := entry + "/" + private
+			_, err := c.sys.Lstat(p)
+			switch {
+			case err == nil:
+				t.fail("the published entry %q holds %q: a coordinator's %s is visible", entry, private, private)
+			case absent(err):
+			default:
+				t.skip("%q: cannot tell whether it exists: %v", p, err)
+			}
+		}
+		if ic != nil {
+			ic.compare("the published entry", entry, false)
+		}
+	}
+	if ic != nil {
+		compared = ic.checked
+	}
+	return len(mounts), len(names), compared
 }
