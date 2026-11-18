@@ -51,8 +51,13 @@ func TestCountNotMet(t *testing.T) {
 		{"no clean check record", func(in *CountInput) { in.SuiteClean = false }, "the check record is not clean"},
 		{"truncated", func(in *CountInput) { in.Truncated = true }, "the summary is truncated"},
 		{"negative files", func(in *CountInput) { in.Files = -1 }, "a negative number in the summary"},
+		{"negative changed lines", func(in *CountInput) { in.ChangedLines = -1 }, "a negative number in the summary"},
 		{"negative bytes", func(in *CountInput) { in.NewBytes = -1 }, "a negative number in the summary"},
 		{"negative flagged", func(in *CountInput) { in.Flagged = -1 }, "a negative number in the summary"},
+		{"negative binary", func(in *CountInput) { in.Binary = -1 }, "a negative number in the summary"},
+		{"negative symbolic links", func(in *CountInput) { in.Symlinks = -1 }, "a negative number in the summary"},
+		{"negative mode changes", func(in *CountInput) { in.ModeChanges = -1 }, "a negative number in the summary"},
+		{"negative submodules", func(in *CountInput) { in.Submodules = -1 }, "a negative number in the summary"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			in := clean()

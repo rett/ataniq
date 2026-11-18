@@ -441,6 +441,9 @@ func TestSuggest(t *testing.T) {
 		{"a date that is no date is dropped", []Day{{Date: "2031-3-10", Uses: 11}, {Date: "", Uses: 11}, {Date: "2031-02-30", Uses: 11}}, 6},
 		{"a day given twice is one day", []Day{{Date: "2031-03-10", Uses: 3}, {Date: "2031-03-10", Uses: 4}}, 14},
 		{"an alert on one of two entries leaves the day out", []Day{{Date: "2031-03-10", Uses: 9}, {Date: "2031-03-10", Alert: true}}, 6},
+		{"an alert on the first of two entries leaves the day out", []Day{{Date: "2031-03-10", Alert: true}, {Date: "2031-03-10", Uses: 9}}, 6},
+		{"a reached limit on the first of two entries leaves the day out", []Day{{Date: "2031-03-10", ReachedLimit: true}, {Date: "2031-03-10", Uses: 9}}, 6},
+		{"a reached limit on the second of two entries leaves the day out", []Day{{Date: "2031-03-10", Uses: 9}, {Date: "2031-03-10", ReachedLimit: true}}, 6},
 		{"a sum that overflows stays at the maximum", []Day{{Date: "2031-03-10", Uses: int(^uint(0) >> 1)}, {Date: "2031-03-10", Uses: 5}}, 40},
 		{"negative uses count as none", []Day{{Date: "2031-03-10", Uses: -5}}, 6},
 	} {
