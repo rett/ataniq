@@ -331,6 +331,51 @@ func TestChangesAlternate(t *testing.T) {
 	}
 }
 
+func TestAnArrivalAfterAReportedLeftAndALongerWindow(t *testing.T) {
+	// He was reported away, and then the window is set longer, so that by
+	// the window alone his old activity counts again. His next action is
+	// still an arrival: the caller was told he left and must hear that he
+	// came back.
+	tr := newTracker(t, DefaultWindow)
+	var kinds []Kind
+	for _, c := range tr.Activity(at(0)).Changes {
+		kinds = append(kinds, c.Kind)
+	}
+	c, ok := tr.Tick(at(11 * time.Minute))
+	if !ok || c.Kind != Left {
+		t.Fatalf("Tick = %+v, %v, want Left", c, ok)
+	}
+	kinds = append(kinds, c.Kind)
+	if err := tr.SetWindow(MaxWindow); err != nil {
+		t.Fatalf("SetWindow(MaxWindow): %v", err)
+	}
+	// Lengthening reports nothing by itself.
+	if c, ok := tr.Tick(at(11*time.Minute + time.Second)); ok {
+		t.Fatalf("Tick after lengthening = %+v, want no change", c)
+	}
+
+	ev := tr.Activity(at(12 * time.Minute))
+	if !ev.Arrival {
+		t.Fatal("the first activity after a reported Left is no arrival")
+	}
+	if len(ev.Changes) != 1 || ev.Changes[0].Kind != Arrived {
+		t.Fatalf("changes = %+v, want one Arrived", ev.Changes)
+	}
+	want := Stamp{At: at(12 * time.Minute), Surface: SurfaceConsole, Session: testSession, LastActivity: at(0)}
+	if ev.Changes[0].Stamp != want {
+		t.Errorf("stamp = %+v, want %+v", ev.Changes[0].Stamp, want)
+	}
+	kinds = append(kinds, ev.Changes[0].Kind)
+	if len(kinds) != 3 || kinds[0] != Arrived || kinds[1] != Left || kinds[2] != Arrived {
+		t.Errorf("changes = %v, want arrived, left, arrived", kinds)
+	}
+
+	// It is reported once: the next action is ordinary activity.
+	if ev := tr.Activity(at(12*time.Minute + time.Second)); ev.Arrival || len(ev.Changes) != 0 {
+		t.Errorf("the next activity = %+v, want no arrival", ev)
+	}
+}
+
 func TestActivityDoesNotConsumeTheAction(t *testing.T) {
 	// The tracker is handed a time and nothing else, so it cannot hold a key
 	// back. What it must not do is tell the caller to: the event of an

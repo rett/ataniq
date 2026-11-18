@@ -258,8 +258,11 @@ func (t *Tracker) leave(at time.Time) (Change, bool) {
 // Activity records an action of the owner at the given time and says what it
 // means. When he was not present just before it, the action is an arrival
 // and the event carries the change; that holds for the first action of a run
-// too. An arrival is reported for that one action only: the next action
-// inside the window is ordinary activity.
+// too. It also holds once [Tracker.Tick] has reported that he left, even
+// when a window set longer since then ([Tracker.SetWindow]) would count him
+// as present again: every reported [Left] is followed by an [Arrived]. An
+// arrival is reported for that one action only: the next action inside the
+// window is ordinary activity.
 //
 // The tracker does not take the action. The caller delivers the key or the
 // pointer action where it was aimed, whatever the event says.
@@ -269,7 +272,11 @@ func (t *Tracker) leave(at time.Time) (Change, bool) {
 // time, and a beat is due.
 func (t *Tracker) Activity(at time.Time) Event {
 	var ev Event
-	if !t.Present(at) {
+	// He is arriving when the caller was last told he is away, or when he
+	// is away by the window now. The first matters after a reported Left
+	// and a longer window set since: the window alone would call him
+	// present again, and the caller would never hear that he came back.
+	if !t.present || !t.Present(at) {
 		if c, ok := t.leave(at); ok {
 			ev.Changes = append(ev.Changes, c)
 		}
