@@ -20,8 +20,12 @@ func message(extra string) string {
 	return "[ataniq-msg id=7 from=ataniq kind=canary]\ncanary-token: " + testToken + "\n" + extra
 }
 
+// committed reports whether the commit itself is made: the branch is
+// switched to before the file is written and committed, so the branch alone
+// does not say it.
 func (r testRepo) committed(t testing.TB) bool {
-	return runGit(t, r.Dir, "rev-parse", "--abbrev-ref", "HEAD") == "canary/one"
+	return runGit(t, r.Dir, "rev-parse", "--abbrev-ref", "HEAD") == Branch &&
+		runGit(t, r.Dir, "log", "-1", "--format=%s") == Subject
 }
 
 func TestPlainDrawsAPromptAndTurnsBracketedPasteOn(t *testing.T) {

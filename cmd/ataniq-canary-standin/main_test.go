@@ -255,10 +255,16 @@ func TestCommandChoosesReplayModeFromTheSwitchFile(t *testing.T) {
 	if _, err := tm.master.WriteString("\r"); err != nil {
 		t.Fatal(err)
 	}
-	for end := time.Now().Add(10 * time.Second); git(t, dir, "rev-parse", "--abbrev-ref", "HEAD") != "canary/one"; time.Sleep(10 * time.Millisecond) {
+	// The branch is switched to before the file is written and committed, so
+	// the commit itself is what is waited for.
+	for end := time.Now().Add(10 * time.Second); git(t, dir, "rev-parse", "--abbrev-ref", "HEAD") != "canary/one" ||
+		git(t, dir, "log", "-1", "--format=%s") != "canary: token"; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(end) {
 			t.Fatal("no commit")
 		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "canary-token.txt")); string(b) != sampleToken+"\n" {
+		t.Fatalf("file %q", b)
 	}
 	if b, err := os.ReadFile(filepath.Join(rd, "order.txt")); err != nil || string(b) != "7501-first\n" {
 		t.Fatalf("order.txt %q, %v", b, err)
