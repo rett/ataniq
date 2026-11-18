@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-canary test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -19,6 +19,15 @@ test: doctor
 
 test-patched: doctor
 	@sh scripts/go-tool.sh test $(PATCHED_PACKAGES)
+
+# The tests of the code behind the canary build tag, which make test does not
+# build. They run with the tag, over every package that holds a Go file whose
+# build constraint names it, found here by grep so that no list needs editing,
+# and over ./tests/, which holds the checks of the tag. With no such package it
+# runs ./tests/ alone. It builds no binary and runs nothing but tests.
+test-canary: doctor
+	@pkgs=$$(grep -rl --include='*.go' --exclude-dir=.git --exclude-dir=build --exclude-dir=testdata -E '^//go:build .*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
 
 test-dev: doctor
 	@sh scripts/go-tool.sh test ./tests/...
