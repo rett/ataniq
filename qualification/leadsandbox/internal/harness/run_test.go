@@ -134,6 +134,14 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 				t.Fatalf("a step failed: %+v", o.Summary.Steps)
 			}
 			for _, s := range o.Summary.Steps {
+				if s.Name == harness.StepPlanted {
+					// Case S21 was not requested: the step says so, and no
+					// fact of it is in the evidence.
+					if s.Status != harness.StepSkipped || !strings.Contains(s.Error, "not requested") || o.Summary.PlantedPaths != nil {
+						t.Errorf("step %s: %+v (planted paths %+v)", s.Name, s, o.Summary.PlantedPaths)
+					}
+					continue
+				}
 				if s.Status != harness.StepOK {
 					t.Errorf("step %s is %s: %s", s.Name, s.Status, s.Error)
 				}

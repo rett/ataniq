@@ -21,7 +21,8 @@
 // source to its real path, the report channel (a FIFO in a folder of the attempt
 // that holds nothing else, whose reader is opened first), the canary, the plan
 // ([plan.Build] and [plan.Verify], with the walk of every bind source Ataniq
-// supplies from [mountpoints.PlanWalks]), the probe spec (with the identities of the
+// supplies from [mountpoints.PlanWalks]), case S21 when it is requested (the
+// step planted-bind-paths, see "Case S21"), the probe spec (with the identities of the
 // owner and holder paths and their ancestors, which assertion 1 needs, and of
 // the coordinators' folders under the state root and their ancestors, which
 // assertion 11 needs), a
@@ -38,7 +39,8 @@
 //
 // It starts nothing unless [Options.Run] is set and the configuration says
 // "coordinator_reviewed": true; with a terminal on standard input, unless
-// [Options.Unattended] is set. Without [Options.Run] it validates, builds and
+// [Options.Unattended] is set. A run that requests case S21 also needs
+// "scratch_folders_disposable": true. Without [Options.Run] it validates, builds and
 // verifies the plan and returns it with its digest: a dry run that starts no
 // process and opens no listener or FIFO.
 //
@@ -109,6 +111,78 @@
 // the record. A failed or refused report, a report that never comes and a
 // process that exits first are each recorded as such, and the run goes on to
 // stop what is left and to write the evidence.
+//
+// # Case S21: planted bind paths
+//
+// S21 (the design, section 7.3) is the case of the walk before each start
+// (section 3.6): every bind target that lies in a folder the lead writes must
+// be absent or of the expected type, and a symbolic link or a wrong type
+// refuses the start with the path. The case plants, at each path that walk looks
+// at, a symbolic link to a path outside (the attempt folder) and then an entry
+// of the wrong type (a regular file where a folder belongs, a folder where a
+// file belongs), runs the checks a start makes and records, for each path and
+// kind, whether the start was refused, which checks refused, the problem the
+// start walk reported and the path it names, that nothing was launched, and
+// whether the original entry was put back. Its facts are planted_paths in
+// summary.json (evidence format 3), and its results are
+// planted-paths-refused, planted-paths-refused-other-runtime and
+// planted-paths-restored, each ok, failed or not-checked. A result is ok only if
+// every plant of its leg was refused with a problem of the kind of the plant
+// that names the planted path; a plant that was not is failed; a plant that
+// could not be made, a path that could not be restored and a case that did not
+// run are not-checked, never ok.
+//
+// The paths are the mount points of [mountpoints.List] and the tree's .git
+// folder, which the walk looks at too. mountpoints does not export the list its
+// walk makes, so the harness derives it the way the walk does; an exported list
+// would be better, because a path added to the walk would not be planted until
+// the harness is changed. The checks of a start are the own-clone check, the
+// walk of the mount points (through [Options.CheckMountPoints], which decides:
+// the case needs it to refuse with the planted path), the resolution of the bind
+// sources, the plan's own check and the check of every bind source the plan
+// binds; the case launches nothing and writes nothing but the plant.
+//
+// Each plant is made in the folder the path lies in, opened from the state
+// root's handle without following a link; the original is set aside by a rename
+// in that folder (the name with [PlantAsideSuffix]), the entry is planted beside
+// it, and afterwards the plant is removed (only if it is still what was planted)
+// and the original renamed back, and the result is looked at: the same type,
+// mode, owner, device and inode, or the name absent as it was. The next plant
+// starts from a clean state. A path that is left planted ends the case with a
+// failure that names it, and the later plants are not made.
+//
+// The case guards what it writes into: it runs only when it is requested by
+// name, with Options.Run, with "coordinator_reviewed" and with the statement
+// "scratch_folders_disposable": true, which says the folders under the state
+// root are disposable scratch folders and not a live lead's. A run without them
+// is refused with a [GateError]. A dry run does nothing for it and says so (the
+// step is skipped, and planted_paths says why).
+//
+// It is its own phase of the attempt: the step runs after the plan is built and
+// verified and before the spec and the second check, so the folders are as
+// found when the steps that follow, the launch phase included, use them. When S21
+// is the only case requested the run launches nothing; with other cases the
+// launch phase follows as it would without S21.
+//
+// Across a runtime switch (the owner's decision Q24(a): S21 covers every start)
+// the case also checks a start of the other runtime, by the walk alone, with
+// the inputs of the configured runtime changed to the other runtime and its
+// managed-settings path taken from the profile (the configured one where the
+// profile has none: the walk does not read it). It plants the paths of that
+// walk that lie in a folder the configuration names for the configured runtime:
+// the .git paths and the place of the config folder in the home. The places of
+// the skills and the instruction file are in the other runtime's own config
+// folder, which nothing in the configuration names: planted_paths lists them as
+// not covered, and they need a second run with the other runtime's
+// configuration.
+//
+// What this case does not cover: the plant is made by the harness from outside,
+// a stand-in for a lead that plants from inside (the attended variant, in which
+// a lead plants in one run and the next run is refused, is a manual
+// procedure); it does not stop the lead and start the next epoch, because the
+// harness has no unit; the repeat for a coordinator and the mirror fetch with
+// .git replaced by a gitdir: file belong to other features. The case has not
+// been run on a host: nothing here says the walk is qualified.
 //
 // # What it does not do
 //

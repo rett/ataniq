@@ -56,7 +56,9 @@ func DefaultScratchCommand() []string {
 // the outside checks speak to. Every other case is attended (see the manual).
 // G1 is not in the design's table: it is the case of rule G1 (no bind source a
 // sandbox can write, every bind source checked without following links).
-var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1"}
+// S21 plants entries in the scratch folders and launches nothing: a run that
+// requests it needs the statement "scratch_folders_disposable" (see Config).
+var AutomatedCases = []string{"S1", "S2", "S3", "S4", "S7", "S11", "G1", CaseS21}
 
 // Config is the configuration file. Nothing in it is discovered or defaulted
 // from the environment or the home folder of the caller: every path is the
@@ -74,6 +76,11 @@ type Config struct {
 	// NoLeadHasRun is the statement that no lead has run in the scratch
 	// folders: only then does a run make the mount points (Prepare).
 	NoLeadHasRun bool `json:"no_lead_has_run"`
+	// ScratchFoldersDisposable is the statement that the folders under the
+	// state root are disposable scratch folders, not a live lead's: case S21
+	// plants entries in them (and puts them back), and a run that requests it
+	// is refused without the statement.
+	ScratchFoldersDisposable bool `json:"scratch_folders_disposable"`
 
 	Executables Executables `json:"executables"`
 

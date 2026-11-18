@@ -35,6 +35,7 @@ const (
 	StepCanary        = "canary"
 	StepBuild         = "build-plan"
 	StepVerify        = "verify-plan"
+	StepPlanted       = "planted-bind-paths"
 	StepSpec          = "write-spec"
 	StepRecheck       = "recheck"
 	StepBindSources   = "check-bind-sources"
@@ -52,7 +53,7 @@ const (
 // recorded as skipped, in its place.
 var stepOrder = []string{
 	StepValidate, StepAttempt, StepVersions, StepOwnClone, StepPrepare, StepCheck, StepResolv, StepResolve,
-	StepChannel, StepCanary, StepBuild, StepVerify, StepSpec, StepRecheck, StepBindSources, StepLaunch,
+	StepChannel, StepCanary, StepBuild, StepVerify, StepPlanted, StepSpec, StepRecheck, StepBindSources, StepLaunch,
 	StepReadReport, StepWaitExit, StepOutside, StepStop, StepTrailing, StepCleanup, StepWriteEvidence,
 }
 

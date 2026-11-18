@@ -9,4 +9,9 @@
   qualification-leadsandbox-build`, which runs the doctor and builds the harness
   and `ataniq-probe`, and starts no sandbox and launches nothing. Both are
   unqualified infrastructure: the harness records facts for a coordinator and
-  says nothing about the sandbox being qualified, safe or supported.
+  says nothing about the sandbox being qualified, safe or supported. The
+  harness has an opt-in case S21 that plants symbolic links and entries of the
+  wrong type at the bind targets in the lead's scratch folders, records that
+  each start is refused with the path, puts every path back and launches
+  nothing; it needs `--run`, `coordinator_reviewed` and the statement
+  `scratch_folders_disposable`.

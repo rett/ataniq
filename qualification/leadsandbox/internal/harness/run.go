@@ -197,14 +197,16 @@ type attempt struct {
 	// the channel asked whether anything followed it.
 	lineRead bool
 
-	reportEv    ReportEvidence
-	outsideEv   *OutsideEvidence
-	exitEv      ExitEvidence
-	stopEv      StopEvidence
-	termEv      TerminalEvidence
-	termData    []byte
-	canaryEv    CanaryEvidence
-	bindEv      BindSourcesEvidence
+	reportEv  ReportEvidence
+	outsideEv *OutsideEvidence
+	exitEv    ExitEvidence
+	stopEv    StopEvidence
+	termEv    TerminalEvidence
+	termData  []byte
+	canaryEv  CanaryEvidence
+	bindEv    BindSourcesEvidence
+	// planted is what case S21 found; nil when the case was not requested.
+	planted     *PlantedPathsEvidence
 	files       []string
 	evidenceErr error
 }
@@ -224,6 +226,9 @@ func Execute(ctx context.Context, cfg *Config, opt Options) (*Outcome, error) {
 	if opt.Run {
 		if !cfg.CoordinatorReviewed {
 			return nil, &GateError{Reason: "a run needs \"coordinator_reviewed\": true in the configuration, the statement that a coordinator reviewed it and the plan it gives"}
+		}
+		if cfg.requests(CaseS21) && !cfg.ScratchFoldersDisposable {
+			return nil, &GateError{Reason: "case S21 plants entries in the folders under the state root and puts them back: a run that requests it needs \"scratch_folders_disposable\": true in the configuration, the statement that they are disposable scratch folders and not a live lead's"}
 		}
 		if !opt.Unattended && (opt.StdinIsTerminal == nil || !opt.StdinIsTerminal()) {
 			return nil, &GateError{Reason: "standard input is not a terminal; a run needs one unless --unattended is given"}
@@ -287,6 +292,8 @@ func (a *attempt) execute(ctx context.Context) (*Outcome, error) {
 		a.skipLaunch("dry run: nothing is started")
 	case a.broken:
 		a.skipLaunch("an earlier step failed")
+	case a.cfg.onlyPlanted():
+		a.skipLaunch("the only case requested is S21, which never launches")
 	default:
 		a.launchPhase(ctx)
 	}
@@ -399,14 +406,24 @@ func (a *attempt) pre(ctx context.Context) {
 		}},
 		{StepBuild, false, false, func(context.Context) error { return a.buildPlan() }},
 		{StepVerify, false, false, func(context.Context) error { return a.verifyPlan() }},
+		{StepPlanted, true, false, a.plantedPaths},
 		{StepSpec, true, false, func(context.Context) error { return a.writeSpec() }},
 		{StepRecheck, true, false, func(context.Context) error { return a.recheck() }},
 		{StepBindSources, true, false, func(context.Context) error { return a.checkBindSources() }},
 	}
 	for _, d := range defs {
 		switch {
+		case d.name == StepPlanted && !a.cfg.requests(CaseS21):
+			a.rec.skip(d.name, "case S21 was not requested")
+			continue
 		case a.broken:
 			a.rec.skip(d.name, "an earlier step failed")
+			a.plantedNotRun(d.name, "an earlier step failed")
+			continue
+		case d.name == StepPlanted && a.dry():
+			const why = "dry run: case S21 plants entries in the scratch folders and does nothing in a dry run"
+			a.rec.skip(d.name, why)
+			a.plantedNotRun(d.name, why)
 			continue
 		case a.dry() && d.runOnly:
 			a.rec.skip(d.name, "dry run: nothing is started, opened or written into the scratch folders")
@@ -422,6 +439,13 @@ func (a *attempt) pre(ctx context.Context) {
 		if !ok && d.soft && !a.refused {
 			a.broken = false
 		}
+	}
+}
+
+// plantedNotRun records, for case S21, why its step made no plant.
+func (a *attempt) plantedNotRun(step, why string) {
+	if step == StepPlanted && a.cfg.requests(CaseS21) {
+		a.planted = &PlantedPathsEvidence{NotRun: why, Plants: []PlantFact{}, NotCovered: []PlantNotCovered{}}
 	}
 }
 
@@ -732,8 +756,15 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 // beneath it, the same type), and a row of the host must be bound by path. So
 // the walk the pass-through step makes is the walk that was checked.
 func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
+	return a.planBindRowsOf(a.res2)
+}
+
+// planBindRowsOf is planBindRows for the resolution given: the last one of a
+// start is the second of the attempt, and the start that case S21 makes for
+// each planted entry has its own.
+func (a *attempt) planBindRowsOf(res mountpoints.Resolution) ([]mountpoints.ResolvedSource, error) {
 	byInside := map[string]mountpoints.ResolvedSource{}
-	for _, s := range a.res2.Sources {
+	for _, s := range res.Sources {
 		byInside[s.Inside] = s
 	}
 	walks := a.planWalks()
@@ -1151,6 +1182,7 @@ func (a *attempt) summary() Summary {
 	if s.BindSources.Sources == nil {
 		s.BindSources.Sources = []BindSourceFact{}
 	}
-	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources)})
+	s.PlantedPaths = a.planted
+	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources), CaseS21: s21Results(a.planted)})
 	return s
 }

@@ -21,9 +21,10 @@ import (
 // ("bound_by_descriptor"), the descriptor and the walk ("descriptor",
 // "walk_root", "walk_rel", "walk_type"), the fact about its type
 // ("has_expected_type"), and for all of them the verifier's fact
-// "no_ataniq_source_bound_by_path". No key of format 1 was removed or changed
-// its meaning.
-const EvidenceFormat = 2
+// "no_ataniq_source_bound_by_path". Format 3 added, to summary.json, the facts
+// of case S21 ("planted_paths"), present only when the case was requested. No
+// key of an earlier format was removed or changed its meaning.
+const EvidenceFormat = 3
 
 // The evidence files of an attempt folder.
 const (
@@ -327,6 +328,79 @@ type BindSourcesEvidence struct {
 	NoAtaniqSourceBoundByPath *bool `json:"no_ataniq_source_bound_by_path,omitempty"`
 }
 
+// PlantFact is what case S21 found for one path and one kind of plant: a
+// symbolic link, or an entry of the wrong type, planted by the harness in a
+// scratch folder at a path the start walk looks at, with the start checked
+// against it. Nothing is launched.
+type PlantFact struct {
+	// Runtime is the runtime whose start was checked; OtherRuntime says it is
+	// not the configured one.
+	Runtime      string `json:"runtime"`
+	OtherRuntime bool   `json:"other_runtime"`
+	// Inside is the bind target inside, Path the host path that was planted
+	// and Expected the type that belongs there ("folder" or "file").
+	Inside   string `json:"inside"`
+	Path     string `json:"path"`
+	Expected string `json:"expected_type"`
+	// Plant is "symbolic-link" or "wrong-type"; PlantedAs says what was made.
+	Plant     string `json:"plant"`
+	PlantedAs string `json:"planted_as,omitempty"`
+	// Planted says the plant was made. When it was not, Detail says why and
+	// the status is not-checked.
+	Planted bool `json:"planted"`
+	// StartRefused says whether any check of the start refused; RefusedBy
+	// names the steps that did and ChecksRun every check that was made.
+	// Absent when nothing was planted.
+	StartRefused *bool    `json:"start_refused,omitempty"`
+	RefusedBy    []string `json:"refused_by,omitempty"`
+	ChecksRun    []string `json:"checks_run,omitempty"`
+	// ProblemKind ("symbolic-link", "wrong-type", "missing" or "other") and
+	// ProblemPath are the problem the start walk reported for the planted
+	// path, and the path it names; absent when it reported none for it.
+	ProblemKind string `json:"problem_kind,omitempty"`
+	ProblemPath string `json:"problem_path,omitempty"`
+	// Launched is always false: the case never launches.
+	Launched bool `json:"launched"`
+	// Restored says the original entry was put back and found to be the same
+	// entry (or the path to be absent, as it was). Absent when nothing was
+	// planted.
+	Restored *bool `json:"restored,omitempty"`
+	// Status is ok when the start was refused with a problem of the kind of
+	// the plant that names the planted path, failed when it was not, and
+	// not-checked when the plant could not be made or the path not restored.
+	Status assert.Status `json:"status"`
+	Detail string        `json:"detail,omitempty"`
+}
+
+// PlantNotCovered is a path of the other runtime's start walk that the case
+// did not plant, and why.
+type PlantNotCovered struct {
+	Runtime string `json:"runtime"`
+	Inside  string `json:"inside,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Reason  string `json:"reason"`
+}
+
+// PlantedPathsEvidence is what case S21 made and found. It is a stand-in for a
+// lead that plants from inside: the harness plants from outside.
+type PlantedPathsEvidence struct {
+	// Ran says every plant was made or refused for a reason and every path was
+	// restored. NotRun says why the case made no plant (a dry run, an earlier
+	// step that failed, a start walk that was not clean before it began).
+	Ran    bool   `json:"ran"`
+	NotRun string `json:"not_run,omitempty"`
+	// Launched is always false: the case never launches.
+	Launched bool `json:"launched"`
+	// FoldersAsFound says the start walk was clean again after the last path
+	// was restored. Absent when the case did not get that far.
+	FoldersAsFound *bool `json:"folders_as_found,omitempty"`
+	// OtherRuntime is the runtime whose start the case also checked, by the
+	// walk alone, at the paths in folders the configuration names.
+	OtherRuntime string            `json:"other_runtime,omitempty"`
+	Plants       []PlantFact       `json:"plants"`
+	NotCovered   []PlantNotCovered `json:"not_covered"`
+}
+
 // Summary is summary.json.
 type Summary struct {
 	Format  int    `json:"format"`
@@ -352,6 +426,9 @@ type Summary struct {
 	Resolv   ResolvEvidence   `json:"resolv_conf"`
 	// BindSources are the bind sources of the plan with the facts of rule G1.
 	BindSources BindSourcesEvidence `json:"bind_sources"`
+	// PlantedPaths are the facts of case S21; present only when the case was
+	// requested.
+	PlantedPaths *PlantedPathsEvidence `json:"planted_paths,omitempty"`
 	// Notes are facts the steps found that no other field holds (a source
 	// whose real path differs from its name, for example).
 	Notes []string `json:"notes,omitempty"`
