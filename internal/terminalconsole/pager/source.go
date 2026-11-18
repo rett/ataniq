@@ -5,6 +5,12 @@ import "errors"
 // Source is where the pager reads the patch from, one page at a time. Its
 // signature uses built-in types only, so that the package that knows the
 // backend can adapt to it without the pager knowing that package.
+//
+// Page may be called again before an earlier call has returned, and from
+// another goroutine: a Source must be safe for concurrent use. The pager
+// calls it from commands, which Bubble Tea runs each on a goroutine of its
+// own, and when the reader goes to the top while a page is being read the
+// pager gives that request up and makes another without waiting for it.
 type Source interface {
 	// Page returns page n of pages (pages >= 1, n < pages). cont[i] is true
 	// when lines[i] continues in the next piece: a line longer than a page
