@@ -113,6 +113,22 @@ func hasFlag(flags []flag, name string, first ...string) bool {
 	return false
 }
 
+// hostnamePinned reports whether the sandbox's host name is set exactly once,
+// to the template's fixed value. A second --hostname would win in bubblewrap,
+// so it fails.
+func hostnamePinned(flags []flag) bool {
+	n := 0
+	for _, f := range flags {
+		if f.name == "--hostname" {
+			if len(f.args) == 0 || f.args[0] != sandboxHost {
+				return false
+			}
+			n++
+		}
+	}
+	return n == 1
+}
+
 func sources(flags []flag, name string) []string {
 	var out []string
 	for _, f := range flags {
@@ -156,7 +172,7 @@ func checkCommon(t *testing.T, what string, flags []flag) {
 	if !hasFlag(flags, "--chdir") {
 		t.Errorf("%s: --chdir is missing: bubblewrap would name the caller's folder in its warning", what)
 	}
-	if !hasFlag(flags, "--hostname", sandboxHost) {
+	if !hostnamePinned(flags) {
 		t.Errorf("%s: --hostname %s is missing: the host's name would be visible inside, or a name is written in the file", what, sandboxHost)
 	}
 	if got := sources(flags, "--ro-bind"); len(got) == 0 || got[0] != "/usr" {
@@ -255,7 +271,8 @@ var (
 // Names found at run time count here only as a path component or beside an
 // @, which is how a leak looks in prose, so that a machine named like a word
 // of the file does not fail on the strict rule that wholeWords applies to
-// the note and wholeStrings to the template.
+// the note and wholeStrings to the template. Those strict rules skip the
+// generic names (see genericNames); the path and @ rules here do not.
 func leaks(text string, names []string, homes []string) []string {
 	var out []string
 	if m := homePath.FindString(text); m != "" {
@@ -369,6 +386,26 @@ func hostNames() (names, homes []string) {
 	return names, homes
 }
 
+// genericNames are host and account names that many machines share and that
+// the note uses as words. They name no one machine, so the bare-word and
+// whole-string rules skip them; the path and @ rules of leaks still apply.
+var genericNames = map[string]bool{
+	"admin": true, "build": true, "builder": true, "ci": true, "dev": true,
+	"git": true, "guest": true, "home": true, "localhost": true,
+	"owner": true, "runner": true, "test": true, "user": true,
+}
+
+// rareNames returns the names that are not generic.
+func rareNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if !genericNames[strings.ToLower(n)] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func TestNoMachineNames(t *testing.T) {
 	names, homes := hostNames()
 	for _, path := range []string{templateFile, noteFile} {
@@ -378,10 +415,11 @@ func TestNoMachineNames(t *testing.T) {
 	}
 	// A string of the template that is exactly a name of this machine is a
 	// leak too, and so is a bare name in the note.
-	for _, n := range wholeStrings(t, read(t, templateFile), names) {
+	rare := rareNames(names)
+	for _, n := range wholeStrings(t, read(t, templateFile), rare) {
 		t.Errorf("%s holds the name %s of this machine as a whole string", templateFile, n)
 	}
-	for _, n := range wholeWords(string(read(t, noteFile)), names) {
+	for _, n := range wholeWords(string(read(t, noteFile)), rare) {
 		t.Errorf("%s holds the name %s of this machine as a word", noteFile, n)
 	}
 }
@@ -407,6 +445,9 @@ func TestScannerFindsLeaks(t *testing.T) {
 		if !strings.Contains(l, c.want) {
 			t.Errorf("scan of %q gave %q, want %q", c.text, l, c.want)
 		}
+	}
+	if got := rareNames([]string{"User", "examplehost"}); !sameList(got, []string{"examplehost"}) {
+		t.Errorf("rare names %q, want examplehost only", got)
 	}
 	// A bare name: the two ways it is found, and what it is not.
 	if l := wholeWords("the owner runs ExampleUser on examplehost.", names); len(l) != 2 {
@@ -452,7 +493,8 @@ func TestNoteLabels(t *testing.T) {
 }
 
 // The host name of the sandbox is pinned: a bare name in its place, the
-// host's own or any other, makes the form check fail.
+// host's own or any other, or a second --hostname, makes the form check fail.
+// The same function runs in checkCommon.
 func TestHostNameIsPinned(t *testing.T) {
 	argv := func(name string) []string {
 		return []string{launcher, "--hostname", name, "--ro-bind", "/usr", "/usr", "/usr/bin/true"}
@@ -466,8 +508,16 @@ func TestHostNameIsPinned(t *testing.T) {
 		{"examplehost", false},
 	} {
 		flags, _ := split(t, argv(c.name))
-		if got := hasFlag(flags, "--hostname", sandboxHost); got != c.ok {
+		if got := hostnamePinned(flags); got != c.ok {
 			t.Errorf("--hostname %s: accepted %v, want %v", c.name, got, c.ok)
 		}
+	}
+	twice := []string{launcher, "--hostname", sandboxHost, "--hostname", "build-host-07", "/usr/bin/true"}
+	if flags, _ := split(t, twice); hostnamePinned(flags) {
+		t.Error("a second --hostname was accepted")
+	}
+	none := []string{launcher, "--ro-bind", "/usr", "/usr", "/usr/bin/true"}
+	if flags, _ := split(t, none); hostnamePinned(flags) {
+		t.Error("a missing --hostname was accepted")
 	}
 }
