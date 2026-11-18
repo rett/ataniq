@@ -5,9 +5,9 @@
 // to read and decide. [New] builds a [Card] from the record. The sections of
 // a card are fields of the model, in the order a surface draws them: the
 // title, the verb line, the plan block, the ref lines, the diff summary and
-// its rows, the four lists, the flagged paths, the evidence and the lead's
-// note. The package knows no terminal, no width and no colour, and it reads
-// no clock.
+// its rows, the four lists, the flagged paths, the evidence, the lead's note
+// and the keys. The package knows no terminal, no width and no colour, and
+// it reads no clock: every rule that needs the time takes it as a value.
 //
 // # What is on a card
 //
@@ -40,6 +40,12 @@
 // record whose name fails. Every other plain string of the model is one the
 // host wrote, and New refuses a record in which such a string holds anything
 // the escaping would change, so no plain string of a card needs escaping.
+//
+// # The rules
+//
+// [Card.MayApprove] is the one rule for when an approve may be offered. It
+// takes a [Reading], which is what the reader has done with the card, and
+// answers yes or no with a one-line reason.
 //
 // # What surfaces and backends share
 //
