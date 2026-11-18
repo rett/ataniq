@@ -69,6 +69,59 @@
 // written is the folder's mode and, in the design, the sandbox that keeps a
 // lead away from it.
 //
+// # Decisions
+//
+// A decision of the owner is journaled before it goes anywhere.
+// [Store.AppendDecision] writes a decision entry (an approve inside the
+// day's limit, or a deny) and returns a handle when the entry is durable.
+// The caller hands the handle's bytes to the door and then says what the
+// door answered, through the handle: [Decision.MarkDelivered], or
+// [Decision.MarkRefusedByDoor] when the door said no. There is no other
+// way to write a delivered entry, so a delivery cannot be journaled for a
+// decision that is not.
+//
+// The decision record is kept byte for byte as it was given, beside the
+// body, because the door is handed the same bytes. With each decision, in
+// the same write, goes an activity entry: the surface and the session it
+// came from, the owner's last activity before it and, when the caller has
+// it, the digest of what the card showed.
+//
+// An approve past the day's limit is a held entry ([Store.AppendHeld]). It
+// is never handed to the door, and the pending record stays pending there.
+// The card comes back to the owner marked "decided past the limit";
+// [Store.HeldCards] is where that mark comes from. Deciding the card again
+// writes a new entry for the same id, a decision or another held, and that
+// closes the earlier one. A held entry whose pending record ran out is
+// closed with an expired entry by [Store.ExpireHeld]. A deny is never held.
+//
+// A decision the host refused (the owner was away, the surface was not the
+// decider, the frame was malformed or named another binding) is a refused
+// entry ([Store.AppendRefused]). It is never delivered.
+//
+// A delivered approval is open until it has its outcome. The door's Use
+// verb consumes it ([Delivery.AppendUse] journals each answer of that
+// verb; this is not the card use the limit counts, which is the decision
+// entry itself), the effect is applied, and [Delivery.AppendOutcome] says
+// what became of it. One decision for a pending id, one delivery for a
+// decision, one consumption and one outcome for an approval: the journal
+// refuses a second of each.
+//
+// # At a restart
+//
+// The journal answers what was under way when the daemon stopped:
+//
+//   - [Store.Undelivered] lists the decisions that have no delivered entry.
+//     The door answers the same for the same id and digest, so each is
+//     handed over again and then marked. A held or a refused entry is never
+//     listed.
+//   - [Store.OpenUses] lists the delivered approvals with no outcome. The
+//     caller settles each from what the door and the mirror show.
+//   - [Store.UnknownOutcomes] lists the approvals whose outcome is unknown
+//     and waits for the owner.
+//   - [Store.Unjournaled] takes the decisions the door holds and returns
+//     those the journal lacks. Such a decision did not come through the
+//     owner's console; the caller refuses it and raises an alert.
+//
 // # Since he last looked
 //
 // The looked entries hold one mark for every surface: the time up to which

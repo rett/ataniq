@@ -29,7 +29,8 @@ const (
 	KindHeld Kind = "held"
 	// KindRefused is a decision the host refused before it was one.
 	KindRefused Kind = "refused"
-	// KindDelivered says that the door answered for a decision.
+	// KindDelivered says that the door answered for a decision: it took
+	// it, or refused it with a code.
 	KindDelivered Kind = "delivered"
 	// KindOutcome says what became of a delivered approval.
 	KindOutcome Kind = "outcome"
