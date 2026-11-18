@@ -62,6 +62,9 @@ func paginate(lines []string, perPage, pieceBytes int) []tpage {
 
 // rig drives a pager as a parent would: it runs every command the pager
 // returns and hands the answer back.
+//
+// Its pager is given testColors: a check of a colour means something only
+// when the colours differ from one another.
 type rig struct {
 	t    *testing.T
 	m    *Model
@@ -73,7 +76,7 @@ type rig struct {
 func newRig(t *testing.T, w, h int, page func(int) ([]string, []bool, int, error)) *rig {
 	t.Helper()
 	r := &rig{t: t, src: &fakeSource{t: t, page: page}}
-	r.m = New(r.src, Options{})
+	r.m = New(r.src, Options{Colors: testColors})
 	r.size(w, h)
 	r.run(r.m.Init())
 	return r

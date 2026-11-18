@@ -340,8 +340,11 @@ func TestAFailedPageEndsTheReading(t *testing.T) {
 			if got, want := r.footer(), tc.want+" · end not reached · Esc closes · j/k PgUp/PgDn Home/End"; got != want {
 				t.Fatalf("footer %q, want %q", got, want)
 			}
-			if c := r.draw().CellAt(0, r.h-1); c.Style.Fg != r.m.colors.Warn {
-				t.Fatalf("the failure line is not in the warning colour")
+			warn := uv.Style{Fg: testColors.Warn, Bg: testColors.Bg}
+			for x, buf := 0, r.draw(); x < len([]rune(r.footer())); x++ {
+				if c := buf.CellAt(x, r.h-1); c.Style != warn {
+					t.Fatalf("cell %d of the failure line has the style %+v, want the warning colour", x, c.Style)
+				}
 			}
 			// Nothing more is read, whatever is pressed, and what was
 			// read can still be scrolled.
