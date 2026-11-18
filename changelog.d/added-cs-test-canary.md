@@ -9,7 +9,8 @@
   or uploads nothing. No release and no other target builds with the tag.
   `tests/canary_tag_test.go` holds the line: a file whose constraint names the
   tag lies only under the paths set for it, and every file of a package that
-  exists only with the tag carries it; the tag is named only in the recipes of
+  exists only with the tag carries it, each constraint read as the go command
+  reads it; the tag is named only in the recipes of
   `test-canary` and `canary-build` in the `Makefile` and nowhere under
   `.github/` or `scripts/`; without the tag no command depends on those
   packages and `ataniqd` depends on nothing under `internal/inject`; tagged

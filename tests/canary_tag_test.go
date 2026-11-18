@@ -77,8 +77,16 @@ func underAnyPath(p string, folders []string) bool {
 // the lines before the package clause, and the constraint lines that do not
 // parse.
 func headerConstraints(data string) ([]constraint.Expr, []string) {
-	var exprs []constraint.Expr
-	var bad []string
+	all, _, bad := headerConstraintsGo(data)
+	return all, bad
+}
+
+// headerConstraintsGo also returns the constraints the go command applies: the
+// go:build line alone when the file has one, and the plus build lines
+// otherwise. Placement uses every line that names the tag, which is the
+// conservative reading, and requirement uses the applied constraints.
+func headerConstraintsGo(data string) (all, applied []constraint.Expr, bad []string) {
+	var goBuild, plusBuild []constraint.Expr
 	inBlock := false
 	for _, line := range strings.Split(data, "\n") {
 		s := strings.TrimSpace(line)
@@ -104,10 +112,21 @@ func headerConstraints(data string) ([]constraint.Expr, []string) {
 				bad = append(bad, s)
 				continue
 			}
-			exprs = append(exprs, expr)
+			all = append(all, expr)
+			if constraint.IsGoBuild(s) {
+				goBuild = append(goBuild, expr)
+			} else {
+				plusBuild = append(plusBuild, expr)
+			}
 		}
 	}
-	return exprs, bad
+	if len(goBuild) > 1 && slices.ContainsFunc(goBuild, exprNamesTag) {
+		bad = append(bad, "more than one go:build line, one of which names "+canaryTag)
+	}
+	if len(goBuild) > 0 {
+		return all, goBuild, bad
+	}
+	return all, plusBuild, bad
 }
 
 func exprNamesTag(e constraint.Expr) bool {
@@ -135,9 +154,12 @@ func buildsWithoutTag(exprs []constraint.Expr) bool {
 	return true
 }
 
-// skipCanaryDir reports the folders no Go package is built from.
-func skipCanaryDir(name string) bool {
-	return name == "testdata" || name == "build" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+// skipCanaryDir reports the folders no Go package is built from: testdata, the
+// folders that start with a dot or an underscore, and the top-level build
+// folder, which holds ignored build output. A folder named build deeper in the
+// tree is a package like any other.
+func skipCanaryDir(p, name string) bool {
+	return name == "testdata" || p == "build" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
 }
 
 // checkCanaryPlacement is check (1): a Go file whose constraint names the tag
@@ -150,7 +172,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			return err
 		}
 		if d.IsDir() {
-			if p != "." && skipCanaryDir(d.Name()) {
+			if p != "." && skipCanaryDir(p, d.Name()) {
 				return fs.SkipDir
 			}
 			return nil
@@ -162,7 +184,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 		if err != nil {
 			return err
 		}
-		exprs, bad := headerConstraints(string(data))
+		exprs, applied, bad := headerConstraintsGo(string(data))
 		for _, line := range bad {
 			if strings.Contains(line, canaryTag) {
 				problems = append(problems, fmt.Sprintf("%s: unreadable build constraint %q", p, line))
@@ -172,7 +194,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 		if named && !underAnyPath(p, canaryAllowedPaths) {
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
 		}
-		if underAnyPath(p, canaryWholePaths) && (!named || buildsWithoutTag(exprs)) {
+		if underAnyPath(p, canaryWholePaths) && (!named || buildsWithoutTag(applied)) {
 			problems = append(problems, fmt.Sprintf("%s: a file of a wholly tagged package does not require %s", p, canaryTag))
 		}
 		return nil
@@ -671,6 +693,9 @@ const (
 	hdrTagged  = "//go:build linux && ataniq_canary"
 	hdrNegated = "//go:build linux && !ataniq_canary"
 	hdrPlain   = "//go:build linux"
+	// The old style lines, alone or after a go:build line.
+	hdrPlusTagged = "// +build linux,ataniq_canary"
+	hdrPlusPlain  = "// +build linux"
 )
 
 func TestCanaryTagPlacementCheck(t *testing.T) {
@@ -735,15 +760,39 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 		{"a constraint after a license comment", fstest.MapFS{
 			"internal/other/x.go": &fstest.MapFile{Data: []byte("/* license\n//go:build ataniq_canary\n*/\n\n// Copyright\n" + hdrTagged + "\n\npackage x\n")},
 		}, []string{"internal/other/x.go"}},
-		{"testdata, build and hidden folders are not packages", fstest.MapFS{
+		{"testdata, the top-level build and hidden folders are not packages", fstest.MapFS{
 			"internal/other/testdata/x.go": goSource(hdrTagged),
 			"build/x.go":                   goSource(hdrTagged),
-			".codex/x.go":                  goSource(hdrTagged),
+			"build/sub/x.go":               goSource(hdrTagged),
+			".hidden/x.go":                 goSource(hdrTagged),
 			"internal/_old/x.go":           goSource(hdrTagged),
 		}, nil},
 		{"an old style line is read", fstest.MapFS{
 			"internal/other/x.go": goSource("// +build ataniq_canary"),
 		}, []string{"internal/other/x.go"}},
+		// The go command applies the go:build line alone when a file has one
+		// and the plus build lines only otherwise.
+		{"a plus build line that the go command ignores", fstest.MapFS{
+			"cmd/ataniq-canary-standin/main.go": goSource(hdrPlain + "\n" + hdrPlusTagged),
+			"internal/leadcanary/a.go":          goSource(hdrPlain + "\n" + hdrPlusTagged),
+			"internal/leadcanary/b.go":          goSource(hdrTagged + "\n" + hdrPlusPlain),
+		}, []string{"cmd/ataniq-canary-standin/main.go", "internal/leadcanary/a.go"}},
+		{"a plus build line alone is applied", fstest.MapFS{
+			"internal/leadcanary/a.go":       goSource(hdrPlusTagged),
+			"internal/leadcanary/b.go":       goSource(hdrPlusPlain),
+			"internal/leadholder/serve/c.go": goSource(hdrPlusPlain),
+		}, []string{"internal/leadcanary/b.go"}},
+		{"two go:build lines, one naming the tag", fstest.MapFS{
+			"internal/leadcanary/a.go": goSource(hdrTagged + "\n" + hdrPlain),
+			"internal/leadcanary/b.go": goSource(hdrPlain + "\n" + hdrPlain),
+		}, []string{"internal/leadcanary/a.go", "internal/leadcanary/b.go"}},
+		// Only the top-level build folder holds build output.
+		{"a build folder below the top level is a package", fstest.MapFS{
+			"internal/leadcanary/build/b.go":  goSource(hdrPlain),
+			"internal/other/build/b.go":       goSource(hdrTagged),
+			"internal/leadcanary/build/ok.go": goSource(hdrTagged),
+			"build/x.go":                      goSource(hdrTagged),
+		}, []string{"internal/leadcanary/build/b.go", "internal/other/build/b.go"}},
 		{"an unreadable constraint that names the tag", fstest.MapFS{
 			"internal/other/x.go": goSource("//go:build ataniq_canary &&"),
 		}, []string{"internal/other/x.go"}},
