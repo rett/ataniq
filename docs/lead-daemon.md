@@ -369,7 +369,11 @@ dashes around one dot. No release build registers one. When one is registered,
 `"mutations":true` only when a registered extension declares that it changes
 something. A request for such an operation may carry `params`, one JSON object
 inside the same line cap, and passes the same peer check, caps, timeouts and
-counters. The protocol stays provisional.
+counters; a `params` that is not an object is `invalid-request`. An extension
+may answer with codes of its own, never `unauthorized`, `busy`, `too-large` or
+`unsupported-protocol`; a malformed error body from it is answered `internal`,
+and so is a panic in it, also while its result is marshalled. The protocol
+stays provisional.
 
 ## The registry
 
