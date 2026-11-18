@@ -330,6 +330,7 @@ func (m *Model) onPage(v pageMsg) {
 	}
 	last := len(v.lines) - 1
 	if v.pages < 1 || v.n >= v.pages || len(v.cont) != len(v.lines) ||
+		emptyContinued(v.lines, v.cont) ||
 		(m.pages != 0 && v.pages != m.pages) ||
 		(v.n == v.pages-1 && last >= 0 && v.cont[last]) {
 		m.malformed()
@@ -367,8 +368,21 @@ func (m *Model) onPage(v pageMsg) {
 
 var (
 	errMalformed = errors.New("pager: the source returned a page that does not fit the others")
-	errTooLong   = errors.New("pager: a line is longer than MaxLineBytes")
+	errTooLong   = errors.New("pager: a line is longer than MaxLineBytes or in more pieces than MaxLinePieces")
 )
+
+// emptyContinued reports whether a piece of a page is empty and continues.
+// Such a piece carries nothing of its line, and a line made of them would
+// never reach MaxLineBytes, so a page that holds one does not fit. lines
+// and cont have the same length.
+func emptyContinued(lines []string, cont []bool) bool {
+	for i, s := range lines {
+		if s == "" && cont[i] {
+			return true
+		}
+	}
+	return false
+}
 
 func (m *Model) malformed() { m.fail, m.err = failMalformed, errMalformed }
 

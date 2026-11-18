@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
+	"slices"
 	"strings"
 	"testing"
 
@@ -437,6 +438,15 @@ func TestPagesThatDoNotFit(t *testing.T) {
 		{"a line longer than the pager shows", func(n int) ([]string, []bool, int, error) {
 			return []string{strings.Repeat("x", 1<<20)}, []bool{true}, 1000, nil
 		}, failTooLong},
+		{"an empty piece that continues", func(n int) ([]string, []bool, int, error) {
+			return []string{"a", "", "b"}, []bool{true, true, false}, 3, nil
+		}, failMalformed},
+		{"a line of empty pieces that continue", func(n int) ([]string, []bool, int, error) {
+			return make([]string, 1000), slices.Repeat([]bool{true}, 1000), 20, nil
+		}, failMalformed},
+		{"a line in more pieces than the pager takes", func(n int) ([]string, []bool, int, error) {
+			return slices.Repeat([]string{"x"}, 1000), slices.Repeat([]bool{true}, 1000), 20, nil
+		}, failTooLong},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t, 100, 12, tc.page)
@@ -456,6 +466,9 @@ func TestPagesThatDoNotFit(t *testing.T) {
 			}
 			if calls > MaxLineBytes>>20+2 {
 				t.Fatalf("%d pages were read", calls)
+			}
+			if n := r.m.heldLines(); n > MaxLinePieces+1000 {
+				t.Fatalf("the pager holds %d pieces", n)
 			}
 		})
 	}

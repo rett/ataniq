@@ -340,18 +340,18 @@ func (m *Model) keep(from, to int) {
 }
 
 // tooLong reports whether a line among the held pages, whole or not yet
-// whole, is longer than MaxLineBytes.
+// whole, is longer than MaxLineBytes or in more pieces than MaxLinePieces.
 func (m *Model) tooLong() bool {
-	n := 0
+	n, pieces := 0, 0
 	for i := range m.held {
 		pg := &m.held[i]
 		for j, s := range pg.lines {
-			n += len(s)
-			if n > MaxLineBytes {
+			n, pieces = n+len(s), pieces+1
+			if n > MaxLineBytes || pieces > MaxLinePieces {
 				return true
 			}
 			if !pg.cont[j] {
-				n = 0
+				n, pieces = 0, 0
 			}
 		}
 	}

@@ -25,7 +25,11 @@
 // go when the reader scrolls back. No wrapped row is kept: rows are wrapped
 // when they are drawn, and for a line of many rows the pager remembers
 // where every 32nd row begins. A line is held whole while it is near the
-// screen, since it is joined before it is wrapped; MaxLineBytes bounds it.
+// screen, since it is joined before it is wrapped; MaxLineBytes bounds its
+// bytes and MaxLinePieces the pieces it may arrive in. The size of a page
+// and the number of pages that hold no piece are the source's: the pager
+// holds a page whole, and every page of a run of pages without a piece
+// that it has to read through to the next piece.
 //
 // A long line is wrapped onto as many rows as it needs, each after the
 // first with a mark in the left margin, and is never cut. The footer says
@@ -34,11 +38,12 @@
 // page was read the pager knows where they begin, lets them go and does not
 // read them again.
 //
-// A page that fails, a page that does not fit the others, or a line longer
-// than MaxLineBytes ends the reading: the footer shows one line of the
-// pager's own words, no further page is asked for, and Reached stays false.
-// Reached is true only once the last piece of the last page was read and its
-// last row was on the screen.
+// A page that fails, a page that does not fit the others (an empty piece
+// that continues is such a page), or a line longer than MaxLineBytes or in
+// more pieces than MaxLinePieces ends the reading: the footer shows one
+// line of the pager's own words, no further page is asked for, and Reached
+// stays false. Reached is true only once the last piece of the last page
+// was read and its last row was on the screen.
 //
 // The package starts no program and opens no file. Of this repository it
 // imports only leadtext.
