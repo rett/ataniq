@@ -55,7 +55,9 @@ import (
 // last fence left, between the fence's own calls (never inside Frozen, which
 // holds the output lock), and its Settle waits for it like for any output. The
 // output of an agent that ends while a fence holds some is applied by the
-// lifetime path before the pane ends, so the last screen has it.
+// lifetime path before the pane ends, so the last screen has it: the path
+// applies the buffer and then waits for the slice another applier may have
+// taken from it (applyLast).
 //
 // # Lock order
 //
@@ -391,6 +393,20 @@ func (s *Session) applyHeld(stop func(applied int) bool) (applied, stopped bool)
 		want -= len(slice)
 	}
 	return applied, false
+}
+
+// applyLast is the lifetime path's applying of held output, called when the
+// reader is gone, so that nothing more enters the buffer: when it returns,
+// every byte the reader held has been applied. applyHeld returns with the
+// buffer empty, but another applier (drainHeld, a fence's Settle or the end of
+// a fence) may have taken the last slice from it and not have applied it yet.
+// It holds the applier lock until it has, so taking and releasing that lock
+// waits for the slice: for one slice, or for the Frozen function that the
+// other applier waits behind.
+func (s *Session) applyLast() {
+	s.applyHeld(nil)
+	s.hold.apply.Lock()
+	s.hold.apply.Unlock()
 }
 
 // release lets the reader apply again, if nothing is held: it clears the flag

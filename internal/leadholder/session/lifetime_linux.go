@@ -197,7 +197,7 @@ func (s *Session) lifecycle() {
 		// A fence may hold output the reader read and the fence did not
 		// apply: the last screen must show it, and the pane takes none
 		// after End.
-		s.applyHeld(nil)
+		s.applyLast()
 	}
 	if stream == Yes {
 		// The session's output is over: the pane keeps its last screen.
