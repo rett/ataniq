@@ -177,6 +177,8 @@ const (
 	seqAltScreenOff     = "\x1b[?1049l"
 	seqCursorHide       = "\x1b[?25l"
 	seqCursorShow       = "\x1b[?25h"
+	seqAutowrapOff      = "\x1b[?7l"
+	seqAutowrapOn       = "\x1b[?7h"
 	seqClear            = "\x1b[H\x1b[2J"
 	seqReset            = "\x1b[0m"
 	seqFaint            = "\x1b[2m"
@@ -187,10 +189,14 @@ const (
 // altNow (true when the alternate screen is on). The screen is drawn at
 // absolute rows from a cleared screen: each row of text at its row, with the
 // faint spans in SGR 2, then the title, then the cursor at its cell and
-// visible or hidden as the snapshot says.
+// visible or hidden as the snapshot says. Autowrap is off while the rows are
+// drawn and on again after them: a row is checked in characters, not cells, so
+// a row of wide characters can be wider than the screen, and it is clipped at
+// the edge instead of wrapping into the next row.
 func (s *snapshot) draw(altNow bool) []byte {
 	var b bytes.Buffer
 	b.WriteString(seqCursorHide)
+	b.WriteString(seqAutowrapOff)
 	switch {
 	case s.AltScreen && !altNow:
 		b.WriteString(seqAltScreenOn)
@@ -229,6 +235,7 @@ func (s *snapshot) draw(altNow bool) []byte {
 			b.WriteString(seqReset)
 		}
 	}
+	b.WriteString(seqAutowrapOn)
 	b.WriteString("\x1b[" + strconv.Itoa(s.CursorY+1) + ";" + strconv.Itoa(s.CursorX+1) + "H")
 	if !s.CursorHidden {
 		b.WriteString(seqCursorShow)
