@@ -72,18 +72,18 @@ Not built:
   agent is an ordinary process of the user, in no sandbox.
 - A daemon that supervises holders, and the role lock and lingering checks
   behind assertion 9 (the package has the interfaces only, and nothing
-  implements them). The daemon skeleton of [the lead daemon guide](lead-daemon.md) starts no
-  holder.
+  implements them). The daemon skeleton of
+  [the lead daemon guide](lead-daemon.md) starts no holder.
 - Injection in use: putting text into a running lead's terminal. A provisional
   library exists (see [the lead injection guide](lead-injection.md)), and no
   holder calls it.
 - Any use of the exchange mirror and the intake by which a lead's work reaches
   the owner's upstream branches. The plan binds the mirror folder read-only
-  and does not make it. `ataniq-intake` (see [the lead intake guide](lead-intake.md)) makes a
-  mirror under the state root it is given, at the same relative path,
-  `mirrors/<project>.git`, and is run by hand. It shares no code with these
-  packages, and the commands it runs come from a sandbox template of its own,
-  not from this profile.
+  and does not make it. `ataniq-intake` (see
+  [the lead intake guide](lead-intake.md)) makes a mirror under the state root
+  it is given, at the same relative path, `mirrors/<project>.git`, and is run by
+  hand. It shares no code with these packages, and the commands it runs come
+  from a sandbox template of its own, not from this profile.
 - Anything that uses the four parent folders (requests, mailbox, mail and the
   coordinators' published folders). They are bound folders only: nothing reads
   the request folder, and nothing writes the mailbox or publishes a
