@@ -40,11 +40,13 @@ const (
 	ManagedSettingsName = "managed-settings.json"
 )
 
-// The inside path of the Qargi records that provisioning prepares the folders
-// for. The records folder is the layout's own whatever this says; the value
-// only has to be a valid inside path that is not in the home, so that no
-// mount point is made for it.
-const recordsInside = "/ataniq/records"
+// RecordsInside is the inside path of the Qargi records that provisioning
+// prepares the mount points for. The records folder is the layout's own
+// whatever this says, but the mount points depend on it: a path in the home
+// would need a mount point there, and this one, outside the home, needs none.
+// The sandbox inputs file must name it as sources.qargi_records_inside, and
+// [CheckInputs] refuses a file that names another.
+const RecordsInside = "/ataniq/records"
 
 // Paths are the host paths that provisioning makes, from the config alone.
 // The run kit reads them to write the sandbox inputs file (the sources of the

@@ -11,6 +11,7 @@ import (
 
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadholder/sandboxstart"
+	"ataniq/internal/leadsandbox/profile"
 )
 
 // goodInputs returns an inputs file's content that matches the world's config
@@ -32,7 +33,7 @@ func goodInputs(t *testing.T, w *provisiontest.World) sandboxstart.Inputs {
 			ManagedSettingsSHA256: hashHex([]byte("x")),
 			LeadSkills:            p.LeadSkills, InstructionFile: p.InstructionFile,
 			GitIdentityDir: p.GitIdentityDir, QargiInstall: p.QargiInstall,
-			QargiRecordsInside: "/ataniq/records",
+			QargiRecordsInside: RecordsInside,
 			AssignmentDir:      p.AssignmentDir, ProjectionDir: p.ProjectionDir,
 		},
 		NeverMounted: []string{"/opt/sample/never"}, ProviderHost: "provider.example.invalid",
@@ -74,6 +75,9 @@ func TestCheckInputsRefusesAFileThatDoesNotMatch(t *testing.T) {
 		"sources.qargi_install":    func(in *sandboxstart.Inputs) { in.Sources.QargiInstall = "/opt/sample/qargi" },
 		"sources.assignment_dir":   func(in *sandboxstart.Inputs) { in.Sources.AssignmentDir = "/opt/sample/a" },
 		"sources.projection_dir":   func(in *sandboxstart.Inputs) { in.Sources.ProjectionDir = "/opt/sample/p" },
+		"sources.qargi_records_inside": func(in *sandboxstart.Inputs) {
+			in.Sources.QargiRecordsInside = profile.HomeInside + "/records"
+		},
 		"sources.extra_placeholders": func(in *sandboxstart.Inputs) {
 			in.Sources.ExtraPlaceholders = []sandboxstart.Placeholder{{Rel: "x", Source: "/opt/sample/x"}}
 		},
