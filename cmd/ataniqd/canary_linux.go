@@ -19,11 +19,15 @@ import (
 // This file is canary mode of the command: a build with the ataniq_canary tag.
 // canary_off_linux.go has the same names for every other build.
 
-// canaryUsage is the part of the usage text that only a tagged build has.
+// canaryUsage is the part of the usage text that only a tagged build has. The
+// text above it is the release build's, byte for byte, and says that the build
+// is read-only and that no flag changes that; this part opens by saying where
+// that holds in this build.
 const canaryUsage = `
-This build has the ataniq_canary tag. Without --canary it is the read-only
-skeleton above; with it, the daemon serves the canary operations for the one
-role of CONFIG (see internal/leadcanary).
+In this build (tag ataniq_canary) the text above holds only without --canary.
+With run --canary the daemon is not read-only: it serves the canary operations
+for the one role of CONFIG, which define, start and stop a lead and send it a
+message (see internal/leadcanary).
 
        ataniqd run --canary CONFIG
        ataniqd canary define|start|stop --config CONFIG
