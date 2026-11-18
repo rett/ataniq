@@ -245,9 +245,9 @@ func (q *qualifier) qualify(ctx context.Context) report {
 			step{"limits-show-read-back", q.limitsShowReadBack},
 			step{"limits-cgroup-read-back", q.limitsCgroupReadBack},
 			step{"memory-limit-lowered", q.memoryLowered},
-			step{"runtime-folders-hold-the-unit", q.runtimeFoldersHoldTheUnit},
 			step{"lowered-memory-limit-show-read-back", q.loweredShowReadBack},
 			step{"lowered-memory-limit-cgroup-read-back", q.loweredCgroupReadBack},
+			step{"runtime-folders-hold-the-unit", q.runtimeFoldersHoldTheUnit},
 		)
 	}
 	steps = append(steps, []step{

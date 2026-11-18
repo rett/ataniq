@@ -210,7 +210,7 @@ func TestLimitChecksPassAndAreNamedInTheReport(t *testing.T) {
 		t.Fatalf("%+v", rep)
 	}
 	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches " +
-		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered runtime-folders-hold-the-unit lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back " +
+		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back runtime-folders-hold-the-unit " +
 		"bound-child-started sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded bound-child-stops-with-parent " +
 		"runtime-folders-clean-after-stop empty-true-for-a-fresh-name cleanup"
 	if got := checkNames(rep); got != want {
