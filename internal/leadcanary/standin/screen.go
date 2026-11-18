@@ -190,9 +190,11 @@ const (
 // absolute rows from a cleared screen: each row of text at its row, with the
 // faint spans in SGR 2, then the title, then the cursor at its cell and
 // visible or hidden as the snapshot says. Autowrap is off while the rows are
-// drawn and on again after them: a row is checked in characters, not cells, so
-// a row of wide characters can be wider than the screen, and it is clipped at
-// the edge instead of wrapping into the next row.
+// drawn and on again after them, whatever it was before the draw: the stand-in
+// owns its terminal and does not read the mode first. A row is checked in
+// characters, not cells, so a row of wide characters can be wider than the
+// screen, and it is clipped at the edge instead of wrapping into the next
+// row.
 func (s *snapshot) draw(altNow bool) []byte {
 	var b bytes.Buffer
 	b.WriteString(seqCursorHide)

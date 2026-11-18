@@ -173,6 +173,13 @@ func commitTree(dir, home, token string) (string, error) {
 // when it does not exist. It refuses a link, and any file that is not a
 // regular file, such as a pipe, which it does not wait for: the open does not
 // block and the file is not truncated before it is known to be regular.
+//
+// The file is truncated and then written, so a reader that opens it between
+// the two sees it empty for a moment. A file that is rewritten while a run is
+// live (order.txt after a late reply, result.txt after a second commit) can
+// show that. This is left to the reader, which treats an empty file as "not
+// yet" and reads again (the run kit); writing a temporary file and renaming it
+// would replace a link at the final name instead of refusing it.
 func writeRegular(path, s string, perm os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, perm)
 	if err != nil {
