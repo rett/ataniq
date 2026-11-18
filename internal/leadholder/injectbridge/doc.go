@@ -22,6 +22,8 @@
 //     payload to the tracker whose status the View reports. It is installed
 //     before the agent starts (session.Config.OSC), with the tracker and the
 //     clock that then go into [Config].
+//   - [WireResult] is the one mapping from the library's result to the words
+//     of the control wire.
 //   - [Counts] reads the tracker's totals for the holder's counters.
 //
 // The package starts nothing and keeps no state beyond the tracker it is
