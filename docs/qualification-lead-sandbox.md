@@ -565,6 +565,13 @@ record, not a failure of the harness.
 | S19 | A lead commits each execution-config path of the design's list; run the documented intake up to the sign-off, and a plain pull in an owner checkout. | Which paths were marked, whether anything the lead wrote ran outside a sandbox, and whether the upstream branch moved without the sign-off. |
 | S20 | Run codex with `danger-full-access` and the `untrusted` approval policy inside the sandbox, and ask for a command outside its trusted set. | Whether it prompts, and what the holder would read. |
 
+The owner-side steps of S16 and the intake of S19 are the fetch and the review
+of [the lead intake guide](lead-intake.md).
+[The lead mirror qualification manual](qualification-lead-mirror.md) has a
+separate opt-in harness that records facts for both. It runs them through a
+sandbox template that its operator writes, not through the plan this harness
+launches.
+
 ### Case G1, attended variant
 
 The automated G1 records the facts about the plan's sources. The attended variant

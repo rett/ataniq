@@ -5,15 +5,15 @@ agents, tools, and local or remote sessions through extensible feature packs.
 
 ## Maturity
 
-The 0.0.8 release is a developer foundation with offline development checks and
-internal libraries. It adds a finite synthetic controller-handoff model and
-independent evidence verifier. Its 32 lawful rows and four mutated-evidence
-controls matched the frozen expectations. Five supplemental verifier checks
-also passed. These results cover bounded model consistency and detection of the four frozen
-mutated-evidence controls only. Real controller authority, exclusive receiving routes and native
-attachment remain unqualified.
+Ataniq is so far a developer foundation with offline development checks and
+internal libraries. It has a finite synthetic controller-handoff model and
+independent evidence verifier. The model's 32 lawful rows and four
+mutated-evidence controls matched the frozen expectations. Five supplemental
+verifier checks also passed. These results cover bounded model consistency and
+detection of the four frozen mutated-evidence controls only. Real controller
+authority, exclusive receiving routes and native attachment remain unqualified.
 
-Earlier releases provide private application contracts, an encrypted cursor
+It also provides private application contracts, an encrypted cursor
 codec with a bounded per-codec epoch reservation allocator, and Linux/amd64
 SQLite default-VFS qualification. SQLite qualification requires the strict gate
 on a capable host. Production storage lifecycle remains unqualified. Pooling
@@ -27,7 +27,7 @@ and authenticated live admission remain pending implementation. See the
 | Commands | Shipped public typed command contracts, strict JSON codecs and canonical binary bindings. Private internal administration, resource, status and conflict contracts add bounded canonical arithmetic. Public v1 contracts and vectors are retained. See the [application contracts](docs/design/application-contracts.md) and [private contract source](internal/appcontract/admin.go). |
 | Cursors | Internal v2 encrypted cursor codec with strict canonical decoding and a bounded epoch reservation allocator per codec. Tests cover rotation, concurrent reservations, failed-mint consumption and fresh construction without received-epoch adoption. See the [cursor source](internal/appcontract/cursor.go). |
 | Controller qualification | Finite synthetic ledger, proof and generation checks with an independent verifier. Broader model behavior and real authority, gate and provider composition remain unqualified. See the [controller qualification scope](qualification/controllerhandoff/README.md). |
-| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. A fixture-only terminal console (`ataniq-console --demo`) shows fictional, read-only data with no live control or provider integration. It ships in this release as a provisional fixture console; it is not a qualification. The CLI prototype remains on a separate development branch. |
+| Service and clients | Production service, runner, provider conversations, authenticated durable admission, execution adapters, provisioning, and released CLI and console remain pending. A provisional terminal console has two modes: `ataniq-console --demo` shows fictional, read-only fixture data, and `ataniq-console --attach` shows a live scratch session from a holder (one writer, one read-only viewer, for a scratch agent only, not managed by the daemon). It has no provider integration and controls no lead, and neither mode is a qualification. See [the console guide](docs/terminal-console.md). The CLI prototype remains on a separate development branch. |
 
 Cursor service composition must provide caller authentication and authorization,
 key provisioning and nonzero key/identity validation, one codec per composition,
@@ -40,10 +40,25 @@ coverage consists of Codex mock tests, alongside Linux/amd64 host and SQLite
 qualification fixtures. Live Claude and Codex attachment remain unqualified.
 See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
+`ataniqd` is a provisional, unqualified, read-only daemon skeleton with the
+packages a later managed-lead daemon will use; it starts, stops and manages no
+lead. See [the lead daemon guide](docs/lead-daemon.md).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
-for the sandbox of a managed lead; nothing uses it yet.
+for the sandbox of a managed lead; nothing uses it yet. Its opt-in harness is in
+[the lead sandbox qualification guide](docs/qualification-lead-sandbox.md).
+The [lead injection guide](docs/lead-injection.md) describes a provisional,
+unqualified library for fenced message injection into a terminal-hosted lead;
+nothing uses it yet.
+The reviewed intake of a managed lead's work through the exchange mirror, with
+the provisional command `ataniq-intake`, is described in
+[the lead intake guide](docs/lead-intake.md); the opt-in harness for a real
+sandbox template is in
+[the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+These parts are built side by side and none calls another: the daemon starts no
+holder, the holder launches no sandbox and injects nothing, and the intake is
+run by hand.
 
 ## Architecture decisions
 

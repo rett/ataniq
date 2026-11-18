@@ -154,7 +154,7 @@ func installFD1(a *Attempt) (result *FD1Runtime, err error) {
 		if e != 0 {
 			return FD1Object{}, FD1Endpoint{}, e
 		}
-		return FD1Object{fd, st.Dev, st.Ino, kind, access, &nb}, FD1Endpoint{fd, FileIdentity{st.Dev, st.Ino, st.Uid}, st.Mode, int(flags)}, nil
+		return FD1Object{fd, st.Dev, st.Ino, kind, access, &nb}, FD1Endpoint{fd, FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}, st.Mode, int(flags)}, nil
 	}
 	r := &FD1Runtime{SourcesClosed: true}
 	objects := []FD1Object{}
@@ -212,7 +212,7 @@ func verifyFD1Endpoints(a *Attempt) error {
 		flags, err := fdFlags(o.FD)
 		access, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(o.FD), syscall.F_GETFL, 0)
 		if syscall.Fstat(o.FD, &st) != nil || err != nil || flags != 0 || errno != 0 || e.FD != o.FD ||
-			(FileIdentity{st.Dev, st.Ino, st.Uid}) != e.Identity || st.Dev != o.Device || st.Ino != o.Inode || st.Uid != uint32(os.Getuid()) || st.Mode != e.Mode || st.Mode&syscall.S_IFMT != fd1Kind(o.FD) ||
+			(FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}) != e.Identity || st.Dev != o.Device || st.Ino != o.Inode || st.Uid != uint32(os.Getuid()) || st.Mode != e.Mode || st.Mode&syscall.S_IFMT != fd1Kind(o.FD) ||
 			int(access) != e.Flags || e.Flags != fd1ExpectedFlags(o.FD) || st.Mode&syscall.S_IFMT == syscall.S_IFREG && st.Nlink != 1 {
 			return errors.New("typed endpoint identity/type/access/flags changed")
 		}

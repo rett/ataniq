@@ -281,7 +281,7 @@ func PrivateInject(path string) error {
 		if a.Config.DescriptorProfile == FD1TypedProfile && want.FD > 2 && want.FD != BPFFD {
 			kind = fd1Kind(want.FD)
 		}
-		if syscall.Fstat(want.FD, &st) != nil || e != nil || st.Mode&syscall.S_IFMT != kind || kind == syscall.S_IFREG && st.Nlink != 1 || (FileIdentity{st.Dev, st.Ino, st.Uid}) != want.Identity || flags != 0 {
+		if syscall.Fstat(want.FD, &st) != nil || e != nil || st.Mode&syscall.S_IFMT != kind || kind == syscall.S_IFREG && st.Nlink != 1 || (FileIdentity{Device: st.Dev, Inode: st.Ino, UID: st.Uid}) != want.Identity || flags != 0 {
 			return errors.New("descriptor role identity mismatch")
 		}
 	}

@@ -6,7 +6,7 @@ sandbox in ordinary use or in the tests, and no command uses it yet: a holder
 that would launch and supervise a lead in it, and a daemon that would start that
 holder, are other work. The scratch-only holder of
 [the lead holder guide](lead-holder.md) and the daemon skeleton of
-the lead daemon guide launch no sandbox. Only the opt-in
+[the lead daemon guide](lead-daemon.md) launch no sandbox. Only the opt-in
 qualification harness can launch the generated plan, on a host a coordinator
 chose. This guide says what the code generates and what it checks. It does not
 say that the sandbox is qualified, safe or supported, and no part of it should
@@ -72,14 +72,14 @@ Not built:
   agent is an ordinary process of the user, in no sandbox.
 - A daemon that supervises holders, and the role lock and lingering checks
   behind assertion 9 (the package has the interfaces only, and nothing
-  implements them). The daemon skeleton of the lead daemon guide starts no
+  implements them). The daemon skeleton of [the lead daemon guide](lead-daemon.md) starts no
   holder.
 - Injection in use: putting text into a running lead's terminal. A provisional
   library exists (see [the lead injection guide](lead-injection.md)), and no
   holder calls it.
 - Any use of the exchange mirror and the intake by which a lead's work reaches
   the owner's upstream branches. The plan binds the mirror folder read-only
-  and does not make it. `ataniq-intake` (see the lead intake guide) makes a
+  and does not make it. `ataniq-intake` (see [the lead intake guide](lead-intake.md)) makes a
   mirror under the state root it is given, at the same relative path,
   `mirrors/<project>.git`, and is run by hand. It shares no code with these
   packages, and the commands it runs come from a sandbox template of its own,
@@ -1144,7 +1144,7 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
 13. **The lead's `.git` (O).** A lead can rename `.git` and build another; the
     read-only binds are defence in depth, and the primary rule (no owner-side tool
     uses a lead's tree) is not enforced here. Case S16 and the intake cover it;
-    the lead intake guide says what the built intake does with
+    [the lead intake guide](lead-intake.md) says what the built intake does with
     a lead's tree.
 14. **Checks at one moment (Q).** The mount-point and source checks are made right
     before the start; nothing here closes the gap between a check and the launch
