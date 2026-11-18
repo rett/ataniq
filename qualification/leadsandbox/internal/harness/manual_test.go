@@ -58,7 +58,7 @@ func TestManualExampleIsAValidConfiguration(t *testing.T) {
 // the manual, and the keys it describes are the ones the harness reads.
 func TestManualCoversEveryCaseAndEvidenceFile(t *testing.T) {
 	m := manual(t)
-	for n := 1; n <= 20; n++ {
+	for n := 1; n <= 21; n++ {
 		if !strings.Contains(m, fmt.Sprintf("| S%d |", n)) {
 			t.Errorf("case S%d has no row in the manual", n)
 		}
@@ -68,7 +68,7 @@ func TestManualCoversEveryCaseAndEvidenceFile(t *testing.T) {
 			t.Errorf("evidence file %s is not described", name)
 		}
 	}
-	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build", harness.StepBindSources} {
+	for _, key := range []string{"coordinator_reviewed", "no_lead_has_run", "reviewed_bpf", "--run", "--unattended", "time_limit_seconds", "managed_settings_inside", "make qualification-leadsandbox-build", harness.StepBindSources, harness.StepPlanted, "planted_paths", "scratch_folders_disposable"} {
 		if !strings.Contains(m, key) {
 			t.Errorf("the manual does not mention %s", key)
 		}
@@ -76,6 +76,13 @@ func TestManualCoversEveryCaseAndEvidenceFile(t *testing.T) {
 	// Case G1 is not in the design's table: it has its own row, the attended
 	// variant and the keys of its evidence.
 	for _, s := range []string{"| G1 |", "### Case G1, attended variant", "bind_sources", "links_checked", "no_symbolic_link_component", "no_source_in_read_write_source", "checked_path", "ataniq-g1-canary-text", "Rule G1 and git inside the sandbox"} {
+		if !strings.Contains(m, s) {
+			t.Errorf("the manual does not mention %q", s)
+		}
+	}
+	// Case S21 is not in the evidence tables of the other cases: its row names
+	// its results and the suffix of the entries it sets aside.
+	for _, s := range []string{"planted-paths-refused", "planted-paths-refused-other-runtime", "planted-paths-restored", harness.PlantAsideSuffix, "folders_as_found", "not_covered"} {
 		if !strings.Contains(m, s) {
 			t.Errorf("the manual does not mention %q", s)
 		}

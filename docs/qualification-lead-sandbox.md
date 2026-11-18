@@ -58,7 +58,14 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    `coord-login`, and the folder, tree and home of every coordinator and the
    folder of every shared login that exists below them at that moment), and
    writes the probe spec with them;
-9. checks the mount points and sources again, right before the launch (the step
+9. when the configuration requests case S21, plants entries at the bind targets
+   in the scratch folders and puts them back, with the start's checks made
+   against each (the step `planted-bind-paths`: see the S21 row of
+   [Automated cases](#automated-cases)). It runs after the plan has been built
+   and verified and before the spec is written, and leaves the folders as it
+   found them, so the steps that follow see them as they were. It launches
+   nothing. Without the case the step is recorded as skipped;
+10. checks the mount points and sources again, right before the launch (the step
    `recheck`; its walk of the mount points is the fact the outside half of
    assertion 7 is made from), and then, as a step of its own
    (`check-bind-sources`), walks to every bind source of the plan by handle,
@@ -72,13 +79,15 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    that decides is made after the launch by the plan's pass-through step, which
    walks to each source Ataniq supplies again, by handle, and the harness does
    not see it (see [Rule G1](#rule-g1-and-git-inside-the-sandbox));
-10. launches pasta, the pass-through step, bubblewrap, the probe and a scratch
+11. launches pasta, the pass-through step, bubblewrap, the probe and a scratch
     command through a launcher (a session and process group of its own, with a
     pseudo-terminal as its standard streams and no controlling terminal, as a
     holder under a unit would run it), reads the probe's report line from the
     channel with a time limit (one line, taken as the start without waiting for
-    end-of-file), and waits for the exit;
-11. runs the checks that can only be made outside: the canary's count, the
+    end-of-file), and waits for the exit. When case S21 is the only case
+    requested the run launches nothing, and the steps from `launch` to
+    `report-trailing` (this item and the next two) are recorded as skipped;
+12. runs the checks that can only be made outside: the canary's count, the
     sysctl, the outside half of assertion 7, and the checks that need a role
     lock, lingering or a qualification record, which have no source here and
     are recorded as not-checked. The outside half of assertion 7 is taken from
@@ -88,11 +97,11 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
     previous instance is stopped". Without the statement a walk that found
     nothing is `not-checked`. A walk that found a problem fails the step
     `recheck` and refuses the launch, so the outside checks are not reached;
-12. stops anything left (SIGTERM, wait, SIGKILL, with the stop-rule constants of
+13. stops anything left (SIGTERM, wait, SIGKILL, with the stop-rule constants of
     the assert package), asks the report channel whether any byte followed the
     line (a failed step `report-trailing`, and `report_trailing_bytes` in
     `report.json`), and closes what it opened;
-13. writes the evidence.
+14. writes the evidence.
 
 It does not:
 
@@ -318,6 +327,7 @@ managed-settings file with it and refuses a difference.
 | `campaign` | The private campaign folder; must exist. |
 | `coordinator_reviewed` | The statement that a coordinator reviewed this configuration and the plan it gives. Without `true`, `--run` is refused. |
 | `no_lead_has_run` | The statement that no lead has ever run in these scratch folders. Only then does a run make the mount points (`Prepare`); otherwise it checks them and fails when they are missing. It is also the harness's only basis for the outside half of assertion 7: with it, a walk of the mount points that found nothing is recorded `ok` ("there is no previous instance" is this statement, not a proof); without it, `not-checked`. Never set it for a folder a lead has run in. |
+| `scratch_folders_disposable` | The statement that the folders under the state root are disposable scratch folders and not a live lead's. Case S21 plants entries in them and puts them back, so a run that requests `S21` is refused (exit 2, nothing written) without `true`. Absent means `false`; it has no other use. Never set it for a state root a live lead uses. |
 | `executables` | `pasta`, `bwrap` and `probe`: absolute, regular, not group- or other-writable. Three different files. |
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
@@ -328,7 +338,7 @@ managed-settings file with it and refuses a difference.
 | `provider_host` | The host name the DNS assertion resolves inside. Not an address. |
 | `terminal` | `term` (required), optional `colorterm`, `lang`, `tz`, and the size of the pseudo-terminal (`rows`, `cols`). These are the values the profile's environment takes from a terminal. |
 | `time_limit_seconds` | 1 to 3600. Bounds the wait for the report line and the wait for the exit, counted from the launch. |
-| `cases` | The automated cases to record, from `S1`, `S2`, `S3`, `S4`, `S7`, `S11`, `G1`. |
+| `cases` | The automated cases to record, from `S1`, `S2`, `S3`, `S4`, `S7`, `S11`, `G1` and `S21`. `S21` is not in the example above: it needs `--run`, `"coordinator_reviewed": true` and `"scratch_folders_disposable": true`, and is asked for by choice. |
 
 The harness passes the launcher an empty environment: no variable of the
 caller's environment reaches pasta, bubblewrap or the probe, and the environment
@@ -365,6 +375,11 @@ the note on descriptors, the seccomp state and the optional rows left out). The
 rows of the host (`/usr`, the `/etc` files) have no walk: they are bound by
 path.
 
+Case S21 does nothing in a dry run, and says so: when it is requested, the step
+`planted-bind-paths` is recorded as skipped with the reason, and `planted_paths`
+in `summary.json` has `ran` false, `not_run` with the same reason and no plant,
+since a dry run writes nothing into the scratch folders.
+
 ## The real run
 
 ```sh
@@ -373,8 +388,10 @@ build/qualification-leadsandbox --config /owned/qualification/lead.json --run
 
 Two gates stand before a launch. The flag `--run`, and `"coordinator_reviewed":
 true` in the configuration. With `--run` the command also refuses when standard
-input is not a terminal, unless `--unattended` is given. A refusal creates
-nothing.
+input is not a terminal, unless `--unattended` is given. A run that requests
+case S21 has a third: `"scratch_folders_disposable": true`, the statement that
+the folders under the state root are disposable scratch folders and not a live
+lead's, because the case plants entries in them. A refusal creates nothing.
 
 Run it on a host the owner chose, as an unprivileged user, with fake credentials
 and no real provider login. The scratch command ends the run: the default one
@@ -407,15 +424,17 @@ the terminal output. Do not copy it into a repository.
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
 | `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. The results are the outside halves of assertions 1, 3, 5 and 7, then 9 and 10. The outside half of 7 (`tree-git-readonly.outside`) is made from the walk of the step `recheck`; its detail names the step and says that the harness has no unit and no control group, and whether the configuration states `no_lead_has_run`. Assertions 9 and 10 are `not-checked` here. |
 | `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
-| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name and, when the release of bubblewrap could not be read from its version line, a note that says so, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
+| `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name and, when the release of bubblewrap could not be read from its version line, a note that says so, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), `planted_paths` (the facts of case S21; present only when the case was requested: see case S21), and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
 
 The files `plan.json`, `report.json`, `outside.json` and `summary.json` each have
-a key `format`, the version of the evidence files, now 2. Format 2 added the
+a key `format`, the version of the evidence files, now 3. Format 2 added the
 walks and the `fd` of a mount to `plan.json`, and the per-source keys
 `bound_by_descriptor`, `descriptor`, `walk_root`, `walk_rel`, `walk_type`,
 `has_expected_type` and `no_ataniq_source_bound_by_path` to `summary.json` (see
-case G1); no key of format 1 was removed or changed its meaning.
+case G1). Format 3 added `planted_paths` to `summary.json`, present only when
+case S21 was requested (see case S21). No key of an earlier format was removed
+or changed its meaning.
 
 A step status is `ok`, `failed`, `timeout`, `interrupted` or `skipped`. The report
 channel's FIFO and its folder exist only during the run. The summary is written last; its own
@@ -498,7 +517,8 @@ and the rule that no owner-side tool uses a lead's tree is not enforced here.
 The design (section 7.3) lists the sandbox cases. The harness records facts for
 the automated ones; the others are attended, and the coordinator makes and
 records them by hand. Case S21, which exercises the walk before every start, is
-not yet built in the harness. The harness passes no input to the sandbox: it
+automated (see its row below); its attended variant stays with S17. The harness
+passes no input to the sandbox: it
 only reads the pseudo-terminal, so a scratch command that waits for the keyboard
 (a shell, for example) cannot be driven from it and is stopped at the time
 limit. Run an
@@ -518,6 +538,7 @@ tree for example; its output goes to `terminal.log` as display only), or in the 
 | S7 | The sysctl `dev.tty.legacy_tiocsti` as the probe and the harness read it, or the seccomp filter the probe finds loaded. The harness never issues TIOCSTI. |
 | S11 | Through the record interface: no store exists here, so the result is `not-checked` with "no qualification record store to ask". The stale-record start refusal belongs to the holder. |
 | G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the check walked to the path by handle without following a link and no component of it, the last one included, is a link. A source below the state root is opened beneath the state root's handle, in one lookup that crosses no mount point, after the state root's own path was looked up from the root of the file system without following a link; any other source is looked up from the root of the file system. For every source that is not a row of the host, the check also decides on the opened descriptor that it is a folder or a regular file, as the row binds; the type of a row of the host is not checked. The fact is `false` when a link was found, and absent when the check found another problem with the source (it is missing, has another type, or lies at or beyond a mount point below the state root) or could not say; `problem` holds the check's reason. `checked_path` is the path the check walked to, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. Per source, `bound_by_descriptor` says how the plan binds it, from the plan: `true` for every source Ataniq supplies, which the plan binds from a descriptor (`--bind-fd`, `--ro-bind-fd`) that its pass-through step walks to by handle, `false` for a row of the host, which is bound by path. For a source bound by descriptor, `descriptor` is the number it is bound from, `walk_root` the folder the step opens without following a link, `walk_rel` the path it walks beneath that folder and `walk_type` the type the source must have there, `folder` or `file`; all four are absent for a row of the host. `has_expected_type` is the fact, read by the check on the descriptor it opened, that a source Ataniq supplies is what its row binds: `true`, or `false` when the check refused it as something else (a file for a folder, a folder for a file, a FIFO, a socket, a device, or a path below something that is no folder; `problem` says which); it is absent for a row of the host, whose type the check does not look at, and when the check found a link or another problem before it reached the type. `no_ataniq_source_bound_by_path` stands beside `no_source_in_read_write_source`: it is the fact, from `plan.Verify`, about the text of the plan that no source Ataniq supplies is bound by path, each being bound from a descriptor paired with a walk of the step that is the one the inputs give; it is `false` when the verifier found a source bound by path, a descriptor without its walk or used twice, or another walk. These facts are about the plan and about the check before the launch, not about what bubblewrap does with a descriptor. The new facts are not results of the case, which stay two: `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
+| S21 | Planted bind paths (the design, section 7.3), the case of the walk before each start (section 3.6): every bind target that lies in a folder the lead writes must be absent or of the expected type, and a symbolic link or a wrong type refuses the start with the path. At each path the start walk looks at (every mount point of the profile, and the tree's `.git` folder, which the walk looks at too) the harness plants a symbolic link that points outside the scratch folders (at the attempt folder), and then an entry of the wrong type (a regular file where a folder belongs, a folder where a file belongs), runs the checks of a start against it and takes the plant away. Each plant is made in the folder the path lies in, opened from the state root's handle without following a link: the original entry, if there is one, is set aside by a rename in that folder (the name with `.ataniq-s21-aside` added), the plant is made beside it, and afterwards the plant is removed (only while it is still what was planted) and the original renamed back. The checks of a start are the own-clone check, the walk of the mount points (the check that decides: it must refuse with a problem of the kind of the plant that names the planted path), the resolution of the bind sources, the plan's own check and the check of every bind source of the plan; for the other runtime's start (the owner's decision Q24(a): the case holds across a runtime switch) the walk alone, with the inputs of the configuration changed to the other runtime. In `summary.json`, `planted_paths` has `ran` (every plant was made or refused for a reason and every path restored), `not_run` (why no plant was made: a dry run, an earlier step that failed, or a start walk that was not clean before the first plant, so that a refusal could not be told from it), `launched` (always `false`: the case never launches), `folders_as_found` (the start walk was clean again after the last path was restored; absent when the case did not get that far), `other_runtime`, `plants` and `not_covered`. Each entry of `plants` has `runtime`, `other_runtime`, `inside` (the bind target inside), `path` (the host path planted), `expected_type` (`folder` or `file`), `plant` (`symbolic-link` or `wrong-type`), `planted_as`, `planted` (false when the plant could not be made, with `detail` saying why), `start_refused`, `refused_by` (the checks that refused), `checks_run`, `problem_kind` and `problem_path` (the problem the start walk reported for the planted path: `symbolic-link`, `wrong-type`, `missing` or `other`, and the path it names; absent when it reported none for it), `launched` (always `false`), `restored` (the original was put back and found to be the same entry, same type, mode, owner, device and inode, or the path to be absent as it was), `status` and `detail`. Each entry of `not_covered` has `runtime`, `inside`, `path` and `reason`. The results are `planted-paths-refused` (the configured runtime), `planted-paths-refused-other-runtime` and `planted-paths-restored`, each `ok`, `failed` or `not-checked`: a result is `ok` only if every plant of its leg was refused with a problem of the plant's kind that names the planted path and, for the third, every path was restored; a plant that was not refused with its path is `failed`; a plant that could not be made, a path that could not be restored and a case that did not run are `not-checked`, never `ok`. The guards: the case runs only when it is requested by name, with `--run`, `"coordinator_reviewed": true` and `"scratch_folders_disposable": true` (see [The real run](#the-real-run)); a path whose set-aside name is already taken is not planted (see crash recovery below), and a path that is left planted ends the case with a failure that names it, and the later plants are not made. It runs as a phase of its own, the step `planted-bind-paths`, after the plan is built and verified and before the spec is written, so the folders are as found when the steps that follow, the launch phase included, use them; when it is the only case requested the run launches nothing, and with other cases the launch phase follows as it would without S21. Crash recovery: a crash in the middle of a plant can leave the original at the set-aside name and the plant at the path; the next run then does not plant at that path (the plant is `not-checked`, and its `detail` says that the entry at the set-aside name is the original). Remove what is at the path if it is a plant, and rename the set-aside entry (`NAME.ataniq-s21-aside`) back to `NAME`; never delete the set-aside entry, which is the original. What it does not cover: the places in the other runtime's own config folder (its skills and instruction file), because this run neither prepares nor writes in that folder, and plants only in the folders the walk of the configured runtime names (`not_covered` lists them; they need a second run with the other runtime's configuration); a lead that plants from inside, which is the attended variant (see S17: the harness plants from outside, as a stand-in); the repeat for a coordinator, and the mirror fetch with `.git` replaced by a `gitdir:` file, which belong to other features. The case has only run in tests, with temporary folders and a fake launcher; nothing here says the walk is qualified. |
 
 ### Attended cases
 
@@ -539,7 +560,7 @@ record, not a failure of the harness.
 | S14 | Connect to a service bound to all interfaces on the host's LAN address, and to one LAN address. | What is reachable, to compare with the network policy the owner chose. |
 | S15 | Sign in inside the sandbox: the pasted-code flow for claude, the device-code flow for codex. | Whether each works and which files change, and that only the lead's config folder is written. |
 | S16 | From inside, try to write `.git/config`, a hook, `.git/info`, `.claude/settings.json`, `.mcp.json`, `.codex/config.toml` and `.envrc`; rename `.git` and build another; create a lead branch named `develop`, a lead tag and an oversized object store. Then run the owner-side steps. | Each attempt's result, what the mirror's `refs/heads` and `refs/tags` hold afterwards, and whether anything the lead wrote ran outside the sandbox. |
-| S17 | Replace the conversation file, the state file, the read-back and a working Qargi record with symbolic links to an outside file and with a file over the size cap; plant a symbolic link at a bind target in the config folder, and start again. | Each owner-side read's result, whether anything outside was disclosed or written, and whether the start was refused (the harness's `prepare` or `check` step must fail on a planted link). |
+| S17 | Replace the conversation file, the state file, the read-back and a working Qargi record with symbolic links to an outside file and with a file over the size cap; plant a symbolic link at a bind target in the config folder, and start again. | Each owner-side read's result, whether anything outside was disclosed or written, and whether the start was refused (the harness's `prepare` or `check` step must fail on a planted link). Case S21 automates the stand-in made from outside (the harness plants at every path the start walk looks at and records that the start is refused); this row keeps the attended variant, in which a lead plants from inside and the next start is refused. |
 | S18 | From inside, remove the guard hook, add an allow rule and raise the permission mode in the lead's own config; restart. Repeat on an account with server-delivered policy, if one is available. | Whether the managed settings still apply and the guard hook still runs, and any policy source that outranks the file. |
 | S19 | A lead commits each execution-config path of the design's list; run the documented intake up to the sign-off, and a plain pull in an owner checkout. | Which paths were marked, whether anything the lead wrote ran outside a sandbox, and whether the upstream branch moved without the sign-off. |
 | S20 | Run codex with `danger-full-access` and the `untrusted` approval policy inside the sandbox, and ask for a command outside its trusted set. | Whether it prompts, and what the holder would read. |

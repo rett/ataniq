@@ -1198,9 +1198,11 @@ coordinator chose, and records facts: a result is `ok`, `failed` or `not-checked
 and no field says that the profile passed. It is opt-in: `make test` does not
 reach it, and building it with `make qualification-leadsandbox-build` runs
 nothing. bubblewrap and pasta are qualification subjects, not developer tools. The
-automated and attended cases (S1 to S20 of the design, section 7.3; case S21,
-which exercises the walk before every start, is not yet built in the harness),
-the
+automated and attended cases (S1 to S20 of the design, section 7.3, and case
+S21, which exercises the walk before every start: the harness plants a symbolic
+link and an entry of the wrong type at the bind targets in scratch folders,
+checks that every start is refused with the path, puts everything back and
+launches nothing, and has run only in tests, with temporary folders), the
 configuration and the R17 note for S8 are in
 [the qualification harness guide](qualification-lead-sandbox.md). Until a
 coordinator has run them and the owner has decided on the profile, everything in
