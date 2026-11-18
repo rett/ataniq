@@ -35,6 +35,15 @@
 //     know, so the text must not hold anything a lead wrote. "commit-tree"
 //     is not allowed.
 //
+// The file "info/attributes" of a repository is the one attribute source no
+// option or setting switches off: git reads it for every diff and merge,
+// whatever else it is told. A line there can turn a text file into a binary
+// one in a diff, or make a merge join both sides where it should report a
+// conflict. [CheckInfoAttributes] is therefore a check the caller runs before
+// such a command: it refuses a bare repository whose "info/attributes" exists
+// and is not an empty regular file. It is a check and not a fence, and it
+// relies on the repository being one that only the host can write.
+//
 // What it does not do:
 //   - It does not make git safe to run in a repository an attacker controls.
 //     The repository's own config file is still read, and the settings here
