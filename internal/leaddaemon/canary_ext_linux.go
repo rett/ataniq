@@ -44,8 +44,8 @@ func CanaryOperations() []string {
 const (
 	// CodeRefused: the daemon refused the operation and changed nothing that
 	// matters (the message did not pass the admission, a second message in the
-	// epoch, a role other than the config's, the registry or the lifecycle
-	// refused).
+	// epoch, injection that is off in the config, a role other than the
+	// config's, the registry or the lifecycle refused).
 	CodeRefused clientapi.ErrorCode = "refused"
 	// CodeUnavailable: the operation could not be carried out: nothing reached
 	// the holder (the control socket could not be dialled or the request frame
@@ -126,6 +126,7 @@ const (
 	msgNotRunning   = "the role is not running"
 	msgSecond       = "a message was already sent in this epoch"
 	msgInFlight     = "a message is in flight"
+	msgInjectOff    = "injection is off in the canary config"
 	msgUnreachable  = "the holder could not be reached"
 	msgHolderNo     = "the holder refused the message"
 	msgTicketNo     = "the holder refused the ticket"
@@ -444,6 +445,10 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 
 // inject sends the one message of the epoch.
 //
+// With "inject": false in the config the operation is refused at once: the
+// holder was started without its inject gate and would answer disabled, so the
+// daemon, which read the config, sends nothing and spends nothing.
+//
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
 // second message, the holder's socket that cannot be dialled. Once the frame
@@ -459,6 +464,10 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
 	e, running := x.runningEntry()
 	epoch := e.Epoch
+	if !x.cfg.Inject {
+		x.refuse(p.MessageID, epoch, "inject-off")
+		return nil, refused(msgInjectOff)
+	}
 	text, err := x.adm.Admit(p.MessageID, p.Body)
 	if err != nil {
 		code := "bad-message"
