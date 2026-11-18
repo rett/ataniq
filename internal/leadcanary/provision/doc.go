@@ -32,7 +32,12 @@
 //     holder.json, final.json or lead-has-run there), and so must the holder's
 //     runtime folder;
 //  5. looks at every path it will make: a symbolic link at any of them, or a
-//     file or a non-empty tree where it would make one, refuses the run.
+//     file where it would make one, refuses the run. So does the replay switch
+//     file, which only [ReplayOn] writes, and a folder that is there already
+//     and holds something ([ErrNotEmpty]): a folder is kept only when it is
+//     empty, the tree included. The exceptions are the folders that hold
+//     other things by design: leads, the lead's own folder, mailbox, pub and
+//     mirrors.
 //
 // Nothing has been written until all of that has passed. Then it makes, with
 // mode 0700 and by handle (every lookup is beneath a handle opened once, with
