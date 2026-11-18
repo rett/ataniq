@@ -125,10 +125,13 @@
 // in-memory leadunit.Fake and private sockets; nothing here has run against
 // systemd.
 //
-// The package is Linux only, provisional and unqualified: its names and
-// behaviour may change until a qualification run has covered it. It does not
-// build for any other system: paths.go uses clientapi.SocketPath, which
-// exists only in a Linux file, and exit.go and doc.go carry no file name
-// suffix only because nothing in them is system specific. The command still
-// builds elsewhere as a stub that imports nothing of this package.
+// The package is provisional and unqualified: its names and behaviour may
+// change until a qualification run has covered it. The daemon is Linux only,
+// the package is not: it builds on every system, so that the whole tree
+// builds there. On another system it is only paths.go, exit.go and doc.go,
+// which carry no file name suffix because nothing in them is system specific
+// (the default folders, the socket and lock paths, the exit codes). The
+// daemon, the client and the status text are in the files with the _linux
+// suffix, which only a Linux build compiles. The command builds elsewhere as
+// a stub that imports nothing of this package.
 package leaddaemon

@@ -28,8 +28,10 @@ arguments you type.
   from a template file that you write (see [The sandbox template](#the-sandbox-template)).
   Without a usable template they refuse and run nothing. The command does not
   check that the template confines anything.
-- The holder, the daemon and the lead's own sandbox are separate work. Nothing
-  here starts a lead.
+- The holder, the daemon and the lead's own sandbox are separate work, and
+  none of them calls this command: see [the lead holder guide](lead-holder.md),
+  [the lead daemon guide](lead-daemon.md) and
+  [the lead sandbox guide](lead-sandbox.md). Nothing here starts a lead.
 - Qualification of a sandbox is separate. See
   [the lead mirror qualification manual](qualification-lead-mirror.md).
 
@@ -143,8 +145,8 @@ and no tag. The steps below follow `Mirror.Fetch` in `internal/mirror`.
     panic, and the mirror is measured again.
 
 The command prints the four sizes (the lead's object store, the mirror
-before, what the fetch added and the mirror after), the duration, each ref update and any
-note from step 9. Lead text in it is escaped (see
+before, what the fetch added and the mirror after), the duration, each ref
+update and any note from step 9. Lead text in it is escaped (see
 [How lead text is shown](#how-lead-text-is-shown)).
 
 ### The limits
@@ -168,23 +170,22 @@ command prints the report and exits with status 1.
 ### The git environment
 
 Every git run by the owner on content a lead wrote goes through the `gitenv`
-package. The
-environment is complete and nothing is inherited from the calling process. The
-git executable is an absolute path and `$PATH` is never searched. No system or
-global configuration is read, no attributes outside the repository and no
-credentials. Hooks, file system monitors, pagers, editors, askpass programs,
-credential helpers, external diff programs and submodule recursion are off.
-Every transport is refused except the one the call names, which is `file`.
-Object checking (fsck) is on for transfers. No option is accepted before the
-subcommand. After it, up to `--end-of-options`, every option must be written
-`--name=value` or be one of a short list of flags that take no value. Options
-that name a program to run are refused in every form, abbreviated too; the one
-upload-pack command of the fetch is set by the package itself, not as an
-option the caller writes. The package does not make git
-safe in a repository an attacker controls, and does not confine the process.
-Owner-side code runs git only on bare repositories that Ataniq made, with an
-explicit `--git-dir`. The package comment of `internal/exchange/gitenv` has
-the details.
+package. The environment is complete and nothing is inherited from the calling
+process. The git executable is an absolute path and `$PATH` is never searched.
+No system or global configuration is read, no attributes outside the
+repository and no credentials. Hooks, file system monitors, pagers, editors,
+askpass programs, credential helpers, external diff programs and submodule
+recursion are off. Every transport is refused except the one the call names,
+which is `file`. Object checking (fsck) is on for transfers. No option is
+accepted before the subcommand. After it, up to the first `--` or
+`--end-of-options`, every option must be written `--name=value` or be one of a
+short list of flags that take no value. Options that name a program to run are
+refused in every form, abbreviated too; the one upload-pack command of the
+fetch is set by the package itself, not as an option the caller writes. The
+package does not make git safe in a repository an attacker controls, and does
+not confine the process. Owner-side code runs git only on bare repositories
+that Ataniq made, with an explicit `--git-dir`. The package comment of
+`internal/exchange/gitenv` has the details.
 
 ### What a refused fetch and a crash leave
 
@@ -195,12 +196,15 @@ the details.
 - **A move that fails** leaves no ref changed. The objects it brought stay in
   the mirror with no ref that reaches them. They are harmless. The owner's
   garbage collection removes them, and nothing here runs it.
-- **A crash** of the owner process is another matter. A terminate or hang-up
-  signal is not a crash: the command cancels like a time-out, so before step 8
-  it leaves the mirror as it was. A kill that cannot be caught or a power loss
-  is a crash. The namespace is changed in two git runs, and nothing makes them one step. A
-  crash between the two leaves the lead's namespace half changed. The next
-  fetch takes the namespace as it finds it and brings it to the lead's
+- **A crash** of the owner process is another matter. An interrupt, terminate
+  or hang-up signal is not a crash: before step 8 the command cancels like a
+  time-out and leaves the mirror as it was, and from step 8 on the signal
+  cancels nothing and the fetch runs to its end. An interrupt or a hang-up
+  that was ignored when the command started (under `nohup`, for example)
+  changes nothing at any step. A kill that cannot be caught or a power loss is
+  a crash. The namespace is changed in two git runs, and nothing makes them one
+  step. A crash between the two leaves the lead's namespace half changed. The
+  next fetch takes the namespace as it finds it and brings it to the lead's
   branches as they are then. It does not repair or notice the half-done state,
   and its report is relative to what it found, so a report can miss changes.
   A crash can also leave a staging folder, which the next fetch removes. A git
@@ -233,7 +237,12 @@ nothing. This is the whole format, version 1:
   `sh`, with the environment of the process that fetches, which may hold
   owner credentials. The plan has no environment for it, so the list itself
   must clear the environment (for example `bwrap --clearenv`, or `env -i`).
-- `serve.repository` is the path of the clone as the sandbox sees it.
+- `serve.repository` is the path of the clone as the sandbox sees it. The
+  owner's git is given this path as the source of the fetch, and it looks at
+  the path on the host before it starts the serving half: when a regular file
+  is there and it is a git bundle, git reads that file itself and never starts
+  `upload_pack`. Choose a path that does not exist on the host, such as
+  `/work/{project}`, and never one where a sandbox could put a file.
 - `serve.measure` and `serve.measure_env` are the command and the
   environment that print the size of the clone's object store. The first
   token of the first output line must be a decimal byte count.
@@ -349,10 +358,11 @@ It prints:
   the digest;
 - the commits between the base and the tip, newest first;
 - the changed paths of the net change, with status and modes;
-- with the optional `--records DIR`, the verification records of the project
-  for this tip, newest first, each with its outcome, its plan digest and its
-  **gates** (name and command), before the sign-off; or a line that says that
-  none is recorded. The newest record decides, as for `integrate`;
+- with the optional `--records DIR`, the newest three verification records of
+  the project for this tip, newest first, each with its outcome, its start
+  time, its plan digest and its **gates** (name and command), before the
+  sign-off, and a count of the earlier ones that are not shown; or a line that
+  says that none is recorded. The newest record decides, as for `integrate`;
 - the section **Needs your sign-off**: each path that needs its own sign-off,
   with the kind of each flag, its reason and the exact `--accept-path`
   argument to type.
@@ -378,9 +388,9 @@ ends the run.
 
 - **Where.** In the verification sandbox of your template, never as you and
   never in your checkout. The command makes two new folders in `--work`, a
-  scratch folder and a home folder, and removes both afterwards, also when an interrupt, terminate or hang-up signal
-  stops the run. The sandbox
-  makes a scratch clone from the mirror, fetches the tip into it (no tags, no
+  scratch folder and a home folder, and removes both afterwards, also when an
+  interrupt, terminate or hang-up signal stops the run. The sandbox makes a
+  scratch clone from the mirror, fetches the tip into it (no tags, no
   hardlinks, no alternates), checks that it is exactly the reviewed tip,
   checks it out detached and runs each gate from the root of the tree. The
   home folder is empty: there is no provider login and no lead credential.
@@ -397,10 +407,10 @@ ends the run.
   named `<UTC time>-verification-<id>.json`. It holds the project, the lead ref,
   the tip, the gates, the digest of the plan, the outcome and the hash and
   length of the output. The raw output, if there was any, is written beside it
-  with the suffix `.out`. Nothing ever overwrites or deletes a record. The command prints the
-  outcome and the last 40 lines of the output, escaped. A failed run is
-  recorded too: the newest record decides, so a later failure withdraws an
-  earlier pass.
+  with the suffix `.out`. Nothing ever overwrites or deletes a record. The
+  command prints the outcome and the last 40 lines of the output, escaped. A
+  failed run is recorded too: the newest record decides, so a later failure
+  withdraws an earlier pass.
 
 The exit status is 0 only for a pass. A pass whose record was stored but could
 not be synced to disk is still a pass: the command exits 0 and warns on
@@ -713,7 +723,7 @@ Old: 737e1bd27db924f3bce4a7c054c43ab9b53c6431
 New: 30205c7864875913553896f203f0900b33718534
 Record: intake of 2026-11-17T15:39:21Z, 1 commits, 2 changed paths, 1 signed paths
 Review digest: ea76d76545258473b87fe4c472a8a6dbc3a8b5b714e901f98800c13ef4cacbbe
-Verification: a pass of 2026-11-17T15:39:21Z, plan digest 505d2fcf..., output sha256 a0c1fbd3...
+Verification: a pass of 2026-11-17T15:39:20Z, plan digest 505d2fcf..., output sha256 a0c1fbd3...
 Gates that the pass stands for (your records, shown escaped):
   gate check: test -f docs/notes.md && make
 Signed paths (unverified lead data):
@@ -765,12 +775,15 @@ intake record.
 - **No owner channel.** The sign-off is typed arguments, and the command cannot
   tell who typed them. The lead cannot run `integrate`, because the mirror is
   read-only in its sandbox and the records folder is not mounted there. That is
-  a job of the sandbox profile and is not checked here.
+  a job of the sandbox profile and is not checked here. The profile that
+  [the lead sandbox guide](lead-sandbox.md) proposes binds the mirror
+  read-only; it is unqualified, and nothing launches a lead in it.
 - **Same-user processes outside a sandbox are not fenced.** The state root, the
   mirror and the records are protected by file modes of one user. A process of
   the same user that is not in a sandbox can write them.
-- **Not wired.** The fetch is not yet called by a daemon or a handoff. You run
-  the commands by hand.
+- **Not wired.** The fetch is not yet called by a daemon or a handoff: the
+  daemon skeleton `ataniqd` is read-only and calls nothing here (see
+  [the lead daemon guide](lead-daemon.md)). You run the commands by hand.
 - **Qualification is separate.** Nothing here qualifies a sandbox. The opt-in
   harness and its manual are in
   [the lead mirror qualification manual](qualification-lead-mirror.md).

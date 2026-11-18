@@ -10,15 +10,9 @@ import (
 	"syscall"
 )
 
-// SocketName is the file name of the socket inside the folder.
-const SocketName = "daemon.sock"
-
 // maxSocketPath is the longest socket path in bytes: sockaddr_un.sun_path has
 // 108 bytes on Linux and the address must keep its terminating NUL.
 const maxSocketPath = 107
-
-// SocketPath returns the socket path for dir.
-func SocketPath(dir string) string { return filepath.Join(dir, SocketName) }
 
 // checkDir verifies that dir is an absolute path to a folder that the caller
 // owns and that no one else can enter, and returns the socket path in it. It

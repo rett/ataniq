@@ -5,15 +5,15 @@ agents, tools, and local or remote sessions through extensible feature packs.
 
 ## Maturity
 
-The 0.0.8 release is a developer foundation with offline development checks and
-internal libraries. It adds a finite synthetic controller-handoff model and
-independent evidence verifier. Its 32 lawful rows and four mutated-evidence
-controls matched the frozen expectations. Five supplemental verifier checks
-also passed. These results cover bounded model consistency and detection of the four frozen
-mutated-evidence controls only. Real controller authority, exclusive receiving routes and native
-attachment remain unqualified.
+Ataniq is so far a developer foundation with offline development checks and
+internal libraries. It has a finite synthetic controller-handoff model and
+independent evidence verifier. The model's 32 lawful rows and four
+mutated-evidence controls matched the frozen expectations. Five supplemental
+verifier checks also passed. These results cover bounded model consistency and
+detection of the four frozen mutated-evidence controls only. Real controller
+authority, exclusive receiving routes and native attachment remain unqualified.
 
-Earlier releases provide private application contracts, an encrypted cursor
+It also provides private application contracts, an encrypted cursor
 codec with a bounded per-codec epoch reservation allocator, and Linux/amd64
 SQLite default-VFS qualification. SQLite qualification requires the strict gate
 on a capable host. Production storage lifecycle remains unqualified. Pooling
@@ -46,7 +46,19 @@ lead. See [the lead daemon guide](docs/lead-daemon.md).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
-for the sandbox of a managed lead; nothing uses it yet.
+for the sandbox of a managed lead; nothing uses it yet. Its opt-in harness is in
+[the lead sandbox qualification guide](docs/qualification-lead-sandbox.md).
+The [lead injection guide](docs/lead-injection.md) describes a provisional,
+unqualified library for fenced message injection into a terminal-hosted lead;
+nothing uses it yet.
+The reviewed intake of a managed lead's work through the exchange mirror, with
+the provisional command `ataniq-intake`, is described in
+[the lead intake guide](docs/lead-intake.md); the opt-in harness for a real
+sandbox template is in
+[the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+These parts are built side by side and none calls another: the daemon starts no
+holder, the holder launches no sandbox and injects nothing, and the intake is
+run by hand.
 
 ## Architecture decisions
 

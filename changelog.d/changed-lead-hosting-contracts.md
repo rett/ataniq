@@ -8,4 +8,9 @@
   data plane, not a second command path: Ataniq admits no command, decision or
   grant from it. It has one writer, one viewer and no takeover, accepts a peer
   of the holder's own OS user only, and carries the stated same-user limit.
-  Specification only; nothing implements it yet.
+  The amendment is a specification. Beside it, `ataniq-holder`,
+  `ataniq-scratch` and `ataniq-console --attach` build the attach stream for a
+  scratch agent only, with tickets from a development stand-in and not from a
+  typed command. Nothing sets `ready`: the holder reports the idle
+  classification as `unknown` and does not use the screen recognisers of
+  `internal/inject`. None of it is joined to the daemon, and none is qualified.
