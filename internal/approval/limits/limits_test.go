@@ -547,6 +547,11 @@ func TestRulesArePerProject(t *testing.T) {
 	}
 }
 
+// always gives a limitOn for DaysOf that answers with one limit for every day.
+func always(limit int) func(string) int {
+	return func(string) int { return limit }
+}
+
 func TestDaysOf(t *testing.T) {
 	now := at(west, 2031, 3, 15, 9, 0)
 	decided := []time.Time{
@@ -555,7 +560,7 @@ func TestDaysOf(t *testing.T) {
 		at(time.UTC, 2031, 3, 14, 3, 0), // 18:00 on the 13th in west
 		at(west, 2031, 3, 15, 0, 0),
 	}
-	got := DaysOf(decided, 2, now)
+	got := DaysOf(decided, always(2), now)
 	want := []Day{
 		{Date: "2031-03-13", Uses: 2, ReachedLimit: true},
 		{Date: "2031-03-14", Uses: 1},
@@ -569,7 +574,74 @@ func TestDaysOf(t *testing.T) {
 			t.Errorf("day %d: %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	if len(DaysOf(nil, 12, now)) != 0 {
+	if len(DaysOf(nil, always(12), now)) != 0 {
 		t.Error("no decisions give days")
+	}
+}
+
+// Each day is marked against the limit that was in force on it, and the
+// function is asked for every day by its date.
+func TestDaysOfUsesTheLimitOfEachDay(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	var decided []time.Time
+	for i := 0; i < 3; i++ {
+		decided = append(decided, at(west, 2031, 3, 12, 10, i), at(west, 2031, 3, 13, 10, i))
+	}
+	limits := map[string]int{"2031-03-12": 3, "2031-03-13": 4}
+	got := DaysOf(decided, func(date string) int { return limits[date] }, now)
+	want := []Day{
+		{Date: "2031-03-12", Uses: 3, ReachedLimit: true},
+		{Date: "2031-03-13", Uses: 3},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("DaysOf = %+v, want %+v", got, want)
+	}
+}
+
+// The limit was 12 on the 10th and the day filled it. On the 11th the owner
+// raised the limit to 18. The full day stays left out: marked against the
+// present 18 it would count, and the suggestion would be 24, above the limit
+// it was full under.
+func TestDaysOfAfterARaiseTheSuggestionDoesNotRise(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	var decided []time.Time
+	for i := 0; i < 12; i++ {
+		decided = append(decided, at(west, 2031, 3, 10, 10, i))
+	}
+	limitOn := func(date string) int {
+		if date < "2031-03-11" {
+			return 12
+		}
+		return 18
+	}
+	days := DaysOf(decided, limitOn, now)
+	if len(days) != 1 || !days[0].ReachedLimit {
+		t.Fatalf("the full day is not marked: %+v", days)
+	}
+	if got := Suggest(days, now); got != SuggestionMin {
+		t.Fatalf("Suggest = %d, want %d", got, SuggestionMin)
+	}
+	v, err := NewView("project-a", 18, days, at(west, 2031, 3, 11, 9, 0), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Suggestion != SuggestionMin {
+		t.Fatalf("the view suggests %d, want %d", v.Suggestion, SuggestionMin)
+	}
+}
+
+// A day whose limit is not known is left out, whatever its uses.
+func TestDaysOfWithoutALimitLeavesTheDayOut(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	decided := []time.Time{at(west, 2031, 3, 13, 10, 0)}
+	for name, limitOn := range map[string]func(string) int{
+		"no function":      nil,
+		"a limit of zero":  always(0),
+		"a negative limit": always(-3),
+	} {
+		days := DaysOf(decided, limitOn, now)
+		if len(days) != 1 || !days[0].ReachedLimit {
+			t.Errorf("%s: %+v", name, days)
+		}
 	}
 }

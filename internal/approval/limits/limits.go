@@ -235,17 +235,30 @@ func NewView(project string, limit int, days []Day, lastRaise, now time.Time) (V
 }
 
 // DaysOf turns the decision times of a project's card uses into days, oldest
-// first, each on its calendar day in the location of now. limit is the limit
-// to mark ReachedLimit against. It is a help for a caller that keeps times
-// and one limit; a caller that recorded each day's own mark and its alerts
-// hands those days to NewView instead.
-func DaysOf(decided []time.Time, limit int, now time.Time) []Day {
+// first, each on its calendar day in the location of now. limitOn returns the
+// limit that was in force on a date (YYYY-MM-DD), and each day's ReachedLimit
+// is marked against the limit of that day. The present limit is not a
+// stand-in for it: after a raise, a day that filled the old limit would no
+// longer look full, and a run of forged cards on that day would push the
+// suggestion up.
+//
+// A limitOn that is nil, or that answers with a number under Min for a date,
+// marks the day as having reached its limit: a day whose limit is not known
+// is left out of the suggestion. DaysOf never sets Alert; a caller that
+// records alerts sets it on the days it gets back, or builds its days itself.
+func DaysOf(decided []time.Time, limitOn func(date string) int, now time.Time) []Day {
 	uses := map[string]int{}
 	for _, t := range decided {
 		uses[Date(t, now)]++
 	}
 	out := make([]Day, 0, len(uses))
 	for date, n := range uses {
+		// Without a limit the day counts as full: no use is under a limit
+		// of zero.
+		limit := 0
+		if limitOn != nil {
+			limit = limitOn(date)
+		}
 		out = append(out, Day{Date: date, Uses: n, ReachedLimit: Reached(n, limit)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
