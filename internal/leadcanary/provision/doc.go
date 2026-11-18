@@ -32,7 +32,14 @@
 //     holder.json, final.json or lead-has-run there), and so must the holder's
 //     runtime folder;
 //  5. looks at every path it will make: a symbolic link at any of them, or a
-//     file or a non-empty tree where it would make one, refuses the run.
+//     file where it would make one, refuses the run. The git metadata copy
+//     and the temporary name it is built under are among them, and nothing
+//     may be at either. The replay switch file, which only [ReplayOn] writes,
+//     refuses the run too, and so does a folder that is there already and
+//     holds something ([ErrNotEmpty]): a folder is kept only when it is
+//     empty, the tree included. The exceptions are the folders that hold
+//     other things by design: leads, the lead's own folder, mailbox, pub and
+//     mirrors.
 //
 // Nothing has been written until all of that has passed. Then it makes, with
 // mode 0700 and by handle (every lookup is beneath a handle opened once, with
@@ -65,7 +72,12 @@
 //     <runtime root>/leads/<layout role>, mode 0700, which must exist before
 //     the holder starts;
 //   - the marker (canaryroot.WriteMarker), the last act. A failed run leaves
-//     none. It also leaves what it made: remove both roots, and run again.
+//     none. It also leaves what it made, and a second run refuses that: remove
+//     <state root>/leads/<layout role>, the lead's mailbox
+//     (<state root>/mailbox/<layout role>), its published folder
+//     (<state root>/pub/<project>) and the runtime root, and run again. Do not
+//     remove the state root: it holds the mirror, which provisioning needs
+//     and does not make, so the mirror stays.
 //
 // The spec folder is not made: the start sequence makes its own "bound/spec"
 // in the runtime folder at each start and refuses leftovers.

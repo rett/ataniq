@@ -53,8 +53,17 @@ var firstStartMarks = []string{"holder.json", "final.json", "lead-has-run"}
 // something.
 var ErrFirstStart = errors.New("provision: the lead has been started already, or this root was provisioned")
 
+// ErrNotEmpty is wrapped when a folder that provisioning would keep holds
+// something. The message names the folder and not what it holds.
+var ErrNotEmpty = errors.New("provision: a folder that is there already is not empty")
+
 // ErrMirror is wrapped when the mirror is not usable.
 var ErrMirror = errors.New("provision: the mirror is not usable")
+
+// gitMetaTmpSuffix is what the mount point work adds to the git metadata
+// folder's name while it builds the folder. The mountpoints package keeps the
+// constant to itself and names the folder, gitmeta.tmp, in its package comment.
+const gitMetaTmpSuffix = ".tmp"
 
 // run is one provisioning.
 type run struct {
@@ -77,7 +86,12 @@ type run struct {
 // Nothing is made until every check that needs no write has passed: the roots,
 // the files it copies, the mirror, the marker and the holder's state folder
 // of the state root, and every path it will make. A failure after that leaves
-// what was made so far, and no marker: remove both roots and run again.
+// what was made so far, and no marker. A second run refuses what the first
+// left, so remove it before running again: the lead's folder
+// (<state root>/leads/<layout role>), its mailbox and published folders
+// (<state root>/mailbox/<layout role>, <state root>/pub/<project>) and the
+// runtime root. The mirror stays: it is in the state root, provisioning needs
+// it and does not make it, so the state root itself is not removed.
 func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
 	r := &run{cfg: cfg, opts: opts, say: func(s string) {
 		if opts.Log != nil {
@@ -178,6 +192,20 @@ func (r *run) stateFolders() []string {
 	}
 }
 
+// sharedParent reports that the folder rel, of stateFolders, is one that holds
+// other things than this lead's by design, or holds the lead's other folders:
+// the leads folder, the lead's own folder, the mailboxes folder, the published
+// folder and the mirrors folder. Every other folder that is there before the
+// run must be empty.
+func (r *run) sharedParent(rel string) bool {
+	for _, abs := range []string{r.p.LeadsDir, r.p.LeadDir, r.p.MailboxesDir, r.p.PublishedDir, r.p.MirrorsDir} {
+		if rel == r.p.stateRel(abs) {
+			return true
+		}
+	}
+	return false
+}
+
 // stateFile is a file made in the state root.
 type stateFile struct {
 	rel  string
@@ -224,9 +252,16 @@ func (r *run) preflight() error {
 	} else if name != "" {
 		return fmt.Errorf("%w: the holder's state folder %s holds %q", ErrFirstStart, r.p.Holder, markName(name))
 	}
+	// Every folder: absent, or a folder as provisioning makes it. Those that
+	// are there are kept, and looked into below.
+	var kept []string
 	for _, rel := range r.stateFolders() {
-		if _, err := r.state.lookFolder(rel); err != nil {
+		ok, err := r.state.lookFolder(rel)
+		if err != nil {
 			return err
+		}
+		if ok && !r.sharedParent(rel) {
+			kept = append(kept, rel)
 		}
 	}
 	// The mirrors folder is the mirror's parent: it exists, or the mirror
@@ -239,11 +274,19 @@ func (r *run) preflight() error {
 			return err
 		}
 	}
-	// The tree is cloned into, so it must be empty.
-	if name, err := r.state.empty(r.p.stateRel(r.p.Tree)); err != nil {
+	// The replay switch is written by ReplayOn alone, after the marker: one
+	// that is there already would start the first epoch in replay mode.
+	if err := r.state.lookAbsent(r.p.stateRel(r.p.ReplaySwitch)); err != nil {
 		return err
-	} else if name != "" {
-		return fmt.Errorf("%s: is not empty (it holds %q)", r.p.Tree, name)
+	}
+	// The git metadata folder and the temporary name it is built under, which
+	// the mount point work makes after the clone: nothing may be at either,
+	// a symbolic link included. The lead's folder is not required to be
+	// empty, so this look is what refuses an old copy.
+	for _, abs := range []string{r.p.GitMeta, r.p.GitMeta + gitMetaTmpSuffix} {
+		if err := r.state.lookAbsent(r.p.stateRel(abs)); err != nil {
+			return err
+		}
 	}
 	// The mount points in the home and the config folder, which the mount
 	// point work makes: a symbolic link there is refused now. Those in the
@@ -263,6 +306,18 @@ func (r *run) preflight() error {
 			return fmt.Errorf("%s: is a symbolic link", pt.HostPath)
 		case err != nil && !errors.Is(err, fs.ErrNotExist):
 			return fmt.Errorf("%s: %w", pt.HostPath, err)
+		}
+	}
+	// A folder that is kept must be empty: what it holds would be bound into
+	// the sandbox as if provisioning had made it (a leftover skill, a config
+	// file, a screen). This comes after every look above, so that a symbolic
+	// link or a file at a made path is named as what it is. The tree is among
+	// them: it is cloned into.
+	for _, rel := range kept {
+		if name, err := r.state.empty(rel); err != nil {
+			return err
+		} else if name != "" {
+			return fmt.Errorf("%w: %s", ErrNotEmpty, r.state.at(rel))
 		}
 	}
 	return r.preflightRuntime()

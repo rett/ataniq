@@ -36,7 +36,7 @@ func profileInputs(cfg leadcanary.Config, p Paths, settingsSHA256 string) profil
 		ManagedSettings: p.ManagedSettings, ManagedSettingsSHA256: settingsSHA256,
 		LeadSkills: p.LeadSkills, InstructionFile: p.InstructionFile,
 		GitIdentityDir: p.GitIdentityDir, QargiInstall: p.QargiInstall,
-		QargiRecordsInside: recordsInside,
+		QargiRecordsInside: RecordsInside,
 		AssignmentDir:      p.AssignmentDir, ProjectionDir: p.ProjectionDir,
 		ResolvConf:   placeholderRoot + "/resolv.conf",
 		NeverMounted: []string{placeholderRoot + "/never"},
@@ -54,8 +54,9 @@ var ErrInputs = errors.New("provision: the sandbox inputs do not match the confi
 // is on, and the project, the state and runtime roots, the layout role, the
 // runtime and its version are the config's. The sources that the layout does
 // not name must be the folders and files that provisioning made (see
-// [PathsOf]), and no extra placeholder may be named, because the git metadata
-// folder lists none. The run kit and the daemon call it before a start.
+// [PathsOf]), the Qargi records must appear inside at [RecordsInside], which
+// the mount points were made for, and no extra placeholder may be named,
+// because the git metadata folder lists none. The run kit and the daemon call it before a start.
 //
 // Every refusal names the field and never repeats a value of the file. A
 // refusal of ReadInputs is returned as it is (an *sandboxstart.InputsError); a
@@ -92,6 +93,7 @@ func checkInputs(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 		{"sources.qargi_install", in.Sources.QargiInstall == p.QargiInstall},
 		{"sources.assignment_dir", in.Sources.AssignmentDir == p.AssignmentDir},
 		{"sources.projection_dir", in.Sources.ProjectionDir == p.ProjectionDir},
+		{"sources.qargi_records_inside", in.Sources.QargiRecordsInside == RecordsInside},
 		{"sources.extra_placeholders", len(in.Sources.ExtraPlaceholders) == 0},
 	} {
 		if !c.ok {
