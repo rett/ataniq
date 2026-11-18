@@ -121,7 +121,7 @@ func sources(flags []flag, name string) []string {
 	return out
 }
 
-func sameSet(got, want []string) bool {
+func sameList(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
 	}
@@ -189,7 +189,7 @@ func TestServeForm(t *testing.T) {
 			t.Errorf("%s runs %q, want %s", c.what, program, c.prog)
 		}
 		// The clone is read-only and nothing is writable.
-		if got := sources(flags, "--ro-bind"); !sameSet(got, []string{"/usr", sampleServe.Tree}) {
+		if got := sources(flags, "--ro-bind"); !sameList(got, []string{"/usr", sampleServe.Tree}) {
 			t.Errorf("%s: read-only binds %q, want /usr and the tree", c.what, got)
 		}
 		for _, name := range []string{"--bind", "--tmpfs", "--proc"} {
@@ -198,7 +198,7 @@ func TestServeForm(t *testing.T) {
 			}
 		}
 	}
-	if got := plan.Measure.Env; !sameSet(got, []string{"PATH=/usr/bin:/bin"}) {
+	if got := plan.Measure.Env; !sameList(got, []string{"PATH=/usr/bin:/bin"}) {
 		t.Errorf("measure environment %q", got)
 	}
 }
@@ -213,13 +213,13 @@ func TestVerifyForm(t *testing.T) {
 		t.Errorf("the prefix ends with %q: the command appends the inner command", program)
 	}
 	checkCommon(t, "verify prefix", flags)
-	if got := sources(flags, "--ro-bind"); !sameSet(got, []string{"/usr", sampleVerify.Mirror}) {
+	if got := sources(flags, "--ro-bind"); !sameList(got, []string{"/usr", sampleVerify.Mirror}) {
 		t.Errorf("read-only binds %q, want /usr and the mirror", got)
 	}
-	if got := sources(flags, "--bind"); !sameSet(got, []string{sampleVerify.Scratch, sampleVerify.Home}) {
+	if got := sources(flags, "--bind"); !sameList(got, []string{sampleVerify.Scratch, sampleVerify.Home}) {
 		t.Errorf("writable binds %q, want the scratch and home folders only", got)
 	}
-	if !sameSet(plan.Env, []string{"PATH=/usr/bin:/bin"}) {
+	if !sameList(plan.Env, []string{"PATH=/usr/bin:/bin"}) {
 		t.Errorf("environment %q", plan.Env)
 	}
 	// The inside paths are names inside the sandbox, not the host's folders.
