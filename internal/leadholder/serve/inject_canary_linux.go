@@ -40,6 +40,10 @@ type injectState struct {
 	// timeout is the delivery's time when it is not zero (a test sets it; the
 	// default is [InjectTimeout]).
 	timeout atomic.Int64
+	// beforeGiveUp, when it is not nil, runs when the handler has decided to
+	// stop waiting and has not yet settled the delivery. Only a test sets it,
+	// before the first request, to let the deliverer return in that window.
+	beforeGiveUp func()
 }
 
 // The results the handler makes up when it has no valid one from the
@@ -124,6 +128,9 @@ func (s *Server) inject(req wire.Request) wire.Response {
 	// for it, or, when the deliverer has just returned, its own (it has then
 	// settled the delivery, and its result is on its way).
 	giveUp := func(made wire.InjectResult) wire.InjectResult {
+		if hook := s.inj.beforeGiveUp; hook != nil {
+			hook()
+		}
 		if settled.CompareAndSwap(false, true) {
 			return made
 		}
