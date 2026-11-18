@@ -37,13 +37,17 @@
 //     folder are 0700 folders of the caller's user. A tree whose .git names
 //     alternates (objects of another repository) is refused. The file
 //     .git/config is not parsed.
-//   - [CheckBindSources] takes the rows [ResolveSources] gave and opens, for
-//     each, the path bubblewrap will bind from the root of the file system with
-//     openat2 (no symbolic link, no magic link, on any component), refusing a
-//     path that has a link anywhere, naming the row by its inside path and the
-//     link. The path it opens is [ResolvedSource].Bound: the row's Source for
-//     every row that is not a row of the host, the real path for a row of the
-//     host. It is the last check before a launch.
+//   - [CheckBindSources] takes the rows [ResolveSources] gave and walks, for
+//     each, to the path bubblewrap will bind, by handle and without following a
+//     link in any component (see below): a source below the state root from the
+//     state root's handle, any other from the root of the file system. For a
+//     row Ataniq supplies it decides on the descriptor it got that the source
+//     is what the row binds, a folder or a regular file. It refuses a path that
+//     has a link anywhere and a source of another type, naming the row by its
+//     inside path, and the link. The path it walks to is
+//     [ResolvedSource].Bound: the row's Source for every row that is not a row
+//     of the host, the real path for a row of the host. It is the last check
+//     before a launch.
 //   - [ResolveSources] is where lexical paths meet the file system: it
 //     resolves each bind source with symbolic links evaluated (through an
 //     injected [Resolver]; [RealResolver] is filepath.EvalSymlinks) and runs
@@ -58,7 +62,9 @@
 //     host's own links, and its real path is reported. A never-mounted path
 //     that is a dangling link is resolved through the link's target, or
 //     reported as unreadable; [ResolveSourcesWith] takes the reader of links
-//     where the resolver is not the real file system.
+//     where the resolver is not the real file system. It compares names: it
+//     opens nothing, and what it resolved is not what is bound for a row Ataniq
+//     supplies (see below).
 //   - [SourceWalks] gives, for each bind row that Ataniq supplies, the folder
 //     to open by name, the path to walk beneath it and the type the source must
 //     have ([SourceWalk]): the state root and the whole path below it for a
@@ -110,13 +116,72 @@
 // made it, because bubblewrap would otherwise make it in a folder the lead
 // writes. The tree's .git is no mount point and may be absent (its three mount
 // points are then the missing ones). The walk is made for the runtime of the
-// inputs, so a start under the other runtime walks that runtime's places. It
-// is the unit-level ground of qualification case S21, which is not yet run.
+// inputs, so a start under the other runtime walks that runtime's places. The
+// tests of this walk are the unit-level ground of qualification case S21; the
+// case itself has not been run.
 //
-// What these three still open by name is the state root alone: it is the
-// folder the walk starts from, and a link at or above it is the caller's to
-// rule out (see Limits). [ResolveSources] and [CheckBindSources] work on the
-// paths of the bind sources, as described above.
+// The walk of the bind sources ([CheckBindSources]) is made at the moment of
+// use, right before the launch, and never reuses what [ResolveSources] or an
+// earlier call found. For a row Ataniq supplies:
+//
+//   - a source below the state root is opened beneath the state root's handle,
+//     in one lookup that follows no link and crosses no mount point, as a
+//     folder or as a regular file, whichever the row binds
+//     ([safefile.Root.OpenDirHandle], [safefile.Root.OpenFileHandle]); the type
+//     is decided on the descriptor. The state root is opened by name, once for
+//     the call; its own path is first looked up from the root of the file
+//     system without following a link, and the folder found must be the folder
+//     opened;
+//   - any other source is looked up from the root of the file system in one
+//     openat2 without a link on any component (mount points are crossed there:
+//     the folder that holds a source may be a mount), and its type is read
+//     from the descriptor that lookup returned.
+//
+// A row that does not say what it binds ([ResolvedSource].Walk, which
+// [ResolveSources] sets) is refused, not checked more weakly. A row of the host
+// is looked up from the root of the file system by its real path, and its type
+// is not checked. A file that is bound is checked for its type only: its
+// content is not read here, so neither its size nor its link count is looked
+// at. The content this package does read (the clone's .git/config and the
+// regular files of .git/info when [Prepare] copies them, and info/exclude of
+// the git metadata folder at every [Check]) is read through a handle, up to a
+// cap, and refused when the file is hard-linked.
+//
+// The descriptors are closed when the check returns: the launch still binds by
+// path. The design has the source passed to bubblewrap as the opened handle
+// where bubblewrap can take it; [SourceWalks] is the data for the launcher-side
+// step that will do so, and this package does not do it.
+//
+// What is still opened or resolved by name, and why:
+//
+//   - the state root, by [Check], [Prepare], [CheckOwnClone] and
+//     [CheckBindSources]: it is the folder the walks start from, the nearest
+//     folder no sandbox can write, and the caller owns it. Only its last
+//     component is protected by the open; [CheckBindSources] looks for a link
+//     above it too, the other three leave that to the caller (see Limits);
+//   - the root of the file system, "/", by [CheckBindSources]: the folder the
+//     lookup of a source outside the state root, of a row of the host and of
+//     the state root's own path starts from;
+//   - every bind source, the never-mounted paths and the state folders, by
+//     [ResolveSources], through the resolver (filepath.EvalSymlinks) and
+//     os.Readlink. This resolves names and opens nothing. It is kept for two
+//     things only: the real path of a row of the host (/usr, /etc/localtime
+//     and the like may be links of the host, which no lead writes), which is
+//     the path the plan binds; and the comparison of real paths, in which the
+//     never-mounted rules, the rules about other state and the overlap rules
+//     run again on what the names resolve to, and a row Ataniq supplies whose
+//     real path differs from its name is refused. It is not the check of what
+//     is bound for a row Ataniq supplies: that is the walk above, on the
+//     object itself. The path of a source Ataniq supplies has no component
+//     inside a folder a sandbox can write (rule G1; a folder the lead writes
+//     is itself named in a parent that is Ataniq's), so resolving its name
+//     reads no link a lead could plant; the never-mounted paths may lie
+//     anywhere, and of them only the names are compared.
+//
+// No folder below the state root is opened by its name, and nothing else is.
+// A folder outside the state root that holds a source (the root a [SourceWalk]
+// names for such a row) is not opened here at all; the launcher-side step will
+// open it by name.
 //
 // # The git metadata folder (rule G1)
 //
@@ -208,7 +273,8 @@
 //     the host) the plan binds the Source the inputs name, and
 //     [ResolveSources] refuses a Source whose real path differs, so the holder
 //     gives real paths in the inputs, the plan binds them, and
-//     [CheckBindSources] checks them as they are, lexically, with no link. For
+//     [CheckBindSources] walks to them as they are, with no link, and checks
+//     the type of what is there. For
 //     a row of the host (/usr, /etc/hosts, /etc/localtime, ...), whose own name
 //     may be a link of the host that no lead writes, the plan binds the real
 //     path [ResolveSources] reported ([ResolvedSource].Real): the holder passes
@@ -227,8 +293,8 @@
 //     0700; [CheckOwnClone] checks their mode and owner with the tree, the
 //     home and the config folder. The mailbox and the published folder, which
 //     are bound read-only, are sources like any other: [ResolveSources] and
-//     [CheckBindSources] look at their paths, and nothing here looks at their
-//     mode, owner or content.
+//     [CheckBindSources] look at their paths and at their type (a folder), and
+//     nothing here looks at their mode, owner or content.
 //  5. Use one state root for every lead on the host. Rule G1 holds across
 //     leads only then: the rules about another lead's state know the state
 //     root of their own inputs and no other, so a lead whose inputs name a
@@ -248,7 +314,9 @@
 // CheckOwnClone cannot tell a rebuilt .git from the original. The primary rule
 // is that no owner-side tool uses a lead's tree (the lead-hosting design,
 // section 3.3); this package does not enforce it. A symbolic link above
-// the state root is not looked for: the caller opens a state root it owns.
+// the state root is not looked for by [Check], [Prepare] and [CheckOwnClone]:
+// the caller opens a state root it owns. [CheckBindSources] looks for one, and
+// [ResolveSources] refuses a source whose name is not its real path.
 // The own-clone check looks for a .git entry in each folder from the tree's
 // parent up to the state root, not above it. The exclude check is textual: it
 // looks for the anchored line and takes any later line that starts with "!"

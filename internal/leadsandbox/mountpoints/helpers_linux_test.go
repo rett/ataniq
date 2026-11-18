@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -278,12 +279,26 @@ func (f *fixture) handMadeGitMeta() {
 }
 
 // ownRows are rows of a host that is not the host's own: each is checked by
-// its own path (its Source, which equals its Real). The inside paths are
-// invented, "/row/<n>" with n from 1.
+// its own path (its Source, which equals its Real), from the root of the file
+// system. The inside paths are invented, "/row/<n>" with n from 1. Each row
+// binds the type its path has when the row is made (a file when nothing is
+// there, or a link), so that a test about links and paths is not about types.
 func ownRows(paths ...string) []ResolvedSource {
 	rows := make([]ResolvedSource, len(paths))
 	for i, p := range paths {
-		rows[i] = ResolvedSource{Inside: fmt.Sprintf("/row/%d", i+1), Source: p, Real: p, Role: profile.RoleAgent}
+		fi, err := os.Lstat(p)
+		rows[i] = fsRow(fmt.Sprintf("/row/%d", i+1), p, err == nil && fi.IsDir())
 	}
 	return rows
+}
+
+// fsRow is the row of a source outside the state root, as [ResolveSources]
+// gives it: walked from the source's own parent folder, binding a folder or a
+// regular file.
+func fsRow(inside, p string, dir bool) ResolvedSource {
+	w := SourceWalk{Inside: inside, Root: path.Dir(p), Rel: path.Base(p), Dir: dir}
+	if p == "/" {
+		w.Rel = "."
+	}
+	return ResolvedSource{Inside: inside, Source: p, Real: p, Role: profile.RoleAgent, Walk: w}
 }

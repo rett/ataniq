@@ -184,7 +184,7 @@ func TestCheckBindSourcesChecksTheBoundPath(t *testing.T) {
 
 	// A row Ataniq supplies whose lexical path has a link is refused, though
 	// its real path is clean: bubblewrap would bind the lexical path.
-	row := ResolvedSource{Inside: "/ataniq/agent", Source: f.in.AgentInstall, Real: real, Role: profile.RoleAgent}
+	row := ResolvedSource{Inside: "/ataniq/agent", Source: f.in.AgentInstall, Real: real, Role: profile.RoleAgent, Walk: f.walkOf("/ataniq/agent")}
 	if got := row.Bound(); got != f.in.AgentInstall {
 		t.Fatalf("Bound = %s, want the lexical path %s", got, f.in.AgentInstall)
 	}

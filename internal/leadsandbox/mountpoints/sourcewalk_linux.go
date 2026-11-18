@@ -13,11 +13,12 @@ import (
 // reached by handle (rule B1 of the design, revision 4, section 3.6): the
 // folder to open by name, the path to walk beneath it, and the type the source
 // must have. It is data only: it names paths, holds no descriptor and opens
-// nothing. It is for the code that does a walk: a launcher-side step that
-// opens Root by name, walks Rel beneath that handle with openat2
+// nothing. It is for the code that does a walk: [CheckBindSources] here, which
+// takes the type and the place of the source from it, and a launcher-side step
+// that opens Root by name, walks Rel beneath that handle with openat2
 // (RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS), checks the type on the descriptor
 // it got, and gives bubblewrap that descriptor, so that the object checked is
-// the object mounted. Nothing in this package does that step.
+// the object mounted. Nothing in this package does that last step.
 //
 // Every row of the bind table that has a source and is not a row of the host
 // (profile.RoleHost) has a walk; a row of the host (/usr, the /etc files) has
@@ -44,8 +45,9 @@ import (
 //
 // Root is opened by name, which follows a link above it: the walk protects the
 // components of Rel, and Root and what lies above it are the caller's to keep.
-// [CheckBindSources] looks for a link on the whole path, from the root of the
-// file system, at the moment of its check.
+// [CheckBindSources] looks for a link above Root as well, from the root of the
+// file system, at the moment of its check: for a source outside the state root
+// it does not open Root at all, and looks the whole path up from there.
 type SourceWalk struct {
 	// Inside is the inside path of the row.
 	Inside string

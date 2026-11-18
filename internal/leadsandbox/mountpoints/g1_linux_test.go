@@ -61,12 +61,13 @@ func ownedSources(f *fixture, p *plan.Plan) []string {
 
 // ownedRows are the rows of the plan whose sources lie in the fixture's
 // folders, as the rows [ResolveSources] would give for them (none is a row of
-// the host): each is checked by its own source.
+// the host): each is checked by its own source, walked as [SourceWalks] says.
 func ownedRows(f *fixture, p *plan.Plan) []ResolvedSource {
+	f.t.Helper()
 	var out []ResolvedSource
 	for _, m := range p.Mounts {
 		if m.Source != "" && strings.HasPrefix(m.Source, f.base+"/") {
-			out = append(out, ResolvedSource{Inside: m.Inside, Source: m.Source, Real: m.Source, Role: "owned"})
+			out = append(out, ResolvedSource{Inside: m.Inside, Source: m.Source, Real: m.Source, Role: "owned", Walk: f.walkOf(m.Inside)})
 		}
 	}
 	return out

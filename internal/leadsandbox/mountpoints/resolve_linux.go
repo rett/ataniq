@@ -51,7 +51,8 @@ type ResolvedSource struct {
 	// the folder to open by name, the path beneath it and the type the source
 	// must have. [ResolveSources] sets it from the bind table for every row
 	// that is not a row of the host; for a row of the host it is the zero
-	// value. See [SourceWalk].
+	// value. [CheckBindSources] refuses a row Ataniq supplies without it, or
+	// with one that does not lead to Source. See [SourceWalk].
 	Walk SourceWalk
 }
 
@@ -136,6 +137,17 @@ func (r Resolution) HostSources() map[string]string {
 // It reads no file and creates nothing; it reads the target of a link with
 // os.Readlink. The error is set only when the inputs are refused or resolve is
 // nil (a *Problem of kind ErrInvalid).
+//
+// It works on names, by design. Resolving a name (filepath.EvalSymlinks for
+// the real file system) is kept for two things: the real path of a row of the
+// host, which is what the plan binds for it, and the comparison on real paths
+// described above, which a walk by handle cannot make (a never-mounted path may
+// not exist, and a rule about a folder is a rule about its name). What it
+// resolved for a row Ataniq supplies is never opened or bound: such a row is
+// bound by the name the inputs give, which is refused here unless it is its own
+// real path, and the object behind that name is checked by [CheckBindSources],
+// by handle, at the moment of use. Each row Ataniq supplies carries the walk
+// for that check ([ResolvedSource].Walk).
 func ResolveSources(in profile.Inputs, resolve Resolver) (Resolution, error) {
 	return ResolveSourcesWith(in, resolve, os.Readlink)
 }
