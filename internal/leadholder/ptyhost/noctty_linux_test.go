@@ -4,6 +4,7 @@ package ptyhost
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ataniq/internal/leadholder/fakeagent"
@@ -33,12 +34,21 @@ func TestNoControllingTerminalLeadsASessionWithoutOne(t *testing.T) {
 	if r.Ctty {
 		t.Error("the child could open /dev/tty: it has a controlling terminal")
 	}
-	if r.Tpgid > 0 {
-		t.Errorf("foreground group %d, want none without a controlling terminal", r.Tpgid)
+	if r.Tpgid != -1 {
+		t.Errorf("foreground group %d, want -1 (none) without a controlling terminal", r.Tpgid)
 	}
-	// The slave is still the child's standard streams.
-	if !r.StdinTTY || !r.StdoutTTY || !r.StderrTTY {
-		t.Errorf("stdio terminals %v %v %v, want all three", r.StdinTTY, r.StdoutTTY, r.StderrTTY)
+	// The slave is still the child's standard streams: descriptors 0 to 2 are
+	// this host's slave, of the size Start set.
+	if !r.StdinTTY || !r.StdoutTTY || !r.StderrTTY || !strings.HasPrefix(r.TTYName, "/dev/pts/") {
+		t.Errorf("stdio terminals %v %v %v on %q, want all three", r.StdinTTY, r.StdoutTTY, r.StderrTTY, r.TTYName)
+	}
+	for fd := 0; fd <= 2; fd++ {
+		if r.Fds[fd] != r.TTYName {
+			t.Errorf("descriptor %d is %q, want the slave %q", fd, r.Fds[fd], r.TTYName)
+		}
+	}
+	if r.Cols != 100 || r.Rows != 30 {
+		t.Errorf("size %dx%d, want 100x30", r.Cols, r.Rows)
 	}
 }
 
