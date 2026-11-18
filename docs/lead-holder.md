@@ -295,7 +295,9 @@ writer, the holder's own terminal replies, and (later) an injection.
   bounded at 64 KiB; one that does not fit is dropped and counted.
 - A fence (the critical section an injection runs in) takes the same lock for
   its whole length. Writer input waits for it, in the order it arrived, and is
-  delivered when the fence ends; the emulator's replies wait in their queue.
+  delivered when the fence ends, unless a write inside the fence failed: that
+  breaks the input like any failed write, and the held input is refused. The
+  emulator's replies wait in their queue.
   While a fence holds the lock the holder keeps reading the terminal but does
   not apply the output to its screen until the fence says so, so that what the
   fence reads and what it writes follow each other with nothing between; it
