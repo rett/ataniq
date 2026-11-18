@@ -69,6 +69,12 @@ type Options struct {
 	// HostHas says whether the host has a path (for the optional symbolic
 	// link rows of the bind table); nil means a no-follow stat.
 	HostHas func(path string) bool
+	// CheckMountPoints is the walk of the bind targets that lie in folders the
+	// lead writes (the start walk of the design, section 3.6), made by the
+	// steps check and recheck and by case S21; nil means mountpoints.Check. The
+	// tests of the harness replace it to stand in for a walk that accepts what
+	// it must refuse.
+	CheckMountPoints func(in profile.Inputs) (mountpoints.Report, error)
 	// CheckBindSources checks the bind sources of the plan, right before the
 	// launch, without following a link (rule G1); nil means
 	// mountpoints.CheckBindSources. It gets the resolved row of every mount of
@@ -103,6 +109,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.Resolver == nil {
 		o.Resolver = mountpoints.RealResolver
+	}
+	if o.CheckMountPoints == nil {
+		o.CheckMountPoints = mountpoints.Check
 	}
 	if o.CheckBindSources == nil {
 		o.CheckBindSources = mountpoints.CheckBindSources
@@ -363,7 +372,7 @@ func (a *attempt) pre(ctx context.Context) {
 			return mountpoints.Prepare(a.in, mountpoints.PrepareOptions{NoLeadHasRun: true})
 		}},
 		{StepCheck, false, false, func(context.Context) error {
-			rep, err := mountpoints.Check(a.in)
+			rep, err := a.opt.CheckMountPoints(a.in)
 			a.recordWalk(StepCheck, rep, err)
 			if err != nil {
 				return err
@@ -645,7 +654,7 @@ func (a *attempt) writeSpec() error {
 // the sources again, which must resolve as they did when the plan was built.
 // Nothing that runs a lead process lies between this and the launch.
 func (a *attempt) recheck() error {
-	rep, err := mountpoints.Check(a.in)
+	rep, err := a.opt.CheckMountPoints(a.in)
 	a.recordWalk(StepRecheck, rep, err)
 	if err != nil {
 		return err
