@@ -1010,10 +1010,10 @@ manager against it:
 - the memory limit lowered once with `systemctl --user set-property --runtime`
   and read back both ways;
 - while the unit runs, after that, `systemd/transient` or `systemd/user.control`
-  of the user's runtime folder holds at least one entry for it (the check
-  `runtime-folders-hold-the-unit`, which fails, and so skips the check after the
-  stop, when neither does), so that the check after the stop has something to
-  find gone;
+  of the user's runtime folder holds the drop-in folder `<unit>.d` that
+  `set-property` wrote (the check `runtime-folders-hold-the-unit`, which fails,
+  and so skips the check after the stop, when neither does; the unit's own file
+  does not count), so that the check after the stop has something to find gone;
 - a second unit bound to the first (`BindsTo`, `PartOf`, `After`) starts, and
   `Inspect` reads the first unit back as its parent;
 - SIGTERM to a process that ignores it leaves the control group populated;

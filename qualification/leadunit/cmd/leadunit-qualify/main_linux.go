@@ -33,9 +33,9 @@ marker and the report file.
 The unit is started with memory, swap and task limits. They are read back with
 systemctl and from the unit's control group files, the memory limit is lowered
 once on the running unit and read back again, the user manager's runtime folders
-must hold an entry for the running unit, and after the stop nothing for the unit
-may remain in them. A SIZE is a number of bytes with an optional suffix K, M or
-G (powers of 1024). A memory or swap size must be a
+must hold the drop-in folder of the running unit, and after the stop nothing for
+the unit may remain in them. A SIZE is a number of bytes with an optional suffix
+K, M or G (powers of 1024). A memory or swap size must be a
 whole number of 4096-byte pages, because the control group files are compared
 with it exactly; any other size is a usage error.
   --memory-max SIZE      the memory limit (default ` + defaultMemoryMax + `; 256M to 64G)
@@ -240,8 +240,8 @@ With --run --state-dir %s it would:
  10. lower the memory limit once to %d with "systemctl --user set-property --runtime"; check: it is
      read back from "systemctl --user show" and from memory.max
  11. check: while the unit runs, systemd/transient or systemd/user.control of the user's runtime
-     folder holds at least one entry for it (so that the check after the stop has something to
-     find gone)
+     folder holds the drop-in folder <unit>.d that set-property wrote (so that the check after
+     the stop has something to find gone)
  12. start a second unit, ataniq-qualify-<random>-child.service, bound to the first (BindsTo, PartOf
      and After), which runs "<this executable> child"; check: it is active and Inspect reads the
      first unit back as its parent

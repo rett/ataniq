@@ -366,10 +366,12 @@ func (q *qualifier) listRuntimeFolders(units ...string) ([]string, error) {
 
 // runtimeFoldersHoldTheUnit is the positive control of the check after the
 // stop. While the unit runs, after the setting was changed with
-// "set-property --runtime", the two folders must hold at least one entry for
-// the unit, so that finding them clear after the stop means something. It keeps
-// what it saw for that check to name. Where a transient unit keeps what
-// set-property writes is not assumed: either folder counts.
+// "set-property --runtime", one of the two folders must hold the drop-in
+// folder of the unit (an entry ending in "/<unit>.d"), so that finding them
+// clear after the stop means something. The unit's own file is always there
+// while it runs and does not count. It keeps what it saw for that check to
+// name. Where a transient unit keeps what set-property writes is not assumed:
+// either folder counts.
 func (q *qualifier) runtimeFoldersHoldTheUnit(context.Context) (string, error) {
 	if err := q.haveHost(); err != nil {
 		return "", err
@@ -384,6 +386,16 @@ func (q *qualifier) runtimeFoldersHoldTheUnit(context.Context) (string, error) {
 	if len(seen) == 0 {
 		return "", fmt.Errorf("neither %s holds an entry for the running unit %s under %s, so finding them clear after the stop would prove nothing",
 			strings.Join(runtimeFolders, " nor "), q.unit, q.runtimeDir)
+	}
+	dropIn := false
+	for _, s := range seen {
+		if strings.HasSuffix(s, "/"+q.unit+".d") {
+			dropIn = true
+		}
+	}
+	if !dropIn {
+		return "", fmt.Errorf("no drop-in folder %s.d is in %s after set-property --runtime (seen %q), so finding them clear after the stop would not show it removed",
+			q.unit, strings.Join(runtimeFolders, " or "), seen)
 	}
 	q.runtimeSeen = seen
 	return fmt.Sprintf("while the unit runs, %s holds %q", strings.Join(runtimeFolders, " and "), seen), nil
