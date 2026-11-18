@@ -968,7 +968,10 @@ The limits come from the flags `--memory-max` (default 1G), `--swap-max`
 (default 0, no swap), `--tasks-max` (default 128) and `--memory-lowered`
 (default 768M, the value the running unit is lowered to), whose defaults the
 help states; a value outside the bounds of the unit specification is a usage
-error. The harness's checks of them read the host only through two seams, one
+error, and so is a memory or swap size that is not a whole number of 4096-byte
+pages, because the kernel keeps such a limit as whole pages and the control
+group files are compared with the limit exactly, with no direction of rounding
+assumed. The harness's checks of them read the host only through two seams, one
 that runs `systemctl` and one that reads files and folders, which every test
 replaces with a fake, so that no test runs `systemctl` or reads a control
 group. Each check is a named line in the report.
@@ -988,8 +991,7 @@ manager against it:
   back with `systemctl --user show` (normalised from `infinity`, size suffixes
   and counts to bytes and tasks) and from `memory.max`, `memory.swap.max` and
   `pids.max` in the unit's control group folder, each compared with the
-  specification; a memory limit that is not a whole number of pages reads back
-  from the files rounded up, and the check allows for that;
+  specification exactly;
 - the memory limit lowered once with `systemctl --user set-property --runtime`
   and read back both ways;
 - a second unit bound to the first (`BindsTo`, `PartOf`, `After`) starts, and

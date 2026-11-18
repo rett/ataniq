@@ -23,7 +23,6 @@ import (
 const (
 	testCgroupRoot = "/cg"
 	testRuntimeDir = "/rt"
-	testPage       = 4096
 )
 
 // sampleLimits and sampleLowered are the numbers of these tests; no test and no
@@ -117,9 +116,6 @@ func (h *fakeHost) ReadFile(path string) ([]byte, error) {
 			continue
 		}
 		v := h.vals[i]
-		if i < 2 && v != infinite && v%testPage != 0 {
-			v += testPage - v%testPage // the kernel keeps whole pages
-		}
 		if v == infinite {
 			return []byte("max\n"), nil
 		}
@@ -167,7 +163,7 @@ func newLimitRig(t *testing.T) (*qrig, *fakeHost) {
 	h := &fakeHost{fake: r.fake, unit: unit, cg: "/fake.slice/" + unit}
 	r.q.limits, r.q.lowered = &l, sampleLowered
 	r.q.host = h
-	r.q.cgroupRoot, r.q.runtimeDir, r.q.pageSize = testCgroupRoot, testRuntimeDir, testPage
+	r.q.cgroupRoot, r.q.runtimeDir = testCgroupRoot, testRuntimeDir
 	return r, h
 }
 
@@ -350,22 +346,51 @@ func (s *splitHost) ReadFile(path string) ([]byte, error) {
 	return s.fakeHost.ReadFile(path)
 }
 
-func TestMemoryLimitsReadBackRoundedUpToWholePages(t *testing.T) {
+// The control group files are compared exactly: a file that holds the limit
+// rounded either way, which is what a size that is not a whole number of pages
+// would read back as, is a difference, whichever direction the kernel rounds.
+func TestControlGroupFilesAreComparedExactly(t *testing.T) {
+	for name, file := range map[string]string{
+		"rounded down": strconv.FormatUint(sampleLimits().MemoryMax-4096, 10) + "\n",
+		"rounded up":   strconv.FormatUint(sampleLimits().MemoryMax+4096, 10) + "\n",
+	} {
+		r, h := newLimitRig(t)
+		h.fileAs = map[string]string{"memory.max": file}
+		rep := r.q.qualify(context.Background())
+		if results(rep)["limits-cgroup-read-back"] != resultFail || rep.Verdict != resultFail {
+			t.Errorf("%s: %+v", name, rep)
+		}
+	}
+	// A size that is not a whole number of pages that the files read back as
+	// given (a host that keeps it exactly) passes: nothing is allowed for.
 	r, _ := newLimitRig(t)
-	r.q.limits.MemoryMax = 2<<30 + 1 // not a whole number of pages
-	r.q.limits.SwapMax = 4097
+	r.q.limits.MemoryMax = 2<<30 + 1
 	r.q.lowered = 1<<30 + 5
-	rep := r.q.qualify(context.Background())
-	if rep.Verdict != resultPass {
+	if rep := r.q.qualify(context.Background()); rep.Verdict != resultPass {
 		t.Fatalf("%+v", rep)
 	}
-	// Without the page size the same files fail.
-	r, _ = newLimitRig(t)
-	r.q.pageSize = 0
-	r.q.limits.MemoryMax = 2<<30 + 1
-	rep = r.q.qualify(context.Background())
-	if results(rep)["limits-cgroup-read-back"] != resultFail {
-		t.Fatalf("%+v", rep)
+}
+
+func TestMemoryAndSwapSizesMustBeWholePages(t *testing.T) {
+	for _, args := range [][]string{
+		{"--memory-max", "2147483649"}, {"--memory-max", "262145K"}, {"--swap-max", "4097"}, {"--swap-max", "1M", "--memory-lowered", "805306369"},
+		{"--memory-lowered", "805306369"},
+	} {
+		_, err := parseArgs(args)
+		if err == nil || !strings.Contains(err.Error(), "whole number of 4096-byte pages") {
+			t.Errorf("%q: %v", args, err)
+		}
+		var out, errb bytes.Buffer
+		if code := runWith(append([]string{"--run", "--state-dir", "/state"}, args...), &out, &errb, refuseManager); code != exitUsage {
+			t.Errorf("%q: exit %d", args, code)
+		}
+	}
+	for _, args := range [][]string{
+		{"--memory-max", "2147483648"}, {"--memory-max", "1048580K"}, {"--swap-max", "4096"}, {"--swap-max", "0"}, {"--memory-lowered", "805306368"},
+	} {
+		if _, err := parseArgs(args); err != nil {
+			t.Errorf("%q: %v", args, err)
+		}
 	}
 }
 
@@ -520,6 +545,7 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 		"--memory-max SIZE", "--swap-max SIZE", "--tasks-max N", "--memory-lowered SIZE",
 		"default " + defaultMemoryMax, "default " + defaultSwapMax, "default " + defaultTasksMax, "default " + defaultMemoryLowered,
 		"lowered", "control group files", "runtime folders",
+		"whole number of 4096-byte pages", "usage error",
 	} {
 		if !strings.Contains(help.String(), want) {
 			t.Errorf("help lacks %q", want)

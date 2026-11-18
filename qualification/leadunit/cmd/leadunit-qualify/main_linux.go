@@ -34,13 +34,21 @@ The unit is started with memory, swap and task limits. They are read back with
 systemctl and from the unit's control group files, the memory limit is lowered
 once on the running unit and read back again, and after the stop nothing for
 the unit may remain in the user manager's runtime folders. A SIZE is a number
-of bytes with an optional suffix K, M or G (powers of 1024).
+of bytes with an optional suffix K, M or G (powers of 1024). A memory or swap
+size must be a whole number of 4096-byte pages, because the control group files
+are compared with it exactly; any other size is a usage error.
   --memory-max SIZE      the memory limit (default ` + defaultMemoryMax + `; 256M to 64G)
   --swap-max SIZE        the swap limit (default ` + defaultSwapMax + `, no swap; 0 to 64G)
   --tasks-max N          the task limit (default ` + defaultTasksMax + `; 16 to 65536)
   --memory-lowered SIZE  the memory limit the running unit is lowered to
                          (default ` + defaultMemoryLowered + `; below --memory-max, at least 256M)
 `
+
+// pageBytes is the page size the memory sizes of the flags must be a whole
+// number of. A memory limit that is not is kept by the kernel as a number of
+// whole pages and reads back changed from the control group files, and the
+// harness compares them exactly rather than assume a direction of rounding.
+const pageBytes = 4096
 
 // The defaults of the limit flags, as the flag text states them. They are the
 // values of this command's own run and are not used anywhere else.
@@ -113,6 +121,14 @@ func (o options) limits() (l leadunit.Limits, lowered uint64, err error) {
 	}
 	if lowered, err = parseSize(orDefault(o.memoryLowered, defaultMemoryLowered)); err != nil {
 		return l, 0, fmt.Errorf("--memory-lowered: %w", err)
+	}
+	for _, c := range []struct {
+		flag string
+		n    uint64
+	}{{"--memory-max", l.MemoryMax}, {"--swap-max", l.SwapMax}, {"--memory-lowered", lowered}} {
+		if c.n%pageBytes != 0 {
+			return l, 0, fmt.Errorf("%s %d is not a whole number of %d-byte pages", c.flag, c.n, pageBytes)
+		}
 	}
 	// The bounds are the specification's own: the unit would be refused with
 	// the same reason, so the command refuses it before it starts anything.
@@ -268,7 +284,7 @@ func runQualification(o options, stdout, stderr io.Writer, newManager managerFac
 		mgr: mgr, sleep: realSleep, ready: waitReadyFile, rand: randomHex,
 		exe: exe, stateDir: o.stateDir,
 		limits: &limits, lowered: lowered,
-		cgroupRoot: cgroupRoot, runtimeDir: userRuntimeDir(), pageSize: os.Getpagesize(),
+		cgroupRoot: cgroupRoot, runtimeDir: userRuntimeDir(),
 	}
 	// A manager that does not give host access leaves the limit checks to fail
 	// with that reason, never to run against the machine by another way.

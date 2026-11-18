@@ -186,31 +186,15 @@ func (q *qualifier) cgroupLimits() (limitValues, error) {
 	return v, nil
 }
 
-// roundUpToPages is the value the kernel keeps for a memory limit: a number of
-// whole pages, rounded up. pageSize 0 means no rounding.
-func (q *qualifier) roundUpToPages(n uint64) uint64 {
-	if q.pageSize <= 0 || n == infinite {
-		return n
-	}
-	ps := uint64(q.pageSize)
-	if r := n % ps; r != 0 && n <= infinite-(ps-r) {
-		return n + ps - r
-	}
-	return n
-}
-
 // differences lists what differs between got and want, "" when nothing does.
-// For the control group files the two memory limits may read back rounded up to
-// whole pages, which is how the kernel keeps them.
-func (q *qualifier) differences(got, want limitValues, kernel bool) string {
+// The comparison is exact for both ways of reading: the command accepts only
+// memory sizes that are a whole number of pages, so that the control group
+// files have no rounding to allow for.
+func differences(got, want limitValues) string {
 	var diff []string
 	for i, p := range limitProps {
-		w := want[i]
-		if kernel && i < 2 {
-			w = q.roundUpToPages(w)
-		}
-		if got[i] != w {
-			diff = append(diff, fmt.Sprintf("%s reads %s, expected %s", p.prop, showNumber(got[i]), showNumber(w)))
+		if got[i] != want[i] {
+			diff = append(diff, fmt.Sprintf("%s reads %s, expected %s", p.prop, showNumber(got[i]), showNumber(want[i])))
 		}
 	}
 	return strings.Join(diff, "; ")
@@ -232,7 +216,7 @@ func (q *qualifier) limitsShowReadBack(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if d := q.differences(got, valuesOf(*q.limits), false); d != "" {
+	if d := differences(got, valuesOf(*q.limits)); d != "" {
 		return "", fmt.Errorf("systemctl show differs from the specification: %s", d)
 	}
 	return "systemctl --user show reads " + got.String() + ", as specified", nil
@@ -248,7 +232,7 @@ func (q *qualifier) limitsCgroupReadBack(context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if d := q.differences(got, valuesOf(*q.limits), true); d != "" {
+	if d := differences(got, valuesOf(*q.limits)); d != "" {
 		return "", fmt.Errorf("the control group files differ from the specification: %s", d)
 	}
 	return "memory.max, memory.swap.max and pids.max in " + q.started.ControlGroup + " read " + got.String() + ", as specified", nil
@@ -284,7 +268,7 @@ func (q *qualifier) loweredShowReadBack(ctx context.Context) (string, error) {
 	var err error
 	ok, perr := q.poll(ctx, emptyBound, func() (bool, error) {
 		got, err = q.showLimits(ctx)
-		return err == nil && q.differences(got, q.loweredValues(), false) == "", err
+		return err == nil && differences(got, q.loweredValues()) == "", err
 	})
 	if !ok {
 		if err != nil {
@@ -293,7 +277,7 @@ func (q *qualifier) loweredShowReadBack(ctx context.Context) (string, error) {
 		if perr != nil {
 			return "", perr
 		}
-		return "", fmt.Errorf("systemctl show after the change differs: %s", q.differences(got, q.loweredValues(), false))
+		return "", fmt.Errorf("systemctl show after the change differs: %s", differences(got, q.loweredValues()))
 	}
 	return "systemctl --user show reads " + got.String() + " after the change", nil
 }
@@ -305,7 +289,7 @@ func (q *qualifier) loweredCgroupReadBack(ctx context.Context) (string, error) {
 	var err error
 	ok, perr := q.poll(ctx, emptyBound, func() (bool, error) {
 		got, err = q.cgroupLimits()
-		return err == nil && q.differences(got, q.loweredValues(), true) == "", err
+		return err == nil && differences(got, q.loweredValues()) == "", err
 	})
 	if !ok {
 		if err != nil {
@@ -314,7 +298,7 @@ func (q *qualifier) loweredCgroupReadBack(ctx context.Context) (string, error) {
 		if perr != nil {
 			return "", perr
 		}
-		return "", fmt.Errorf("the control group files after the change differ: %s", q.differences(got, q.loweredValues(), true))
+		return "", fmt.Errorf("the control group files after the change differ: %s", differences(got, q.loweredValues()))
 	}
 	return "the control group files read " + got.String() + " after the change", nil
 }

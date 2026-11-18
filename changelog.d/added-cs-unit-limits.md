@@ -9,7 +9,8 @@
   registry changes and refuses limits outside the bounds like a preflight
   refusal.
   `leadunit-qualify` starts its unit with limits from its flags
-  (`--memory-max`, `--swap-max`, `--tasks-max`, `--memory-lowered`), reads them
-  back from `systemctl --user show` and the control group files, lowers the
-  memory limit once, and checks that no runtime folder entry is left after the
-  stop; it has not been run.
+  (`--memory-max`, `--swap-max`, `--tasks-max`, `--memory-lowered`; a memory or
+  swap size must be a whole number of 4096-byte pages), reads them back from
+  `systemctl --user show` and the control group files, lowers the memory limit
+  once, and checks that no runtime folder entry is left after the stop; it has
+  not been run.

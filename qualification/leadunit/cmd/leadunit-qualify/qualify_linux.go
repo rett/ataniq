@@ -91,11 +91,11 @@ type qualifier struct {
 	// host runs systemctl and reads files for the limit checks.
 	host host
 	// cgroupRoot is where the unified control group hierarchy is mounted;
-	// runtimeDir is the user's runtime folder; pageSize is the size of a page,
-	// to which the kernel rounds a memory limit up (0 means no rounding).
+	// runtimeDir is the user's runtime folder. The control group files are
+	// compared with the limits exactly: the command refuses a memory size that
+	// is not a whole number of pages, so that there is nothing to round.
 	cgroupRoot string
 	runtimeDir string
-	pageSize   int
 
 	suffix    string
 	unit      string

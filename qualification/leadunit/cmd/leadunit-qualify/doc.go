@@ -47,8 +47,10 @@
 // a process can move itself into another control group of the user's
 // delegated subtree before its group is removed, and no check here sees that.
 // It does not look at the unit's environment beyond what the start call sent.
-// A memory limit that is not a whole number of pages reads back from the control
-// group files rounded up, as the kernel keeps it, and the check allows for that.
+// A memory or swap size that is not a whole number of 4096-byte pages is a
+// usage error, since the kernel keeps such a limit as whole pages and the files
+// would not read back as given; the files are compared with the limits exactly.
+// A host with a larger page size needs sizes that are also a multiple of it.
 // It needs the user manager of the calling user and reaches the system
 // manager nowhere. The harness runs systemctl only for the three properties and
 // the one set-property.
