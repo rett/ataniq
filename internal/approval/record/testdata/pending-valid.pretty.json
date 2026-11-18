@@ -1,0 +1,152 @@
+{
+  "schema": "ataniq.approval-pending/1",
+  "id": "ap-20261120-0007",
+  "planner": "planner-a",
+  "request_id": "rq-20261120t140201z-7c1e",
+  "request_sha256": "8a16b96f28d7e1e03ce1bc0d7ffeb18d688333407a569bbee45d44d7ae95ae3f",
+  "binding": {
+    "project": "project-a",
+    "subject": {
+      "kind": "seat",
+      "role_name": "role-a",
+      "epoch": 7,
+      "seat_rev": 12,
+      "holder": {
+        "kind": "lead",
+        "display_id": "role-a@e7",
+        "runtime": "runtime-a"
+      }
+    },
+    "verb": "feature finish",
+    "argv": [
+      "sample-feature"
+    ],
+    "class": "ref-move",
+    "plan_token": "h-3fa9c2e1",
+    "plan_sha256": "0c4e42e4fe2a5bdcce93abf860503d9678b8b10a8a49389965bc00654ef027d3",
+    "effects": [
+      {
+        "kind": "ref",
+        "ref": "refs/heads/develop",
+        "old": "93c8d68b93c8d68b93c8d68b93c8d68b93c8d68b",
+        "new": "0194dafc0194dafc0194dafc0194dafc0194dafc"
+      }
+    ],
+    "merge": {
+      "commit": "0194dafc0194dafc0194dafc0194dafc0194dafc",
+      "parents": [
+        "93c8d68b93c8d68b93c8d68b93c8d68b93c8d68b",
+        "8281895a8281895a8281895a8281895a8281895a"
+      ],
+      "built_by": "host"
+    },
+    "summary": {
+      "review_digest": "c97ace4c8fef2cee8fa0f3c9f52aab18dbd4f42438afe362ffb8f75ce4c04b84",
+      "base": "93c8d68b93c8d68b93c8d68b93c8d68b93c8d68b",
+      "tip": "0194dafc0194dafc0194dafc0194dafc0194dafc",
+      "files": 5,
+      "added": 612,
+      "removed": 88,
+      "new_bytes": 48211,
+      "paths": [
+        {
+          "path": "lib/seat_read.py",
+          "status": "A",
+          "old_mode": "000000",
+          "new_mode": "100644",
+          "added": 301,
+          "removed": 0,
+          "new_bytes": 9120
+        },
+        {
+          "path": "Makefile",
+          "status": "M",
+          "old_mode": "100644",
+          "new_mode": "100644",
+          "added": 4,
+          "removed": 1,
+          "new_bytes": 120
+        },
+        {
+          "path": "docs/<a>&b \u00e9t\u00e9 \u65e5\u672c\u8a9e\u2028.md",
+          "status": "M",
+          "old_mode": "100644",
+          "new_mode": "100755",
+          "added": 300,
+          "removed": 87,
+          "new_bytes": 38000
+        },
+        {
+          "path": {
+            "b64": "ZGF0YS9jYWbpLmJpbg=="
+          },
+          "status": "A",
+          "old_mode": "000000",
+          "new_mode": "100644",
+          "added": 0,
+          "removed": 0,
+          "new_bytes": 971
+        },
+        {
+          "path": {
+            "b64": "dG9vbHMvG1sySmNsZWFy"
+          },
+          "status": "T",
+          "old_mode": "100644",
+          "new_mode": "120000",
+          "added": 7,
+          "removed": 0,
+          "new_bytes": 0
+        }
+      ],
+      "paths_truncated": false,
+      "flagged": [
+        {
+          "kind": "exec-config",
+          "path": "Makefile",
+          "pattern": "Makefile"
+        },
+        {
+          "kind": "symlink",
+          "path": {
+            "b64": "dG9vbHMvG1sySmNsZWFy"
+          },
+          "pattern": ""
+        }
+      ],
+      "binary": [
+        {
+          "b64": "ZGF0YS9jYWbpLmJpbg=="
+        }
+      ],
+      "symlinks": [
+        {
+          "b64": "dG9vbHMvG1sySmNsZWFy"
+        }
+      ],
+      "mode_changes": [
+        "docs/<a>&b \u00e9t\u00e9 \u65e5\u672c\u8a9e\u2028.md"
+      ],
+      "submodules": [],
+      "exec_config_set": {
+        "matcher": "execconfig/1",
+        "sha256": "6c621d1a05138a7888d37d9269a9da8e2e11e4aced2f6cfd24b05ab1b9e61bb0",
+        "additions": 0
+      }
+    },
+    "evidence": [
+      {
+        "kind": "suite",
+        "record_id": "v-0412",
+        "record_sha256": "f8ebd43dbef1f029bf4930c65c9b7c5cc76af476927cee861ff18fcc73bfc4ab"
+      }
+    ],
+    "requested_at": "2026-11-20T14:02:04Z",
+    "pending_expires_at": "2026-11-21T14:02:04Z"
+  },
+  "binding_sha256": "12969c837bce0f6598da9ece4c5e885ec6a669e731f542dbb4a05d3313aabf6c",
+  "plan_text": {
+    "b64": "cWFyZ2kgZmVhdHVyZSBmaW5pc2ggc2FtcGxlLWZlYXR1cmUKICBtZXJnZSBmZWF0dXJlL3NhbXBsZS1mZWF0dXJlIGludG8gZGV2ZWxvcCAoLS1uby1mZikKICBtb3ZlIHJlZnMvaGVhZHMvZGV2ZWxvcAo="
+  },
+  "note": "The suite is clean. <ok> & \u00e9t\u00e9 \u65e5\u672c\u8a9e \u2028 done"
+}
