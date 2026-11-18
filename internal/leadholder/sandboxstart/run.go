@@ -18,7 +18,7 @@
 //	validate-config   the inputs, the profile's own checks, the host
 //	tool-versions     the tools' versions; a bubblewrap too old for --bind-fd
 //	own-clone         the tree is the lead's own clone, the folders are its own
-//	prepare           the mount points are made (only with no_lead_has_run)
+//	prepare           the mount points are made (only with Inputs.NoLeadHasRun)
 //	check             the start walk of the bind destinations (assertion 7)
 //	resolv-conf       the resolv.conf derived from the host's, and the bound folder
 //	resolve-sources   every bind source with its links evaluated
@@ -59,7 +59,9 @@
 //
 // The role lock is the one the holder holds: System.RoleLock gives it, Run
 // does not take it. Lingering is read through System.Lingering, from the login
-// manager's state.
+// manager's state. Assertion 9 asks the lock with the layout role
+// (Inputs.LayoutRole), not with the daemon's role text. An inputs file with
+// "canary": false reaches assertion 10 only after the launch.
 //
 // # A failed start leaves nothing behind
 //
@@ -110,6 +112,7 @@ type attempt struct {
 
 	exes     []ExeRecord
 	versions ToolVersions
+	notes    []string
 	// walk is what the last check of the mount points found (the steps check
 	// and recheck): the fact the outside half of assertion 7 is made from.
 	walk assert.StartWalk
@@ -145,8 +148,9 @@ type stepDef struct {
 // error: a *StepError that names the step that refused the start, or, in canary
 // mode, the *canaryroot.RefusedError of the root check, which is made before
 // any step (a project without the reserved prefix, a default root, a missing
-// marker or a root that is not the marker's). With canary false there is no
-// root check here and no waiver.
+// marker or a root that is not the marker's), or a plain refusal, also before
+// any step, of a layout role that is not "<project>-lead". With canary false
+// there is no root check here and no waiver.
 //
 // The holder owns the child of the result. After an error nothing of the start
 // is left: the child, if one was launched, has been stopped and reaped, and the
@@ -162,6 +166,10 @@ func Run(ctx context.Context, in Inputs, sys System, launch Launcher) (Started, 
 		if err := canaryroot.Check(in.StateRoot, in.RuntimeRoot, in.Project, sys.Getenv); err != nil {
 			return Started{}, fmt.Errorf("sandbox start refused before any step: %w", err)
 		}
+		// The layout role of the slice is the project's lead (seams section 1).
+		if want := in.Project + "-lead"; in.LayoutRole != want {
+			return Started{}, fmt.Errorf("sandbox start refused before any step: in canary mode the layout role is %q (the project's lead), not %q", want, clipText(in.LayoutRole))
+		}
 	}
 	a := &attempt{ctx: ctx, in: in, sys: sys, launch: launch}
 	return a.execute()
@@ -174,7 +182,7 @@ func (a *attempt) execute() (Started, error) {
 		{StepOwnClone, nil, a.ownClone},
 		{StepPrepare, func() string {
 			if !a.in.NoLeadHasRun {
-				return "the inputs do not state that no lead has run: the mount points are checked, not made"
+				return "the holder does not state that no lead has run: the mount points are checked, not made"
 			}
 			return ""
 		}, a.prepare},
@@ -222,6 +230,7 @@ func (a *attempt) execute() (Started, error) {
 		Steps:          a.rec.list(),
 		Executables:    a.exes,
 		Versions:       a.versions,
+		Notes:          a.notes,
 		Plan:           a.pl,
 	}, nil
 }
@@ -378,8 +387,12 @@ func (a *attempt) toolVersions() error {
 	a.versions = a.sys.ToolVersions(a.ctx, ToolPaths{Pasta: a.in.Executables.Pasta, Bwrap: a.in.Executables.Bwrap})
 	// The plan binds every source Ataniq supplies from a descriptor: a
 	// bubblewrap whose release is known to be too old for that is refused.
-	if _, err := checkBwrapBindFD(a.versions.Bwrap); err != nil {
+	note, err := checkBwrapBindFD(a.versions.Bwrap)
+	if err != nil {
 		return err
+	}
+	if note != "" {
+		a.notes = append(a.notes, note)
 	}
 	if len(a.versions.Errors) > 0 {
 		return fmt.Errorf("%d tool version(s) could not be read: %s", len(a.versions.Errors), strings.Join(a.versions.Errors, "; "))
@@ -413,9 +426,9 @@ func (a *attempt) checkMountPoints(step string) error {
 // design wants the walk made with the previous instance proven stopped. This
 // sequence has no unit and no control group, so it proves nothing about a
 // process of an earlier lead: when the inputs state that no lead has run in
-// these folders (no_lead_has_run) there is no previous instance, and when they
-// state that the previous instance has stopped (previous_instance_stopped) the
-// caller proved it, and the fact says which. Without either statement the fact
+// these folders (Inputs.NoLeadHasRun) there is no previous instance, and when
+// they state that the previous instance has stopped (Inputs.PreviousInstanceStopped) the
+// holder proved it, and the fact says which. Without either statement the fact
 // says the previous instance is not proven stopped, and the result of a walk
 // that found nothing is not-checked.
 func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
@@ -433,11 +446,11 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 			w.Detail += " (and more problems than the check lists)"
 		}
 	case a.in.NoLeadHasRun:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that there is no previous instance is the inputs' statement that no lead has run in these folders (no_lead_has_run)", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that there is no previous instance is the holder's statement that no lead has run in these folders (NoLeadHasRun)", step)
 	case a.in.PreviousInstanceStopped:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that the previous instance has stopped is the inputs' statement (previous_instance_stopped)", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that the previous instance has stopped is the holder's statement (PreviousInstanceStopped)", step)
 	default:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the inputs state neither that no lead has run in these folders (no_lead_has_run) nor that the previous instance has stopped (previous_instance_stopped): it does not prove that no process of an earlier lead remains", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the holder states neither that no lead has run in these folders (NoLeadHasRun) nor that the previous instance has stopped (PreviousInstanceStopped): it does not prove that no process of an earlier lead remains", step)
 	}
 	a.walk = w
 }

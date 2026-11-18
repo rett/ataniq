@@ -52,7 +52,7 @@ func wantInputsError(t *testing.T, err error, substr string) {
 // fields the holder fills are not in the file.
 func TestReadInputsRoundTrip(t *testing.T) {
 	in, data := sampleInputsJSON(t)
-	for _, key := range []string{"agent_argv", "agent_env", "argv", "env", "expected_digest", "holder_paths", "AgentArgv", "ExpectedDigest", "HolderPaths", "AgentEnv"} {
+	for _, key := range []string{"agent_argv", "agent_env", "argv", "env", "expected_digest", "holder_paths", "AgentArgv", "ExpectedDigest", "HolderPaths", "AgentEnv", "no_lead_has_run", "previous_instance_stopped", "NoLeadHasRun", "PreviousInstanceStopped"} {
 		if strings.Contains(string(data), `"`+key+`"`) {
 			t.Errorf("the file holds the holder's field %s", key)
 		}
@@ -64,6 +64,7 @@ func TestReadInputsRoundTrip(t *testing.T) {
 	// The file carries everything but the fields the holder fills.
 	want := in
 	want.AgentArgv, want.AgentEnv, want.ExpectedDigest, want.HolderPaths = nil, nil, "", nil
+	want.NoLeadHasRun, want.PreviousInstanceStopped = false, false
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("read %+v\nwant %+v", got, want)
 	}

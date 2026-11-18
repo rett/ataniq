@@ -165,7 +165,7 @@ func TestRunSecondEpoch(t *testing.T) {
 			outside7 = r
 		}
 	}
-	if outside7.Status != assert.StatusOK || !strings.Contains(outside7.Detail, "previous_instance_stopped") {
+	if outside7.Status != assert.StatusOK || !strings.Contains(outside7.Detail, "PreviousInstanceStopped") {
 		t.Errorf("the outside half of assertion 7 is %s: %s", outside7.Status, outside7.Detail)
 	}
 }

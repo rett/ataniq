@@ -28,7 +28,11 @@ const DefaultLingerDir = "/var/lib/systemd/linger"
 // but RoleLock means the real thing.
 type SystemConfig struct {
 	// RoleLock is the lock the holder holds on its role, which assertion 9 asks
-	// about. It is required: the sequence never takes it.
+	// about. It is required: the sequence never takes it. Run asks it with the
+	// layout role (Inputs.LayoutRole, for example "throwaway-one-lead"), not
+	// with the role text of the daemon
+	// ("throwaway-one/lead"): an adapter that compares the argument with its
+	// own role text must compare it with the layout role, or assertion 9 fails.
 	RoleLock assert.RoleLock
 	// LingerDir overrides DefaultLingerDir (tests give a folder).
 	LingerDir string
