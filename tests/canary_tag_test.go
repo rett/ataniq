@@ -513,13 +513,16 @@ func workflowRunCommands(lines []string) []string {
 	return commands
 }
 
+// workflowUsesKey finds a uses key, quoted or not, and captures its value.
+var workflowUsesKey = regexp.MustCompile(`^["']?uses["']?\s*:(.*)$`)
+
 func workflowUses(lines []string) []string {
 	var uses []string
 	for _, raw := range lines {
 		trimmed := strings.TrimSpace(stripYAMLComment(raw))
 		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
-		if strings.HasPrefix(trimmed, "uses:") {
-			uses = append(uses, strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "uses:")), `"'`))
+		if m := workflowUsesKey.FindStringSubmatch(trimmed); m != nil {
+			uses = append(uses, strings.Trim(strings.TrimSpace(m[1]), `"'`))
 		}
 	}
 	return uses
@@ -536,6 +539,10 @@ var canaryJobUses = []string{"actions/checkout@", "actions/setup-go@"}
 // canaryRunKitPath is the folder of the canary run kit. A file there may build
 // with the tag, so no workflow run line may name it.
 var canaryRunKitPath = regexp.MustCompile(`qualification/canary($|[^A-Za-z0-9_.-])`)
+
+// canaryJobGuardKey finds a key that can keep a job or a step from failing,
+// quoted or not. A flow mapping that holds one is not found.
+var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*:`)
 
 // checkCanaryWorkflow is check (5). Its input is every file under .github:
 // the workflow files directly below .github/workflows by their file name, and
@@ -573,6 +580,12 @@ func checkCanaryWorkflow(files map[string]string) []string {
 				problems = append(problems, fmt.Sprintf("%s: a run line names the canary run kit: %q", name, run))
 			}
 		}
+		// A local action outside .github is a file this check does not read.
+		for _, use := range workflowUses(kept) {
+			if strings.HasPrefix(use, "./") && !strings.HasPrefix(path.Clean(use), ".github/") {
+				problems = append(problems, fmt.Sprintf("%s: uses the local action %s, outside .github", name, use))
+			}
+		}
 	}
 	text, ok := files["test.yml"]
 	if !ok {
@@ -598,7 +611,7 @@ func checkCanaryWorkflow(files map[string]string) []string {
 	}
 	for _, raw := range job {
 		key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripYAMLComment(raw)), "- "))
-		if strings.HasPrefix(key, "continue-on-error:") || strings.HasPrefix(key, "if:") {
+		if canaryJobGuardKey.MatchString(key) {
 			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has %q, which could keep it from failing", key))
 		}
 	}
@@ -1173,6 +1186,15 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"a composite action that only mentions canary-build in a comment", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "# not canary-build\nruns:\n  using: composite\n  steps: []\n"}, false},
 		{"a file that is not yaml names canary-build", map[string]string{"test.yml": goodWorkflow, ".github/scripts/ship.sh": "make canary-build\n"}, true},
 		{"another workflow names the tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "# ataniq_canary\n"}, true},
+		{"a quoted if on the job", edit("    timeout-minutes: 30\n    permissions", "    'if': always()\n    permissions"), true},
+		{"a quoted continue-on-error on a step of the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n        \"continue-on-error\": true\n"), true},
+		{"a local action outside .github in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./tools/ship\n"}, true},
+		{"a local action at the root in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./\n"}, true},
+		{"a quoted local action outside .github under a quoted key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'uses': \"./tools/ship\"\n"}, true},
+		{"a local action that leaves .github", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./.github/../tools/ship\n"}, true},
+		{"a local action outside .github in a composite action", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: ./tools/ship\n"}, true},
+		{"a local action under .github in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./.github/actions/b\n"}, false},
+		{"an action of another repository in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: some-org/ship@v1\n"}, false},
 		{"continue-on-error on the job", edit("    timeout-minutes: 30\n    permissions", "    continue-on-error: true\n    permissions"), true},
 		{"if on the job", edit("    timeout-minutes: 30\n    permissions", "    if: always()\n    permissions"), true},
 		{"if on a step of the job", edit("      - run: make test-canary\n", "      - if: always()\n        run: make test-canary\n"), true},
