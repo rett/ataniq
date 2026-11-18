@@ -4,10 +4,12 @@ package leaddaemon
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -80,6 +82,39 @@ func TestCanaryUnspentMessageStaysUnspentAcrossARestart(t *testing.T) {
 	}
 }
 
+// runToRefusal runs the daemon in canary mode, which must refuse to start, and
+// returns its error. A daemon that starts instead fails the test as soon as it
+// listens, and is stopped: the test does not wait for a daemon that will not
+// end by itself.
+func (c *canaryEnv) runToRefusal() error {
+	c.t.Helper()
+	cfg := c.daemonConfig()
+	listening := make(chan string, 1)
+	cfg.Ready = func(s string) { listening <- s }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, cfg) }()
+	stopped := func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+		}
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-listening:
+		stopped()
+		c.t.Fatal("the daemon started and listens; it was to refuse the start")
+	case <-time.After(20 * time.Second):
+		stopped()
+		c.t.Fatal("the daemon neither refused nor listened in 20 s")
+	}
+	return nil
+}
+
 // evidenceLineOf is a line of the evidence as the writer makes it, without the
 // newline.
 func evidenceLineOf(event, role string, more string) string {
@@ -99,7 +134,9 @@ func TestCanaryDamagedEvidenceRefusesTheStart(t *testing.T) {
 		"two objects on a line":    {strings.TrimSuffix(good, "\n") + " " + good, "not a JSON object"},
 		"no event":                 {`{"role":"` + canaryRoleText + `","epoch":1}` + "\n", `"event" is not a string`},
 		"an event that is no text": {`{"event":7,"role":"` + canaryRoleText + `"}` + "\n", `"event" is not a string`},
+		"an empty event":           {`{"event":"","role":"` + canaryRoleText + `"}` + "\n", `"event" is not a string`},
 		"no role":                  {`{"event":"inject-sent","epoch":1}` + "\n", `"role" is not a string`},
+		"an empty role":            {`{"event":"inject-sent","role":"","epoch":1}` + "\n", `"role" is not a string`},
 		"an epoch in quotes":       {evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":"1"`) + "\n", `"epoch" is not a whole number`},
 		"a negative epoch":         {evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":-1`) + "\n", `"epoch" is not a whole number`},
 		"an epoch with a fraction": {evidenceLineOf("inject-sent", canaryRoleText, `,"epoch":1.5`) + "\n", `"epoch" is not a whole number`},
@@ -114,7 +151,7 @@ func TestCanaryDamagedEvidenceRefusesTheStart(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err := c.runToEnd(c.daemonConfig())
+			err := c.runToRefusal()
 			se := mustFail(t, err, StepState, ExitState)
 			if !strings.Contains(se.Error(), tc.want) || !strings.Contains(se.Error(), "no message is admitted") {
 				t.Fatalf("the error is %q, want %q in it", se.Error(), tc.want)
