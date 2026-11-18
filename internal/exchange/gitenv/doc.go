@@ -20,6 +20,11 @@
 //     monitors, pagers, editors, askpass programs, credential helpers,
 //     external diff programs, submodule recursion and every transport except
 //     the ones the caller names.
+//   - For "diff" and "log" it adds the options "--no-ext-diff" and
+//     "--no-textconv", so that neither starts an external diff program or the
+//     textconv program of a diff driver that the repository's config names.
+//     "log" needs them as "diff" does: "git log -p" runs a textconv program
+//     by default.
 //   - It turns on object checking (fsck) for fetches.
 //   - For "diff", "diff-tree", "merge-tree" and "log" it pins the attribute
 //     source to the empty tree, with the setting "attr.tree" among its own

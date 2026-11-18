@@ -124,6 +124,20 @@ var noGitDir = []string{"init", "version"}
 // prefix of one of these, at least "--" and three letters, is refused too.
 var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ext-diff"}
 
+// noDiffPrograms are the subcommands that run the programs of the
+// configuration when they print a patch: "git diff" runs diff.external and
+// the textconv program of a diff driver by default, and "git log -p" runs
+// the textconv program. An empty or dummy diff.external does not stop it:
+// git reports "cannot run" and fails. For these [Git.Argv] adds the options
+// "--no-ext-diff" and "--no-textconv" right after the subcommand, which do
+// stop both. "diff-tree" is plumbing and runs neither unless asked; the
+// tests show that for the installed git.
+//
+// A tree cannot name a diff driver, because of the attribute pin (see
+// [attrPinned]), but the repository's own "info/attributes" can, and a
+// caller of "log" is not required to run [CheckInfoAttributes].
+var noDiffPrograms = []string{"diff", "log"}
+
 // emptyTree is the id of the tree with no entry, in a SHA-1 repository. git
 // knows it without the object being stored.
 const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -210,8 +224,9 @@ func IsObjectID(s string) bool {
 
 // Argv returns the command line for c: the git path, the fixed -c settings,
 // for "diff", "diff-tree", "merge-tree" and "log" the setting that pins the
-// attribute source to the empty tree, --git-dir=..., then the arguments. It
-// starts nothing. It refuses what the package comment lists.
+// attribute source to the empty tree, --git-dir=..., the subcommand, for
+// "diff" and "log" the options "--no-ext-diff" and "--no-textconv", then the
+// arguments. It starts nothing. It refuses what the package comment lists.
 func (g Git) Argv(c Cmd) ([]string, error) {
 	if !filepath.IsAbs(g.Path) {
 		return nil, errors.New("gitenv: Git has no absolute path; use New or Find")
@@ -285,10 +300,8 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if uploadPack != "" {
 		argv = append(argv, uploadPack)
 	}
-	if sub == "diff" {
-		// "git diff" runs diff.external and textconv programs by default,
-		// and an empty or dummy diff.external does not stop it: git
-		// reports "cannot run" and fails. The two options do.
+	if slices.Contains(noDiffPrograms, sub) {
+		// No external diff and no textconv program; see noDiffPrograms.
 		argv = append(argv, "--no-ext-diff", "--no-textconv")
 	}
 	return append(argv, c.Args[1:]...), nil
@@ -536,7 +549,8 @@ func checkHashObject(args []string) error {
 // the first list, and why:
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
-//     adds --no-ext-diff and --no-textconv to "diff" instead.
+//     adds --no-ext-diff and --no-textconv to "diff" and "log" instead
+//     (see [noDiffPrograms]).
 //   - core.alternateRefsCommand is set to the empty string. git 2.56 does
 //     not skip an empty command: when a fetch lists the refs of an alternate
 //     it tries to start it, fails, prints "error: cannot run : No such file
