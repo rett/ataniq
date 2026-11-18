@@ -274,21 +274,53 @@ func TestUsesToday(t *testing.T) {
 		time.Date(2031, 3, 8, 23, 59, 59, 0, west), // yesterday
 		time.Date(2031, 3, 9, 0, 0, 0, 0, west),    // today, the first instant
 		time.Date(2031, 3, 9, 23, 59, 59, 0, west), // today, the last second
-		time.Date(2031, 3, 10, 0, 0, 0, 0, west),   // tomorrow
+		time.Date(2031, 3, 10, 0, 0, 0, 0, west),   // tomorrow: the clock was set back, counted
 		at(time.UTC, 2031, 3, 10, 5, 0),            // 20:00 on the 9th in west: today
 		at(time.UTC, 2031, 3, 9, 5, 0),             // 20:00 on the 8th in west: yesterday
 	}
-	if got := UsesToday(decided, now); got != 3 {
-		t.Fatalf("UsesToday in west = %d, want 3", got)
+	if got := UsesToday(decided, now); got != 4 {
+		t.Fatalf("UsesToday in west = %d, want 4", got)
 	}
-	// The same times under a UTC clock on the 9th: the two west times of the
-	// 9th and the UTC one of the 9th, and the last second of the 8th in west
-	// (08:59:59 UTC on the 9th).
-	if got := UsesToday(decided, at(time.UTC, 2031, 3, 9, 12, 0)); got != 3 {
-		t.Fatalf("UsesToday in UTC = %d, want 3", got)
+	// The same times under a UTC clock on the 9th: every one of them is on
+	// the UTC 9th or after it. The earliest, 20:00 on the 8th in west, is
+	// 05:00 UTC on the 9th.
+	if got := UsesToday(decided, at(time.UTC, 2031, 3, 9, 12, 0)); got != 6 {
+		t.Fatalf("UsesToday in UTC = %d, want 6", got)
 	}
 	if got := UsesToday(nil, now); got != 0 {
 		t.Fatalf("no decisions: %d", got)
+	}
+}
+
+// A clock set back across midnight leaves uses that are dated tomorrow. They
+// still take room: the day must not get a second helping, and RaisedToday
+// reads a raise dated after today the same way.
+func TestUsesTodayCountsATimeAfterToday(t *testing.T) {
+	now := at(west, 2031, 3, 9, 23, 59)
+	for _, c := range []struct {
+		name    string
+		decided time.Time
+		want    int
+	}{
+		{"the first instant of tomorrow", at(west, 2031, 3, 10, 0, 0), 1},
+		{"a week ahead", at(west, 2031, 3, 16, 12, 0), 1},
+		{"across a year's end", at(west, 2032, 1, 1, 0, 0), 1},
+		{"the last minute of yesterday", at(west, 2031, 3, 8, 23, 59), 0},
+		{"a year back", at(west, 2030, 3, 10, 0, 0), 0},
+		{"a year whose date cannot be read back", at(west, 10000, 1, 1, 0, 0), 1},
+	} {
+		if got := UsesToday([]time.Time{c.decided}, now); got != c.want {
+			t.Errorf("%s: UsesToday = %d, want %d", c.name, got, c.want)
+		}
+	}
+	// The limit and the room agree: a day filled before the clock went back
+	// stays full.
+	var decided []time.Time
+	for i := 0; i < 12; i++ {
+		decided = append(decided, at(west, 2031, 3, 10, 0, i))
+	}
+	if got := Judge(true, UsesToday(decided, now), 12); got != Held {
+		t.Fatalf("an approve after the clock went back is %s, want held", got)
 	}
 }
 

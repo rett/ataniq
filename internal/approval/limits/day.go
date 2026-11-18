@@ -44,11 +44,17 @@ func dateOf(number int64) string {
 // of now in its own location. The caller hands in the decision times of the
 // project's card uses, that is, of its approves that were not held; a deny
 // and a held approve are not among them.
+//
+// A time dated after today also counts, as it does in RaisedToday. That can
+// only happen when the clock was set back, and a clock set back must not
+// give the day more room.
 func UsesToday(decided []time.Time, now time.Time) int {
-	today := Today(now)
+	today := todayNumber(now)
 	n := 0
 	for _, t := range decided {
-		if Date(t, now) == today {
+		// A date that cannot be read counts too: the day gets no room from
+		// a time that cannot be placed.
+		if day, ok := dayNumber(Date(t, now)); !ok || day >= today {
 			n++
 		}
 	}
