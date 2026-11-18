@@ -12,5 +12,5 @@
   (`--memory-max`, `--swap-max`, `--tasks-max`, `--memory-lowered`; a memory or
   swap size must be a whole number of 4096-byte pages), reads them back from
   `systemctl --user show` and the control group files, lowers the memory limit
-  once, and checks that no runtime folder entry is left after the stop; it has
-  not been run.
+  once, checks that the runtime folders hold an entry for the unit while it runs
+  and that none is left after the stop; it has not been run.

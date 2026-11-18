@@ -32,11 +32,12 @@ marker and the report file.
 
 The unit is started with memory, swap and task limits. They are read back with
 systemctl and from the unit's control group files, the memory limit is lowered
-once on the running unit and read back again, and after the stop nothing for
-the unit may remain in the user manager's runtime folders. A SIZE is a number
-of bytes with an optional suffix K, M or G (powers of 1024). A memory or swap
-size must be a whole number of 4096-byte pages, because the control group files
-are compared with it exactly; any other size is a usage error.
+once on the running unit and read back again, the user manager's runtime folders
+must hold an entry for the running unit, and after the stop nothing for the unit
+may remain in them. A SIZE is a number of bytes with an optional suffix K, M or
+G (powers of 1024). A memory or swap size must be a
+whole number of 4096-byte pages, because the control group files are compared
+with it exactly; any other size is a usage error.
   --memory-max SIZE      the memory limit (default ` + defaultMemoryMax + `; 256M to 64G)
   --swap-max SIZE        the swap limit (default ` + defaultSwapMax + `, no swap; 0 to 64G)
   --tasks-max N          the task limit (default ` + defaultTasksMax + `; 16 to 65536)
@@ -238,19 +239,22 @@ With --run --state-dir %s it would:
   9. check: memory.max, memory.swap.max and pids.max in the unit's control group folder read as specified
  10. lower the memory limit once to %d with "systemctl --user set-property --runtime"; check: it is
      read back from "systemctl --user show" and from memory.max
- 11. start a second unit, ataniq-qualify-<random>-child.service, bound to the first (BindsTo, PartOf
+ 11. check: while the unit runs, systemd/transient or systemd/user.control of the user's runtime
+     folder holds at least one entry for it (so that the check after the stop has something to
+     find gone)
+ 12. start a second unit, ataniq-qualify-<random>-child.service, bound to the first (BindsTo, PartOf
      and After), which runs "<this executable> child"; check: it is active and Inspect reads the
      first unit back as its parent
- 12. check: SIGTERM to the first unit, whose process ignores it, leaves the control group populated
- 13. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
- 14. check: the bound child unit stops with its parent (it is not loaded, with no signal sent to it)
+ 13. check: SIGTERM to the first unit, whose process ignores it, leaves the control group populated
+ 14. wait 2 s, send SIGKILL, check: Empty becomes true and the unit is not loaded
+ 15. check: the bound child unit stops with its parent (it is not loaded, with no signal sent to it)
      and Empty is true for its control group
- 15. check: nothing for the two units remains under systemd/transient and systemd/user.control of the
+ 16. check: nothing for the two units remains under systemd/transient and systemd/user.control of the
      user's runtime folder
- 16. check: Empty is true for a fresh, never-used unit name (no invocation, no group)
- 17. always clean up: SIGKILL its own units (never a unit whose description is not this run's
+ 17. check: Empty is true for a fresh, never-used unit name (no invocation, no group)
+ 18. always clean up: SIGKILL its own units (never a unit whose description is not this run's
      intent) and report what was and was not sent and whether the groups were proven empty
- 18. print one JSON report with a line per check and a verdict; exit non-zero on any failure
+ 19. print one JSON report with a line per check and a verdict; exit non-zero on any failure
 Not attempted: a lost start reply.
 `, dir, dir, dir, dir, l.MemoryMax, l.SwapMax, l.TasksMax, lowered)
 }

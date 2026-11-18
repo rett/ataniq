@@ -82,9 +82,10 @@ type qualifier struct {
 
 	// limits, when set, is what the qualification unit is started with, and
 	// turns on the checks of it: read back with systemctl and in the control
-	// group files, lowered once, and no runtime folder entry left after the
-	// stop. The command always sets it, from its flags. A qualifier without it
-	// starts the unit with no limits and makes none of those checks.
+	// group files, lowered once, runtime folder entries seen while it runs, and
+	// none left after the stop. The command always sets it, from its flags. A
+	// qualifier without it starts the unit with no limits and makes none of
+	// those checks.
 	limits *leadunit.Limits
 	// lowered is the memory limit the running unit is lowered to once.
 	lowered uint64
@@ -96,6 +97,10 @@ type qualifier struct {
 	// is not a whole number of pages, so that there is nothing to round.
 	cgroupRoot string
 	runtimeDir string
+	// runtimeSeen is what the runtime folders held for the unit while it ran,
+	// as "folder/name", found by the check that precedes the one after the
+	// stop.
+	runtimeSeen []string
 
 	suffix    string
 	unit      string
@@ -240,6 +245,7 @@ func (q *qualifier) qualify(ctx context.Context) report {
 			step{"limits-show-read-back", q.limitsShowReadBack},
 			step{"limits-cgroup-read-back", q.limitsCgroupReadBack},
 			step{"memory-limit-lowered", q.memoryLowered},
+			step{"runtime-folders-hold-the-unit", q.runtimeFoldersHoldTheUnit},
 			step{"lowered-memory-limit-show-read-back", q.loweredShowReadBack},
 			step{"lowered-memory-limit-cgroup-read-back", q.loweredCgroupReadBack},
 		)

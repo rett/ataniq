@@ -18,11 +18,12 @@
 // bytes and tasks) and from memory.max, memory.swap.max and pids.max in its
 // control group folder, each compared with what was specified, has its memory
 // limit lowered once to --memory-lowered with "systemctl --user set-property
-// --runtime" and read back both ways, and after the stop nothing for it or for
-// its bound unit remains under the transient and user.control folders of the
-// user manager's runtime folder; a second unit, bound to the first
-// (Spec.Parent: BindsTo, PartOf and After), starts and Inspect reads the first
-// unit back as its parent; SIGTERM leaves the control group populated; after 2
+// --runtime" and read back both ways, is found to have at least one entry in
+// the transient or user.control folder of the user manager's runtime folder
+// while it runs (so that the check after the stop has something to find gone),
+// and after the stop nothing for it or for its bound unit remains in them; a
+// second unit, bound to the first (Spec.Parent: BindsTo, PartOf and After),
+// starts and Inspect reads the first unit back as its parent; SIGTERM leaves the control group populated; after 2
 // s SIGKILL empties it; Empty is then true and the unit is not loaded; the
 // bound unit stops with it, with no signal sent to it, and Empty is true for
 // its control group; and Empty is true for a fresh, never-used unit name, which

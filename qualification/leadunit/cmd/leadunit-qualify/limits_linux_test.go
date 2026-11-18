@@ -51,9 +51,13 @@ type fakeHost struct {
 	setErr      error                         // set-property fails
 	ignoreSet   bool                          // set-property succeeds and changes nothing
 	showIgnore  bool                          // show keeps the first values after set-property
-	leaveDropIn bool                          // user.control keeps the unit's folder after the stop
+	leaveDropIn bool                          // the drop-in folder is kept after the stop
 	noRuntime   bool                          // the runtime folder is not there
 	listErr     error                         // listing user.control fails
+	listErrStop error                         // listing user.control fails once the unit is not loaded
+	neverHolds  bool                          // the folders are there and never hold anything for the unit
+	dropFolder  string                        // where set-property writes: "systemd/transient" (the default) or "systemd/user.control"
+	dropIn      bool                          // set-property has written its drop-in
 }
 
 func (h *fakeHost) load() {
@@ -94,6 +98,7 @@ func (h *fakeHost) Run(_ context.Context, argv []string) (string, error) {
 			}
 			h.vals[0] = n
 		}
+		h.dropIn = true
 		return "", nil
 	}
 	return "", errors.New("unexpected systemctl verb")
@@ -124,6 +129,18 @@ func (h *fakeHost) ReadFile(path string) ([]byte, error) {
 	return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
 }
 
+// dropInHere says whether the unit's drop-in folder is in the runtime folder
+// named, which is where set-property writes it: in the transient folder unless
+// a test says otherwise (L3: a transient unit's settings most likely live
+// beside its unit file).
+func (h *fakeHost) dropInHere(folder string) bool {
+	want := h.dropFolder
+	if want == "" {
+		want = "systemd/transient"
+	}
+	return want == folder && h.dropIn && !h.neverHolds && (h.leaveDropIn || h.fake.Loaded(h.unit))
+}
+
 func (h *fakeHost) ReadDir(path string) ([]string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -137,17 +154,23 @@ func (h *fakeHost) ReadDir(path string) ([]string, error) {
 	case filepath.Join(testRuntimeDir, "systemd/transient"):
 		var names []string
 		for _, u := range []string{h.unit, child} {
-			if h.fake.Loaded(u) {
+			if h.fake.Loaded(u) && !h.neverHolds {
 				names = append(names, u)
 			}
+		}
+		if h.dropInHere("systemd/transient") {
+			names = append(names, h.unit+".d")
 		}
 		return append(names, "unrelated.service"), nil
 	case filepath.Join(testRuntimeDir, "systemd/user.control"):
 		if h.listErr != nil {
 			return nil, h.listErr
 		}
+		if h.listErrStop != nil && !h.fake.Loaded(h.unit) {
+			return nil, h.listErrStop
+		}
 		var names []string
-		if h.leaveDropIn || h.fake.Loaded(h.unit) {
+		if h.dropInHere("systemd/user.control") {
 			names = append(names, h.unit+".d")
 		}
 		return names, nil
@@ -187,7 +210,7 @@ func TestLimitChecksPassAndAreNamedInTheReport(t *testing.T) {
 		t.Fatalf("%+v", rep)
 	}
 	want := "record-unit-name start unit-active description-read-back child-ready arguments-reach-the-child-unchanged second-start-refused inspect-matches " +
-		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back " +
+		"limits-show-read-back limits-cgroup-read-back memory-limit-lowered runtime-folders-hold-the-unit lowered-memory-limit-show-read-back lowered-memory-limit-cgroup-read-back " +
 		"bound-child-started sigterm-leaves-group-populated sigkill-sent empty-true unit-not-loaded bound-child-stops-with-parent " +
 		"runtime-folders-clean-after-stop empty-true-for-a-fresh-name cleanup"
 	if got := checkNames(rep); got != want {
@@ -224,7 +247,7 @@ func TestLimitChecksPassAndAreNamedInTheReport(t *testing.T) {
 	}
 	// The detail of the check that lowers the limit says what the folders held.
 	for _, c := range rep.Checks {
-		if c.Name == "memory-limit-lowered" && !strings.Contains(c.Detail, "systemd/user.control holds") {
+		if c.Name == "memory-limit-lowered" && !strings.Contains(c.Detail, "systemd/transient holds") {
 			t.Errorf("no folder note: %q", c.Detail)
 		}
 	}
@@ -395,40 +418,98 @@ func TestMemoryAndSwapSizesMustBeWholePages(t *testing.T) {
 }
 
 func TestRuntimeFoldersAfterTheStop(t *testing.T) {
-	r, h := newLimitRig(t)
-	h.leaveDropIn = true
-	rep := r.q.qualify(context.Background())
-	res := results(rep)
-	if rep.Verdict != resultFail || res["runtime-folders-clean-after-stop"] != resultFail {
-		t.Fatalf("%+v", rep)
-	}
-	for _, c := range rep.Checks {
-		if c.Name == "runtime-folders-clean-after-stop" && !strings.Contains(c.Detail, "systemd/user.control/"+rep.Unit+".d") {
-			t.Errorf("the entry that is left is not named: %q", c.Detail)
+	// A drop-in left behind is found in either folder, and named.
+	for _, folder := range []string{"systemd/transient", "systemd/user.control"} {
+		r, h := newLimitRig(t)
+		h.dropFolder, h.leaveDropIn = folder, true
+		rep := r.q.qualify(context.Background())
+		res := results(rep)
+		if rep.Verdict != resultFail || res["runtime-folders-hold-the-unit"] != resultPass || res["runtime-folders-clean-after-stop"] != resultFail {
+			t.Fatalf("%s: %+v", folder, rep)
+		}
+		for _, c := range rep.Checks {
+			if c.Name == "runtime-folders-clean-after-stop" && !strings.Contains(c.Detail, folder+"/"+rep.Unit+".d") {
+				t.Errorf("%s: the entry that is left is not named: %q", folder, c.Detail)
+			}
+		}
+		if res["empty-true-for-a-fresh-name"] != resultSkipped || res["cleanup"] != resultPass {
+			t.Fatalf("%s: %+v", folder, rep)
 		}
 	}
-	if res["empty-true-for-a-fresh-name"] != resultSkipped || res["cleanup"] != resultPass {
-		t.Fatalf("%+v", rep)
+
+	// An entry of another unit is not the run's, and the entries seen while the
+	// unit ran are named as gone.
+	for _, folder := range []string{"systemd/transient", "systemd/user.control"} {
+		r, h := newLimitRig(t)
+		h.dropFolder = folder
+		rep := r.q.qualify(context.Background())
+		res := results(rep)
+		if res["runtime-folders-clean-after-stop"] != resultPass || rep.Verdict != resultPass {
+			t.Fatalf("%s: %+v", folder, rep)
+		}
+		for _, c := range rep.Checks {
+			switch c.Name {
+			case "runtime-folders-hold-the-unit":
+				if !strings.Contains(c.Detail, "systemd/transient/"+rep.Unit) || !strings.Contains(c.Detail, folder+"/"+rep.Unit+".d") {
+					t.Errorf("%s: what the folders held is not named: %q", folder, c.Detail)
+				}
+			case "runtime-folders-clean-after-stop":
+				if !strings.Contains(c.Detail, "are gone") || !strings.Contains(c.Detail, folder+"/"+rep.Unit+".d") {
+					t.Errorf("%s: what went is not named: %q", folder, c.Detail)
+				}
+			}
+		}
 	}
 
-	// An entry of another unit is not the run's.
+	// A listing that fails after the stop cannot pass.
+	r, h := newLimitRig(t)
+	h.listErrStop = errors.New("permission denied")
+	rep := r.q.qualify(context.Background())
+	res := results(rep)
+	if res["runtime-folders-hold-the-unit"] != resultPass || res["runtime-folders-clean-after-stop"] != resultFail {
+		t.Fatalf("%+v", rep)
+	}
+}
+
+// The check before the stop is the positive control of the one after it: it
+// fails, and the one after it is not run, when there is nothing for the unit to
+// find in the folders, so that "clean after the stop" cannot pass vacuously.
+func TestRuntimeFoldersMustHoldTheRunningUnit(t *testing.T) {
+	cases := map[string]func(h *fakeHost){
+		"folders absent":           func(h *fakeHost) { h.noRuntime = true },
+		"folders never hold it":    func(h *fakeHost) { h.neverHolds = true },
+		"listing fails":            func(h *fakeHost) { h.listErr = errors.New("permission denied") },
+		"set-property wrote where": func(h *fakeHost) { h.dropFolder = "systemd/elsewhere"; h.neverHolds = true },
+	}
+	for name, setup := range cases {
+		r, h := newLimitRig(t)
+		setup(h)
+		rep := r.q.qualify(context.Background())
+		res := results(rep)
+		if rep.Verdict != resultFail || res["runtime-folders-hold-the-unit"] != resultFail ||
+			res["runtime-folders-clean-after-stop"] != resultSkipped || res["cleanup"] != resultPass {
+			t.Errorf("%s: %+v", name, rep)
+		}
+		if r.fake.Loaded(rep.Unit) {
+			t.Errorf("%s: left running", name)
+		}
+	}
+	// Its detail says what was looked for.
+	r, h := newLimitRig(t)
+	h.neverHolds = true
+	rep := r.q.qualify(context.Background())
+	for _, c := range rep.Checks {
+		if c.Name == "runtime-folders-hold-the-unit" && !strings.Contains(c.Detail, "neither systemd/transient nor systemd/user.control holds an entry for the running unit") {
+			t.Errorf("%q", c.Detail)
+		}
+	}
+
+	// The check after the stop does not pass either when it was never told what
+	// the unit left in the folders while it ran.
 	r, _ = newLimitRig(t)
-	if rep := r.q.qualify(context.Background()); results(rep)["runtime-folders-clean-after-stop"] != resultPass {
-		t.Fatalf("%+v", rep)
-	}
-
-	// A runtime folder that is not there, or a listing that fails, cannot pass.
-	r, h = newLimitRig(t)
-	h.noRuntime = true
-	rep = r.q.qualify(context.Background())
-	if results(rep)["runtime-folders-clean-after-stop"] != resultFail {
-		t.Fatalf("%+v", rep)
-	}
-	r, h = newLimitRig(t)
-	h.listErr = errors.New("permission denied")
-	rep = r.q.qualify(context.Background())
-	if results(rep)["runtime-folders-clean-after-stop"] != resultFail {
-		t.Fatalf("%+v", rep)
+	r.q.unit, r.q.childUnit = "ataniq-qualify-"+testSuffix+".service", "ataniq-qualify-"+testSuffix+"-child.service"
+	if _, err := r.q.runtimeFoldersClean(context.Background()); err == nil || !strings.Contains(err.Error(), "proves nothing") {
+		t.Fatalf("passed without a positive control: %v", err)
 	}
 }
 
@@ -544,7 +625,7 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 	for _, want := range []string{
 		"--memory-max SIZE", "--swap-max SIZE", "--tasks-max N", "--memory-lowered SIZE",
 		"default " + defaultMemoryMax, "default " + defaultSwapMax, "default " + defaultTasksMax, "default " + defaultMemoryLowered,
-		"lowered", "control group files", "runtime folders",
+		"lowered", "control group files", "runtime folders", "must hold an entry for the running unit",
 		"whole number of 4096-byte pages", "usage error",
 	} {
 		if !strings.Contains(help.String(), want) {
@@ -561,6 +642,7 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 		"set-property --runtime",
 		"memory.max, memory.swap.max and pids.max",
 		"nothing for the two units remains under systemd/transient and systemd/user.control",
+		"holds at least one entry for it",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())

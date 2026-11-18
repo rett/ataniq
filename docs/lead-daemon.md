@@ -994,6 +994,11 @@ manager against it:
   specification exactly;
 - the memory limit lowered once with `systemctl --user set-property --runtime`
   and read back both ways;
+- while the unit runs, after that, `systemd/transient` or `systemd/user.control`
+  of the user's runtime folder holds at least one entry for it (the check
+  `runtime-folders-hold-the-unit`, which fails, and so skips the check after the
+  stop, when neither does), so that the check after the stop has something to
+  find gone;
 - a second unit bound to the first (`BindsTo`, `PartOf`, `After`) starts, and
   `Inspect` reads the first unit back as its parent;
 - SIGTERM to a process that ignores it leaves the control group populated;
@@ -1002,7 +1007,8 @@ manager against it:
 - the bound unit stops with its parent, with no signal sent to it, and `Empty`
   is true for its group;
 - nothing for either unit remains under `systemd/transient` and
-  `systemd/user.control` of the user's runtime folder after the stop;
+  `systemd/user.control` of the user's runtime folder after the stop, and the
+  check names the entries that were seen while the unit ran and are gone;
 - `Empty` is true for a fresh unit name that was never used.
 
 It prints one JSON report with a line per check and a verdict, and always

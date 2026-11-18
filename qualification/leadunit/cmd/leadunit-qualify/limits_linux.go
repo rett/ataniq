@@ -343,10 +343,58 @@ func (q *qualifier) runtimeFolderNote() string {
 	return strings.Join(parts, "; ")
 }
 
+// listRuntimeFolders lists, in each of the two runtime folders, the entries
+// that belong to one of the units, as "folder/name". An absent folder holds
+// nothing; any other failure to list is an error.
+func (q *qualifier) listRuntimeFolders(units ...string) ([]string, error) {
+	var found []string
+	for _, f := range runtimeFolders {
+		names, err := q.host.ReadDir(filepath.Join(q.runtimeDir, f))
+		switch {
+		case err == nil:
+		case errors.Is(err, fs.ErrNotExist):
+			continue // an absent folder holds nothing
+		default:
+			return nil, fmt.Errorf("list %s: %w", f, err)
+		}
+		for _, n := range entriesFor(names, units...) {
+			found = append(found, f+"/"+n)
+		}
+	}
+	return found, nil
+}
+
+// runtimeFoldersHoldTheUnit is the positive control of the check after the
+// stop. While the unit runs, after the setting was changed with
+// "set-property --runtime", the two folders must hold at least one entry for
+// the unit, so that finding them clear after the stop means something. It keeps
+// what it saw for that check to name. Where a transient unit keeps what
+// set-property writes is not assumed: either folder counts.
+func (q *qualifier) runtimeFoldersHoldTheUnit(context.Context) (string, error) {
+	if err := q.haveHost(); err != nil {
+		return "", err
+	}
+	if q.runtimeDir == "" {
+		return "", errors.New("no runtime folder is configured")
+	}
+	seen, err := q.listRuntimeFolders(q.unit)
+	if err != nil {
+		return "", err
+	}
+	if len(seen) == 0 {
+		return "", fmt.Errorf("neither %s holds an entry for the running unit %s under %s, so finding them clear after the stop would prove nothing",
+			strings.Join(runtimeFolders, " nor "), q.unit, q.runtimeDir)
+	}
+	q.runtimeSeen = seen
+	return fmt.Sprintf("while the unit runs, %s holds %q", strings.Join(runtimeFolders, " and "), seen), nil
+}
+
 // runtimeFoldersClean checks, after the stop, that nothing for the run's units
 // remains under the transient and user.control folders of the user manager's
 // runtime folder. The units are given a bounded time to be removed. The
-// manager's folder must exist, so that a wrong runtime folder cannot pass.
+// manager's folder must exist, and the check names the entries that
+// [qualifier.runtimeFoldersHoldTheUnit] saw while the unit ran and refuses to
+// run without any, so that it cannot pass when there was nothing to find.
 func (q *qualifier) runtimeFoldersClean(ctx context.Context) (string, error) {
 	if err := q.haveHost(); err != nil {
 		return "", err
@@ -357,23 +405,14 @@ func (q *qualifier) runtimeFoldersClean(ctx context.Context) (string, error) {
 	if _, err := q.host.ReadDir(filepath.Join(q.runtimeDir, "systemd")); err != nil {
 		return "", fmt.Errorf("the user manager's runtime folder: %w", err)
 	}
+	if len(q.runtimeSeen) == 0 {
+		return "", errors.New("no entry for the unit was seen in the runtime folders while it ran, so their state after the stop proves nothing")
+	}
 	var left []string
 	ok, err := q.poll(ctx, emptyBound, func() (bool, error) {
-		left = left[:0]
-		for _, f := range runtimeFolders {
-			names, rerr := q.host.ReadDir(filepath.Join(q.runtimeDir, f))
-			switch {
-			case rerr == nil:
-			case errors.Is(rerr, fs.ErrNotExist):
-				continue // an absent folder holds nothing
-			default:
-				return false, fmt.Errorf("list %s: %w", f, rerr)
-			}
-			for _, n := range entriesFor(names, q.unit, q.childUnit) {
-				left = append(left, f+"/"+n)
-			}
-		}
-		return len(left) == 0, nil
+		var lerr error
+		left, lerr = q.listRuntimeFolders(q.unit, q.childUnit)
+		return len(left) == 0 && lerr == nil, lerr
 	})
 	if !ok {
 		if len(left) > 0 {
@@ -381,5 +420,6 @@ func (q *qualifier) runtimeFoldersClean(ctx context.Context) (string, error) {
 		}
 		return "", err
 	}
-	return "nothing for " + q.unit + " or " + q.childUnit + " remains under " + strings.Join(runtimeFolders, " and ") + " of " + q.runtimeDir, nil
+	return fmt.Sprintf("nothing for %s or %s remains under %s of %s; the entries seen while the unit ran, %q, are gone",
+		q.unit, q.childUnit, strings.Join(runtimeFolders, " and "), q.runtimeDir, q.runtimeSeen), nil
 }
