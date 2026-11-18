@@ -141,14 +141,17 @@ func TestLegacyWidthPlaceholderKeepsTheStyle(t *testing.T) {
 }
 
 // TestBoundsDrawCellContent piles thousands of combining marks onto one
-// character: the emulator keeps them in one cell, and the pane draws that
-// cell as a placeholder of its width, in its style, in both width modes.
+// character: the emulator keeps the first 64 bytes of the cluster in one cell
+// and the pane draws that cell as it is, in its style, in both width modes.
 func TestBoundsDrawCellContent(t *testing.T) {
 	const acute = "\u0301" // COMBINING ACUTE ACCENT, two bytes
 	kiss := "\U0001F469\U0001F3FD\u200d\u2764\ufe0f\u200d\U0001F48B\u200d\U0001F468\U0001F3FF"
 	if len(kiss) != 35 {
 		t.Fatalf("kiss is %d bytes", len(kiss))
 	}
+	// The base is one byte and each mark two, so 31 marks fill 63 of the 64
+	// bytes and the next would make 65.
+	kept := "e" + strings.Repeat(acute, 31)
 	for _, graphemes := range []bool{false, true} {
 		p := newPane(t, 10, 3, sessionpane.Options{GraphemeWidths: graphemes})
 		// Row 0: far over the limit, written in pieces as a stream would.
@@ -157,7 +160,7 @@ func TestBoundsDrawCellContent(t *testing.T) {
 			p.Write([]byte(strings.Repeat(acute, 1000)))
 		}
 		p.Write([]byte("x\x1b[m\r\n"))
-		// Row 1: one byte over and at the limit. Row 2: a long real cluster.
+		// Row 1: one mark over and at the limit. Row 2: a long real cluster.
 		over := "e" + strings.Repeat(acute, sessionpane.MaxCellBytes/2)
 		at := "e" + strings.Repeat(acute, sessionpane.MaxCellBytes/2-1)
 		p.Write([]byte(over + "y" + at + "z\r\n漢" + strings.Repeat(acute, 100) + "w"))
@@ -167,10 +170,10 @@ func TestBoundsDrawCellContent(t *testing.T) {
 
 		buf := draw(p)
 		c := buf.CellAt(0, 0)
-		if c.Content != "?" || c.Width != 1 || c.Style.Attrs&uv.AttrBold == 0 || c.Style.Fg == nil {
+		if c.Content != kept || c.Width != 1 || c.Style.Attrs&uv.AttrBold == 0 || c.Style.Fg == nil {
 			t.Fatalf("grapheme widths %v: long cell drawn as %d bytes, width %d, style %+v", graphemes, len(c.Content), c.Width, c.Style)
 		}
-		want := []string{"?x", "?y" + at + "z", "？w"}
+		want := []string{kept + "x", kept + "y" + at + "z", "漢" + strings.Repeat(acute, 30) + "w"}
 		if graphemes {
 			want[2] += kiss
 		}
@@ -191,6 +194,34 @@ func TestBoundsDrawCellContent(t *testing.T) {
 			method = ansi.GraphemeWidth
 		}
 		checkGeometry(t, buf, method)
+	}
+}
+
+// TestBoundsDrawOverlongCell sets a cell the emulator would not keep, as no
+// output can, and checks that the pane still draws it as a placeholder of its
+// width, in its style, in both width modes: the pane's own limit is a second
+// line behind the emulator's.
+func TestBoundsDrawOverlongCell(t *testing.T) {
+	for _, graphemes := range []bool{false, true} {
+		p := newPane(t, 10, 1, sessionpane.Options{GraphemeWidths: graphemes})
+		style := uv.Style{Fg: ansi.Red, Attrs: uv.AttrBold}
+		long := "e" + strings.Repeat("\u0301", sessionpane.MaxCellBytes/2) // 65 bytes
+		sessionpane.SetCell(p, 0, 0, &uv.Cell{Content: long, Width: 1, Style: style})
+		wide := "漢" + strings.Repeat("\u0301", sessionpane.MaxCellBytes/2) // 66 bytes
+		sessionpane.SetCell(p, 1, 0, &uv.Cell{Content: wide, Width: 2, Style: style})
+		atLimit := "e" + strings.Repeat("\u0301", sessionpane.MaxCellBytes/2-1)
+		sessionpane.SetCell(p, 3, 0, &uv.Cell{Content: atLimit, Width: 1, Style: style})
+
+		buf := draw(p)
+		if c := buf.CellAt(0, 0); c.Content != "?" || c.Width != 1 || c.Style.Attrs&uv.AttrBold == 0 || c.Style.Fg == nil {
+			t.Errorf("grapheme widths %v: narrow cell %+v", graphemes, c)
+		}
+		if c := buf.CellAt(1, 0); c.Content != "？" || c.Width != 2 || c.Style.Fg == nil {
+			t.Errorf("grapheme widths %v: wide cell %+v", graphemes, c)
+		}
+		if c := buf.CellAt(3, 0); c.Content != atLimit {
+			t.Errorf("grapheme widths %v: cell at the limit %q", graphemes, c.Content)
+		}
 	}
 }
 

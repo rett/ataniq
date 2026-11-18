@@ -1,0 +1,36 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Haiku 5.5 · Claude Ultra
+ ▝▝   ▝▝   /home/user/work
+
+
+❯ Use the Write tool to create a file named approval-test.txt in the current folder containing exactly one line: hello.
+  Use no other tool.
+
+● Write(approval-test.txt)
+  ⎿  Wrote 1 line to approval-test.txt
+      1 hello
+
+● I created /home/user/work/approval-test.txt with the single line hello, using only the Write
+  tool. The file ends with a trailing newline, the usual form for one line of text.
+
+✻ Crunched for 3s · done 2:02 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                       ○ low · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts

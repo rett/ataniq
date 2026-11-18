@@ -27,13 +27,33 @@ boundaries. The core must not load arbitrary executable packs in-process.
 Provider-specific capabilities use namespaced, validated extensions.
 Declared support and independently observed support are recorded separately.
 
-Session hosting is decided by an attended spike, and its design is written
-after the spike. Sandbox qualification comes before any Ataniq-managed lead. A
-provider's remote control stays an optional launch profile during the
-transition, and a Codex lead is an interactive `codex` in its own session.
-Codex is the first live provider target, subject to version-specific capability
-and security evidence; qargi integration is limited to qualified public APIs.
-Unknown or disconnected state must remain explicit.
+Session hosting for a lead run as a terminal program follows the amendment in
+[runtime](design/runtime.md#lifecycle) and the one in the
+[client protocol](design/client-protocol.md#terminal-data-plane): a per-lead
+holder owns the PTY and a console attaches to it. Only a provisional,
+scratch-only holder and attach client exist; see
+[the lead holder guide](lead-holder.md). Sandbox qualification comes before any
+Ataniq-managed lead. A provider's remote control stays an optional launch
+profile during the transition, and a Codex lead is an interactive `codex` in its
+own session. Codex is the first live provider target, subject to version-specific
+capability and security evidence; qargi integration is limited to qualified
+public APIs. Unknown or disconnected state must remain explicit.
+The [lead sandbox guide](lead-sandbox.md) describes the sandbox profile for a
+managed lead as a proposal, unqualified; nothing uses it yet. Its opt-in
+harness is in
+[the lead sandbox qualification guide](qualification-lead-sandbox.md).
+
+[Lead injection](lead-injection.md) describes the provisional library that
+pastes a message into a terminal-hosted lead and submits it only when its
+recognisers read the screen as idle; it is a library that no daemon and no
+holder uses yet, and it is unqualified.
+
+[Lead intake](lead-intake.md) describes the exchange mirror and the reviewed,
+fast-forward-only intake by which a managed lead's work enters an upstream
+branch, with the provisional command `ataniq-intake`. No sandbox is shipped or
+qualified with it, and no daemon or holder calls it: the owner runs it by hand.
+The opt-in harness for a real sandbox template is in
+[the lead mirror qualification manual](qualification-lead-mirror.md).
 
 ## Roles and authority split
 
@@ -43,6 +63,14 @@ scheduling and escalation routing; qargi owns development tasks, the dependency
 graph, member dispatch, evidence, review, merge and release gates, and
 campaigns. Each record has one authoritative system. See
 [roles and authority](design/roles-and-authority.md).
+
+A provisional, unqualified, read-only daemon skeleton, `ataniqd`, and the
+registry, lock, unit-manager and lifecycle packages a later managed-lead daemon
+will use are in the tree. They start, stop and manage no lead. See
+[the lead daemon guide](lead-daemon.md). The daemon, the holder, the sandbox
+proposal, the injection library and the intake are built side by side, and
+none calls another: the daemon starts no holder, the holder launches no sandbox
+and injects nothing, and the intake is run by hand.
 
 ## Authentication and authority
 

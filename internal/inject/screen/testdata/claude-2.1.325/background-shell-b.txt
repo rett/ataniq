@@ -1,0 +1,36 @@
+  67
+  68
+  69
+  70
+  71
+  72
+  73
+  74
+  75
+  76
+  77
+  78
+  79
+  80
+
+✻ Worked for 1s · done 1:32 PM · 1 shell still running
+
+❯ [ataniq-msg id=6]
+
+● ACK 6
+
+✻ Sautéed for 1s · done 1:32 PM · 1 shell still running
+
+❯ Run sleep 25 and then say DONE
+
+  Ran 2 shell commands
+
+● The foreground sleep 25 was blocked by the harness, so I ran it in the background instead. I'll say DONE when it
+  finishes and the notification comes back.
+
+✻ Cogitated for 4s · done 1:33 PM · 1 shell still running
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · 1 shell · ↓ to manage

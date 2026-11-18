@@ -90,7 +90,7 @@ func TestR1EntryRejectsSelectedMetadata(t *testing.T) {
 					return copy, e
 				}
 			case "unknown-member":
-				f.members[0].Executable = FileIdentity{1, 999, 1000}
+				f.members[0].Executable = FileIdentity{Device: 1, Inode: 999, UID: 1000}
 			case "unknown-branch":
 				f.members[1].Status = strings.Replace(f.members[1].Status, "PPid:\t100", "PPid:\t777", 1)
 			case "margin":
@@ -508,7 +508,7 @@ func TestR1EntryFDInfoAndNullMetadata(t *testing.T) {
 			t.Fatal("invalid fdinfo admitted", bad)
 		}
 	}
-	base := R1NullDevice{FileIdentity{1, 2, 0}, syscall.S_IFCHR | 0666, 0, 259}
+	base := R1NullDevice{FileIdentity{Device: 1, Inode: 2, UID: 0}, syscall.S_IFCHR | 0666, 0, 259}
 	if !validEntryNull(base) {
 		t.Fatal("null metadata rejected")
 	}

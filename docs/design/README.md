@@ -15,6 +15,18 @@ The [guarded dispatch journal](journal.md) documents the implemented internal
 offline Linux journal, its durable attempt guards, retained receipt evidence,
 crash/reopen tests and qualification limits.
 
+Two amendments of 2026-11-17 (an owner decision of that date, from a
+lead-hosting design not yet in this repository) cover a lead hosted as a
+terminal program: its `ready` state in [runtime](runtime.md), and its attach
+stream as a terminal data plane in [client protocol](client-protocol.md).
+Neither is implemented as specified: nothing sets `ready`, and no typed command
+issues an attach ticket. A scratch-only holder and attach client are built, with
+tickets from a development stand-in (see
+[the lead holder guide](../lead-holder.md)), and screen recognisers for one
+version each of two runtimes are built in a library that the holder does not
+use (see [the lead injection guide](../lead-injection.md)). All of it is
+provisional and unqualified, and none of it is used for a real lead.
+
 The [application command contracts](application-contracts.md) document the
 implemented pure typed model, bounded JSON codec and canonical binary bindings,
 with authentication and durable admission kept as explicit service contracts.

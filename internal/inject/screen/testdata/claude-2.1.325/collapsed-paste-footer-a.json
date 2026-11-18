@@ -1,0 +1,23 @@
+{
+ "source": "row1/claude-s2/screens/mark-017-holder",
+ "description": "claude 2.1.325 after a 20-line paste collapsed into a pasted-text marker; the footer is the paste hint, no mode",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 59,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "�",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "paste one line alpha beta gamma[Pasted text #1 +20 lines]",
+  "cursor_in_composer": true,
+  "pasted_marker": true,
+  "notes": [
+   "paste footer: the working hint and the shell count are not shown, so Working and BackgroundTask are not observed; take the working state from the OSC 7501 report"
+  ],
+  "state_hidden": true
+ }
+}

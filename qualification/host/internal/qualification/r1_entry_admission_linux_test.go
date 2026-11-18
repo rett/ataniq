@@ -51,7 +51,7 @@ func entryAdmissionFixture(t *testing.T, f *entryFixture) {
 		if path == f.parent.Boundary.Path || path == f.service.Boundary.Path {
 			return bound(path)
 		}
-		return Boundary{path, FileIdentity{Device: 7, Inode: uint64(len(path) + 100)}}, nil
+		return Boundary{Path: path, Identity: FileIdentity{Device: 7, Inode: uint64(len(path) + 100)}}, nil
 	}
 	h.entryRead = func(path, key string) ([]byte, error) {
 		max, tasks, group := "max", "max", "0"

@@ -1,0 +1,27 @@
+{
+ "source": "q13/t2-claude/screens/fenced-002-before-holder",
+ "description": "approval dialog open before the fence pasted",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 1,
+ "cursor_y": 31,
+ "cursor_hidden": true,
+ "alt_screen": true,
+ "title": "ACK message protocol",
+ "faint": [
+  {
+   "row": 28,
+   "from": 1,
+   "to": 4
+  }
+ ],
+ "want": {
+  "known": true,
+  "dialog": true,
+  "dialog_marks": [
+   "Do you want to",
+   "❯ N.",
+   "Esc to cancel"
+  ]
+ }
+}

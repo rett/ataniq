@@ -68,6 +68,8 @@ type Pane struct {
 	syncOut   syncState
 	title     string
 	clipboard int
+	// titlesCut counts the titles that lost characters to the length cap.
+	titlesCut uint64
 
 	ended       bool
 	status      int
@@ -100,10 +102,10 @@ func New(cols, rows int, o Options) *Pane {
 	if p.input == nil {
 		p.input = Discard{}
 	}
-	// The pane shows no scrollback, so the main screen keeps one line, the
-	// smallest x/vt accepts. SetScrollbackSize reaches the main screen
-	// only; the patched x/vt gives the alternate screen no scrollback.
-	p.emu.SetScrollbackSize(1)
+	// The pane keeps no scrollback: a client gets the visible screen only.
+	// SetScrollbackSize reaches the main screen only, and the patched x/vt
+	// gives the alternate screen none.
+	p.emu.SetScrollbackSize(0)
 	// Closing the writer, rather than calling the emulator's Close, ends the
 	// reader without writing the emulator's closed flag, which its Read
 	// checks on the drain goroutine without a lock.
@@ -138,16 +140,48 @@ func clamp(cols, rows int) (int, int) {
 	return min(max(cols, MinCols), MaxCols), min(max(rows, MinRows), MaxRows)
 }
 
+// writeSlice is the most output the pane feeds to the emulator under one
+// hold of its lock. A whole-screen erase of the largest pane costs the lines
+// it changes (see the patched x/vt) and a scroll in a region narrower than the
+// screen moves up to 11 MB, a millisecond, so a chunk of 64 KiB of such
+// sequences would keep the lock, and with it every draw, digest and snapshot,
+// for seconds. In slices of 4 KiB the lock is held for a sixteenth of that at
+// most, and a call that waits for it waits for one slice.
+const writeSlice = 4 << 10
+
 // Write feeds session output to the emulator. A chunk may end anywhere,
-// inside an escape sequence or a character; the next chunk continues it.
-// After End or Close, Write does nothing.
+// inside an escape sequence or a character; the next chunk continues it. The
+// chunk is fed in slices of at most 4 KiB, and the pane's lock is free between
+// two slices, so a draw or a digest never waits for a whole chunk; a slice
+// ends anywhere too, which the parser does not mind. Another call that
+// writes may come in between, as it may between two chunks. After End or
+// Close, Write does nothing; a chunk that is in the middle of being fed is
+// dropped from the slice on that finds the pane ended or closed.
 func (p *Pane) Write(b []byte) {
+	for len(b) > 0 {
+		var ok bool
+		if b, ok = p.feed(b); !ok {
+			return
+		}
+	}
+}
+
+// feed feeds the first slice of b to the emulator under the lock and returns
+// the rest, and whether the pane took the slice (it does not once it has
+// ended or closed). The frame logic of synchronized output (write) sees one
+// slice at a time: a frame that opens and closes inside the slice is never
+// shown, as before; a frame that is still open at the end of a slice is
+// held, so a reader that comes in between two slices sees the last complete
+// frame, not half of the next.
+func (p *Pane) feed(b []byte) (rest []byte, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ended || p.closed || len(b) == 0 {
-		return
+	if p.ended || p.closed {
+		return nil, false
 	}
-	p.write(b)
+	n := min(len(b), writeSlice)
+	p.write(b[:n])
+	return b[n:], true
 }
 
 // Resize sets the pane's size, clamped to the limits. A frame held for

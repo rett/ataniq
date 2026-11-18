@@ -83,7 +83,11 @@ func (p *Pane) install() {
 	for _, cmd := range []int{0, 2} {
 		p.emu.RegisterOscHandler(cmd, func(data []byte) bool {
 			if i := bytes.IndexByte(data, ';'); i >= 0 {
-				p.title = cleanTitle(data[i+1:])
+				title, cut := cleanTitle(data[i+1:])
+				p.title = title
+				if cut {
+					p.titlesCut++
+				}
 			}
 			return true
 		})
@@ -202,10 +206,12 @@ func (p *Pane) ClipboardBlocked() int {
 // cleanTitle makes a title safe to show: invalid UTF-8 becomes U+FFFD,
 // control characters, line separators and bidirectional formatting
 // characters are dropped, and the result is cut, at a character boundary, to
-// MaxTitle bytes. Only the first 4*MaxTitle bytes are read.
-func cleanTitle(b []byte) string {
+// MaxTitle bytes. Only the first 4*MaxTitle bytes are read. cut is true when
+// the length cap lost something: the input was over 4*MaxTitle bytes, or a
+// character did not fit in MaxTitle.
+func cleanTitle(b []byte) (title string, cut bool) {
 	if len(b) > 4*MaxTitle {
-		b = b[:4*MaxTitle]
+		b, cut = b[:4*MaxTitle], true
 	}
 	var s strings.Builder
 	for len(b) > 0 {
@@ -215,11 +221,12 @@ func cleanTitle(b []byte) string {
 			continue
 		}
 		if s.Len()+utf8.RuneLen(r) > MaxTitle {
+			cut = true
 			break
 		}
 		s.WriteRune(r)
 	}
-	return s.String()
+	return s.String(), cut
 }
 
 func dropFromTitle(r rune) bool {

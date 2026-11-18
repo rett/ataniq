@@ -205,7 +205,7 @@ func prepareFD1Static(a *Attempt, path string) error {
 		return err
 	}
 	size := int64(len(b))
-	a.FD1Static = &FD1Static{Directory: Boundary{p, id}, Leaf: s, MetadataName: FD1BindingName,
+	a.FD1Static = &FD1Static{Directory: Boundary{Path: p, Identity: id}, Leaf: s, MetadataName: FD1BindingName,
 		Challenge: FD1Leaf{Name: "leaf", Device: s.Identity.Device, Inode: s.Identity.Inode, Size: &size, SHA256: s.SHA256}}
 	return nil
 }
@@ -314,7 +314,7 @@ func validateFD1Runtime(a *Attempt, r *FD1Runtime) error {
 	seen := map[FileIdentity]bool{}
 	for j, o := range fd1Objects(b) {
 		e := r.Endpoints[j]
-		if e.FD != o.FD || e.Identity != (FileIdentity{o.Device, o.Inode, uint32(os.Getuid())}) || e.Mode&syscall.S_IFMT != fd1Kind(o.FD) || e.Flags != fd1ExpectedFlags(o.FD) || seen[e.Identity] {
+		if e.FD != o.FD || e.Identity != (FileIdentity{Device: o.Device, Inode: o.Inode, UID: uint32(os.Getuid())}) || e.Mode&syscall.S_IFMT != fd1Kind(o.FD) || e.Flags != fd1ExpectedFlags(o.FD) || seen[e.Identity] {
 			return errors.New("typed endpoint owner/type/flags mismatch")
 		}
 		seen[e.Identity] = true

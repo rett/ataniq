@@ -85,13 +85,17 @@ func (s *Scrollback) MaxLines() int {
 
 // SetMaxLines sets the maximum number of lines in the scrollback buffer.
 // If the current number of lines exceeds the new maximum, oldest lines are removed.
+// Zero keeps no lines at all: the lines held are released and none is added.
+// A negative number is ignored.
 func (s *Scrollback) SetMaxLines(maxLines int) {
-	if s == nil || maxLines <= 0 {
+	if s == nil || maxLines < 0 {
 		return
 	}
 
 	s.maxLines = maxLines
-	if len(s.lines) > maxLines {
+	if maxLines == 0 {
+		s.lines = nil
+	} else if len(s.lines) > maxLines {
 		// Remove oldest lines
 		s.lines = s.lines[len(s.lines)-maxLines:]
 	}

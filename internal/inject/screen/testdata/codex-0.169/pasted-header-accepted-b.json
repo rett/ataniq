@@ -1,0 +1,74 @@
+{
+ "source": "q13/t2-codex/screens/fenced-002-after-holder",
+ "description": "a second pasted header line",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 66,
+ "cursor_y": 32,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "Handle ataniq acknowledgments | work",
+ "faint": [
+  {
+   "row": 0,
+   "from": 8,
+   "to": 56
+  },
+  {
+   "row": 1,
+   "from": 9,
+   "to": 46
+  },
+  {
+   "row": 6,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 10,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 12,
+   "from": 0,
+   "to": 120
+  },
+  {
+   "row": 15,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 18,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 20,
+   "from": 0,
+   "to": 120
+  },
+  {
+   "row": 23,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 27,
+   "from": 0,
+   "to": 2
+  },
+  {
+   "row": 29,
+   "from": 0,
+   "to": 120
+  }
+ ],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_text": "[ataniq-msg id=2 from=ataniq kind=test] reply with exactly ACK 2",
+  "cursor_in_composer": true
+ }
+}

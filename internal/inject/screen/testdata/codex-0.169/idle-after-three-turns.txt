@@ -1,0 +1,36 @@
+  else, and use no tools for it.
+
+
+• ACK N
+
+  Worked for 1s • 13:37
+
+
+› [ataniq-msg id=1]
+
+
+• ACK 1
+
+  Worked for 1s • 13:38
+
+
+› [ataniq-msg id=2]
+
+
+• ACK 2
+
+  Worked for 2s • 13:38
+
+
+› [ataniq-msg id=3]
+
+
+• ACK 3
+
+  Worked for 1s • 13:38
+                                                                                     ⚠ weekly limit: 11% left · /status
+
+› Ask Codex to do anything
+
+  GPT-6-Luna medium · /home/user/work · Acknowledge tagged messages
+  ← for agents · ? for shortcuts                                                               ⚠ 1 warning · f2 to view

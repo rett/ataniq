@@ -1,7 +1,7 @@
 # Patched github.com/charmbracelet/x/ansi
 
 This directory is a copy of the module `github.com/charmbracelet/x/ansi` at
-version v0.11.9 with two patches applied. The module is MIT licensed; its
+version v0.11.9 with three patches applied. The module is MIT licensed; its
 upstream `LICENSE` file is kept here unchanged. The root `go.mod` replaces the
 module with this directory, so Bubble Tea, ultraviolet and the patched
 `x/vt` all use it.
@@ -26,10 +26,17 @@ Patches, applied in this order to the files of the module as released:
 2. `ansi: do not end decoded string data on a 0x9C byte inside a UTF-8
    character` (`parser_decode.go` and new tests). The same fix for
    `DecodeSequence`.
+3. `ansi: count the string data a full data buffer drops` (`parser.go` and
+   `parser_truncate_test.go`). The parser already stopped keeping bytes of an
+   OSC, DCS, SOS, PM or APC string when its data buffer was full, and dropped
+   the rest without a trace. `Parser.Truncated` now returns the number of
+   strings that lost data, counted once per string when its first byte is
+   dropped; the patched `x/vt` reads it to count the strings it truncates.
+   Nothing else changes: the data handlers see is the same.
 
 The patches were not part of v0.11.9 (the version copied); later releases were
 not checked when this copy was made.
 
 Removal: drop this directory, the `replace` line and the matching test wiring
-once an upstream release of the module contains both fixes, and require that
+once an upstream release of the module contains all the changes, and require that
 release instead.

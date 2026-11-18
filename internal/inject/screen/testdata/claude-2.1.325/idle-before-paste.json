@@ -1,0 +1,19 @@
+{
+ "source": "q13/t2-claude/screens/fenced-001-before-holder",
+ "description": "empty composer just before the fence pasted a message",
+ "cols": 120,
+ "rows": 36,
+ "cursor_x": 2,
+ "cursor_y": 33,
+ "cursor_hidden": false,
+ "alt_screen": true,
+ "title": "ACK message protocol",
+ "faint": [],
+ "want": {
+  "known": true,
+  "composer": true,
+  "composer_empty": true,
+  "cursor_in_composer": true,
+  "mode": "manual"
+ }
+}
