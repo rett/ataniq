@@ -455,6 +455,14 @@ func TestBadAnswer(t *testing.T) {
 				return
 			}
 			wantState(t, r, StateBadAnswer)
+			// A daemon of another version answers like this too (it writes
+			// its own protocol's name on the answer), so the next step
+			// names that cause and the command.
+			for _, part := range []string{"same version", "ataniqd status"} {
+				if !strings.Contains(r.NextStep, part) {
+					t.Errorf("next step %q does not say %q", r.NextStep, part)
+				}
+			}
 		})
 	}
 }

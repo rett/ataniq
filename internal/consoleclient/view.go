@@ -34,6 +34,9 @@ const (
 	StateRefused State = "refused"
 	// StateBadAnswer: an answer over the size limit, or one that is not a
 	// valid answer, or a connection closed in place of an answer.
+	// A daemon of another version can be the cause: one that writes another
+	// protocol's name on its answers is seen here, not as
+	// StateOtherProtocol, so the next step names the version too.
 	StateBadAnswer State = "bad-answer"
 	// StateUnavailable: everything else. The socket could not be opened for a
 	// reason other than its absence, the daemon was at its connection limit
@@ -48,7 +51,7 @@ var stateTexts = map[State][2]string{
 	StateSlow:          {"the daemon did not answer in time", "check the daemon with: ataniqd status, then try again"},
 	StateOtherProtocol: {"the daemon speaks another protocol than this console", "use a console and a daemon of the same version"},
 	StateRefused:       {"the daemon refused this user", "run the console as the user that runs the daemon"},
-	StateBadAnswer:     {"the daemon's answer was not valid or was over the size limit", "check the daemon with: ataniqd status, and restart it if this stays"},
+	StateBadAnswer:     {"the daemon's answer was not valid or was over the size limit", "check that the console and daemon are the same version, then: ataniqd status"},
 	StateUnavailable:   {"the daemon could not be asked", "check the socket's folder and the daemon with: ataniqd status"},
 }
 
