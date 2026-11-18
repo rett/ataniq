@@ -271,7 +271,8 @@ var (
 // Names found at run time count here only as a path component or beside an
 // @, which is how a leak looks in prose, so that a machine named like a word
 // of the file does not fail on the strict rule that wholeWords applies to
-// the note and wholeStrings to the template.
+// the note and wholeStrings to the template. Those strict rules skip the
+// generic names (see genericNames); the path and @ rules here do not.
 func leaks(text string, names []string, homes []string) []string {
 	var out []string
 	if m := homePath.FindString(text); m != "" {
@@ -385,6 +386,26 @@ func hostNames() (names, homes []string) {
 	return names, homes
 }
 
+// genericNames are host and account names that many machines share and that
+// the note uses as words. They name no one machine, so the bare-word and
+// whole-string rules skip them; the path and @ rules of leaks still apply.
+var genericNames = map[string]bool{
+	"admin": true, "build": true, "builder": true, "ci": true, "dev": true,
+	"git": true, "guest": true, "home": true, "localhost": true,
+	"owner": true, "runner": true, "test": true, "user": true,
+}
+
+// rareNames returns the names that are not generic.
+func rareNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if !genericNames[strings.ToLower(n)] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func TestNoMachineNames(t *testing.T) {
 	names, homes := hostNames()
 	for _, path := range []string{templateFile, noteFile} {
@@ -394,10 +415,11 @@ func TestNoMachineNames(t *testing.T) {
 	}
 	// A string of the template that is exactly a name of this machine is a
 	// leak too, and so is a bare name in the note.
-	for _, n := range wholeStrings(t, read(t, templateFile), names) {
+	rare := rareNames(names)
+	for _, n := range wholeStrings(t, read(t, templateFile), rare) {
 		t.Errorf("%s holds the name %s of this machine as a whole string", templateFile, n)
 	}
-	for _, n := range wholeWords(string(read(t, noteFile)), names) {
+	for _, n := range wholeWords(string(read(t, noteFile)), rare) {
 		t.Errorf("%s holds the name %s of this machine as a word", noteFile, n)
 	}
 }
@@ -423,6 +445,9 @@ func TestScannerFindsLeaks(t *testing.T) {
 		if !strings.Contains(l, c.want) {
 			t.Errorf("scan of %q gave %q, want %q", c.text, l, c.want)
 		}
+	}
+	if got := rareNames([]string{"User", "examplehost"}); !sameList(got, []string{"examplehost"}) {
+		t.Errorf("rare names %q, want examplehost only", got)
 	}
 	// A bare name: the two ways it is found, and what it is not.
 	if l := wholeWords("the owner runs ExampleUser on examplehost.", names); len(l) != 2 {
