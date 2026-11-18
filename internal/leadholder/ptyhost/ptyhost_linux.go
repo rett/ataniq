@@ -474,7 +474,12 @@ func (h *Host) Write(p []byte) (int, error) {
 // completes a write that failed at the bound: n bytes, a prefix of p, were
 // accepted, and the caller must treat the input as broken as it does after a
 // timed-out Write. The time spent waiting for another writer (writes are
-// serialised) counts against deadline.
+// serialised) counts against deadline, but the wait for a write already in
+// progress is not cut short at deadline: WriteBy returns once that write has
+// ended, which is at most the host's write timeout after it began. A caller
+// that must return by deadline cannot rely on WriteBy alone and keeps other
+// writers off the host. An empty p returns 0 and no error whatever the
+// deadline, even one that has passed.
 func (h *Host) WriteBy(p []byte, deadline time.Time) (int, error) {
 	return h.write(p, deadline, true)
 }
