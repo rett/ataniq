@@ -183,15 +183,21 @@ func buildsWithoutTag(exprs []constraint.Expr) bool {
 
 // skipCanaryDir reports the folders check (1) does not read: .git, the
 // top-level build folder, which holds ignored build output, and a folder that
-// holds its own go.mod, which is another module, such as a nested checkout
-// under a hidden tool folder. A folder named build deeper in the tree is a
-// package like any other.
+// holds its own go.mod file inside a folder that ./... and make test-canary
+// skip, which is another module, such as a nested checkout under a hidden tool
+// folder. A module that make test-canary does reach, such as a directory
+// replacement under third_party, is built into the binaries and is read. A
+// folder named go.mod is no module, and a folder named build deeper in the
+// tree is a package like any other.
 func skipCanaryDir(fsys fs.FS, p, name string) bool {
 	if name == ".git" || p == "build" {
 		return true
 	}
-	_, err := fs.Stat(fsys, path.Join(p, "go.mod"))
-	return err == nil
+	if !inGoSkippedDir(p + "/x.go") {
+		return false
+	}
+	fi, err := fs.Stat(fsys, path.Join(p, "go.mod"))
+	return err == nil && !fi.IsDir()
 }
 
 // inGoSkippedDir reports whether a file lies in a folder that ./... and the
@@ -1008,7 +1014,8 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 			"internal/_x/x.go":         goSource(hdrTagged),
 			"internal/_x/x_test.go":    goSource(hdrTagged),
 		}, []string{"internal/_x/x.go", "internal/_x/x_test.go"}},
-		// A nested checkout holds its own module, which is not read.
+		// A nested checkout in a folder ./... skips holds its own module,
+		// which is not read.
 		{"a nested checkout with tagged code", fstest.MapFS{
 			"go.mod":                                    {Data: []byte("module m\n")},
 			"internal/leadcanary/a.go":                  goSource(hdrTagged),
@@ -1018,6 +1025,18 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 			"scratch/checkout/go.mod":                   {Data: []byte("module m\n")},
 			"scratch/checkout/internal/leadcanary/a.go": goSource(hdrPlain),
 		}, nil},
+		// A module that ./... and make test-canary reach, such as a directory
+		// replacement, is built into the binaries and read; a folder named
+		// go.mod is no module, in a skipped folder or not.
+		{"a module make test-canary reaches, and a folder named go.mod", fstest.MapFS{
+			"go.mod":                            {Data: []byte("module m\n")},
+			"third_party/patched/p/go.mod":      {Data: []byte("module p\n")},
+			"third_party/patched/p/x.go":        goSource(hdrTagged),
+			"internal/evil/go.mod/README":       {Data: []byte("x\n")},
+			"internal/evil/x.go":                goSource(hdrTagged),
+			".tool/worktrees/w/go.mod/README":   {Data: []byte("x\n")},
+			".tool/worktrees/w/internal/x/x.go": goSource(hdrTagged),
+		}, []string{".tool/worktrees/w/internal/x/x.go", "internal/evil/x.go", "third_party/patched/p/x.go"}},
 		{"an old style line is read", fstest.MapFS{
 			"internal/other/x.go": goSource("// +build ataniq_canary"),
 		}, []string{"internal/other/x.go"}},
