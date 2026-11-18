@@ -119,6 +119,10 @@ func TestCanaryDamagedEvidenceRefusesTheStart(t *testing.T) {
 			if !strings.Contains(se.Error(), tc.want) || !strings.Contains(se.Error(), "no message is admitted") {
 				t.Fatalf("the error is %q, want %q in it", se.Error(), tc.want)
 			}
+			// The refusal says when the file may be set aside, and why.
+			if !strings.Contains(se.Error(), "set the file aside only once the role's unit is stopped, since a new file spends no epoch's message") {
+				t.Fatalf("the error %q does not say when the file may be set aside", se.Error())
+			}
 			// Nothing was added to the file, nothing listened and no unit was
 			// touched.
 			after, err := os.ReadFile(path)

@@ -135,7 +135,10 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 // openEvidence opens the evidence file in the state root and reads back the
 // epochs whose one message it shows as sent. Both locks are held, so nothing
 // else appends to the file. A file that cannot be read back line by line
-// refuses the start: the daemon admits no message it cannot rule out.
+// refuses the start: the daemon admits no message it cannot rule out. The
+// refusal says what setting the file aside costs: a new file spends no epoch's
+// message, so a lead that still runs in an epoch whose message was sent would
+// be given a second one. The operator stops the role's unit first.
 func (m *canaryMode) openEvidence() error {
 	if m == nil {
 		return nil
@@ -149,7 +152,7 @@ func (m *canaryMode) openEvidence() error {
 	spent, err := spentEpochs(m.cfg.EvidencePath(), m.cfg.Role.String())
 	if err != nil {
 		_ = ev.Close()
-		return fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back, so set the file aside to start", err)
+		return fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)
 	}
 	for epoch := range spent {
 		m.d.logf("canary: the evidence shows the message of epoch %d as sent; the epoch takes no other", epoch)
