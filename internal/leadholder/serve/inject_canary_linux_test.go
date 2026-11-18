@@ -69,6 +69,13 @@ func (f *fakeDeliverer) calls() int {
 	return len(f.ids)
 }
 
+// first is what the first call got.
+func (f *fakeDeliverer) first() (id, text string, ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ids[0], f.texts[0], f.ctxs[0]
+}
+
 func submitted() wire.InjectResult {
 	return wire.InjectResult{
 		Outcome: wire.InjectOutcomeSubmitted, Written: wire.InjectWrittenWhole, Detail: "sample detail",
@@ -184,8 +191,8 @@ func TestInjectDelivers(t *testing.T) {
 			if !r.OK || r.Code != "" || r.Status != nil || r.Inject == nil || *r.Inject != res {
 				t.Fatalf("answer %+v, want ok with %+v", r, res)
 			}
-			if d.calls() != 1 || d.ids[0] != canaryID || d.texts[0] != canaryText {
-				t.Errorf("the deliverer got %q %q", d.ids, d.texts)
+			if id, text, _ := d.first(); d.calls() != 1 || id != canaryID || text != canaryText {
+				t.Errorf("the deliverer got %q %q", id, text)
 			}
 			evs := e.injectEvents(2)
 			if len(evs) != 2 {
@@ -356,7 +363,8 @@ func TestInjectContextIsBounded(t *testing.T) {
 	if r := e.mustControl(injectReq("inj-ctx")); !r.OK {
 		t.Fatalf("%+v", r)
 	}
-	deadline, ok := d.ctxs[0].Deadline()
+	_, _, ctx := d.first()
+	deadline, ok := ctx.Deadline()
 	if left := time.Until(deadline); !ok || left > InjectTimeout || left < InjectTimeout-5*time.Second {
 		t.Errorf("deadline %v, in %v", ok, left)
 	}
@@ -386,9 +394,7 @@ func TestInjectOutlastingDeliverer(t *testing.T) {
 	if !r.OK || r.Inject == nil || *r.Inject != want {
 		t.Fatalf("answer %+v, want ok with %+v", r, want)
 	}
-	if !sawEnd.Load() {
-		t.Error("the deliverer's context had not ended")
-	}
+	poll(t, func() string { return "the end of the deliverer's context" }, sawEnd.Load)
 	evs := e.injectEvents(2)
 	if evs[1].Outcome != "uncertain" || evs[1].Reason != "died" || evs[1].State != "written-unknown" {
 		t.Errorf("after: %+v", evs[1])
@@ -605,7 +611,7 @@ func TestInjectAndClose(t *testing.T) {
 	case <-time.After(patience):
 		t.Fatal("Close did not return")
 	}
-	if err := d.ctxs[0].Err(); err == nil {
+	if _, _, ctx := d.first(); ctx.Err() == nil {
 		t.Error("the deliverer's context did not end")
 	}
 	if r := e.srv.inject(injectReq("inj-late")); r.OK || r.Code != wire.CodeBusy {
