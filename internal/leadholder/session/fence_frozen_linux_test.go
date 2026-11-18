@@ -219,13 +219,15 @@ func TestFrozenWritePastItsBoundErrorsAndWritesNoPasteEnd(t *testing.T) {
 		t.Errorf("writer input after the failed write = %v, want ErrInputBroken", h.Err)
 	}
 	// The agent now reads what reached it: a prefix of the paste, no end.
+	// The report is drawn in pieces (the reader may be behind), so wait for
+	// it to be there and not to change over a pause.
 	var got []byte
-	until(t, "the agent to report what it received", func() bool {
+	until(t, "the agent's report to be drawn and stable", func() bool {
+		before := rxFromText(screenText(s))
+		time.Sleep(300 * time.Millisecond)
 		got = rxFromText(screenText(s))
-		return len(got) > 0
+		return len(got) > 0 && bytes.Equal(before, got)
 	})
-	time.Sleep(300 * time.Millisecond)
-	got = rxFromText(screenText(s))
 	if len(got) == 0 || len(got) >= len(payload) || !bytes.HasPrefix([]byte(payload), got) {
 		t.Errorf("the agent received %d bytes of %d, want a strict prefix of the paste", len(got), len(payload))
 	}

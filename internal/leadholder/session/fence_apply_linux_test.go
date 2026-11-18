@@ -181,3 +181,38 @@ func TestCloseWaitsForTheDrain(t *testing.T) {
 		t.Errorf("the subscriber got %d of %d bytes, or in another order", c.len(), len(stream))
 	}
 }
+
+// Applying output only notes the time and arms the timer: the digest of the
+// screen is not computed on the goroutine that applies it, however long ago the
+// last comparison was.
+func TestApplyingOutputDoesNotCompareTheScreen(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("raw; wait")
+	long := time.Now().Add(-time.Hour)
+	s.scr.mu.Lock()
+	if s.scr.timer != nil {
+		s.scr.timer.Stop()
+		s.scr.timer = nil
+	}
+	s.scr.sigAt, s.scr.dirty = long, false
+	s.scr.mu.Unlock()
+	s.deliverSlice([]byte("x"))
+	s.scr.mu.Lock()
+	compared, dirty, armed := !s.scr.sigAt.Equal(long), s.scr.dirty, s.scr.timer != nil
+	s.scr.mu.Unlock()
+	if compared {
+		t.Error("applying a slice compared the digest on the caller's goroutine")
+	}
+	if !dirty || !armed {
+		t.Errorf("after a slice dirty = %v, timer armed = %v, want both true", dirty, armed)
+	}
+	// The timer compares, off the applier's goroutine, and the change is found.
+	until(t, "the timer to compare", func() bool {
+		s.scr.mu.Lock()
+		defer s.scr.mu.Unlock()
+		return !s.scr.dirty
+	})
+	if q := s.screenQuiet(); q > 5*time.Second {
+		t.Errorf("ScreenQuiet = %v after a change just made", q)
+	}
+}

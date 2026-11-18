@@ -125,7 +125,8 @@ const (
 	// ScreenCheckInterval is the least time between two comparisons of the
 	// screen's digest that find out whether output changed the screen (see
 	// FenceView.ScreenQuiet): the time since the screen last changed is
-	// exact to about this much, and never shorter than the truth.
+	// found to within about this much, and a change undone within it is not
+	// seen.
 	ScreenCheckInterval = 100 * time.Millisecond
 	// DefaultStreamWait is how long, after the TUI exited, the session waits
 	// for the terminal stream to end.
@@ -491,7 +492,6 @@ func (s *Session) readLoop() {
 // applies it. The check is made for every slice, so a fence that begins
 // between two slices of a chunk gets the rest of it.
 func (s *Session) deliver(chunk []byte) {
-	applied := false
 	for i := 0; len(chunk) > 0; i++ {
 		rest, apply := s.admit(chunk)
 		if !apply {
@@ -501,14 +501,10 @@ func (s *Session) deliver(chunk []byte) {
 		n := min(len(chunk), OutputSlice)
 		s.deliverSlice(chunk[:n])
 		s.hold.applied()
-		applied = true
 		chunk = chunk[n:]
 		if s.cfg.betweenSlices != nil {
 			s.cfg.betweenSlices(i)
 		}
-	}
-	if applied {
-		s.noteApplied()
 	}
 }
 
@@ -525,6 +521,7 @@ func (s *Session) deliverSlice(slice []byte) {
 	s.pos += uint64(len(slice))
 	s.posA.Store(s.pos)
 	s.unapplied.Add(-int64(len(slice)))
+	s.noteApplied()
 	if time.Since(t0) > s.cfg.slowSlice {
 		s.cnt.slowOutputSlices.Add(1)
 	}

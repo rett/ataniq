@@ -184,8 +184,16 @@ type FenceView interface {
 	// ScreenQuiet is the time since applied output last changed the screen
 	// (its cells, cursor, modes, size or title). Output that changes
 	// nothing, an answered query or a status report, does not restart it.
-	// It is found by comparing the screen's digest at most once in
-	// ScreenCheckInterval, and is never longer than the truth.
+	// It is found by comparing the screen's digest, on a timer at most once
+	// in ScreenCheckInterval while output is applied, and again each time it
+	// is asked. Each slice applied is noted before the output lock is
+	// released, so a fence that holds that lock (Frozen) is told of every
+	// slice applied before it. The answer is exact to the last slice
+	// applied: it can be shorter than the time since the screen changed (by
+	// the output that changed nothing after the change, within one
+	// interval), and it is longer only when the screen was changed and
+	// changed back between two comparisons, which is seen as no change at
+	// all.
 	ScreenQuiet() time.Duration
 	// Ended is true when the agent's process has ended.
 	Ended() bool
@@ -370,9 +378,6 @@ func (s *Session) applyHeld(stop func(applied int) bool) (applied, stopped bool)
 		h.apply.Lock()
 		if stop != nil && stop(i) {
 			h.apply.Unlock()
-			if applied {
-				s.noteApplied()
-			}
 			return applied, true
 		}
 		slice := s.takeSlice()
@@ -384,9 +389,6 @@ func (s *Session) applyHeld(stop func(applied int) bool) (applied, stopped bool)
 		h.apply.Unlock()
 		applied = true
 		want -= len(slice)
-	}
-	if applied {
-		s.noteApplied()
 	}
 	return applied, false
 }
@@ -753,12 +755,13 @@ func (v frozenView) Pending() bool {
 }
 
 // screenTrack finds when applied output last changed the screen. Comparing the
-// whole screen after each chunk would cost the reader a hash of the screen for
-// every read, so the digest is compared at most once in ScreenCheckInterval
-// while output is applied: an apply that comes sooner than that after the last
-// comparison arms a timer that compares at the end of the interval, so the
-// change is found within the interval and not at the next apply, which may be
-// long after. The digest is compared again whenever the answer is asked for.
+// whole screen after each slice would cost the reader a hash of the screen (14
+// ms on the largest screen) for every read, so the reader never compares: for
+// each slice it applies it notes the time, under the output lock, and arms a
+// timer if none is armed. The timer compares the digest at the end of the
+// interval, on its own goroutine, so the change is found within
+// ScreenCheckInterval and not at the next apply, which may be long after, and
+// the digest is compared again whenever the answer is asked for.
 type screenTrack struct {
 	mu        sync.Mutex
 	sig       [32]byte    // the digest at sigAt
@@ -793,18 +796,18 @@ func (s *Session) refreshScreen(now time.Time) {
 	}
 }
 
-// noteApplied records that output was applied.
+// noteApplied records that a slice was applied, with the output lock held (so
+// that whoever takes it next sees the slice noted). It never compares the
+// digest: it notes the time, marks the screen as maybe changed and arms the
+// timer that will compare.
 func (s *Session) noteApplied() {
 	now := time.Now()
 	t := &s.scr
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.lastApply, t.dirty = now, true
-	switch since := now.Sub(t.sigAt); {
-	case since >= ScreenCheckInterval:
-		s.refreshScreen(now)
-	case t.timer == nil:
-		t.timer = time.AfterFunc(ScreenCheckInterval-since, s.screenTick)
+	if t.timer == nil {
+		t.timer = time.AfterFunc(max(ScreenCheckInterval-now.Sub(t.sigAt), 0), s.screenTick)
 	}
 }
 
