@@ -27,7 +27,9 @@
   `qualification/canary/`, no workflow uses a local action outside `.github/`,
   also when it is written in a flow mapping or a block scalar, while the
   `test-canary` job runs the make target, uses only `actions/checkout` and
-  `actions/setup-go`, has no `if` or `continue-on-error`, and is written without
-  flow style, complex or merge keys, anchors, aliases or tags. The keys of the
-  workflow files are read the same quoted or not and with white space before the
-  colon.
+  `actions/setup-go`, has no `if` or `continue-on-error`, holds only listed
+  keys, as `test.yml` holds only listed top-level keys (so that no `env`,
+  `shell`, `defaults` or `working-directory` changes what the target does or
+  whether it runs), and is written without flow style, complex or merge keys,
+  anchors, aliases or tags. The keys of the workflow files are read the same
+  quoted or not and with white space before the colon.

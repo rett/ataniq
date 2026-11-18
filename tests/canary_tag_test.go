@@ -637,6 +637,65 @@ func workflowUnreadForms(lines []string) []string {
 // workflowPlainKey splits a line into a plain key and the rest of the line.
 var workflowPlainKey = regexp.MustCompile(`^([A-Za-z0-9_-]+):(?:\s+(.*))?$`)
 
+// workflowLine is a line of a workflow file outside a block scalar: its key
+// written plain (empty when the line does not start with a key these checks
+// read), the indent of the key's mapping, and its text.
+type workflowLine struct {
+	key    string
+	indent int
+	text   string
+}
+
+// workflowLines returns the lines outside comments and block scalars. A dash
+// before a key opens a mapping two columns in, as the workflow files of this
+// project are written.
+func workflowLines(lines []string) []workflowLine {
+	var out []workflowLine
+	blockIndent := -1
+	for _, raw := range lines {
+		line := stripYAMLComment(raw)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		indent := yamlIndent(line)
+		if blockIndent >= 0 {
+			if indent > blockIndent {
+				continue
+			}
+			blockIndent = -1
+		}
+		for strings.HasPrefix(trimmed, "- ") {
+			trimmed = strings.TrimSpace(trimmed[2:])
+			indent += 2
+		}
+		m := workflowPlainKey.FindStringSubmatch(trimmed)
+		if m == nil {
+			out = append(out, workflowLine{"", indent, trimmed})
+			continue
+		}
+		out = append(out, workflowLine{m[1], indent, trimmed})
+		if v := strings.TrimSpace(m[2]); strings.HasPrefix(v, "|") || strings.HasPrefix(v, ">") {
+			blockIndent = indent
+		}
+	}
+	return out
+}
+
+// canaryJobKeys are the only keys the test-canary job, its steps and their
+// with blocks may hold, and canaryWorkflowKeys the only top-level keys of
+// test.yml, which apply to that job too. Any other key (env, defaults, shell,
+// working-directory, container, services, strategy and the like) could change
+// what make test-canary does or whether it runs: make reads MAKEFLAGS from the
+// environment, a custom shell need not run the script, and another working
+// directory holds another Makefile. The list is flat: a key on it is allowed
+// at any depth of the job.
+var (
+	canaryJobKeys = []string{"test-canary", "runs-on", "timeout-minutes", "permissions", "contents", "steps", "name",
+		"uses", "with", "run", "persist-credentials", "fetch-depth", "fetch-tags", "go-version-file"}
+	canaryWorkflowKeys = []string{"name", "on", "permissions", "concurrency", "jobs"}
+)
+
 // canaryJobRuns are the only commands the test-canary job runs.
 var canaryJobRuns = []string{"make -n bootstrap", "make bootstrap", "make doctor", "make test-canary"}
 
@@ -663,7 +722,11 @@ var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*
 // names the tag, uses only the actions of canaryJobUses, has no if or
 // continue-on-error that could keep it from failing, has read-only
 // permissions, and is written in no flow style, with no complex or merge key
-// and with no anchor, alias or YAML tag.
+// and with no anchor, alias or YAML tag. The job holds only the keys of
+// canaryJobKeys and test.yml only the top-level keys of canaryWorkflowKeys, so
+// that no environment, shell, default or working directory changes what the
+// job's make test-canary does; a line of the job, or a top-level line of
+// test.yml, that does not start with a key these checks read is refused.
 //
 // A text check reads lines. A run or uses key is read wherever it starts a
 // line (after a dash or not), follows a brace or a comma on a line, or is
@@ -671,15 +734,28 @@ var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*
 // test-canary job also refuses every form that could hide a key from these
 // readers: a flow mapping or sequence (except permissions), a complex or merge
 // key, and an anchor, an alias or a YAML tag. A uses value that has one, or an
-// escape, is refused in every file. The limits that remain, in every file but
-// that job, are: a key spelled with escapes or reached only through a complex
-// key; a flow mapping whose key and value are on different lines; a value
-// split over lines inside quotes; a run value that is an alias of text defined
-// elsewhere; a run line that assembles at run time,
-// or spells with escapes, the text of the tag, of canary-build or of the run
-// kit's folder (for example from two shell variables); and what an action of
-// another repository runs once the repository is checked out, which is allowed
-// outside the test-canary job.
+// escape, is refused in every file.
+//
+// The limits that remain in every file but that job are: a key spelled with
+// escapes or reached only through a complex key; a flow mapping whose key and
+// value are on different lines; a value split over lines inside quotes; a run
+// value that is an alias of text defined elsewhere; a run line that assembles
+// at run time, or spells with escapes, the text of the tag, of canary-build or
+// of the run kit's folder (for example from two shell variables); and what an
+// action of another repository runs once the repository is checked out, which
+// is allowed outside the test-canary job.
+//
+// The limits that remain for the job itself are: the key lists are flat, so a
+// listed key is accepted at any depth of the job and its value is read only
+// where a check above names it (runs-on, timeout-minutes, name and the values
+// under with are not read, and neither is the version of a listed action nor
+// what that action does); the values of the top-level keys of test.yml other
+// than permissions are not read (on and concurrency decide when the job
+// starts and whether a newer run cancels it); a permissions value written as
+// a flow mapping over several lines; and whatever acts on the job from
+// outside test.yml, such as settings of the repository or the organisation,
+// the runner's image and environment, and the Makefile, which check (2) reads
+// only for the tag.
 func checkCanaryWorkflow(files map[string]string) []string {
 	var problems []string
 	names := make([]string, 0, len(files))
@@ -739,8 +815,28 @@ func checkCanaryWorkflow(files map[string]string) []string {
 			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job uses %s, and nothing but %s is allowed", use, strings.Join(canaryJobUses, ", ")))
 		}
 	}
-	for _, form := range workflowUnreadForms(job) {
+	forms := workflowUnreadForms(job)
+	for _, form := range forms {
 		problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has %q, a form this check does not read", form))
+	}
+	// The job holds only listed keys, and every line of it starts with a key.
+	for _, line := range workflowLines(job) {
+		switch {
+		case line.key == "" && !slices.Contains(forms, line.text):
+			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has the line %q, which does not start with a key this check reads", line.text))
+		case line.key != "" && !slices.Contains(canaryJobKeys, line.key):
+			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has the key %s, and nothing but %s is allowed", line.key, strings.Join(canaryJobKeys, ", ")))
+		}
+	}
+	// A top-level key of the workflow applies to the job too.
+	for _, line := range workflowLines(strings.Split(text, "\n")) {
+		switch {
+		case line.indent != 0:
+		case line.key == "":
+			problems = append(problems, fmt.Sprintf("test.yml: the workflow has the top-level line %q, which does not start with a key this check reads", line.text))
+		case !slices.Contains(canaryWorkflowKeys, line.key):
+			problems = append(problems, fmt.Sprintf("test.yml: the workflow has the top-level key %s, which applies to the test-canary job too, and nothing but %s is allowed", line.key, strings.Join(canaryWorkflowKeys, ", ")))
+		}
 	}
 	for _, raw := range job {
 		key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripYAMLComment(raw)), "- "))
@@ -1482,6 +1578,21 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"a run kit run line after a comma in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {shell: sh, 'run': \"sh qualification/canary/run/build.sh\"}\n"}, true},
 		{"a run kit run line on the line below its key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run:\n          sh qualification/canary/run/build.sh\n"}, true},
 		{"a run line in a flow mapping that is not the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {run: make test}\n"}, false},
+		// The test-canary job holds only listed keys and test.yml only listed
+		// top-level keys: each of these would keep make test-canary from
+		// running while the job stays green.
+		{"make flags in the job's environment", edit("    timeout-minutes: 30\n", "    timeout-minutes: 30\n    env:\n      MAKEFLAGS: n\n"), true},
+		{"make flags in the workflow's environment", edit("\npermissions:\n  contents: read\n", "\nenv:\n  MAKEFLAGS: n\npermissions:\n  contents: read\n"), true},
+		{"a shell that runs nothing on the step", edit("      - run: make test-canary\n", "      - run: make test-canary\n        shell: true {0}\n"), true},
+		{"a default shell of the workflow", edit("\npermissions:\n  contents: read\n", "\ndefaults:\n  run:\n    shell: true {0}\npermissions:\n  contents: read\n"), true},
+		{"a working directory with another Makefile", edit("      - run: make test-canary\n", "      - run: make test-canary\n        working-directory: .github/fake\n"), true},
+		{"a quoted shell key on the step", edit("      - run: make test-canary\n", "      - run: make test-canary\n        'shell' : true {0}\n"), true},
+		{"a shell key spelled with an escape on the step", edit("      - run: make test-canary\n", "      - run: make test-canary\n        \"sh\\x65ll\": true {0}\n"), true},
+		{"an environment key spelled with an escape in the workflow", edit("\npermissions:\n  contents: read\n", "\n\"\\x65nv\":\n  MAKEFLAGS: n\npermissions:\n  contents: read\n"), true},
+		{"a key of the job in another case", edit("    timeout-minutes: 30\n", "    timeout-minutes: 30\n    Env:\n      MAKEFLAGS: n\n"), true},
+		{"a container on the job", edit("    timeout-minutes: 30\n", "    timeout-minutes: 30\n    container: some-org/image\n"), true},
+		{"a step of the job with a name", edit("      - run: make test-canary\n", "      - name: the tagged tests\n        run: make test-canary\n"), false},
+		{"an environment on the first job is not this job's", edit("      - run: make test\n", "      - run: make test\n        env:\n          X: y\n"), false},
 		// The test-canary job is held to the forms the readers see through.
 		{"a flow mapping step in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - {uses: actions/checkout@v4}\n"), true},
 		{"a flow mapping step that runs in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - {run: make doctor}\n"), true},
