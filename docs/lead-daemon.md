@@ -27,6 +27,15 @@ These are not part of it: a real lead, the holder, a sandbox, injection of
 instructions into a session, any console integration and any Qargi
 integration. The list of what is not built is at the [end](#not-built).
 
+The tree has provisional code for some of these, and the daemon uses none of
+it: the scratch-only holder and the console's attach client
+([the lead holder guide](lead-holder.md)), the sandbox proposal
+([the lead sandbox guide](lead-sandbox.md)), the injection library
+([the lead injection guide](lead-injection.md)), and the exchange mirror with
+its intake command ([the lead intake guide](lead-intake.md)). None of that
+code imports a package of this guide, and no package of this guide imports
+it.
+
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
 | [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`. | It is the daemon. |
@@ -99,6 +108,12 @@ path, `daemon.sock` included, must fit in 107 bytes.
 
 `<state>/roles/<project>/lead.lock` and the other role lock paths are named in
 [Roles](#roles) and [Locks](#locks). This build creates none of them.
+
+With the default folders, `ataniq-scratch` keeps the files of a scratch holder
+in a folder `scratch` inside `<state>` and inside `<runtime>` (see
+[the lead holder guide](lead-holder.md#files-and-folders)). The daemon reads
+nothing there, and the `daemon.lock` of a scratch holder is the launcher's own
+file, not the daemon lock.
 
 ### Start-up order
 
@@ -228,8 +243,10 @@ the same user.** Any such process can open the socket and is served. Version 1
 accepts that by owner decision. Reading `hello` and `status` therefore tells
 every process of the user that can reach the socket what is in the registry
 summary. A managed lead that runs in a sandbox must never see this socket.
-Keeping it away is the sandbox's job; nothing here asserts or tests it, and no
-sandbox is part of this build.
+Keeping it away is the sandbox's job; nothing here asserts or tests it, and the
+daemon launches no sandbox. The profile in
+[the lead sandbox guide](lead-sandbox.md) is an unqualified proposal that no
+lead runs in.
 
 ### Wire format
 
@@ -577,9 +594,12 @@ anywhere; the kernel releases it when the last one closes, a SIGKILL included.
 The file is opened close-on-exec, and is never removed.
 
 Only the daemon's own locks are taken today: the daemon lock and the runtime
-folder lock, which use the same mechanism. No role lock is taken: there is no
-holder in this build, so nothing takes one. The daemon never probes a role lock
-by taking and releasing it, and the package offers no such call.
+folder lock, which use the same mechanism. No role lock is taken through this
+package: the daemon starts no holder, so nothing takes one. The scratch-only
+holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
+own scratch folder, taken by its own code and not at a role's path. The daemon
+never probes a role lock by taking and releasing it, and the package offers no
+such call.
 
 The daemon takes two locks, which exclude different things:
 
@@ -618,6 +638,11 @@ is its implementation for the systemd user manager, and
 top. **The daemon calls none of `Start`, `Signal` or the lifecycle's `Start`
 and `Stop`.** What follows is what the packages do and what their tests check
 against the fake.
+
+The scratch holder's unit is not one of these. `ataniq-scratch` starts its
+holder in a transient user unit `ataniq-scratch-NAME` with `systemd-run`, not
+through this manager, and that name is no role's unit name (see
+[the lead holder guide](lead-holder.md#unit-mode-and-direct-mode)).
 
 ### Properties of a unit
 
@@ -966,13 +991,23 @@ What only a real run can confirm:
 
 ## Not built
 
-None of the following exists in this build:
+The daemon and the packages of this guide have none of the following. Where
+another part of the tree has provisional code for an item, the item names its
+guide; the daemon uses none of that code.
 
-- the holder command line, and the holder itself;
+- a holder that the daemon starts, and the command line for it. `ataniq-holder`
+  refuses to run without `--scratch`, and `ataniq-scratch` is what starts it
+  (see [the lead holder guide](lead-holder.md));
+- a sandbox for a lead: the daemon launches none. The profile of
+  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal;
 - readiness: nothing sets `ready`;
 - delivery of instructions and the wait for an idle turn, and the quiesce of
-  delivery before a stop (the interface exists, nothing implements it);
-- tickets;
+  delivery before a stop (the interface exists, nothing implements it). The
+  library of [the lead injection guide](lead-injection.md) is not joined to
+  the daemon;
+- tickets: `ataniq-scratch` issues the attach tickets of a scratch holder;
+- the exchange mirror and the intake: `ataniq-intake` is run by hand (see
+  [the lead intake guide](lead-intake.md)), and the daemon does not call it;
 - any mutating command: nothing defines a role, starts, stops or resolves an
   unknown role. The one write the daemon makes is the reconcile's: it records
   what it finds about a role, and acknowledges a registry recovery;

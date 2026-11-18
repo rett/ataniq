@@ -2,12 +2,15 @@
 
 This is a **proposal that awaits qualification and the owner's decision on the
 profile (design question Q1)**. Nothing here is qualified. Nothing starts a
-sandbox in ordinary use or in the tests, and no command uses it yet: the holder
-that would launch and supervise a lead, and the daemon, are other work. Only the
-opt-in qualification harness can launch the generated plan, on a host a
-coordinator chose. This guide says what the code generates and what it checks.
-It does not say that the sandbox is qualified, safe or supported, and no part of
-it should be read that way.
+sandbox in ordinary use or in the tests, and no command uses it yet: a holder
+that would launch and supervise a lead in it, and a daemon that would start that
+holder, are other work. The scratch-only holder of
+[the lead holder guide](lead-holder.md) and the daemon skeleton of
+[the lead daemon guide](lead-daemon.md) launch no sandbox. Only the opt-in
+qualification harness can launch the generated plan, on a host a coordinator
+chose. This guide says what the code generates and what it checks. It does not
+say that the sandbox is qualified, safe or supported, and no part of it should
+be read that way.
 
 The proposal comes from the lead-hosting design (sections 3 and 7.3), revision 3,
 with one change by the owner (R17, nested sandboxes, see
@@ -51,15 +54,26 @@ Built, each unqualified:
 
 Not built:
 
-- The holder: the process that opens the report channel, writes the spec,
-  runs the checks in order, starts the plan under a unit and stops it by the
-  stop rule. `assert` has the stop rule's constants, and the holder would
-  implement it.
-- The daemon that supervises holders, and the role lock and lingering checks
-  behind assertion 9 (the package has the interfaces only).
-- The injection protocol: putting text into a running lead's terminal.
-- The exchange mirror and the intake by which a lead's work reaches the owner's
-  checkout. The plan binds the mirror folder read-only; nothing makes it.
+- A holder for a sandboxed lead: the process that opens the report channel,
+  writes the spec, runs the checks in order, starts the plan under a unit and
+  stops it by the stop rule. `assert` has the stop rule's constants, and the
+  holder would implement it. The scratch-only holder of
+  [the lead holder guide](lead-holder.md) uses none of these packages: its
+  agent is an ordinary process of the user, in no sandbox.
+- A daemon that supervises holders, and the role lock and lingering checks
+  behind assertion 9 (the package has the interfaces only, and nothing
+  implements them). The daemon skeleton of
+  [the lead daemon guide](lead-daemon.md) starts no holder.
+- Injection in use: putting text into a running lead's terminal. A provisional
+  library exists (see [the lead injection guide](lead-injection.md)), and no
+  holder calls it.
+- Any use of the exchange mirror and the intake by which a lead's work reaches
+  the owner's upstream branches. The plan binds the mirror folder read-only
+  and does not make it. `ataniq-intake` (see
+  [the lead intake guide](lead-intake.md)) makes a mirror under the state root
+  it is given, at the same relative path, `mirrors/<project>.git`, and is run
+  by hand. It shares no code with these packages, and the commands it runs
+  come from a sandbox template of its own, not from this profile.
 - The qualification record store. `assert` checks a record through an interface;
   no store exists.
 - A generated or reviewed seccomp filter (see
@@ -561,7 +575,7 @@ The ten assertions of the design (section 3.8) are the table in `assert`. The
 probe makes the inside half of each that has one, once each, before it executes
 the agent. The holder would make the outside half and the others
 (`assert.RunOutside`; only the qualification harness calls it, and no holder
-exists yet), after the probe has reported and before it accepts the start, add
+does yet), after the probe has reported and before it accepts the start, add
 them to the probe's results and judge the whole. The report has no field that
 says the sandbox as a whole passed or is supported.
 
@@ -727,8 +741,9 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
     policy source, server-delivered for example, that outranks the file.
 13. **The lead's `.git` (O).** A lead can rename `.git` and build another; the
     read-only binds are defence in depth, and the primary rule (no owner-side tool
-    uses a lead's tree) is not enforced here. Case S16 and the intake design cover
-    it.
+    uses a lead's tree) is not enforced here. Case S16 and the intake cover it;
+    [the lead intake guide](lead-intake.md) says what the built intake does with
+    a lead's tree.
 14. **Checks at one moment (Q).** The mount-point and source checks are made right
     before the start; nothing here closes the gap between a check and the launch
     except an empty control group, which the holder has to prove.

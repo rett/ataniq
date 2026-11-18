@@ -251,6 +251,8 @@ only part of the console that opens a socket: it makes one connection to a unix
 socket and listens on nothing. The client names itself `ataniq-console` to the
 holder. There is no daemon and no project data in this mode: the left pane,
 the Context block and the timeline say so, and every control is unavailable.
+The console does not connect to `ataniqd`, the read-only daemon skeleton of
+[the lead daemon guide](lead-daemon.md).
 The header and the session frame carry a label in place of the fixture's, such
 as `live scratch session · lead NAME · writer · epoch 7`, and the Session block
 and the evidence pane show the role, the holder's runtime and version, the

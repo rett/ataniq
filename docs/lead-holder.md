@@ -26,21 +26,28 @@ emulator.
 Three commands take part:
 
 - `ataniq-holder`, the holder. It refuses to run without `--scratch`.
-- `ataniq-scratch`, a development launcher that stands in for the daemon, which
-  does not exist yet. It starts a holder, mints attach tickets and asks the
-  holder to stop.
+- `ataniq-scratch`, a development launcher that stands in for the daemon. It
+  starts a holder, mints attach tickets and asks the holder to stop. The
+  daemon skeleton `ataniqd` ([the lead daemon guide](lead-daemon.md)) does none
+  of that: it starts no holder and issues no ticket.
 - `ataniq-console --attach`, the console's attach client.
 
 Status: provisional and unqualified, for a scratch agent only. A scratch agent
-has no project, no lead role and a disposable configuration. Not built:
+has no project, no lead role and a disposable configuration. Not built, or
+built elsewhere in the tree and not used by the holder:
 
-- the sandbox: the agent is an ordinary process of your user;
+- the sandbox: the agent is an ordinary process of your user. The profile of
+  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal, and the
+  holder does not launch it;
 - prompt injection: the input lock that a later injection will take exists, and
-  the control socket answers an `inject` request with `disabled`;
-- idle classification: the holder always reports `unknown`;
-- the daemon and its registry, and with them the typed command that issues
+  the control socket answers an `inject` request with `disabled`. The holder
+  does not call the library of [the lead injection guide](lead-injection.md);
+- idle classification: the holder always reports `unknown`, and does not use
+  that library's classifier;
+- a daemon that starts holders, and with it the typed command that issues
   tickets (`ataniq-scratch` issues them instead);
-- the exchange mirror and real leads.
+- any part in the exchange mirror and the intake of
+  [the lead intake guide](lead-intake.md), and real leads.
 
 ## The same-user limit
 
@@ -246,6 +253,13 @@ Nothing removes these folders for you. Delete the state folder by hand when you
 are done with a NAME; the runtime folder is under `XDG_RUNTIME_DIR` and goes
 with your session. The socket path is limited to 107 bytes, so a long NAME or a
 long `XDG_RUNTIME_DIR` is refused.
+
+With its default folders, `ataniqd` uses `$XDG_STATE_HOME/ataniq` and
+`$XDG_RUNTIME_DIR/ataniq` (see
+[the lead daemon guide](lead-daemon.md#folders-and-files)), so the `scratch`
+folders lie inside them. Neither command uses the other's files: `ataniqd`
+reads nothing under `scratch`, and the `daemon.lock` and `control.sock` above
+are not its lock and not its socket.
 
 ## Input rules
 

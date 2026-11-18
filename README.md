@@ -46,7 +46,19 @@ lead. See [the lead daemon guide](docs/lead-daemon.md).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
-for the sandbox of a managed lead; nothing uses it yet.
+for the sandbox of a managed lead; nothing uses it yet. Its opt-in harness is in
+[the lead sandbox qualification guide](docs/qualification-lead-sandbox.md).
+The [lead injection guide](docs/lead-injection.md) describes a provisional,
+unqualified library for fenced message injection into a terminal-hosted lead;
+nothing uses it yet.
+The reviewed intake of a managed lead's work through the exchange mirror, with
+the provisional command `ataniq-intake`, is described in
+[the lead intake guide](docs/lead-intake.md); the opt-in harness for a real
+sandbox template is in
+[the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+These parts are built side by side and none calls another: the daemon starts no
+holder, the holder launches no sandbox and injects nothing, and the intake is
+run by hand.
 
 ## Architecture decisions
 

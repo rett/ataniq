@@ -1,0 +1,9 @@
+- Link the lead guides from `README.md` and `docs/architecture.md`, which now
+  name the lead injection guide, the lead intake guide and the two opt-in
+  qualification manuals (lead sandbox, lead mirror) beside the holder, sandbox
+  and daemon guides. The guides point at each other and no longer say that a
+  holder or a daemon does not exist: each says what the others built, and that
+  none of these parts calls another yet. `docs/lead-intake.md` adds that the
+  owner's git reads a git bundle file found on the host at the template's
+  `serve.repository` path, so that path must not exist on the host.
+  Documentation only.
