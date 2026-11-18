@@ -293,6 +293,14 @@ writer, the holder's own terminal replies, and (later) an injection.
   (OSC 10, 11 and 12) are answered with the colours the writer's console sent when
   it attached, else white on black. Replies that wait for the input lock are
   bounded at 64 KiB; one that does not fit is dropped and counted.
+- A fence (the critical section an injection runs in) takes the same lock for
+  its whole length. Writer input waits for it, in the order it arrived, and is
+  delivered when the fence ends; the emulator's replies wait in their queue.
+  While a fence holds the lock the holder keeps reading the terminal but does
+  not apply the output to its screen until the fence says so, so that what the
+  fence reads and what it writes follow each other with nothing between; it
+  holds at most 4 MiB, and when that is full it waits and drops nothing
+  (`held_output_full`).
 - OSC 52, the clipboard sequence, is dropped and counted
   (`clipboard_requests_blocked`, `clipboard_blocked`). Nothing the agent prints
   reaches the outer terminal's clipboard.
@@ -319,6 +327,7 @@ keeps. A cap that is hit is counted, not silent.
 | Repeat (`CSI n b`) | a count over two lines and two characters is done in bulk or cut | `repeats_cut` |
 | One PTY read | 64 KiB; a longer burst is several chunks | none |
 | Terminal replies waiting for the input lock | 64 KiB | `reply_dropped_chunks`, `reply_dropped_bytes` |
+| Output the reader holds while a fence has the input lock | 4 MiB; the reader waits for room and drops nothing | `held_output_full` |
 | Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted) |
 | Send buffer | 1 MiB of output for each client, plus one queued snapshot outside it | `resyncs`, `too_slow_disconnects`, `stalled_disconnects` |
 | Frame payload | 64 KiB from a client, 1 MiB from the holder, 64 KiB on the control socket | `bad_frames`; the connection is closed |

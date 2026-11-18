@@ -48,6 +48,21 @@
 // and the write is not seen. In raw mode (ISIG off, as real agents run) the
 // byte 0x03 is input like any other.
 //
+// # Fence
+//
+// [Session.WithFence] is the critical section of an injection: it takes the
+// input lock like WithInputLock and gives its function two calls, Settle (apply
+// the output the reader held, write the replies it caused, wait for quiet) and
+// Frozen (a function that reads a [FenceView] and writes with nothing applied
+// meanwhile). While a fence holds the lock the reader keeps reading the PTY
+// but holds what it reads, up to [HeldOutputBytes], and the fence applies it;
+// with no fence the reader applies as before. The lock order, the buffer's
+// bound and what happens when it is full are written in fence_linux.go. The
+// session knows nothing of the injection library: [Config.OSC] installs
+// handlers for the OSC strings the pane does not know (a provider's status
+// report, answered in emulator order), and the view's types are the session's
+// own.
+//
 // # Lifetime
 //
 // Three facts are kept apart (design 1.4), each yes, no or unknown: the
@@ -102,6 +117,16 @@ const (
 	// SlowSlice is how long one hold of the output lock for a slice may last
 	// before it is counted in "slow_output_slices".
 	SlowSlice = 250 * time.Millisecond
+	// HeldOutputBytes is the most output the reader keeps, unapplied, while a
+	// fence holds the input lock (see WithFence). When it is full the reader
+	// waits for room and does not drop a byte; each such wait is counted in
+	// "held_output_full".
+	HeldOutputBytes = 4 << 20
+	// ScreenCheckInterval is the least time between two comparisons of the
+	// screen's digest that find out whether output changed the screen (see
+	// FenceView.ScreenQuiet): the time since the screen last changed is
+	// exact to about this much, and never shorter than the truth.
+	ScreenCheckInterval = 100 * time.Millisecond
 	// DefaultStreamWait is how long, after the TUI exited, the session waits
 	// for the terminal stream to end.
 	DefaultStreamWait = 2 * time.Second
@@ -181,6 +206,13 @@ type Config struct {
 	TreeWait   time.Duration
 	StopGrace  time.Duration
 
+	// OSC are the handlers of OSC strings that the pane does not know, set
+	// with Pane.HandleOSC in Start, before the agent starts (see OSCHook).
+	// With none, nothing is answered and the session behaves as it did before
+	// they existed. A command the pane handles itself, a nil Fn or a negative
+	// Cmd makes Start fail.
+	OSC []OSCHook
+
 	// PTY holds the injectable settings of ptyhost (WriteTimeout, ProcRoot,
 	// CgroupRoot, NoCgroup, ProcScanLimit, CgroupWalkLimit). Its Argv, Env,
 	// Dir, Cols and Rows are ignored: the fields above are used.
@@ -188,6 +220,8 @@ type Config struct {
 
 	// slowSlice replaces SlowSlice (tests).
 	slowSlice time.Duration
+	// heldLimit replaces HeldOutputBytes (tests).
+	heldLimit int
 	// betweenSlices is a test hook, set before the read loop starts: it is
 	// called with the slice's index after each slice of a chunk, with the
 	// output lock released.
@@ -214,9 +248,21 @@ type Session struct {
 	subID   uint64
 	nextSub uint64
 
-	// imu is the input lock (design 1.2).
-	imu       sync.Mutex
+	// imu is the input lock (design 1.2). It is first in line for its
+	// waiters: a writer input that waits for it while a fence holds it is
+	// delivered in the order it arrived (see inputLock).
+	imu       inputLock
 	lastInput atomic.Int64 // unix nanoseconds of the last writer input
+
+	// The fence's side of the output (see fence_linux.go): the buffer the
+	// reader fills while a fence holds the input lock, the bytes read and not
+	// yet applied, when the last bytes were read, and what the screen was when
+	// output last changed it.
+	hold      heldOutput
+	unapplied atomic.Int64 // bytes read from the master and not yet applied
+	lastRecv  atomic.Int64 // unix nanoseconds when a read last returned bytes
+	posA      atomic.Uint64
+	scr       screenTrack
 
 	replies replyQueue
 
@@ -266,6 +312,7 @@ type counters struct {
 	readErrors         atomic.Uint64
 	logErrors          atomic.Uint64
 	slowOutputSlices   atomic.Uint64
+	heldOutputFull     atomic.Uint64
 
 	mu    sync.Mutex
 	extra map[string]uint64
@@ -311,6 +358,9 @@ func Start(cfg Config) (_ *Session, err error) {
 			return nil, err
 		}
 	}
+	if cfg.heldLimit <= 0 {
+		cfg.heldLimit = HeldOutputBytes
+	}
 	s := &Session{
 		cfg:      cfg,
 		log:      cfg.Log,
@@ -320,12 +370,23 @@ func Start(cfg Config) (_ *Session, err error) {
 		done:     make(chan struct{}),
 		closing:  make(chan struct{}),
 	}
+	s.imu.init()
+	s.hold.init(cfg.heldLimit)
 	s.replies.init()
 	s.replies.owner = s
 	s.pane = sessionpane.New(cols, rows, sessionpane.Options{
 		Replies: s.replies.push,
 		Colours: cfg.Colours,
 	})
+	// The handlers are set before the agent starts, so that no output reaches
+	// the pane without them.
+	for _, h := range cfg.OSC {
+		if err := s.pane.HandleOSC(h.Cmd, h.Fn); err != nil {
+			s.pane.Close()
+			return nil, fmt.Errorf("session: %w", err)
+		}
+	}
+	s.scr.init(s.started, s.pane.Digest())
 
 	pc := cfg.PTY
 	pc.Argv, pc.Env, pc.Dir, pc.Cols, pc.Rows = cfg.Argv, cfg.Env, cfg.Dir, cols, rows
@@ -395,6 +456,11 @@ func (s *Session) readLoop() {
 	for {
 		n, err := s.host.Read(buf)
 		if n > 0 {
+			// Counted from the moment the read returns, so that a fence's
+			// Pending sees the bytes whether they are applied, held or still
+			// on their way to the buffer.
+			s.unapplied.Add(int64(n))
+			s.lastRecv.Store(time.Now().UnixNano())
 			s.deliver(buf[:n])
 		}
 		if err != nil {
@@ -419,14 +485,30 @@ func (s *Session) readLoop() {
 // position. A snapshot, a subscription or a resize runs between two slices, and
 // sees the position of the bytes fed so far, so the no-gap property of
 // SubscribeScreen holds at every slice boundary.
+//
+// While a fence holds the input lock (WithFence) the reader does not apply:
+// admit puts what is left of the chunk in the fence's buffer, and the fence
+// applies it. The check is made for every slice, so a fence that begins
+// between two slices of a chunk gets the rest of it.
 func (s *Session) deliver(chunk []byte) {
+	applied := false
 	for i := 0; len(chunk) > 0; i++ {
+		rest, apply := s.admit(chunk)
+		if !apply {
+			break
+		}
+		chunk = rest
 		n := min(len(chunk), OutputSlice)
 		s.deliverSlice(chunk[:n])
+		s.hold.applied()
+		applied = true
 		chunk = chunk[n:]
 		if s.cfg.betweenSlices != nil {
 			s.cfg.betweenSlices(i)
 		}
+	}
+	if applied {
+		s.noteApplied()
 	}
 }
 
@@ -441,6 +523,8 @@ func (s *Session) deliverSlice(slice []byte) {
 		s.sub(s.pos, slice)
 	}
 	s.pos += uint64(len(slice))
+	s.posA.Store(s.pos)
+	s.unapplied.Add(-int64(len(slice)))
 	if time.Since(t0) > s.cfg.slowSlice {
 		s.cnt.slowOutputSlices.Add(1)
 	}
@@ -526,6 +610,7 @@ func (s *Session) Resize(cols, rows int) (appliedCols, appliedRows int, err erro
 	}
 	s.pane.Resize(cols, rows)
 	s.omu.Unlock()
+	s.noteResized()
 	s.event(eventlog.EventResize, eventlog.Fields{Cols: cols, Rows: rows})
 	return cols, rows, nil
 }
@@ -563,6 +648,7 @@ func (s *Session) Close() error {
 		s.closed.Store(true)
 		s.closeErr = s.host.Close()
 		<-s.readDone
+		s.waitDrained()
 		s.pane.Close()
 		s.replies.stop()
 		if err := s.lockFile.Close(); err != nil && s.closeErr == nil {
@@ -592,6 +678,7 @@ var reservedCounters = map[string]bool{
 	"termios_errors":         true,
 	"read_errors":            true,
 	"slow_output_slices":     true,
+	"held_output_full":       true,
 	"log_errors":             true,
 	"clipboard_blocked":      true,
 	"output_bytes":           true,
@@ -667,11 +754,12 @@ func (s *Session) Counters() map[string]uint64 {
 	out["termios_errors"] = c.termiosErrors.Load()
 	out["read_errors"] = c.readErrors.Load()
 	out["slow_output_slices"] = c.slowOutputSlices.Load()
+	out["held_output_full"] = c.heldOutputFull.Load()
 	out["log_errors"] = c.logErrors.Load()
 	out["clipboard_blocked"] = uint64(s.pane.ClipboardBlocked())
-	s.omu.Lock()
-	out["output_bytes"] = s.pos
-	s.omu.Unlock()
+	// Read without the output lock: a fence's Frozen holds it for as long as
+	// its write takes, and the status answer must not wait for that.
+	out["output_bytes"] = s.posA.Load()
 	c.mu.Lock()
 	for k, v := range c.extra {
 		out[k] += v
