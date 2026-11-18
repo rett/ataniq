@@ -194,10 +194,10 @@ func TestJudge(t *testing.T) {
 			t.Fatalf("waived %v, problems %v", waived, probs)
 		}
 	})
-	t.Run("canary excuses a failed 10 too", func(t *testing.T) {
+	t.Run("canary does not excuse a failed 10", func(t *testing.T) {
 		rep := withResult(good, 10, assert.StatusFailed)
 		waived, probs := judge(rep, spec, true)
-		if !waived || len(probs) != 0 {
+		if waived || !only10(probs) {
 			t.Fatalf("waived %v, problems %v", waived, probs)
 		}
 	})
