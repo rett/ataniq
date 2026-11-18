@@ -193,6 +193,38 @@ func TestVectorDigests(t *testing.T) {
 	if !SignOffsEqual(pending.Binding.Summary.Flagged, decision.SignedOff) {
 		t.Error("the valid decision's sign-offs are not the pending record's flagged list")
 	}
+
+	// Every valid pending record answers the valid request of its verb: it
+	// names that request's id and the digest of that request's bytes.
+	requests := map[string]string{VerbFeatureFinish: "request-valid.json", VerbBranchPrune: "request-valid-prune.json"}
+	answered := make(map[string]bool)
+	for _, name := range validVectors(t) {
+		if kindOf(t, name) != "pending" {
+			continue
+		}
+		p, err := DecodePending(readVector(t, name))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		file := requests[p.Binding.Verb]
+		r, err := DecodeRequest(readVector(t, file))
+		if err != nil {
+			t.Fatalf("%s: %v", file, err)
+		}
+		if r.Verb != p.Binding.Verb || !reflect.DeepEqual(r.Argv, p.Binding.Argv) {
+			t.Errorf("%s: the verb and argv are not those of %s", name, file)
+		}
+		if p.RequestID != r.RequestID || p.RequestSHA256 != Digest(readVector(t, file)) {
+			t.Errorf("%s: request_id %s and request_sha256 %s are not those of %s", name, p.RequestID, p.RequestSHA256, file)
+		}
+		answered[p.Binding.Verb] = true
+	}
+	for verb, file := range requests {
+		if !answered[verb] {
+			t.Errorf("no valid pending record answers %s", file)
+		}
+	}
 }
 
 func TestInvalidVectorsAreRefusedWithTheirCode(t *testing.T) {

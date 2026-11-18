@@ -27,7 +27,7 @@ the result must give the same bytes.
 | `request-valid.json` | A request for a feature finish |
 | `request-valid-prune.json` | A request for a prune: no argument and no `feature_sha` |
 | `pending-valid.json` | The pending record for that feature finish. Its plan text has several lines, so it is `b64`. Its paths include one that is not UTF-8 (`data/caf`, the byte E9, then `.bin`), one with an escape byte, and one with `<`, `>`, `&`, U+2028 and non-ASCII letters, written as it is; its note holds the same characters |
-| `pending-valid-prune.json` | A pending record for a prune: one effect that deletes a ref and says where it was merged, no merge, no summary, no evidence |
+| `pending-valid-prune.json` | The pending record for that prune, with the id of `request-valid-prune.json` and the digest of its bytes: one effect that deletes a ref and says where it was merged, no merge, no summary, no evidence |
 | `decision-valid.json` | The approve that answers `pending-valid.json`, with its two sign-offs in the order of the flagged list |
 | `decision-valid-deny.json` | A deny of the same record, with a reason |
 
