@@ -9,4 +9,8 @@
   `docs/lead-daemon.md` no longer says that the daemon's packages build on
   Linux only: the daemon runs on Linux only, and for another system `ataniqd`
   builds as a stub and the packages compile without their Linux files.
+  The status notes of the two amendments of 2026-11-17 in `docs/design` no
+  longer say that the scratch holder and attach client are being built and that
+  no recogniser exists: they name what is built, and say that it is not joined
+  and that nothing sets `ready`. No contract text changes.
   Documentation only.

@@ -62,8 +62,13 @@ working lead stays `ready` with its input queued. Losing the terminal stream, a
 holder for another epoch, a runtime version other than the pinned one, or a
 runtime or version the recogniser is not qualified for ends `ready` like any
 lost connection, and readiness is unknown until reconciled. Nothing implements
-this amendment yet: the recogniser does not exist. A scratch-only holder and
-attach client, provisional and unqualified, are being built without it.
+this amendment yet: nothing sets `ready`. Screen recognisers for one version
+each of two runtimes are built in a provisional, unqualified library, from
+recorded screens and never run against a real agent (see
+[the lead injection guide](../lead-injection.md)). The scratch-only holder and
+attach client that are built, also provisional and unqualified (see
+[the lead holder guide](../lead-holder.md)), do not use it: the holder reports
+the idle classification as `unknown`.
 
 Bootstrap is a durable per-conversation/version operation: record its intent
 and identity before delivery and completion evidence afterward. Reconnect or
