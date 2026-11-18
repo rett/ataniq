@@ -197,6 +197,25 @@ func TestLabelledViewCleansEveryStringOfItsSource(t *testing.T) {
 		if len(r.m.problem) > 512 || len(r.m.nextStep) > 512 || len(r.m.label) > 512 {
 			t.Fatal("unbounded")
 		}
+		// What the model holds of a fact and of a lead's state is cleaned and
+		// bounded too, not only what the painter draws of it.
+		held := []string{}
+		for _, c := range r.m.facts {
+			held = append(held, c.Name, c.State)
+		}
+		for _, pr := range r.m.projects {
+			for _, l := range pr.Leads {
+				held = append(held, l.Name, l.State)
+			}
+		}
+		if len(p.Facts) > 0 && len(held) != 4 {
+			t.Fatalf("the model holds %d strings of the fact and the lead", len(held))
+		}
+		for _, h := range held {
+			if len(h) > 512 || strings.ContainsAny(h, "\x1b\x07\u009b\u202e\n") {
+				t.Fatalf("the model holds %d bytes: %.40q", len(h), h)
+			}
+		}
 	}
 	many := make([]Check, 100)
 	if m := NewWithOptions(sample{Projection{Facts: many}}, Options{Label: testLabel}); len(m.facts) != maxContract {
