@@ -33,10 +33,22 @@
 // with symbolic links resolved, and also when the device and inode of the two
 // folders, or of one folder and an ancestor of the other, are the same, which
 // catches a second path to one folder that no symbolic link explains, such as
-// a bind mount. A path that does not exist yet is compared by the resolved
-// path of its nearest existing parent and the rest, and by the identity of
-// that parent. A relative or unclean root is refused, and so is a root or
-// candidate that cannot be resolved: the check fails closed.
+// a bind mount of a default folder itself or of one of its ancestors. A path
+// that does not exist yet is compared by the resolved path of its nearest
+// existing parent and the rest, and by the identity of that parent. A relative
+// or unclean root is refused, and so is a root or candidate that cannot be
+// resolved: the check fails closed.
+//
+// # What is not caught
+//
+// A bind mount of a folder strictly inside a default folder is not caught: a
+// given root that is that alias, or lies below it, has no ancestor with the
+// identity of the default, and its resolved path is not under the default's.
+// The runtime root has no marker behind it, and the state root's marker is
+// written into whatever root passed this check, so neither covers the case.
+// The full fix is to compare a canonical form of each path, the device and the
+// path inside that file system, read from the mount table
+// (/proc/self/mountinfo). That is not built.
 //
 // The two given roots must also differ and not nest.
 //
