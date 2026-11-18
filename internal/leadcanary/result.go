@@ -54,11 +54,13 @@ func ResultEntry(messageID string, epoch uint64, r wire.InjectResult) Entry {
 // Judge says what a result means for the epoch, as section 2 of the seams
 // note rules.
 //
-// spent is true for every result: once the request frame is written the
-// message is spent for the epoch, whatever the answer was (even not-now or
-// refused, with nothing written), and a second message in the epoch is
-// refused. Only a refusal before the frame is written leaves the message
-// unspent, and that is not a result.
+// spent is true for every result, "not-now" included: once the request frame is
+// written the message is spent for the epoch, whatever the answer was (even
+// not-now or refused, with nothing written), and a second message in the epoch
+// is refused. This is the plan's "one message per epoch": no queue and no retry,
+// and a not-now result must not be sent again in the same epoch. Only a refusal
+// before the frame is written leaves the message unspent, and that is not a
+// result.
 //
 // uncertain is true when the outcome is uncertain, and for a result that is not
 // valid by [wire.InjectResult.Validate] (which is not believed). An uncertain

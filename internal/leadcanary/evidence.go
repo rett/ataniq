@@ -113,6 +113,10 @@ type Evidence struct {
 	kind string
 	now  func() time.Time
 	torn bool
+	// write and sync are the file's Write and Sync. They are fields only so
+	// that a test can make one fail (export_test.go); nothing else sets them.
+	write func([]byte) (int, error)
+	sync  func() error
 }
 
 // OpenEvidence opens the evidence file under the state root of the config,
@@ -161,8 +165,15 @@ func OpenEvidence(cfg Config, now func() time.Time) (*Evidence, error) {
 		return fail("leadcanary: the evidence file is not owned by the caller")
 	case st.Mode&07777 != 0o600:
 		return fail("leadcanary: the evidence file has mode %04o, want 0600", st.Mode&07777)
+	case st.Nlink != 1:
+		// A second link could make this append to a file that is also kept
+		// somewhere else.
+		return fail("leadcanary: the evidence file has more than one link")
 	}
-	return &Evidence{f: f, role: cfg.Role.String(), kind: string(cfg.Agent.Kind), now: now}, nil
+	return &Evidence{
+		f: f, role: cfg.Role.String(), kind: string(cfg.Agent.Kind), now: now,
+		write: f.Write, sync: f.Sync,
+	}, nil
 }
 
 // Close closes the file. Appending after it is an error.
@@ -220,7 +231,7 @@ func (e *Evidence) Append(en Entry) error {
 	if e.torn {
 		out = append([]byte{'\n'}, out...)
 	}
-	n, err := e.f.Write(out)
+	n, err := e.write(out)
 	if err != nil || n != len(out) {
 		e.torn = true
 		if err == nil {
@@ -229,7 +240,7 @@ func (e *Evidence) Append(en Entry) error {
 		return fmt.Errorf("leadcanary: cannot write the evidence: %w", err)
 	}
 	e.torn = false
-	if err := e.f.Sync(); err != nil {
+	if err := e.sync(); err != nil {
 		return fmt.Errorf("leadcanary: cannot sync the evidence: %w", err)
 	}
 	return nil

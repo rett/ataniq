@@ -38,13 +38,13 @@ var requiredKeys = [][]string{
 // ReadConfig reads the canary config at path and checks it.
 //
 // The file must be one regular file that the caller owns, with mode 0600
-// exactly, of at most [MaxConfigBytes]. It is opened once, by its handle,
-// without following a symbolic link at its last element, and every check is of
-// the handle: the owner, the mode, the size and the resolved path. That path
-// must lie outside the state root and the runtime root the file names, by
-// resolved path (symbolic links resolved as far as the folders exist), so the
-// lead's sandbox and the holder's state can never hold the file that governs
-// them.
+// exactly and one link, of at most [MaxConfigBytes]. It is opened once, by its
+// handle, without following a symbolic link at its last element, and every
+// check is of the handle: the owner, the mode, the link count, the size and the
+// resolved path. That path must lie outside the state root and the runtime root
+// the file names, by resolved path (symbolic links resolved as far as the
+// folders exist), so the lead's sandbox and the holder's state can never hold
+// the file that governs them.
 //
 // The content is one JSON object: valid UTF-8, no unknown field, no repeated
 // key, no null, nothing after the object, version 1, and every key of the
@@ -103,6 +103,10 @@ func readConfigFile(path string) (data []byte, real string, err error) {
 		return nil, "", bad("file", "is not owned by the caller")
 	case st.Mode&07777 != 0o600:
 		return nil, "", bad("file", "must have mode 0600")
+	case st.Nlink != 1:
+		// The path the handle names is judged against the roots below; a second
+		// link to the inode could sit inside one of them unseen.
+		return nil, "", bad("file", "must have exactly one link")
 	case st.Size > MaxConfigBytes:
 		return nil, "", bad("file", "is longer than %d bytes", MaxConfigBytes)
 	}
