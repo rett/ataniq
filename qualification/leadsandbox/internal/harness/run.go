@@ -23,8 +23,10 @@ import (
 	"ataniq/internal/leadsandbox/sandboxnet"
 )
 
-// GateError is a refusal to start: one of the two gates before a launch is
-// closed, or the configuration is refused. Nothing was created.
+// GateError is a refusal to start a run: a gate is closed (coordinator_reviewed
+// is not true, case S21 is requested without scratch_folders_disposable, or
+// standard input is not a terminal and --unattended was not given). Nothing was
+// created.
 type GateError struct{ Reason string }
 
 // Error implements error.
