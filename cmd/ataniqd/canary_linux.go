@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 
 	"ataniq/internal/clientapi"
 	"ataniq/internal/leadcanary"
@@ -160,20 +161,28 @@ func (a *app) canaryCmd(args []string) int {
 
 // readBody reads the body of a message from a regular file, at most one byte
 // more than the admission accepts: a longer file is read no further, and the
-// daemon refuses it.
+// daemon refuses it as too long.
+//
+// The file is opened without blocking, so that a FIFO with no writer (or a
+// device) returns at once, and it is judged by its handle before anything is
+// read: only a regular file is read.
 func readBody(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", errors.New("cannot be opened")
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	fi, err := f.Stat() // fstat of the handle, not of the name
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", errors.New("is not a regular file")
 	}
-	b, err := io.ReadAll(io.LimitReader(f, leadcanary.MaxBodyBytes+1))
+	b, err := io.ReadAll(io.LimitReader(f, maxBodyRead))
 	if err != nil {
 		return "", errors.New("cannot be read")
 	}
 	return string(b), nil
 }
+
+// maxBodyRead is how much of a body file is read: one byte more than the
+// admission accepts, which is enough for the daemon to see that it is too long.
+const maxBodyRead = leadcanary.MaxBodyBytes + 1
