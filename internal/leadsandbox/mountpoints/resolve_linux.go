@@ -47,6 +47,12 @@ type ResolvedSource struct {
 	// Skipped says the source does not exist and its row is optional (it is
 	// applied only if the host has it): Real is empty.
 	Skipped bool
+	// Walk says how the source of a row Ataniq supplies is reached by handle:
+	// the folder to open by name, the path beneath it and the type the source
+	// must have. [ResolveSources] sets it from the bind table for every row
+	// that is not a row of the host; for a row of the host it is the zero
+	// value. See [SourceWalk].
+	Walk SourceWalk
 }
 
 // Bound is the path bubblewrap is to bind for the row, and the path
@@ -206,7 +212,8 @@ func ResolveSourcesWith(in profile.Inputs, resolve Resolver, readlink Readlinker
 			continue
 		}
 		realPaths[i] = r
-		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r, Role: b.SourceRole})
+		walk, _ := sourceWalk(in.StateRoot, b)
+		res.Sources = append(res.Sources, ResolvedSource{Inside: b.Inside, Source: b.Source, Real: r, Role: b.SourceRole, Walk: walk})
 		// Rule G1: bubblewrap binds the path the plan names, and follows a
 		// link in it. A row Ataniq supplies must name its real path, so that
 		// the path that is checked is the path that is bound.

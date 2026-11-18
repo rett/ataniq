@@ -59,6 +59,14 @@
 //     that is a dangling link is resolved through the link's target, or
 //     reported as unreadable; [ResolveSourcesWith] takes the reader of links
 //     where the resolver is not the real file system.
+//   - [SourceWalks] gives, for each bind row that Ataniq supplies, the folder
+//     to open by name, the path to walk beneath it and the type the source must
+//     have ([SourceWalk]): the state root and the whole path below it for a
+//     source below the state root, the source's own parent folder and its name
+//     for any other. It is data, taken from the inputs alone, for a
+//     launcher-side step that walks the source by handle and gives bubblewrap
+//     the descriptor it checked; nothing in this package does that step.
+//     [ResolveSources] puts the same walk on each row it returns.
 //
 // # Handles, not names (rule B1)
 //
