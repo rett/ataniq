@@ -30,8 +30,9 @@ import (
 // not apply: it appends what it read to a buffer (admit), up to
 // HeldOutputBytes, and the fence's goroutine applies the buffer (Settle, and
 // the end of the fence). So between two calls of the fence the emulator changes
-// only when the fence says so, Frozen has nothing to freeze but the call it is
-// in, and an agent that blocks on its own output is read all the same.
+// only when the fence says so (or when the drain an earlier fence left applies
+// its backlog, see below), Frozen has nothing to freeze but the call it is in,
+// and an agent that blocks on its own output is read all the same.
 //
 // When the buffer is full the reader waits for room, and drops nothing: a
 // dropped byte would leave the emulator's screen and parser out of step with
@@ -193,9 +194,11 @@ type FenceView interface {
 	// slice applied before it. The answer is exact to the last slice
 	// applied: it can be shorter than the time since the screen changed (by
 	// the output that changed nothing after the change, within one
-	// interval), and it is longer only when the screen was changed and
-	// changed back between two comparisons, which is seen as no change at
-	// all.
+	// interval), and it is longer when the screen was changed and changed
+	// back between two comparisons (seen as no change at all), or by at most
+	// one interval when the timer compares while a slice is being applied
+	// (after the pane took it and before it is noted: the change is then
+	// dated at the slice before).
 	ScreenQuiet() time.Duration
 	// Ended is true when the agent's process has ended.
 	Ended() bool
@@ -796,9 +799,13 @@ func (t *screenTrack) init(now time.Time, sig [32]byte) {
 }
 
 // refreshScreen compares the digest, with scr.mu held. A screen that differs
-// changed at the last output applied or earlier, and at the earliest at the
-// comparison before, so taking the last output's time is never too old and is
-// at most the interval too new (the timer sees to that).
+// changed at the last output noted or earlier, and at the earliest at the
+// comparison before, so taking the last noted output's time is at most the
+// interval too new (the timer sees to that). It is too old in one case: the
+// timer, which does not hold the output lock, compares after the pane took a
+// slice and before that slice is noted. The change is then dated at the slice
+// noted before, which is at most one interval older, since the timer was armed
+// by a slice noted within the interval.
 func (s *Session) refreshScreen(now time.Time) {
 	t := &s.scr
 	if t.timer != nil {
