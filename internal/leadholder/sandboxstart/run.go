@@ -413,15 +413,17 @@ func (a *attempt) checkMountPoints(step string) error {
 // design wants the walk made with the previous instance proven stopped. This
 // sequence has no unit and no control group, so it proves nothing about a
 // process of an earlier lead: when the inputs state that no lead has run in
-// these folders (no_lead_has_run) there is no previous instance, and the fact
-// says so. Without the statement the fact says the previous instance is not
-// proven stopped, and the result of a walk that found nothing is not-checked.
+// these folders (no_lead_has_run) there is no previous instance, and when they
+// state that the previous instance has stopped (previous_instance_stopped) the
+// caller proved it, and the fact says which. Without either statement the fact
+// says the previous instance is not proven stopped, and the result of a walk
+// that found nothing is not-checked.
 func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 	if err != nil {
 		a.walk = assert.StartWalk{Detail: fmt.Sprintf("step %s: the check of the mount points refused the inputs: %v", step, err)}
 		return
 	}
-	w := assert.StartWalk{Made: true, Problems: len(rep.Problems), PreviousStopped: a.in.NoLeadHasRun}
+	w := assert.StartWalk{Made: true, Problems: len(rep.Problems), PreviousStopped: a.in.NoLeadHasRun || a.in.PreviousInstanceStopped}
 	switch {
 	case len(rep.Problems) > 0:
 		first := rep.Problems[0]
@@ -432,8 +434,10 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 		}
 	case a.in.NoLeadHasRun:
 		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that there is no previous instance is the inputs' statement that no lead has run in these folders (no_lead_has_run)", step)
+	case a.in.PreviousInstanceStopped:
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group: that the previous instance has stopped is the inputs' statement (previous_instance_stopped)", step)
 	default:
-		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the inputs do not state that no lead has run in these folders (no_lead_has_run): it does not prove that no process of an earlier lead remains", step)
+		w.Detail = fmt.Sprintf("step %s; the start sequence has no unit and no control group, and the inputs state neither that no lead has run in these folders (no_lead_has_run) nor that the previous instance has stopped (previous_instance_stopped): it does not prove that no process of an earlier lead remains", step)
 	}
 	a.walk = w
 }

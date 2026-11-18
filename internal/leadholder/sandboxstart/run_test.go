@@ -136,6 +136,40 @@ func TestRunSkipsPrepareWithoutTheStatement(t *testing.T) {
 	}
 }
 
+// TestRunSecondEpoch shows the start of an epoch after the first: no statement
+// that no lead has run, so the mount points are checked and not made, and the
+// caller's statement that the previous instance has stopped is what assertion 7
+// rests on.
+func TestRunSecondEpoch(t *testing.T) {
+	w := newWorld(t)
+	w.in.NoLeadHasRun, w.in.PreviousInstanceStopped = false, true
+	st, err := w.run_()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stepStatus(t, st.Steps, StepPrepare) != StepSkipped {
+		t.Errorf("prepare is %s", stepStatus(t, st.Steps, StepPrepare))
+	}
+	for _, c := range w.sys.callList() {
+		if c == "PrepareMountPoints" {
+			t.Error("the mount points were made for a second epoch")
+		}
+	}
+	seven := resultOf(t, st.Results, 7)
+	if seven.Status != assert.StatusOK {
+		t.Errorf("assertion 7 (outside half) is %s: %s", seven.Status, seven.Detail)
+	}
+	var outside7 assert.Result
+	for _, r := range st.Results {
+		if r.ID == assert.IDTreeGitReadOnly+assert.OutsideSuffix {
+			outside7 = r
+		}
+	}
+	if outside7.Status != assert.StatusOK || !strings.Contains(outside7.Detail, "previous_instance_stopped") {
+		t.Errorf("the outside half of assertion 7 is %s: %s", outside7.Status, outside7.Detail)
+	}
+}
+
 // TestRunPassesWhatTheHolderOwns checks the role lock and lingering are the
 // system's, asked for the layout role and the user.
 func TestRunPassesWhatTheHolderOwns(t *testing.T) {

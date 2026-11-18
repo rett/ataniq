@@ -87,12 +87,21 @@ const (
 //	                        System.Username.
 //	no_lead_has_run         the statement that no lead has run in the lead's
 //	                        folders yet. Only then does Run make the mount points
-//	                        (the step prepare); and a walk of the bind
-//	                        destinations that finds nothing is "ok" for assertion
-//	                        7 only with it, because the sequence has no unit and
-//	                        no control group to prove the previous instance
-//	                        stopped (the harness's rule). Without it that walk is
-//	                        not-checked, and the start is refused.
+//	                        (the step prepare, which is idempotent). It also means
+//	                        there is no previous instance, so the next key follows
+//	                        from it.
+//	previous_instance_stopped
+//	                        the statement that no process of an earlier instance of
+//	                        the lead remains: the start sequence has no unit and no
+//	                        control group to prove it, so the caller does (the
+//	                        daemon starts an epoch only after the unit of the last
+//	                        one is gone, and the holder holds the role lock). A
+//	                        walk of the bind destinations that finds nothing is
+//	                        "ok" for assertion 7 only with this key or with
+//	                        no_lead_has_run (the harness's rule); without both that
+//	                        walk is not-checked, and the start is refused. A start
+//	                        of a second epoch says no_lead_has_run false and this
+//	                        true.
 //	executables             "pasta", "bwrap" and "probe": absolute paths of three
 //	                        different regular files that group and others cannot
 //	                        write. The probe is the static probe (the plan's
@@ -122,7 +131,8 @@ type Inputs struct {
 	Identity  string `json:"identity,omitempty"`
 	OwnerUser string `json:"owner_user,omitempty"`
 
-	NoLeadHasRun bool `json:"no_lead_has_run"`
+	NoLeadHasRun            bool `json:"no_lead_has_run"`
+	PreviousInstanceStopped bool `json:"previous_instance_stopped"`
 
 	Executables  Executables `json:"executables"`
 	Sources      Sources     `json:"sources"`
