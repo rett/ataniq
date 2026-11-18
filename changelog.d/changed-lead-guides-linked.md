@@ -6,4 +6,15 @@
   none of these parts calls another yet. `docs/lead-intake.md` adds that the
   owner's git reads a git bundle file found on the host at the template's
   `serve.repository` path, so that path must not exist on the host.
+  `docs/lead-daemon.md` no longer says that the daemon's packages build on
+  Linux only: the daemon runs on Linux only, and for another system `ataniqd`
+  builds as a stub and the packages compile without their Linux files.
+  The status notes of the two amendments of 2026-11-17 in `docs/design` no
+  longer say that the scratch holder and attach client are being built and that
+  no recogniser exists: they name what is built, and say that it is not joined
+  and that nothing sets `ready`. No contract text changes.
+  The maturity section of `README.md` describes the tree without naming a
+  release; it named 0.0.8.
+  `docs/terminal-console.md` says of `--attach` that the mode is not managed
+  by the daemon, where it said that there is no daemon.
   Documentation only.

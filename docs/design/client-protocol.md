@@ -31,11 +31,14 @@ machine-readable reason. Limits and supported protocol versions are advertised.
 ## Terminal data plane
 
 Amended 2026-11-17 by an owner decision of that date, taken in a lead-hosting
-design that is not yet in this repository. Nothing implements this section yet.
-A scratch-only holder of a terminal-hosted lead's PTY and a plain attach
-client, provisional and unqualified, are being built; in them tickets come from
-a development stand-in, not from a typed command, until the typed issuing
-command exists. See [runtime](runtime.md) for the lead's `ready` state.
+design that is not yet in this repository. This section is not implemented as
+specified: the typed command that issues a ticket does not exist. A
+scratch-only holder of a terminal-hosted agent's PTY and a plain attach client
+are built, provisional and unqualified, for a scratch agent and no real lead;
+in them tickets come from a development stand-in, not from a typed command,
+until the typed issuing command exists. See
+[the lead holder guide](../lead-holder.md) for what they do, and
+[runtime](runtime.md) for the lead's `ready` state.
 
 The attach stream of a terminal-hosted lead is a terminal data plane, not a
 second command path. It carries terminal output to a console and the writer's
