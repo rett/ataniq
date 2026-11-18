@@ -28,10 +28,12 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
 3. records the versions of the tools (each question has a time limit, and does
    not wait for the output of a process the tool left behind longer than a
    second after the tool has ended; such a case is recorded in the step);
-4. checks that the lead's tree is its own full clone, makes the mount points
-   and Ataniq's copy of the tree's git files (the git metadata folder, see
-   [rule G1](#rule-g1-and-git-inside-the-sandbox)) when the configuration says
-   no lead has run, and checks them;
+4. checks that the lead's tree is its own full clone and that the six folders
+   the lead writes are the caller's alone (the step `own-clone`), makes the
+   mount points and Ataniq's copy of the tree's git files (the git metadata
+   folder, see [rule G1](#rule-g1-and-git-inside-the-sandbox)) when the
+   configuration says no lead has run, and checks them (the step `check`, the
+   walk of every bind destination in a folder the lead writes);
 5. derives the sandbox's `resolv.conf` from the host and writes it into a folder
    of its own;
 6. resolves every bind source to its real path. A source the configuration
@@ -44,20 +46,37 @@ The command `qualify` (in `qualification/leadsandbox/cmd/qualify`, logic in
    and an abstract socket that count connections);
 8. builds the plan and checks it with the plan package's own verifier, collects
    the identities (device and inode) of the owner's and the holder's paths and
-   of their ancestors, and writes the probe spec with them;
-9. checks the mount points and sources again, right before the launch, and
-   then, as a step of its own (`check-bind-sources`), opens every bind source of
-   the plan from the root of the file system without following a symbolic link;
-   a link on any component of a source refuses the launch, naming it;
+   of their ancestors, which assertion 1 needs, and of the coordinators' folders
+   under the state root and their ancestors, which assertion 11 needs (the two
+   roots `coords` and `coord-login`, and the folder, tree and home of every
+   coordinator and the folder of every shared login that exists below them at
+   that moment), and writes the probe spec with them;
+9. checks the mount points and sources again, right before the launch (the step
+   `recheck`; its walk of the mount points is the fact the outside half of
+   assertion 7 is made from), and then, as a step of its own
+   (`check-bind-sources`), walks to every bind source of the plan by handle,
+   without following a symbolic link in any component: a source below the state
+   root beneath the state root's handle, any other from the root of the file
+   system. For every source that is not a row of the host (`/usr`, the `/etc`
+   files) it checks on the opened descriptor that the source is a folder or a
+   regular file, as the row binds. A link on any component, a source of another type and a mount
+   point below the state root refuse the launch, naming the row;
 10. launches pasta, bubblewrap, the probe and a scratch command through a
     launcher (a session and process group of its own, with a pseudo-terminal as
     its standard streams and no controlling terminal, as a holder under a unit
     would run it), reads the probe's report line from the channel with a time limit
     (one line, taken as the start without waiting for end-of-file), and waits
     for the exit;
-11. runs the checks that can only be made outside (the canary's count, the
-    sysctl, and the checks that need a role lock, lingering or a qualification
-    record, which have no source here and are recorded as not-checked);
+11. runs the checks that can only be made outside: the canary's count, the
+    sysctl, the outside half of assertion 7, and the checks that need a role
+    lock, lingering or a qualification record, which have no source here and
+    are recorded as not-checked. The outside half of assertion 7 is taken from
+    the walk of the step `recheck`. It is `ok` only when that walk found nothing
+    and the configuration states `no_lead_has_run`: the harness has no unit and
+    no control group, so that statement, not a proof, is its basis for "the
+    previous instance is stopped". Without the statement a walk that found
+    nothing is `not-checked`. A walk that found a problem fails the step
+    `recheck` and refuses the launch, so the outside checks are not reached;
 12. stops anything left (SIGTERM, wait, SIGKILL, with the stop-rule constants of
     the assert package), asks the report channel whether any byte followed the
     line (a failed step `report-trailing`, and `report_trailing_bytes` in
@@ -122,8 +141,12 @@ caller's environment or home.
   bind sources of the harness lie below it. Put it outside every never-mounted
   folder rather than shortening the never-mounted list: a configuration that
   lists a whole home folder as never-mounted cannot keep its campaign inside it.
-- **State root**, for example `/owned/qualification/state`: a real path holding
-  the lead's layout, all folders mode 0700:
+  Do not put it below a path that is a mount point inside the sandbox (`/tmp`,
+  say): the holder's paths of assertion 1 lie in it, and the probe's comparison
+  by path fails the assertion for a mount point above one of them. The harness
+  does not refuse such a campaign; the probe's report shows it.
+- **State root**, for example `/owned/qualification/state`: a real path (a
+  folder with no symbolic link in its path) holding the lead's layout:
 
   ```text
   leads/<role>/home
@@ -136,6 +159,29 @@ caller's environment or home.
   pub/<project>
   mirrors/<project>.git
   ```
+
+  Make every folder with mode 0700, owned by the caller. What the harness
+  checks of that is less than "all folders". The six folders the lead writes
+  (`home`, `config/<runtime>`, `tree`, `qargi`, `requests` and `mail` under
+  `leads/<role>`) must be folders of mode 0700 that belong to the caller, with
+  no link on their path below the state root: the step `own-clone`
+  (`mountpoints.CheckOwnClone`) opens each from the state root's handle and
+  reads the mode and owner from the descriptor it got. `leads/<role>/qargi` is
+  also looked at before anything is created (mode 0700, the caller's, a real
+  path). `mailbox/<role>`, `pub/<project>` and `mirrors/<project>.git` are
+  looked at as bind sources only: no link on the path, and a folder. Their
+  mode and owner, and those of the state root itself and of `leads/<role>`,
+  are not checked.
+
+  Where the state root may lie. Not below a path that is a mount point inside
+  the sandbox, such as `/tmp`: the probe compares the coordinators' roots
+  (`<state root>/coords` and `<state root>/coord-login`) with the mount points
+  inside by path, and assertion 11 fails for a mount point above them, as
+  assertion 1 does for the holder's paths (in the harness, the campaign
+  folder). And with no folder below it on a file system of its own: the checks
+  walk beneath the state root's handle and cross no mount point, so a folder
+  below the state root that is a separate mount, or lies beyond one, is
+  refused.
 
   The run makes one more folder, `leads/<role>/gitmeta`, when the configuration
   says no lead has run. It is always that folder: the configuration has no key
@@ -247,7 +293,7 @@ managed-settings file with it and refuses a difference.
 | `version` | Format version, 1. |
 | `campaign` | The private campaign folder; must exist. |
 | `coordinator_reviewed` | The statement that a coordinator reviewed this configuration and the plan it gives. Without `true`, `--run` is refused. |
-| `no_lead_has_run` | The statement that no lead has ever run in these scratch folders. Only then does a run make the mount points (`Prepare`); otherwise it checks them and fails when they are missing. Never set it for a folder a lead has run in. |
+| `no_lead_has_run` | The statement that no lead has ever run in these scratch folders. Only then does a run make the mount points (`Prepare`); otherwise it checks them and fails when they are missing. It is also the harness's only basis for the outside half of assertion 7: with it, a walk of the mount points that found nothing is recorded `ok` ("there is no previous instance" is this statement, not a proof); without it, `not-checked`. Never set it for a folder a lead has run in. |
 | `executables` | `pasta`, `bwrap` and `probe`: absolute, regular, not group- or other-writable. Three different files. |
 | `runtime`, `runtime_version` | `claude` or `codex`, and the pinned version string. |
 | `state` | The scratch state root, the role and the project. |
@@ -326,7 +372,7 @@ the terminal output. Do not copy it into a repository.
 | `plan.json` | The plan: argument vector, the names of the environment allowlist, the mounts (kind, inside path, source, whether the source lies below a folder the lead can write, optional), the descriptors the pass-through step opens, the notes, and the profile digest. |
 | `spec.json` | The probe's spec, as written for it (also bound read-only inside, in `bound/spec`). |
 | `report.json` | What the probe reported: its results with their statuses, or what came instead (`line-read`, `refused-line` with the parser's reason and an escaped excerpt, `time-limit`, `exited-before-report`, `interrupted`, `not-launched`). After a line was read, `report_trailing_bytes` says whether the channel held any byte after it when it was asked (`true` is a failure of the start and of the step `report-trailing`). |
-| `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. |
+| `outside.json` | The results of the checks the harness makes outside, and the canary's connection counts. The results are the outside halves of assertions 1, 3, 5 and 7, then 9 and 10. The outside half of 7 (`tree-git-readonly.outside`) is made from the walk of the step `recheck`; its detail names the step and says that the harness has no unit and no control group, and whether the configuration states `no_lead_has_run`. Assertions 9 and 10 are `not-checked` here. |
 | `terminal.log` | The first 1 MiB of what the processes wrote to the pseudo-terminal, raw and unescaped; the rest is counted in `summary.json`. The command inside controls it: it is display only, never evidence of a check (a report line seen there authenticates nothing, and `marker_seen` only says the text is there). It may hold escape sequences: read it with `cat -v`. |
 | `summary.json` | The versions (kernel release, bubblewrap, pasta), the SHA-256 of each executable, every step with its start, end, status and error text, the exit status (when the first process was still there at the time limit, `exit.exited` is false and `exit.after_stop` says how the stop ended it: its code, or the signal), how the stop went, the canary's hit counts, the terminal counts, the resolv.conf derivation, notes about rows of the host whose real path differs from their name, `bind_sources` (every bind source of the plan with the facts of rule G1: see case G1), and the requested cases with the results each speaks to. |
 | `bound/` | What the plan binds from the harness: the derived `resolv.conf` and the spec folder. |
@@ -356,8 +402,12 @@ which the lead cannot write. The run fills it once, before the lead's first run
 `.git/info` with one anchored line in `exclude` for each tree placeholder. The
 mount points in the tree stay and are checked as before; they are only targets.
 A later start does not fill the folder again: it checks it, resolves the
-sources, and opens the path bound for each row, last of all, with
-`check-bind-sources`. For every row the path that is bound is the path that is
+sources, and walks to the path bound for each row, last of all, with
+`check-bind-sources`: by handle, beneath the state root's handle for a source
+below the state root and from the root of the file system for any other,
+without following a link, and with the type of every source that is not a row
+of the host (a folder or a regular file, as the row binds) decided on the
+opened descriptor. For every row the path that is bound is the path that is
 checked: a source the configuration supplies is bound as it is given (its real
 path, which the resolution has found a link-free one), and a row of the host
 whose own name is a link (`/etc/localtime` often is) is bound from its real path,
@@ -366,7 +416,9 @@ bound path is not the one the check would open, and the evidence says it as
 `checked_path`, equal to the source of every row. The check says what the path was
 at that moment: a lead that could write above a source could change it
 afterwards, which is why every source and everything above it must be the
-caller's.
+caller's. The check closes its descriptors, and bubblewrap then resolves each
+source by path: passing the bind sources to bubblewrap by descriptor is not yet
+built.
 
 What changes for git inside the sandbox: the copies of `config` and `info` are
 read-only binds of files the lead cannot write, so the lead cannot change the
@@ -387,9 +439,11 @@ and the rule that no owner-side tool uses a lead's tree is not enforced here.
 
 The design (section 7.3) lists the sandbox cases. The harness records facts for
 the automated ones; the others are attended, and the coordinator makes and
-records them by hand. The harness passes no input to the sandbox: it only reads
-the pseudo-terminal, so a scratch command that waits for the keyboard (a shell,
-for example) cannot be driven from it and is stopped at the time limit. Run an
+records them by hand. Case S21, which exercises the walk before every start, is
+not yet built in the harness. The harness passes no input to the sandbox: it
+only reads the pseudo-terminal, so a scratch command that waits for the keyboard
+(a shell, for example) cannot be driven from it and is stopped at the time
+limit. Run an
 attended case either as a non-interactive scratch command (a command in
 `scratch_command` that does the steps and prints what happened; it runs inside
 the sandbox, so its program and files must be reachable there, in the lead's
@@ -399,13 +453,13 @@ tree for example; its output goes to `terminal.log` as display only), or in the 
 
 | Case | What the harness records |
 | --- | --- |
-| S1 | The probe's `holder-hidden` and `owner-paths-absent` results (it looks for the holder's paths, the owner's checkout and provider folders, and the other runtime's config folder inside), and the harness's check that no bind source touches a path the harness owns. |
+| S1 | The probe's `holder-hidden` and `owner-paths-absent` results (it looks for the holder's paths, the owner's checkout and provider folders, and the other runtime's config folder inside), and the harness's check that no bind source touches a path the harness owns. Also the probe's `parent-folders` result (assertion 11): the four parent folders inside (`/ataniq/requests`, `/ataniq/mailbox`, `/ataniq/mail` and `/coord`), each a mount of its own, the mailbox and `/coord` not writable and the other two writable, and the probe's look for a coordinator's tree or home. The identities it compares are of the coordinators' folders that existed when the spec was written (`coordinator_identities` in `spec.json`); a scratch state root without `coords` and `coord-login` still lists the identities of their ancestors. |
 | S2 | The probe's dial of a host loopback port and abstract socket, and the canary's counts, which do not depend on the probe's judgement. |
 | S3 | The probe's comparison of its environment with the allowlist (plus `PWD`, which bubblewrap sets). |
 | S4 | The probe's resolution of the provider host, and this run's resolv.conf derivation: its source, the nameservers kept and the loopback ones dropped. A derivation refused for lack of any non-loopback server ends the run before a launch, with the reason in the step; that is the second half of S4. |
 | S7 | The sysctl `dev.tty.legacy_tiocsti` as the probe and the harness read it, or the seccomp filter the probe finds loaded. The harness never issues TIOCSTI. |
 | S11 | Through the record interface: no store exists here, so the result is `not-checked` with "no qualification record store to ask". The stale-record start refusal belongs to the holder. |
-| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the path was opened from the root of the file system without following a link and no component of it, the last one included, is a link (`false` with the reason when one is, absent when the check could not say). `checked_path` is the path the check opened, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
+| G1 | Rule G1 (see [Rule G1 and git inside the sandbox](#rule-g1-and-git-inside-the-sandbox)); not a case of the design's table. In `summary.json`, `bind_sources` lists every bind source of the plan, in the order of its mounts, with `no_symbolic_link_component`: the fact, from `mountpoints.CheckBindSources` right before the launch, that the check walked to the path by handle without following a link and no component of it, the last one included, is a link. A source below the state root is opened beneath the state root's handle, in one lookup that crosses no mount point, after the state root's own path was looked up from the root of the file system without following a link; any other source is looked up from the root of the file system. For every source that is not a row of the host, the check also decides on the opened descriptor that it is a folder or a regular file, as the row binds; the type of a row of the host is not checked. The fact is `false` when a link was found, and absent when the check found another problem with the source (it is missing, has another type, or lies at or beyond a mount point below the state root) or could not say; `problem` holds the check's reason. `checked_path` is the path the check walked to, and equals the row's source for every row (a row of the host whose own name is a link is bound, and so checked, by its real path). `links_checked` says the step `check-bind-sources` ran; without it the list is empty and nothing is claimed. `no_source_in_read_write_source` is the fact, from `plan.Verify`, that no bind source lies in or below the source of a read-write bind. The case's results are `bind-sources-no-symbolic-link` and `no-bind-source-in-read-write-source`, each `ok`, `failed` or `not-checked`. The attended variant is [below](#case-g1-attended-variant). |
 
 ### Attended cases
 
@@ -474,7 +528,11 @@ does. It needs two runs on the same scratch folders.
 3. Second run, on the same scratch folders, with a scratch command that looks for
    the canary's text under the places the first run tried, and with
    `"no_lead_has_run": false` (the lead has run: nothing is made, the folders are
-   only checked):
+   only checked). In this run the outside half of assertion 7 is `not-checked`
+   in `outside.json` when the start proceeds: without the statement the harness
+   has no basis for "the previous instance is stopped", and it has no unit or
+   control group to prove that no process of the first run remains. Make sure
+   yourself that none does before you start it:
 
    ```sh
    if grep -rs ataniq-g1-canary-text /work/qualproj/.git /home/lead/.claude; then
@@ -528,7 +586,8 @@ removes nothing else.
 
 To remove an attempt, delete its folder by hand after the coordinator has taken
 what is needed from it. The mount points that `Prepare` made in the scratch
-state folders (skills folder, instruction file placeholder, `.git/hooks` if the
+state folders (the places of the config folder and of the records in the home,
+the skills folder, the instruction file placeholder, `.git/hooks` if the
 clone had none) and the git metadata folder with its copy of the clone's git
 files stay: use a fresh
 scratch state root for the next first run. Remove the scratch state root, the

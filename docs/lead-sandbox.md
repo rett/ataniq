@@ -9,10 +9,14 @@ coordinator chose. This guide says what the code generates and what it checks.
 It does not say that the sandbox is qualified, safe or supported, and no part of
 it should be read that way.
 
-The proposal comes from the lead-hosting design (sections 3 and 7.3), revision 3,
-with one change by the owner (R17, nested sandboxes, see
-[Nested sandboxes](#nested-sandboxes-owner-decision-r17)). Where the design says
-otherwise, R17 wins. The code is in `internal/leadsandbox` (the packages
+The proposal follows the lead-hosting design (sections 3 and 7.3), revision 4:
+rule B1 for every owner-side access to a path a sandbox can write, the lead's
+four parent folders, assertion 11 and the walk before every start. With it goes
+the owner's decision R17: nested sandboxes are allowed for now (see
+[Nested sandboxes](#nested-sandboxes-owner-decision-r17)). The code differs from
+the design's text in one place, the source of the three `.git` binds, and is
+stricter there (see [the `.git` rows](#the-clone-rules-and-rule-g1)). The code
+is in `internal/leadsandbox` (the packages
 `profile`, `sandboxnet`, `safefile`, `mountpoints`, `plan` and `assert`), in
 `cmd/ataniq-probe` and in `qualification/leadsandbox`. Each package's `doc.go`
 is the detailed statement of what it does and does not do; this guide gathers
@@ -28,8 +32,8 @@ session: what the lead sees (the file-system view), what it can reach (the
 network), who it is (identity and environment), what is checked before the agent
 starts, and the launch command that makes all of that so. The profile is Go data
 and checks; the launch plan is a list of arguments. Nothing in the packages runs
-a program, and the checks that touch files (`mountpoints`, `safefile`) work on a
-folder the caller opened.
+a program, and the checks that touch files (`mountpoints`, `safefile`) start
+from the handle of a folder the caller owns.
 
 Built, each unqualified:
 
@@ -41,9 +45,10 @@ Built, each unqualified:
 - `plan`: the whole launch command, built from the profile, and `Verify`, which
   parses a plan back and compares it with the inputs. It starts nothing.
 - `mountpoints` and `safefile`: the host-side checks and preparation of the
-  folders a lead can write, without following symbolic links.
-- `assert`: the ten start-up assertions, the spec and the report line, and the
-  checks the probe and the holder make.
+  folders a lead can write, by handle and without following symbolic links
+  (rule B1).
+- `assert`: the eleven start-up assertions, the spec and the report line, and
+  the checks the probe and the holder make.
 - `ataniq-probe`: the static helper that runs inside the sandbox (and, in its
   pass-through mode, between pasta and bubblewrap).
 - The opt-in harness `qualify` and its guide,
@@ -57,9 +62,19 @@ Not built:
   implement it.
 - The daemon that supervises holders, and the role lock and lingering checks
   behind assertion 9 (the package has the interfaces only).
-- The injection protocol: putting text into a running lead's terminal.
+- Injection into a sandboxed lead: the library that puts text into a running
+  lead's terminal exists ([lead injection](lead-injection.md)), and no holder
+  uses it.
 - The exchange mirror and the intake by which a lead's work reaches the owner's
   checkout. The plan binds the mirror folder read-only; nothing makes it.
+- Anything that uses the four parent folders (requests, mailbox, mail and the
+  coordinators' published folders). They are bound folders only: nothing reads
+  the request folder, and nothing writes the mailbox or publishes a
+  coordinator's folders.
+- The launcher-side step that walks each bind source by handle and gives
+  bubblewrap the descriptor it checked. `mountpoints.SourceWalks` names the
+  walks as data; until the step exists, bubblewrap resolves each source by
+  path.
 - The qualification record store. `assert` checks a record through an interface;
   no store exists.
 - A generated or reviewed seccomp filter (see
@@ -146,13 +161,18 @@ optional host row present). Its command, with invented paths, is:
     --bind /state/leads/arc-lead/config/claude /home/lead/.claude \
     --ro-bind /opt/ataniq/skills/arc-lead /home/lead/.claude/skills \
     --ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md \
-    --ro-bind /opt/ataniq/git/arc-lead/config /ataniq/git/config \
+    --ro-bind /opt/ataniq/git/arc-lead /ataniq/git \
     --bind /state/leads/arc-lead/tree /work/demo \
     --ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config \
     --ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks \
     --ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info \
     --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git \
     --ro-bind /opt/ataniq/qargi /ataniq/qargi \
+    --bind /state/leads/arc-lead/qargi /home/lead/.qargi \
+    --bind /state/leads/arc-lead/requests /ataniq/requests \
+    --ro-bind /state/mailbox/arc-lead /ataniq/mailbox \
+    --bind /state/leads/arc-lead/mail /ataniq/mail \
+    --ro-bind /state/pub/demo /coord \
     --ro-bind /opt/ataniq/assignment/demo /ataniq/assignment \
     --ro-bind /opt/ataniq/projection/demo /ataniq/projection \
     --chdir /work/demo \
@@ -207,8 +227,10 @@ disable user namespaces.
 **What `Build` checks.** It refuses, with the reason, inputs the profile refuses;
 relative executable or agent paths; a descriptor number outside 3 to 1023 or used
 twice; a report path that is not directly inside the folder the holder names as
-its own, or that lies in a folder the lead can write, in a never-mounted path or
-above a bind source; host sources that are missing for a row of the host it
+its own, that lies in a folder the lead can write or in a never-mounted path, or
+that is, lies below or lies above a bind source or one of the state root's
+folders `leads`, `mirrors`, `mailbox`, `pub`, `coords` and `coord-login`; host
+sources that are missing for a row of the host it
 emits (`/usr`, the `/etc` files: the plan binds the real path the holder
 resolved, see [the clone rules](#the-clone-rules-and-rule-g1)) or given for
 another row; a working folder outside the tree and the home; an operand of
@@ -221,16 +243,16 @@ with it.
 
 ## Nested sandboxes (owner decision R17)
 
-The owner has decided that nested sandboxes are allowed for now. So
-`--disable-userns` is deliberately not passed, and neither is
-`--assert-userns-disabled`, and the ten start-up assertions include none about
-them. The reason is that members, Codex included, start their own sandboxes
-inside the lead's, which they cannot do where user namespaces are disabled.
+The owner has decided that nested sandboxes are allowed for now. So the profile
+passes neither `--disable-userns` nor `--assert-userns-disabled`, and none of
+the eleven start-up assertions is about them. The reason is that members, Codex
+included, start their own sandboxes inside the lead's, which they cannot do
+where user namespaces are disabled.
 
 The cost, stated plainly: user namespaces stay available inside the lead's
 sandbox. Code in the sandbox can create them, and through them reach kernel code
-that is reachable only that way. That is a larger kernel surface than the design's
-first profile exposed. Qualification must cover it (case S8, rewritten for R17 in
+that is reachable only that way. That is a larger kernel surface than with user
+namespaces disabled. Qualification must cover it (case S8, rewritten for R17 in
 [the harness guide](qualification-lead-sandbox.md#the-r17-note-for-s8)): it
 records that a nested user namespace and a nested sandbox start, and what they can
 reach. The outside broker remains the target: this is a decision for now, not a
@@ -274,30 +296,98 @@ mounts keep their own access, so the read-write rows and `/tmp` stay writable.
 | `/home/lead/.claude` or `/home/lead/.codex` | `<state>/leads/<role>/config/<runtime>` | read-write |
 | the `skills` folder in that config folder | the lead skills folder Ataniq owns | read-only |
 | the instruction file in that config folder (`CLAUDE.md` or `AGENTS.md`) | the instruction file Ataniq owns | read-only |
-| `/ataniq/git/config` | the git identity file Ataniq owns | read-only |
+| `/ataniq/git` | the folder Ataniq owns that holds the git identity file, `config` | read-only |
 | `/work/<project>` | `<state>/leads/<role>/tree`, the lead's own clone | read-write |
 | `/work/<project>/.git/config`, `.git/hooks`, `.git/info` | Ataniq's copy, `<state>/leads/<role>/gitmeta` | read-only |
 | extra placeholders in the tree, if the inputs name any | a host path Ataniq owns | read-only |
 | `/ataniq/mirror/<project>.git` | `<state>/mirrors/<project>.git` | read-only |
 | `/ataniq/qargi` | the Qargi install | read-only |
-| the Qargi records, if the inputs name them | `<state>/leads/<role>/records` (the only host path the profile accepts for them), at the inside path the inputs give | read-write |
+| the Qargi records, at the inside path the inputs give | `<state>/leads/<role>/qargi`, the lead's working Qargi records | read-write |
+| `/ataniq/requests` | `<state>/leads/<role>/requests` | read-write |
+| `/ataniq/mailbox` | `<state>/mailbox/<role>`, the lead's mailbox, which is Ataniq's | read-only |
+| `/ataniq/mail` | `<state>/leads/<role>/mail`, with one subfolder per feature | read-write |
+| `/coord` | `<state>/pub/<project>`, what the project's coordinators publish | read-only |
 | `/ataniq/assignment`, `/ataniq/projection` | folders written outside the sandbox | read-only |
 
 The managed-settings path is fixed for claude, `/etc/claude-code/managed-settings.json`.
 The design names no path for codex's managed configuration, so for codex the
 caller gives the path (it must lie under `/etc`), and the golden file uses an
-invented one.
+invented one. The per-runtime paths and names in the profile (the config folder
+and its variable, the instruction file, the managed-settings path) are existing
+configuration that is to move into provider packs; no new runtime-specific code
+was added for revision 4.
+
+**The host layout of one lead.** Under the state root (`profile.Layout`):
+
+```text
+<state>/leads/<role>/holder            the holder's own state, never bound
+<state>/leads/<role>/home              read-write
+<state>/leads/<role>/config/<runtime>  read-write
+<state>/leads/<role>/tree              read-write
+<state>/leads/<role>/gitmeta           Ataniq's copy of the tree's git files
+<state>/leads/<role>/qargi             read-write, the Qargi records
+<state>/leads/<role>/requests          read-write
+<state>/leads/<role>/mail              read-write
+<state>/mailbox/<role>                 read-only
+<state>/pub/<project>                  read-only
+<state>/mirrors/<project>.git          read-only
+```
+
+`<state>/leads/<role>` itself is Ataniq's and is never bound. The folders are
+the layout's: a caller cannot name another folder for any of them (the git
+metadata folder is an input, and it must be the layout's).
+The coordinators' trees and homes (`<state>/coords`) and their shared logins
+(`<state>/coord-login`) lie under the same state root and are never bound into a
+lead's sandbox.
+
+**The Qargi records.** Every lead has the row of its working Qargi records,
+read-write, from `<state>/leads/<role>/qargi` (`profile.Layout.QargiRecords`).
+The inside path is required and the inputs give it
+(`profile.Inputs.QargiRecordsInside`), because Qargi's layout names it and the
+profile knows no default; in the golden files it is `/home/lead/.qargi`.
+
+**The four parent folders.** `/ataniq/requests`, `/ataniq/mailbox`,
+`/ataniq/mail` and `/coord` are in every profile and in its digest, for both
+runtimes, whether or not the lead has coordinators: a bind cannot be added to a
+running sandbox, so the four are fixed at the lead's start. Their sources are
+the layout's. The published folder holds only `<feature>/qargi`,
+`<feature>/out` and `<feature>/archive` of the project's coordinators. In this
+code the four are only bound folders: the profile says where they lie and how
+they are bound and nothing about what is in them, and nothing in Ataniq reads
+the request folder (a condition of the owner).
+
+**The git identity is bound as a folder.** `GIT_CONFIG_GLOBAL` is
+`/ataniq/git/config`. The row that brings the file in binds the Ataniq-owned
+folder that holds it (`profile.Inputs.GitIdentityDir`), read-only at
+`/ataniq/git`; the file has the fixed name `config` in it. A bind of a single
+file is a bind of the file that was there when the sandbox started: when the
+holder replaces the file by writing a new one and renaming it into place, the
+sandbox keeps the old inode. A bind of the folder shows the new file. The whole
+folder is readable inside, so it holds the identity file alone. The
+managed-settings file and the instruction file stay binds of a single file, so
+one that Ataniq replaces while the lead runs is seen at the lead's next start,
+not before.
 
 **What is never mounted.** The inputs list host paths that no bind source may
 equal, lie below or lie above: the owner's checkout, the real provider folders,
 `.ssh`, and whatever else the caller names (at least one is required). The profile
-adds the other runtime's config folder, and refuses a source in or above another
-lead's state or another project's mirror folder. The host's `/home`, the real
+adds the other runtime's config folder. The host's `/home`, the real
 provider folders and the owner's checkout are not in the table at all: the lead's
 home is its own folder under the state root. The check is on the text of the
 paths, so a link could hide a folder: `mountpoints.ResolveSources` runs the same
 checks again on the real paths, and refuses a source Ataniq supplies that has a
 link on it (it must be given as its real path).
+
+**Other state under the state root.** The profile knows the state root, so it
+refuses, whatever the caller lists as never-mounted, a bind source that lies in
+or above the lead's own holder folder, another lead's state, another role's
+mailbox, another project's published folder or mirror, or any coordinator's
+tree, home or login (`<state>/coords`, `<state>/coord-login`). The lead's own
+mailbox and the project's own published folder are each the source of exactly
+one row: a source may be that folder only as that row, and no source may lie
+inside it. These rules too are on the text of the paths
+(`profile.StateFolders.Reason`), and `ResolveSources` runs them again on the
+real paths.
 
 **The per-lead home.** `/home/lead` is `<state>/leads/<role>/home`, the same
 inside path for every lead and both runtimes, because providers key their state by
@@ -315,16 +405,19 @@ is absent, or an empty folder that is not a mount point.
 **The fixed inside paths.** The same for every epoch and both runtimes:
 `/home/lead`, `/work/<project>`, `/ataniq/probe`, `/ataniq/spec` (with
 `spec.json`), `/ataniq/agent`, `/ataniq/qargi`, `/ataniq/mirror/<project>.git`,
-`/ataniq/assignment`, `/ataniq/projection`, `/ataniq/git/config`, `/tmp` and
-`/etc/resolv.conf`. The working folder is the tree by default; it may be the
-home or a folder below either.
+`/ataniq/assignment`, `/ataniq/projection`, `/ataniq/requests`,
+`/ataniq/mailbox`, `/ataniq/mail`, `/coord`, `/ataniq/git` (with `config`),
+`/tmp` and `/etc/resolv.conf`. The inside path of the Qargi records is the
+inputs'. The working folder is the tree by default; it may be the home or a
+folder below either.
 
 ## The clone rules and rule G1
 
 **The tree is the lead's own clone.** It is a full clone that Ataniq made for the
 lead, bound whole and read-write. `mountpoints.CheckOwnClone` refuses a worktree,
 a submodule, a folder below another repository, a tree whose `.git` names
-alternates, and a tree, home or config folder that is not a 0700 folder of the
+alternates, and a tree, home, config folder, records folder, requests folder or
+mail folder (the six folders the lead writes) that is not a 0700 folder of the
 caller's user.
 
 **Rule G1: no bind source in a folder a sandbox can write.** bubblewrap resolves
@@ -332,17 +425,18 @@ a bind source on the host, outside every sandbox, and follows a symbolic link
 there. A source that lies in a folder the lead can write could be replaced by a
 link that brings a folder of the owner into the sandbox at the next start. So no
 row of the bind table has a source in or below a host folder the lead can write
-(the home, the config folder, the tree and the records folder). The profile
+(the home, the config folder, the tree, the records folder, the requests folder
+and the mail folder: the sources of the read-write rows). The profile
 refuses a table that breaks the rule, `plan.Build` checks it again, and
 `plan.Verify` reports a mount that does. The rule holds across leads too, as long
 as every lead on the host uses the same state root (nothing here checks that; it
 is the holder's obligation, listed in `internal/leadsandbox/mountpoints/doc.go`):
 every folder a lead writes lies in that lead's own state folder, so the rules
 about another lead's state keep the read-only sources of one lead out of the
-reach of every other. That is why the records folder, when the inputs name one, must be
-`<state>/leads/<role>/records` (`profile.Layout.Records`) and any other host path
-is refused, and why the git metadata folder must be `<state>/leads/<role>/gitmeta`
-(`profile.Layout.GitMeta`).
+reach of every other. That is why the records, requests and mail folders are
+always the layout's (`<state>/leads/<role>/qargi`, `requests` and `mail`), with
+no input that could name another host path, and why the git metadata folder
+must be `<state>/leads/<role>/gitmeta` (`profile.Layout.GitMeta`).
 
 **The `.git` rows.** The tree's `.git/config`, `.git/hooks` and `.git/info` are
 read-only inside, and are bound from an Ataniq-owned copy, not from the tree.
@@ -358,6 +452,14 @@ before the move leaves the sibling and no folder in the place: `Check` then
 refuses the start, and the next `Prepare` refuses the leftover with a reason that
 names it, until it is removed by hand.
 
+This is a stated difference from the design's text. Revision 4 has the clone's
+`.git/config`, `.git/hooks` and `.git/info` bound from "the same paths, walked
+under B1". The code keeps Ataniq's own copy, `<state>/leads/<role>/gitmeta`, as
+the source of the three binds. That is stricter: no bind source ever lies inside
+a folder the lead writes, so no source has to be walked through one. The
+destinations in the tree (`.git` itself and the three paths) are still walked
+before every start, as the design asks (see below).
+
 `Prepare` refuses a clone `.git/config` that has an `include` or `includeIf`
 section (any case; a bounded scan of the section headers, and no other key is
 interpreted), because git would read the file it names as configuration. For the
@@ -370,8 +472,9 @@ rebuilds in the tree), which is inside the lead's own authority. The copy is
 never read as configuration by a tool outside the sandbox.
 
 **Mount points inside folders the lead writes.** The targets of the `.git` rows,
-the skills folder and the instruction file of the config folder, the inside path
-of the records folder (when the inputs name one), and any extra placeholder lie
+the place of the runtime's config folder in the home, the skills folder and the
+instruction file of the config folder, the place of the Qargi records when it
+lies in the home, and any extra placeholder lie
 inside folders the lead writes. bubblewrap would make a missing
 one itself, in a folder where a planted link could redirect it. So Ataniq makes
 them before the lead's first run (`mountpoints.Prepare`, which refuses unless the
@@ -380,15 +483,86 @@ lists the tree placeholders (the ones outside `.git`) in the git exclude file of
 the copy, as one anchored line each. A placeholder whose path holds a character
 git treats as a pattern is refused.
 
-**Checks before every start.** `mountpoints.Check` finds missing or wrong mount
-points and a copy that is incomplete or has no exclude line for a placeholder;
-`ResolveSources` resolves each bind source to its real path and runs the
-never-mounted checks again; `CheckBindSources` opens the path bound for every row
-from the root of the file system with `openat2`, without following a symbolic
-link on any component, and refuses a path that has one, naming the row by its
-inside path. They run in that order, right before the launch, after the previous
-unit is gone and its control group is empty (the sandbox's own process tree does
-not show that no lead process remains, because nested sandboxes are allowed).
+**Handles, not names (rule B1).** Rule B1 of the design (revision 4, section
+3.6): host-side code never binds or reads a path any of whose components a
+sandbox can write. It opens the nearest folder no sandbox can write by name,
+walks every further component from that handle with `openat2`
+(`RESOLVE_BENEATH` and `RESOLVE_NO_SYMLINKS`), refuses a symbolic link and an
+unexpected type, and does so at the moment of use, every time: an earlier check
+is never reused. In `mountpoints` the folder opened by name is the state root,
+which the caller owns. `Check`, `Prepare` and `CheckOwnClone` open every folder
+below it that they work in once per call, from the state root's handle and never
+by its name (`safefile.Root.SubRoot`: one lookup without links, the type decided
+on the descriptor the lookup returned), and every later step is beneath that
+descriptor. So no folder is looked at and then opened again by its name: the
+folder that was checked is the folder that is used, whatever a lead does to the
+name in between. Nothing found by one call is kept for the next.
+
+**Checks before every start.** Three, in this order, right before the launch,
+after the previous unit is gone and its control group is empty (the sandbox's
+own process tree does not show that no lead process remains, because nested
+sandboxes are allowed):
+
+- `mountpoints.Check` is the start walk. It covers every bind target that lies
+  in a folder the lead writes: the place of the runtime's config folder in the
+  home (`.claude` or `.codex`), the places of the skills and of the instruction
+  file in the config folder, the tree's `.git` itself and its `.git/config`,
+  `.git/hooks` and `.git/info`, the tree placeholders, and the place of the
+  records when it lies in the home. Each is looked up beneath the handle of the
+  folder it lies in, in one lookup that follows no link in any component, and
+  its type is decided on the descriptor the lookup returned. A symbolic link (at
+  the path or before it, dangling or not) or a wrong type refuses the start with
+  a problem that names the path. The design asks that each target be absent or
+  of the expected type; the code is stricter and wants each mount point present,
+  as `Prepare` made it. The tree's `.git` is no mount point and may be absent;
+  its three mount points are then the ones reported as missing. `Check` also
+  refuses a copy (the git metadata folder) that is incomplete, has other modes
+  than `Prepare` gave it or has no exclude line for a placeholder.
+- `ResolveSources` resolves each bind source to its real path and runs the
+  never-mounted checks and the rules about other state again on the real paths.
+  It compares names and opens nothing.
+- `CheckBindSources` walks to the path bound for every row, by handle, without
+  following a link in any component. A source Ataniq supplies below the state
+  root is opened beneath the state root's handle, in one lookup that crosses no
+  mount point (a mount point below the state root is refused); the state root's
+  own path is first looked up from the root of the file system without following
+  a link, and the folder found must be the folder opened by name. Any other
+  source is looked up from the root of the file system in one `openat2` that
+  follows no link (mount points are crossed there: the folder that holds a
+  source may be a mount). For a row Ataniq supplies it then checks, on the
+  descriptor it opened, that the source is a folder or a regular file, as the
+  row binds. The type of a row of the host is not checked, and no content is
+  read. A problem names the row by its inside path.
+
+`mountpoints.SourceWalks` names the walk of each row Ataniq supplies as data:
+the folder to open by name, the path to walk beneath it and the type the source
+must have (the state root and the whole path below it for a source below the
+state root, the source's own parent folder and its name for any other). It
+reads nothing. `ResolveSources` puts the same walk on each row it returns, and
+`CheckBindSources` takes the place and the type of a source from it, refusing a
+row Ataniq supplies that has none. The launcher-side step that would make the
+same walk and give bubblewrap the descriptor is not yet built.
+
+**What is still opened or resolved by name, and why.** The state root: it is the
+folder the walks start from, the nearest folder no sandbox can write. Only its
+last component is protected by the open; `CheckBindSources` looks for a link
+above it too, and `Check`, `Prepare` and `CheckOwnClone` leave that to the
+caller. The root of the file system, `/`, for the lookups of `CheckBindSources`
+that start there. And every bind source, the never-mounted paths and the state
+folders in `ResolveSources`, which resolves names (`filepath.EvalSymlinks`) and
+opens nothing. That resolution is kept for two things: the real path of a row
+of the host (`/usr`, `/etc/localtime` and the like may be links of the host,
+which no lead writes), which is the path the plan binds; and the comparison of
+real paths under the never-mounted rules and the rules about other state. The
+path of a source Ataniq supplies has no component inside a folder a sandbox can
+write (rule G1), so resolving its name reads no link a lead could plant. No
+folder below the state root is opened by its name.
+
+**The limit.** The descriptors are closed when `CheckBindSources` returns, and
+the launch binds by path. Until the bind sources are passed to bubblewrap by
+descriptor, bubblewrap still resolves each source by path after the check: the
+check says what was there at that moment, which is why every source and
+everything above it must be Ataniq's.
 
 **The path that is bound is the path that is checked.** bubblewrap binds the path
 the plan names and follows a link in it, so a source that is checked and a
@@ -397,13 +571,14 @@ different one that is bound is a check that did not happen. For every row:
 - a source Ataniq supplies (every row but the host's own) must be given as its
   real path. `ResolveSources` refuses a source whose real path differs from its
   lexical one, a link anywhere on it, naming the row and the real path; the plan
-  binds the source as given, and `CheckBindSources` opens that path as it is, with
-  no link allowed on it;
+  binds the source as given, and `CheckBindSources` walks to that path as it is,
+  with no link allowed on it, and checks its type;
 - a row of the host (`/usr`, `/etc/hosts`, `/etc/localtime` and the like), whose
   own name may be a link of the host that no lead writes, is bound from the real
   path that `ResolveSources` reported. The holder gives it to the plan
   (`plan.Options.HostSources`, which `plan.Build` requires for every host row it
-  emits and `plan.Verify` checks), and `CheckBindSources` opens that real path.
+  emits and `plan.Verify` checks), and `CheckBindSources` looks that real path
+  up from the root of the file system.
 
 **What the read-only binds do not protect against.** They are defence in depth.
 A lead can rename `.git` (renaming the parent of a mount point is allowed) and
@@ -412,10 +587,13 @@ from the original. The primary rule is that no owner-side tool uses a lead's tre
 (the lead-hosting design, section 3.3); nothing here enforces it. The checks are
 made at one moment: a lead that runs between a check and the start can change what
 it checked. The exclude check is textual, and a `.gitignore` of the tree can make
-git show a placeholder as untracked, which is cosmetic. The records folder lies
-in the lead's state folder, so the lookup from the state root covers its path,
-but its mode and owner are not checked by `CheckOwnClone`: the holder makes it
-0700 and checks it.
+git show a placeholder as untracked, which is cosmetic. The records, requests
+and mail folders lie in the lead's state folder, so the lookup from the state
+root covers their paths; the holder makes them with mode 0700, and
+`CheckOwnClone` checks their mode and owner with the tree, the home and the
+config folder. The mailbox and the published folder, which are bound read-only,
+are sources like any other: their paths and their type (a folder) are looked
+at, and nothing here looks at their mode, owner or content.
 
 ## The environment allowlist
 
@@ -524,8 +702,8 @@ runtime's own descriptors is refused.
 sandbox as the program the plan starts last. In order, it marks the report
 descriptor close-on-exec; checks that the agent is an executable regular file;
 reads the spec (a regular file of at most 256 KiB, decoded strictly); runs
-assertions 1 to 8 against the real system; writes the report; judges it; gives the
-agent a session; and executes the agent.
+assertions 1 to 8 and 11 against the real system; writes the report; judges it;
+gives the agent a session; and executes the agent.
 
 **The report channel contract.** The probe writes exactly one line, the report, to
 the report descriptor, on success and on failure, and no other byte, then or
@@ -557,9 +735,11 @@ terminal when there is one is exit 98.
 
 ## The start-up assertions
 
-The ten assertions of the design (section 3.8) are the table in `assert`. The
-probe makes the inside half of each that has one, once each, before it executes
-the agent. The holder would make the outside half and the others
+The eleven assertions of the design (revision 4, section 3.8) are the table in
+`assert`. The design lists the eleventh between 7 and 8; the table keeps its
+number, and it comes last. The probe makes the inside half of each that has one
+(1 to 8 and 11), once each, before it executes the agent. The holder would make
+the outside half of 1, 3, 5 and 7, then 9 and 10
 (`assert.RunOutside`; only the qualification harness calls it, and no holder
 exists yet), after the probe has reported and before it accepts the start, add
 them to the probe's results and judge the whole. The report has no field that
@@ -573,10 +753,11 @@ says the sandbox as a whole passed or is supported.
 | 4 | A provider host name resolves. | inside |
 | 5 | `dev.tty.legacy_tiocsti` is 0, or the seccomp filter is loaded. | inside and outside |
 | 6 | The owner's real provider folders, `~/.ssh`, the owner's checkout and the other runtime's config folder do not exist inside. | inside |
-| 7 | The tree is the lead's own clone, and its `.git/config`, `.git/hooks` and `.git/info` are not writable inside. | inside |
+| 7 | Before the sandbox starts, with the previous instance proven stopped, the holder's walk of 3.6 found no symlink or wrong type at any bind destination inside a lead-writable folder. Inside, the tree is the lead's own clone, and its `.git/config`, `.git/hooks` and `.git/info` are not writable. | inside and outside |
 | 8 | The managed-settings file is present and read-only; for claude it contains the guard hook. | inside |
 | 9 | The role lock is held, and lingering is on. | outside |
 | 10 | A current qualification record exists for this runtime, version and profile digest. | outside |
+| 11 | The four parent folders of 3.3 are present; `/ataniq/mailbox` and `/coord` are not writable inside, and no coordinator's tree or home is visible. | inside |
 
 What the checks do and do not show, from the package:
 
@@ -603,11 +784,21 @@ What the checks do and do not show, from the package:
   names no seccomp filter, because a filter that something else loaded is not
   evidence that `TIOCSTI` is blocked. When a filter is named, the probe requires
   that one is loaded; it does not verify from inside which one.
-- **Assertion 7** shows that each of the three paths is on a read-only mount, that
+- **Assertion 7** is checked on both sides. The outside half is the start walk
+  (`mountpoints.Check`). `assert` does not make the walk: the holder makes it
+  and gives what it found as a fact (`assert.StartWalk`), which
+  `assert.CheckStartWalk` turns into the result. It is ok only when the walk
+  was made to its end, the previous instance is proven stopped (its unit gone
+  and its control group empty, or the lead has no previous instance) and
+  nothing was found; failed, with the first path, when the walk found a
+  problem; and not-checked for a walk that was not made or was made while a
+  process of the lead may remain. The package takes the holder's word for
+  both: it cannot see whether the walk was made or the instance stopped. The
+  inside half shows that each of the three paths is on a read-only mount, that
   no read-write mount lies at or below it, and that a write is refused. The probe
   checks that `.git` is a folder; that the tree is the lead's own clone is the
   check of `mountpoints`. Where the kernel gives no mount ID (before Linux 5.8)
-  the result is not-checked.
+  the inside result is not-checked.
 - **Assertion 8** shows that the managed-settings file is a regular file on a
   read-only mount and holds the marker text. It does not parse the file: a file
   that holds the text where it does not make the hook active passes.
@@ -618,6 +809,29 @@ What the checks do and do not show, from the package:
   start and is meant to show in the console as unsupported
   (`assert.ConsoleUnsupported`; no console view uses it yet). No store is
   built, so the harness records the result as not-checked.
+- **Assertion 11** shows that each of the four parent folders
+  (`/ataniq/requests`, `/ataniq/mailbox`, `/ataniq/mail` and `/coord`) is a
+  folder and a mount of its own; that `/ataniq/mailbox` and `/coord` are
+  read-only in the way of assertion 7; and that `/ataniq/requests` and
+  `/ataniq/mail` are on a mount that is not read-only and are writable by
+  `access(W_OK)`. It says nothing about what is in them. That no coordinator's
+  tree or home is visible is looked for in the ways of assertions 1 and 6, with
+  the same limits, through two keys of the spec. `coordinator_paths` lists the
+  two roots of the layout, `<state>/coords` and `<state>/coord-login`: they
+  must not exist inside, and no mount may be related to them by the text of
+  its root, source or mount point. `coordinator_identities` lists device and
+  inode pairs, at most 1024: no mount point (the first 2048), none of the four
+  folders and no entry of `/coord` may have one of them, and with none listed
+  the assertion is not-checked, never ok. The probe also lists `/coord` (at
+  most 4096 entries; with more the assertion is not-checked) and fails an entry
+  that holds `tree` or `home`. The limit: the identities are a snapshot, taken
+  when the spec is written, of the roots, their ancestors and the folders of
+  the coordinators and shared logins the holder listed then. A coordinator
+  made later is not in the list, and its tree or home, bound from a file system
+  that is not mounted at `/`, is found by neither comparison. Because the
+  comparison by text includes mount points, a state root that lies below a
+  path that is a mount point inside (`/tmp`, say) fails the assertion, by the
+  same rule assertion 1 has for the holder's paths.
 
 **What `not-checked` means.** A check that cannot be made (a file that cannot be
 read, a mount table that does not parse, a dial that failed for a reason that does
@@ -640,6 +854,17 @@ the writes the mount-point work needs (`MkdirAll`, `WriteFileExclusive` which on
 creates, and `AppendFile` for an existing regular file), `Sync` (fsync of a file
 or folder) and `RenameNoReplace` (one name to another in the handle's folder,
 which never replaces), and no replacing rename, remove or truncate.
+
+Three methods open an entry beneath the handle and keep its descriptor, each in
+one lookup with the type checked on the descriptor it got. `SubRoot` opens a
+folder as a new handle, for a caller that looks at a folder and then works in
+it: every later call is beneath the folder that was looked up, whatever happens
+to its name afterwards. `OpenDirHandle` and `OpenFileHandle` open a folder or a
+regular file with `O_PATH` and return an entry handle, for a caller that hands
+the entry on (a bind source given to a child process): what it checked is the
+descriptor it passes. None of the three crosses a mount point, and an entry
+handle on a file refuses neither a size nor a hard-linked file, as it reads
+nothing.
 
 **What it guarantees.** A symbolic link is refused, even when it points back
 inside the folder or nowhere; a link in a parent component is refused by every
@@ -666,7 +891,10 @@ someone with owner rights to the folder behind the handle.
 
 ## The profile digest
 
-`profile.Digest` is the SHA-256 of a canonical, versioned encoding. It covers the
+`profile.Digest` is the SHA-256 of a canonical, versioned encoding. The profile
+version is 4: the layout of revision 4 of the design, in which every table has
+the rows of the four parent folders and of the Qargi records, and the git
+identity is bound as its folder. The digest covers the
 profile version, the runtime and its pinned version, the identity mode; the
 bubblewrap flag set; the bind table (every row's kind, inside path, source role,
 link target and flags, with the project replaced by a token and a host path by its
@@ -695,7 +923,7 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
 1. **The profile itself (O).** This whole proposal awaits the owner's decision on
    the profile (Q1).
 2. **Nested sandboxes and the kernel surface (O, Q).** R17 leaves user namespaces
-   available inside, a larger kernel surface than the first profile. Case S8
+   available inside, a larger kernel surface than with them disabled. Case S8
    measures it.
 3. **Tools as UID 0 (O, Q).** The default identity is UID 0 inside; tools that
    run as UID 0 are untested. The owner mode is the fallback.
@@ -731,18 +959,26 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
     it.
 14. **Checks at one moment (Q).** The mount-point and source checks are made right
     before the start; nothing here closes the gap between a check and the launch
-    except an empty control group, which the holder has to prove.
+    except an empty control group, which the holder has to prove. The bind
+    sources are checked by handle and then bound by path: passing them to
+    bubblewrap by descriptor is not yet built.
 15. **The agent's exit 98 (Q).** A holder cannot tell an agent that exited 98 from
     a probe that failed to execute it after a good report.
 16. **Owner-side state (O).** The owner's state folders should lie on a file
-    system mounted `nodev`, and the holder makes the records folder (in the
-    lead's state folder) with mode 0700 and checks its mode and owner.
+    system mounted `nodev`, and the holder makes the records, requests and mail
+    folders (in the lead's state folder) with mode 0700; `CheckOwnClone` checks
+    their mode and owner. Nothing looks at the mode, owner or content of the
+    mailbox and the published folder.
 17. **One state root for every lead (Q).** Rule G1 across leads rests on every
     lead on the host using the same state root, and on every source and
     everything above it being Ataniq's. No code checks either: the rules about
     another lead's state know only the state root of their own inputs, and the
     other checks cover links and the lexical and real folder rules. The holder
     has to guarantee both.
+18. **The four parent folders (O, Q).** They are only bound folders: nothing
+    reads the request folder, writes the mailbox or publishes a coordinator's
+    folders. Assertion 11 compares the coordinators' identities as they were
+    when the spec was written, so a coordinator made later is not in the list.
 
 ## Qualification
 
@@ -751,7 +987,9 @@ coordinator chose, and records facts: a result is `ok`, `failed` or `not-checked
 and no field says that the profile passed. It is opt-in: `make test` does not
 reach it, and building it with `make qualification-leadsandbox-build` runs
 nothing. bubblewrap and pasta are qualification subjects, not developer tools. The
-automated and attended cases (S1 to S20 of the design, section 7.3), the
+automated and attended cases (S1 to S20 of the design, section 7.3; case S21,
+which exercises the walk before every start, is not yet built in the harness),
+the
 configuration and the R17 note for S8 are in
 [the qualification harness guide](qualification-lead-sandbox.md). Until a
 coordinator has run them and the owner has decided on the profile, everything in
