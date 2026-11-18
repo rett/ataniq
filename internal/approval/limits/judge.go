@@ -43,9 +43,16 @@ func Reached(uses, limit int) bool { return uses >= limit }
 // never queued behind one. After the limit is raised, or on the next day, the
 // next approve is a use again, and a held card that is decided again is
 // judged like any other.
+//
+// A limit above Max is read as Max. No such limit can be set, so one that
+// arrives here is a damaged or mistyped record, and it must not let a day go
+// past the highest limit there is. A limit under Min holds every approve.
 func Judge(approve bool, usesToday, limit int) Outcome {
 	if !approve {
 		return NotCounted
+	}
+	if limit > Max {
+		limit = Max
 	}
 	if Reached(usesToday, limit) {
 		return Held
