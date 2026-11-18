@@ -4,6 +4,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -128,7 +129,14 @@ func TestFrozenTheAgentCanWriteALotOfOutputWithoutBlocking(t *testing.T) {
 		if c := s.Counters(); c["held_output_full"] != 0 {
 			t.Errorf("the buffer was full: %v", c)
 		}
-		settle(t, f, 0, 100*time.Millisecond, 20*time.Second)
+		// Applying the flood takes about ten seconds under the race
+		// detector on an idle machine: the bound is far above that, so that a
+		// loaded machine does not end the Settle with output still held.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if drained, err := f.Settle(ctx, 0, 100*time.Millisecond, 90*time.Second); err != nil || !drained {
+			t.Fatalf("Settle = %v, %v, want drained", drained, err)
+		}
 		if got := s.Counters()["output_bytes"]; got < flood {
 			t.Errorf("output_bytes %d is less than the flood of %d: output was lost", got, flood)
 		}
