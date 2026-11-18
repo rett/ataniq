@@ -30,7 +30,9 @@ const (
 
 // callHolder makes one control request of the holder: it dials the control
 // socket in dir, writes the request frame and reads one response frame, waiting
-// at most wait for it, counted from the end of the write.
+// at most wait for it, counted from the end of the write. One deadline, dial
+// from the start of the call, covers the dial and the write together, so the
+// whole exchange ends within dial and wait.
 //
 // wrote tells how far it got. With wrote false nothing reached the holder: the
 // socket could not be dialled or the frame could not be written (err says
@@ -52,7 +54,10 @@ func callHolder(ctx context.Context, dir string, req wire.Request, dial, wait ti
 	// A context that ends (the daemon is stopping) ends the exchange.
 	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Unix(1, 0)) })
 	defer stop()
-	if err := conn.SetWriteDeadline(time.Now().Add(dial)); err != nil {
+	// The write shares the deadline of the dial: a context made by WithTimeout
+	// always has one, and it is the earlier of dial and the caller's own.
+	until, _ := dctx.Deadline()
+	if err := conn.SetWriteDeadline(until); err != nil {
 		return wire.Response{}, false, err
 	}
 	if err := wire.NewWriter(conn, wire.ControlRequests).WriteFrame(wire.TypeRequest, payload); err != nil {

@@ -27,7 +27,9 @@ const (
 	// the holder's own bound on a delivery (15 s) and 5 s.
 	DefaultInjectWait = 20 * time.Second
 	// DefaultDialTimeout bounds the dial of the holder's control socket and the
-	// write of one request frame.
+	// write of one request frame, the two together. With [DefaultInjectWait] it
+	// bounds an inject exchange at 25 s, under the 30 s the command's client
+	// waits ([CanaryInjectTimeout]).
 	DefaultDialTimeout = 5 * time.Second
 )
 
@@ -63,7 +65,7 @@ type Canary struct {
 	// [DefaultInjectWait].
 	InjectWait time.Duration
 	// DialTimeout bounds the dial of the holder's control socket and the write
-	// of a request frame; default [DefaultDialTimeout].
+	// of a request frame, the two together; default [DefaultDialTimeout].
 	DialTimeout time.Duration
 }
 
