@@ -122,20 +122,21 @@ func TestNewExtensionSet(t *testing.T) {
 		exts []Extension
 		bad  bool
 	}{
-		"none":                {nil, false},
-		"empty":               {[]Extension{}, false},
-		"one":                 {[]Extension{ok("a.b", "a.c")}, false},
-		"two":                 {[]Extension{ok("a.b"), ok("c.d")}, false},
-		"no operations":       {[]Extension{ok()}, false},
-		"nil extension":       {[]Extension{nil}, true},
-		"bad name":            {[]Extension{ok("a.b", "Ab.c")}, true},
-		"no dot":              {[]Extension{ok("canary")}, true},
-		"two dots":            {[]Extension{ok("a.b.c")}, true},
-		"base hello":          {[]Extension{ok("hello")}, true},
-		"base status":         {[]Extension{ok("status")}, true},
-		"repeated in one":     {[]Extension{ok("a.b", "a.b")}, true},
-		"repeated across two": {[]Extension{ok("a.b"), ok("c.d", "a.b")}, true},
-		"panicking":           {[]Extension{&fakeExtension{panicOps: true}}, true},
+		"none":                       {nil, false},
+		"empty":                      {[]Extension{}, false},
+		"one":                        {[]Extension{ok("a.b", "a.c")}, false},
+		"two":                        {[]Extension{ok("a.b"), ok("c.d")}, false},
+		"no operations":              {[]Extension{ok()}, true},
+		"no operations among others": {[]Extension{ok("a.b"), &fakeExtension{mutating: true}}, true},
+		"nil extension":              {[]Extension{nil}, true},
+		"bad name":                   {[]Extension{ok("a.b", "Ab.c")}, true},
+		"no dot":                     {[]Extension{ok("canary")}, true},
+		"two dots":                   {[]Extension{ok("a.b.c")}, true},
+		"base hello":                 {[]Extension{ok("hello")}, true},
+		"base status":                {[]Extension{ok("status")}, true},
+		"repeated in one":            {[]Extension{ok("a.b", "a.b")}, true},
+		"repeated across two":        {[]Extension{ok("a.b"), ok("c.d", "a.b")}, true},
+		"panicking":                  {[]Extension{&fakeExtension{panicOps: true}}, true},
 	} {
 		set, err := newExtensionSet(tc.exts)
 		if (err != nil) != tc.bad {

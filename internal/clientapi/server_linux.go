@@ -232,10 +232,10 @@ func newServer(h Handler, opts Options) *server {
 
 // Serve accepts connections on l until ctx ends, and answers the requests of
 // each with h and the extensions of opts.Extra. Before it accepts, it checks
-// the extensions: when one is nil, or has an operation name that is not
-// lower-case letters, digits and dashes around exactly one dot, or that
-// collides with a base operation or another extension's, Serve closes l and
-// returns an error. It takes ownership of l and closes it before it returns; a
+// the extensions: when one is nil, or has no operation, or has an operation
+// name that is not lower-case letters, digits and dashes around exactly one
+// dot, or that repeats another extension's, Serve closes l and returns an
+// error. It takes ownership of l and closes it before it returns; a
 // socket file that [Listen] bound is unlinked by that close. Serve returns nil
 // when ctx ended, and the accept error otherwise. When it returns, every
 // connection goroutine has ended; Serve waits for a handler call in flight, so
@@ -261,7 +261,7 @@ func Serve(ctx context.Context, l net.Listener, h Handler, opts Options) error {
 		return err
 	}
 	s := newServer(h, opts)
-	if len(exts.ops) > 0 || exts.mutations {
+	if len(exts.ops) > 0 {
 		s.ext = exts
 		s.counters.registerExt(exts.ops)
 	}

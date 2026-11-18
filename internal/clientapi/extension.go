@@ -13,10 +13,10 @@ import (
 // timeouts and the counters; an extension supplies only the operations and
 // what they answer. No release build registers one.
 type Extension interface {
-	// Operations returns the operation names the extension serves: lower-case
-	// letters, digits and dashes around exactly one dot, for example
-	// "canary.start". The list is read once, before the server accepts, and is
-	// fixed for the server's life.
+	// Operations returns the operation names the extension serves, at least
+	// one: lower-case letters, digits and dashes around exactly one dot, for
+	// example "canary.start". The list is read once, before the server
+	// accepts, and is fixed for the server's life.
 	Operations() []string
 	// Mutating tells whether any of the operations changes anything. It is
 	// read once, before the server accepts. The hello result says
@@ -104,9 +104,10 @@ type extensionSet struct {
 }
 
 // newExtensionSet validates the extensions and reads their operations and
-// mutation flags once. It returns an error for a nil extension, an operation
-// name that is not well-formed, or one that collides with a base operation or
-// another extension's. A panic in Operations or Mutating is an error.
+// mutation flags once. It returns an error for a nil extension, one with no
+// operations, an operation name that is not well-formed, or one that repeats
+// another extension's. A name that is well-formed has a dot, so it cannot be
+// "hello" or "status". A panic in Operations or Mutating is an error.
 func newExtensionSet(exts []Extension) (set *extensionSet, err error) {
 	defer func() {
 		if recover() != nil {
@@ -118,12 +119,15 @@ func newExtensionSet(exts []Extension) (set *extensionSet, err error) {
 		if ext == nil {
 			return nil, fmt.Errorf("clientapi: extension %d is nil", i)
 		}
-		for _, op := range append([]string(nil), ext.Operations()...) {
-			switch {
-			case !validOperationName(op):
+		ops := append([]string(nil), ext.Operations()...)
+		if len(ops) == 0 {
+			// Hello would otherwise say "mutations" for an extension that
+			// offers nothing to mutate.
+			return nil, fmt.Errorf("clientapi: extension %d has no operations", i)
+		}
+		for _, op := range ops {
+			if !validOperationName(op) {
 				return nil, fmt.Errorf("clientapi: extension %d has an operation name that is not well-formed", i)
-			case op == OpHello || op == OpStatus:
-				return nil, fmt.Errorf("clientapi: extension %d names a base operation", i)
 			}
 			if _, dup := set.byOp[op]; dup {
 				return nil, fmt.Errorf("clientapi: extension %d repeats operation %q", i, op)

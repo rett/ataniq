@@ -62,10 +62,8 @@ func extReq(id, op, params string) string {
 
 func TestServerWithoutExtensionsAnswersByteForByte(t *testing.T) {
 	for name, extra := range map[string][]Extension{
-		"nil":        nil,
-		"empty":      {},
-		"no ops":     {&fakeExtension{}},
-		"only a nil": nil,
+		"nil":   nil,
+		"empty": {},
 	} {
 		h := &stubHandler{version: "v-test", status: StatusResult{}}
 		ts := startServer(t, h, Options{Extra: extra})
@@ -558,6 +556,9 @@ func TestServeRefusesBadExtensionsBeforeItAccepts(t *testing.T) {
 		"repeated in one":     {newRecordingExtension(false, "a.b", "a.b")},
 		"repeated across two": {newRecordingExtension(false, "a.b"), newRecordingExtension(true, "c.d", "a.b")},
 		"panicking":           {&fakeExtension{panicOps: true}},
+		"no operations":       {&fakeExtension{}},
+		"mutating, no ops":    {&fakeExtension{mutating: true}},
+		"none after another":  {newRecordingExtension(false, "a.b"), &fakeExtension{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			l, path, err := Listen(socketDir(t))
