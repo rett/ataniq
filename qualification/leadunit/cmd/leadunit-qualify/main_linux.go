@@ -114,17 +114,15 @@ func (o options) limits() (l leadunit.Limits, lowered uint64, err error) {
 	if lowered, err = parseSize(orDefault(o.memoryLowered, defaultMemoryLowered)); err != nil {
 		return l, 0, fmt.Errorf("--memory-lowered: %w", err)
 	}
-	switch {
-	case l.MemoryMax < leadunit.MinMemoryMax || l.MemoryMax > leadunit.MaxMemoryMax:
-		err = fmt.Errorf("--memory-max %d is outside %d to %d bytes", l.MemoryMax, leadunit.MinMemoryMax, leadunit.MaxMemoryMax)
-	case l.SwapMax < leadunit.MinSwapMax || l.SwapMax > leadunit.MaxSwapMax:
-		err = fmt.Errorf("--swap-max %d is outside %d to %d bytes", l.SwapMax, leadunit.MinSwapMax, leadunit.MaxSwapMax)
-	case l.TasksMax < leadunit.MinTasksMax || l.TasksMax > leadunit.MaxTasksMax:
-		err = fmt.Errorf("--tasks-max %d is outside %d to %d", l.TasksMax, leadunit.MinTasksMax, leadunit.MaxTasksMax)
-	case lowered < leadunit.MinMemoryMax || lowered >= l.MemoryMax:
-		err = fmt.Errorf("--memory-lowered %d must be at least %d and below --memory-max %d", lowered, leadunit.MinMemoryMax, l.MemoryMax)
+	// The bounds are the specification's own: the unit would be refused with
+	// the same reason, so the command refuses it before it starts anything.
+	if err = l.Validate(); err != nil {
+		return l, 0, fmt.Errorf("limit flags (--memory-max, --swap-max, --tasks-max): %w", err)
 	}
-	return l, lowered, err
+	if lowered < leadunit.MinMemoryMax || lowered >= l.MemoryMax {
+		return l, 0, fmt.Errorf("--memory-lowered %d must be at least %d and below --memory-max %d", lowered, leadunit.MinMemoryMax, l.MemoryMax)
+	}
+	return l, lowered, nil
 }
 
 // parseArgs parses the harness arguments. It returns flag.ErrHelp for -h and
