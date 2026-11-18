@@ -53,6 +53,13 @@ import (
 // two journal lines of the desired state (set, then restored) remain in the
 // registry's journal; the role's record is as before.
 //
+// The unit gets memory, swap and task limits when [Options].Limits is set and
+// answers non-nil for the role: Start asks it once per launch, after the launch
+// intent is journaled and the command is built, and puts the answer in the
+// specification. With no function, or a nil answer, the unit has no limits.
+// Values outside the bounds of [leadunit.Spec.Validate] make the manager
+// refuse the start, which is a start that failed (below).
+//
 // Once the proof is in hand it sets the desired state to running, journals the
 // launch intent (new epoch, intent id, unit name, and the boot identity the
 // manager reported, so that a later reboot settles an intent that never got a
@@ -155,6 +162,9 @@ func (c *Controller) Start(ctx context.Context, role leadrole.Role) (leadregistr
 	}
 	if !parent.IsZero() {
 		spec.Parent = parent.UnitName()
+	}
+	if c.limits != nil {
+		spec.Limits = c.limits(role)
 	}
 	got, err := c.mgr.Start(ctx, spec)
 	switch {

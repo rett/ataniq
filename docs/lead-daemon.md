@@ -684,6 +684,12 @@ the role is left as it is. Only then does the lifecycle journal the launch
 intent, with the boot identity when the manager reported one, and call `Start`
 once. It never waits for readiness, and it never sets `ready`.
 
+The lifecycle's options have an optional function that gives the
+[limits](#properties-of-a-unit) of a role. Start asks it once per launch and
+puts the answer in the unit specification. With no function, or an answer of
+nil, the unit has no limits. Limits outside the bounds make the manager refuse
+the start, which is a start that failed.
+
 A reply that is lost is its own error. The caller inspects and does not start
 again. A unit with exactly this epoch and intent is adopted. Otherwise the
 intent stays pending and the role is shown `unknown` with the reason
