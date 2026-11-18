@@ -113,3 +113,29 @@ func TestCountAgainstOtherTerms(t *testing.T) {
 		t.Fatal("the defaults were changed")
 	}
 }
+
+// The zero value is not the defaults: it allows nothing, so it says "not met"
+// for every change that has a file, a line or a byte.
+func TestZeroFirstTermsAllowNothing(t *testing.T) {
+	var zero FirstTerms
+	for _, in := range []CountInput{
+		{Files: 1, SuiteClean: true},
+		{ChangedLines: 1, SuiteClean: true},
+		{NewBytes: 1, SuiteClean: true},
+	} {
+		if c := zero.Count(in); c.Met {
+			t.Errorf("the zero terms are met by %+v", in)
+		}
+		if c := Count(in); !c.Met {
+			t.Errorf("the defaults are not met by %+v: %s", in, c.Reason)
+		}
+	}
+	c := zero.Count(CountInput{Files: 1, ChangedLines: 1, NewBytes: 1, SuiteClean: true})
+	want := "1 files, and the terms allow 0; 1 changed lines, and the terms allow 0; 1 new bytes, and the terms allow 0 (" + VerdictRunsNote + ")"
+	if c.Met || c.Reason != want {
+		t.Fatalf("reason %q, want %q", c.Reason, want)
+	}
+	if c := zero.Count(CountInput{SuiteClean: true}); !c.Met {
+		t.Fatalf("a change with nothing in it: %+v", c)
+	}
+}
