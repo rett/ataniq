@@ -134,6 +134,7 @@ const (
 	msgTicketFile   = "the holder took the ticket but the ticket file could not be written"
 	msgFolder       = "the role's runtime folder is missing or not private"
 	msgRegistryNo   = "the registry refused"
+	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
 	msgStopping     = "the daemon is stopping"
 	attachRoleWrite = string(wire.RoleWriter)
@@ -298,7 +299,12 @@ func (x *canaryExt) record(en leadcanary.Entry) {
 }
 
 // failure maps the error of a registry or lifecycle call to a fixed answer and
-// logs the error itself.
+// logs the error itself. A refusal of the registry or of the lifecycle is the
+// error refused; what could not be carried out or is not known is unavailable.
+// An error may match more than one case (the lifecycle joins what it found
+// with what the registry then said), so the order is: the lifecycle's own
+// refusals, then what the lifecycle could not do or does not know, then a
+// refusal of the registry with nothing more specific about it.
 func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 	x.logf("canary %s: %s", op, SafeText(err.Error()))
 	switch {
@@ -310,6 +316,9 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return refused("the role is not run by this daemon")
 	case errors.Is(err, leadlifecycle.ErrPreflight):
 		return refused("the preflight refused the start")
+	case errors.Is(err, leadlifecycle.ErrForeignUnit):
+		// Before ErrUnitLoaded, which the lifecycle wraps beside it.
+		return refused(msgForeignUnit)
 	case errors.Is(err, leadlifecycle.ErrUnitLoaded):
 		return refused("a unit with the role's name is loaded")
 	case errors.Is(err, leadunit.ErrInvalidSpec):
@@ -328,6 +337,10 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return unavailable("the stop is not proven; the role is shown unknown")
 	case errors.Is(err, leadlifecycle.ErrIntentPending):
 		return unavailable("the launch intent is not settled yet")
+	case errors.Is(err, leadregistry.ErrStaleEpoch),
+		errors.Is(err, leadregistry.ErrStateTransition),
+		errors.Is(err, leadregistry.ErrEpochExhausted):
+		return refused(msgRegistryNo)
 	}
 	return unavailable(msgFailed)
 }
