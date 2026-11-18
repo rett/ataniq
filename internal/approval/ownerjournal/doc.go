@@ -122,6 +122,27 @@
 //     those the journal lacks. Such a decision did not come through the
 //     owner's console; the caller refuses it and raises an alert.
 //
+// # The limit, the days and the count
+//
+// The journal keeps what the daily card limit is judged and shown from. It
+// holds none of the limit's rules; those are the limits package's, and the
+// caller applies them before it journals.
+//
+//   - Each change of a project's limit is a limit entry
+//     ([Store.AppendLimit]); [Store.Limit] gives the present number and the
+//     time of the last raise, [Store.LimitChanges] every change.
+//   - A card use is an approve journaled as a decision. [Store.CardUses]
+//     gives their times and [Store.Days] the days of the limit's view, each
+//     with its uses and its marks.
+//   - A day's marks come from alert entries ([Store.AppendAlert]): one for
+//     a day that reached the limit, one for an alert of another kind.
+//   - For every request the caller journals whether it would have met the
+//     terms of the first standing approval ([Store.AppendCount]);
+//     [Store.Counts] and [Store.CountTotals] read it back.
+//
+// A day is a calendar day in the location of the time the caller hands in.
+// The journal stores moments, not dates.
+//
 // # Since he last looked
 //
 // The looked entries hold one mark for every surface: the time up to which
