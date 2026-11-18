@@ -405,6 +405,50 @@ func TestAFailureAfterTheEndWasReached(t *testing.T) {
 	}
 }
 
+// After a failure nothing is read, so Home must not let go of the pages
+// that are held to read the first page again: where the first page was let
+// go before the failure, Home leaves the screen as it is.
+func TestHomeAfterAFailureKeepsTheScreen(t *testing.T) {
+	pages := paginate(numbered(2000), 20, 0)
+	fail := false
+	r := newRig(t, 60, 12, func(n int) ([]string, []bool, int, error) {
+		if fail {
+			return nil, nil, 0, hostileErr
+		}
+		return serve(pages)(n)
+	})
+	for i := 0; i < 30; i++ {
+		r.press(keyEnd)
+	}
+	fail = true
+	// Scrolling up comes to a page that was let go, and reading it fails.
+	for i := 0; r.m.Err() == nil; i++ {
+		if i > 100 {
+			t.Fatal("no page is read on the way up")
+		}
+		r.press(keyPgUp)
+	}
+	if r.m.lo == 0 {
+		t.Fatal("the first page is held: the test does not reach what it tests")
+	}
+	before, calls := r.patchRows(), len(r.src.calls)
+	if !strings.HasPrefix(before[0].text, "l") {
+		t.Fatalf("after the failure the first row is %q", before[0].text)
+	}
+	r.press(keyHome, keyHome)
+	if got := r.patchRows(); !slices.Equal(got, before) {
+		t.Fatalf("Home after the failure changed the screen:\n%+v\nwas\n%+v", got, before)
+	}
+	if len(r.src.calls) != calls {
+		t.Fatalf("pages read after the failure: %v", r.src.calls[calls:])
+	}
+	// What is held can still be scrolled.
+	r.press(keyJ)
+	if got := r.patchRows(); got[0] != before[1] {
+		t.Fatalf("a row down after Home: first row %q, want %q", got[0].text, before[1].text)
+	}
+}
+
 // A page that does not fit the others ends the reading as a failed one
 // does.
 func TestPagesThatDoNotFit(t *testing.T) {

@@ -184,15 +184,13 @@ func (m *Model) wrapper() wrapper {
 	return wrapper{width: max(2, m.w-marginCells), graphemes: m.graphemes}
 }
 
-// lockMods are lock states a terminal may report with a key. They never
-// change which key it is.
-const lockMods = tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
-
 // Update handles a message. The pager acts on the answers to its own page
 // requests and on its keys: j and k and the arrows scroll by a row, PgDn
 // and PgUp by a screen, Home goes to the top, End to the end of what is
 // read so far (and reads on), and Esc returns Close. Every other message
-// and key is left alone. The command, when not nil, is to be run by the
+// and key is left alone. A lock state that a terminal reports with a key
+// (Caps Lock, Num Lock, Scroll Lock) does not change which key it is: the
+// key's name leaves it out. The command, when not nil, is to be run by the
 // parent; it never ends the program.
 func (m *Model) Update(msg tea.Msg) (tea.Cmd, Action) {
 	switch v := msg.(type) {
@@ -200,7 +198,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Cmd, Action) {
 		m.onPage(v)
 		return m.settle(), None
 	case tea.KeyPressMsg:
-		v.Mod &^= lockMods
 		key := v.String()
 		if key == "esc" {
 			return nil, Close
