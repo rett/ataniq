@@ -1,6 +1,7 @@
 - Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
   is unqualified, runs on Linux only (elsewhere it builds and exits with a
-  message) and nothing uses it yet. It has two modes. `ataniq-probe --spec PATH
+  message), and only the opt-in lead sandbox qualification harness launches it:
+  no holder and no daemon uses it. It has two modes. `ataniq-probe --spec PATH
   --report-fd N -- AGENT ARGV...` runs the inside checks of the proposal, writes
   exactly one report line to descriptor N (and nothing else to it: the holder
   takes that line as its signal and fails the start on any further byte), and

@@ -127,9 +127,10 @@
 //
 // The package is provisional and unqualified: its names and behaviour may
 // change until a qualification run has covered it. The daemon is Linux only,
-// the package is not: it builds on every system, so that the whole tree
-// builds there. On another system it is only paths.go, exit.go and doc.go,
-// which carry no file name suffix because nothing in them is system specific
+// the package is not: it builds on every system, as do the daemon's other
+// packages (the whole tree builds on macOS, not yet on Windows). On another
+// system it is only paths.go, exit.go and doc.go, which carry no file name
+// suffix because nothing in them is system specific
 // (the default folders, the socket and lock paths, the exit codes). The
 // daemon, the client and the status text are in the files with the _linux
 // suffix, which only a Linux build compiles. The command builds elsewhere as
