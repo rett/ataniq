@@ -1,6 +1,7 @@
 package canary
 
 import (
+	"encoding/json"
 	"os"
 	"os/user"
 	"regexp"
@@ -20,6 +21,7 @@ const (
 	templateFile = "templates/canary-intake.json"
 	noteFile     = "templates/README.md"
 	launcher     = "/usr/bin/bwrap"
+	sandboxHost  = "ataniq-canary-sandbox"
 )
 
 func read(t *testing.T, path string) []byte {
@@ -154,8 +156,8 @@ func checkCommon(t *testing.T, what string, flags []flag) {
 	if !hasFlag(flags, "--chdir") {
 		t.Errorf("%s: --chdir is missing: bubblewrap would name the caller's folder in its warning", what)
 	}
-	if !hasFlag(flags, "--hostname") {
-		t.Errorf("%s: --hostname is missing: the host's name would be visible inside", what)
+	if !hasFlag(flags, "--hostname", sandboxHost) {
+		t.Errorf("%s: --hostname %s is missing: the host's name would be visible inside, or a name is written in the file", what, sandboxHost)
 	}
 	if got := sources(flags, "--ro-bind"); len(got) == 0 || got[0] != "/usr" {
 		t.Errorf("%s: the first read-only bind is %q, want /usr", what, got)
@@ -250,9 +252,10 @@ var (
 )
 
 // leaks returns what in text names a machine, a user or a home path.
-// Names found at run time count only as a path component or beside an @,
-// which is how a leak looks, so that a machine named like a word of the file
-// does not fail the test.
+// Names found at run time count here only as a path component or beside an
+// @, which is how a leak looks in prose, so that a machine named like a word
+// of the file does not fail on the strict rule that wholeWords applies to
+// the note and wholeStrings to the template.
 func leaks(text string, names []string, homes []string) []string {
 	var out []string
 	if m := homePath.FindString(text); m != "" {
@@ -279,6 +282,60 @@ func leaks(text string, names []string, homes []string) []string {
 	return out
 }
 
+// wholeWords returns the names that text holds as a whole word, in any
+// case: a bare name, not only one beside a path separator or an @.
+func wholeWords(text string, names []string) []string {
+	var out []string
+	for _, n := range names {
+		re := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(n) + `($|[^A-Za-z0-9_-])`)
+		if re.MatchString(text) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// stringsOf returns every string value in a decoded JSON document.
+func stringsOf(v any) []string {
+	switch v := v.(type) {
+	case string:
+		return []string{v}
+	case []any:
+		var out []string
+		for _, e := range v {
+			out = append(out, stringsOf(e)...)
+		}
+		return out
+	case map[string]any:
+		var out []string
+		for _, e := range v {
+			out = append(out, stringsOf(e)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// wholeStrings returns the names that are exactly one string of the JSON
+// document, in any case: a host name or a user name stands alone as an
+// argument.
+func wholeStrings(t *testing.T, doc []byte, names []string) []string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(doc, &v); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range stringsOf(v) {
+		for _, n := range names {
+			if strings.EqualFold(s, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
 // hostNames returns the names of this host and of this user, as the
 // scanner looks for them. A name of two letters or fewer, and the names of
 // the system accounts, are not looked for.
@@ -287,6 +344,11 @@ func hostNames() (names, homes []string) {
 		n = strings.TrimSpace(n)
 		if len(n) <= 2 || n == "root" || n == "nobody" {
 			return
+		}
+		for _, have := range names {
+			if have == n {
+				return
+			}
 		}
 		names = append(names, n)
 	}
@@ -314,6 +376,14 @@ func TestNoMachineNames(t *testing.T) {
 			t.Errorf("%s names something that belongs to one machine: %s", path, strings.Join(l, "; "))
 		}
 	}
+	// A string of the template that is exactly a name of this machine is a
+	// leak too, and so is a bare name in the note.
+	for _, n := range wholeStrings(t, read(t, templateFile), names) {
+		t.Errorf("%s holds the name %s of this machine as a whole string", templateFile, n)
+	}
+	for _, n := range wholeWords(string(read(t, noteFile)), names) {
+		t.Errorf("%s holds the name %s of this machine as a word", noteFile, n)
+	}
 }
 
 // The scanner must see what it is for.
@@ -337,6 +407,22 @@ func TestScannerFindsLeaks(t *testing.T) {
 		if !strings.Contains(l, c.want) {
 			t.Errorf("scan of %q gave %q, want %q", c.text, l, c.want)
 		}
+	}
+	// A bare name: the two ways it is found, and what it is not.
+	if l := wholeWords("the owner runs ExampleUser on examplehost.", names); len(l) != 2 {
+		t.Errorf("whole-word scan of a note gave %q, want both names", l)
+	}
+	for _, text := range []string{"examplehosts", "my-examplehost", "exampleuser2"} {
+		if l := wholeWords(text, names); len(l) > 0 {
+			t.Errorf("whole-word scan of %q found %v", text, l)
+		}
+	}
+	planted := []byte(`{"serve": {"argv": ["--hostname", "ExampleHost"]}, "x": ["exampleuser", "/usr"]}`)
+	if l := wholeStrings(t, planted, names); len(l) != 2 {
+		t.Errorf("whole-string scan of a template gave %q, want both names", l)
+	}
+	if l := wholeStrings(t, []byte(`{"a": ["--hostname", "`+sandboxHost+`", "/ataniq/home"]}`), names); len(l) > 0 {
+		t.Errorf("whole-string scan found %v in a clean template", l)
 	}
 	for _, clean := range []string{
 		"/ataniq/mirror/{project}.git", "--unshare-user", "/usr/bin/git-upload-pack",
@@ -362,5 +448,26 @@ func TestNoteLabels(t *testing.T) {
 	}
 	if !strings.Contains(note, "form only") {
 		t.Error("the note must say that the test checks form only")
+	}
+}
+
+// The host name of the sandbox is pinned: a bare name in its place, the
+// host's own or any other, makes the form check fail.
+func TestHostNameIsPinned(t *testing.T) {
+	argv := func(name string) []string {
+		return []string{launcher, "--hostname", name, "--ro-bind", "/usr", "/usr", "/usr/bin/true"}
+	}
+	for _, c := range []struct {
+		name string
+		ok   bool
+	}{
+		{sandboxHost, true},
+		{"build-host-07", false},
+		{"examplehost", false},
+	} {
+		flags, _ := split(t, argv(c.name))
+		if got := hasFlag(flags, "--hostname", sandboxHost); got != c.ok {
+			t.Errorf("--hostname %s: accepted %v, want %v", c.name, got, c.ok)
+		}
 	}
 }
