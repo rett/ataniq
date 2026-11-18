@@ -112,7 +112,11 @@ func (m *Model) restart() tea.Cmd {
 		m.notice = "There is no recording to replay in this view."
 		return nil
 	}
-	m.Close()
+	// Stop the replay's pane only: the refresh outlives a replay, and Close
+	// would end it for good.
+	if m.rep.pane != nil {
+		m.rep.pane.Close()
+	}
 	m.rep = replay{gen: m.rep.gen}
 	m.focus = consoleFocus
 	m.sel = selection{}

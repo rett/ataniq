@@ -377,6 +377,53 @@ func TestTheRequestEndsWithItsPeriodAndWithTheConsole(t *testing.T) {
 	}
 }
 
+// endedSource is a Refresher that records, for each call of Refresh, whether
+// the context it was given had already ended.
+type endedSource struct {
+	mu    sync.Mutex
+	ended []bool
+}
+
+func (e *endedSource) Snapshot() Projection { return leadsOf("alpha:one") }
+
+func (e *endedSource) Refresh(ctx context.Context) (Projection, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ended = append(e.ended, ctx.Err() != nil)
+	return leadsOf("alpha:one"), ctx.Err()
+}
+
+func TestTheRefreshOutlivesAReplay(t *testing.T) {
+	// A view with no label replays the recording on "r". That stops the
+	// replay's pane and nothing else: the next request's context is not one
+	// that has already ended.
+	src := &endedSource{}
+	r := newSourceRig(t, src, 140, 45, Options{})
+	if r.m.labelled() || r.m.rep.pane == nil {
+		t.Fatal("the view has no recording to replay")
+	}
+	r.refresh(0)
+	before := r.m.rep.pane
+	r.typ("r")
+	if r.m.rep.pane == nil || r.m.rep.pane == before {
+		t.Fatal("the recording was not started again")
+	}
+	r.refresh(3 * time.Second)
+	r.refresh(3 * time.Second)
+	if got := src.ended; len(got) != 3 || got[0] || got[1] || got[2] {
+		t.Fatalf("the contexts that had ended: %v", got)
+	}
+	if v := r.view(); strings.Contains(v, "as of") {
+		t.Fatalf("the view shows an age after a replay:\n%s", v)
+	}
+	// Close still ends the refresh.
+	r.m.Close()
+	r.refresh(3 * time.Second)
+	if got := src.ended; len(got) != 4 || !got[3] {
+		t.Fatalf("after Close: %v", got)
+	}
+}
+
 func TestSelectionSurvivesARefresh(t *testing.T) {
 	src := &fakeSource{p: leadsOf("alpha:a1,a2", "beta:b1,b2", "gamma:g1")}
 	r := newSourceRig(t, src, 140, 45, Options{Label: testLabel})
