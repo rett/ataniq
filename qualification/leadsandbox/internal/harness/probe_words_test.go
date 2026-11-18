@@ -99,15 +99,19 @@ func TestPlanUsesTheOptionWordsTheProbeParses(t *testing.T) {
 	if fields := strings.Fields(passFDs); len(fields) < 2 || fields[1] != plan.PassFDsMode {
 		t.Errorf("the documented mode word is not %q: %q", plan.PassFDsMode, passFDs)
 	}
+	// The probe may document more options than the plan uses; every option
+	// the plan names and writes must be a documented one.
 	documented := optionWords(passFDs)
-	if strings.Join(documented, " ") != plan.PassFDsRead+" "+plan.PassFDsWrite {
-		t.Errorf("the probe documents the options %q for its pass-through mode, the plan names %q and %q", documented, plan.PassFDsRead, plan.PassFDsWrite)
+	for _, w := range []string{plan.PassFDsRead, plan.PassFDsWrite} {
+		if !contains(documented, w) {
+			t.Errorf("the plan names the option %q, and the probe documents %q for its pass-through mode", w, documented)
+		}
 	}
 	words, values := optionsAt(mode)
 	seen := map[string]bool{}
 	for i, w := range words {
 		seen[w] = true
-		if w != plan.PassFDsRead && w != plan.PassFDsWrite {
+		if !contains(documented, w) {
 			t.Errorf("the plan passes %q to the pass-through mode, which the probe does not document", w)
 		}
 		if !regexp.MustCompile(`^[0-9]+=/`).MatchString(values[i]) {

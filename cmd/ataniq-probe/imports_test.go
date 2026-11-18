@@ -11,13 +11,24 @@ import (
 
 // TestImportGuard keeps the command small: it reads the direct imports of its
 // non-test files and refuses a process package, any network package, cgo and
-// every package of this module except the two the probe is written against
-// (assert and profile). golang.org/x/sys/unix is the one module outside the
-// standard library it may use.
+// every package of this module except the three the probe is written against
+// (assert, profile and safefile). golang.org/x/sys/unix is the one module
+// outside the standard library it may use.
+//
+// safefile is allowed because the pass-through mode walks each bind source by
+// handle (rule B1) and must not have a second walker of its own: the openat2
+// lookup beneath a folder handle, with the type read from the descriptor, is
+// the one the holder's own checks use. The package is small, imports only the
+// standard library and golang.org/x/sys/unix, starts no process and uses no
+// network, so the probe stays a static program with that one outside module.
+// The package mountpoints, which holds the holder's check of the same walks,
+// stays out: it is the holder's side (it resolves real paths, makes mount
+// points and reads the tree's git files), and the probe needs none of that.
 func TestImportGuard(t *testing.T) {
 	allowedOwn := map[string]bool{
-		"ataniq/internal/leadsandbox/assert":  true,
-		"ataniq/internal/leadsandbox/profile": true,
+		"ataniq/internal/leadsandbox/assert":   true,
+		"ataniq/internal/leadsandbox/profile":  true,
+		"ataniq/internal/leadsandbox/safefile": true,
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {
