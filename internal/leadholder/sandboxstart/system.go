@@ -204,4 +204,9 @@ type Started struct {
 	Executables []ExeRecord
 	Versions    ToolVersions
 	Plan        *plan.Plan
+	// Notes are what the sequence noticed and did not refuse on: the note of
+	// the bubblewrap release check when the version line does not give a
+	// release (so it is not known whether bubblewrap has --bind-fd). The
+	// holder records them with the start.
+	Notes []string
 }

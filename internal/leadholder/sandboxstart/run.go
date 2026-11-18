@@ -110,6 +110,7 @@ type attempt struct {
 
 	exes     []ExeRecord
 	versions ToolVersions
+	notes    []string
 	// walk is what the last check of the mount points found (the steps check
 	// and recheck): the fact the outside half of assertion 7 is made from.
 	walk assert.StartWalk
@@ -227,6 +228,7 @@ func (a *attempt) execute() (Started, error) {
 		Steps:          a.rec.list(),
 		Executables:    a.exes,
 		Versions:       a.versions,
+		Notes:          a.notes,
 		Plan:           a.pl,
 	}, nil
 }
@@ -383,8 +385,12 @@ func (a *attempt) toolVersions() error {
 	a.versions = a.sys.ToolVersions(a.ctx, ToolPaths{Pasta: a.in.Executables.Pasta, Bwrap: a.in.Executables.Bwrap})
 	// The plan binds every source Ataniq supplies from a descriptor: a
 	// bubblewrap whose release is known to be too old for that is refused.
-	if _, err := checkBwrapBindFD(a.versions.Bwrap); err != nil {
+	note, err := checkBwrapBindFD(a.versions.Bwrap)
+	if err != nil {
 		return err
+	}
+	if note != "" {
+		a.notes = append(a.notes, note)
 	}
 	if len(a.versions.Errors) > 0 {
 		return fmt.Errorf("%d tool version(s) could not be read: %s", len(a.versions.Errors), strings.Join(a.versions.Errors, "; "))
