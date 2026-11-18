@@ -42,6 +42,7 @@ func TestDaemonFlagSelectsTheDaemonView(t *testing.T) {
 func TestDaemonRefusals(t *testing.T) {
 	notFixture := "--daemon cannot be used with --demo, --recording or --linger"
 	notAttach := "--daemon cannot be used with --attach, --ticket-file, --viewer or --shift-enter"
+	notReturnKey := "--daemon cannot be used with --return-key: its view has no session focus to leave"
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -63,7 +64,13 @@ func TestDaemonRefusals(t *testing.T) {
 		{[]string{"--daemon"}, "invalid flags"},
 		{[]string{"--daemon", "d", "extra"}, "positional"},
 		{[]string{"--daemon", "d", "--theme", "blue"}, "dark or light"},
-		{[]string{"--daemon", "d", "--return-key", "ctrl+c"}, "--return-key"},
+		// A return key that is not valid is refused as such, before the mode.
+		{[]string{"--daemon", "d", "--return-key", "ctrl+c"}, "--return-key: "},
+		{[]string{"--daemon", "d", "--return-key", "ctrl+g"}, notReturnKey},
+		{[]string{"--return-key", "ctrl+]", "--daemon", "d"}, notReturnKey},
+		// The other modes are named before the return key.
+		{[]string{"--daemon", "d", "--demo", "--return-key", "ctrl+g"}, notFixture},
+		{[]string{"--daemon", "d", "--viewer", "--return-key", "ctrl+g"}, notAttach},
 	} {
 		var out, err bytes.Buffer
 		if got := run(tc.args, &out, &err); got != 2 || !strings.Contains(err.String(), tc.want) || strings.Count(err.String(), "Usage:") != 1 {
@@ -83,6 +90,8 @@ func TestDaemonDiagnosticsDoNotEchoArguments(t *testing.T) {
 		{"--daemon", secret, "--attach", secret, "--ticket-file", secret},
 		{"--daemon", secret, "--viewer"},
 		{"--daemon", secret, "--linger", secret},
+		{"--daemon", long, "--return-key", "ctrl+g"},
+		{"--daemon", secret, "--return-key", "ctrl+" + secret},
 		{"--daemon", long + "\x00"},
 		{"--daemon", secret, long},
 		{"--daemon" + secret},

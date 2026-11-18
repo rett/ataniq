@@ -140,6 +140,9 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 			return usageError("--daemon cannot be used with --demo, --recording or --linger")
 		case given["attach"] || given["ticket-file"] || given["viewer"] || given["shift-enter"]:
 			return usageError("--daemon cannot be used with --attach, --ticket-file, --viewer or --shift-enter")
+		case given["return-key"]:
+			// The return key leaves the session pane, and this view has none.
+			return usageError("--daemon cannot be used with --return-key: its view has no session focus to leave")
 		case *daemon == "":
 			return usageError("--daemon needs a path")
 		case strings.ContainsRune(*daemon, 0):
