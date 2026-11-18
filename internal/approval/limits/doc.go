@@ -1,4 +1,5 @@
-// Package limits holds the rules of the daily card limit.
+// Package limits holds the rules of the daily card limit, and the count from
+// the first card.
 //
 // A card is a request that the owner approves or denies by hand. The daily
 // card limit is how many approved cards a project may have in one day. It
@@ -30,6 +31,12 @@
 // value, "now"; the package never reads a clock by itself. A decision made at
 // 23:59 and one made at 00:00 in that location are on two days, whatever
 // their UTC dates are.
+//
+// The count from the first card is a different thing with a similar purpose:
+// Count says whether one change, given as plain numbers, would have met the
+// terms of the First template (FirstTerms). It is recorded for every request
+// so that the owner can see how many cards a standing approval would have
+// taken.
 //
 // The package is pure. It opens no file, keeps no store and imports nothing
 // of this repository. When a rule says no, the answer is a *Refusal with a
