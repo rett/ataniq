@@ -572,7 +572,8 @@ func TestTheDaemonViewFollowsTheDaemon(t *testing.T) {
 	daemon.set(consoleclient.Result{State: consoleclient.StateNoDaemon, Text: "no daemon answers", NextStep: "start the daemon"})
 	screen = d.until("no daemon again", func(v string) bool { return strings.Contains(v, "no daemon answers") })
 	plain(screen)
-	if strings.Contains(screen, "alpha") {
+	// The leads are not kept under an age: the state is all the view shows.
+	if strings.Contains(screen, "alpha") || strings.Contains(screen, "as of") {
 		t.Fatal(screen)
 	}
 	// The cockpit at its full size says the same.

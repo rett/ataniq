@@ -4,7 +4,6 @@
   each one's state, and asks the daemon again every few seconds. The view is
   read-only: every control stays unavailable with its reason, and there is no
   session terminal in it. With no daemon, a slow one or one that speaks
-  another protocol, it shows that plainly with the next step, and keeps
-  asking; when a refresh fails it keeps the last view and the header says how
-  old it is. `--daemon` cannot be combined with `--demo` or `--attach`. The
-  view is provisional and is not a qualification.
+  another protocol, it shows that plainly with the next step in place of the
+  leads, and keeps asking. `--daemon` cannot be combined with `--demo` or
+  `--attach`. The view is provisional and is not a qualification.
