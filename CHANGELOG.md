@@ -8,6 +8,268 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.0.10] - 2026-11-17
 
+### Added
+
+- Add `ataniq-holder`, the per-agent holder process: one process for one
+  hosted agent. It owns the agent's terminal (the PTY master and the emulator
+  that mirrors its screen), the attach and control sockets, the event log and
+  the final record, takes the role lock, and writes a state file (`holder.json`)
+  before it starts the agent. The agent's environment is exactly the `--env`
+  list and nothing of the holder's own. It refuses to run without `--scratch`
+  (exit 2), because it launches no sandbox, so it hosts only a scratch agent
+  (the lead sandbox proposal is built beside it, unqualified, and not joined to
+  it); it also refuses to start when `dev.tty.legacy_tiocsti` is not 0, when a
+  signal the agent needs is ignored, or when the state or runtime folder is not
+  a private directory of the user. SIGTERM, SIGINT, SIGQUIT, SIGUSR1 and
+  SIGUSR2 stop it with a final record, and the record of an earlier epoch is
+  kept as `final.json.previous`. A second holder for a held role exits 3 and
+  changes nothing of the first. It is provisional and unqualified, and hosts no
+  real lead; `ataniq-scratch` starts it.
+- Add `ataniq-intake`, a provisional owner command for the reviewed intake of
+  a managed lead's work through the exchange mirror, a bare repository in the
+  state folder that is the only way out of a lead. `init` creates the mirror,
+  `fetch` brings a lead's branches into it, `branches` lists them, `review`
+  shows the change and lists under "Needs your sign-off" each path that needs
+  its own approval, with its flag kind (and, with `--records`, the gates of
+  the verification records of the tip). The kinds are `exec-config` (a path in
+  the execution-config set), `symlink`, `submodule`, `aliased` (a changed path
+  in a folder that a symbolic link with an execution-config name stands for)
+  and `history-only` (a path of one of those kinds in some commit of the
+  branch that the net change does not show, such as one added and removed
+  again; it still enters the history). `verify` runs
+  gates in a sandbox and stores the result in the records folder, and
+  `integrate` moves an upstream branch to a reviewed, verified tip,
+  fast-forward only. The sign-off is typed as arguments (`--accept-change`,
+  and one `--accept-path` for each flagged path); the command never asks a
+  question. Everything a lead wrote is shown escaped and labelled "unverified
+  lead data". The same `--path-rule` list must be given to `review` and to
+  `integrate`. The command does not touch a working checkout, which gets the
+  commits by its own fetch from the mirror. No sandbox is shipped or
+  qualified: `fetch` and `verify` run the commands of a template file that the
+  owner writes, and refuse without a usable one. A verification pass is
+  evidence, not proof, and after the sign-off the code runs as the owner like
+  any merged code. See [the lead intake guide](docs/lead-intake.md).
+- Add `ataniq-probe`, a static helper command of the lead sandbox proposal. It
+  is unqualified, runs on Linux only (elsewhere it builds and exits with a
+  message), and only the opt-in lead sandbox qualification harness launches it:
+  no holder and no daemon uses it. It has two modes. `ataniq-probe --spec PATH
+  --report-fd N -- AGENT ARGV...` runs the inside checks of the proposal, writes
+  exactly one report line to descriptor N (and nothing else to it: the holder
+  takes that line as its signal and fails the start on any further byte), and
+  exits 97 without starting the agent when the report does not allow a start.
+  Otherwise it gives the agent a new session with descriptor 0 as its
+  controlling terminal when that is a terminal, makes every descriptor above 2
+  close-on-exec so the exec closes it, and executes the agent with the
+  environment as Go reads it (os.Environ: a name that appears twice is passed on
+  once, with its first value, and an entry without `=` as it is). A usage error
+  or any failure to read the spec, write the report, get the terminal or execute
+  the agent is exit 98. The agent path is checked first, before the report is
+  written, to be an executable regular file, otherwise it is exit 98 with no
+  report; a file that the kernel then refuses to execute is exit 98 after a good
+  report, which a holder cannot tell from an agent that exited 98. `ataniq-probe
+  pass-fds [--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...` runs on
+  the host between pasta and bubblewrap, because pasta closes the descriptors it
+  inherits: it takes descriptor numbers in decimal digits without a leading
+  zero, opens up to 8 files (read-only regular files, or write-only appending
+  regular files and FIFOs, never created or truncated, links not followed; every
+  path must lie in folders only the holder can write, as the checks on a path
+  are not atomic with the open), places each at exactly its number (a FIFO that
+  no process has open for reading is refused at once and does not wait), makes
+  every other descriptor above 2 close-on-exec and executes the command with the
+  environment as Go reads it, as above; any error is exit 98 and nothing is
+  executed. Both modes refuse (exit 98, one line) a number that is one of the Go
+  runtime's own descriptors, which it holds when a standard stream was
+  non-blocking at start: a target number in the pass-through mode, the report
+  descriptor in the inside mode.
+- Add `ataniq-scratch`, a development launcher that hosts a scratch agent (no
+  project, no lead role, a disposable home) in a holder, in a transient systemd
+  user unit or as a direct child with `--direct`, and stands in for the daemon
+  to issue attach tickets over the holder's control socket. `start`, `ticket`,
+  `status`, `release-writer` and `stop` are its subcommands. `start` takes the
+  agent as an absolute path, because the holder does no `PATH` search, and
+  refuses any other with exit status 2. It is provisional and unqualified, and
+  not for a real lead.
+- Add `ataniqd`, a provisional and unqualified daemon skeleton. It is
+  read-only: it starts, stops and manages no unit and defines no lead, and no
+  flag changes that. `ataniqd run [--state-dir DIR] [--runtime-dir DIR]` (state
+  defaults to `$XDG_STATE_HOME/ataniq`, else `$HOME/.local/state/ataniq`;
+  runtime to `$XDG_RUNTIME_DIR/ataniq`, with no default and no fallback to a
+  shared folder when `XDG_RUNTIME_DIR` is unset) refuses to run as root,
+  creates the state folder with mode 0700 and refuses one that is not the
+  caller's or is open to group or others, takes `daemon.lock` there (a second
+  daemon exits with its own code and names the lock as held, with the pid in
+  the file shown as a hint, not as proof), takes a second lock,
+  `daemon.sock.lock` in the runtime folder, opens the registry journal in
+  `registry/` (a corrupt one stops the daemon and nothing is repaired),
+  reconciles once, removes a stale socket only once it holds both locks, and
+  serves `hello` and `status` on `daemon.sock` until SIGTERM or SIGINT. The
+  runtime folder lock keeps two daemons with different state folders and one
+  runtime folder from taking each other's socket: the second exits with code 17
+  and says that another daemon serves that folder, with the pid in the lock
+  shown as a hint. It is refused before it opens its registry, so it has
+  reconciled nothing and written nothing to its journal. A socket path that is
+  too long for a Unix socket is refused before the runtime folder or the lock
+  file is made. A socket or lock file that a crashed daemon left does not block
+  the next start. At shutdown it stops accepting, waits for the connections for
+  a bounded time, closes the listener (which removes the socket) under the
+  runtime folder lock, closes the registry, releases the runtime folder lock
+  and releases the daemon lock last;
+  when the server does not end in that time it exits with code 19, says what is
+  left and closes the listener; the registry and both locks are left to the end
+  of the process. It never stops a lead or any unit. The reconcile reads the
+  units and may write the registry's journal, the states stopped, ended or
+  unknown with their proof or reason and the outcomes adopted or abandoned of
+  launch intents, and, once it has acted on every role of a registry whose
+  journal was cut when it was opened, the acknowledgement of that cut, which
+  is a record of its own kind in the journal; it starts, stops and signals
+  nothing. A cut that was acknowledged shows no more in `status`; a cut that
+  stays unacknowledged (the manager did not answer for a role, or the
+  reconcile stopped first) shows as the reconcile not completed, and the next
+  start acts on it again. When systemd cannot be
+  asked (also when the registry has no role to ask about), when any call to it
+  failed during the reconcile, or when the reconcile ran out of time (also in
+  its last step), the daemon still serves the roles as the registry has them,
+  with the reconcile shown as not completed, which is also how an
+  unacknowledged recovery of the registry shows, as the protocol has no field
+  for the reason. An answer such as "not loaded" is not a failure. Reconcile
+  runs at start only, not on a timer. Each start-up step that fails has its own
+  exit code (10 to 18) and one line on standard error. The socket is mode 0600
+  in a 0700 folder, and a peer is accepted only when its user id equals the
+  daemon's, which does not tell one process of that user from another. `ataniqd
+  status [--socket PATH] [--json]` prints one line per role (role, kind, state,
+  reason, epoch, desired, manager, and for a coordinator its parent and
+  instance) and one for the daemon, or the status result as JSON; every string
+  from the socket is escaped, so a hostile one cannot act on the terminal. Only
+  `run` takes SIGTERM and SIGINT as the request to stop; they end `status` at
+  once. `status` exits 0 when the daemon answered, 20 when no daemon answers,
+  21 when it refuses the user and 22 for an answer that is not valid or an
+  error the daemon answered. The requested and the observed profile stay apart,
+  and a field that was not observed is shown as not observed. The protocol has
+  no place for the proof of a stopped or ended state or for the unit evidence,
+  so `status` shows neither. `ataniqd version` prints the version, `0.0.0-dev`
+  unless set with a linker flag, because the `VERSION` file cannot be embedded
+  from the command's folder. Leads, coordinators, the holder, the sandbox and
+  the console are not part of it, and nothing in it has run against systemd.
+  The same change adds `leadunit-qualify`, an opt-in harness for the systemd
+  unit manager that `ataniqd` uses, and the one new command that can start a
+  unit. Without `--run` it prints its plan and touches nothing. With `--run
+  --state-dir DIR` it starts one transient user unit,
+  `ataniq-qualify-<random>.service`, and one bound to it,
+  `ataniq-qualify-<random>-child.service`, never under the name of a role,
+  checks the manager against them, prints one JSON report and cleans its units
+  up. It is run by hand: no test and no make target runs it, and no run of it
+  is recorded. See [the lead daemon guide](docs/lead-daemon.md).
+- `ataniq-console --attach DIR --ticket-file FILE [--viewer]` shows a live
+  scratch session from a holder in the cockpit: one writer, one read-only
+  viewer, no takeover. A console that waits for a ticket does not connect, so
+  it does not touch the holder, and a refused ticket file shows its reason. It
+  is provisional and unqualified, and for a scratch agent only.
+- Add the `internal/inject` packages for fenced message injection into a
+  terminal-hosted lead, as a library with no command using it yet. They
+  classify a session as idle, working, blocked, ended or unknown for claude
+  2.1.325 and codex 0.169 (also spelled 0.169.0) from OSC 7501 reports, window
+  titles and screen recognisers built from recorded sessions; any other version
+  is refused. The fence pastes a message only into a composer it reads as empty
+  and idle, writes nothing while it sees an approval dialog, and presses Enter
+  only when a second check after the paste finds the composer idle and holding
+  the header, or showing a pasted-text marker that was not there before.
+  Durable command states keep a command `uncertain`, and its lead's queue
+  frozen, until an operator decides that it was delivered, or drops it, or
+  sends it again as a new command; nothing retries. Message admission fixes
+  the header, the senders and edges (never `owner`), the text and marker rules,
+  and the caps of 16 messages and 64 KiB for a target's queue (a project lead
+  or the supervisor), 6 a minute for a sender and 4 KiB for a text. It is
+  provisional and unqualified, built from recorded screens of an earlier
+  prototype and never run against a real agent: neither the `ataniqd` skeleton
+  nor `ataniq-holder`, which are built beside it, uses it (the daemon has no
+  queue and delivers nothing, and the holder answers an `inject` request with
+  `disabled`), nothing reads delivery from the conversation file, and no live
+  agent was used.
+  See [lead injection](docs/lead-injection.md).
+- Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
+  plan, nested sandboxes under owner decision R17, the file-system view, the
+  clone rules, the environment allowlist, network and DNS, the probe, the ten
+  start-up assertions, symlink-safe reads, the profile digest and the open
+  points. It is a proposal that awaits qualification and the owner's decision on
+  the profile; nothing starts a sandbox in ordinary use, and no command uses it
+  yet. Add the opt-in qualification harness `qualify` for the proposal, with its
+  guide `docs/qualification-lead-sandbox.md`, and the target `make
+  qualification-leadsandbox-build`, which runs the doctor and builds the harness
+  and `ataniq-probe`, and starts no sandbox and launches nothing. Both are
+  unqualified infrastructure: the harness records facts for a coordinator and
+  says nothing about the sandbox being qualified, safe or supported.
+- Add `qualify-mirror`, an opt-in harness that records what a real sandbox
+  template does with a hostile lead clone: the fetch into the exchange mirror
+  and the review of a lead branch, and, if the template has a verification
+  section, two gates that probe it. It is run by hand with a config and a new
+  output file, is not part of `make test` and is not built by any Makefile
+  target. It works in a scratch state root and writes one JSON report of facts
+  with no pass, supported or qualified field: a person reads the facts and
+  decides. It qualifies no sandbox by itself. See
+  [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
+
+### Changed
+
+- Link the lead guides from `README.md` and `docs/architecture.md`, which now
+  name the lead injection guide, the lead intake guide and the two opt-in
+  qualification manuals (lead sandbox, lead mirror) beside the holder, sandbox
+  and daemon guides. The guides point at each other and no longer say that a
+  holder or a daemon does not exist: each says what the others built, and that
+  none of these parts calls another yet. `docs/lead-intake.md` adds that the
+  owner's git reads a git bundle file found on the host at the template's
+  `serve.repository` path, so that path must not exist on the host.
+  `docs/lead-daemon.md` no longer says that the daemon's packages build on
+  Linux only: the daemon runs on Linux only, and for another system `ataniqd`
+  builds as a stub and the packages compile without their Linux files.
+  The status notes of the two amendments of 2026-11-17 in `docs/design` no
+  longer say that the scratch holder and attach client are being built and that
+  no recogniser exists: they name what is built, and say that it is not joined
+  and that nothing sets `ready`. No contract text changes.
+  The maturity section of `README.md` describes the tree without naming a
+  release; it named 0.0.8.
+  `docs/terminal-console.md` says of `--attach` that the mode is not managed
+  by the daemon, where it said that there is no daemon.
+  Documentation only.
+- Amend the runtime and client protocol contracts for a lead hosted as a
+  terminal program (owner decision of 2026-11-17). Its `ready` state is an
+  Ataniq observation of the hosted terminal, never a provider report: the
+  holder runs for the current epoch, the stream is open, the runtime version is
+  the pinned one, login is checked or says `login: not checked`, and the screen
+  is an idle composer. The screen then gates each delivery and never proves
+  health, authority or completion. Its attach stream is a ticketed terminal
+  data plane, not a second command path: Ataniq admits no command, decision or
+  grant from it. It has one writer, one viewer and no takeover, accepts a peer
+  of the holder's own OS user only, and carries the stated same-user limit.
+  The amendment is a specification. Beside it, `ataniq-holder`,
+  `ataniq-scratch` and `ataniq-console --attach` build the attach stream for a
+  scratch agent only, with tickets from a development stand-in and not from a
+  typed command. Nothing sets `ready`: the holder reports the idle
+  classification as `unknown` and does not use the screen recognisers of
+  `internal/inject`. None of it is joined to the daemon, and none is qualified.
+- Bound what the console's session pane keeps of a session's output, in the
+  patched `x/vt`. A cell keeps at most 64 bytes of a grapheme cluster, cut at
+  a character boundary; the rest is dropped and counted, and a megabyte of
+  combining marks costs bounded memory and linear time. Only a fixed table
+  of known terminal modes is recorded (the ones the emulator acts on, the ones
+  the pane and console follow, and the ones a full-screen agent commonly sets);
+  setting or resetting any other mode number is ignored and counted, a request
+  for it is answered "not recognised", and setting 100 000 distinct numbers
+  does not grow memory. A hyperlink whose URL is over 2 KiB or whose
+  parameters are over 256 bytes is dropped and counted, and the text after it
+  has no link; a screen (the main and the alternate each) keeps at most 256
+  distinct live links, and text printed under a further link is drawn without
+  it and counted; and the data of an OSC, DCS or APC string is cut at 64 KiB
+  (it was 4 MiB), with the rest dropped and counted. The emulator exposes the
+  counts of every cap it hit through `Counters`.
+  Clearing or resetting the screen, switching the alternate screen and
+  scrolling a whole region cost the lines they change and no longer every
+  cell, so a program that does these in a loop (for example a full-screen
+  program that clears the screen on every frame) no longer stalls the pane for
+  seconds or minutes, and the pane feeds the emulator in slices of 4 KiB, so
+  that a draw waits for one slice of output at most. Output that scrolls a
+  region with left and right margins set can still take about a minute for
+  64 KiB on the largest screen; see `third_party/patched/x-vt/NOTICE.md`.
+
 ## [0.0.9] - 2026-11-17
 
 ### Added
