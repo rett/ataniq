@@ -179,6 +179,10 @@ type Config struct {
 	// accepts the process whose pid it holds while it is locked.
 	DaemonLock string
 
+	// InjectConfig is the injection's seam: empty in a release build, and in
+	// a build with the ataniq_canary tag the deliverer that opens the gate.
+	InjectConfig
+
 	// TicketLifetime is how long a registered ticket stays valid.
 	TicketLifetime time.Duration
 	// CheckInterval is the time between Check frames to a client.
@@ -280,6 +284,9 @@ type Server struct {
 	conns       map[net.Conn]struct{}
 	closed      bool // teardown began: nothing new is accepted
 	finishing   bool // the session is over
+
+	// inj is the injection's own state (inject_off_linux.go, inject_linux.go).
+	inj injectState
 
 	// The emulator state the clients were told of.
 	lastModes    sessionpane.ModeSet

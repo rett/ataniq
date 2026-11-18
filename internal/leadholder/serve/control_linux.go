@@ -117,11 +117,19 @@ func (s *Server) execute(req wire.Request) wire.Response {
 		s.inMu.Unlock()
 		return wire.Response{OK: true}
 	case wire.OpInject:
-		// Injection is built elsewhere; the session logs the refusal.
-		_ = s.sess.Inject(session.InjectRequest{})
-		return refusal(wire.CodeDisabled, "injection is disabled")
+		// What a build does with it is in inject_off_linux.go (a release
+		// build: the disabled answer) or inject_linux.go (a build with the
+		// ataniq_canary tag).
+		return s.inject(req)
 	}
 	return refusal(wire.CodeBadRequest, "unknown operation")
+}
+
+// injectDisabled is the answer to an inject request when injection is not
+// available: the session logs the refusal, the request's text is not looked at.
+func (s *Server) injectDisabled() wire.Response {
+	_ = s.sess.Inject(session.InjectRequest{})
+	return refusal(wire.CodeDisabled, "injection is disabled")
 }
 
 // issueTicket registers a ticket for a role. A writer ticket is refused with
