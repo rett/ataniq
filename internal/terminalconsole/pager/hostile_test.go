@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 
 	"ataniq/internal/exchange/leadtext"
 )
@@ -72,7 +73,10 @@ func hostileLines() []string {
 }
 
 // checkCell fails when a cell holds something a terminal would act on or
-// hide: no cell may hold a raw byte of the lead.
+// hide: no cell may hold a raw byte of the lead. It also fails when a cell
+// begins with a code point that has no width of its own, such as a
+// combining mark: a terminal would draw that on the cell to the left, which
+// may be the pager's margin.
 func checkCell(t *testing.T, where string, c *uv.Cell) {
 	t.Helper()
 	if c == nil {
@@ -84,6 +88,9 @@ func checkCell(t *testing.T, where string, c *uv.Cell) {
 	}
 	if !utf8.ValidString(s) {
 		t.Fatalf("%s: a cell holds bytes that are not UTF-8: %q", where, s)
+	}
+	if first, size := utf8.DecodeRuneInString(s); size > 0 && ansi.StringWidth(s[:size]) == 0 {
+		t.Fatalf("%s: a cell begins with %U, which has no width and would join the cell to its left: %q", where, first, s)
 	}
 	if len(s) > maxCellBytes+1 {
 		t.Fatalf("%s: a cell holds %d bytes", where, len(s))
