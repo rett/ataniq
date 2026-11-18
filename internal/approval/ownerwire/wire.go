@@ -113,7 +113,7 @@ func EncodePageParams(p PageParams) ([]byte, error) { return pageParamsForm.enco
 func DecodePathsPage(data []byte) (PathsPage, error) { return pathsPageForm.decode(data) }
 
 // EncodePathsPage writes the result of owner.paths. It refuses a page that
-// would be over [MaxPageBytes].
+// would be over [MaxPageBytes]; [SplitPaths] makes pages that fit.
 func EncodePathsPage(p PathsPage) ([]byte, error) { return pathsPageForm.encode(p) }
 
 // DecodePatchPage reads the result of owner.patch. A page over
@@ -125,7 +125,7 @@ func EncodePathsPage(p PathsPage) ([]byte, error) { return pathsPageForm.encode(
 func DecodePatchPage(data []byte) (PatchPage, error) { return patchPageForm.decode(data) }
 
 // EncodePatchPage writes the result of owner.patch. It refuses a page that
-// would be over [MaxPageBytes].
+// would be over [MaxPageBytes]; [SplitPatch] makes pages that fit.
 func EncodePatchPage(p PatchPage) ([]byte, error) { return patchPageForm.encode(p) }
 
 // DecodeDeciderParams reads the params of owner.decider. Params over

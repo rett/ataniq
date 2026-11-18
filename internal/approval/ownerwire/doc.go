@@ -67,7 +67,8 @@
 // at most [MaxPageBytes] as encoded. A line of a patch is raw bytes in the
 // record package's Text form. A line that does not fit in the room left on
 // a page travels in pieces, each marked as continuing but the last, and the
-// reader joins them byte for byte.
+// reader joins them byte for byte. [SplitPaths] and [SplitPatch] make the
+// pages, and [JoinPaths] and [JoinPatch] put them together again.
 //
 // The lines of a patch are lead-written. Nothing here escapes them: a
 // surface shows them only through the lead-text escaping.

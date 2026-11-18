@@ -29,6 +29,9 @@ const (
 	// MaxLinePieces is the most pieces one line of a patch may travel in.
 	// The console's pager ends the reading of a line in more.
 	MaxLinePieces = 4096
+	// MaxLineBytes is the longest line of a patch, in raw bytes. The
+	// console's pager ends the reading of a longer one.
+	MaxLineBytes = 16 << 20
 	// MaxHostLineBytes caps a line the host writes for the owner's eyes: an
 	// outcome's line, the reason a connection is not the decider, a rule in
 	// words.
