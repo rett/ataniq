@@ -151,6 +151,12 @@
 // starts from a clean state. A path that is left planted ends the case with a
 // failure that names it, and the later plants are not made.
 //
+// A crash in the middle of a plant can leave the original at the set-aside name
+// and the plant at the path. The next run does not plant at that path: the
+// plant is not-checked, with a detail that says the entry at the set-aside name
+// is the original. To recover, remove what is at the path if it is a plant,
+// and rename the set-aside entry back to its name.
+//
 // The case guards what it writes into: it runs only when it is requested by
 // name, with Options.Run, with "coordinator_reviewed" and with the statement
 // "scratch_folders_disposable": true, which says the folders under the state
@@ -169,11 +175,12 @@
 // the inputs of the configured runtime changed to the other runtime and its
 // managed-settings path taken from the profile (the configured one where the
 // profile has none: the walk does not read it). It plants the paths of that
-// walk that lie in a folder the configuration names for the configured runtime:
+// walk that lie in a folder the walk of the configured runtime also names:
 // the .git paths and the place of the config folder in the home. The places of
 // the skills and the instruction file are in the other runtime's own config
-// folder, which nothing in the configuration names: planted_paths lists them as
-// not covered, and they need a second run with the other runtime's
+// folder, where this run neither prepares nor writes, because it plants only in
+// the folders the walk of the configured runtime names: planted_paths lists
+// them as not covered, and they need a second run with the other runtime's
 // configuration.
 //
 // What this case does not cover: the plant is made by the harness from outside,
