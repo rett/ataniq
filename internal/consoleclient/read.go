@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"net"
-	"syscall"
 	"time"
 
 	"ataniq/internal/clientapi"
@@ -13,6 +12,10 @@ import (
 
 // DefaultTimeout bounds [Read] when its context has no deadline.
 const DefaultTimeout = 10 * time.Second
+
+// defaultTimeout is DefaultTimeout as Read uses it. It is a variable so that
+// a test can lower it and not wait ten seconds.
+var defaultTimeout = DefaultTimeout
 
 // Read asks the daemon whose socket is in the folder dir for its leads, and
 // returns a view of them or a state that says why there is none. It never
@@ -27,7 +30,7 @@ const DefaultTimeout = 10 * time.Second
 func Read(ctx context.Context, dir string) Result {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
 	c, err := clientapi.Dial(ctx, clientapi.SocketPath(dir))
@@ -76,6 +79,13 @@ func timedOut(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
+// errRefused is the error of a dial to a socket file that nothing listens
+// on, or nil on a system for which the package does not know it. It is set
+// in a file for Linux, the one system the daemon runs on: the error's name is
+// in the syscall package, which does not have it on every system this
+// package builds for. Where it is nil such a dial is [StateUnavailable].
+var errRefused error
+
 // dialState is the state for a failed dial.
 func dialState(err error) State {
 	switch {
@@ -83,7 +93,7 @@ func dialState(err error) State {
 		return StateSlow
 	case errors.Is(err, context.Canceled):
 		return StateUnavailable
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
+	case errors.Is(err, fs.ErrNotExist), errRefused != nil && errors.Is(err, errRefused):
 		// No socket file, or a file that nothing listens on.
 		return StateNoDaemon
 	}
@@ -127,8 +137,12 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 	if status.Daemon.PID > 0 {
 		v.Daemon.PID = status.Daemon.PID
 	}
-	index := make(map[string]int) // project name to its place in v.Projects
+	// index maps a project's name as the daemon sent it to the project's
+	// place in v.Projects. The cleaned name is not the key: two names can
+	// clean to the same text and are still two projects.
+	index := make(map[string]int)
 	for i := range status.Leads {
+		raw := status.Leads[i].Project
 		e, ok := entry(&status.Leads[i])
 		if !ok {
 			v.LeftOut++
@@ -142,14 +156,14 @@ func buildView(hello clientapi.HelloResult, status clientapi.StatusResult) View 
 			v.HasSupervisor, v.Supervisor = true, e
 			continue
 		}
-		at, known := index[e.Project]
+		at, known := index[raw]
 		if !known {
 			if e.Project == "" || len(v.Projects) >= MaxProjects {
 				v.LeftOut++
 				continue
 			}
 			at = len(v.Projects)
-			index[e.Project] = at
+			index[raw] = at
 			v.Projects = append(v.Projects, Project{Name: e.Project})
 		}
 		p := &v.Projects[at]

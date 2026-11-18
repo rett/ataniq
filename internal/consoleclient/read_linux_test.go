@@ -351,6 +351,27 @@ func TestSlowPeer(t *testing.T) {
 	wantState(t, Read(ctx, f.dir), StateSlow)
 }
 
+// A context without a deadline is still bounded: Read gives it the default
+// timeout. The test lowers the default; no test of the package runs in
+// parallel with it.
+func TestNoDeadlineGetsTheDefaultTimeout(t *testing.T) {
+	if defaultTimeout != DefaultTimeout || DefaultTimeout <= 0 {
+		t.Fatalf("Read's default is %v, want DefaultTimeout (%v)", defaultTimeout, DefaultTimeout)
+	}
+	defaultTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { defaultTimeout = DefaultTimeout })
+	f := startFake(t, func(clientapi.Request) []byte { return nil })
+	done := make(chan Result, 1)
+	go func() { done <- Read(context.Background(), f.dir) }()
+	select {
+	case r := <-done:
+		wantState(t, r, StateSlow)
+	case <-time.After(5 * time.Second):
+		// Left running, Read ends when the test's cleanup closes the fake.
+		t.Fatal("Read with a context without a deadline did not return")
+	}
+}
+
 func TestCancelledCaller(t *testing.T) {
 	f := startFake(t, func(clientapi.Request) []byte { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -455,6 +476,14 @@ func TestBadAnswer(t *testing.T) {
 				return
 			}
 			wantState(t, r, StateBadAnswer)
+			// A daemon of another version answers like this too (it writes
+			// its own protocol's name on the answer), so the next step
+			// names that cause and the command.
+			for _, part := range []string{"same version", "ataniqd status"} {
+				if !strings.Contains(r.NextStep, part) {
+					t.Errorf("next step %q does not say %q", r.NextStep, part)
+				}
+			}
 		})
 	}
 }
@@ -667,6 +696,31 @@ func TestHostileStringsComeOutCleanAndBounded(t *testing.T) {
 	}
 }
 
+// An entry of a kind the package does not know, and a lead without a
+// project, make no project and are counted as left out. Each is first to
+// name its project here, in a status far below the bounds, so that no other
+// rule leaves it out.
+func TestEntriesWithoutAKindOrAProjectMakeNoProject(t *testing.T) {
+	status := clientapi.StatusResult{Leads: []clientapi.LeadStatus{
+		{Role: "/lead", Kind: clientapi.KindLead, Project: "", State: clientapi.StateReady},
+		{Role: "solo/operator", Kind: "operator", Project: "solo", State: clientapi.StateReady},
+		{Role: "/coord", Kind: clientapi.KindCoordinator, Project: "", State: clientapi.StateReady},
+		{Role: "demo/lead", Kind: clientapi.KindLead, Project: "demo", State: clientapi.StateReady},
+	}}
+	dir := startServer(t, &handler{status: status}, clientapi.Options{})
+	r := read(t, dir)
+	if r.State != StateOK {
+		t.Fatalf("state = %q, want a view", r.State)
+	}
+	v := r.View
+	if len(v.Projects) != 1 || v.Projects[0].Name != "demo" || v.Projects[0].Lead.Name != "demo/lead" {
+		t.Errorf("projects = %+v, want the demo project alone", v.Projects)
+	}
+	if v.LeftOut != 3 || v.HasSupervisor {
+		t.Errorf("left out %d, supervisor %v, want 3 and none", v.LeftOut, v.HasSupervisor)
+	}
+}
+
 func TestCountsAreBounded(t *testing.T) {
 	var leads []clientapi.LeadStatus
 	add := func(kind, project, role string) {
@@ -710,6 +764,35 @@ func TestCountsAreBounded(t *testing.T) {
 	shown := 1 + MaxProjects + MaxCoordinators
 	if shown+v.LeftOut != len(leads) {
 		t.Errorf("%d shown and %d left out do not add up to %d", shown, v.LeftOut, len(leads))
+	}
+}
+
+// Two projects whose names clean to the same text stay two projects: the
+// second one's lead is not left out as a second lead of the first, and each
+// keeps its own coordinator.
+func TestProjectsThatShowAlikeStayApart(t *testing.T) {
+	const hidden = "a\u200b" // shows as "a"
+	status := clientapi.StatusResult{Leads: []clientapi.LeadStatus{
+		{Role: "first/lead", Kind: clientapi.KindLead, Project: hidden, State: clientapi.StateReady},
+		{Role: "second/lead", Kind: clientapi.KindLead, Project: "a", State: clientapi.StateReady},
+		{Role: "second/coord", Kind: clientapi.KindCoordinator, Project: "a", State: clientapi.StateReady},
+		{Role: "first/coord", Kind: clientapi.KindCoordinator, Project: hidden, State: clientapi.StateReady},
+	}}
+	dir := startServer(t, &handler{status: status}, clientapi.Options{})
+	r := read(t, dir)
+	if r.State != StateOK {
+		t.Fatalf("state = %q, want a view", r.State)
+	}
+	v := r.View
+	if len(v.Projects) != 2 || v.LeftOut != 0 {
+		t.Fatalf("%d projects, %d left out, want 2 and 0: %+v", len(v.Projects), v.LeftOut, v.Projects)
+	}
+	for i, want := range []string{"first", "second"} {
+		p := v.Projects[i]
+		if p.Name != "a" || !p.HasLead || p.Lead.Name != want+"/lead" || p.Lead.Project != "a" ||
+			len(p.Coordinators) != 1 || p.Coordinators[0].Name != want+"/coord" {
+			t.Errorf("project %d = %+v, want the %s project shown as \"a\"", i, p, want)
+		}
 	}
 }
 
