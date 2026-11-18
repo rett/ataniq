@@ -134,10 +134,13 @@ type env struct {
 	home func(uid int) (string, error)
 	// eval resolves the symbolic links of an existing path.
 	eval func(path string) (string, error)
+	// runBase is the folder that holds the per-user runtime folders,
+	// /run/user on a real system. A test points it into a temporary folder.
+	runBase string
 }
 
 func systemEnv() env {
-	return env{uid: unix.Geteuid(), home: accountHome, eval: filepath.EvalSymlinks}
+	return env{uid: unix.Geteuid(), home: accountHome, eval: filepath.EvalSymlinks, runBase: "/run/user"}
 }
 
 // accountHome looks the account up by id. The os/user package reads the
@@ -188,7 +191,7 @@ func (e env) candidates(getenv func(string) string) ([]string, error) {
 	}
 	out = append(out,
 		filepath.Join(home, ".local", "state", stateName),
-		filepath.Join("/run/user", strconv.Itoa(e.uid), runtimeName))
+		filepath.Join(e.runBase, strconv.Itoa(e.uid), runtimeName))
 	return out, nil
 }
 
