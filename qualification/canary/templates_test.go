@@ -113,6 +113,22 @@ func hasFlag(flags []flag, name string, first ...string) bool {
 	return false
 }
 
+// hostnamePinned reports whether the sandbox's host name is set exactly once,
+// to the template's fixed value. A second --hostname would win in bubblewrap,
+// so it fails.
+func hostnamePinned(flags []flag) bool {
+	n := 0
+	for _, f := range flags {
+		if f.name == "--hostname" {
+			if len(f.args) == 0 || f.args[0] != sandboxHost {
+				return false
+			}
+			n++
+		}
+	}
+	return n == 1
+}
+
 func sources(flags []flag, name string) []string {
 	var out []string
 	for _, f := range flags {
@@ -156,7 +172,7 @@ func checkCommon(t *testing.T, what string, flags []flag) {
 	if !hasFlag(flags, "--chdir") {
 		t.Errorf("%s: --chdir is missing: bubblewrap would name the caller's folder in its warning", what)
 	}
-	if !hasFlag(flags, "--hostname", sandboxHost) {
+	if !hostnamePinned(flags) {
 		t.Errorf("%s: --hostname %s is missing: the host's name would be visible inside, or a name is written in the file", what, sandboxHost)
 	}
 	if got := sources(flags, "--ro-bind"); len(got) == 0 || got[0] != "/usr" {
@@ -452,7 +468,8 @@ func TestNoteLabels(t *testing.T) {
 }
 
 // The host name of the sandbox is pinned: a bare name in its place, the
-// host's own or any other, makes the form check fail.
+// host's own or any other, or a second --hostname, makes the form check fail.
+// The same function runs in checkCommon.
 func TestHostNameIsPinned(t *testing.T) {
 	argv := func(name string) []string {
 		return []string{launcher, "--hostname", name, "--ro-bind", "/usr", "/usr", "/usr/bin/true"}
@@ -466,8 +483,16 @@ func TestHostNameIsPinned(t *testing.T) {
 		{"examplehost", false},
 	} {
 		flags, _ := split(t, argv(c.name))
-		if got := hasFlag(flags, "--hostname", sandboxHost); got != c.ok {
+		if got := hostnamePinned(flags); got != c.ok {
 			t.Errorf("--hostname %s: accepted %v, want %v", c.name, got, c.ok)
 		}
+	}
+	twice := []string{launcher, "--hostname", sandboxHost, "--hostname", "build-host-07", "/usr/bin/true"}
+	if flags, _ := split(t, twice); hostnamePinned(flags) {
+		t.Error("a second --hostname was accepted")
+	}
+	none := []string{launcher, "--ro-bind", "/usr", "/usr", "/usr/bin/true"}
+	if flags, _ := split(t, none); hostnamePinned(flags) {
+		t.Error("a missing --hostname was accepted")
 	}
 }
