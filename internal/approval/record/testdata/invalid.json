@@ -163,6 +163,10 @@
     "code": "request-invalid",
     "why": "a null"
   },
+  "request-invalid-repeated-key-escaped.json": {
+    "code": "request-invalid",
+    "why": "the key epoch appears twice, the second time with its first letter written as a \\u escape; keys are compared after their escapes are resolved"
+  },
   "request-invalid-repeated-key.json": {
     "code": "request-invalid",
     "why": "the key epoch appears twice with the same value"

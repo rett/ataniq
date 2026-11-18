@@ -213,6 +213,11 @@ func TestInvalidVectorsAreRefusedWithTheirCode(t *testing.T) {
 		}
 		kind := kindOf(t, name)
 		perKind[kind]++
+		// A vector that is about an escape must still hold one: a tool
+		// that rewrote the file may have resolved it.
+		if strings.Contains(name, "escaped") && !bytes.Contains(readVector(t, name), []byte{0x5c, 'u'}) {
+			t.Errorf("%s: the vector holds no escape", name)
+		}
 		_, _, err := kinds[kind](readVector(t, name))
 		if err == nil {
 			t.Errorf("%s: decoded, want %s (%s)", name, want.Code, want.Why)

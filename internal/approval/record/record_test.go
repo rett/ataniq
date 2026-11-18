@@ -258,6 +258,12 @@ func TestCanonicalFormSortsKeysAndHasNoWhitespace(t *testing.T) {
 	}
 }
 
+// bs is a backslash. The JSON escapes of the rows that are about an escape
+// are built from it, so that no tool that reads or writes this file can turn
+// the escape into the character it stands for and leave a row that changes
+// nothing.
+const bs = "\\"
+
 // strictCases are spellings of the valid request that a decoder must
 // refuse, and a few it must accept. old is replaced by new once.
 var strictCases = []struct {
@@ -266,15 +272,18 @@ var strictCases = []struct {
 }{
 	{"as it is", "", "", ""},
 	{"whitespace between tokens", `,"epoch":7,`, " ,\n\t\"epoch\" : 7 ,\r\n", ""},
-	{"an escaped character in a value", `"feature finish"`, `"feature finish"`, ""},
+	{"an escaped character in a value", `"feature finish"`, `"feature fin` + bs + `u0069sh"`, ""},
 	{"an escaped solidus", `"qargi.approval-request/1"`, `"qargi.approval-request\/1"`, ""},
-	{"an escaped character in a key", `"epoch"`, `"epoch"`, ""},
+	{"an escaped character in a key", `"epoch"`, `"` + bs + `u0065poch"`, ""},
+	{"every character of a key escaped", `"epoch"`, `"` + bs + `u0065` + bs + `u0070` + bs + `u006f` + bs + `u0063` + bs + `u0068"`, ""},
 	{"a key in upper case", `"epoch"`, `"EPOCH"`, CodeRequestInvalid},
 	{"a key with one capital", `"verb"`, `"Verb"`, CodeRequestInvalid},
 	{"a key with a Kelvin sign", `"request_id"`, "\"request_id\u212a\"", CodeRequestInvalid},
 	{"a repeated key, same value", `"epoch":7,`, `"epoch":7,"epoch":7,`, CodeRequestInvalid},
 	{"a repeated key, other value", `"epoch":7,`, `"epoch":8,"epoch":7,`, CodeRequestInvalid},
-	{"a repeated key spelled with an escape", `"epoch":7,`, `"epoch":7,"epoch":7,`, CodeRequestInvalid},
+	{"a repeated key spelled with an escape", `"epoch":7,`, `"epoch":7,"` + bs + `u0065poch":8,`, CodeRequestInvalid},
+	{"a repeated key, the first spelled with an escape", `"epoch":7,`, `"` + bs + `u0065poch":8,"epoch":7,`, CodeRequestInvalid},
+	{"a repeated key, both spelled with an escape", `"epoch":7,`, `"` + bs + `u0065poch":7,"epoc` + bs + `u0068":8,`, CodeRequestInvalid},
 	{"an unknown key", `"epoch":7,`, `"epoch":7,"project":"project-a",`, CodeRequestInvalid},
 	{"an empty key", `"epoch":7,`, `"epoch":7,"":0,`, CodeRequestInvalid},
 	{"a missing key", `"epoch":7,`, ``, CodeRequestInvalid},
@@ -336,12 +345,35 @@ var strictCases = []struct {
 
 func TestDecodingIsStrict(t *testing.T) {
 	valid := string(readVector(t, "request-valid.json"))
+	same := validRequest(t)
+	// The accepted cases that change a value and not only its spelling.
+	otherRecord := map[string]bool{"the largest int64": true, "a feature name of 48 bytes": true}
+	unchanged := 0
 	for _, tt := range strictCases {
 		if tt.old != "" && !strings.Contains(valid, tt.old) {
 			t.Fatalf("%s: the valid vector does not hold %s", tt.name, tt.old)
 		}
-		_, err := DecodeRequest([]byte(strings.Replace(valid, tt.old, tt.new, 1)))
+		// A row whose input is the valid vector tests nothing, whatever
+		// its name says. Only the first row, which is the vector as it
+		// is, may leave it unchanged.
+		in := strings.Replace(valid, tt.old, tt.new, 1)
+		if tt.old == "" && tt.new == "" {
+			if unchanged++; unchanged > 1 {
+				t.Fatalf("%s: a second case that changes nothing", tt.name)
+			}
+		} else if tt.old == tt.new || in == valid {
+			t.Fatalf("%s: the case changes nothing", tt.name)
+		}
+		if strings.Contains(tt.name, "escape") && !strings.Contains(tt.new, bs) {
+			t.Fatalf("%s: the case holds no escape", tt.name)
+		}
+		r, err := DecodeRequest([]byte(in))
 		wantCode(t, tt.name, err, tt.want)
+		// An accepted spelling of the same record is the same record: an
+		// escaped key is matched to its field, and no value is lost.
+		if tt.want == "" && err == nil && !otherRecord[tt.name] && !reflect.DeepEqual(r, same) {
+			t.Errorf("%s: decoded to another record than the valid vector", tt.name)
+		}
 	}
 
 	for _, tt := range []struct{ name, in string }{
