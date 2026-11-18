@@ -7,11 +7,12 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
-// fakeUID is the user id of the injected account. No folder is expected under
-// /run/user/<fakeUID>.
+// fakeUID is the user id of the injected account. Its runtime folder is under
+// the fixture's own base folder, never under the host's /run/user.
 const fakeUID = 4242
 
 // fixture is a private tree with the layout of a user's folders, and an
@@ -22,6 +23,8 @@ type fixture struct {
 	stateHome  string // <home>/.local/state
 	stateDef   string // <stateHome>/ataniq
 	runDir     string // <base>/run/user
+	runBase    string // <base>/runbase, the env's base of the per-user runtime folders
+	acctRun    string // <runBase>/<fakeUID>/ataniq, the account's runtime default
 	runtimeDef string // <runDir>/ataniq
 	env        env
 	getenv     func(string) string
@@ -61,17 +64,21 @@ func newFixture(t *testing.T, existing bool) *fixture {
 	f.stateDef = filepath.Join(f.stateHome, "ataniq")
 	f.runDir = filepath.Join(base, "run", "user")
 	f.runtimeDef = filepath.Join(f.runDir, "ataniq")
+	f.runBase = filepath.Join(base, "runbase")
+	f.acctRun = filepath.Join(f.runBase, strconv.Itoa(fakeUID), "ataniq")
 	mkdir(t, f.home)
 	mkdir(t, f.runDir)
+	mkdir(t, f.runBase)
 	if existing {
 		mkdir(t, f.stateDef)
 		mkdir(t, f.runtimeDef)
 	}
 	f.good = [2]string{filepath.Join(base, "canary", "state"), filepath.Join(base, "canary", "run")}
 	f.env = env{
-		uid:  fakeUID,
-		home: func(int) (string, error) { return f.home, nil },
-		eval: filepath.EvalSymlinks,
+		uid:     fakeUID,
+		home:    func(int) (string, error) { return f.home, nil },
+		eval:    filepath.EvalSymlinks,
+		runBase: f.runBase,
 	}
 	f.getenv = envOf(map[string]string{"HOME": f.home, "XDG_RUNTIME_DIR": f.runDir})
 	return f
@@ -234,8 +241,8 @@ func TestRootsDefaultNotExistingYet(t *testing.T) {
 	wantRefusal(t, f.runtime(f.runtimeDef), CodeDefaultRoot)
 	wantRefusal(t, f.runtime(filepath.Join(f.runtimeDef, "canary")), CodeDefaultRoot)
 	// The account's runtime default for the fake user does not exist either.
-	wantRefusal(t, f.runtime(filepath.Join("/run/user", "4242", "ataniq")), CodeDefaultRoot)
-	wantRefusal(t, f.runtime(filepath.Join("/run/user", "4242", "ataniq", "x")), CodeDefaultRoot)
+	wantRefusal(t, f.runtime(f.acctRun), CodeDefaultRoot)
+	wantRefusal(t, f.runtime(filepath.Join(f.acctRun, "x")), CodeDefaultRoot)
 	if err := f.state(filepath.Join(f.home, ".local", "state", "other")); err != nil {
 		t.Fatalf("a sibling of a default that does not exist yet: %v", err)
 	}
@@ -276,10 +283,11 @@ func TestRootsSourcesDisagree(t *testing.T) {
 	mkdir(t, filepath.Join(changedRun, "ataniq"))
 	getenv = envOf(map[string]string{"HOME": f.home, "XDG_RUNTIME_DIR": changedRun})
 	wantRefusal(t, f.env.checkRoots(f.good[0], filepath.Join(changedRun, "ataniq"), getenv), CodeDefaultRoot)
-	wantRefusal(t, f.env.checkRoots(f.good[0], filepath.Join("/run/user", "4242", "ataniq"), getenv), CodeDefaultRoot)
+	wantRefusal(t, f.env.checkRoots(f.good[0], f.acctRun, getenv), CodeDefaultRoot)
 
-	// A HOME that differs from the account's gives a second state candidate
-	// only when XDG_STATE_HOME is not set; the account's stays.
+	// A HOME that differs from the account's gives a second state candidate;
+	// the account's stays. With XDG_STATE_HOME set, see
+	// TestRootsHomeDiffersWithXDGStateHome.
 	otherHome := filepath.Join(f.base, "otherhome")
 	mkdir(t, otherHome)
 	getenv = envOf(map[string]string{"HOME": otherHome})
@@ -299,7 +307,7 @@ func TestRootsUnitLikeEnvironment(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			wantRefusal(t, f.env.checkRoots(f.stateDef, f.good[1], getenv), CodeDefaultRoot)
-			wantRefusal(t, f.env.checkRoots(f.good[0], filepath.Join("/run/user", "4242", "ataniq"), getenv), CodeDefaultRoot)
+			wantRefusal(t, f.env.checkRoots(f.good[0], f.acctRun, getenv), CodeDefaultRoot)
 			wantRefusal(t, f.env.checkRoots(filepath.Join(f.stateDef, "x"), f.good[1], getenv), CodeDefaultRoot)
 			wantRefusal(t, f.env.checkRoots(f.home, f.good[1], getenv), CodeDefaultRoot)
 			if err := f.env.checkRoots(f.good[0], f.good[1], getenv); err != nil {

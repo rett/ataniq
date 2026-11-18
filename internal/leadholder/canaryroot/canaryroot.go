@@ -21,6 +21,10 @@
 //     gives <home>/.local/state/ataniq, and the user's id gives
 //     /run/user/<uid>/ataniq. The lookup needs no cgo.
 //
+// One more state candidate comes from the environment: when HOME is an
+// absolute path, $HOME/.local/state/ataniq counts even where XDG_STATE_HOME is
+// set, because a daemon started without that variable would use it.
+//
 // The second source is never skipped. A unit's environment may have no HOME
 // and no XDG_* variable, or may differ from the daemon's, and a check that
 // trusted the environment alone would then accept the real lead's folders.
@@ -33,10 +37,22 @@
 // with symbolic links resolved, and also when the device and inode of the two
 // folders, or of one folder and an ancestor of the other, are the same, which
 // catches a second path to one folder that no symbolic link explains, such as
-// a bind mount. A path that does not exist yet is compared by the resolved
-// path of its nearest existing parent and the rest, and by the identity of
-// that parent. A relative or unclean root is refused, and so is a root or
-// candidate that cannot be resolved: the check fails closed.
+// a bind mount of a default folder itself or of one of its ancestors. A path
+// that does not exist yet is compared by the resolved path of its nearest
+// existing parent and the rest, and by the identity of that parent. A relative
+// or unclean root is refused, and so is a root or candidate that cannot be
+// resolved: the check fails closed.
+//
+// # What is not caught
+//
+// A bind mount of a folder strictly inside a default folder is not caught: a
+// given root that is that alias, or lies below it, has no ancestor with the
+// identity of the default, and its resolved path is not under the default's.
+// The runtime root has no marker behind it, and the state root's marker is
+// written into whatever root passed this check, so neither covers the case.
+// The full fix is to compare a canonical form of each path, the device and the
+// path inside that file system, read from the mount table
+// (/proc/self/mountinfo). That is not built.
 //
 // The two given roots must also differ and not nest.
 //
@@ -122,10 +138,13 @@ type env struct {
 	home func(uid int) (string, error)
 	// eval resolves the symbolic links of an existing path.
 	eval func(path string) (string, error)
+	// runBase is the folder that holds the per-user runtime folders,
+	// /run/user on a real system. A test points it into a temporary folder.
+	runBase string
 }
 
 func systemEnv() env {
-	return env{uid: unix.Geteuid(), home: accountHome, eval: filepath.EvalSymlinks}
+	return env{uid: unix.Geteuid(), home: accountHome, eval: filepath.EvalSymlinks, runBase: "/run/user"}
 }
 
 // accountHome looks the account up by id. The os/user package reads the
@@ -157,7 +176,11 @@ func envCandidates(getenv func(string) string) (state, runtime string, stateOK, 
 }
 
 // candidates returns every default folder: the environment's and the
-// account's, state folders and runtime folders together.
+// account's, state folders and runtime folders together. It also adds
+// $HOME/.local/state/ataniq whenever HOME is absolute, which envCandidates
+// leaves out where XDG_STATE_HOME is set: a daemon started without that
+// variable would use it. envCandidates stays the copy of the daemon's
+// derivation.
 func (e env) candidates(getenv func(string) string) ([]string, error) {
 	var out []string
 	state, runtime, stateOK, runtimeOK := envCandidates(getenv)
@@ -166,6 +189,11 @@ func (e env) candidates(getenv func(string) string) ([]string, error) {
 	}
 	if runtimeOK {
 		out = append(out, runtime)
+	}
+	if h := getenvOrEmpty(getenv, "HOME"); filepath.IsAbs(h) {
+		if c := filepath.Join(h, ".local", "state", stateName); !stateOK || c != state {
+			out = append(out, c)
+		}
 	}
 	home, err := e.home(e.uid)
 	if err != nil {
@@ -176,8 +204,15 @@ func (e env) candidates(getenv func(string) string) ([]string, error) {
 	}
 	out = append(out,
 		filepath.Join(home, ".local", "state", stateName),
-		filepath.Join("/run/user", strconv.Itoa(e.uid), runtimeName))
+		filepath.Join(e.runBase, strconv.Itoa(e.uid), runtimeName))
 	return out, nil
+}
+
+func getenvOrEmpty(getenv func(string) string, key string) string {
+	if getenv == nil {
+		return ""
+	}
+	return getenv(key)
 }
 
 // identity is the device and inode of a folder.
