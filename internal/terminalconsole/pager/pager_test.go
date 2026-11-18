@@ -190,6 +190,61 @@ func TestReached(t *testing.T) {
 	})
 }
 
+// Pages at the end of the patch that hold no piece are not rows below the
+// last row: the footer says the end is the end, the pages are let go, and
+// no key reads them again.
+func TestPagesWithoutAPieceAtTheEnd(t *testing.T) {
+	t.Run("the footer at the end", func(t *testing.T) {
+		pages := append(paginate(numbered(30), 10, 0), tpage{}, tpage{})
+		r := newRig(t, 80, 12, serve(pages))
+		for r.bottom() != "l028" {
+			r.press(keyJ)
+		}
+		// The two pages without a piece are not pages below.
+		if got := r.footer(); !strings.HasPrefix(got, "end not reached · last page, more below · ") {
+			t.Fatalf("one row above the end: footer %q", got)
+		}
+		r.press(keyHome)
+		for i := 0; i < 5; i++ {
+			r.press(keyEnd)
+		}
+		if got := r.bottom(); got != "l029" || !r.m.Reached() {
+			t.Fatalf("after End the last row is %q, reached %v", got, r.m.Reached())
+		}
+		if got := r.footer(); !strings.HasPrefix(got, "end reached · end of the patch · Esc closes") {
+			t.Fatalf("footer %q", got)
+		}
+		calls := len(r.src.calls)
+		r.press(keyJ, keyK, keyEnd, keyPgDn, keyK, keyJ, keyPgUp, keyPgUp, keyHome, keyEnd, keyEnd, keyJ)
+		if len(r.src.calls) != calls {
+			t.Fatalf("pages read at the end of a patch read whole: %v", r.src.calls[calls:])
+		}
+		if got := r.footer(); !strings.HasPrefix(got, "end reached · end of the patch · Esc closes") {
+			t.Fatalf("footer %q", got)
+		}
+	})
+	t.Run("many pages", func(t *testing.T) {
+		const empty = 500
+		pages := append(paginate(numbered(1), 10, 0), make([]tpage, empty)...)
+		r := newRig(t, 80, 12, serve(pages))
+		// To know that the line is the last, every page is read, once.
+		if len(r.src.calls) != 1+empty {
+			t.Fatalf("%d pages read, want every page once", len(r.src.calls))
+		}
+		if len(r.m.held) > 3 {
+			t.Fatalf("the pager holds %d pages of a patch of one line", len(r.m.held))
+		}
+		if got := r.footer(); !r.m.Reached() || !strings.HasPrefix(got, "end reached · end of the patch · Esc closes") {
+			t.Fatalf("reached %v, footer %q", r.m.Reached(), got)
+		}
+		r.press(keyJ, keyK, keyEnd, keyPgDn, keyPgUp, keyHome, keyEnd)
+		r.size(60, 30)
+		if len(r.src.calls) != 1+empty {
+			t.Fatalf("pages read again: %v", r.src.calls[1+empty:])
+		}
+	})
+}
+
 // The footer says how much is below, from the number of pages.
 func TestFooterSaysHowMuchIsBelow(t *testing.T) {
 	r := newRig(t, 100, 12, serve(paginate(numbered(100), 10, 0)))

@@ -61,6 +61,12 @@ type Model struct {
 	held  []page
 	lo    int
 	pages int
+	// tail is the first of the pages at the end of the patch that hold no
+	// piece (pages when the last page holds one), once tailKnown: once the
+	// last page was read. No row lies on a page from tail on, so the pager
+	// may let those pages go and need not read them again.
+	tail      int
+	tailKnown bool
 	// cache holds the joined and escaped lines that were looked at, by
 	// their first piece.
 	cache map[ref]*line
@@ -342,10 +348,16 @@ func (m *Model) onPage(v pageMsg) {
 	}
 	m.pages = v.pages
 	if m.hi() == m.pages {
-		// The patch may not end in the middle of a line.
-		if b, st := m.back(ref{m.hi(), 0}); st == found && m.page(b.p).cont[b.i] {
+		// The patch may not end in the middle of a line. The pages after
+		// its last piece are the tail.
+		switch b, st := m.back(ref{m.hi(), 0}); {
+		case st == found && m.page(b.p).cont[b.i]:
 			m.malformed()
 			return
+		case st == found:
+			m.tail, m.tailKnown = b.p+1, true
+		case st == edge:
+			m.tail, m.tailKnown = 0, true
 		}
 	}
 	if m.tooLong() {

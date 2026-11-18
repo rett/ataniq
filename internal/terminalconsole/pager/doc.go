@@ -29,7 +29,10 @@
 //
 // A long line is wrapped onto as many rows as it needs, each after the
 // first with a mark in the left margin, and is never cut. The footer says
-// how many pages lie below and whether the end was reached.
+// how many pages lie below and whether the end was reached. Pages at the
+// end of the patch that hold no piece are not pages below: once the last
+// page was read the pager knows where they begin, lets them go and does not
+// read them again.
 //
 // A page that fails, a page that does not fit the others, or a line longer
 // than MaxLineBytes ends the reading: the footer shows one line of the
