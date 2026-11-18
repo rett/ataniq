@@ -151,6 +151,24 @@ func CheckInjectDetail(s string) error {
 	return nil
 }
 
+// SanitizeDetail makes s a detail that [CheckInjectDetail] accepts: each byte
+// outside printable ASCII (0x20 to 0x7e) becomes ?, so a character of more
+// than one byte becomes one ? for each of its bytes, and the result is cut to
+// [MaxInjectDetail] bytes. It is the one place that rule lives, for whoever
+// builds an [InjectResult] from text that did not come from the wire.
+func SanitizeDetail(s string) string {
+	if len(s) > MaxInjectDetail {
+		s = s[:MaxInjectDetail]
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c < 0x20 || c > 0x7e {
+			b[i] = '?'
+		}
+	}
+	return string(b)
+}
+
 // Validate reports whether the result is one that the wire carries: each word
 // is in its set, the three together are one of the valid combinations, and
 // the detail fits. The error wraps [ErrInvalid].
