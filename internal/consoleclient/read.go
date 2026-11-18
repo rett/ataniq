@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"net"
-	"syscall"
 	"time"
 
 	"ataniq/internal/clientapi"
@@ -76,6 +75,13 @@ func timedOut(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
+// errRefused is the error of a dial to a socket file that nothing listens
+// on, or nil on a system for which the package does not know it. It is set
+// in a file for Linux, the one system the daemon runs on: the error's name is
+// in the syscall package, which does not have it on every system this
+// package builds for. Where it is nil such a dial is [StateUnavailable].
+var errRefused error
+
 // dialState is the state for a failed dial.
 func dialState(err error) State {
 	switch {
@@ -83,7 +89,7 @@ func dialState(err error) State {
 		return StateSlow
 	case errors.Is(err, context.Canceled):
 		return StateUnavailable
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ECONNREFUSED):
+	case errors.Is(err, fs.ErrNotExist), errRefused != nil && errors.Is(err, errRefused):
 		// No socket file, or a file that nothing listens on.
 		return StateNoDaemon
 	}
