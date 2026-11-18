@@ -142,26 +142,20 @@ func TestInjectTextRules(t *testing.T) {
 func TestInjectTextOnTheWire(t *testing.T) {
 	// A decoder holds the same rules: JSON escapes do not get around them.
 	for name, body := range map[string]string{
-		"a tab":                `"a\tb"`,
-		"escaped NUL":          `"a\u0000b"`,
-		"escaped line sep.":    `"a\u2028b"`,
-		"escaped no-break":     `"a\u00a0b"`,
-		"a lone surrogate":     `"a\ud800b"`,
-		"a raw newline":        "\"a\nb\"",
-		"an over-long text":    `"` + strings.Repeat("a", wire.MaxInjectText+1) + `"`,
+		"a tab":             `"a\tb"`,
+		"escaped NUL":       `"a\u0000b"`,
+		"escaped line sep.": `"a\u2028b"`,
+		"escaped no-break":  `"a\u00a0b"`,
+		"a lone surrogate":  `"a\ud800b"`,
+		"a raw newline":     "\"a\nb\"",
+		"an over-long text": `"` + strings.Repeat("a", wire.MaxInjectText+1) + `"`,
+		// An empty or null text beside a message id breaks "only together".
 		"the empty text alone": `""`,
 		"the null text":        `null`,
 		"a number":             `5`,
 		"an array of the text": `["a"]`,
 	} {
 		p := `{"op":"inject","epoch":1,"message_id":"m1","text":` + body + `}`
-		if name == "the empty text alone" || name == "the null text" {
-			// An empty text beside a message id breaks "only together".
-			if _, err := wire.DecodeRequest([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
-				t.Errorf("%s: %v", name, err)
-			}
-			continue
-		}
 		if _, err := wire.DecodeRequest([]byte(p)); !errors.Is(err, wire.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
