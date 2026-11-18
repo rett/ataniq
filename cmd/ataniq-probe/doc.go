@@ -150,11 +150,12 @@
 // manager has it, a login session often does not) it opens the cgroup's cpu.max
 // and keeps it open, close-on-exec, at the lowest free number, which is 3 when
 // the caller closed everything else. The probe could not tell that file from
-// one the caller passed, and a file placed over it would break the runtime's
-// next read of the limit. So the probe turns the feature off in the program
-// itself, with a go:debug directive (containermaxprocs=0), and holds no such
-// descriptor: its descriptors above 2 are the caller's, and the poller's
-// described above.
+// one the caller passed, and with a file placed over it the runtime would
+// read that file as its CPU limit. So the probe turns the feature off in the
+// program itself, with a go:debug directive (containermaxprocs=0), and holds no
+// such descriptor: its descriptors above 2 are the caller's, and the poller's
+// described above. A GODEBUG setting in the probe's environment overrides the
+// directive, so a caller must not start it with containermaxprocs=1.
 //
 // # Exit statuses and standard error
 //

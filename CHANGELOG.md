@@ -24,7 +24,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   SIGUSR2 stop it with a final record, and the record of an earlier epoch is
   kept as `final.json.previous`. A second holder for a held role exits 3 and
   changes nothing of the first. It is provisional and unqualified, and hosts no
-  real lead; `ataniq-scratch` starts it.
+  real lead; `ataniq-scratch` starts it. It is built with the Go runtime's
+  cgroup-aware `GOMAXPROCS` turned off (`containermaxprocs=0`), so it keeps no
+  descriptor of the cgroup's `cpu.max` open and its `GOMAXPROCS` does not follow
+  a cgroup CPU quota.
 - Add `ataniq-intake`, a provisional owner command for the reviewed intake of
   a managed lead's work through the exchange mirror, a bare repository in the
   state folder that is the only way out of a lead. `init` creates the mirror,
@@ -80,7 +83,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   executed. Both modes refuse (exit 98, one line) a number that is one of the Go
   runtime's own descriptors, which it holds when a standard stream was
   non-blocking at start: a target number in the pass-through mode, the report
-  descriptor in the inside mode.
+  descriptor in the inside mode. Like `ataniq-holder`, it is built with the Go
+  runtime's cgroup-aware `GOMAXPROCS` turned off, so the runtime holds no
+  descriptor of the cgroup's `cpu.max` at a number the caller may use.
 - Add `ataniq-scratch`, a development launcher that hosts a scratch agent (no
   project, no lead role, a disposable home) in a holder, in a transient systemd
   user unit or as a direct child with `--direct`, and stands in for the daemon

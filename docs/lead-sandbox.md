@@ -536,7 +536,8 @@ runtime's own descriptors is refused. The probe is built with the runtime's
 cgroup-aware `GOMAXPROCS` turned off (`containermaxprocs=0`), so that the
 runtime does not keep the cgroup's `cpu.max` open at the lowest free number when
 the probe runs in a cgroup that has the cpu controller; the only descriptors the
-runtime holds are the poller's.
+runtime holds are the poller's. A `GODEBUG` setting in the probe's environment
+overrides this, so the probe must not be started with `containermaxprocs=1`.
 
 **Inside mode** (`--spec PATH --report-fd N -- AGENT ARGV...`) runs inside the
 sandbox as the program the plan starts last. In order, it marks the report

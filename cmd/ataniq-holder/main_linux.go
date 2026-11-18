@@ -31,7 +31,8 @@
 // The holder keeps exact control of its descriptors, so it turns off the Go
 // runtime's cgroup-aware default for GOMAXPROCS (containermaxprocs=0). With
 // it on, a runtime in a cgroup that has the cpu controller opens that cgroup's
-// cpu.max and keeps it open, close-on-exec, at the lowest free number.
+// cpu.max and keeps it open, close-on-exec, at the lowest free number. A
+// GODEBUG setting in the holder's environment overrides the directive.
 //
 //go:debug containermaxprocs=0
 package main
