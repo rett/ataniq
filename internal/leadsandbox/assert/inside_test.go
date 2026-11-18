@@ -508,14 +508,26 @@ func TestProblemsRequireAll(t *testing.T) {
 	if !FailedAll(rep, s) {
 		t.Fatal("the inside report alone must not satisfy RequireAll")
 	}
-	if p := Problems(rep, s, RequireAll); len(p) != 5 {
-		t.Errorf("want 5 missing outside results, got %v", p)
+	if p := Problems(rep, s, RequireAll); len(p) != 6 {
+		t.Errorf("want 6 missing outside results, got %v", p)
 	}
 }
 
 func TestInsideHasNoExec(t *testing.T) {
 	// The inside checks never start a process.
 	assertNoImport(t, "os/exec")
+}
+
+func TestStartWalkIsAFactAndNotAnImport(t *testing.T) {
+	// The outside half of assertion 7 is the holder's walk, given as a fact:
+	// the package imports neither the package that makes it nor the plan.
+	for _, path := range []string{
+		"ataniq/internal/leadsandbox/mountpoints",
+		"ataniq/internal/leadsandbox/safefile",
+		"ataniq/internal/leadsandbox/plan",
+	} {
+		assertNoImport(t, path)
+	}
 }
 
 func TestDetailListsAFewFindingsAndCountsTheRest(t *testing.T) {

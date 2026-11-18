@@ -28,6 +28,59 @@ func TestHostRowNotesNameTheRealPathOfARowOfTheHostOnly(t *testing.T) {
 	}
 }
 
+// The fact of the start walk is what the last check of the mount points found.
+func TestRecordWalkTurnsTheCheckIntoTheFactOfAssertion7(t *testing.T) {
+	link := &mountpoints.Problem{Kind: mountpoints.ErrSymlink, Path: "/srv/state/leads/qual-lead/home/.claude/skills", Detail: "the mount point is a symbolic link"}
+	other := &mountpoints.Problem{Kind: mountpoints.ErrWrongType, Path: "/srv/state/leads/qual-lead/tree/.git/hooks"}
+	for _, tc := range []struct {
+		name      string
+		statement bool
+		rep       mountpoints.Report
+		err       error
+		status    assert.Status
+		detail    []string
+	}{
+		{"nothing found, no lead has run", true, mountpoints.Report{}, nil, assert.StatusOK,
+			[]string{"with the previous instance proven stopped", "step recheck", "no_lead_has_run"}},
+		{"nothing found, no statement", false, mountpoints.Report{}, nil, assert.StatusNotChecked,
+			[]string{"not made with the previous instance proven stopped", "does not prove that no process of an earlier lead remains"}},
+		{"a link at a mount point", true, mountpoints.Report{Problems: []*mountpoints.Problem{link, other}}, nil, assert.StatusFailed,
+			[]string{"found 2 problems", `the first is at "/srv/state/leads/qual-lead/home/.claude/skills"`, "a path component is a symbolic link"}},
+		{"a problem is failed without the statement too", false, mountpoints.Report{Problems: []*mountpoints.Problem{other}}, nil, assert.StatusFailed,
+			[]string{"found 1 problems", "/tree/.git/hooks", "wrong type"}},
+		{"more problems than are listed", true, mountpoints.Report{Problems: []*mountpoints.Problem{link}, Truncated: true}, nil, assert.StatusFailed,
+			[]string{"more problems than the check lists"}},
+		{"the check refused the inputs", true, mountpoints.Report{}, &mountpoints.Problem{Kind: mountpoints.ErrInvalid, Detail: "no role"}, assert.StatusNotChecked,
+			[]string{"was not made", "refused the inputs", "no role"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &attempt{cfg: &Config{NoLeadHasRun: tc.statement}}
+			a.recordWalk(StepRecheck, tc.rep, tc.err)
+			r := assert.CheckStartWalk(a.walk)
+			if r.Status != tc.status || r.Number != 7 || r.ID != assert.IDTreeGitReadOnly+assert.OutsideSuffix {
+				t.Fatalf("%+v, want %s", r, tc.status)
+			}
+			for _, want := range tc.detail {
+				if !strings.Contains(r.Detail, want) {
+					t.Errorf("detail %q lacks %q", r.Detail, want)
+				}
+			}
+		})
+	}
+	// A later check replaces an earlier one: the walk right before the launch
+	// is the one that counts.
+	a := &attempt{cfg: &Config{NoLeadHasRun: true}}
+	a.recordWalk(StepCheck, mountpoints.Report{}, nil)
+	a.recordWalk(StepRecheck, mountpoints.Report{Problems: []*mountpoints.Problem{link}}, nil)
+	if r := assert.CheckStartWalk(a.walk); r.Status != assert.StatusFailed || !strings.Contains(r.Detail, "step recheck") {
+		t.Errorf("the later check did not replace the earlier: %+v", r)
+	}
+	// An attempt that made no check has no walk to speak of.
+	if r := assert.CheckStartWalk((&attempt{cfg: &Config{}}).walk); r.Status != assert.StatusNotChecked {
+		t.Errorf("no check at all: %+v", r)
+	}
+}
+
 func TestCasesForListsTheResultsAnAssertionMapsTo(t *testing.T) {
 	results := []assert.Result{
 		{Number: 3, ID: "host-loopback-unreachable", Status: assert.StatusOK},
@@ -42,7 +95,9 @@ func TestCasesForListsTheResultsAnAssertionMapsTo(t *testing.T) {
 	if len(got[1].Results) != 1 || got[1].Results[0].ID != "qualification-record" {
 		t.Errorf("S11: %+v", got[1])
 	}
-	// S16 (assertion 7) is not requested, so its result is nowhere.
+	// S16 (assertion 7) is not requested, so its result is nowhere, and
+	// neither S16 nor S21 is an automated case: the results of assertion 7,
+	// inside and outside, are in report.json and outside.json.
 	// A requested case with no result says so.
 	if len(got[2].Results) != 0 || !strings.Contains(strings.Join(got[2].Notes, " "), "no result of case S4") {
 		t.Errorf("S4: %+v", got[2])

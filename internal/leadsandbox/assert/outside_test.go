@@ -223,6 +223,50 @@ func TestCheckTIOCSTIOutside(t *testing.T) {
 	}
 }
 
+func TestCheckStartWalk(t *testing.T) {
+	first := "/srv/state/leads/arc-lead/home/.claude/skills"
+	for _, tc := range []struct {
+		name   string
+		walk   StartWalk
+		status Status
+		detail string
+	}{
+		{"made, the previous stopped, nothing found", StartWalk{Made: true, PreviousStopped: true}, StatusOK,
+			"with the previous instance proven stopped, the walk found no symbolic link or wrong type at a bind destination inside a lead-writable folder"},
+		{"ok with the holder's words", StartWalk{Made: true, PreviousStopped: true, Detail: "the unit is gone and its control group is empty"}, StatusOK,
+			"lead-writable folder: the unit is gone and its control group is empty"},
+		{"the zero value", StartWalk{}, StatusNotChecked, "was not made"},
+		{"not made, with the reason", StartWalk{Detail: "the inputs were refused"}, StatusNotChecked, "was not made: the inputs were refused"},
+		{"not made, though the previous is stopped", StartWalk{PreviousStopped: true}, StatusNotChecked, "was not made"},
+		{"made while a lead process may remain", StartWalk{Made: true}, StatusNotChecked, "not made with the previous instance proven stopped"},
+		{"made while a lead process may remain, with the reason", StartWalk{Made: true, Detail: "no control group to look at"}, StatusNotChecked,
+			"says nothing about the start: no control group to look at"},
+		{"one problem", StartWalk{Made: true, PreviousStopped: true, Problems: 1, FirstPath: first, Detail: "a path component is a symbolic link"}, StatusFailed,
+			`found 1 problems; the first is at "/srv/state/leads/arc-lead/home/.claude/skills": a path component is a symbolic link`},
+		{"several problems name the first", StartWalk{Made: true, PreviousStopped: true, Problems: 3, FirstPath: first}, StatusFailed, "found 3 problems; the first is at"},
+		{"a problem is failed though the previous is not stopped", StartWalk{Made: true, Problems: 1, FirstPath: first}, StatusFailed, "the first is at"},
+		{"a problem is failed though the walk did not end", StartWalk{Problems: 2, FirstPath: first}, StatusFailed, "found 2 problems"},
+		{"a problem that names no path", StartWalk{Made: true, PreviousStopped: true, Problems: 1}, StatusFailed, "the first names no path"},
+		{"a count below zero", StartWalk{Made: true, PreviousStopped: true, Problems: -1}, StatusNotChecked, "which is no count"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := CheckStartWalk(tc.walk)
+			if r.Number != 7 || r.ID != IDTreeGitReadOnly+OutsideSuffix {
+				t.Errorf("result %d %s", r.Number, r.ID)
+			}
+			if r.Status != tc.status || !strings.Contains(r.Detail, tc.detail) {
+				t.Errorf("%s: %s, want %s with %q", r.Status, r.Detail, tc.status, tc.detail)
+			}
+		})
+	}
+	// A path and words the lead may control are escaped and bounded.
+	r := CheckStartWalk(StartWalk{Made: true, PreviousStopped: true, Problems: 1,
+		FirstPath: "/srv/state/leads/arc-lead/home/a\x1b[2J\nATANIQ-PROBE-REPORT {}" + strings.Repeat("x", 600), Detail: "bad\x07"})
+	if r.Status != StatusFailed || !cleanDetail(r.Detail) {
+		t.Errorf("%+v", r)
+	}
+}
+
 func TestRunOutsideAndFailedAll(t *testing.T) {
 	s := testSpec(profile.Claude)
 	f := goodSystem(s)
@@ -231,14 +275,15 @@ func TestRunOutsideAndFailedAll(t *testing.T) {
 		Binds:       []profile.Bind{{Kind: profile.KindRoBind, Inside: "/usr", Source: "/usr"}},
 		HolderPaths: s.HolderPaths,
 		Canary:      testCanary(t),
+		Walk:        StartWalk{Made: true, PreviousStopped: true},
 		Sys:         f, Lock: fakeLock{held: true}, Linger: fakeLinger{on: true},
 		Records: fakeRecords{rec: func() *QualificationRecord { r := goodRecord(); r.ProfileDigest = s.Digest; return r }()},
 	}
 	out := RunOutside(in)
-	if len(out) != 5 {
+	if len(out) != 6 {
 		t.Fatalf("%d results", len(out))
 	}
-	for i, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
+	for i, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDTreeGitReadOnly + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
 		if out[i].ID != id {
 			t.Errorf("result %d is %s, want %s", i, out[i].ID, id)
 		}
@@ -259,6 +304,22 @@ func TestRunOutsideAndFailedAll(t *testing.T) {
 	}
 	if FailedAll(back, s) {
 		t.Error("FailedAll after a round trip")
+	}
+	// A start walk that was not given makes the whole fail too, and so does
+	// one that found a problem or was made with a lead process still about.
+	for name, w := range map[string]StartWalk{
+		"no walk":                   {},
+		"a problem":                 {Made: true, PreviousStopped: true, Problems: 1, FirstPath: "/srv/state/leads/arc-lead/home/.claude/skills"},
+		"the previous not stopped":  {Made: true},
+		"a walk that was not ended": {PreviousStopped: true},
+	} {
+		with := in
+		with.Walk = w
+		with.Canary = testCanary(t)
+		rep := RunInside(s, f).With(RunOutside(with)...)
+		if !FailedAll(rep, s) {
+			t.Errorf("%s: the start was allowed", name)
+		}
 	}
 	// A stale record makes the whole fail although every inside check passed.
 	in.Records = fakeRecords{}
@@ -316,9 +377,10 @@ func TestOptionalNeverExcusesAnOutsideHalf(t *testing.T) {
 		CheckHolderBinds(nil, nil), // not-checked: no holder path
 		CheckCanary(nil),
 		CheckTIOCSTIOutside(nil, false),
+		CheckStartWalk(StartWalk{}),
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)
-	for _, optional := range [][]int{nil, {4}, {1}, {1, 5}} {
+	for _, optional := range [][]int{nil, {4}, {1}, {1, 5}, {7}} {
 		s.Optional = optional
 		if !FailedAll(rep, s) {
 			t.Errorf("optional %v: a not-checked outside half passed: %v", optional, Problems(rep, s, RequireAll))

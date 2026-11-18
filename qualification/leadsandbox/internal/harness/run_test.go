@@ -182,11 +182,22 @@ func TestFullRunWritesEveryEvidenceFile(t *testing.T) {
 			}
 			for id, want := range map[string]assert.Status{
 				"holder-hidden.outside": assert.StatusOK, "host-loopback-unreachable.outside": assert.StatusOK,
-				"tiocsti-blocked.outside": assert.StatusOK, "role-lock-lingering": assert.StatusNotChecked,
-				"qualification-record": assert.StatusNotChecked,
+				"tiocsti-blocked.outside": assert.StatusOK, "tree-git-readonly.outside": assert.StatusOK,
+				"role-lock-lingering": assert.StatusNotChecked, "qualification-record": assert.StatusNotChecked,
 			} {
 				if byID[id] != want {
 					t.Errorf("outside result %s is %q, want %q", id, byID[id], want)
+				}
+			}
+			if len(out.Results) != 6 {
+				t.Errorf("%d outside results, want 6: %+v", len(out.Results), out.Results)
+			}
+			// The outside half of assertion 7 is the check right before the
+			// launch, and it says on what the absence of a previous instance
+			// rests.
+			for _, res := range out.Results {
+				if res.ID == "tree-git-readonly.outside" && (res.Number != 7 || !strings.Contains(res.Detail, "step "+harness.StepRecheck) || !strings.Contains(res.Detail, "no_lead_has_run")) {
+					t.Errorf("the outside half of assertion 7: %+v", res)
 				}
 			}
 			if out.Canary.TCPHits+out.Canary.AbstractHits != 0 || out.Canary.Stopped {
@@ -584,6 +595,38 @@ func idsWithStatus(rs []harness.CaseResult, st assert.Status) []string {
 		}
 	}
 	return out
+}
+
+// Without the statement that no lead has run, the harness cannot say that the
+// previous instance is stopped: it has no unit and no control group. The walk
+// right before the launch found nothing, and the outside half of assertion 7
+// is still not-checked, never ok.
+func TestStartWalkWithoutTheStatementIsNotChecked(t *testing.T) {
+	f := harnesstest.New(t, profile.Claude)
+	approved(f)
+	// The first run makes the mount points; the second only checks them.
+	mustNoErr(t, execute(t, f, okProbe(assert.StatusOK, 0, 0), nil))
+	f.Config.NoLeadHasRun = false
+	r := execute(t, f, okProbe(assert.StatusOK, 0, 0), nil)
+	mustNoErr(t, r)
+	wantStep(t, r.out, harness.StepPrepare, harness.StepSkipped)
+	wantStep(t, r.out, harness.StepRecheck, harness.StepOK)
+	wantStep(t, r.out, harness.StepLaunch, harness.StepOK)
+	var out harness.OutsideEvidence
+	readJSON(t, r.out.Dir+"/outside.json", &out)
+	found := false
+	for _, res := range out.Results {
+		if res.ID != "tree-git-readonly.outside" {
+			continue
+		}
+		found = true
+		if res.Status != assert.StatusNotChecked || !strings.Contains(res.Detail, "not made with the previous instance proven stopped") || !strings.Contains(res.Detail, "no control group") {
+			t.Errorf("the outside half of assertion 7 without the statement: %+v", res)
+		}
+	}
+	if !found {
+		t.Errorf("no outside half of assertion 7: %+v", out.Results)
+	}
 }
 
 // A source that resolves differently right before the launch than it did when

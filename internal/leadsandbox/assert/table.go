@@ -60,7 +60,7 @@ var assertions = [NumAssertions]Assertion{
 	{4, IDProviderResolves, "A provider host name resolves.", Inside, []string{"S4"}},
 	{5, IDTIOCSTIBlocked, "dev.tty.legacy_tiocsti is 0, or the seccomp filter is loaded.", Both, []string{"S7"}},
 	{6, IDOwnerPathsAbsent, "The owner's real provider folders, ~/.ssh, the owner's checkout and the other runtime's config folder do not exist inside.", Inside, []string{"S1"}},
-	{7, IDTreeGitReadOnly, "The tree is the lead's own clone, and its .git/config, .git/hooks and .git/info are not writable inside.", Inside, []string{"S16"}},
+	{7, IDTreeGitReadOnly, "Before the sandbox starts, with the previous instance proven stopped, the holder's walk of 3.6 found no symlink or wrong type at any bind destination inside a lead-writable folder. Inside, the tree is the lead's own clone, and its .git/config, .git/hooks and .git/info are not writable.", Both, []string{"S16", "S21"}},
 	{8, IDManagedSettings, "The managed-settings file is present and read-only; for claude it contains the guard hook.", Inside, []string{"S18"}},
 	{9, IDRoleLockLingering, "The role lock is held, and lingering is on.", Outside, []string{"H7", "L3"}},
 	{10, IDQualificationRecord, "A current qualification record exists for this runtime, version and profile digest. A missing or stale record blocks the start and shows as unsupported.", Outside, []string{"S11"}},

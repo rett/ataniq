@@ -29,8 +29,8 @@ const ReportPrefix = "ATANIQ-PROBE-REPORT "
 const (
 	// MaxDetailBytes is the longest detail a result keeps.
 	MaxDetailBytes = 512
-	// MaxResults is the most results a report holds. The table allows 14
-	// distinct results at most (eleven assertions and three outside halves).
+	// MaxResults is the most results a report holds. The table allows 15
+	// distinct results at most (eleven assertions and four outside halves).
 	MaxResults = 24
 	// MaxReportLineBytes is the longest line ParseLine accepts, terminator
 	// included. It holds MaxResults results with a detail of MaxDetailBytes
@@ -308,7 +308,7 @@ const (
 	// assertion that has one (1 to 8 and 11): what a probe's report holds.
 	RequireInside Require = iota
 	// RequireAll also demands the outside results: 9, 10, and the outside
-	// halves of 1, 3 and 5. The holder judges a start with it.
+	// halves of 1, 3, 5 and 7. The holder judges a start with it.
 	RequireAll
 )
 
@@ -369,7 +369,7 @@ func Problems(r Report, s Spec, req Require) []string {
 			out = append(out, fmt.Sprintf("assertion %d (%s): failed: %s", res.Number, res.ID, EscapeDetail(res.Detail)))
 		case StatusNotChecked:
 			// Only the inside half of an assertion can be optional: the
-			// outside half of 1, 3 or 5 is the holder's own check. Validate
+			// outside half of 1, 3, 5 or 7 is the holder's own check. Validate
 			// allows only assertion 4, which has no outside half, so the ID
 			// test is defence in depth for a result that carries the number of
 			// an optional assertion and the ID of an outside half; a test

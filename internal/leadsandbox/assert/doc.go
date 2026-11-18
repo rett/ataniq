@@ -27,11 +27,17 @@
 //     folders the lead writes, both must say writable). They never issue
 //     TIOCSTI, never send a byte on a connection, and start no process: the
 //     package imports no os/exec.
-//   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3
-//     and 5): [CheckRoleLockAndLingering], [CheckQualification],
-//     [CheckHolderBinds], [CheckCanary] and [CheckTIOCSTIOutside], and
-//     [RunOutside] to run them, behind the interfaces [RoleLock], [Lingering] and
-//     [QualificationRecords], which the holder and the daemon implement.
+//   - The outside checks (assertions 9 and 10, and the outside halves of 1, 3,
+//     5 and 7): [CheckRoleLockAndLingering], [CheckQualification],
+//     [CheckHolderBinds], [CheckCanary], [CheckTIOCSTIOutside] and
+//     [CheckStartWalk], and [RunOutside] to run them, behind the interfaces
+//     [RoleLock], [Lingering] and [QualificationRecords], which the holder and
+//     the daemon implement. The outside half of assertion 7 is the holder's
+//     walk of the bind destinations before the start. The walk is not made
+//     here: the holder makes it (the mountpoints package has it) and gives
+//     what it found as a fact, [StartWalk], which [CheckStartWalk] turns into
+//     the result. This package imports no package that walks the file system
+//     for it.
 //     [QualificationRecord] and [Current] say when a record counts. No store
 //     is built here.
 //   - The [Report]: [Result]s with a status ([StatusOK], [StatusFailed] or
@@ -102,11 +108,12 @@
 //     [ReportPrefix]; the report carries the digest of the spec, which the
 //     lead can read, so the prefix and the digest authenticate nothing.
 //   - The probe makes the results 1 to 8 and 11, the inside half of each
-//     assertion that has one, once each. The holder makes the others (the outside half
-//     of 1, 3 and 5, then 9 and 10) with [RunOutside], which takes the
-//     canary, adds them with [Report.With] and judges the whole with
-//     [FailedAll], after the probe's report and before it accepts the start. [ParseLine] reads a full report;
-//     the probe's line is read with [ParseProbeLine].
+//     assertion that has one, once each. The holder makes the others (the
+//     outside half of 1, 3, 5 and 7, then 9 and 10) with [RunOutside], which
+//     takes the canary and the fact of the start walk, adds them with
+//     [Report.With] and judges the whole with [FailedAll], after the probe's
+//     report and before it accepts the start. [ParseLine] reads a full
+//     report; the probe's line is read with [ParseProbeLine].
 //
 // # Not-checked is not ok
 //
@@ -164,7 +171,15 @@
 //     owner path. The other
 //     runtime's config folder is ok only when it is absent, or an empty
 //     folder that is not a mount point and has nothing mounted below it.
-//   - Assertion 7 shows that each of the three paths, and the
+//   - Assertion 7 is checked on both sides. The outside half is a fact the
+//     holder gives ([StartWalk]): it is ok only for a walk that ran to its
+//     end, with the previous instance proven stopped, and found no problem;
+//     failed, with the first path, when the walk found one; and not-checked
+//     for a walk that was not made or was made while a process of the lead
+//     may remain, since such a walk says nothing about what the sandbox will
+//     find. The package takes the holder's word for both: it cannot see
+//     whether the walk was made or the instance stopped. The inside half
+//     shows that each of the three paths, and the
 //     managed-settings file of assertion 8, is on a read-only mount (found by
 //     the mount ID that statx gives, not by the longest mount point above the
 //     path, so a later bind that hides an earlier one is seen), that no

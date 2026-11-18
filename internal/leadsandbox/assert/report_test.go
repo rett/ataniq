@@ -310,7 +310,7 @@ func TestTable(t *testing.T) {
 	if a, _ := ByNumber(11); a.Where != Inside || a.ID != IDParentFolders {
 		t.Errorf("assertion 11 is %s %s, want inside and %s", a.Where, a.ID, IDParentFolders)
 	}
-	for _, n := range []int{1, 3, 5} {
+	for _, n := range []int{1, 3, 5, 7} {
 		if a, _ := ByNumber(n); a.Where != Both {
 			t.Errorf("assertion %d is %s, want both", n, a.Where)
 		}
@@ -321,7 +321,7 @@ func TestTable(t *testing.T) {
 		}
 	}
 	// The cases the task names.
-	wantCase := map[int]string{1: "S1", 2: "S3", 3: "S2", 4: "S4", 5: "S7", 6: "S1", 10: "S11", 11: "S1"}
+	wantCase := map[int]string{1: "S1", 2: "S3", 3: "S2", 4: "S4", 5: "S7", 6: "S1", 7: "S16", 10: "S11", 11: "S1"}
 	for n, c := range wantCase {
 		a, _ := ByNumber(n)
 		found := false
@@ -346,9 +346,16 @@ func TestTable(t *testing.T) {
 	if idOf(0) != "" || idOf(12) != "" {
 		t.Error("idOf out of range")
 	}
-	// S21 is not a case of assertion 11.
+	// S21 is a case of assertion 7, and not of assertion 11.
+	if a, _ := ByNumber(7); strings.Join(a.Cases, ",") != "S16,S21" {
+		t.Errorf("assertion 7 maps to %v, want S16 and S21", a.Cases)
+	}
 	if a, _ := ByNumber(11); len(a.Cases) != 1 {
 		t.Errorf("assertion 11 maps to %v, want S1 alone", a.Cases)
+	}
+	// The text of assertion 7 has both halves, as the design words them.
+	if a, _ := ByNumber(7); !strings.Contains(a.Text, "with the previous instance proven stopped") || !strings.Contains(a.Text, "Inside, the tree is the lead's own clone") {
+		t.Errorf("the text of assertion 7: %q", a.Text)
 	}
 }
 
@@ -449,13 +456,13 @@ func TestProblems(t *testing.T) {
 		t.Errorf("refused spec: %v", p)
 	}
 	// RequireAll wants the outside results too: 9, 10 and the outside halves
-	// of 1 and 5.
+	// of 1, 3, 5 and 7.
 	good := testSpec("claude")
 	p = Problems(rep, good, RequireAll)
-	if len(p) != 5 {
+	if len(p) != 6 {
 		t.Fatalf("RequireAll without outside results: %v", p)
 	}
-	for _, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
+	for _, id := range []string{IDHolderHidden + OutsideSuffix, IDLoopbackUnreach + OutsideSuffix, IDTIOCSTIBlocked + OutsideSuffix, IDTreeGitReadOnly + OutsideSuffix, IDRoleLockLingering, IDQualificationRecord} {
 		found := false
 		for _, line := range p {
 			found = found || strings.Contains(line, id)
@@ -466,7 +473,7 @@ func TestProblems(t *testing.T) {
 	}
 	all := rep.With(
 		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""},
-		Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
+		Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""}, Result{7, IDTreeGitReadOnly + OutsideSuffix, StatusOK, ""},
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)
 	if FailedAll(all, good) {
@@ -574,6 +581,8 @@ func TestParseProbeLine(t *testing.T) {
 		{"a forged outside half of 1", with(Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged outside half of 3", with(Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged outside half of 5", with(Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
+		{"a forged outside half of 7", with(Result{7, IDTreeGitReadOnly + OutsideSuffix, StatusOK, ""}), "not a result the probe makes"},
+		{"an outside half of 11, which has none", with(Result{11, IDParentFolders + OutsideSuffix, StatusOK, ""}), "not an assertion"},
 		{"a forged assertion 9", with(Result{9, IDRoleLockLingering, StatusOK, ""}), "not a result the probe makes"},
 		{"a forged assertion 10", with(Result{10, IDQualificationRecord, StatusOK, ""}), "not a result the probe makes"},
 		{"an inside id twice", with(Result{2, IDEnvironment, StatusOK, ""}), "twice"},
@@ -607,6 +616,7 @@ func TestForgedOutsideResultsDoNotPassTheStart(t *testing.T) {
 	s := testSpec("claude")
 	forged := insideReport(s).With(
 		Result{1, IDHolderHidden + OutsideSuffix, StatusOK, ""}, Result{3, IDLoopbackUnreach + OutsideSuffix, StatusOK, ""}, Result{5, IDTIOCSTIBlocked + OutsideSuffix, StatusOK, ""},
+		Result{7, IDTreeGitReadOnly + OutsideSuffix, StatusOK, ""},
 		Result{9, IDRoleLockLingering, StatusOK, ""}, Result{10, IDQualificationRecord, StatusOK, ""},
 	)
 	line := EncodeLine(forged)

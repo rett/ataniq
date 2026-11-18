@@ -173,6 +173,9 @@ type attempt struct {
 	planOpt  plan.Options
 	planEv   PlanEvidence
 	spec     assert.Spec
+	// walk is what the last check of the mount points found (the steps check
+	// and recheck): the fact the outside half of assertion 7 is made from.
+	walk assert.StartWalk
 
 	proc     Process
 	launched bool
@@ -346,6 +349,7 @@ func (a *attempt) pre(ctx context.Context) {
 		}},
 		{StepCheck, false, false, func(context.Context) error {
 			rep, err := mountpoints.Check(a.in)
+			a.recordWalk(StepCheck, rep, err)
 			if err != nil {
 				return err
 			}
@@ -614,6 +618,7 @@ func (a *attempt) writeSpec() error {
 // Nothing that runs a lead process lies between this and the launch.
 func (a *attempt) recheck() error {
 	rep, err := mountpoints.Check(a.in)
+	a.recordWalk(StepRecheck, rep, err)
 	if err != nil {
 		return err
 	}
@@ -637,6 +642,43 @@ func (a *attempt) recheck() error {
 		}
 	}
 	return nil
+}
+
+// recordWalk keeps what a check of the mount points found as the fact the
+// outside half of assertion 7 is made from. The check is the holder's walk of
+// the design (section 3.6): mountpoints.Check looks at every bind destination
+// inside a lead-writable folder without following a link, and at the git
+// metadata folder. The last one made counts, which in a run is the one of the
+// step recheck, right before the launch.
+//
+// The design wants the walk made with the previous instance proven stopped.
+// The harness makes no unit and has no control group, so it proves nothing
+// about a process of an earlier lead. When the configuration states that no
+// lead has run in these folders (no_lead_has_run, the statement the
+// preparation of the mount points also rests on), there is no previous
+// instance, and the fact says so in those words. Without the statement the
+// fact says the previous instance is not proven stopped, and the result of a
+// walk that found nothing is not-checked.
+func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
+	if err != nil {
+		a.walk = assert.StartWalk{Detail: fmt.Sprintf("step %s: the check of the mount points refused the inputs: %v", step, err)}
+		return
+	}
+	w := assert.StartWalk{Made: true, Problems: len(rep.Problems), PreviousStopped: a.cfg.NoLeadHasRun}
+	switch {
+	case len(rep.Problems) > 0:
+		first := rep.Problems[0]
+		w.FirstPath = first.Path
+		w.Detail = fmt.Sprintf("step %s: %s", step, first.Error())
+		if rep.Truncated {
+			w.Detail += " (and more problems than the check lists)"
+		}
+	case a.cfg.NoLeadHasRun:
+		w.Detail = fmt.Sprintf("step %s; the harness has no unit and no control group: that there is no previous instance is the configuration's statement that no lead has run in these folders (no_lead_has_run)", step)
+	default:
+		w.Detail = fmt.Sprintf("step %s; the harness has no unit and no control group, and the configuration does not state that no lead has run in these folders (no_lead_has_run): it does not prove that no process of an earlier lead remains", step)
+	}
+	a.walk = w
 }
 
 // planBindRows pairs each mount of the plan that has a source with the row of
@@ -910,7 +952,7 @@ func (a *attempt) outside() error {
 	// The canary is read before it is closed (cleanup closes it).
 	results := assert.RunOutside(assert.OutsideInput{
 		Spec: a.spec, Role: a.cfg.State.Role, User: a.in.OwnerUser, Version: a.cfg.RuntimeVersion,
-		Now: a.opt.Now(), Binds: binds, HolderPaths: a.spec.HolderPaths, Canary: a.canary, Sys: a.opt.System,
+		Now: a.opt.Now(), Binds: binds, HolderPaths: a.spec.HolderPaths, Canary: a.canary, Walk: a.walk, Sys: a.opt.System,
 	})
 	a.canaryEv = canaryEvidence(a.canary)
 	a.outsideEv = &OutsideEvidence{Format: EvidenceFormat, Results: results, Canary: a.canaryEv}
