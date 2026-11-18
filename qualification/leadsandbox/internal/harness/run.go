@@ -506,10 +506,19 @@ func (a *attempt) buildPlan() error {
 	if err != nil {
 		return err
 	}
+	// The walk of every bind source Ataniq supplies, from the inputs alone:
+	// the plan's pass-through step makes these walks and bubblewrap binds the
+	// descriptors they return. They are the walks the check of the bind sources
+	// makes on the same rows; none is built by hand.
+	walks, err := mountpoints.PlanWalks(a.in)
+	if err != nil {
+		return err
+	}
 	a.planOpt = plan.Options{
 		PastaPath: a.cfg.Executables.Pasta, BwrapPath: a.cfg.Executables.Bwrap,
 		AgentArgv: a.cfg.Command(), HostPresent: present, HostSources: a.res.HostSources(),
-		ReportPath: a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
+		SourceWalks: walks,
+		ReportPath:  a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
 	}
 	if a.in.SeccompEnabled() {
 		a.planOpt.SeccompFD = SeccompFD

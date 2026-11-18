@@ -91,7 +91,8 @@ func TestPlanUsesTheOptionWordsTheProbeParses(t *testing.T) {
 	}
 
 	// The pass-through mode: the probe on the host, then its mode word, then
-	// the options the documentation lists, each with FD=PATH.
+	// the options the documentation lists: a file option with FD=PATH, a walk
+	// option with a descriptor, a folder and the path beneath it.
 	mode := index(0, plan.PassFDsMode)
 	if mode == 0 || argv[mode-1] != f.Config.Executables.Probe {
 		t.Errorf("the mode word %q does not follow the probe's path: %q", plan.PassFDsMode, argv[:mode+1])
@@ -99,28 +100,49 @@ func TestPlanUsesTheOptionWordsTheProbeParses(t *testing.T) {
 	if fields := strings.Fields(passFDs); len(fields) < 2 || fields[1] != plan.PassFDsMode {
 		t.Errorf("the documented mode word is not %q: %q", plan.PassFDsMode, passFDs)
 	}
-	// The probe may document more options than the plan uses; every option
-	// the plan names and writes must be a documented one.
+	// The probe documents exactly the options the plan names, each with the
+	// operands the plan writes.
 	documented := optionWords(passFDs)
-	for _, w := range []string{plan.PassFDsRead, plan.PassFDsWrite} {
-		if !contains(documented, w) {
-			t.Errorf("the plan names the option %q, and the probe documents %q for its pass-through mode", w, documented)
+	named := []string{plan.PassFDsRead, plan.PassFDsWrite, plan.PassFDsWalkDir, plan.PassFDsWalkFile}
+	if strings.Join(documented, " ") != strings.Join(named, " ") {
+		t.Errorf("the probe documents the options %q for its pass-through mode, the plan names %q", documented, named)
+	}
+	for _, form := range []string{
+		"[" + plan.PassFDsRead + " FD=PATH]...", "[" + plan.PassFDsWrite + " FD=PATH]...",
+		"[" + plan.PassFDsWalkDir + " FD ROOT REL]...", "[" + plan.PassFDsWalkFile + " FD ROOT REL]...",
+	} {
+		if !strings.Contains(passFDs, form) {
+			t.Errorf("the documented command line %q does not have %q", passFDs, form)
 		}
 	}
 	words, values := optionsAt(mode)
 	seen := map[string]bool{}
-	for i, w := range words {
+	number := regexp.MustCompile(`^[1-9][0-9]*$`)
+	end := index(mode, "--")
+	for i := mode + 1; i < end; {
+		w := argv[i]
 		seen[w] = true
-		if !contains(documented, w) {
-			t.Errorf("the plan passes %q to the pass-through mode, which the probe does not document", w)
-		}
-		if !regexp.MustCompile(`^[0-9]+=/`).MatchString(values[i]) {
-			t.Errorf("the value of %s is %q, not FD=PATH", w, values[i])
+		switch w {
+		case plan.PassFDsRead, plan.PassFDsWrite:
+			if i+1 >= end || !regexp.MustCompile(`^[0-9]+=/`).MatchString(argv[i+1]) {
+				t.Fatalf("the value of %s at element %d is not FD=PATH: %q", w, i, argv[i:end])
+			}
+			i += 2
+		case plan.PassFDsWalkDir, plan.PassFDsWalkFile:
+			if i+3 >= end || !number.MatchString(argv[i+1]) || !strings.HasPrefix(argv[i+2], "/") || argv[i+3] == "" || strings.HasPrefix(argv[i+3], "/") || strings.HasPrefix(argv[i+3], "-") {
+				t.Fatalf("the values of %s at element %d are not a descriptor, a folder and a path beneath it: %q", w, i, argv[i:end])
+			}
+			i += 4
+		default:
+			t.Fatalf("the plan passes %q to the pass-through mode at element %d, which the probe does not document", w, i)
 		}
 	}
-	if !seen[plan.PassFDsRead] || !seen[plan.PassFDsWrite] {
-		t.Errorf("the plan does not use both options (the seccomp file and the report channel): %q", words)
+	for _, w := range named {
+		if !seen[w] {
+			t.Errorf("the plan does not use the option %s (the seccomp file, the report channel, a source that is a folder and one that is a file): %q", w, words)
+		}
 	}
+	_ = values
 
 	// The inside mode: the probe's path inside, then its options, in the
 	// order the documentation gives, each used once.
@@ -155,8 +177,8 @@ func TestPlanUsesTheOptionWordsTheProbeParses(t *testing.T) {
 		}
 	}
 	// The agent's command follows the probe's "--".
-	end := index(probe, "--")
-	if got := strings.Join(argv[end+1:], " "); got != strings.Join(harness.DefaultScratchCommand(), " ") {
+	last := index(probe, "--")
+	if got := strings.Join(argv[last+1:], " "); got != strings.Join(harness.DefaultScratchCommand(), " ") {
 		t.Errorf("after the probe's options: %q", got)
 	}
 }

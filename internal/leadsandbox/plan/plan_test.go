@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -120,9 +121,21 @@ func TestPartsAndOrder(t *testing.T) {
 	if got := join(p.Pasta, p.PassFDs, p.Bwrap, p.Inner); !equal(got, p.Argv) {
 		t.Fatalf("Argv is not Pasta, PassFDs, Bwrap and Inner joined")
 	}
-	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo", "--"}
-	if !equal(p.PassFDs, wantPass) {
+	// The step: the probe, its mode, the report channel, one walk per bind
+	// source Ataniq supplies, in the order of the table, and the terminator.
+	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo"}
+	for _, w := range p.Walks {
+		opt := PassFDsWalkFile
+		if w.Dir {
+			opt = PassFDsWalkDir
+		}
+		wantPass = append(wantPass, opt, strconv.Itoa(w.FD), w.Root, w.Rel)
+	}
+	if wantPass = append(wantPass, "--"); !equal(p.PassFDs, wantPass) {
 		t.Errorf("pass-through step = %q", p.PassFDs)
+	}
+	if len(p.Walks) != 23 {
+		t.Errorf("%d walks, the table has 23 bind rows Ataniq supplies", len(p.Walks))
 	}
 	if p.Pasta[0] != "/usr/bin/pasta" || !equal(p.Pasta[1:], sandboxnet.PastaArgs()) {
 		t.Errorf("pasta part = %q", p.Pasta)
@@ -198,8 +211,9 @@ func TestSeccompHook(t *testing.T) {
 	if len(p.Files) != 2 || p.Files[0] != want || p.Files[1].Purpose != PurposeReport {
 		t.Errorf("Files = %+v", p.Files)
 	}
-	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--read", "7=/opt/ataniq/seccomp/lead.bpf", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo", "--"}
-	if !equal(p.PassFDs, wantPass) {
+	// The files come first, the read before the write, then the walks.
+	wantPass := []string{"/opt/ataniq/bin/probe", "pass-fds", "--read", "7=/opt/ataniq/seccomp/lead.bpf", "--write", "3=/opt/ataniq/run/arc-lead/report.fifo", "--walk-file"}
+	if len(p.PassFDs) < len(wantPass) || !equal(p.PassFDs[:len(wantPass)], wantPass) || p.PassFDs[len(p.PassFDs)-1] != "--" {
 		t.Errorf("pass-through step = %q", p.PassFDs)
 	}
 	if !containsNote(p.Notes, "descriptor 7") || containsNote(p.Notes, NoteNoSeccomp) {
@@ -689,8 +703,7 @@ func TestAssertPlanRefusesOnItsOwn(t *testing.T) {
 		"command line too long":    {"command line", func(p *Plan) { p.Argv = append(p.Argv, strings.Repeat("a", MaxArgvBytes)) }},
 		"the plan fails Verify":    {"plan", func(p *Plan) { p.Digest = "" }},
 		"a git row bound from the tree": {"plan", func(p *Plan) {
-			i := find(t, p, "--ro-bind", "/state/leads/arc-lead/gitmeta/hooks")
-			p.Bwrap[i+1] = "/state/leads/arc-lead/tree/.git/hooks"
+			rewalk(t, p, "/state/leads/arc-lead/gitmeta/hooks", "/state", "leads/arc-lead/tree/.git/hooks")
 			p.Mounts[indexOfMount(t, p, "/work/demo/.git/hooks")].Source = "/state/leads/arc-lead/tree/.git/hooks"
 			resync(p)
 		}},

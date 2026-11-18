@@ -169,6 +169,8 @@ func TestAgreesWithThePlan(t *testing.T) {
 		{"mode", modePassFDs, plan.PassFDsMode},
 		{"read", optRead, plan.PassFDsRead},
 		{"write", optWrite, plan.PassFDsWrite},
+		{"walk to a folder", optWalkDir, plan.PassFDsWalkDir},
+		{"walk to a file", optWalkFile, plan.PassFDsWalkFile},
 		{"report fd", optReportFD, plan.ProbeReportFD},
 	} {
 		if c.got != c.want {
@@ -177,5 +179,13 @@ func TestAgreesWithThePlan(t *testing.T) {
 	}
 	if minFD != 3 || maxFD != 1023 {
 		t.Errorf("descriptor bounds %d..%d", minFD, maxFD)
+	}
+	// The plan refuses to ask for more descriptors than the probe places, and
+	// gives a bind source no number the probe would not take.
+	if maxPassFDs != plan.MaxPassFDs {
+		t.Errorf("the probe places at most %d descriptors, the plan asks for at most %d", maxPassFDs, plan.MaxPassFDs)
+	}
+	if plan.MinBindFD < minFD || plan.MaxBindFD > maxFD {
+		t.Errorf("the plan gives bind sources the numbers %d to %d, the probe takes %d to %d", plan.MinBindFD, plan.MaxBindFD, minFD, maxFD)
 	}
 }

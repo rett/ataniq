@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"path"
 	"strconv"
 	"strings"
 	"testing"
@@ -86,6 +87,7 @@ func options(in profile.Inputs, present map[string]bool) Options {
 		AgentArgv:   []string{"/ataniq/agent/bin/" + string(in.Runtime), "--model", "example"},
 		HostPresent: present,
 		HostSources: hostSources(in, present),
+		SourceWalks: walksFor(in),
 		ReportPath:  "/opt/ataniq/run/arc-lead/report.fifo",
 		ReportDir:   "/opt/ataniq/run/arc-lead",
 		ReportFD:    3,
@@ -110,6 +112,88 @@ func hostSources(in profile.Inputs, present map[string]bool) map[string]string {
 		}
 	}
 	return m
+}
+
+// walksFor gives the walk of each bind row Ataniq supplies, as
+// mountpoints.SourceWalks derives it from the inputs (this package cannot
+// import it; a test of mountpoints builds a plan from its own walks): the
+// state root and the whole path below it for a source below the state root,
+// else the folder that holds the source and its name.
+func walksFor(in profile.Inputs) []SourceWalk {
+	binds, err := in.Binds()
+	if err != nil {
+		return nil
+	}
+	var out []SourceWalk
+	for _, b := range binds {
+		if b.Source == "" || b.SourceRole == profile.RoleHost {
+			continue
+		}
+		w := SourceWalk{Inside: b.Inside, Root: path.Dir(b.Source), Rel: path.Base(b.Source), Dir: b.IsDir}
+		if rel, below := strings.CutPrefix(b.Source, in.StateRoot+"/"); below {
+			w.Root, w.Rel = in.StateRoot, rel
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// walkOf returns the walk of the plan for the row whose source is the path,
+// or fails the test.
+func walkOf(t *testing.T, p *Plan, source string) Walk {
+	t.Helper()
+	for _, w := range p.Walks {
+		if w.Path() == source {
+			return w
+		}
+	}
+	t.Fatalf("no walk leads to %s", source)
+	return Walk{}
+}
+
+// findBind returns the index in p.Bwrap of the option that binds, from a
+// descriptor, the row whose source is the path.
+func findBind(t *testing.T, p *Plan, source string) int {
+	t.Helper()
+	fd := strconv.Itoa(walkOf(t, p, source).FD)
+	for i := 1; i < len(p.Bwrap)-1; i += width(p.Bwrap[i]) {
+		if (p.Bwrap[i] == "--ro-bind-fd" || p.Bwrap[i] == "--bind-fd") && p.Bwrap[i+1] == fd {
+			return i
+		}
+	}
+	t.Fatalf("no mount binds the descriptor of %s", source)
+	return -1
+}
+
+// findWalk returns the index in p.PassFDs of the walk option of the row whose
+// source is the path: the option, then the descriptor, the folder and the
+// path beneath it.
+func findWalk(t *testing.T, p *Plan, source string) int {
+	t.Helper()
+	fd := strconv.Itoa(walkOf(t, p, source).FD)
+	for i := 2; i+3 < len(p.PassFDs); i++ {
+		if (p.PassFDs[i] == PassFDsWalkDir || p.PassFDs[i] == PassFDsWalkFile) && p.PassFDs[i+1] == fd {
+			return i
+		}
+	}
+	t.Fatalf("the pass-through step has no walk for %s", source)
+	return -1
+}
+
+// rewalk makes the pass-through step walk somewhere else for the row whose
+// source is the path: the step is what runs, so this is what a tampered plan
+// that binds another source looks like. Nothing else of the plan is changed.
+func rewalk(t *testing.T, p *Plan, source, root, rel string) {
+	t.Helper()
+	i := findWalk(t, p, source)
+	p.PassFDs[i+2], p.PassFDs[i+3] = root, rel
+}
+
+// resource is rewalk with the new source given as one path: walked from its
+// parent folder.
+func resource(t *testing.T, p *Plan, source, other string) {
+	t.Helper()
+	rewalk(t, p, source, path.Dir(other), path.Base(other))
 }
 
 func mustBuild(t *testing.T, in profile.Inputs, o Options) *Plan {
@@ -139,6 +223,7 @@ func clonePlan(p *Plan) *Plan {
 	c.Inner = append([]string(nil), p.Inner...)
 	c.Env = append([]profile.EnvVar(nil), p.Env...)
 	c.Files = append([]File(nil), p.Files...)
+	c.Walks = append([]Walk(nil), p.Walks...)
 	c.Mounts = append([]Mount(nil), p.Mounts...)
 	c.Notes = append([]string(nil), p.Notes...)
 	return &c
@@ -157,21 +242,26 @@ func resync(p *Plan) *Plan {
 func render(p *Plan) string {
 	var b strings.Builder
 	line := func(s ...string) { b.WriteString(strings.Join(s, " ") + "\n") }
+	// options writes a program and its first words on one line, then one
+	// option with its operands per line.
+	options := func(head int, args []string) {
+		line(args[:head]...)
+		var cur []string
+		for _, a := range args[head:] {
+			if strings.HasPrefix(a, "--") && len(cur) > 0 {
+				line(cur...)
+				cur = nil
+			}
+			cur = append(cur, a)
+		}
+		line(cur...)
+	}
 	b.WriteString("# pasta\n")
 	line(p.Pasta...)
 	b.WriteString("# pass-fds\n")
-	line(p.PassFDs...)
+	options(2, p.PassFDs)
 	b.WriteString("# bubblewrap\n")
-	line(p.Bwrap[0])
-	var cur []string
-	for _, a := range p.Bwrap[1:] {
-		if strings.HasPrefix(a, "--") && len(cur) > 0 {
-			line(cur...)
-			cur = nil
-		}
-		cur = append(cur, a)
-	}
-	line(cur...)
+	options(1, p.Bwrap)
 	b.WriteString("# inner\n")
 	line(p.Inner...)
 	b.WriteString("# env\n")
@@ -184,6 +274,9 @@ func render(p *Plan) string {
 		if m.Source != "" {
 			cols = append(cols, m.Source)
 		}
+		if m.FD != 0 {
+			cols = append(cols, "[fd "+strconv.Itoa(m.FD)+"]")
+		}
 		if m.LeadWritable {
 			cols = append(cols, "[lead-writable]")
 		}
@@ -195,6 +288,14 @@ func render(p *Plan) string {
 	b.WriteString("# files\n")
 	for _, f := range p.Files {
 		line(strings.TrimSpace(strings.Join([]string{"fd", strconv.Itoa(f.FD), string(f.Mode), f.Purpose, f.Path, f.SHA256}, " ")))
+	}
+	b.WriteString("# walks\n")
+	for _, w := range p.Walks {
+		kind := "file"
+		if w.Dir {
+			kind = "dir"
+		}
+		line("fd", strconv.Itoa(w.FD), kind, w.Inside, w.Root, w.Rel)
 	}
 	b.WriteString("# digest\n")
 	line(p.Digest)

@@ -37,6 +37,9 @@ const (
 	ProbNever        ProblemKind = "never-mounted"    // a source in or around a never-mounted path
 	ProbOtherRuntime ProblemKind = "other-runtime"    // the other runtime's config folder
 	ProbLeadWritable ProblemKind = "lead-writable"    // a bind source in or below a host folder the lead can write (rule G1)
+	ProbBindByPath   ProblemKind = "bind-by-path"     // a bind row Ataniq supplies is bound by path, not from a descriptor (rule B1)
+	ProbBindFD       ProblemKind = "bind-fd"          // a bind descriptor that is no number, is used twice, has no walk or no mount, or is one of another kind's
+	ProbWalk         ProblemKind = "walk"             // a walk, or the list of walks, is not what the inputs and options give
 	ProbWorkDir      ProblemKind = "workdir"          // --chdir or the plan's working folder is not the options'
 	ProbRemount      ProblemKind = "remount-ro"       // --remount-ro / missing or not last
 	ProbInner        ProblemKind = "inner"            // the probe command line
@@ -66,6 +69,7 @@ var bwrapArity = map[string]int{
 	"--clearenv": 0, "--uid": 1, "--gid": 1, "--cap-drop": 1,
 	"--setenv": 2, "--seccomp": 1,
 	"--tmpfs": 1, "--dev": 1, "--proc": 1, "--ro-bind": 2, "--bind": 2, "--symlink": 2,
+	"--ro-bind-fd": 2, "--bind-fd": 2,
 	"--chdir": 1, "--remount-ro": 1,
 }
 
@@ -85,7 +89,7 @@ func sectionOf(opt string) int {
 		return secEnv
 	case "--seccomp":
 		return secSeccomp
-	case "--tmpfs", "--dev", "--proc", "--ro-bind", "--bind", "--symlink":
+	case "--tmpfs", "--dev", "--proc", "--ro-bind", "--bind", "--symlink", "--ro-bind-fd", "--bind-fd":
 		return secMount
 	case "--chdir":
 		return secChdir
@@ -99,6 +103,7 @@ func sectionOf(opt string) int {
 var mountKinds = map[string]profile.Kind{
 	"--tmpfs": profile.KindTmpfs, "--dev": profile.KindDev, "--proc": profile.KindProc,
 	"--ro-bind": profile.KindRoBind, "--bind": profile.KindRwBind, "--symlink": profile.KindSymlink,
+	"--ro-bind-fd": profile.KindRoBind, "--bind-fd": profile.KindRwBind,
 }
 
 // item is one parsed option with its operands.
@@ -112,7 +117,73 @@ type mount struct {
 	kind           profile.Kind
 	source, target string // target is the link target of a symlink
 	inside         string
+	// byFD says the option binds from a descriptor (--bind-fd, --ro-bind-fd);
+	// fdText is its first operand as written. fd is that number when it is
+	// one, else zero. walk is the walk of the pass-through step that opens the
+	// descriptor, when exactly one does: source is then the path that walk
+	// leads to, and is empty otherwise.
+	byFD   bool
+	fdText string
+	fd     int
+	walk   *stepWalk
 }
+
+// stepWalk is one walk option parsed back from the pass-through step.
+type stepWalk struct {
+	// fd is the descriptor number, or zero when the operand is not one.
+	fd        int
+	root, rel string
+	dir       bool
+	// used counts the mounts bound from the descriptor.
+	used int
+}
+
+// parseStepWalks reads the walk options of the pass-through step back, apart
+// from the code that writes them: after the program and the mode word come
+// options, a file option with one operand and a walk option with three, up to
+// the final "--". It returns the walks it could read, in order; what it cannot
+// read is left to the comparison of the whole step with the expected one, which
+// reports it.
+func parseStepWalks(step []string) []*stepWalk {
+	var walks []*stepWalk
+	for i := 2; i < len(step); {
+		switch step[i] {
+		case PassFDsRead, PassFDsWrite:
+			i += 2
+		case PassFDsWalkDir, PassFDsWalkFile:
+			if i+3 >= len(step) {
+				return walks
+			}
+			walks = append(walks, &stepWalk{fd: fdNumber(step[i+1]), root: step[i+2], rel: step[i+3], dir: step[i] == PassFDsWalkDir})
+			i += 4
+		default:
+			return walks
+		}
+	}
+	return walks
+}
+
+// fdNumber reads a descriptor number as the probe does: decimal digits, no
+// sign and no leading zero, from 3 to 1023. Anything else is zero.
+func fdNumber(s string) int {
+	if s == "" || len(s) > 4 || s[0] == '0' {
+		return 0
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	if n < minFD || n > MaxBindFD {
+		return 0
+	}
+	return n
+}
+
+// minFD is the lowest descriptor number that is not a standard stream.
+const minFD = 3
 
 // Verify checks a finished plan against the profile inputs and the options the
 // holder uses now, without trusting the code that built it. The holder gives
@@ -121,11 +192,21 @@ type mount struct {
 // host rows exist. Verify parses the bubblewrap arguments back into flags,
 // environment and mounts and compares everything with the profile and the
 // options: every part of the plan (the pasta, pass-through, bubblewrap and
-// probe command lines, Argv, Env, Mounts, Files, Digest, Notes, WorkDir and
-// SetControllingTerminal) is compared with what the inputs and the options
+// probe command lines, Argv, Env, Mounts, Files, Walks, Digest, Notes, WorkDir
+// and SetControllingTerminal) is compared with what the inputs and the options
 // give. It returns no problem for a plan that agrees with them. An optional
 // row is present exactly when the options say the host has it; a row that is
 // not optional is always present.
+//
+// A mount that binds from a descriptor (--bind-fd, --ro-bind-fd) is paired
+// with the walk of the pass-through step that opens that descriptor, read back
+// from the step itself, and the path that walk leads to is the mount's source
+// for every check a source gets. A bind row Ataniq supplies that is bound by
+// path is reported ([ProbBindByPath]); so are a descriptor that two mounts or
+// two walks use, a mount without a walk and a walk without a mount, a row of
+// the host bound from a descriptor, a bind descriptor that is the seccomp or
+// the report descriptor ([ProbBindFD]); and a walk whose descriptor, folder,
+// path or type is not the one the inputs and the options give ([ProbWalk]).
 //
 // The holder calls it before every start. It checks the text of the plan; it
 // does not check that a source exists, nor what bubblewrap or pasta do with
@@ -148,7 +229,7 @@ func Verify(p *Plan, in profile.Inputs, opt Options) []Problem {
 	}
 	v.shape(p)
 	v.pasta(p, opt)
-	v.passFDs(p, in, opt)
+	v.passFDs(p, in, opt, f)
 	v.inner(p, opt)
 	v.size(p)
 	if bad := forbiddenIn(p.Argv); bad != "" {
@@ -204,7 +285,7 @@ func (v *verifier) pasta(p *Plan, opt Options) {
 
 // passFDs checks the pass-through step and the list of descriptors against
 // what the inputs and the options ask for.
-func (v *verifier) passFDs(p *Plan, in profile.Inputs, opt Options) {
+func (v *verifier) passFDs(p *Plan, in profile.Inputs, opt Options, f *facts) {
 	want := wantFiles(in, opt)
 	before := len(v.out)
 	for _, w := range want {
@@ -243,7 +324,17 @@ func (v *verifier) passFDs(p *Plan, in profile.Inputs, opt Options) {
 	if len(v.out) == before && len(p.Files) != len(want) {
 		v.add(ProbPassFDs, "Files lists %d descriptors, the options ask for %d", len(p.Files), len(want))
 	}
-	if i := firstDiff(p.PassFDs, passFDs(in.ProbeBinary, want)); i >= 0 {
+	walks := wantWalks(in, f.table, opt)
+	if len(p.Walks) != len(walks) {
+		v.add(ProbWalk, "Walks lists %d walks, the inputs and options give %d", len(p.Walks), len(walks))
+	} else {
+		for i := range walks {
+			if p.Walks[i] != walks[i] {
+				v.add(ProbWalk, "walk %d of Walks is not the walk of %s that the inputs and options give", i+1, walks[i].Inside)
+			}
+		}
+	}
+	if i := firstDiff(p.PassFDs, passFDs(in.ProbeBinary, want, walks)); i >= 0 {
 		v.add(ProbPassFDs, "the pass-through step differs from the one the inputs and options give (first difference at element %d)", i)
 	}
 }
@@ -370,12 +461,17 @@ func (v *verifier) bwrap(p *Plan, in profile.Inputs, opt Options, f *facts, work
 				m.inside = it.args[0]
 			case "--symlink":
 				m.target, m.inside = it.args[0], it.args[1]
+			case "--ro-bind-fd", "--bind-fd":
+				m.byFD, m.fdText, m.inside = true, it.args[0], it.args[1]
 			default:
 				m.source, m.inside = it.args[0], it.args[1]
 			}
 			mounts = append(mounts, m)
 		}
 	}
+	// Before any check of a source: a mount bound from a descriptor takes its
+	// source from the walk of the pass-through step that opens the descriptor.
+	v.bindFDs(in, opt, mounts, parseStepWalks(p.PassFDs))
 
 	want := f.flags
 	if !equal(flags, want) {
@@ -447,6 +543,68 @@ func (v *verifier) seccomp(in profile.Inputs, opt Options, got []item) {
 	}
 }
 
+// bindFDs pairs each mount that binds from a descriptor with the walk of the
+// pass-through step that opens the descriptor, and reports every way the two
+// lists do not pair one to one: a descriptor that is no number, one that two
+// walks or two mounts use, a mount without a walk, a walk without a mount,
+// and a bind descriptor that is the seccomp or the report descriptor of the
+// options. A mount that pairs with exactly one walk gets that walk and, as its
+// source, the path the walk leads to. Walks and mounts are named by their
+// position: their text is the plan's.
+func (v *verifier) bindFDs(in profile.Inputs, opt Options, mounts []mount, walks []*stepWalk) {
+	other := map[int]string{opt.ReportFD: "report"}
+	if in.SeccompEnabled() {
+		other[opt.SeccompFD] = "seccomp"
+	}
+	byFD := map[int]*stepWalk{}
+	twice := map[int]bool{}
+	for n, w := range walks {
+		switch {
+		case w.fd == 0:
+			v.add(ProbBindFD, "walk number %d of the pass-through step has a descriptor that is not a number from %d to %d", n+1, minFD, MaxBindFD)
+			continue
+		case byFD[w.fd] != nil:
+			twice[w.fd] = true
+			v.add(ProbBindFD, "walk number %d of the pass-through step uses the descriptor of an earlier walk", n+1)
+			continue
+		}
+		if what, ok := other[w.fd]; ok {
+			v.add(ProbBindFD, "walk number %d of the pass-through step uses the %s descriptor of the options", n+1, what)
+		}
+		byFD[w.fd] = w
+	}
+	for i := range mounts {
+		m := &mounts[i]
+		if !m.byFD {
+			continue
+		}
+		if m.fd = fdNumber(m.fdText); m.fd == 0 {
+			v.add(ProbBindFD, "mount number %d binds from a descriptor that is not a number from %d to %d", i+1, minFD, MaxBindFD)
+			continue
+		}
+		w := byFD[m.fd]
+		switch {
+		case w == nil:
+			v.add(ProbBindFD, "mount number %d binds from a descriptor that no walk of the pass-through step opens", i+1)
+			continue
+		case w.used > 0:
+			v.add(ProbBindFD, "mount number %d binds from a descriptor that an earlier mount binds from", i+1)
+		}
+		w.used++
+		if twice[m.fd] {
+			// Two walks claim the number: which one the step would leave at
+			// it is not the plan's to say, so the mount has no source.
+			continue
+		}
+		m.walk, m.source = w, joinWalk(w.root, w.rel)
+	}
+	for n, w := range walks {
+		if w.fd != 0 && byFD[w.fd] == w && w.used == 0 {
+			v.add(ProbBindFD, "walk number %d of the pass-through step opens a descriptor that no mount binds from", n+1)
+		}
+	}
+}
+
 // expect is a row of the bind table as it must appear in the arguments.
 type expect struct {
 	row   profile.Bind
@@ -464,6 +622,10 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 	other := in.Runtime.Other()
 	otherInside := profile.ConfigInside(other)
 	otherHost := in.OtherConfigDir()
+	wantWalk := map[string]Walk{}
+	for _, w := range wantWalks(in, table, opt) {
+		wantWalk[w.Inside] = w
+	}
 
 	// Paths of the plan are not repeated, only paths of the bind table: a
 	// mount that is not a row is named by its position.
@@ -519,6 +681,28 @@ func (v *verifier) mounts(in profile.Inputs, opt Options, f *facts, got []mount)
 		case m.target != e.row.Target:
 			v.add(ProbMountDiffers, "%s: the link target is not the table's", label)
 		}
+		// Rule B1: a source Ataniq supplies is bound from the descriptor the
+		// pass-through step walked to, with the walk the inputs and options
+		// give; a row of the host, and no other row, is bound by path.
+		switch supplied := suppliedRow(e.row); {
+		case supplied && !m.byFD:
+			v.add(ProbBindByPath, "%s is a bind row Ataniq supplies and the plan binds it by path: it must be bound from a descriptor that the pass-through step walked to", label)
+		case !supplied && m.byFD:
+			v.add(ProbBindFD, "%s is bound from a descriptor, and it is not a bind row Ataniq supplies: a row of the host is bound by path", label)
+		case supplied && m.walk != nil:
+			w, ok := wantWalk[e.row.Inside]
+			switch {
+			case !ok:
+				// The options were checked, so every such row has a walk.
+				v.add(ProbWalk, "%s is bound from a descriptor and the options give no walk for it", label)
+			case m.fd != w.FD:
+				v.add(ProbWalk, "%s is bound from a descriptor other than the %d that the inputs and options give it", label, w.FD)
+			case m.walk.root != w.Root || m.walk.rel != w.Rel:
+				v.add(ProbWalk, "%s: the folder its walk starts from, or the path beneath it, is not the one the inputs and options give", label)
+			case m.walk.dir != w.Dir:
+				v.add(ProbWalk, "%s: its walk is for %s, and the row binds %s", label, kindWord(m.walk.dir), kindWord(w.Dir))
+			}
+		}
 	}
 	for _, b := range table {
 		if b.Kind == profile.KindRemountRO {
@@ -565,8 +749,10 @@ func (v *verifier) writableSources(p *Plan, f *facts, got []mount) {
 }
 
 // mountList checks Plan.Mounts against the mounts parsed from the arguments:
-// the same rows in the same order, with the lead-writable flag worked out from
-// the table's read-write sources and the optional flag from the table.
+// the same rows in the same order, with the descriptor a row is bound from
+// (and, as its source, the path the walk of that descriptor leads to), the
+// lead-writable flag worked out from the table's read-write sources and the
+// optional flag from the table.
 func (v *verifier) mountList(p *Plan, f *facts, got []mount) {
 	writable := writableSources(f.table)
 	optional := map[string]bool{}
@@ -575,7 +761,7 @@ func (v *verifier) mountList(p *Plan, f *facts, got []mount) {
 	}
 	want := make([]Mount, 0, len(got))
 	for _, m := range got {
-		want = append(want, Mount{Kind: m.kind, Inside: m.inside, Source: m.source, LeadWritable: belowAny(m.source, writable), Optional: optional[m.inside]})
+		want = append(want, Mount{Kind: m.kind, Inside: m.inside, Source: m.source, FD: m.fd, LeadWritable: belowAny(m.source, writable), Optional: optional[m.inside]})
 	}
 	if len(p.Mounts) != len(want) {
 		v.add(ProbMountList, "Mounts lists %d rows, the arguments mount %d", len(p.Mounts), len(want))

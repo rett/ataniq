@@ -3,6 +3,7 @@
 package mountpoints
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,12 +27,18 @@ func (f *fixture) planOptions() plan.Options {
 	for inside := range hostSources {
 		present[inside] = true
 	}
+	// The walks of the sources Ataniq supplies, as the plan takes them.
+	walks, err := PlanWalks(f.in)
+	if err != nil {
+		f.t.Fatalf("PlanWalks: %v", err)
+	}
 	return plan.Options{
 		PastaPath:   "/usr/bin/pasta",
 		BwrapPath:   "/usr/bin/bwrap",
 		AgentArgv:   []string{"/ataniq/agent/bin/agent"},
 		HostPresent: present,
 		HostSources: hostSources,
+		SourceWalks: walks,
 		ReportPath:  f.base + "/run/report.fifo",
 		ReportDir:   f.base + "/run",
 		ReportFD:    3,
@@ -381,5 +388,82 @@ func TestG1TheBoundPathIsTheCheckedPath(t *testing.T) {
 				t.Errorf("only %d rows are the fixture's", len(own))
 			}
 		})
+	}
+}
+
+// The walks the plan is given are the walks of this package, field for field,
+// and the plan built from them binds every source Ataniq supplies from the
+// descriptor of exactly that walk: what the pass-through step walks to is what
+// [CheckBindSources] checked on the same rows, from the same inputs.
+func TestPlanWalksAreTheSourceWalksThePlanBindsFrom(t *testing.T) {
+	for _, rt := range profile.Runtimes() {
+		t.Run(string(rt), func(t *testing.T) {
+			f := newFixture(t, rt)
+			f.prepare()
+			walks, err := SourceWalks(f.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			given, err := PlanWalks(f.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(given) != len(walks) || len(walks) < 20 {
+				t.Fatalf("%d walks for the plan, %d source walks", len(given), len(walks))
+			}
+			for i, w := range walks {
+				if given[i] != (plan.SourceWalk{Inside: w.Inside, Root: w.Root, Rel: w.Rel, Dir: w.Dir}) || given[i].Path() != w.Path() {
+					t.Errorf("walk %d for the plan is %+v, the source walk %+v", i, given[i], w)
+				}
+			}
+			opt := f.planOptions()
+			p := f.buildPlan()
+			if probs := plan.Verify(p, f.in, opt); len(probs) != 0 {
+				t.Fatalf("Verify: %v", probs)
+			}
+			if len(p.Walks) != len(walks) {
+				t.Fatalf("the plan walks %d sources, want %d", len(p.Walks), len(walks))
+			}
+			rows := map[string]ResolvedSource{}
+			for _, s := range f.resolve().Sources {
+				rows[s.Inside] = s
+			}
+			fds := map[int]bool{}
+			for i, w := range walks {
+				pw := p.Walks[i]
+				if pw.Inside != w.Inside || pw.Root != w.Root || pw.Rel != w.Rel || pw.Dir != w.Dir {
+					t.Errorf("the plan's walk %d is %+v, want %+v", i, pw, w)
+				}
+				if pw.FD < plan.MinBindFD || fds[pw.FD] || pw.FD == opt.ReportFD {
+					t.Errorf("the plan's walk of %s is at descriptor %d", pw.Inside, pw.FD)
+				}
+				fds[pw.FD] = true
+				// The row the check looks at is walked the same way.
+				if row := rows[w.Inside]; row.Walk != w || row.Bound() != pw.Path() {
+					t.Errorf("row %s: the check walks %+v to %s, the plan %+v", w.Inside, row.Walk, row.Bound(), pw)
+				}
+			}
+			// No argument of bubblewrap names a source Ataniq supplies, and
+			// every such row is bound from a descriptor.
+			for _, m := range p.Mounts {
+				if m.Source == "" {
+					continue
+				}
+				if host := rows[m.Inside].Role == profile.RoleHost; host != (m.FD == 0) {
+					t.Errorf("%s (a row of the host: %v) is bound from descriptor %d", m.Inside, host, m.FD)
+				}
+			}
+			for _, a := range p.Bwrap {
+				if strings.HasPrefix(a, f.base+"/") {
+					t.Errorf("the bubblewrap argument %s names a path of the fixture: a source Ataniq supplies is bound from a descriptor", a)
+				}
+			}
+		})
+	}
+
+	f := newFixture(t, profile.Claude)
+	f.in.NeverMounted = nil
+	if walks, err := PlanWalks(f.in); !errors.Is(err, ErrInvalid) || walks != nil {
+		t.Errorf("invalid inputs: %v, %v; want ErrInvalid", walks, err)
 	}
 }

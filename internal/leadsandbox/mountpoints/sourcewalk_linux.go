@@ -6,6 +6,7 @@ import (
 	"path"
 	"strings"
 
+	"ataniq/internal/leadsandbox/plan"
 	"ataniq/internal/leadsandbox/profile"
 )
 
@@ -14,11 +15,16 @@ import (
 // folder to open by name, the path to walk beneath it, and the type the source
 // must have. It is data only: it names paths, holds no descriptor and opens
 // nothing. It is for the code that does a walk: [CheckBindSources] here, which
-// takes the type and the place of the source from it, and a launcher-side step
-// that opens Root by name, walks Rel beneath that handle with openat2
+// takes the type and the place of the source from it, and the pass-through
+// step of the launch plan (the probe's pass-fds mode, the last host-side code
+// before bubblewrap), which opens Root without following a link in any
+// component of its path, walks Rel beneath that handle with openat2
 // (RESOLVE_BENEATH and RESOLVE_NO_SYMLINKS), checks the type on the descriptor
 // it got, and gives bubblewrap that descriptor, so that the object checked is
-// the object mounted. Nothing in this package does that last step.
+// the object mounted. The plan takes the walks as data ([PlanWalks] gives them
+// in its type) and writes them into the step; nothing in this package does
+// that last step, and whether bubblewrap mounts the object behind the
+// descriptor is a qualification item.
 //
 // Every row of the bind table that has a source and is not a row of the host
 // (profile.RoleHost) has a walk; a row of the host (/usr, the /etc files) has
@@ -43,11 +49,18 @@ import (
 //     the holder must do") is what makes it a folder no sandbox can write. The
 //     package cannot check that.
 //
-// Root is opened by name, which follows a link above it: the walk protects the
-// components of Rel, and Root and what lies above it are the caller's to keep.
-// [CheckBindSources] looks for a link above Root as well, from the root of the
-// file system, at the moment of its check: for a source outside the state root
-// it does not open Root at all, and looks the whole path up from there.
+// Root is opened by name: the walk protects the components of Rel, and Root
+// and what lies above it are the caller's to keep. Both walks refuse a link
+// above Root at the moment they are made, and nothing more than a link:
+// [CheckBindSources] looks from the root of the file system (for a source
+// outside the state root it does not open Root at all, and looks the whole
+// path up from there), and the pass-through step opens Root itself in one
+// lookup from the root of the file system that follows none. The two differ
+// in one place: beneath Root the step crosses no mount point, for any row,
+// while [CheckBindSources] crosses none below the state root only. So a source
+// outside the state root that is itself a mount point passes the check here
+// and is refused by the step: the holder keeps every source on the mount of
+// the folder that holds it.
 type SourceWalk struct {
 	// Inside is the inside path of the row.
 	Inside string
@@ -112,4 +125,22 @@ func sourceWalk(stateRoot string, b profile.Bind) (SourceWalk, bool) {
 		w.Root, w.Rel = path.Dir(b.Source), path.Base(b.Source)
 	}
 	return w, true
+}
+
+// PlanWalks is [SourceWalks] in the type the plan takes
+// (plan.Options.SourceWalks): the walk of every bind row that Ataniq supplies,
+// in the order of the bind table, for the pass-through step to make. A caller
+// builds the plan's walks with it and never by hand: the walk the step makes
+// is then the walk [CheckBindSources] made on the same rows just before, from
+// the same inputs. The error is a *Problem of kind ErrInvalid.
+func PlanWalks(in profile.Inputs) ([]plan.SourceWalk, error) {
+	walks, err := SourceWalks(in)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]plan.SourceWalk, len(walks))
+	for i, w := range walks {
+		out[i] = plan.SourceWalk{Inside: w.Inside, Root: w.Root, Rel: w.Rel, Dir: w.Dir}
+	}
+	return out, nil
 }
