@@ -84,7 +84,8 @@ func ReplayMode(home string) bool {
 // Run runs the stand-in on c.In and c.Out until the input ends or ctx is
 // done, and returns nil then. In replay mode it reads its files before it
 // touches the terminal, and returns an error, having drawn nothing, when they
-// cannot be read. It restores the terminal on every return.
+// cannot be read; it then removes the OrderFile and ResultFile of an earlier
+// run. It restores the terminal on every return.
 func Run(ctx context.Context, c Config) error {
 	if c.Dir == "" {
 		c.Dir = "."
@@ -96,6 +97,9 @@ func Run(ctx context.Context, c Config) error {
 	if ReplayMode(c.Home) {
 		var err error
 		if rp, err = loadReplay(filepath.Join(c.Home, ReplayDir)); err != nil {
+			return fmt.Errorf("standin: replay: %w", err)
+		}
+		if err := rp.removeStale(); err != nil {
 			return fmt.Errorf("standin: replay: %w", err)
 		}
 	}
@@ -398,6 +402,28 @@ func (r *replay) answered(l *loop) error {
 	if !r.reportSent {
 		r.reportSent = true
 		l.write([]byte("\x1b]7501;" + r.report + "\x1b\\"))
+	}
+	return nil
+}
+
+// removeStale removes the OrderFile and ResultFile that an earlier run left in
+// the replay folder, so that a file read after this run starts is this run's.
+// Each is found by name and not followed: a regular file is removed, a name
+// that is not there is skipped, and any other kind of file (a link, a pipe, a
+// directory) is left, to be refused when the run writes to it.
+func (r *replay) removeStale() error {
+	for _, name := range []string{OrderFile, ResultFile} {
+		path := filepath.Join(r.dir, name)
+		st, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return err
+		case st.Mode().IsRegular():
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
