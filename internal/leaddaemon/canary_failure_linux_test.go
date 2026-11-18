@@ -38,9 +38,11 @@ func TestCanaryFailureCodes(t *testing.T) {
 			CodeRefused, "a unit with the role's name is loaded",
 		},
 		// The registry's refusals.
-		"a stale epoch":         {leadregistry.ErrStaleEpoch, CodeRefused, msgRegistryNo},
-		"a wrapped stale epoch": {fmt.Errorf("sample: %w", leadregistry.ErrStaleEpoch), CodeRefused, msgRegistryNo},
-		"a state change":        {fmt.Errorf("sample: %w", leadregistry.ErrStateTransition), CodeRefused, msgRegistryNo},
+		// A stale epoch and a refused state change may follow an action: their
+		// text says to check, not that nothing changed.
+		"a stale epoch":         {leadregistry.ErrStaleEpoch, CodeRefused, msgRegistryCheck},
+		"a wrapped stale epoch": {fmt.Errorf("sample: %w", leadregistry.ErrStaleEpoch), CodeRefused, msgRegistryCheck},
+		"a state change":        {fmt.Errorf("sample: %w", leadregistry.ErrStateTransition), CodeRefused, msgRegistryCheck},
 		"an exhausted epoch":    {leadregistry.ErrEpochExhausted, CodeRefused, msgRegistryNo},
 		"invalid input":         {leadregistry.ErrInvalid, CodeRefused, msgRegistryNo},
 		"no role":               {leadregistry.ErrNoRole, CodeRefused, "the role is not defined"},

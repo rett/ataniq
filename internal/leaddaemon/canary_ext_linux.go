@@ -45,7 +45,10 @@ const (
 	// CodeRefused: the daemon refused the operation and changed nothing that
 	// matters (the message did not pass the admission, a second message in the
 	// epoch, injection that is off in the config, a role other than the
-	// config's, the registry or the lifecycle refused).
+	// config's, the registry or the lifecycle refused). One answer is the
+	// exception: when the registry refuses with a stale epoch or a state it
+	// does not change from, the refusal may follow a launch or a stop that
+	// was already carried out, and the text says to check the role's status.
 	CodeRefused clientapi.ErrorCode = "refused"
 	// CodeUnavailable: the operation could not be carried out: nothing reached
 	// the holder (the control socket could not be dialled or the request frame
@@ -140,6 +143,10 @@ const (
 	attachRoleWrite = string(wire.RoleWriter)
 	attachRoleView  = string(wire.RoleViewer)
 )
+
+// msgRegistryCheck is the fixed text for a refusal of the registry that may
+// follow something the daemon already did.
+const msgRegistryCheck = "the registry refused; check the role's status before you retry"
 
 // canaryExt is the extension: the five operations of canary mode.
 type canaryExt struct {
@@ -304,7 +311,10 @@ func (x *canaryExt) record(en leadcanary.Entry) {
 // An error may match more than one case (the lifecycle joins what it found
 // with what the registry then said), so the order is: the lifecycle's own
 // refusals, then what the lifecycle could not do or does not know, then a
-// refusal of the registry with nothing more specific about it.
+// refusal of the registry with nothing more specific about it. Of those, a
+// stale epoch and a refused state change may come after the lifecycle acted,
+// and their answer says to check the role's status and not that nothing
+// changed.
 func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 	x.logf("canary %s: %s", op, SafeText(err.Error()))
 	switch {
@@ -337,10 +347,15 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return unavailable("the stop is not proven; the role is shown unknown")
 	case errors.Is(err, leadlifecycle.ErrIntentPending):
 		return unavailable("the launch intent is not settled yet")
-	case errors.Is(err, leadregistry.ErrStaleEpoch),
-		errors.Is(err, leadregistry.ErrStateTransition),
-		errors.Is(err, leadregistry.ErrEpochExhausted):
+	case errors.Is(err, leadregistry.ErrEpochExhausted):
+		// Only a launch that has not begun meets it: nothing was done.
 		return refused(msgRegistryNo)
+	case errors.Is(err, leadregistry.ErrStaleEpoch),
+		errors.Is(err, leadregistry.ErrStateTransition):
+		// The lifecycle also returns these bare after it acted (a launch that
+		// is to be recorded, a stop that is to be shown proven), so the text
+		// does not say that nothing changed.
+		return refused(msgRegistryCheck)
 	}
 	return unavailable(msgFailed)
 }
