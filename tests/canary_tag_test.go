@@ -532,53 +532,104 @@ func workflowPermissions(lines []string, indent int) (bool, string) {
 	return false, ""
 }
 
-// workflowRunCommands returns the commands of the run steps in the lines, one
-// per command line.
-func workflowRunCommands(lines []string) []string {
-	var commands []string
+// workflowFlowKey finds a run or uses key written inside a flow mapping
+// (a step as {uses: ./x}, or a key after a comma) and captures its value.
+var workflowFlowKey = regexp.MustCompile(`[{,]\s*["']?(run|uses)["']?\s*:\s*("[^"]*"|'[^']*'|[^,}]*)`)
+
+// workflowKeyValues returns the values of a run or uses key in the lines. A
+// key in a block mapping gives its value on the line, or, when the value is
+// empty or a block scalar (| or >), the lines below it that are indented more
+// than the key, one value per line. A key inside a flow mapping on one line
+// gives its value too. Quotes around a value are dropped.
+func workflowKeyValues(lines []string, key string) []string {
+	var values []string
+	unquote := func(v string) string { return strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`)) }
 	for i, raw := range lines {
 		line := stripYAMLComment(raw)
+		for _, m := range workflowFlowKey.FindAllStringSubmatch(line, -1) {
+			if m[1] == key {
+				values = append(values, unquote(m[2]))
+			}
+		}
 		trimmed := strings.TrimSpace(line)
 		keyIndent := yamlIndent(line)
 		if strings.HasPrefix(trimmed, "- ") {
 			trimmed = strings.TrimSpace(trimmed[2:])
 			keyIndent += 2
 		}
-		if !strings.HasPrefix(trimmed, "run:") {
+		if !strings.HasPrefix(trimmed, key+":") {
 			continue
 		}
-		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "run:"))
-		if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, key+":"))
+		if value == "" || strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+			block := value != ""
 			for _, next := range lines[i+1:] {
-				if strings.TrimSpace(next) == "" {
+				t := strings.TrimSpace(next)
+				if t == "" || !block && strings.HasPrefix(t, "#") {
 					continue
 				}
 				if yamlIndent(next) <= keyIndent {
 					break
 				}
-				commands = append(commands, strings.TrimSpace(next))
+				values = append(values, unquote(t))
 			}
 			continue
 		}
-		commands = append(commands, strings.Trim(value, `"'`))
+		values = append(values, unquote(value))
 	}
-	return commands
+	return values
 }
 
-// workflowUsesKey finds a uses key, quoted or not, and captures its value.
-var workflowUsesKey = regexp.MustCompile(`^["']?uses["']?\s*:(.*)$`)
+// workflowRunCommands returns the commands of the run steps in the lines.
+func workflowRunCommands(lines []string) []string { return workflowKeyValues(lines, "run") }
 
-func workflowUses(lines []string) []string {
-	var uses []string
+// workflowUses returns the actions the lines use.
+func workflowUses(lines []string) []string { return workflowKeyValues(lines, "uses") }
+
+// workflowUnreadForms returns the lines of a job written in a form that the
+// readers above do not see through: a flow mapping or sequence, which can hold
+// a step, a run, an if or a continue-on-error (permissions may be written as a
+// flow mapping, which workflowPermissions reads), a complex or merge key, and
+// an anchor, an alias or a tag at the start of a value. The lines of a block
+// scalar are text, not YAML, and are not looked at.
+func workflowUnreadForms(lines []string) []string {
+	var out []string
+	blockIndent := -1
 	for _, raw := range lines {
-		trimmed := strings.TrimSpace(stripYAMLComment(raw))
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
-		if m := workflowUsesKey.FindStringSubmatch(trimmed); m != nil {
-			uses = append(uses, strings.Trim(strings.TrimSpace(m[1]), `"'`))
+		line := stripYAMLComment(raw)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		indent := yamlIndent(line)
+		if blockIndent >= 0 {
+			if indent > blockIndent {
+				continue
+			}
+			blockIndent = -1
+		}
+		for strings.HasPrefix(trimmed, "- ") {
+			trimmed = strings.TrimSpace(trimmed[2:])
+			indent += 2
+		}
+		key, value := "", trimmed
+		if m := workflowPlainKey.FindStringSubmatch(trimmed); m != nil {
+			key, value = m[1], strings.TrimSpace(m[2])
+		}
+		if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
+			blockIndent = indent
+			continue
+		}
+		flow := strings.HasPrefix(value, "{") && key != "permissions" || strings.HasPrefix(value, "[")
+		if flow || strings.HasPrefix(trimmed, "? ") || strings.HasPrefix(trimmed, "<<") || value != "" && strings.ContainsRune("&*!", rune(value[0])) {
+			out = append(out, trimmed)
 		}
 	}
-	return uses
+	return out
 }
+
+// workflowPlainKey splits a line into a plain key and the rest of the line.
+var workflowPlainKey = regexp.MustCompile(`^([A-Za-z0-9_-]+):(?:\s+(.*))?$`)
 
 // canaryJobRuns are the only commands the test-canary job runs.
 var canaryJobRuns = []string{"make -n bootstrap", "make bootstrap", "make doctor", "make test-canary"}
@@ -593,20 +644,36 @@ var canaryJobUses = []string{"actions/checkout@", "actions/setup-go@"}
 var canaryRunKitPath = regexp.MustCompile(`qualification/canary($|[^A-Za-z0-9_.-])`)
 
 // canaryJobGuardKey finds a key that can keep a job or a step from failing,
-// quoted or not. A flow mapping that holds one is not found.
+// quoted or not. The job is refused when it holds a flow mapping, which could
+// hold one (workflowUnreadForms).
 var canaryJobGuardKey = regexp.MustCompile(`^["']?(if|continue-on-error)["']?\s*:`)
 
 // checkCanaryWorkflow is check (5). Its input is every file under .github:
 // the workflow files directly below .github/workflows by their file name, and
 // every other file (composite actions, nested folders, anything else) by its
-// path. No file names the tag or canary-build outside a comment, and no run
-// line of any file names the run kit's folder. test.yml has a job test-canary
-// that runs the make target and never names the tag, uses only the actions of
-// canaryJobUses, has no if or continue-on-error that could keep it from
-// failing, and has read-only permissions.
+// path. No file names the tag or canary-build outside a comment, no run line of
+// any file names the run kit's folder, and no file uses a local action outside
+// .github. test.yml has a job test-canary that runs the make target and never
+// names the tag, uses only the actions of canaryJobUses, has no if or
+// continue-on-error that could keep it from failing, has read-only
+// permissions, and is written in no flow style, with no complex or merge key
+// and with no anchor, alias or YAML tag.
 //
-// The limit no text check closes is a run line that assembles the text of the
-// tag or of canary-build at run time, for example from two shell variables.
+// A text check reads lines. A run or uses key is read wherever it starts a
+// line (after a dash or not), follows a brace or a comma on a line, or is
+// quoted, and its value is read on its line or below it as a block scalar. The
+// test-canary job also refuses every form that could hide a key from these
+// readers: a flow mapping or sequence (except permissions), a complex or merge
+// key, and an anchor, an alias or a YAML tag. A uses value that has one, or an
+// escape, is refused in every file. The limits that remain, in every file but
+// that job, are: a key spelled with escapes or reached only through a complex
+// key; a flow mapping whose key and value are on different lines; a value
+// split over lines inside quotes; a run value that is an alias of text defined
+// elsewhere; a run line that assembles at run time,
+// or spells with escapes, the text of the tag, of canary-build or of the run
+// kit's folder (for example from two shell variables); and what an action of
+// another repository runs once the repository is checked out, which is allowed
+// outside the test-canary job.
 func checkCanaryWorkflow(files map[string]string) []string {
 	var problems []string
 	names := make([]string, 0, len(files))
@@ -633,8 +700,13 @@ func checkCanaryWorkflow(files map[string]string) []string {
 			}
 		}
 		// A local action outside .github is a file this check does not read.
+		// A value written with escapes, a tag, an anchor or an alias cannot be
+		// read as a path, so it is refused too.
 		for _, use := range workflowUses(kept) {
-			if strings.HasPrefix(use, "./") && !strings.HasPrefix(path.Clean(use), ".github/") {
+			switch {
+			case strings.Contains(use, `\`) || use != "" && strings.ContainsRune("&*!", rune(use[0])):
+				problems = append(problems, fmt.Sprintf("%s: uses %s, which this check cannot read as a path", name, use))
+			case strings.HasPrefix(use, "./") && !strings.HasPrefix(path.Clean(use), ".github/"):
 				problems = append(problems, fmt.Sprintf("%s: uses the local action %s, outside .github", name, use))
 			}
 		}
@@ -660,6 +732,9 @@ func checkCanaryWorkflow(files map[string]string) []string {
 		if !slices.ContainsFunc(canaryJobUses, func(prefix string) bool { return strings.HasPrefix(use, prefix) }) {
 			problems = append(problems, fmt.Sprintf("test.yml: the test-canary job uses %s, and nothing but %s is allowed", use, strings.Join(canaryJobUses, ", ")))
 		}
+	}
+	for _, form := range workflowUnreadForms(job) {
+		problems = append(problems, fmt.Sprintf("test.yml: the test-canary job has %q, a form this check does not read", form))
 	}
 	for _, raw := range job {
 		key := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(stripYAMLComment(raw)), "- "))
@@ -1370,6 +1445,37 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 		{"a quoted run key in the job that is on the list", edit("      - run: make doctor\n", "      - 'run': make doctor\n"), false},
 		{"a quoted run key in a composite action that runs the run kit", map[string]string{"test.yml": goodWorkflow, ".github/actions/b/action.yml": "runs:\n  using: composite\n  steps:\n    - 'run': sh qualification/canary/x.sh\n      shell: sh\n"}, true},
 		{"a quoted uses key for an action that is not on the list", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - 'uses': actions/cache@v4\n"), true},
+		// A local action or a run line in a form other than a block key.
+		{"a local action in a flow mapping step", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {uses: ./tools/ship}\n"}, true},
+		{"a local action after a comma in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {name: ship, uses: \"./tools/ship\"}\n"}, true},
+		{"a local action in a flow sequence of steps", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n    steps: [{uses: './tools/ship'}]\n"}, true},
+		{"a local action in a flow mapping under a quoted key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {'uses' : ./tools/ship}\n"}, true},
+		{"a local action under .github in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {uses: ./.github/actions/b}\n"}, false},
+		{"an action of another repository in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {uses: some-org/ship@v1}\n"}, false},
+		{"a local action in a folded block scalar", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: >-\n          ./tools/ship\n"}, true},
+		{"a local action in a literal block scalar", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: |\n          ./tools/ship\n"}, true},
+		{"a local action on the line below its key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses:\n          ./tools/ship\n"}, true},
+		{"a local action under .github in a block scalar", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: >-\n          ./.github/actions/b\n"}, false},
+		{"a local action written with escapes", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: \"\\x2e/tools/ship\"\n"}, true},
+		{"a local action that is an alias", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: *ship\n"}, true},
+		{"a local action with a YAML tag", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: !!str ./tools/ship\n"}, true},
+		{"a run kit run line in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {run: sh qualification/canary/run/build.sh}\n"}, true},
+		{"a run kit run line after a comma in a flow mapping", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {shell: sh, 'run': \"sh qualification/canary/run/build.sh\"}\n"}, true},
+		{"a run kit run line on the line below its key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - run:\n          sh qualification/canary/run/build.sh\n"}, true},
+		{"a run line in a flow mapping that is not the run kit", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - {run: make test}\n"}, false},
+		// The test-canary job is held to the forms the readers see through.
+		{"a flow mapping step in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - {uses: actions/checkout@v4}\n"), true},
+		{"a flow mapping step that runs in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - {run: make doctor}\n"), true},
+		{"a flow mapping step that guards the job", edit("      - run: make test-canary\n", "      - {if: always(), run: make test-canary}\n"), true},
+		{"a flow mapping step with a local action in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - {uses: ./tools/ship}\n"), true},
+		{"a flow sequence of steps in the job", edit("    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n      - uses: actions/setup-go@v5\n        with:\n          go-version-file: .go-version\n      - run: make -n bootstrap\n      - run: make bootstrap\n      - run: make doctor\n      - run: make test-canary\n", "    steps: [{run: make test-canary}]\n"), true},
+		{"a flow mapping that holds the guard keys", edit("      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n", "      - uses: actions/checkout@v4\n        with: {persist-credentials: false}\n"), true},
+		{"a complex key in the job", edit("    timeout-minutes: 30\n", "    timeout-minutes: 30\n    ? if\n    : always()\n"), true},
+		{"a merge key in the job", edit("    timeout-minutes: 30\n", "    timeout-minutes: 30\n    <<: *guard\n"), true},
+		{"an alias in the job", edit("      - run: make test-canary\n", "      - run: make test-canary\n      - *extra\n"), true},
+		{"an anchor in the job", edit("      - run: make doctor\n", "      - run: &d make doctor\n"), true},
+		{"a YAML tag in the job", edit("      - run: make doctor\n", "      - run: !!str make doctor\n"), true},
+		{"permissions written as a flow mapping stay allowed", edit("    permissions:\n      contents: read\n    steps", "    permissions: {contents: read}\n    steps"), false},
 		{"a local action outside .github in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./tools/ship\n"}, true},
 		{"a local action at the root in another workflow", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - uses: ./\n"}, true},
 		{"a quoted local action outside .github under a quoted key", map[string]string{"test.yml": goodWorkflow, "other.yml": "jobs:\n  b:\n    steps:\n      - 'uses': \"./tools/ship\"\n"}, true},
@@ -1405,6 +1511,37 @@ func TestCanaryTagWorkflowCheck(t *testing.T) {
 			problems := checkCanaryWorkflow(files)
 			if (len(problems) > 0) != tc.bad {
 				t.Fatalf("problems %v, want bad=%v", problems, tc.bad)
+			}
+		})
+	}
+}
+
+func TestCanaryTagUnreadForms(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"block forms only", "    runs-on: x\n    permissions:\n      contents: read\n    steps:\n      - uses: a@v1\n        with:\n          k: v\n      - run: ${{ x }}\n", nil},
+		{"permissions as a flow mapping", "    permissions: {contents: read}\n", nil},
+		{"the lines of a block scalar are text", "      - run: |\n          { make doctor; }\n          [ -f x ] && *.go\n      - run: make x\n", nil},
+		{"a folded block scalar", "      - run: >-\n          {a}\n    name: x\n", nil},
+		{"text after the block scalar is read again", "      - run: |\n          a\n      - {run: b}\n", []string{"{run: b}"}},
+		{"a flow step", "      - {uses: ./x}\n", []string{"{uses: ./x}"}},
+		{"a flow sequence", "    steps: [a, b]\n", []string{"steps: [a, b]"}},
+		{"a flow sequence entry", "      - [a]\n", []string{"[a]"}},
+		{"a flow mapping value", "        with: {a: b}\n", []string{"with: {a: b}"}},
+		{"a complex key", "    ? if\n", []string{"? if"}},
+		{"a merge key", "    <<: *x\n", []string{"<<: *x"}},
+		{"an anchor", "    a: &x b\n", []string{"a: &x b"}},
+		{"an alias", "      - *x\n", []string{"*x"}},
+		{"a YAML tag", "    a: !!str b\n", []string{"a: !!str b"}},
+		{"a comment", "    # {a: b}\n    a: b # [c]\n", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := workflowUnreadForms(strings.Split(tc.text, "\n"))
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("%q, want %q", got, tc.want)
 			}
 		})
 	}

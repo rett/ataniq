@@ -23,7 +23,9 @@
   nothing under `internal/inject`; tagged code uses no module that untagged code
   does not; and no file under `.github/` names `canary-build` or the tag, and no
   run line there names `qualification/canary/`, no workflow uses a local action
-  outside `.github/`, while the `test-canary` job runs the make target, uses
-  only `actions/checkout` and `actions/setup-go` and has no `if` or
-  `continue-on-error`, every key of the workflow files read the same quoted or
-  not and with white space before its colon.
+  outside `.github/`, also when it is written in a flow mapping or a block
+  scalar, while the `test-canary` job runs the make target, uses only
+  `actions/checkout` and `actions/setup-go`, has no `if` or `continue-on-error`,
+  and is written without flow style, complex or merge keys, anchors, aliases or
+  tags. The keys of the workflow files are read the same quoted or not and with
+  white space before the colon.
