@@ -9,8 +9,12 @@
 // [LoadConfig] reads one explicit configuration file (mode 0600, owned by the
 // caller, strictly decoded, bounded). [Execute] then runs the steps in
 // order and records each with its start, end, status and error text:
-// validation of the configuration and of the executables, the folder of the
-// attempt, the version of each tool, the own-clone check, the preparation of
+// validation of the configuration and of the executables (and that the git
+// identity folder, which is bound whole, holds the file "config" and nothing
+// else), the folder of the
+// attempt, the version of each tool (a bubblewrap whose release is older than
+// [MinBwrapBindFD] ends the run there: see "Bind sources by descriptor"), the
+// own-clone check, the preparation of
 // the mount points and of Ataniq's copy of the tree's git files (the git
 // metadata folder, profile.Inputs.GitMeta; only when the configuration says no
 // lead has run), the mount-point check, the resolv.conf derivation, the resolution of every
@@ -87,6 +91,15 @@
 // object behind a descriptor, and closes the descriptor before the command
 // inside starts, is a qualification item that nothing here records
 // [qualify].
+//
+// bubblewrap must have the two options. The harness reads the release from the
+// version line the tool prints (the step tool-versions, in a run) and ends the
+// run when it is older than [MinBwrapBindFD], which is an assumption about the
+// release that brought the options, to be confirmed at qualification. A version
+// line that gives no release decides nothing: a note in summary.json says so
+// and the run goes on, and a bubblewrap without the options then refuses the
+// plan's arguments and starts nothing. A dry run asks no tool and decides
+// nothing about it.
 //
 // The harness never judges the probe's report: the report's own statuses are
 // the record. A failed or refused report, a report that never comes and a

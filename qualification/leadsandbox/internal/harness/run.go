@@ -180,6 +180,10 @@ type attempt struct {
 	proc     Process
 	launched bool
 	broken   bool
+	// refused is set when a step that is otherwise soft found a reason not to
+	// launch at all (a bubblewrap too old for the plan): the attempt stays
+	// broken.
+	refused bool
 	// lineRead is set once the one report line was accepted: only then is
 	// the channel asked whether anything followed it.
 	lineRead bool
@@ -332,6 +336,17 @@ func (a *attempt) pre(ctx context.Context) {
 	defs := []def{
 		{StepVersions, true, true, func(ctx context.Context) error {
 			a.versions = a.opt.Launcher.ToolVersions(ctx, ToolPaths{Pasta: a.cfg.Executables.Pasta, Bwrap: a.cfg.Executables.Bwrap})
+			// The plan binds every source Ataniq supplies from a descriptor:
+			// a bubblewrap whose release is known to be too old for that is
+			// refused here, and that failure is not a soft one.
+			note, err := checkBwrapBindFD(a.versions.Bwrap)
+			if err != nil {
+				a.refused = true
+				return err
+			}
+			if note != "" {
+				a.notes = append(a.notes, note)
+			}
 			if len(a.versions.Errors) > 0 {
 				return fmt.Errorf("%d tool version(s) could not be read: %s", len(a.versions.Errors), strings.Join(a.versions.Errors, "; "))
 			}
@@ -395,7 +410,7 @@ func (a *attempt) pre(ctx context.Context) {
 			continue
 		}
 		ok := a.step(d.name, func() error { return d.fn(ctx) })
-		if !ok && d.soft {
+		if !ok && d.soft && !a.refused {
 			a.broken = false
 		}
 	}
