@@ -21,7 +21,11 @@ import (
 // for the daemon that starts next. spentEpochs is what that daemon reads.
 func TestCanarySentLineIsWrittenWhileTheHolderWorks(t *testing.T) {
 	c := newCanaryEnv(t)
-	c.start()
+	// The daemon waits for the holder far longer than the test holds it, so
+	// that every check below is made during the wait, however slow the run.
+	cfg := c.daemonConfig()
+	cfg.Canary.InjectWait = 15 * time.Second
+	c.running = c.startDaemon(cfg)
 	c.define()
 	started := c.startRole()
 	release := make(chan struct{})
