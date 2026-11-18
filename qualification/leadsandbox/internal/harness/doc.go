@@ -16,13 +16,15 @@
 // lead has run), the mount-point check, the resolv.conf derivation, the resolution of every
 // source to its real path, the report channel (a FIFO in a folder of the attempt
 // that holds nothing else, whose reader is opened first), the canary, the plan
-// ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
+// ([plan.Build] and [plan.Verify], with the walk of every bind source Ataniq
+// supplies from [mountpoints.PlanWalks]), the probe spec (with the identities of the
 // owner and holder paths and their ancestors, which assertion 1 needs, and of
 // the coordinators' folders under the state root and their ancestors, which
 // assertion 11 needs), a
 // second check right before the launch, the check of every bind source of the
 // plan without following a symbolic link (rule G1, a step of its own after the
-// second resolution; a problem refuses the launch), the launch through a
+// second resolution; a problem, a link or a source of another type than its
+// row binds included, refuses the launch), the launch through a
 // [Launcher], the
 // probe's report line (one line, read with [assert.ReadProbeReport], taken as
 // the start without waiting for end-of-file), the wait for exit, the outside
@@ -58,6 +60,33 @@
 // the host's own links is bound, and checked, by its real path, which the harness
 // gives the plan. The harness refuses to check a plan whose bound path is not the
 // one the check would open.
+//
+// # Bind sources by descriptor
+//
+// The plan binds every source Ataniq supplies from a descriptor (rule B1 of
+// the design, revision 4, section 3.6): its pass-through step, the probe's
+// pass-fds mode on the host between pasta and bubblewrap, walks to each such
+// source by handle and bubblewrap gets --bind-fd or --ro-bind-fd with the
+// descriptor that walk returned; the rows of the host stay bound by path. The
+// harness gives the plan the walks of [mountpoints.PlanWalks], which are the
+// walks its own check of the bind sources makes on the same rows, and it
+// refuses to check a plan that binds a source Ataniq supplies in any other
+// way, or by another walk. plan.json lists the walks and the descriptor of each
+// mount. summary.json says per source whether it is bound from a descriptor
+// ("bound_by_descriptor"), with the descriptor, the folder the walk starts
+// from and the path beneath it; and, from the check before the launch, the
+// fact that no component of its path is a link and, as a fact of its own, that
+// it is of the type its row binds ("has_expected_type": false for a source the
+// check refused as something else).
+//
+// What these facts are about is the plan and the harness's check before the
+// launch. The walk that counts is made by the pass-through step after the
+// launch, and the harness does not see it: a source it refuses ends the step
+// with status 96 before bubblewrap starts, which the evidence shows as a
+// first process that exited before a report. Whether bubblewrap mounts the
+// object behind a descriptor, and closes the descriptor before the command
+// inside starts, is a qualification item that nothing here records
+// [qualify].
 //
 // The harness never judges the probe's report: the report's own statuses are
 // the record. A failed or refused report, a report that never comes and a
