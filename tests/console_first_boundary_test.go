@@ -20,7 +20,9 @@ import (
 // commands must not reach. It reads the direct imports of the Go files in the
 // repository with go/parser, so it needs no network, no module cache and no
 // go list, and a rule about a package that is not written yet simply finds
-// nothing to object to.
+// nothing to object to. The rules for the commands and the console also
+// follow those imports from package to package inside this repository, so
+// that a package in between does not hide what is reached.
 //
 // Each rule is a function from a set of files to a list of findings. It is
 // called once on the repository and again on small samples that break it, so
@@ -359,6 +361,77 @@ func standardLibrary(imp string) bool {
 	return !strings.Contains(first, ".")
 }
 
+// boundaryGraph returns, for each package, the packages of this repository
+// that its non-test files import, leaving out the files that need the owner
+// channel's tag. Each list is sorted, so that a walk over the graph gives the
+// same answer every time.
+func boundaryGraph(files []boundaryFile) map[string][]string {
+	edges := map[string]map[string]bool{}
+	for _, f := range files {
+		if !f.imported() {
+			continue
+		}
+		for _, imp := range f.imports {
+			p, ours := inModule(imp)
+			if !ours || p == f.pkg() {
+				continue
+			}
+			if edges[f.pkg()] == nil {
+				edges[f.pkg()] = map[string]bool{}
+			}
+			edges[f.pkg()][p] = true
+		}
+	}
+	graph := map[string][]string{}
+	for pkg, to := range edges {
+		for p := range to {
+			graph[pkg] = append(graph[pkg], p)
+		}
+		sort.Strings(graph[pkg])
+	}
+	return graph
+}
+
+// boundaryWay returns the shortest chain of packages that leads from a package
+// to one that denied names, following the imports in the graph. The chain
+// starts with from and ends with the denied package, so it has one entry when
+// from itself is denied. It is nil when no denied package is reached.
+func boundaryWay(graph map[string][]string, from string, denied func(pkg string) bool) []string {
+	before := map[string]string{from: from}
+	queue := []string{from}
+	for len(queue) > 0 {
+		pkg := queue[0]
+		queue = queue[1:]
+		if denied(pkg) {
+			way := []string{pkg}
+			for pkg != from {
+				pkg = before[pkg]
+				way = append([]string{pkg}, way...)
+			}
+			return way
+		}
+		for _, next := range graph[pkg] {
+			if _, seen := before[next]; !seen {
+				before[next] = pkg
+				queue = append(queue, next)
+			}
+		}
+	}
+	return nil
+}
+
+// boundaryReached writes the finding for an import of a file that leads to a
+// denied package, where way is what boundaryWay returned for the imported
+// package. An import of the denied package itself is named as such; a longer
+// way is written out, package by package.
+func boundaryReached(f boundaryFile, imp string, way []string, direct, indirect string) string {
+	if len(way) == 1 {
+		return f.path + " imports " + imp + ", " + direct
+	}
+	return f.path + " imports " + imp + ", and through it reaches " + way[len(way)-1] + ", " + indirect +
+		": " + strings.Join(way, " -> ")
+}
+
 // ruleTable is rule 1: a package with a row in the table imports, of this
 // repository, only what its row names.
 func ruleTable(files []boundaryFile) []string {
@@ -436,21 +509,39 @@ const pkgFixtureTool = "internal/terminalconsole/sessionreplay/cmd/genfixtures"
 // backend, the daemon view, or the network, file and process packages. The
 // sample backend and the daemon view reach the console as values that the
 // command hands over. The one exception is pkgFixtureTool.
+//
+// For the packages of this repository the rule follows the imports: a console
+// package that imports a package which in turn reaches a package that acts,
+// the sample backend or the daemon view is reported too, with the way there.
+// The network, file and process packages are read as direct imports only:
+// the packages the console may import are free to use them.
 func ruleConsoleReach(files []boundaryFile) []string {
 	deniedOurs := append([]string{pkgDemo, pkgConsoleView}, boundaryActing...)
+	denied := func(pkg string) bool {
+		for _, d := range deniedOurs {
+			if within(pkg, d) {
+				return true
+			}
+		}
+		return false
+	}
+	graph := boundaryGraph(files)
 	var found []string
 	for _, f := range files {
 		if !within(f.pkg(), pkgConsole) || !f.imported() {
 			continue
 		}
 		for _, imp := range f.imports {
-			denied := imp == "net" || strings.HasPrefix(imp, "net/") || imp == "os" || imp == "os/exec" || imp == "syscall"
 			if p, ours := inModule(imp); ours {
-				for _, d := range deniedOurs {
-					denied = denied || within(p, d)
+				if way := boundaryWay(graph, p, denied); way != nil {
+					found = append(found, boundaryReached(f, imp, way,
+						"which nothing under "+pkgConsole+" may import",
+						"which nothing under "+pkgConsole+" may depend on"))
 				}
+				continue
 			}
-			if denied && !(f.pkg() == pkgFixtureTool && imp == "os") {
+			std := imp == "net" || strings.HasPrefix(imp, "net/") || imp == "os" || imp == "os/exec" || imp == "syscall"
+			if std && !(f.pkg() == pkgFixtureTool && imp == "os") {
 				found = append(found, f.path+" imports "+imp+", which nothing under "+pkgConsole+" may import")
 			}
 		}
@@ -483,8 +574,20 @@ func ruleStandIn(files []boundaryFile) []string {
 	return found
 }
 
-// ruleCommands is rule 6: no package under cmd imports a package that acts.
+// ruleCommands is rule 6: no package under cmd depends on a package that acts.
+// The rule follows the imports inside this repository, so a command that
+// imports a package which in turn reaches a package that acts is reported
+// too, with the way there.
 func ruleCommands(files []boundaryFile) []string {
+	denied := func(pkg string) bool {
+		for _, d := range boundaryActing {
+			if within(pkg, d) {
+				return true
+			}
+		}
+		return false
+	}
+	graph := boundaryGraph(files)
 	var found []string
 	for _, f := range files {
 		if !within(f.pkg(), "cmd") || !f.imported() {
@@ -495,11 +598,9 @@ func ruleCommands(files []boundaryFile) []string {
 			if !ours {
 				continue
 			}
-			for _, d := range boundaryActing {
-				if within(p, d) {
-					found = append(found, f.path+" imports "+imp+", which no command may import")
-					break
-				}
+			if way := boundaryWay(graph, p, denied); way != nil {
+				found = append(found, boundaryReached(f, imp, way,
+					"which no command may import", "which no command may depend on"))
 			}
 		}
 	}
@@ -591,6 +692,21 @@ func expectFindings(t *testing.T, rule func([]boundaryFile) []string, files []bo
 	for _, finding := range left {
 		t.Errorf("unexpected finding: %s", finding)
 	}
+}
+
+// expectWay checks that the finding for a file ends with the way to the
+// package it reaches, written package by package.
+func expectWay(t *testing.T, found []string, file, way string) {
+	t.Helper()
+	for _, finding := range found {
+		if strings.HasPrefix(finding, file+" ") {
+			if !strings.HasSuffix(finding, ": "+way) {
+				t.Errorf("the finding %q does not end with the way %q", finding, way)
+			}
+			return
+		}
+	}
+	t.Errorf("no finding for %s in %q", file, found)
 }
 
 // boundaryTagged is a sample file that needs the owner channel's tag and
@@ -687,17 +803,26 @@ func TestConsoleFirstBoundaryConsoleReach(t *testing.T) {
 		sources := map[string]string{
 			pkg + "/good.go": boundarySource(
 				"strings", "time", "network", "charm.land/bubbletea/v2", "/"+pkgCard, "/"+pkgRecord, "/"+pkgLimits,
-				"/"+pkgPresence, "/"+pkgLeadText, "/"+pkgPager),
+				"/"+pkgPresence, "/"+pkgLeadText, "/"+pkgSessionPlay),
 			pkg + "/bad_test.go": boundarySource(denied...),
 			pkg + "/tagged.go":   boundaryTagged,
+			// A package in between does not hide the sample backend, and
+			// one that uses the file package itself is no finding.
+			pkg + "/through.go":     boundarySource("/internal/between"),
+			pkg + "/quiet.go":       boundarySource("/internal/quiet"),
+			"internal/between/b.go": boundarySource("os", "/internal/quiet", "/internal/middle"),
+			"internal/middle/m.go":  boundarySource("/internal/between", "/"+pkgDemo),
+			"internal/quiet/q.go":   boundarySource("os", "net"),
 		}
-		var want []string
+		want := []string{pkg + "/through.go"}
 		for i, imp := range denied {
 			name := pkg + "/bad" + strconv.Itoa(i) + ".go"
 			sources[name] = boundarySource(imp)
 			want = append(want, name)
 		}
-		expectFindings(t, ruleConsoleReach, boundarySample(t, sources), want...)
+		files := boundarySample(t, sources)
+		expectFindings(t, ruleConsoleReach, files, want...)
+		expectWay(t, ruleConsoleReach(files), pkg+"/through.go", "internal/between -> internal/middle -> "+pkgDemo)
 	}
 	// The fixture tool may import os, and nothing else that is denied.
 	expectFindings(t, ruleConsoleReach, boundarySample(t, map[string]string{
@@ -746,14 +871,36 @@ func TestConsoleFirstBoundaryCommands(t *testing.T) {
 		"cmd/ataniqd/tagged.go":          boundaryTagged,
 		"cmd/later/below/a.go":           boundarySource("/" + pkgDoor + "/below"),
 		pkgOwnerChannel + "/a.go":        boundarySource("/"+pkgDoor, "/"+pkgOwnerJournal),
+		// A command reaches the service through two packages in between,
+		// which also import each other.
+		"cmd/ataniqd/through.go": boundarySource("strings", "/internal/between"),
+		"internal/between/b.go":  boundarySource("/internal/quiet", "/internal/middle"),
+		"internal/middle/m.go":   boundarySource("/internal/between", "/"+pkgOwnerChannel),
+		// A package whose test files and tagged files alone reach a package
+		// that acts is no finding, and neither is a ring of imports.
+		"cmd/ataniqd/quiet.go":       boundarySource("/internal/quiet", "/internal/ring"),
+		"internal/quiet/q.go":        boundarySource("os", "/"+pkgCard),
+		"internal/quiet/q_test.go":   boundarySource("/"+pkgDoorTest, "/"+pkgOwnerChannel),
+		"internal/quiet/tagged.go":   boundaryTagged,
+		"internal/ring/r.go":         boundarySource("/internal/ring/back"),
+		"internal/ring/back/back.go": boundarySource("/internal/ring"),
 	}
-	want := []string{"cmd/later/below/a.go"}
+	want := []string{"cmd/later/below/a.go", "cmd/ataniqd/through.go"}
 	for i, imp := range boundaryActing {
 		name := "cmd/ataniqd/bad" + strconv.Itoa(i) + ".go"
 		sources[name] = boundarySource("/" + imp)
 		want = append(want, name)
 	}
-	expectFindings(t, ruleCommands, boundarySample(t, sources), want...)
+	files := boundarySample(t, sources)
+	expectFindings(t, ruleCommands, files, want...)
+	expectWay(t, ruleCommands(files), "cmd/ataniqd/through.go",
+		"internal/between -> internal/middle -> "+pkgOwnerChannel)
+	// A direct import is named as before, without a way.
+	for _, finding := range ruleCommands(files) {
+		if strings.HasPrefix(finding, "cmd/ataniqd/bad0.go ") && !strings.HasSuffix(finding, ", which no command may import") {
+			t.Errorf("a direct import is reported as %q", finding)
+		}
+	}
 }
 
 func TestConsoleFirstBoundaryWords(t *testing.T) {
