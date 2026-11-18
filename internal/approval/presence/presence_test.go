@@ -44,7 +44,11 @@ func TestWindowIsASettingWithBounds(t *testing.T) {
 		ok bool
 	}{
 		{DefaultWindow, true},
-		{time.Nanosecond, true},
+		{BeatInterval, true},
+		{BeatInterval + time.Nanosecond, true},
+		{BeatInterval - time.Nanosecond, false},
+		{10 * time.Second, false},
+		{time.Nanosecond, false},
 		{MaxWindow, true},
 		{MaxWindow + time.Nanosecond, false},
 		{31 * time.Minute, false},
@@ -78,7 +82,7 @@ func TestSetWindow(t *testing.T) {
 	tr := newTracker(t, DefaultWindow)
 	tr.Activity(at(0))
 
-	for _, d := range []time.Duration{0, -time.Second, MaxWindow + time.Second} {
+	for _, d := range []time.Duration{0, -time.Second, BeatInterval - time.Nanosecond, MaxWindow + time.Second} {
 		if err := tr.SetWindow(d); !errors.Is(err, ErrWindow) {
 			t.Errorf("SetWindow(%v) = %v, want an ErrWindow", d, err)
 		}
@@ -463,13 +467,34 @@ func TestNoBeatWithoutActivity(t *testing.T) {
 	if *tr != before {
 		t.Error("asking moved the beat's time")
 	}
-	// An arrival with a short window, less than a minute after the last
-	// beat, does not earn a second beat.
-	tr = newTracker(t, 10*time.Second)
-	tr.Activity(at(0))
-	ev := tr.Activity(at(30 * time.Second))
-	if !ev.Arrival || ev.BeatDue {
-		t.Errorf("event = %+v, want an arrival with no beat due", ev)
+}
+
+func TestAnArrivalAlwaysHasABeatDue(t *testing.T) {
+	// The side that hears only beats must hear every arrival. No window
+	// shorter than the beat interval is accepted, so the last beat before
+	// an away stretch is always at least one interval old when he comes
+	// back. The shortest window, with the stretch as short as it can be
+	// and the last beat as late as it can be, is the nearest case.
+	for _, window := range []time.Duration{BeatInterval, DefaultWindow, MaxWindow} {
+		tr := newTracker(t, window)
+		if ev := tr.Activity(at(0)); !ev.Arrival || !ev.BeatDue {
+			t.Fatalf("window %v: the first activity = %+v, want an arrival with a beat due", window, ev)
+		}
+		// The last activity before the stretch is also a beat.
+		last := BeatInterval
+		if ev := tr.Activity(at(last)); ev.Arrival || !ev.BeatDue {
+			t.Fatalf("window %v: activity = %+v, want a beat and no arrival", window, ev)
+		}
+		ev := tr.Activity(at(last + window + time.Nanosecond))
+		if !ev.Arrival || !ev.BeatDue {
+			t.Errorf("window %v: event = %+v, want an arrival with a beat due", window, ev)
+		}
+	}
+	// A window under the interval, which would allow an arrival with no
+	// beat, cannot be set on a tracker either.
+	tr := newTracker(t, BeatInterval)
+	if err := tr.SetWindow(10 * time.Second); !errors.Is(err, ErrWindow) {
+		t.Errorf("SetWindow(10s) = %v, want an ErrWindow", err)
 	}
 }
 

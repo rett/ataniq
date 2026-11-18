@@ -25,7 +25,7 @@ const (
 )
 
 // ErrWindow is the error, found with errors.Is, of a window that is refused:
-// zero, negative, or longer than [MaxWindow].
+// shorter than [BeatInterval] or longer than [MaxWindow].
 var ErrWindow = errors.New("presence: window refused")
 
 // ErrSurface is the error, found with errors.Is, of a surface name that is
@@ -37,11 +37,17 @@ var ErrSurface = errors.New("presence: surface name refused")
 var ErrSession = errors.New("presence: session id refused")
 
 // CheckWindow says whether d may be used as the presence window. It returns
-// nil for a duration above zero and at most [MaxWindow], and otherwise an
-// error that wraps [ErrWindow] and says why.
+// nil for a duration of at least [BeatInterval] (one minute) and at most
+// [MaxWindow], and otherwise an error that wraps [ErrWindow] and says why.
+//
+// The lower bound is there for the side that hears only beats and runs a
+// tracker of its own on them. With a window of at least one beat interval,
+// every arrival after an away stretch is also a due beat, because the last
+// beat is then at least one interval old, so that side hears every arrival.
+// Under a shorter window an arrival could come with no beat.
 func CheckWindow(d time.Duration) error {
-	if d <= 0 {
-		return fmt.Errorf("%w: %v is not above zero", ErrWindow, d)
+	if d < BeatInterval {
+		return fmt.Errorf("%w: %v is shorter than %v", ErrWindow, d, BeatInterval)
 	}
 	if d > MaxWindow {
 		return fmt.Errorf("%w: %v is longer than %v", ErrWindow, d, MaxWindow)
