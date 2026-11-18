@@ -72,7 +72,12 @@
 //     <runtime root>/leads/<layout role>, mode 0700, which must exist before
 //     the holder starts;
 //   - the marker (canaryroot.WriteMarker), the last act. A failed run leaves
-//     none. It also leaves what it made: remove both roots, and run again.
+//     none. It also leaves what it made, and a second run refuses that: remove
+//     <state root>/leads/<layout role>, the lead's mailbox
+//     (<state root>/mailbox/<layout role>), its published folder
+//     (<state root>/pub/<project>) and the runtime root, and run again. Do not
+//     remove the state root: it holds the mirror, which provisioning needs
+//     and does not make, so the mirror stays.
 //
 // The spec folder is not made: the start sequence makes its own "bound/spec"
 // in the runtime folder at each start and refuses leftovers.

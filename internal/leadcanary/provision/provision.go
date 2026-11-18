@@ -86,7 +86,12 @@ type run struct {
 // Nothing is made until every check that needs no write has passed: the roots,
 // the files it copies, the mirror, the marker and the holder's state folder
 // of the state root, and every path it will make. A failure after that leaves
-// what was made so far, and no marker: remove both roots and run again.
+// what was made so far, and no marker. A second run refuses what the first
+// left, so remove it before running again: the lead's folder
+// (<state root>/leads/<layout role>), its mailbox and published folders
+// (<state root>/mailbox/<layout role>, <state root>/pub/<project>) and the
+// runtime root. The mirror stays: it is in the state root, provisioning needs
+// it and does not make it, so the state root itself is not removed.
 func Provision(ctx context.Context, cfg leadcanary.Config, opts Options) error {
 	r := &run{cfg: cfg, opts: opts, say: func(s string) {
 		if opts.Log != nil {
