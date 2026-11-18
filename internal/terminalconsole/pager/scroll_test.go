@@ -301,6 +301,43 @@ func TestPiecesAreJoinedBeforeWrapping(t *testing.T) {
 	}
 }
 
+// The blanks of a line are the line's: every one is drawn, in its place,
+// and none is added between two rows. The lines here hold no wide character
+// and no mark, so every row but a line's last is full, and the rows of a
+// line, joined, are its escaped text and then only the blanks that fill its
+// last row. The other tests compare without the blanks.
+func TestSpacesAreKept(t *testing.T) {
+	lines := []string{
+		"+  indented  twice",
+		"-\tx  =  1 ;",
+		"   ",
+		"a b  c   d    e     f",
+		" one in front",
+		"        eight in front",
+		`"a  b" != "a b"`,
+		strings.Repeat("ab  cd   e    ", 30),
+		"",
+	}
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("  l%03d  filler   line", i))
+	}
+	for _, w := range []int{80, 31, 20, 9, 5} {
+		for _, pieceBytes := range []int{0, 1, 3} {
+			r := newRig(t, w, 12, serve(paginate(lines, 7, pieceBytes)))
+			got := r.readAllCells()
+			if len(got) != len(lines) {
+				t.Fatalf("%d columns, pieces of %d bytes: %d lines drawn, want %d", w, pieceBytes, len(got), len(lines))
+			}
+			for i, l := range lines {
+				want := leadtext.Escape(l)
+				if !strings.HasPrefix(got[i], want) || strings.TrimRight(got[i][len(want):], " ") != "" {
+					t.Fatalf("%d columns, pieces of %d bytes, line %d:\n%q is drawn as\n%q, want\n%q and blanks", w, pieceBytes, i, l, got[i], want)
+				}
+			}
+		}
+	}
+}
+
 // With a page for every piece, the pager holds the pages of the rows it
 // looks at and one on either side, not the patch.
 func TestHoldsNoMoreThanItLooksAt(t *testing.T) {

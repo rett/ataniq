@@ -55,6 +55,12 @@ const (
 // hi is the first page after the held ones.
 func (m *Model) hi() int { return m.lo + len(m.held) }
 
+// heldToEnd reports whether no piece lies after the held pages: they go up
+// to the last page, or up to the pages at the end that hold no piece.
+func (m *Model) heldToEnd() bool {
+	return m.pages > 0 && (m.hi() == m.pages || (m.tailKnown && m.hi() >= m.tail))
+}
+
 func (m *Model) page(p int) *page { return &m.held[p-m.lo] }
 
 // norm moves a ref that points after the last piece of its page to the
@@ -214,7 +220,7 @@ func (m *Model) next(c pos) (pos, status) {
 	}
 	n := m.norm(ln.next)
 	if n.p >= m.hi() {
-		if m.pages > 0 && m.hi() == m.pages {
+		if m.heldToEnd() {
 			return c, edge
 		}
 		return c, missing
@@ -334,18 +340,18 @@ func (m *Model) keep(from, to int) {
 }
 
 // tooLong reports whether a line among the held pages, whole or not yet
-// whole, is longer than MaxLineBytes.
+// whole, is longer than MaxLineBytes or in more pieces than MaxLinePieces.
 func (m *Model) tooLong() bool {
-	n := 0
+	n, pieces := 0, 0
 	for i := range m.held {
 		pg := &m.held[i]
 		for j, s := range pg.lines {
-			n += len(s)
-			if n > MaxLineBytes {
+			n, pieces = n+len(s), pieces+1
+			if n > MaxLineBytes || pieces > MaxLinePieces {
 				return true
 			}
 			if !pg.cont[j] {
-				n = 0
+				n, pieces = 0, 0
 			}
 		}
 	}

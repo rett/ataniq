@@ -61,6 +61,12 @@ type Model struct {
 	held  []page
 	lo    int
 	pages int
+	// tail is the first of the pages at the end of the patch that hold no
+	// piece (pages when the last page holds one), once tailKnown: once the
+	// last page was read. No row lies on a page from tail on, so the pager
+	// may let those pages go and need not read them again.
+	tail      int
+	tailKnown bool
 	// cache holds the joined and escaped lines that were looked at, by
 	// their first piece.
 	cache map[ref]*line
@@ -178,15 +184,13 @@ func (m *Model) wrapper() wrapper {
 	return wrapper{width: max(2, m.w-marginCells), graphemes: m.graphemes}
 }
 
-// lockMods are lock states a terminal may report with a key. They never
-// change which key it is.
-const lockMods = tea.ModCapsLock | tea.ModNumLock | tea.ModScrollLock
-
 // Update handles a message. The pager acts on the answers to its own page
 // requests and on its keys: j and k and the arrows scroll by a row, PgDn
 // and PgUp by a screen, Home goes to the top, End to the end of what is
 // read so far (and reads on), and Esc returns Close. Every other message
-// and key is left alone. The command, when not nil, is to be run by the
+// and key is left alone. A lock state that a terminal reports with a key
+// (Caps Lock, Num Lock, Scroll Lock) does not change which key it is: the
+// key's name leaves it out. The command, when not nil, is to be run by the
 // parent; it never ends the program.
 func (m *Model) Update(msg tea.Msg) (tea.Cmd, Action) {
 	switch v := msg.(type) {
@@ -194,7 +198,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Cmd, Action) {
 		m.onPage(v)
 		return m.settle(), None
 	case tea.KeyPressMsg:
-		v.Mod &^= lockMods
 		key := v.String()
 		if key == "esc" {
 			return nil, Close
@@ -324,6 +327,7 @@ func (m *Model) onPage(v pageMsg) {
 	}
 	last := len(v.lines) - 1
 	if v.pages < 1 || v.n >= v.pages || len(v.cont) != len(v.lines) ||
+		emptyContinued(v.lines, v.cont) ||
 		(m.pages != 0 && v.pages != m.pages) ||
 		(v.n == v.pages-1 && last >= 0 && v.cont[last]) {
 		m.malformed()
@@ -342,10 +346,16 @@ func (m *Model) onPage(v pageMsg) {
 	}
 	m.pages = v.pages
 	if m.hi() == m.pages {
-		// The patch may not end in the middle of a line.
-		if b, st := m.back(ref{m.hi(), 0}); st == found && m.page(b.p).cont[b.i] {
+		// The patch may not end in the middle of a line. The pages after
+		// its last piece are the tail.
+		switch b, st := m.back(ref{m.hi(), 0}); {
+		case st == found && m.page(b.p).cont[b.i]:
 			m.malformed()
 			return
+		case st == found:
+			m.tail, m.tailKnown = b.p+1, true
+		case st == edge:
+			m.tail, m.tailKnown = 0, true
 		}
 	}
 	if m.tooLong() {
@@ -355,8 +365,21 @@ func (m *Model) onPage(v pageMsg) {
 
 var (
 	errMalformed = errors.New("pager: the source returned a page that does not fit the others")
-	errTooLong   = errors.New("pager: a line is longer than MaxLineBytes")
+	errTooLong   = errors.New("pager: a line is longer than MaxLineBytes or in more pieces than MaxLinePieces")
 )
+
+// emptyContinued reports whether a piece of a page is empty and continues.
+// Such a piece carries nothing of its line, and a line made of them would
+// never reach MaxLineBytes, so a page that holds one does not fit. lines
+// and cont have the same length.
+func emptyContinued(lines []string, cont []bool) bool {
+	for i, s := range lines {
+		if s == "" && cont[i] {
+			return true
+		}
+	}
+	return false
+}
 
 func (m *Model) malformed() { m.fail, m.err = failMalformed, errMalformed }
 

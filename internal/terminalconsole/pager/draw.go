@@ -64,7 +64,11 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 			if !ok {
 				break
 			}
+			// The pages at the end that hold no piece are not below it.
 			below = m.pages - 1 - ln.last
+			if m.tailKnown {
+				below = m.tail - 1 - ln.last
+			}
 			if c.row > 0 {
 				d.set(0, 1+y, wrapMark, 1, dim)
 			}

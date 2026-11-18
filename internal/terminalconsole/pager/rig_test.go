@@ -62,6 +62,9 @@ func paginate(lines []string, perPage, pieceBytes int) []tpage {
 
 // rig drives a pager as a parent would: it runs every command the pager
 // returns and hands the answer back.
+//
+// Its pager is given testColors: a check of a colour means something only
+// when the colours differ from one another.
 type rig struct {
 	t    *testing.T
 	m    *Model
@@ -73,7 +76,7 @@ type rig struct {
 func newRig(t *testing.T, w, h int, page func(int) ([]string, []bool, int, error)) *rig {
 	t.Helper()
 	r := &rig{t: t, src: &fakeSource{t: t, page: page}}
-	r.m = New(r.src, Options{})
+	r.m = New(r.src, Options{Colors: testColors})
 	r.size(w, h)
 	r.run(r.m.Init())
 	return r
@@ -194,6 +197,17 @@ func (r *rig) footer() string { return strings.TrimRight(rowText(r.draw(), r.h-1
 // that fill a line's last row. A patch read this way must fill the screen.
 func (r *rig) readAll() []string {
 	r.t.Helper()
+	lines := r.readAllCells()
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return lines
+}
+
+// readAllCells reads as readAll does and returns every cell of every row of
+// a line, with the blanks that fill its rows.
+func (r *rig) readAllCells() []string {
+	r.t.Helper()
 	var rows []trow
 	for {
 		screen, before := r.patchRows(), r.m.top
@@ -211,9 +225,6 @@ func (r *rig) readAll() []string {
 		} else {
 			lines = append(lines, row.text)
 		}
-	}
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], " ")
 	}
 	return lines
 }
