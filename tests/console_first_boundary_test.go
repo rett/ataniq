@@ -30,9 +30,12 @@ import (
 // the rules below is written without it.
 const boundaryModule = "ataniq"
 
-// boundaryTag is the build tag of the owner channel. A file whose build line
-// names it is skipped by the import rules here: a later tag guard checks those
-// files, with the rules that hold when the tag is set.
+// boundaryTag is the build tag of the owner channel. A file that cannot be
+// built without it is skipped by the import rules here: a later tag guard
+// checks those files, with the rules that hold when the tag is set. A file
+// whose build line names the tag and can still be built without it, such as
+// one that asks for the tag to be off, is read like any other: it is part of
+// the build the rules protect.
 const boundaryTag = "ataniq_ownerchannel"
 
 // Short names for the packages the rules speak of, as paths below the module.
@@ -115,7 +118,7 @@ var boundaryWords = []string{
 type boundaryFile struct {
 	path    string   // relative to the repository root, with slashes
 	test    bool     // the name ends in _test.go
-	tagged  bool     // a build line names boundaryTag
+	tagged  bool     // the build lines need boundaryTag: without it the file is not built
 	imports []string // the direct imports, unquoted
 	text    string   // the whole file
 }
@@ -124,10 +127,53 @@ type boundaryFile struct {
 func (f boundaryFile) pkg() string { return path.Dir(f.path) }
 
 // imported reports whether the import rules read the file: they leave out test
-// files and files of the owner channel's tag.
+// files and files that need the owner channel's tag.
 func (f boundaryFile) imported() bool { return !f.test && !f.tagged }
 
-var boundaryTagWord = regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + boundaryTag + `($|[^A-Za-z0-9_.])`)
+// needsBoundaryTag reports whether a build line cannot be met while the owner
+// channel's tag is off. It is false for a line that does not name the tag.
+// For a line that does, it tries the line with the tag off and every setting
+// of the other tags the line names; a build line names only a few.
+func needsBoundaryTag(expr constraint.Expr) bool {
+	named := false
+	var others []string
+	seen := map[string]bool{}
+	var collect func(constraint.Expr)
+	collect = func(x constraint.Expr) {
+		switch x := x.(type) {
+		case *constraint.TagExpr:
+			if x.Tag == boundaryTag {
+				named = true
+			} else if !seen[x.Tag] {
+				seen[x.Tag] = true
+				others = append(others, x.Tag)
+			}
+		case *constraint.NotExpr:
+			collect(x.X)
+		case *constraint.AndExpr:
+			collect(x.X)
+			collect(x.Y)
+		case *constraint.OrExpr:
+			collect(x.X)
+			collect(x.Y)
+		}
+	}
+	collect(expr)
+	if !named || len(others) > 16 {
+		// A line with that many tags is not tried: the file is read.
+		return false
+	}
+	for set := 0; set < 1<<len(others); set++ {
+		on := map[string]bool{}
+		for i, tag := range others {
+			on[tag] = set&(1<<i) != 0
+		}
+		if expr.Eval(func(tag string) bool { return on[tag] }) {
+			return false
+		}
+	}
+	return true
+}
 
 // parseBoundaryFile reads the imports and the build lines of one file. Only
 // the part of the file up to the end of its imports has to be valid Go.
@@ -145,14 +191,28 @@ func parseBoundaryFile(name, src string) (boundaryFile, error) {
 		}
 		f.imports = append(f.imports, p)
 	}
-	// A build line stands above the package clause.
+	// A build line stands above the package clause. A //go:build line decides
+	// alone, as it does for the compiler; without one, every // +build line
+	// has to be met, so one of them that needs the tag is enough.
+	goBuild := false
 	for _, group := range parsed.Comments {
 		if group.Pos() > parsed.Package {
 			break
 		}
 		for _, c := range group.List {
-			if (constraint.IsGoBuild(c.Text) || constraint.IsPlusBuild(c.Text)) && boundaryTagWord.MatchString(c.Text) {
-				f.tagged = true
+			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
+				continue
+			}
+			expr, err := constraint.Parse(c.Text)
+			if err != nil {
+				// The compiler does not take the line as a build line.
+				continue
+			}
+			if constraint.IsGoBuild(c.Text) {
+				goBuild = true
+				f.tagged = needsBoundaryTag(expr)
+			} else if !goBuild {
+				f.tagged = f.tagged || needsBoundaryTag(expr)
 			}
 		}
 	}
@@ -533,8 +593,8 @@ func expectFindings(t *testing.T, rule func([]boundaryFile) []string, files []bo
 	}
 }
 
-// boundaryTagged is a sample file of the owner channel's tag that breaks every
-// import rule at once wherever it is put.
+// boundaryTagged is a sample file that needs the owner channel's tag and
+// breaks every import rule at once wherever it is put.
 var boundaryTagged = "//go:build linux && " + boundaryTag + "\n\n" + boundarySource(
 	"os", "net", "example.org/module", "charm.land/bubbletea/v2",
 	"/internal/clientapi", "/internal/terminalconsole", "/"+pkgDoor, "/"+pkgDoorTest, "/"+pkgOwnerChannel,
@@ -726,8 +786,10 @@ func TestConsoleFirstBoundaryWords(t *testing.T) {
 	}
 }
 
-// TestConsoleFirstBoundaryTaggedFiles checks which build lines name the owner
-// channel's tag. The import rules skip such a file; the word rule does not.
+// TestConsoleFirstBoundaryTaggedFiles checks which build lines need the owner
+// channel's tag. The import rules skip a file that cannot be built without it;
+// the word rule does not. A file that is built when the tag is off is read,
+// although its build line names the tag.
 func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 	for _, c := range []struct {
 		head   string
@@ -736,10 +798,24 @@ func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 		{"", false},
 		{"//go:build linux\n\n", false},
 		{"//go:build " + boundaryTag + "\n\n", true},
-		{"//go:build !" + boundaryTag + "\n\n", true},
-		{"//go:build linux && (" + boundaryTag + " || other)\n\n", true},
+		{"//go:build !" + boundaryTag + "\n\n", false},
+		{"//go:build !linux || !" + boundaryTag + "\n\n", false},
+		{"//go:build linux && !" + boundaryTag + "\n\n", false},
+		{"//go:build linux && " + boundaryTag + "\n\n", true},
+		{"//go:build !(linux || !" + boundaryTag + ")\n\n", true},
+		{"//go:build linux && (" + boundaryTag + " || other)\n\n", false},
+		{"//go:build linux && (" + boundaryTag + " || (other && " + boundaryTag + "))\n\n", true},
+		{"//go:build " + boundaryTag + " || other\n\n", false},
 		{"// A comment.\n\n//go:build other && " + boundaryTag + "\n\n", true},
 		{"// +build linux," + boundaryTag + "\n\n", true},
+		{"// +build linux " + boundaryTag + "\n\n", false},
+		{"// +build !" + boundaryTag + "\n\n", false},
+		{"// +build linux\n// +build " + boundaryTag + "\n\n", true},
+		{"// +build " + boundaryTag + "\n// +build linux\n\n", true},
+		// A //go:build line decides alone, wherever it stands.
+		{"//go:build linux\n// +build " + boundaryTag + "\n\n", false},
+		{"// +build " + boundaryTag + "\n\n//go:build linux\n\n", false},
+		{"//go:build " + boundaryTag + "\n// +build linux\n\n", true},
 		{"//go:build " + boundaryTag + "_more\n\n", false},
 		{"//go:build more_" + boundaryTag + "\n\n", false},
 		{"// The tag " + boundaryTag + " is named in a comment only.\n\n", false},
