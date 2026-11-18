@@ -5,6 +5,7 @@
 ## Commands
 
 - Whole test suite: `make test`. Run it once after a set of related changes is merged, not after every edit.
+- `make test-canary` runs the tests of code behind the `ataniq_canary` build tag; `make test` stays untagged. While tagged code exists the whole suite is `make test` and then `make test-canary`. No release and no other target builds with the tag.
 - While working on a task, run only the check that covers what you changed.
 
 ## Rules
