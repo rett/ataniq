@@ -13,4 +13,6 @@
   longer say that the scratch holder and attach client are being built and that
   no recogniser exists: they name what is built, and say that it is not joined
   and that nothing sets `ready`. No contract text changes.
+  The maturity section of `README.md` describes the tree without naming a
+  release; it named 0.0.8.
   Documentation only.
