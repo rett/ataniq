@@ -145,8 +145,9 @@ type stepDef struct {
 // error: a *StepError that names the step that refused the start, or, in canary
 // mode, the *canaryroot.RefusedError of the root check, which is made before
 // any step (a project without the reserved prefix, a default root, a missing
-// marker or a root that is not the marker's). With canary false there is no
-// root check here and no waiver.
+// marker or a root that is not the marker's), or a plain refusal, also before
+// any step, of a layout role that is not "<project>-lead". With canary false
+// there is no root check here and no waiver.
 //
 // The holder owns the child of the result. After an error nothing of the start
 // is left: the child, if one was launched, has been stopped and reaped, and the
@@ -161,6 +162,10 @@ func Run(ctx context.Context, in Inputs, sys System, launch Launcher) (Started, 
 	if in.Canary {
 		if err := canaryroot.Check(in.StateRoot, in.RuntimeRoot, in.Project, sys.Getenv); err != nil {
 			return Started{}, fmt.Errorf("sandbox start refused before any step: %w", err)
+		}
+		// The layout role of the slice is the project's lead (seams section 1).
+		if want := in.Project + "-lead"; in.LayoutRole != want {
+			return Started{}, fmt.Errorf("sandbox start refused before any step: in canary mode the layout role is %q (the project's lead), not %q", want, clipText(in.LayoutRole))
 		}
 	}
 	a := &attempt{ctx: ctx, in: in, sys: sys, launch: launch}
