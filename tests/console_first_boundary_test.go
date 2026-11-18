@@ -20,7 +20,9 @@ import (
 // commands must not reach. It reads the direct imports of the Go files in the
 // repository with go/parser, so it needs no network, no module cache and no
 // go list, and a rule about a package that is not written yet simply finds
-// nothing to object to.
+// nothing to object to. The rules for the commands and the console also
+// follow those imports from package to package inside this repository, so
+// that a package in between does not hide what is reached.
 //
 // Each rule is a function from a set of files to a list of findings. It is
 // called once on the repository and again on small samples that break it, so
@@ -30,9 +32,12 @@ import (
 // the rules below is written without it.
 const boundaryModule = "ataniq"
 
-// boundaryTag is the build tag of the owner channel. A file whose build line
-// names it is skipped by the import rules here: a later tag guard checks those
-// files, with the rules that hold when the tag is set.
+// boundaryTag is the build tag of the owner channel. A file that cannot be
+// built without it is skipped by the import rules here: a later tag guard
+// checks those files, with the rules that hold when the tag is set. A file
+// whose build line names the tag and can still be built without it, such as
+// one that asks for the tag to be off, is read like any other: it is part of
+// the build the rules protect.
 const boundaryTag = "ataniq_ownerchannel"
 
 // Short names for the packages the rules speak of, as paths below the module.
@@ -103,19 +108,22 @@ var boundaryPure = []string{pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgOwner
 // the merge builder. No command imports one of them.
 var boundaryActing = []string{pkgDoor, pkgDoorTest, pkgOwnerChannel, pkgOwnerJournal, pkgMergeBuild}
 
-// boundaryWords is a small list of model and vendor words that no Go file
-// under internal/approval may hold. Remove this list, the rule that reads it
-// and its tests when a repository-wide word test exists: the new packages then
-// come under that test.
+// boundaryWords is a small list of model and vendor words that no file under
+// internal/approval may hold, sample data in a testdata folder included.
+// Remove this list, the rule that reads it and its tests when a
+// repository-wide word test exists: the new packages then come under that
+// test.
 var boundaryWords = []string{
 	"claude", "codex", "anthropic", "openai", "gemini", "gpt", "sonnet", "opus", "haiku", "fable",
 }
 
-// boundaryFile is one Go file as the rules see it.
+// boundaryFile is one file as the rules see it: a Go file, or a file under
+// internal/approval that is kept for its text alone.
 type boundaryFile struct {
 	path    string   // relative to the repository root, with slashes
 	test    bool     // the name ends in _test.go
-	tagged  bool     // a build line names boundaryTag
+	textual bool     // read for the word rule only: not parsed, so it holds no imports
+	tagged  bool     // the build lines need boundaryTag: without it the file is not built
 	imports []string // the direct imports, unquoted
 	text    string   // the whole file
 }
@@ -124,10 +132,54 @@ type boundaryFile struct {
 func (f boundaryFile) pkg() string { return path.Dir(f.path) }
 
 // imported reports whether the import rules read the file: they leave out test
-// files and files of the owner channel's tag.
+// files and files that need the owner channel's tag. A file read for its text
+// alone holds no imports, so the import rules find nothing in it.
 func (f boundaryFile) imported() bool { return !f.test && !f.tagged }
 
-var boundaryTagWord = regexp.MustCompile(`(^|[^A-Za-z0-9_.])` + boundaryTag + `($|[^A-Za-z0-9_.])`)
+// needsBoundaryTag reports whether a build line cannot be met while the owner
+// channel's tag is off. It is false for a line that does not name the tag.
+// For a line that does, it tries the line with the tag off and every setting
+// of the other tags the line names; a build line names only a few.
+func needsBoundaryTag(expr constraint.Expr) bool {
+	named := false
+	var others []string
+	seen := map[string]bool{}
+	var collect func(constraint.Expr)
+	collect = func(x constraint.Expr) {
+		switch x := x.(type) {
+		case *constraint.TagExpr:
+			if x.Tag == boundaryTag {
+				named = true
+			} else if !seen[x.Tag] {
+				seen[x.Tag] = true
+				others = append(others, x.Tag)
+			}
+		case *constraint.NotExpr:
+			collect(x.X)
+		case *constraint.AndExpr:
+			collect(x.X)
+			collect(x.Y)
+		case *constraint.OrExpr:
+			collect(x.X)
+			collect(x.Y)
+		}
+	}
+	collect(expr)
+	if !named || len(others) > 16 {
+		// A line with that many tags is not tried: the file is read.
+		return false
+	}
+	for set := 0; set < 1<<len(others); set++ {
+		on := map[string]bool{}
+		for i, tag := range others {
+			on[tag] = set&(1<<i) != 0
+		}
+		if expr.Eval(func(tag string) bool { return on[tag] }) {
+			return false
+		}
+	}
+	return true
+}
 
 // parseBoundaryFile reads the imports and the build lines of one file. Only
 // the part of the file up to the end of its imports has to be valid Go.
@@ -145,14 +197,28 @@ func parseBoundaryFile(name, src string) (boundaryFile, error) {
 		}
 		f.imports = append(f.imports, p)
 	}
-	// A build line stands above the package clause.
+	// A build line stands above the package clause. A //go:build line decides
+	// alone, as it does for the compiler; without one, every // +build line
+	// has to be met, so one of them that needs the tag is enough.
+	goBuild := false
 	for _, group := range parsed.Comments {
 		if group.Pos() > parsed.Package {
 			break
 		}
 		for _, c := range group.List {
-			if (constraint.IsGoBuild(c.Text) || constraint.IsPlusBuild(c.Text)) && boundaryTagWord.MatchString(c.Text) {
-				f.tagged = true
+			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
+				continue
+			}
+			expr, err := constraint.Parse(c.Text)
+			if err != nil {
+				// The compiler does not take the line as a build line.
+				continue
+			}
+			if constraint.IsGoBuild(c.Text) {
+				goBuild = true
+				f.tagged = needsBoundaryTag(expr)
+			} else if !goBuild {
+				f.tagged = f.tagged || needsBoundaryTag(expr)
 			}
 		}
 	}
@@ -161,7 +227,9 @@ func parseBoundaryFile(name, src string) (boundaryFile, error) {
 
 // loadBoundaryFiles reads every Go file below dir, test files and files of any
 // build line included. It leaves out hidden folders, testdata, vendored and
-// third-party code, and the build output folder at the top.
+// third-party code, and the build output folder at the top. For the word rule
+// it then adds the text of every other file under internal/approval, which
+// loadBoundaryTexts reads.
 func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 	t.Helper()
 	var files []boundaryFile
@@ -195,6 +263,50 @@ func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 			return err
 		}
 		files = append(files, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(files, loadBoundaryTexts(t, dir, files)...)
+}
+
+// loadBoundaryTexts walks internal/approval below dir a second time, for the
+// word rule only. It returns the text of every regular file there that is not
+// among the files already loaded, without parsing it: a file of any kind, in
+// any folder, a testdata folder included, since sample data and test vectors
+// are a likely place for a model's name. An absent folder gives nothing.
+func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []boundaryFile {
+	t.Helper()
+	have := map[string]bool{}
+	for _, f := range loaded {
+		have[f.path] = true
+	}
+	top := filepath.Join(dir, filepath.FromSlash(pkgApproval))
+	if _, err := os.Lstat(top); os.IsNotExist(err) {
+		return nil
+	}
+	var files []boundaryFile
+	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if have[rel] {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files = append(files, boundaryFile{path: rel, textual: true, text: string(src)})
 		return nil
 	})
 	if err != nil {
@@ -299,6 +411,77 @@ func standardLibrary(imp string) bool {
 	return !strings.Contains(first, ".")
 }
 
+// boundaryGraph returns, for each package, the packages of this repository
+// that its non-test files import, leaving out the files that need the owner
+// channel's tag. Each list is sorted, so that a walk over the graph gives the
+// same answer every time.
+func boundaryGraph(files []boundaryFile) map[string][]string {
+	edges := map[string]map[string]bool{}
+	for _, f := range files {
+		if !f.imported() {
+			continue
+		}
+		for _, imp := range f.imports {
+			p, ours := inModule(imp)
+			if !ours || p == f.pkg() {
+				continue
+			}
+			if edges[f.pkg()] == nil {
+				edges[f.pkg()] = map[string]bool{}
+			}
+			edges[f.pkg()][p] = true
+		}
+	}
+	graph := map[string][]string{}
+	for pkg, to := range edges {
+		for p := range to {
+			graph[pkg] = append(graph[pkg], p)
+		}
+		sort.Strings(graph[pkg])
+	}
+	return graph
+}
+
+// boundaryWay returns the shortest chain of packages that leads from a package
+// to one that denied names, following the imports in the graph. The chain
+// starts with from and ends with the denied package, so it has one entry when
+// from itself is denied. It is nil when no denied package is reached.
+func boundaryWay(graph map[string][]string, from string, denied func(pkg string) bool) []string {
+	before := map[string]string{from: from}
+	queue := []string{from}
+	for len(queue) > 0 {
+		pkg := queue[0]
+		queue = queue[1:]
+		if denied(pkg) {
+			way := []string{pkg}
+			for pkg != from {
+				pkg = before[pkg]
+				way = append([]string{pkg}, way...)
+			}
+			return way
+		}
+		for _, next := range graph[pkg] {
+			if _, seen := before[next]; !seen {
+				before[next] = pkg
+				queue = append(queue, next)
+			}
+		}
+	}
+	return nil
+}
+
+// boundaryReached writes the finding for an import of a file that leads to a
+// denied package, where way is what boundaryWay returned for the imported
+// package. An import of the denied package itself is named as such; a longer
+// way is written out, package by package.
+func boundaryReached(f boundaryFile, imp string, way []string, direct, indirect string) string {
+	if len(way) == 1 {
+		return f.path + " imports " + imp + ", " + direct
+	}
+	return f.path + " imports " + imp + ", and through it reaches " + way[len(way)-1] + ", " + indirect +
+		": " + strings.Join(way, " -> ")
+}
+
 // ruleTable is rule 1: a package with a row in the table imports, of this
 // repository, only what its row names.
 func ruleTable(files []boundaryFile) []string {
@@ -376,21 +559,39 @@ const pkgFixtureTool = "internal/terminalconsole/sessionreplay/cmd/genfixtures"
 // backend, the daemon view, or the network, file and process packages. The
 // sample backend and the daemon view reach the console as values that the
 // command hands over. The one exception is pkgFixtureTool.
+//
+// For the packages of this repository the rule follows the imports: a console
+// package that imports a package which in turn reaches a package that acts,
+// the sample backend or the daemon view is reported too, with the way there.
+// The network, file and process packages are read as direct imports only:
+// the packages the console may import are free to use them.
 func ruleConsoleReach(files []boundaryFile) []string {
 	deniedOurs := append([]string{pkgDemo, pkgConsoleView}, boundaryActing...)
+	denied := func(pkg string) bool {
+		for _, d := range deniedOurs {
+			if within(pkg, d) {
+				return true
+			}
+		}
+		return false
+	}
+	graph := boundaryGraph(files)
 	var found []string
 	for _, f := range files {
 		if !within(f.pkg(), pkgConsole) || !f.imported() {
 			continue
 		}
 		for _, imp := range f.imports {
-			denied := imp == "net" || strings.HasPrefix(imp, "net/") || imp == "os" || imp == "os/exec" || imp == "syscall"
 			if p, ours := inModule(imp); ours {
-				for _, d := range deniedOurs {
-					denied = denied || within(p, d)
+				if way := boundaryWay(graph, p, denied); way != nil {
+					found = append(found, boundaryReached(f, imp, way,
+						"which nothing under "+pkgConsole+" may import",
+						"which nothing under "+pkgConsole+" may depend on"))
 				}
+				continue
 			}
-			if denied && !(f.pkg() == pkgFixtureTool && imp == "os") {
+			std := imp == "net" || strings.HasPrefix(imp, "net/") || imp == "os" || imp == "os/exec" || imp == "syscall"
+			if std && !(f.pkg() == pkgFixtureTool && imp == "os") {
 				found = append(found, f.path+" imports "+imp+", which nothing under "+pkgConsole+" may import")
 			}
 		}
@@ -423,8 +624,20 @@ func ruleStandIn(files []boundaryFile) []string {
 	return found
 }
 
-// ruleCommands is rule 6: no package under cmd imports a package that acts.
+// ruleCommands is rule 6: no package under cmd depends on a package that acts.
+// The rule follows the imports inside this repository, so a command that
+// imports a package which in turn reaches a package that acts is reported
+// too, with the way there.
 func ruleCommands(files []boundaryFile) []string {
+	denied := func(pkg string) bool {
+		for _, d := range boundaryActing {
+			if within(pkg, d) {
+				return true
+			}
+		}
+		return false
+	}
+	graph := boundaryGraph(files)
 	var found []string
 	for _, f := range files {
 		if !within(f.pkg(), "cmd") || !f.imported() {
@@ -435,11 +648,9 @@ func ruleCommands(files []boundaryFile) []string {
 			if !ours {
 				continue
 			}
-			for _, d := range boundaryActing {
-				if within(p, d) {
-					found = append(found, f.path+" imports "+imp+", which no command may import")
-					break
-				}
+			if way := boundaryWay(graph, p, denied); way != nil {
+				found = append(found, boundaryReached(f, imp, way,
+					"which no command may import", "which no command may depend on"))
 			}
 		}
 	}
@@ -448,9 +659,11 @@ func ruleCommands(files []boundaryFile) []string {
 
 var boundaryWordPattern = regexp.MustCompile(`(?i)\b(?:` + strings.Join(boundaryWords, "|") + `)\b`)
 
-// ruleWords is rule 7: no Go file under internal/approval holds a word of the
+// ruleWords is rule 7: no file under internal/approval holds a word of the
 // list, as a whole word and without regard to case. It reads test files and
-// files of every build line, and the whole text, not only the imports.
+// files of every build line, and the whole text, not only the imports; it
+// also reads the files the loader keeps for their text alone, which are the
+// files in a testdata folder and the files that are not Go.
 func ruleWords(files []boundaryFile) []string {
 	var found []string
 	for _, f := range files {
@@ -533,8 +746,23 @@ func expectFindings(t *testing.T, rule func([]boundaryFile) []string, files []bo
 	}
 }
 
-// boundaryTagged is a sample file of the owner channel's tag that breaks every
-// import rule at once wherever it is put.
+// expectWay checks that the finding for a file ends with the way to the
+// package it reaches, written package by package.
+func expectWay(t *testing.T, found []string, file, way string) {
+	t.Helper()
+	for _, finding := range found {
+		if strings.HasPrefix(finding, file+" ") {
+			if !strings.HasSuffix(finding, ": "+way) {
+				t.Errorf("the finding %q does not end with the way %q", finding, way)
+			}
+			return
+		}
+	}
+	t.Errorf("no finding for %s in %q", file, found)
+}
+
+// boundaryTagged is a sample file that needs the owner channel's tag and
+// breaks every import rule at once wherever it is put.
 var boundaryTagged = "//go:build linux && " + boundaryTag + "\n\n" + boundarySource(
 	"os", "net", "example.org/module", "charm.land/bubbletea/v2",
 	"/internal/clientapi", "/internal/terminalconsole", "/"+pkgDoor, "/"+pkgDoorTest, "/"+pkgOwnerChannel,
@@ -542,20 +770,29 @@ var boundaryTagged = "//go:build linux && " + boundaryTag + "\n\n" + boundarySou
 
 func TestConsoleFirstBoundaryImportTable(t *testing.T) {
 	// Every row of the table trips on an import of this repository that it
-	// does not name, and passes on what it does name.
+	// does not name, and passes on what it does name. A row names a package
+	// and not the packages below it, so an import below each entry trips it
+	// as well.
 	for pkg, row := range boundaryTable {
 		allowed := []string{"strings", "example.org/module"}
 		for _, r := range row {
 			allowed = append(allowed, "/"+r)
 		}
-		expectFindings(t, ruleTable, boundarySample(t, map[string]string{
+		sources := map[string]string{
 			pkg + "/good.go":      boundarySource(allowed...),
 			pkg + "/bad.go":       boundarySource("/internal/journal"),
 			pkg + "/root.go":      boundarySource(boundaryModule),
 			pkg + "/bad_test.go":  boundarySource("/internal/journal"),
 			pkg + "/tagged.go":    boundaryTagged,
 			pkg + "/below/sub.go": boundarySource("/internal/journal"),
-		}), pkg+"/bad.go", pkg+"/root.go")
+		}
+		want := []string{pkg + "/bad.go", pkg + "/root.go"}
+		for i, r := range row {
+			name := pkg + "/sub" + strconv.Itoa(i) + ".go"
+			sources[name] = boundarySource("/" + r + "/below")
+			want = append(want, name)
+		}
+		expectFindings(t, ruleTable, boundarySample(t, sources), want...)
 	}
 	// The three packages that are built first import none of the others.
 	for _, pkg := range []string{pkgRecord, pkgLimits, pkgPresence} {
@@ -590,6 +827,8 @@ func TestConsoleFirstBoundaryPurePackages(t *testing.T) {
 			pkg + "/cgo.go":      boundarySource("C"),
 			pkg + "/bad_test.go": boundarySource("example.org/module"),
 			pkg + "/tagged.go":   boundaryTagged,
+			// The list names a package and not the packages below it.
+			pkg + "/below/module.go": boundarySource("example.org/module"),
 		}), pkg+"/module.go", pkg+"/x.go", pkg+"/cgo.go")
 	}
 	// A package that is not in the list may import a module.
@@ -627,17 +866,26 @@ func TestConsoleFirstBoundaryConsoleReach(t *testing.T) {
 		sources := map[string]string{
 			pkg + "/good.go": boundarySource(
 				"strings", "time", "network", "charm.land/bubbletea/v2", "/"+pkgCard, "/"+pkgRecord, "/"+pkgLimits,
-				"/"+pkgPresence, "/"+pkgLeadText, "/"+pkgPager),
+				"/"+pkgPresence, "/"+pkgLeadText, "/"+pkgSessionPlay),
 			pkg + "/bad_test.go": boundarySource(denied...),
 			pkg + "/tagged.go":   boundaryTagged,
+			// A package in between does not hide the sample backend, and
+			// one that uses the file package itself is no finding.
+			pkg + "/through.go":     boundarySource("/internal/between"),
+			pkg + "/quiet.go":       boundarySource("/internal/quiet"),
+			"internal/between/b.go": boundarySource("os", "/internal/quiet", "/internal/middle"),
+			"internal/middle/m.go":  boundarySource("/internal/between", "/"+pkgDemo),
+			"internal/quiet/q.go":   boundarySource("os", "net"),
 		}
-		var want []string
+		want := []string{pkg + "/through.go"}
 		for i, imp := range denied {
 			name := pkg + "/bad" + strconv.Itoa(i) + ".go"
 			sources[name] = boundarySource(imp)
 			want = append(want, name)
 		}
-		expectFindings(t, ruleConsoleReach, boundarySample(t, sources), want...)
+		files := boundarySample(t, sources)
+		expectFindings(t, ruleConsoleReach, files, want...)
+		expectWay(t, ruleConsoleReach(files), pkg+"/through.go", "internal/between -> internal/middle -> "+pkgDemo)
 	}
 	// The fixture tool may import os, and nothing else that is denied.
 	expectFindings(t, ruleConsoleReach, boundarySample(t, map[string]string{
@@ -686,14 +934,36 @@ func TestConsoleFirstBoundaryCommands(t *testing.T) {
 		"cmd/ataniqd/tagged.go":          boundaryTagged,
 		"cmd/later/below/a.go":           boundarySource("/" + pkgDoor + "/below"),
 		pkgOwnerChannel + "/a.go":        boundarySource("/"+pkgDoor, "/"+pkgOwnerJournal),
+		// A command reaches the service through two packages in between,
+		// which also import each other.
+		"cmd/ataniqd/through.go": boundarySource("strings", "/internal/between"),
+		"internal/between/b.go":  boundarySource("/internal/quiet", "/internal/middle"),
+		"internal/middle/m.go":   boundarySource("/internal/between", "/"+pkgOwnerChannel),
+		// A package whose test files and tagged files alone reach a package
+		// that acts is no finding, and neither is a ring of imports.
+		"cmd/ataniqd/quiet.go":       boundarySource("/internal/quiet", "/internal/ring"),
+		"internal/quiet/q.go":        boundarySource("os", "/"+pkgCard),
+		"internal/quiet/q_test.go":   boundarySource("/"+pkgDoorTest, "/"+pkgOwnerChannel),
+		"internal/quiet/tagged.go":   boundaryTagged,
+		"internal/ring/r.go":         boundarySource("/internal/ring/back"),
+		"internal/ring/back/back.go": boundarySource("/internal/ring"),
 	}
-	want := []string{"cmd/later/below/a.go"}
+	want := []string{"cmd/later/below/a.go", "cmd/ataniqd/through.go"}
 	for i, imp := range boundaryActing {
 		name := "cmd/ataniqd/bad" + strconv.Itoa(i) + ".go"
 		sources[name] = boundarySource("/" + imp)
 		want = append(want, name)
 	}
-	expectFindings(t, ruleCommands, boundarySample(t, sources), want...)
+	files := boundarySample(t, sources)
+	expectFindings(t, ruleCommands, files, want...)
+	expectWay(t, ruleCommands(files), "cmd/ataniqd/through.go",
+		"internal/between -> internal/middle -> "+pkgOwnerChannel)
+	// A direct import is named as before, without a way.
+	for _, finding := range ruleCommands(files) {
+		if strings.HasPrefix(finding, "cmd/ataniqd/bad0.go ") && !strings.HasSuffix(finding, ", which no command may import") {
+			t.Errorf("a direct import is reported as %q", finding)
+		}
+	}
 }
 
 func TestConsoleFirstBoundaryWords(t *testing.T) {
@@ -726,8 +996,10 @@ func TestConsoleFirstBoundaryWords(t *testing.T) {
 	}
 }
 
-// TestConsoleFirstBoundaryTaggedFiles checks which build lines name the owner
-// channel's tag. The import rules skip such a file; the word rule does not.
+// TestConsoleFirstBoundaryTaggedFiles checks which build lines need the owner
+// channel's tag. The import rules skip a file that cannot be built without it;
+// the word rule does not. A file that is built when the tag is off is read,
+// although its build line names the tag.
 func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 	for _, c := range []struct {
 		head   string
@@ -736,10 +1008,24 @@ func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 		{"", false},
 		{"//go:build linux\n\n", false},
 		{"//go:build " + boundaryTag + "\n\n", true},
-		{"//go:build !" + boundaryTag + "\n\n", true},
-		{"//go:build linux && (" + boundaryTag + " || other)\n\n", true},
+		{"//go:build !" + boundaryTag + "\n\n", false},
+		{"//go:build !linux || !" + boundaryTag + "\n\n", false},
+		{"//go:build linux && !" + boundaryTag + "\n\n", false},
+		{"//go:build linux && " + boundaryTag + "\n\n", true},
+		{"//go:build !(linux || !" + boundaryTag + ")\n\n", true},
+		{"//go:build linux && (" + boundaryTag + " || other)\n\n", false},
+		{"//go:build linux && (" + boundaryTag + " || (other && " + boundaryTag + "))\n\n", true},
+		{"//go:build " + boundaryTag + " || other\n\n", false},
 		{"// A comment.\n\n//go:build other && " + boundaryTag + "\n\n", true},
 		{"// +build linux," + boundaryTag + "\n\n", true},
+		{"// +build linux " + boundaryTag + "\n\n", false},
+		{"// +build !" + boundaryTag + "\n\n", false},
+		{"// +build linux\n// +build " + boundaryTag + "\n\n", true},
+		{"// +build " + boundaryTag + "\n// +build linux\n\n", true},
+		// A //go:build line decides alone, wherever it stands.
+		{"//go:build linux\n// +build " + boundaryTag + "\n\n", false},
+		{"// +build " + boundaryTag + "\n\n//go:build linux\n\n", false},
+		{"//go:build " + boundaryTag + "\n// +build linux\n\n", true},
 		{"//go:build " + boundaryTag + "_more\n\n", false},
 		{"//go:build more_" + boundaryTag + "\n\n", false},
 		{"// The tag " + boundaryTag + " is named in a comment only.\n\n", false},
@@ -767,9 +1053,11 @@ func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 
 // TestConsoleFirstBoundaryLoader checks, in a temporary folder, which files
 // the loader reads: test files and files of any build line are read, and only
-// the imports have to be valid Go.
+// the imports have to be valid Go. Under internal/approval every other file
+// is read too, for its text alone, and the word rule finds a word in it.
 func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	dir := t.TempDir()
+	word := boundaryWords[0]
 	for name, src := range map[string]string{
 		"cmd/sample/main.go":                    boundarySource("/"+pkgDoor) + "\nfunc main() { this is not Go\n",
 		"cmd/sample/main_test.go":               boundarySource("/" + pkgDoorTest),
@@ -784,6 +1072,16 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"build/a.go":                            "not Go at all\n",
 		"internal/build/a.go":                   boundarySource("strings"),
 		"internal/approval/card/third_party.go": boundarySource("strings"),
+		// Files the word rule alone reads. The Go file in testdata breaks
+		// the import rules as well, and they do not see it.
+		"internal/approval/card/testdata/vector.json":   "{\"model\": \"" + word + "-4\"}\n",
+		"internal/approval/card/testdata/sample.go":     "// Made for " + word + ".\n" + boundarySource("/"+pkgConsole, "example.org/module"),
+		"internal/approval/card/testdata/neutral.json":  "{\"model\": \"model-a\"}\n",
+		"internal/approval/card/testdata/below/deep.go": "not Go at all, and " + strings.ToUpper(word) + "\n",
+		"internal/approval/later/notes.txt":             "One.\nTwo " + word + ".\n",
+		"internal/approval/.hidden/a.txt":               word + "\n",
+		"internal/approvalx/testdata/vector.json":       word + "\n",
+		"internal/other/testdata/vector.json":           word + "\n",
 	} {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -803,6 +1101,9 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		if f.tagged {
 			mark += " tagged"
 		}
+		if f.textual {
+			mark += " text"
+		}
 		got = append(got, f.path+mark)
 	}
 	sort.Strings(got)
@@ -811,11 +1112,29 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"cmd/sample/main_test.go test",
 		"cmd/sample/other_windows.go",
 		"cmd/sample/tagged.go tagged",
+		"internal/approval/.hidden/a.txt text",
+		"internal/approval/card/testdata/below/deep.go text",
+		"internal/approval/card/testdata/neutral.json text",
+		"internal/approval/card/testdata/sample.go text",
+		"internal/approval/card/testdata/vector.json text",
 		"internal/approval/card/third_party.go",
+		"internal/approval/later/notes.txt text",
 		"internal/build/a.go",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("read %q, want %q", got, want)
 	}
 	expectFindings(t, ruleCommands, files, "cmd/sample/main.go", "cmd/sample/other_windows.go")
+	expectFindings(t, ruleWords, files,
+		"internal/approval/.hidden/a.txt", "internal/approval/card/testdata/below/deep.go",
+		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/vector.json",
+		"internal/approval/later/notes.txt")
+	// No import rule finds anything in a file that is kept for its text.
+	for _, rule := range []func([]boundaryFile) []string{ruleTable, rulePure, ruleApprovalHeadless} {
+		expectFindings(t, rule, files)
+	}
+	// A folder without internal/approval gives no text files.
+	if texts := loadBoundaryTexts(t, t.TempDir(), nil); len(texts) != 0 {
+		t.Errorf("read %d files in an empty folder", len(texts))
+	}
 }
