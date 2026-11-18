@@ -194,6 +194,17 @@ func (r *rig) footer() string { return strings.TrimRight(rowText(r.draw(), r.h-1
 // that fill a line's last row. A patch read this way must fill the screen.
 func (r *rig) readAll() []string {
 	r.t.Helper()
+	lines := r.readAllCells()
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return lines
+}
+
+// readAllCells reads as readAll does and returns every cell of every row of
+// a line, with the blanks that fill its rows.
+func (r *rig) readAllCells() []string {
+	r.t.Helper()
 	var rows []trow
 	for {
 		screen, before := r.patchRows(), r.m.top
@@ -211,9 +222,6 @@ func (r *rig) readAll() []string {
 		} else {
 			lines = append(lines, row.text)
 		}
-	}
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], " ")
 	}
 	return lines
 }
