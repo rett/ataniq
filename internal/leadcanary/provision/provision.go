@@ -60,6 +60,11 @@ var ErrNotEmpty = errors.New("provision: a folder that is there already is not e
 // ErrMirror is wrapped when the mirror is not usable.
 var ErrMirror = errors.New("provision: the mirror is not usable")
 
+// gitMetaTmpSuffix is what the mount point work adds to the git metadata
+// folder's name while it builds the folder. The mountpoints package keeps the
+// constant to itself and names the folder, gitmeta.tmp, in its package comment.
+const gitMetaTmpSuffix = ".tmp"
+
 // run is one provisioning.
 type run struct {
 	cfg  leadcanary.Config
@@ -268,6 +273,15 @@ func (r *run) preflight() error {
 	// that is there already would start the first epoch in replay mode.
 	if err := r.state.lookAbsent(r.p.stateRel(r.p.ReplaySwitch)); err != nil {
 		return err
+	}
+	// The git metadata folder and the temporary name it is built under, which
+	// the mount point work makes after the clone: nothing may be at either,
+	// a symbolic link included. The lead's folder is not required to be
+	// empty, so this look is what refuses an old copy.
+	for _, abs := range []string{r.p.GitMeta, r.p.GitMeta + gitMetaTmpSuffix} {
+		if err := r.state.lookAbsent(r.p.stateRel(abs)); err != nil {
+			return err
+		}
 	}
 	// The mount points in the home and the config folder, which the mount
 	// point work makes: a symbolic link there is refused now. Those in the

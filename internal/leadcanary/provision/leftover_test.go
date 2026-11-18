@@ -174,3 +174,24 @@ func TestAHomeThatHoldsOnlyTheEmptyReplayFolderIsRefusedToo(t *testing.T) {
 		t.Fatal("the refused run made something")
 	}
 }
+
+func TestAnOldGitMetadataFolderRefusesTheRunBeforeAnythingIsMade(t *testing.T) {
+	// The lead's own folder may hold other things, so the git metadata folder
+	// and the temporary name it is built under are looked at by name.
+	for _, suffix := range []string{"", gitMetaTmpSuffix} {
+		t.Run("gitmeta"+suffix, func(t *testing.T) {
+			w := provisiontest.New(t)
+			p := mustPaths(t, w)
+			old := p.GitMeta + suffix
+			mkdirs(t, w, old)
+			before := snapshot(t, w.State)
+			lines, err := provisionWorld(w)
+			if err == nil || !strings.Contains(err.Error(), old+": exists already") {
+				t.Fatalf("Provision: %v, want a refusal of %s\n%q", err, old, lines)
+			}
+			if len(lines) != 0 || snapshot(t, w.State) != before || exists(w.Runtime) {
+				t.Fatalf("the refused run made something\n%q", lines)
+			}
+		})
+	}
+}

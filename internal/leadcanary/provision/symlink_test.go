@@ -33,7 +33,7 @@ func madePaths(t *testing.T, w *provisiontest.World) []plantable {
 	}
 	var out []plantable
 	for _, d := range []string{
-		p.LeadsDir, p.LeadDir, p.Holder, p.Home, p.ConfigRoot, p.ConfigDir, p.Tree, p.GitMeta,
+		p.LeadsDir, p.LeadDir, p.Holder, p.Home, p.ConfigRoot, p.ConfigDir, p.Tree, p.GitMeta, p.GitMeta + gitMetaTmpSuffix,
 		p.Records, p.Requests, p.Mail, p.MailboxesDir, p.Mailbox, p.PublishedDir, p.Published,
 		p.LeadSkills, p.GitIdentityDir, p.QargiInstall, p.AssignmentDir, p.ProjectionDir, p.ReplayDir,
 	} {
@@ -100,9 +100,21 @@ func TestAPlantedSymlinkAtAnyMadePathRefusesTheRun(t *testing.T) {
 			if err := os.Symlink(outside, target); err != nil {
 				t.Fatal(err)
 			}
+			// Everything of the world: the state root, the runtime root if the
+			// link is in it, and what the link points at.
+			before := snapshot(t, w.Dir)
 			lines, err := provisionWorld(w)
 			if err == nil {
 				t.Fatalf("a symbolic link at %s did not refuse the run\n%q", target, lines)
+			}
+			// The refusal came before anything was written: the state root and
+			// everything beside it are as they were, and nothing was reported
+			// as made.
+			if after := snapshot(t, w.Dir); after != before {
+				t.Errorf("the refused run changed something:\n%s", strings.Join(lineDiff(before, after), "\n"))
+			}
+			if len(lines) != 0 {
+				t.Errorf("the refused run reported work: %q", lines)
 			}
 			marker := mustPaths(t, w).Marker
 			if target != marker && !strings.Contains(err.Error(), "symbolic link") {

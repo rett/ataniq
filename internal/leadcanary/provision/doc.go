@@ -32,9 +32,11 @@
 //     holder.json, final.json or lead-has-run there), and so must the holder's
 //     runtime folder;
 //  5. looks at every path it will make: a symbolic link at any of them, or a
-//     file where it would make one, refuses the run. So does the replay switch
-//     file, which only [ReplayOn] writes, and a folder that is there already
-//     and holds something ([ErrNotEmpty]): a folder is kept only when it is
+//     file where it would make one, refuses the run. The git metadata copy
+//     and the temporary name it is built under are among them, and nothing
+//     may be at either. The replay switch file, which only [ReplayOn] writes,
+//     refuses the run too, and so does a folder that is there already and
+//     holds something ([ErrNotEmpty]): a folder is kept only when it is
 //     empty, the tree included. The exceptions are the folders that hold
 //     other things by design: leads, the lead's own folder, mailbox, pub and
 //     mirrors.
