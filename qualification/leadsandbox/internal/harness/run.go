@@ -765,8 +765,9 @@ func (a *attempt) planWalks() map[string]plan.Walk {
 }
 
 // checkBindSources is the last check before the launch (rule G1): the path
-// bound for every row of the plan is opened from the root of the file system
-// without following a link, and a link anywhere on a path, a missing source
+// bound for every row of the plan is walked to without following a link (a
+// source below the state root beneath the state root's handle, any other from
+// the root of the file system), and a link anywhere on a path, a missing source
 // and a source of another type than its row binds refuse the launch. It comes
 // after the second resolution and nothing that runs a lead process lies
 // between it and the launch. For a source Ataniq supplies it is a check before

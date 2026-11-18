@@ -281,12 +281,16 @@ type BindSourceFact struct {
 	WalkRoot   string `json:"walk_root,omitempty"`
 	WalkRel    string `json:"walk_rel,omitempty"`
 	WalkType   string `json:"walk_type,omitempty"`
-	// NoSymbolicLinkComponent is the fact: the check opened the path from the
-	// root of the file system without following a link, and no component of it,
-	// the last included, is one. False says it is (Problem says where, or what
-	// else was found). Absent when the report of the check was cut short and
-	// does not say, and when the check found another problem, which says
-	// nothing about links.
+	// NoSymbolicLinkComponent is the fact: the check walked to the path without
+	// following a link in any component, and no component of it, the last
+	// included, is one. A source below the state root is walked beneath the
+	// state root's handle (the state root's own path is looked up from the root
+	// of the file system without following a link); any other source from the
+	// root of the file system. False says a component is a link (Problem says
+	// where). Absent when the check found another problem (a missing source, a
+	// source it could not read, or one of the wrong type: the walk stopped
+	// there, or never reached the type), which says nothing about links, and
+	// when the report of the check was cut short and does not say.
 	NoSymbolicLinkComponent *bool `json:"no_symbolic_link_component,omitempty"`
 	// HasExpectedType is the fact about the type of a source Ataniq supplies,
 	// read by the check from the descriptor it opened: true when the source is
