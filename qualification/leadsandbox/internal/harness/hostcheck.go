@@ -225,10 +225,10 @@ func onlyEntry(field, dir, name string) error {
 // confirmed offline when this was written. If the release is another one, this
 // constant is the one place to change. A bubblewrap that is older than this
 // and does have the options is refused wrongly; one that is at least this and
-// lacks them is launched, refuses the plan's arguments as unknown options and
-// starts nothing, which the evidence then shows as a first process that exited
-// before a report: the plan has no form that binds such a source by path, so
-// nothing weaker is started in either case.
+// lacks them is launched, and is expected to refuse the plan's arguments as
+// unknown options and to start nothing (not observed). The plan has no form
+// that binds such a source by path, so no weaker plan is started in either
+// case.
 const MinBwrapBindFD = "0.10.0"
 
 // parseBwrapVersion reads the release out of the first line bubblewrap prints
@@ -262,12 +262,12 @@ func parseBwrapVersion(line string) (v [3]int, ok bool) {
 // plan can be launched with it. A release older than [MinBwrapBindFD] is
 // refused with an error. A line that does not give a release decides nothing:
 // the note says so, and the launch goes on, where a bubblewrap without the
-// options refuses the plan's arguments itself.
+// options is expected to refuse the plan's arguments itself.
 func checkBwrapBindFD(line string) (note string, err error) {
 	min, _ := parseBwrapVersion("bubblewrap " + MinBwrapBindFD)
 	got, ok := parseBwrapVersion(line)
 	if !ok {
-		return fmt.Sprintf("the release of bubblewrap could not be read from its version line, so it is not known whether it has --bind-fd and --ro-bind-fd (release %s is assumed to be the first that has them): a bubblewrap without them refuses the plan's arguments and starts nothing", MinBwrapBindFD), nil
+		return fmt.Sprintf("the release of bubblewrap could not be read from its version line, so it is not known whether it has --bind-fd and --ro-bind-fd (release %s is assumed to be the first that has them): a bubblewrap without them is expected to refuse the plan's arguments and to start nothing, which has not been observed", MinBwrapBindFD), nil
 	}
 	for i := range got {
 		if got[i] != min[i] {

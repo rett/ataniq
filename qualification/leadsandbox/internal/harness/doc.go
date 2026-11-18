@@ -86,20 +86,24 @@
 // What these facts are about is the plan and the harness's check before the
 // launch. The walk that counts is made by the pass-through step after the
 // launch, and the harness does not see it: a source it refuses ends the step
-// with status 96 before bubblewrap starts, which the evidence shows as a
-// first process that exited before a report. Whether bubblewrap mounts the
-// object behind a descriptor, and closes the descriptor before the command
-// inside starts, is a qualification item that nothing here records
-// [qualify].
+// with status 96 before bubblewrap starts (the probe's tests show that much).
+// What the evidence of a real run then holds has not been observed: no report
+// line can come, so the expectation is a first process that exited before a
+// report, and how pasta passes the step's status on is not known here.
+// Whether bubblewrap mounts the object behind a descriptor, and closes the
+// descriptor before the command inside starts, is a qualification item that
+// nothing here records [qualify].
 //
 // bubblewrap must have the two options. The harness reads the release from the
 // version line the tool prints (the step tool-versions, in a run) and ends the
 // run when it is older than [MinBwrapBindFD], which is an assumption about the
 // release that brought the options, to be confirmed at qualification. A version
 // line that gives no release decides nothing: a note in summary.json says so
-// and the run goes on, and a bubblewrap without the options then refuses the
-// plan's arguments and starts nothing. A dry run asks no tool and decides
-// nothing about it.
+// and the run goes on. A bubblewrap without the options is then expected to
+// refuse the plan's arguments as unknown and to start nothing; that has not
+// been observed, and the plan has no form that binds such a source by path
+// whatever bubblewrap does. A dry run asks no tool and decides nothing about
+// it.
 //
 // The harness never judges the probe's report: the report's own statuses are
 // the record. A failed or refused report, a report that never comes and a

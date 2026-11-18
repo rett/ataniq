@@ -260,9 +260,9 @@ func TestSourceWalkRefusals(t *testing.T) {
 			setWalk(o, "/ataniq/probe", func(w *SourceWalk) { w.Root, w.Rel = "/opt/ataniq/bin/probe", "." })
 		}, "path of the walk of /ataniq/probe", "names the folder and not a file"},
 		{"a walk that starts in a folder the lead writes", func(o *Options) {
-			// A source cannot lie there (rule G1), so the walk is given the
-			// folder alone: it would be opened by a name the lead's parent
-			// folder holds, which is fine, but from inside the tree is not.
+			// The walk of the tree, started from the tree itself: it leads to
+			// the row's source, and its folder is one the lead writes. A walk
+			// starts from a folder no sandbox can write (here the state root).
 			setWalk(o, "/work/demo", func(w *SourceWalk) { w.Root, w.Rel = "/state/leads/arc-lead/tree", "." })
 		}, "source walks", "a folder the lead can write"},
 	} {
