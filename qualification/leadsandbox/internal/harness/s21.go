@@ -24,7 +24,8 @@ const CaseS21 = "S21"
 
 // PlantAsideSuffix is appended to the name of an entry the case sets aside
 // while it plants another in its place, in the same folder. The case refuses
-// to plant at a path whose set-aside name is taken.
+// to plant at a path whose set-aside name is taken: after a crash in the middle
+// of a plant, that entry is the original.
 const PlantAsideSuffix = ".ataniq-s21-aside"
 
 // The kinds of plant. A symbolic link points outside the scratch folders; a
@@ -141,7 +142,7 @@ const plantContent = "planted by the harness, case S21\n"
 func (e *entryPlant) plant(kind string, dir bool, linkTarget string) error {
 	switch _, err := e.root.Lstat(e.aside); {
 	case err == nil:
-		return fmt.Errorf("an entry named %s%s already exists beside %s: a case that did not finish left it, remove it first", e.name, PlantAsideSuffix, e.host)
+		return fmt.Errorf("an entry named %s%s already exists beside %s: it is the original entry, which a case that did not finish set aside; if what is at %s is a plant, remove it, and rename %s%s back to %s", e.name, PlantAsideSuffix, e.host, e.host, e.name, PlantAsideSuffix, e.name)
 	case !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("look at %s%s: %w", e.name, PlantAsideSuffix, err)
 	}
@@ -361,11 +362,12 @@ func (a *attempt) otherRuntimeInputs() (profile.Inputs, error) {
 //
 // The start of the configured runtime is checked as a whole; the start of the
 // other runtime (Q24(a): S21 holds across a runtime switch) by the walk alone,
-// at the paths the configuration names the folder of: the .git paths and the
-// config folder's place in the home, which both runtimes have. The places in
-// the other runtime's own config folder are not covered: nothing in the
-// configuration names that folder, so they need a second run with the other
-// runtime's configuration.
+// at the paths in the folders the walk of the configured runtime names: the
+// .git paths and the config folder's place in the home, which both runtimes
+// have. The places in the other runtime's own config folder are not covered:
+// this run neither prepares nor writes in that folder (the layout derives it,
+// and the case plants only in the folders the configured runtime's walk names),
+// so they need a second run with the other runtime's configuration.
 func (a *attempt) plantedPaths(ctx context.Context) error {
 	ev := &PlantedPathsEvidence{Plants: []PlantFact{}, NotCovered: []PlantNotCovered{}}
 	a.planted = ev
@@ -436,7 +438,8 @@ func (a *attempt) plantedPaths(ctx context.Context) error {
 
 // otherRuntimeItems makes the items of the other runtime's start: the paths its
 // walk looks at that lie in a folder the configured runtime's walk also looks
-// at. Any other is recorded as not covered, with the reason.
+// at. Any other is recorded as not covered, with the reason: this run neither
+// prepares nor writes in that folder, so nothing is planted there.
 func (a *attempt) otherRuntimeItems(ev *PlantedPathsEvidence, roots map[string]bool) []plantItem {
 	other := a.in.Runtime.Other()
 	ev.OtherRuntime = string(other)
@@ -459,7 +462,7 @@ func (a *attempt) otherRuntimeItems(ev *PlantedPathsEvidence, roots map[string]b
 	var items []plantItem
 	for _, t := range targets {
 		if !roots[t.rootDir] {
-			ev.NotCovered = append(ev.NotCovered, PlantNotCovered{Runtime: string(other), Inside: t.inside, Path: t.host, Reason: "lies in " + t.rootDir + ", a folder the configuration does not name for the configured runtime: it " + needs})
+			ev.NotCovered = append(ev.NotCovered, PlantNotCovered{Runtime: string(other), Inside: t.inside, Path: t.host, Reason: "lies in " + t.rootDir + ", a folder this run neither prepares nor writes in (it plants only in the folders the walk of the configured runtime names): it " + needs})
 			continue
 		}
 		for _, k := range []string{PlantSymlink, PlantWrongType} {

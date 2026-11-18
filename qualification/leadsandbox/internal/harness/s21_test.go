@@ -291,11 +291,11 @@ func TestS21ChecksTheStartOfTheOtherRuntime(t *testing.T) {
 				t.Errorf("the config folder's place in the home (%s) is not planted for the other runtime: %v", other, byPath)
 			}
 			// The other runtime's skills and instruction places are in its own
-			// config folder, which the configuration does not name.
+			// config folder, where this run neither prepares nor writes.
 			skills, instr := 0, 0
 			cfgDir, _ := f.Layout().ConfigDir(other)
 			for _, nc := range pe.NotCovered {
-				if nc.Runtime != string(other) || !strings.Contains(nc.Reason, "second run with the other runtime's configuration") {
+				if nc.Runtime != string(other) || !strings.Contains(nc.Reason, "second run with the other runtime's configuration") || !strings.Contains(nc.Reason, "neither prepares nor writes") || strings.Contains(nc.Reason, "does not name") {
 					t.Errorf("not covered: %+v", nc)
 				}
 				switch nc.Path {
@@ -528,6 +528,16 @@ func TestS21APathThatCannotBePlantedIsNotChecked(t *testing.T) {
 			notChecked++
 			if p.Status != assert.StatusNotChecked || p.Planted || p.StartRefused != nil || !strings.Contains(p.Detail, "not planted") || !strings.Contains(p.Detail, "already exists") {
 				t.Errorf("%+v", p)
+			}
+			// The entry at the set-aside name is the original, not a leftover to
+			// delete: the detail says so, and how to put it back.
+			for _, w := range []string{"it is the original entry", "if what is at " + p.Path + " is a plant, remove it", "rename .git" + harness.PlantAsideSuffix + " back to .git"} {
+				if !strings.Contains(p.Detail, w) {
+					t.Errorf("the detail %q does not say %q", p.Detail, w)
+				}
+			}
+			if strings.Contains(p.Detail, "remove it first") {
+				t.Errorf("the detail tells to remove the original: %q", p.Detail)
 			}
 		} else if p.Status != assert.StatusOK {
 			t.Errorf("another path is not ok: %+v", p)
