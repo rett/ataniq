@@ -15,4 +15,6 @@
   and that nothing sets `ready`. No contract text changes.
   The maturity section of `README.md` describes the tree without naming a
   release; it named 0.0.8.
+  `docs/terminal-console.md` says of `--attach` that the mode is not managed
+  by the daemon, where it said that there is no daemon.
   Documentation only.
