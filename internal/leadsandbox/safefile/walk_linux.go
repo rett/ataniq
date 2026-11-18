@@ -190,7 +190,9 @@ func (h *Handle) Info() (Info, error) {
 // descriptor: the number is valid until Close, so the caller keeps the Handle
 // open until the child has it, and neither closes the number itself nor wraps
 // it in something that would (an os.File from os.NewFile closes it when the
-// file is closed or collected; duplicate the descriptor first).
+// file is closed or collected; duplicate the descriptor first). A caller that
+// wants a descriptor of its own, which no Close of the Handle can invalidate,
+// takes [Handle.Dup].
 func (h *Handle) Fd() (int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -198,6 +200,43 @@ func (h *Handle) Fd() (int, error) {
 		return -1, &Error{Op: "handle", Path: h.rel, Err: ErrClosed}
 	}
 	return h.fd, nil
+}
+
+// minDupFD is the lowest number [Handle.Dup] gives: above the standard
+// streams, so that a duplicate never becomes descriptor 0, 1 or 2 of a
+// process that has closed one of them.
+const minDupFD = 3
+
+// Dup returns a duplicate of the descriptor that the caller owns: a new
+// number (the lowest free one from 3 up) that names the same opened object,
+// is an O_PATH descriptor like the Handle's own and is close-on-exec. It is
+// for a caller that hands the object on (a bind source placed at a number a
+// child process inherits). The caller closes the duplicate, or moves it
+// (dup3) and clears close-on-exec for the one program that is to inherit it;
+// closing the Handle does not close it, and closing it does not close the
+// Handle. After Close it returns [ErrClosed].
+//
+// Unlike the number [Handle.Fd] returns, the duplicate cannot be invalidated
+// by a Close of the Handle in another goroutine: it is made under the
+// Handle's lock (F_DUPFD_CLOEXEC, so no other thread's exec sees it without
+// the flag) and from then on is the caller's alone.
+func (h *Handle) Dup() (int, error) {
+	const op = "handle"
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.opened || h.closed {
+		return -1, &Error{Op: op, Path: h.rel, Err: ErrClosed}
+	}
+	for {
+		fd, err := unix.FcntlInt(uintptr(h.fd), unix.F_DUPFD_CLOEXEC, minDupFD)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return -1, &Error{Op: op, Path: h.rel, Err: err}
+		}
+		return fd, nil
+	}
 }
 
 // Close releases the descriptor. A second Close, and Close on a zero Handle,
