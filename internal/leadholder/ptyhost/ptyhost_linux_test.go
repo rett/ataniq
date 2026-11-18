@@ -36,8 +36,16 @@ import (
 	"ataniq/internal/leadholder/fakeagent"
 )
 
+// TestMain makes the test binary the fake agent when it is started as one. In
+// the test process it then marks every descriptor from 3 close-on-exec, as the
+// holder does at its start: a process that runs the tests may hold descriptors
+// it inherited (the job server of make, for one), and they must not reach a
+// child that a test starts.
 func TestMain(m *testing.M) {
 	fakeagent.RunIfChild()
+	if err := CloseOnExecFrom(3); err != nil {
+		panic(err)
+	}
 	os.Exit(m.Run())
 }
 
