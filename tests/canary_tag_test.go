@@ -80,17 +80,20 @@ func underAnyPath(p string, folders []string) bool {
 // the lines before the package clause, and the constraint lines that do not
 // parse.
 func headerConstraints(data string) ([]constraint.Expr, []string) {
-	all, _, bad := headerConstraintsGo(data)
+	all, _, _, bad := headerConstraintsGo(data)
 	return all, bad
 }
 
 // headerConstraintsGo also returns the constraints the go command applies: the
 // go:build line alone when the file has one, and the plus build lines
-// otherwise. Placement uses every line that names the tag, which is the
-// conservative reading, and requirement uses the applied constraints.
-func headerConstraintsGo(data string) (all, applied []constraint.Expr, bad []string) {
-	var goBuild, plusBuild []constraint.Expr
-	inBlock := false
+// otherwise, where a plus build line counts only when a blank line follows it
+// before anything else and no block comment comes before it. It reports
+// whether the file has a go:build line. Placement uses every line that names
+// the tag, which is the conservative reading, and requirement uses the applied
+// constraints.
+func headerConstraintsGo(data string) (all, applied []constraint.Expr, hasGoBuild bool, bad []string) {
+	var goBuild, plusBuild, pending []constraint.Expr
+	inBlock, ended := false, false
 	for _, line := range strings.Split(data, "\n") {
 		s := strings.TrimSpace(line)
 		if inBlock {
@@ -100,9 +103,14 @@ func headerConstraintsGo(data string) (all, applied []constraint.Expr, bad []str
 			continue
 		}
 		if s == "" {
+			if !ended {
+				plusBuild = append(plusBuild, pending...)
+				pending = nil
+			}
 			continue
 		}
 		if strings.HasPrefix(s, "/*") {
+			ended = true
 			inBlock = !strings.Contains(s[2:], "*/")
 			continue
 		}
@@ -119,7 +127,7 @@ func headerConstraintsGo(data string) (all, applied []constraint.Expr, bad []str
 			if constraint.IsGoBuild(s) {
 				goBuild = append(goBuild, expr)
 			} else {
-				plusBuild = append(plusBuild, expr)
+				pending = append(pending, expr)
 			}
 		}
 	}
@@ -127,9 +135,9 @@ func headerConstraintsGo(data string) (all, applied []constraint.Expr, bad []str
 		bad = append(bad, "more than one go:build line, one of which names "+canaryTag)
 	}
 	if len(goBuild) > 0 {
-		return all, goBuild, bad
+		return all, goBuild, true, bad
 	}
-	return all, plusBuild, bad
+	return all, plusBuild, false, bad
 }
 
 func exprNamesTag(e constraint.Expr) bool {
@@ -167,7 +175,8 @@ func skipCanaryDir(p, name string) bool {
 
 // checkCanaryPlacement is check (1): a Go file whose constraint names the tag
 // lies under canaryAllowedPaths, and every Go file of a wholly tagged package
-// carries the tag, that is, is not built without it.
+// carries a go:build line that needs the tag, that is, is not built without
+// it. A plus build line alone does not satisfy the second rule.
 func checkCanaryPlacement(fsys fs.FS) []string {
 	var problems []string
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
@@ -187,7 +196,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 		if err != nil {
 			return err
 		}
-		exprs, applied, bad := headerConstraintsGo(string(data))
+		exprs, applied, hasGoBuild, bad := headerConstraintsGo(string(data))
 		for _, line := range bad {
 			if strings.Contains(line, canaryTag) {
 				problems = append(problems, fmt.Sprintf("%s: unreadable build constraint %q", p, line))
@@ -197,7 +206,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 		if named && !underAnyPath(p, canaryAllowedPaths) {
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
 		}
-		if underAnyPath(p, canaryWholePaths) && (!named || buildsWithoutTag(applied)) {
+		if underAnyPath(p, canaryWholePaths) && (!hasGoBuild || !named || buildsWithoutTag(applied)) {
 			problems = append(problems, fmt.Sprintf("%s: a file of a wholly tagged package does not require %s", p, canaryTag))
 		}
 		return nil
@@ -850,11 +859,27 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 			"internal/leadcanary/a.go":          goSource(hdrPlain + "\n" + hdrPlusTagged),
 			"internal/leadcanary/b.go":          goSource(hdrTagged + "\n" + hdrPlusPlain),
 		}, []string{"cmd/ataniq-canary-standin/main.go", "internal/leadcanary/a.go"}},
+		// Outside the wholly tagged paths a plus build line alone is applied; in
+		// them a file must carry a go:build line that needs the tag.
 		{"a plus build line alone is applied", fstest.MapFS{
-			"internal/leadcanary/a.go":       goSource(hdrPlusTagged),
-			"internal/leadcanary/b.go":       goSource(hdrPlusPlain),
+			"internal/leaddaemon/a.go":       goSource(hdrPlusTagged),
+			"internal/leaddaemon/b.go":       goSource(hdrPlusPlain),
 			"internal/leadholder/serve/c.go": goSource(hdrPlusPlain),
-		}, []string{"internal/leadcanary/b.go"}},
+		}, nil},
+		{"a plus build line alone in a wholly tagged package", fstest.MapFS{
+			"internal/leadcanary/a.go":          goSource(hdrPlusTagged),
+			"internal/leadcanary/b.go":          goSource(hdrPlusPlain),
+			"cmd/ataniq-canary-standin/main.go": goSource(hdrPlusTagged),
+			"internal/leadcanary/c.go":          goSource(hdrTagged),
+		}, []string{"cmd/ataniq-canary-standin/main.go", "internal/leadcanary/a.go", "internal/leadcanary/b.go"}},
+		// The go command reads a plus build line only when a blank line follows
+		// it and no block comment comes before it, and in these packages a plus
+		// build line is not enough either way.
+		{"a plus build line that the go command does not read in a wholly tagged package", fstest.MapFS{
+			"internal/leadcanary/a.go":          &fstest.MapFile{Data: []byte(hdrPlusTagged + "\npackage a\n")},
+			"internal/leadcanary/b.go":          &fstest.MapFile{Data: []byte("/* license */\n" + hdrPlusTagged + "\n\npackage a\n")},
+			"cmd/ataniq-canary-standin/main.go": &fstest.MapFile{Data: []byte(hdrPlusTagged + "\npackage main\n")},
+		}, []string{"cmd/ataniq-canary-standin/main.go", "internal/leadcanary/a.go", "internal/leadcanary/b.go"}},
 		{"two go:build lines, one naming the tag", fstest.MapFS{
 			"internal/leadcanary/a.go": goSource(hdrTagged + "\n" + hdrPlain),
 			"internal/leadcanary/b.go": goSource(hdrPlain + "\n" + hdrPlain),
@@ -902,6 +927,41 @@ test-canary: doctor
 canary-build: doctor
 	@sh scripts/go-tool.sh build -tags ataniq_canary ./cmd/ataniq-canary
 `
+
+// The go command applies a plus build line only when a blank line follows it
+// before anything else and no block comment comes before it. Placement still
+// reads every line that names the tag, and the applied list is what a file is
+// built by.
+func TestCanaryTagHeaderConstraints(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		data       string
+		all        int
+		applied    int
+		hasGoBuild bool
+	}{
+		{"a plus build line, a blank line, the package", hdrPlusTagged + "\n\npackage a\n", 1, 1, false},
+		{"a plus build line then the package", hdrPlusTagged + "\npackage a\n", 1, 0, false},
+		{"a plus build line, a blank line, a doc comment", hdrPlusTagged + "\n\n// Package a.\npackage a\n", 1, 1, false},
+		{"a plus build line then a comment then a blank line", hdrPlusTagged + "\n// A comment.\n\npackage a\n", 1, 1, false},
+		{"a plus build line after a line comment", "// A comment.\n" + hdrPlusTagged + "\n\npackage a\n", 1, 1, false},
+		{"a block comment before a plus build line", "/* license */\n" + hdrPlusTagged + "\n\npackage a\n", 1, 0, false},
+		{"a multi-line block comment before a plus build line", "/* license\n*/\n" + hdrPlusTagged + "\n\npackage a\n", 1, 0, false},
+		{"a plus build line, a blank line, a block comment", hdrPlusTagged + "\n\n/* license */\npackage a\n", 1, 1, false},
+		{"a plus build line then a block comment", hdrPlusTagged + "\n/* license */\n\npackage a\n", 1, 0, false},
+		{"a tab after the plus build line", "// +build\tlinux,ataniq_canary\n\npackage a\n", 1, 1, false},
+		{"a go:build line needs no blank line", hdrTagged + "\npackage a\n", 1, 1, true},
+		{"a go:build line wins over a plus build line", hdrPlain + "\n" + hdrPlusTagged + "\n\npackage a\n", 2, 1, true},
+		{"no constraint", "package a\n", 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			all, applied, hasGoBuild, bad := headerConstraintsGo(tc.data)
+			if len(all) != tc.all || len(applied) != tc.applied || hasGoBuild != tc.hasGoBuild || len(bad) != 0 {
+				t.Fatalf("all %d, applied %d, go:build %v, bad %v; want %d, %d, %v", len(all), len(applied), hasGoBuild, bad, tc.all, tc.applied, tc.hasGoBuild)
+			}
+		})
+	}
+}
 
 func TestCanaryTagMakefileCheck(t *testing.T) {
 	for _, tc := range []struct {
