@@ -86,6 +86,39 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 
 func (l *limitedBuffer) String() string { return l.b.String() }
 
+// stageError is a failure of one stage of Commit. Reason is a fixed text
+// that holds nothing of the message, the tree or git's own output, so that it
+// can be written to a file; the error's own text may.
+type stageError struct {
+	reason string
+	err    error
+}
+
+func (e *stageError) Error() string { return e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
+// The fixed reasons of a failed commit, which is all result.txt says of it.
+const (
+	reasonToken   = "not a valid token"
+	reasonTree    = "no working tree"
+	reasonBranch  = "branch"
+	reasonFile    = "token file"
+	reasonAdd     = "git add"
+	reasonCommit  = "git commit"
+	reasonUnknown = "commit"
+)
+
+// failReason returns the fixed reason of a Commit error.
+func failReason(err error) string {
+	var se *stageError
+	if errors.As(err, &se) {
+		return se.reason
+	}
+	return reasonUnknown
+}
+
+func stage(reason string, err error) error { return &stageError{reason, err} }
+
 // Commit writes token and one LF to TokenFile at the top of the working tree
 // that holds dir, and commits the file on Branch with the subject Subject. The
 // branch is made from the current commit when it does not exist, and switched
@@ -95,33 +128,45 @@ func (l *limitedBuffer) String() string { return l.b.String() }
 // for it. An empty commit is allowed, so a token that is already in the file
 // is committed again. home is the HOME of git's environment.
 func Commit(dir, home, token string) error {
+	_, err := commitTree(dir, home, token)
+	return err
+}
+
+// commitTree is Commit; it also returns the short name of the new commit.
+func commitTree(dir, home, token string) (string, error) {
 	if !ValidToken(token) {
-		return errors.New("standin: not a valid token")
+		return "", stage(reasonToken, errors.New("standin: not a valid token"))
 	}
 	top, err := git(dir, home, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return err
+		return "", stage(reasonTree, err)
 	}
 	top = strings.TrimRight(top, "\n")
 	if !filepath.IsAbs(top) {
-		return fmt.Errorf("standin: git names the top of the tree as %q", top)
+		return "", stage(reasonTree, fmt.Errorf("standin: git names the top of the tree as %q", top))
 	}
 	if _, err := git(top, home, "rev-parse", "--verify", "--quiet", "refs/heads/"+Branch); err == nil {
 		_, err = git(top, home, "switch", Branch)
 		if err != nil {
-			return err
+			return "", stage(reasonBranch, err)
 		}
 	} else if _, err = git(top, home, "switch", "--create", Branch); err != nil {
-		return err
+		return "", stage(reasonBranch, err)
 	}
 	if err := writeRegular(filepath.Join(top, TokenFile), token+"\n", 0o644); err != nil {
-		return err
+		return "", stage(reasonFile, err)
 	}
 	if _, err := git(top, home, "add", "--", TokenFile); err != nil {
-		return err
+		return "", stage(reasonAdd, err)
 	}
-	_, err = git(top, home, "commit", "--no-verify", "--allow-empty", "--message", Subject, "--", TokenFile)
-	return err
+	if _, err := git(top, home, "commit", "--no-verify", "--allow-empty", "--message", Subject, "--", TokenFile); err != nil {
+		return "", stage(reasonCommit, err)
+	}
+	short, err := git(top, home, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return "", stage(reasonCommit, err)
+	}
+	return strings.TrimSpace(short), nil
 }
 
 // writeRegular replaces the content of the file at path with s, making it

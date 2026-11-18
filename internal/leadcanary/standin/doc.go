@@ -29,11 +29,14 @@
 // it reads from the folder (1.json and 2.json, each with its text), asks the
 // terminal the OSC 7501 support query and a DA1 query, records which reply
 // came first in order.txt ("no-7501-reply" when none came within the wait,
-// and replaced by the true order if one comes later), writes one idle report
-// when the support query is answered, draws the second screen after a bracketed paste and, when a
-// carriage return follows the paste, commits as plain mode does. The report's
-// payload, and so the name of the application in it, comes from the optional
-// file report.txt.
+// replaced by the true order if one comes later), writes one idle report when
+// the support query is answered, draws the second screen after a bracketed
+// paste and, when a carriage return follows the paste, commits as plain mode
+// does. It records each commit it tries in result.txt, one line: "committed"
+// and the short hash, or "failed:" and one of a few fixed reasons. The
+// report's payload, and so the name of the application in it, comes from the
+// optional file report.txt. The files it writes are written without following
+// a link, and are refused when they are not regular files.
 //
 // # Terminal
 //

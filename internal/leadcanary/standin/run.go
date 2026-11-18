@@ -31,6 +31,10 @@ const (
 	ReportFile = "report.txt"
 	// OrderFile is what the stand-in writes: which reply came first.
 	OrderFile = "order.txt"
+	// ResultFile is what replay mode writes after each commit it tries: one
+	// line, "committed <short hash>" or "failed: <reason>". The reason is one
+	// of a few fixed texts and holds nothing of the message or of git's output.
+	ResultFile = "result.txt"
 )
 
 // The lines of OrderFile.
@@ -240,35 +244,42 @@ func (l *loop) handle(ev event) error {
 			l.write(echo(ev.data))
 		}
 	case evCR:
-		l.submit()
+		return l.submit()
 	}
 	return nil
 }
 
 // submit handles a carriage return: a pending paste is a submitted message.
-func (l *loop) submit() {
+// It returns an error when replay mode cannot write its result.
+func (l *loop) submit() error {
 	p := l.pending
 	l.pending = nil
 	if p == nil {
 		if l.rp == nil {
 			l.write([]byte("\r\n" + prompt))
 		}
-		return
+		return nil
 	}
-	var result string
-	switch {
-	case !p.ok:
-		result = "no token"
-	default:
-		if err := Commit(l.c.Dir, l.c.Home, p.token); err != nil {
+	result := "no token"
+	var line string // what replay mode records, when it tried a commit
+	if p.ok {
+		hash, err := commitTree(l.c.Dir, l.c.Home, p.token)
+		if err != nil {
 			result = "commit failed: " + string(echo([]byte(err.Error())))
+			line = "failed: " + failReason(err)
 		} else {
 			result = "committed " + Branch
+			line = "committed " + hash
 		}
 	}
-	if l.rp == nil {
-		l.write([]byte("\r\n" + result + "\r\n" + prompt))
+	if l.rp != nil {
+		if line != "" {
+			return l.rp.result(line)
+		}
+		return nil
 	}
+	l.write([]byte("\r\n" + result + "\r\n" + prompt))
+	return nil
 }
 
 // echo makes bytes safe to show: line breaks become CR LF, any other control
@@ -397,4 +408,10 @@ func (r *replay) decide(order string) error {
 	r.decided = true
 	r.noReply = order == OrderNo7501Reply
 	return writeRegular(filepath.Join(r.dir, OrderFile), order+"\n", 0o600)
+}
+
+// result records the outcome of a commit in ResultFile, replacing the line of
+// an earlier one.
+func (r *replay) result(line string) error {
+	return writeRegular(filepath.Join(r.dir, ResultFile), line+"\n", 0o600)
 }
