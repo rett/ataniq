@@ -29,7 +29,10 @@ type CountInput struct {
 // no binary file, no symbolic link, no mode change, no submodule, a clean
 // check record, and a summary that is not truncated.
 //
-// DefaultFirstTerms is the one place where the numbers stand.
+// DefaultFirstTerms is the one place where the numbers stand. The zero value,
+// FirstTerms{}, does not hold them: it allows no file, no changed line and no
+// new byte, so every change that has one does not meet it. To count against
+// the numbers of this build, call Count, or DefaultFirstTerms().Count.
 type FirstTerms struct {
 	MaxFiles        int
 	MaxChangedLines int

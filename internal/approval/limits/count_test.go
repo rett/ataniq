@@ -51,8 +51,13 @@ func TestCountNotMet(t *testing.T) {
 		{"no clean check record", func(in *CountInput) { in.SuiteClean = false }, "the check record is not clean"},
 		{"truncated", func(in *CountInput) { in.Truncated = true }, "the summary is truncated"},
 		{"negative files", func(in *CountInput) { in.Files = -1 }, "a negative number in the summary"},
+		{"negative changed lines", func(in *CountInput) { in.ChangedLines = -1 }, "a negative number in the summary"},
 		{"negative bytes", func(in *CountInput) { in.NewBytes = -1 }, "a negative number in the summary"},
 		{"negative flagged", func(in *CountInput) { in.Flagged = -1 }, "a negative number in the summary"},
+		{"negative binary", func(in *CountInput) { in.Binary = -1 }, "a negative number in the summary"},
+		{"negative symbolic links", func(in *CountInput) { in.Symlinks = -1 }, "a negative number in the summary"},
+		{"negative mode changes", func(in *CountInput) { in.ModeChanges = -1 }, "a negative number in the summary"},
+		{"negative submodules", func(in *CountInput) { in.Submodules = -1 }, "a negative number in the summary"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			in := clean()
@@ -106,5 +111,31 @@ func TestCountAgainstOtherTerms(t *testing.T) {
 	}
 	if !Count(CountInput{Files: 3, ChangedLines: 10, NewBytes: 100, SuiteClean: true}).Met {
 		t.Fatal("the defaults were changed")
+	}
+}
+
+// The zero value is not the defaults: it allows nothing, so it says "not met"
+// for every change that has a file, a line or a byte.
+func TestZeroFirstTermsAllowNothing(t *testing.T) {
+	var zero FirstTerms
+	for _, in := range []CountInput{
+		{Files: 1, SuiteClean: true},
+		{ChangedLines: 1, SuiteClean: true},
+		{NewBytes: 1, SuiteClean: true},
+	} {
+		if c := zero.Count(in); c.Met {
+			t.Errorf("the zero terms are met by %+v", in)
+		}
+		if c := Count(in); !c.Met {
+			t.Errorf("the defaults are not met by %+v: %s", in, c.Reason)
+		}
+	}
+	c := zero.Count(CountInput{Files: 1, ChangedLines: 1, NewBytes: 1, SuiteClean: true})
+	want := "1 files, and the terms allow 0; 1 changed lines, and the terms allow 0; 1 new bytes, and the terms allow 0 (" + VerdictRunsNote + ")"
+	if c.Met || c.Reason != want {
+		t.Fatalf("reason %q, want %q", c.Reason, want)
+	}
+	if c := zero.Count(CountInput{SuiteClean: true}); !c.Met {
+		t.Fatalf("a change with nothing in it: %+v", c)
 	}
 }

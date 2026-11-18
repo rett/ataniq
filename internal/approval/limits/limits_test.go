@@ -91,7 +91,10 @@ func TestCheck(t *testing.T) {
 		{"3 to 4", 3, false, Change{To: 4, Typed: true}, ""},
 		{"3 to 5", 3, false, Change{To: 5, Typed: true}, RaiseTooLarge},
 		{"second raise of the day", 18, true, Change{To: 19, Typed: true}, AlreadyRaised},
-		{"second raise of the day, too large", 18, true, Change{To: 28, Typed: true}, RaiseTooLarge},
+		{"second raise of the day, too large", 18, true, Change{To: 28, Typed: true}, AlreadyRaised},
+		{"second raise of the day, from a limit that cannot rise", 1, true, Change{To: 2, Typed: true}, AlreadyRaised},
+		{"second raise of the day, by one key", 18, true, Change{To: 19}, NotTyped},
+		{"second raise of the day, above the maximum", 39, true, Change{To: 41, Typed: true}, AboveMax},
 		{"present limit of zero", 0, false, Change{To: 1}, BadLimit},
 		{"present limit above the maximum", 41, false, Change{To: 40}, BadLimit},
 	} {
@@ -271,21 +274,53 @@ func TestUsesToday(t *testing.T) {
 		time.Date(2031, 3, 8, 23, 59, 59, 0, west), // yesterday
 		time.Date(2031, 3, 9, 0, 0, 0, 0, west),    // today, the first instant
 		time.Date(2031, 3, 9, 23, 59, 59, 0, west), // today, the last second
-		time.Date(2031, 3, 10, 0, 0, 0, 0, west),   // tomorrow
+		time.Date(2031, 3, 10, 0, 0, 0, 0, west),   // tomorrow: the clock was set back, counted
 		at(time.UTC, 2031, 3, 10, 5, 0),            // 20:00 on the 9th in west: today
 		at(time.UTC, 2031, 3, 9, 5, 0),             // 20:00 on the 8th in west: yesterday
 	}
-	if got := UsesToday(decided, now); got != 3 {
-		t.Fatalf("UsesToday in west = %d, want 3", got)
+	if got := UsesToday(decided, now); got != 4 {
+		t.Fatalf("UsesToday in west = %d, want 4", got)
 	}
-	// The same times under a UTC clock on the 9th: the two west times of the
-	// 9th and the UTC one of the 9th, and the last second of the 8th in west
-	// (08:59:59 UTC on the 9th).
-	if got := UsesToday(decided, at(time.UTC, 2031, 3, 9, 12, 0)); got != 3 {
-		t.Fatalf("UsesToday in UTC = %d, want 3", got)
+	// The same times under a UTC clock on the 9th: every one of them is on
+	// the UTC 9th or after it. The earliest, 20:00 on the 8th in west, is
+	// 05:00 UTC on the 9th.
+	if got := UsesToday(decided, at(time.UTC, 2031, 3, 9, 12, 0)); got != 6 {
+		t.Fatalf("UsesToday in UTC = %d, want 6", got)
 	}
 	if got := UsesToday(nil, now); got != 0 {
 		t.Fatalf("no decisions: %d", got)
+	}
+}
+
+// A clock set back across midnight leaves uses that are dated tomorrow. They
+// still take room: the day must not get a second helping, and RaisedToday
+// reads a raise dated after today the same way.
+func TestUsesTodayCountsATimeAfterToday(t *testing.T) {
+	now := at(west, 2031, 3, 9, 23, 59)
+	for _, c := range []struct {
+		name    string
+		decided time.Time
+		want    int
+	}{
+		{"the first instant of tomorrow", at(west, 2031, 3, 10, 0, 0), 1},
+		{"a week ahead", at(west, 2031, 3, 16, 12, 0), 1},
+		{"across a year's end", at(west, 2032, 1, 1, 0, 0), 1},
+		{"the last minute of yesterday", at(west, 2031, 3, 8, 23, 59), 0},
+		{"a year back", at(west, 2030, 3, 10, 0, 0), 0},
+		{"a year whose date cannot be read back", at(west, 10000, 1, 1, 0, 0), 1},
+	} {
+		if got := UsesToday([]time.Time{c.decided}, now); got != c.want {
+			t.Errorf("%s: UsesToday = %d, want %d", c.name, got, c.want)
+		}
+	}
+	// The limit and the room agree: a day filled before the clock went back
+	// stays full.
+	var decided []time.Time
+	for i := 0; i < 12; i++ {
+		decided = append(decided, at(west, 2031, 3, 10, 0, i))
+	}
+	if got := Judge(true, UsesToday(decided, now), 12); got != Held {
+		t.Fatalf("an approve after the clock went back is %s, want held", got)
 	}
 }
 
@@ -302,6 +337,10 @@ func TestJudge(t *testing.T) {
 		{"approve above the limit, after it was lowered", true, 12, 6, Held},
 		{"approve with a limit of one, no use yet", true, 0, 1, Use},
 		{"approve with a limit of one, one use", true, 1, 1, Held},
+		{"limit above the maximum", true, 40, 41, Held},
+		{"limit far above the maximum", true, 45, 1000, Held},
+		{"limit above the maximum, the day has room", true, 39, 41, Use},
+		{"limit of zero", true, 0, 0, Held},
 		{"deny on an empty day", false, 0, 12, NotCounted},
 		{"deny at the limit", false, 12, 12, NotCounted},
 		{"deny above the limit", false, 30, 6, NotCounted},
@@ -402,6 +441,9 @@ func TestSuggest(t *testing.T) {
 		{"a date that is no date is dropped", []Day{{Date: "2031-3-10", Uses: 11}, {Date: "", Uses: 11}, {Date: "2031-02-30", Uses: 11}}, 6},
 		{"a day given twice is one day", []Day{{Date: "2031-03-10", Uses: 3}, {Date: "2031-03-10", Uses: 4}}, 14},
 		{"an alert on one of two entries leaves the day out", []Day{{Date: "2031-03-10", Uses: 9}, {Date: "2031-03-10", Alert: true}}, 6},
+		{"an alert on the first of two entries leaves the day out", []Day{{Date: "2031-03-10", Alert: true}, {Date: "2031-03-10", Uses: 9}}, 6},
+		{"a reached limit on the first of two entries leaves the day out", []Day{{Date: "2031-03-10", ReachedLimit: true}, {Date: "2031-03-10", Uses: 9}}, 6},
+		{"a reached limit on the second of two entries leaves the day out", []Day{{Date: "2031-03-10", Uses: 9}, {Date: "2031-03-10", ReachedLimit: true}}, 6},
 		{"a sum that overflows stays at the maximum", []Day{{Date: "2031-03-10", Uses: int(^uint(0) >> 1)}, {Date: "2031-03-10", Uses: 5}}, 40},
 		{"negative uses count as none", []Day{{Date: "2031-03-10", Uses: -5}}, 6},
 	} {
@@ -547,6 +589,11 @@ func TestRulesArePerProject(t *testing.T) {
 	}
 }
 
+// always gives a limitOn for DaysOf that answers with one limit for every day.
+func always(limit int) func(string) int {
+	return func(string) int { return limit }
+}
+
 func TestDaysOf(t *testing.T) {
 	now := at(west, 2031, 3, 15, 9, 0)
 	decided := []time.Time{
@@ -555,7 +602,7 @@ func TestDaysOf(t *testing.T) {
 		at(time.UTC, 2031, 3, 14, 3, 0), // 18:00 on the 13th in west
 		at(west, 2031, 3, 15, 0, 0),
 	}
-	got := DaysOf(decided, 2, now)
+	got := DaysOf(decided, always(2), now)
 	want := []Day{
 		{Date: "2031-03-13", Uses: 2, ReachedLimit: true},
 		{Date: "2031-03-14", Uses: 1},
@@ -569,7 +616,74 @@ func TestDaysOf(t *testing.T) {
 			t.Errorf("day %d: %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	if len(DaysOf(nil, 12, now)) != 0 {
+	if len(DaysOf(nil, always(12), now)) != 0 {
 		t.Error("no decisions give days")
+	}
+}
+
+// Each day is marked against the limit that was in force on it, and the
+// function is asked for every day by its date.
+func TestDaysOfUsesTheLimitOfEachDay(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	var decided []time.Time
+	for i := 0; i < 3; i++ {
+		decided = append(decided, at(west, 2031, 3, 12, 10, i), at(west, 2031, 3, 13, 10, i))
+	}
+	limits := map[string]int{"2031-03-12": 3, "2031-03-13": 4}
+	got := DaysOf(decided, func(date string) int { return limits[date] }, now)
+	want := []Day{
+		{Date: "2031-03-12", Uses: 3, ReachedLimit: true},
+		{Date: "2031-03-13", Uses: 3},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("DaysOf = %+v, want %+v", got, want)
+	}
+}
+
+// The limit was 12 on the 10th and the day filled it. On the 11th the owner
+// raised the limit to 18. The full day stays left out: marked against the
+// present 18 it would count, and the suggestion would be 24, above the limit
+// it was full under.
+func TestDaysOfAfterARaiseTheSuggestionDoesNotRise(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	var decided []time.Time
+	for i := 0; i < 12; i++ {
+		decided = append(decided, at(west, 2031, 3, 10, 10, i))
+	}
+	limitOn := func(date string) int {
+		if date < "2031-03-11" {
+			return 12
+		}
+		return 18
+	}
+	days := DaysOf(decided, limitOn, now)
+	if len(days) != 1 || !days[0].ReachedLimit {
+		t.Fatalf("the full day is not marked: %+v", days)
+	}
+	if got := Suggest(days, now); got != SuggestionMin {
+		t.Fatalf("Suggest = %d, want %d", got, SuggestionMin)
+	}
+	v, err := NewView("project-a", 18, days, at(west, 2031, 3, 11, 9, 0), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Suggestion != SuggestionMin {
+		t.Fatalf("the view suggests %d, want %d", v.Suggestion, SuggestionMin)
+	}
+}
+
+// A day whose limit is not known is left out, whatever its uses.
+func TestDaysOfWithoutALimitLeavesTheDayOut(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	decided := []time.Time{at(west, 2031, 3, 13, 10, 0)}
+	for name, limitOn := range map[string]func(string) int{
+		"no function":      nil,
+		"a limit of zero":  always(0),
+		"a negative limit": always(-3),
+	} {
+		days := DaysOf(decided, limitOn, now)
+		if len(days) != 1 || !days[0].ReachedLimit {
+			t.Errorf("%s: %+v", name, days)
+		}
 	}
 }
