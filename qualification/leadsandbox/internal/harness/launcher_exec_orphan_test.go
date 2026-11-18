@@ -167,6 +167,9 @@ func TestExecLauncherHelperRefusesToRunUnguarded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			env := tc.env
 			if env == nil {
+				// The helper has an owner and no parent: it needs a process
+				// descriptor to notice that the owner has ended.
+				skipWithoutPidfd(t)
 				// A child that has ended and is not reaped yet keeps its id:
 				// no other process has it.
 				ended, _ := startGuarded(t, helperEnviron("exit-0"))

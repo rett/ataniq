@@ -37,7 +37,10 @@ func TestManualExampleIsAValidConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the manual's example is refused: %v", err)
 	}
-	if !cfg.CoordinatorReviewed || len(cfg.Cases) != len(harness.AutomatedCases) {
+	// The example requests every automated case but S21, which plants entries
+	// in the scratch folders and needs a statement of its own: it is asked for
+	// by choice.
+	if !cfg.CoordinatorReviewed || len(cfg.Cases) != len(harness.AutomatedCases)-1 || contains(cfg.Cases, harness.CaseS21) {
 		t.Errorf("example: %+v", cfg)
 	}
 	for _, p := range []string{cfg.Campaign, cfg.State.Root, cfg.Executables.Pasta, cfg.Sources.AgentInstall} {

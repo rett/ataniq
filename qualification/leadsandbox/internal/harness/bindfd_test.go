@@ -49,8 +49,8 @@ func TestThePlanOfARunBindsEverySuppliedSourceFromADescriptor(t *testing.T) {
 			// the host, and the walk of each.
 			var pe harness.PlanEvidence
 			readJSON(t, r.out.Dir+"/plan.json", &pe)
-			if pe.Format != 2 || harness.EvidenceFormat != 2 {
-				t.Errorf("the evidence format is %d (constant %d), want 2", pe.Format, harness.EvidenceFormat)
+			if pe.Format != 3 || harness.EvidenceFormat != 3 {
+				t.Errorf("the evidence format is %d (constant %d), want 3", pe.Format, harness.EvidenceFormat)
 			}
 			if len(pe.Walks) != len(walks) {
 				t.Fatalf("plan.json lists %d walks, want %d", len(pe.Walks), len(walks))
@@ -110,7 +110,7 @@ func TestThePlanOfARunBindsEverySuppliedSourceFromADescriptor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, k := range []string{`"walks": [`, `"root": "` + f.State + `"`, `"type": "folder"`, `"type": "file"`, `"format": 2`} {
+			for _, k := range []string{`"walks": [`, `"root": "` + f.State + `"`, `"type": "folder"`, `"type": "file"`, `"format": 3`} {
 				if !strings.Contains(string(raw), k) {
 					t.Errorf("plan.json does not hold %s", k)
 				}
@@ -154,7 +154,7 @@ func TestEvidenceSaysHowEachSourceIsBound(t *testing.T) {
 	}
 	var sum harness.Summary
 	readJSON(t, r.out.Dir+"/summary.json", &sum)
-	if sum.Format != 2 {
+	if sum.Format != 3 {
 		t.Errorf("summary format %d", sum.Format)
 	}
 	ev := sum.BindSources
@@ -211,7 +211,7 @@ func TestEvidenceSaysHowEachSourceIsBound(t *testing.T) {
 	for _, k := range []string{
 		`"bound_by_descriptor": true`, `"bound_by_descriptor": false`, `"descriptor": 10`, `"walk_root": "` + f.State + `"`,
 		`"walk_rel": "`, `"walk_type": "folder"`, `"walk_type": "file"`, `"has_expected_type": true`,
-		`"no_ataniq_source_bound_by_path": true`, `"format": 2`,
+		`"no_ataniq_source_bound_by_path": true`, `"format": 3`,
 	} {
 		if !strings.Contains(string(raw), k) {
 			t.Errorf("summary.json does not hold %s", k)

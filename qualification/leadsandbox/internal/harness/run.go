@@ -69,6 +69,12 @@ type Options struct {
 	// HostHas says whether the host has a path (for the optional symbolic
 	// link rows of the bind table); nil means a no-follow stat.
 	HostHas func(path string) bool
+	// CheckMountPoints is the walk of the bind targets that lie in folders the
+	// lead writes (the start walk of the design, section 3.6), made by the
+	// steps check and recheck and by case S21; nil means mountpoints.Check. The
+	// tests of the harness replace it to stand in for a walk that accepts what
+	// it must refuse.
+	CheckMountPoints func(in profile.Inputs) (mountpoints.Report, error)
 	// CheckBindSources checks the bind sources of the plan, right before the
 	// launch, without following a link (rule G1); nil means
 	// mountpoints.CheckBindSources. It gets the resolved row of every mount of
@@ -103,6 +109,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.Resolver == nil {
 		o.Resolver = mountpoints.RealResolver
+	}
+	if o.CheckMountPoints == nil {
+		o.CheckMountPoints = mountpoints.Check
 	}
 	if o.CheckBindSources == nil {
 		o.CheckBindSources = mountpoints.CheckBindSources
@@ -188,14 +197,16 @@ type attempt struct {
 	// the channel asked whether anything followed it.
 	lineRead bool
 
-	reportEv    ReportEvidence
-	outsideEv   *OutsideEvidence
-	exitEv      ExitEvidence
-	stopEv      StopEvidence
-	termEv      TerminalEvidence
-	termData    []byte
-	canaryEv    CanaryEvidence
-	bindEv      BindSourcesEvidence
+	reportEv  ReportEvidence
+	outsideEv *OutsideEvidence
+	exitEv    ExitEvidence
+	stopEv    StopEvidence
+	termEv    TerminalEvidence
+	termData  []byte
+	canaryEv  CanaryEvidence
+	bindEv    BindSourcesEvidence
+	// planted is what case S21 found; nil when the case was not requested.
+	planted     *PlantedPathsEvidence
 	files       []string
 	evidenceErr error
 }
@@ -215,6 +226,9 @@ func Execute(ctx context.Context, cfg *Config, opt Options) (*Outcome, error) {
 	if opt.Run {
 		if !cfg.CoordinatorReviewed {
 			return nil, &GateError{Reason: "a run needs \"coordinator_reviewed\": true in the configuration, the statement that a coordinator reviewed it and the plan it gives"}
+		}
+		if cfg.requests(CaseS21) && !cfg.ScratchFoldersDisposable {
+			return nil, &GateError{Reason: "case S21 plants entries in the folders under the state root and puts them back: a run that requests it needs \"scratch_folders_disposable\": true in the configuration, the statement that they are disposable scratch folders and not a live lead's"}
 		}
 		if !opt.Unattended && (opt.StdinIsTerminal == nil || !opt.StdinIsTerminal()) {
 			return nil, &GateError{Reason: "standard input is not a terminal; a run needs one unless --unattended is given"}
@@ -278,6 +292,8 @@ func (a *attempt) execute(ctx context.Context) (*Outcome, error) {
 		a.skipLaunch("dry run: nothing is started")
 	case a.broken:
 		a.skipLaunch("an earlier step failed")
+	case a.cfg.onlyPlanted():
+		a.skipLaunch("the only case requested is S21, which never launches")
 	default:
 		a.launchPhase(ctx)
 	}
@@ -363,7 +379,7 @@ func (a *attempt) pre(ctx context.Context) {
 			return mountpoints.Prepare(a.in, mountpoints.PrepareOptions{NoLeadHasRun: true})
 		}},
 		{StepCheck, false, false, func(context.Context) error {
-			rep, err := mountpoints.Check(a.in)
+			rep, err := a.opt.CheckMountPoints(a.in)
 			a.recordWalk(StepCheck, rep, err)
 			if err != nil {
 				return err
@@ -390,14 +406,24 @@ func (a *attempt) pre(ctx context.Context) {
 		}},
 		{StepBuild, false, false, func(context.Context) error { return a.buildPlan() }},
 		{StepVerify, false, false, func(context.Context) error { return a.verifyPlan() }},
+		{StepPlanted, true, false, a.plantedPaths},
 		{StepSpec, true, false, func(context.Context) error { return a.writeSpec() }},
 		{StepRecheck, true, false, func(context.Context) error { return a.recheck() }},
 		{StepBindSources, true, false, func(context.Context) error { return a.checkBindSources() }},
 	}
 	for _, d := range defs {
 		switch {
+		case d.name == StepPlanted && !a.cfg.requests(CaseS21):
+			a.rec.skip(d.name, "case S21 was not requested")
+			continue
 		case a.broken:
 			a.rec.skip(d.name, "an earlier step failed")
+			a.plantedNotRun(d.name, "an earlier step failed")
+			continue
+		case d.name == StepPlanted && a.dry():
+			const why = "dry run: case S21 plants entries in the scratch folders and does nothing in a dry run"
+			a.rec.skip(d.name, why)
+			a.plantedNotRun(d.name, why)
 			continue
 		case a.dry() && d.runOnly:
 			a.rec.skip(d.name, "dry run: nothing is started, opened or written into the scratch folders")
@@ -413,6 +439,13 @@ func (a *attempt) pre(ctx context.Context) {
 		if !ok && d.soft && !a.refused {
 			a.broken = false
 		}
+	}
+}
+
+// plantedNotRun records, for case S21, why its step made no plant.
+func (a *attempt) plantedNotRun(step, why string) {
+	if step == StepPlanted && a.cfg.requests(CaseS21) {
+		a.planted = &PlantedPathsEvidence{NotRun: why, Plants: []PlantFact{}, NotCovered: []PlantNotCovered{}}
 	}
 }
 
@@ -645,7 +678,7 @@ func (a *attempt) writeSpec() error {
 // the sources again, which must resolve as they did when the plan was built.
 // Nothing that runs a lead process lies between this and the launch.
 func (a *attempt) recheck() error {
-	rep, err := mountpoints.Check(a.in)
+	rep, err := a.opt.CheckMountPoints(a.in)
 	a.recordWalk(StepRecheck, rep, err)
 	if err != nil {
 		return err
@@ -723,8 +756,15 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 // beneath it, the same type), and a row of the host must be bound by path. So
 // the walk the pass-through step makes is the walk that was checked.
 func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
+	return a.planBindRowsOf(a.res2)
+}
+
+// planBindRowsOf is planBindRows for the resolution given: the last one of a
+// start is the second of the attempt, and the start that case S21 makes for
+// each planted entry has its own.
+func (a *attempt) planBindRowsOf(res mountpoints.Resolution) ([]mountpoints.ResolvedSource, error) {
 	byInside := map[string]mountpoints.ResolvedSource{}
-	for _, s := range a.res2.Sources {
+	for _, s := range res.Sources {
 		byInside[s.Inside] = s
 	}
 	walks := a.planWalks()
@@ -765,8 +805,9 @@ func (a *attempt) planWalks() map[string]plan.Walk {
 }
 
 // checkBindSources is the last check before the launch (rule G1): the path
-// bound for every row of the plan is opened from the root of the file system
-// without following a link, and a link anywhere on a path, a missing source
+// bound for every row of the plan is walked to without following a link (a
+// source below the state root beneath the state root's handle, any other from
+// the root of the file system), and a link anywhere on a path, a missing source
 // and a source of another type than its row binds refuse the launch. It comes
 // after the second resolution and nothing that runs a lead process lies
 // between it and the launch. For a source Ataniq supplies it is a check before
@@ -1141,6 +1182,7 @@ func (a *attempt) summary() Summary {
 	if s.BindSources.Sources == nil {
 		s.BindSources.Sources = []BindSourceFact{}
 	}
-	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources)})
+	s.PlantedPaths = a.planted
+	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources), CaseS21: s21Results(a.planted)})
 	return s
 }
