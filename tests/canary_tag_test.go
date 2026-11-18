@@ -207,16 +207,29 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 
 var makeRuleLine = regexp.MustCompile(`^([A-Za-z0-9_.%/ -]+):($|[^=])`)
 
+// canaryTargetRef finds the name of one of canaryMakeTargets as a word.
+var canaryTargetRef = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])(test-canary|canary-build)($|[^A-Za-z0-9_.-])`)
+
+var makeInclude = regexp.MustCompile(`^-?s?include\s`)
+
+var makePhony = regexp.MustCompile(`^\.PHONY\s*:`)
+
 // checkMakefileTag is the first half of check (2): in a Makefile the tag
 // appears only inside the recipes of canaryMakeTargets. A comment, a variable,
 // the .PHONY line, a prerequisite line and the recipe of any other target are
-// all outside.
+// all outside. Two more lines are problems, so that no other target and no
+// other file can reach the tagged targets: a mention of a name in
+// canaryMakeTargets anywhere but a comment, the .PHONY line and the rule line
+// that defines it (a prerequisite or a recipe of another target), and an
+// include, whose file this check does not read. The limit of a text check is
+// a name that is assembled at run time or by make's own expansion.
 func checkMakefileTag(text string) []string {
 	var problems []string
 	var targets []string
-	continued, continuedRecipe := false, false
+	continued, continuedRecipe, continuedPhony := false, false, false
 	for i, line := range strings.Split(text, "\n") {
 		recipe := strings.HasPrefix(line, "\t")
+		phony := continued && continuedPhony || makePhony.MatchString(line)
 		if continued {
 			recipe = continuedRecipe
 		} else if !recipe {
@@ -227,17 +240,35 @@ func checkMakefileTag(text string) []string {
 				targets = nil
 			}
 		}
+		wasContinued := continued
 		continued = strings.HasSuffix(line, "\\")
 		continuedRecipe = recipe
-		if !strings.Contains(line, canaryTag) {
-			continue
+		continuedPhony = phony
+		trimmed := strings.TrimSpace(line)
+		var problem string
+		if !recipe && !wasContinued && makeInclude.MatchString(trimmed+" ") {
+			problem = "includes another makefile, which this check does not read"
 		}
-		allowed := recipe && len(targets) > 0
-		for _, target := range targets {
-			allowed = allowed && slices.Contains(canaryMakeTargets, target)
+		if problem == "" && strings.Contains(line, canaryTag) {
+			allowed := recipe && len(targets) > 0
+			for _, target := range targets {
+				allowed = allowed && slices.Contains(canaryMakeTargets, target)
+			}
+			if !allowed {
+				problem = fmt.Sprintf("names %s outside the recipes of %s", canaryTag, strings.Join(canaryMakeTargets, " and "))
+			}
 		}
-		if !allowed {
-			problems = append(problems, fmt.Sprintf("Makefile:%d: names %s outside the recipes of %s", i+1, canaryTag, strings.Join(canaryMakeTargets, " and ")))
+		if problem == "" && canaryTargetRef.MatchString(line) && !strings.HasPrefix(trimmed, "#") && !phony {
+			own := false
+			if m := makeRuleLine.FindStringSubmatch(line); m != nil && !recipe && !wasContinued {
+				own = !canaryTargetRef.MatchString(line[len(m[1])+1:])
+			}
+			if !own {
+				problem = "another line names " + strings.TrimSpace(canaryTargetRef.FindString(line))
+			}
+		}
+		if problem != "" {
+			problems = append(problems, fmt.Sprintf("Makefile:%d: %s", i+1, problem))
 		}
 	}
 	return problems
@@ -851,6 +882,23 @@ func TestCanaryTagMakefileCheck(t *testing.T) {
 		{"in a recipe after the allowed target ended", "test-canary:\n\t@true\n\ntest:\n\t@echo ataniq_canary\n", []int{5}},
 		{"in a rule of several targets", "test-canary test:\n\t@echo ataniq_canary\n", []int{2}},
 		{"in a variable that continues", "X = a \\\n\tataniq_canary\ntest-canary:\n\t@true\n", []int{2}},
+		// No other target may run the tagged ones, and no other file may hold a
+		// target that builds with the tag.
+		{"a prerequisite of another target", "test: doctor test-canary\n\t@true\n", []int{1}},
+		{"a prerequisite of the build target", "release-build: canary-build\n\t@true\n", []int{1}},
+		{"a recipe that calls a tagged target", "test: doctor\n\t@$(MAKE) canary-build\n", []int{2}},
+		{"a recipe that calls the other tagged target", "test: doctor\n\t@make -C . test-canary\n", []int{2}},
+		{"a tagged target that runs the other", "test-canary: doctor\n\t@$(MAKE) canary-build\n", []int{2}},
+		{"a tagged target that depends on the other", "test-canary: canary-build\n\t@true\n", []int{1}},
+		{"a call that also names the tag is one problem", "test-canary: doctor\n\t@$(MAKE) canary-build ataniq_canary\n", []int{2}},
+		{"a variable that names a tagged target", "T = test-canary\n", []int{1}},
+		{"an include", "include canary.mk\n", []int{1}},
+		{"an include that may be missing", "-include canary.mk\n", []int{1}},
+		{"a silent include", "sinclude canary.mk\n", []int{1}},
+		{"an indented include", "ifdef X\n  include canary.mk\nendif\n", []int{2}},
+		{"names that only look like an include", "includedir = x\nINCLUDES = y\n", nil},
+		{"the targets in comments and a continued phony line", ".PHONY: test \\\n\ttest-canary\n# test-canary and canary-build\n", nil},
+		{"a name that only contains a tagged target's", "test-canary-x: doctor\n\t@true\nmy-canary-build:\n\t@true\n", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []int
@@ -1086,6 +1134,18 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"cmd/ataniq-holder/canary.go":       "//go:build linux && ataniq_canary\n\npackage main\n",
 			"tests/y_test.go":                   "package tests\n",
 		}, "test -tags ataniq_canary ./cmd/ataniq-holder ./internal/leadcanary ./internal/leadcanary/sub ./internal/leaddaemon ./tests/"},
+		// Every form Go builds with the tag is found.
+		{"every form Go builds with the tag", map[string]string{
+			"internal/plusonly/p.go":     hdrPlusTagged + "\n\npackage a\n",
+			"internal/plusonly/q.go":     "// +build\tlinux,ataniq_canary\n\npackage a\n",
+			"internal/plusonly/r.go":     "//+build linux,ataniq_canary\n\npackage a\n",
+			"internal/tabbed/t.go":       "//go:build\tlinux && ataniq_canary\n\npackage a\n",
+			"internal/indented/i.go":     "  \t" + hdrTagged + "\n\npackage a\n",
+			"internal/nested/build/n.go": hdrTagged + "\n\npackage a\n",
+			"build/o.go":                 hdrTagged + "\n\npackage a\n",
+			"internal/plain/p.go":        hdrPlusPlain + "\n\npackage a\n",
+			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
+		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)

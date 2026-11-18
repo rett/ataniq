@@ -23,10 +23,13 @@ test-patched: doctor
 # The tests of the code behind the canary build tag, which make test does not
 # build. They run with the tag, over every package that holds a Go file whose
 # build constraint names it, found here by grep so that no list needs editing,
-# and over ./tests/, which holds the checks of the tag. With no such package it
-# runs ./tests/ alone. It builds no binary and runs nothing but tests.
+# and over ./tests/, which holds the checks of the tag. The grep reads every
+# form Go builds with the tag: a go:build line or an old style plus build line,
+# indented or not, with a space or a tab after it. It skips no folder named
+# build, which Go does not skip either. With no such package the target runs
+# ./tests/ alone. It builds no binary and runs nothing but tests.
 test-canary: doctor
-	@pkgs=$$(grep -rl --include='*.go' --exclude-dir=.git --exclude-dir=build --exclude-dir=testdata -E '^//go:build .*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	@pkgs=$$(grep -rl --include='*.go' --exclude-dir=.git --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
 
 test-dev: doctor
