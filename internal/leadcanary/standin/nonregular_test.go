@@ -5,6 +5,7 @@ package standin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,8 +49,14 @@ func TestCommitRefusesATokenFileThatIsAPipe(t *testing.T) {
 				defer unix.Close(fd)
 			}
 			first := r.head(t)
-			if err := within(t, "Commit", func() error { return Commit(r.Dir, r.Home, testToken) }); err == nil {
+			err := within(t, "Commit", func() error { return Commit(r.Dir, r.Home, testToken) })
+			if err == nil {
 				t.Fatal("Commit accepted a pipe")
+			}
+			// With a reader, ftruncate would refuse a pipe too; the check of
+			// the kind must be what does.
+			if reader && !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("refused for another reason: %v", err)
 			}
 			if r.head(t) != first {
 				t.Fatal("a commit was made")
