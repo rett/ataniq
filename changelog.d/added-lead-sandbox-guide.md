@@ -1,9 +1,8 @@
 - Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
-  plan, nested sandboxes under owner decision R17, the file-system view with
-  the host layout of a lead and its four parent folders, the clone rules, the
-  checks by handle before every start (rule B1), the environment allowlist,
-  network and DNS, the probe, the eleven start-up assertions, symlink-safe
-  reads, the profile digest and the open points. It is a proposal that awaits qualification and the owner's decision on
+  plan, nested sandboxes under owner decision R17, the file-system view, the
+  clone rules, the environment allowlist, network and DNS, the probe, the ten
+  start-up assertions, symlink-safe reads, the profile digest and the open
+  points. It is a proposal that awaits qualification and the owner's decision on
   the profile; nothing starts a sandbox in ordinary use, and no command uses it
   yet. Add the opt-in qualification harness `qualify` for the proposal, with its
   guide `docs/qualification-lead-sandbox.md`, and the target `make
