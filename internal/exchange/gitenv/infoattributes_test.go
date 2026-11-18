@@ -285,3 +285,14 @@ func TestGitReadsInfoAttributesWhateverTheSource(t *testing.T) {
 		}
 	}
 }
+
+// writeInfoAttributes writes text as the file "info/attributes" of repo.
+func writeInfoAttributes(t *testing.T, repo, text string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(repo, "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "info", "attributes"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

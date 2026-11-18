@@ -21,11 +21,23 @@
 //     external diff programs, submodule recursion and every transport except
 //     the ones the caller names.
 //   - It turns on object checking (fsck) for fetches.
+//   - For "diff", "diff-tree", "merge-tree" and "log" it pins the attribute
+//     source to the empty tree, with the setting "attr.tree" among its own
+//     -c settings. git then reads no ".gitattributes" from any tree, neither
+//     from the trees it compares or merges nor from HEAD, so an attribute a
+//     lead committed ("-diff", "binary", "merge=union", "merge=binary")
+//     cannot hide a change in a diff or change the result of a merge. The
+//     caller cannot set, change or remove the pin: "--attr-source", which
+//     git puts before the setting, is refused in every place of the
+//     arguments, also abbreviated, and the environment never holds
+//     GIT_ATTR_SOURCE. The id is the SHA-1 one. In a SHA-256 repository it
+//     names no object, and git then reads no attributes from a tree either.
+//     The tests ask the installed git about each of these points.
 //   - It accepts only a short list of git subcommands, refuses options before
 //     the subcommand, and refuses a relative or missing repository path.
 //   - The list holds "merge-tree", so that the host can build a merge itself
-//     ("merge-tree --write-tree") in a bare repository it owns. No working
-//     tree is involved and no merge driver from the configuration is named.
+//     ("merge-tree --write-tree") in a bare repository it owns, with no
+//     working tree.
 //   - It accepts "hash-object" in one form only, "hash-object -tcommit -w
 //     --stdin", with exactly these arguments in this order, and refuses every
 //     other form. The host writes the commit of a merge with it, from a text
@@ -35,8 +47,8 @@
 //     know, so the text must not hold anything a lead wrote. "commit-tree"
 //     is not allowed.
 //
-// The file "info/attributes" of a repository is the one attribute source no
-// option or setting switches off: git reads it for every diff and merge,
+// The file "info/attributes" of a repository is the one attribute source the
+// pin does not reach, and no option or setting switches it off: git reads it for every diff and merge,
 // whatever else it is told. A line there can turn a text file into a binary
 // one in a diff, or make a merge join both sides where it should report a
 // conflict. [CheckInfoAttributes] is therefore a check the caller runs before
@@ -72,7 +84,9 @@
 //     example) places "--end-of-options" or a fully qualified ref before
 //     it. The options that name a program to run ("--upload-pack",
 //     "--receive-pack", "--exec", "--ext-diff") are refused in every form,
-//     also abbreviated as git accepts. The one way to name an upload-pack
+//     also abbreviated as git accepts. "--attr-source" is refused in the
+//     same way, before and after the end of the options, because it would
+//     undo the attribute pin. The one way to name an upload-pack
 //     program is [Cmd.UploadPack], for a fetch from a local path; Argv
 //     quotes it, and the field comment says what the program receives.
 //   - It does not confine the process: no namespace, no file system limit, no

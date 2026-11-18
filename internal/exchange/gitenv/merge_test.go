@@ -36,7 +36,14 @@ type mergeScene struct {
 // holds it as the file ".gitattributes".
 func newMergeScene(t *testing.T, g Git, attributes string) *mergeScene {
 	t.Helper()
-	s := &mergeScene{repo: bare(t, g), env: fixtureEnv(t), g: g, attributes: attributes}
+	return newMergeSceneIn(t, g, bare(t, g), attributes)
+}
+
+// newMergeSceneIn builds the scene in an empty bare repository the caller
+// made, for example one with another object format.
+func newMergeSceneIn(t *testing.T, g Git, repo, attributes string) *mergeScene {
+	t.Helper()
+	s := &mergeScene{repo: repo, env: fixtureEnv(t), g: g, attributes: attributes}
 	s.baseTree = s.tree(t, mergeBaseText)
 	s.oursTree = s.tree(t, mergeOursText)
 	s.theirsTree = s.tree(t, mergeTheirsText)

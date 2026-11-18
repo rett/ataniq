@@ -27,6 +27,7 @@ type Cmd struct {
 	// [Git.Argv] refuses any other. The options that name a program are
 	// refused in every form. "config" does not end its options at "--",
 	// so Argv refuses that marker there; use "--end-of-options".
+	// "--attr-source" is refused in every place, also abbreviated.
 	// "hash-object" is the exception to all of this: its arguments are
 	// exactly "-tcommit", "-w", "--stdin" (see hashObjectArgs in gitenv.go).
 	Args []string
@@ -123,6 +124,39 @@ var noGitDir = []string{"init", "version"}
 // prefix of one of these, at least "--" and three letters, is refused too.
 var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ext-diff"}
 
+// emptyTree is the id of the tree with no entry, in a SHA-1 repository. git
+// knows it without the object being stored.
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// attrPinned are the subcommands whose result depends on attributes: an
+// attribute turns a text file into a binary one in a diff ("-diff",
+// "binary") or names the way two sides of a file are merged ("merge=union").
+// For these [Git.Argv] adds the setting "attr.tree=<emptyTree>" to its own
+// -c settings, so that git reads no ".gitattributes" from any tree, not from
+// the trees it compares or merges and not from HEAD. Trees hold what a lead
+// wrote, so an attribute in one must not change what the owner sees or what
+// the host merges.
+//
+// The setting on the command line comes before the same key in the
+// repository's config. Two things come before the setting, and the builder
+// keeps both out: the option "--attr-source" (see [attrSourceOption]) and
+// the variable GIT_ATTR_SOURCE, which [Git.Env] never sets. In a SHA-256
+// repository this id names no object; git then reads no attributes from a
+// tree either, which the tests show, so the pin holds there too.
+//
+// What the pin cannot reach is the repository's own "info/attributes"; see
+// [CheckInfoAttributes].
+var attrPinned = []string{"diff", "diff-tree", "merge-tree", "log"}
+
+// attrSourceOption is the git option that names the attribute source. It
+// comes before the setting "attr.tree", so it would undo the pin of
+// [attrPinned]. git takes it before the subcommand, where every option is
+// refused already; Argv also refuses it in every other place of Args, in
+// every form ("--attr-source", "--attr-source=X") and abbreviated down to
+// "--" and three letters, as it does for [refusedOptions], so that the pin
+// does not rest on how git reads an argument.
+const attrSourceOption = "--attr-source"
+
 // New returns a Git for an absolute path that names an executable regular
 // file (a symbolic link to one is accepted).
 func New(path string) (Git, error) {
@@ -175,8 +209,9 @@ func IsObjectID(s string) bool {
 }
 
 // Argv returns the command line for c: the git path, the fixed -c settings,
-// --git-dir=..., then the arguments. It starts nothing. It refuses what the
-// package comment lists.
+// for "diff", "diff-tree", "merge-tree" and "log" the setting that pins the
+// attribute source to the empty tree, --git-dir=..., then the arguments. It
+// starts nothing. It refuses what the package comment lists.
 func (g Git) Argv(c Cmd) ([]string, error) {
 	if !filepath.IsAbs(g.Path) {
 		return nil, errors.New("gitenv: Git has no absolute path; use New or Find")
@@ -195,6 +230,11 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	}
 	if sub != hashObject && !slices.Contains(subcommands, sub) {
 		return nil, fmt.Errorf("gitenv: subcommand %q is not allowed", sub)
+	}
+	for _, a := range c.Args[1:] {
+		if name, _, _ := strings.Cut(a, "="); len(name) >= 5 && strings.HasPrefix(attrSourceOption, name) {
+			return nil, fmt.Errorf("gitenv: argument %q is refused in every place: the attribute source is the builder's alone", a)
+		}
 	}
 	if c.GitDir == "" {
 		if !slices.Contains(noGitDir, sub) {
@@ -233,6 +273,10 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	argv := []string{g.Path}
 	for _, kv := range settings(protocols) {
 		argv = append(argv, "-c", kv)
+	}
+	if slices.Contains(attrPinned, sub) {
+		// No attribute from any tree; see attrPinned.
+		argv = append(argv, "-c", "attr.tree="+emptyTree)
 	}
 	if c.GitDir != "" {
 		argv = append(argv, "--git-dir="+c.GitDir)
@@ -391,6 +435,9 @@ var valuelessFlags = []string{
 	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
 	// Merge-tree: the host builds a merge with "merge-tree --write-tree".
 	"--write-tree", "--no-messages",
+	// Diff output: the patch and the line counts, which the tests of the
+	// attribute pin compare.
+	"-p", "--numstat",
 }
 
 // valueIn names, for flags of [valuelessFlags], the subcommands in which the
