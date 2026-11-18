@@ -105,6 +105,10 @@ func (m *Model) restart() tea.Cmd {
 		m.notice = "A live session cannot be replayed."
 		return nil
 	}
+	if m.labelled() {
+		m.notice = "There is no recording to replay in this view."
+		return nil
+	}
 	m.Close()
 	m.rep = replay{gen: m.rep.gen}
 	m.focus = consoleFocus

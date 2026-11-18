@@ -88,6 +88,9 @@ func (m *Model) sessionLabel() string {
 	if m.live.on() {
 		return m.liveLabel()
 	}
+	if m.labelled() {
+		return m.viewLabel()
+	}
 	return fixtureLabel
 }
 
@@ -102,6 +105,8 @@ func (m *Model) drawHeader(p *painter, l layout) {
 	left := "ATANIQ / DEMO FIXTURE · cockpit · " + fixtureLabel
 	if m.live.on() {
 		left = "ATANIQ / LIVE SCRATCH · cockpit · " + m.liveLabel() + " · through a holder"
+	} else if m.labelled() {
+		left = "ATANIQ · cockpit · " + m.viewLabel()
 	}
 	n := p.text(0, 0, l.header.Dx(), left, p.style(lnHead))
 	if room := l.header.Dx() - n - 2; room >= ansi.StringWidth(tagline) {
@@ -148,7 +153,7 @@ func (m *Model) treeRows() []treeRow {
 	for pi, pr := range m.projects {
 		rows = append(rows, treeRow{text: pr.Name, selectable: true, project: pi, lead: m.leadSelections[pi]})
 		for li, ld := range pr.Leads {
-			rows = append(rows, treeRow{text: ld.Name, selectable: true, project: pi, lead: li, indent: 1})
+			rows = append(rows, treeRow{text: leadText(ld), selectable: true, project: pi, lead: li, indent: 1})
 			for _, s := range ld.Subagents {
 				rows = append(rows, treeRow{text: s, indent: 2, delegate: true})
 			}
@@ -165,6 +170,19 @@ func (m *Model) drawTree(p *painter, l layout) {
 	focused := m.pane == paneTree
 	p.box(l.tree, "Projects & leads", "", focused)
 	in := inset(l.tree)
+	if m.problem != "" {
+		// The plain state and its next step stand where the tree would be.
+		ls := []line{}
+		for i, s := range m.problemLines(in.Dx()) {
+			k := lnText
+			if i == 0 {
+				k = lnWarn
+			}
+			ls = append(ls, line{s, k})
+		}
+		p.lines(in, ls)
+		return
+	}
 	rows := m.treeRows()
 	if len(rows) == 0 {
 		p.lines(in, []line{{"No projects", lnDim}})
@@ -247,13 +265,18 @@ func (m *Model) drawMeta(p *painter, l layout) {
 	if m.rep.pane != nil {
 		title, blocked = orNone(m.rep.pane.Title()), m.rep.pane.ClipboardBlocked()
 	}
-	p.lines(inset(l.meta), []line{
+	ls := []line{
 		{"Project: " + orNone(project) + "   Lead: " + orNone(lead), lnText},
 		{"Provider: " + orNone(s.Provider) + "   Host: " + orNone(s.Host), lnText},
 		{"Session: " + orNone(s.ID), lnText},
 		{"Attachment: " + orNone(s.Attachment), lnWarn},
-		{"Title: " + title + "   Clipboard requests blocked: " + strconv.Itoa(blocked), lnDim},
-	})
+	}
+	if !m.labelled() {
+		// A labelled view has no session terminal, so no title and no
+		// clipboard requests.
+		ls = append(ls, line{"Title: " + title + "   Clipboard requests blocked: " + strconv.Itoa(blocked), lnDim})
+	}
+	p.lines(inset(l.meta), ls)
 }
 
 func (m *Model) drawSession(p *painter, l layout) {
@@ -278,6 +301,10 @@ func (m *Model) drawPane(p *painter, area uv.Rectangle) {
 			ls = []line{{"The live session starts when the window size is known.", lnWarn}}
 		}
 		p.centred(area, "LIVE SESSION UNAVAILABLE", ls)
+		return
+	}
+	if m.rep.pane == nil && m.labelled() {
+		p.centred(area, "NO SESSION TERMINAL", []line{{noSessionText, lnDim}})
 		return
 	}
 	if m.rep.pane == nil {
@@ -344,6 +371,10 @@ func (m *Model) drawFocusBar(p *painter, l layout) {
 	if m.sessionEnded() {
 		second = "The terminal stream has ended"
 	}
+	if m.labelled() {
+		first = m.focusName() + " · read-only view"
+		second = noSessionText + " · a full attach (unavailable)"
+	}
 	p.lines(in, []line{{first, lnHead}, {second, lnDim}})
 }
 
@@ -369,6 +400,13 @@ func (m *Model) evidenceLines(width int) []line {
 		for _, w := range wrapLines(s, width) {
 			out = append(out, line{w, k})
 		}
+	}
+	if len(m.facts) > 0 {
+		add(lnHead, "SOURCE")
+		for _, c := range m.facts {
+			add(stateKind(c.State), c.Name+": "+c.State)
+		}
+		add(lnText, "")
 	}
 	add(lnHead, "ATTACHMENT CONTRACT")
 	if len(m.contract) == 0 {
@@ -438,6 +476,8 @@ func (m *Model) drawKeys(p *painter, l layout) {
 	s := "Tab pane · j/k move · Enter focus · a attach · Ctrl+K actions · r replay · ? help · q quit"
 	if m.live.on() {
 		s = "Tab pane · j/k move · Enter focus · F12 zoom · Ctrl+K actions · ? help · q quit"
+	} else if m.labelled() {
+		s = "Tab pane · j/k move · Enter select · a attach · Ctrl+K actions · ? help · q quit"
 	}
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
@@ -480,6 +520,9 @@ func (m *Model) overlayLines(width int) (string, []line) {
 			add(lnWarn, "Unavailable: "+c.Reason)
 		}
 		return "ACTIONS (all unavailable)", out
+	}
+	if m.labelled() {
+		return m.viewHelpLines(width)
 	}
 	add(lnHead, "Console focus")
 	for _, s := range []string{

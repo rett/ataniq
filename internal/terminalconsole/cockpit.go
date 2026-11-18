@@ -250,6 +250,10 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 // session the focus.
 func (m *Model) enter() {
 	if m.zoom || m.pane == paneSession {
+		if m.labelled() {
+			m.notice = noSessionText
+			return
+		}
 		if m.layout().cockpit {
 			m.focus = sessionFocus
 		}

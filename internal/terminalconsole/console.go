@@ -14,6 +14,11 @@
 // defines and another package implements, because this one may not open a
 // socket. See live.go.
 //
+// With Options.Label set the cockpit shows a labelled, read-only view of its
+// source in place of the fixture: nothing in it is called a fixture, no
+// recording is replayed, and every control stays unavailable with its reason.
+// See view.go.
+//
 // With a window of at least MinCols by MinRows the console draws the cockpit:
 // three panes, a timeline and a key bar. Below that it falls back to
 // single-column pages.
@@ -53,6 +58,14 @@ type Projection struct {
 	// Controls lists the controls the cockpit knows of. Each is unavailable,
 	// and carries the reason.
 	Controls []Control
+	// Facts are facts about where the projection comes from, such as a
+	// service's version, shown first in the evidence pane. The fixture has
+	// none.
+	Facts []Check
+	// Problem, when it is not empty, says why the source has nothing to
+	// show. The cockpit then draws it and NextStep, which says what a
+	// person can do about it, where the projects and leads would be.
+	Problem, NextStep string
 }
 type Project struct {
 	Name  string
@@ -60,7 +73,10 @@ type Project struct {
 	Tasks []string
 }
 type Lead struct {
-	Name         string
+	Name string
+	// State is the lead's state in a word or two, shown beside its name in
+	// the tree. Empty shows the name alone.
+	State        string
 	Subagents    []string
 	Conversation []string
 	Session      Session
@@ -104,9 +120,13 @@ type Model struct {
 	contract                                         []Check
 	timeline                                         []TimelineEntry
 	controls                                         []Control
+	facts                                            []Check
+	problem, nextStep                                string
 	project, lead, projectCursor, leadCursor, scroll int
 	page, theme, notice                              string
-	width, height                                    int
+	// label is Options.Label, cleaned. Empty is the fixture.
+	label         string
+	width, height int
 
 	opts Options
 	cockpitState
@@ -164,6 +184,7 @@ func NewWithOptions(source Source, o Options) *Model {
 		o.Recording = DefaultRecording
 	}
 	m := &Model{theme: o.Theme, page: "projects", opts: o}
+	m.label = clean(o.Label)
 	m.after = tea.Tick
 	m.focus = consoleFocus
 	if o.Live != nil {
@@ -176,24 +197,35 @@ func NewWithOptions(source Source, o Options) *Model {
 		m.startSession()
 		return m
 	}
-	snapshot := source.Snapshot()
-	m.controlUnavailable = clean(snapshot.ControlUnavailable)
+	m.apply(source.Snapshot())
+	// A labelled view is not the fixture: no recording is replayed in it.
+	if !m.labelled() {
+		m.startSession()
+	}
+	return m
+}
+
+// apply replaces the model's copy of the source's data with a sanitized,
+// bounded copy of in.
+func (m *Model) apply(in Projection) {
+	m.contract, m.timeline, m.controls, m.facts, m.projects, m.leadSelections = nil, nil, nil, nil, nil, nil
+	m.controlUnavailable = clean(in.ControlUnavailable)
 	if m.controlUnavailable == "" {
 		m.controlUnavailable = "No live control capability is available."
 	}
-	m.operator = clean(snapshot.Operator)
-	m.gate = Gate{Action: clean(snapshot.Gate.Action), Scope: clean(snapshot.Gate.Scope), Target: clean(snapshot.Gate.Target),
-		Approver: clean(snapshot.Gate.Approver), State: clean(snapshot.Gate.State)}
-	for _, c := range snapshot.Contract[:min(len(snapshot.Contract), maxContract)] {
+	m.operator = clean(in.Operator)
+	m.gate = Gate{Action: clean(in.Gate.Action), Scope: clean(in.Gate.Scope), Target: clean(in.Gate.Target),
+		Approver: clean(in.Gate.Approver), State: clean(in.Gate.State)}
+	for _, c := range in.Contract[:min(len(in.Contract), maxContract)] {
 		m.contract = append(m.contract, Check{Name: clean(c.Name), State: clean(c.State)})
 	}
-	for _, e := range snapshot.Timeline[:min(len(snapshot.Timeline), maxList)] {
+	for _, e := range in.Timeline[:min(len(in.Timeline), maxList)] {
 		m.timeline = append(m.timeline, TimelineEntry{Time: clean(e.Time), Text: clean(e.Text)})
 	}
-	for _, c := range snapshot.Controls[:min(len(snapshot.Controls), maxControls)] {
+	for _, c := range in.Controls[:min(len(in.Controls), maxControls)] {
 		m.controls = append(m.controls, Control{Name: clean(c.Name), Key: clean(c.Key), Reason: clean(c.Reason)})
 	}
-	ps := snapshot.Projects
+	ps := in.Projects
 	if len(ps) > maxProjects {
 		ps = ps[:maxProjects]
 	}
@@ -204,13 +236,15 @@ func NewWithOptions(source Source, o Options) *Model {
 			ls = ls[:maxLeads]
 		}
 		for _, l := range ls {
-			cp.Leads = append(cp.Leads, Lead{Name: clean(l.Name), Subagents: bounded(l.Subagents), Conversation: bounded(l.Conversation), Session: cleanSession(l.Session)})
+			cp.Leads = append(cp.Leads, Lead{Name: clean(l.Name), State: clean(l.State), Subagents: bounded(l.Subagents), Conversation: bounded(l.Conversation), Session: cleanSession(l.Session)})
 		}
 		m.projects = append(m.projects, cp)
 		m.leadSelections = append(m.leadSelections, 0)
 	}
-	m.startSession()
-	return m
+	for _, c := range in.Facts[:min(len(in.Facts), maxContract)] {
+		m.facts = append(m.facts, Check{Name: clean(c.Name), State: clean(c.State)})
+	}
+	m.problem, m.nextStep = clean(in.Problem), clean(in.NextStep)
 }
 
 // Init sends tea.Raw(ansi.RequestModeUnicodeCore), which asks the outer
@@ -254,6 +288,11 @@ type Options struct {
 	// goes to the sink the source returns, and nothing of the fixture is
 	// shown as if it were live data. See LiveSource.
 	Live LiveSource
+	// Label says what the cockpit shows, in the header and on the session
+	// frame, such as "a service's view, read-only". Empty means the demo
+	// fixture. With a label nothing is called a fixture and no recording is
+	// replayed: the view has no session terminal.
+	Label string
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -385,10 +424,27 @@ func (m *Model) lines() []string {
 		return m.liveLines()
 	}
 	lines := []string{"ATANIQ / DEMO FIXTURE", "Read-only fixture; no live backend", ""}
-	if len(m.projects) == 0 {
-		return append(lines, "No projects")
+	// fixture marks the headings of the fixture's pages; a labelled view is
+	// not one.
+	fixture := " (fixture)"
+	if m.labelled() {
+		lines = []string{"ATANIQ / " + m.viewLabel(), "Read-only view; every control is unavailable", ""}
+		fixture = ""
 	}
-	p := m.projects[m.project]
+	// The fixture shows nothing but this with no projects. A labelled view
+	// keeps its help and its action list, whose reasons matter most then.
+	if overlayPage := m.labelled() && (m.page == "help" || m.page == "actions"); !overlayPage {
+		if m.problem != "" {
+			return append(lines, m.problemLines(0)...)
+		}
+		if len(m.projects) == 0 {
+			return append(lines, "No projects")
+		}
+	}
+	var p Project
+	if len(m.projects) > 0 {
+		p = m.projects[m.project]
+	}
 	switch m.page {
 	case "projects":
 		lines = append(lines, "Projects")
@@ -400,7 +456,7 @@ func (m *Model) lines() []string {
 			lines = append(lines, mark+p.Name)
 		}
 	case "leads":
-		lines = append(lines, "Project: "+p.Name, "Persistent leads (fixture)")
+		lines = append(lines, "Project: "+p.Name, "Persistent leads"+fixture)
 		if len(p.Leads) == 0 {
 			lines = append(lines, "  No leads")
 		}
@@ -409,24 +465,28 @@ func (m *Model) lines() []string {
 			if i == m.leadCursor {
 				mark = "> "
 			}
-			lines = append(lines, mark+l.Name)
+			lines = append(lines, mark+leadText(l))
 			for _, s := range l.Subagents {
 				lines = append(lines, "    subagent: "+s)
 			}
 		}
 	case "tasks":
-		lines = append(lines, "Project: "+p.Name, "Tasks (fixture)")
+		lines = append(lines, "Project: "+p.Name, "Tasks"+fixture)
 		lines = append(lines, p.Tasks...)
 	case "conversation":
 		if len(p.Leads) > 0 {
 			l := p.Leads[m.lead]
-			lines = append(lines, "Project: "+p.Name+" / Lead: "+l.Name, "Conversation (fixture)")
+			lines = append(lines, "Project: "+p.Name+" / Lead: "+l.Name, "Conversation"+fixture)
 			lines = append(lines, l.Conversation...)
 		}
 	case "help":
 		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
 	case "actions":
-		lines = append(lines, "Actions (all unavailable, fixture)")
+		if m.labelled() {
+			lines = append(lines, "Actions (all unavailable)")
+		} else {
+			lines = append(lines, "Actions (all unavailable, fixture)")
+		}
 		for _, c := range m.controls {
 			lines = append(lines, c.Name+": "+c.Reason)
 		}
