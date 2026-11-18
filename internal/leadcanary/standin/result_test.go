@@ -109,6 +109,46 @@ func TestReplayResultNamesAFailedCommitWithAFixedReason(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("branch", func(t *testing.T) {
+		r := newRepo(t)
+		writeReplay(t, r, true)
+		// A lock on the branch's reference makes the switch fail.
+		lock := filepath.Join(r.Dir, ".git", "refs", "heads", "canary")
+		if err := os.MkdirAll(lock, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(lock, "one.lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run := startRun(t, r, 0)
+		submitToken(t, run)
+		waitUntil(t, "result.txt", func() bool { return resultWritten(r) })
+		if got := readResult(t, r); got != "failed: branch\n" {
+			t.Fatalf("result.txt %q", got)
+		}
+		if err := run.finish(t); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("git commit", func(t *testing.T) {
+		r := newRepo(t)
+		writeReplay(t, r, true)
+		// A commit that git cannot make: with no identity in the
+		// configuration, and git told not to guess one, git commit fails
+		// after git add has succeeded.
+		runGit(t, r.Dir, "config", "user.useConfigOnly", "true")
+		runGit(t, r.Dir, "config", "--unset", "user.name")
+		runGit(t, r.Dir, "config", "--unset", "user.email")
+		run := startRun(t, r, 0)
+		submitToken(t, run)
+		waitUntil(t, "result.txt", func() bool { return resultWritten(r) })
+		if got := readResult(t, r); got != "failed: git commit\n" {
+			t.Fatalf("result.txt %q", got)
+		}
+		if err := run.finish(t); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("git add", func(t *testing.T) {
 		r := newRepo(t)
 		writeReplay(t, r, true)
