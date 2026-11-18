@@ -32,8 +32,9 @@ session: what the lead sees (the file-system view), what it can reach (the
 network), who it is (identity and environment), what is checked before the agent
 starts, and the launch command that makes all of that so. The profile is Go data
 and checks; the launch plan is a list of arguments. Nothing in the packages runs
-a program, and the checks that touch files (`mountpoints`, `safefile`) start
-from the handle of a folder the caller owns.
+a program, and the checks that touch files (`mountpoints`, `safefile`) walk by
+handle without following links, from the state root the caller owns or, for a
+source outside it, from the root of the file system.
 
 Built, each unqualified:
 
@@ -42,15 +43,19 @@ Built, each unqualified:
   profile digest. It does no I/O.
 - `sandboxnet`: the arguments of pasta and the derivation of the sandbox's
   `resolv.conf`. It reads only through a small file-system interface that tests replace.
-- `plan`: the whole launch command, built from the profile, and `Verify`, which
-  parses a plan back and compares it with the inputs. It starts nothing.
+- `plan`: the whole launch command, built from the profile, with the walk of
+  every bind source Ataniq supplies, and `Verify`, which parses a plan back and
+  compares it with the inputs. It starts nothing.
 - `mountpoints` and `safefile`: the host-side checks and preparation of the
-  folders a lead can write, by handle and without following symbolic links
-  (rule B1).
+  folders a lead can write, and the checks of the bind sources, by handle and
+  without following symbolic links (rule B1); `mountpoints.SourceWalks` and
+  `PlanWalks` give the walks of the bind sources as data.
 - `assert`: the eleven start-up assertions, the spec and the report line, and
   the checks the probe and the holder make.
-- `ataniq-probe`: the static helper that runs inside the sandbox (and, in its
-  pass-through mode, between pasta and bubblewrap).
+- `ataniq-probe`: the static helper that runs inside the sandbox and, in its
+  pass-through mode, on the host between pasta and bubblewrap, where it walks to
+  each bind source Ataniq supplies by handle and opens the report channel and
+  the seccomp file.
 - The opt-in harness `qualify` and its guide,
   [the lead sandbox qualification harness](qualification-lead-sandbox.md).
 
@@ -71,10 +76,6 @@ Not built:
   coordinators' published folders). They are bound folders only: nothing reads
   the request folder, and nothing writes the mailbox or publishes a
   coordinator's folders.
-- The launcher-side step that walks each bind source by handle and gives
-  bubblewrap the descriptor it checked. `mountpoints.SourceWalks` names the
-  walks as data; until the step exists, bubblewrap resolves each source by
-  path.
 - The qualification record store. `assert` checks a record through an interface;
   no store exists.
 - A generated or reviewed seccomp filter (see
@@ -85,7 +86,7 @@ Not built:
 `plan.Build` returns one command line. Its shape, in order, is:
 
 ```text
-PASTA ARGS... -- PROBE_HOST pass-fds [--read FD=PATH]... [--write FD=PATH]... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json --report-fd FD -- AGENT ARGV...
+PASTA ARGS... -- PROBE_HOST pass-fds [--read FD=PATH]... [--write FD=PATH]... [--walk-dir FD ROOT REL]... [--walk-file FD ROOT REL]... -- BWRAP ARGS... -- /ataniq/probe --spec /ataniq/spec/spec.json --report-fd FD -- AGENT ARGV...
 ```
 
 - pasta gives the sandbox a network namespace (see
@@ -93,10 +94,13 @@ PASTA ARGS... -- PROBE_HOST pass-fds [--read FD=PATH]... [--write FD=PATH]... --
 - The pass-through step, the probe binary in its `pass-fds` mode, runs on the
   host between pasta and bubblewrap. It exists because pasta closes every
   descriptor it inherits before it starts its command, so a descriptor the
-  launcher opened would never reach bubblewrap. The step opens each named file
-  at exactly the descriptor number given, and executes the rest of the line.
-  The files are the report channel (always) and the seccomp file (when one is
-  named). The launcher opens nothing.
+  launcher opened would never reach bubblewrap. The step opens each file it is
+  told to open (`--read`, `--write`), walks to each bind source Ataniq supplies
+  (`--walk-dir`, `--walk-file`: see below), places every one at exactly the
+  descriptor number given, and executes the rest of the line. The files it
+  opens for reading or writing are the report channel (always) and the seccomp
+  file (when one is named); the walks are one per bind row Ataniq supplies. The
+  launcher opens nothing.
 - bubblewrap builds the sandbox from the arguments below.
 - The probe inside runs the start-up checks and then executes the agent.
 
@@ -106,7 +110,32 @@ optional host row present). Its command, with invented paths, is:
 
 ```text
 /usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw -- \
-  /opt/ataniq/bin/probe pass-fds --write 3=/opt/ataniq/run/arc-lead/report.fifo -- \
+  /opt/ataniq/bin/probe pass-fds \
+    --write 3=/opt/ataniq/run/arc-lead/report.fifo \
+    --walk-file 10 /opt/ataniq/resolv/arc-lead resolv.conf \
+    --walk-file 11 /opt/ataniq/bin probe \
+    --walk-dir 12 /opt/ataniq/spec arc-lead \
+    --walk-dir 13 /opt/agent/claude 2.1.0 \
+    --walk-file 14 /opt/ataniq/managed/arc-lead settings.json \
+    --walk-dir 15 /state leads/arc-lead/home \
+    --walk-dir 16 /state leads/arc-lead/config/claude \
+    --walk-dir 17 /opt/ataniq/skills arc-lead \
+    --walk-file 18 /opt/ataniq/instructions/arc-lead CLAUDE.md \
+    --walk-dir 19 /opt/ataniq/git arc-lead \
+    --walk-dir 20 /state leads/arc-lead/tree \
+    --walk-file 21 /state leads/arc-lead/gitmeta/config \
+    --walk-dir 22 /state leads/arc-lead/gitmeta/hooks \
+    --walk-dir 23 /state leads/arc-lead/gitmeta/info \
+    --walk-dir 24 /state mirrors/demo.git \
+    --walk-dir 25 /opt/ataniq qargi \
+    --walk-dir 26 /state leads/arc-lead/qargi \
+    --walk-dir 27 /state leads/arc-lead/requests \
+    --walk-dir 28 /state mailbox/arc-lead \
+    --walk-dir 29 /state leads/arc-lead/mail \
+    --walk-dir 30 /state pub/demo \
+    --walk-dir 31 /opt/ataniq/assignment demo \
+    --walk-dir 32 /opt/ataniq/projection demo \
+  -- \
   /usr/bin/bwrap \
     --die-with-parent \
     --unshare-all \
@@ -149,32 +178,32 @@ optional host row present). Its command, with invented paths, is:
     --ro-bind /etc/passwd /etc/passwd \
     --ro-bind /etc/group /etc/group \
     --ro-bind /etc/localtime /etc/localtime \
-    --ro-bind /opt/ataniq/resolv/arc-lead/resolv.conf /etc/resolv.conf \
+    --ro-bind-fd 10 /etc/resolv.conf \
     --dev /dev \
     --proc /proc \
     --tmpfs /tmp \
-    --ro-bind /opt/ataniq/bin/probe /ataniq/probe \
-    --ro-bind /opt/ataniq/spec/arc-lead /ataniq/spec \
-    --ro-bind /opt/agent/claude/2.1.0 /ataniq/agent \
-    --ro-bind /opt/ataniq/managed/arc-lead/settings.json /etc/claude-code/managed-settings.json \
-    --bind /state/leads/arc-lead/home /home/lead \
-    --bind /state/leads/arc-lead/config/claude /home/lead/.claude \
-    --ro-bind /opt/ataniq/skills/arc-lead /home/lead/.claude/skills \
-    --ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md \
-    --ro-bind /opt/ataniq/git/arc-lead /ataniq/git \
-    --bind /state/leads/arc-lead/tree /work/demo \
-    --ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config \
-    --ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks \
-    --ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info \
-    --ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git \
-    --ro-bind /opt/ataniq/qargi /ataniq/qargi \
-    --bind /state/leads/arc-lead/qargi /home/lead/.qargi \
-    --bind /state/leads/arc-lead/requests /ataniq/requests \
-    --ro-bind /state/mailbox/arc-lead /ataniq/mailbox \
-    --bind /state/leads/arc-lead/mail /ataniq/mail \
-    --ro-bind /state/pub/demo /coord \
-    --ro-bind /opt/ataniq/assignment/demo /ataniq/assignment \
-    --ro-bind /opt/ataniq/projection/demo /ataniq/projection \
+    --ro-bind-fd 11 /ataniq/probe \
+    --ro-bind-fd 12 /ataniq/spec \
+    --ro-bind-fd 13 /ataniq/agent \
+    --ro-bind-fd 14 /etc/claude-code/managed-settings.json \
+    --bind-fd 15 /home/lead \
+    --bind-fd 16 /home/lead/.claude \
+    --ro-bind-fd 17 /home/lead/.claude/skills \
+    --ro-bind-fd 18 /home/lead/.claude/CLAUDE.md \
+    --ro-bind-fd 19 /ataniq/git \
+    --bind-fd 20 /work/demo \
+    --ro-bind-fd 21 /work/demo/.git/config \
+    --ro-bind-fd 22 /work/demo/.git/hooks \
+    --ro-bind-fd 23 /work/demo/.git/info \
+    --ro-bind-fd 24 /ataniq/mirror/demo.git \
+    --ro-bind-fd 25 /ataniq/qargi \
+    --bind-fd 26 /home/lead/.qargi \
+    --bind-fd 27 /ataniq/requests \
+    --ro-bind-fd 28 /ataniq/mailbox \
+    --bind-fd 29 /ataniq/mail \
+    --ro-bind-fd 30 /coord \
+    --ro-bind-fd 31 /ataniq/assignment \
+    --ro-bind-fd 32 /ataniq/projection \
     --chdir /work/demo \
     --remount-ro / \
   -- \
@@ -186,11 +215,34 @@ allowlist entry in name order, the optional `--seccomp FD`, the rows of the bind
 table in table order, `--chdir`, and `--remount-ro /` last. An optional host row
 is emitted, as `--ro-bind` or `--symlink`, only when the caller says the host has
 it; otherwise it is left out and a note in the plan says so. `--ro-bind-try` is
-never used, so the plan says exactly what is mounted. A row of the host is bound
-from the real path the caller resolved (in the golden files, a host without
-links, so each is its own path). Every plan also carries
-notes (the golden files list them) that state the choices below and what the
-plan does not show.
+never used, so the plan says exactly what is mounted.
+
+**How a bind source reaches bubblewrap.** A bind row whose source Ataniq
+supplies (every bind row but the host's own) is emitted as `--ro-bind-fd FD
+DEST` or `--bind-fd FD DEST`, never as `--ro-bind` or `--bind` with a path, and
+the pass-through step gets the matching walk: `--walk-dir FD ROOT REL` for a
+source that is a folder, `--walk-file FD ROOT REL` for a regular file. In the
+excerpt, `--walk-dir 20 /state leads/arc-lead/tree` and `--bind-fd 20
+/work/demo` are the two halves of one row. The step opens ROOT without following
+a symbolic link, walks REL beneath it, checks the type on the descriptor it got
+and places that descriptor at FD; bubblewrap is given the number, not a path
+(see "Checks before every start", below). For a source below the state root,
+ROOT is the state root and REL the whole path below it; for any other source,
+ROOT is the folder that holds the source and REL its name. `/etc/resolv.conf`,
+the file the holder derived, is Ataniq's and is bound this way too.
+
+The rows of the host (`/usr` and the `/etc` files other than `resolv.conf`) stay
+bound by path, from the real path the caller resolved (in the golden files, a
+host without links, so each is its own path). The reason: no sandbox writes
+them, and their names may be links of the host (`/etc/localtime` often is),
+which a walk that follows no link would refuse; for them bubblewrap does the
+lookup by path and follows a link. Whether bubblewrap mounts the object behind a
+descriptor, and closes the descriptor before the command inside starts, is not
+shown by anything here. It is a qualification item, and every plan says so in a
+note [qualify].
+
+Every plan also carries notes (the golden files list them) that state the
+choices below and what the plan does not show.
 
 **Namespaces.** `--unshare-all` asks bubblewrap to unshare every namespace type
 it can (as bubblewrap documents it: user, IPC, PID, network, UTS and cgroup), and
@@ -233,13 +285,47 @@ folders `leads`, `mirrors`, `mailbox`, `pub`, `coords` and `coord-login`; host
 sources that are missing for a row of the host it
 emits (`/usr`, the `/etc` files: the plan binds the real path the holder
 resolved, see [the clone rules](#the-clone-rules-and-rule-g1)) or given for
-another row; a working folder outside the tree and the home; an operand of
-bubblewrap that starts with `--`; and a command line above a fixed cap. It
-then runs `Verify` on its own result. `Verify` is written apart from the code
-that builds the arguments: it parses the bubblewrap arguments back and compares
-each part with the inputs. A plan that verifies says the text is the one the
-inputs describe. It does not say what bubblewrap, pasta or the kernel will do
-with it.
+another row; source walks that do not match the bind rows Ataniq supplies (see
+below); more descriptors than the pass-through step places; a working folder
+outside the tree and the home; an operand of bubblewrap that starts with `--`;
+and a command line above a fixed cap. It then runs `Verify` on its own result.
+`Verify` is written apart from the code that builds the arguments: it parses
+the bubblewrap arguments back and compares each part with the inputs. A plan
+that verifies says the text is the one the inputs describe. It does not say
+what bubblewrap, pasta or the kernel will do with it.
+
+**The source walks and the descriptors.** There is one walk per bind row Ataniq
+supplies and none for anything else, so the walks match the table row for row:
+23 rows in the table today, and one more for each extra tree placeholder. The
+caller gives them as data (`plan.Options.SourceWalks`, from
+`mountpoints.PlanWalks`), because the plan reads no file system. `Build` refuses
+a row without a walk, a walk for a row of the host or for no row, two walks for
+one row, a walk that does not lead to the row's source or names the other type
+(folder or regular file), a folder or a path that is not clean, and a folder in
+or below one the lead writes. The descriptor numbers are the plan's own, not the
+caller's: from 10 up, in the order of the table, passing over the seccomp
+descriptor and the report descriptor of the options, so they depend on the
+inputs and the options alone and never collide with those two. They start at 10
+and not at 3 to stay clear of the low numbers a caller picks for those two, and
+of 3 and 4, which the probe refuses as a target when its Go runtime holds them
+(see [The probe](#the-probe)). The step places at most 128 descriptors in all
+(the walks, the seccomp file and the report channel together). The cap is hard:
+the probe refuses more, and the plan refuses to emit one. The number has a
+reason: a plan needs one per supplied row (23 today), one per extra placeholder
+(the profile allows 64), the seccomp file and the report channel, which is 89 at
+most, and 128 leaves room for rows the table gains. `Plan.Walks` lists the walks
+with their numbers and `Mount.FD` says which number a row is bound from.
+
+`Verify` reads `--bind-fd` and `--ro-bind-fd` back and pairs each with the walk
+of the pass-through step that places its descriptor, which it reads back from
+the step on its own. The path that walk leads to is the mount's source for every
+check a source gets, so a step that walks somewhere else is caught as a mount of
+another source. It reports a bind row Ataniq supplies that is bound by path; a
+descriptor that two mounts or two walks use, a mount without a walk, a walk
+without a mount, a row of the host bound from a descriptor, and a bind
+descriptor that is the seccomp or the report descriptor; and a walk, in the step
+or in `Plan.Walks`, whose descriptor, folder, path or type is not the one the
+inputs and the options give.
 
 ## Nested sandboxes (owner decision R17)
 
@@ -420,11 +506,15 @@ alternates, and a tree, home, config folder, records folder, requests folder or
 mail folder (the six folders the lead writes) that is not a 0700 folder of the
 caller's user.
 
-**Rule G1: no bind source in a folder a sandbox can write.** bubblewrap resolves
-a bind source on the host, outside every sandbox, and follows a symbolic link
-there. A source that lies in a folder the lead can write could be replaced by a
-link that brings a folder of the owner into the sandbox at the next start. So no
-row of the bind table has a source in or below a host folder the lead can write
+**Rule G1: no bind source in a folder a sandbox can write.** A bind source is
+resolved on the host, outside every sandbox. For a row of the host, bubblewrap
+does the lookup by path and follows a symbolic link; for a row Ataniq supplies,
+the pass-through step's walk is the lookup, it follows none, and bubblewrap gets
+the descriptor. A source that lies in a folder the lead can write is a name the
+lead chose: a lookup that followed a link there would bring a folder of the
+owner into the sandbox at the next start, and the rule does not rest on the walk
+refusing one. So no row of the bind table has a source in or below a host
+folder the lead can write
 (the home, the config folder, the tree, the records folder, the requests folder
 and the mail folder: the sources of the read-write rows). The profile
 refuses a table that breaks the rule, `plan.Build` checks it again, and
@@ -486,17 +576,20 @@ git treats as a pattern is refused.
 **Handles, not names (rule B1).** Rule B1 of the design (revision 4, section
 3.6): host-side code never binds or reads a path any of whose components a
 sandbox can write. It opens the nearest folder no sandbox can write by name,
-walks every further component from that handle with `openat2`
-(`RESOLVE_BENEATH` and `RESOLVE_NO_SYMLINKS`), refuses a symbolic link and an
-unexpected type, and does so at the moment of use, every time: an earlier check
-is never reused. In `mountpoints` the folder opened by name is the state root,
-which the caller owns. `Check`, `Prepare` and `CheckOwnClone` open every folder
-below it that they work in once per call, from the state root's handle and never
-by its name (`safefile.Root.SubRoot`: one lookup without links, the type decided
-on the descriptor the lookup returned), and every later step is beneath that
-descriptor. So no folder is looked at and then opened again by its name: the
-folder that was checked is the folder that is used, whatever a lead does to the
-name in between. Nothing found by one call is kept for the next.
+walks every further component from that handle with `openat2` (`RESOLVE_BENEATH`
+and `RESOLVE_NO_SYMLINKS`), refuses a symbolic link and an unexpected type, and
+does so at the moment of use, every time: an earlier check is never reused.
+Where bubblewrap can take it, the source is passed as the handle that walk
+returned: the pass-through step makes the walk of every bind source Ataniq
+supplies, and bubblewrap is given its descriptor (see "How a bind source reaches
+bubblewrap", above). In `mountpoints` the folder opened by name is the state
+root, which the caller owns. `Check`, `Prepare` and `CheckOwnClone` open every
+folder below it that they work in once per call, from the state root's handle
+and never by its name (`safefile.Root.SubRoot`: one lookup without links, the
+type decided on the descriptor the lookup returned), and every later step is
+beneath that descriptor. So no folder is looked at and then opened again by its
+name: the folder that was checked is the folder that is used, whatever a lead
+does to the name in between. Nothing found by one call is kept for the next.
 
 **Checks before every start.** Three, in this order, right before the launch,
 after the previous unit is gone and its control group is empty (the sandbox's
@@ -532,7 +625,8 @@ sandboxes are allowed):
   source may be a mount). For a row Ataniq supplies it then checks, on the
   descriptor it opened, that the source is a folder or a regular file, as the
   row binds. The type of a row of the host is not checked, and no content is
-  read. A problem names the row by its inside path.
+  read. A problem names the row by its inside path. This is the pre-check of
+  the bind sources: the walk that decides is the pass-through step's (below).
 
 `mountpoints.SourceWalks` names the walk of each row Ataniq supplies as data:
 the folder to open by name, the path to walk beneath it and the type the source
@@ -540,39 +634,68 @@ must have (the state root and the whole path below it for a source below the
 state root, the source's own parent folder and its name for any other). It
 reads nothing. `ResolveSources` puts the same walk on each row it returns, and
 `CheckBindSources` takes the place and the type of a source from it, refusing a
-row Ataniq supplies that has none. The launcher-side step that would make the
-same walk and give bubblewrap the descriptor is not yet built.
+row Ataniq supplies that has none. `PlanWalks` gives the same walks in the type
+the plan takes (`plan.Options.SourceWalks`), and the pass-through step makes
+them.
+
+**The walk that decides.** `CheckBindSources` stays as the pre-check. It runs
+first, closes its descriptors when it returns and passes none on. The step walks
+to every bind source Ataniq supplies once more, by handle, right before it
+starts bubblewrap, and that walk decides: the descriptor it got is the one
+bubblewrap is told to bind the row from, so what the name holds afterwards
+changes nothing for the object that is bound (if bubblewrap mounts the object
+behind the descriptor: an open point). A source that changed since the pre-check
+is refused by the walk, or bound as the object the walk found. A source the walk
+refuses (a link, a missing entry, another type, a mount point below its root, no
+`openat2`) ends the step with exit 96, before bubblewrap is started and before
+the report channel is opened for writing. The step is stricter than the
+pre-check in one place: beneath the folder its walk starts from it crosses no
+mount point, for any row, where `CheckBindSources` crosses mount points for a
+source outside the state root.
 
 **What is still opened or resolved by name, and why.** The state root: it is the
 folder the walks start from, the nearest folder no sandbox can write. Only its
 last component is protected by the open; `CheckBindSources` looks for a link
 above it too, and `Check`, `Prepare` and `CheckOwnClone` leave that to the
 caller. The root of the file system, `/`, for the lookups of `CheckBindSources`
-that start there. And every bind source, the never-mounted paths and the state
-folders in `ResolveSources`, which resolves names (`filepath.EvalSymlinks`) and
-opens nothing. That resolution is kept for two things: the real path of a row
-of the host (`/usr`, `/etc/localtime` and the like may be links of the host,
-which no lead writes), which is the path the plan binds; and the comparison of
-real paths under the never-mounted rules and the rules about other state. The
-path of a source Ataniq supplies has no component inside a folder a sandbox can
-write (rule G1), so resolving its name reads no link a lead could plant. No
-folder below the state root is opened by its name.
+that start there. The folder each walk of the pass-through step starts from
+(ROOT): the step opens it by name, from the root of the file system, in one
+lookup that follows no link on any component (`safefile.OpenRootNoLinks`; mount
+points above it are crossed). That refuses a link on the way to ROOT and
+protects nothing else above it, so ROOT and everything above it must be
+Ataniq's: the plan and the holder choose it, the state root for a source below
+it and otherwise the folder that holds the source. And every bind source, the
+never-mounted paths and the state folders in `ResolveSources`, which resolves
+names (`filepath.EvalSymlinks`) and opens nothing. That resolution is kept for
+two things: the real path of a row of the host (`/usr`, `/etc/localtime` and the
+like may be links of the host, which no lead writes), which is the path the plan
+binds; and the comparison of real paths under the never-mounted rules and the
+rules about other state. The path of a source Ataniq supplies has no component
+inside a folder a sandbox can write (rule G1), so resolving its name reads no
+link a lead could plant. No folder below the state root is opened by its name.
 
-**The limit.** The descriptors are closed when `CheckBindSources` returns, and
-the launch binds by path. Until the bind sources are passed to bubblewrap by
-descriptor, bubblewrap still resolves each source by path after the check: the
-check says what was there at that moment, which is why every source and
-everything above it must be Ataniq's.
+**The limit.** What the step's descriptor gives is that bubblewrap is handed the
+object the walk found. Whether bubblewrap mounts the object behind the
+descriptor, and closes the descriptor before the command inside starts, is not
+shown by anything here (an open point). The rows of the host are still bound by
+path: bubblewrap resolves each by name, from a real path that no lead writes.
+And the walk of the step, like every check here, says what was there at that
+moment, which is why every source and everything above it must be Ataniq's.
 
-**The path that is bound is the path that is checked.** bubblewrap binds the path
-the plan names and follows a link in it, so a source that is checked and a
-different one that is bound is a check that did not happen. For every row:
+**The path that is bound is the path that is checked.** For a row bound by path,
+bubblewrap binds the path the plan names and follows a link in it, so a source
+that is checked and a different one that is bound is a check that did not
+happen. For a row bound from a descriptor there is no second lookup by name: the
+path the plan names for the row is the path the step walks to. For every row:
 
 - a source Ataniq supplies (every row but the host's own) must be given as its
   real path. `ResolveSources` refuses a source whose real path differs from its
-  lexical one, a link anywhere on it, naming the row and the real path; the plan
-  binds the source as given, and `CheckBindSources` walks to that path as it is,
-  with no link allowed on it, and checks its type;
+  lexical one, a link anywhere on it, naming the row and the real path. The
+  plan's walk for the row leads to that source (`Build` refuses a walk that does
+  not, and `Verify` takes the source of such a mount from the walk it reads back
+  out of the step), the step walks to it as it is, with no link allowed on it,
+  and checks its type, and `CheckBindSources` is the check before that walk, on
+  the same path;
 - a row of the host (`/usr`, `/etc/hosts`, `/etc/localtime` and the like), whose
   own name may be a link of the host that no lead writes, is bound from the real
   path that `ResolveSources` reported. The holder gives it to the plan
@@ -681,22 +804,48 @@ Two limits of the derivation are stated and not detected:
 
 ## The probe
 
-`ataniq-probe` is a static program, built without cgo, with two modes. It exits 97
-or 98 and otherwise replaces itself with the command it was given (or, when
-`setsid` is refused, runs it as a child and exits with its status, or 128 plus
-the signal number; see below).
+`ataniq-probe` is a static program, built without cgo, with two modes. It exits
+96, 97 or 98 and otherwise replaces itself with the command it was given (or,
+when `setsid` is refused, runs it as a child and exits with its status, or 128
+plus the signal number; see below).
 
-**Pass-through mode** (`pass-fds [--read FD=PATH]... [--write FD=PATH]... --
-COMMAND ARGV...`) runs on the host between pasta and bubblewrap. FD is 3 to 1023
-and at most 8 files are given. A `--read` file is opened read-only and must be a
-regular file; a `--write` file is opened write-only, appending, never created and
-never truncated, and must be a regular file or a FIFO. Links are not followed at
-the last component. A FIFO that no process has open for reading is refused at
-once, so the holder opens its reading end first. Each file is placed at exactly
-its number, every other descriptor above 2 is made close-on-exec, and the command
-is executed. The checks on a path are not atomic with the open, so every path must
-lie in a folder only the holder can write. A number that is one of the Go
-runtime's own descriptors is refused.
+**Pass-through mode** (`pass-fds [--read FD=PATH]... [--write FD=PATH]...
+[--walk-dir FD ROOT REL]... [--walk-file FD ROOT REL]... -- COMMAND ARGV...`)
+runs on the host between pasta and bubblewrap. FD is 3 to 1023, each at most
+once whatever the option, and at most 128 descriptors are given in all, counting
+every option: the cap is hard (see "The source walks and the descriptors" for
+the number). A `--read` file is opened read-only and must be a regular file; a
+`--write` file is opened write-only, appending, never created and never
+truncated, and must be a regular file or a FIFO. Links are not followed at the
+last component. A FIFO that no process has open for reading is refused at once,
+so the holder opens its reading end first.
+
+A walk is a bind source of the plan, reached by handle: `--walk-dir` for a
+source that must be a folder, `--walk-file` for a regular file. ROOT is the
+folder the walk starts from and REL the path of the source beneath it. For each
+walk the step opens ROOT in one lookup that follows no symbolic link in any
+component (mount points above ROOT are crossed), opens REL beneath that handle
+in one `openat2` lookup that follows no link on any component, the last
+included, and crosses no mount point, with `O_PATH` (so a FIFO does not block it
+and a device's own open does not run), reads the type from the descriptor that
+lookup returned and refuses anything but a folder or a regular file as the
+option says. No content is read. It keeps a descriptor of its own on that
+object. The walks are made first, before any `--read` or `--write` file is
+opened, so a refused source ends the step before the report channel has been
+opened. There is no fallback to a path-based open: where `openat2` is not
+available the walk is refused.
+
+Each descriptor, of a file or of a walk, is placed at exactly its number, every
+other descriptor above 2 is made close-on-exec, and the command is executed.
+Whether the command, bubblewrap, then binds the object behind a descriptor and
+closes it before it starts what runs inside is not something the probe answers:
+a qualification item. The checks on a `--read` or `--write` path are not atomic
+with the open, so every such path must lie in a folder only the holder can
+write. That rule is about those two options only: a walk has no such gap below
+ROOT, because its lookup and its check are on one descriptor. Above ROOT a walk
+refuses a link and nothing else, so ROOT and the folders above it must be ones
+no sandbox can write; the plan and the holder choose ROOT. A number that is one
+of the Go runtime's own descriptors is refused.
 
 **Inside mode** (`--spec PATH --report-fd N -- AGENT ARGV...`) runs inside the
 sandbox as the program the plan starts last. In order, it marks the report
@@ -715,14 +864,19 @@ A line seen anywhere else, the terminal in particular, is display only: the lead
 writes to the same terminal after the exec and can print the same prefix, and the
 report's digest is readable by the lead, so neither authenticates anything.
 
-**Exit codes.** 97: the inside checks did not pass; the agent is not started, and
-standard error lists the problems (display only). 98: a usage error, or a failure
-to do what the command is for. A refusal before the report (a usage error, a
-report descriptor that is not open, an agent that cannot be executed, a spec that
-is refused) writes nothing to the channel, and the holder sees the exit status
-alone. A file the kernel does not accept as a program fails after a good report
-with the same 98, which a holder cannot tell from an agent that started and exited
-98.
+**Exit codes.** 96: the pass-through mode refused a bind source in its walk;
+standard error holds one line that names the option, the descriptor, the reason,
+ROOT and REL, nothing was executed, and bubblewrap was not started. 97: the
+inside checks did not pass; the agent is not started, and standard error lists
+the problems (display only). 98: a usage error, or a failure to do what the
+command is for (in the pass-through mode, any error but a refused walk). A
+refusal before the report (a usage error, a report descriptor that is not open,
+an agent that cannot be executed, a spec that is refused) writes nothing to the
+channel, and the holder sees the exit status alone. A file the kernel does not
+accept as a program fails after a good report with the same 98, which a holder
+cannot tell from an agent that started and exited 98. How pasta passes on the
+status of the pass-through step, 96 included, is not shown by anything here (an
+open point).
 
 **Session and controlling terminal.** When descriptor 0 is a terminal, the probe
 gives the agent a new session with that terminal as its controlling terminal
@@ -846,9 +1000,11 @@ before the agent starts; they say nothing about what the agent does after.
 ## Reading lead-writable folders without following links
 
 `safefile` is the owner-side way to read or prepare a folder a lead can write. The
-caller opens a folder handle (`OpenRoot`) once, on a path it owns, and every
-access goes through `openat2` with `RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`,
-`RESOLVE_NO_MAGICLINKS` and `RESOLVE_NO_XDEV`, relative to that handle. It offers
+caller opens a folder handle once, with `OpenRoot` on a path it owns (only the
+last component is checked) or with `OpenRootNoLinks` on a path that is expected
+to be a real path (see below), and every access goes through `openat2` with
+`RESOLVE_BENEATH`, `RESOLVE_NO_SYMLINKS`, `RESOLVE_NO_MAGICLINKS` and
+`RESOLVE_NO_XDEV`, relative to that handle. It offers
 reads (a regular file up to a cap, a folder listing up to a count, `Lstat`) and
 the writes the mount-point work needs (`MkdirAll`, `WriteFileExclusive` which only
 creates, and `AppendFile` for an existing regular file), `Sync` (fsync of a file
@@ -864,7 +1020,19 @@ regular file with `O_PATH` and return an entry handle, for a caller that hands
 the entry on (a bind source given to a child process): what it checked is the
 descriptor it passes. None of the three crosses a mount point, and an entry
 handle on a file refuses neither a size nor a hard-linked file, as it reads
-nothing.
+nothing. The descriptor is close-on-exec, so no child inherits it by itself.
+`Handle.Dup` gives the caller a descriptor of its own on the same object,
+close-on-exec too, which it places at the number a child process is to inherit;
+the number `Handle.Fd` returns stays the handle's and ends with its `Close`, so a
+caller that hands the object on takes the duplicate and closes the handle.
+
+`OpenRootNoLinks` is for a folder that a bind source is walked from, which is
+not the caller's own choice of path. It looks the whole path up from the root of
+the file system in one `openat2` that follows no symbolic link on any component,
+and the handle is the descriptor that lookup returned. Mount points above the
+folder are crossed, because the folder may be on any mount; below the handle the
+rules are those of any other `Root`. The pass-through step opens the ROOT of
+each walk this way.
 
 **What it guarantees.** A symbolic link is refused, even when it points back
 inside the folder or nowhere; a link in a parent component is refused by every
@@ -876,17 +1044,20 @@ mount point below the handle is refused. A regular file with more than one hard
 link is reported, and `RefuseHardLinks` makes a read refuse it; an append always
 refuses it. Every refusal names its reason and matches one of the package's
 errors. When `openat2` does not work (an old kernel, a seccomp filter that denies
-it), `OpenRoot` fails with `ErrUnsupported`; there is no fallback to a path-based
-open.
+it), `OpenRoot` and `OpenRootNoLinks` fail with `ErrUnsupported`; there is no
+fallback to a path-based open.
 
-**What the caller must still do.** Pass a path whose parents it owns: only the last
-component is checked. Keep the owner's state folders on a file system mounted
-`nodev`, because a device node is opened before `fstat` can refuse it. Check again,
-right before use, a path it will later use by name (a bind): the end check of
-`MkdirAll` holds only at that moment, and folders made after a move stay where the
-moved folder went. Expect that a raw error number (`EACCES`, `ENXIO`, `EPERM`,
-`EAGAIN` for a leased file) can come instead of a package error from the open of a
-device or a leased file. The package does not protect against changes made by
+**What the caller must still do.** For `OpenRoot`, pass a path whose parents it
+owns: only the last component is checked. `OpenRootNoLinks` refuses a link on
+every component and adds nothing else: whoever can write a folder above can
+still rename what the path names, so the parents must be the caller's there too.
+Keep the owner's state folders on a file system mounted `nodev`, because a
+device node is opened before `fstat` can refuse it. Check again, right before
+use, a path it will later use by name (a bind): the end check of `MkdirAll`
+holds only at that moment, and folders made after a move stay where the moved
+folder went. Expect that a raw error number (`EACCES`, `ENXIO`, `EPERM`,
+`EAGAIN` for a leased file) can come instead of a package error from the open of
+a device or a leased file. The package does not protect against changes made by
 someone with owner rights to the folder behind the handle.
 
 ## The profile digest
@@ -959,9 +1130,12 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
     it.
 14. **Checks at one moment (Q).** The mount-point and source checks are made right
     before the start; nothing here closes the gap between a check and the launch
-    except an empty control group, which the holder has to prove. The bind
-    sources are checked by handle and then bound by path: passing them to
-    bubblewrap by descriptor is not yet built.
+    except an empty control group, which the holder has to prove. For a bind
+    source Ataniq supplies the gap is narrowed to the pass-through step's walk,
+    which is made right before bubblewrap starts and whose descriptor bubblewrap
+    is given (if it mounts that object: item 19). The rows of the host, bound by
+    path, and the start walk of the mount points inside the lead's folders, which
+    the step does not repeat, are not covered by it.
 15. **The agent's exit 98 (Q).** A holder cannot tell an agent that exited 98 from
     a probe that failed to execute it after a good report.
 16. **Owner-side state (O).** The owner's state folders should lie on a file
@@ -979,6 +1153,25 @@ For the owner (O) and for qualification (Q). Each is stated in the package named
     reads the request folder, writes the mailbox or publishes a coordinator's
     folders. Assertion 11 compares the coordinators' identities as they were
     when the spec was written, so a coordinator made later is not in the list.
+19. **Bind descriptors through bubblewrap (Q).** Whether bubblewrap mounts the
+    object behind the descriptor that `--bind-fd` and `--ro-bind-fd` are given,
+    the folder or file the step's walk found, and closes the descriptor before
+    the command inside starts. Nothing here shows either; every plan says so in a
+    note.
+20. **`--ro-bind-fd` and an `O_PATH` descriptor (Q).** The step keeps an `O_PATH`
+    descriptor on each source it walks to. Whether `--ro-bind-fd` takes an
+    `O_PATH` descriptor of a regular file is not shown by anything here.
+21. **The status of the step through pasta (Q).** A source the step's walk
+    refuses is exit 96 of the step, before bubblewrap starts. How pasta passes on
+    the exit status of its command is not known here; the harness expects a first
+    process that exited before a report, and that has not been observed.
+22. **The minimum bubblewrap release (Q).** The harness ends a run at the step
+    `tool-versions` when bubblewrap is older than 0.10.0. That release is an
+    assumption, the first one taken to have `--bind-fd` and `--ro-bind-fd`, to be
+    confirmed at qualification. A bubblewrap without the options is expected to
+    refuse the plan's arguments as unknown and to start nothing, which has not
+    been observed; the plan has no form that binds a source Ataniq supplies by
+    path.
 
 ## Qualification
 
