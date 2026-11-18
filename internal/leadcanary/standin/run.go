@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -392,16 +391,5 @@ func (r *replay) answered(l *loop) error {
 // decide records the order, once.
 func (r *replay) decide(order string) error {
 	r.decided = true
-	f, err := os.OpenFile(filepath.Join(r.dir, OrderFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return fmt.Errorf("standin: %w", err)
-	}
-	_, werr := f.WriteString(order + "\n")
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
-		return fmt.Errorf("standin: %w", werr)
-	}
-	return nil
+	return writeRegular(filepath.Join(r.dir, OrderFile), order+"\n", 0o600)
 }

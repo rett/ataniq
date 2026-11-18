@@ -90,9 +90,10 @@ func (l *limitedBuffer) String() string { return l.b.String() }
 // that holds dir, and commits the file on Branch with the subject Subject. The
 // branch is made from the current commit when it does not exist, and switched
 // to when it does. The token is checked against its character set first; no
-// other text reaches git or a file. An empty commit is allowed, so a token
-// that is already in the file is committed again. home is the HOME of git's
-// environment.
+// other text reaches git or a file. TokenFile must be a regular file or not
+// exist: a link, a pipe or any other kind of file is refused, without waiting
+// for it. An empty commit is allowed, so a token that is already in the file
+// is committed again. home is the HOME of git's environment.
 func Commit(dir, home, token string) error {
 	if !ValidToken(token) {
 		return errors.New("standin: not a valid token")
@@ -113,20 +114,40 @@ func Commit(dir, home, token string) error {
 	} else if _, err = git(top, home, "switch", "--create", Branch); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(top, TokenFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		return fmt.Errorf("standin: %w", err)
-	}
-	_, werr := f.WriteString(token + "\n")
-	if cerr := f.Close(); werr == nil {
-		werr = cerr
-	}
-	if werr != nil {
-		return fmt.Errorf("standin: %w", werr)
+	if err := writeRegular(filepath.Join(top, TokenFile), token+"\n", 0o644); err != nil {
+		return err
 	}
 	if _, err := git(top, home, "add", "--", TokenFile); err != nil {
 		return err
 	}
 	_, err = git(top, home, "commit", "--no-verify", "--allow-empty", "--message", Subject, "--", TokenFile)
 	return err
+}
+
+// writeRegular replaces the content of the file at path with s, making it
+// when it does not exist. It refuses a link, and any file that is not a
+// regular file, such as a pipe, which it does not wait for: the open does not
+// block and the file is not truncated before it is known to be regular.
+func writeRegular(path, s string, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, perm)
+	if err != nil {
+		return fmt.Errorf("standin: %w", err)
+	}
+	st, err := f.Stat()
+	if err == nil && !st.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a regular file", filepath.Base(path))
+	}
+	if err == nil {
+		err = f.Truncate(0)
+	}
+	if err == nil {
+		_, err = f.WriteString(s)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return fmt.Errorf("standin: %w", err)
+	}
+	return nil
 }
