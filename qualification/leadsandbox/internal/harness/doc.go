@@ -17,7 +17,9 @@
 // source to its real path, the report channel (a FIFO in a folder of the attempt
 // that holds nothing else, whose reader is opened first), the canary, the plan
 // ([plan.Build] and [plan.Verify]), the probe spec (with the identities of the
-// owner and holder paths and their ancestors, which assertion 1 needs), a
+// owner and holder paths and their ancestors, which assertion 1 needs, and of
+// the coordinators' folders under the state root and their ancestors, which
+// assertion 11 needs), a
 // second check right before the launch, the check of every bind source of the
 // plan without following a symbolic link (rule G1, a step of its own after the
 // second resolution; a problem refuses the launch), the launch through a
@@ -67,7 +69,14 @@
 // It does not create a systemd unit, so the cases that need one (the stop
 // rule, limits, S9) belong to the holder's qualification. It has no role
 // lock, no lingering check and no qualification record store: the outside
-// results for them are "not-checked". It does not check that the probe is a
+// results for them are "not-checked". The outside half of assertion 7 is made
+// from the harness's own check of the mount points right before the launch
+// (the step recheck). The design wants that walk made with the previous
+// instance proven stopped, and without a unit the harness has no control
+// group to prove it with: when the configuration states that no lead has run
+// in the scratch folders ("no_lead_has_run"), there is no previous instance,
+// by that statement, and the detail of the result says so; without the
+// statement a walk that found nothing is "not-checked". It does not check that the probe is a
 // static executable, does not review a seccomp filter and does not narrow
 // outbound network access. The real [Launcher] ([ExecLauncher], in its own
 // file) is the only non-test code here that starts a process, and a test

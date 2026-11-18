@@ -10,7 +10,10 @@ import (
 
 // caseNotes say what else in the evidence bears on an automated case.
 var caseNotes = map[string][]string{
-	"S1":  {"results holder-hidden and owner-paths-absent: the probe's look from inside, and the harness's look at the bind sources"},
+	"S1": {
+		"results holder-hidden and owner-paths-absent: the probe's look from inside, and the harness's look at the bind sources",
+		"result parent-folders (assertion 11, a result of this case by amendment H2 of the coordinator note): the four parent folders inside, and the probe's look for a coordinator's tree or home; the identities it compares are of the coordinators' folders that existed when the spec was written (coordinator_identities in spec.json)",
+	},
 	"S2":  {"the canary counts in outside.json and summary.json are the evidence that does not depend on the probe's own judgement"},
 	"S4":  {"the resolv.conf derivation of this run is in summary.json (resolv_conf); a derivation that was refused ends the run before a launch, with the reason in the step"},
 	"S7":  {"the sysctl or filter fact only: the harness never issues TIOCSTI"},

@@ -70,13 +70,17 @@ func testSpec(t *testing.T) assert.Spec {
 		// The identity check cannot be made without a forbidden identity.
 		ForbiddenIdentities: []assert.FileIdentity{{Device: 7, Inode: 70}},
 		OtherConfigDir:      profile.ConfigInside(rt.Other()),
-		LoopbackTCP:         addr,
-		AbstractSocket:      fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
-		ProviderHost:        "localhost",
-		Tree:                "/work/ataniq",
-		GitReadOnly:         []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
-		ManagedSettings:     profile.ClaudeManagedInside,
-		ManagedMarker:       "example-guard-hook",
+		// The coordinators' roots of an invented state root, and one identity:
+		// without one assertion 11 cannot be made.
+		CoordinatorPaths:      []string{"/var/lib/example/state/coords", "/var/lib/example/state/coord-login"},
+		CoordinatorIdentities: []assert.FileIdentity{{Device: 9, Inode: 90}},
+		LoopbackTCP:           addr,
+		AbstractSocket:        fmt.Sprintf("ataniq-probe-test-%d-%d", os.Getpid(), time.Now().UnixNano()),
+		ProviderHost:          "localhost",
+		Tree:                  "/work/ataniq",
+		GitReadOnly:           []string{"/work/ataniq/.git/config", "/work/ataniq/.git/hooks", "/work/ataniq/.git/info"},
+		ManagedSettings:       profile.ClaudeManagedInside,
+		ManagedMarker:         "example-guard-hook",
 
 		ConnectTimeoutMS: 100,
 		ResolveTimeoutMS: 100,
@@ -107,6 +111,8 @@ type fakeSystem struct {
 	data   map[string]string
 	mounts []assert.Mount
 	ids    map[string]int
+	// writable are the paths access(W_OK) allows.
+	writable map[string]bool
 }
 
 func passSystem(s assert.Spec) *fakeSystem {
@@ -117,7 +123,8 @@ func passSystem(s assert.Spec) *fakeSystem {
 			"/proc/sys/dev/tty/legacy_tiocsti": "0\n",
 			s.ManagedSettings:                  `{"hooks":"` + s.ManagedMarker + `"}`,
 		},
-		ids: map[string]int{},
+		ids:      map[string]int{},
+		writable: map[string]bool{},
 	}
 	for _, e := range s.Env {
 		f.env = append(f.env, e.Name+"="+e.Value)
@@ -133,6 +140,24 @@ func passSystem(s assert.Spec) *fakeSystem {
 		id := 10 + i
 		f.mounts = append(f.mounts, assert.Mount{ID: id, ParentID: 1, Root: "/", Point: p, Options: "ro,nosuid", FSType: "tmpfs", Source: "tmpfs", SuperOptions: "rw"})
 		f.ids[p] = id
+	}
+	// The four parent folders of assertion 11, each a mount of its own: the
+	// requests and the mail folder read-write, the mailbox and the published
+	// folder read-only and empty.
+	for i, pf := range []struct {
+		path     string
+		writable bool
+	}{
+		{profile.RequestsInside, true}, {profile.MailboxInside, false}, {profile.MailInside, true}, {profile.CoordInside, false},
+	} {
+		id, opts := 20+i, "ro,nosuid"
+		if pf.writable {
+			opts = "rw,nosuid"
+		}
+		f.nodes[pf.path] = fs.ModeDir | 0o700
+		f.mounts = append(f.mounts, assert.Mount{ID: id, ParentID: 1, Root: "/", Point: pf.path, Options: opts, FSType: "tmpfs", Source: "tmpfs", SuperOptions: "rw"})
+		f.ids[pf.path] = id
+		f.writable[pf.path] = pf.writable
 	}
 	return f
 }
@@ -178,7 +203,15 @@ func (f *fakeSystem) Identity(p string) (assert.FileIdentity, error) {
 	return assert.FileIdentity{Device: 4242, Inode: h.Sum64() | 1<<40}, nil
 }
 func (f *fakeSystem) DirEmpty(string) (bool, error) { return true, nil }
-func (f *fakeSystem) Writable(string) (bool, error) { return false, nil }
+
+// DirNames is an empty folder for every folder of the fake.
+func (f *fakeSystem) DirNames(p string, _ int) ([]string, error) {
+	if mode, ok := f.nodes[p]; !ok || !mode.IsDir() {
+		return nil, &fs.PathError{Op: "open", Path: p, Err: syscall.ENOENT}
+	}
+	return nil, nil
+}
+func (f *fakeSystem) Writable(p string) (bool, error) { return f.writable[p], nil }
 
 // agentFD is one descriptor above 2 as the test agent sees it.
 type agentFD struct {

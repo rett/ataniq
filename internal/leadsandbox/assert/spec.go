@@ -14,8 +14,9 @@ import (
 	"ataniq/internal/leadsandbox/profile"
 )
 
-// SpecVersion is the version of the spec format.
-const SpecVersion = 1
+// SpecVersion is the version of the spec format. Version 2 added the
+// coordinators' paths and identities (assertion 11).
+const SpecVersion = 2
 
 // Bounds on a spec. The holder writes it and the probe reads it from a
 // read-only folder, but the decoder still treats it as input.
@@ -26,7 +27,7 @@ const (
 	MaxEnvEntries      = 128
 	MaxPathEntries     = 64
 	MaxMountSubstrings = 64
-	// MaxIdentities is declared in identity.go.
+	// MaxIdentities and MaxCoordinatorIdentities are declared in identity.go.
 	MaxOptional       = 1
 	MaxPathBytes      = 4096
 	MaxEnvNameBytes   = 64
@@ -93,6 +94,24 @@ type Spec struct {
 	// inside, in the lead's home. It must be absent, or an empty folder (a
 	// lead can make one) with nothing mounted at or below it (assertion 6).
 	OtherConfigDir string `json:"other_config_dir"`
+
+	// CoordinatorPaths are the coordinators' folders on the host: the two
+	// roots of the layout, <state>/coords (the trees and homes) and
+	// <state>/coord-login (the shared logins), and whatever else the holder
+	// adds. None may exist inside, and no mount may have a root, a source or
+	// a mount point that is one of them, lies below one or is an ancestor of
+	// one (assertion 11). They are host paths, written as they would appear
+	// inside if they were bound at the same place.
+	CoordinatorPaths []string `json:"coordinator_paths"`
+	// CoordinatorIdentities are the identities, as the holder saw them
+	// outside, of the coordinators' folders that exist and of each of their
+	// ancestors up to, and not including, "/" (CollectIdentities over
+	// CoordinatorIdentityPaths and, when the holder lists them, the folders
+	// CoordinatorFolders finds). Assertion 11 fails a mount point, one of the
+	// four parent folders or an entry of the published folder that has one of
+	// them. An empty list makes assertion 11 not-checked, never ok. At most
+	// MaxCoordinatorIdentities are listed.
+	CoordinatorIdentities []FileIdentity `json:"coordinator_identities,omitempty"`
 
 	// LoopbackTCP is one host loopback address (ip:port) and AbstractSocket
 	// one host abstract socket name (without the leading @) that must be
@@ -254,7 +273,13 @@ func (s Spec) Validate() error {
 	if err := checkSubstrings(s.MountSubstrings); err != nil {
 		return err
 	}
-	if err := checkIdentities(s.ForbiddenIdentities); err != nil {
+	if err := checkIdentities("forbidden_identities", s.ForbiddenIdentities, MaxIdentities); err != nil {
+		return err
+	}
+	if err := checkPaths("coordinator_paths", s.CoordinatorPaths); err != nil {
+		return err
+	}
+	if err := checkIdentities("coordinator_identities", s.CoordinatorIdentities, MaxCoordinatorIdentities); err != nil {
 		return err
 	}
 	if want := profile.ConfigInside(s.Runtime.Other()); s.OtherConfigDir != want {
@@ -382,13 +407,13 @@ func checkSubstrings(list []string) error {
 	return nil
 }
 
-func checkIdentities(list []FileIdentity) error {
-	if len(list) > MaxIdentities {
-		return refuse("forbidden_identities", "more than %d entries", MaxIdentities)
+func checkIdentities(field string, list []FileIdentity, most int) error {
+	if len(list) > most {
+		return refuse(field, "more than %d entries", most)
 	}
 	for i, id := range list {
 		if id.Inode == 0 {
-			return refuse(fmt.Sprintf("forbidden_identities[%d]", i), "has inode 0, which no file has")
+			return refuse(fmt.Sprintf("%s[%d]", field, i), "has inode 0, which no file has")
 		}
 	}
 	return nil

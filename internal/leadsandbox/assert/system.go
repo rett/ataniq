@@ -11,10 +11,11 @@ import (
 	"time"
 )
 
-// Errors a System's ReadFile reports, in addition to the errors of the file
-// system (which satisfy fs.ErrNotExist and the like).
+// Errors a System's ReadFile and DirNames report, in addition to the errors of
+// the file system (which satisfy fs.ErrNotExist and the like).
 var (
-	// ErrTooLarge: the file is larger than the limit given.
+	// ErrTooLarge: the file is larger than the limit given, or the folder
+	// holds more entries than the limit given.
 	ErrTooLarge = errors.New("assert: file is larger than the limit")
 	// ErrNotRegular: the path is not a regular file (or is a symbolic link).
 	ErrNotRegular = errors.New("assert: not a regular file")
@@ -66,8 +67,8 @@ type FileIdentity struct {
 // String writes the identity as "device:inode".
 func (id FileIdentity) String() string { return fmt.Sprintf("%d:%d", id.Device, id.Inode) }
 
-// System is what the inside checks may do: ask about files, the mount table
-// and the environment, dial and resolve with a deadline, and ask the kernel
+// System is what the inside checks may do: ask about files, folders, the mount
+// table and the environment, dial and resolve with a deadline, and ask the kernel
 // whether a path is writable without writing. It has no way to create a file,
 // to start a process or to send a byte on a connection. [HostSystem] is the
 // real one (Linux); tests pass a fake.
@@ -111,6 +112,13 @@ type System interface {
 	// (the path is not a folder, or cannot be read) is a question that could
 	// not be asked.
 	DirEmpty(path string) (bool, error)
+	// DirNames returns the names of the entries of the folder at the path,
+	// sorted, at most limit of them. It does not follow a link at the path. A
+	// folder that holds more is an error that wraps ErrTooLarge, and no name
+	// is returned: a list that is cut short would make a check look better
+	// than it is. Any other error (the path is not a folder, or cannot be
+	// read) is a question that could not be asked.
+	DirNames(path string, limit int) ([]string, error)
 	// Writable asks the kernel whether the calling process may write the path
 	// (access(2) with W_OK), without writing. False with a nil error is a
 	// plain refusal (a read-only mount or no permission); the error is for a

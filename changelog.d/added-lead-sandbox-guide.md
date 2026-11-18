@@ -1,6 +1,6 @@
 - Add `docs/lead-sandbox.md`, a guide to the lead sandbox proposal: the launch
   plan, nested sandboxes under owner decision R17, the file-system view, the
-  clone rules, the environment allowlist, network and DNS, the probe, the ten
+  clone rules, the environment allowlist, network and DNS, the probe, the eleven
   start-up assertions, symlink-safe reads, the profile digest and the open
   points. It is a proposal that awaits qualification and the owner's decision on
   the profile; nothing starts a sandbox in ordinary use, and no command uses it
