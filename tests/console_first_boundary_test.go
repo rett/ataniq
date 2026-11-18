@@ -718,20 +718,29 @@ var boundaryTagged = "//go:build linux && " + boundaryTag + "\n\n" + boundarySou
 
 func TestConsoleFirstBoundaryImportTable(t *testing.T) {
 	// Every row of the table trips on an import of this repository that it
-	// does not name, and passes on what it does name.
+	// does not name, and passes on what it does name. A row names a package
+	// and not the packages below it, so an import below each entry trips it
+	// as well.
 	for pkg, row := range boundaryTable {
 		allowed := []string{"strings", "example.org/module"}
 		for _, r := range row {
 			allowed = append(allowed, "/"+r)
 		}
-		expectFindings(t, ruleTable, boundarySample(t, map[string]string{
+		sources := map[string]string{
 			pkg + "/good.go":      boundarySource(allowed...),
 			pkg + "/bad.go":       boundarySource("/internal/journal"),
 			pkg + "/root.go":      boundarySource(boundaryModule),
 			pkg + "/bad_test.go":  boundarySource("/internal/journal"),
 			pkg + "/tagged.go":    boundaryTagged,
 			pkg + "/below/sub.go": boundarySource("/internal/journal"),
-		}), pkg+"/bad.go", pkg+"/root.go")
+		}
+		want := []string{pkg + "/bad.go", pkg + "/root.go"}
+		for i, r := range row {
+			name := pkg + "/sub" + strconv.Itoa(i) + ".go"
+			sources[name] = boundarySource("/" + r + "/below")
+			want = append(want, name)
+		}
+		expectFindings(t, ruleTable, boundarySample(t, sources), want...)
 	}
 	// The three packages that are built first import none of the others.
 	for _, pkg := range []string{pkgRecord, pkgLimits, pkgPresence} {
@@ -766,6 +775,8 @@ func TestConsoleFirstBoundaryPurePackages(t *testing.T) {
 			pkg + "/cgo.go":      boundarySource("C"),
 			pkg + "/bad_test.go": boundarySource("example.org/module"),
 			pkg + "/tagged.go":   boundaryTagged,
+			// The list names a package and not the packages below it.
+			pkg + "/below/module.go": boundarySource("example.org/module"),
 		}), pkg+"/module.go", pkg+"/x.go", pkg+"/cgo.go")
 	}
 	// A package that is not in the list may import a module.
