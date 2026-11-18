@@ -96,22 +96,20 @@ func headerConstraintsGo(data string) (all, applied []constraint.Expr, hasGoBuil
 	inBlock, ended := false, false
 	for _, line := range strings.Split(data, "\n") {
 		s := strings.TrimSpace(line)
-		if inBlock {
-			if strings.Contains(s, "*/") {
-				inBlock = false
-			}
-			continue
-		}
-		if s == "" {
+		if !inBlock && s == "" {
 			if !ended {
 				plusBuild = append(plusBuild, pending...)
 				pending = nil
 			}
 			continue
 		}
-		if strings.HasPrefix(s, "/*") {
+		if inBlock || strings.HasPrefix(s, "/*") {
 			ended = true
-			inBlock = !strings.Contains(s[2:], "*/")
+			var rest string
+			rest, inBlock = afterBlockComments(s, inBlock)
+			if !inBlock && rest != "" && !strings.HasPrefix(rest, "//") {
+				break // code follows the comment: the header is over
+			}
 			continue
 		}
 		if !strings.HasPrefix(s, "//") {
@@ -138,6 +136,24 @@ func headerConstraintsGo(data string) (all, applied []constraint.Expr, hasGoBuil
 		return all, goBuild, true, bad
 	}
 	return all, plusBuild, false, bad
+}
+
+// afterBlockComments drops the block comments that open or continue on a line
+// and returns what follows them and whether one is still open.
+func afterBlockComments(s string, inBlock bool) (string, bool) {
+	for {
+		if inBlock {
+			i := strings.Index(s, "*/")
+			if i < 0 {
+				return "", true
+			}
+			s, inBlock = strings.TrimSpace(s[i+2:]), false
+		} else if strings.HasPrefix(s, "/*") {
+			s, inBlock = s[2:], true
+		} else {
+			return s, false
+		}
+	}
 }
 
 func exprNamesTag(e constraint.Expr) bool {
@@ -233,10 +249,12 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			}
 			return nil
 		}
-		if named && !underAnyPath(p, canaryAllowedPaths) {
+		switch {
+		case named && !underAnyPath(p, canaryAllowedPaths):
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
-		}
-		if underAnyPath(p, canaryWholePaths) && (!hasGoBuild || !named || buildsWithoutTag(applied)) {
+		case named && !(hasGoBuild && slices.ContainsFunc(applied, exprNamesTag)):
+			problems = append(problems, fmt.Sprintf("%s: %s is named, but not in a go:build line that the go command applies", p, canaryTag))
+		case underAnyPath(p, canaryWholePaths) && (!hasGoBuild || !named || buildsWithoutTag(applied)):
 			problems = append(problems, fmt.Sprintf("%s: a file of a wholly tagged package does not require %s", p, canaryTag))
 		}
 		return nil
@@ -931,13 +949,36 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 			"internal/leadcanary/a.go":          goSource(hdrPlain + "\n" + hdrPlusTagged),
 			"internal/leadcanary/b.go":          goSource(hdrTagged + "\n" + hdrPlusPlain),
 		}, []string{"cmd/ataniq-canary-standin/main.go", "internal/leadcanary/a.go"}},
-		// Outside the wholly tagged paths a plus build line alone is applied; in
-		// them a file must carry a go:build line that needs the tag.
-		{"a plus build line alone is applied", fstest.MapFS{
+		// Wherever a file names the tag, it does so in a go:build line: a plus
+		// build line alone is refused outside the wholly tagged paths too, where
+		// it would be read or not by the go command as the blank line and the
+		// block comments decide.
+		{"a plus build line alone naming the tag", fstest.MapFS{
 			"internal/leaddaemon/a.go":       goSource(hdrPlusTagged),
 			"internal/leaddaemon/b.go":       goSource(hdrPlusPlain),
 			"internal/leadholder/serve/c.go": goSource(hdrPlusPlain),
-		}, nil},
+			"internal/leadholder/serve/d.go": goSource(hdrPlusTagged),
+			"cmd/ataniqd/e.go":               goSource(hdrPlain + "\n" + hdrPlusTagged),
+			"cmd/ataniq-holder/f.go":         goSource(hdrTagged + "\n" + hdrPlusPlain),
+		}, []string{"cmd/ataniqd/e.go", "internal/leaddaemon/a.go", "internal/leadholder/serve/d.go"}},
+		// The go command does not read a plus build line that no blank line
+		// follows, so the file builds without the tag.
+		{"a plus build line that no blank line follows", fstest.MapFS{
+			"internal/leaddaemon/canary_q2.go": &fstest.MapFile{Data: []byte(hdrPlusTagged + "\npackage leaddaemon\n")},
+			"cmd/ataniqd/canary_q3.go":         &fstest.MapFile{Data: []byte("/* c */\n" + hdrPlusTagged + "\n\npackage main\n")},
+			"cmd/ataniqd/canary_ok.go":         &fstest.MapFile{Data: []byte(hdrTagged + "\npackage main\n")},
+		}, []string{"cmd/ataniqd/canary_q3.go", "internal/leaddaemon/canary_q2.go"}},
+		// The header ends at the code that follows a block comment on its line,
+		// so a line after that is no constraint, and a wholly tagged file that
+		// has no constraint before it does not require the tag.
+		{"a go:build line after code that follows a block comment", fstest.MapFS{
+			"internal/leadcanary/a.go": &fstest.MapFile{Data: []byte("/* c */ package leadcanary\n" + hdrTagged + "\n")},
+			"internal/leadcanary/b.go": &fstest.MapFile{Data: []byte("/* c\n*/ package leadcanary\n" + hdrTagged + "\n")},
+			"internal/leadcanary/c.go": &fstest.MapFile{Data: []byte("/* c */ // note\n" + hdrTagged + "\n\npackage leadcanary\n")},
+			"internal/leaddaemon/v.go": &fstest.MapFile{Data: []byte("/* c */ package leaddaemon\n" + hdrTagged + "\n")},
+			"internal/leadcanary/d.go": &fstest.MapFile{Data: []byte("/* c */ /* d */\n" + hdrTagged + "\n\npackage leadcanary\n")},
+			"internal/leadcanary/e.go": &fstest.MapFile{Data: []byte("/* c\nd */\n" + hdrTagged + "\n\npackage leadcanary\n")},
+		}, []string{"internal/leadcanary/a.go", "internal/leadcanary/b.go"}},
 		{"a plus build line alone in a wholly tagged package", fstest.MapFS{
 			"internal/leadcanary/a.go":          goSource(hdrPlusTagged),
 			"internal/leadcanary/b.go":          goSource(hdrPlusPlain),
@@ -1081,6 +1122,12 @@ func TestCanaryTagHeaderConstraints(t *testing.T) {
 		{"a go:build line needs no blank line", hdrTagged + "\npackage a\n", 1, 1, true},
 		{"a go:build line wins over a plus build line", hdrPlain + "\n" + hdrPlusTagged + "\n\npackage a\n", 2, 1, true},
 		{"no constraint", "package a\n", 0, 0, false},
+		{"code after a block comment ends the header", "/* c */ package a\n" + hdrTagged + "\n", 0, 0, false},
+		{"code after a multi-line block comment ends the header", "/* c\n*/ package a\n" + hdrTagged + "\n", 0, 0, false},
+		{"a line comment after a block comment is no constraint", "/* c */ " + hdrTagged + "\n\npackage a\n", 0, 0, false},
+		{"a block comment closed on its line, a constraint below", "/* c */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"two block comments on a line", "/* c */ /* d */\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
+		{"a block comment that closes then opens again", "/* c\n*/ /* d\n*/\n" + hdrTagged + "\n\npackage a\n", 1, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			all, applied, hasGoBuild, bad := headerConstraintsGo(tc.data)

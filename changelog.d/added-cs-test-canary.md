@@ -11,15 +11,18 @@
   tag. `tests/canary_tag_test.go` holds the line: reading every folder but
   `.git`, the top-level `build` and one with its own `go.mod`, a file whose
   constraint names the tag lies only under the paths set for it and in no folder
-  `./...` skips (`testdata`, a dot or an underscore), and every file of a
-  package that exists only with the tag carries a `//go:build` line that needs
-  it, each constraint read as the go command reads it; the tag is named only in
-  the recipes of `test-canary` and `canary-build` in the `Makefile`, which names
-  those two targets nowhere else and includes no other file, and nowhere under
-  `.github/` or `scripts/`; without the tag no command depends on those packages
-  and `ataniqd` depends on nothing under `internal/inject`; tagged code uses no
-  module that untagged code does not; and no file under `.github/` names
-  `canary-build` or the tag, and no run line there names
-  `qualification/canary/`, no workflow uses a local action outside `.github/`,
-  while the `test-canary` job runs the make target, uses only `actions/checkout`
-  and `actions/setup-go` and has no `if` or `continue-on-error`, quoted or not.
+  `./...` skips (`testdata`, a dot or an underscore), every file that names the
+  tag in a constraint does so in a `//go:build` line that the go command applies
+  (a plus build line alone is refused, and the header is not read past code that
+  follows a block comment), and every file of a package that exists only with
+  the tag carries a `//go:build` line that needs it, each constraint read as the
+  go command reads it; the tag is named only in the recipes of `test-canary` and
+  `canary-build` in the `Makefile`, which names those two targets nowhere else
+  and includes no other file, and nowhere under `.github/` or `scripts/`;
+  without the tag no command depends on those packages and `ataniqd` depends on
+  nothing under `internal/inject`; tagged code uses no module that untagged code
+  does not; and no file under `.github/` names `canary-build` or the tag, and no
+  run line there names `qualification/canary/`, no workflow uses a local action
+  outside `.github/`, while the `test-canary` job runs the make target, uses
+  only `actions/checkout` and `actions/setup-go` and has no `if` or
+  `continue-on-error`, quoted or not.
