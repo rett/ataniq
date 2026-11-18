@@ -50,9 +50,12 @@ import (
 // If the agent writes faster than the emulator applies, what is left goes to a
 // goroutine (drainHeld) that applies it in order while the reader goes on
 // holding, and the reader applies again when that backlog is gone: the fence
-// returns, no byte is dropped and none is applied out of order. The output of
-// an agent that ends while a fence holds some is applied by the lifetime path
-// before the pane ends, so the last screen has it.
+// returns, no byte is dropped and none is applied out of order. One drainHeld
+// lives at a time; a fence that begins while it runs finds it applying what the
+// last fence left, between the fence's own calls (never inside Frozen, which
+// holds the output lock), and its Settle waits for it like for any output. The
+// output of an agent that ends while a fence holds some is applied by the
+// lifetime path before the pane ends, so the last screen has it.
 //
 // # Lock order
 //
@@ -60,9 +63,9 @@ import (
 //
 //	imu        the input lock: writer input, the reply writer, WithInputLock
 //	           and WithFence, whole critical sections
-//	apply      one applier of held output at a time (Settle, the end of a
-//	           fence, drainHeld, the lifetime path), so that held bytes are
-//	           applied in the order they were read
+//	apply      one applier of held output at a time, for one slice (Settle,
+//	           the end of a fence, drainHeld, the lifetime path), so that held
+//	           bytes are applied in the order they were read
 //	omu        the output lock: pane writes in slices, the subscriber,
 //	           Resize, Screen, and the whole of a Frozen function
 //	pane       the pane's own lock (sessionpane), taken inside its methods
@@ -139,8 +142,9 @@ func (l *inputLock) lockCtx(ctx context.Context) error {
 // at that point. It is called on the goroutine that applies the output, in the
 // order the emulator meets the strings, with the pane locked: it must return
 // promptly and must not call the session or the pane. While a fence holds the
-// input lock output is applied only by Settle and at the end of the fence, so
-// the hook is not called between them.
+// input lock output is applied only by Settle and at the end of the fence (and
+// by the drain a previous fence left, if one is still running), so the hook is
+// not called between them otherwise.
 type OSCHook struct {
 	Cmd int
 	Fn  func(data []byte) (reply []byte, handled bool)
@@ -250,8 +254,10 @@ type heldOutput struct {
 	arrive chan struct{} // cap 1: bytes were added to buf
 
 	// drainDone is closed when the drainHeld goroutine of the last hand-off
-	// returned; nil if there was none.
+	// returned; nil if there was none. draining is true exactly while that
+	// goroutine lives, so there is at most one.
 	drainDone chan struct{}
+	drains    int // drainHeld goroutines started (tests)
 
 	// apply serialises the appliers of held bytes (see the lock order).
 	apply sync.Mutex
@@ -320,27 +326,24 @@ func (s *Session) admit(chunk []byte) (rest []byte, apply bool) {
 	return chunk, true
 }
 
-// takeHeld removes and returns everything the reader held.
-func (s *Session) takeHeld() []byte {
+// takeSlice removes and returns the first slice of the held bytes: at most
+// OutputSlice of them, or nil if there are none. The caller holds hold.apply, so
+// the slices leave the buffer, and are applied, in the order they were read.
+func (s *Session) takeSlice() []byte {
 	h := &s.hold
 	h.mu.Lock()
-	b := h.buf
-	h.buf = nil
+	n := min(len(h.buf), OutputSlice)
+	b := h.buf[:n:n]
+	if n == len(h.buf) {
+		h.buf = nil
+	} else {
+		h.buf = h.buf[n:]
+	}
 	h.mu.Unlock()
-	if len(b) > 0 {
+	if n > 0 {
 		poke(h.room)
 	}
 	return b
-}
-
-// putBack puts bytes taken and not applied back in front of the held ones.
-func (s *Session) putBack(rest []byte) {
-	h := &s.hold
-	h.mu.Lock()
-	nb := make([]byte, 0, len(rest)+len(h.buf))
-	nb = append(append(nb, rest...), h.buf...)
-	h.buf = nb
-	h.mu.Unlock()
 }
 
 func (s *Session) heldEmpty() bool {
@@ -350,32 +353,66 @@ func (s *Session) heldEmpty() bool {
 	return len(h.buf) == 0
 }
 
-// applyHeld applies what the reader held, in slices of at most OutputSlice
-// bytes, each under its own hold of the output lock, as the reader does. stop,
-// when given, is asked before each slice with the number of slices applied so
-// far in this call, and what is left is put back in front of the buffer when it
-// says so. It reports whether it applied anything and whether it stopped. One
-// caller at a time applies, so the bytes are applied in the order they were
-// read.
+// applyHeld applies what the reader held when it was called, in slices of at
+// most OutputSlice bytes, each under its own hold of the output lock, as the
+// reader does. The applier lock is held for one slice at a time, so that
+// another applier (a fence's Settle, the end of a fence, drainHeld) waits for at
+// most one slice and not for a whole batch; the slices still leave the buffer
+// in the order they were read. stop, when given, is asked before each slice
+// with the number of slices applied so far in this call, and the call ends when
+// it says so. It reports whether it applied anything and whether it stopped.
 func (s *Session) applyHeld(stop func(applied int) bool) (applied, stopped bool) {
-	s.hold.apply.Lock()
-	defer s.hold.apply.Unlock()
-	batch := s.takeHeld()
-	for i := 0; len(batch) > 0; i++ {
+	h := &s.hold
+	h.mu.Lock()
+	want := len(h.buf)
+	h.mu.Unlock()
+	for i := 0; want > 0; i++ {
+		h.apply.Lock()
 		if stop != nil && stop(i) {
-			s.putBack(batch)
-			stopped = true
+			h.apply.Unlock()
+			if applied {
+				s.noteApplied()
+			}
+			return applied, true
+		}
+		slice := s.takeSlice()
+		if len(slice) == 0 {
+			h.apply.Unlock()
 			break
 		}
-		n := min(len(batch), OutputSlice)
-		s.deliverSlice(batch[:n])
+		s.deliverSlice(slice)
+		h.apply.Unlock()
 		applied = true
-		batch = batch[n:]
+		want -= len(slice)
 	}
 	if applied {
 		s.noteApplied()
 	}
-	return applied, stopped
+	return applied, false
+}
+
+// release lets the reader apply again, if nothing is held: it clears the flag
+// of a fence (drain false) or of drainHeld (drain true). It takes the applier
+// lock first, so that a slice another applier took from the buffer is applied
+// before the reader can apply a later byte, and tests the buffer under the lock
+// the reader adds to it with. It reports whether the flag fell.
+func (s *Session) release(drain bool) bool {
+	h := &s.hold
+	h.apply.Lock()
+	defer h.apply.Unlock()
+	h.mu.Lock()
+	if len(h.buf) > 0 {
+		h.mu.Unlock()
+		return false
+	}
+	if drain {
+		h.draining = false
+	} else {
+		h.fenced = false
+	}
+	h.mu.Unlock()
+	poke(h.room)
+	return true
 }
 
 // beginFence makes the reader hold. It returns when the slice the reader may be
@@ -398,49 +435,47 @@ const endFenceBudget = 250 * time.Millisecond
 // endFence applies what the reader held and lets it apply again. The bytes are
 // applied before the flag falls, and the flag falls only with the buffer empty,
 // under the lock the reader adds to it with, so the order of the output is
-// kept. It applies for at most endFenceBudget: an agent that writes faster than
-// the emulator applies would keep the fence from ending, which no unfenced
-// reader would suffer. What is left then is handed to drainHeld, a goroutine
-// that applies it in order while the reader goes on holding, so the order
-// holds there too, and the flag for it falls the same way.
+// kept. It applies for at most endFenceBudget, checked before each slice, so it
+// returns within the budget and one slice (plus a wait for the slice another
+// applier has in hand): an agent that writes faster than the emulator applies
+// would keep the fence from ending, which no unfenced reader would suffer. What
+// is left then goes to drainHeld, a goroutine that applies it in order while
+// the reader goes on holding, and the flag for it falls the same way. Only one
+// drainHeld lives at a time: when one is running already it applies what is
+// left, and the end of this fence leaves it to it.
 func (s *Session) endFence() {
 	h := &s.hold
 	end := time.Now().Add(endFenceBudget)
+	over := func(int) bool { return !time.Now().Before(end) }
 	for {
-		s.applyHeld(nil)
-		h.mu.Lock()
-		switch {
-		case len(h.buf) == 0:
-			h.fenced = false
-			h.mu.Unlock()
-			poke(h.room)
-			return
-		case !time.Now().Before(end):
-			h.fenced, h.draining = false, true
-			h.drainDone = make(chan struct{})
-			go s.drainHeld(h.drainDone)
-			h.mu.Unlock()
+		s.applyHeld(over)
+		if s.release(false) {
 			return
 		}
-		h.mu.Unlock()
+		if !time.Now().Before(end) {
+			break
+		}
 	}
+	h.mu.Lock()
+	h.fenced = false
+	if !h.draining {
+		h.draining = true
+		h.drainDone = make(chan struct{})
+		h.drains++
+		go s.drainHeld(h.drainDone)
+	}
+	h.mu.Unlock()
 }
 
 // drainHeld applies the backlog a fence left, and what the reader adds to it
 // meanwhile, then lets the reader apply again.
 func (s *Session) drainHeld(done chan<- struct{}) {
 	defer close(done)
-	h := &s.hold
 	for {
 		s.applyHeld(nil)
-		h.mu.Lock()
-		if len(h.buf) == 0 {
-			h.draining = false
-			h.mu.Unlock()
-			poke(h.room)
+		if s.release(true) {
 			return
 		}
-		h.mu.Unlock()
 	}
 }
 
