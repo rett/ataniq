@@ -47,6 +47,22 @@
 // action of his does, and that action is then an arrival, because by the
 // clock's new reading he was not present before it.
 //
+// A caller should pass readings of its own running clock, as the Now
+// function of package time returns them. Such a reading carries Go's
+// monotonic clock, which never goes back, and the tracker compares times by
+// it: a change of the wall clock then never reaches the tracker, and what is
+// said here does not come up.
+//
+// It comes up with times that carry no such reading: times that were stored
+// and read back, parsed from text, or handed on by another process. The
+// tracker takes them as they are. Each action at a time earlier than the
+// last activity, by however little, is reported as the owner leaving and
+// arriving again, and a beat is due for it. Times that step back again and
+// again while he types therefore show him as arriving each time, and send
+// beats more often than once in a [BeatInterval]. A caller that holds only
+// such times and cannot trust their order must settle that itself before it
+// calls the tracker.
+//
 // # Since he last looked
 //
 // What the arrival summary lists is "what happened since he last looked".

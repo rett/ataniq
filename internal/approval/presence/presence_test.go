@@ -611,6 +611,33 @@ func TestActivityOnAClockSetBackIsAnArrival(t *testing.T) {
 	}
 }
 
+func TestEveryStepBackOfWallTimesIsAnArrivalAndABeat(t *testing.T) {
+	// The times here are plain wall times, as stored or parsed ones are:
+	// they carry no monotonic reading, so a step back reaches the tracker.
+	// The package doc says what follows, and this holds it to that: each
+	// action at an earlier time, by however little, is a Left and an
+	// Arrived with a beat due, also inside one beat interval.
+	tr := newTracker(t, DefaultWindow)
+	tr.Activity(at(time.Hour))
+	for i := 1; i <= 5; i++ {
+		now := at(time.Hour - time.Duration(i)*time.Millisecond)
+		ev := tr.Activity(now)
+		if !ev.Arrival || !ev.BeatDue {
+			t.Fatalf("step %d back: event = %+v, want an arrival with a beat due", i, ev)
+		}
+		if len(ev.Changes) != 2 || ev.Changes[0].Kind != Left || ev.Changes[1].Kind != Arrived {
+			t.Fatalf("step %d back: changes = %+v, want Left then Arrived", i, ev.Changes)
+		}
+		if !ev.Changes[0].At.Equal(now) || !ev.Changes[1].At.Equal(now) {
+			t.Errorf("step %d back: changes at %v and %v, want both at %v", i, ev.Changes[0].At, ev.Changes[1].At, now)
+		}
+	}
+	// A step forward after them is ordinary activity again.
+	if ev := tr.Activity(at(time.Hour)); ev.Arrival || ev.BeatDue || len(ev.Changes) != 0 {
+		t.Errorf("a step forward = %+v, want ordinary activity with no beat", ev)
+	}
+}
+
 func TestStampsCarryNoMonotonicReading(t *testing.T) {
 	// A time from a running clock carries a monotonic reading, which makes
 	// two equal instants differ under ==. The fields for the journal are
