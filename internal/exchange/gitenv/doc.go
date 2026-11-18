@@ -26,6 +26,14 @@
 //   - The list holds "merge-tree", so that the host can build a merge itself
 //     ("merge-tree --write-tree") in a bare repository it owns. No working
 //     tree is involved and no merge driver from the configuration is named.
+//   - It accepts "hash-object" in one form only, "hash-object -tcommit -w
+//     --stdin", with exactly these arguments in this order, and refuses every
+//     other form. The host writes the commit of a merge with it, from a text
+//     it wrote in full and passes on standard input, so the parents, the
+//     author, the committer, the dates and the message are the host's. git
+//     refuses a malformed text, but it accepts a header line it does not
+//     know, so the text must not hold anything a lead wrote. "commit-tree"
+//     is not allowed.
 //
 // What it does not do:
 //   - It does not make git safe to run in a repository an attacker controls.

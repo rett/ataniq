@@ -27,6 +27,8 @@ type Cmd struct {
 	// [Git.Argv] refuses any other. The options that name a program are
 	// refused in every form. "config" does not end its options at "--",
 	// so Argv refuses that marker there; use "--end-of-options".
+	// "hash-object" is the exception to all of this: its arguments are
+	// exactly "-tcommit", "-w", "--stdin" (see hashObjectArgs in gitenv.go).
 	Args []string
 	// Protocols lists the transports this command may use. The only name
 	// known is "file". Empty means no transport.
@@ -86,13 +88,32 @@ var protocolNames = []string{"file"}
 
 // subcommands are the git subcommands that follow the option rule of
 // [checkOptions]. "merge-tree" is here for the merge the host builds
-// ("merge-tree --write-tree").
+// ("merge-tree --write-tree"). "hash-object" is not here: it is allowed in
+// one exact form only, by [checkHashObject].
 var subcommands = []string{
 	"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list",
 	"merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref",
 	"symbolic-ref", "show-ref", "count-objects", "config",
 	"check-ref-format", "ls-tree", "merge-tree",
 }
+
+// hashObject is the one subcommand outside [subcommands] that Argv accepts,
+// and hashObjectArgs are the only arguments it accepts for it, in this
+// order: write (-w) an object of the type commit (-tcommit) from the text on
+// standard input (--stdin). The host uses it to write a merge commit whose
+// every byte it wrote itself: the tree, the parents in order, the author,
+// the committer, the dates and the message. git checks the text and refuses
+// a malformed commit. "commit-tree" is not allowed: it takes its parents as
+// "-p <id>", an option with a separate value, and its identity and dates
+// from the environment.
+//
+// "-tcommit" is the type joined to its option, one argument, and "-w" is a
+// short flag. Neither is in [valuelessFlags], and [checkOptions] would
+// refuse both, so this subcommand has its own rule, [checkHashObject], and
+// no other subcommand can use these two.
+const hashObject = "hash-object"
+
+var hashObjectArgs = []string{"-tcommit", "-w", "--stdin"}
 
 // noGitDir are the subcommands that may run without --git-dir.
 var noGitDir = []string{"init", "version"}
@@ -172,7 +193,7 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if strings.HasPrefix(sub, "-") {
 		return nil, fmt.Errorf("gitenv: %q comes before the subcommand; options there are the builder's alone", sub)
 	}
-	if !slices.Contains(subcommands, sub) {
+	if sub != hashObject && !slices.Contains(subcommands, sub) {
 		return nil, fmt.Errorf("gitenv: subcommand %q is not allowed", sub)
 	}
 	if c.GitDir == "" {
@@ -196,7 +217,12 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkOptions(sub, c.Args[1:]); err != nil {
+	if sub == hashObject {
+		// The exact form stands in place of the option rule.
+		if err := checkHashObject(c.Args[1:]); err != nil {
+			return nil, err
+		}
+	} else if err := checkOptions(sub, c.Args[1:]); err != nil {
 		return nil, err
 	}
 	uploadPack, err := uploadPackOption(c, sub, protocols)
@@ -440,6 +466,19 @@ func checkOptions(sub string, args []string) error {
 			continue
 		}
 		return fmt.Errorf("gitenv: option %q before the end of the options is not allowed: write its value with \"=\" (\"--name=value\"), or ask for the flag to be added to the list of valueless flags", a)
+	}
+	return nil
+}
+
+// checkHashObject is the rule for "hash-object", in place of [checkOptions]:
+// the arguments must be exactly [hashObjectArgs], in that order. Every other
+// form is refused: another type, the type as a separate argument, another
+// order, a missing or repeated argument, a file name, a marker, and options
+// such as "--path", "--no-filters", "--literally" and "--stdin-paths".
+func checkHashObject(args []string) error {
+	if !slices.Equal(args, hashObjectArgs) {
+		return fmt.Errorf("gitenv: %q is allowed in one form only, %q with exactly these arguments in this order; %q is refused",
+			hashObject, hashObject+" "+strings.Join(hashObjectArgs, " "), args)
 	}
 	return nil
 }
