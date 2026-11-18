@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"time"
 
@@ -38,6 +39,11 @@ const RegistryDirName = "registry"
 // Config is what [Run] needs. Every dependency that touches the host is
 // injectable, so that a test runs the whole daemon in process.
 type Config struct {
+	// CanaryConfig is what a build with the ataniq_canary tag adds: the
+	// canary parts. In a build without the tag it is an empty struct and
+	// nothing can set it, so the daemon is the read-only skeleton.
+	CanaryConfig
+
 	// StateDir is the state folder, a clean absolute path. Required.
 	StateDir string
 	// RuntimeDir is the folder that holds daemon.sock, a clean absolute path
@@ -104,7 +110,8 @@ func (d *daemon) step(s Step) {
 // [StepShutdown] ([ExitShutdown]) that says what is left: the registry is then
 // left open, with the daemon lock and the socket lock held, not closed under a
 // goroutine that may still use them, and all end with the process. It starts,
-// signals and stops no unit.
+// signals and stops no unit itself; in canary mode (a build with the
+// ataniq_canary tag) the operations of the canary extension do.
 func Run(ctx context.Context, cfg Config) error {
 	d := &daemon{Config: cfg, log: cfg.Log}
 	if d.log == nil {
@@ -148,6 +155,13 @@ func Run(ctx context.Context, cfg Config) error {
 	// config
 	d.step(StepConfig)
 	if err := d.checkConfig(); err != nil {
+		return err
+	}
+	// canary mode, when it is asked for in a build that has it: the config,
+	// the roots and the marker are checked here, before anything is made. In
+	// every other case canary is nil and its methods do nothing.
+	canary, err := d.canarySetup()
+	if err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -214,6 +228,20 @@ func Run(ctx context.Context, cfg Config) error {
 		return nil
 	}
 
+	// canary evidence, once both locks are held: a daemon that was refused
+	// above has written nothing.
+	if err := canary.openEvidence(); err != nil {
+		return &StartupError{Step: StepState, Err: err}
+	}
+	defer func() {
+		if abandoned {
+			return
+		}
+		if err := canary.closeEvidence(); err != nil {
+			d.logf("close the canary evidence: %v", err)
+		}
+	}()
+
 	// registry
 	d.step(StepRegistry)
 	reg, err := leadregistry.Open(filepath.Join(d.StateDir, RegistryDirName), leadregistry.Options{Now: d.Clock.Now})
@@ -248,10 +276,12 @@ func Run(ctx context.Context, cfg Config) error {
 	// The lifecycle gets the counting wrapper, so that every call that fails
 	// is known to the reconcile's verdict.
 	mgr := &failureCounter{Manager: built}
-	ctl, err := leadlifecycle.New(leadlifecycle.Options{
+	lifecycle := leadlifecycle.Options{
 		Registry: reg, Manager: mgr, Clock: d.Clock,
 		Preflight: refusePreflight{}, Holder: refuseHolder{},
-	})
+	}
+	canary.configure(&lifecycle)
+	ctl, err := leadlifecycle.New(lifecycle)
 	if err != nil {
 		return &StartupError{Step: StepManager, Err: fmt.Errorf("build the lifecycle controller: %w", err)}
 	}
@@ -296,6 +326,10 @@ func Run(ctx context.Context, cfg Config) error {
 		return &StartupError{Step: StepSocket, Err: err}
 	}
 	d.logf("listening on %s", socket)
+	if err := canary.announce(); err != nil {
+		l.Close()
+		return &StartupError{Step: StepSocket, Err: err}
+	}
 	if d.Ready != nil {
 		d.Ready(socket)
 	}
@@ -305,8 +339,10 @@ func Run(ctx context.Context, cfg Config) error {
 	serveCtx, serveCancel := context.WithCancel(ctx)
 	defer serveCancel()
 	done := make(chan error, 1)
+	srvOpts := d.Server
+	srvOpts.Extra = append(slices.Clone(srvOpts.Extra), canary.extensions(ctl, reg)...)
 	go func() {
-		done <- clientapi.Serve(serveCtx, l, &handler{reg: reg, version: d.Version, info: info}, d.Server)
+		done <- clientapi.Serve(serveCtx, l, &handler{reg: reg, version: d.Version, info: info}, srvOpts)
 	}()
 	var serveErr error
 	select {
