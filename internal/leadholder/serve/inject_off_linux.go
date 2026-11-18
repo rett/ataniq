@@ -7,7 +7,7 @@ import "ataniq/internal/leadholder/wire"
 // InjectConfig is the injection's seam in Config. In a release build it is
 // empty: there is no deliverer to give, so the control server can only answer
 // an inject request with disabled. The build with the ataniq_canary tag
-// (inject_linux.go) has the deliverer.
+// (inject_canary_linux.go) has the deliverer.
 type InjectConfig struct{}
 
 // injectState is the injection's state in a Server: none in a release build.

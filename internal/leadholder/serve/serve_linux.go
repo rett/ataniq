@@ -302,7 +302,7 @@ type Server struct {
 	closed      bool // teardown began: nothing new is accepted
 	finishing   bool // the session is over
 
-	// inj is the injection's own state (inject_off_linux.go, inject_linux.go).
+	// inj is the injection's own state (inject_off_linux.go, inject_canary_linux.go).
 	inj injectState
 
 	// The emulator state the clients were told of.

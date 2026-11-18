@@ -118,7 +118,7 @@ func (s *Server) execute(req wire.Request) wire.Response {
 		return wire.Response{OK: true}
 	case wire.OpInject:
 		// What a build does with it is in inject_off_linux.go (a release
-		// build: the disabled answer) or inject_linux.go (a build with the
+		// build: the disabled answer) or inject_canary_linux.go (a build with the
 		// ataniq_canary tag).
 		return s.inject(req)
 	}
