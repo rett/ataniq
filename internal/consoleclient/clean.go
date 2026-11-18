@@ -19,7 +19,8 @@ const cutMark = "…"
 // format characters (direction marks and overrides, zero-width characters),
 // private-use and unassigned code points, and characters that print as
 // nothing or as a blank. Every kind of space becomes one ASCII space, so a
-// value stays on one line. A string that is over the bound once cleaned, or
+// value stays on one line. A combining mark that would start the result is
+// dropped, so the result never joins the text drawn before it. A string that is over the bound once cleaned, or
 // longer than clean inspects, is cut and ends in "…"; with the mark it is at
 // most MaxText bytes.
 func clean(s string) string {
@@ -39,6 +40,11 @@ func clean(s string) string {
 		if unicode.IsSpace(r) {
 			r, n = ' ', 1
 		} else if !visible(r) {
+			continue
+		}
+		if b.Len() == 0 && unicode.Is(unicode.M, r) {
+			// A combining mark with nothing of this string before it would
+			// join whatever the caller draws before the value.
 			continue
 		}
 		if b.Len()+n > MaxText {

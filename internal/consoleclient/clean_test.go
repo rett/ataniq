@@ -32,6 +32,9 @@ func shownSafely(s string) string {
 			return "a space that is not the ASCII one"
 		}
 	}
+	if r, _ := utf8.DecodeRuneInString(s); unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) {
+		return "a combining mark at the start"
+	}
 	return ""
 }
 
@@ -49,6 +52,11 @@ func TestClean(t *testing.T) {
 		{"invalid UTF-8", "a\xff\xfeb\xc3", "ab"},
 		{"tags and variation selectors", "a\U000e0041b\ufe0fc", "abc"},
 		{"private use and the blank braille", "a\ue000b\u2800c", "abc"},
+		{"a combining mark at the start", "\u0301x", "x"},
+		{"marks of every kind at the start", "\u0301\u20dd\u0903\u0300x\u0301y", "x\u0301y"},
+		{"a mark after dropped characters is at the start too", "\x1b\u200b\u0301x", "x"},
+		{"a mark after the value's own space stays", " \u0301x", " \u0301x"},
+		{"only marks", "\u0301\u0300", ""},
 		{"empty", "", ""},
 	} {
 		got := clean(c.in)
