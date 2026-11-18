@@ -424,6 +424,42 @@ func TestTheRefreshOutlivesAReplay(t *testing.T) {
 	}
 }
 
+func TestTheTreeCursorMovesToTheNearestRowWhenItsProjectIsGone(t *testing.T) {
+	src := &fakeSource{p: leadsOf("alpha:a1", "beta:b1,b2", "gamma:g1")}
+	r := newSourceRig(t, src, 140, 45, Options{Label: testLabel})
+	r.refresh(0)
+	// The rows are alpha, a1, beta, b1, b2, gamma, g1. The cursor goes to
+	// gamma's lead; nothing is selected with it, so the selection stays on
+	// alpha and only the cursor is in the project that goes away.
+	r.typ("jjjjjj")
+	if p, _, c := r.selectedNames(); p != "alpha" || c != "g1" {
+		t.Fatal(p, c)
+	}
+	src.set(leadsOf("alpha:a1", "beta:b1,b2"), nil)
+	r.refresh(3 * time.Second)
+	// The nearest row at or above its old place is beta's last lead, not
+	// the first row.
+	if p, l, c := r.selectedNames(); p != "alpha" || l != "a1" || c != "b2" {
+		t.Fatal(p, l, c)
+	}
+	if rows := r.m.treeRows(); r.m.treeCursor != len(rows)-1 || !rows[r.m.treeCursor].selectable {
+		t.Fatal(r.m.treeCursor)
+	}
+	// The row at the old place is a coordinator's, which cannot be selected:
+	// the cursor is on the nearest row above it that can be.
+	src.set(leadsOf("alpha:a1", "beta:b1,b2", "gamma:g1"), nil)
+	r.refresh(3 * time.Second)
+	r.typ("jj")
+	if _, _, c := r.selectedNames(); c != "g1" {
+		t.Fatal(c)
+	}
+	src.set(Projection{Projects: []Project{{Name: "alpha", Leads: []Lead{{Name: "a1", Subagents: []string{"s1", "s2"}}}}}}, nil)
+	r.refresh(3 * time.Second)
+	if _, _, c := r.selectedNames(); c != "a1" {
+		t.Fatal(c)
+	}
+}
+
 func TestSelectionSurvivesARefresh(t *testing.T) {
 	src := &fakeSource{p: leadsOf("alpha:a1,a2", "beta:b1,b2", "gamma:g1")}
 	r := newSourceRig(t, src, 140, 45, Options{Label: testLabel})
