@@ -72,6 +72,13 @@ func mustLoad(t testing.TB, path string) *snapshot {
 	return s
 }
 
+// orderWritten reports whether order.txt holds its line: the file exists
+// before its content is written, so its existence alone does not say it.
+func orderWritten(r testRepo) bool {
+	b, err := os.ReadFile(filepath.Join(replayDir(r), OrderFile))
+	return err == nil && len(b) > 0
+}
+
 func readOrder(t testing.TB, r testRepo) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(replayDir(r), OrderFile))
@@ -105,7 +112,7 @@ func TestReplayEndToEnd(t *testing.T) {
 	run.pty.send(t, osc7501.QueryReply+da1Reply)
 	report := "\x1b]7501;" + sampleReport + "\x1b\\"
 	off = run.pty.waitFor(t, off, report)
-	waitUntil(t, "order.txt", func() bool { _, err := os.Stat(filepath.Join(replayDir(r), OrderFile)); return err == nil })
+	waitUntil(t, "order.txt", func() bool { return orderWritten(r) })
 	if got := readOrder(t, r); got != "7501-first\n" {
 		t.Fatalf("order.txt %q", got)
 	}
@@ -212,7 +219,7 @@ func TestReplayRecordsTheOrderOfTheReplies(t *testing.T) {
 				run.pty.send(t, s)
 				time.Sleep(50 * time.Millisecond)
 			}
-			waitUntil(t, "order.txt", func() bool { _, err := os.Stat(filepath.Join(replayDir(r), OrderFile)); return err == nil })
+			waitUntil(t, "order.txt", func() bool { return orderWritten(r) })
 			if got := readOrder(t, r); got != c.want+"\n" {
 				t.Fatalf("order.txt %q, want %q", got, c.want)
 			}
@@ -236,16 +243,20 @@ func TestReplayRecordsTheOrderOfTheReplies(t *testing.T) {
 }
 
 // A 7501 reply that comes after the order was recorded as "no reply" is still
-// answered with the report, and the file keeps what was recorded.
-func TestReplayLateReplyGetsTheReportAndKeepsTheOrder(t *testing.T) {
+// answered with the report, and the file is rewritten with the order the
+// replies came in.
+func TestReplayLateReplyGetsTheReportAndRewritesTheOrder(t *testing.T) {
 	r := newRepo(t)
 	writeReplay(t, r, true)
 	run := startRun(t, r, 100*time.Millisecond)
 	run.pty.waitFor(t, 0, bothQueries)
-	waitUntil(t, "order.txt", func() bool { _, err := os.Stat(filepath.Join(replayDir(r), OrderFile)); return err == nil })
+	waitUntil(t, "order.txt", func() bool { return orderWritten(r) })
+	if got := readOrder(t, r); got != "no-7501-reply\n" {
+		t.Fatalf("order.txt %q before the reply", got)
+	}
 	run.pty.send(t, osc7501.QueryReply)
 	run.pty.waitFor(t, 0, "\x1b]7501;"+sampleReport+"\x1b\\")
-	if got := readOrder(t, r); got != "no-7501-reply\n" {
+	if got := readOrder(t, r); got != "7501-first\n" {
 		t.Fatalf("order.txt %q", got)
 	}
 	if err := run.finish(t); err != nil {

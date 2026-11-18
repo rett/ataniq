@@ -28,8 +28,9 @@
 // Replay mode holds no screen and names no runtime. It draws two screens that
 // it reads from the folder (1.json and 2.json, each with its text), asks the
 // terminal the OSC 7501 support query and a DA1 query, records which reply
-// came first in order.txt, writes one idle report when the support query is
-// answered, draws the second screen after a bracketed paste and, when a
+// came first in order.txt ("no-7501-reply" when none came within the wait,
+// and replaced by the true order if one comes later), writes one idle report
+// when the support query is answered, draws the second screen after a bracketed paste and, when a
 // carriage return follows the paste, commits as plain mode does. The report's
 // payload, and so the name of the application in it, comes from the optional
 // file report.txt.

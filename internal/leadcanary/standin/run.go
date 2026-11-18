@@ -307,6 +307,7 @@ type replay struct {
 	alt        bool // the alternate screen is on
 	da1Seen    bool
 	decided    bool
+	noReply    bool // the order recorded is OrderNo7501Reply
 	reportSent bool
 }
 
@@ -370,9 +371,11 @@ func (r *replay) second() []byte {
 }
 
 // answered handles the reply to the support query: it fixes the order, and
-// writes the idle report once.
+// writes the idle report once. A reply that comes after the wait ended, and so
+// after "no reply" was recorded, replaces that record with the order it came
+// in; "no reply" stands only when no reply ever came.
 func (r *replay) answered(l *loop) error {
-	if !r.decided {
+	if !r.decided || r.noReply {
 		order := Order7501First
 		if r.da1Seen {
 			order = OrderDA1First
@@ -388,8 +391,10 @@ func (r *replay) answered(l *loop) error {
 	return nil
 }
 
-// decide records the order, once.
+// decide records the order in OrderFile. It is called once, and again when a
+// late reply replaces "no reply".
 func (r *replay) decide(order string) error {
 	r.decided = true
+	r.noReply = order == OrderNo7501Reply
 	return writeRegular(filepath.Join(r.dir, OrderFile), order+"\n", 0o600)
 }
