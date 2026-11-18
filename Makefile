@@ -27,8 +27,10 @@ test-patched: doctor
 # form Go builds with the tag: a go:build line or an old style plus build line,
 # indented or not, with a space or a tab after it. It skips the folders that
 # ./... skips (testdata and those that start with a dot or an underscore, such
-# as a worktree under .claude) and no folder named build. With no such package
-# the target runs ./tests/ alone. It builds no binary and runs nothing but tests.
+# as a worktree under a hidden folder) and no folder named build. The
+# placement test refuses a tagged file in any of those folders, so no tagged
+# test goes unrun. With no such package the target runs ./tests/ alone. It
+# builds no binary and runs nothing but tests.
 test-canary: doctor
 	@pkgs=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/

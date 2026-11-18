@@ -165,18 +165,42 @@ func buildsWithoutTag(exprs []constraint.Expr) bool {
 	return true
 }
 
-// skipCanaryDir reports the folders no Go package is built from: testdata, the
-// folders that start with a dot or an underscore, and the top-level build
-// folder, which holds ignored build output. A folder named build deeper in the
-// tree is a package like any other.
-func skipCanaryDir(p, name string) bool {
-	return name == "testdata" || p == "build" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+// skipCanaryDir reports the folders check (1) does not read: .git, the
+// top-level build folder, which holds ignored build output, and a folder that
+// holds its own go.mod, which is another module, such as a nested checkout
+// under a hidden tool folder. A folder named build deeper in the tree is a
+// package like any other.
+func skipCanaryDir(fsys fs.FS, p, name string) bool {
+	if name == ".git" || p == "build" {
+		return true
+	}
+	_, err := fs.Stat(fsys, path.Join(p, "go.mod"))
+	return err == nil
+}
+
+// inGoSkippedDir reports whether a file lies in a folder that ./... and the
+// grep of make test-canary skip: testdata, or a folder whose name starts with
+// a dot or an underscore. Go still builds such a package when something
+// imports it, so a file there must not name the tag: its tests would never
+// run.
+func inGoSkippedDir(p string) bool {
+	dir := path.Dir(p)
+	if dir == "." {
+		return false
+	}
+	for _, part := range strings.Split(dir, "/") {
+		if part == "testdata" || strings.HasPrefix(part, ".") || strings.HasPrefix(part, "_") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkCanaryPlacement is check (1): a Go file whose constraint names the tag
-// lies under canaryAllowedPaths, and every Go file of a wholly tagged package
-// carries a go:build line that needs the tag, that is, is not built without
-// it. A plus build line alone does not satisfy the second rule.
+// lies under canaryAllowedPaths and in no folder that ./... skips, and every
+// Go file of a wholly tagged package carries a go:build line that needs the
+// tag, that is, is not built without it. A plus build line alone does not
+// satisfy the second rule.
 func checkCanaryPlacement(fsys fs.FS) []string {
 	var problems []string
 	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
@@ -184,7 +208,7 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			return err
 		}
 		if d.IsDir() {
-			if p != "." && skipCanaryDir(p, d.Name()) {
+			if p != "." && skipCanaryDir(fsys, p, d.Name()) {
 				return fs.SkipDir
 			}
 			return nil
@@ -203,6 +227,12 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 			}
 		}
 		named := slices.ContainsFunc(exprs, exprNamesTag)
+		if inGoSkippedDir(p) {
+			if named {
+				problems = append(problems, fmt.Sprintf("%s: the build constraint names %s in a folder that ./... and make test-canary skip", p, canaryTag))
+			}
+			return nil
+		}
 		if named && !underAnyPath(p, canaryAllowedPaths) {
 			problems = append(problems, fmt.Sprintf("%s: the build constraint names %s outside the allowed paths", p, canaryTag))
 		}
@@ -855,12 +885,41 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 		{"a constraint after a license comment", fstest.MapFS{
 			"internal/other/x.go": &fstest.MapFile{Data: []byte("/* license\n//go:build ataniq_canary\n*/\n\n// Copyright\n" + hdrTagged + "\n\npackage x\n")},
 		}, []string{"internal/other/x.go"}},
-		{"testdata, the top-level build and hidden folders are not packages", fstest.MapFS{
-			"internal/other/testdata/x.go": goSource(hdrTagged),
-			"build/x.go":                   goSource(hdrTagged),
-			"build/sub/x.go":               goSource(hdrTagged),
-			".hidden/x.go":                 goSource(hdrTagged),
-			"internal/_old/x.go":           goSource(hdrTagged),
+		{"the top-level build folder and another module are not read", fstest.MapFS{
+			"build/x.go":               goSource(hdrTagged),
+			"build/sub/x.go":           goSource(hdrTagged),
+			".tool/worktrees/w/go.mod": {Data: []byte("module m\n")},
+			".tool/worktrees/w/internal/leadcanary/a.go":     goSource(hdrTagged),
+			".tool/worktrees/w/internal/other/x.go":          goSource(hdrTagged),
+			"internal/leadcanary/testdata/untagged_input.go": goSource(""),
+			"internal/_old/plain.go":                         goSource(hdrPlain),
+		}, nil},
+		// Go builds a package in testdata or in a dot or underscore folder when
+		// something imports it, but ./... and make test-canary skip it, so its
+		// tests would never run.
+		{"a tagged file in a folder Go skips", fstest.MapFS{
+			"internal/other/testdata/x.go":   goSource(hdrTagged),
+			".hidden/x.go":                   goSource(hdrTagged),
+			"internal/_old/x.go":             goSource(hdrTagged),
+			"internal/leadcanary/_impl/x.go": goSource(hdrTagged),
+			"internal/leadcanary/.impl/x.go": goSource(hdrTagged),
+		}, []string{".hidden/x.go", "internal/_old/x.go", "internal/leadcanary/.impl/x.go", "internal/leadcanary/_impl/x.go", "internal/other/testdata/x.go"}},
+		// A tagged package under internal/_x that a tagged package imports is
+		// built by every tagged binary, and make test-canary would not run it.
+		{"a tagged package that a tagged package imports, in an underscore folder", fstest.MapFS{
+			"internal/leadcanary/b.go": &fstest.MapFile{Data: []byte(hdrTagged + "\n\npackage b\n\nimport _ \"example.test/m/internal/_x\"\n")},
+			"internal/_x/x.go":         goSource(hdrTagged),
+			"internal/_x/x_test.go":    goSource(hdrTagged),
+		}, []string{"internal/_x/x.go", "internal/_x/x_test.go"}},
+		// A nested checkout holds its own module, which is not read.
+		{"a nested checkout with tagged code", fstest.MapFS{
+			"go.mod":                                    {Data: []byte("module m\n")},
+			"internal/leadcanary/a.go":                  goSource(hdrTagged),
+			".tool/worktrees/w/go.mod":                  {Data: []byte("module m\n")},
+			".tool/worktrees/w/internal/other/x.go":     goSource(hdrTagged),
+			".tool/worktrees/w/internal/_x/x.go":        goSource(hdrTagged),
+			"scratch/checkout/go.mod":                   {Data: []byte("module m\n")},
+			"scratch/checkout/internal/leadcanary/a.go": goSource(hdrPlain),
 		}, nil},
 		{"an old style line is read", fstest.MapFS{
 			"internal/other/x.go": goSource("// +build ataniq_canary"),
@@ -922,6 +981,62 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// canaryCorrectTree is a tree as the slice leaves it: the wholly tagged
+// packages, a helper package for the tests of one of them, and tagged files
+// beside untagged ones in the packages that also build without the tag, with
+// a nested checkout of the same tree under a hidden tool folder.
+func canaryCorrectTree() map[string]string {
+	tagged := hdrTagged + "\n\npackage x\n"
+	plain := "package x\n"
+	files := map[string]string{
+		"go.mod":                                           "module example.test/m\n",
+		"internal/leadcanary/a.go":                         tagged,
+		"internal/leadcanary/a_test.go":                    tagged,
+		"internal/leadcanary/standin/a.go":                 tagged,
+		"internal/leadcanary/standin/a_test.go":            tagged,
+		"internal/leadcanary/provision/a.go":               tagged,
+		"internal/leadcanary/provision/a_test.go":          tagged,
+		"internal/leadcanary/provision/provisiontest/a.go": tagged,
+		"internal/leadholder/canaryroot/a.go":              tagged,
+		"internal/leadholder/sandboxstart/a.go":            tagged,
+		"internal/leadholder/sandboxstart/a_test.go":       tagged,
+		"internal/leadholder/injectbridge/a.go":            tagged,
+		"cmd/ataniq-canary/main.go":                        tagged,
+		"cmd/ataniq-canary-standin/main.go":                tagged,
+		"cmd/ataniq-canary-standin/main_test.go":           tagged,
+		"internal/leadholder/eventlog/a.go":                plain,
+		"tests/a_test.go":                                  plain,
+	}
+	for _, dir := range []string{"internal/leadholder/serve", "internal/leaddaemon", "cmd/ataniqd", "cmd/ataniq-holder"} {
+		files[dir+"/a.go"] = plain
+		files[dir+"/b.go"] = hdrPlain + "\n\npackage x\n"
+		files[dir+"/canary.go"] = tagged
+		files[dir+"/canary_test.go"] = tagged
+	}
+	for name, content := range maps.Clone(files) {
+		if name != "tests/a_test.go" {
+			files[".tool/worktrees/w/"+name] = content
+		}
+	}
+	return files
+}
+
+// A correct tree passes the placement check, read from a temporary folder, and
+// make test-canary (below) lists exactly its tagged packages.
+func TestCanaryTagCorrectTree(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range canaryCorrectTree() {
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reportCanaryProblems(t, checkCanaryPlacement(os.DirFS(dir)))
 }
 
 const goodMakefile = `.PHONY: test test-canary
@@ -1318,14 +1433,21 @@ func TestCanaryTagMakeTarget(t *testing.T) {
 			"internal/plain/q.go":        "// the ataniq_canary tag is not a constraint\n\npackage a\n",
 		}, "test -tags ataniq_canary ./build ./internal/indented ./internal/nested/build ./internal/plusonly ./internal/tabbed ./tests/"},
 		// Go's ./... skips folders that start with a dot or an underscore,
-		// such as a nested checkout under .claude/worktrees with its own go.mod.
+		// such as a nested checkout under a hidden tool folder with its own
+		// go.mod.
 		{"folders Go skips", map[string]string{
-			"internal/leadcanary/a.go":                     hdrTagged + "\n\npackage a\n",
-			".claude/worktrees/w/go.mod":                   "module ataniq\n",
-			".claude/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
-			"internal/_old/a.go":                           hdrTagged + "\n\npackage a\n",
-			".hidden/a.go":                                 hdrTagged + "\n\npackage a\n",
+			"internal/leadcanary/a.go":                   hdrTagged + "\n\npackage a\n",
+			".tool/worktrees/w/go.mod":                   "module ataniq\n",
+			".tool/worktrees/w/internal/leadcanary/a.go": hdrTagged + "\n\npackage a\n",
+			"internal/_old/a.go":                         hdrTagged + "\n\npackage a\n",
+			".hidden/a.go":                               hdrTagged + "\n\npackage a\n",
 		}, "test -tags ataniq_canary ./internal/leadcanary ./tests/"},
+		// The tree the slice leaves, with a nested checkout under a hidden folder.
+		{"a correct tree with tagged packages", canaryCorrectTree(), "test -tags ataniq_canary " +
+			"./cmd/ataniq-canary ./cmd/ataniq-canary-standin ./cmd/ataniq-holder ./cmd/ataniqd " +
+			"./internal/leadcanary ./internal/leadcanary/provision ./internal/leadcanary/provision/provisiontest " +
+			"./internal/leadcanary/standin ./internal/leaddaemon ./internal/leadholder/canaryroot " +
+			"./internal/leadholder/injectbridge ./internal/leadholder/sandboxstart ./internal/leadholder/serve ./tests/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, pin := fixture(t)

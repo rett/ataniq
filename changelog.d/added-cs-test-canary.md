@@ -8,11 +8,13 @@
   suite is `make test` and then `make test-canary`. The job runs the target
   after the same checkout, bootstrap and doctor steps, has read-only permissions
   and keeps or uploads nothing. No release and no other target builds with the
-  tag. `tests/canary_tag_test.go` holds the line: a file whose constraint names
-  the tag lies only under the paths set for it, and every file of a package that
-  exists only with the tag carries a `//go:build` line that needs it, each
-  constraint read as the go command reads it; the tag is named only in the
-  recipes of `test-canary` and `canary-build` in the `Makefile`, which names
+  tag. `tests/canary_tag_test.go` holds the line: reading every folder but
+  `.git`, the top-level `build` and one with its own `go.mod`, a file whose
+  constraint names the tag lies only under the paths set for it and in no folder
+  `./...` skips (`testdata`, a dot or an underscore), and every file of a
+  package that exists only with the tag carries a `//go:build` line that needs
+  it, each constraint read as the go command reads it; the tag is named only in
+  the recipes of `test-canary` and `canary-build` in the `Makefile`, which names
   those two targets nowhere else and includes no other file, and nowhere under
   `.github/` or `scripts/`; without the tag no command depends on those packages
   and `ataniqd` depends on nothing under `internal/inject`; tagged code uses no
