@@ -189,22 +189,41 @@ func TestApplyingOutputDoesNotCompareTheScreen(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("raw; wait")
 	long := time.Now().Add(-time.Hour)
+	// A timer the start's output armed may have fired and wait for the
+	// tracker's lock: let it run first, or it compares after the slice below.
+	until(t, "the start's comparison to be done", func() bool {
+		s.scr.mu.Lock()
+		defer s.scr.mu.Unlock()
+		return s.scr.timer == nil && !s.scr.dirty
+	})
+	// A parked timer: noteApplied arms none of its own, which with the last
+	// comparison an hour old would fire at once and compare before the
+	// check below.
+	parked := time.AfterFunc(time.Hour, func() {})
+	defer parked.Stop()
 	s.scr.mu.Lock()
-	if s.scr.timer != nil {
-		s.scr.timer.Stop()
-		s.scr.timer = nil
-	}
-	s.scr.sigAt, s.scr.dirty = long, false
+	s.scr.sigAt, s.scr.dirty, s.scr.timer = long, false, parked
 	s.scr.mu.Unlock()
 	s.deliverSlice([]byte("x"))
 	s.scr.mu.Lock()
-	compared, dirty, armed := !s.scr.sigAt.Equal(long), s.scr.dirty, s.scr.timer != nil
+	compared, dirty := !s.scr.sigAt.Equal(long), s.scr.dirty
+	s.scr.timer = nil
 	s.scr.mu.Unlock()
 	if compared {
 		t.Error("applying a slice compared the digest on the caller's goroutine")
 	}
-	if !dirty || !armed {
-		t.Errorf("after a slice dirty = %v, timer armed = %v, want both true", dirty, armed)
+	if !dirty {
+		t.Errorf("after a slice dirty = %v, want true", dirty)
+	}
+	// With no timer armed a slice arms one. Its delay is zero, the last
+	// comparison being an hour old, so it may have compared already: then
+	// dirty is false again.
+	s.deliverSlice([]byte("y"))
+	s.scr.mu.Lock()
+	armed := s.scr.timer != nil || !s.scr.dirty
+	s.scr.mu.Unlock()
+	if !armed {
+		t.Error("a slice with no timer armed armed none")
 	}
 	// The timer compares, off the applier's goroutine, and the change is found.
 	until(t, "the timer to compare", func() bool {
