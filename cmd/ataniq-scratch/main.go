@@ -1,9 +1,10 @@
 // Command ataniq-scratch is a development launcher for a scratch agent: it
 // starts a lead holder for an agent that has no project, no lead role and a
 // disposable configuration, and it stands in for the daemon where the
-// lead-hosting design needs one (section 2.1: before the daemon exists the
-// test harness issues the attach tickets). It is provisional, unqualified and
-// not for a real lead.
+// lead-hosting design needs one (section 2.1: the test harness issues the
+// attach tickets where no daemon does). A scratch holder is not managed by the
+// daemon (ataniqd), which starts no holder and issues no ticket. This command
+// is provisional, unqualified and not for a real lead.
 package main
 
 import (
@@ -31,8 +32,9 @@ const usageText = `Usage:
 
 ataniq-scratch is a development launcher for a SCRATCH agent only: no project,
 no lead role, a disposable home. It is provisional and unqualified, and it is
-not for a real lead. It stands in for the daemon, which does not exist yet: it
-issues attach tickets over the holder's control socket.
+not for a real lead. It stands in for the daemon: a scratch holder is not
+managed by the daemon (ataniqd), which starts no holder and issues no ticket,
+so this command issues attach tickets over the holder's control socket.
 
 NAME is 1 to 31 characters of a-z, 0-9 and -, starting with a letter or digit.
 
