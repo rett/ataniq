@@ -16,9 +16,14 @@ import (
 // not reach it. It is killed, and its scratch folders are removed, only when
 // the run returns, and a run returns early only when its context ends.
 //
-// A signal that was ignored when the command started (nohup, a background
-// job) does not kill the command, so it does not cancel the run either: the
-// owner chose to ignore it.
+// An interrupt or a hang-up that was ignored when the command started (under
+// nohup, for example) stays ignored: the Go runtime keeps an inherited ignore
+// for those two signals only, signal.Ignored reports it, and the signal is
+// left out here. It neither kills the command nor cancels the run: the owner
+// chose to ignore it. A terminate that was ignored at start is different. The
+// runtime installs its own handler for it whatever the command inherited,
+// signal.Ignored does not report it, and it cancels the run like any other
+// terminate.
 func stopContext() (context.Context, context.CancelFunc) {
 	sigs := notIgnored(boundedexec.StopSignals(), signal.Ignored)
 	if len(sigs) == 0 {

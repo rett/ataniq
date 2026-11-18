@@ -272,7 +272,7 @@ const (
 )
 
 // liveUnavailable is the reason shown for every control in live mode.
-const liveUnavailable = "A live scratch session has no daemon: there is nothing to attach, approve or control from here."
+const liveUnavailable = "A live scratch session is not managed by the daemon (ataniqd): there is nothing to attach, approve or control from here."
 
 // liveMsg says the source called Wake. liveGapMsg says the gap after one has
 // passed, so that the program listens again.

@@ -59,6 +59,15 @@ const TemplateVersion = 1
 // "home". Those fields are paths as the sandbox sees them: they hold only
 // {role}, {project} and fixed text.
 //
+// "repository" is read on the host too. The owner's git is given that path
+// as the source of the fetch, and it looks at the path on the host before it
+// starts the serving half: when a regular file is there and it is a git
+// bundle, git reads that file itself and never starts "upload_pack". The
+// owner must therefore choose a path that does not exist on the host, such
+// as the example's /work/{project} on a host with no /work, and never one
+// where a sandbox could put a file. Nothing in this package checks it: it
+// reads no file.
+//
 // The first element of each argv is the launcher, which runs as the owner:
 // it is an absolute, clean path written out in full, with no placeholder and
 // no brace.

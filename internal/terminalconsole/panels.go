@@ -413,7 +413,7 @@ func (m *Model) drawTimeline(p *painter, l layout) {
 	p.box(l.timeline, "Timeline", "", m.pane == paneTimeline)
 	in := inset(l.timeline)
 	if m.live.on() {
-		p.lines(in, []line{{"No timeline: a live scratch session has no daemon and no journal.", lnDim}})
+		p.lines(in, []line{{"No timeline: a live scratch session is not managed by the daemon and has no journal.", lnDim}})
 		return
 	}
 	if len(m.timeline) == 0 {
