@@ -6,3 +6,8 @@
   no swap, tasks 16 to 65,536). The in-memory manager records them, and the
   lifecycle's new optional `Options.Limits` function gives the limits of a role
   at each launch.
+  `leadunit-qualify` starts its unit with limits from its flags
+  (`--memory-max`, `--swap-max`, `--tasks-max`, `--memory-lowered`), reads them
+  back from `systemctl --user show` and the control group files, lowers the
+  memory limit once, and checks that no runtime folder entry is left after the
+  stop; it has not been run.

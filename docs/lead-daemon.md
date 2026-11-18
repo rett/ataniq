@@ -961,6 +961,15 @@ sh scripts/go-tool.sh build -o build/leadunit-qualify ./qualification/leadunit/c
 ./build/leadunit-qualify
 ```
 
+The limits come from the flags `--memory-max` (default 1G), `--swap-max`
+(default 0, no swap), `--tasks-max` (default 128) and `--memory-lowered`
+(default 768M, the value the running unit is lowered to), whose defaults the
+help states; a value outside the bounds of the unit specification is a usage
+error. The harness's checks of them read the host only through two seams, one
+that runs `systemctl` and one that reads files and folders, which every test
+replaces with a fake, so that no test runs `systemctl` or reads a control
+group. Each check is a named line in the report.
+
 Without `--run` it prints what it would do and exits 0, without touching
 systemd. With `--run --state-dir DIR` (an existing folder of the caller, mode
 0700) it starts one transient user unit with a unique name,
@@ -972,6 +981,14 @@ manager against it:
   among them;
 - a second start with the same name is refused;
 - `Inspect` matches the start;
+- the unit's memory, swap and task limits, set when the unit was created, read
+  back with `systemctl --user show` (normalised from `infinity`, size suffixes
+  and counts to bytes and tasks) and from `memory.max`, `memory.swap.max` and
+  `pids.max` in the unit's control group folder, each compared with the
+  specification; a memory limit that is not a whole number of pages reads back
+  from the files rounded up, and the check allows for that;
+- the memory limit lowered once with `systemctl --user set-property --runtime`
+  and read back both ways;
 - a second unit bound to the first (`BindsTo`, `PartOf`, `After`) starts, and
   `Inspect` reads the first unit back as its parent;
 - SIGTERM to a process that ignores it leaves the control group populated;
@@ -979,6 +996,8 @@ manager against it:
   loaded;
 - the bound unit stops with its parent, with no signal sent to it, and `Empty`
   is true for its group;
+- nothing for either unit remains under `systemd/transient` and
+  `systemd/user.control` of the user's runtime folder after the stop;
 - `Empty` is true for a fresh unit name that was never used.
 
 It prints one JSON report with a line per check and a verdict, and always
@@ -1008,6 +1027,12 @@ What only a real run can confirm:
 - what `PartOf=` does on a restart of the parent;
 - that `BindsTo` is printed as one space-separated list;
 - how long a failed unit stays loaded before it is collected;
+- that the manager's limit properties (`MemoryMax`, `MemorySwapMax` and
+  `TasksMax` as unsigned 64-bit numbers) are accepted by the user manager, that
+  the control group files carry them (which needs the memory and pids
+  controllers delegated to the unit), how `systemctl show` prints them, and
+  where `set-property --runtime` writes on a transient unit and whether the
+  stop removes it;
 - that a unit gets, besides the explicit environment, only what systemd adds
   (`HOME`, `LOGNAME`, `USER`, `SHELL`, `INVOCATION_ID` and the like).
 

@@ -11,7 +11,16 @@
 // and the description read back; the child's arguments, among them one with
 // $HOME and one with %h, reach it unchanged (the child records what it was
 // started with before it says it is ready); a second start with the same name
-// is refused; Inspect matches the start; a second unit, bound to the first
+// is refused; Inspect matches the start; the unit, which is started with
+// memory, swap and task limits (the flags --memory-max, --swap-max and
+// --tasks-max, with the defaults the help states), reads them back from
+// "systemctl --user show" (normalised from infinity, suffixes and counts to
+// bytes and tasks) and from memory.max, memory.swap.max and pids.max in its
+// control group folder, each compared with what was specified, has its memory
+// limit lowered once to --memory-lowered with "systemctl --user set-property
+// --runtime" and read back both ways, and after the stop nothing for it or for
+// its bound unit remains under the transient and user.control folders of the
+// user manager's runtime folder; a second unit, bound to the first
 // (Spec.Parent: BindsTo, PartOf and After), starts and Inspect reads the first
 // unit back as its parent; SIGTERM leaves the control group populated; after 2
 // s SIGKILL empties it; Empty is then true and the unit is not loaded; the
@@ -38,8 +47,11 @@
 // a process can move itself into another control group of the user's
 // delegated subtree before its group is removed, and no check here sees that.
 // It does not look at the unit's environment beyond what the start call sent.
+// A memory limit that is not a whole number of pages reads back from the control
+// group files rounded up, as the kernel keeps it, and the check allows for that.
 // It needs the user manager of the calling user and reaches the system
-// manager nowhere.
+// manager nowhere. The harness runs systemctl only for the three properties and
+// the one set-property.
 //
 // The program is provisional and unqualified.
 package main

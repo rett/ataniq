@@ -80,6 +80,23 @@ type qualifier struct {
 	exe      string
 	stateDir string
 
+	// limits, when set, is what the qualification unit is started with, and
+	// turns on the checks of it: read back with systemctl and in the control
+	// group files, lowered once, and no runtime folder entry left after the
+	// stop. The command always sets it, from its flags. A qualifier without it
+	// starts the unit with no limits and makes none of those checks.
+	limits *leadunit.Limits
+	// lowered is the memory limit the running unit is lowered to once.
+	lowered uint64
+	// host runs systemctl and reads files for the limit checks.
+	host host
+	// cgroupRoot is where the unified control group hierarchy is mounted;
+	// runtimeDir is the user's runtime folder; pageSize is the size of a page,
+	// to which the kernel rounds a memory limit up (0 means no rounding).
+	cgroupRoot string
+	runtimeDir string
+	pageSize   int
+
 	suffix    string
 	unit      string
 	intent    string
@@ -142,7 +159,18 @@ func (q *qualifier) spec(intent string) leadunit.Spec {
 			"--literal", literalDollar, "--literal", literalPercent},
 		WorkDir: q.stateDir,
 		Env:     []string{"LANG=C"},
+		Limits:  q.limitsCopy(),
 	}
+}
+
+// limitsCopy returns a copy of the limits the unit is started with, nil when
+// there are none.
+func (q *qualifier) limitsCopy() *leadunit.Limits {
+	if q.limits == nil {
+		return nil
+	}
+	l := *q.limits
+	return &l
 }
 
 // childSpec is the unit that is bound to the qualification unit: a plain child
@@ -206,6 +234,17 @@ func (q *qualifier) qualify(ctx context.Context) report {
 		{"arguments-reach-the-child-unchanged", func(ctx context.Context) (string, error) { return q.argumentsUnchanged(spec) }},
 		{"second-start-refused", func(ctx context.Context) (string, error) { return q.secondStart(ctx, spec) }},
 		{"inspect-matches", q.inspectMatches},
+	}
+	if q.limits != nil {
+		steps = append(steps,
+			step{"limits-show-read-back", q.limitsShowReadBack},
+			step{"limits-cgroup-read-back", q.limitsCgroupReadBack},
+			step{"memory-limit-lowered", q.memoryLowered},
+			step{"lowered-memory-limit-show-read-back", q.loweredShowReadBack},
+			step{"lowered-memory-limit-cgroup-read-back", q.loweredCgroupReadBack},
+		)
+	}
+	steps = append(steps, []step{
 		{"bound-child-started", q.startChild},
 		{"sigterm-leaves-group-populated", q.sigterm},
 		{"sigkill-sent", func(ctx context.Context) (string, error) {
@@ -214,8 +253,11 @@ func (q *qualifier) qualify(ctx context.Context) report {
 		{"empty-true", q.emptyTrue},
 		{"unit-not-loaded", q.notLoaded},
 		{"bound-child-stops-with-parent", q.childStops},
-		{"empty-true-for-a-fresh-name", q.emptyFreshName},
+	}...)
+	if q.limits != nil {
+		steps = append(steps, step{"runtime-folders-clean-after-stop", q.runtimeFoldersClean})
 	}
+	steps = append(steps, step{"empty-true-for-a-fresh-name", q.emptyFreshName})
 	failed := false
 	for _, s := range steps {
 		if failed {
