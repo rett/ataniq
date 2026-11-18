@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -336,6 +337,74 @@ func TestReadmeNamesEveryVector(t *testing.T) {
 			continue
 		}
 		t.Errorf("testdata/README.md does not say what %s is", name)
+	}
+}
+
+// The README states the rules in full, so that another implementation can
+// find each invalid vector's code from it alone. This holds it in step with
+// the forms and the content rules: it must name every field of every form,
+// every closed word, every cap and every code a vector is refused with.
+func TestReadmeStatesTheRules(t *testing.T) {
+	readme := string(readVector(t, "README.md"))
+	_, rules, found := strings.Cut(readme, "\n## The rules in full\n")
+	if !found {
+		t.Fatal("testdata/README.md has no section \"The rules in full\"")
+	}
+	need := func(what, word string) {
+		t.Helper()
+		if !strings.Contains(rules, "`"+word+"`") {
+			t.Errorf("the rules of testdata/README.md do not name %s `%s`", what, word)
+		}
+	}
+
+	fields := 0
+	seen := make(map[reflect.Type]bool)
+	var walk func(reflect.Type)
+	walk = func(typ reflect.Type) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct || seen[typ] {
+			return
+		}
+		seen[typ] = true
+		for _, f := range fieldsOf(typ) {
+			need("the field", f.name)
+			if f.optional && !strings.Contains(rules, "| `"+f.name+"` | *Optional.*") {
+				t.Errorf("the rules of testdata/README.md do not mark `%s` as optional", f.name)
+			}
+			fields++
+			walk(typ.Field(f.index).Type)
+		}
+	}
+	for _, v := range []any{Request{}, Pending{}, Decision{}} {
+		walk(reflect.TypeOf(v))
+	}
+	if fields < 90 {
+		t.Fatalf("walked %d fields, want those of all three forms", fields)
+	}
+	if got, want := strings.Count(rules, "*Optional.*"), 6; got != want {
+		t.Errorf("the rules mark %d fields as optional, want %d", got, want)
+	}
+
+	for _, word := range []string{SchemaRequest, SchemaPending, SchemaDecision, VerbFeatureFinish, VerbBranchPrune,
+		ClassRefMove, SubjectSeat, EffectRef, BuiltByHost, EvidenceSuite, DecisionApprove, DecisionDeny,
+		ConfirmedCode, FlagExecConfig, FlagSymlink, FlagSubmodule, FlagAliased, FlagHistoryOnly, "A", "M", "D", "T",
+		"rq-", "ap-", "b64", PlanDigest("")} {
+		need("the word", word)
+	}
+	for _, limit := range []int{MaxRequestBytes, MaxPendingBytes, MaxDecisionBytes, MaxNoteBytes, MaxReasonBytes, MaxEffects} {
+		if !strings.Contains(rules, " "+strconv.Itoa(limit)+" ") {
+			t.Errorf("the rules of testdata/README.md do not give the limit %d", limit)
+		}
+	}
+
+	var expect map[string]struct{ Code string }
+	if err := json.Unmarshal(readVector(t, "invalid.json"), &expect); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range expect {
+		need("the code", want.Code)
 	}
 }
 
