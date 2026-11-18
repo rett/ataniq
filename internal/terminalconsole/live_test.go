@@ -1106,7 +1106,7 @@ func TestLiveLabelsNameTheSessionNotTheFixture(t *testing.T) {
 	}
 	r.key(escKey)
 	r.key(ctrlK)
-	if av := r.view(); !strings.Contains(av, "no daemon") || strings.Contains(strings.ToLower(av), "fixture") {
+	if av := r.view(); !strings.Contains(av, "not managed by the daemon") || strings.Contains(strings.ToLower(av), "fixture") {
 		t.Fatalf("actions:\n%s", av)
 	}
 }
@@ -1124,13 +1124,13 @@ func TestLiveShowsNoFixtureProjectionEvenWithASnapshot(t *testing.T) {
 			t.Fatalf("%q shown in live mode:\n%s", bad, v)
 		}
 	}
-	for _, want := range []string{"scratch-lead", "claude 2.1", "No daemon, no projects.", "check mismatches 0 · resyncs 0 · refused input 0", sizeText(f.start.Cols, f.start.Rows)} {
+	for _, want := range []string{"scratch-lead", "claude 2.1", "Not daemon-managed.", "No projects.", "check mismatches 0 · resyncs 0 · refused input 0", sizeText(f.start.Cols, f.start.Rows)} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("missing %q:\n%s", want, v)
 		}
 	}
 	ev := strings.Join(textOf(m.evidenceLines(200)), "\n")
-	for _, want := range []string{"One writer, no takeover.", "Input is the owner's direct words.", "There is no daemon, project, gate or delegate data"} {
+	for _, want := range []string{"One writer, no takeover.", "Input is the owner's direct words.", "The daemon (ataniqd) does not manage this session: it has no project, gate or delegate data."} {
 		if !strings.Contains(ev, want) {
 			t.Fatalf("evidence lacks %q:\n%s", want, ev)
 		}

@@ -29,7 +29,8 @@ func (m *Model) drawLiveTree(p *painter, l layout) {
 		{"  epoch: " + m.liveEpochText(), lnText},
 		{"  " + st.Conn.String(), stateKind(st.Conn.String())},
 		{"", lnText},
-		{"No daemon, no projects.", lnDim},
+		{"Not daemon-managed.", lnDim},
+		{"No projects.", lnDim},
 	})
 }
 
@@ -45,7 +46,7 @@ func (m *Model) drawLiveContext(p *painter, l layout) {
 	p.box(l.context, "Context", "", false)
 	in := inset(l.context)
 	var ls []line
-	for _, w := range wrapLines("A live scratch session through a holder. There is no daemon and no project data here: only what the holder reports is shown.", in.Dx()) {
+	for _, w := range wrapLines("A live scratch session through a holder, not managed by the daemon. No project data here: only what the holder reports is shown.", in.Dx()) {
 		ls = append(ls, line{w, lnDim})
 	}
 	p.lines(in, ls)
@@ -142,8 +143,8 @@ func (m *Model) liveEvidenceLines(width int) []line {
 		add(lnText, "["+n.code+"] "+n.text)
 	}
 	add(lnText, "")
-	add(lnHead, "NO DAEMON")
-	add(lnDim, "There is no daemon, project, gate or delegate data in this session. Ctrl+K lists what is unavailable.")
+	add(lnHead, "NOT MANAGED BY THE DAEMON")
+	add(lnDim, "The daemon (ataniqd) does not manage this session: it has no project, gate or delegate data. Ctrl+K lists what is unavailable.")
 	return out
 }
 
@@ -174,7 +175,7 @@ func (m *Model) liveHelpLines(width int) (string, []line) {
 	add(lnText, "In session focus as the writer, a session that asked for the mouse gets it instead.")
 	add(lnHead, "Live scratch session")
 	add(lnText, "This is a "+m.liveLabel()+", through a holder.")
-	add(lnText, "There is no daemon and no project data.")
+	add(lnText, "The daemon (ataniqd) does not manage it, and there is no project data.")
 	add(lnText, "There is no replay.")
 	add(lnText, liveScreenOnly)
 	return "HELP", out
