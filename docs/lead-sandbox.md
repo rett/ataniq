@@ -334,7 +334,8 @@ was added for revision 4.
 ```
 
 `<state>/leads/<role>` itself is Ataniq's and is never bound. The folders are
-the layout's and no input: a caller cannot name another folder for any of them.
+the layout's: a caller cannot name another folder for any of them (the git
+metadata folder is an input, and it must be the layout's).
 The coordinators' trees and homes (`<state>/coords`) and their shared logins
 (`<state>/coord-login`) lie under the same state root and are never bound into a
 lead's sandbox.
@@ -537,9 +538,10 @@ sandboxes are allowed):
 the folder to open by name, the path to walk beneath it and the type the source
 must have (the state root and the whole path below it for a source below the
 state root, the source's own parent folder and its name for any other). It
-reads nothing. `CheckBindSources` takes the place and the type of a source from
-it; the launcher-side step that would make the same walk and give bubblewrap the
-descriptor is not yet built.
+reads nothing. `ResolveSources` puts the same walk on each row it returns, and
+`CheckBindSources` takes the place and the type of a source from it, refusing a
+row Ataniq supplies that has none. The launcher-side step that would make the
+same walk and give bubblewrap the descriptor is not yet built.
 
 **What is still opened or resolved by name, and why.** The state root: it is the
 folder the walks start from, the nearest folder no sandbox can write. Only its
