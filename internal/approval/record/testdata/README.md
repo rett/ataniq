@@ -56,8 +56,9 @@ Each invalid vector is a valid one with one thing wrong, named by the file.
 The codes: `request-invalid`, `record-invalid` (a pending record) and
 `decision-invalid` for a record that breaks the rules or its form;
 `feature-name` for a feature finish that does not name exactly one feature
-of 1 to 48 lower-case letters, digits and dashes; `verb-not-requestable`
-for a verb outside the closed list; `binding-mismatch` for a pending record
+of 1 to 48 lower-case letters, digits and dashes, and `verb-not-requestable`
+for a verb outside the closed list, each in a request and in a pending
+record alike; `binding-mismatch` for a pending record
 whose `binding_sha256` or `plan_sha256` is not the digest it should be;
 `record-too-large` for a record over its cap (request 8 KiB, pending 64 KiB,
 decision 8 KiB) or a note over 2 KiB.

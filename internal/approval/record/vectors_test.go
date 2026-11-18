@@ -3,6 +3,9 @@ package record
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -276,6 +279,47 @@ func TestInvalidVectorsAreRefusedWithTheirCode(t *testing.T) {
 		if _, ok := expect[name]; !ok {
 			t.Errorf("no vector %s", name)
 		}
+	}
+}
+
+// The comment of each Decode function lists the codes it refuses with. It
+// must name every code that an invalid vector of its kind is refused with.
+func TestDecodeCommentsNameTheirCodes(t *testing.T) {
+	var expect map[string]struct{ Code string }
+	if err := json.Unmarshal(readVector(t, "invalid.json"), &expect); err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "record.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := make(map[string]string)
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Doc != nil {
+			comments[fn.Name.Name] = strings.Join(strings.Fields(fn.Doc.Text()), " ")
+		}
+	}
+	functions := map[string]string{"request": "DecodeRequest", "pending": "DecodePending", "decision": "DecodeDecision"}
+	checked := 0
+	for name, want := range expect {
+		function := functions[kindOf(t, name)]
+		comment := comments[function]
+		if comment == "" {
+			t.Fatalf("record.go has no comment for %s", function)
+		}
+		// A code is a whole word of the comment: record-invalid is not
+		// named by a comment that says only "record-invalid-x".
+		named := false
+		for _, word := range strings.FieldsFunc(comment, func(r rune) bool { return r != '-' && (r < 'a' || r > 'z') }) {
+			named = named || word == want.Code
+		}
+		if !named {
+			t.Errorf("the comment of %s does not name %s, which %s is refused with", function, want.Code, name)
+		}
+		checked++
+	}
+	if checked < 30 {
+		t.Fatalf("checked %d vectors, want the whole set", checked)
 	}
 }
 

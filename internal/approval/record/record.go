@@ -26,9 +26,11 @@ func DecodeRequest(data []byte) (Request, error) {
 // DecodePending reads a pending record from its bytes and checks it against
 // the record rules and its form. A record over [MaxPendingBytes], or whose
 // note is over [MaxNoteBytes], is refused record-too-large; a feature finish
-// that does not name exactly one valid feature feature-name; a binding or a
-// plan text that does not match its digest binding-mismatch; anything else
-// record-invalid.
+// that does not name exactly one valid feature feature-name; a verb outside
+// the closed list verb-not-requestable; a binding or a plan text that does
+// not match its digest binding-mismatch; anything else record-invalid. The
+// verb and the feature name are checked by the rule a request is checked
+// by, so they are refused with the same two codes in both records.
 func DecodePending(data []byte) (Pending, error) {
 	var p Pending
 	if err := decode(data, MaxPendingBytes, CodeRecordInvalid, "pending", &p); err != nil {

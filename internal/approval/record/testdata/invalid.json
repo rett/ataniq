@@ -135,6 +135,10 @@
     "code": "record-invalid",
     "why": "a field the form does not name, inside the summary"
   },
+  "pending-invalid-verb.json": {
+    "code": "verb-not-requestable",
+    "why": "a verb outside the closed list, in a record whose digests are right"
+  },
   "request-invalid-control-c1.json": {
     "code": "request-invalid",
     "why": "a raw U+0085 in a plain string"
