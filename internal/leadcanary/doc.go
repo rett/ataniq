@@ -1,12 +1,13 @@
 //go:build linux && ataniq_canary
 
 // Package leadcanary holds what the daemon of canary mode needs that is not
-// the daemon's own: the canary config, the names of the role, the preflight and
-// the holder command that the lifecycle controller asks for, and the admission
-// of the one message. It exists only
-// in a build with the ataniq_canary tag: every file of the package, the tests
-// included, starts with "//go:build linux && ataniq_canary", and nothing outside
-// canary mode imports it.
+// the daemon's own: the canary config, the mapping between the role and the
+// names the layout and the unit use, the preflight and the holder command that
+// the lifecycle controller asks for, the admission of the one message, and the
+// evidence file. It exists only in a build with the ataniq_canary tag: every
+// file of the package, the tests included, starts with
+// "//go:build linux && ataniq_canary", and nothing outside canary mode imports
+// it.
 //
 // Canary mode starts one throwaway lead, whose project carries
 // leadrole.ThrowawayPrefix, in a real sandbox with no qualification record, and
@@ -22,12 +23,24 @@
 //   - [Names] and [RoleOf] map the role "<project>/lead" to the layout and
 //     intake role "<project>-lead" and the unit name, and back.
 //   - [Preflight] satisfies leadlifecycle.Preflight and passes for the config's
-//     role only. It checks no qualification record and no login, and records
-//     nothing: [QualificationText] and [LoginText] are the words the evidence
-//     lines will carry.
+//     role only.
 //   - [HolderCommand] satisfies leadlifecycle.HolderCommand. It builds the
 //     holder's argument vector, its working folder and its whole environment.
 //   - [Admission] builds the text of the one message. Its file, admission.go,
 //     is the only file of the package that imports from the injection tree
 //     (internal/inject/command), and a test holds that.
+//   - [Evidence] appends the events of a run to <state root>/canary-evidence.jsonl.
+//     [ResultEntry] and [Judge] read the holder's result for it and for the
+//     daemon.
+//
+// # What the evidence says
+//
+// Two lines of the evidence say what canary mode waives and does not check: on
+// the define and start lines, "qualification" is [QualificationText] and "login"
+// is [LoginText], and the start line also carries the waiver
+// (canaryroot.WaiverText). They show what the daemon declares. They are not a
+// finding of the holder.
+//
+// The message body is never written to the evidence, nor is anything that
+// could hold it: [Entry] has no field for it.
 package leadcanary
