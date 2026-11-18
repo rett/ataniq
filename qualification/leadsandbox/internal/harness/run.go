@@ -180,6 +180,10 @@ type attempt struct {
 	proc     Process
 	launched bool
 	broken   bool
+	// refused is set when a step that is otherwise soft found a reason not to
+	// launch at all (a bubblewrap too old for the plan): the attempt stays
+	// broken.
+	refused bool
 	// lineRead is set once the one report line was accepted: only then is
 	// the channel asked whether anything followed it.
 	lineRead bool
@@ -332,6 +336,17 @@ func (a *attempt) pre(ctx context.Context) {
 	defs := []def{
 		{StepVersions, true, true, func(ctx context.Context) error {
 			a.versions = a.opt.Launcher.ToolVersions(ctx, ToolPaths{Pasta: a.cfg.Executables.Pasta, Bwrap: a.cfg.Executables.Bwrap})
+			// The plan binds every source Ataniq supplies from a descriptor:
+			// a bubblewrap whose release is known to be too old for that is
+			// refused here, and that failure is not a soft one.
+			note, err := checkBwrapBindFD(a.versions.Bwrap)
+			if err != nil {
+				a.refused = true
+				return err
+			}
+			if note != "" {
+				a.notes = append(a.notes, note)
+			}
 			if len(a.versions.Errors) > 0 {
 				return fmt.Errorf("%d tool version(s) could not be read: %s", len(a.versions.Errors), strings.Join(a.versions.Errors, "; "))
 			}
@@ -395,7 +410,7 @@ func (a *attempt) pre(ctx context.Context) {
 			continue
 		}
 		ok := a.step(d.name, func() error { return d.fn(ctx) })
-		if !ok && d.soft {
+		if !ok && d.soft && !a.refused {
 			a.broken = false
 		}
 	}
@@ -506,10 +521,19 @@ func (a *attempt) buildPlan() error {
 	if err != nil {
 		return err
 	}
+	// The walk of every bind source Ataniq supplies, from the inputs alone:
+	// the plan's pass-through step makes these walks and bubblewrap binds the
+	// descriptors they return. They are the walks the check of the bind sources
+	// makes on the same rows; none is built by hand.
+	walks, err := mountpoints.PlanWalks(a.in)
+	if err != nil {
+		return err
+	}
 	a.planOpt = plan.Options{
 		PastaPath: a.cfg.Executables.Pasta, BwrapPath: a.cfg.Executables.Bwrap,
 		AgentArgv: a.cfg.Command(), HostPresent: present, HostSources: a.res.HostSources(),
-		ReportPath: a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
+		SourceWalks: walks,
+		ReportPath:  a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
 	}
 	if a.in.SeccompEnabled() {
 		a.planOpt.SeccompFD = SeccompFD
@@ -529,13 +553,17 @@ func (a *attempt) buildPlan() error {
 func (a *attempt) verifyPlan() error {
 	var errs []error
 	probs := plan.Verify(a.pl, a.in, a.planOpt)
-	noWritable := true
+	noWritable, byDescriptor := true, true
 	for _, p := range probs {
-		if p.Kind == plan.ProbLeadWritable {
+		switch p.Kind {
+		case plan.ProbLeadWritable:
 			noWritable = false
+		case plan.ProbBindByPath, plan.ProbBindFD, plan.ProbWalk:
+			byDescriptor = false
 		}
 	}
 	a.bindEv.NoSourceInReadWriteSource = &noWritable
+	a.bindEv.NoAtaniqSourceBoundByPath = &byDescriptor
 	if len(probs) > 0 {
 		show := probs
 		if len(show) > 5 {
@@ -688,11 +716,18 @@ func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
 // that is checked. A row Ataniq supplies is bound from its Source, which the
 // resolution has found to be its real path; a row of the host from the real
 // path the plan was given.
+//
+// It also refuses a plan whose way of binding a row is not the row's: a row
+// Ataniq supplies must be bound from a descriptor, by a walk of the plan that
+// is the walk the check makes for the row (the same folder, the same path
+// beneath it, the same type), and a row of the host must be bound by path. So
+// the walk the pass-through step makes is the walk that was checked.
 func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
 	byInside := map[string]mountpoints.ResolvedSource{}
 	for _, s := range a.res2.Sources {
 		byInside[s.Inside] = s
 	}
+	walks := a.planWalks()
 	var rows []mountpoints.ResolvedSource
 	for _, m := range a.pl.Mounts {
 		if m.Source == "" {
@@ -705,16 +740,38 @@ func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
 		case m.Source != row.Bound():
 			return nil, fmt.Errorf("the plan binds %s from %s and the check would open %s: the path that is bound must be the path that is checked", m.Inside, m.Source, row.Bound())
 		}
+		w, walked := walks[m.Inside]
+		switch host := row.Role == profile.RoleHost; {
+		case host && (walked || m.FD != 0):
+			return nil, fmt.Errorf("the plan binds the row of the host %s from a descriptor: a row of the host is bound by its real path", m.Inside)
+		case host:
+		case !walked || m.FD == 0 || m.FD != w.FD:
+			return nil, fmt.Errorf("the plan does not bind %s from a descriptor of its pass-through step: a source Ataniq supplies is never bound by path", m.Inside)
+		case w.Root != row.Walk.Root || w.Rel != row.Walk.Rel || w.Dir != row.Walk.Dir:
+			return nil, fmt.Errorf("the plan walks to the source of %s from %s by %s and the check walks from %s by %s: the walk the step makes must be the walk that is checked", m.Inside, w.Root, w.Rel, row.Walk.Root, row.Walk.Rel)
+		}
 		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
+// planWalks are the walks of the plan by the inside path of their row.
+func (a *attempt) planWalks() map[string]plan.Walk {
+	walks := map[string]plan.Walk{}
+	for _, w := range a.pl.Walks {
+		walks[w.Inside] = w
+	}
+	return walks
+}
+
 // checkBindSources is the last check before the launch (rule G1): the path
 // bound for every row of the plan is opened from the root of the file system
-// without following a link, and a link anywhere on a path refuses the launch.
-// It comes after the second resolution and nothing that runs a lead process
-// lies between it and the launch.
+// without following a link, and a link anywhere on a path, a missing source
+// and a source of another type than its row binds refuse the launch. It comes
+// after the second resolution and nothing that runs a lead process lies
+// between it and the launch. For a source Ataniq supplies it is a check before
+// the walk that counts: the plan's pass-through step, which the launch starts,
+// walks to the source again by handle and gives bubblewrap the descriptor.
 func (a *attempt) checkBindSources() error {
 	rows, err := a.planBindRows()
 	if err != nil {
@@ -726,10 +783,14 @@ func (a *attempt) checkBindSources() error {
 }
 
 // recordBindSources puts the facts of the check into the evidence: each source
-// of the plan, with the problem the check found about its path, or the fact
-// that no component of it is a link. The path checked is the path bound, for
-// every row. A report that was cut short, or that holds a problem naming no row,
-// does not say about the sources it did not reach, so those have no fact.
+// of the plan, with how the plan binds it (from a descriptor, with the walk of
+// the pass-through step, or by path), and with the problem the check found
+// about its path, or the facts that no component of it is a link and that it is
+// of the type the row binds. A link and a wrong type are facts of their own; a
+// source that is missing or cannot be read has neither. The path checked is the
+// path bound, for every row. A report that was cut short, or that holds a
+// problem naming no row, does not say about the sources it did not reach, so
+// those have no fact.
 func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mountpoints.Report) {
 	byRow := map[string]*mountpoints.Problem{}
 	unscoped := false
@@ -745,23 +806,36 @@ func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mount
 	}
 	a.bindEv.LinksChecked = true
 	a.bindEv.Sources = []BindSourceFact{}
+	walks := a.planWalks()
 	for _, row := range rows {
 		f := BindSourceFact{Inside: row.Inside, Source: row.Bound(), CheckedPath: row.Bound()}
+		if w, ok := walks[row.Inside]; ok {
+			f.BoundByDescriptor, f.Descriptor, f.WalkRoot, f.WalkRel, f.WalkType = true, w.FD, w.Root, w.Rel, walkType(w.Dir)
+		}
+		// The check reads the type of a source Ataniq supplies; it does not
+		// look at the type of a row of the host.
+		typed := row.Role != profile.RoleHost
+		no, yes := false, true
 		switch p, bad := byRow[row.Inside]; {
 		case bad:
 			f.Problem = assert.EscapeDetail(p.Error())
-			if errors.Is(p, mountpoints.ErrSymlink) {
-				found := false
-				f.NoSymbolicLinkComponent = &found
+			switch {
+			case errors.Is(p, mountpoints.ErrSymlink):
+				f.NoSymbolicLinkComponent = &no
+			case errors.Is(p, mountpoints.ErrWrongType) && typed:
+				f.HasExpectedType = &no
 			}
 			// Any other problem (missing, unreadable) says nothing about
-			// links, so no fact is given either way.
+			// links or about the type, so no fact is given either way; and a
+			// wrong type says nothing about links, as the walk stopped there.
 		case rep.Truncated, unscoped:
 			// The report was cut short, or a problem names no row: this source
 			// may be among the problems not listed, or was never checked.
 		default:
-			none := true
-			f.NoSymbolicLinkComponent = &none
+			f.NoSymbolicLinkComponent = &yes
+			if typed {
+				f.HasExpectedType = &yes
+			}
 		}
 		a.bindEv.Sources = append(a.bindEv.Sources, f)
 	}

@@ -22,37 +22,55 @@ func hostPassDeps() passDeps {
 	return passDeps{exec: unix.Exec, environ: os.Environ, closeAbove2: hostCloseOnExecAbove2}
 }
 
-// runPassFDs is the pass-through mode. It opens each file, checks its type,
-// places each at exactly its number without close-on-exec, makes every other
+// runPassFDs is the pass-through mode. It walks to each bind source by
+// handle (see walkSources), opens each file and checks its type, places every
+// descriptor at exactly its number without close-on-exec, makes every other
 // descriptor above 2 close-on-exec (so the execve closes it) and executes the
-// command with the environment as Go reads it (os.Environ). Any error is exit 98 with one line,
-// and nothing is executed.
+// command with the environment as Go reads it (os.Environ). A bind source that
+// its walk refuses is exit 96 with one line; any other error is exit 98 with
+// one line; and in both cases nothing is executed. The walks come first: they
+// open with O_PATH, which touches nothing, so a refused source ends the step
+// before the report channel has been opened for writing.
 func runPassFDs(args []string, stderr io.Writer, d passDeps) int {
 	a, err := parsePassFDs(args)
 	if err != nil {
 		return fail(stderr, exitSetup, "usage: pass-fds: %v", err)
 	}
 	// Before anything is opened or moved: see runtimeOwned.
-	for _, f := range a.Files {
-		if runtimeOwned(f.FD) {
-			return fail(stderr, exitSetup, "pass-fds: descriptor %d is one of the Go runtime's own (a standard stream was non-blocking when the program started); choose another number", f.FD)
+	for _, fd := range a.targets() {
+		if runtimeOwned(fd) {
+			return fail(stderr, exitSetup, "pass-fds: descriptor %d is one of the Go runtime's own (a standard stream was non-blocking when the program started); choose another number", fd)
 		}
+	}
+	placed, err := walkSources(a.Walks)
+	if err != nil {
+		code := exitSetup
+		var refused *walkError
+		if errors.As(err, &refused) {
+			code = exitWalk
+		}
+		return fail(stderr, code, "pass-fds: %v", err)
 	}
 	files, err := openFiles(a.Files)
 	if err != nil {
+		for _, p := range placed {
+			unix.Close(p.fd)
+		}
 		return fail(stderr, exitSetup, "pass-fds: %v", err)
 	}
-	if err := placeFiles(files); err != nil {
+	placed = append(placed, files...)
+	if err := placeFiles(placed); err != nil {
 		return fail(stderr, exitSetup, "pass-fds: %v", err)
 	}
-	keep := make([]int, len(files))
-	for i, f := range files {
+	keep := make([]int, len(placed))
+	for i, f := range placed {
 		keep[i] = f.target
 	}
 	return execProgram("command", a.Command, d.environ(), stderr, d.exec, func() error { return d.closeAbove2(keep) })
 }
 
-// openedFile is a file opened at fd that is to be placed at target.
+// openedFile is a file, or the source a walk reached, opened at fd that is to
+// be placed at target.
 type openedFile struct {
 	fd, target int
 	desc       string

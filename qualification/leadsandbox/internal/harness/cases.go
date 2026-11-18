@@ -18,7 +18,10 @@ var caseNotes = map[string][]string{
 	"S4":  {"the resolv.conf derivation of this run is in summary.json (resolv_conf); a derivation that was refused ends the run before a launch, with the reason in the step"},
 	"S7":  {"the sysctl or filter fact only: the harness never issues TIOCSTI"},
 	"S11": {"the harness has no qualification record store: the result is not-checked, and it says so"},
-	"G1":  {"the per-source facts are bind_sources in summary.json: for every bind source of the plan, whether any component of its path is a symbolic link (checked from the root of the file system without following one, right before the launch), and whether any source lies in or below a read-write source (plan.Verify)"},
+	"G1": {
+		"the per-source facts are bind_sources in summary.json: for every bind source of the plan, whether any component of its path is a symbolic link (checked from the root of the file system without following one, right before the launch), and whether any source lies in or below a read-write source (plan.Verify)",
+		"bind_sources also says, per source, whether the plan binds it from a descriptor that its pass-through step walks to by handle (every source Ataniq supplies) or by path (a row of the host), with the walk, and whether the check found it to be of the type its row binds; these are facts about the plan and about the check before the launch: whether bubblewrap mounts the object behind a descriptor is not among them",
+	},
 }
 
 // The ids of the results of case G1. They are the harness's own facts, not the

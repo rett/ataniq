@@ -25,8 +25,8 @@ const bindResolveFlags = unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
 
 // CheckBindSources is the walk of rule B1 over the bind sources, made at the
 // moment of use: right before a launch, with every sandbox that could write a
-// source proven stopped. bubblewrap resolves a bind source on the host, outside
-// every sandbox, and follows a link there; a link planted anywhere on the way
+// source proven stopped. A bind source is resolved on the host, outside every
+// sandbox; a link planted anywhere on the way and followed there
 // would bring a folder of the owner into the sandbox (rule G1). For each row it
 // reaches the path the row is bound from without following a link in any
 // component, and decides on the descriptor it got, not on the name, that the
@@ -68,12 +68,14 @@ const bindResolveFlags = unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
 // when it fills and checks the git metadata folder, are capped and refused
 // when hard-linked).
 //
-// The path checked for a row is the path bubblewrap binds,
-// [ResolvedSource].Bound: for a row of the host the real path; for every other
-// row the Source itself, the lexical path the plan names, which ResolveSources
-// has refused unless it equals its real path, and which the row's walk must
-// lead to. So the path that is checked is the path that is bound, for every
-// row. A skipped row (an optional source the host lacks) is not checked.
+// The path checked for a row is the path the plan binds,
+// [ResolvedSource].Bound: for a row of the host the real path, which bubblewrap
+// binds by path; for every other row the Source itself, the lexical path the
+// plan names, which ResolveSources has refused unless it equals its real path,
+// which the row's walk must lead to, and which the plan's pass-through step
+// walks to again before bubblewrap binds the descriptor it got. So the path
+// that is checked is the path that is bound, for every row. A skipped row (an
+// optional source the host lacks) is not checked.
 //
 // A path that is itself a link, or lies below one, is refused with [ErrSymlink]
 // and the first link on the way is named; a path that does not exist is
@@ -89,12 +91,15 @@ const bindResolveFlags = unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS
 // checked, its Inside the row's inside path, and its detail names the row. The
 // problems come in the order of the rows, and the report is bounded like any
 // other. The caller runs it right before every launch, after [ResolveSources];
-// it says what was there at that moment, and what bubblewrap then resolves by
-// name can still change if something else can write above a source, which is
-// why the sources and everything above them must be Ataniq's, and why the
+// it says what was there at that moment, and what is resolved by name
+// afterwards can still change if something else can write above a source, which
+// is why the sources and everything above them must be Ataniq's, and why the
 // design has the source passed to bubblewrap as the opened handle where
-// bubblewrap can take it ([SourceWalks] gives a launcher-side step the walk to
-// make; this function passes no descriptor on).
+// bubblewrap can take it. This function passes no descriptor on: it is the
+// check before the launch. The plan's pass-through step makes the walk again
+// for every row Ataniq supplies, from the same walks ([SourceWalks],
+// [PlanWalks]), and that walk's descriptor is what bubblewrap binds; a row of
+// the host is bound by its real path.
 func CheckBindSources(rows []ResolvedSource) Report {
 	return checkBindSources(rows, unix.Openat2)
 }

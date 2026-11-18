@@ -5,9 +5,9 @@
 // Only Linux is supported; on another system the command builds, says so on
 // standard error and exits 98. It is built without cgo (CGO_ENABLED=0) as a
 // static program, and imports only the standard library, golang.org/x/sys/unix
-// and, of this module, the lead sandbox packages assert and profile (it uses
-// assert). The design is the
-// lead-hosting design, sections 1.1 and 3.8.
+// and, of this module, the lead sandbox packages assert, profile and safefile
+// (it uses assert, and safefile for the walks of the pass-through mode). The
+// design is the lead-hosting design, sections 1.1, 3.6 and 3.8.
 //
 // # Inside mode
 //
@@ -89,38 +89,95 @@
 //
 // # Pass-through mode
 //
-//	ataniq-probe pass-fds [--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...
+//	ataniq-probe pass-fds [--read FD=PATH]... [--write FD=PATH]... [--walk-dir FD ROOT REL]... [--walk-file FD ROOT REL]... -- COMMAND ARGV...
 //
 // The launch plan puts this step on the host between pasta and bubblewrap,
 // because pasta closes every descriptor it inherits before it starts its
-// command. FD is 3 to 1023 (decimal digits, no leading zero), each at most
-// once, PATH and COMMAND are absolute paths, and at most 8 files are given. A
-// --read file is opened read-only and must be a regular file. A --write file is
+// command: it is the last host-side code before bubblewrap, and the only place
+// whose descriptors bubblewrap inherits. The options come in any order. FD is
+// 3 to 1023 (decimal digits, no leading zero), each at most once whatever the
+// option, PATH and COMMAND are absolute paths, and at most 128 descriptors are
+// given in all: a hard cap. (The plan asks for one per bind row Ataniq
+// supplies, 23 in the bind table today, one per extra placeholder of the
+// tree, at most 64, the seccomp file and the report channel, 89 at most; 128
+// leaves room for rows the table gains.)
+//
+// A --read file is opened read-only and must be a regular file. A --write file is
 // opened write-only, appending, never created and never truncated, and must be
 // a regular file or a FIFO. All are opened with O_NOFOLLOW (a link at the last
 // component is refused), O_CLOEXEC and O_NOCTTY, and non-blocking while the
 // open and the type check last; the flag is cleared afterwards. A --write FIFO
 // that no process has open for reading is therefore refused at once (ENXIO,
 // exit 98, one line) and does not hold the launch: the holder opens its reading
-// end first. Each file is then placed at exactly its number without
-// close-on-exec, every other descriptor above 2 is made close-on-exec, and
-// COMMAND is executed, with ARGV (whose first element is COMMAND's own) and the
-// environment as Go reads it (see above). Any error is exit 98 with one line,
+// end first.
+//
+// A walk is a bind source of the plan, reached by handle (rule B1 of the
+// design, revision 4, section 3.6): --walk-dir for a source that must be a
+// folder, --walk-file for one that must be a regular file. ROOT is the folder
+// the walk starts from, an absolute clean path, and REL the path of the source
+// beneath it, relative and clean, without "..", and "." only with --walk-dir
+// (the folder itself). For each walk, in the order given, the probe:
+//
+//  1. Opens ROOT, once for all the walks that name the same ROOT, without
+//     following a symbolic link in any component of it: one openat2 lookup
+//     from the root of the file system with RESOLVE_NO_SYMLINKS and
+//     RESOLVE_NO_MAGICLINKS (safefile.OpenRootNoLinks). Mount points above
+//     ROOT are crossed.
+//  2. Opens REL beneath that handle in one openat2 lookup with
+//     RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS, RESOLVE_NO_MAGICLINKS and
+//     RESOLVE_NO_XDEV, with O_PATH (safefile.Root.OpenDirHandle or
+//     OpenFileHandle): no link is followed on any component, the last
+//     included, and no mount point below ROOT is crossed. O_PATH opens
+//     nothing: a FIFO does not block it and a device's own open does not run.
+//  3. Reads the type from the descriptor that lookup returned, not from the
+//     name, and refuses anything but a folder (--walk-dir) or a regular file
+//     (--walk-file). A file's content is not read, so neither a size nor a
+//     link count is looked at.
+//  4. Keeps a descriptor of its own on that object (an O_PATH descriptor,
+//     close-on-exec until it is placed).
+//
+// The walks are made before any --read or --write file is opened, so a refused
+// source ends the step before the report channel has been opened for writing.
+// The first walk that is refused ends the step with exit 96 and one line that
+// names the option, the descriptor, the reason, ROOT and REL (the launch plan
+// lists which inside path each descriptor is bound at); every descriptor
+// opened so far is closed and nothing is executed. There is no fallback to a
+// path-based open: where openat2 is not available the walk is refused. The
+// descriptor that reaches the command is the one the walk checked, so it
+// names the object that was there at the walk, whatever is done to the name
+// afterwards (a rename, a link put in its place): a check made earlier, by
+// the holder or by anyone, decides nothing here, and this walk is the one
+// that counts. Whether the command then binds the object behind the
+// descriptor (bubblewrap's --bind-fd and --ro-bind-fd), and closes it before
+// it starts what runs inside, is a question about that command which the
+// probe does not answer: a qualification item.
+//
+// Each descriptor is then placed at exactly its number without close-on-exec,
+// every other descriptor above 2 is made close-on-exec (the folders the walks
+// started from are closed before that), and COMMAND is executed, with ARGV
+// (whose first element is COMMAND's own) and the environment as Go reads it
+// (see above). Any error other than a refused walk is exit 98 with one line,
 // and nothing is executed; so is a number that the Go runtime holds (see
 // below).
 //
-// The checks on a path are not atomic with the open, and the probe does not
-// try to make them so. A --write path is looked at (lstat) before it is opened
+// The checks on a --read or --write path are not atomic with the open, and
+// the probe does not try to make them so. A --write path is looked at (lstat)
+// before it is opened
 // and checked again on the descriptor it opened; a --read path is checked only
 // on the descriptor, after the open, so a device node at a --read path is
 // opened (without becoming a controlling terminal, and not blocking) before it
 // is refused. O_NOFOLLOW covers the last component only. Whoever can rename or
 // replace an entry in a folder on the path can change what the probe opens
-// between the look and the open. So every path given to the pass-through mode
+// between the look and the open. So every path given with --read or --write
 // must lie in a folder that only the holder can write, and nobody else may be
 // able to change a folder above it; the launch plan requires the report path
 // to lie directly in a folder the holder owns. The probe does not reopen the
-// descriptor through /proc to compare it with the first look.
+// descriptor through /proc to compare it with the first look. A walk has no
+// such gap below ROOT: the lookup and the check are on one descriptor. Above
+// ROOT a walk refuses a link and nothing else, so ROOT and the folders above
+// it must be ones no sandbox can write (the plan and the holder choose ROOT:
+// the state root for a source below it, else the folder that holds the
+// source).
 //
 // # Descriptors are closed by the exec
 //
@@ -149,6 +206,10 @@
 //
 //   - 0 is never returned by the command itself: a successful execve replaces
 //     it.
+//   - 96: the pass-through mode refused a bind source in its walk. Standard
+//     error holds one line, "ataniq-probe: pass-fds: OPTION FD: REASON (folder
+//     ROOT, path REL)", with ROOT and REL quoted and each cut to 150 bytes.
+//     Nothing was executed.
 //   - 97: the inside checks did not pass. Standard error holds a first line
 //     "ataniq-probe: the inside checks did not pass: N problems; the agent is
 //     not started" and then one line per problem, "ataniq-probe:   assertion
@@ -160,5 +221,5 @@
 //     the command is for, "ataniq-probe: MESSAGE", always one line.
 //
 // A parent that waited for the agent returns the agent's own status, which can
-// be 97 or 98 too.
+// be 96, 97 or 98 too.
 package main

@@ -63,6 +63,22 @@
 // entry handle on a file refuses neither a size nor a hard-linked file, as it
 // reads nothing; Info reports both for the caller to judge.
 //
+// [Handle.Dup] gives the caller a descriptor of its own on the same object: a
+// duplicate, close-on-exec too, that the caller closes or places at the
+// number a child process is to inherit. The number Fd returns stays the
+// Handle's and ends with its Close; the duplicate does not, so a caller that
+// hands the object on takes the duplicate and closes the Handle.
+//
+// # A folder opened without following a link above it
+//
+// [OpenRoot] protects the last component of its path only. [OpenRootNoLinks]
+// is for a path that is expected to be a real path and is not the caller's own
+// choice (the folder a bind source is walked from): it looks the whole path up
+// from the root of the file system in one openat2 that follows no symbolic
+// link on any component, and the handle is the descriptor that lookup
+// returned. Mount points above the folder are crossed, as the folder may be on
+// any mount; below the handle the rules are the same as for any Root.
+//
 // # Rules every call follows
 //
 // A path is relative to the handle and clean: an absolute path or a ".."
@@ -103,7 +119,14 @@
 // nodev, so that no device node there is ever opened; the package does not
 // check it. [Root.SubRoot], [Root.OpenDirHandle] and [Root.OpenFileHandle]
 // open with O_PATH, as [Root.Lstat] does: that does not open the file itself,
-// so a device node is seen by fstat and refused without its open having run.
+// so the open of a device node never runs. What refuses the node differs.
+// [Root.OpenFileHandle] gets a descriptor on it, and fstat on that descriptor
+// refuses it with [ErrNotRegular]. The two folder methods, SubRoot and
+// OpenDirHandle, open with O_DIRECTORY as well, so the kernel refuses the node
+// in the lookup (ENOTDIR, reported as [ErrNotDirectory]) before there is a
+// descriptor for fstat to look at; the fstat check of the folder methods is
+// there so that the type does not rest on the open alone. [OpenRootNoLinks]
+// opens with O_PATH and O_DIRECTORY in the same way.
 //
 // Opens use O_NONBLOCK. Besides keeping a FIFO from blocking them, it keeps a
 // file lease from stalling the owner: a process with the lead's user (the
@@ -129,7 +152,8 @@
 //
 // # When openat2 is not usable
 //
-// [OpenRoot] probes openat2 once, on the new handle and with the flags every
+// [OpenRoot] (and [OpenRootNoLinks], whose own lookup is an openat2 too)
+// probes openat2 once, on the new handle and with the flags every
 // call uses, and fails with [ErrUnsupported] when it does not work (the kernel
 // lacks it, a seccomp filter denies it with EPERM, which cannot be told apart
 // from a permission failure and is not guessed at, or the flags are refused),
@@ -156,7 +180,10 @@
 // It does not protect against the folder behind the handle being changed by
 // someone with owner rights, and it trusts the path given to [OpenRoot]: only
 // the last component is checked (O_NOFOLLOW), so the caller must pass a path
-// whose parents it owns. It does not sandbox anything, create a namespace or
+// whose parents it owns. [OpenRootNoLinks] refuses a link on every component,
+// and that is all it adds: whoever can write a folder above can still rename
+// what the path names, so the parents must be the caller's there too. It does
+// not sandbox anything, create a namespace or
 // run a process. It is Linux only: on other systems the package has no
 // behaviour. It is part of an unqualified proposal; it is generated and
 // tested against the real system calls on a temporary folder, and no claim

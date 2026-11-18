@@ -14,8 +14,16 @@ import (
 	"ataniq/internal/leadsandbox/plan"
 )
 
-// EvidenceFormat is the version of the evidence files.
-const EvidenceFormat = 1
+// EvidenceFormat is the version of the evidence files. Format 2 added, to
+// plan.json, the walks of the plan's pass-through step ("walks") and the
+// descriptor a mount is bound from ("fd"); and to the bind sources of
+// summary.json, per source, whether the plan binds it from a descriptor
+// ("bound_by_descriptor"), the descriptor and the walk ("descriptor",
+// "walk_root", "walk_rel", "walk_type"), the fact about its type
+// ("has_expected_type"), and for all of them the verifier's fact
+// "no_ataniq_source_bound_by_path". No key of format 1 was removed or changed
+// its meaning.
+const EvidenceFormat = 2
 
 // The evidence files of an attempt folder.
 const (
@@ -47,19 +55,53 @@ type PlanEvidence struct {
 	EnvNames []string        `json:"env_names"`
 	Mounts   []MountEvidence `json:"mounts"`
 	Files    []FileEvidence  `json:"files"`
-	Notes    []string        `json:"notes"`
-	WorkDir  string          `json:"work_dir"`
+	// Walks are the bind sources the plan's pass-through step walks to by
+	// handle, one per bind source Ataniq supplies, with the descriptor the
+	// source is bound from.
+	Walks   []WalkEvidence `json:"walks"`
+	Notes   []string       `json:"notes"`
+	WorkDir string         `json:"work_dir"`
 	// Digest is the digest of the profile (profile.Inputs.Digest).
 	Digest string `json:"digest"`
 }
 
 // MountEvidence is one emitted row of the bind table.
 type MountEvidence struct {
-	Kind         string `json:"kind"`
-	Inside       string `json:"inside"`
-	Source       string `json:"source,omitempty"`
-	LeadWritable bool   `json:"lead_writable,omitempty"`
-	Optional     bool   `json:"optional,omitempty"`
+	Kind   string `json:"kind"`
+	Inside string `json:"inside"`
+	Source string `json:"source,omitempty"`
+	// FD is the descriptor the plan binds the row from (--bind-fd,
+	// --ro-bind-fd); absent for a row that is bound by path (a row of the
+	// host) or has no source.
+	FD           int  `json:"fd,omitempty"`
+	LeadWritable bool `json:"lead_writable,omitempty"`
+	Optional     bool `json:"optional,omitempty"`
+}
+
+// The types a walk binds.
+const (
+	WalkFolder = "folder"
+	WalkFile   = "file"
+)
+
+// WalkEvidence is one walk of the plan's pass-through step: the folder the
+// step opens without following a link, the path it walks beneath that handle,
+// the type the source must have there and the descriptor the source is placed
+// at, which is the one bubblewrap is told to bind the row from.
+type WalkEvidence struct {
+	FD     int    `json:"fd"`
+	Inside string `json:"inside"`
+	Root   string `json:"root"`
+	Rel    string `json:"rel"`
+	// Type is "folder" or "file" (a regular file).
+	Type string `json:"type"`
+}
+
+func walkType(dir bool) string {
+	if dir {
+		return WalkFolder
+	}
+	return WalkFile
 }
 
 // FileEvidence is a descriptor the plan's pass-through step opens.
@@ -74,14 +116,17 @@ type FileEvidence struct {
 func planEvidence(p *plan.Plan) PlanEvidence {
 	e := PlanEvidence{
 		Format: EvidenceFormat, Argv: append([]string{}, p.Argv...), Notes: append([]string{}, p.Notes...),
-		WorkDir: p.WorkDir, Digest: p.Digest, EnvNames: []string{}, Mounts: []MountEvidence{}, Files: []FileEvidence{},
+		WorkDir: p.WorkDir, Digest: p.Digest, EnvNames: []string{}, Mounts: []MountEvidence{}, Files: []FileEvidence{}, Walks: []WalkEvidence{},
 	}
 	for _, v := range p.Env {
 		e.EnvNames = append(e.EnvNames, v.Name)
 	}
 	sort.Strings(e.EnvNames)
 	for _, m := range p.Mounts {
-		e.Mounts = append(e.Mounts, MountEvidence{Kind: string(m.Kind), Inside: m.Inside, Source: m.Source, LeadWritable: m.LeadWritable, Optional: m.Optional})
+		e.Mounts = append(e.Mounts, MountEvidence{Kind: string(m.Kind), Inside: m.Inside, Source: m.Source, FD: m.FD, LeadWritable: m.LeadWritable, Optional: m.Optional})
+	}
+	for _, w := range p.Walks {
+		e.Walks = append(e.Walks, WalkEvidence{FD: w.FD, Inside: w.Inside, Root: w.Root, Rel: w.Rel, Type: walkType(w.Dir)})
 	}
 	for _, f := range p.Files {
 		e.Files = append(e.Files, FileEvidence{FD: f.FD, Path: f.Path, Mode: string(f.Mode), Purpose: f.Purpose, SHA256: f.SHA256})
@@ -219,12 +264,39 @@ type BindSourceFact struct {
 	// CheckedPath is the path the check opened. It is Source for every row:
 	// the path that is bound is the path that is checked.
 	CheckedPath string `json:"checked_path"`
+	// BoundByDescriptor says how the plan binds the source: true when it is
+	// bound from a descriptor that the plan's pass-through step walks to by
+	// handle (--bind-fd, --ro-bind-fd), which holds for every source Ataniq
+	// supplies; false when it is bound by path, which holds for a row of the
+	// host. It is what the plan says, from the plan: that bubblewrap mounts
+	// the object behind the descriptor is not a fact of this record.
+	BoundByDescriptor bool `json:"bound_by_descriptor"`
+	// Descriptor is the number the source is bound from, WalkRoot the folder
+	// the step opens without following a link, WalkRel the path it walks
+	// beneath that handle and WalkType what the source must be there
+	// ("folder" or "file"). All four are absent for a source bound by path.
+	// The harness has checked that this walk is the one the check of the
+	// source made.
+	Descriptor int    `json:"descriptor,omitempty"`
+	WalkRoot   string `json:"walk_root,omitempty"`
+	WalkRel    string `json:"walk_rel,omitempty"`
+	WalkType   string `json:"walk_type,omitempty"`
 	// NoSymbolicLinkComponent is the fact: the check opened the path from the
 	// root of the file system without following a link, and no component of it,
 	// the last included, is one. False says it is (Problem says where, or what
 	// else was found). Absent when the report of the check was cut short and
-	// does not say.
+	// does not say, and when the check found another problem, which says
+	// nothing about links.
 	NoSymbolicLinkComponent *bool `json:"no_symbolic_link_component,omitempty"`
+	// HasExpectedType is the fact about the type of a source Ataniq supplies,
+	// read by the check from the descriptor it opened: true when the source is
+	// what the row binds (a folder, or a regular file), false when the check
+	// refused it as something else (a file for a folder, a folder for a file,
+	// a FIFO, a socket, a device, or a path below something that is no
+	// folder; Problem says which). Absent for a row of the host, whose type
+	// the check does not look at, when the check found a link or another
+	// problem before it reached the type, and when its report was cut short.
+	HasExpectedType *bool `json:"has_expected_type,omitempty"`
 	// Problem is the check's reason, bounded and escaped, when it found one.
 	Problem string `json:"problem,omitempty"`
 }
@@ -242,6 +314,13 @@ type BindSourcesEvidence struct {
 	// lies in or below the source of a read-write bind, a folder the lead can
 	// write. Absent when the plan was not built or verified.
 	NoSourceInReadWriteSource *bool `json:"no_source_in_read_write_source,omitempty"`
+	// NoAtaniqSourceBoundByPath is the fact from plan.Verify about the text
+	// of the plan: no bind source Ataniq supplies is bound by path, each is
+	// bound from a descriptor paired with a walk of the pass-through step, and
+	// each walk is the one the inputs give. False when the verifier found a
+	// source bound by path, a descriptor without its walk or used twice, or
+	// another walk. Absent when the plan was not built or verified.
+	NoAtaniqSourceBoundByPath *bool `json:"no_ataniq_source_bound_by_path,omitempty"`
 }
 
 // Summary is summary.json.

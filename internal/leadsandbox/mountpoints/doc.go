@@ -69,10 +69,11 @@
 //     to open by name, the path to walk beneath it and the type the source must
 //     have ([SourceWalk]): the state root and the whole path below it for a
 //     source below the state root, the source's own parent folder and its name
-//     for any other. It is data, taken from the inputs alone, for a
-//     launcher-side step that walks the source by handle and gives bubblewrap
-//     the descriptor it checked; nothing in this package does that step.
-//     [ResolveSources] puts the same walk on each row it returns.
+//     for any other. It is data, taken from the inputs alone, for the
+//     pass-through step of the launch plan, which walks the source by handle
+//     and gives bubblewrap the descriptor it checked; nothing in this package
+//     does that step. [PlanWalks] gives the same walks in the type the plan
+//     takes, and [ResolveSources] puts the same walk on each row it returns.
 //
 // # Handles, not names (rule B1)
 //
@@ -147,10 +148,17 @@
 // the git metadata folder at every [Check]) is read through a handle, up to a
 // cap, and refused when the file is hard-linked.
 //
-// The descriptors are closed when the check returns: the launch still binds by
-// path. The design has the source passed to bubblewrap as the opened handle
-// where bubblewrap can take it; [SourceWalks] is the data for the launcher-side
-// step that will do so, and this package does not do it.
+// The descriptors are closed when the check returns: this package passes none
+// on, and its check is a check before the walk that counts. The design has the
+// source passed to bubblewrap as the opened handle where bubblewrap can take
+// it, and the launch plan does so for every row Ataniq supplies: its
+// pass-through step, the last host-side code before bubblewrap, walks to each
+// such source again by handle, from the walks [SourceWalks] gives ([PlanWalks]
+// for the plan), and bubblewrap binds the descriptor that walk returned
+// (--bind-fd, --ro-bind-fd). A source that changed between the check here and
+// that walk is refused there, or bound as the object that walk found. A row of
+// the host is still bound by path. Whether bubblewrap mounts the object behind
+// the descriptor is a qualification item.
 //
 // What is still opened or resolved by name, and why:
 //
@@ -180,8 +188,8 @@
 //
 // No folder below the state root is opened by its name, and nothing else is.
 // A folder outside the state root that holds a source (the root a [SourceWalk]
-// names for such a row) is not opened here at all; the launcher-side step will
-// open it by name.
+// names for such a row) is not opened here at all; the pass-through step of
+// the plan opens it, without following a link in any component of its path.
 //
 // # The git metadata folder (rule G1)
 //
@@ -267,16 +275,19 @@
 //     not show that no lead process remains; only an empty control group
 //     does. A check made while a lead process remains says nothing.
 //  3. Make the path that is bound the path that is checked, for every row.
-//     bubblewrap binds the path the plan names and follows a link in it, so a
-//     source that is checked and a different one that is bound is a check that
-//     did not happen. For a row Ataniq supplies (every row that is not a row of
-//     the host) the plan binds the Source the inputs name, and
+//     A source that is checked and a different one that is bound is a check
+//     that did not happen. For a row Ataniq supplies (every row that is not a
+//     row of the host) the plan binds the Source the inputs name, from a
+//     descriptor: the holder passes [PlanWalks] as plan.Options.SourceWalks,
+//     the plan's pass-through step walks to each Source by handle and
+//     bubblewrap binds the descriptor that walk returned, not a path.
 //     [ResolveSources] refuses a Source whose real path differs, so the holder
-//     gives real paths in the inputs, the plan binds them, and
-//     [CheckBindSources] walks to them as they are, with no link, and checks
-//     the type of what is there. For
+//     gives real paths in the inputs, and [CheckBindSources] walks to them as
+//     they are, with no link, and checks the type of what is there, before
+//     the step does the same once more. For
 //     a row of the host (/usr, /etc/hosts, /etc/localtime, ...), whose own name
-//     may be a link of the host that no lead writes, the plan binds the real
+//     may be a link of the host that no lead writes, the plan binds, by path
+//     (bubblewrap follows a link in a path it is given), the real
 //     path [ResolveSources] reported ([ResolvedSource].Real): the holder passes
 //     [Resolution.HostSources] as plan.Options.HostSources (and has
 //     plan.Options.HostPresent say which optional rows the resolution found),

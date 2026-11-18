@@ -1,7 +1,32 @@
 # pasta
 /usr/bin/pasta -f -q --config-net -t none -u none -T none -U none --no-map-gw --
 # pass-fds
-/opt/ataniq/bin/probe pass-fds --write 3=/opt/ataniq/run/arc-lead/report.fifo --
+/opt/ataniq/bin/probe pass-fds
+--write 3=/opt/ataniq/run/arc-lead/report.fifo
+--walk-file 10 /opt/ataniq/resolv/arc-lead resolv.conf
+--walk-file 11 /opt/ataniq/bin probe
+--walk-dir 12 /opt/ataniq/spec arc-lead
+--walk-dir 13 /opt/agent/claude 2.1.0
+--walk-file 14 /opt/ataniq/managed/arc-lead settings.json
+--walk-dir 15 /state leads/arc-lead/home
+--walk-dir 16 /state leads/arc-lead/config/claude
+--walk-dir 17 /opt/ataniq/skills arc-lead
+--walk-file 18 /opt/ataniq/instructions/arc-lead CLAUDE.md
+--walk-dir 19 /opt/ataniq/git arc-lead
+--walk-dir 20 /state leads/arc-lead/tree
+--walk-file 21 /state leads/arc-lead/gitmeta/config
+--walk-dir 22 /state leads/arc-lead/gitmeta/hooks
+--walk-dir 23 /state leads/arc-lead/gitmeta/info
+--walk-dir 24 /state mirrors/demo.git
+--walk-dir 25 /opt/ataniq qargi
+--walk-dir 26 /state leads/arc-lead/qargi
+--walk-dir 27 /state leads/arc-lead/requests
+--walk-dir 28 /state mailbox/arc-lead
+--walk-dir 29 /state leads/arc-lead/mail
+--walk-dir 30 /state pub/demo
+--walk-dir 31 /opt/ataniq/assignment demo
+--walk-dir 32 /opt/ataniq/projection demo
+--
 # bubblewrap
 /usr/bin/bwrap
 --die-with-parent
@@ -45,32 +70,32 @@
 --ro-bind /etc/passwd /etc/passwd
 --ro-bind /etc/group /etc/group
 --ro-bind /etc/localtime /etc/localtime
---ro-bind /opt/ataniq/resolv/arc-lead/resolv.conf /etc/resolv.conf
+--ro-bind-fd 10 /etc/resolv.conf
 --dev /dev
 --proc /proc
 --tmpfs /tmp
---ro-bind /opt/ataniq/bin/probe /ataniq/probe
---ro-bind /opt/ataniq/spec/arc-lead /ataniq/spec
---ro-bind /opt/agent/claude/2.1.0 /ataniq/agent
---ro-bind /opt/ataniq/managed/arc-lead/settings.json /etc/claude-code/managed-settings.json
---bind /state/leads/arc-lead/home /home/lead
---bind /state/leads/arc-lead/config/claude /home/lead/.claude
---ro-bind /opt/ataniq/skills/arc-lead /home/lead/.claude/skills
---ro-bind /opt/ataniq/instructions/arc-lead/CLAUDE.md /home/lead/.claude/CLAUDE.md
---ro-bind /opt/ataniq/git/arc-lead /ataniq/git
---bind /state/leads/arc-lead/tree /work/demo
---ro-bind /state/leads/arc-lead/gitmeta/config /work/demo/.git/config
---ro-bind /state/leads/arc-lead/gitmeta/hooks /work/demo/.git/hooks
---ro-bind /state/leads/arc-lead/gitmeta/info /work/demo/.git/info
---ro-bind /state/mirrors/demo.git /ataniq/mirror/demo.git
---ro-bind /opt/ataniq/qargi /ataniq/qargi
---bind /state/leads/arc-lead/qargi /home/lead/.qargi
---bind /state/leads/arc-lead/requests /ataniq/requests
---ro-bind /state/mailbox/arc-lead /ataniq/mailbox
---bind /state/leads/arc-lead/mail /ataniq/mail
---ro-bind /state/pub/demo /coord
---ro-bind /opt/ataniq/assignment/demo /ataniq/assignment
---ro-bind /opt/ataniq/projection/demo /ataniq/projection
+--ro-bind-fd 11 /ataniq/probe
+--ro-bind-fd 12 /ataniq/spec
+--ro-bind-fd 13 /ataniq/agent
+--ro-bind-fd 14 /etc/claude-code/managed-settings.json
+--bind-fd 15 /home/lead
+--bind-fd 16 /home/lead/.claude
+--ro-bind-fd 17 /home/lead/.claude/skills
+--ro-bind-fd 18 /home/lead/.claude/CLAUDE.md
+--ro-bind-fd 19 /ataniq/git
+--bind-fd 20 /work/demo
+--ro-bind-fd 21 /work/demo/.git/config
+--ro-bind-fd 22 /work/demo/.git/hooks
+--ro-bind-fd 23 /work/demo/.git/info
+--ro-bind-fd 24 /ataniq/mirror/demo.git
+--ro-bind-fd 25 /ataniq/qargi
+--bind-fd 26 /home/lead/.qargi
+--bind-fd 27 /ataniq/requests
+--ro-bind-fd 28 /ataniq/mailbox
+--bind-fd 29 /ataniq/mail
+--ro-bind-fd 30 /coord
+--ro-bind-fd 31 /ataniq/assignment
+--ro-bind-fd 32 /ataniq/projection
 --chdir /work/demo
 --remount-ro /
 --
@@ -111,34 +136,58 @@ ro-bind /etc/nsswitch.conf /etc/nsswitch.conf [optional]
 ro-bind /etc/passwd /etc/passwd
 ro-bind /etc/group /etc/group
 ro-bind /etc/localtime /etc/localtime [optional]
-ro-bind /etc/resolv.conf /opt/ataniq/resolv/arc-lead/resolv.conf
+ro-bind /etc/resolv.conf /opt/ataniq/resolv/arc-lead/resolv.conf [fd 10]
 dev /dev
 proc /proc
 tmpfs /tmp
-ro-bind /ataniq/probe /opt/ataniq/bin/probe
-ro-bind /ataniq/spec /opt/ataniq/spec/arc-lead
-ro-bind /ataniq/agent /opt/agent/claude/2.1.0
-ro-bind /etc/claude-code/managed-settings.json /opt/ataniq/managed/arc-lead/settings.json
-rw-bind /home/lead /state/leads/arc-lead/home
-rw-bind /home/lead/.claude /state/leads/arc-lead/config/claude
-ro-bind /home/lead/.claude/skills /opt/ataniq/skills/arc-lead
-ro-bind /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead/CLAUDE.md
-ro-bind /ataniq/git /opt/ataniq/git/arc-lead
-rw-bind /work/demo /state/leads/arc-lead/tree
-ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config
-ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks
-ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info
-ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git
-ro-bind /ataniq/qargi /opt/ataniq/qargi
-rw-bind /home/lead/.qargi /state/leads/arc-lead/qargi
-rw-bind /ataniq/requests /state/leads/arc-lead/requests
-ro-bind /ataniq/mailbox /state/mailbox/arc-lead
-rw-bind /ataniq/mail /state/leads/arc-lead/mail
-ro-bind /coord /state/pub/demo
-ro-bind /ataniq/assignment /opt/ataniq/assignment/demo
-ro-bind /ataniq/projection /opt/ataniq/projection/demo
+ro-bind /ataniq/probe /opt/ataniq/bin/probe [fd 11]
+ro-bind /ataniq/spec /opt/ataniq/spec/arc-lead [fd 12]
+ro-bind /ataniq/agent /opt/agent/claude/2.1.0 [fd 13]
+ro-bind /etc/claude-code/managed-settings.json /opt/ataniq/managed/arc-lead/settings.json [fd 14]
+rw-bind /home/lead /state/leads/arc-lead/home [fd 15]
+rw-bind /home/lead/.claude /state/leads/arc-lead/config/claude [fd 16]
+ro-bind /home/lead/.claude/skills /opt/ataniq/skills/arc-lead [fd 17]
+ro-bind /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead/CLAUDE.md [fd 18]
+ro-bind /ataniq/git /opt/ataniq/git/arc-lead [fd 19]
+rw-bind /work/demo /state/leads/arc-lead/tree [fd 20]
+ro-bind /work/demo/.git/config /state/leads/arc-lead/gitmeta/config [fd 21]
+ro-bind /work/demo/.git/hooks /state/leads/arc-lead/gitmeta/hooks [fd 22]
+ro-bind /work/demo/.git/info /state/leads/arc-lead/gitmeta/info [fd 23]
+ro-bind /ataniq/mirror/demo.git /state/mirrors/demo.git [fd 24]
+ro-bind /ataniq/qargi /opt/ataniq/qargi [fd 25]
+rw-bind /home/lead/.qargi /state/leads/arc-lead/qargi [fd 26]
+rw-bind /ataniq/requests /state/leads/arc-lead/requests [fd 27]
+ro-bind /ataniq/mailbox /state/mailbox/arc-lead [fd 28]
+rw-bind /ataniq/mail /state/leads/arc-lead/mail [fd 29]
+ro-bind /coord /state/pub/demo [fd 30]
+ro-bind /ataniq/assignment /opt/ataniq/assignment/demo [fd 31]
+ro-bind /ataniq/projection /opt/ataniq/projection/demo [fd 32]
 # files
 fd 3 write report /opt/ataniq/run/arc-lead/report.fifo
+# walks
+fd 10 file /etc/resolv.conf /opt/ataniq/resolv/arc-lead resolv.conf
+fd 11 file /ataniq/probe /opt/ataniq/bin probe
+fd 12 dir /ataniq/spec /opt/ataniq/spec arc-lead
+fd 13 dir /ataniq/agent /opt/agent/claude 2.1.0
+fd 14 file /etc/claude-code/managed-settings.json /opt/ataniq/managed/arc-lead settings.json
+fd 15 dir /home/lead /state leads/arc-lead/home
+fd 16 dir /home/lead/.claude /state leads/arc-lead/config/claude
+fd 17 dir /home/lead/.claude/skills /opt/ataniq/skills arc-lead
+fd 18 file /home/lead/.claude/CLAUDE.md /opt/ataniq/instructions/arc-lead CLAUDE.md
+fd 19 dir /ataniq/git /opt/ataniq/git arc-lead
+fd 20 dir /work/demo /state leads/arc-lead/tree
+fd 21 file /work/demo/.git/config /state leads/arc-lead/gitmeta/config
+fd 22 dir /work/demo/.git/hooks /state leads/arc-lead/gitmeta/hooks
+fd 23 dir /work/demo/.git/info /state leads/arc-lead/gitmeta/info
+fd 24 dir /ataniq/mirror/demo.git /state mirrors/demo.git
+fd 25 dir /ataniq/qargi /opt/ataniq qargi
+fd 26 dir /home/lead/.qargi /state leads/arc-lead/qargi
+fd 27 dir /ataniq/requests /state leads/arc-lead/requests
+fd 28 dir /ataniq/mailbox /state mailbox/arc-lead
+fd 29 dir /ataniq/mail /state leads/arc-lead/mail
+fd 30 dir /coord /state pub/demo
+fd 31 dir /ataniq/assignment /opt/ataniq/assignment demo
+fd 32 dir /ataniq/projection /opt/ataniq/projection demo
 # digest
 2cd0df4fb5cb55e28954e3a07173ad49a627489a363aea4d5860c1f39ba3858f
 # workdir
@@ -148,7 +197,8 @@ false
 # notes
 - --share-net is passed because bubblewrap runs inside the network namespace that pasta made; it does not share the host's network
 - nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled
-- bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; the path that is bound is the path that is checked: a source Ataniq supplies is its real path as the inputs name it, and a row of the host (/usr, the /etc files) is bound from the real path the holder resolved (Options.HostSources); this package checks the text of the sources, and the holder checks each bound path without following links right before the start (mountpoints.CheckBindSources)
+- bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because a source is resolved on the host, outside every sandbox, where a symbolic link would be followed; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; a source Ataniq supplies is its real path as the inputs name it and is bound from a descriptor (see the note on descriptors), and a row of the host (/usr, the /etc files) is bound by path, from the real path the holder resolved (Options.HostSources), which bubblewrap resolves by name; this package checks the text of the sources, and the holder checks each source without following links right before the start (mountpoints.CheckBindSources), as a check before the walk that counts
+- bind sources by descriptor (rule B1): every bind source Ataniq supplies is bound from a descriptor (--bind-fd, --ro-bind-fd), never by path; the pass-fds step, the last host-side code before bubblewrap, opens the folder each walk starts from without following a symbolic link, walks the path beneath that handle in one openat2 lookup that follows none (RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS), checks on the descriptor it got that the source is the folder or the regular file the row binds, and places that descriptor at the number bubblewrap is given; a source its walk refuses ends the step before bubblewrap starts; whether bubblewrap mounts the object behind the descriptor, and closes the descriptor before the command inside starts, are qualification items that nothing here shows [qualify]
 - no seccomp filter: none has been reviewed
 - identity: uid and gid 0 inside, mapped to the owner outside; tools that run as UID 0 are untested
 - report channel: the pass-fds step opens the holder's report path write-only as descriptor 3 after pasta, bubblewrap inherits it and the probe inside gets --report-fd 3; the holder takes one accepted probe line as the positive signal and does not wait for end-of-file, because bubblewrap's own processes may keep the descriptor open, and a second line or any further byte after the line is a failure of the start; whether the descriptor reaches the probe inside and which other processes hold it are qualification items that nothing here shows
