@@ -285,8 +285,9 @@ func TestRootsSourcesDisagree(t *testing.T) {
 	wantRefusal(t, f.env.checkRoots(f.good[0], filepath.Join(changedRun, "ataniq"), getenv), CodeDefaultRoot)
 	wantRefusal(t, f.env.checkRoots(f.good[0], f.acctRun, getenv), CodeDefaultRoot)
 
-	// A HOME that differs from the account's gives a second state candidate
-	// only when XDG_STATE_HOME is not set; the account's stays.
+	// A HOME that differs from the account's gives a second state candidate;
+	// the account's stays. With XDG_STATE_HOME set, see
+	// TestRootsHomeDiffersWithXDGStateHome.
 	otherHome := filepath.Join(f.base, "otherhome")
 	mkdir(t, otherHome)
 	getenv = envOf(map[string]string{"HOME": otherHome})

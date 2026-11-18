@@ -21,6 +21,10 @@
 //     gives <home>/.local/state/ataniq, and the user's id gives
 //     /run/user/<uid>/ataniq. The lookup needs no cgo.
 //
+// One more state candidate comes from the environment: when HOME is an
+// absolute path, $HOME/.local/state/ataniq counts even where XDG_STATE_HOME is
+// set, because a daemon started without that variable would use it.
+//
 // The second source is never skipped. A unit's environment may have no HOME
 // and no XDG_* variable, or may differ from the daemon's, and a check that
 // trusted the environment alone would then accept the real lead's folders.
@@ -172,7 +176,11 @@ func envCandidates(getenv func(string) string) (state, runtime string, stateOK, 
 }
 
 // candidates returns every default folder: the environment's and the
-// account's, state folders and runtime folders together.
+// account's, state folders and runtime folders together. It also adds
+// $HOME/.local/state/ataniq whenever HOME is absolute, which envCandidates
+// leaves out where XDG_STATE_HOME is set: a daemon started without that
+// variable would use it. envCandidates stays the copy of the daemon's
+// derivation.
 func (e env) candidates(getenv func(string) string) ([]string, error) {
 	var out []string
 	state, runtime, stateOK, runtimeOK := envCandidates(getenv)
@@ -181,6 +189,11 @@ func (e env) candidates(getenv func(string) string) ([]string, error) {
 	}
 	if runtimeOK {
 		out = append(out, runtime)
+	}
+	if h := getenvOrEmpty(getenv, "HOME"); filepath.IsAbs(h) {
+		if c := filepath.Join(h, ".local", "state", stateName); !stateOK || c != state {
+			out = append(out, c)
+		}
 	}
 	home, err := e.home(e.uid)
 	if err != nil {
@@ -193,6 +206,13 @@ func (e env) candidates(getenv func(string) string) ([]string, error) {
 		filepath.Join(home, ".local", "state", stateName),
 		filepath.Join(e.runBase, strconv.Itoa(e.uid), runtimeName))
 	return out, nil
+}
+
+func getenvOrEmpty(getenv func(string) string, key string) string {
+	if getenv == nil {
+		return ""
+	}
+	return getenv(key)
 }
 
 // identity is the device and inode of a folder.
