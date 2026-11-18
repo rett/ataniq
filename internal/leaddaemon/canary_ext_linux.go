@@ -465,10 +465,13 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
 // second message, the holder's socket that cannot be dialled. Once the frame
-// is written the message is spent for the epoch whatever comes back (and
-// whatever becomes of the daemon: the inject-sent line of the evidence spends
-// it for a daemon that starts later, see spentEpochs), and only
-// an ok answer whose inject result decodes is a result: no answer within the
+// is written the message is spent for the epoch whatever comes back, and
+// whatever becomes of the daemon: the inject-sent line of the evidence, which
+// spends it for a daemon that starts later (see spentEpochs), is written right
+// after the frame and before the wait for the answer, so a daemon that is
+// killed while it waits leaves the epoch spent. When that line cannot be
+// written the message is on its way all the same and is never reported as
+// unsent (see sentUnrecorded). Only an ok answer whose inject result decodes is a result: no answer within the
 // wait, a closed connection, an answer that does not decode, an ok answer
 // without a result and a refusal code the daemon does not know are all the
 // uncertain result of [leadcanary.NoAnswerResult], not an error. The holder's
@@ -518,16 +521,21 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 		x.mu.Unlock()
 	}()
 
-	resp, wrote, err := callHolder(ctx, x.holderDir, wire.Request{
+	// The inject-sent line is written as soon as the frame is, before the
+	// wait: it is what spends the message for a daemon that starts later.
+	sent := false
+	resp, wrote, err := callHolderThen(ctx, x.holderDir, wire.Request{
 		Op: wire.OpInject, Epoch: epoch, MessageID: p.MessageID, Text: text,
 		CommandID: x.commandID("inject", epoch),
-	}, x.dial, x.wait)
+	}, x.dial, x.wait, func() { sent = x.recordSent(p.MessageID, epoch) })
 	if !wrote {
 		x.logf("canary inject: %s", SafeText(err.Error()))
 		x.refuse(p.MessageID, epoch, "holder-unreachable")
 		return nil, unavailable(msgUnreachable)
 	}
-	x.record(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: epoch, MessageID: p.MessageID})
+	if !sent {
+		x.sentUnrecorded(p.MessageID, epoch)
+	}
 
 	result := leadcanary.NoAnswerResult()
 	switch {
@@ -541,6 +549,36 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 	}
 	x.record(leadcanary.ResultEntry(p.MessageID, epoch, result))
 	return CanaryInjectResult{Role: x.role.String(), Epoch: epoch, MessageID: p.MessageID, Result: result}, nil
+}
+
+// recordSent writes the inject-sent line of a message whose request frame is
+// written and reports whether the line is in the evidence.
+func (x *canaryExt) recordSent(messageID string, epoch uint64) bool {
+	err := x.ev.Append(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: epoch, MessageID: messageID})
+	if err != nil {
+		x.logf("canary evidence: %s: %s", leadcanary.EventInjectSent, SafeText(err.Error()))
+	}
+	return err == nil
+}
+
+// sentUnrecorded is what the daemon does when the inject-sent line could not
+// be written right after the frame. The message is on its way, so nothing
+// about the operation changes: the epoch is spent in this daemon, the answer
+// is the result (or the holder's refusal) as with the line, and the message is
+// never reported as unsent. The line is tried once more, now that the wait is
+// over. When that fails too the log says what is lost: the evidence does not
+// spend the epoch, so a daemon that is restarted inside it would take a second
+// message, and the role is to be stopped before the daemon is.
+//
+// A write that failed part way leaves a part of a line in the file, and a
+// later line that is written starts with a newline: either way the next
+// daemon cannot read the file back and refuses to start, which keeps the
+// epoch closed.
+func (x *canaryExt) sentUnrecorded(messageID string, epoch uint64) {
+	if x.recordSent(messageID, epoch) {
+		return
+	}
+	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon only, so stop the role before the daemon is restarted", epoch)
 }
 
 // holderRefusal reports whether code is one of the refusals that mean nothing

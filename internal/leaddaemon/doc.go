@@ -149,8 +149,11 @@
 // spent when the daemon is restarted inside the epoch: when canary mode starts
 // it reads back the inject-sent lines of the evidence, and an evidence file
 // that it cannot read back line by line refuses the start, at [StepState]. The
-// line is written when the holder's answer is in or the wait is over, so a
-// daemon that is killed while it waits leaves no line. The ticket is written to
+// inject-sent line is written as soon as the frame is, before the wait for the
+// holder's answer, so a daemon killed while it waits leaves the epoch spent. A
+// line that cannot be written then is tried again after the wait; the message
+// counts as sent either way, and the log says so when the evidence does not
+// hold it. The ticket is written to
 // the role's runtime folder for the console and is in no answer and no
 // evidence line. No file of the package imports the injection tree.
 //

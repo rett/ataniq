@@ -40,6 +40,15 @@ const (
 // was no usable answer (no answer in time, a closed connection, a frame that
 // does not decode); the caller must treat the request as delivered.
 func callHolder(ctx context.Context, dir string, req wire.Request, dial, wait time.Duration) (resp wire.Response, wrote bool, err error) {
+	return callHolderThen(ctx, dir, req, dial, wait, nil)
+}
+
+// callHolderThen is callHolder that calls written, when it is not nil, as soon
+// as the request frame is written and before the wait for the answer starts:
+// the place for what must be on record whatever becomes of the answer. It
+// calls written at most once, on the caller's goroutine, and only when wrote
+// is true. The time written takes is not part of wait.
+func callHolderThen(ctx context.Context, dir string, req wire.Request, dial, wait time.Duration, written func()) (resp wire.Response, wrote bool, err error) {
 	payload, err := wire.EncodeRequest(req)
 	if err != nil {
 		return wire.Response{}, false, err
@@ -62,6 +71,9 @@ func callHolder(ctx context.Context, dir string, req wire.Request, dial, wait ti
 	}
 	if err := wire.NewWriter(conn, wire.ControlRequests).WriteFrame(wire.TypeRequest, payload); err != nil {
 		return wire.Response{}, false, err
+	}
+	if written != nil {
+		written()
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		return wire.Response{}, true, err
