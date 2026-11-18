@@ -1,8 +1,9 @@
 //go:build linux && ataniq_canary
 
 // Package leadcanary holds what the daemon of canary mode needs that is not
-// the daemon's own: the canary config, the names of the role, and the preflight
-// and the holder command that the lifecycle controller asks for. It exists only
+// the daemon's own: the canary config, the names of the role, the preflight and
+// the holder command that the lifecycle controller asks for, and the admission
+// of the one message. It exists only
 // in a build with the ataniq_canary tag: every file of the package, the tests
 // included, starts with "//go:build linux && ataniq_canary", and nothing outside
 // canary mode imports it.
@@ -26,4 +27,7 @@
 //     lines will carry.
 //   - [HolderCommand] satisfies leadlifecycle.HolderCommand. It builds the
 //     holder's argument vector, its working folder and its whole environment.
+//   - [Admission] builds the text of the one message. Its file, admission.go,
+//     is the only file of the package that imports from the injection tree
+//     (internal/inject/command), and a test holds that.
 package leadcanary
