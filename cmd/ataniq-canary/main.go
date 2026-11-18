@@ -9,6 +9,8 @@
 //	ataniq-canary replay-on --config CONFIG
 //	ataniq-canary show --config CONFIG
 //	ataniq-canary check-inputs --config CONFIG --inputs FILE
+//	ataniq-canary fields --file FILE
+//	ataniq-canary scrub-screen --file FILE
 //	ataniq-canary --version
 //
 // provision makes the folders of the layout, clones the throwaway repository
@@ -19,9 +21,12 @@
 // allowed after a first start. show and check-inputs change nothing: show
 // prints the values of the config that the attended run script needs, as
 // key=value lines, and check-inputs checks the sandbox inputs file against the
-// config (show.go). All four read the config with leadcanary.ReadConfig. The
-// work is in internal/leadcanary/provision; this file only parses the command
-// line and prints.
+// config (show.go). Those four read the config with leadcanary.ReadConfig.
+// fields and scrub-screen read one JSON file and no config: fields prints its
+// values as lines, and scrub-screen replaces the screen text in a copy of the
+// holder's final record by its hash (jsonfile.go). The work of provisioning is
+// in internal/leadcanary/provision; this file only parses the command line and
+// prints.
 package main
 
 import (
@@ -51,6 +56,8 @@ const usage = `usage: ataniq-canary provision --config CONFIG
        ataniq-canary replay-on --config CONFIG
        ataniq-canary show --config CONFIG
        ataniq-canary check-inputs --config CONFIG --inputs FILE
+       ataniq-canary fields --file FILE
+       ataniq-canary scrub-screen --file FILE
        ataniq-canary --version`
 
 func main() {
@@ -74,6 +81,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, getenv func(
 	sub := args[0]
 	switch sub {
 	case "provision", "replay-on", "show", "check-inputs":
+	case "fields", "scrub-screen":
+		return runFile(sub, args[1:], out, errOut)
 	default:
 		fmt.Fprintf(errOut, "ataniq-canary: unknown subcommand %q\n%s\n", sub, usage)
 		return exitUsage
