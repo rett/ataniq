@@ -59,7 +59,9 @@
 //
 // The role lock is the one the holder holds: System.RoleLock gives it, Run
 // does not take it. Lingering is read through System.Lingering, from the login
-// manager's state.
+// manager's state. Assertion 9 asks the lock with the layout role
+// (Inputs.LayoutRole), not with the daemon's role text. An inputs file with
+// "canary": false reaches assertion 10 only after the launch.
 //
 // # A failed start leaves nothing behind
 //

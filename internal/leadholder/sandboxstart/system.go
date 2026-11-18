@@ -92,7 +92,11 @@ type System interface {
 	// sysctl.
 	Assert() assert.System
 	// RoleLock is the lock the holder holds on its role. Run does not take it:
-	// it asks the lock whether this process holds it, for assertion 9.
+	// it asks the lock whether this process holds it, for assertion 9. Run
+	// asks it with the layout role (Inputs.LayoutRole, for example
+	// "throwaway-one-lead"), not with the role text of the daemon
+	// ("throwaway-one/lead"): an adapter that compares the argument with its
+	// own role text must compare it with the layout role, or assertion 9 fails.
 	RoleLock() assert.RoleLock
 	// Lingering reads whether lingering is on, from the login manager's state,
 	// for assertion 9.
