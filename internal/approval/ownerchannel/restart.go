@@ -208,12 +208,14 @@ func (s *Service) countOne(ctx context.Context, p record.Pending) error {
 	return s.syncIndex()
 }
 
-// noteEnded remembers when a card was first seen in a final state.
+// noteEnded remembers when a card was first seen in a final state, by the
+// service's clock (see [Service.now]).
 func (s *Service) noteEnded(e door.Entry) {
+	at := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.ended[e.ID]; !ok {
-		s.ended[e.ID] = s.cfg.Now()
+		s.ended[e.ID] = at
 	}
 }
 

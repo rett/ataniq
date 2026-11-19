@@ -3,6 +3,7 @@ package ownerchannel
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -507,5 +508,53 @@ func TestADoorOutOfReachAtStartIsRetriedByATick(t *testing.T) {
 	}
 	if e.state(p.ID) != record.StateApplied {
 		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+}
+
+// OC22 is about the wall clock. A reading of time.Now carries a monotonic
+// reading, with which After and Sub of two readings ignore a wall clock set
+// back, so the service drops it. This test cannot set the wall clock; it
+// checks that no reading the service keeps or hands out carries one, which
+// is what makes the guard see the wall clock.
+func TestTheClockGuardReadsTheWallClockAlone(t *testing.T) {
+	if !strings.Contains(time.Now().String(), "m=") {
+		t.Skip("this platform's clock has no monotonic reading")
+	}
+	e := newEnv(t)
+	e.start()
+	e.svc.cfg.Now = time.Now
+	got := e.svc.now()
+	if strings.Contains(got.String(), "m=") {
+		t.Errorf("now() returned a reading with a monotonic part: %s", got)
+	}
+	e.svc.mu.Lock()
+	high := e.svc.high
+	e.svc.mu.Unlock()
+	if strings.Contains(high.String(), "m=") {
+		t.Errorf("the latest reading the guard keeps has a monotonic part: %s", high)
+	}
+	if time.Since(got) > time.Minute || time.Since(got) < -time.Minute {
+		t.Errorf("now() returned %s, which is not the clock's time", got)
+	}
+}
+
+// noteEnded reads the clock through the guard, so a card first seen ended
+// after the clock moved back marks the clock as moved back too.
+func TestNoteEndedReadsTheClockThroughTheGuard(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.svc.now()
+	back := e.clock.Now().Add(-2 * time.Minute)
+	e.clock.Set(back)
+	e.svc.noteEnded(door.Entry{ID: p.ID, State: record.StateWithdrawn})
+	e.svc.mu.Lock()
+	moved, at := e.svc.back, e.svc.ended[p.ID]
+	e.svc.mu.Unlock()
+	if !moved {
+		t.Error("a reading two minutes back, taken by noteEnded, was not seen by the guard")
+	}
+	if !at.Equal(back) {
+		t.Errorf("the card's end was noted at %s, want %s", at, back)
 	}
 }

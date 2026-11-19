@@ -205,9 +205,12 @@ func (s *Service) begin(ctx context.Context) (context.Context, func(), error) {
 
 // now reads the clock and watches it: a reading more than a minute before
 // the latest one marks the clock as moved back, which refuses uses until a
-// restart.
+// restart. It is the one place the service reads the clock. The reading's
+// monotonic part is dropped (Round(0)): the guard is about the wall clock,
+// and a reading from time.Now carries a monotonic one with which After and
+// Sub would ignore a wall clock that was set back.
 func (s *Service) now() time.Time {
-	t := s.cfg.Now()
+	t := s.cfg.Now().Round(0)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
