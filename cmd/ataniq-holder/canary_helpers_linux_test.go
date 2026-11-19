@@ -183,6 +183,9 @@ func (c *canaryRig) deps() deps {
 				return nil, err
 			}
 			cfg.Argv, cfg.Env = fakeagent.Command(script)
+			if c.stopGrace > 0 {
+				cfg.StopGrace = c.stopGrace
+			}
 			s, err := session.Start(cfg)
 			if err == nil {
 				c.mu.Lock()

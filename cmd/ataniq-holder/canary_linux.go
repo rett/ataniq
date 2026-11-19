@@ -39,8 +39,9 @@ package main
 // learns of an early exit a few seconds late, never wrongly); Stop is Stop and
 // a wait for Done; TreeGone is the tree fact of the concluded session; Close
 // is Close, which also releases the session's hold of the role lock. The
-// session's grace between SIGTERM and SIGKILL is the stop rule's
-// (session.DefaultStopGrace is assert.StopTermWait; a test compares them).
+// session's grace between SIGTERM and SIGKILL is the stop rule's, set in its
+// configuration (assert.StopTermWait), and the plan's first process starts in /,
+// as the qualification harness starts it.
 //
 // # A failed start
 //
@@ -79,6 +80,7 @@ import (
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadrole"
+	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/profile"
 )
 
@@ -470,6 +472,11 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	// The plan's first process gets no variable of the holder's and none of
 	// the command line's: the plan sets the environment inside.
 	scfg.Argv, scfg.Env = nil, nil
+	// The harness starts the first process in /, not in the lead's tree, which
+	// the sandboxed agent writes. The grace between SIGTERM and SIGKILL is the
+	// stop rule's, set here and not left to the session's default.
+	scfg.Dir = "/"
+	scfg.StopGrace = assert.StopTermWait
 	scfg.OSC = append(append([]session.OSCHook(nil), scfg.OSC...), injectbridge.Hook(m.tracker, nil))
 	scfg.PTY.NoControllingTerminal = true
 	launch := &sessionLauncher{base: scfg, start: m.d.canary.startSession}
