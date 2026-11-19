@@ -135,6 +135,10 @@ func (m *Model) openCard(id string) tea.Cmd {
 
 // onOpened takes in the answer to Open.
 func (m *Model) onOpened(v openedMsg) tea.Cmd {
+	if v.reread {
+		m.onReread(v)
+		return nil
+	}
 	if v.refresh {
 		// The card is read again to see whether its request ended.
 		cs := m.cs
@@ -171,6 +175,22 @@ func (m *Model) onOpened(v openedMsg) tea.Cmd {
 	m.buildBody()
 	m.markRead()
 	return tea.Batch(cmds...)
+}
+
+// onReread takes in the card read again after the owner's decision on it.
+// Only the two things that come after a decision are taken: the verdicts and
+// the mark that a run refused, which a decided card does not carry (it says
+// it in its verdicts). The outcome, the cursor and everything the owner
+// read stay. A card that is not decided there, or whose binding is not the
+// one decided on, is left as it is.
+func (m *Model) onReread(v openedMsg) {
+	cs := m.cs
+	if cs == nil || cs.id != v.id || !cs.decided || cs.endedLine != "" || v.err != nil ||
+		!v.c.Decided() || v.c.BindingSHA256 != cs.c.BindingSHA256 {
+		return
+	}
+	cs.c.Verdicts, cs.c.Refused = v.c.Verdicts, v.c.Refused
+	m.buildBody()
 }
 
 // endCard closes the card to one line and drops what was typed.
@@ -260,7 +280,8 @@ func (m *Model) onDecided(v decidedMsg) tea.Cmd {
 	// The outcome stands at the top of the card.
 	cs.cursor, cs.top = 0, 0
 	m.buildBody()
-	return m.listCmd()
+	// The card is read again for the verdict lines that follow a decision.
+	return tea.Batch(m.listCmd(), m.rereadCmd(cs.id))
 }
 
 // approveReason says whether Approve is offered, and if not why, in one

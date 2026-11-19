@@ -1312,7 +1312,15 @@ func TestApprovalsFlowTheVerdictAdviceComesAfterTheDecision(t *testing.T) {
 	if len(f.b.decs) != 1 || f.b.decs[0].Approve {
 		t.Fatalf("the deny was not sent:\n%s", f.view())
 	}
-	// Opened again, the decided card shows both runs, labelled as advice.
+	// The card that was open is read again after the decision: it shows both
+	// runs, labelled as advice. The refused line is now the one inside the
+	// verdicts, and not also the one of the header.
+	f.seenAll("verdicts (advice of this program, not in any record)", "run 1", "provider-a / model-a", "run 2")
+	if n := strings.Count(f.view(), "this card is here because a verdict run refused"); n != 1 {
+		t.Fatalf("the refused line is drawn %d times, not once:\n%s", n, f.view())
+	}
+	f.press(escKey)
+	// Opened again, the decided card shows the same.
 	f.openCardID(id)
 	f.seenAll("verdicts (advice of this program, not in any record)", "run 1", "provider-a / model-a", "run 2")
 
