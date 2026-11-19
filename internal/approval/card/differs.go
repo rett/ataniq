@@ -57,8 +57,12 @@ func (c Change) Changed() bool {
 // target's tip and the merge then and now, and the paths added to and
 // removed from the summary.
 //
-// The earlier record is checked as [record.DecodePending] checks one. It
-// must be another record for the same project, verb and target as now: the
+// The earlier record is checked by [record.EncodePending], the encoder that
+// makes every check of [record.DecodePending]: its form, its digests and its
+// size. New's own further checks (the feature name first, and the host
+// strings that would need escaping) are not made on it, since nothing of
+// the earlier record is drawn except its id, which has the grammar of the
+// encoder's check. It must be another record for the same project, verb and target as now: the
 // same argv, and for a feature finish the same ref. Anything else is refused
 // record-invalid, since such a pair is no "differs from". Whether the owner
 // read the earlier card, and how long ago, is for the caller to know. The

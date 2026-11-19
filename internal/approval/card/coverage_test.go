@@ -232,6 +232,19 @@ var (
 		"Differs":  DiffersLabel,
 		"After":    AfterLabel,
 		"Verdicts": AfterLabel,
+		// The card's own record of a refused earlier card; it stands
+		// where the block would.
+		"DiffersRefused": DiffersLabel,
+	}
+	// namesNotContent are the values inside a bound section that are not
+	// under the binding's digest, each with why it is there. They are
+	// not content of the card but its name, so they are the one thing a
+	// change of the id moves in a bound section; every other value in a
+	// bound section comes from the binding or the plan text. A value added
+	// here is a fourth thing the owner sees beside the binding, and the
+	// package comment has to say so.
+	namesNotContent = map[string]string{
+		"Title.ID": "the host's id of the pending record: it names the card, and a decision carries it beside the digest",
 	}
 )
 
@@ -271,10 +284,11 @@ func TestTheThreeExceptionsAreNamedAndLabelled(t *testing.T) {
 	}
 	// The exceptions have the types the note fixes.
 	for name, want := range map[string]reflect.Type{
-		"Note":     reflect.TypeOf(LeadText{}),
-		"Differs":  reflect.TypeOf(&Differs{}),
-		"After":    reflect.TypeOf(After{}),
-		"Verdicts": reflect.TypeOf(&VerdictBlock{}),
+		"Note":           reflect.TypeOf(LeadText{}),
+		"Differs":        reflect.TypeOf(&Differs{}),
+		"After":          reflect.TypeOf(After{}),
+		"Verdicts":       reflect.TypeOf(&VerdictBlock{}),
+		"DiffersRefused": reflect.TypeOf(""),
 	} {
 		f, _ := typ.FieldByName(name)
 		if f.Type != want {
@@ -337,6 +351,11 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 			earlier := seal(t, laterPending())
 			in.Earlier = &Earlier{Record: earlier, ReadAt: asked}
 		}, []string{"Differs"}},
+		{"an earlier card that is refused", func(p *record.Pending, in *Inputs) {
+			earlier := rawPending()
+			earlier.Schema = "other/1"
+			in.Earlier = &Earlier{Record: seal(t, earlier), ReadAt: asked}
+		}, []string{"DiffersRefused"}},
 		{"the id", func(p *record.Pending, in *Inputs) { p.ID = "ap-another" }, []string{"Title.ID"}},
 	}
 	for _, tc := range outside {
@@ -357,8 +376,10 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 		if len(tc.moves) > 0 && len(changed(base, got)) == 0 {
 			t.Errorf("%s changed nothing on the card", tc.name)
 		}
-		if tc.name != "the id" && len(changed(boundPart(base), boundPart(got))) != 0 {
-			t.Errorf("%s changed a section that the binding covers", tc.name)
+		for _, path := range changed(boundPart(base), boundPart(got)) {
+			if _, name := namesNotContent[path]; !name {
+				t.Errorf("%s changed %s, a value of a section that the binding covers", tc.name, path)
+			}
 		}
 	}
 
@@ -430,7 +451,7 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 	// lack: a card without inputs has an empty After, no Differs and no
 	// Verdicts, and its note is the record's note.
 	c := mustCard(t, p, Inputs{})
-	if c.After != (After{}) || c.Differs != nil || c.Verdicts != nil || !c.Note.Equal(NewLeadText(string(p.Note))) {
+	if c.After != (After{}) || c.Differs != nil || c.DiffersRefused != "" || c.Verdicts != nil || !c.Note.Equal(NewLeadText(string(p.Note))) {
 		t.Errorf("a card without inputs has %+v, %v, %v", c.After, c.Differs, c.Verdicts)
 	}
 }

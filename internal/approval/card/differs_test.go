@@ -2,6 +2,7 @@ package card
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"ataniq/internal/approval/record"
@@ -158,10 +159,30 @@ func TestDiffersFromRefusals(t *testing.T) {
 		earlier = seal(t, earlier)
 		_, err := DiffersFrom(earlier, now, asked)
 		wantCode(t, tc.name, err, tc.want)
+		// A refused earlier record does not refuse the new card: the card
+		// has no block and says so, with the code of the refusal.
 		c, err := New(now, Inputs{Earlier: &Earlier{Record: earlier, ReadAt: asked}})
-		wantCode(t, tc.name+", through New", err, tc.want)
-		if !reflect.DeepEqual(c, Card{}) {
-			t.Errorf("%s: a card came with the refusal", tc.name)
+		if err != nil {
+			t.Errorf("%s: New refused the card: %v", tc.name, err)
+			continue
+		}
+		if c.Differs != nil {
+			t.Errorf("%s: the card has a block", tc.name)
+		}
+		if want := DiffersRefusedLine + " (" + string(tc.want) + ")"; c.DiffersRefused != want {
+			t.Errorf("%s: the card says %q, want %q", tc.name, c.DiffersRefused, want)
+		}
+		if !hostText(c.DiffersRefused) || strings.ContainsAny(c.DiffersRefused, "\n") {
+			t.Errorf("%s: %q is not one line of the host's words", tc.name, c.DiffersRefused)
+		}
+		// The same card without the earlier record, but for this line.
+		plain := mustCard(t, now, Inputs{})
+		c.DiffersRefused = ""
+		if !reflect.DeepEqual(c, plain) {
+			t.Errorf("%s: the card differs from the card with no earlier record", tc.name)
+		}
+		if c.ShownDigest() != plain.ShownDigest() {
+			t.Errorf("%s: the digest moved", tc.name)
 		}
 	}
 

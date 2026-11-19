@@ -13,19 +13,23 @@
 //
 // A card is the record's binding made readable. Everything under the
 // binding's digest is on the model, and nothing else is, with three
-// exceptions. Each is a field of [Card] with a label that a surface draws
-// beside it:
+// exceptions and the card's name (below). Each exception is a field of
+// [Card] with a label that a surface draws beside it:
 //
 //   - Card.Note, the lead's note ([NoteLabel]): it is shown and not
 //     approved;
 //   - Card.Differs, the "differs from" block ([DiffersLabel]): it comes from
-//     an earlier record;
+//     an earlier record. When that record is refused, Card.DiffersRefused
+//     says so in one line, in its place;
 //   - Card.After and Card.Verdicts, what came after the decision
 //     ([AfterLabel]): the state and the outcome line, the held mark
 //     ([HeldLabel]) and the verdicts.
 //
-// The record's id stands in the title. It is the name of the card and not
-// part of what is approved; a decision carries it beside the digest.
+// One more value stands in a section that the binding covers without being
+// under its digest: Title.ID, the record's id. It is the name of the card
+// and not content: the host makes it, and a decision carries it beside the
+// digest. The coverage test lists it by name, so it is not taken for an
+// accident.
 //
 // # Lead text
 //
