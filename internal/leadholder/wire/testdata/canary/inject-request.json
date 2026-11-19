@@ -1,0 +1,1 @@
+{"op":"inject","epoch":1,"command_id":"canary-inject-1-2","message_id":"golden-msg-1","text":"[ataniq-msg id=golden-msg-1 from=ataniq kind=canary]\ncanary-token: 0123456789abcdef-golden\n"}
