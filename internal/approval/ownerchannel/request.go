@@ -88,8 +88,11 @@ func pinKey(requestSHA256 string) string {
 // A request that ends without a card is refused with a code, answered in
 // the lead's mailbox, counted, and returned as a status in the state
 // refused: that is a result, not an error. An error is a failure the host
-// could not answer for (the journal, a cancelled call, the door out of
-// reach); the request then has no reply.
+// could not answer for (the journal, a call its caller cancelled, the door
+// out of reach); the request then has no reply. A request that [Service.Close]
+// stops while it waits for its turn or is being verified is not that: it is
+// refused request-invalid with a line that says the host stopped, answered
+// and counted like any refusal.
 //
 // Anything but a clean verification refuses the request verification-failed
 // and makes no card. A request that fails before its plan is ended at the
@@ -133,8 +136,7 @@ func (s *Service) Submit(ctx context.Context, in Collected) (RequestStatus, erro
 	case s.slot <- struct{}{}:
 		defer func() { <-s.slot }()
 	case <-ctx.Done():
-		r.end(ctx)
-		return RequestStatus{}, ctx.Err()
+		return r.failed(ctx, ctx.Err(), "")
 	}
 	r.status.State = RequestVerifying
 	s.setStatus(r.status)
@@ -282,11 +284,17 @@ func verifyDetail(err error, v Verification) string {
 	return "the suite did not pass cleanly on the merge: " + word
 }
 
-// failed ends a request for a failure of the host. A cancelled call is
-// returned as it is, with no reply; any other failure refuses the request
-// request-invalid with the host-written reason, since the design has no
-// code for the host's own failure (a point for the joint contract).
+// failed ends a request for a failure of the host. A call its caller
+// cancelled is ended at the door and returned as it is, with no reply. A
+// call that [Service.Close] cancelled is refused like any other: the lead
+// gets a reply, and the request is counted, so that a request does not
+// disappear because the service stopped. Any other failure refuses the
+// request request-invalid with the host-written reason, since the design has
+// no code for the host's own failure (a point for the joint contract).
 func (f *flow) failed(ctx context.Context, err error, reason string) (RequestStatus, error) {
+	if ctx.Err() != nil && f.s.ctx.Err() != nil {
+		return f.refuse(ctx, record.CodeRequestInvalid, "the host stopped before it was done with the request")
+	}
 	if ctx.Err() != nil {
 		f.unpin(ctx)
 		f.end(ctx)

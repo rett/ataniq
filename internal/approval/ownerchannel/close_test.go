@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"ataniq/internal/approval/ownerjournal"
 	"ataniq/internal/approval/ownerwire"
 	"ataniq/internal/approval/record"
 )
@@ -63,12 +64,20 @@ func TestCloseCancelsAndWaitsForCallsUnderWay(t *testing.T) {
 	if err := e.svc.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err == nil {
-		t.Error("a call under way was not cancelled")
+	if err := <-done; err != nil {
+		t.Errorf("a request stopped by Close was returned as an error: %v", err)
 	}
-	// The cancelled request was ended: no pin is left, nothing was said.
+	// The stopped request was ended: no pin is left, and the lead was told
+	// and the request counted, as for any refusal.
 	if n := e.merger.pinCount(); n != 0 {
 		t.Errorf("%d pins left", n)
+	}
+	if got, _ := e.svc.Status("rq-test-01"); got.State != RequestRefused || got.Code != record.CodeRequestInvalid {
+		t.Errorf("the request's status is %+v", got)
+	}
+	replies := e.mail.repliesFor("rq-test-01")
+	if len(replies) != 1 || replies[0].Code != record.CodeRequestInvalid || replies[0].Line == "" {
+		t.Errorf("the lead was told %+v, want one reply", replies)
 	}
 	if _, err := e.svc.Submit(context.Background(), e.collected(e.request("feature-b", nil))); !errors.Is(err, ErrClosed) {
 		t.Errorf("a closed service answered: %v", err)
@@ -80,6 +89,99 @@ func TestCloseCancelsAndWaitsForCallsUnderWay(t *testing.T) {
 		t.Errorf("a second Close returned %v", err)
 	}
 	settleGoroutines(t, before)
+	// The count was journaled before the journal was closed.
+	e.start()
+	if n := len(e.entries(ownerjournal.KindCount)); n != 1 {
+		t.Errorf("%d count entries, want one for the stopped request", n)
+	}
+}
+
+// Close stops the requests that wait for their turn as well, answers and
+// counts each, and leaves no pin.
+func TestCloseRefusesTheRequestsThatWaitForTheSlot(t *testing.T) {
+	e := newEnv(t)
+	admitted := make(chan struct{}, 2)
+	e.at["admitted"] = func() { admitted <- struct{}{} }
+	e.start()
+	inside := make(chan struct{})
+	e.verif.onVerify = func(ctx context.Context, in VerifyInput) {
+		close(inside)
+		<-ctx.Done()
+	}
+	done := make(chan RequestStatus, 2)
+	submit := func(name string) {
+		st, err := e.svc.Submit(context.Background(), e.collected(e.request(name, nil)))
+		if err != nil {
+			t.Errorf("Submit %s: %v", name, err)
+		}
+		done <- st
+	}
+	go submit("feature-a")
+	<-inside
+	go submit("feature-b")
+	// The second request is admitted, and waits for the slot.
+	<-admitted
+	<-admitted
+	time.Sleep(20 * time.Millisecond)
+	if err := e.svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if st := <-done; st.State != RequestRefused || st.Code != record.CodeRequestInvalid {
+			t.Errorf("a request stopped by Close ended as %+v", st)
+		}
+	}
+	for _, id := range []string{"rq-test-01", "rq-test-02"} {
+		if replies := e.mail.repliesFor(id); len(replies) != 1 {
+			t.Errorf("%s: the lead was told %+v", id, replies)
+		}
+	}
+	if n := e.merger.pinCount(); n != 0 {
+		t.Errorf("%d pins left", n)
+	}
+	e.start()
+	if n := len(e.entries(ownerjournal.KindCount)); n != 2 {
+		t.Errorf("%d count entries, want one for each stopped request", n)
+	}
+	if entries, _ := e.door.List(context.Background()); len(entries) != 0 {
+		t.Errorf("%d pending records", len(entries))
+	}
+}
+
+// Close does not return while a call is under way, even one that does not
+// give way to its cancelled context at once.
+func TestCloseWaitsForACallUnderWay(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	e.verif.onVerify = func(ctx context.Context, in VerifyInput) {
+		close(inside)
+		<-release
+	}
+	submitted := make(chan struct{})
+	go func() {
+		defer close(submitted)
+		_, _ = e.svc.Submit(context.Background(), e.collected(e.request("feature-a", nil)))
+	}()
+	<-inside
+	closed := make(chan error, 1)
+	go func() { closed <- e.svc.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned (%v) while a call was under way", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return once the call ended")
+	}
+	<-submitted
 }
 
 // Run with -race: reads and decisions at once.
