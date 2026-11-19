@@ -1485,10 +1485,36 @@ func TestEnterOnTheGateOpensTheGatesCardWhenATickComesBeforeTheFirstListAnswers(
 	for _, a := range answers {
 		r.send(a)
 	}
-	for _, id := range b.opens {
-		if id != "ap-x" {
-			t.Fatalf("the gate named ap-x and the view opened %v", b.opens)
-		}
+	if len(b.opens) != 1 || b.opens[0] != "ap-x" {
+		t.Fatalf("the gate named ap-x and the view opened %v", b.opens)
+	}
+}
+
+// A first list that never returns must not keep the open view stale for good:
+// the drive is given up at the second tick that finds it unread, and the view
+// is refreshed again from the next tick on. One tick does not give it up.
+func TestTheDriveIsGivenUpWhenTheViewsFirstListNeverReturns(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-x", "project-a", 40*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	r.clk.Advance(100 * time.Millisecond)
+	r.m.Update(enterKey) // the view's first list is out, and is dropped
+	if r.m.ap.view == nil || !r.m.ap.wantOldest {
+		t.Fatal("the drive is not armed")
+	}
+	r.poll()
+	if !r.m.ap.wantOldest {
+		t.Fatal("one tick gave the drive up")
+	}
+	r.poll()
+	if r.m.ap.wantOldest {
+		t.Fatal("the drive is still armed after the second tick")
+	}
+	r.poll()
+	if r.m.ap.view.Pending() != 1 {
+		t.Fatalf("the view was not refreshed: %d pending", r.m.ap.view.Pending())
 	}
 }
 

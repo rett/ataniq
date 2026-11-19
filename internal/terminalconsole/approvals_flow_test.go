@@ -433,6 +433,14 @@ func checkFrame(t *testing.T, where, raw string) {
 var leadMarkers = []string{"APPROVED", "K7P3", "ap-sample-hostile", "osc-bel", "osc-st", "dcs", "evil", "zero", "caf",
 	"owned", "diff --git", "not utf-8", "workflows", "exec-config"}
 
+// visibleEscape is how a lead's escape byte is drawn: the text \x1b, once. A
+// frame that held the byte itself, or dropped it, would not hold it.
+// visibleEscapeTwice is the same text with its backslash escaped again.
+const (
+	visibleEscape      = `\x1b[2J`
+	visibleEscapeTwice = `\\x1b`
+)
+
 // chromeRows returns the rows of a card's screen that are the console's own:
 // the title, the verb line and the rule at the top, and the rule, the key
 // hints, the status and the footer at the bottom.
@@ -474,12 +482,17 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 				if got := f.titleCode(); got != flowCode {
 					t.Fatalf("%s: the title code is %q:\n%s", c.id, got, f.view())
 				}
+				var shown strings.Builder
 				for step := 0; step < 90; step++ {
 					f.press(ch('j'))
 					raw := f.m.View().Content
 					where := fmt.Sprintf("%s step %d", c.id, step)
 					checkFrame(t, where, raw)
 					frame := ansi.Strip(raw)
+					shown.WriteString(frame)
+					if strings.Contains(frame, visibleEscapeTwice) {
+						t.Fatalf("%s: a lead's escape is escaped twice:\n%s", where, frame)
+					}
 					rows := strings.Split(frame, "\n")
 					if len(rows) > size[1] {
 						t.Fatalf("%s: %d rows", where, len(rows))
@@ -507,6 +520,10 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 					}
 				}
 				f.seenAll("end of the card")
+				// The lead's escape in a path is drawn as a visible escape.
+				if !strings.Contains(shown.String(), visibleEscape) {
+					t.Fatalf("%s: no frame draws the escape as %q", c.id, visibleEscape)
+				}
 			}
 			// The pager on the hostile patch.
 			f.openCardID(cards[0].id)
@@ -514,6 +531,9 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 			if f.m.ap.view.CardOpen() && !strings.Contains(f.view(), "PATCH") {
 				t.Fatalf("d did not open the pager:\n%s", f.view())
 			}
+			// The first screen of the pager holds the hostile hunk's escape.
+			pagerShown := strings.Builder{}
+			pagerShown.WriteString(ansi.Strip(f.m.View().Content))
 			for step := 0; step < 70; step++ {
 				if step%2 == 0 {
 					f.press(tea.KeyPressMsg{Code: tea.KeyPgDown})
@@ -523,6 +543,10 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 				raw := f.m.View().Content
 				where := fmt.Sprintf("pager step %d", step)
 				checkFrame(t, where, raw)
+				pagerShown.WriteString(ansi.Strip(raw))
+				if strings.Contains(ansi.Strip(raw), visibleEscapeTwice) {
+					t.Fatalf("%s: a lead's escape is escaped twice in the pager", where)
+				}
 				rows := strings.Split(ansi.Strip(raw), "\n")
 				last := rows[len(rows)-1]
 				for _, bad := range leadMarkers {
@@ -532,6 +556,10 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 				}
 			}
 			f.seenAll("PATCH")
+			// The escape of the hostile hunk is drawn as a visible escape.
+			if !strings.Contains(pagerShown.String(), visibleEscape) {
+				t.Fatalf("no frame of the pager draws the escape as %q", visibleEscape)
+			}
 			f.press(escKey)
 			if f.m.ap.view == nil || !f.m.ap.view.CardOpen() {
 				t.Fatal("Esc left the card with the pager")
@@ -1125,6 +1153,23 @@ func TestApprovalsFlowADigitThatWakesTheConsoleIsNotTheStrips(t *testing.T) {
 	f.seenAll("APPROVAL "+flowCode, "name=pair-feature")
 }
 
+// TestApprovalsFlowAnEscThatWakesTheConsoleDoesNotCloseTheStrip: the first key
+// after the owner was away, when it is Esc, only wakes the console: the strip
+// that was waiting for him stays, and the next Esc closes it.
+func TestApprovalsFlowAnEscThatWakesTheConsoleDoesNotCloseTheStrip(t *testing.T) {
+	f := newFlowRig(t, 140, 45)
+	f.poll()
+	f.press(escKey)
+	if !f.m.ap.strip.Visible() || f.m.apprOpen() {
+		t.Fatalf("the waking Esc was taken by the strip:\n%s", f.view())
+	}
+	f.view() // the strip is drawn
+	f.press(escKey)
+	if f.m.ap.strip.Visible() {
+		t.Fatal("the next Esc did not close the strip")
+	}
+}
+
 // TestApprovalsFlowTheGateInThePaneOpensTheCardItNames: Enter on the pending
 // gate in the right pane opens the oldest waiting card, the one the gate
 // names, and reading it asks nothing of the backend but its card.
@@ -1286,7 +1331,10 @@ func TestApprovalsFlowApproveAndDenyAreNotOfferedBelow80By24(t *testing.T) {
 
 // TestApprovalsFlowTheVerdictAdviceComesAfterTheDecision: a card shows the
 // advice of the verdict runs only once it was decided, and before it nothing
-// but the one header line of a card that exists because a run refused.
+// but the one header line of a card that exists because a run refused. This
+// is the display check from end to end. The backend wrapper below sets the
+// card's fields as card.New does, so the rule that gates them is proved in
+// the card and approvals packages, not here.
 func TestApprovalsFlowTheVerdictAdviceComesAfterTheDecision(t *testing.T) {
 	const id = "ap-sample-clean"
 	f := newFlowRig(t, 140, 45)
@@ -1312,7 +1360,15 @@ func TestApprovalsFlowTheVerdictAdviceComesAfterTheDecision(t *testing.T) {
 	if len(f.b.decs) != 1 || f.b.decs[0].Approve {
 		t.Fatalf("the deny was not sent:\n%s", f.view())
 	}
-	// Opened again, the decided card shows both runs, labelled as advice.
+	// The card that was open is read again after the decision: it shows both
+	// runs, labelled as advice. The refused line is now the one inside the
+	// verdicts, and not also the one of the header.
+	f.seenAll("verdicts (advice of this program, not in any record)", "run 1", "provider-a / model-a", "run 2")
+	if n := strings.Count(f.view(), "this card is here because a verdict run refused"); n != 1 {
+		t.Fatalf("the refused line is drawn %d times, not once:\n%s", n, f.view())
+	}
+	f.press(escKey)
+	// Opened again, the decided card shows the same.
 	f.openCardID(id)
 	f.seenAll("verdicts (advice of this program, not in any record)", "run 1", "provider-a / model-a", "run 2")
 

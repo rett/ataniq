@@ -167,8 +167,11 @@ type (
 		seq     int
 		id      string
 		refresh bool
-		c       card.Card
-		err     error
+		// reread says that the card is read again after the owner's
+		// decision on it, to take in what comes after the decision.
+		reread bool
+		c      card.Card
+		err    error
 	}
 	pagedMsg struct {
 		owner *Model
@@ -204,6 +207,16 @@ func (m *Model) openCmd(id string, refresh bool) tea.Cmd {
 	return func() tea.Msg {
 		c, err := b.Open(id)
 		return openedMsg{owner: m, seq: seq, id: id, refresh: refresh, c: c, err: err}
+	}
+}
+
+// rereadCmd reads the card again after a decision that is not held, so that
+// the card on the screen takes in the verdict lines that follow a decision.
+func (m *Model) rereadCmd(id string) tea.Cmd {
+	b := m.b
+	return func() tea.Msg {
+		c, err := b.Open(id)
+		return openedMsg{owner: m, id: id, reread: true, c: c, err: err}
 	}
 }
 

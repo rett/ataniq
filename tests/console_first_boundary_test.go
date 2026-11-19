@@ -325,8 +325,10 @@ func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []bounda
 }
 
 // binaryLike reports whether src is data rather than text with a few odd
-// bytes: more than one byte in 32 is a NUL or not valid UTF-8. Random bytes
-// can spell a word by chance; a text vector with one bad byte cannot hide one.
+// bytes: at least two bytes, and more than one byte in 32, are a NUL or not
+// valid UTF-8. Random bytes can spell a word by chance; a text vector with one
+// bad byte cannot hide one, however short the file is. Padding with NUL bytes
+// and UTF-16 text still count as data and are not read.
 func binaryLike(src []byte) bool {
 	bad := 0
 	for i := 0; i < len(src); {
@@ -336,7 +338,7 @@ func binaryLike(src []byte) bool {
 		}
 		i += n
 	}
-	return bad*32 > len(src)
+	return bad > 1 && bad*32 > len(src)
 }
 
 // repositoryBoundaryFiles loads the repository. It stops the test when the
@@ -1105,7 +1107,8 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"internal/approval/card/testdata/below/deep.go": "not Go at all, and " + strings.ToUpper(word) + "\n",
 		"internal/approval/later/notes.txt":             "One.\nTwo " + word + ".\n",
 		"internal/approval/.hidden/a.txt":               word + "\n",
-		"internal/approval/card/testdata/blob.bin":      "\x00\x01 " + word + "\n",
+		"internal/approval/card/testdata/blob.bin":      "\x00\x00\x01 " + word + "\n",
+		"internal/approval/card/testdata/short.json":    word + "\xff\n",
 		"internal/approval/card/testdata/latin1.txt":    "\xff\xfe " + word + "\n",
 		"internal/approval/card/testdata/mostly.txt":    strings.Repeat("plain text ", 20) + "\xff " + word + "\n",
 		"internal/approvalx/testdata/vector.json":       word + "\n",
@@ -1145,6 +1148,7 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"internal/approval/card/testdata/mostly.txt text",
 		"internal/approval/card/testdata/neutral.json text",
 		"internal/approval/card/testdata/sample.go text",
+		"internal/approval/card/testdata/short.json text",
 		"internal/approval/card/testdata/vector.json text",
 		"internal/approval/card/third_party.go",
 		"internal/approval/later/notes.txt text",
@@ -1157,8 +1161,8 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	expectFindings(t, ruleWords, files,
 		"internal/approval/card/testdata/below/deep.go",
 		"internal/approval/.hidden/a.txt", "internal/approval/card/testdata/mostly.txt",
-		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/vector.json",
-		"internal/approval/later/notes.txt")
+		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/short.json",
+		"internal/approval/card/testdata/vector.json", "internal/approval/later/notes.txt")
 	// No import rule finds anything in a file that is kept for its text.
 	for _, rule := range []func([]boundaryFile) []string{ruleTable, rulePure, ruleApprovalHeadless} {
 		expectFindings(t, rule, files)

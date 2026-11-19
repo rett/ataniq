@@ -206,3 +206,67 @@ func bodyRowText(r row) string {
 	}
 	return line.String()
 }
+
+// A card decided in place is read again, so that its verdict lines show and
+// the header line of a card that exists because a run refused goes, without
+// the card being opened a second time.
+func TestVerdictShownOnTheOpenCardRightAfterTheDecision(t *testing.T) {
+	c := testCard("p-1")
+	c.Refused = true
+	b := backendWith(t, []card.Card{c}, nil)
+	b.decide = func(card.Decision) (card.Outcome, error) {
+		// The backend now holds the decided card, as card.New makes it: its
+		// verdicts, and no refused mark.
+		d := c
+		d.Refused = false
+		d.After = card.After{State: record.StateDenied, Line: "denied"}
+		d.Verdicts = block(true, false)
+		b.mu.Lock()
+		b.cards["p-1"] = d
+		b.mu.Unlock()
+		return card.Outcome{State: record.StateDenied, Line: "denied"}, nil
+	}
+	r := newRig(t, b, 100, 40)
+	r.openFirst()
+	r.bodyHas(refusedLine)
+	r.key("x")
+	r.key("enter")
+	if len(b.opens) != 2 {
+		t.Fatalf("the card was opened %d times, not once and read again once", len(b.opens))
+	}
+	r.bodyHas(verdictAdvice)
+	r.bodyHas("provider-a / model-a")
+	r.bodyHas("provider-b / model-b")
+	for _, row := range r.m.cs.body {
+		if strings.Contains(bodyRowText(row), refusedLine) {
+			t.Fatalf("the decided card still says a run refused: %q", bodyRowText(row))
+		}
+	}
+	if r.m.cs.outcome != "denied" || r.m.cs.cursor != 0 {
+		t.Fatalf("the outcome or the cursor changed: %q %d", r.m.cs.outcome, r.m.cs.cursor)
+	}
+}
+
+// A card read again that is not decided on the backend's side shows nothing
+// of the verdicts: the view takes them only from a decided card.
+func TestVerdictNotTakenFromARereadCardThatIsNotDecided(t *testing.T) {
+	c := testCard("p-1")
+	b := backendWith(t, []card.Card{c}, nil)
+	b.decide = func(card.Decision) (card.Outcome, error) {
+		d := c
+		d.Verdicts = block(true, false) // a wrong backend: verdicts, not decided
+		b.mu.Lock()
+		b.cards["p-1"] = d
+		b.mu.Unlock()
+		return card.Outcome{State: record.StateDenied, Line: "denied"}, nil
+	}
+	r := newRig(t, b, 100, 40)
+	r.openFirst()
+	r.key("x")
+	r.key("enter")
+	for _, row := range r.m.cs.body {
+		if strings.Contains(bodyRowText(row), "provider-a") {
+			t.Fatalf("verdicts of an undecided card were taken: %q", bodyRowText(row))
+		}
+	}
+}
