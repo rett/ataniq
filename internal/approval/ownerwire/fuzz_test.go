@@ -58,7 +58,7 @@ func fuzzForm(f *testing.F, name string, seeds ...string) {
 			default:
 				t.Fatalf("the refusal has the code %q", e.Code)
 			}
-			if e.Detail == "" || !plain(e.Detail) {
+			if e.Detail == "" || !record.Text(e.Detail).Plain() {
 				t.Fatalf("the refusal has the detail %q", e.Detail)
 			}
 			return

@@ -44,6 +44,14 @@
 // own bytes and is never written again on its way. Decoding a canonical
 // record and encoding the result gives the same bytes.
 //
+// # Reading API for other packages
+//
+// A package that carries payloads under the same rules (the owner
+// connection's frames) reads and writes them with [Reader], [Marshal],
+// [AppendMarshal] and [TextLen], and checks them with [ValidFlagKind],
+// [ValidMode], [IsLowerHex] and [IsControl], instead of keeping a copy that
+// could drift from the records' own.
+//
 // # Refusals
 //
 // Every refusal is an [*Error] with a [Code]. All refusal codes of the

@@ -44,10 +44,16 @@ type member struct {
 // key, and nothing but whitespace after the value. The error text is this
 // package's own and holds no byte of data.
 func parse(data []byte) (value, error) {
+	return parseDepth(data, maxDepth, "record")
+}
+
+// parseDepth is parse with the depth a nesting may reach and the noun
+// ("record", "payload") the error texts call the data.
+func parseDepth(data []byte, depth int, noun string) (value, error) {
 	if !utf8.Valid(data) {
-		return value{}, errors.New("the record is not valid UTF-8")
+		return value{}, errors.New("the " + noun + " is not valid UTF-8")
 	}
-	p := reader{data: data}
+	p := reader{data: data, maxDepth: depth, noun: noun}
 	p.space()
 	v, err := p.value(0)
 	if err != nil {
@@ -62,8 +68,10 @@ func parse(data []byte) (value, error) {
 
 // reader walks the bytes of one record.
 type reader struct {
-	data []byte
-	pos  int
+	data     []byte
+	pos      int
+	maxDepth int
+	noun     string
 }
 
 func (p *reader) space() {
@@ -257,8 +265,8 @@ func (p *reader) hex4() (rune, error) {
 }
 
 func (p *reader) array(depth int) (value, error) {
-	if depth >= maxDepth {
-		return value{}, errors.New("the record nests too deep")
+	if depth >= p.maxDepth {
+		return value{}, errors.New("the " + p.noun + " nests too deep")
 	}
 	p.pos++ // the opening bracket
 	v := value{kind: kindArray, arr: []value{}}
@@ -288,8 +296,8 @@ func (p *reader) array(depth int) (value, error) {
 }
 
 func (p *reader) object(depth int) (value, error) {
-	if depth >= maxDepth {
-		return value{}, errors.New("the record nests too deep")
+	if depth >= p.maxDepth {
+		return value{}, errors.New("the " + p.noun + " nests too deep")
 	}
 	p.pos++ // the opening brace
 	v := value{kind: kindObject}

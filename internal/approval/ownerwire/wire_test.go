@@ -157,7 +157,7 @@ func refused(t testing.TB, err error, code record.Code, what string) {
 	if e.Code != code {
 		t.Errorf("%s: refused %s, want %s (%s)", what, e.Code, code, e.Detail)
 	}
-	if e.Detail == "" || !plain(e.Detail) {
+	if e.Detail == "" || !record.Text(e.Detail).Plain() {
 		t.Errorf("%s: the detail %q cannot be shown as it is", what, e.Detail)
 	}
 }
@@ -523,6 +523,11 @@ func TestARecordWhoseDigestIsNotItsBytesIsRefused(t *testing.T) {
 	_, err = EncodeShowResult(ShowResult{Record: big})
 	refused(t, err, record.CodeRecordTooLarge, "a record one byte over the cap")
 }
+
+var (
+	textType  = reflect.TypeOf(record.Text(""))
+	bytesType = reflect.TypeOf([]byte(nil))
+)
 
 // The listing carries no record bytes: no type it is made of has a field
 // that could hold them.

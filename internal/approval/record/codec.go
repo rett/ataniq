@@ -1,6 +1,7 @@
 package record
 
 import (
+	"encoding/base64"
 	"errors"
 	"reflect"
 	"sort"
@@ -48,18 +49,32 @@ func fieldsOf(t reflect.Type) []field {
 	return fields
 }
 
-var textType = reflect.TypeOf(Text(""))
+var (
+	textType  = reflect.TypeOf(Text(""))
+	bytesType = reflect.TypeOf([]byte(nil))
+)
 
 // fromValue fills dst from v. where names the place in the form for the
 // error text: it is made of the form's own names and of list positions, and
 // never of a key the record brought.
 func fromValue(v value, dst reflect.Value, where string) error {
-	if dst.Type() == textType {
+	switch dst.Type() {
+	case textType:
 		t, err := textFromValue(v)
 		if err != nil {
 			return errors.New(where + ": " + err.Error())
 		}
 		dst.SetString(string(t))
+		return nil
+	case bytesType:
+		if v.kind != kindString {
+			return errors.New(where + " is not a string of base64")
+		}
+		b, err := base64.StdEncoding.Strict().DecodeString(v.str)
+		if err != nil {
+			return errors.New(where + " is not standard base64")
+		}
+		dst.SetBytes(b)
 		return nil
 	}
 	switch dst.Kind() {
@@ -68,9 +83,12 @@ func fromValue(v value, dst reflect.Value, where string) error {
 			return errors.New(where + " is not a string")
 		}
 		dst.SetString(v.str)
-	case reflect.Int64:
+	case reflect.Int, reflect.Int64:
 		if v.kind != kindInt {
 			return errors.New(where + " is not an integer")
+		}
+		if dst.OverflowInt(v.num) {
+			return errors.New(where + " is too large")
 		}
 		dst.SetInt(v.num)
 	case reflect.Bool:
@@ -130,8 +148,13 @@ func fromValue(v value, dst reflect.Value, where string) error {
 // a plain string that holds a control character or bytes that are not
 // UTF-8, since only a [Text] can carry those.
 func appendValue(out []byte, src reflect.Value, where string) ([]byte, error) {
-	if src.Type() == textType {
+	switch src.Type() {
+	case textType:
 		return appendText(out, Text(src.String())), nil
+	case bytesType:
+		out = append(out, '"')
+		out = base64.StdEncoding.AppendEncode(out, src.Bytes())
+		return append(out, '"'), nil
 	}
 	var err error
 	switch src.Kind() {
@@ -140,7 +163,7 @@ func appendValue(out []byte, src reflect.Value, where string) ([]byte, error) {
 			return nil, errors.New(where + " holds a control character or bytes that are not UTF-8")
 		}
 		out = appendString(out, src.String())
-	case reflect.Int64:
+	case reflect.Int, reflect.Int64:
 		out = strconv.AppendInt(out, src.Int(), 10)
 	case reflect.Bool:
 		out = strconv.AppendBool(out, src.Bool())
