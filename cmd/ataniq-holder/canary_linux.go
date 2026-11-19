@@ -530,18 +530,17 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 		return fail(exitRefuse, "lead-has-run-mark-failed", "refused: cannot read the mark %s in the state folder: %v", leadHasRunMark, err)
 	}
 	in.NoLeadHasRun = first
-	if first {
-		launch.mark = func() error {
-			// The mark is made exclusively. One that is there now appeared
-			// after the decision above, which nothing should do: the launch
-			// is refused. When the mark was there at the decision, it is
-			// there still and the launcher has nothing to make.
-			made, err := markLeadHasRun(cfg.stateDir)
-			if err == nil && !made {
-				err = errors.New("it appeared during the start")
-			}
-			return err
+	launch.mark = func() error {
+		// The mark is made exclusively, so it exists when the plan starts. For
+		// a first start, one that is there now appeared after the decision
+		// above, which nothing should do: the launch is refused. A later start
+		// made the decision with the mark there, and makes it again when it
+		// has gone since.
+		made, err := markLeadHasRun(cfg.stateDir)
+		if err == nil && first && !made {
+			err = errors.New("it appeared during the start")
 		}
+		return err
 	}
 
 	// A stop signal during the sequence ends it: the sequence stops the child
