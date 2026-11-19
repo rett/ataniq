@@ -925,3 +925,70 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 		}
 	}
 }
+
+// L6 and the seams note, section 3: in the first epoch of pass A the config
+// declares a tested version and the stand-in draws a screen no recogniser
+// knows, so the fence answers not-now, not-ready, nothing, and only that
+// passes step 17. A refusal for an untested version is a wrong config, and
+// the daemon's own refusal (exit status 30) is not the fence's answer.
+func TestCanaryRunKitPassAExpectsNotNow(t *testing.T) {
+	for _, o := range canaryOutcomes {
+		for _, r := range canaryReasons {
+			for _, w := range canaryWritten {
+				want := "unexpected"
+				switch {
+				case o == "not-now" && r == "not-ready" && w == "nothing":
+					want = "owner-supplies"
+				case o == "refused" && r == "untested":
+					want = "wrong-config"
+				}
+				if got, code := canarySelfTest(t, "inject-action", "A", o, r, w); code != 0 || got != want {
+					t.Errorf("pass A, %s/%s/%s: the action is %q (exit status %d), want %q", o, r, w, got, code, want)
+				}
+			}
+		}
+	}
+
+	body := canaryFuncs(t, canaryScriptText(t))["step_17"]
+	at := func(part string) int {
+		t.Helper()
+		if strings.Count(body, part) != 1 {
+			t.Fatalf("step 17 does not hold once: %s", part)
+		}
+		return strings.Index(body, part)
+	}
+	// Exit status 30 stands for a refusal in pass B only; in pass A it fails
+	// the step before any action is taken from the result.
+	passB := at(`elif [ "$RC" -eq 30 ] && [ "$PASS" = B ]; then`)
+	daemon := at("fail 'the daemon refused the message (exit 30)")
+	action := at(`_act=$(inject_action "$PASS" "$_o" "$_r" "$_w")`)
+	wrong := at(`if [ "$_act" = wrong-config ]; then`)
+	wrongFail := at(`fail "a wrong config: the fence refused an untested version`)
+	check := at(`is_eq "$_act" owner-supplies || return 0`)
+	supplied := at("wait_key 'Owner: press Enter here when you have ")
+	order := []int{passB, daemon, action, wrong, wrongFail, check, supplied}
+	if !sort.IntsAreSorted(order) {
+		t.Errorf("step 17 of pass A is out of order: %v", order)
+	}
+	if strings.Contains(body, "refused/nothing") {
+		t.Error("step 17 still expects refused, nothing")
+	}
+
+	out, _ := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	for _, b := range canaryBlocks(out) {
+		if !strings.HasPrefix(b.heading, "== step 17 [pass A]: ") {
+			continue
+		}
+		expected, _ := b.line("expected:")
+		for _, want := range []string{"not-now with the reason not-ready and writes nothing (L6)", "exit status 30", "refused, untested: a wrong config"} {
+			if !strings.Contains(expected, want) {
+				t.Errorf("the expected result of step 17 in pass A does not say %q: %s", want, expected)
+			}
+		}
+		if b.count("[dry] would check: the result is not-now, not-ready, written nothing") != 1 {
+			t.Errorf("the dry run of step 17 in pass A does not check for not-now, not-ready, nothing:\n%s", strings.Join(b.lines, "\n"))
+		}
+		return
+	}
+	t.Error("the dry run of pass A has no step 17")
+}

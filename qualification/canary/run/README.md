@@ -17,9 +17,13 @@ owner's.
 There are two passes, and pass A comes first:
 
 - **Pass A** uses the stand-in agent that `make canary-build` builds. It needs
-  no credential. It runs two epochs: in the first the fence refuses the unknown
-  screen and the owner types the message; in the second the stand-in replays
-  recorded screens, so the fence can accept inside the real sandbox.
+  no credential. It runs two epochs: in the first the fence finds the screen
+  unknown, answers `not-now` with the reason `not-ready` and writes nothing,
+  and the owner types the message; in the second the stand-in replays
+  recorded screens, so the fence can accept inside the real sandbox. In the
+  first epoch a refusal fails the step: `refused` with the reason `untested`
+  means the config does not declare a tested version, and exit status 30 means
+  the daemon refused the message before the fence was asked.
 - **Pass B** uses one live agent, once, with a fresh login inside the sandbox,
   the cheapest model, and a cap of 30 minutes or 10 turns. A second run of
   pass B needs the owner's word again.
@@ -340,4 +344,4 @@ test entry:
 | Test entry | Prints |
 | --- | --- |
 | `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
-| `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `unexpected`. |
+| `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |

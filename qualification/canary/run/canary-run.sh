@@ -311,10 +311,17 @@ below_floor() { [ "$1" -lt "$2" ]; }
 #   owner-supplies  the fence wrote nothing, and the owner puts the message in
 #                   the pane himself
 #   decide          no key is pressed; the owner decides whether the pass goes on
+#   wrong-config    pass A: the fence refused an untested version, so the
+#                   config does not declare a tested one
 #   unexpected      pass A: not the result the stand-in's unknown screen gives
+# Pass A, first epoch (L6): the config declares a tested version and the
+# stand-in draws a screen no recogniser knows. The fence then answers "not
+# idle", which the wire carries as not-now, not-ready, nothing. "refused" is
+# the wire's word for an untested version or a refused text, not for this.
 inject_action() {
   case $1:$2/$3/$4 in
-    A:refused/*/nothing) out owner-supplies ;;
+    A:not-now/not-ready/nothing) out owner-supplies ;;
+    A:refused/untested/*) out wrong-config ;;
     A:*) out unexpected ;;
     B:submitted//whole) out none ;;
     B:uncertain/not-submitted/partial) out owner-enter ;;
@@ -1109,7 +1116,7 @@ make_message() {
 
 step_17() {
   if [ "$PASS" = A ]; then
-    _exp='the config declares the tested version, so the fence answers refused for an unknown screen and writes nothing (L6); the owner then types the message'
+    _exp='the config declares the tested version and the stand-in draws a screen no recogniser knows, so the fence answers not-now with the reason not-ready and writes nothing (L6); the owner then types the message; a refusal by the daemon (exit status 30) or by the fence (refused, untested: a wrong config) fails the step'
   else
     _exp='the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner types'
   fi
@@ -1122,7 +1129,8 @@ step_17() {
   if [ "$DRY" -eq 1 ]; then
     dry 'read outcome, reason and written of the result with ataniq-canary fields, and record them'
     if [ "$PASS" = A ]; then
-      dry 'check: the result is a refusal and nothing was written'
+      dry 'check: the result is not-now, not-ready, written nothing'
+      dry 'fail the step on exit status 30 (the daemon refused the message) and on refused, untested (a wrong config: the version is not a tested one)'
       dry "print the message's text for the owner to type in the pane himself; wait"
     else
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
@@ -1142,23 +1150,33 @@ step_17() {
     _w=$(fld "$LASTOUT" result.written)
     out "   result: outcome=$_o reason=${_r:-none} written=$_w"
     note "inject result: outcome=$_o reason=${_r:-none} written=$_w"
-  elif [ "$RC" -eq 30 ]; then
+  elif [ "$RC" -eq 30 ] && [ "$PASS" = B ]; then
     _o=refused
     _w=nothing
     out '   result: the daemon refused the message (exit 30)'
     note 'inject refused by the daemon (exit 30)'
+  elif [ "$RC" -eq 30 ]; then
+    # Pass A: the daemon's refusal (admission, epoch or role) is not the
+    # fence's answer, and must not read as one.
+    fail 'the daemon refused the message (exit 30): the fence was not asked, so this is not the answer of L6'
+    return 0
   else
     fail "inject ended with exit status $RC"
     return 0
   fi
   _act=$(inject_action "$PASS" "$_o" "$_r" "$_w")
   if [ "$PASS" = A ]; then
-    check 'the fence refused and wrote nothing' is_eq "$_act" owner-supplies || return 0
+    if [ "$_act" = wrong-config ]; then
+      note 'wrong config: the fence refused an untested version'
+      fail "a wrong config: the fence refused an untested version, so the config's agent.runtime_version is not a tested one (pass A declares a tested version)"
+      return 0
+    fi
+    check 'the fence answered not-now, not-ready and wrote nothing (L6: an unknown screen)' is_eq "$_act" owner-supplies || return 0
     out '   Owner: type this message in the pane yourself, and submit it:'
     sed 's/^/     /' "$BODY"
     wait_key 'Owner: press Enter here when you have typed and submitted the message.'
     note 'the owner typed the message'
-    result refusal
+    result 'not-now, not-ready, nothing: the owner supplied the message'
     done_step
     return 0
   fi
