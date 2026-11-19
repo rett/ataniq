@@ -104,8 +104,9 @@ func TestCloseRefusesTheRequestsThatWaitForTheSlot(t *testing.T) {
 	e.at["admitted"] = func() { admitted <- struct{}{} }
 	e.start()
 	inside := make(chan struct{})
+	var once sync.Once
 	e.verif.onVerify = func(ctx context.Context, in VerifyInput) {
-		close(inside)
+		once.Do(func() { close(inside) })
 		<-ctx.Done()
 	}
 	done := make(chan RequestStatus, 2)
@@ -145,6 +146,31 @@ func TestCloseRefusesTheRequestsThatWaitForTheSlot(t *testing.T) {
 	}
 	if entries, _ := e.door.List(context.Background()); len(entries) != 0 {
 		t.Errorf("%d pending records", len(entries))
+	}
+}
+
+// A request whose context is cancelled as it reaches a free slot never
+// starts verification, whichever case select picks. The hook cancels the
+// context between the door and the slot, so that both are ready every time.
+func TestACancelledRequestNeverVerifiesOnAFreeSlot(t *testing.T) {
+	for i := 0; i < 40; i++ {
+		e := newEnv(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		e.at["admitted"] = cancel
+		e.start()
+		verified := 0
+		e.verif.onVerify = func(context.Context, VerifyInput) { verified++ }
+		_, err := e.svc.Submit(ctx, e.collected(e.request("feature-a", nil)))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("round %d: Submit returned %v, want the cancellation", i, err)
+		}
+		if verified != 0 {
+			t.Fatalf("round %d: a cancelled request was verified", i)
+		}
+		if n := e.merger.pinCount(); n != 0 {
+			t.Fatalf("round %d: %d pins left", i, n)
+		}
+		e.stop()
 	}
 }
 

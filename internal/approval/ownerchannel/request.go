@@ -135,6 +135,12 @@ func (s *Service) Submit(ctx context.Context, in Collected) (RequestStatus, erro
 	select {
 	case s.slot <- struct{}{}:
 		defer func() { <-s.slot }()
+		// A request that waited for the slot can see the slot free and its
+		// context cancelled together, and select may pick the slot: a
+		// cancelled request never starts verification.
+		if ctx.Err() != nil {
+			return r.failed(ctx, ctx.Err(), "")
+		}
 	case <-ctx.Done():
 		return r.failed(ctx, ctx.Err(), "")
 	}
