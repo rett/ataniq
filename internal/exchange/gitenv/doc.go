@@ -50,7 +50,10 @@
 //     merge end cleanly, "--allow-unrelated-histories" (which git also takes
 //     as "--all") merges commits that share no history, and "--stdin" reads
 //     the merges from standard input. A ref name in place of an id and a
-//     third id are refused too.
+//     third id are refused too, except that an id is checked for 40 or 64
+//     hex digits and not for the repository's object format: in a SHA-256
+//     repository git reads 40 hex digits as a ref name first, so a caller
+//     passes ids of the repository's own format.
 //   - It accepts "hash-object" in one form only, "hash-object -tcommit -w
 //     --stdin", with exactly these arguments in this order, and refuses every
 //     other form. The host writes the commit of a merge with it, from a text
