@@ -486,12 +486,13 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 // after the frame and before the wait for the answer, so a daemon that is
 // killed while it waits leaves the epoch spent. When that line cannot be
 // written the message is on its way all the same and is never reported as
-// unsent (see sentUnrecorded). Only an ok answer whose inject result decodes is a result: no answer within the
-// wait, a closed connection, an answer that does not decode, an ok answer
-// without a result and a refusal code the daemon does not know are all the
-// uncertain result of [leadcanary.NoAnswerResult], not an error. The holder's
-// refusals disabled, wrong-epoch, busy and bad-request mean that nothing was
-// written to the lead; they are the error unavailable.
+// unsent (see sentUnrecorded). Only an ok answer whose inject result decodes
+// is a result: no answer within the wait, a closed connection, an answer that
+// does not decode, an ok answer without a result and a refusal code the daemon
+// does not know are all the uncertain result of [leadcanary.NoAnswerResult],
+// not an error. The holder's refusals disabled, wrong-epoch, busy and
+// bad-request mean that nothing was written to the lead; they are the error
+// unavailable.
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
 	e, running := x.runningEntry()
 	epoch := e.Epoch
@@ -589,6 +590,12 @@ func (x *canaryExt) recordSent(messageID string, epoch uint64) bool {
 // later line that is written starts with a newline: either way the next
 // daemon cannot read the file back and refuses to start, which keeps the
 // epoch closed.
+//
+// A line whose write succeeded and whose sync failed counts as not recorded
+// (Append returns an error), so the retry may write a second inject-sent line
+// for the same message, and the log may then say the line is missing when one
+// is there. A reader of the evidence must not count these lines per epoch
+// without looking at the message id.
 func (x *canaryExt) sentUnrecorded(messageID string, epoch uint64) {
 	if x.recordSent(messageID, epoch) {
 		return

@@ -153,9 +153,9 @@
 // holder's answer, so a daemon killed while it waits leaves the epoch spent. A
 // line that cannot be written then is tried again after the wait; the message
 // counts as sent either way, and the log says so when the evidence does not
-// hold it. The ticket is written to
-// the role's runtime folder for the console and is in no answer and no
-// evidence line. No file of the package imports the injection tree.
+// hold it. The ticket is written to the role's runtime folder for the console
+// and is in no answer and no evidence line. No file of the package imports the
+// injection tree.
 //
 // # What it does not prove
 //
