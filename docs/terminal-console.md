@@ -233,15 +233,15 @@ card are:
 | ] and [ | Read the next or previous page of a long path list. |
 | l | Open the lead. |
 | a | Approve: open the confirm step. |
-| x | Deny: open the confirm step, with an optional reason of at most 500 bytes. |
+| x | Deny: open a field for an optional reason of at most 500 bytes. Enter sends the denial; no code is asked. |
 | Esc | Go back one step. |
 
 ### The confirm step
 
 Approve opens a field that asks for a code of four characters. The code is
-drawn only in the card's title and is made again each time a card opens. A
-decision is made only by typing the code and pressing Enter. The step refuses
-and clears the field when:
+drawn only in the card's title and is made again each time a card opens. An
+approval is made only by typing the code and pressing Enter; a denial needs no
+code. The step refuses and clears the field when:
 
 - the card is not ready: the plan, the lists and the paths were not all read,
   a flagged path is not signed off, the card ended or expired, or it opened
