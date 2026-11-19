@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"bytes"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -230,8 +229,8 @@ func parseBoundaryFile(name, src string) (boundaryFile, error) {
 // loadBoundaryFiles reads every Go file below dir, test files and files of any
 // build line included. It leaves out hidden folders, testdata, vendored and
 // third-party code, and the build output folder at the top. For the word rule
-// it then adds the text of every other file under internal/approval, which
-// loadBoundaryTexts reads.
+// it then adds the text of the other files under internal/approval, which
+// loadBoundaryTexts reads; it leaves out only files that look like binary data.
 func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 	t.Helper()
 	var files []boundaryFile
@@ -276,11 +275,12 @@ func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 // loadBoundaryTexts walks internal/approval below dir a second time, for the
 // word rule only. It returns the text of every regular file there that is not
 // among the files already loaded, without parsing it: a file of any kind, in
-// any folder, a testdata folder included, since sample data and test vectors
-// are a likely place for a model's name. It leaves out hidden folders, as the
-// main loader does, and every file that is not text (it holds a NUL byte or
-// is not valid UTF-8), since random bytes can spell a word by chance. An
-// absent folder gives nothing.
+// any folder, a testdata folder and a hidden folder included, since sample
+// data and test vectors are a likely place for a model's name and a test can
+// read or embed a file in a hidden folder. It leaves out only a file that looks
+// like binary data (see binaryLike), since random bytes can spell a word by
+// chance. In any other file a NUL or an invalid byte is turned into a space and
+// the rest is scanned. An absent folder gives nothing.
 func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []boundaryFile {
 	t.Helper()
 	have := map[string]bool{}
@@ -295,9 +295,6 @@ func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []bounda
 	err := filepath.WalkDir(top, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
-		}
-		if d.IsDir() && p != top && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -314,16 +311,32 @@ func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []bounda
 		if err != nil {
 			return err
 		}
-		if bytes.IndexByte(src, 0) >= 0 || !utf8.Valid(src) {
+		if binaryLike(src) {
 			return nil
 		}
-		files = append(files, boundaryFile{path: rel, textual: true, text: string(src)})
+		text := strings.ToValidUTF8(strings.ReplaceAll(string(src), "\x00", " "), " ")
+		files = append(files, boundaryFile{path: rel, textual: true, text: text})
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return files
+}
+
+// binaryLike reports whether src is data rather than text with a few odd
+// bytes: more than one byte in 32 is a NUL or not valid UTF-8. Random bytes
+// can spell a word by chance; a text vector with one bad byte cannot hide one.
+func binaryLike(src []byte) bool {
+	bad := 0
+	for i := 0; i < len(src); {
+		r, n := utf8.DecodeRune(src[i:])
+		if r == 0 || (r == utf8.RuneError && n == 1) {
+			bad++
+		}
+		i += n
+	}
+	return bad*32 > len(src)
 }
 
 // repositoryBoundaryFiles loads the repository. It stops the test when the
@@ -1065,7 +1078,8 @@ func TestConsoleFirstBoundaryTaggedFiles(t *testing.T) {
 // TestConsoleFirstBoundaryLoader checks, in a temporary folder, which files
 // the loader reads: test files and files of any build line are read, and only
 // the imports have to be valid Go. Under internal/approval every other file
-// is read too, for its text alone, and the word rule finds a word in it.
+// is read too, for its text alone, unless it looks like binary data, and the
+// word rule finds a word in it.
 func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	dir := t.TempDir()
 	word := boundaryWords[0]
@@ -1093,6 +1107,7 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"internal/approval/.hidden/a.txt":               word + "\n",
 		"internal/approval/card/testdata/blob.bin":      "\x00\x01 " + word + "\n",
 		"internal/approval/card/testdata/latin1.txt":    "\xff\xfe " + word + "\n",
+		"internal/approval/card/testdata/mostly.txt":    strings.Repeat("plain text ", 20) + "\xff " + word + "\n",
 		"internal/approvalx/testdata/vector.json":       word + "\n",
 		"internal/other/testdata/vector.json":           word + "\n",
 	} {
@@ -1125,7 +1140,9 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"cmd/sample/main_test.go test",
 		"cmd/sample/other_windows.go",
 		"cmd/sample/tagged.go tagged",
+		"internal/approval/.hidden/a.txt text",
 		"internal/approval/card/testdata/below/deep.go text",
+		"internal/approval/card/testdata/mostly.txt text",
 		"internal/approval/card/testdata/neutral.json text",
 		"internal/approval/card/testdata/sample.go text",
 		"internal/approval/card/testdata/vector.json text",
@@ -1139,6 +1156,7 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	expectFindings(t, ruleCommands, files, "cmd/sample/main.go", "cmd/sample/other_windows.go")
 	expectFindings(t, ruleWords, files,
 		"internal/approval/card/testdata/below/deep.go",
+		"internal/approval/.hidden/a.txt", "internal/approval/card/testdata/mostly.txt",
 		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/vector.json",
 		"internal/approval/later/notes.txt")
 	// No import rule finds anything in a file that is kept for its text.
