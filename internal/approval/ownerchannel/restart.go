@@ -26,9 +26,10 @@ import (
 //     door before the service stopped (see [Service.Dispose]): the journal
 //     takes it. Nothing is settled.
 //   - A held decision delivers nothing.
-//   - A decision the door holds and the journal lacks did not come from the
-//     owner's console. That approval is refused and an alert is journaled;
-//     the others go on.
+//   - A decision the door holds and the journal lacks, or holds with other
+//     bytes than the journal's, did not come from the owner's console. That
+//     approval is refused and an alert is journaled; the others go on. This
+//     is looked at first, before any use is tried.
 //   - A request that has a pending record and no count is counted.
 //   - A held card past its expiry is closed, and a card that ended at the
 //     door gets its reply and loses its pin.
@@ -60,6 +61,12 @@ func (s *Service) reconcile(ctx context.Context) error {
 		return err
 	}
 
+	// What the door holds comes first: a decision it holds that the journal
+	// lacks blocks that approval before any use is tried.
+	if err := note(s.checkDoor(ctx)); err != nil {
+		return err
+	}
+
 	st := s.journal()
 	undelivered, err := st.Undelivered()
 	if err != nil {
@@ -88,9 +95,6 @@ func (s *Service) reconcile(ctx context.Context) error {
 		}
 	}
 
-	if err := note(s.checkDoor(ctx)); err != nil {
-		return err
-	}
 	if err := note(s.takeUpDisposals(ctx)); err != nil {
 		return err
 	}

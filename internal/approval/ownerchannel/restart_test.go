@@ -882,3 +882,99 @@ func TestAnUncertainRefusalMarkIsRecovered(t *testing.T) {
 		})
 	}
 }
+
+// A decision the door holds with other bytes than the journal's is looked at
+// before any use is tried: the approval is blocked and alerted, and the use
+// does not run in the same pass that finds the difference.
+func TestADoorDecisionWithOtherBytesIsFoundBeforeAnyUse(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.stop()
+	ctx := context.Background()
+	// The door holds one decision, made at it directly; the journal holds
+	// another for the same card, delivered.
+	if _, err := e.stand.Decide(ctx, forgedFor(t, e, p)); err != nil {
+		t.Fatal(err)
+	}
+	e.advance(time.Second)
+	other := forgedFor(t, e, p)
+	st, err := ownerjournal.Open(e.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := st.AppendDecision(other.Bytes, ownerjournal.Seen{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MarkDelivered(e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	e.start()
+	if _, uses, _ := e.door.counts(); uses != 0 {
+		t.Errorf("the door's use ran %d times in the pass that found the difference", uses)
+	}
+	if e.state(p.ID) != record.StateApproved {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	if calls, _ := e.intake.appliesSeen(); calls != 0 {
+		t.Errorf("applied %d times", calls)
+	}
+	alerts := e.entries(ownerjournal.KindAlert)
+	if len(alerts) != 1 || alerts[0].PendingID != p.ID {
+		t.Errorf("the alerts are %v", alerts)
+	}
+}
+
+// The service never settles an unknown outcome by itself. A stop at the
+// point where the door has the outcome as unknown and the journal does not
+// leaves it for the owner at the restart, whatever the mirror shows then.
+func TestARestartAfterAStopAtSettledLeavesAnUnknownOutcomeForTheOwner(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.intake.applyErr = errors.New("update-ref was killed")
+	e.fault = "settled"
+	if _, err := e.decide(p, true); !errors.Is(err, errInjected) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	if e.state(p.ID) != record.StateUnknown {
+		t.Fatalf("the door's state is %s", e.state(p.ID))
+	}
+	if n := len(e.entries(ownerjournal.KindOutcome)); n != 0 {
+		t.Fatalf("%d outcome entries before the restart", n)
+	}
+	// The mirror now shows the ref at its new value.
+	e.intake.mu.Lock()
+	e.intake.refs[targetRef] = mergeID
+	e.intake.mu.Unlock()
+	_, _, settles := e.door.counts()
+	e.restart()
+	if got := e.state(p.ID); got != record.StateUnknown {
+		t.Fatalf("the service settled an unknown outcome by itself: %s", got)
+	}
+	if _, _, after := e.door.counts(); after != settles {
+		t.Errorf("the restart settled at the door: %d settles, want %d", after, settles)
+	}
+	outcomes := e.entries(ownerjournal.KindOutcome)
+	if len(outcomes) != 1 || !strings.Contains(string(outcomes[0].Body), `"state":"unknown"`) {
+		t.Fatalf("the outcome entries: %+v", outcomes)
+	}
+	if unknown, err := e.svc.journal().UnknownOutcomes(); err != nil || len(unknown) != 1 {
+		t.Errorf("the unknown outcomes: %d, %v", len(unknown), err)
+	}
+	if got := e.mail.all(); len(got) != 0 {
+		t.Errorf("the lead was told of an outcome that is not final: %v", got)
+	}
+	if n := e.merger.pinCount(); n != 1 {
+		t.Errorf("%d pins, want the pin kept while the outcome is unknown", n)
+	}
+	// Only the owner's word moves it.
+	e.beat()
+	if res, err := e.svc.Dispose(context.Background(), src, p.ID, record.StateApplied); err != nil || res.State != record.StateApplied {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
