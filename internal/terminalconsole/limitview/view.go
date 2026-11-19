@@ -252,7 +252,10 @@ func cleanText(name string, maxCells int) string {
 			b.WriteRune(r)
 		}
 	}
-	s := strings.TrimSpace(b.String())
+	// A combining mark with no base before it is dropped as well.
+	s := strings.TrimFunc(b.String(), unicode.IsSpace)
+	s = strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsMark(r) })
+	s = strings.TrimRightFunc(s, unicode.IsSpace)
 	if ansi.StringWidth(s) <= maxCells {
 		return s
 	}

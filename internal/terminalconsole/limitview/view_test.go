@@ -339,6 +339,28 @@ func TestLoweringToOneAsksOnce(t *testing.T) {
 	}
 }
 
+func TestLoweringToTwoAsksOnce(t *testing.T) {
+	m := newModel(sampleView(t, 12, []int{3}, false))
+	typeKeys(m, "2")
+	if a := m.Update(key("enter")); a.Kind != None {
+		t.Fatalf("first Enter reported %+v", a)
+	}
+	s := screen(m)
+	if want := limits.LowerWarning(12, 2); want == "" || !strings.Contains(s, want) || !strings.Contains(s, "only by one, to 3") {
+		t.Errorf("no warning for 2:\n%s", s)
+	}
+	a := m.Update(key("enter"))
+	if a.Kind != Propose || a.Change != (limits.Change{To: 2, Typed: true}) {
+		t.Fatalf("got %+v", a)
+	}
+	// A number that needs no question is sent by the first Enter.
+	m = newModel(sampleView(t, 12, []int{3}, false))
+	typeKeys(m, "4")
+	if a := m.Update(key("enter")); a.Kind != Propose {
+		t.Fatalf("4 asked a question: %+v", a)
+	}
+}
+
 func TestBackspaceAndLength(t *testing.T) {
 	m := newModel(sampleView(t, 12, []int{3}, false))
 	typeKeys(m, "12345")
@@ -530,6 +552,11 @@ func TestHostileProject(t *testing.T) {
 		"\x1bP1;2q data\x1b\\",
 		"",
 		"\n\t\x00",
+		strings.Repeat("宽", 30),
+		strings.Repeat("宽", 1000),
+		"\u0301\u0301abc",
+		" \u0301 \u0308abc",
+		"\u0301\u0301",
 	} {
 		got := CleanName(name)
 		for _, r := range got {
@@ -540,6 +567,9 @@ func TestHostileProject(t *testing.T) {
 		if len([]rune(got)) > MaxProjectCells {
 			t.Errorf("CleanName(%q) is %d runes", name, len([]rune(got)))
 		}
+		if w := ansi.StringWidth(got); w > MaxProjectCells {
+			t.Errorf("CleanName(%.20q) is %d cells", name, w)
+		}
 		v := sampleView(t, 12, []int{3}, false)
 		v.Project = name
 		s := screen(newModel(v))
@@ -549,27 +579,76 @@ func TestHostileProject(t *testing.T) {
 			}
 		}
 	}
+	if got := CleanName("\u0301\u0301abc"); got != "abc" {
+		t.Errorf("leading marks kept: %q", got)
+	}
+	if got := CleanName(" \u0301 \u0308abc"); got != "abc" {
+		t.Errorf("marks after a space kept: %q", got)
+	}
+	if got := CleanName("e\u0301x"); got != "e\u0301x" {
+		t.Errorf("a mark with a base dropped: %q", got)
+	}
+	if CleanName("\u0301\u0301") != nameFallback {
+		t.Error("a name of marks not replaced")
+	}
 	if CleanName("") != nameFallback {
 		t.Error("empty name not replaced")
 	}
 }
 
 func TestHostileDate(t *testing.T) {
-	v := sampleView(t, 12, []int{3}, false)
-	v.Days[0].Date = "\x1b[31m2026-11-01\x1b[0m"
-	s := screen(newModel(v))
-	if strings.ContainsRune(s, 0x1b) {
-		t.Error("escape drawn")
+	for in, want := range map[string]string{
+		"2026-11-01":               "2026-11-01",
+		"2026-11-0\x1b":            "2026-11-0?",
+		"2026-11-0\x07":            "2026-11-0?",
+		"":                         "",
+		"2026-11-01 and then some": "2026-11-01",
+	} {
+		if got := cleanDate(in); got != want {
+			t.Errorf("cleanDate(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"2026-11-0\x1b", "2026-11-0\x07", "2026-11-0\u202e", "\x1b[31m2026-11-01\x1b[0m"} {
+		for _, r := range cleanDate(in) {
+			if r != '-' && r != '?' && (r < '0' || r > '9') {
+				t.Errorf("cleanDate(%q) holds %U", in, r)
+			}
+		}
+		v := sampleView(t, 12, []int{3}, false)
+		v.Days[0].Date = in
+		s := screen(newModel(v))
+		if strings.ContainsRune(s, 0x1b) || strings.ContainsRune(s, 0x07) || strings.ContainsRune(s, 0x202e) {
+			t.Errorf("control character drawn for date %q", in)
+		}
 	}
 }
 
 func TestDrawFillsAreaAndSmallSizes(t *testing.T) {
 	m := newModel(sampleView(t, 12, []int{3}, false))
+	sentinel := uv.Cell{Content: "Z", Width: 1}
 	for _, sz := range [][2]int{{0, 0}, {1, 1}, {5, 3}, {20, 8}, {200, 60}} {
 		m.SetSize(sz[0], sz[1])
-		buf := uv.NewBuffer(100, 30)
-		m.Draw(buf, buf.Bounds())
-		m.Draw(buf, uv.Rect(-5, -5, 0, 0))
+		for _, area := range []uv.Rectangle{uv.Rect(0, 0, 100, 30), uv.Rect(7, 3, 40, 12), uv.Rect(60, 20, 80, 30)} {
+			buf := uv.NewBuffer(100, 30)
+			for y := 0; y < 30; y++ {
+				for x := 0; x < 100; x++ {
+					c := sentinel
+					buf.SetCell(x, y, &c)
+				}
+			}
+			m.Draw(buf, area)
+			for y := 0; y < 30; y++ {
+				for x := 0; x < 100; x++ {
+					z := buf.CellAt(x, y).Content == "Z"
+					if in := inRect(area, x, y); in && z {
+						t.Fatalf("size %v: cell %d,%d of the area not written", sz, x, y)
+					} else if !in && !z {
+						t.Fatalf("size %v: cell %d,%d outside the area written", sz, x, y)
+					}
+				}
+			}
+		}
+		m.Draw(uv.NewBuffer(100, 30), uv.Rect(-5, -5, 0, 0))
 	}
 	New(Options{}).Draw(uv.NewBuffer(10, 3), uv.Rect(0, 0, 10, 3))
 	// No View yet: Enter does nothing.
@@ -577,4 +656,8 @@ func TestDrawFillsAreaAndSmallSizes(t *testing.T) {
 	if a := e.Update(key("enter")); a.Kind != None {
 		t.Error("enter without a view acted")
 	}
+}
+
+func inRect(r uv.Rectangle, x, y int) bool {
+	return x >= r.Min.X && x < r.Max.X && y >= r.Min.Y && y < r.Max.Y
 }
