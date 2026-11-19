@@ -18,9 +18,13 @@ is idle, and presses Enter only when the screen then shows the message in the
 composer. When it cannot tell, it writes nothing, or it leaves the pasted text
 where it is and does not press Enter.
 
-It is a library only. No daemon, no holder and no command uses it yet. The
-scratch-only holder of [the lead holder guide](lead-holder.md) answers an
-`inject` request with `disabled`, and the daemon skeleton of
+It is a library only. No daemon, no holder and no command uses it yet, except in
+a build with the `ataniq_canary` tag, under `--canary`: there the holder
+delivers one message through the fence and the daemon sends one message per
+epoch, with no queue (see [the canary slice guide](canary-slice.md)). Release
+builds do not contain that. The scratch-only holder of
+[the lead holder guide](lead-holder.md) answers an `inject` request with
+`disabled`, and the daemon skeleton of
 [the lead daemon guide](lead-daemon.md) has no queue and delivers nothing.
 Nothing here starts an agent, opens a terminal or touches a real one. The tests
 use recorded screens and a fake session.
@@ -47,7 +51,8 @@ These are the nine rules, with the place that enforces each.
 1. **The daemon is the only injector.** A supervisor or a lead asks the daemon;
    it never reaches a holder. This library does not enforce it, because the
    daemon that holds the queue is not built: `ataniqd` is a read-only skeleton
-   (see [the lead daemon guide](lead-daemon.md)). It fixes the shape: `command`
+   (see [the lead daemon guide](lead-daemon.md)), except that canary mode sends
+   one message per epoch with no queue. It fixes the shape: `command`
    is for the daemon and `Deliver` is for the holder, and nothing else joins
    them.
 2. **A message is data, with a fixed header.** The first line is
@@ -112,7 +117,9 @@ refused.
 The attended runs, and every recorded screen, came from an earlier prototype
 holder and fence, not from this library, and used single-line messages only.
 That prototype is not the `ataniq-holder` of
-[the lead holder guide](lead-holder.md), whose injection is a disabled stub.
+[the lead holder guide](lead-holder.md), whose injection is a disabled stub
+except in a build with the `ataniq_canary` tag, under `--canary`, whose bridge
+is new code that has not run against a real agent either.
 This library has never been run against a real agent. See
 [Limits](#limits-and-what-is-not-established).
 
@@ -964,10 +971,13 @@ bluntly as we can state them.
 - The daemon's part: the queue process, the journal store, the deadline and
   fence timeout that must agree, the queue time limit, and the owner's
   decisions. The skeleton `ataniqd` of [the lead daemon guide](lead-daemon.md)
-  is read-only and has none of it.
+  is read-only and has none of it; canary mode sends one message per epoch
+  with no queue, no journal and no retry.
 - A holder that implements `Session`, `Locked` and `View`. The scratch-only
   holder of [the lead holder guide](lead-holder.md) has the PTY, the emulator
-  and the input lock, and does not implement them.
+  and the input lock, and does not implement them. A build with the
+  `ataniq_canary` tag has the bridge `internal/leadholder/injectbridge`, which
+  does, for canary mode only.
 - Delivery confirmation from the agent's conversation file, and the rules for
   the daemon that go with it (see [Durable commands](#durable-commands)). None
   of it is built.
@@ -983,10 +993,13 @@ bluntly as we can state them.
   much was written (`nothing`, `partial`, `whole` or `unknown`), of which only
   the combinations of the package documentation are valid, and a detail of at
   most 512 printable ASCII bytes. The holder neither reads the fields nor
-  answers with a result yet.
+  answers with a result, except in a build with the `ataniq_canary` tag, in
+  canary mode with `--inject`: there it checks the header against the message
+  ID, delivers one message at a time and answers ok with the result (see
+  [the canary slice guide](canary-slice.md#the-result-and-its-evidence)).
 - The notices to the owner, including "this lead is waiting for an approval".
 - The sandbox. [The lead sandbox guide](lead-sandbox.md) describes a proposal,
-  unqualified, that nothing here runs in.
+  unqualified, that nothing here runs in, except in canary mode.
 
 ### What must be checked live before use
 

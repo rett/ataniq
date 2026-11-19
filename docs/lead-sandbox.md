@@ -8,7 +8,11 @@ holder, are other work. The scratch-only holder of
 [the lead holder guide](lead-holder.md) and the daemon skeleton of
 [the lead daemon guide](lead-daemon.md) launch no sandbox. Only the opt-in
 qualification harness can launch the generated plan, on a host a coordinator
-chose. This guide says what the code generates and what it checks. It does not
+chose, with one exception: in a build with the `ataniq_canary` tag, under
+`--canary`, the holder runs a copy of the harness's start sequence for one
+throwaway lead in an attended session, with assertion 10 waived by name (see
+[the canary slice guide](canary-slice.md)). Release builds do not contain it,
+and it is not a qualification. This guide says what the code generates and what it checks. It does not
 say that the sandbox is qualified, safe or supported, and no part of it should
 be read that way.
 
@@ -62,21 +66,28 @@ Built, each unqualified:
 - The opt-in harness `qualify` and its guide,
   [the lead sandbox qualification harness](qualification-lead-sandbox.md).
 
-Not built:
+Not built, with one exception for each item that the canary slice joins: a
+build with the `ataniq_canary` tag, in canary mode, which is for one throwaway
+lead in an attended session, is not a qualification and is not in a release
+build (see [the canary slice guide](canary-slice.md)):
 
 - A holder for a sandboxed lead: the process that opens the report channel,
   writes the spec, runs the checks in order, starts the plan under a unit and
   stops it by the stop rule. `assert` has the stop rule's constants, and the
   holder would implement it. The scratch-only holder of
   [the lead holder guide](lead-holder.md) uses none of these packages: its
-  agent is an ordinary process of the user, in no sandbox.
+  agent is an ordinary process of the user, in no sandbox. In canary mode the
+  holder uses them through `internal/leadholder/sandboxstart`, a copy of the
+  harness's order that is debt until the harness drives it.
 - A daemon that supervises holders, and the role lock and lingering checks
   behind assertion 9 (the package has the interfaces only, and nothing
   implements them). The daemon skeleton of
-  [the lead daemon guide](lead-daemon.md) starts no holder.
+  [the lead daemon guide](lead-daemon.md) starts no holder. In canary mode the
+  daemon starts one for the config's role, and the holder answers assertion 9
+  from the role lock it holds and from the login manager's lingering state.
 - Injection in use: putting text into a running lead's terminal. A provisional
   library exists (see [the lead injection guide](lead-injection.md)), and no
-  holder calls it.
+  holder calls it. In canary mode with `--inject` the holder does.
 - Any use of the exchange mirror and the intake by which a lead's work reaches
   the owner's upstream branches. The plan binds the mirror folder read-only
   and does not make it. `ataniq-intake` (see
@@ -912,7 +923,7 @@ number, and it comes last. The probe makes the inside half of each that has one
 (1 to 8 and 11), once each, before it executes the agent. The holder would make
 the outside half of 1, 3, 5 and 7, then 9 and 10
 (`assert.RunOutside`; only the qualification harness calls it, and no holder
-does yet), after the probe has reported and before it accepts the start, add
+does yet, except the holder in canary mode), after the probe has reported and before it accepts the start, add
 them to the probe's results and judge the whole. The report has no field that
 says the sandbox as a whole passed or is supported.
 
