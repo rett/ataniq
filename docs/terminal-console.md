@@ -285,8 +285,8 @@ suggestion, the present number and the suggestion. Its rules are:
 ### Arrival and the bell
 
 When you return after an away stretch, the console shows a short summary above
-the cockpit: alerts and stops first, then the waiting cards, then what was
-approved without you, then the notices that were held. It is shown once per
+the cockpit: how many cards wait and the age of the oldest, and the cards that
+were decided past the limit and wait again. It is shown once per
 arrival, it never takes the key that woke the console, and it is not drawn in
 session focus. Esc closes it, and a digit opens one of its lines. Opening a
 line decides nothing.
