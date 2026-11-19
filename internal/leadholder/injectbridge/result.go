@@ -3,6 +3,8 @@
 package injectbridge
 
 import (
+	"strings"
+
 	"ataniq/internal/inject"
 	"ataniq/internal/leadholder/wire"
 )
@@ -31,12 +33,17 @@ const contradictory = "contradictory result: "
 // answered as the least that is known (something may have been written), and
 // its detail starts "contradictory result: ".
 //
-// The detail is the result's Detail, " | " and its Readings, made printable
-// ASCII and cut to the wire's length by wire.SanitizeDetail. Nothing branches
-// on it. Every result returned passes wire.InjectResult.Validate.
+// The detail is the result's Readings alone when they already contain the
+// result's Detail (they begin with the outcome and what was written and hold
+// the Detail after them), so that the Detail is not spent twice; otherwise it
+// is the Detail, " | " and the Readings. Either is made printable ASCII and
+// cut to the wire's length by wire.SanitizeDetail. Nothing branches on it. Every result returned passes wire.InjectResult.Validate.
 func WireResult(r inject.Result) wire.InjectResult {
 	out, ok := wireWords(r.Outcome, r.Written)
-	detail := r.Detail + " | " + r.Readings()
+	detail := r.Readings()
+	if !strings.Contains(detail, r.Detail) {
+		detail = r.Detail + " | " + detail
+	}
 	if !ok {
 		detail = contradictory + detail
 	}

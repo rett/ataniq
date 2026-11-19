@@ -112,7 +112,7 @@ func TestDeliverWithAnEndedContextAnswersNotNow(t *testing.T) {
 		for name, ctx := range map[string]context.Context{"cancelled": cancelled, "past its deadline": expired} {
 			got := d.Deliver(ctx, "msg-1", sampleText("msg-1"))
 			wantWords(t, name, got, wire.InjectOutcomeNotNow, wire.InjectReasonNotReady, wire.InjectWrittenNothing)
-			if !strings.HasPrefix(got.Detail, "cancelled | ") {
+			if !strings.HasPrefix(got.Detail, "not idle, written nothing: cancelled; ") {
 				t.Errorf("%s: detail %q, want the fence's word for an ended context", name, got.Detail)
 			}
 		}
@@ -182,7 +182,7 @@ func TestDeliverOnAnUnknownScreenAnswersNotNowAndWritesNothing(t *testing.T) {
 	start := time.Now()
 	got := d.Deliver(testCtx(t), "msg-1", sampleText("msg-1"))
 	wantWords(t, "unknown screen", got, wire.InjectOutcomeNotNow, wire.InjectReasonNotReady, wire.InjectWrittenNothing)
-	if !strings.Contains(got.Detail, " | not idle, written nothing") {
+	if !strings.HasPrefix(got.Detail, "not idle, written nothing: ") {
 		t.Errorf("detail %q does not hold the fence's readings", got.Detail)
 	}
 	// One attempt: the fence's first settle is at most a second, and a
