@@ -23,6 +23,7 @@ import (
 	"ataniq/internal/leadholder/fakeagent"
 	"ataniq/internal/leadholder/sandboxstart"
 	"ataniq/internal/leadholder/session"
+	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/mountpoints"
 	"ataniq/internal/leadsandbox/profile"
@@ -145,7 +146,7 @@ func (c *canaryRig) spec(digest string, bools ...string) *argSpec {
 	a := &argSpec{agent: []string{"/ataniq/agent/bin/stand-in", "--sample"}, env: []string{"SAMPLE_FLAG=on"}}
 	for _, f := range [][2]string{
 		{"role", canaryRoleText}, {"epoch", strconv.Itoa(testEpoch)}, {"launch-intent", "intent-0123456789abcdef"},
-		{"runtime", "sample"}, {"runtime-version", "1.0"}, {"profile-digest", digest},
+		{"runtime", c.in.Runtime}, {"runtime-version", c.in.RuntimeVersion}, {"profile-digest", digest},
 		{"tree", c.tree}, {"state-dir", c.state}, {"runtime-dir", c.runtime},
 		{"role-lock", c.roleLock}, {"daemon-lock", c.daemonLock}, {"cols", "100"}, {"rows", "30"},
 		{"sandbox-inputs", c.inputsPath}, {"expected-mode", "sample mode on"},
@@ -182,6 +183,9 @@ func (c *canaryRig) deps() deps {
 				return nil, err
 			}
 			cfg.Argv, cfg.Env = fakeagent.Command(script)
+			if c.stopGrace > 0 {
+				cfg.StopGrace = c.stopGrace
+			}
 			s, err := session.Start(cfg)
 			if err == nil {
 				c.mu.Lock()
@@ -219,7 +223,7 @@ var pinnedDigest = regexp.MustCompile(`the profile digest of this plan is ([0-9a
 // digest finds the profile digest of the plan for this rig's command line: a
 // start pinned to sixty-four zeros is refused at the step verify-plan, before
 // anything is launched, and the refusal names the real digest. What that start
-// left in the state folder is removed, the mark included.
+// left in the state folder is removed; it left no mark, which is checked.
 func (c *canaryRig) digest() string {
 	c.t.Helper()
 	if code := c.runNow(c.spec("").build()); code != exitSandbox {
@@ -231,6 +235,9 @@ func (c *canaryRig) digest() string {
 	}
 	if n := len(c.launches()); n != 0 {
 		c.t.Fatalf("the probing start launched %d times", n)
+	}
+	if _, err := os.Lstat(filepath.Join(c.state, leadHasRunMark)); err == nil {
+		c.t.Fatal("the probing start, which never launched, left the mark")
 	}
 	ents, err := os.ReadDir(c.state)
 	if err != nil {
@@ -326,6 +333,8 @@ type fakeSystem struct {
 	// asked is the role the lock was asked about.
 	asked  []string
 	digest string
+	// hook runs, outside the lock, when a call of that name is made.
+	hook map[string]func()
 }
 
 func newFakeSystem() *fakeSystem {
@@ -346,9 +355,13 @@ func (s *fakeSystem) setLock(l assert.RoleLock) {
 
 func (s *fakeSystem) hit(name string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.calls = append(s.calls, name)
-	return s.fail[name]
+	err, h := s.fail[name], s.hook[name]
+	s.mu.Unlock()
+	if h != nil {
+		h()
+	}
+	return err
 }
 
 func (s *fakeSystem) callList() []string {
@@ -559,3 +572,15 @@ func (c *fakeChannel) Trailing() error { return c.s.hit("Trailing") }
 func (c *fakeChannel) Close() error    { return c.s.hit("Channel.Close") }
 
 var _ sandboxstart.System = (*fakeSystem)(nil)
+
+// stopAndWait stops the serving holder through the control socket and waits
+// for it to end cleanly.
+func (c *canaryRig) stopAndWait() {
+	c.t.Helper()
+	if resp := c.mustControl(wire.Request{Op: wire.OpStop, Epoch: testEpoch}); !resp.OK {
+		c.t.Fatalf("stop: %+v", resp)
+	}
+	if code := c.wait(); code != exitOK {
+		c.t.Fatalf("exit %d; stderr: %s", code, c.errbuf.String())
+	}
+}

@@ -287,7 +287,7 @@ func TestCanaryStartServes(t *testing.T) {
 	if len(l.OSC) != 1 || l.OSC[0].Cmd != injectbridge.OSCCommand || l.OSC[0].Fn == nil {
 		t.Errorf("the hook of the status protocol was not in the configuration the session started with: %+v", l.OSC)
 	}
-	if l.HeldRoleLock == nil || l.Role != canaryRoleText || l.Epoch != strconv.Itoa(testEpoch) || l.Dir != c.tree {
+	if l.HeldRoleLock == nil || l.Role != canaryRoleText || l.Epoch != strconv.Itoa(testEpoch) || l.Dir != "/" {
 		t.Errorf("the session's configuration: role %q epoch %q dir %q lock %v", l.Role, l.Epoch, l.Dir, l.HeldRoleLock)
 	}
 	// The option reached the terminal host: the child leads a session and has

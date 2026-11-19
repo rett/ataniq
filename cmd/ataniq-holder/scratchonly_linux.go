@@ -35,5 +35,13 @@ func (p *flagParser) modeOf() (modeConfig, error) {
 	return modeConfig{}, nil
 }
 
+// vettedMode is empty: scratch mode has nothing to check before the role lock.
+type vettedMode struct{}
+
+// vetMode refuses nothing.
+func vetMode(config, deps, holderOut) (vettedMode, int) { return vettedMode{}, exitOK }
+
 // selectMode returns scratch mode, the only one.
-func selectMode(config, deps, holderOut, int) (holderMode, int) { return scratchMode{}, exitOK }
+func selectMode(vettedMode, config, deps, holderOut, int) (holderMode, int) {
+	return scratchMode{}, exitOK
+}

@@ -137,8 +137,8 @@ type deps struct {
 }
 
 // holderMode is what differs between the holder's modes: scratch mode, in every
-// build, and canary mode, in a build with the ataniq_canary tag. selectMode
-// returns the mode of a command line.
+// build, and canary mode, in a build with the ataniq_canary tag. vetMode and
+// selectMode choose the mode of a command line.
 type holderMode interface {
 	// state marks the state file with the mode, before it is written.
 	state(st *stateFile)
@@ -316,14 +316,22 @@ func run(args []string, d deps) int {
 		return refuse("cannot read this process's start time: %v", err)
 	}
 
+	// The refusals of the mode that write nothing (canary mode reads its
+	// inputs and looks at the roots and paths) come before the role lock is
+	// taken, so that a refused command line opens and creates nothing.
+	vetted, code := vetMode(cfg, d, out)
+	if code != exitOK {
+		return code
+	}
+
 	// From here on the stop signals end the agent, and SIGHUP changes
 	// nothing: the holder outlives its starter's terminal. One that comes
 	// before the agent starts is acted on just before it would (below).
 	sigc, stopSignals := d.signals()
 	defer stopSignals()
 
-	// The role lock is taken once, here, before anything is opened or written,
-	// and kept until the holder ends: a second holder for a held role is
+	// The role lock is taken once, here, before anything else is opened or
+	// written, and kept until the holder ends: a second holder for a held role is
 	// refused having changed nothing, and two that start together cannot both
 	// write the state file (the lead-hosting design, section 1.6). The lock
 	// belongs to session.Start from the call on.
@@ -365,10 +373,9 @@ func run(args []string, d deps) int {
 		}
 	}()
 
-	// The mode of the command line. Canary mode reads its inputs and makes its
-	// refusals here, with the role lock held and before anything is opened or
-	// written.
-	mode, code := selectMode(cfg, d, out, keep)
+	// The mode of the command line. Canary mode makes its system here, with
+	// the role lock held and before anything else is opened or written.
+	mode, code := selectMode(vetted, cfg, d, out, keep)
 	if mode == nil {
 		return code
 	}

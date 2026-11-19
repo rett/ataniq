@@ -10,16 +10,20 @@ package main
 //
 // # The order of a start
 //
-// With the role lock held: the inputs file is read; the holder refuses
-// "canary": false, a layout role that is not "<project>-lead" and a --role that
-// is not the lead of the inputs' project; the root check of canary mode
-// (canaryroot.Check) is made with the process's real environment; the holder
-// refuses a --role-lock that is not that role's lock under the state root, and
-// a --state-dir or --runtime-dir that does not lie under the inputs' roots.
-// Only then is
-// anything opened or written: the event log, the state file, the mark
-// lead-has-run. Then the start sequence runs, and after it the state file is
-// written again with the waiver, the event is appended and the service starts.
+// Before the role lock is taken, with nothing written: the inputs file is read;
+// the holder refuses "canary": false, a layout role that is not
+// "<project>-lead" and a --role that is not the lead of the inputs' project; the
+// root check of canary mode (canaryroot.Check) is made with the process's real
+// environment; the holder refuses a --role-lock that is not that role's lock
+// under the state root, and a --state-dir or --runtime-dir that does not lie
+// under the inputs' roots; then it compares the flags with the inputs: --runtime
+// and --runtime-version are the inputs', --tree is the layout's tree, --state-dir
+// is exactly the layout's holder folder and --runtime-dir is exactly the lead's
+// runtime folder. Then the role lock is taken, and only then is
+// anything else opened or written: the event log, the state file. The start
+// sequence runs, and the launcher makes the mark lead-has-run just before the
+// plan's first process starts; after the sequence the state file is written
+// again with the waiver, the event is appended and the service starts.
 //
 // # The session and the start sequence
 //
@@ -35,15 +39,18 @@ package main
 // learns of an early exit a few seconds late, never wrongly); Stop is Stop and
 // a wait for Done; TreeGone is the tree fact of the concluded session; Close
 // is Close, which also releases the session's hold of the role lock. The
-// session's grace between SIGTERM and SIGKILL is the stop rule's
-// (session.DefaultStopGrace is assert.StopTermWait; a test compares them).
+// session's grace between SIGTERM and SIGKILL is the stop rule's, set in its
+// configuration (assert.StopTermWait), and the plan's first process starts in /,
+// as the qualification harness starts it.
 //
 // # A failed start
 //
 // When the sequence refuses or fails, it has stopped and reaped the child
 // through the adapter, so the session is closed. The holder then removes the
 // state file, appends a refusal to the event log and exits with exitSandbox.
-// The mark lead-has-run stays: it says a lead may have run in the folders.
+// The mark lead-has-run is made by the launcher just before the plan's first
+// process starts: it stays after a failure from the launch on, and a start
+// that failed before the launch leaves none.
 // When the child had been launched, final.json is the session's record of the
 // sandbox's first process, which was stopped; it is not the record of an agent
 // that served.
@@ -73,6 +80,7 @@ import (
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadrole"
+	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/profile"
 )
 
@@ -99,7 +107,8 @@ waives assertion 10 (no qualification record). It needs --sandbox-inputs, the
 inputs file of the start sequence, and refuses --scratch. The project must be a
 throwaway project and the roots must not be the default ones. --inject opens
 injection through the control socket; --expected-mode is the permission mode the
-agent's footer must show for a delivery. The three are refused without --canary.
+agent's footer must show for a delivery; --inject needs a non-empty one. The
+three are refused without --canary.
 
 Exit status 4: the start sequence of the sandbox refused or failed; no agent is
 left and holder.json is removed.
@@ -174,6 +183,9 @@ func (p *flagParser) modeOf() (modeConfig, error) {
 	case !m.canary:
 		return modeConfig{}, nil
 	}
+	if m.inject && m.expectedMode.s == "" {
+		return modeConfig{}, usageError("--inject needs a non-empty --expected-mode: with none no delivery can pass the gate")
+	}
 	if !m.inputs.set || m.inputs.s == "" {
 		return modeConfig{}, usageError("--canary needs --sandbox-inputs")
 	}
@@ -205,6 +217,9 @@ type canaryDeps struct {
 	// counterInterval is how often the 7501 counters are copied; zero is
 	// counterInterval.
 	counterInterval time.Duration
+	// pumpStarted, when set, is given the counter pump as the service is
+	// built.
+	pumpStarted func(*counterPump)
 }
 
 // leadHasRunMark is the durable mark in the holder's state folder that says a
@@ -237,17 +252,23 @@ type canaryMode struct {
 	tracker *osc7501.Tracker
 }
 
-// selectMode returns the mode of the command line: scratch mode, or canary
-// mode after its refusals. keep is the holder's own descriptor of the role
-// lock. With no mode, the refusal has been said and the exit status is
-// returned.
-func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
+// vettedMode is what the checks of the command line before the role lock
+// leave for selectMode.
+type vettedMode struct {
+	in sandboxstart.Inputs
+}
+
+// vetMode makes the refusals of canary mode that write nothing: it reads the
+// inputs file and looks at the roots and the paths, so the role lock is not yet
+// taken. A command line of scratch mode passes. A refusal has been said, and
+// the exit status is returned.
+func vetMode(cfg config, d deps, out holderOut) (vettedMode, int) {
 	if !cfg.mode.canary {
-		return scratchMode{}, exitOK
+		return vettedMode{}, exitOK
 	}
-	refuse := func(format string, args ...any) (holderMode, int) {
+	refuse := func(format string, args ...any) (vettedMode, int) {
 		out.line("refused: "+format, args...)
-		return nil, exitRefuse
+		return vettedMode{}, exitRefuse
 	}
 	in, err := sandboxstart.ReadInputs(cfg.mode.inputs)
 	if err != nil {
@@ -286,6 +307,33 @@ func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
 			return refuse("%s does not lie under the %s of the sandbox inputs, as a real path with no link on it", f.flag, f.what)
 		}
 	}
+	// The holder's own flags are the layout's for the inputs: the plan, the
+	// profile digest and the judgement of assertion 10 use the inputs'
+	// runtime and version, and the bridge and holder.json use the flags'; the
+	// folders are exactly the lead's, and the work tree is the lead's tree.
+	layout := profile.Layout{StateRoot: in.StateRoot, Role: in.LayoutRole, Project: in.Project}
+	switch {
+	case cfg.runtime != in.Runtime || cfg.runtimeVersion != in.RuntimeVersion:
+		return refuse("--runtime and --runtime-version are not the runtime and version of the sandbox inputs")
+	case cfg.tree != layout.Tree():
+		return refuse("--tree is not the lead's tree under the state root of the sandbox inputs")
+	case cfg.stateDir != layout.Holder():
+		return refuse("--state-dir is not the holder folder of the lead under the state root of the sandbox inputs")
+	case cfg.runtimeDir != sandboxstart.RuntimeFolder(in.RuntimeRoot, in.LayoutRole):
+		return refuse("--runtime-dir is not the lead's runtime folder under the runtime root of the sandbox inputs")
+	}
+	return vettedMode{in: in}, exitOK
+}
+
+// selectMode returns the mode of the command line, once vetMode passed it:
+// scratch mode, or canary mode with its system. keep is the holder's own
+// descriptor of the role lock. With no mode, the refusal has been said and the
+// exit status is returned.
+func selectMode(v vettedMode, cfg config, d deps, out holderOut, keep int) (holderMode, int) {
+	if !cfg.mode.canary {
+		return scratchMode{}, exitOK
+	}
+	in := v.in
 	newSystem := d.canary.newSystem
 	if newSystem == nil {
 		newSystem = sandboxstart.NewSystem
@@ -293,7 +341,8 @@ func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
 	// Assertion 9 asks the lock with the layout role, not with --role.
 	sys, err := newSystem(sandboxstart.SystemConfig{RoleLock: heldRoleLock{fd: keep, path: cfg.roleLock, layoutRole: in.LayoutRole}})
 	if err != nil {
-		return refuse("the start sequence has no system: %s", diagnostic(err.Error()))
+		out.line("refused: the start sequence has no system: %s", diagnostic(err.Error()))
+		return nil, exitRefuse
 	}
 	return &canaryMode{cfg: cfg, d: d, in: in, sys: sys}, exitOK
 }
@@ -353,6 +402,10 @@ func (m *canaryMode) state(st *stateFile) { st.Canary = true }
 type sessionLauncher struct {
 	base  session.Config
 	start func(session.Config) (*session.Session, error)
+	// mark makes the durable mark lead-has-run, exclusively and synced, right
+	// before the session starts the plan's first process. A launch whose mark
+	// cannot be made is refused, with nothing started.
+	mark func() error
 
 	// called is true once the session's start was called: it owns the role
 	// lock from then on, whether it succeeded or not.
@@ -366,6 +419,11 @@ func (l *sessionLauncher) Launch(argv []string) (sandboxstart.Child, error) {
 	}
 	cfg := l.base
 	cfg.Argv = argv
+	if l.mark != nil {
+		if err := l.mark(); err != nil {
+			return nil, errors.New("the mark " + leadHasRunMark + " cannot be made: " + err.Error())
+		}
+	}
 	l.called = true
 	s, err := l.start(cfg)
 	if err != nil {
@@ -417,6 +475,11 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	// The plan's first process gets no variable of the holder's and none of
 	// the command line's: the plan sets the environment inside.
 	scfg.Argv, scfg.Env = nil, nil
+	// The harness starts the first process in /, not in the lead's tree, which
+	// the sandboxed agent writes. The grace between SIGTERM and SIGKILL is the
+	// stop rule's, set here and not left to the session's default.
+	scfg.Dir = "/"
+	scfg.StopGrace = assert.StopTermWait
 	scfg.OSC = append(append([]session.OSCHook(nil), scfg.OSC...), injectbridge.Hook(m.tracker, nil))
 	scfg.PTY.NoControllingTerminal = true
 	launch := &sessionLauncher{base: scfg, start: m.d.canary.startSession}
@@ -454,18 +517,32 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 		filepath.Join(cfg.runtimeDir, serve.AttachSocket),
 		filepath.Join(cfg.runtimeDir, serve.ControlSocket),
 	}
-	if holder := (profile.Layout{StateRoot: in.StateRoot, Role: in.LayoutRole, Project: in.Project}).Holder(); cfg.stateDir != holder {
-		// The sequence hides the layout's holder folder itself.
-		in.HolderPaths = append(in.HolderPaths, cfg.stateDir)
-	}
+	// The sequence hides the layout's holder folder itself, which --state-dir
+	// is exactly (vetMode).
 	in.PreviousInstanceStopped = aloneInControlGroup(m.d.procRoot, m.d.canary.cgroupRoot, os.Getpid())
-	// The mark is made exclusively: that it was absent and that it is written
-	// are one act, before the sequence runs.
-	first, err := markLeadHasRun(cfg.stateDir)
+	// NoLeadHasRun is decided here, before the sequence: no lead has run when
+	// the mark is absent (the role lock keeps another holder from racing this).
+	// The mark itself is made by the launcher, just before the plan's first
+	// process starts, so a start that fails before the launch leaves none and
+	// the next start prepares the folders again.
+	first, err := leadHasRunAbsent(cfg.stateDir)
 	if err != nil {
-		return fail(exitRefuse, "lead-has-run-mark-failed", "refused: cannot read or write the mark %s in the state folder: %v", leadHasRunMark, err)
+		return fail(exitRefuse, "lead-has-run-mark-failed", "refused: cannot read the mark %s in the state folder: %v", leadHasRunMark, err)
 	}
 	in.NoLeadHasRun = first
+	if first {
+		launch.mark = func() error {
+			// The mark is made exclusively. One that is there now appeared
+			// after the decision above, which nothing should do: the launch
+			// is refused. When the mark was there at the decision, it is
+			// there still and the launcher has nothing to make.
+			made, err := markLeadHasRun(cfg.stateDir)
+			if err == nil && !made {
+				err = errors.New("it appeared during the start")
+			}
+			return err
+		}
+	}
 
 	// A stop signal during the sequence ends it: the sequence stops the child
 	// it launched.
@@ -514,7 +591,17 @@ wait:
 	}
 
 	// The start succeeded: the state file says so, with the waiver.
-	file := sc.st
+	if err := writeStateFile(cfg.stateDir, startedState(sc.st, st)); err != nil {
+		return fail(exitSandbox, "state-file-failed", "cannot write the state file after the start of the sandbox; the agent was stopped: %v", err)
+	}
+	announceStart(sc, epoch, st)
+	return launch.sess, exitOK
+}
+
+// startedState is the state file of a start that succeeded: the profile and
+// the notes of the start, and the waiver only when one was applied.
+func startedState(base stateFile, st sandboxstart.Started) stateFile {
+	file := base
 	file.SandboxStarted = true
 	file.ProfileVersion = st.ProfileVersion
 	file.ProfileDigest = st.ProfileDigest
@@ -522,25 +609,30 @@ wait:
 	if st.Waived {
 		file.Waiver = st.Waiver
 	}
-	if err := writeStateFile(cfg.stateDir, file); err != nil {
-		return fail(exitSandbox, "state-file-failed", "cannot write the state file after the start of the sandbox; the agent was stopped: %v", err)
-	}
+	return file
+}
+
+// announceStart tells of a start that succeeded: the event and the waiver's
+// text only when a waiver was applied (the event log holds codes, not the
+// waiver's text), and the notes of the start.
+func announceStart(sc startContext, epoch string, st sandboxstart.Started) {
 	if st.Waived {
-		// The event log holds codes, not the waiver's text.
-		_ = sc.log.Append(eventlog.KindHolder, eventlog.EventState, eventlog.Fields{Role: cfg.role, Epoch: epoch, State: "sandbox-started", Reason: "assertion-10-waived"})
-		out.line("%s", st.Waiver)
+		_ = sc.log.Append(eventlog.KindHolder, eventlog.EventState, eventlog.Fields{Role: sc.cfg.role, Epoch: epoch, State: "sandbox-started", Reason: "assertion-10-waived"})
+		sc.out.line("%s", st.Waiver)
 	}
 	for _, n := range st.Notes {
-		out.line("note of the start: %s", diagnostic(n))
+		sc.out.line("note of the start: %s", diagnostic(n))
 	}
-	return launch.sess, exitOK
 }
 
 // serve makes the bridge, starts the copy of the 7501 counters and, only with
 // --inject, gives the service its deliverer.
 func (m *canaryMode) serve(sess *session.Session, vcfg *serve.Config) {
 	bridge := injectbridge.New(sess, injectbridge.Config{Runtime: m.cfg.runtime, Version: m.cfg.runtimeVersion, Tracker: m.tracker})
-	pump := &counterPump{tracker: m.tracker, sess: sess}
+	pump := &counterPump{tracker: m.tracker, sess: sess, stopped: make(chan struct{})}
+	if m.d.canary.pumpStarted != nil {
+		m.d.canary.pumpStarted(pump)
+	}
 	every := m.d.canary.counterInterval
 	if every <= 0 {
 		every = counterInterval
@@ -557,6 +649,8 @@ func (m *canaryMode) serve(sess *session.Session, vcfg *serve.Config) {
 type counterPump struct {
 	tracker *osc7501.Tracker
 	sess    *session.Session
+	// stopped is closed when run returns.
+	stopped chan struct{}
 
 	mu   sync.Mutex
 	last injectbridge.Totals
@@ -584,6 +678,7 @@ func (p *counterPump) copy() {
 
 // run copies every interval and stops with the session.
 func (p *counterPump) run(every time.Duration) {
+	defer close(p.stopped)
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -605,6 +700,23 @@ type countingDeliverer struct {
 func (d countingDeliverer) Deliver(ctx context.Context, messageID, text string) wire.InjectResult {
 	d.pump.copy()
 	return d.next.Deliver(ctx, messageID, text)
+}
+
+// leadHasRunAbsent says nothing is at the mark's name in the state folder,
+// asked by the folder's handle without following a link: a link, or anything
+// else, at the name is the mark of an earlier start.
+func leadHasRunAbsent(dir string) (bool, error) {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(dfd)
+	var st unix.Stat_t
+	err = unix.Fstatat(dfd, leadHasRunMark, &st, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return true, nil
+	}
+	return false, err
 }
 
 // markLeadHasRun makes the mark lead-has-run in the state folder, by the
