@@ -208,7 +208,9 @@ func TestListScrollsToTheCursor(t *testing.T) {
 // The backend interface is declared as the seams note writes it.
 var _ Backend = (*fakeBackend)(nil)
 
-func TestVerdictHooksReturnNothingYet(t *testing.T) {
+// A card without verdicts and a listing with no decided rows draw nothing of
+// a verdict.
+func TestVerdictHooksReturnNothingWithoutVerdicts(t *testing.T) {
 	if got := verdictLines(testCard("p-1"), true); got != nil {
 		t.Fatalf("verdictLines returned %q", got)
 	}

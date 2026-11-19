@@ -6,10 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"ataniq/internal/approval/record"
 )
 
 // allowed is every package the non-test files may import: the standard
@@ -76,8 +79,27 @@ func TestNoExportedMethodBeyondTheInterface(t *testing.T) {
 	}
 }
 
-func TestVerdictSamplesStartEmpty(t *testing.T) {
-	if got := verdictSamples(newBackendTime()); got != nil {
-		t.Errorf("verdictSamples = %v", got)
+// The verdict hook holds the two decided samples: one the runs agreed with
+// the owner on and one they did not, both already approved.
+func TestVerdictSamplesAreTheTwoDecidedOnes(t *testing.T) {
+	got := verdictSamples(newBackendTime())
+	if len(got) != 2 {
+		t.Fatalf("verdictSamples holds %d samples, want 2", len(got))
+	}
+	var ids []string
+	for _, s := range got {
+		ids = append(ids, s.pending.ID)
+		if s.state != record.StateApproved || s.verdicts == nil {
+			t.Errorf("%s: state %q, verdicts %v", s.pending.ID, s.state, s.verdicts)
+		}
+	}
+	if !slices.Equal(ids, []string{"ap-sample-verdict-agreed", "ap-sample-verdict-differed"}) {
+		t.Errorf("ids %v", ids)
+	}
+	if !got[0].verdicts.Runs[0].Approve || !got[0].verdicts.Runs[1].Approve {
+		t.Error("the first sample's runs do not both approve")
+	}
+	if got[1].verdicts.Runs[0].Approve == got[1].verdicts.Runs[1].Approve {
+		t.Error("the second sample's runs agree with each other")
 	}
 }

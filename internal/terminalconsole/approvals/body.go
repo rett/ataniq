@@ -156,6 +156,11 @@ func (m *Model) buildBody() {
 		return
 	}
 	c := cs.c
+	// A card that exists because a run refused says so first, in one line
+	// that holds no verdict detail, also before the decision.
+	if c.Refused {
+		b.flow(nil, 0, refusedLine, sWarn, nil)
+	}
 	// The three kinds of content that the binding does not cover come
 	// first where they matter: the block that says how this card differs
 	// from an earlier one, and what came after the decision.

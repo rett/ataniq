@@ -112,7 +112,7 @@ func TestNewBuildsEverySection(t *testing.T) {
 	for i := 0; i < reflect.TypeOf(c).NumField(); i++ {
 		names = append(names, reflect.TypeOf(c).Field(i).Name)
 	}
-	want := "Title Verb Plan Refs Merge Diff Lists Flagged Evidence BindingSHA256 Note Differs DiffersRefused After Verdicts"
+	want := "Title Verb Plan Refs Merge Diff Lists Flagged Evidence BindingSHA256 Note Differs DiffersRefused After Verdicts Refused"
 	if got := strings.Join(names, " "); got != want {
 		t.Errorf("the card's fields are %q, want %q", got, want)
 	}

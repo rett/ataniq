@@ -235,6 +235,9 @@ var (
 		// The card's own record of a refused earlier card; it stands
 		// where the block would.
 		"DiffersRefused": DiffersLabel,
+		// The one mark of the verdict block that an undecided card
+		// carries; it stands with Verdicts.
+		"Refused": AfterLabel,
 	}
 	// namesNotContent are the values inside a bound section that are not
 	// under the binding's digest, each with why it is there. They are
