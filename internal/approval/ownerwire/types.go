@@ -292,15 +292,17 @@ type LimitParams struct {
 type LimitSetParams struct {
 	// Project is the project whose limit is changed.
 	Project string `json:"project"`
-	// To is the new limit.
+	// To is the new limit. A number under 1 is refused when the params are
+	// read, before the limit's own rule is asked.
 	To int `json:"to"`
 	// Typed is whether the owner typed the number. A raise must be typed.
 	Typed bool `json:"typed"`
 }
 
 // LimitView is the result of owner.limit and of owner.limit-set: the daily
-// card limit of one project as its screen shows it. Whether a number is a
-// lawful limit is the limit's own rule and is not checked here.
+// card limit of one project as its screen shows it. A limit under 1 and a
+// negative suggestion are refused here, as is a limit-set whose To is under
+// 1; any other rule of a lawful limit is the limit's own.
 type LimitView struct {
 	// Project is the project the limit is for.
 	Project string `json:"project"`
