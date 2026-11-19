@@ -1043,3 +1043,103 @@ func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
 		}
 	}
 }
+
+// R6: the second epoch of pass A runs steps 11, 12 and 14 again for a new
+// epoch, in the same state folder. Step 12 must not pass on the records the
+// first epoch left there: it waits for holder.json to name the epoch of this
+// start, and matches the lines of the event log and of the evidence by that
+// epoch.
+func TestCanaryRunKitStepTwelveReadsItsOwnEpoch(t *testing.T) {
+	// The lines of two epochs, as ataniq-canary fields prints them.
+	const (
+		firstEvent  = "epoch=1\nevent=state\nkind=holder\nreason=assertion-10-waived\nrole=throwaway-one/lead\nseq=4\nstate=sandbox-started"
+		secondEvent = "epoch=2\nevent=state\nkind=holder\nreason=assertion-10-waived\nrole=throwaway-one/lead\nseq=4\nstate=sandbox-started"
+		tenthEvent  = "epoch=12\nevent=state\nkind=holder\nreason=assertion-10-waived\nseq=4\nstate=sandbox-started"
+		otherEvent  = "epoch=2\nevent=state\nkind=holder\nreason=signal\nseq=5\nstate=ended"
+	)
+	for _, c := range []struct {
+		name, fields string
+		want         string
+		pairs        []string
+	}{
+		{"the line of this epoch", secondEvent, "yes", []string{"epoch=2", "state=sandbox-started", "reason=assertion-10-waived"}},
+		{"the first epoch's line does not pass for the second", firstEvent, "no", []string{"epoch=2", "state=sandbox-started", "reason=assertion-10-waived"}},
+		{"an epoch that only begins with the digits", tenthEvent, "no", []string{"epoch=1", "state=sandbox-started"}},
+		{"another event of this epoch", otherEvent, "no", []string{"epoch=2", "state=sandbox-started"}},
+		{"a value that only begins alike", "epoch=2\nstate=sandbox-started-late", "no", []string{"epoch=2", "state=sandbox-started"}},
+		{"a path that only ends alike", "last_epoch=2\nstate=sandbox-started", "no", []string{"epoch=2", "state=sandbox-started"}},
+		{"a pattern character is not a pattern", "epoch=2\nstate=sandbox-started", "no", []string{"epoch=*"}},
+		{"no line at all", "", "no", []string{"epoch=2"}},
+		{"the waiver, with its spaces", "epoch=2\nevent=start\nwaiver=" + canaryWaiver, "yes", []string{"epoch=2", "event=start", "waiver=" + canaryWaiver}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, code := canarySelfTest(t, append([]string{"fields-hold", c.fields}, c.pairs...)...)
+			if code != 0 || got != c.want {
+				t.Errorf("exit status %d, got %q, want %q", code, got, c.want)
+			}
+		})
+	}
+
+	text := canaryScriptText(t)
+	if !strings.Contains(text, "\nWAIVER='"+canaryWaiver+"'\n") {
+		t.Error("the script's waiver text is not the exact wording")
+	}
+	funcs := canaryFuncs(t, text)
+	eleven, twelve, hasLine := funcs["step_11"], funcs["step_12"], funcs["has_line"]
+	if strings.Count(eleven, `START_EPOCH=$(fld "$START_OUT" epoch)`) != 1 || !strings.Contains(eleven, `is_number "$START_EPOCH"`) {
+		t.Error("step 11 does not keep the epoch of the start result")
+	}
+	for _, want := range []string{
+		`while [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" != "$START_EPOCH" ]`,
+		`is_eq "$(fld "$HSTATE/holder.json" epoch)" "$START_EPOCH" || return 0`,
+		`has_line "$HSTATE/events.jsonl" "epoch=$START_EPOCH" 'state=sandbox-started' 'reason=assertion-10-waived' || return 0`,
+		`has_line "$EVIDENCE" "epoch=$START_EPOCH" 'event=start' "waiver=$WAIVER" || return 0`,
+	} {
+		if strings.Count(twelve, want) != 1 {
+			t.Errorf("step 12 does not hold once: %s", want)
+		}
+	}
+	// Nothing in step 12 matches a record as text, without its epoch.
+	if canaryCalls(twelve, "grep") != 0 || strings.Contains(twelve, `-s "$HSTATE/holder.json"`) {
+		t.Error("step 12 matches a record without its epoch")
+	}
+	if n := strings.Count(twelve, "has_line "); n != 3 {
+		t.Errorf("step 12 matches %d lines, want 3 (the wait, the event log, the evidence)", n)
+	}
+	for _, line := range strings.Split(twelve, "\n") {
+		if strings.Contains(line, "has_line ") && !strings.Contains(line, `"epoch=$START_EPOCH"`) {
+			t.Errorf("step 12 matches a line without its epoch: %s", strings.TrimSpace(line))
+		}
+	}
+	for _, want := range []string{`"$BIN/ataniq-canary" fields --file -`, `if fields_hold "$_got" "$@"; then return 0; fi`, `done <"$_file"`} {
+		if !strings.Contains(hasLine, want) {
+			t.Errorf("has_line does not hold: %s", want)
+		}
+	}
+
+	// The second epoch runs step 12 after its own step 11, and the dry run
+	// says what is matched.
+	second := funcs["second_epoch"]
+	if a, b := strings.Index(second, "\n  step_11\n"), strings.Index(second, "\n  step_12\n"); a < 0 || b < a {
+		t.Error("the second epoch does not run step 12 after step 11")
+	}
+	out, _ := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	n := 0
+	for _, b := range canaryBlocks(out) {
+		if !strings.HasPrefix(b.heading, "== step 12 [pass A") {
+			continue
+		}
+		n++
+		for _, want := range []string{"names the epoch of the start of step 11", "events.jsonl with that epoch holds the state sandbox-started", "canary-evidence.jsonl with that epoch holds the waiver"} {
+			if b.count(want) != 1 {
+				t.Errorf("the dry run of %s does not say %q", b.heading, want)
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("the dry run of pass A has %d step 12, want 2", n)
+	}
+}
+
+// canaryWaiver is the waiver's exact wording (the seams note, section 5).
+const canaryWaiver = "assertion 10 waived: canary slice, no qualification record"

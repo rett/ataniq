@@ -358,3 +358,4 @@ test entry:
 | --- | --- |
 | `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
+| `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |

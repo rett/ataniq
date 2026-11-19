@@ -39,7 +39,9 @@ usage() {
     '         balance CEILING SHARE FLOOR AVAILABLE' \
     '                      the balanced memory limit of step 11 (bytes, percent, bytes, kB)' \
     '         inject-action PASS OUTCOME REASON WRITTEN' \
-    '                      what step 17 does with a result of the injection' >&2
+    '                      what step 17 does with a result of the injection' \
+    '         fields-hold FIELDS PATH=VALUE...' \
+    '                      yes when the lines FIELDS hold every PATH=VALUE (step 12)' >&2
   exit 2
 }
 
@@ -82,6 +84,7 @@ INJECTED=0     # --fail-at fires once
 EPOCH_NO=1     # 1, or 2 in the second epoch of pass A
 STARTED=0      # a start was asked of the daemon
 STOPPED=0      # the last start was stopped with proof
+START_EPOCH=   # the epoch the last start result named
 PROVISIONED=0
 DAEMON_UP=0
 CAPPED=0       # pass B met the cap of 30 minutes or 10 turns
@@ -230,6 +233,39 @@ fld() {
     awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'
 }
 
+# fields_hold reports whether the lines $1, which are what ataniq-canary
+# fields prints for one JSON object, hold each further argument ("path=value")
+# as a whole line.
+fields_hold() {
+  _flds=$1
+  shift
+  for _kv in "$@"; do
+    case "
+$_flds
+" in
+      *"
+$_kv
+"*) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# has_line reports whether one line of the file $1, which holds one JSON
+# object in a line, holds every further argument ("path=value"). Each line is
+# read as JSON by the tagged helper, never matched as text; a line that is not
+# a whole JSON object (one being written) is passed over.
+has_line() {
+  _file=$1
+  shift
+  [ -f "$_file" ] || return 1
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _got=$(printf '%s\n' "$_line" | "$BIN/ataniq-canary" fields --file - 2>/dev/null) || continue
+    if fields_hold "$_got" "$@"; then return 0; fi
+  done <"$_file"
+  return 1
+}
+
 # fact appends the name, size, time and hash of a file to a list in the
 # evidence. The content is not copied.
 fact() {
@@ -361,6 +397,12 @@ self_test() {
     inject-action)
       [ "$#" -eq 4 ] || usage
       inject_action "$1" "$2" "$3" "$4"
+      ;;
+    fields-hold)
+      # FIELDS PATH=VALUE...: FIELDS is what ataniq-canary fields prints for
+      # one line of a record, with its line feeds.
+      [ "$#" -ge 2 ] || usage
+      if fields_hold "$@"; then out yes; else out no; fi
       ;;
     *) usage ;;
   esac
@@ -906,6 +948,7 @@ step_11() {
   check 'start succeeded' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
     dry 'check: the start result names the role state starting, this unit and the waiver'
+    dry 'keep the epoch the start result names: step 12 reads the records of that epoch only'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"
     dry 'check: the unit is active'
     dry "read MemoryMax, MemorySwapMax, TasksMax and ControlGroup with systemctl --user show $UNIT, normalised to bytes and counts"
@@ -929,6 +972,9 @@ step_11() {
   esac
   check 'the start result names this unit' is_eq "$(fld "$START_OUT" unit)" "$UNIT" || return 0
   check 'the start result shows the waiver in full' is_eq "$(fld "$START_OUT" waiver)" "$WAIVER" || return 0
+  # The epoch of this start: step 12 reads the records of this epoch only.
+  START_EPOCH=$(fld "$START_OUT" epoch)
+  check 'the start result names its epoch' is_number "$START_EPOCH" || return 0
   _active=$(show_prop ActiveState)
   case $_active in
     active | activating) out "   ok: the unit is $_active" ;;
@@ -969,27 +1015,34 @@ step_12() {
     'the probe reported once; every assertion is ok except 10, which is waived by name; the profile is version 4 with the pinned digest; the waiver shows in holder.json, the event log, the evidence and the status line' 'G5'
   wait_key "Step 12 reads the holder's files."
   if [ "$DRY" -eq 1 ]; then
+    dry "wait until $HSTATE/holder.json names the epoch of the start of step 11 (the folder still holds the last epoch's file until the new holder writes its own); fail when it never does"
     dry "print the values of $HSTATE/holder.json with ataniq-canary fields"
     dry "check: its field waiver is exactly: $WAIVER"
-    dry "check: $HSTATE/events.jsonl holds the state sandbox-started with the reason assertion-10-waived"
-    dry "check: the start line of $EVIDENCE holds the waiver"
+    dry "check: a line of $HSTATE/events.jsonl with that epoch holds the state sandbox-started with the reason assertion-10-waived"
+    dry "check: the start line of $EVIDENCE with that epoch holds the waiver"
     dry 'check: the result of start (step 11) showed the waiver'
   else
+    # The state folder is the same in every epoch, so each record is matched
+    # by the epoch of this start: a file or a line of an earlier epoch does
+    # not pass for this one.
     _try=0
-    while [ ! -s "$HSTATE/holder.json" ] && [ "$_try" -lt 20 ]; do
+    while [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" != "$START_EPOCH" ] && [ "$_try" -lt 30 ]; do
       _try=$((_try + 1))
       sleep 1
     done
     runcap holder-json "$BIN/ataniq-canary" fields --file "$HSTATE/holder.json"
     check 'holder.json can be read' is_rc 0 || return 0
+    check "holder.json is the one of this start: its epoch is $START_EPOCH" is_eq "$(fld "$HSTATE/holder.json" epoch)" "$START_EPOCH" || return 0
     check 'holder.json shows the waiver in full' is_eq "$(fld "$HSTATE/holder.json" waiver)" "$WAIVER" || return 0
     _try=0
-    while ! grep -q '"sandbox-started"' "$HSTATE/events.jsonl" 2>/dev/null && [ "$_try" -lt 30 ]; do
+    while ! has_line "$HSTATE/events.jsonl" "epoch=$START_EPOCH" 'state=sandbox-started' && [ "$_try" -lt 30 ]; do
       _try=$((_try + 1))
       sleep 1
     done
-    check 'the event log shows the sandbox started with assertion 10 waived' grep -q '"assertion-10-waived"' "$HSTATE/events.jsonl" || return 0
-    check "the daemon's evidence shows the waiver on a start line" grep -q '"event":"start".*assertion 10 waived' "$EVIDENCE" || return 0
+    check "the event log shows the sandbox started in epoch $START_EPOCH with assertion 10 waived" \
+      has_line "$HSTATE/events.jsonl" "epoch=$START_EPOCH" 'state=sandbox-started' 'reason=assertion-10-waived' || return 0
+    check "the daemon's evidence shows the waiver on the start line of epoch $START_EPOCH" \
+      has_line "$EVIDENCE" "epoch=$START_EPOCH" 'event=start' "waiver=$WAIVER" || return 0
   fi
   affirm 'Lead: the record shows the probe reported once, every assertion ok except 10, and profile version 4 with the pinned digest' yes || return 0
   result ok
