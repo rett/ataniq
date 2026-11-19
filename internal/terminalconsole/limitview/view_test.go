@@ -75,6 +75,27 @@ func screen(m *Model) string {
 	return b.String()
 }
 
+// rowsAt draws m into a w by h region and returns its rows, each with the
+// trailing blanks cut.
+func rowsAt(m *Model, w, h int) []string {
+	m.SetSize(w, h)
+	buf := uv.NewBuffer(w, h)
+	m.Draw(buf, buf.Bounds())
+	rows := make([]string, h)
+	for y := range rows {
+		var b strings.Builder
+		for x := 0; x < w; x++ {
+			if c := buf.CellAt(x, y); c != nil && c.Content != "" {
+				b.WriteString(c.Content)
+			} else {
+				b.WriteByte(' ')
+			}
+		}
+		rows[y] = strings.TrimRight(b.String(), " ")
+	}
+	return rows
+}
+
 func TestShowsEverything(t *testing.T) {
 	v := sampleView(t, 12, []int{3, 5, 0, 7}, true)
 	v.Days[13].ReachedLimit = true
@@ -215,6 +236,82 @@ func TestRefusalsShowLimitsReason(t *testing.T) {
 		}
 		if m.Typed() != c.typed {
 			t.Errorf("%s: typed number dropped", c.name)
+		}
+	}
+}
+
+// TestNothingCutAt80By24 draws every note the view can show, the refusals of
+// limits first, in an 80 by 24 region and checks that the note, the help line
+// and the last day are there whole.
+func TestNothingCutAt80By24(t *testing.T) {
+	type step struct {
+		name   string
+		view   limits.View
+		typed  string
+		enters int
+		want   string // the note; empty: the reason limits gives for typed
+	}
+	bad := sampleView(t, 12, []int{3}, false)
+	bad.Limit = 0
+	steps := []step{
+		{"under min", sampleView(t, 12, []int{3}, false), "0", 1, ""},
+		{"above max", sampleView(t, 12, []int{3}, false), "41", 1, ""},
+		{"too large", sampleView(t, 12, []int{3}, false), "19", 1, ""},
+		{"second raise", sampleView(t, 12, []int{3}, true), "15", 1, ""},
+		{"limit of one", sampleView(t, 1, []int{3}, false), "2", 1, ""},
+		{"bad limit", bad, "5", 1, ""},
+		{"not typed", sampleView(t, 12, []int{9}, false), "", 1, limits.Check(12, false, limits.Change{To: 18}).Error()},
+		{"not typed, limit of one", sampleView(t, 1, []int{9}, false), "", 1, limits.Check(1, false, limits.Change{To: 6, Typed: true}).Error()},
+		{"not typed, raised today", sampleView(t, 12, []int{9}, true), "", 1, limits.Check(12, true, limits.Change{To: 18, Typed: true}).Error()},
+		{"same suggestion", sampleView(t, 6, []int{3}, false), "", 1, sameAsNow},
+		{"same number", sampleView(t, 12, []int{3}, false), "12", 1, typedSame},
+		{"lower to one", sampleView(t, 12, []int{3}, false), "1", 1, limits.LowerWarning(12, 1) + "; " + confirmFmt + "1"},
+		{"lower to two", sampleView(t, 12, []int{3}, false), "2", 1, limits.LowerWarning(12, 2) + "; " + confirmFmt + "2"},
+		{"sent", sampleView(t, 20, []int{3}, false), "", 1, sentNote},
+	}
+	for _, c := range steps {
+		m := newModel(c.view)
+		typeKeys(m, c.typed)
+		for i := 0; i < c.enters; i++ {
+			m.Update(key("enter"))
+		}
+		want := c.want
+		if want == "" {
+			n, _ := strconv.Atoi(c.typed)
+			want = limits.Check(c.view.Limit, c.view.RaisedToday, limits.Change{To: n, Typed: true}).Error()
+		}
+		rows := rowsAt(m, 80, 24)
+		if got := rows[5] + " " + rows[6]; strings.TrimSpace(got) != want {
+			t.Errorf("%s: note %q, want %q", c.name, got, want)
+		}
+		if rows[7] != helpLine {
+			t.Errorf("%s: help line %q", c.name, rows[7])
+		}
+		if !strings.HasPrefix(rows[23], "2026-11-18") {
+			t.Errorf("%s: last day row is %q", c.name, rows[23])
+		}
+		for y, r := range rows {
+			if strings.Contains(r, "…") {
+				t.Errorf("%s: row %d is cut: %q", c.name, y, r)
+			}
+		}
+	}
+}
+
+func TestSplitNote(t *testing.T) {
+	for _, c := range []struct {
+		in, first, rest string
+		w               int
+	}{
+		{"short", "short", "", 10},
+		{"aaa bbb ccc", "aaa bbb", "ccc", 8},
+		{"aaa bbb ccc", "aaa bbb", "ccc", 7},
+		{"aaaaaaaaaaaa", "aaaaa", "aaaaaaa", 5},
+		{"宽宽宽宽", "宽宽", "宽宽", 5},
+		{"abc", "abc", "", 0},
+	} {
+		if f, r := splitNote(c.in, c.w); f != c.first || r != c.rest {
+			t.Errorf("splitNote(%q, %d) = %q, %q; want %q, %q", c.in, c.w, f, r, c.first, c.rest)
 		}
 	}
 }

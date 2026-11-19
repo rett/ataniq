@@ -61,7 +61,7 @@ const MaxErrorCells = 160
 // The view's own words.
 const (
 	title        = "DAILY CARD LIMIT"
-	helpLine     = "Enter takes the suggestion if it is not higher; type digits then Enter for a number; Esc closes"
+	helpLine     = "Enter: take a lower suggestion · digits, Enter: set a number · Esc: close"
 	sameAsNow    = "the suggestion is the present limit: nothing to change"
 	typedSame    = "that is the present limit: nothing changes"
 	sentNote     = "change sent; waiting for the new limit"
@@ -378,7 +378,11 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 	if m.note != "" && m.note != sentNote {
 		st = warn
 	}
-	row(m.note, st)
+	// The note has two rows: a long one is broken at a space, so that at 80
+	// cells no refusal of limits is cut.
+	first, rest := splitNote(m.note, w)
+	row(first, st)
+	row(rest, st)
 	row(helpLine, dim)
 	row("", text)
 	row(daysHeading, dim)
@@ -394,6 +398,33 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 		}
 		row(line, text)
 	}
+}
+
+// splitNote breaks s into a first part of at most w cells, at the last space
+// that allows it (in the middle of a word if there is none), and the rest.
+func splitNote(s string, w int) (first, rest string) {
+	if w <= 0 || ansi.StringWidth(s) <= w {
+		return s, ""
+	}
+	used, end, space := 0, 0, -1
+	for end < len(s) {
+		c, cw := ansi.FirstGraphemeCluster(s[end:], ansi.GraphemeWidth)
+		if c == "" || used+cw > w {
+			break
+		}
+		if c == " " {
+			space = end
+		}
+		end += len(c)
+		used += cw
+	}
+	if end < len(s) && s[end] == ' ' {
+		space = end
+	}
+	if space <= 0 {
+		return s[:end], s[end:]
+	}
+	return s[:space], strings.TrimLeft(s[space:], " ")
 }
 
 func leftOutWhy(d limits.Day) string {
