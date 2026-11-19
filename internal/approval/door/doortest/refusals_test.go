@@ -324,6 +324,10 @@ var refusals = []refusal{
 	{"decide", "an approve that signs a path off as another kind", record.CodeDecisionInvalid, record.StatePending, func(f *fixture) (string, error) {
 		return f.decide(f.pending("sample-feature"), true, func(d *record.Decision) { d.SignedOff[0].Kind = record.FlagSubmodule })
 	}},
+	{"decide", "another binding digest after the record was decided", record.CodeBindingMismatch, record.StateApproved, func(f *fixture) (string, error) {
+		p := f.approved("sample-feature")
+		return f.decide(p, true, func(d *record.Decision) { d.BindingSHA256 = record.Digest([]byte("other binding")) })
+	}},
 	{"decide", "a record that was withdrawn", record.CodeApprovalVoid, record.StateWithdrawn, func(f *fixture) (string, error) {
 		p := f.pending("sample-feature")
 		if err := f.d.Withdraw(p.ID); err != nil {
@@ -466,6 +470,14 @@ var refusals = []refusal{
 		_, err := f.d.Settle(f.ctx, door.SettleInput{ID: p.ID, BindingSHA256: record.Digest(nil), Outcome: door.OutcomeApplied})
 		return p.ID, err
 	}},
+	{"settle", "another binding digest after the record was settled", record.CodeBindingMismatch, record.StateApplied, func(f *fixture) (string, error) {
+		p := f.consumed("sample-feature")
+		if _, err := f.settle(p, door.OutcomeApplied); err != nil {
+			f.t.Fatal(err)
+		}
+		_, err := f.d.Settle(f.ctx, door.SettleInput{ID: p.ID, BindingSHA256: record.Digest(nil), Outcome: door.OutcomeApplied})
+		return p.ID, err
+	}},
 	{"settle", "an approval that was not used", record.CodeApprovalVoid, record.StateApproved, func(f *fixture) (string, error) {
 		p := f.approved("sample-feature")
 		_, err := f.settle(p, door.OutcomeApplied)
@@ -576,5 +588,17 @@ func TestRefusalTableHoldsEveryCode(t *testing.T) {
 	sort.Strings(wanted)
 	if strings.Join(got, " ") != strings.Join(wanted, " ") {
 		t.Errorf("the table's codes are\n %v\nwant\n %v", got, wanted)
+	}
+}
+
+// A settle of an approval that was never used says so, and does not say
+// the record has no approval.
+func TestSettleOfAnUnusedApprovalSaysItWasNotUsed(t *testing.T) {
+	f := newFixture(t)
+	p := f.approved("sample-feature")
+	_, err := f.settle(p, door.OutcomeApplied)
+	wantCode(t, err, record.CodeApprovalVoid)
+	if got := err.(*record.Error).Detail; !strings.Contains(got, "was not used") {
+		t.Errorf("detail = %q", got)
 	}
 }

@@ -356,6 +356,8 @@ func ended(e *entry) error {
 			return refuse(record.CodePreviousEpoch, "the record is void: the seat's epoch ended")
 		}
 		return refuse(record.CodeApprovalVoid, "the record is void")
+	case record.StateApproved:
+		return refuse(record.CodeApprovalVoid, "the approval was not used")
 	}
 	// Pending, denied or withdrawn: there is no approval to act on.
 	return refuse(record.CodeApprovalVoid, "the record has no approval: it is "+string(e.state))
