@@ -62,6 +62,18 @@ func TestApproveFlow(t *testing.T) {
 	// Keys while the decision is under way send nothing more.
 	r.key("enter")
 	r.key("a")
+	// x, a typed character and Enter open no deny field and send no deny.
+	r.key("x")
+	r.typ("n")
+	r.key("enter")
+	if r.m.FieldOpen() {
+		t.Fatal("a field opened while a decision was being sent")
+	}
+	// No key acts on the card while the decision is under way.
+	r.key("esc")
+	if !r.m.CardOpen() {
+		t.Fatal("Esc left the card while a decision was being sent")
+	}
 	r.run(cmd)
 	if len(r.b.decisions) != 1 {
 		t.Fatalf("Decide was called %d times", len(r.b.decisions))

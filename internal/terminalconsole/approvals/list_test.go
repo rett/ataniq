@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"ataniq/internal/approval/card"
 	"ataniq/internal/approval/record"
 )
@@ -213,4 +215,27 @@ func TestVerdictHooksReturnNothingYet(t *testing.T) {
 	if got := agreementLine(card.Listing{Count: card.Count{Requests: 1}}); got != "" {
 		t.Fatalf("agreementLine returned %q", got)
 	}
+}
+
+// An answer to a list request that a later request replaced is left alone,
+// also when it arrives after the newer one.
+func TestAnOlderListAnswerIsIgnored(t *testing.T) {
+	b := backendWith(t, []card.Card{testCard("p-1")}, nil)
+	r := newRig(t, b, 80, 24)
+	answer := func(cmd tea.Cmd) tea.Msg {
+		b.inCmd = true
+		defer func() { b.inCmd = false }()
+		return cmd()
+	}
+	// The older request is answered while the backend says read-only.
+	b.deciderO, b.deciderW = false, "another console holds the decider's place"
+	older := answer(r.m.listCmd())
+	b.deciderO, b.deciderW = true, ""
+	newer := answer(r.m.listCmd())
+	r.feed(newer)
+	r.feed(older)
+	if !r.m.decider {
+		t.Fatal("an older list answer replaced a newer one")
+	}
+	r.seen("feature finish")
 }
