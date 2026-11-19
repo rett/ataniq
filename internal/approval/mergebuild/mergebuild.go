@@ -35,6 +35,10 @@ var (
 	// ErrUnrelated means the two tips share no history, so git has no base
 	// to merge them from.
 	ErrUnrelated = errors.New("mergebuild: the two tips share no history")
+	// ErrNothingToMerge means the target's tip already holds the feature's
+	// tip, so merging it would change nothing; the host builds no empty
+	// merge. (Two equal tips are refused earlier, as [ErrValue].)
+	ErrNothingToMerge = errors.New("mergebuild: the target already holds the feature")
 	// ErrPinExists means the key already has a pin. [Build] never
 	// overwrites one.
 	ErrPinExists = errors.New("mergebuild: the key already has a pin")
@@ -119,7 +123,9 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 // repository's "info/attributes" must be absent or empty ([ErrAttributes]);
 // the repository must use SHA-1 ([ErrObjectFormat]); the two tips must be full ids of the repository's object format and name
 // commits ([ErrValue], [ErrNoCommit]); the key must have no pin yet
-// ([ErrPinExists]); the tips must share history ([ErrUnrelated]). Then git
+// ([ErrPinExists]); the tips must share history ([ErrUnrelated]); the
+// target's tip must not already hold the feature's ([ErrNothingToMerge]),
+// since the merge would change nothing. Then git
 // merges the two commits, reading no attribute from any tree. A conflict is
 // refused with a [*record.Error] whose code is [record.CodeMergeConflict],
 // and then no commit and no ref is written (git leaves the trees and blobs
@@ -158,6 +164,11 @@ func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error)
 
 	if err := c.related(ctx, in.TargetTip, in.FeatureTip); err != nil {
 		return Merge{}, err
+	}
+	if held, err := c.holds(ctx, in.TargetTip, in.FeatureTip); err != nil {
+		return Merge{}, err
+	} else if held {
+		return Merge{}, ErrNothingToMerge
 	}
 	tree, clean, err := c.mergeTree(ctx, in.TargetTip, in.FeatureTip)
 	if err != nil {

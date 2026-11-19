@@ -304,23 +304,49 @@ func TestBuildTreatsALeadMadeMergeAsHistory(t *testing.T) {
 		t.Errorf("Check of the host's merge returned %v", err)
 	}
 
-	// A feature that already holds the target, and one the target already
-	// holds, are merged all the same: the host's commit is always written.
-	for name, tips := range map[string][2]string{
-		"the feature holds the target": {s.base, s.feature},
-		"the target holds the feature": {s.feature, s.base},
-	} {
-		m, err := Build(ctx, l.repo, inputs(tips[0], tips[1]), "k-"+strings.ReplaceAll(name, " ", "-"))
-		if err != nil {
-			t.Errorf("%s: %v", name, err)
-			continue
-		}
-		if kind, _ := l.read(m.Commit); kind != "commit" || m.Commit == tips[0] || m.Commit == tips[1] {
-			t.Errorf("%s: the merge is %s", name, m.Commit)
-		}
-		if want := l.tree("f.txt", featureText); m.Tree != want {
-			t.Errorf("%s: the tree is %s, want the feature's, %s", name, m.Tree, want)
-		}
+	// A feature that already holds the target is merged all the same: the
+	// host's commit is always written, and it has the feature's tree.
+	fast, err := Build(ctx, l.repo, inputs(s.base, s.feature), "k-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := l.read(fast.Commit); kind != "commit" || fast.Commit == s.base || fast.Commit == s.feature {
+		t.Errorf("the merge is %s", fast.Commit)
+	}
+	if want := l.tree("f.txt", featureText); fast.Tree != want {
+		t.Errorf("the tree is %s, want the feature's, %s", fast.Tree, want)
+	}
+}
+
+// A feature that the target already holds changes nothing, and is refused
+// with its own error before anything is written: the target's tip being
+// the feature's parent, and further back in its history.
+func TestBuildRefusesAFeatureTheTargetHolds(t *testing.T) {
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			noGoroutineLeft(t)
+			l := newLabFormat(t, format)
+			s := newScene(t, l, nil, nil)
+			// The target is two commits past the feature's tip.
+			later := l.commit(l.tree("f.txt", mergedText), "more work", s.target)
+			commits := l.count("commit")
+
+			for name, tips := range map[string][2]string{
+				"the target is the feature's child": {s.feature, s.base},
+				"the target is further on":          {later, s.base},
+			} {
+				m, err := Build(ctx, l.repo, inputs(tips[0], tips[1]), "k")
+				if !errors.Is(err, ErrNothingToMerge) || m != (Merge{}) {
+					t.Errorf("%s: Build returned %+v, %v", name, m, err)
+				}
+			}
+			if got := l.count("commit"); got != commits {
+				t.Errorf("%d commits were written", got-commits)
+			}
+			if got := l.refs(); got != "" {
+				t.Errorf("refs were written: %q", got)
+			}
+		})
 	}
 }
 
