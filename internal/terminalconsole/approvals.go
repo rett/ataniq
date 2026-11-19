@@ -729,8 +729,12 @@ func (m *Model) approvalsTimeline() []TimelineEntry {
 	return out
 }
 
-// decidedEntries are the timeline entries after a request was asked: the
-// decision, and for a request that was applied or not applied, that too.
+// decidedEntries are the timeline entries after a request was asked: what
+// became of it, and for a request that was applied or not applied, that too.
+// Only the states that are decisions are worded "decided". A request that
+// ended with no decision is "ended", and a request that was applied, not
+// applied or consumed was approved, though the listing does not say by whom
+// (the owner, a rule or a grant), so it says "approved" alone.
 func decidedEntries(it card.Item) []TimelineEntry {
 	const unknown = "--:--"
 	state := clean(string(it.State))
@@ -740,11 +744,15 @@ func decidedEntries(it card.Item) []TimelineEntry {
 	switch it.State {
 	case record.StateApplied, record.StateNotApplied, record.StateConsumed:
 		return []TimelineEntry{
-			{Time: unknown, Text: "decided: approved"},
+			{Time: unknown, Text: "approved"},
 			{Time: unknown, Text: "applied: " + state},
 		}
 	case "", record.StatePending:
 		return nil
+	case record.StateExpired, record.StateWithdrawn, record.StateVoid:
+		return []TimelineEntry{{Time: unknown, Text: "ended: " + state}}
+	case record.StateUnknown:
+		return []TimelineEntry{{Time: unknown, Text: "state: " + state}}
 	}
 	return []TimelineEntry{{Time: unknown, Text: "decided: " + state}}
 }

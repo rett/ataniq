@@ -723,7 +723,7 @@ func TestTheTimelineShowsAskedDecidedAndApplied(t *testing.T) {
 		got = append(got, e.Text)
 	}
 	want := []string{
-		"asked: feature finish name=feature-x (project-b)", "decided: approved", "applied: applied · applied: develop moved",
+		"asked: feature finish name=feature-x (project-b)", "approved", "applied: applied · applied: develop moved",
 		"asked: feature finish name=feature-x (project-a)", "decided: denied · denied by the owner",
 		"asked: feature finish name=feature-x (project-a)",
 	}
@@ -735,6 +735,32 @@ func TestTheTimelineShowsAskedDecidedAndApplied(t *testing.T) {
 	// The source's own entries stay first.
 	if len(r.m.allTimeline()) != len(r.m.timeline)+len(entries) || r.m.allTimeline()[0] != r.m.timeline[0] {
 		t.Fatal("the source's timeline is not first")
+	}
+}
+
+func TestTheTimelineSaysDecidedOnlyForADecision(t *testing.T) {
+	b := newFakeApprovals(t)
+	states := []record.State{record.StateApproved, record.StateApprovedByRule, record.StateApprovedByGrant, record.StateDenied,
+		record.StateExpired, record.StateWithdrawn, record.StateVoid, record.StateConsumed, record.StateNotApplied, record.StateUnknown}
+	for i, st := range states {
+		c := apprCard(fmt.Sprintf("ap-%d", i), "project-a")
+		c.Title.Asked = apprT0.Add(-time.Duration(60-i) * time.Minute)
+		c.After = card.After{State: st}
+		b.listing.Recent = append(b.listing.Recent, c.Item())
+	}
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	var got []string
+	for _, e := range r.m.approvalsTimeline() {
+		if !strings.HasPrefix(e.Text, "asked:") {
+			got = append(got, e.Text)
+		}
+	}
+	want := []string{"decided: approved", "decided: approved-by-rule", "decided: approved-by-grant", "decided: denied",
+		"ended: expired", "ended: withdrawn", "ended: void",
+		"approved", "applied: consumed", "approved", "applied: not-applied", "state: unknown"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("timeline:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
