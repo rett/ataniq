@@ -136,10 +136,11 @@ func (m *Model) Update(msg tea.Msg) Action {
 	if !ok {
 		return Action{}
 	}
-	// Keys are matched by code, and only with no modifier: the text a key
-	// carries (an input method can commit any string) never stands for Enter,
-	// Esc or Backspace.
-	if k.Mod != 0 {
+	// Keys are matched by code, and only with no modifier, lock states aside
+	// (caps, num and scroll lock never change which key it is): the text a
+	// key carries (an input method can commit any string) never stands for
+	// Enter, Esc or Backspace.
+	if k.Mod&^(tea.ModCapsLock|tea.ModNumLock|tea.ModScrollLock) != 0 {
 		return Action{}
 	}
 	switch {

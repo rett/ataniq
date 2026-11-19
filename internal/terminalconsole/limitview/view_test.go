@@ -515,6 +515,8 @@ func TestKeysMatchByCodeWithNoModifier(t *testing.T) {
 		{Code: tea.KeyEscape, Mod: tea.ModShift},
 		{Code: tea.KeyBackspace, Mod: tea.ModCtrl},
 		{Code: '1'},
+		{Code: tea.KeyEnter, Mod: tea.ModCtrl | tea.ModNumLock},
+		{Code: '1', Text: "1", Mod: tea.ModAlt | tea.ModCapsLock},
 	} {
 		if a := m.Update(k); a.Kind != None {
 			t.Errorf("key %+v acted: %+v", k, a)
@@ -527,6 +529,29 @@ func TestKeysMatchByCodeWithNoModifier(t *testing.T) {
 	m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt})
 	if m.Typed() != "1" {
 		t.Errorf("modified Backspace edited: %q", m.Typed())
+	}
+}
+
+func TestLockStatesAreNotModifiers(t *testing.T) {
+	for _, lock := range []tea.KeyMod{tea.ModCapsLock, tea.ModNumLock, tea.ModScrollLock, tea.ModCapsLock | tea.ModNumLock} {
+		m := newModel(sampleView(t, 20, []int{3}, false))
+		if a := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape, Mod: lock}); a.Kind != Close {
+			t.Errorf("Esc with lock %d: %+v", lock, a)
+		}
+		for _, d := range "18" {
+			m.Update(tea.KeyPressMsg{Code: d, Text: string(d), Mod: lock})
+		}
+		if m.Typed() != "18" {
+			t.Errorf("digits with lock %d typed %q", lock, m.Typed())
+		}
+		m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: lock})
+		if m.Typed() != "1" {
+			t.Errorf("Backspace with lock %d left %q", lock, m.Typed())
+		}
+		m.Update(tea.KeyPressMsg{Code: '8', Text: "8", Mod: lock})
+		if a := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: lock}); a.Kind != Propose || a.Change.To != 18 {
+			t.Errorf("Enter with lock %d: %+v", lock, a)
+		}
 	}
 }
 
