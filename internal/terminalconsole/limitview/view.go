@@ -55,12 +55,15 @@ const maxDigits = 3
 // MaxProjectCells bounds the project's name, in cells.
 const MaxProjectCells = 40
 
+// MaxErrorCells bounds the line SetError shows, in cells.
+const MaxErrorCells = 160
+
 // The view's own words.
 const (
 	title        = "DAILY CARD LIMIT"
-	helpLine     = "Enter takes the suggestion if it is not higher; type digits then Enter for a number; Esc closes"
-	needTyped    = "the suggestion is higher than the present limit: a higher number has to be typed"
+	helpLine     = "Enter: take a lower suggestion · digits, Enter: set a number · Esc: close"
 	sameAsNow    = "the suggestion is the present limit: nothing to change"
+	typedSame    = "that is the present limit: nothing changes"
 	sentNote     = "change sent; waiting for the new limit"
 	reasonReach  = "reached the limit"
 	reasonAlert  = "had an alert"
@@ -69,6 +72,7 @@ const (
 	daysHeading  = "last 14 days (a day left out is not counted in the suggestion)"
 	raisedNote   = "the limit was already raised today"
 	nameFallback = "(unnamed)"
+	errFallback  = "the change was refused"
 )
 
 // Model is the screen. Make one with New, give it a View with SetView and its
@@ -87,6 +91,9 @@ type Model struct {
 	// warn says that note is a question and that another Enter with the same
 	// typed number confirms it.
 	warn bool
+	// pending says that a change was sent and the parent has not answered
+	// yet, with SetView or SetError. While it is set no second change is sent.
+	pending bool
 }
 
 // New returns a view with no View yet; it draws only its title until SetView.
@@ -97,7 +104,20 @@ func New(o Options) *Model { return &Model{colors: o.Colors} }
 // parent did with the last Action.
 func (m *Model) SetView(v limits.View) {
 	m.view, m.has = v, true
-	m.typed, m.note, m.warn = "", "", false
+	m.typed, m.note, m.warn, m.pending = "", "", false, false
+}
+
+// SetError shows line, which the parent wrote about its backend's refusal of
+// the last change, and lets the owner try again. The view cleans line (it
+// keeps only printable characters, one line of at most MaxErrorCells cells,
+// an ellipsis where it was cut) and shows nothing of the backend's own text
+// beyond that. An empty line shows a fixed one.
+func (m *Model) SetError(line string) {
+	m.typed, m.warn, m.pending = "", false, false
+	m.note = cleanText(line, MaxErrorCells)
+	if m.note == "" {
+		m.note = errFallback
+	}
 }
 
 // SetSize tells the view the size of its region.
@@ -116,24 +136,31 @@ func (m *Model) Update(msg tea.Msg) Action {
 	if !ok {
 		return Action{}
 	}
-	switch key := k.String(); key {
-	case "esc":
+	// Keys are matched by code, and only with no modifier, lock states aside
+	// (caps, num and scroll lock never change which key it is): the text a
+	// key carries (an input method can commit any string) never stands for
+	// Enter, Esc or Backspace.
+	if k.Mod&^(tea.ModCapsLock|tea.ModNumLock|tea.ModScrollLock) != 0 {
+		return Action{}
+	}
+	switch {
+	case k.Code == tea.KeyEscape:
 		return Action{Kind: Close}
-	case "enter":
+	case m.pending:
+		// A change is out: nothing is edited or sent until the parent answers.
+	case k.Code == tea.KeyEnter:
 		return m.enter()
-	case "backspace":
+	case k.Code == tea.KeyBackspace:
 		if m.typed != "" {
 			m.typed = m.typed[:len(m.typed)-1]
 		}
 		m.note, m.warn = "", false
-	default:
+	case k.Code >= '0' && k.Code <= '9' && k.Text == string(k.Code):
 		// A digit is exactly one ASCII digit as text, with no modifier.
-		if len(key) == 1 && key[0] >= '0' && key[0] <= '9' && k.Text == key {
-			if len(m.typed) < maxDigits {
-				m.typed += key
-			}
-			m.note, m.warn = "", false
+		if len(m.typed) < maxDigits {
+			m.typed += k.Text
 		}
+		m.note, m.warn = "", false
 	}
 	return Action{}
 }
@@ -146,7 +173,7 @@ func (m *Model) enter() Action {
 	if m.typed == "" {
 		switch {
 		case v.Suggestion > v.Limit:
-			m.note, m.warn = needTyped, false
+			m.note, m.warn = higherSuggestionNote(v), false
 			return Action{}
 		case v.Suggestion == v.Limit:
 			m.note, m.warn = sameAsNow, false
@@ -157,6 +184,10 @@ func (m *Model) enter() Action {
 	n, err := strconv.Atoi(m.typed)
 	if err != nil {
 		m.note, m.warn = "", false
+		return Action{}
+	}
+	if n == v.Limit {
+		m.note, m.warn = typedSame, false
 		return Action{}
 	}
 	c := limits.Change{To: n, Typed: true}
@@ -171,6 +202,20 @@ func (m *Model) enter() Action {
 	return m.propose(c)
 }
 
+// higherSuggestionNote returns limits' own reason for why the suggestion,
+// which is higher than the present limit, is not taken by Enter: the reason
+// a typed raise is refused if one is (the limit was raised today, or it is
+// too small to raise), else the reason one key does not raise.
+func higherSuggestionNote(v limits.View) string {
+	if err := limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion, Typed: true}); err != nil {
+		return err.Error()
+	}
+	if err := limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion}); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // propose checks c once more with limits, so that no change leaves the view
 // that its rule refuses, and reports it.
 func (m *Model) propose(c limits.Change) Action {
@@ -178,7 +223,7 @@ func (m *Model) propose(c limits.Change) Action {
 		m.note, m.warn = err.Error(), false
 		return Action{}
 	}
-	m.typed, m.note, m.warn = "", sentNote, false
+	m.typed, m.note, m.warn, m.pending = "", sentNote, false, true
 	return Action{Kind: Propose, Change: c}
 }
 
@@ -187,6 +232,16 @@ func (m *Model) propose(c limits.Change) Action {
 // not UTF-8 are dropped), at most MaxProjectCells cells, an ellipsis where it
 // was cut.
 func CleanName(name string) string {
+	if s := cleanText(name, MaxProjectCells); s != "" {
+		return s
+	}
+	return nameFallback
+}
+
+// cleanText returns s with only its printable characters, trimmed, at most
+// maxCells cells, an ellipsis where it was cut. It is empty if nothing is
+// left.
+func cleanText(name string, maxCells int) string {
 	var b strings.Builder
 	for rest := name; rest != ""; {
 		r, n := utf8.DecodeRuneInString(rest)
@@ -198,18 +253,18 @@ func CleanName(name string) string {
 			b.WriteRune(r)
 		}
 	}
-	s := strings.TrimSpace(b.String())
-	if s == "" {
-		return nameFallback
-	}
-	if ansi.StringWidth(s) <= MaxProjectCells {
+	// A combining mark with no base before it is dropped as well.
+	s := strings.TrimFunc(b.String(), unicode.IsSpace)
+	s = strings.TrimLeftFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsMark(r) })
+	s = strings.TrimRightFunc(s, unicode.IsSpace)
+	if ansi.StringWidth(s) <= maxCells {
 		return s
 	}
 	var out strings.Builder
 	used := 0
 	for rest := s; rest != ""; {
 		c, w := ansi.FirstGraphemeCluster(rest, ansi.GraphemeWidth)
-		if c == "" || used+w > MaxProjectCells-1 {
+		if c == "" || used+w > maxCells-1 {
 			break
 		}
 		rest = rest[len(c):]
@@ -327,7 +382,11 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 	if m.note != "" && m.note != sentNote {
 		st = warn
 	}
-	row(m.note, st)
+	// The note has two rows: a long one is broken at a space, so that at 80
+	// cells no refusal of limits is cut.
+	first, rest := splitNote(m.note, w)
+	row(first, st)
+	row(rest, st)
 	row(helpLine, dim)
 	row("", text)
 	row(daysHeading, dim)
@@ -343,6 +402,33 @@ func (m *Model) Draw(dst Canvas, area uv.Rectangle) {
 		}
 		row(line, text)
 	}
+}
+
+// splitNote breaks s into a first part of at most w cells, at the last space
+// that allows it (in the middle of a word if there is none), and the rest.
+func splitNote(s string, w int) (first, rest string) {
+	if w <= 0 || ansi.StringWidth(s) <= w {
+		return s, ""
+	}
+	used, end, space := 0, 0, -1
+	for end < len(s) {
+		c, cw := ansi.FirstGraphemeCluster(s[end:], ansi.GraphemeWidth)
+		if c == "" || used+cw > w {
+			break
+		}
+		if c == " " {
+			space = end
+		}
+		end += len(c)
+		used += cw
+	}
+	if end < len(s) && s[end] == ' ' {
+		space = end
+	}
+	if space <= 0 {
+		return s[:end], s[end:]
+	}
+	return s[:space], strings.TrimLeft(s[space:], " ")
 }
 
 func leftOutWhy(d limits.Day) string {
