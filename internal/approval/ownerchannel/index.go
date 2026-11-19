@@ -27,9 +27,10 @@ type index struct {
 	counted       map[string]bool
 	bareRequests  int64
 	bareWouldMeet int64
-	// lastUse holds, for each project, the latest decision or held entry
-	// that may have been a card use, so that a restart can tell which
-	// projects to check for the day's limit alert.
+	// lastUse holds, for each project, the latest approve decision, so that
+	// a restart can tell which projects to check for the day's limit alert.
+	// A held entry is not noted: a day is held only when its uses reached
+	// the limit, and those uses are approve decisions already noted.
 	lastUse map[string]projectUse
 }
 
@@ -144,7 +145,6 @@ func (x *index) add(e ownerjournal.Entry) {
 	case ownerjournal.KindHeld:
 		r := x.rec(e.PendingID)
 		r.decidedAt, r.refusedByDoor = e.At, ""
-		x.noteUse(e)
 	case ownerjournal.KindDelivered:
 		var b indexCode
 		if json.Unmarshal(e.Body, &b) != nil {
