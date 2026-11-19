@@ -46,14 +46,16 @@ epoch, and every result of that message spends it, `not-now` included: nothing
 is retried, nothing is queued, and a second message in the same epoch is
 refused. **A real run is the owner's attended act.** The run script starts a
 real systemd unit, a real sandbox and, in pass B, a live agent with a fresh
-login, and it is run only by the owner's hand with the lead present. No test,
-no Makefile target and no CI job runs it.
+login, and it is run only by the owner's hand with the lead present. No
+Makefile target and no CI job runs it, and the tests run it only with `--dry`,
+which starts nothing.
 
 What the slice does not do, so that nobody reads it into the pieces:
 
 - No Qargi inside the sandbox: no install, no seat, no assignment or
-  projection record, no handoff note, no bootstrap. Their folders are bound as
-  empty placeholders because the bind table requires the rows.
+  projection record, no handoff note, no bootstrap. Their folders are bound
+  because the bind table requires the rows; they are empty but for the guard
+  hook in the install folder.
 - No `ready`: nothing sets it, and no login-status check exists.
 - No durable command queue, no retry, no operator decision on an uncertain
   command and no confirmation from the conversation file. The injection can end
@@ -77,10 +79,10 @@ What the slice does not do, so that nobody reads it into the pieces:
 
 **The build tag.** Canary mode exists only in a build with the Go build tag
 `ataniq_canary`. Every file of canary mode starts with
-`//go:build linux && ataniq_canary`, and three packages
-(`internal/leadcanary`, `internal/leadholder/sandboxstart` and
-`internal/leadholder/injectbridge`) have no untagged file, so an untagged build
-cannot import them. **Release builds do not contain canary mode.** Without the
+`//go:build linux && ataniq_canary`, and four library packages
+(`internal/leadcanary` with its sub-packages, `internal/leadholder/sandboxstart`,
+`internal/leadholder/injectbridge` and `internal/leadholder/canaryroot`) have no
+untagged file, so an untagged build cannot import them. **Release builds do not contain canary mode.** Without the
 tag, `ataniqd` has no `--canary` flag and no `canary` command, `ataniq-holder`
 knows `--scratch` only and its control socket answers every `inject` request
 `disabled`, and `hello` lists two operations and says `mutations: false`. The
@@ -226,8 +228,8 @@ Exit status of `ataniqd canary`:
 | 20 | No daemon answers at the socket. |
 | 21 | The daemon refused this user. |
 | 22 | An answer that is not valid, or an error the daemon answered with another code. |
-| 30 | `refused`: the daemon changed nothing that matters. The message did not pass the admission, a second message in the epoch, injection is off in the config, a role other than the config's, or the registry or the lifecycle refused. One refusal may follow a start or a stop that was already carried out (a stale epoch, a state change the registry does not make): its text says to check the role's status. |
-| 31 | `unavailable`: the operation could not be carried out. For `inject` it means nothing reached the lead: the holder's socket could not be dialled or the frame could not be written, or the holder refused with `disabled`, `wrong-epoch`, `busy` or `bad-request`. |
+| 30 | `refused`: the daemon changed nothing that matters. The message did not pass the admission, the role is not running, a message is already in flight, a second message in the epoch, injection is off in the config, a role other than the config's, or the registry or the lifecycle refused. One refusal may follow a start or a stop that was already carried out (a stale epoch, a state change the registry does not make): its text says to check the role's status. |
+| 31 | `unavailable`: the operation could not be carried out, or its outcome is not known. A start whose outcome is not known and a stop that is not proven answer this too: the role is then shown `unknown`, a unit may still run, and its text says so. For `inject` it means nothing reached the lead: the holder's socket could not be dialled or the frame could not be written, or the holder refused with `disabled`, `wrong-epoch`, `busy` or `bad-request`. |
 
 The two error codes `refused` and `unavailable` are new, and carry fixed texts
 that never echo what the caller sent.
@@ -350,8 +352,8 @@ with the sources from `ataniq-canary show`, and checks it with
 
 - `canary` must be `true`: the holder refuses `false` under `--canary`.
   `layout_role` must be `<project>-lead`.
-- `runtime_root` must exist as `<runtime root>/leads/<layout_role>`, a real
-  folder of the caller with no access for group or others. The start sequence
+- The folder `<runtime_root>/leads/<layout_role>` must exist, a real folder of
+  the caller with no access for group or others. The start sequence
   makes `report` (the report FIFO's folder) and `bound` in it and removes them
   when the start ends.
 - `time_limit_seconds` (1 to 3600) is how long the start waits for the probe's
@@ -429,7 +431,8 @@ run in the folders; a start that fails before the launch leaves no mark, and
 the next start prepares again. The plan's first process starts in `/`.
 
 The holder in canary mode refuses, with exit status 2 and a line on its
-standard error, before it opens or writes anything:
+standard error, after reading the inputs file and before it takes the role lock
+or writes anything:
 
 - a sandbox inputs file that says `"canary": false`, a layout role that is not
   `<project>-lead`, a `--role` that is not the lead of the inputs' project;
@@ -450,9 +453,9 @@ the kind is `canary`, so the first line is
 [ataniq-msg id=<message id> from=ataniq kind=canary]
 ```
 
-followed by a line break and the body. The id is 1 to 64 characters: a lower-case letter or digit first, then lower-case
-letters, digits, `.`, `_` or `-`.
-The body is at most 2048 bytes, valid UTF-8, printable characters or line
+followed by a line break and the body. The id is 1 to 64 characters: a
+lower-case letter or digit first, then lower-case letters, digits, `.`, `_` or
+`-`. The body is at most 2048 bytes, valid UTF-8, printable characters or line
 breaks, not empty and holding no header marker, and the whole text is at most
 4096 bytes. A message the admission refuses is answered `refused` with a fixed
 code (`bad-id`, `body-too-long`, `invalid-utf8`, `bad-character`,
@@ -501,19 +504,21 @@ is not an error: `canary.inject` answers ok with `outcome` `uncertain`,
 holder`. The daemon waits 5 s to reach the holder and 20 s for its answer, and
 the command's client waits 30 s, so the daemon's answer arrives first. A
 refusal before the frame is written spends nothing, and an `unavailable` answer
-always means that nothing was written.
+always means that nothing was written to the lead. A refusal by the holder
+(`unavailable` after the frame was written) still spends the epoch's message:
+the epoch takes no other.
 
 The result is only a result: the `uncertain` ones need the owner's decision,
 and the run script says what is pressed for each. A restarted daemon keeps the
 epoch spent, because it reads the evidence back; an evidence file that cannot
-be read back refuses the start, because the daemon admits no message it cannot
-rule out. A role that is stopped and started again has a new epoch and a new
+be read back refuses the daemon's own start (`ataniqd run --canary` exits 11),
+because the daemon admits no message it cannot rule out. A role that is stopped and started again has a new epoch and a new
 message.
 
 **The evidence file** is `<state root>/canary-evidence.jsonl`, mode 0600, the
 caller's, one JSON object and one line break per event, synced after each. Each
-line has `at` (RFC 3339, UTC), `event`, `role`, `agent` (the config's kind) and
-`epoch`, and by event `message_id`, `outcome`, `reason`, `written`, `detail`,
+line has `at` (RFC 3339, UTC), `event`, `role`, `agent` (the config's kind),
+`epoch` once the role has one (not on `daemon-start` and `define`), and by event `message_id`, `outcome`, `reason`, `written`, `detail`,
 `code`, and on the `define` and `start` lines `qualification`, `login` and
 (`start` only) `waiver`. The events are:
 
@@ -597,7 +602,10 @@ live agent, a fresh login inside the sandbox, the cheapest model and a cap of
 expected result and the gate it serves, waits for Enter before every step that
 runs anything, never answers a prompt, and writes an evidence folder of mode
 0700 that it never publishes. A failure runs a clean-up chain. `--dry` prints
-everything and starts nothing. Its own guide,
+everything and starts nothing. In this feature the holder's reported idle field
+reads `unknown` and never `idle` (the fence judges idle itself inside a
+delivery), so step 16 records what the lead reads from the holder's status and
+does not require `idle`. Its own guide,
 [the run kit's README](../qualification/canary/run/README.md), says what each
 pass needs beforehand (the fact reports, the intake template's review, the
 mirror, the config and the inputs file), how a failed step is handled, what the
@@ -637,8 +645,10 @@ Stated plainly, because the slice proves none of these:
    were recorded with an earlier prototype holder, with single-line messages;
    the fence's own message form (a header line, a line break, a body) was never
    recorded. The bridge is new code under it. The automated accepting-path test
-   replays recorded screens.
-6. **Login inside the sandbox** and **the managed-settings path** are untested.
+   replays recorded screens: it shows that the plumbing carries the fence to
+   `submitted`, and says nothing about a live agent's timing.
+6. **Login inside the sandbox** (case S15) and **the managed-settings path**
+   (case S18) are untested.
 7. **The intake template** is checked for form only. The owner vouches that it
    confines.
 8. **The same-user limit.** Any unsandboxed process of the owner's user can
@@ -648,7 +658,7 @@ Stated plainly, because the slice proves none of these:
    session open that has been told about the slice.
 9. **The stand-in declares a real runtime's key,** because the profile's
    runtime enum has only two values. The evidence records `agent: stand-in`
-   beside it.
+   beside it. A neutral key is later work; the slice does not wait for it.
 10. **The limits are set when the unit is created,** so no canary start can
     miss them. Only the balancing is the script's.
 

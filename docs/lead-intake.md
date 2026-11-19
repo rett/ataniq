@@ -780,8 +780,8 @@ intake record.
   read-only in its sandbox and the records folder is not mounted there. That is
   a job of the sandbox profile and is not checked here. The profile that
   [the lead sandbox guide](lead-sandbox.md) proposes binds the mirror
-  read-only; it is unqualified, and nothing launches a lead in it, except in a build
-  with the `ataniq_canary` tag, under `--canary`.
+  read-only; it is unqualified, and nothing launches a lead in it, except in a build with
+  the `ataniq_canary` tag, under `--canary`.
 - **Same-user processes outside a sandbox are not fenced.** The state root, the
   mirror and the records are protected by file modes of one user. A process of
   the same user that is not in a sandbox can write them.

@@ -629,8 +629,8 @@ Only the daemon's own locks are taken today: the daemon lock and the runtime
 folder lock, which use the same mechanism. No role lock is taken through this
 package: the daemon starts no holder, so nothing takes one (in a build with the
 `ataniq_canary` tag, under `--canary`, it starts one, and that holder takes the
-role's lock itself; see [the canary slice guide](canary-slice.md)). The scratch-only
-holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
+role's lock itself; see [the canary slice guide](canary-slice.md)). The
+scratch-only holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
 own scratch folder, taken by its own code and not at a role's path. The daemon
 never probes a role lock by taking and releasing it, and the package offers no
 such call.
@@ -673,8 +673,8 @@ top. **The daemon calls none of `Start`, `Signal` or the lifecycle's `Start`
 and `Stop`,** except that in a build with the `ataniq_canary` tag, under
 `--canary`, the operations `canary.start` and `canary.stop` call the
 lifecycle's `Start` and `Stop` for the config's one lead role (see
-[the canary slice guide](canary-slice.md)). What follows is what the packages do and what their tests check
-against the fake.
+[the canary slice guide](canary-slice.md)). What follows is what the packages do
+and what their tests check against the fake.
 
 The scratch holder's unit is not one of these. `ataniq-scratch` starts its
 holder in a transient user unit `ataniq-scratch-NAME` with `systemd-run`, not

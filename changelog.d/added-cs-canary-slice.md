@@ -1,10 +1,10 @@
 - Add the canary slice, one short attended session that joins the parts built
-  side by side: `ataniqd run --canary CONFIG` defines the one throwaway lead of
+  side by side: `ataniqd run --canary CONFIG` serves the one throwaway lead of
   its config and `ataniqd canary define|start|ticket|inject|stop` drive it, the
   daemon starts a holder in a transient user unit with memory, swap and task
   limits, `ataniq-holder --canary` starts the lead sandbox with the waiver of
   assertion 10 (`assertion 10 waived: canary slice, no qualification record`,
-  shown in `holder.json`, the holder's event log and the daemon's evidence), a
+  the text in `holder.json` and the daemon's evidence, a code in the holder's event log), a
   stand-in agent receives one injected message through the fence, and one commit
   comes back through `ataniq-intake`. `ataniq-canary` provisions the folders and
   `qualification/canary/run/canary-run.sh` is the attended run. Every result of
