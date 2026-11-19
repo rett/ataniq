@@ -1175,3 +1175,104 @@ func TestHostileTextFromTheListingNeverReachesTheTerminalRaw(t *testing.T) {
 	r.focusPane(paneTimeline)
 	r.seen("decided: denied")
 }
+
+// The guards of the cockpit's approvals pieces, one test each.
+
+func TestADigitInZoomOpensNoLineOfAStripHeCannotSee(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
+	r.poll()
+	r.press(ch('j')) // an arrival: the strip shows
+	r.view()         // and is drawn, so the strip believes its lines are on screen
+	r.press(zoomPress)
+	if !r.m.zoom {
+		t.Fatal("no zoom")
+	}
+	r.view()
+	r.press(ch('1'))
+	if r.m.apprOpen() {
+		t.Fatal("a digit opened a line of a strip that zoom hides")
+	}
+}
+
+func TestAClickWhileApprovalsIsOpenMovesNothingUnderTheView(t *testing.T) {
+	o := Options{Linger: time.Hour}
+	r := newApprRig(t, 140, 45, oneCardBackend(t), o)
+	r.play(600 * time.Millisecond)
+	r.open()
+	before := r.m.sel
+	l := r.m.layout()
+	x, y := l.inner.Min.X+2, l.inner.Min.Y+1
+	r.send(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	r.send(tea.MouseMotionMsg{X: x + 5, Y: y, Button: tea.MouseLeft})
+	if r.m.sel != before || len(r.sink.mouse) != 0 {
+		t.Fatalf("a pointer action reached the cockpit under the view: %+v", r.m.sel)
+	}
+	// With the view closed the same click starts a selection: the test would
+	// otherwise prove nothing.
+	r.press(escKey)
+	r.send(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if !r.m.sel.drag {
+		t.Fatal("the click does not start a selection without the view")
+	}
+}
+
+func TestATerminalAnswerWhileTheConfirmFieldIsOpenClearsIt(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{}, "QAJK")
+	r.openFirstCard()
+	r.readCard()
+	r.press(ch('a'))
+	r.typeText("QA")
+	r.seen("code> **__")
+	r.send(tea.ModeReportMsg{Mode: ansi.ModeUnicodeCore, Value: ansi.ModeReset})
+	r.seen("input that was not typed was refused, and the field was cleared")
+	r.notSeen("code> **")
+}
+
+func TestAStaleListingIsNotTakenIn(t *testing.T) {
+	b := oneCardBackend(t)
+	r := newApprRig(t, 140, 45, b, Options{})
+	_, cmd := r.m.Update(apprTickMsg{at: r.clk.Now()}) // a request is out; its command is not run
+	_ = cmd
+	cur := r.m.ap.seq
+	r.send(apprListMsg{seq: cur - 1, l: card.Listing{Pending: b.listing.Pending}})
+	if r.m.ap.have || !r.m.ap.pending {
+		t.Fatal("an answer to an older request was taken in")
+	}
+	r.send(apprListMsg{seq: cur, l: card.Listing{Pending: b.listing.Pending}})
+	if !r.m.ap.have || r.m.ap.pending || len(r.m.ap.listing.Pending) != 1 {
+		t.Fatal("the answer to the present request was not taken in")
+	}
+}
+
+func TestAStaleLimitAnswerOrAnotherProjectsIsNotShown(t *testing.T) {
+	b := oneCardBackend(t)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.open()
+	r.press(ch('L'))
+	if r.m.ap.limit == nil {
+		t.Fatalf("no limit screen:\n%s", r.view())
+	}
+	proj, seq := r.m.ap.limitProject, r.m.ap.limitSeq
+	r.seen("project-a")
+	r.notSeen("limit 97", "97")
+	r.send(apprLimitMsg{seq: seq - 1, project: proj, v: limits.View{Project: proj, Limit: 97, Suggestion: 97}})
+	r.notSeen("97")
+	r.send(apprLimitMsg{seq: seq, project: "project-other", v: limits.View{Project: "project-other", Limit: 97, Suggestion: 97}})
+	r.notSeen("97", "project-other")
+	r.send(apprLimitMsg{seq: seq, project: proj, v: limits.View{Project: proj, Limit: 97, Suggestion: 97}})
+	r.seen("97")
+}
+
+func TestEnterOnTheGateWithNoBackendOpensNothing(t *testing.T) {
+	r := newRig(t, 140, 45, Options{})
+	for i := 0; r.m.pane != paneEvidence; i++ {
+		if i > paneCount {
+			t.Fatal("no such pane")
+		}
+		r.key(tabKey)
+	}
+	r.key(enterKey)
+	if r.m.apprOpen() {
+		t.Fatal("Enter on the gate opened the screen with no backend")
+	}
+}
