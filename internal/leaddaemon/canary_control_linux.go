@@ -78,6 +78,11 @@ func callHolderThen(ctx context.Context, dir string, req wire.Request, dial, wai
 	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		return wire.Response{}, true, err
 	}
+	// A context that ended before this point had its past deadline
+	// overwritten by the ones set above: end the read now.
+	if ctx.Err() != nil {
+		conn.SetDeadline(time.Unix(1, 0))
+	}
 	fr, err := wire.NewReader(conn, wire.ControlResponses).Next()
 	if err != nil {
 		return wire.Response{}, true, err
