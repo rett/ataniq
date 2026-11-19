@@ -1,8 +1,10 @@
 package demo
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"ataniq/internal/approval/card"
 	"ataniq/internal/approval/record"
@@ -56,5 +58,39 @@ func TestVerdictSamplesStayOutOfPendingAndNameNoVendor(t *testing.T) {
 				t.Errorf("not neutral: %q %q", r.Provider, r.Model)
 			}
 		}
+	}
+}
+
+// The two decided samples carry a time of decision, so that Recent sorts them
+// like cards decided during the run: the later decision first, and a card
+// decided now ahead of both.
+func TestVerdictSamplesHaveATimeOfDecision(t *testing.T) {
+	b, c := newBackend(t)
+	at := map[string]time.Time{}
+	for _, e := range b.cards {
+		if e.state != "" {
+			at[e.pending.ID] = e.decidedAt
+		}
+	}
+	agreed, differed := at["ap-sample-verdict-agreed"], at["ap-sample-verdict-differed"]
+	if agreed.IsZero() || differed.IsZero() || !agreed.Before(c.t) || !differed.Before(c.t) {
+		t.Fatalf("times of decision %v and %v, now %v", agreed, differed, c.t)
+	}
+	if !agreed.After(differed) {
+		t.Errorf("the agreed sample was decided at %v, not after %v", agreed, differed)
+	}
+	b.Activity(c.t)
+	k := open(t, b, "ap-sample-clean")
+	if _, err := b.Decide(card.Decision{ID: k.Title.ID, BindingSHA256: k.BindingSHA256, Approve: true}); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := b.List()
+	var ids []string
+	for _, it := range l.Recent {
+		ids = append(ids, it.ID)
+	}
+	want := []string{"ap-sample-clean", "ap-sample-verdict-agreed", "ap-sample-verdict-differed"}
+	if !slices.Equal(ids, want) {
+		t.Errorf("recent %v, want %v", ids, want)
 	}
 }

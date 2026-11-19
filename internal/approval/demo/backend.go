@@ -92,14 +92,25 @@ func New(now func() time.Time) *Backend {
 	}
 	b := &Backend{now: now, tracker: tracker, projects: map[string]*project{}}
 	for _, s := range samples(t0) {
-		b.cards = append(b.cards, &entry{
+		e := &entry{
 			sample:    s,
 			state:     s.state,
 			line:      s.line,
 			held:      s.held,
 			pathPages: splitPaths(s.paths),
 			patch:     splitPatch(s.patch),
-		})
+		}
+		if s.state != "" {
+			// A sample that starts decided was decided halfway between
+			// its asking and now, so that it sorts in Recent by that time
+			// like a card decided during the run.
+			asked, err := record.ParseTime(s.pending.Binding.RequestedAt)
+			if err != nil {
+				panic("demo: " + err.Error())
+			}
+			e.decidedAt = asked.Add(t0.Sub(asked) / 2)
+		}
+		b.cards = append(b.cards, e)
 		if in, ok := card.BindingCountInput(s.pending.Binding); ok {
 			b.count.Add(limits.Count(in))
 		}
