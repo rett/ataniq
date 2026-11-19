@@ -687,3 +687,16 @@ func TestDaysOfWithoutALimitLeavesTheDayOut(t *testing.T) {
 		}
 	}
 }
+
+// A limit above Max counts as Max, as Judge counts it: a full day is marked.
+func TestDaysOfCapsALimitAboveMax(t *testing.T) {
+	now := at(west, 2031, 3, 15, 9, 0)
+	var decided []time.Time
+	for i := 0; i < Max; i++ {
+		decided = append(decided, at(west, 2031, 3, 13, 10, i))
+	}
+	days := DaysOf(decided, always(1000), now)
+	if len(days) != 1 || days[0].Uses != Max || !days[0].ReachedLimit {
+		t.Fatalf("a full day under a limit above Max is not marked: %+v", days)
+	}
+}
