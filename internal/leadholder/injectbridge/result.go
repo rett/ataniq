@@ -37,7 +37,8 @@ const contradictory = "contradictory result: "
 // result's Detail (they begin with the outcome and what was written and hold
 // the Detail after them), so that the Detail is not spent twice; otherwise it
 // is the Detail, " | " and the Readings. Either is made printable ASCII and
-// cut to the wire's length by wire.SanitizeDetail. Nothing branches on it. Every result returned passes wire.InjectResult.Validate.
+// cut to the wire's length by wire.SanitizeDetail. Nothing branches on it.
+// Every result returned passes wire.InjectResult.Validate.
 func WireResult(r inject.Result) wire.InjectResult {
 	out, ok := wireWords(r.Outcome, r.Written)
 	detail := r.Readings()
