@@ -1225,3 +1225,73 @@ func TestCanaryRunKitDeleteCommandNeedsAStoppedUnit(t *testing.T) {
 		}
 	}
 }
+
+// R6: a refusal in the second epoch of pass A is a finding for a fix task
+// before pass B. So step 2 of pass B takes a record of pass A that shows no
+// finding, or one with findings and the lead's recorded word that the fixes
+// are merged, and nothing else.
+func TestCanaryRunKitPassBNeedsACleanPassA(t *testing.T) {
+	dir := t.TempDir()
+	for name, c := range map[string]struct{ content, want string }{
+		"clean":                {"pass A: complete\nfindings: 0\n", "clean"},
+		"one finding":          {"pass A: complete\nfindings: 1\n", "findings 1"},
+		"twelve findings":      {"pass A: complete\nfindings: 12\n", "findings 12"},
+		"no last line feed":    {"pass A: complete\nfindings: 2", "findings 2"},
+		"no findings line":     {"pass A: complete\n", "unknown"},
+		"findings in words":    {"pass A: complete\nfindings: none\n", "unknown"},
+		"a negative number":    {"pass A: complete\nfindings: -1\n", "unknown"},
+		"failed":               {"pass A: failed at step 17: the fence\nfindings: 0\n", "incomplete"},
+		"failed, no chain":     {"pass A: failed at step 3: git\n", "incomplete"},
+		"pass B's record":      {"pass B: complete\nfindings: 0\n", "incomplete"},
+		"complete in a longer": {"pass A: complete, almost\nfindings: 0\n", "incomplete"},
+		"empty":                {"", "incomplete"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			file := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".txt")
+			if err := os.WriteFile(file, []byte(c.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got, code := canarySelfTest(t, "pass-a-record", file); code != 0 || got != c.want {
+				t.Errorf("%q (exit status %d), want %q", got, code, c.want)
+			}
+		})
+	}
+	if got, code := canarySelfTest(t, "pass-a-record", filepath.Join(dir, "missing.txt")); code != 0 || got != "incomplete" {
+		t.Errorf("a missing record: %q (exit status %d), want incomplete", got, code)
+	}
+
+	// Step 2: only "clean" passes without a question; findings need the
+	// lead's "yes" through affirm, which records it; the rest fails.
+	body := canaryFuncs(t, canaryScriptText(t))["step_2"]
+	at := func(part string) int {
+		t.Helper()
+		if strings.Count(body, part) != 1 {
+			t.Fatalf("step 2 does not hold once: %s", part)
+		}
+		return strings.Index(body, part)
+	}
+	order := []int{
+		at(`_rec=$(passa_record "$PASSA/result.txt")`),
+		at("case $_rec in\n"),
+		at("        clean) out "),
+		at("        'findings '*)\n"),
+		at(`affirm "Lead: every finding of pass A (${_rec#findings }) has its fix merged" yes || return 0`),
+		at("        incomplete) fail 'the record of pass A does not say the pass completed'; return 0 ;;"),
+		at("        *) fail 'the record of pass A does not say how many findings it had'; return 0 ;;"),
+		at(`fact facts.txt "$PASSA/result.txt"`),
+	}
+	if !sort.IntsAreSorted(order) {
+		t.Errorf("step 2 is out of order: %v", order)
+	}
+	if strings.Contains(body, "grep -qx 'pass A: complete'") {
+		t.Error("step 2 still takes a record of pass A on its first line alone")
+	}
+	out, _ := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json")
+	for _, b := range canaryBlocks(out) {
+		if strings.HasPrefix(b.heading, "== step 2 [pass B]: ") {
+			if b.count("the record shows no finding (findings: 0); with findings, print the number and ask the lead to confirm that every finding has its fix merged") != 1 {
+				t.Errorf("the dry run of step 2 in pass B does not say what it needs of pass A:\n%s", strings.Join(b.lines, "\n"))
+			}
+		}
+	}
+}

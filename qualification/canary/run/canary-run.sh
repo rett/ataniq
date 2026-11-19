@@ -13,7 +13,8 @@
 # N, so that the dry run prints the clean-up chain a real failure there runs.
 # --self-test NAME [VALUE...] is the test entry: it gives sample values to one
 # of the script's own functions, prints what the function answers and ends. It
-# only computes: no step runs, and nothing is started, read or written.
+# only computes: no step runs, nothing is started or written, and no file is
+# read but the one given to pass-a-record.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -42,6 +43,8 @@ usage() {
     '                      what step 17 does with a result of the injection' \
     '         fields-hold FIELDS PATH=VALUE...' \
     '                      yes when the lines FIELDS hold every PATH=VALUE (step 12)' \
+    '         pass-a-record FILE' \
+    '                      what step 2 of pass B reads in a result.txt of pass A' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' >&2
   exit 2
@@ -371,6 +374,33 @@ inject_action() {
 
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
+# passa_record reads the result.txt of a pass A, $1, for step 2 of pass B. It
+# prints "clean" when the pass completed with no finding, "findings N" when
+# it completed with N findings, "unknown" when it completed and the number of
+# findings is not there as a number, and "incomplete" in every other case (a
+# failed pass, no file).
+passa_record() {
+  _complete=0
+  _found=
+  if [ -f "$1" ]; then
+    while IFS= read -r _l || [ -n "$_l" ]; do
+      case $_l in
+        'pass A: complete') _complete=1 ;;
+        'findings: '*) _found=${_l#findings: } ;;
+      esac
+    done <"$1"
+  fi
+  if [ "$_complete" -ne 1 ]; then
+    out incomplete
+  elif ! is_number "$_found"; then
+    out unknown
+  elif [ "$_found" -eq 0 ]; then
+    out clean
+  else
+    out "findings $_found"
+  fi
+}
+
 # unit_state prints the unit's active state as systemd names it, or nothing
 # when systemd cannot be asked.
 unit_state() { systemctl --user show "$UNIT" --property=ActiveState --value 2>/dev/null || :; }
@@ -416,6 +446,11 @@ self_test() {
       # STATE: an active state as systemd names it; it may be empty.
       [ "$#" -eq 1 ] || usage
       if unit_stopped "$1"; then out stopped; else out not-stopped; fi
+      ;;
+    pass-a-record)
+      # FILE: a result.txt of pass A. The file is read and nothing else.
+      [ "$#" -eq 1 ] || usage
+      passa_record "$1"
       ;;
     fields-hold)
       # FIELDS PATH=VALUE...: FIELDS is what ataniq-canary fields prints for
@@ -653,7 +688,25 @@ step_2() {
   if [ "$PASS" = B ]; then
     ask 'Lead: the evidence folder of pass A'
     PASSA=$ANSWER
-    check 'the record of pass A says the pass completed' grep -qx 'pass A: complete' "$PASSA/result.txt" || return 0
+    if [ "$DRY" -eq 1 ]; then
+      dry 'check: the record of pass A (result.txt in that folder) says the pass completed'
+      dry 'check: the record shows no finding (findings: 0); with findings, print the number and ask the lead to confirm that every finding has its fix merged, and record the answer; anything else stops the run'
+    else
+      _rec=$(passa_record "$PASSA/result.txt")
+      out "   the record of pass A: $_rec"
+      note "the record of pass A: $_rec"
+      case $_rec in
+        clean) out '   ok: pass A completed with no finding' ;;
+        'findings '*)
+          # A finding of pass A (a refusal in its second epoch) is for a fix
+          # task before pass B: the lead's word that it is merged is recorded.
+          out "   pass A completed with ${_rec#findings } finding(s): each needs its fix merged before pass B"
+          affirm "Lead: every finding of pass A (${_rec#findings }) has its fix merged" yes || return 0
+          ;;
+        incomplete) fail 'the record of pass A does not say the pass completed'; return 0 ;;
+        *) fail 'the record of pass A does not say how many findings it had'; return 0 ;;
+      esac
+    fi
     fact facts.txt "$PASSA/result.txt"
   fi
   result ok

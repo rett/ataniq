@@ -59,7 +59,7 @@ sh qualification/canary/run/canary-run.sh --pass B --config /path/to/canary-live
 | `--dry` | Print every step and start nothing. No command is run and no file is read or written; the values printed are samples, so it works with no binary built and no config. Read it before each pass. |
 | `--evidence DIR` | The folder in which the dated evidence folder is made, an absolute path. The default is `ataniq-canary-evidence` in your home folder. |
 | `--fail-at N` | A test hook, accepted with `--dry` only: a failure is injected at step N, so the dry run prints the clean-up chain a real failure there would run. |
-| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs and nothing is started, read or written. The names are listed under the check of the kit, below. |
+| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs, nothing is started or written, and no file is read but the one given to `pass-a-record`. The names are listed under the check of the kit, below. |
 
 The script prints each step with its number, what it does, the expected result
 and the gate it serves. It waits for Enter before every step that runs
@@ -131,7 +131,12 @@ does.
    the summary of one real launch of the sandbox plan
    (see [the lead sandbox qualification manual](../../../docs/qualification-lead-sandbox.md)).
    Step 2 asks for the path of each and records its name, size, time and hash.
-   Pass B also asks for the evidence folder of pass A.
+   Pass B also asks for the evidence folder of pass A. Its `result.txt` must
+   say `pass A: complete` and `findings: 0`. A pass A that completed with
+   findings (a refusal in its second epoch is one) needs a fix before pass B:
+   the script prints the number, and the lead confirms that every finding has
+   its fix merged, which is recorded with the time. Without that the run
+   stops.
 2. **The intake template** [`canary-intake.json`](../templates/canary-intake.json)
    has its review on file, the owner has read it and
    [its note](../templates/README.md), and the owner runs `qualify-mirror` with
@@ -364,4 +369,5 @@ test entry:
 | `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
+| `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
