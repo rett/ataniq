@@ -345,6 +345,9 @@ type countingDoor struct {
 	// Settle answer with a refusal, once.
 	failShow     error
 	refuseSettle *record.Error
+	// refuseUse makes every Use answer with a refusal, as long as it is
+	// set, without the stand-in seeing the call.
+	refuseUse *record.Error
 }
 
 func (c *countingDoor) Show(ctx context.Context, id string) (door.Shown, error) {
@@ -381,7 +384,11 @@ func (c *countingDoor) Decide(ctx context.Context, d door.Record) (door.Decided,
 func (c *countingDoor) Use(ctx context.Context, in door.UseInput) (door.Used, error) {
 	c.mu.Lock()
 	c.uses++
+	refuse := c.refuseUse
 	c.mu.Unlock()
+	if refuse != nil {
+		return door.Used{}, refuse
+	}
 	return c.Door.Use(ctx, in)
 }
 

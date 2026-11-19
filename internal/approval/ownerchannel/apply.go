@@ -118,8 +118,16 @@ func (s *Service) use(ctx context.Context, dl *ownerjournal.Delivery, p record.P
 			// next look at the door's state says.
 			return ownerwire.DecideResult{}, wrapDoor(err)
 		}
-		if aerr := s.handles().AppendUse(dl, s.now(), e.Code); aerr != nil {
-			return ownerwire.DecideResult{}, s.jerr(ctx, aerr)
+		// A refusal is journaled once for each code: the tick tries the
+		// use again while the approval lasts, and the journal does not
+		// grow with each try.
+		if serr := s.syncIndex(); serr != nil {
+			return ownerwire.DecideResult{}, s.jerr(ctx, serr)
+		}
+		if !s.useRefusedBefore(p.ID, e.Code) {
+			if aerr := s.handles().AppendUse(dl, s.now(), e.Code); aerr != nil {
+				return ownerwire.DecideResult{}, s.jerr(ctx, aerr)
+			}
 		}
 		shown, serr := s.cfg.Door.Show(ctx, p.ID)
 		if serr != nil {

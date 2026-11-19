@@ -38,6 +38,9 @@ type idRecord struct {
 	decided   bool
 	approve   bool
 	delivered bool
+	// useRefused holds the codes the door refused a use of the approval
+	// with, each of which has a use entry.
+	useRefused map[record.Code]bool
 	// refusedByDoor is the code the door refused the last decision with,
 	// while no decision or held entry came after it, or empty. The card is
 	// undecided again then.
@@ -112,6 +115,16 @@ func (x *index) add(e ownerjournal.Entry) {
 		if b.Code != "" {
 			r.refusedByDoor = record.Code(b.Code)
 		}
+	case ownerjournal.KindUse:
+		var b indexCode
+		if json.Unmarshal(e.Body, &b) != nil || b.Code == "" {
+			return
+		}
+		r := x.rec(e.PendingID)
+		if r.useRefused == nil {
+			r.useRefused = make(map[record.Code]bool)
+		}
+		r.useRefused[record.Code(b.Code)] = true
 	case ownerjournal.KindOutcome:
 		var b indexOutcome
 		if json.Unmarshal(e.Body, &b) != nil {
@@ -175,6 +188,15 @@ func (s *Service) syncIndex() error {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// useRefusedBefore reports whether the journal has a use entry that says the
+// door refused a use of the approval with the code.
+func (s *Service) useRefusedBefore(id string, c record.Code) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.idx.byID[id]
+	return r != nil && r.useRefused[c]
 }
 
 // indexed returns a copy of what the index holds for id.

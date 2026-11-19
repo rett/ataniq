@@ -978,3 +978,48 @@ func TestARestartAfterAStopAtSettledLeavesAnUnknownOutcomeForTheOwner(t *testing
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+// A use the door refuses while the approval stays open is tried again by
+// each tick, and journaled once for each code it is refused with, not once
+// for each try.
+func TestARefusedUseIsJournaledOncePerCode(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.door.refuseUse = &record.Error{Code: record.CodeEvidenceChanged, Detail: "the evidence changed"}
+	_, err := e.decide(p, true)
+	wantCode(t, err, record.CodeEvidenceChanged)
+	coded := func() []string {
+		var out []string
+		for _, en := range e.entries(ownerjournal.KindUse) {
+			out = append(out, string(en.Body))
+		}
+		return out
+	}
+	for i := 0; i < 3; i++ {
+		e.advance(time.Minute)
+		wantCode(t, e.svc.Tick(context.Background()), record.CodeEvidenceChanged)
+	}
+	if got := coded(); len(got) != 1 || got[0] != `{"code":"evidence-changed"}` {
+		t.Fatalf("the use entries after three ticks: %v", got)
+	}
+	// Another code is another entry, once.
+	e.door.refuseUse = &record.Error{Code: record.CodeReviewChanged, Detail: "the review changed"}
+	for i := 0; i < 2; i++ {
+		wantCode(t, e.svc.Tick(context.Background()), record.CodeReviewChanged)
+	}
+	if got := coded(); len(got) != 2 || got[1] != `{"code":"review-changed"}` {
+		t.Fatalf("the use entries after another code: %v", got)
+	}
+	// Once the door takes the use, the approval goes through.
+	e.door.refuseUse = nil
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.state(p.ID) != record.StateApplied {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	if got := coded(); len(got) != 3 || got[2] != `{"code":""}` {
+		t.Errorf("the use entries at the end: %v", got)
+	}
+}
