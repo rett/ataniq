@@ -98,9 +98,7 @@ func (m *Model) rebuildList() {
 			prefix = append(prefix, seg{state + "  ", sText})
 		}
 		text := clip(it.Verb)
-		if it.Feature != "" {
-			text += " name=" + clip(it.Feature)
-		}
+		text += nameText(it.Feature)
 		text += "  " + clip(it.Project) + "  asked " + clock(it.Asked, now)
 		if !recent {
 			text += "  expires " + clock(it.Expires, it.Asked)

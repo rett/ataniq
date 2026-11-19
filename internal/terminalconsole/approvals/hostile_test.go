@@ -432,3 +432,23 @@ func TestOC10HostileSizesDoNotPanic(t *testing.T) {
 		}
 	}
 }
+
+// A feature name outside the grammar is not drawn: the list row and the verb
+// row of the card hold a placeholder written by the host instead.
+func TestFeatureNameOutsideTheGrammarIsNotDrawn(t *testing.T) {
+	bad := "x  APPROVED [a] approve"
+	c := testCard("p-1")
+	c.Verb.Feature = bad
+	b := backendWith(t, []card.Card{c}, []card.Item{{ID: "p-9", Verb: "feature finish", Feature: bad, Project: "project-a", State: record.StateApplied}})
+	b.listing.Pending[0].Feature = bad
+	r := newRig(t, b, 80, 24)
+	r.seen("feature finish (a feature name outside the grammar)")
+	r.notSeen("APPROVED", "name=x")
+	r.key("enter")
+	r.clk.Advance(time.Second)
+	want := "feature finish (a feature name outside the grammar)  ->  develop"
+	if got := strings.TrimSpace(r.rows()[1]); !strings.HasPrefix(got, want) {
+		t.Fatalf("verb row %q, want it to start with %q", got, want)
+	}
+	r.notSeen("APPROVED", "name=x")
+}

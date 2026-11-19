@@ -121,9 +121,7 @@ func (cs *cardState) whenInBody(w int) bool {
 func (cs *cardState) verbLine() string {
 	v := cs.c.Verb
 	s := clip(v.Name)
-	if v.Feature != "" {
-		s += " name=" + clip(v.Feature)
-	}
+	s += nameText(v.Feature)
 	if v.Target != "" {
 		s += "  ->  " + clip(v.Target)
 	}

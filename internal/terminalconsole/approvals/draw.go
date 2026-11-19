@@ -7,6 +7,8 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+
+	"ataniq/internal/approval/record"
 )
 
 // Canvas is what the view draws into: a *uv.Buffer, or any uv.Screen such as
@@ -101,6 +103,24 @@ func cellOf(r rune) (string, int) {
 		return replacement, 1
 	}
 	return c, w
+}
+
+// badFeatureName is what is drawn in place of a feature name that is outside
+// the grammar of feature names.
+const badFeatureName = "(a feature name outside the grammar)"
+
+// nameText returns the text drawn after the verb for a feature name: " name="
+// and the name when it is within the grammar of feature names, and a
+// placeholder written here when it is not. The view checks the name itself,
+// since the card it is given may come from any backend.
+func nameText(feature string) string {
+	if feature == "" {
+		return ""
+	}
+	if !record.ValidFeatureName(feature) {
+		return " " + badFeatureName
+	}
+	return " name=" + feature
 }
 
 // clip cuts s to maxText bytes at a character boundary, with an ellipsis
