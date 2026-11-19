@@ -40,7 +40,8 @@ const maxRecent = ownerwire.MaxRecent
 // decisions and outcomes, the count from the first card and the "since he
 // last looked" mark. A listing too large for one page drops recent rows,
 // oldest first, and then the newest pending rows, so that the oldest, which
-// end first, are the ones shown; a rule row says how many were left out.
+// end first, are the ones shown; the listing's NotListed says how many
+// were left out.
 func (s *Service) List(ctx context.Context) (ownerwire.Listing, error) {
 	ctx, done, err := s.begin(ctx)
 	if err != nil {
@@ -189,7 +190,8 @@ func (s *Service) recentOf(p record.Pending, e door.Entry) (time.Time, string) {
 }
 
 // fitListing makes a listing fit one page. It drops recent rows from the
-// oldest, and then the newest pending rows with a rule row that counts them.
+// oldest, and then the newest pending rows, with the number left out in the
+// listing's NotListed.
 func fitListing(l ownerwire.Listing) (ownerwire.Listing, error) {
 	for {
 		_, err := ownerwire.EncodeListing(l)
@@ -224,10 +226,7 @@ func fitListing(l ownerwire.Listing) (ownerwire.Listing, error) {
 // cut keeps the oldest n pending rows and says how many were left out.
 func cut(l ownerwire.Listing, all []ownerwire.PendingItem, n int) ownerwire.Listing {
 	l.Pending = all[:n]
-	l.Rules = append(append([]ownerwire.Rule{}, l.Rules...), ownerwire.Rule{
-		ID: "listing-cut", Project: "all",
-		Line: fmt.Sprintf("%d newer pending cards are not listed: the list is full, and the oldest are shown", len(all)-n),
-	})
+	l.NotListed = int64(len(all) - n)
 	return l
 }
 

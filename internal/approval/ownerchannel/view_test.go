@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestTheListingKeepsTheNewestRecentRowsOnly(t *testing.T) {
 // many were left out.
 func TestAListingTooLargeForOnePageKeepsTheOldestPendingRows(t *testing.T) {
 	var l ownerwire.Listing
-	l.Rules = []ownerwire.Rule{}
+	l.Rules = []ownerwire.Rule{{ID: "prune-merged", Project: "project-a", Line: "merged branches are pruned", On: true}}
 	const n = 2500
 	for i := 0; i < n; i++ {
 		l.Pending = append(l.Pending, ownerwire.PendingItem{
@@ -143,9 +144,13 @@ func TestAListingTooLargeForOnePageKeepsTheOldestPendingRows(t *testing.T) {
 			t.Fatalf("row %d is %s: the oldest rows must be the ones kept", i, p.ID)
 		}
 	}
-	if len(got.Rules) != 1 || got.Rules[0].ID != "listing-cut" ||
-		!strings.HasPrefix(got.Rules[0].Line, fmt.Sprintf("%d newer pending cards are not listed", n-len(got.Pending))) {
-		t.Errorf("the host's line is %+v", got.Rules)
+	if got.NotListed != int64(n-len(got.Pending)) {
+		t.Errorf("the listing says %d rows were left out, want %d", got.NotListed, n-len(got.Pending))
+	}
+	// The count travels in its own field: the standing rules are the
+	// rules and nothing else.
+	if !reflect.DeepEqual(got.Rules, l.Rules) {
+		t.Errorf("the rules are %+v, want only the standing rules %+v", got.Rules, l.Rules)
 	}
 	// One row more would not have fit.
 	more := cut(l, l.Pending, len(got.Pending)+1)
@@ -154,7 +159,7 @@ func TestAListingTooLargeForOnePageKeepsTheOldestPendingRows(t *testing.T) {
 	}
 	// A listing that fits is returned as it is.
 	small := ownerwire.Listing{Pending: l.Pending[:3], Recent: l.Recent[:3], Rules: []ownerwire.Rule{}}
-	if out, err := fitListing(small); err != nil || len(out.Pending) != 3 || len(out.Recent) != 3 || len(out.Rules) != 0 {
+	if out, err := fitListing(small); err != nil || len(out.Pending) != 3 || len(out.Recent) != 3 || len(out.Rules) != 0 || out.NotListed != 0 {
 		t.Errorf("a small listing was changed: %+v %v", out, err)
 	}
 	// Recent rows are dropped first, oldest first.
@@ -173,7 +178,7 @@ func TestAListingTooLargeForOnePageKeepsTheOldestPendingRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Pending) != k || len(out.Recent) >= 100 || len(out.Rules) != 0 {
+	if len(out.Pending) != k || len(out.Recent) >= 100 || len(out.Rules) != 0 || out.NotListed != 0 {
 		t.Errorf("%d pending and %d recent rows kept of %d", len(out.Pending), len(out.Recent), k)
 	}
 	for i, r := range out.Recent {
