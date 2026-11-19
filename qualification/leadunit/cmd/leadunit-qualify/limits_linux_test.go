@@ -630,7 +630,8 @@ func TestHelpAndDryRunStateTheLimitsAndTheirDefaults(t *testing.T) {
 		"lowered", "control group files", "runtime folders", "must hold the drop-in folder of the running unit",
 		"whole number of 4096-byte pages", "usage error",
 	} {
-		if !strings.Contains(help.String(), want) {
+		// A phrase may break across a line of the help.
+		if !strings.Contains(strings.Join(strings.Fields(help.String()), " "), want) {
 			t.Errorf("help lacks %q", want)
 		}
 	}
