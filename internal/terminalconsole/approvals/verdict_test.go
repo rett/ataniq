@@ -30,20 +30,61 @@ func TestVerdictLinesNothingBeforeTheDecision(t *testing.T) {
 	}
 }
 
-func TestVerdictLinesRefusedCardSaysSoWithoutDetail(t *testing.T) {
+// The refused line is not a verdict line: it is drawn in the header, from
+// Card.Refused, so verdictLines gives nothing for an undecided card even when
+// the block says Refused.
+func TestVerdictLinesNothingForARefusedUndecidedCard(t *testing.T) {
 	c := testCard("p-1")
 	v := block(false, false)
 	v.Refused = true
 	c.Verdicts = v
-	got := verdictLines(c, false)
-	if len(got) != 1 || got[0] != refusedLine {
+	if got := verdictLines(c, false); got != nil {
 		t.Fatalf("lines %q", got)
 	}
-	for _, bad := range []string{"provider", "model", "run-", "reject", "approv"} {
-		if strings.Contains(got[0], bad) {
-			t.Errorf("the header line holds %q", bad)
+}
+
+// The header of an undecided card says in one line that a run refused, with
+// no verdict detail; with Refused false the line is not there.
+func TestVerdictRefusedLineInTheHeaderOfAnUndecidedCard(t *testing.T) {
+	for _, refused := range []bool{true, false} {
+		c := testCard("p-1")
+		c.Refused = refused
+		b := backendWith(t, []card.Card{c}, nil)
+		r := newRig(t, b, 100, 40)
+		r.openFirst()
+		hidden := []string{"provider-a", "model-a", "run-1", "approved", "rejected", "agreed with you", verdictAdvice}
+		if refused {
+			r.bodyHas(refusedLine)
+			if first := r.m.cs.body[0]; !strings.Contains(bodyRowText(first), refusedLine) {
+				t.Errorf("the line is not first: %q", bodyRowText(first))
+			}
+		} else {
+			hidden = append(hidden, refusedLine)
+		}
+		r.scrollAll()
+		r.notSeen(hidden...)
+		for _, row := range r.m.cs.body {
+			for _, bad := range hidden {
+				if strings.Contains(bodyRowText(row), bad) {
+					t.Fatalf("refused %v: the body holds %q: %q", refused, bad, bodyRowText(row))
+				}
+			}
 		}
 	}
+}
+
+// A backend that puts Refused only in the block of an undecided card, not in
+// the card's own mark, gets no line: the view draws the mark alone.
+func TestVerdictRefusedInTheBlockAloneIsNotDrawnBeforeTheDecision(t *testing.T) {
+	c := testCard("p-1")
+	v := block(true, true)
+	v.Refused = true
+	c.Verdicts = v
+	b := backendWith(t, []card.Card{c}, nil)
+	r := newRig(t, b, 100, 40)
+	r.openFirst()
+	r.scrollAll()
+	r.notSeen(refusedLine, "provider-a", "run-1")
 }
 
 func TestVerdictLinesAfterTheDecisionShowBothRunsAsAdvice(t *testing.T) {
@@ -125,13 +166,9 @@ func TestVerdictNeverVisibleOnAnUndecidedCard(t *testing.T) {
 		r.notSeen(hidden...)
 	}
 	for _, row := range r.m.cs.body {
-		var line strings.Builder
-		for _, s := range row.segs {
-			line.WriteString(s.s)
-		}
 		for _, bad := range hidden {
-			if strings.Contains(line.String(), bad) {
-				t.Fatalf("the body holds %q: %q", bad, line.String())
+			if strings.Contains(bodyRowText(row), bad) {
+				t.Fatalf("the body holds %q: %q", bad, bodyRowText(row))
 			}
 		}
 	}
@@ -150,4 +187,13 @@ func TestVerdictShownAfterTheDecision(t *testing.T) {
 	r.bodyHas("provider-a / model-a")
 	r.bodyHas("provider-b / model-b")
 	r.bodyHas(verdictAdvice)
+}
+
+// bodyRowText is the text of one drawn row.
+func bodyRowText(r row) string {
+	var line strings.Builder
+	for _, s := range r.segs {
+		line.WriteString(s.s)
+	}
+	return line.String()
 }

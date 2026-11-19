@@ -16,18 +16,13 @@ const refusedLine = "this card is here because a verdict run refused"
 
 // verdictLines returns the lines that show the verdicts of a card, in the
 // host's words, to be drawn in the card's "after the decision" block. decided
-// says that the owner decided the card. Before the decision nothing of a
-// verdict is returned, except one line for a card that exists because a run
-// refused. After it, the lines name both runs and say that they are advice.
+// says that the owner decided the card. Before the decision nothing is
+// returned: the one line of a card that exists because a run refused is
+// drawn in the header, from Card.Refused. After the decision, the lines name
+// both runs and say that they are advice.
 func verdictLines(c card.Card, decided bool) []string {
 	v := c.Verdicts
-	if v == nil {
-		return nil
-	}
-	if !decided {
-		if v.Refused {
-			return []string{refusedLine}
-		}
+	if v == nil || !decided {
 		return nil
 	}
 	out := []string{"verdicts (" + verdictAdvice + ")"}

@@ -23,7 +23,9 @@
 //     says so in one line, in its place;
 //   - Card.After and Card.Verdicts, what came after the decision
 //     ([AfterLabel]): the state and the outcome line, the held mark
-//     ([HeldLabel]) and the verdicts.
+//     ([HeldLabel]) and the verdicts. Card.Refused, one mark of the
+//     verdict block, stands with them: it says that a run refused, and an
+//     undecided card carries it so that a surface can say so in one line.
 //
 // One more value stands in a section that the binding covers without being
 // under its digest: Title.ID, the record's id. It is the name of the card

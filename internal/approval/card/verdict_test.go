@@ -1,6 +1,8 @@
 package card
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -85,5 +87,43 @@ func TestVerdictOnlyOnDecidedCards(t *testing.T) {
 	}
 	if !(Card{After: After{State: record.StateDenied}}).Decided() {
 		t.Error("denied is not decided")
+	}
+}
+
+// New copies one thing of the verdict block to a card that is not decided:
+// whether the card exists because a run refused. Nothing else of the block
+// reaches it. A decided card holds the whole block and no separate mark.
+func TestVerdictRefusedMarkOnUndecidedCards(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "record", "testdata", "pending-valid.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := record.DecodePending(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, refused := range []bool{true, false} {
+		v := twoRuns(true, true)
+		v.Refused = refused
+		for _, s := range []record.State{"", record.StatePending, record.StateExpired} {
+			c, err := New(p, Inputs{State: s, Verdicts: v})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Refused != refused || c.Verdicts != nil {
+				t.Errorf("state %q, refused %v: Refused %v, Verdicts %v", s, refused, c.Refused, c.Verdicts)
+			}
+		}
+		c, err := New(p, Inputs{State: record.StateDenied, Verdicts: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Verdicts != v || c.Refused {
+			t.Errorf("decided, refused %v: Verdicts %v, Refused %v", refused, c.Verdicts, c.Refused)
+		}
+	}
+	c, err := New(p, Inputs{})
+	if err != nil || c.Refused || c.Verdicts != nil {
+		t.Errorf("no verdicts: %+v, %v", c.Refused, err)
 	}
 }

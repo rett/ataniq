@@ -72,6 +72,11 @@ type Card struct {
 	// Verdicts are the verdicts, labelled [AfterLabel] as well. They are
 	// nil until the card is decided.
 	Verdicts *VerdictBlock
+	// Refused says that this card exists because a run refused. It is the
+	// one thing of the verdict block that an undecided card carries, so
+	// that a surface can say so in one line of its header, with no verdict
+	// detail. It is false on a decided card, whose Verdicts say it.
+	Refused bool
 }
 
 // Title is the first line of a card.
@@ -396,7 +401,8 @@ type Inputs struct {
 	// Line is the outcome line, written by the host.
 	Line string
 	// Verdicts are the verdicts. New copies them to the card only when
-	// State says the card is decided.
+	// State says the card is decided. On a card that is not decided New
+	// copies only Verdicts.Refused, to Card.Refused.
 	Verdicts *VerdictBlock
 }
 
@@ -460,6 +466,8 @@ func New(p record.Pending, in Inputs) (Card, error) {
 	c.After = After{State: in.State, Line: in.Line, Held: in.Held}
 	if c.Decided() {
 		c.Verdicts = in.Verdicts
+	} else if in.Verdicts != nil {
+		c.Refused = in.Verdicts.Refused
 	}
 	return c, nil
 }
