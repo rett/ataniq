@@ -515,6 +515,25 @@ func TestAnUnknownOutcomeWaitsAndIsSettledOnce(t *testing.T) {
 			t.Fatalf("the line %q was taken", line)
 		}
 	}
+	// An outcome that follows a consumption needs the consumption first;
+	// a use the door refused is not one.
+	consumedStates := []record.State{record.StateApplied, record.StateNotApplied, record.StateUnknown}
+	for _, state := range consumedStates {
+		if err := one.AppendOutcome(base.Add(time.Hour), state, ""); !errors.Is(err, ErrNotConsumed) {
+			t.Fatalf("%s before any use: %v, want %v", state, err, ErrNotConsumed)
+		}
+	}
+	if err := one.AppendUse(base.Add(time.Hour), record.CodeEvidenceChanged); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range consumedStates {
+		if err := one.AppendOutcome(base.Add(time.Hour), state, ""); !errors.Is(err, ErrNotConsumed) {
+			t.Fatalf("%s after a refused use: %v, want %v", state, err, ErrNotConsumed)
+		}
+	}
+	if err := one.AppendUse(base.Add(time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := one.AppendOutcome(base.Add(time.Hour), record.StateUnknown, "the ref is at neither value"); err != nil {
 		t.Fatal(err)
 	}
