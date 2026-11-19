@@ -41,7 +41,9 @@ usage() {
     '         inject-action PASS OUTCOME REASON WRITTEN' \
     '                      what step 17 does with a result of the injection' \
     '         fields-hold FIELDS PATH=VALUE...' \
-    '                      yes when the lines FIELDS hold every PATH=VALUE (step 12)' >&2
+    '                      yes when the lines FIELDS hold every PATH=VALUE (step 12)' \
+    '         unit-stopped STATE' \
+    '                      whether that active state lets step 26 show the delete command' >&2
   exit 2
 }
 
@@ -369,6 +371,18 @@ inject_action() {
 
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
+# unit_state prints the unit's active state as systemd names it, or nothing
+# when systemd cannot be asked.
+unit_state() { systemctl --user show "$UNIT" --property=ActiveState --value 2>/dev/null || :; }
+
+# unit_stopped reports whether the active state $1 shows that nothing of the
+# unit runs: "inactive" (which systemd also answers for a unit it does not
+# know) or "failed". Every other answer, an empty one too, is not a proof.
+unit_stopped() {
+  case $1 in inactive | failed) return 0 ;; esac
+  return 1
+}
+
 done_step() { DONE_STEPS="$DONE_STEPS$CUR "; }
 was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
 
@@ -397,6 +411,11 @@ self_test() {
     inject-action)
       [ "$#" -eq 4 ] || usage
       inject_action "$1" "$2" "$3" "$4"
+      ;;
+    unit-stopped)
+      # STATE: an active state as systemd names it; it may be empty.
+      [ "$#" -eq 1 ] || usage
+      if unit_stopped "$1"; then out stopped; else out not-stopped; fi
       ;;
     fields-hold)
       # FIELDS PATH=VALUE...: FIELDS is what ataniq-canary fields prints for
@@ -1575,6 +1594,9 @@ step_26() {
     dry "wait for Enter: Owner: stop the daemon yourself (Ctrl-C in its terminal)"
     dry "run: $BIN/ataniqd status --socket $SOCK"
     dry 'check: no daemon answers (exit 20)'
+    dry "run: systemctl --user show $UNIT --property=ActiveState --value"
+    dry "when the unit is not stopped (its state is neither inactive nor failed): print systemctl --user stop $UNIT for the owner, wait for Enter, and read the state again"
+    dry 'fail the step when the unit is still not stopped: the command that deletes the roots is then not shown'
     dry "wait for Enter: Owner: delete the canary's two roots yourself: rm -rf -- $STATE $RUNTIME"
     dry 'check: both roots are gone'
     if [ "$PASS" = B ]; then dry 'ask and record the answer and the time: Owner: under H4, the two logins of the spike are logged out and its home is deleted'; fi
@@ -1617,10 +1639,26 @@ step_26() {
     out "   nothing to act on: neither root exists and this run provisioned nothing"
     note 'nothing to act on: no folder to delete'
   else
-    out "   Owner: delete the canary's two roots yourself, in your own terminal. The script deletes neither:"
-    out "     rm -rf -- $STATE $RUNTIME"
-    wait_key 'Owner: press Enter when both are deleted.'
-    if [ -e "$STATE" ] || [ -e "$RUNTIME" ]; then fail 'a root of the canary still exists'; fi
+    # The undo's order: the unit is stopped before the roots are deleted. Step
+    # 22 may not have stopped it (the daemon gone, the stop interrupted), and
+    # the holder and the agent then still run with these folders bound.
+    _ust=$(unit_state)
+    if ! unit_stopped "$_ust"; then
+      out "   the unit $UNIT is \"$_ust\", not stopped: the roots are not deleted while it may run."
+      out '   Owner: stop it first, yourself, in your own terminal (README.md, undo by hand, 1 and 2):'
+      out "     systemctl --user stop $UNIT"
+      wait_key 'Owner: press Enter when the unit is stopped.'
+      _ust=$(unit_state)
+    fi
+    if ! unit_stopped "$_ust"; then
+      fail "the unit $UNIT is still \"$_ust\": the command that deletes the roots is not shown; stop the unit and then delete the roots by hand (README.md, undo by hand)"
+    else
+      note "the unit is $_ust"
+      out "   Owner: delete the canary's two roots yourself, in your own terminal. The script deletes neither:"
+      out "     rm -rf -- $STATE $RUNTIME"
+      wait_key 'Owner: press Enter when both are deleted.'
+      if [ -e "$STATE" ] || [ -e "$RUNTIME" ]; then fail 'a root of the canary still exists'; fi
+    fi
   fi
   if [ "$PASS" = B ]; then
     ask 'Owner: under H4, the two logins of the spike are logged out and its home is deleted (type done, or not-applicable)'

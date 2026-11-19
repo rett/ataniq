@@ -321,7 +321,12 @@ failed, undo in this order. The names come from
 3. **Stop the daemon** in its terminal (Ctrl-C).
 4. **Delete the canary's two roots by hand:** the state root and the runtime
    root of the config. The script never deletes them; step 26 prints the
-   command and waits for you. Nothing else of the host was written: the
+   command and waits for you. It prints it only when the unit is stopped
+   (`ActiveState` is `inactive` or `failed`): otherwise it prints
+   `systemctl --user stop <unit>`, waits for your key and asks the state
+   again, and when the unit is still not stopped the step fails and the
+   delete command is not shown, because the holder and the agent may still
+   run with those folders bound. Then do 1 and 2 above first. Nothing else of the host was written: the
    evidence folder is yours to keep.
 
 In pass B, also: log out inside the sandbox if the pane still runs, revoke the
@@ -359,3 +364,4 @@ test entry:
 | `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
+| `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |

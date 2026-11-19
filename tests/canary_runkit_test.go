@@ -1143,3 +1143,85 @@ func TestCanaryRunKitStepTwelveReadsItsOwnEpoch(t *testing.T) {
 
 // canaryWaiver is the waiver's exact wording (the seams note, section 5).
 const canaryWaiver = "assertion 10 waived: canary slice, no qualification record"
+
+// The undo's order is: stop, prove the unit gone, then delete the roots.
+// Step 22 of the chain may not have stopped the unit (the daemon gone, the
+// stop interrupted), so step 26 asks the unit's state before it shows the
+// command that deletes the roots, and does not show it for a unit that is
+// not proven stopped.
+func TestCanaryRunKitDeleteCommandNeedsAStoppedUnit(t *testing.T) {
+	for state, want := range map[string]string{
+		"inactive": "stopped", "failed": "stopped",
+		"active": "not-stopped", "activating": "not-stopped", "deactivating": "not-stopped",
+		"reloading": "not-stopped", "refreshing": "not-stopped", "maintenance": "not-stopped",
+		"": "not-stopped", "inactive ": "not-stopped", "not-inactive": "not-stopped", "unknown": "not-stopped",
+	} {
+		if got, code := canarySelfTest(t, "unit-stopped", state); code != 0 || got != want {
+			t.Errorf("the active state %q: %q (exit status %d), want %q", state, got, code, want)
+		}
+	}
+
+	funcs := canaryFuncs(t, canaryScriptText(t))
+	body := funcs["step_26"]
+	const (
+		ask    = "_ust=$(unit_state)"
+		test   = `if ! unit_stopped "$_ust"; then`
+		stop   = `out "     systemctl --user stop $UNIT"`
+		key    = "wait_key 'Owner: press Enter when the unit is stopped.'"
+		refuse = `fail "the unit $UNIT is still \"$_ust\": the command that deletes the roots is not shown`
+		remove = `out "     rm -rf -- $STATE $RUNTIME"`
+	)
+	for part, n := range map[string]int{ask: 2, test: 2, stop: 1, key: 1, refuse: 1, remove: 1} {
+		if strings.Count(body, part) != n {
+			t.Fatalf("step 26 holds %d times, want %d: %s", strings.Count(body, part), n, part)
+		}
+	}
+	// The order of the real branch: ask, tell the owner to stop and wait, ask
+	// again, and only in the branch of a stopped unit print the command.
+	firstAsk, firstTest := strings.Index(body, ask), strings.Index(body, test)
+	secondAsk, secondTest := strings.LastIndex(body, ask), strings.LastIndex(body, test)
+	order := []int{firstAsk, firstTest, strings.Index(body, stop), strings.Index(body, key), secondAsk, secondTest, strings.Index(body, refuse), strings.Index(body, remove)}
+	if !sort.IntsAreSorted(order) {
+		t.Fatalf("step 26 is out of order: %v", order)
+	}
+	between := body[strings.Index(body, refuse):strings.Index(body, remove)]
+	if !strings.Contains(between, "\n    else\n") || strings.Contains(between, "\n    fi\n") {
+		t.Errorf("the delete command is not in the branch of a stopped unit:\n%s", between)
+	}
+	if strings.Contains(body, "rm -rf -- \"$STATE\"") || canaryCalls(body, "rmdir") != 0 {
+		t.Error("step 26 deletes a root itself")
+	}
+	if state := funcs["unit_state"]; !strings.Contains(state, `systemctl --user show "$UNIT" --property=ActiveState --value`) {
+		t.Errorf("unit_state does not ask systemd for the active state: %s", state)
+	}
+
+	// The dry run says so, in both passes and in the chain.
+	for _, args := range [][]string{{"--pass", "A"}, {"--pass", "B"}, {"--pass", "A", "--fail-at", "12"}} {
+		out, _ := canaryDry(t, append(args, "--config", "/nonexistent/sample/canary.json")...)
+		blocks := canaryBlocks(out)
+		b := blocks[len(blocks)-1]
+		for i := len(blocks) - 1; i >= 0; i-- {
+			if strings.Contains(blocks[i].heading, "step 26 [pass ") {
+				b = blocks[i]
+				break
+			}
+		}
+		text := strings.Join(b.lines, "\n")
+		var at []int
+		for _, part := range []string{
+			"would run: systemctl --user show ataniq-lead-throwaway-one.service --property=ActiveState --value",
+			"would when the unit is not stopped (its state is neither inactive nor failed): print systemctl --user stop ataniq-lead-throwaway-one.service",
+			"would fail the step when the unit is still not stopped: the command that deletes the roots is then not shown",
+			"would wait for Enter: Owner: delete the canary's two roots yourself",
+		} {
+			i := strings.Index(text, "[dry] "+part)
+			if i < 0 {
+				t.Errorf("%v: step 26 does not say %q", args, part)
+			}
+			at = append(at, i)
+		}
+		if !sort.IntsAreSorted(at) {
+			t.Errorf("%v: step 26 is out of order: %v", args, at)
+		}
+	}
+}
