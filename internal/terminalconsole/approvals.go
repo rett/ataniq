@@ -239,6 +239,13 @@ func (m *Model) onApprTick(apprTickMsg) tea.Cmd {
 	}
 	cmds := []tea.Cmd{m.apprTickCmd(a.period)}
 	if a.view != nil {
+		// Refresh asks the view for a new listing on every tick, whether or
+		// not its last request is answered, and the view drops an answer to
+		// an older request. A backend that is slower than the period (the
+		// daemon client of a later part) would so never get a listing into
+		// the open view. The cockpit's own request below has a guard; this
+		// one has none, and a later part is to add one (for example, a
+		// wrapper that counts the calls in flight and skips Refresh).
 		cmds = append(cmds, a.view.Refresh())
 	}
 	if !a.pending {
