@@ -60,6 +60,13 @@ type Card struct {
 	// Differs is the "differs from" block, labelled [DiffersLabel], or nil
 	// when the owner read no earlier card for the same verb and target.
 	Differs *Differs
+	// DiffersRefused is one line in the host's words, empty unless the
+	// caller gave an earlier card and [DiffersFrom] refused it. The card
+	// then has no "differs from" block, and the line says so, so the owner
+	// does not take the missing block for "nothing differs". It is
+	// labelled [DiffersLabel], like the block, and is not under the
+	// binding's digest.
+	DiffersRefused string
 	// After is what came after the card was shown, labelled [AfterLabel].
 	After After
 	// Verdicts are the verdicts, labelled [AfterLabel] as well. They are
@@ -371,12 +378,16 @@ type After struct {
 	Held bool
 }
 
+// DiffersRefusedLine starts Card.DiffersRefused.
+const DiffersRefusedLine = "the earlier card could not be compared, so nothing is said about how this one differs"
+
 // Inputs carries what a card holds that is not in its record.
 type Inputs struct {
 	// Earlier is the earlier card of the "differs from" block: a card for
 	// the same verb and target that the owner opened before. The caller
 	// decides whether there is one (the design says: within the last 24
-	// hours); nil means none.
+	// hours); nil means none. When [DiffersFrom] refuses it, [New] still
+	// makes the card, with no block and Card.DiffersRefused set.
 	Earlier *Earlier
 	// Held is the held mark; see After.Held.
 	Held bool
@@ -412,6 +423,19 @@ type Earlier struct {
 //     inputs that do not fit the record.
 //
 // Every refusal is a [*record.Error], and then there is no card.
+//
+// The refusal of a host string has a consequence for a project. A project,
+// a role, a holder or a plan token whose name the escaping would change
+// (a control character, a bidirectional mark, a code point the Unicode
+// tables do not know) makes every record of it unmakeable as a card: there
+// is no card, so the console has nothing to show and no decision to take
+// for it, and the owner can neither approve nor deny it. The record then
+// waits for its expiry. Such a name has to be caught where the project or
+// the role is named.
+//
+// An earlier record that [DiffersFrom] refuses does not refuse the new
+// card. The card is built without the "differs from" block, and
+// Card.DiffersRefused says so in one line with the refusal's code.
 func New(p record.Pending, in Inputs) (Card, error) {
 	if err := check(p); err != nil {
 		return Card{}, err
@@ -424,11 +448,14 @@ func New(p record.Pending, in Inputs) (Card, error) {
 	}
 	c := build(p)
 	if in.Earlier != nil {
-		d, err := DiffersFrom(in.Earlier.Record, p, in.Earlier.ReadAt)
-		if err != nil {
-			return Card{}, err
+		if d, err := DiffersFrom(in.Earlier.Record, p, in.Earlier.ReadAt); err != nil {
+			c.DiffersRefused = DiffersRefusedLine
+			if code, ok := record.CodeOf(err); ok {
+				c.DiffersRefused += " (" + string(code) + ")"
+			}
+		} else {
+			c.Differs = &d
 		}
-		c.Differs = &d
 	}
 	c.After = After{State: in.State, Line: in.Line, Held: in.Held}
 	if c.Decided() {

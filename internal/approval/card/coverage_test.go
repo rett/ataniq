@@ -232,6 +232,9 @@ var (
 		"Differs":  DiffersLabel,
 		"After":    AfterLabel,
 		"Verdicts": AfterLabel,
+		// The card's own record of a refused earlier card; it stands
+		// where the block would.
+		"DiffersRefused": DiffersLabel,
 	}
 )
 
@@ -271,10 +274,11 @@ func TestTheThreeExceptionsAreNamedAndLabelled(t *testing.T) {
 	}
 	// The exceptions have the types the note fixes.
 	for name, want := range map[string]reflect.Type{
-		"Note":     reflect.TypeOf(LeadText{}),
-		"Differs":  reflect.TypeOf(&Differs{}),
-		"After":    reflect.TypeOf(After{}),
-		"Verdicts": reflect.TypeOf(&VerdictBlock{}),
+		"Note":           reflect.TypeOf(LeadText{}),
+		"Differs":        reflect.TypeOf(&Differs{}),
+		"After":          reflect.TypeOf(After{}),
+		"Verdicts":       reflect.TypeOf(&VerdictBlock{}),
+		"DiffersRefused": reflect.TypeOf(""),
 	} {
 		f, _ := typ.FieldByName(name)
 		if f.Type != want {
@@ -337,6 +341,11 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 			earlier := seal(t, laterPending())
 			in.Earlier = &Earlier{Record: earlier, ReadAt: asked}
 		}, []string{"Differs"}},
+		{"an earlier card that is refused", func(p *record.Pending, in *Inputs) {
+			earlier := rawPending()
+			earlier.Schema = "other/1"
+			in.Earlier = &Earlier{Record: seal(t, earlier), ReadAt: asked}
+		}, []string{"DiffersRefused"}},
 		{"the id", func(p *record.Pending, in *Inputs) { p.ID = "ap-another" }, []string{"Title.ID"}},
 	}
 	for _, tc := range outside {
@@ -430,7 +439,7 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 	// lack: a card without inputs has an empty After, no Differs and no
 	// Verdicts, and its note is the record's note.
 	c := mustCard(t, p, Inputs{})
-	if c.After != (After{}) || c.Differs != nil || c.Verdicts != nil || !c.Note.Equal(NewLeadText(string(p.Note))) {
+	if c.After != (After{}) || c.Differs != nil || c.DiffersRefused != "" || c.Verdicts != nil || !c.Note.Equal(NewLeadText(string(p.Note))) {
 		t.Errorf("a card without inputs has %+v, %v, %v", c.After, c.Differs, c.Verdicts)
 	}
 }

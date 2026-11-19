@@ -19,7 +19,8 @@
 //   - Card.Note, the lead's note ([NoteLabel]): it is shown and not
 //     approved;
 //   - Card.Differs, the "differs from" block ([DiffersLabel]): it comes from
-//     an earlier record;
+//     an earlier record. When that record is refused, Card.DiffersRefused
+//     says so in one line, in its place;
 //   - Card.After and Card.Verdicts, what came after the decision
 //     ([AfterLabel]): the state and the outcome line, the held mark
 //     ([HeldLabel]) and the verdicts.
