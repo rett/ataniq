@@ -158,12 +158,21 @@ func (s *Strip) Arrive(ev presence.Event, sum Summary) bool {
 // Refresh gives a strip that is showing the summary as it is now, so that
 // its numbers stay true while it shows. A summary that became empty closes
 // it. Refresh never shows a strip: when none is showing it does nothing.
+// Digits open only lines the last [Strip.Draw] showed, so when a line
+// that was drawn is gone or has moved, no digit opens a line until the next
+// Draw.
 func (s *Strip) Refresh(sum Summary) {
 	if !s.visible {
 		return
 	}
-	s.rows = rowsOf(sum)
-	s.drawn = min(s.drawn, len(s.rows))
+	rows := rowsOf(sum)
+	for i := 0; i < s.drawn; i++ {
+		if i >= len(rows) || rows[i].line != s.rows[i].line {
+			s.drawn = 0 // the lines moved: draw before a digit opens one
+			break
+		}
+	}
+	s.rows = rows
 	s.visible = len(s.rows) > 0
 }
 
