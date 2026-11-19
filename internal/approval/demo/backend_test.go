@@ -539,15 +539,13 @@ func TestDeciderAndUnknownCard(t *testing.T) {
 	}
 }
 
-func TestSamplesDoNotHoldProviderWords(t *testing.T) {
+func TestSamplesUseNeutralNames(t *testing.T) {
 	b, _ := newBackend(t)
 	l, _ := b.List()
 	for _, it := range l.Pending {
 		k := open(t, b, it.ID)
-		for _, s := range []string{k.Title.Subject.Runtime, k.Title.Project} {
-			if strings.Contains(s, "claude") || strings.Contains(s, "codex") {
-				t.Errorf("%s: %q", it.ID, s)
-			}
+		if k.Title.Subject.Runtime != "runtime-a" || !strings.HasPrefix(k.Title.Project, "project-") {
+			t.Errorf("%s: runtime %q, project %q", it.ID, k.Title.Subject.Runtime, k.Title.Project)
 		}
 	}
 }
