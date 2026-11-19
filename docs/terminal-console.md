@@ -45,8 +45,9 @@ The cockpit has these parts:
   the session terminal, and a focus bar. The focus bar always shows the
   current focus and the return key.
 - The right pane, Evidence & approvals, shows the attachment contract, the
-  pending gate and the binding of the lead and its delegates. The gate is data.
-  No approval is possible.
+  pending gate and the binding of the lead and its delegates. The pending gate
+  is the oldest waiting sample card; Enter on it opens the card (see
+  [Approvals](#approvals)). A decision on a sample card changes nothing.
 - The timeline runs along the bottom and the key bar under it.
 
 The session terminal frame carries the fixture label in every state. In zoom
