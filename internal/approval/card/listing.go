@@ -180,8 +180,10 @@ type Page struct {
 // Format writes the page's kind, number, page count and the number of rows
 // and patch lines it holds, for every verb of the fmt package, and none of
 // its content. A Page carries raw bytes of a lead in Paths and Patch, so
-// printing one, or a value that holds one, must not write them. The fields
-// are still there for a caller that reads them.
+// printing one, or a value that holds one in an exported field, must not
+// write them. fmt cannot call Format on a Page held in an unexported field,
+// so a type that keeps one there prints it as it is. The fields are still
+// there for a caller that reads them.
 func (p Page) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "card.Page{kind=%s n=%d pages=%d rows=%d lines=%d}",
 		p.Kind, p.N, p.Pages, len(p.Paths), len(p.Patch))
