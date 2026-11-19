@@ -13,6 +13,12 @@ import (
 // runs it once, which is the restart of owner-channel 6.3; a daemon may run
 // it from time to time after that, since each step is safe to repeat.
 //
+// An approval lasts 30 minutes from its decision (see
+// [Config.ApprovalLife]), and one that was decided and is waiting for a use
+// (the door was out of reach, or the repository could not be read) is tried
+// again only when a tick runs. The caller must run a tick well inside that
+// time, every few minutes, or such an approval expires unused.
+//
 //   - A journaled decision with no delivered entry is handed to the door,
 //     byte for byte, once. The door answers the same for the same bytes, so
 //     a decision that did reach it before the stop is not applied twice. A
