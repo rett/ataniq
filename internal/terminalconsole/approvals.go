@@ -486,9 +486,9 @@ func (m *Model) apprUpdate(msg tea.Msg) tea.Cmd {
 // with j and presses Enter. These are the only keys the cockpit ever sends the
 // view on its own, and they open a card for reading: a decision is made on the
 // card (an approval with its typed code, a denial without one). The keys are
-// sent at most once, for the view's first list. When that list does not hold the card (it was decided or
-// expired meanwhile), or the view is no longer at its list, nothing is opened
-// and nothing stays armed to fire later.
+// sent at most once, for the view's first list. When that list does not hold
+// the card (it was decided or expired meanwhile), or the view is no longer at
+// its list, nothing is opened and nothing stays armed to fire later.
 func (m *Model) driveOldest() tea.Cmd {
 	a := &m.ap
 	if !a.wantOldest || a.view == nil || a.gate == nil {
