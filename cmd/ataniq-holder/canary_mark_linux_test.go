@@ -158,8 +158,14 @@ func TestCanaryMarkBeforeTheProcessAndRefusal(t *testing.T) {
 	c.errbuf = &syncBuf{}
 	c.sys.hook = map[string]func(){"OpenReport": func() { os.WriteFile(mark, nil, 0o600) }}
 	before := len(c.launches())
-	if code := c.runNow(c.spec(digest).build()); code != exitSandbox {
-		t.Fatalf("exit %d; stderr: %s", code, c.errbuf.String())
+	c.start(c.spec(digest).build())
+	select {
+	case code := <-c.done:
+		if code != exitSandbox {
+			t.Fatalf("exit %d; stderr: %s", code, c.errbuf.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a mark that appeared during the start did not refuse the launch: the holder is serving")
 	}
 	if !strings.Contains(c.errbuf.String(), "at the step launch") || !strings.Contains(c.errbuf.String(), "cannot be made") {
 		t.Errorf("stderr: %s", c.errbuf.String())
