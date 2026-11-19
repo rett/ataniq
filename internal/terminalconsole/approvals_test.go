@@ -411,7 +411,8 @@ func TestWithNoBackendTheActionListKeepsItsReasons(t *testing.T) {
 func TestWithABackendTheActionListsApproveAndDenyAreLiveAndOpenTheView(t *testing.T) {
 	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
 	r.press(ctrlK)
-	r.seen("ACTIONS (approve and deny open the approvals view)", "Approve pending gate [g]", "Available: available: g opens")
+	r.seen("ACTIONS (approve and deny open the approvals view)", "Approve pending gate [g]", "Available: g opens")
+	r.notSeen("vailable: available")
 	r.notSeen("No grant is honoured")
 	r.seen("Full attach [a]", "Unavailable: Full attach needs")
 	r.press(ch('g'))

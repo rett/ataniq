@@ -808,10 +808,11 @@ func (m *Model) approvalsLive() bool {
 }
 
 // controlReason is what the action list says of a control after its name: its
-// reason, or for a live control that it opens the approvals view.
+// reason, or for a live control that it opens the approvals view. The caller
+// puts its own word before it ("Available: ", or the control's name).
 func (m *Model) controlReason(c Control) string {
 	if c.Approval && m.ap.backend != nil {
-		return "available: g opens the approvals view; a decision is made there, on the card"
+		return "g opens the approvals view; a decision is made there, on the card"
 	}
 	return c.Reason
 }
