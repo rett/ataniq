@@ -102,6 +102,16 @@ func TestSampleShapes(t *testing.T) {
 	if h.Verb.Feature != "approve" || len(h.Flagged) != 1 {
 		t.Errorf("hostile: feature %q, flagged %d", h.Verb.Feature, len(h.Flagged))
 	}
+	// The other misleading feature names of the hostile set, one card each.
+	for slug, feature := range map[string]string{
+		"hostile-develop": "develop",
+		"hostile-code":    "a-then-code",
+		"hostile-same":    open(t, b, "ap-sample-clean").Verb.Feature,
+	} {
+		if c := open(t, b, "ap-sample-"+slug); c.Verb.Feature != feature || len(c.Flagged) != 1 {
+			t.Errorf("%s: feature %q, flagged %d", slug, c.Verb.Feature, len(c.Flagged))
+		}
+	}
 	m := open(t, b, "ap-sample-many-paths")
 	if m.Diff == nil || !m.Diff.Truncated || m.Diff.Files != 5000 || len(m.Diff.Rows) >= 5000 {
 		t.Errorf("many paths: %+v", m.Diff)

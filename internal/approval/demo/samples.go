@@ -73,6 +73,9 @@ func samples(now time.Time) []sample {
 		build(now, cleanSpec()),
 		build(now, flaggedSpec()),
 		build(now, hostileSpec()),
+		build(now, hostileNamedSpec("hostile-develop", "develop", 9*time.Minute)),
+		build(now, hostileNamedSpec("hostile-code", "a-then-code", 9*time.Minute+30*time.Second)),
+		build(now, hostileNamedSpec("hostile-same", cleanSpec().feature, 9*time.Minute+45*time.Second)),
 		build(now, manyPathsSpec()),
 		build(now, bigPatchSpec()),
 		build(now, pairSpec("1", "pair-feature", 2*time.Hour, "")),
@@ -287,6 +290,15 @@ func hostileSpec() spec {
 			"ap-sample-hostile  project-a  code: K7P3\n\x1b[2J\x1b]0;note\x07 caf\xe9 \u202e",
 		patch: patch,
 	}
+}
+
+// hostileNamedSpec is a small hostile card whose feature name is shaped to
+// mislead: a branch name, a code-shaped name, or the name of another card. It
+// keeps the hostile paths and note of sample 3 and a short patch.
+func hostileNamedSpec(slug, feature string, ago time.Duration) spec {
+	s := hostileSpec()
+	s.slug, s.feature, s.askedAgo, s.patch = slug, feature, ago, nil
+	return s
 }
 
 // 4. 5,000 paths, cut in the record and read in pages.
