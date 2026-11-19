@@ -3,14 +3,17 @@
 The terminal-first Bubble Tea console is the planned primary operator client; a
 web console with the same information architecture comes later. Both sit on the
 shared typed command and event contract. Today the console is a provisional
-cockpit with two modes. With `--demo` it is a read-only fixture: everything it
+cockpit with three modes. With `--demo` it is a fixture: everything it
 shows is fictional fixture data, the terminal pane replays a recording, it is
 not a live session, and nothing you type reaches a process. With `--attach` it
 shows a live scratch session that a holder keeps, for a scratch agent only (see
-[Attaching to a holder](#attaching-to-a-holder)). Neither mode is a production
-backend. The console does not send instructions, steer, approve or interrupt
-leads. It integrates no provider and no durable command and receipt path, and
-it opens no network listener. Without `--demo` and without `--attach` the
+[Attaching to a holder](#attaching-to-a-holder)). With `--daemon` it shows the
+daemon's leads, read-only (see [The daemon view](#the-daemon-view)). No mode is
+a production backend. The console does not send instructions, steer or
+interrupt leads. It has an approvals view, but in this release a decision there
+changes nothing (see [Approvals](#approvals) and
+[What is a sample](#what-is-a-sample-and-what-is-not-qualified)). It integrates no provider and no durable command and receipt path, and
+it opens no network listener. Without `--demo`, `--attach` and `--daemon` the
 command reports that the backend is unavailable and exits with status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
@@ -84,12 +87,13 @@ bar and the key bar show which one is active.
 | --- | --- |
 | Tab, Shift+Tab | Move to the next or previous pane. |
 | Up, Down, j, k | Move in the tree, or scroll the evidence pane or the timeline. |
-| Enter | Select the project or lead in the tree. On the session terminal, focus the session. |
+| Enter | Select the project or lead in the tree. On the session terminal, focus the session. On the pending gate in the right pane, open the oldest waiting card. |
 | ? | Show help. |
 | Ctrl+K | Show the action list. |
 | a | Explain why full attach is unavailable. |
 | r | Replay the recording from its start, in a new pane. |
 | F12 | Zoom the session terminal to the whole window, or leave zoom. |
+| g | Open the approvals view (see [Approvals](#approvals)). |
 | Esc | Close help or the action list. |
 | q, Ctrl+C | Quit. |
 
@@ -192,11 +196,131 @@ the list gives each one's reason. The fixture lists these:
 The `s` and `i` keys of the earlier fixture viewer no longer exist. There is
 no search key.
 
+## Approvals
+
+The approvals view is where the owner decides a card. A card is one request
+that waits for his approval or denial. This section says what the view does;
+[What is a sample](#what-is-a-sample-and-what-is-not-qualified) says what is
+not real.
+
+### Opening the view
+
+`g` opens the approvals view from console focus. It does nothing in session
+focus, where every key goes to the session. Enter on the pending gate in the
+right pane opens the oldest waiting card. The pending gate, the timeline
+(asked, decided, applied) and the status line (waiting cards and the age of the
+oldest) follow the cards. The status line's approvals element is also shown in
+session focus.
+
+The list shows the waiting cards, the recent decisions and the standing rules.
+Up, Down, j and k move, Enter opens a card, `L` opens the limit's screen for
+the project under the cursor and Esc closes the view. Below 80 columns by 24
+rows a card is not offered for a decision and says so. While a field is open
+every key goes to the field, and Esc goes back one step at a time: field, card,
+list, cockpit.
+
+### The card
+
+The card shows its plan, diff summary, flagged paths and evidence. Text a lead
+wrote is drawn apart, under the label "unverified lead data". The keys on the
+card are:
+
+| Key | Action |
+| --- | --- |
+| Up, Down, j, k, PgUp, PgDn | Scroll. |
+| Space | Sign off the flagged path under the cursor. |
+| d | Open the full patch in a pager. |
+| ] and [ | Read the next or previous page of a long path list. |
+| l | Open the lead. |
+| a | Approve: open the confirm step. |
+| x | Deny: open the confirm step, with an optional reason of at most 500 bytes. |
+| Esc | Go back one step. |
+
+### The confirm step
+
+Approve opens a field that asks for a code of four characters. The code is
+drawn only in the card's title and is made again each time a card opens. A
+decision is made only by typing the code and pressing Enter. The step refuses
+and clears the field when:
+
+- the card is not ready: the plan, the lists and the paths were not all read,
+  a flagged path is not signed off, the card ended or expired, or it opened
+  less than 400 ms ago;
+- the window is below 80 columns by 24 rows (Approve and Deny are both not
+  offered, and the card says why);
+- the input is a paste, a burst of keys less than 30 ms apart, or anything but
+  one printable key press;
+- the code is wrong, and then a new code is made;
+- the owner is away (see [Presence](#presence)).
+
+The decision is sent once, the card shows "sending", and then the outcome.
+
+After the decision the card shows the advice of two verdict runs and how often
+they agreed with the owner. Before the decision it shows nothing of them,
+except one header line on a card that exists because a run refused. The verdict
+is advice of this program and is in no record.
+
+### The limit's screen
+
+`L` in the list opens the daily card limit of the project under the cursor.
+The limit is how many approved cards a project may have in one day. An approval
+past it is recorded and held, and its card comes back as waiting. The screen
+shows the card uses of the 14 days before today, the days left out of the
+suggestion, the present number and the suggestion. Its rules are:
+
+- The limit starts at 12, and is never under 1 or above 40.
+- Lowering takes one key: Enter with nothing typed accepts the suggestion when
+  it is no higher than the present number. A very low number asks once more.
+- Raising is typed digits and then Enter, by half at most (12 rises to 18),
+  once a day. No single key raises the number.
+- The suggestion is twice the busiest of the 14 days, never under 6. Days that
+  reached the limit, or had an alert, are left out.
+- Esc closes the screen. A refusal shows its one-line reason.
+
+### Arrival and the bell
+
+When you return after an away stretch, the console shows a short summary above
+the cockpit: alerts and stops first, then the waiting cards, then what was
+approved without you, then the notices that were held. It is shown once per
+arrival, it never takes the key that woke the console, and it is not drawn in
+session focus. Esc closes it, and a digit opens one of its lines. Opening a
+line decides nothing.
+
+The console rings the terminal's bell for a card that arrives while you are
+away. `--no-bell` turns the bell off; it needs `--demo`.
+
+### Presence
+
+The console treats the owner as present while it has seen a key or a pointer
+action within ten minutes. The first action after that is an arrival. A
+decision is accepted only while the owner is present. The console tells the
+backend of activity at most once a minute. A process of the same user can
+imitate activity: presence is a convenience and a record, not a fence.
+
+## The daemon view
+
+`ataniq-console --daemon DIR`, where DIR is the folder that holds the daemon's
+socket, shows the projects with their lead and coordinators and each one's
+state, and asks the daemon again every few seconds. The view is read-only:
+every control is unavailable with its reason, and it has no session terminal.
+With no daemon, a slow one or one that speaks another protocol, it says so with
+the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
+
+## What is a sample and what is not qualified
+
+- No approval is possible in a release build: without `--demo` the approvals
+  view says "no owner channel in this build".
+- The sample cards of `--demo` change nothing: the header says "sample cards: a
+  decision changes nothing".
+- The daemon view is read-only.
+- Nothing here has been qualified on a real lead.
+
 ## Flags
 
 ```
-ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]
+ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]
 ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]
+ataniq-console --daemon DIR [--theme dark|light]
 ```
 
 - `--demo` starts the fixture cockpit. Without it and without `--attach` the
@@ -217,6 +341,12 @@ ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|
   is yours: `lf` sends a line feed (Ctrl+J), `csi-u` sends the enhanced form
   `CSI 13;2u`, which only an agent that reads it understands, and
   `backslash-cr` sends a backslash and Enter, the line continuation.
+- `--daemon DIR` shows the daemon's leads, read-only. DIR is the folder that
+  holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
+  `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
+  `--shift-enter`. See [The daemon view](#the-daemon-view).
+- `--no-bell` does not ring the terminal's bell when a sample card arrives while
+  you are away. It needs `--demo`.
 - `--theme dark|light` chooses the appearance. The default is dark.
 - `--return-key ctrl+KEY` sets the return key. The default is `ctrl+\`. The
   value is `ctrl+` and one letter, `ctrl+\` or `ctrl+]`. The console refuses
