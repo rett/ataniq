@@ -25,7 +25,9 @@ const maxLinger = time.Hour
 const defaultLinger = 30 * time.Second
 
 const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]\n" +
-	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]"
+	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]\n" +
+	"       ataniq-console --daemon DIR [--theme dark|light]\n" +
+	"--demo, --attach and --daemon exclude each other."
 
 // clientName is the name the console gives the holder, which shows it to the
 // other pane when the writer changes.
@@ -58,7 +60,10 @@ type attachConfig struct {
 type config struct {
 	demo bool
 	// attach is nil unless --attach was given.
-	attach  *attachConfig
+	attach *attachConfig
+	// daemon is the folder of the daemon's socket; empty unless --daemon was
+	// given.
+	daemon  string
 	options terminalconsole.Options
 }
 
@@ -78,6 +83,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	ticketFile := flags.String("ticket-file", "", "with --attach: a 0600 file the single-use attach ticket is read from each time one is needed")
 	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
 	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
+	daemon := flags.String("daemon", "", "show the daemon's leads, read-only: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
 		flags.SetOutput(errout)
@@ -126,6 +132,25 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 		return usageError("--linger must be between 0 and 1h")
 	}
 	cfg = config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger}}
+	if given["daemon"] {
+		// The daemon's view replaces the fixture and attaches to nothing: no
+		// flag of either applies to it. The messages do not repeat the folder.
+		switch {
+		case *demo || given["recording"] || given["linger"]:
+			return usageError("--daemon cannot be used with --demo, --recording or --linger")
+		case given["attach"] || given["ticket-file"] || given["viewer"] || given["shift-enter"]:
+			return usageError("--daemon cannot be used with --attach, --ticket-file, --viewer or --shift-enter")
+		case given["return-key"]:
+			// The return key leaves the session pane, and this view has none.
+			return usageError("--daemon cannot be used with --return-key: its view has no session focus to leave")
+		case *daemon == "":
+			return usageError("--daemon needs a path")
+		case strings.ContainsRune(*daemon, 0):
+			return usageError("--daemon needs a path without a NUL byte")
+		}
+		cfg.daemon = *daemon
+		return cfg, 0, true
+	}
 	if !given["attach"] && !given["ticket-file"] {
 		if given["viewer"] || given["shift-enter"] {
 			return usageError("--viewer and --shift-enter need --attach")
@@ -201,6 +226,8 @@ func run(args []string, out, errout io.Writer) int {
 	switch {
 	case cfg.attach != nil:
 		model = attachModel(cfg)
+	case cfg.daemon != "":
+		model = daemonModel(cfg)
 	case cfg.demo:
 		model = terminalconsole.NewWithOptions(terminalconsole.Fixture{}, cfg.options)
 	default:

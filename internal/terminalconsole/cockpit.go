@@ -67,6 +67,8 @@ type cockpitState struct {
 	sel selection
 	// live is the live session, when Options.Live is set.
 	live liveState
+	// refresh asks the source again on a tick: see refresh.go.
+	refresh refreshState
 }
 
 // resizeMsg applies a debounced window resize to the pane.
@@ -90,6 +92,9 @@ func (m *Model) onSize() tea.Cmd {
 			cmds = append(cmds, m.startLive())
 		} else {
 			cmds = append(cmds, m.tickCmd())
+			if cmd := m.startRefresh(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 	if cmd := m.syncPane(m.sized); cmd != nil {
@@ -250,6 +255,10 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 // session the focus.
 func (m *Model) enter() {
 	if m.zoom || m.pane == paneSession {
+		if m.labelled() {
+			m.notice = noSessionText
+			return
+		}
 		if m.layout().cockpit {
 			m.focus = sessionFocus
 		}

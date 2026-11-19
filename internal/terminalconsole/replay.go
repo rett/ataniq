@@ -89,6 +89,9 @@ func (m *Model) startSession() {
 
 // Close stops the session pane's goroutine. It may be called more than once.
 func (m *Model) Close() {
+	if m.refresh.stop != nil {
+		m.refresh.stop()
+	}
 	if m.live.begun && !m.live.closed {
 		m.live.closed = true
 		close(m.live.done)
@@ -105,7 +108,15 @@ func (m *Model) restart() tea.Cmd {
 		m.notice = "A live session cannot be replayed."
 		return nil
 	}
-	m.Close()
+	if m.labelled() {
+		m.notice = "There is no recording to replay in this view."
+		return nil
+	}
+	// Stop the replay's pane only: the refresh outlives a replay, and Close
+	// would end it for good.
+	if m.rep.pane != nil {
+		m.rep.pane.Close()
+	}
 	m.rep = replay{gen: m.rep.gen}
 	m.focus = consoleFocus
 	m.sel = selection{}
