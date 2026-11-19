@@ -408,6 +408,13 @@ func TestTheRefreshOutlivesAReplay(t *testing.T) {
 	if r.m.rep.pane == nil || r.m.rep.pane == before {
 		t.Fatal("the recording was not started again")
 	}
+	// The old pane is stopped, not left running beside the new one. A closed
+	// pane takes no resize, so a pane that was left running follows it.
+	cols, rows := before.Size()
+	before.Resize(cols-1, rows)
+	if c, _ := before.Size(); c != cols {
+		t.Fatal("the old replay pane was not closed")
+	}
 	r.refresh(3 * time.Second)
 	r.refresh(3 * time.Second)
 	if got := src.ended; len(got) != 3 || got[0] || got[1] || got[2] {
