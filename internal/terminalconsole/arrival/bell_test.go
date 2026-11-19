@@ -152,6 +152,10 @@ func TestKnownCardsDoNotRing(t *testing.T) {
 	for _, id := range []string{"card-1", "card-2", "card-1", "", strings.Repeat("x", maxCardID+1)} {
 		b.Known(id)
 	}
+	// The empty id and the long one took no place in the memory.
+	if len(b.seen) != 2 {
+		t.Errorf("the bell remembers %d cards, want 2", len(b.seen))
+	}
 	for _, id := range []string{"card-1", "card-2"} {
 		if cmd, ring := b.CardArrived(id, false); ring || cmd != nil {
 			t.Errorf("the bell rang for %q, which was known at start", id)

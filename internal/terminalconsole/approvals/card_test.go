@@ -307,6 +307,7 @@ func TestCardBelowTheSmallestWindow(t *testing.T) {
 			t.Fatalf("%v: the code is drawn below 80 by 24", size)
 		}
 		r.notSeen("[a] approve")
+		r.notSeen("[x] deny")
 		// The card can still be read in pages.
 		if size[1] >= 10 {
 			r.key("pgdown")

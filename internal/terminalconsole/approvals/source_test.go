@@ -41,4 +41,16 @@ func TestPatchPageSourceRefusesAPageThatIsNotTheOneAsked(t *testing.T) {
 			t.Fatalf("%s: err %v, want a review that changed", c.name, err)
 		}
 	}
+
+	// A card with no review digest takes in no page either.
+	b := newBackend(t)
+	p := good
+	p.ReviewDigest = ""
+	b.pages = func(string, card.PageKind, int) (card.Page, error) { return p, nil }
+	b.inCmd = true
+	_, _, _, err := pageSource{b: b, id: "p-1", digest: ""}.Page(1)
+	b.inCmd = false
+	if !errors.Is(err, pager.ErrReviewChanged) {
+		t.Fatalf("both digests empty: err %v, want a review that changed", err)
+	}
 }

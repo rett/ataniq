@@ -20,9 +20,9 @@ const cutMark = "…"
 // private-use and unassigned code points, and characters that print as
 // nothing or as a blank. Every kind of space becomes one ASCII space, so a
 // value stays on one line. A combining mark that would start the result is
-// dropped, so the result never joins the text drawn before it. A string that is over the bound once cleaned, or
-// longer than clean inspects, is cut and ends in "…"; with the mark it is at
-// most MaxText bytes.
+// dropped, so the result never joins the text drawn before it. A string that
+// is over the bound once cleaned, or longer than clean inspects, is cut and
+// ends in "…"; with the mark it is at most MaxText bytes.
 func clean(s string) string {
 	var b strings.Builder
 	cut := false
