@@ -30,9 +30,11 @@ type Config struct {
 	// reports no status.
 	Tracker *osc7501.Tracker
 	// Now is the clock a Deliverer made from the Bridge reads its deadline
-	// on. Nil means time.Now. The session measures its own waits and write
-	// bounds on the system clock, so anything but a clock that follows it is
-	// for tests of what happens before the session is touched.
+	// on. Nil means time.Now, and production callers leave it nil: the
+	// session measures its own waits and write bounds, and the context its
+	// deadline, on the system clock, so any other clock makes those bounds
+	// mean nothing. It is for tests, which set one behind the system clock to
+	// get a short deadline.
 	Now func() time.Time
 }
 
