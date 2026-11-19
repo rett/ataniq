@@ -11,10 +11,11 @@ import (
 	"ataniq/internal/leadholder/wire"
 )
 
-// DeliverTimeout is how long after the call a delivery may still write: the
-// fence's deadline. It is shorter than the control server's own bound on a
-// delivery, so the fence has given its result before the server stops
-// waiting.
+// DeliverTimeout is how long after the call a delivery may last: the fence's
+// deadline. It bounds the whole attempt, the wait for the input lock
+// included, because Deliver ends its context at that deadline. It is shorter
+// than the control server's own bound on a delivery, so the result is given
+// before the server stops waiting.
 const DeliverTimeout = 10 * time.Second
 
 // headerStart is how the first line of a message starts, before its id.
@@ -44,8 +45,9 @@ func NewDeliverer(b *Bridge, expectedMode string) *Deliverer {
 // wire accepts; otherwise the result is that of a refused text (refused, text,
 // nothing) and neither the library nor the session is touched.
 //
-// Nothing is written later than DeliverTimeout after the call, or than ctx's
-// deadline when that is earlier. When ctx has ended before the fence writes,
+// The whole call, the wait for the input lock included, ends within
+// DeliverTimeout, or at ctx's deadline when that is earlier; nothing is
+// written later. When ctx has ended before the fence writes,
 // the result is not-now, not-ready, nothing; an error of the session
 // (session.ErrClosed, session.ErrInputBroken, a failed write) is uncertain,
 // died, with what was written before it.
@@ -65,7 +67,12 @@ func (d *Deliverer) Deliver(ctx context.Context, messageID, text string) wire.In
 	if b := d.bridge(); b != nil {
 		s = b
 	}
-	return WireResult(inject.Deliver(ctx, s, inject.Message{Text: text, Header: header}, d.options(ctx)))
+	opts := d.options(ctx)
+	// The wait for the input lock is bounded by ctx alone: end ctx at the
+	// fence's deadline too, so that the result comes before the server's bound.
+	ctx, cancel := context.WithDeadline(ctx, opts.Deadline)
+	defer cancel()
+	return WireResult(inject.Deliver(ctx, s, inject.Message{Text: text, Header: header}, opts))
 }
 
 // now returns the configured clock, or time.Now.
