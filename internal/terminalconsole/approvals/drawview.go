@@ -78,11 +78,11 @@ func (m *Model) hints() string {
 	var parts []string
 	for _, k := range keys {
 		switch k.Action {
-		case card.ActionSignOff, card.ActionDeny:
+		case card.ActionSignOff:
 			if !canAct {
 				continue
 			}
-		case card.ActionApprove:
+		case card.ActionDeny, card.ActionApprove:
 			if !canAct || !m.sizeOK() {
 				continue
 			}
