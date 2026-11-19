@@ -143,3 +143,33 @@ func TestBellFollowsATracker(t *testing.T) {
 		t.Fatal("the bell rang twice for one card")
 	}
 }
+
+// TestKnownCardsDoNotRing: the cards that were waiting when the console
+// started are marked known, and the bell rings for none of them while he
+// is away, but still rings for a card that comes later.
+func TestKnownCardsDoNotRing(t *testing.T) {
+	b := NewBell(true)
+	for _, id := range []string{"card-1", "card-2", "card-1", "", strings.Repeat("x", maxCardID+1)} {
+		b.Known(id)
+	}
+	for _, id := range []string{"card-1", "card-2"} {
+		if cmd, ring := b.CardArrived(id, false); ring || cmd != nil {
+			t.Errorf("the bell rang for %q, which was known at start", id)
+		}
+	}
+	if _, ring := b.CardArrived("card-3", false); !ring {
+		t.Error("no bell for a card that arrived after the start")
+	}
+	// A card that rang is known too, and Known does not make it ring.
+	b.Known("card-3")
+	if _, ring := b.CardArrived("card-3", false); ring {
+		t.Error("the bell rang twice for one card")
+	}
+	// Known remembers within the same bound as CardArrived.
+	for i := 0; i < bellMemory; i++ {
+		b.Known("filler-" + strconv.Itoa(i))
+	}
+	if _, ring := b.CardArrived("card-1", false); !ring {
+		t.Error("the oldest known card was not forgotten at the bound")
+	}
+}
