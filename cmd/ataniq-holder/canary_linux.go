@@ -10,16 +10,17 @@ package main
 //
 // # The order of a start
 //
-// With the role lock held: the inputs file is read; the holder refuses
-// "canary": false, a layout role that is not "<project>-lead" and a --role that
-// is not the lead of the inputs' project; the root check of canary mode
-// (canaryroot.Check) is made with the process's real environment; the holder
-// refuses a --role-lock that is not that role's lock under the state root, and
-// a --state-dir or --runtime-dir that does not lie under the inputs' roots.
-// Only then is
-// anything opened or written: the event log, the state file, the mark
-// lead-has-run. Then the start sequence runs, and after it the state file is
-// written again with the waiver, the event is appended and the service starts.
+// Before the role lock is taken, with nothing written: the inputs file is read;
+// the holder refuses "canary": false, a layout role that is not
+// "<project>-lead" and a --role that is not the lead of the inputs' project; the
+// root check of canary mode (canaryroot.Check) is made with the process's real
+// environment; the holder refuses a --role-lock that is not that role's lock
+// under the state root, and a --state-dir or --runtime-dir that does not lie
+// under the inputs' roots. Then the role lock is taken, and only then is
+// anything else opened or written: the event log, the state file. The start
+// sequence runs, and the launcher makes the mark lead-has-run just before the
+// plan's first process starts; after the sequence the state file is written
+// again with the waiver, the event is appended and the service starts.
 //
 // # The session and the start sequence
 //
@@ -239,17 +240,23 @@ type canaryMode struct {
 	tracker *osc7501.Tracker
 }
 
-// selectMode returns the mode of the command line: scratch mode, or canary
-// mode after its refusals. keep is the holder's own descriptor of the role
-// lock. With no mode, the refusal has been said and the exit status is
-// returned.
-func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
+// vettedMode is what the checks of the command line before the role lock
+// leave for selectMode.
+type vettedMode struct {
+	in sandboxstart.Inputs
+}
+
+// vetMode makes the refusals of canary mode that write nothing: it reads the
+// inputs file and looks at the roots and the paths, so the role lock is not yet
+// taken. A command line of scratch mode passes. A refusal has been said, and
+// the exit status is returned.
+func vetMode(cfg config, d deps, out holderOut) (vettedMode, int) {
 	if !cfg.mode.canary {
-		return scratchMode{}, exitOK
+		return vettedMode{}, exitOK
 	}
-	refuse := func(format string, args ...any) (holderMode, int) {
+	refuse := func(format string, args ...any) (vettedMode, int) {
 		out.line("refused: "+format, args...)
-		return nil, exitRefuse
+		return vettedMode{}, exitRefuse
 	}
 	in, err := sandboxstart.ReadInputs(cfg.mode.inputs)
 	if err != nil {
@@ -288,6 +295,18 @@ func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
 			return refuse("%s does not lie under the %s of the sandbox inputs, as a real path with no link on it", f.flag, f.what)
 		}
 	}
+	return vettedMode{in: in}, exitOK
+}
+
+// selectMode returns the mode of the command line, once vetMode passed it:
+// scratch mode, or canary mode with its system. keep is the holder's own
+// descriptor of the role lock. With no mode, the refusal has been said and the
+// exit status is returned.
+func selectMode(v vettedMode, cfg config, d deps, out holderOut, keep int) (holderMode, int) {
+	if !cfg.mode.canary {
+		return scratchMode{}, exitOK
+	}
+	in := v.in
 	newSystem := d.canary.newSystem
 	if newSystem == nil {
 		newSystem = sandboxstart.NewSystem
@@ -295,7 +314,8 @@ func selectMode(cfg config, d deps, out holderOut, keep int) (holderMode, int) {
 	// Assertion 9 asks the lock with the layout role, not with --role.
 	sys, err := newSystem(sandboxstart.SystemConfig{RoleLock: heldRoleLock{fd: keep, path: cfg.roleLock, layoutRole: in.LayoutRole}})
 	if err != nil {
-		return refuse("the start sequence has no system: %s", diagnostic(err.Error()))
+		out.line("refused: the start sequence has no system: %s", diagnostic(err.Error()))
+		return nil, exitRefuse
 	}
 	return &canaryMode{cfg: cfg, d: d, in: in, sys: sys}, exitOK
 }
