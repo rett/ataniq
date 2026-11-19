@@ -8,3 +8,8 @@
   `holder.json`. `ataniq-holder --version` prints the name and the version, and
   in a tagged build the tag. Without the tag the holder is unchanged apart from
   `--version`: the four flags are unknown and it hosts a scratch agent only.
+  Canary mode also refuses `--inject` without a non-empty `--expected-mode`, and
+  a `--runtime`, `--runtime-version`, `--tree`, `--state-dir` or `--runtime-dir`
+  that does not match the sandbox inputs and the lead's layout; it starts the
+  plan's first process in `/`; and it makes its `lead-has-run` mark only just
+  before that process starts, so a start that fails earlier leaves none.
