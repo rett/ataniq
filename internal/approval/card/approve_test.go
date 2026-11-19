@@ -53,7 +53,7 @@ func TestMayApprove(t *testing.T) {
 	lastPage := func(r *Reading, digest string) {
 		r.ReadPage(Page{Kind: PagePaths, N: 12, Pages: 13, ReviewDigest: digest})
 	}
-	// allPages reads pages first to last-1 (skipping those in skip) of 13.
+	// pages reads pages first to last-1 (skipping those in skip) of 13.
 	pages := func(r *Reading, digest string, skip ...int) {
 	next:
 		for n := 0; n < 13; n++ {
