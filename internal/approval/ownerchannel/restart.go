@@ -34,7 +34,10 @@ import (
 //   - A held decision delivers nothing.
 //   - A project that has a card use today and has reached its limit gets
 //     the day's limit alert, once, when a stop lost it between the decision
-//     entry and the alert entry that follows it.
+//     entry and the alert entry that follows it. The limit is the one in
+//     force at the tick, so a day whose limit the owner lowered below its
+//     uses gets the alert at the next tick, and the alert names the day's
+//     latest use.
 //   - A decision the door holds and the journal lacks, or holds with other
 //     bytes than the journal's, did not come from the owner's console. That
 //     approval is refused and an alert is journaled; the others go on. This

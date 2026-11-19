@@ -191,7 +191,7 @@ func TestOC14OneVerificationAtATime(t *testing.T) {
 			defer wg.Done()
 			name := "feature-" + string(rune('a'+i))
 			st, err := e.svc.Submit(context.Background(), Collected{
-				Project: "project-a", Request: requests[i], At: start,
+				Project: "project-a", Request: requests[i], Note: record.Text("a note"), At: start,
 			})
 			if err != nil {
 				t.Errorf("Submit %s: %v", name, err)

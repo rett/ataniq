@@ -129,9 +129,10 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 // tree. A conflict is refused with a [*record.Error] whose code is
 // [record.CodeMergeConflict], and then no commit and no ref is written (git
 // leaves the trees and blobs of its attempt in the object store, where
-// nothing names them). Otherwise Build writes the commit from a text it wrote in full (see the package
-// comment), checks that git stored exactly that text, and creates the ref
-// [PinPrefix]+key at the commit. It never moves an existing ref.
+// nothing names them). Otherwise Build writes the commit from a text it
+// wrote in full (see the package comment), checks that git stored exactly
+// that text, and creates the ref [PinPrefix]+key at the commit. It never
+// moves an existing ref.
 //
 // The feature's tip is merged as it is, whatever it is: when it is a merge
 // commit a lead made, that commit is ordinary history under the second

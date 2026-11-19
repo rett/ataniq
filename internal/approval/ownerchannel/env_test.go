@@ -544,7 +544,7 @@ func (e *env) request(name string, change func(*record.Request)) []byte {
 		Verb:       record.VerbFeatureFinish,
 		Argv:       []string{name},
 		FeatureSHA: featureID,
-		NoteSHA256: record.Digest(nil),
+		NoteSHA256: record.Digest([]byte("a note")),
 		At:         record.FormatTime(e.clock.Now()),
 	}
 	if change != nil {
