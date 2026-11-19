@@ -105,7 +105,8 @@ waives assertion 10 (no qualification record). It needs --sandbox-inputs, the
 inputs file of the start sequence, and refuses --scratch. The project must be a
 throwaway project and the roots must not be the default ones. --inject opens
 injection through the control socket; --expected-mode is the permission mode the
-agent's footer must show for a delivery. The three are refused without --canary.
+agent's footer must show for a delivery; --inject needs a non-empty one. The
+three are refused without --canary.
 
 Exit status 4: the start sequence of the sandbox refused or failed; no agent is
 left and holder.json is removed.
@@ -179,6 +180,9 @@ func (p *flagParser) modeOf() (modeConfig, error) {
 		return modeConfig{}, notScratch{}
 	case !m.canary:
 		return modeConfig{}, nil
+	}
+	if m.inject && m.expectedMode.s == "" {
+		return modeConfig{}, usageError("--inject needs a non-empty --expected-mode: with none no delivery can pass the gate")
 	}
 	if !m.inputs.set || m.inputs.s == "" {
 		return modeConfig{}, usageError("--canary needs --sandbox-inputs")
