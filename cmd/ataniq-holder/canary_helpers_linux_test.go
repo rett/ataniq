@@ -146,7 +146,7 @@ func (c *canaryRig) spec(digest string, bools ...string) *argSpec {
 	a := &argSpec{agent: []string{"/ataniq/agent/bin/stand-in", "--sample"}, env: []string{"SAMPLE_FLAG=on"}}
 	for _, f := range [][2]string{
 		{"role", canaryRoleText}, {"epoch", strconv.Itoa(testEpoch)}, {"launch-intent", "intent-0123456789abcdef"},
-		{"runtime", "sample"}, {"runtime-version", "1.0"}, {"profile-digest", digest},
+		{"runtime", c.in.Runtime}, {"runtime-version", c.in.RuntimeVersion}, {"profile-digest", digest},
 		{"tree", c.tree}, {"state-dir", c.state}, {"runtime-dir", c.runtime},
 		{"role-lock", c.roleLock}, {"daemon-lock", c.daemonLock}, {"cols", "100"}, {"rows", "30"},
 		{"sandbox-inputs", c.inputsPath}, {"expected-mode", "sample mode on"},

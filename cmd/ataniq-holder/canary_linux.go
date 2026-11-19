@@ -16,7 +16,10 @@ package main
 // root check of canary mode (canaryroot.Check) is made with the process's real
 // environment; the holder refuses a --role-lock that is not that role's lock
 // under the state root, and a --state-dir or --runtime-dir that does not lie
-// under the inputs' roots. Then the role lock is taken, and only then is
+// under the inputs' roots; then it compares the flags with the inputs: --runtime
+// and --runtime-version are the inputs', --tree is the layout's tree, --state-dir
+// is exactly the layout's holder folder and --runtime-dir is exactly the lead's
+// runtime folder. Then the role lock is taken, and only then is
 // anything else opened or written: the event log, the state file. The start
 // sequence runs, and the launcher makes the mark lead-has-run just before the
 // plan's first process starts; after the sequence the state file is written
@@ -295,6 +298,21 @@ func vetMode(cfg config, d deps, out holderOut) (vettedMode, int) {
 			return refuse("%s does not lie under the %s of the sandbox inputs, as a real path with no link on it", f.flag, f.what)
 		}
 	}
+	// The holder's own flags are the layout's for the inputs: the plan, the
+	// profile digest and the judgement of assertion 10 use the inputs'
+	// runtime and version, and the bridge and holder.json use the flags'; the
+	// folders are exactly the lead's, and the work tree is the lead's tree.
+	layout := profile.Layout{StateRoot: in.StateRoot, Role: in.LayoutRole, Project: in.Project}
+	switch {
+	case cfg.runtime != in.Runtime || cfg.runtimeVersion != in.RuntimeVersion:
+		return refuse("--runtime and --runtime-version are not the runtime and version of the sandbox inputs")
+	case cfg.tree != layout.Tree():
+		return refuse("--tree is not the lead's tree under the state root of the sandbox inputs")
+	case cfg.stateDir != layout.Holder():
+		return refuse("--state-dir is not the holder folder of the lead under the state root of the sandbox inputs")
+	case cfg.runtimeDir != sandboxstart.RuntimeFolder(in.RuntimeRoot, in.LayoutRole):
+		return refuse("--runtime-dir is not the lead's runtime folder under the runtime root of the sandbox inputs")
+	}
 	return vettedMode{in: in}, exitOK
 }
 
@@ -485,10 +503,8 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 		filepath.Join(cfg.runtimeDir, serve.AttachSocket),
 		filepath.Join(cfg.runtimeDir, serve.ControlSocket),
 	}
-	if holder := (profile.Layout{StateRoot: in.StateRoot, Role: in.LayoutRole, Project: in.Project}).Holder(); cfg.stateDir != holder {
-		// The sequence hides the layout's holder folder itself.
-		in.HolderPaths = append(in.HolderPaths, cfg.stateDir)
-	}
+	// The sequence hides the layout's holder folder itself, which --state-dir
+	// is exactly (vetMode).
 	in.PreviousInstanceStopped = aloneInControlGroup(m.d.procRoot, m.d.canary.cgroupRoot, os.Getpid())
 	// NoLeadHasRun is decided here, before the sequence: no lead has run when
 	// the mark is absent (the role lock keeps another holder from racing this).
