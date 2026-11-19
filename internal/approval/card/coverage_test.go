@@ -236,6 +236,16 @@ var (
 		// where the block would.
 		"DiffersRefused": DiffersLabel,
 	}
+	// namesNotContent are the values inside a bound section that are not
+	// under the binding's digest, each with why it is there. They are
+	// not content of the card but its name, so they are the one thing a
+	// change of the id moves in a bound section; every other value in a
+	// bound section comes from the binding or the plan text. A value added
+	// here is a fourth thing the owner sees beside the binding, and the
+	// package comment has to say so.
+	namesNotContent = map[string]string{
+		"Title.ID": "the host's id of the pending record: it names the card, and a decision carries it beside the digest",
+	}
 )
 
 func TestTheThreeExceptionsAreNamedAndLabelled(t *testing.T) {
@@ -366,8 +376,10 @@ func TestNothingIsOnTheModelBeyondTheBinding(t *testing.T) {
 		if len(tc.moves) > 0 && len(changed(base, got)) == 0 {
 			t.Errorf("%s changed nothing on the card", tc.name)
 		}
-		if tc.name != "the id" && len(changed(boundPart(base), boundPart(got))) != 0 {
-			t.Errorf("%s changed a section that the binding covers", tc.name)
+		for _, path := range changed(boundPart(base), boundPart(got)) {
+			if _, name := namesNotContent[path]; !name {
+				t.Errorf("%s changed %s, a value of a section that the binding covers", tc.name, path)
+			}
 		}
 	}
 
