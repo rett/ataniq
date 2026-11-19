@@ -467,18 +467,20 @@ func TestSetErrorCleansAndBounds(t *testing.T) {
 }
 
 func TestLongErrorLeavesHelpLineWhole(t *testing.T) {
-	for _, line := range []string{strings.Repeat("w", 1<<16), strings.Repeat("word ", 1<<12), strings.Repeat("宽", 1<<12)} {
-		plain := newModel(sampleView(t, 12, []int{9}, false))
-		want := rowsAt(plain, 80, 24)
-		m := newModel(sampleView(t, 12, []int{9}, false))
-		m.SetError(line)
-		rows := rowsAt(m, 80, 24)
-		if strings.TrimSpace(rows[5]) == "" {
-			t.Errorf("note row 5 is empty for %.10q", line)
-		}
-		for i, r := range rows {
-			if i >= 7 && r != want[i] {
-				t.Errorf("row %d changed for %.10q: %q, want %q", i, line, r, want[i])
+	for _, width := range []int{80, 60} {
+		for _, line := range []string{strings.Repeat("w", 1<<16), strings.Repeat("word ", 1<<12), strings.Repeat("宽", 1<<12)} {
+			plain := newModel(sampleView(t, 12, []int{9}, false))
+			want := rowsAt(plain, width, 24)
+			m := newModel(sampleView(t, 12, []int{9}, false))
+			m.SetError(line)
+			rows := rowsAt(m, width, 24)
+			if strings.TrimSpace(rows[5]) == "" {
+				t.Errorf("width %d: note row 5 is empty for %.10q", width, line)
+			}
+			for i, r := range rows {
+				if i >= 7 && r != want[i] {
+					t.Errorf("width %d: row %d changed for %.10q: %q, want %q", width, i, line, r, want[i])
+				}
 			}
 		}
 	}
