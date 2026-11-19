@@ -35,9 +35,9 @@ systemctl and from the unit's control group files, the memory limit is lowered
 once on the running unit and read back again, the user manager's runtime folders
 must hold the drop-in folder of the running unit, and after the stop nothing for
 the unit may remain in them. A SIZE is a number of bytes with an optional suffix
-K, M or G (powers of 1024). A memory or swap size must be a
-whole number of 4096-byte pages, because the control group files are compared
-with it exactly; any other size is a usage error.
+K, M or G (powers of 1024). A memory or swap size must be a whole number of
+4096-byte pages, because the control group files are compared with it exactly;
+any other size is a usage error.
   --memory-max SIZE      the memory limit (default ` + defaultMemoryMax + `; 256M to 64G)
   --swap-max SIZE        the swap limit (default ` + defaultSwapMax + `, no swap; 0 to 64G)
   --tasks-max N          the task limit (default ` + defaultTasksMax + `; 16 to 65536)
