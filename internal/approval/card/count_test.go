@@ -111,6 +111,16 @@ func TestCountInputLargeNumbers(t *testing.T) {
 	}
 }
 
+// A negative count stays negative in the sum, whichever side it is on, so
+// that the limits package sees it.
+func TestCountInputKeepsANegativeCount(t *testing.T) {
+	for _, s := range []record.Summary{{Added: 5, Removed: -3}, {Added: -3, Removed: 5}, {Added: -3, Removed: -4}} {
+		if got := CountInput(s, true); got.ChangedLines >= 0 {
+			t.Errorf("added %d and removed %d: got %d changed lines", s.Added, s.Removed, got.ChangedLines)
+		}
+	}
+}
+
 func TestCountAdd(t *testing.T) {
 	var c Count
 	c.Add(limits.Counted{Met: true})
