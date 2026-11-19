@@ -491,6 +491,27 @@ func TestDecideRefusesAPastExpiry(t *testing.T) {
 	}
 }
 
+func TestARaiseTodayKeepsPastDaysAtTheirLimit(t *testing.T) {
+	b, c := newBackend(t)
+	yesterday := limits.Today(c.t.AddDate(0, 0, -1))
+	if _, err := b.SetLimit(projectC, limits.Change{To: 3, Typed: true}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := b.Limit(projectC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range v.Days {
+		if d.Date == yesterday {
+			if d.Uses != 2 || !d.ReachedLimit {
+				t.Errorf("the day that filled the old limit: %+v", d)
+			}
+			return
+		}
+	}
+	t.Errorf("no day %s in %+v", yesterday, v.Days)
+}
+
 func TestHeldMarkIsClearedWhenTheCardIsDecided(t *testing.T) {
 	for _, approve := range []bool{true, false} {
 		b, c := newBackend(t)
