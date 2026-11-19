@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -720,5 +721,67 @@ func TestEveryCommitIsSynced(t *testing.T) {
 		}
 		fill(t, s, 1)
 		mustClose(t, s)
+	}
+}
+
+// A crash in the middle of a write leaves a torn write-ahead file beside
+// the main file, not a short main file. The files are copied while the
+// store is open and without the shared-memory file, which a crash leaves
+// useless, and the write-ahead copy is cut at many points. Each cut opens
+// as a store whose entries are a gapless prefix of the whole journal, never
+// shorter than that of a shorter cut, or is refused with ErrDamaged. The
+// whole file gives every entry.
+func TestAWriteAheadFileCutShortIsRecovered(t *testing.T) {
+	const appends = 20
+	path := newPath(t)
+	s := mustOpen(t, path)
+	for i := 0; i < appends; i++ {
+		if _, err := addLooked(s, base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	whole := mustEntries(t, s)
+	copied := copyStore(t, path)
+	mustClose(t, s)
+	if err := os.Remove(copied + "-shm"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	wal := readFile(t, copied+"-wal")
+	if len(wal) < 20*4096 {
+		t.Fatalf("the write-ahead file is %d bytes; the test wants one frame at least for each append", len(wal))
+	}
+	cuts := []int{0, 1, 31, 32, 33, len(wal) - 1}
+	for cut := 997; cut < len(wal); cut += 997 {
+		cuts = append(cuts, cut)
+	}
+	cuts = append(cuts, len(wal))
+	sort.Ints(cuts)
+	last := 0
+	for _, cut := range cuts {
+		cutPath := newPath(t)
+		for suffix, b := range map[string][]byte{"": readFile(t, copied), "-wal": wal[:cut]} {
+			if err := os.WriteFile(cutPath+suffix, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := Open(cutPath)
+		if err != nil {
+			if !errors.Is(err, ErrDamaged) {
+				t.Fatalf("cut at %d of %d bytes: %v, want a store or %v", cut, len(wal), err, ErrDamaged)
+			}
+			continue
+		}
+		entries := mustEntries(t, got)
+		mustClose(t, got)
+		if len(entries) > len(whole) || (len(entries) > 0 && !reflect.DeepEqual(entries, whole[:len(entries)])) {
+			t.Fatalf("cut at %d of %d bytes: the entries are not a prefix of the journal", cut, len(wal))
+		}
+		if len(entries) < last {
+			t.Fatalf("cut at %d of %d bytes: %d entries, fewer than the %d of a shorter cut", cut, len(wal), len(entries), last)
+		}
+		last = len(entries)
+	}
+	if last != appends {
+		t.Fatalf("the whole write-ahead file gives %d entries, want %d", last, appends)
 	}
 }
