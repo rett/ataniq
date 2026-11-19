@@ -10,13 +10,37 @@ import (
 	"testing"
 )
 
+// allowedOwn lists, by name, the packages of this repository a non-test file
+// of the cockpit package may import. Its own subpackages: the session pane and
+// the replay, and the approvals pieces it places (the pager, the arrival
+// strip, the approvals view and the limit's screen). And what those pieces
+// speak in: the card and the record, the limit's rules, the presence tracker,
+// and the text escaping of lead-written text. The sample backend and the
+// daemon's client are not here: they reach the console as values, handed over
+// by the command.
+var allowedOwn = map[string]bool{
+	"ataniq/internal/terminalconsole/sessionpane":   true,
+	"ataniq/internal/terminalconsole/sessionreplay": true,
+	"ataniq/internal/terminalconsole/pager":         true,
+	"ataniq/internal/terminalconsole/arrival":       true,
+	"ataniq/internal/terminalconsole/approvals":     true,
+	"ataniq/internal/terminalconsole/limitview":     true,
+	"ataniq/internal/approval/card":                 true,
+	"ataniq/internal/approval/record":               true,
+	"ataniq/internal/approval/presence":             true,
+	"ataniq/internal/approval/limits":               true,
+	"ataniq/internal/exchange/leadtext":             true,
+}
+
 // importDenied reports whether a non-test file of the cockpit package may not
 // import p. The cockpit shows a snapshot and replays a recording: it starts no
 // process, opens no socket, makes no system call, and imports no client or
 // mutation package of this repository (the operator CLI, the dispatcher, the
-// journal and the shared client). Of this repository it may import only the
-// pane and the replay, its own subpackages. Only direct imports are checked;
-// test files may import what they need.
+// journal and the shared client), nor the door, the service, the journal of
+// the owner channel, the merge builder, the sample backend or the daemon's
+// client. Of this repository it may import only the packages allowedOwn
+// lists by name. Only direct imports are checked; test files may import what
+// they need.
 func importDenied(p string) bool {
 	switch p {
 	case "C", "os", "net", "syscall", "unsafe", "plugin", "io/ioutil", "os/exec", "os/signal", "path/filepath":
@@ -32,7 +56,7 @@ func importDenied(p string) bool {
 		}
 	}
 	if p == "ataniq" || strings.HasPrefix(p, "ataniq/") {
-		return p != "ataniq/internal/terminalconsole/sessionpane" && p != "ataniq/internal/terminalconsole/sessionreplay"
+		return !allowedOwn[p]
 	}
 	return false
 }
@@ -46,7 +70,18 @@ func TestImportGuardRules(t *testing.T) {
 		{"unsafe", true}, {"C", true}, {"golang.org/x/sys/unix", true}, {"github.com/creack/pty", true},
 		{"ataniq/internal/operatorcli", true}, {"ataniq/internal/dispatch", true}, {"ataniq/internal/journal", true},
 		{"ataniq/internal/client", true}, {"ataniq/internal/terminalconsole/sessionpane", false},
-		{"ataniq/internal/terminalconsole/sessionreplay", false}, {"network", false}, {"netutil", false},
+		{"ataniq/internal/terminalconsole/sessionreplay", false}, {"network", false},
+		{"ataniq/internal/terminalconsole/pager", false}, {"ataniq/internal/terminalconsole/arrival", false},
+		{"ataniq/internal/terminalconsole/approvals", false}, {"ataniq/internal/terminalconsole/limitview", false},
+		{"ataniq/internal/approval/card", false}, {"ataniq/internal/approval/record", false},
+		{"ataniq/internal/approval/presence", false}, {"ataniq/internal/approval/limits", false},
+		{"ataniq/internal/exchange/leadtext", false},
+		{"ataniq/internal/approval/demo", true}, {"ataniq/internal/consoleclient", true},
+		{"ataniq/internal/approval/door", true}, {"ataniq/internal/approval/door/doortest", true},
+		{"ataniq/internal/approval/ownerchannel", true}, {"ataniq/internal/approval/ownerjournal", true},
+		{"ataniq/internal/approval/mergebuild", true}, {"ataniq/internal/approval/ownerwire", true},
+		{"ataniq/internal/terminalconsole/sessionpane/extra", true}, {"ataniq/internal/approval", true},
+		{"ataniq", true}, {"netutil", false},
 		{"time", false}, {"strings", false}, {"charm.land/bubbletea/v2", false}, {"github.com/charmbracelet/ultraviolet", false},
 		{"github.com/charmbracelet/x/ansi", false},
 	} {

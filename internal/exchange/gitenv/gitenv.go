@@ -27,6 +27,13 @@ type Cmd struct {
 	// [Git.Argv] refuses any other. The options that name a program are
 	// refused in every form. "config" does not end its options at "--",
 	// so Argv refuses that marker there; use "--end-of-options".
+	// "--attr-source" is refused in every place, also abbreviated.
+	// "hash-object" and "merge-tree" are the exceptions to all of this:
+	// each has one exact form. The arguments of "hash-object" are exactly
+	// "-tcommit", "-w", "--stdin" (see hashObjectArgs in gitenv.go). Those
+	// of "merge-tree" are "--write-tree", then any of "--name-only",
+	// "--no-messages" and "-z", then "--end-of-options" and two full object
+	// ids (see checkMergeTree in gitenv.go).
 	Args []string
 	// Protocols lists the transports this command may use. The only name
 	// known is "file". Empty means no transport.
@@ -84,13 +91,88 @@ const defaultCeilings = "/home:/root:/tmp:/var:/dev/shm:/run:/mnt:/srv:/opt"
 // protocolNames are the transports a command may allow.
 var protocolNames = []string{"file"}
 
-// subcommands are the git subcommands this feature uses.
+// subcommands are the git subcommands that follow the option rule of
+// [checkOptions]. "hash-object" and "merge-tree" are not here: each is
+// allowed in one exact form only (see [exactForms]).
 var subcommands = []string{
 	"init", "version", "fetch", "for-each-ref", "rev-parse", "rev-list",
 	"merge-base", "diff-tree", "diff", "log", "cat-file", "update-ref",
 	"symbolic-ref", "show-ref", "count-objects", "config",
 	"check-ref-format", "ls-tree",
 }
+
+// exactForms are the subcommands outside [subcommands] that Argv accepts.
+// Each serves one use of the host and has its own rule for its arguments,
+// which runs in place of [checkOptions] and accepts one form only.
+var exactForms = map[string]func(args []string) error{
+	hashObject: checkHashObject,
+	mergeTree:  checkMergeTree,
+}
+
+// hashObject is a subcommand outside [subcommands] that Argv accepts, and
+// hashObjectArgs are the only arguments it accepts for it, in this
+// order: write (-w) an object of the type commit (-tcommit) from the text on
+// standard input (--stdin). The host uses it to write a merge commit whose
+// every byte it wrote itself: the tree, the parents in order, the author,
+// the committer, the dates and the message. git checks the text and refuses
+// a malformed commit. "commit-tree" is not allowed: it takes its parents as
+// "-p <id>", an option with a separate value, and its identity and dates
+// from the environment.
+//
+// "-tcommit" is the type joined to its option, one argument, and "-w" is a
+// short flag. Neither is in [valuelessFlags], and [checkOptions] would
+// refuse both, so this subcommand has its own rule, [checkHashObject], and
+// no other subcommand can use these two.
+const hashObject = "hash-object"
+
+var hashObjectArgs = []string{"-tcommit", "-w", "--stdin"}
+
+// mergeTree is the other subcommand outside [subcommands] that Argv accepts.
+// The host builds a merge with it in a bare repository, with no working
+// tree. Its one form, checked by [checkMergeTree], is
+//
+//	merge-tree --write-tree [flags] --end-of-options <id> <id>
+//
+// where the flags are any of [mergeTreeFlags], each at most once and in any
+// order, and each id is a full object id ([IsObjectID]). So git merges
+// exactly the two commits named, from the merge base it finds itself, in the
+// one way it merges by default.
+//
+// The form is exact because other options of "merge-tree" change what the
+// merge is, and the attribute pin (see [attrPinned]) exists so that a merge
+// which should report a conflict cannot end cleanly. With
+// "--strategy-option=ours" (or "-X") a conflicting merge ends cleanly with
+// one side's lines. With "--merge-base=<one side>" it ends cleanly with the
+// other side's tree. "--allow-unrelated-histories", which git also accepts
+// as "--all", merges two commits that share no history. "--stdin" reads the
+// merges to do from standard input. A name in place of an id would make the
+// merge depend on where a ref points when git runs. None of these can be
+// written in the form, with one limit: an id is checked for 40 or 64 hex
+// digits, not for the repository's object format, and in a SHA-256
+// repository git reads 40 hex digits as a ref name first. A caller passes
+// ids of the repository's own format. The tests show each of these effects
+// with the installed git.
+const mergeTree = "merge-tree"
+
+// mergeTreeWrite is the first argument of the one form of [mergeTree]: the
+// mode that writes the merged tree and reports conflicts by exit status 1.
+// The other mode, "--trivial-merge", is refused.
+const mergeTreeWrite = "--write-tree"
+
+// mergeTreeFlags are the flags that may follow [mergeTreeWrite]. None takes
+// a value and none changes the merge: "--name-only" lists the conflicting
+// paths without their modes and ids, "--no-messages" leaves out the
+// informational text, and "-z" ends each line with a NUL.
+var mergeTreeFlags = []string{"--name-only", "--no-messages", "-z"}
+
+// mergeTreeForm is the one form as the error text of [checkMergeTree] shows
+// it.
+const mergeTreeForm = "merge-tree --write-tree [--name-only] [--no-messages] [-z] --end-of-options <id> <id>"
+
+// mergeTreeEnd is the marker that ends the options in the one form of
+// [mergeTree]. The installed git (2.56) takes it for "merge-tree
+// --write-tree"; the tests run the form.
+const mergeTreeEnd = "--end-of-options"
 
 // noGitDir are the subcommands that may run without --git-dir.
 var noGitDir = []string{"init", "version"}
@@ -99,6 +181,53 @@ var noGitDir = []string{"init", "version"}
 // configuration. git accepts a unique abbreviation of a long option, so a
 // prefix of one of these, at least "--" and three letters, is refused too.
 var refusedOptions = []string{"--upload-pack", "--receive-pack", "--exec", "--ext-diff"}
+
+// noDiffPrograms are the subcommands that run the programs of the
+// configuration when they print a patch: "git diff" runs diff.external and
+// the textconv program of a diff driver by default, and "git log -p" runs
+// the textconv program. An empty or dummy diff.external does not stop it:
+// git reports "cannot run" and fails. For these [Git.Argv] adds the options
+// "--no-ext-diff" and "--no-textconv" right after the subcommand, which do
+// stop both. "diff-tree" is plumbing and runs neither unless asked; the
+// tests show that for the installed git.
+//
+// A tree cannot name a diff driver, because of the attribute pin (see
+// [attrPinned]), but the repository's own "info/attributes" can, and a
+// caller of "log" is not required to run [CheckInfoAttributes].
+var noDiffPrograms = []string{"diff", "log"}
+
+// emptyTree is the id of the tree with no entry, in a SHA-1 repository. git
+// knows it without the object being stored.
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+// attrPinned are the subcommands whose result depends on attributes: an
+// attribute turns a text file into a binary one in a diff ("-diff",
+// "binary") or names the way two sides of a file are merged ("merge=union").
+// For these [Git.Argv] adds the setting "attr.tree=<emptyTree>" to its own
+// -c settings, so that git reads no ".gitattributes" from any tree, not from
+// the trees it compares or merges and not from HEAD. Trees hold what a lead
+// wrote, so an attribute in one must not change what the owner sees or what
+// the host merges.
+//
+// The setting on the command line comes before the same key in the
+// repository's config. Two things come before the setting, and the builder
+// keeps both out: the option "--attr-source" (see [attrSourceOption]) and
+// the variable GIT_ATTR_SOURCE, which [Git.Env] never sets. In a SHA-256
+// repository this id names no object; git then reads no attributes from a
+// tree either, which the tests show, so the pin holds there too.
+//
+// What the pin cannot reach is the repository's own "info/attributes"; see
+// [CheckInfoAttributes].
+var attrPinned = []string{"diff", "diff-tree", "merge-tree", "log"}
+
+// attrSourceOption is the git option that names the attribute source. It
+// comes before the setting "attr.tree", so it would undo the pin of
+// [attrPinned]. git takes it before the subcommand, where every option is
+// refused already; Argv also refuses it in every other place of Args, in
+// every form ("--attr-source", "--attr-source=X") and abbreviated down to
+// "--" and three letters, as it does for [refusedOptions], so that the pin
+// does not rest on how git reads an argument.
+const attrSourceOption = "--attr-source"
 
 // New returns a Git for an absolute path that names an executable regular
 // file (a symbolic link to one is accepted).
@@ -152,8 +281,10 @@ func IsObjectID(s string) bool {
 }
 
 // Argv returns the command line for c: the git path, the fixed -c settings,
-// --git-dir=..., then the arguments. It starts nothing. It refuses what the
-// package comment lists.
+// for "diff", "diff-tree", "merge-tree" and "log" the setting that pins the
+// attribute source to the empty tree, --git-dir=..., the subcommand, for
+// "diff" and "log" the options "--no-ext-diff" and "--no-textconv", then the
+// arguments. It starts nothing. It refuses what the package comment lists.
 func (g Git) Argv(c Cmd) ([]string, error) {
 	if !filepath.IsAbs(g.Path) {
 		return nil, errors.New("gitenv: Git has no absolute path; use New or Find")
@@ -170,8 +301,14 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if strings.HasPrefix(sub, "-") {
 		return nil, fmt.Errorf("gitenv: %q comes before the subcommand; options there are the builder's alone", sub)
 	}
-	if !slices.Contains(subcommands, sub) {
+	exactForm := exactForms[sub]
+	if exactForm == nil && !slices.Contains(subcommands, sub) {
 		return nil, fmt.Errorf("gitenv: subcommand %q is not allowed", sub)
+	}
+	for _, a := range c.Args[1:] {
+		if name, _, _ := strings.Cut(a, "="); len(name) >= 5 && strings.HasPrefix(attrSourceOption, name) {
+			return nil, fmt.Errorf("gitenv: argument %q is refused in every place: the attribute source is the builder's alone", a)
+		}
 	}
 	if c.GitDir == "" {
 		if !slices.Contains(noGitDir, sub) {
@@ -194,7 +331,12 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkOptions(sub, c.Args[1:]); err != nil {
+	if exactForm != nil {
+		// The exact form stands in place of the option rule.
+		if err := exactForm(c.Args[1:]); err != nil {
+			return nil, err
+		}
+	} else if err := checkOptions(sub, c.Args[1:]); err != nil {
 		return nil, err
 	}
 	uploadPack, err := uploadPackOption(c, sub, protocols)
@@ -206,6 +348,10 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	for _, kv := range settings(protocols) {
 		argv = append(argv, "-c", kv)
 	}
+	if slices.Contains(attrPinned, sub) {
+		// No attribute from any tree; see attrPinned.
+		argv = append(argv, "-c", "attr.tree="+emptyTree)
+	}
 	if c.GitDir != "" {
 		argv = append(argv, "--git-dir="+c.GitDir)
 	}
@@ -213,10 +359,8 @@ func (g Git) Argv(c Cmd) ([]string, error) {
 	if uploadPack != "" {
 		argv = append(argv, uploadPack)
 	}
-	if sub == "diff" {
-		// "git diff" runs diff.external and textconv programs by default,
-		// and an empty or dummy diff.external does not stop it: git
-		// reports "cannot run" and fails. The two options do.
+	if slices.Contains(noDiffPrograms, sub) {
+		// No external diff and no textconv program; see noDiffPrograms.
 		argv = append(argv, "--no-ext-diff", "--no-textconv")
 	}
 	return append(argv, c.Args[1:]...), nil
@@ -361,6 +505,9 @@ var valuelessFlags = []string{
 	// flags name the key as a plain argument, not as their value.
 	"--get", "--get-all", "--unset", "--show-origin", "--oneline", "--stat",
 	"--name-only", "--exit-code", "--update-head-ok", "-e", "--show-signature",
+	// Diff output: the patch and the line counts, which the tests of the
+	// attribute pin compare.
+	"-p", "--numstat",
 }
 
 // valueIn names, for flags of [valuelessFlags], the subcommands in which the
@@ -440,13 +587,67 @@ func checkOptions(sub string, args []string) error {
 	return nil
 }
 
+// checkHashObject is the rule for "hash-object", in place of [checkOptions]:
+// the arguments must be exactly [hashObjectArgs], in that order. Every other
+// form is refused: another type, the type as a separate argument, another
+// order, a missing or repeated argument, a file name, a marker, and options
+// such as "--path", "--no-filters", "--literally" and "--stdin-paths".
+func checkHashObject(args []string) error {
+	if !slices.Equal(args, hashObjectArgs) {
+		return fmt.Errorf("gitenv: %q is allowed in one form only, %q with exactly these arguments in this order; %q is refused",
+			hashObject, hashObject+" "+strings.Join(hashObjectArgs, " "), args)
+	}
+	return nil
+}
+
+// checkMergeTree is the rule for "merge-tree", in place of [checkOptions]:
+// the arguments must have the one form that [mergeTree] describes. Every
+// other form is refused: no "--write-tree" first, a flag outside
+// [mergeTreeFlags] in any spelling ("--merge-base", "--strategy-option",
+// "-X", "--all", "--allow-unrelated-histories", "--stdin",
+// "--trivial-merge", with or without "=" and abbreviated), a flag twice, the
+// marker "--" or no marker, and after the marker anything but two full
+// object ids: a ref name, an abbreviated id, one id, a third id.
+func checkMergeTree(args []string) error {
+	refuse := func(why string) error {
+		return fmt.Errorf("gitenv: %q is allowed in one form only, %q, where each flag stands at most once and each id is a full object id; %s in %q",
+			mergeTree, mergeTreeForm, why, args)
+	}
+	if len(args) == 0 || args[0] != mergeTreeWrite {
+		return refuse(fmt.Sprintf("the first argument is not %q", mergeTreeWrite))
+	}
+	end := slices.Index(args, mergeTreeEnd)
+	if end < 0 {
+		return refuse(fmt.Sprintf("there is no %q", mergeTreeEnd))
+	}
+	for i, a := range args[1:end] {
+		if !slices.Contains(mergeTreeFlags, a) {
+			return refuse(fmt.Sprintf("%q is refused", a))
+		}
+		if slices.Contains(args[1:1+i], a) {
+			return refuse(fmt.Sprintf("%q stands twice", a))
+		}
+	}
+	ids := args[end+1:]
+	if len(ids) != 2 {
+		return refuse(fmt.Sprintf("%d arguments follow %q, not two", len(ids), mergeTreeEnd))
+	}
+	for _, id := range ids {
+		if !IsObjectID(id) {
+			return refuse(fmt.Sprintf("%q is not a full object id", id))
+		}
+	}
+	return nil
+}
+
 // settings returns the fixed -c settings as key=value strings.
 //
 // Each key was checked against "git help config" of git 2.56. Changes from
 // the first list, and why:
 //   - diff.external is not set. An empty or dummy value does not disable the
 //     external diff: "git diff" then fails with "cannot run". [Git.Argv]
-//     adds --no-ext-diff and --no-textconv to "diff" instead.
+//     adds --no-ext-diff and --no-textconv to "diff" and "log" instead
+//     (see [noDiffPrograms]).
 //   - core.alternateRefsCommand is set to the empty string. git 2.56 does
 //     not skip an empty command: when a fetch lists the refs of an alternate
 //     it tries to start it, fails, prints "error: cannot run : No such file

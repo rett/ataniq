@@ -1,0 +1,258 @@
+{
+  "decision-invalid-approve-reason.json": {
+    "code": "decision-invalid",
+    "why": "an approve with a reason"
+  },
+  "decision-invalid-b64-plain.json": {
+    "code": "decision-invalid",
+    "why": "b64 that holds valid UTF-8 without a control character"
+  },
+  "decision-invalid-control-character.json": {
+    "code": "decision-invalid",
+    "why": "an escaped U+007F in a plain string"
+  },
+  "decision-invalid-duplicate-sign-off.json": {
+    "code": "decision-invalid",
+    "why": "one sign-off twice"
+  },
+  "decision-invalid-empty-reason.json": {
+    "code": "decision-invalid",
+    "why": "a deny with reason written as an empty string; an optional field that is empty is left out"
+  },
+  "decision-invalid-float.json": {
+    "code": "decision-invalid",
+    "why": "uses is a float"
+  },
+  "decision-invalid-holder.json": {
+    "code": "decision-invalid",
+    "why": "a subject with a holder"
+  },
+  "decision-invalid-id.json": {
+    "code": "decision-invalid",
+    "why": "a pending id with nothing after ap-"
+  },
+  "decision-invalid-key-case.json": {
+    "code": "decision-invalid",
+    "why": "the key signed_off in another case"
+  },
+  "decision-invalid-reason-too-long.json": {
+    "code": "decision-invalid",
+    "why": "a deny whose reason is more than 500 bytes"
+  },
+  "decision-invalid-repeated-key.json": {
+    "code": "decision-invalid",
+    "why": "the key decision appears twice"
+  },
+  "decision-invalid-schema.json": {
+    "code": "decision-invalid",
+    "why": "the schema of another kind"
+  },
+  "decision-invalid-session.json": {
+    "code": "decision-invalid",
+    "why": "a session that is not 16 lower-case hexadecimal digits"
+  },
+  "decision-invalid-too-large.json": {
+    "code": "record-too-large",
+    "why": "more than 8 KiB"
+  },
+  "decision-invalid-unknown-field.json": {
+    "code": "decision-invalid",
+    "why": "a field the form does not name, inside the console block"
+  },
+  "decision-invalid-verdict-field.json": {
+    "code": "decision-invalid",
+    "why": "a verdict block, which no record has"
+  },
+  "pending-invalid-b64-malformed.json": {
+    "code": "record-invalid",
+    "why": "b64 that is not standard base64"
+  },
+  "pending-invalid-b64-plain.json": {
+    "code": "record-invalid",
+    "why": "b64 that holds valid UTF-8 without a control character"
+  },
+  "pending-invalid-binding-digest.json": {
+    "code": "binding-mismatch",
+    "why": "binding_sha256 is not the digest of the binding"
+  },
+  "pending-invalid-built-by.json": {
+    "code": "record-invalid",
+    "why": "a merge that says another builder than the host"
+  },
+  "pending-invalid-control-character.json": {
+    "code": "record-invalid",
+    "why": "an escaped U+001B in a plain string"
+  },
+  "pending-invalid-effect-not-branch.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect is on a tag; every effect is on a ref under refs/heads/"
+  },
+  "pending-invalid-effect-not-merge.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect has a new that is not the merge commit"
+  },
+  "pending-invalid-effect-old.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect has an old that is not the first parent of the merge"
+  },
+  "pending-invalid-feature-name.json": {
+    "code": "feature-name",
+    "why": "a feature name outside [a-z0-9-]{1,48}"
+  },
+  "pending-invalid-finish-deletes.json": {
+    "code": "record-invalid",
+    "why": "a feature finish whose effect deletes the target: the merge commit, the tip of the summary and the new of the effect are all zeros, and the effect says where it was merged; the effect of a feature finish does not delete"
+  },
+  "pending-invalid-finish-two-effects.json": {
+    "code": "record-invalid",
+    "why": "a feature finish with a second effect, which deletes the feature branch; a feature finish has exactly one effect"
+  },
+  "pending-invalid-flag-kind.json": {
+    "code": "record-invalid",
+    "why": "a flag kind outside the closed list"
+  },
+  "pending-invalid-float.json": {
+    "code": "record-invalid",
+    "why": "files is a float"
+  },
+  "pending-invalid-held-field.json": {
+    "code": "record-invalid",
+    "why": "a held mark, which no record has"
+  },
+  "pending-invalid-id.json": {
+    "code": "record-invalid",
+    "why": "a pending id that does not start with ap-"
+  },
+  "pending-invalid-key-case.json": {
+    "code": "record-invalid",
+    "why": "the key binding_sha256 in another case"
+  },
+  "pending-invalid-note-too-large.json": {
+    "code": "record-too-large",
+    "why": "a note of more than 2 KiB"
+  },
+  "pending-invalid-path-newline.json": {
+    "code": "record-invalid",
+    "why": "a path with a line feed written as a string, not as b64"
+  },
+  "pending-invalid-plan-digest.json": {
+    "code": "binding-mismatch",
+    "why": "plan_sha256 is not the digest of plan_text"
+  },
+  "pending-invalid-prune-move.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect moves a branch to another commit; every effect of a prune deletes"
+  },
+  "pending-invalid-prune-no-merged-into.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect deletes a branch and does not say where it was merged"
+  },
+  "pending-invalid-prune-not-branch.json": {
+    "code": "record-invalid",
+    "why": "a prune whose effect deletes a tag; every effect is on a ref under refs/heads/"
+  },
+  "pending-invalid-repeated-key.json": {
+    "code": "record-invalid",
+    "why": "the key planner appears twice"
+  },
+  "pending-invalid-schema.json": {
+    "code": "record-invalid",
+    "why": "another schema"
+  },
+  "pending-invalid-summary-base.json": {
+    "code": "record-invalid",
+    "why": "a summary whose base is the second parent of the merge, not the first"
+  },
+  "pending-invalid-summary-tip.json": {
+    "code": "record-invalid",
+    "why": "a summary whose tip is not the merge commit"
+  },
+  "pending-invalid-three-parents.json": {
+    "code": "record-invalid",
+    "why": "a merge with three parents"
+  },
+  "pending-invalid-too-large.json": {
+    "code": "record-too-large",
+    "why": "more than 64 KiB: the four lists are never cut"
+  },
+  "pending-invalid-unknown-field.json": {
+    "code": "record-invalid",
+    "why": "a field the form does not name, inside the summary"
+  },
+  "pending-invalid-verb.json": {
+    "code": "verb-not-requestable",
+    "why": "a verb outside the closed list, in a record whose digests are right"
+  },
+  "request-invalid-control-c1.json": {
+    "code": "request-invalid",
+    "why": "a raw U+0085 in a plain string"
+  },
+  "request-invalid-control-character.json": {
+    "code": "request-invalid",
+    "why": "an escaped tab in a plain string"
+  },
+  "request-invalid-empty-feature-sha.json": {
+    "code": "request-invalid",
+    "why": "a prune with feature_sha written as an empty string; an optional field that is empty is left out"
+  },
+  "request-invalid-exponent.json": {
+    "code": "request-invalid",
+    "why": "epoch is written with an exponent"
+  },
+  "request-invalid-feature-name.json": {
+    "code": "feature-name",
+    "why": "a feature name outside [a-z0-9-]{1,48}"
+  },
+  "request-invalid-float.json": {
+    "code": "request-invalid",
+    "why": "epoch is written as a float"
+  },
+  "request-invalid-id.json": {
+    "code": "request-invalid",
+    "why": "a request id outside rq-[a-z0-9-]{1,48}"
+  },
+  "request-invalid-key-case.json": {
+    "code": "request-invalid",
+    "why": "the key epoch is written Epoch"
+  },
+  "request-invalid-null.json": {
+    "code": "request-invalid",
+    "why": "a null"
+  },
+  "request-invalid-repeated-key-escaped.json": {
+    "code": "request-invalid",
+    "why": "the key epoch appears twice, the second time with its first letter written as a \\u escape; keys are compared after their escapes are resolved"
+  },
+  "request-invalid-repeated-key.json": {
+    "code": "request-invalid",
+    "why": "the key epoch appears twice with the same value"
+  },
+  "request-invalid-schema.json": {
+    "code": "request-invalid",
+    "why": "another schema"
+  },
+  "request-invalid-time.json": {
+    "code": "request-invalid",
+    "why": "a time that does not end in Z"
+  },
+  "request-invalid-too-large.json": {
+    "code": "record-too-large",
+    "why": "more than 8 KiB"
+  },
+  "request-invalid-trailing-data.json": {
+    "code": "request-invalid",
+    "why": "data after the object"
+  },
+  "request-invalid-two-names.json": {
+    "code": "feature-name",
+    "why": "a feature finish that names two features"
+  },
+  "request-invalid-unknown-field.json": {
+    "code": "request-invalid",
+    "why": "a field the form does not name"
+  },
+  "request-invalid-verb.json": {
+    "code": "verb-not-requestable",
+    "why": "a verb that cannot be asked for"
+  }
+}

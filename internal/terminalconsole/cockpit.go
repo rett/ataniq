@@ -7,6 +7,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+
+	"ataniq/internal/terminalconsole/arrival"
 )
 
 // focusState says where keys go.
@@ -67,6 +69,10 @@ type cockpitState struct {
 	sel selection
 	// live is the live session, when Options.Live is set.
 	live liveState
+	// refresh asks the source again on a tick: see refresh.go.
+	refresh refreshState
+	// ap is the approvals pieces: see approvals.go.
+	ap approvalsState
 }
 
 // resizeMsg applies a debounced window resize to the pane.
@@ -90,6 +96,12 @@ func (m *Model) onSize() tea.Cmd {
 			cmds = append(cmds, m.startLive())
 		} else {
 			cmds = append(cmds, m.tickCmd())
+			if cmd := m.startRefresh(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if cmd := m.startApprovals(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 	}
 	if cmd := m.syncPane(m.sized); cmd != nil {
@@ -141,9 +153,14 @@ func (m *Model) onResize(v resizeMsg) {
 	}
 }
 
-// onKey routes a key press: to the single-column pages below the cockpit's
-// size, else to the cockpit.
+// onKey routes a key press: to an open approvals screen, else to the
+// single-column pages below the cockpit's size, else to the cockpit.
 func (m *Model) onKey(v tea.KeyPressMsg) tea.Cmd {
+	// An open approvals screen has every key before the cockpit's own, the
+	// zoom key and the single-column pages included.
+	if m.apprOpen() {
+		return m.apprKey(v)
+	}
 	if !m.layout().cockpit {
 		return m.handleFallbackKey(v)
 	}
@@ -195,17 +212,33 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 	m.notice = ""
 	m.live.noticeLive = false
 	key := v.String()
+	// The arrival strip takes Esc and a digit only here, in console focus,
+	// and only while it shows and nothing else has the keys. It never takes
+	// the key that woke the console.
+	if act, line := m.ap.strip.Key(v, m.ap.ev, m.stripFocused()); act != arrival.None {
+		if act == arrival.Open {
+			return m.openApprovals(line == arrival.LineWaiting)
+		}
+		return nil
+	}
 	if key == "q" || key == "ctrl+c" {
 		return m.quit()
 	}
 	// Zoom draws no help or action list, so the keys that would open one do
 	// nothing there. Without this an invisible overlay would take the next
 	// Enter. Nor does a, whose notice explains a control of the action list.
-	if m.zoom && (key == "?" || key == "ctrl+k" || key == "a") {
+	if m.zoom && (key == "?" || key == "ctrl+k" || key == "a" || key == "g") {
 		return nil
 	}
 	if m.overlay != "" {
 		switch key {
+		case "g":
+			// The action list's approve and deny are live with a backend:
+			// they open the approvals view.
+			if m.overlay == "actions" && m.approvalsLive() {
+				m.overlay = ""
+				return m.openApprovals(false)
+			}
 		case "esc", "enter", "?", "ctrl+k":
 			m.overlay = ""
 		case "up", "k", "down", "j":
@@ -236,8 +269,10 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 			}
 			m.pane = (m.pane + step) % paneCount
 		}
+	case "g":
+		return m.openApprovals(false)
 	case "enter":
-		m.enter()
+		return m.enter()
 	case "up", "k":
 		m.move(-1)
 	case "down", "j":
@@ -246,17 +281,25 @@ func (m *Model) consoleKey(v tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
-// enter acts on the focused pane: it selects in the tree and gives the
-// session the focus.
-func (m *Model) enter() {
+// enter acts on the focused pane: it selects in the tree, gives the session
+// the focus, and on the pending gate in the right pane opens the oldest
+// waiting card.
+func (m *Model) enter() tea.Cmd {
 	if m.zoom || m.pane == paneSession {
+		if m.labelled() {
+			m.notice = noSessionText
+			return nil
+		}
 		if m.layout().cockpit {
 			m.focus = sessionFocus
 		}
-		return
+		return nil
+	}
+	if m.pane == paneEvidence && m.ap.backend != nil {
+		return m.openApprovals(true)
 	}
 	if m.pane != paneTree {
-		return
+		return nil
 	}
 	rows := m.treeRows()
 	if m.treeCursor < len(rows) && rows[m.treeCursor].selectable {
@@ -265,6 +308,7 @@ func (m *Model) enter() {
 		m.projectCursor, m.leadCursor = r.project, r.lead
 		m.leadSelections[r.project] = r.lead
 	}
+	return nil
 }
 
 // move moves the tree cursor or scrolls the focused pane. A scroll of the
@@ -286,7 +330,7 @@ func (m *Model) move(delta int) {
 	case paneEvidence:
 		m.scrolls[paneEvidence] = min(max(0, m.scrolls[paneEvidence]+delta), max(0, len(m.evidenceLines(m.layout().evidence.Dx()-2))-1))
 	case paneTimeline:
-		m.scrolls[paneTimeline] = min(max(0, m.scrolls[paneTimeline]-delta), max(0, len(m.timeline)-1))
+		m.scrolls[paneTimeline] = min(max(0, m.scrolls[paneTimeline]-delta), max(0, len(m.allTimeline())-1))
 	}
 }
 
