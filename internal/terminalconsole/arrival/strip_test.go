@@ -248,6 +248,18 @@ func TestRefreshKeepsDigitsTrueToTheLastDrawing(t *testing.T) {
 		}
 	}
 
+	// A short strip drew two of four lines. The alerts clear: three lines
+	// remain, more than were drawn, but they moved up.
+	s, _ = shown(t, full(), 100, 3)
+	sum = full()
+	sum.Alerts, sum.LimitReached = nil, 0
+	s.Refresh(sum)
+	for _, d := range "12" {
+		if a, l := s.Key(key(d), typing, true); a != None || l != NoLine {
+			t.Fatalf("digit %c after the lines moved in a short strip: %v %v", d, a, l)
+		}
+	}
+
 	// Lines that stay where they were keep their digits.
 	s, _ = shown(t, full(), 100, 5)
 	sum = full()
