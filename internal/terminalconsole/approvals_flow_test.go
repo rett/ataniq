@@ -560,6 +560,9 @@ func TestApprovalsFlowHostileTextOnTheCardAndInThePagerOC10(t *testing.T) {
 			if !strings.Contains(pagerShown.String(), visibleEscape) {
 				t.Fatalf("no frame of the pager draws the escape as %q", visibleEscape)
 			}
+			if strings.Contains(pagerShown.String(), visibleEscapeTwice) {
+				t.Fatal("a lead's escape is escaped twice on a pager screen")
+			}
 			f.press(escKey)
 			if f.m.ap.view == nil || !f.m.ap.view.CardOpen() {
 				t.Fatal("Esc left the card with the pager")
