@@ -339,6 +339,20 @@ type countingDoor struct {
 	// does the same for List.
 	failDecide error
 	failList   error
+	// failShow makes Show fail as a call, and refuseSettle makes the next
+	// Settle answer with a refusal, once.
+	failShow     error
+	refuseSettle *record.Error
+}
+
+func (c *countingDoor) Show(ctx context.Context, id string) (door.Shown, error) {
+	c.mu.Lock()
+	fail := c.failShow
+	c.mu.Unlock()
+	if fail != nil {
+		return door.Shown{}, fail
+	}
+	return c.Door.Show(ctx, id)
 }
 
 func (c *countingDoor) List(ctx context.Context) ([]door.Entry, error) {
@@ -372,7 +386,12 @@ func (c *countingDoor) Use(ctx context.Context, in door.UseInput) (door.Used, er
 func (c *countingDoor) Settle(ctx context.Context, in door.SettleInput) (door.Settled, error) {
 	c.mu.Lock()
 	c.settles++
+	refuse := c.refuseSettle
+	c.refuseSettle = nil
 	c.mu.Unlock()
+	if refuse != nil {
+		return door.Settled{}, refuse
+	}
 	return c.Door.Settle(ctx, in)
 }
 

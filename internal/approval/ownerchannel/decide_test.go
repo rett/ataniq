@@ -3,6 +3,7 @@ package ownerchannel
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -599,3 +600,146 @@ func TestAFrameThatCannotBecomeARecordIsRefused(t *testing.T) {
 }
 
 var _ = door.RecordOf
+
+// The owner's word reaches the door and the service stops before the
+// journal has it. A restart takes it up: the journal copies what the door
+// holds, and nothing is settled again.
+func TestADisposeThatStoppedAfterTheDoorSettledIsTakenUpByARestart(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.intake.applyErr = errors.New("update-ref was killed")
+	if res, err := e.decide(p, true); err != nil || res.State != record.StateUnknown {
+		t.Fatalf("%+v %v", res, err)
+	}
+	e.beat()
+	e.fault = "settled"
+	if _, err := e.svc.Dispose(context.Background(), src, p.ID, record.StateApplied); !errors.Is(err, errInjected) {
+		t.Fatalf("Dispose returned %v, want the injected stop", err)
+	}
+	if e.state(p.ID) != record.StateApplied {
+		t.Fatalf("the door's state is %s: the owner's word did not reach it", e.state(p.ID))
+	}
+	_, _, settles := e.door.counts()
+	e.restart()
+	if e.state(p.ID) != record.StateApplied {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	unknown, err := e.svc.journal().UnknownOutcomes()
+	if err != nil || len(unknown) != 0 {
+		t.Errorf("an outcome is still unknown after the restart: %v %v", unknown, err)
+	}
+	outcomes := e.entries(ownerjournal.KindOutcome)
+	if len(outcomes) != 2 || !strings.Contains(string(outcomes[1].Body), `"state":"applied"`) {
+		t.Errorf("the outcome entries: %+v", outcomes)
+	}
+	if _, _, after := e.door.counts(); after != settles {
+		t.Errorf("the restart settled at the door: %d settles, want %d", after, settles)
+	}
+	if replies := e.mail.repliesFor("rq-test-01"); len(replies) != 1 || replies[0].State != record.StateApplied {
+		t.Errorf("the lead was told %+v", replies)
+	}
+	if n := e.merger.pinCount(); n != 0 {
+		t.Errorf("%d pins left", n)
+	}
+	e.beat()
+	_, err = e.svc.Dispose(context.Background(), src, p.ID, record.StateApplied)
+	wantCode(t, err, record.CodeDecisionInvalid)
+}
+
+// The same stop, met by the owner's second word before anything has taken
+// the record up: Dispose accepts a door that holds what he said, writes the
+// journal alone, and does not settle again. It refuses the other word.
+func TestDisposeAcceptsADoorThatHoldsTheOwnersWordAlready(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.intake.applyErr = errors.New("update-ref was killed")
+	if _, err := e.decide(p, true); err != nil {
+		t.Fatal(err)
+	}
+	e.beat()
+	e.fault = "settled"
+	if _, err := e.svc.Dispose(context.Background(), src, p.ID, record.StateNotApplied); !errors.Is(err, errInjected) {
+		t.Fatalf("Dispose returned %v, want the injected stop", err)
+	}
+	// A new service that cannot read the door at its start leaves the
+	// record as it is.
+	e.door.failShow = errors.New("connection refused")
+	e.stop()
+	e.start()
+	e.door.failShow = nil
+	if unknown, err := e.svc.journal().UnknownOutcomes(); err != nil || len(unknown) != 1 {
+		t.Fatalf("the journal's unknown outcomes: %d, %v", len(unknown), err)
+	}
+	_, _, settles := e.door.counts()
+	e.beat()
+	_, err := e.svc.Dispose(context.Background(), src, p.ID, record.StateApplied)
+	wantCode(t, err, record.CodeDecisionInvalid)
+	res, err := e.svc.Dispose(context.Background(), src, p.ID, record.StateNotApplied)
+	if err != nil || res.State != record.StateNotApplied {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if _, _, after := e.door.counts(); after != settles {
+		t.Errorf("Dispose settled a record the door had settled: %d settles, want %d", after, settles)
+	}
+	if unknown, err := e.svc.journal().UnknownOutcomes(); err != nil || len(unknown) != 0 {
+		t.Errorf("an outcome is still unknown: %v %v", unknown, err)
+	}
+	if replies := e.mail.repliesFor("rq-test-01"); len(replies) != 1 || replies[0].State != record.StateNotApplied {
+		t.Errorf("the lead was told %+v", replies)
+	}
+}
+
+// The door refuses the settle that follows an application. The record stays
+// consumed and the journal says unknown. Nothing but the owner moves it
+// (ticks and restarts leave it), and his word is settled at the door
+// and journaled: the merge that was applied is reported and unpinned.
+func TestASettleTheDoorRefusedIsFinishedByTheOwner(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.door.refuseSettle = &record.Error{Code: record.CodePreviousEpoch, Detail: "the seat's epoch ended"}
+	res, err := e.decide(p, true)
+	if err != nil || res.State != record.StateUnknown {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if e.state(p.ID) != record.StateConsumed {
+		t.Fatalf("the door's state is %s, want consumed", e.state(p.ID))
+	}
+	if e.intake.ref() != mergeID {
+		t.Fatal("the ref was not moved")
+	}
+	if got := e.mail.all(); len(got) != 0 {
+		t.Errorf("the lead was told of an outcome that is not final: %v", got)
+	}
+	// A tick and a restart leave it for the owner.
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.restart()
+	if e.state(p.ID) != record.StateConsumed {
+		t.Fatalf("the service settled by itself: %s", e.state(p.ID))
+	}
+	if unknown, err := e.svc.journal().UnknownOutcomes(); err != nil || len(unknown) != 1 {
+		t.Fatalf("the journal's unknown outcomes: %d, %v", len(unknown), err)
+	}
+
+	e.beat()
+	res, err = e.svc.Dispose(context.Background(), src, p.ID, record.StateApplied)
+	if err != nil || res.State != record.StateApplied {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if e.state(p.ID) != record.StateApplied {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	if unknown, err := e.svc.journal().UnknownOutcomes(); err != nil || len(unknown) != 0 {
+		t.Errorf("an outcome is still unknown: %v %v", unknown, err)
+	}
+	if replies := e.mail.repliesFor("rq-test-01"); len(replies) != 1 || replies[0].State != record.StateApplied {
+		t.Errorf("the lead was told %+v", replies)
+	}
+	if n := e.merger.pinCount(); n != 0 {
+		t.Errorf("%d pins left", n)
+	}
+}

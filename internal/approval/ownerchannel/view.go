@@ -451,6 +451,13 @@ func (s *Service) Patch(ctx context.Context, params ownerwire.PageParams) (owner
 // outcome by itself; this is the owner's word. It is refused to a
 // connection that is not the decider and to an owner who is away, as a
 // decision is.
+//
+// The door's record is settled first and the journal's outcome follows, so
+// a stop between the two leaves the door with his word and the journal
+// still unknown. Dispose accepts that state, and so does a restart, which
+// copies what the door holds into the journal. Dispose also takes a record
+// that the door holds as consumed: the door refused the settle that came
+// with the outcome, and the owner's word is settled again now.
 func (s *Service) Dispose(ctx context.Context, src Source, id string, state record.State) (ownerwire.DecideResult, error) {
 	ctx, done, err := s.begin(ctx)
 	if err != nil {
@@ -479,7 +486,14 @@ func (s *Service) Dispose(ctx context.Context, src Source, id string, state reco
 		}
 		return ownerwire.DecideResult{}, wrapDoor(err)
 	}
-	if shown.Entry.State != record.StateUnknown {
+	settle := true
+	switch shown.Entry.State {
+	case record.StateUnknown, record.StateConsumed:
+	case state:
+		// The door has his word already: a stop came between the door's
+		// settle and the journal's entry. Only the journal is written.
+		settle = false
+	default:
 		return ownerwire.DecideResult{}, refuse(record.CodeDecisionInvalid, "the approval's outcome is not unknown")
 	}
 	unknown, err := s.journal().UnknownOutcomes()
@@ -490,7 +504,7 @@ func (s *Service) Dispose(ctx context.Context, src Source, id string, state reco
 		if u.Decision().ID() != id {
 			continue
 		}
-		return s.journalOutcome(ctx, u, p, door.Outcome(state), true)
+		return s.journalOutcome(ctx, u, p, door.Outcome(state), settle)
 	}
 	return ownerwire.DecideResult{}, refuse(record.CodeDecisionInvalid, "the journal has no unknown outcome for this approval")
 }

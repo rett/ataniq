@@ -21,6 +21,10 @@ import (
 //     what the door says: not used yet, it is used now; used, its outcome
 //     is read from what the mirror shows (applied, not-applied, else
 //     unknown) and the approval is never applied again.
+//   - An outcome the journal holds as unknown, for an approval the door now
+//     holds as applied or not-applied, is the owner's word that reached the
+//     door before the service stopped (see [Service.Dispose]): the journal
+//     takes it. Nothing is settled.
 //   - A held decision delivers nothing.
 //   - A decision the door holds and the journal lacks did not come from the
 //     owner's console. That approval is refused and an alert is journaled;
@@ -87,12 +91,47 @@ func (s *Service) reconcile(ctx context.Context) error {
 	if err := note(s.checkDoor(ctx)); err != nil {
 		return err
 	}
+	if err := note(s.takeUpDisposals(ctx)); err != nil {
+		return err
+	}
 
 	if _, err := st.ExpireHeld(s.now()); err != nil {
 		return s.jerr(ctx, err)
 	}
 	if err := s.syncIndex(); err != nil {
 		return s.jerr(ctx, err)
+	}
+	return errors.Join(doorErrs...)
+}
+
+// takeUpDisposals finishes what a [Service.Dispose] left half done: the
+// owner's word reached the door (applied or not-applied) and the service
+// stopped before the journal had it. It copies what the door holds into the
+// journal and settles nothing. An outcome the door holds as unknown, or
+// still as consumed, is left for the owner.
+func (s *Service) takeUpDisposals(ctx context.Context) error {
+	unknown, err := s.journal().UnknownOutcomes()
+	if err != nil {
+		return s.jerr(ctx, err)
+	}
+	var doorErrs []error
+	for _, u := range unknown {
+		shown, p, perr := s.lookup(ctx, u.Decision().ID())
+		if perr != nil {
+			doorErrs = append(doorErrs, wrapDoor(perr))
+			continue
+		}
+		st := shown.Entry.State
+		if st != record.StateApplied && st != record.StateNotApplied {
+			continue
+		}
+		if _, err := s.journalOutcome(ctx, u, p, door.Outcome(st), false); err != nil {
+			if errors.Is(err, ErrDoorUnavailable) || ctx.Err() != nil {
+				doorErrs = append(doorErrs, err)
+				continue
+			}
+			return err
+		}
 	}
 	return errors.Join(doorErrs...)
 }
