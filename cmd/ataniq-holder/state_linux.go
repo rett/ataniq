@@ -50,8 +50,26 @@ type stateFile struct {
 	Rows          int       `json:"rows"`
 	// Agent is the agent's program, ARGV[0].
 	Agent string `json:"agent"`
-	// Scratch is true: this build hosts only a scratch agent.
+	// Scratch is true for a scratch agent, the only kind a build without the
+	// ataniq_canary tag hosts.
 	Scratch bool `json:"scratch"`
+	// The fields below are canary mode's, which exists only in a build with
+	// the ataniq_canary tag; scratch mode leaves them out of the file.
+	//
+	// Canary is true in canary mode.
+	Canary bool `json:"canary,omitempty"`
+	// Waiver is the waiver of assertion 10, in full, once the start sequence of
+	// the sandbox has succeeded with it. Without a waiver it is absent.
+	Waiver string `json:"waiver,omitempty"`
+	// ProfileVersion is the version of the sandbox profile the start sequence
+	// used; ProfileDigest, above, is then the digest of the plan it launched,
+	// which is the digest the holder was pinned to.
+	ProfileVersion int `json:"profile_version,omitempty"`
+	// SandboxStarted is true once the start sequence has succeeded: before
+	// that the file names a holder whose agent is not yet running.
+	SandboxStarted bool `json:"sandbox_started,omitempty"`
+	// StartNotes are what the start sequence noticed and did not refuse on.
+	StartNotes []string `json:"start_notes,omitempty"`
 }
 
 // startTicks reads the start time, in clock ticks since boot, of the process

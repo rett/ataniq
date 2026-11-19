@@ -12,6 +12,12 @@
 // refuses to start without --scratch. It is provisional and unqualified, and it
 // hosts no real lead. The development launcher ataniq-scratch starts it.
 //
+// A build with the ataniq_canary tag has a second mode, --canary, for the
+// canary slice: the agent is started by the start sequence of the lead sandbox
+// (canary_linux.go). Every file of that mode carries the tag; without it the
+// command knows --scratch only (scratchonly_linux.go), and scratch mode is the
+// same in both builds: it waives nothing and gives the service no deliverer.
+//
 // The state folder. The holder writes holder.json (its pid and start ticks, the
 // epoch and launch intent it was given) before the agent starts, and
 // session.Start's final record final.json when the session is over. Before it
@@ -62,9 +68,17 @@ const (
 	exitFail   = 1 // a holder failure after start
 	exitRefuse = 2 // wrong usage or a start-up refusal
 	exitLocked = 3 // the role is held by another holder
+	// exitSandbox is canary mode's alone (a build with the ataniq_canary tag):
+	// the start sequence of the sandbox refused or failed, and no agent is left.
+	exitSandbox = 4
 )
 
+// version is what --version reports. A build that wants the real number sets
+// it with -ldflags "-X main.version=N".
+var version = "0.0.0-dev"
+
 const usageText = `Usage:
+  ataniq-holder --version
   ataniq-holder --scratch --role ROLE --epoch N --launch-intent ID --runtime NAME
                 --runtime-version V --profile-digest D --tree DIR --state-dir DIR
                 --runtime-dir DIR --role-lock FILE --daemon-lock FILE --cols C --rows R
@@ -92,6 +106,8 @@ failure after start, 2 wrong usage or a start-up refusal, 3 the role is held.
 // process.
 type deps struct {
 	stderr io.Writer
+	// stdout takes the line of --version; nil is the process's own.
+	stdout io.Writer
 	// procRoot is where the sysctl dev.tty.legacy_tiocsti is read; empty is
 	// /proc.
 	procRoot string
@@ -115,7 +131,63 @@ type deps struct {
 	// it keeps for the end. It is for tests, which start a second holder
 	// there.
 	beforeLockRelease func()
+	// canary holds the seams of canary mode. It is empty in a build without
+	// the ataniq_canary tag.
+	canary canaryDeps
 }
+
+// holderMode is what differs between the holder's modes: scratch mode, in every
+// build, and canary mode, in a build with the ataniq_canary tag. selectMode
+// returns the mode of a command line.
+type holderMode interface {
+	// state marks the state file with the mode, before it is written.
+	state(st *stateFile)
+	// start starts the agent and returns its session. It owns the role lock
+	// from the call on. When it returns no session it has said why on stderr
+	// and in the event log, has left no agent, and returns the exit status.
+	start(sc startContext) (*session.Session, int)
+	// serve completes the configuration of the attach and control service for
+	// the started session.
+	serve(sess *session.Session, vcfg *serve.Config)
+}
+
+// startContext is what a mode's start is given.
+type startContext struct {
+	cfg  config
+	d    deps
+	out  holderOut
+	log  *eventlog.Log
+	sigc <-chan os.Signal
+	// scfg is the session's configuration for the agent of the command line;
+	// its HeldRoleLock is the role lock.
+	scfg session.Config
+	// st is the state file as it was written.
+	st stateFile
+}
+
+// scratchMode hosts a scratch agent: the agent of the command line is the
+// session's child, with no sandbox. It waives nothing and gives the service no
+// deliverer, in every build.
+type scratchMode struct{}
+
+func (scratchMode) state(st *stateFile) { st.Scratch = true }
+
+func (scratchMode) start(sc startContext) (*session.Session, int) {
+	sess, err := session.Start(sc.scfg)
+	if err != nil {
+		if errors.Is(err, session.ErrRoleLocked) {
+			sc.out.line("refused: the role is already held by another holder (--role-lock is locked)")
+			return nil, exitLocked
+		}
+		_ = sc.log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: sc.cfg.role, Epoch: strconv.FormatUint(sc.cfg.epoch, 10), Reason: "start-failed"})
+		// The error names the agent's path, which the journal has no need of.
+		sc.out.line("cannot start the agent: %s (%s)", startReason(err), staleStateNote)
+		return nil, exitFail
+	}
+	return sess, exitOK
+}
+
+func (scratchMode) serve(*session.Session, *serve.Config) {}
 
 func realDeps() deps {
 	return deps{
@@ -174,22 +246,30 @@ func run(args []string, d deps) int {
 	if d.now == nil {
 		d.now = time.Now
 	}
+	if len(args) == 1 && args[0] == "--version" {
+		w := d.stdout
+		if w == nil {
+			w = os.Stdout
+		}
+		fmt.Fprintf(w, "ataniq-holder %s%s\n", version, versionSuffix)
+		return exitOK
+	}
 	cfg, err := parse(args)
 	switch e := err.(type) {
 	case nil:
 	case helpRequest:
-		fmt.Fprint(d.stderr, usageText)
+		fmt.Fprint(d.stderr, usageText+modeUsageText)
 		return exitOK
 	case notScratch:
-		out.line("refused: this build can host only a scratch agent (--scratch): the sandbox is not built")
+		out.line("refused: " + notScratchText)
 		return exitRefuse
 	case usageError:
 		fmt.Fprintln(d.stderr, "error: "+string(e))
-		fmt.Fprint(d.stderr, usageText)
+		fmt.Fprint(d.stderr, usageText+modeUsageText)
 		return exitRefuse
 	default:
 		fmt.Fprintln(d.stderr, "error: invalid arguments")
-		fmt.Fprint(d.stderr, usageText)
+		fmt.Fprint(d.stderr, usageText+modeUsageText)
 		return exitRefuse
 	}
 	refuse := func(format string, args ...any) int {
@@ -285,6 +365,14 @@ func run(args []string, d deps) int {
 		}
 	}()
 
+	// The mode of the command line. Canary mode reads its inputs and makes its
+	// refusals here, with the role lock held and before anything is opened or
+	// written.
+	mode, code := selectMode(cfg, d, out, keep)
+	if mode == nil {
+		return code
+	}
+
 	log, err := eventlog.Open(cfg.stateDir, eventlog.Options{Clock: d.now})
 	if err != nil {
 		return refuse("cannot open the event log in the state folder: %v", err)
@@ -297,12 +385,14 @@ func run(args []string, d deps) int {
 		return refuse("cannot move the final record of an earlier epoch aside: %v", err)
 	}
 	// The state file is written before the agent starts (design 1.1).
-	if err := writeStateFile(cfg.stateDir, stateFile{
+	st := stateFile{
 		Version: stateFileVersion, Role: cfg.role, Epoch: cfg.epoch, LaunchIntent: cfg.launchIntent,
 		Runtime: cfg.runtime, RuntimeVersion: cfg.runtimeVersion, ProfileDigest: cfg.profileDigest,
 		Tree: cfg.tree, Pid: os.Getpid(), PidStartTicks: ticks, Started: d.now().UTC(),
-		Cols: cfg.cols, Rows: cfg.rows, Agent: cfg.argv[0], Scratch: true,
-	}); err != nil {
+		Cols: cfg.cols, Rows: cfg.rows, Agent: cfg.argv[0],
+	}
+	mode.state(&st)
+	if err := writeStateFile(cfg.stateDir, st); err != nil {
 		return refuse("cannot write the state file in the state folder: %v", err)
 	}
 
@@ -326,18 +416,11 @@ func run(args []string, d deps) int {
 		out.line("stopped by %s before the agent was started", signalName(*s))
 		return exitRefuse
 	}
-	// Start owns the lock now, whether it succeeds or not.
+	// The mode's start owns the lock now, whether it succeeds or not.
 	lock = nil
-	sess, err := session.Start(scfg)
-	if err != nil {
-		if errors.Is(err, session.ErrRoleLocked) {
-			out.line("refused: the role is already held by another holder (--role-lock is locked)")
-			return exitLocked
-		}
-		_ = log.Append(eventlog.KindHolder, eventlog.EventRefusal, eventlog.Fields{Role: cfg.role, Epoch: strconv.FormatUint(cfg.epoch, 10), Reason: "start-failed"})
-		// The error names the agent's path, which the journal has no need of.
-		out.line("cannot start the agent: %s (%s)", startReason(err), staleStateNote)
-		return exitFail
+	sess, code := mode.start(startContext{cfg: cfg, d: d, out: out, log: log, sigc: sigc, scfg: scfg, st: st})
+	if sess == nil {
+		return code
 	}
 	defer sess.Close()
 
@@ -346,6 +429,7 @@ func run(args []string, d deps) int {
 		Runtime: cfg.runtime, RuntimeVersion: cfg.runtimeVersion, Log: log, DaemonLock: cfg.daemonLock,
 		Now: d.now,
 	}
+	mode.serve(sess, &vcfg)
 	if d.tweakServe != nil {
 		d.tweakServe(&vcfg)
 	}
@@ -385,7 +469,7 @@ wait:
 	// stops an agent that still runs, waits for the final record and releases
 	// the role lock.
 	sess.Close()
-	code := exitOK
+	code = exitOK
 	if serveErr != nil {
 		out.line("the attach and control service ended with an error: %v", serveErr)
 		code = exitFail

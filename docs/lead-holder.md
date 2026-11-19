@@ -17,11 +17,13 @@ A holder is one process for one hosted agent. It owns the agent's pseudo-termina
 the screen (the patched `x/vt` in `third_party/patched`, wrapped by the same
 code as the console's session pane, so that holder and console cannot drift),
 two unix sockets, an event log and a final record. The agent runs as the
-holder's child with the terminal as its controlling terminal. A console attaches
-to the holder, gets a snapshot of the screen and then follows the output. The
-console can go away and come back; the agent keeps running, and the holder
-keeps reading its output, answering its terminal queries and updating its
-emulator.
+holder's child with the terminal as its controlling terminal, except in canary
+mode, in a build with the `ataniq_canary` tag: there the child is the first
+process of the sandbox, which starts with no controlling terminal and takes the
+terminal inside. A console attaches to the holder, gets a snapshot of the screen
+and then follows the output. The console can go away and come back; the agent
+keeps running, and the holder keeps reading its output, answering its terminal
+queries and updating its emulator.
 
 Three commands take part:
 
@@ -330,7 +332,7 @@ keeps. A cap that is hit is counted, not silent.
 | One PTY read | 64 KiB; a longer burst is several chunks | none |
 | Terminal replies waiting for the input lock | 64 KiB | `reply_dropped_chunks`, `reply_dropped_bytes` |
 | Output the reader holds while a fence has the input lock | 4 MiB; the reader waits for room and drops nothing | `held_output_full` |
-| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted) |
+| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted, except in a build with the `ataniq_canary` tag whose holder has a deliverer: there the `busy` and `bad-request` refusals of `inject` are counted here) |
 | Send buffer | 1 MiB of output for each client, plus one queued snapshot outside it | `resyncs`, `too_slow_disconnects`, `stalled_disconnects` |
 | Frame payload | 64 KiB from a client, 1 MiB from the holder, 64 KiB on the control socket | `bad_frames`; the connection is closed |
 | Snapshot frame | 19 MiB | the snapshot is not taken (`snapshot_errors`) |
