@@ -27,6 +27,11 @@ type Reading struct {
 	// A [ListKind] is the index. An empty list counts as read once the
 	// line that shows it empty was on the screen.
 	Lists [NumLists]bool
+	// Refs says that the ref lines of a prune card were read to their
+	// end. A prune may delete many refs, and it has no diff and no lists
+	// to read, so this is the one thing it asks for. It matters only for a
+	// card with no diff summary.
+	Refs bool
 	// Differs says that the "differs from" block was passed.
 	Differs bool
 
@@ -111,6 +116,9 @@ const (
 	// ReasonPathPages answers a cut path list of which a page was not
 	// read.
 	ReasonPathPages = "the path list is cut on the card, and a page of the whole list was not read"
+	// ReasonRefs answers a prune card whose ref lines were not read to
+	// their end.
+	ReasonRefs = "the list of refs was not read to its end"
 	// ReasonUnsigned answers flagged paths without a sign-off. MayApprove
 	// puts their number before it.
 	ReasonUnsigned = "not signed off"
@@ -138,6 +146,8 @@ func reasonList(k ListKind) string {
 //     the record holds only the first part of the path list, the path list
 //     counts only when every page of the whole list was read, from the
 //     review the card was made from (see [Reading.ReadPage]);
+//   - on a prune card, which has no diff, the ref lines were read to their
+//     end;
 //   - every flagged path is signed off, and no sign-off names a path that
 //     is not flagged;
 //   - at least [OpenDelay] has gone by since the card opened.
@@ -173,6 +183,9 @@ func (c Card) MayApprove(r Reading, now time.Time) (ok bool, reason string) {
 				return false, reasonList(k)
 			}
 		}
+	}
+	if c.Diff == nil && !r.Refs {
+		return false, ReasonRefs
 	}
 	flagged := make(map[record.SignOff]bool, len(c.Flagged))
 	for _, f := range c.Flagged {

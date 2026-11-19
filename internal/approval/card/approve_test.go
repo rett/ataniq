@@ -277,12 +277,21 @@ func TestMayApproveWithoutASummary(t *testing.T) {
 	if _, ok, reason := (Card{}).Approve(full, now); ok || reason != ReasonNoCard {
 		t.Errorf("no card, Approve: got %v, %q", ok, reason)
 	}
-	// A prune has no path list and no lists to read.
+	// A prune has no path list and no lists to read, only its ref lines.
 	prune := mustCard(t, prunePending(t), Inputs{})
-	if ok, reason := prune.MayApprove(Reading{Opened: asked}, now); !ok {
+	if ok, reason := prune.MayApprove(Reading{Opened: asked, Refs: true}, now); !ok {
 		t.Errorf("a prune: refused, %q", reason)
 	}
-	if ok, reason := prune.MayApprove(Reading{Opened: asked, SignedOff: []record.SignOff{{Kind: "symlink", Path: "x"}}}, now); ok || reason != ReasonSurplus {
+	if ok, reason := prune.MayApprove(Reading{Opened: asked}, now); ok || reason != ReasonRefs {
+		t.Errorf("a prune whose refs were not read: got %v, %q", ok, reason)
+	}
+	if ok, reason := prune.MayApprove(Reading{Opened: asked, Paths: true, Lists: allLists, Differs: true}, now); ok || reason != ReasonRefs {
+		t.Errorf("a prune with everything else read: got %v, %q", ok, reason)
+	}
+	if _, ok, reason := prune.Approve(Reading{Opened: asked}, now); ok || reason != ReasonRefs {
+		t.Errorf("Approve of a prune whose refs were not read: got %v, %q", ok, reason)
+	}
+	if ok, reason := prune.MayApprove(Reading{Opened: asked, Refs: true, SignedOff: []record.SignOff{{Kind: "symlink", Path: "x"}}}, now); ok || reason != ReasonSurplus {
 		t.Errorf("a prune with a sign-off: got %v, %q", ok, reason)
 	}
 }
@@ -290,7 +299,7 @@ func TestMayApproveWithoutASummary(t *testing.T) {
 // Every reason is one line of the host's own words.
 func TestReasonsAreHostLines(t *testing.T) {
 	reasons := []string{
-		ReasonNoCard, ReasonEnded, ReasonExpired, ReasonDiffers, ReasonPaths, ReasonPathPages, ReasonUnsigned,
+		ReasonNoCard, ReasonEnded, ReasonExpired, ReasonDiffers, ReasonPaths, ReasonPathPages, ReasonRefs, ReasonUnsigned,
 		ReasonSurplus, ReasonNotOpened, ReasonJustOpened, ReasonTooLong, ReasonNotText,
 		NoteLabel, DiffersLabel, AfterLabel, HeldLabel,
 	}
