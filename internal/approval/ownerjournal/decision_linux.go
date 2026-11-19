@@ -26,6 +26,10 @@ var (
 	ErrConsumed = errors.New("ownerjournal: the approval was already consumed")
 	// ErrSettled says that the approval already has its outcome.
 	ErrSettled = errors.New("ownerjournal: the approval already has its outcome")
+	// ErrNotConsumed says that an outcome that follows a consumption
+	// (applied, not-applied or unknown) was journaled for an approval that
+	// has no use entry saying the door consumed it.
+	ErrNotConsumed = errors.New("ownerjournal: the approval was not consumed")
 )
 
 // Seen is what the journal keeps beside a decision about the moment it was
@@ -527,6 +531,25 @@ func (u *Delivery) usable(t *txn) ([]Entry, error) {
 	return related(t.tx, u.d.seq, KindOutcome)
 }
 
+// consumed reports, inside a write, whether the approval has a use entry
+// with an empty code, which says the door consumed it.
+func (u *Delivery) consumed(t *txn) (bool, error) {
+	uses, err := related(t.tx, u.d.seq, KindUse)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range uses {
+		var b codeBody
+		if err := parseBody(e, &b); err != nil {
+			return false, err
+		}
+		if b.Code == "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // AppendUse journals one answer of the door's Use verb for the approval:
 // code is empty when the door consumed it, and the door's code when it
 // refused the use. This is not a card use; the card use that counts
@@ -552,18 +575,10 @@ func (u *Delivery) AppendUse(at time.Time, code record.Code) error {
 			return ErrSettled
 		}
 		if code == "" {
-			uses, err := related(t.tx, u.d.seq, KindUse)
-			if err != nil {
+			if done, err := u.consumed(t); err != nil {
 				return err
-			}
-			for _, e := range uses {
-				var b codeBody
-				if err := parseBody(e, &b); err != nil {
-					return err
-				}
-				if b.Code == "" {
-					return ErrConsumed
-				}
+			} else if done {
+				return ErrConsumed
 			}
 		}
 		_, err = t.add(Entry{Kind: KindUse, At: at, PendingID: u.d.rec.ID, Project: u.d.rec.Project, Ref: u.d.seq, Body: b})
@@ -577,6 +592,11 @@ func (u *Delivery) AppendUse(at time.Time, code record.Code) error {
 // record ended: applied, not-applied or unknown after it was consumed, or
 // expired, void or withdrawn when it ended unused. line is a host-written
 // line of at most 500 bytes and may be empty.
+//
+// Applied, not-applied and unknown follow a consumption at the door, so
+// they are refused with [ErrNotConsumed] until [Delivery.AppendUse] has
+// journaled a use whose code is empty. Expired, void and withdrawn are
+// for an approval that ended unused and need no use.
 //
 // An approval has one outcome ([ErrSettled] for a second), with one
 // exception: unknown waits for the owner, so after it one more outcome,
@@ -592,6 +612,7 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 	if !validLine(line) {
 		return errors.New("ownerjournal: the outcome's line is not at most 500 bytes without control characters")
 	}
+	unused := state == record.StateExpired || state == record.StateVoid || state == record.StateWithdrawn
 	b, err := body(map[string]any{"line": line, "state": string(state)})
 	if err != nil {
 		return err
@@ -600,6 +621,15 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 		outcomes, err := u.usable(t)
 		if err != nil {
 			return err
+		}
+		if !unused {
+			consumed, err := u.consumed(t)
+			if err != nil {
+				return err
+			}
+			if !consumed {
+				return ErrNotConsumed
+			}
 		}
 		if n := len(outcomes); n != 0 {
 			var last outcomeBody

@@ -36,6 +36,11 @@ var (
 	ErrDamaged = errors.New("ownerjournal: the store is damaged")
 	// ErrClosed says that the store was closed.
 	ErrClosed = errors.New("ownerjournal: the store is closed")
+	// ErrUncertain says that a commit returned an error, so it is not known
+	// whether the entries are in the file, and that the store refuses every
+	// later call until it is closed and opened again. See the package
+	// comment.
+	ErrUncertain = errors.New("ownerjournal: a write may or may not have been made; reopen the store")
 )
 
 // applicationID marks a file as a store of this package ("ATOJ"), and
@@ -94,7 +99,9 @@ type Store struct {
 	db       *sql.DB
 	wal      atomic.Bool // set once the file is known to be a store; see verify
 	closed   bool
-	closeErr error
+	// uncertain is set when a commit returned an error; see [ErrUncertain].
+	uncertain bool
+	closeErr  error
 	// fault is called before and after each step of a write, with the
 	// step's name. It is nil outside tests. An error from it ends the
 	// write as a failed step would.
@@ -472,6 +479,12 @@ func (s *Store) checkPath() error {
 	return nil
 }
 
+// ofdLockingEnabled says whether SQLite is using the file locks that survive
+// the closing of another descriptor. It is a variable so that a test can
+// show what Connect does when they are not in use, which no setting of the
+// kernel here can bring about once they are selected.
+var ofdLockingEnabled = sqlite.OFDLockingEnabled
+
 // requireOFDLocking selects, for the whole process, the file locks that
 // survive the closing of another descriptor. The dispatch journal selects
 // the same; the choice cannot be changed once a database is open.
@@ -553,7 +566,7 @@ func (c *connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
 	}
 	// SQLite falls back to the other kind of lock without an error when
 	// the kernel or the file system refuses these; by now it has locked.
-	if !sqlite.OFDLockingEnabled() {
+	if !ofdLockingEnabled() {
 		return nil, errors.New("ownerjournal: the file locks the store needs are not in use")
 	}
 	if c.check != nil {

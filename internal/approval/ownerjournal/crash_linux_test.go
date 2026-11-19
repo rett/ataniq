@@ -350,3 +350,46 @@ func TestAnOpenWhileAStoreIsBeingMadeIsRefused(t *testing.T) {
 	mustClose(t, s)
 	checkWhole(t, path, []Entry{{Seq: 1, Kind: KindLooked, At: base, Body: []byte("{}")}})
 }
+
+// A commit that returned an error leaves it open whether the entry is in the
+// file. The store then refuses every call, reads and writes, with
+// ErrUncertain, until it is closed and opened again; the reopened store
+// answers what is there.
+func TestACommitThatFailedRefusesEveryLaterCall(t *testing.T) {
+	boom := errors.New("fault")
+	path := newPath(t)
+	armed := false
+	s, err := openWithFault(path, func(p string) error {
+		if armed && p == "commit" {
+			return boom
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	want := fill(t, s, 2)
+	armed = true
+	at := base.Add(time.Minute)
+	if _, err := addLooked(s, at); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("the write: %v, want %v", err, ErrUncertain)
+	}
+	armed = false
+	if _, err := addLooked(s, at.Add(time.Second)); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("a write after it: %v, want %v", err, ErrUncertain)
+	}
+	if _, err := s.Entries(0, 0); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("Entries after it: %v, want %v", err, ErrUncertain)
+	}
+	if _, err := s.Undelivered(); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("Undelivered after it: %v, want %v", err, ErrUncertain)
+	}
+	if _, err := s.LookedAt(); !errors.Is(err, ErrUncertain) {
+		t.Fatalf("LookedAt after it: %v, want %v", err, ErrUncertain)
+	}
+	mustClose(t, s)
+	// The commit did reach the file here, as it may; the reopened store
+	// says so.
+	checkWhole(t, path, append(want, Entry{Seq: 3, Kind: KindLooked, At: at, Body: []byte("{}")}))
+}

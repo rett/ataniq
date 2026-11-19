@@ -2,12 +2,14 @@ package ownerjournal
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -691,5 +693,146 @@ func TestAGapInTheSequenceIsFoundEvenWhenTheDigestsHold(t *testing.T) {
 				t.Fatalf("Open: %v, want %v", err, ErrDamaged)
 			}
 		})
+	}
+}
+
+// The package's promise is that an append is on the disk when it returns.
+// A crash test that copies files or kills a process cannot see a write that
+// was never synced, because the kernel keeps the pages. So this test reads
+// the settings of the store's own connection, after Open and after a reopen,
+// and fails if either is lowered.
+func TestEveryCommitIsSynced(t *testing.T) {
+	path := newPath(t)
+	for i := 0; i < 2; i++ {
+		s := mustOpen(t, path)
+		err := s.read(func(q querier) error {
+			var synced int
+			if err := q.QueryRowContext(context.Background(), "PRAGMA synchronous").Scan(&synced); err != nil || synced != 2 {
+				t.Errorf("opening %d: synchronous is %d, %v; want 2 (FULL)", i+1, synced, err)
+			}
+			var mode string
+			if err := q.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+				t.Errorf("opening %d: journal_mode is %q, %v; want wal", i+1, mode, err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fill(t, s, 1)
+		mustClose(t, s)
+	}
+}
+
+// A crash in the middle of a write leaves a torn write-ahead file beside
+// the main file, not a short main file. The files are copied while the
+// store is open and without the shared-memory file, which a crash leaves
+// useless, and the write-ahead copy is cut at many points. Each cut opens
+// as a store whose entries are a gapless prefix of the whole journal, never
+// shorter than that of a shorter cut, or is refused with ErrDamaged. The
+// whole file gives every entry.
+func TestAWriteAheadFileCutShortIsRecovered(t *testing.T) {
+	const appends = 20
+	path := newPath(t)
+	s := mustOpen(t, path)
+	for i := 0; i < appends; i++ {
+		if _, err := addLooked(s, base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	whole := mustEntries(t, s)
+	copied := copyStore(t, path)
+	mustClose(t, s)
+	if err := os.Remove(copied + "-shm"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	wal := readFile(t, copied+"-wal")
+	if len(wal) < 20*4096 {
+		t.Fatalf("the write-ahead file is %d bytes; the test wants one frame at least for each append", len(wal))
+	}
+	cuts := []int{0, 1, 31, 32, 33, len(wal) - 1}
+	for cut := 997; cut < len(wal); cut += 997 {
+		cuts = append(cuts, cut)
+	}
+	cuts = append(cuts, len(wal))
+	sort.Ints(cuts)
+	last := 0
+	for _, cut := range cuts {
+		cutPath := newPath(t)
+		for suffix, b := range map[string][]byte{"": readFile(t, copied), "-wal": wal[:cut]} {
+			if err := os.WriteFile(cutPath+suffix, b, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := Open(cutPath)
+		if err != nil {
+			if !errors.Is(err, ErrDamaged) {
+				t.Fatalf("cut at %d of %d bytes: %v, want a store or %v", cut, len(wal), err, ErrDamaged)
+			}
+			continue
+		}
+		entries := mustEntries(t, got)
+		mustClose(t, got)
+		if len(entries) > len(whole) || (len(entries) > 0 && !reflect.DeepEqual(entries, whole[:len(entries)])) {
+			t.Fatalf("cut at %d of %d bytes: the entries are not a prefix of the journal", cut, len(wal))
+		}
+		if len(entries) < last {
+			t.Fatalf("cut at %d of %d bytes: %d entries, fewer than the %d of a shorter cut", cut, len(wal), len(entries), last)
+		}
+		last = len(entries)
+	}
+	if last != appends {
+		t.Fatalf("the whole write-ahead file gives %d entries, want %d", last, appends)
+	}
+}
+
+// SQLite opens the file by its path each time it makes a connection. When
+// the path has come to name another file than the one the store locked, the
+// connection is refused, whatever else is true of the file.
+func TestAConnectionIsRefusedWhenThePathNamesAnotherFile(t *testing.T) {
+	path := newPath(t)
+	other := filepath.Join(filepath.Dir(path), "other.journal")
+	o := mustOpen(t, other)
+	fill(t, o, 2)
+	mustClose(t, o)
+	s := mustOpen(t, path)
+	fill(t, s, 1)
+	if got := mustEntries(t, s); len(got) != 1 {
+		t.Fatalf("%d entries before the swap, want 1", len(got))
+	}
+	// Another private store of the same user now has the path's name.
+	if err := os.Rename(other, path); err != nil {
+		t.Fatal(err)
+	}
+	// Drop the idle connection so that the next call makes a new one.
+	s.db.SetMaxIdleConns(0)
+	got, err := s.Entries(0, 0)
+	if err == nil {
+		t.Fatalf("a connection was made to the other file and read %d entries", len(got))
+	}
+	if !strings.Contains(err.Error(), "another file than the one that was locked") {
+		t.Fatalf("the refusal: %v, want the path naming another file", err)
+	}
+}
+
+// Connect refuses a connection when SQLite is not using the file locks that
+// survive the closing of another descriptor. Once they are selected the
+// kernel cannot be made to refuse them, so the test says they are not in
+// use.
+func TestAConnectionIsRefusedWithoutTheFileLocksItNeeds(t *testing.T) {
+	path := newPath(t)
+	s := mustOpen(t, path)
+	fill(t, s, 1)
+	was := ofdLockingEnabled
+	ofdLockingEnabled = func() bool { return false }
+	defer func() { ofdLockingEnabled = was }()
+	s.db.SetMaxIdleConns(0)
+	if _, err := s.Entries(0, 0); err == nil || !strings.Contains(err.Error(), "file locks the store needs") {
+		t.Fatalf("a connection without the file locks: %v, want a refusal", err)
+	}
+	ofdLockingEnabled = was
+	s.db.SetMaxIdleConns(1)
+	if got := mustEntries(t, s); len(got) != 1 {
+		t.Fatalf("%d entries once the locks are in use again, want 1", len(got))
 	}
 }

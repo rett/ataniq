@@ -515,6 +515,25 @@ func TestAnUnknownOutcomeWaitsAndIsSettledOnce(t *testing.T) {
 			t.Fatalf("the line %q was taken", line)
 		}
 	}
+	// An outcome that follows a consumption needs the consumption first;
+	// a use the door refused is not one.
+	consumedStates := []record.State{record.StateApplied, record.StateNotApplied, record.StateUnknown}
+	for _, state := range consumedStates {
+		if err := one.AppendOutcome(base.Add(time.Hour), state, ""); !errors.Is(err, ErrNotConsumed) {
+			t.Fatalf("%s before any use: %v, want %v", state, err, ErrNotConsumed)
+		}
+	}
+	if err := one.AppendUse(base.Add(time.Hour), record.CodeEvidenceChanged); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range consumedStates {
+		if err := one.AppendOutcome(base.Add(time.Hour), state, ""); !errors.Is(err, ErrNotConsumed) {
+			t.Fatalf("%s after a refused use: %v, want %v", state, err, ErrNotConsumed)
+		}
+	}
+	if err := one.AppendUse(base.Add(time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := one.AppendOutcome(base.Add(time.Hour), record.StateUnknown, "the ref is at neither value"); err != nil {
 		t.Fatal(err)
 	}
@@ -824,13 +843,13 @@ func TestACopyTakenWhileADecisionIsWrittenHoldsBothEntriesOrNeither(t *testing.T
 			for _, sh := range shots {
 				points = append(points, sh.point)
 			}
-			wantPoints := []string{"before:begin", "after:begin", "before:insert", "after:insert", "before:insert", "after:insert", "before:commit", "after:commit"}
+			wantPoints := []string{"before:begin", "after:begin", "before:insert", "after:insert", "before:insert", "after:insert", "before:commit", "commit", "after:commit"}
 			if !reflect.DeepEqual(points, wantPoints) {
 				t.Fatalf("the steps of the write: %v, want %v", points, wantPoints)
 			}
 			for i, sh := range shots {
 				want := before
-				if sh.point == "after:commit" {
+				if sh.point == "commit" || sh.point == "after:commit" {
 					want = after
 				}
 				c, err := Open(sh.path)
@@ -842,7 +861,7 @@ func TestACopyTakenWhileADecisionIsWrittenHoldsBothEntriesOrNeither(t *testing.T
 				}
 				// What the copy says is under way matches what it holds.
 				wantUndelivered := []int64{1}
-				if sh.point == "after:commit" && kind == KindDecision {
+				if (sh.point == "commit" || sh.point == "after:commit") && kind == KindDecision {
 					wantUndelivered = []int64{1, 3}
 				}
 				wantSeqs(t, "undelivered in the copy at "+sh.point, undeliveredSeqs(t, c), wantUndelivered...)
