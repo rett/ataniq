@@ -684,6 +684,24 @@ func TestTheStatusLineCarriesTheApprovalsElement(t *testing.T) {
 	}
 }
 
+func TestTheStatusLineShowsAnArrivingCardInSessionFocus(t *testing.T) {
+	b := newFakeApprovals(t)
+	r := newApprRig(t, 100, 30, b, Options{})
+	r.poll()
+	r.focusSession()
+	b.add("ap-new", "project-a", 4*time.Minute)
+	r.poll()
+	rows := r.rows()
+	last := rows[len(rows)-1]
+	if !strings.Contains(last, "approvals 1 (oldest 4 min)") || !strings.Contains(last, "SESSION FOCUS") {
+		t.Fatalf("status line %q", last)
+	}
+	// The card gave no key to the session and rang nothing: he is present.
+	if len(r.sink.keys) != 0 || len(r.raw) != 0 {
+		t.Fatalf("keys %v, raw %q", r.sink.keys, r.raw)
+	}
+}
+
 func TestTheTimelineShowsAskedDecidedAndApplied(t *testing.T) {
 	b := newFakeApprovals(t)
 	b.add("ap-wait", "project-a", 2*time.Minute)

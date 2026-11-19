@@ -521,9 +521,11 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		}
 	}
 	room := l.keys.Dx()
-	if st := m.approvalsStatus(); st.Text != "" && m.focus != sessionFocus {
+	if st := m.approvalsStatus(); st.Text != "" {
 		// The approvals element of the status line, at the right, in the
-		// alert style when a waiting card has little life left.
+		// alert style when a waiting card has little life left. It is
+		// information and takes no key, so it is drawn in session focus too:
+		// it is how a card that comes while the owner types shows.
 		w := ansi.StringWidth(st.Text)
 		if x := room - w; x > 0 {
 			kind := lnHead
