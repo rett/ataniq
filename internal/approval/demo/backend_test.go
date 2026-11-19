@@ -422,6 +422,31 @@ func TestDenyKeepsItsReasonOutOfTheLine(t *testing.T) {
 	}
 }
 
+func TestEveryOutcomeLineSaysSampleAndNothingChanged(t *testing.T) {
+	for _, l := range []string{lineApproved, lineDenied, lineHeld, lineExpired, lineLapsed} {
+		if !strings.Contains(l, "sample") || !strings.Contains(l, "nothing was changed") {
+			t.Errorf("line %q", l)
+		}
+	}
+}
+
+func TestReasonRules(t *testing.T) {
+	b, c := newBackend(t)
+	b.Activity(c.t)
+	k := open(t, b, "ap-sample-clean")
+	deny := card.Decision{ID: k.Title.ID, BindingSHA256: k.BindingSHA256, Reason: "two\nlines"}
+	if _, err := b.Decide(deny); code(err) != record.CodeDecisionInvalid {
+		t.Errorf("a deny reason with a control character: %v", err)
+	}
+	approve := card.Decision{ID: k.Title.ID, BindingSHA256: k.BindingSHA256, Approve: true, Reason: "because"}
+	if _, err := b.Decide(approve); code(err) != record.CodeDecisionInvalid {
+		t.Errorf("an approve with a reason: %v", err)
+	}
+	if l, _ := b.List(); len(l.Recent) != 0 {
+		t.Errorf("a refused decision was taken: %+v", l.Recent)
+	}
+}
+
 func TestHeldPastTheLimit(t *testing.T) {
 	b, c := newBackend(t)
 	b.Activity(c.t)
@@ -514,6 +539,12 @@ func TestApproveBecomesHeldWhenTheLimitIsReached(t *testing.T) {
 	out, err := b.Decide(card.Decision{ID: two.Title.ID, BindingSHA256: two.BindingSHA256, Approve: true})
 	if err != nil || !out.Held {
 		t.Fatalf("second: %+v %v", out, err)
+	}
+	if k := open(t, b, two.Title.ID); !k.After.Held || k.Ended() {
+		t.Errorf("the held card did not come back marked and pending: %+v", k.After)
+	}
+	if l, _ := b.List(); !itemOf(l, two.Title.ID).Held {
+		t.Error("the list row of the held card is not marked")
 	}
 	v, _ := b.Limit(projectB)
 	if len(v.Days) != limits.WindowDays {
