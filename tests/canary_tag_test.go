@@ -271,6 +271,90 @@ func checkCanaryPlacement(fsys fs.FS) []string {
 	return problems
 }
 
+// canaryNamedPaths are the folders whose files named canary_* are canary mode
+// or its release counterpart, and so carry a constraint that says which.
+var canaryNamedPaths = []string{
+	"cmd/ataniq-holder/",
+	"internal/leaddaemon/",
+	"cmd/ataniqd/",
+	"internal/leadholder/serve/",
+}
+
+// canaryNamedPrefix starts the name of such a file, and canaryOffPrefix the
+// name of the release counterpart of one, which forbids the tag.
+const (
+	canaryNamedPrefix = "canary_"
+	canaryOffPrefix   = "canary_off_"
+)
+
+// canaryUntaggedByDesign are the files named canary_* that have no constraint
+// on purpose: they test the whole folder, whatever its constraints, and the
+// same test must hold in a build with the tag and in one without it.
+var canaryUntaggedByDesign = []string{"canary_imports_test.go"}
+
+// checkCanaryNamedFiles is the naming rule of check (1): a Go file named
+// canary_* in canaryNamedPaths carries a go:build line that the go command
+// applies and that needs the tag, so that it is not built without it, or,
+// when its name starts with canary_off_, one that names the tag and is not
+// built with it. A file in canaryUntaggedByDesign has no requirement. A
+// constraint that was weakened to linux alone, or left out, is a problem.
+func checkCanaryNamedFiles(fsys fs.FS) []string {
+	var problems []string
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != "." && skipCanaryDir(fsys, p, d.Name()) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		base := path.Base(p)
+		if !strings.HasSuffix(p, ".go") || !strings.HasPrefix(base, canaryNamedPrefix) ||
+			!underAnyPath(p, canaryNamedPaths) || inGoSkippedDir(p) ||
+			slices.Contains(canaryUntaggedByDesign, base) {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		_, applied, hasGoBuild, _ := headerConstraintsGo(string(data))
+		named := hasGoBuild && slices.ContainsFunc(applied, exprNamesTag)
+		if strings.HasPrefix(base, canaryOffPrefix) {
+			if !named || !buildsNeverWithTag(applied) {
+				problems = append(problems, fmt.Sprintf("%s: a release counterpart does not forbid %s in a go:build line", p, canaryTag))
+			}
+			return nil
+		}
+		if !hasGoBuild || !named || buildsWithoutTag(applied) {
+			problems = append(problems, fmt.Sprintf("%s: a file named %s* does not require %s in a go:build line", p, canaryNamedPrefix, canaryTag))
+		}
+		return nil
+	})
+	if err != nil {
+		problems = append(problems, "walking the tree: "+err.Error())
+	}
+	return problems
+}
+
+// buildsNeverWithTag reports whether the file is not built when the canary tag
+// is set, whatever the other tags are.
+func buildsNeverWithTag(exprs []constraint.Expr) bool {
+	for _, tags := range []func(string) bool{
+		func(tag string) bool { return true },
+		func(tag string) bool { return tag == canaryTag },
+	} {
+		for _, e := range exprs {
+			if e.Eval(tags) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 var makeRuleLine = regexp.MustCompile(`^([A-Za-z0-9_.%/ -]+):($|[^=])`)
 
 // canaryTargetRef finds the name of one of canaryMakeTargets as a word.
@@ -974,6 +1058,7 @@ func TestCanaryTag(t *testing.T) {
 
 	t.Run("1_placement", func(t *testing.T) {
 		reportCanaryProblems(t, checkCanaryPlacement(repo))
+		reportCanaryProblems(t, checkCanaryNamedFiles(repo))
 	})
 
 	t.Run("2_makefile_and_scripts", func(t *testing.T) {
@@ -1222,6 +1307,76 @@ func TestCanaryTagPlacementCheck(t *testing.T) {
 // packages, a helper package for the tests of one of them, and tagged files
 // beside untagged ones in the packages that also build without the tag, with
 // a nested checkout of the same tree under a hidden tool folder.
+func TestCanaryTagNamedFilesCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files fstest.MapFS
+		bad   []string // paths named by the problems
+	}{
+		{"empty tree", fstest.MapFS{}, nil},
+		{"tagged files and their counterparts", fstest.MapFS{
+			"cmd/ataniq-holder/canary_linux.go":            goSource(hdrTagged),
+			"cmd/ataniq-holder/canary_x_test.go":           goSource(hdrTagged),
+			"cmd/ataniqd/canary_off_linux.go":              goSource(hdrNegated),
+			"internal/leaddaemon/canary_off_linux_test.go": goSource(hdrNegated),
+			"internal/leadholder/serve/canary_y.go":        goSource(hdrTagged),
+		}, nil},
+		{"the file with no constraint on purpose", fstest.MapFS{
+			"cmd/ataniqd/canary_imports_test.go":         goSource(""),
+			"internal/leaddaemon/canary_imports_test.go": goSource(""),
+		}, nil},
+		{"a test file weakened to linux", fstest.MapFS{
+			"cmd/ataniq-holder/canary_a_test.go": goSource(hdrPlain),
+		}, []string{"cmd/ataniq-holder/canary_a_test.go"}},
+		{"a source file weakened to linux", fstest.MapFS{
+			"internal/leaddaemon/canary_a.go": goSource(hdrPlain),
+		}, []string{"internal/leaddaemon/canary_a.go"}},
+		{"a file with no constraint", fstest.MapFS{
+			"cmd/ataniqd/canary_b.go":                    goSource(""),
+			"internal/leadholder/serve/canary_c_test.go": goSource(""),
+		}, []string{"cmd/ataniqd/canary_b.go", "internal/leadholder/serve/canary_c_test.go"}},
+		{"a plus build line alone does not count", fstest.MapFS{
+			"cmd/ataniqd/canary_d.go": goSource(hdrPlusTagged),
+		}, []string{"cmd/ataniqd/canary_d.go"}},
+		{"a negated file that is not a counterpart", fstest.MapFS{
+			"cmd/ataniqd/canary_e.go": goSource(hdrNegated),
+		}, []string{"cmd/ataniqd/canary_e.go"}},
+		{"a counterpart that does not forbid the tag", fstest.MapFS{
+			"cmd/ataniqd/canary_off_a.go":      goSource(hdrPlain),
+			"cmd/ataniqd/canary_off_b.go":      goSource(hdrTagged),
+			"cmd/ataniqd/canary_off_c.go":      goSource(""),
+			"cmd/ataniqd/canary_off_d_test.go": goSource(hdrNegated),
+		}, []string{"cmd/ataniqd/canary_off_a.go", "cmd/ataniqd/canary_off_b.go", "cmd/ataniqd/canary_off_c.go"}},
+		{"an or that lets the file build without the tag", fstest.MapFS{
+			"cmd/ataniqd/canary_f.go": goSource("//go:build linux && ataniq_canary || darwin"),
+		}, []string{"cmd/ataniqd/canary_f.go"}},
+		{"other names and other folders are not read", fstest.MapFS{
+			"cmd/ataniqd/main_linux.go":        goSource(hdrPlain),
+			"cmd/ataniqd/xcanary_g.go":         goSource(hdrPlain),
+			"cmd/ataniqd/canary_h.txt":         &fstest.MapFile{Data: []byte("x")},
+			"internal/other/canary_i.go":       goSource(hdrPlain),
+			"cmd/ataniqd/testdata/canary_j.go": goSource(hdrPlain),
+		}, nil},
+		{"a subfolder is read", fstest.MapFS{
+			"internal/leaddaemon/sub/canary_k.go": goSource(hdrPlain),
+		}, []string{"internal/leaddaemon/sub/canary_k.go"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			problems := checkCanaryNamedFiles(tc.files)
+			var got []string
+			for _, p := range problems {
+				got = append(got, strings.SplitN(p, ":", 2)[0])
+			}
+			sort.Strings(got)
+			want := slices.Clone(tc.bad)
+			sort.Strings(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("problems for %v, want %v: %q", got, want, problems)
+			}
+		})
+	}
+}
+
 func canaryCorrectTree() map[string]string {
 	tagged := hdrTagged + "\n\npackage x\n"
 	plain := "package x\n"
