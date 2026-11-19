@@ -40,12 +40,12 @@ func TestWaitProcessGone(t *testing.T) {
 		t.Errorf("a zombie was not polled until it was reaped: state %q", state)
 	}
 
-	cmd = exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
+	live := exec.Command("sleep", "60")
+	if err := live.Start(); err != nil {
 		t.Skip("cannot start a sample process:", err)
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }()
-	if state, gone := waitProcessGone(cmd.Process.Pid, 50*time.Millisecond); gone || state == "Z" || state == "" {
+	defer func() { live.Process.Kill(); live.Wait() }()
+	if state, gone := waitProcessGone(live.Process.Pid, 50*time.Millisecond); gone || state == "Z" || state == "" {
 		t.Errorf("a live process: gone %v, state %q", gone, state)
 	}
 }
