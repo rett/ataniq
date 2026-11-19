@@ -246,17 +246,22 @@ card are:
 Approve opens a field that asks for a code of four characters. The code is
 drawn only in the card's title and is made again each time a card opens. An
 approval is made only by typing the code and pressing Enter; a denial needs no
-code. The step refuses and clears the field when:
+code. Approve does not open the field, and says why in one line, when:
 
-- the card is not ready: the plan, the lists and the paths were not all read,
-  a flagged path is not signed off, the card ended or expired, or it opened
-  less than 400 ms ago;
+- the card is not ready: the paths, the lists (or the refs) and the "differs
+  from" block, where there is one, were not all read, a flagged path is not
+  signed off, the card ended or expired, or it opened less than 400 ms ago;
 - the window is below 80 columns by 24 rows (Approve and Deny are both not
-  offered, and the card says why);
+  offered, and the card says why).
+
+Once the field is open, it refuses and clears itself when:
+
 - the input is a paste, a burst of keys less than 30 ms apart, or anything but
   one printable key press;
-- the code is wrong, and then a new code is made;
-- the owner is away (see [Presence](#presence)).
+- the code is wrong, and then a new code is made.
+
+A decision made while the owner is away is not accepted: the card says so and
+shows a new code (see [Presence](#presence)).
 
 The decision is sent once, the card shows "sending", and then the outcome.
 
