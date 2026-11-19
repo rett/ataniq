@@ -341,7 +341,7 @@ func TestANewerSchemaIsRefused(t *testing.T) {
 	s := mustOpen(t, path)
 	fill(t, s, 2)
 	mustClose(t, s)
-	rawExec(t, path, "PRAGMA user_version=2")
+	rawExec(t, path, "PRAGMA user_version=3")
 	before := readFile(t, path)
 	if got, err := Open(path); !errors.Is(err, ErrNewerSchema) {
 		if err == nil {

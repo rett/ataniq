@@ -1030,3 +1030,131 @@ func TestAChangedRecordIsFound(t *testing.T) {
 		})
 	}
 }
+
+// A decision the door refused while the record stayed pending leaves the
+// card undecided: a new decision for the id is accepted, the refused one is
+// no card use, and a decision that stands still blocks a second.
+func TestACardTheDoorRefusedCanBeDecidedAgain(t *testing.T) {
+	path := newPath(t)
+	s := mustOpen(t, path)
+	first, pending := approveOf(t, "ap-one", "project-a", base)
+	_, digest := pendingRecord(t, "ap-one", "project-a", base.Add(time.Hour))
+	d1, err := s.AppendDecision(first, Seen{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Until the door has answered, the decision stands.
+	again := decisionRecord(t, "ap-one", "project-a", digest, true, base.Add(time.Minute))
+	if _, err := s.AppendDecision(again, Seen{}); !errors.Is(err, ErrDecided) {
+		t.Fatalf("a decision beside an undelivered one: %v, want %v", err, ErrDecided)
+	}
+	if err := d1.MarkRefusedByDoor(base.Add(2*time.Minute), record.CodeApprovalExpired); err != nil {
+		t.Fatal(err)
+	}
+	wantSeqs(t, "undelivered after the refusal", undeliveredSeqs(t, s))
+	wantSeqs(t, "open uses after the refusal", openSeqs(t, s))
+	if uses, err := s.CardUses("project-a", base); err != nil || len(uses) != 0 {
+		t.Fatalf("a decision the door refused is a card use: %v, %v", uses, err)
+	}
+
+	// The card is undecided again: a deny and an approve are both taken,
+	// and so is a held entry.
+	deny := decisionRecord(t, "ap-one", "project-a", digest, false, base.Add(3*time.Minute))
+	d2, err := s.AppendDecision(deny, Seen{})
+	if err != nil {
+		t.Fatalf("a decision after the door refused the first: %v", err)
+	}
+	wantSeqs(t, "undelivered after the second decision", undeliveredSeqs(t, s), d2.Seq())
+	if err := d2.MarkRefusedByDoor(base.Add(4*time.Minute), record.CodeApprovalExpired); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendHeld(decisionRecord(t, "ap-one", "project-a", digest, true, base.Add(5*time.Minute)), pending, Seen{}); err != nil {
+		t.Fatalf("a held entry after two refusals: %v", err)
+	}
+	third := decisionRecord(t, "ap-one", "project-a", digest, true, base.Add(6*time.Minute))
+	d3, err := s.AppendDecision(third, Seen{})
+	if err != nil {
+		t.Fatalf("a decision after a held entry that followed refusals: %v", err)
+	}
+	if _, err := d3.MarkDelivered(base.Add(7 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// The one the door took stands.
+	if _, err := s.AppendDecision(decisionRecord(t, "ap-one", "project-a", digest, false, base.Add(8*time.Minute)), Seen{}); !errors.Is(err, ErrDecided) {
+		t.Fatalf("a decision after one the door took: %v, want %v", err, ErrDecided)
+	}
+	if _, err := s.AppendHeld(decisionRecord(t, "ap-one", "project-a", digest, true, base.Add(8*time.Minute)), pending, Seen{}); !errors.Is(err, ErrDecided) {
+		t.Fatalf("a held entry after one the door took: %v, want %v", err, ErrDecided)
+	}
+	// Only the one that stands is a card use.
+	if uses, err := s.CardUses("project-a", base); err != nil || len(uses) != 1 || !uses[0].Equal(base.Add(6*time.Minute)) {
+		t.Fatalf("the card uses: %v, %v", uses, err)
+	}
+	days, err := s.Days("project-a", base)
+	if err != nil || days[len(days)-1].Uses != 1 {
+		t.Fatalf("the days: %+v, %v", days, err)
+	}
+
+	// The door holds the decision that stands; the refused ones are the
+	// journal's too, so none of them is lacking.
+	lacking, err := s.Unjournaled([]DoorDecision{
+		{Project: "project-a", ID: "ap-one", SHA256: record.Digest(third)},
+		{Project: "project-a", ID: "ap-one", SHA256: record.Digest(first)},
+		{Project: "project-a", ID: "ap-one", SHA256: record.Digest(again)},
+	})
+	if err != nil || len(lacking) != 1 || lacking[0].SHA256 != record.Digest(again) {
+		t.Fatalf("Unjournaled: %+v, %v", lacking, err)
+	}
+
+	// The same after a restart, which reads and checks the whole file.
+	mustClose(t, s)
+	s = mustOpen(t, path)
+	wantSeqs(t, "open uses after the restart", openSeqs(t, s), d3.Seq())
+	if _, err := s.AppendDecision(decisionRecord(t, "ap-one", "project-a", digest, false, base.Add(9*time.Minute)), Seen{}); !errors.Is(err, ErrDecided) {
+		t.Fatalf("a decision after the restart: %v, want %v", err, ErrDecided)
+	}
+}
+
+// The file's own rule holds the same: a second decision entry for an id is
+// refused by the file unless the door refused the first.
+func TestTheFileRefusesASecondDecisionUnlessTheDoorRefusedTheFirst(t *testing.T) {
+	path := newPath(t)
+	s := mustOpen(t, path)
+	first, _ := approveOf(t, "ap-one", "project-a", base)
+	if _, err := s.AppendDecision(first, Seen{}); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := approveOf(t, "ap-two", "project-a", base)
+	if _, err := s.AppendDecision(other, Seen{}); err != nil {
+		t.Fatal(err)
+	}
+	mustClose(t, s)
+	insert := func(id string, seq int) string {
+		return fmt.Sprintf("INSERT INTO entries (seq, kind, at, pending_id, project, ref, body, record, sum) VALUES (%d, 'decision', 1, '", seq) + id +
+			"', 'project-a', 0, CAST('{}' AS BLOB), NULL, zeroblob(32))"
+	}
+	db := rawDB(t, path)
+	for _, id := range []string{"ap-one", "ap-two"} {
+		if _, err := db.Exec(insert(id, 99)); err == nil || !strings.Contains(err.Error(), "the pending id has a decision") {
+			t.Fatalf("a second decision for %s: %v, want the file's refusal", id, err)
+		}
+	}
+	// Once the door has refused the first decision of ap-one, the file lets
+	// a second through.
+	s = mustOpen(t, path)
+	undelivered, err := s.Undelivered()
+	if err != nil || len(undelivered) != 2 {
+		t.Fatalf("%d undelivered, %v", len(undelivered), err)
+	}
+	if err := undelivered[0].MarkRefusedByDoor(base.Add(time.Second), record.CodeApprovalVoid); err != nil {
+		t.Fatal(err)
+	}
+	mustClose(t, s)
+	db = rawDB(t, path)
+	if _, err := db.Exec(insert("ap-one", 99)); err != nil {
+		t.Fatalf("a decision after the door's refusal: %v", err)
+	}
+	if _, err := db.Exec(insert("ap-two", 100)); err == nil {
+		t.Fatal("a second decision for an id the door has not refused")
+	}
+}

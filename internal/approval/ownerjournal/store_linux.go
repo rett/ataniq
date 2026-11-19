@@ -48,7 +48,7 @@ var (
 // of the file.
 const (
 	applicationID = 0x41544f4a
-	schemaVersion = 1
+	schemaVersion = 2
 )
 
 // newSuffix is added to the store's name while a new store is made. The
@@ -62,7 +62,8 @@ var sidecars = []string{"-wal", "-shm", "-journal"}
 // holds, so a file with another layout is refused and not read. The
 // triggers and the indexes hold the rules of the journal a second time,
 // beside the code: nothing is changed or removed, one decision for a
-// pending id, one delivery for a decision, one activity entry for what it
+// pending id at a time (a new one only after the door refused the last),
+// one delivery for a decision, one activity entry for what it
 // belongs to, and one expiry for a held entry.
 var schema = []struct{ kind, name, ddl string }{
 	{"table", "entries", `CREATE TABLE entries (
@@ -79,10 +80,10 @@ var schema = []struct{ kind, name, ddl string }{
 	{"index", "entries_by_id", `CREATE INDEX entries_by_id ON entries (project, pending_id, seq)`},
 	{"index", "entries_by_kind", `CREATE INDEX entries_by_kind ON entries (kind, project, at)`},
 	{"index", "entries_by_ref", `CREATE INDEX entries_by_ref ON entries (ref, kind) WHERE ref > 0`},
-	{"index", "one_decision", `CREATE UNIQUE INDEX one_decision ON entries (project, pending_id) WHERE kind = 'decision'`},
 	{"index", "one_delivered", `CREATE UNIQUE INDEX one_delivered ON entries (ref) WHERE kind = 'delivered'`},
 	{"index", "one_activity", `CREATE UNIQUE INDEX one_activity ON entries (ref) WHERE kind = 'activity'`},
 	{"index", "one_expired", `CREATE UNIQUE INDEX one_expired ON entries (ref) WHERE kind = 'expired'`},
+	{"trigger", "one_decision", `CREATE TRIGGER one_decision BEFORE INSERT ON entries WHEN NEW.kind = 'decision' AND EXISTS (SELECT 1 FROM entries d WHERE d.kind = 'decision' AND d.project = NEW.project AND d.pending_id = NEW.pending_id AND NOT EXISTS (SELECT 1 FROM entries x WHERE x.ref = d.seq AND x.kind = 'delivered' AND x.body <> CAST('{"code":""}' AS BLOB))) BEGIN SELECT RAISE(ABORT, 'the pending id has a decision'); END`},
 	{"trigger", "entries_no_update", `CREATE TRIGGER entries_no_update BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'the journal is append-only'); END`},
 	{"trigger", "entries_no_delete", `CREATE TRIGGER entries_no_delete BEFORE DELETE ON entries BEGIN SELECT RAISE(ABORT, 'the journal is append-only'); END`},
 }

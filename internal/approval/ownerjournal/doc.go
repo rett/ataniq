@@ -111,7 +111,11 @@
 // entry itself), the effect is applied, and [Delivery.AppendOutcome] says
 // what became of it. One decision for a pending id, one delivery for a
 // decision, one consumption and one outcome for an approval: the journal
-// refuses a second of each.
+// refuses a second of each. The one exception is a decision the door
+// refused ([Decision.MarkRefusedByDoor]) while the pending record stayed
+// pending: the card counts as undecided again, and a new decision or held
+// entry for the id is accepted. The refused decision stays in the journal,
+// closed, and is no card use.
 //
 // # At a restart
 //
@@ -138,8 +142,8 @@
 //   - Each change of a project's limit is a limit entry
 //     ([Store.AppendLimit]); [Store.Limit] gives the present number and the
 //     time of the last raise, [Store.LimitChanges] every change.
-//   - A card use is an approve journaled as a decision. [Store.CardUses]
-//     gives their times and [Store.Days] the days of the limit's view, each
+//   - A card use is an approve journaled as a decision, unless the door
+//     refused it. [Store.CardUses] gives their times and [Store.Days] the days of the limit's view, each
 //     with its uses and its marks.
 //   - A day's marks come from alert entries ([Store.AppendAlert]): one for
 //     a day that reached the limit, one for an alert of another kind.
