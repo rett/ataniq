@@ -26,6 +26,9 @@ import (
 //     door before the service stopped (see [Service.Dispose]): the journal
 //     takes it. Nothing is settled.
 //   - A held decision delivers nothing.
+//   - A project that has a card use today and has reached its limit gets
+//     the day's limit alert, once, when a stop lost it between the decision
+//     entry and the alert entry that follows it.
 //   - A decision the door holds and the journal lacks, or holds with other
 //     bytes than the journal's, did not come from the owner's console. That
 //     approval is refused and an alert is journaled; the others go on. This
@@ -105,7 +108,27 @@ func (s *Service) reconcile(ctx context.Context) error {
 	if err := s.syncIndex(ctx); err != nil {
 		return s.jerr(ctx, err)
 	}
+	if err := s.markReachedAgain(ctx); err != nil {
+		return err
+	}
 	return errors.Join(doorErrs...)
+}
+
+// markReachedAgain writes the limit alert of today for each project that has
+// a card use today and has no such alert. A stop between a decision entry
+// and the alert entry that follows it (they are two commits) would lose the
+// alert otherwise; markReached writes it once for the day.
+func (s *Service) markReachedAgain(ctx context.Context) error {
+	now := s.now()
+	s.mu.Lock()
+	projects, ids := s.idx.usedSince(startOfDay(now))
+	s.mu.Unlock()
+	for i, project := range projects {
+		if err := s.markReached(ctx, project, ids[i], now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // takeUpDisposals finishes what a [Service.Dispose] left half done: the
