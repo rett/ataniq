@@ -885,3 +885,62 @@ func TestPageTurnedToIsNotReadBeforeItsEndIsDrawn(t *testing.T) {
 	r.readAll()
 	r.seen("pkg1/file24.go", "approve is ready")
 }
+
+// noDecision checks that Enter in the open field sent nothing, that the field
+// closed with the reason on the message row, and that what was typed is gone.
+func noDecision(t *testing.T, r *rig, reason string) {
+	t.Helper()
+	r.key("enter")
+	if len(r.b.decisions) != 0 {
+		t.Fatalf("a decision was sent: %+v", r.b.decisions)
+	}
+	if r.m.FieldOpen() || r.m.cs.typed != "" || r.m.cs.sending {
+		t.Fatalf("the field stayed open or what was typed was kept (typed %q)", r.m.cs.typed)
+	}
+	r.seen(reason)
+}
+
+func TestEnterSendsNothingAfterTheWindowShrank(t *testing.T) {
+	r := withField(t)
+	r.typ("7Q4")
+	r.run(r.m.SetSize(70, 20))
+	r.typ("K")
+	noDecision(t, r, "approve is off: "+reasonSmall)
+
+	// A deny too, with its reason typed in the window that became small.
+	r = readyRig(t, testCard("p-1"))
+	r.key("x")
+	if !r.m.FieldOpen() {
+		t.Fatal("the deny field did not open")
+	}
+	r.typ("no")
+	r.run(r.m.SetSize(80, 23))
+	noDecision(t, r, "deny is off: "+reasonSmall)
+}
+
+func TestEnterSendsNothingAfterTheBackendSaidReadOnly(t *testing.T) {
+	line := "another console holds the decider's place"
+	for _, key := range []string{"a", "x"} {
+		r := readyRig(t, testCard("p-1"))
+		r.key(key)
+		if !r.m.FieldOpen() {
+			t.Fatalf("%q: the field did not open", key)
+		}
+		if key == "a" {
+			r.typ("7Q4K")
+		} else {
+			r.typ("no")
+		}
+		r.b.deciderO, r.b.deciderW = false, line
+		r.run(r.m.Refresh())
+		noDecision(t, r, "read-only: "+line)
+	}
+}
+
+func TestEnterSendsNoApproveOfAStaleCard(t *testing.T) {
+	r := withField(t)
+	r.typ("7Q4K")
+	// A page answer that arrives while the field is open makes the card stale.
+	r.m.cs.stale = true
+	noDecision(t, r, "approve is off: "+reasonStale)
+}

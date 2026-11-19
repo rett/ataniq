@@ -514,17 +514,40 @@ func (m *Model) turnPage(by int) tea.Cmd {
 	return cmd
 }
 
+// mayDecide is the one rule that decides whether a decision of the kind
+// (fieldConfirm for an approve, fieldDeny for a deny) may leave the view. It
+// is asked when a field opens and again when Enter is pressed. It returns the
+// line that says why not.
+func (m *Model) mayDecide(kind fieldKind, now time.Time) (bool, string) {
+	cs := m.cs
+	if why := m.readOnlyReason(); why != "" {
+		return false, why
+	}
+	if kind == fieldConfirm {
+		if ok, why := m.approveReason(now); !ok {
+			return false, "approve is off: " + why
+		}
+		return true, ""
+	}
+	switch {
+	case !m.sizeOK():
+		return false, "deny is off: " + reasonSmall
+	case cs.sending, cs.decided, cs.endedLine != "":
+		return false, "deny is off: this request ended, was decided or is being sent"
+	}
+	if _, ok, why := cs.c.Deny("", now); !ok {
+		return false, "deny is off: " + why
+	}
+	return true, ""
+}
+
 // startConfirm opens the confirm field when the card may be approved, and
 // says why not in one line when it may not.
 func (m *Model) startConfirm() {
 	cs := m.cs
-	if why := m.readOnlyReason(); why != "" {
-		cs.status = why
-		return
-	}
 	now := m.now()
-	if ok, why := m.approveReason(now); !ok {
-		cs.status = "approve is off: " + why
+	if ok, why := m.mayDecide(fieldConfirm, now); !ok {
+		cs.status = why
 		return
 	}
 	cs.field, cs.typed, cs.lastKey = fieldConfirm, "", now
@@ -533,12 +556,8 @@ func (m *Model) startConfirm() {
 // startDeny opens the deny reason.
 func (m *Model) startDeny() {
 	cs := m.cs
-	if why := m.readOnlyReason(); why != "" {
+	if ok, why := m.mayDecide(fieldDeny, m.now()); !ok {
 		cs.status = why
-		return
-	}
-	if _, ok, why := cs.c.Deny("", m.now()); !ok {
-		cs.status = "deny is off: " + why
 		return
 	}
 	cs.field, cs.typed = fieldDeny, ""
@@ -619,9 +638,16 @@ func (m *Model) submit() (tea.Cmd, Action) {
 	kind, typed := cs.field, cs.typed
 	cs.field, cs.typed = fieldNone, ""
 	var d card.Decision
+	// The rules for who may decide, and in which window, are asked again
+	// now: the window, the backend's answer or the card may have changed
+	// since the field opened. What was typed is dropped.
+	if ok, why := m.mayDecide(kind, now); !ok {
+		cs.status = why
+		return nil, Action{}
+	}
 	switch kind {
 	case fieldConfirm:
-		if cs.code == "" || typed != cs.code {
+		if typed != cs.code {
 			// A wrong code makes a new one.
 			cs.code = m.newCode()
 			cs.status = "that is not the code: a new code is in the title"
