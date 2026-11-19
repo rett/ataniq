@@ -8,7 +8,9 @@ trailing newline:
   `writer` attach role, epoch 1, the first command of the epoch.
 - `inject-request.json`: the inject request of `canary inject` for the message
   id `golden-msg-1` and the body `canary-token: 0123456789abcdef-golden`, epoch
-  1, the second command of the epoch.
+  1, the second command of the epoch. Its `text` is the header line
+  `[ataniq-msg id=golden-msg-1 from=ataniq kind=canary]`, a line feed, then the
+  body with its own line feed after it, so the text ends in a line feed.
 
 The daemon sends no status request and no stop request to the holder in the
 slice (the daemon stops the lead through the unit manager), so there is no
