@@ -156,7 +156,7 @@ func TestMayApprove(t *testing.T) {
 			want: ReasonPathPages},
 		{name: "truncated, every page of another review read", p: truncated,
 			change: func(r *Reading) { pages(r, otherDigest) }, want: ReasonPathPages},
-		{name: "truncated, the last page of the patch read", p: truncated,
+		{name: "truncated, every page of the patch read", p: truncated,
 			change: func(r *Reading) {
 				for n := 0; n < 13; n++ {
 					r.ReadPage(Page{Kind: PagePatch, N: n, Pages: 13, ReviewDigest: digest})

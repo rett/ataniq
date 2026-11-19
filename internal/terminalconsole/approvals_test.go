@@ -3,6 +3,7 @@ package terminalconsole
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -705,6 +706,29 @@ func TestTheStatusLineShowsAnArrivingCardInSessionFocus(t *testing.T) {
 	}
 }
 
+func TestTheStatusLineKeepsTheReturnHintInSessionFocusWhenTheElementIsLong(t *testing.T) {
+	b := newFakeApprovals(t)
+	r := newApprRig(t, 100, 30, b, Options{})
+	r.poll()
+	r.focusSession()
+	// A count of six digits makes the element wider than the room the hint
+	// leaves: the element gives way, the hint does not.
+	for i := 0; i < 100000; i++ {
+		b.listing.Pending = append(b.listing.Pending, card.Item{ID: "ap-" + strconv.Itoa(i), Project: "project-a",
+			Asked: apprT0, Expires: apprT0.Add(30 * time.Minute)})
+	}
+	r.poll()
+	rows := r.rows()
+	last := rows[len(rows)-1]
+	hint := "SESSION FOCUS \u00b7 every key goes to the session \u00b7 " + r.m.opts.ReturnKey.String() + " returns"
+	if !strings.Contains(last, hint) {
+		t.Fatalf("status line %q lost the hint %q", last, hint)
+	}
+	if !strings.Contains(last, "approvals 100000") {
+		t.Fatalf("status line %q lost the count", last)
+	}
+}
+
 func TestTheTimelineShowsAskedDecidedAndApplied(t *testing.T) {
 	b := newFakeApprovals(t)
 	b.add("ap-wait", "project-a", 2*time.Minute)
@@ -1395,6 +1419,8 @@ func TestTheCockpitsSurfacesTakeTheWholeHostileSet(t *testing.T) {
 				{ID: "ap-r1", Project: h, Verb: h, Feature: h, Asked: apprT0.Add(-time.Hour), State: record.StateDenied, Line: h},
 				{ID: "ap-r2", Project: "p", Verb: "v", Feature: other, Asked: apprT0.Add(-50 * time.Minute), State: record.StateApplied, Line: h},
 				{ID: "ap-r3", Project: "p", Verb: "v", Feature: h, Asked: apprT0.Add(-40 * time.Minute), State: record.StateExpired, Line: h},
+				// A state the cockpit does not know is drawn as it comes.
+				{ID: "ap-r4", Project: "p", Verb: "v", Feature: other, Asked: apprT0.Add(-30 * time.Minute), State: record.State(h)},
 			}
 			for _, size := range [][2]int{{140, 45}, {100, 30}, {79, 23}} {
 				r := newApprRig(t, size[0], size[1], b, Options{})
@@ -1409,6 +1435,93 @@ func TestTheCockpitsSurfacesTakeTheWholeHostileSet(t *testing.T) {
 				}
 				r.press(ch('g'))
 				checkNoRawLead(t, where+" approvals", r.m.View().Content)
+			}
+		})
+	}
+}
+
+// collect runs cmd, and the commands of every batch it returns, without
+// delivering any answer, and returns the answers in the order they finished.
+func (r *apprRig) collect(cmd tea.Cmd) []tea.Msg {
+	r.t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	r.b.inCmd = true
+	msg := cmd()
+	r.b.inCmd = false
+	switch v := msg.(type) {
+	case nil:
+		return nil
+	case tea.BatchMsg:
+		var out []tea.Msg
+		for _, c := range v {
+			out = append(out, r.collect(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func TestEnterOnTheGateOpensTheGatesCardWhenATickComesBeforeTheFirstListAnswers(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-x", "project-a", 40*time.Minute)
+	b.add("ap-y", "project-a", 9*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	r.clk.Advance(100 * time.Millisecond)
+	_, enter := r.m.Update(enterKey) // the view's first list is out
+	// A tick comes before that list is answered, and its list reads newer
+	// state: the gate's card was decided, another came. That list is
+	// answered first, and the first one last.
+	older := b.listing.Pending
+	b.add("ap-z", "project-a", time.Minute)
+	b.listing.Pending = b.listing.Pending[1:]
+	_, tick := r.m.Update(apprTickMsg{at: r.clk.Now()})
+	answers := r.collect(tick)
+	b.listing.Pending = older
+	answers = append(answers, r.collect(enter)...)
+	for _, a := range answers {
+		r.send(a)
+	}
+	for _, id := range b.opens {
+		if id != "ap-x" {
+			t.Fatalf("the gate named ap-x and the view opened %v", b.opens)
+		}
+	}
+}
+
+func TestEnterOnTheGateStillOpensItsCardWhenAKeyComesBeforeTheFirstListIsTakenIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read bool // the list was read before the key, and not yet delivered
+	}{
+		{"the list is not read yet", false},
+		{"the list is read and not delivered", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeApprovals(t)
+			b.add("ap-1", "project-a", 5*time.Minute)
+			r := newApprRig(t, 140, 45, b, Options{})
+			r.poll()
+			r.focusPane(paneEvidence)
+			r.clk.Advance(100 * time.Millisecond)
+			_, cmd := r.m.Update(enterKey) // the view's first list is out
+			var answers []tea.Msg
+			if tc.read {
+				answers = r.collect(cmd)
+			}
+			r.press(ch('k')) // a key reaches the view before the list does
+			if tc.read {
+				for _, a := range answers {
+					r.send(a)
+				}
+			} else {
+				r.pump(cmd)
+			}
+			if len(b.opens) != 1 || b.opens[0] != "ap-1" {
+				t.Fatalf("opened %v, want the gate's card", b.opens)
 			}
 		})
 	}

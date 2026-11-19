@@ -31,6 +31,8 @@ type index struct {
 	// a restart can tell which projects to check for the day's limit alert.
 	// A held entry is not noted: a day is held only when its uses reached
 	// the limit, and those uses are approve decisions already noted.
+	// An alert a restart writes therefore names the day's latest use, not a
+	// held card.
 	lastUse map[string]projectUse
 }
 

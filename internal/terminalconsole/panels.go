@@ -525,14 +525,26 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		// The approvals element of the status line, at the right, in the
 		// alert style when a waiting card has little life left. It is
 		// information and takes no key, so it is drawn in session focus too:
-		// it is how a card that comes while the owner types shows.
-		w := ansi.StringWidth(st.Text)
-		if x := room - w; x > 0 {
+		// it is how a card that comes while the owner types shows. In session
+		// focus the key that returns is what the line is for, so the element
+		// is shortened to its count, or left out, before it cuts into that
+		// hint.
+		text, keep := st.Text, 0
+		if m.focus == sessionFocus {
+			if i := strings.LastIndex(s, "returns"); i >= 0 {
+				keep = ansi.StringWidth(s[:i+len("returns")])
+			}
+			if room-ansi.StringWidth(text)-2 < keep {
+				text, _, _ = strings.Cut(text, " (")
+			}
+		}
+		w := ansi.StringWidth(text)
+		if x := room - w; x > 0 && (keep == 0 || x-2 >= keep) {
 			kind := lnHead
 			if st.Alert {
 				kind = lnWarn
 			}
-			p.text(x, l.keys.Min.Y, w, st.Text, p.style(kind))
+			p.text(x, l.keys.Min.Y, w, text, p.style(kind))
 			room = max(0, x-2)
 		}
 	}

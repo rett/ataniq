@@ -238,7 +238,12 @@ func (m *Model) onApprTick(apprTickMsg) tea.Cmd {
 		return nil
 	}
 	cmds := []tea.Cmd{m.apprTickCmd(a.period)}
-	if a.view != nil {
+	if a.view != nil && !a.wantOldest {
+		// While the gate's card is still to be opened the view is not
+		// refreshed: its first list is then the only one read, so that the
+		// list the gate noted is the list the view holds. (The drive's own
+		// length check below catches a differing list only when the lengths
+		// differ; it does not tell two lists of the same length apart.)
 		// Refresh asks the view for a new listing on every tick, whether or
 		// not its last request is answered, and the view drops an answer to
 		// an older request. A backend that is slower than the period (the
