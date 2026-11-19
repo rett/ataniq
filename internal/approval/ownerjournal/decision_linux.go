@@ -636,15 +636,6 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 		if err != nil {
 			return err
 		}
-		if !unused {
-			consumed, err := u.consumed(t)
-			if err != nil {
-				return err
-			}
-			if !consumed {
-				return ErrNotConsumed
-			}
-		}
 		if n := len(outcomes); n != 0 {
 			var last outcomeBody
 			if err := parseBody(outcomes[n-1], &last); err != nil {
@@ -653,6 +644,15 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 			resolves := state == record.StateApplied || state == record.StateNotApplied
 			if n != 1 || last.State != string(record.StateUnknown) || !resolves {
 				return ErrSettled
+			}
+		}
+		if !unused {
+			consumed, err := u.consumed(t)
+			if err != nil {
+				return err
+			}
+			if !consumed {
+				return ErrNotConsumed
 			}
 		}
 		_, err = t.add(Entry{Kind: KindOutcome, At: at, PendingID: u.d.rec.ID, Project: u.d.rec.Project, Ref: u.d.seq, Body: b})

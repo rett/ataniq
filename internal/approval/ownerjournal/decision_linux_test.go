@@ -596,6 +596,11 @@ func TestAnApprovalThatEndsUnusedIsClosedWithoutAUse(t *testing.T) {
 		}
 		seqs = seqs[:len(seqs)-1]
 		wantSeqs(t, "open uses after "+string(state), openSeqs(t, s), seqs...)
+		// The approval is settled, and that is the reason a later outcome
+		// is refused, not the missing use.
+		if err := u.AppendOutcome(at.Add(2*time.Hour), record.StateApplied, ""); !errors.Is(err, ErrSettled) {
+			t.Fatalf("applied after %s: %v, want %v", state, err, ErrSettled)
+		}
 	}
 }
 
