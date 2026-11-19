@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -556,5 +557,328 @@ func TestNoteEndedReadsTheClockThroughTheGuard(t *testing.T) {
 	}
 	if !at.Equal(back) {
 		t.Errorf("the card's end was noted at %s, want %s", at, back)
+	}
+}
+
+// shaky is a store whose ExpireHeld and AppendCount answer ErrUncertain
+// when its failing function says so, and which counts how often it was
+// opened (each wrapper made is one opening).
+type shaky struct {
+	*ownerjournal.Store
+	failing func(method string) bool
+}
+
+func (f *shaky) ExpireHeld(now time.Time) ([]ownerjournal.HeldCard, error) {
+	if f.failing("ExpireHeld") {
+		return nil, ownerjournal.ErrUncertain
+	}
+	return f.Store.ExpireHeld(now)
+}
+
+func (f *shaky) AppendCount(c ownerjournal.Count) error {
+	if f.failing("AppendCount") {
+		return ownerjournal.ErrUncertain
+	}
+	return f.Store.AppendCount(c)
+}
+
+// A store that is uncertain again right after it was reopened is not
+// reopened again and again: the service reopens once, and when taking up
+// what the journal says fails the same way, it stops.
+func TestAStoreUncertainAgainAfterItWasReopenedStopsTheService(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	opened, broken := 0, false
+	e.journalWrap = func(s *ownerjournal.Store) Journal {
+		mu.Lock()
+		opened++
+		mu.Unlock()
+		return &shaky{Store: s, failing: func(m string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return broken && m == "ExpireHeld"
+		}}
+	}
+	e.start()
+	p := e.card("feature-a")
+	mu.Lock()
+	broken, opened = true, 0
+	mu.Unlock()
+	err := e.svc.Tick(context.Background())
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("Tick returned %v, want ErrStopped", err)
+	}
+	mu.Lock()
+	n := opened
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("the journal was reopened %d times, want once", n)
+	}
+	// The service is stopped for every later call.
+	if _, err := e.svc.List(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Errorf("a stopped service answered: %v", err)
+	}
+	if _, err := e.svc.Decide(context.Background(), src, frame(p, true)); !errors.Is(err, ErrStopped) {
+		t.Errorf("Decide on a stopped service returned %v", err)
+	}
+	// A new service on the same journal, once it is sound, takes over.
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	e.restart()
+	if res, err := e.decide(p, false); err != nil || res.State != record.StateDenied {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// The same for a failure met by a call that takes no decision lock first
+// (a listing): one reopen, and then it stops.
+func TestAStoreThatKeepsFailingStopsAfterOneReopenForEveryKindOfCall(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	opened, broken := 0, false
+	e.journalWrap = func(s *ownerjournal.Store) Journal {
+		mu.Lock()
+		opened++
+		mu.Unlock()
+		return &shaky{Store: s, failing: func(m string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return broken && m == "ExpireHeld"
+		}}
+	}
+	e.start()
+	e.card("feature-a")
+	mu.Lock()
+	broken, opened = true, 0
+	mu.Unlock()
+	if _, err := e.svc.List(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("List returned %v, want ErrStopped", err)
+	}
+	mu.Lock()
+	n := opened
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("the journal was reopened %d times, want once", n)
+	}
+}
+
+// Two calls that began with the same store and both saw it fail: the first
+// reopens it, and the second does not reopen the new one.
+func TestACallDoesNotReopenAStoreAnotherCallReplacedAlready(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	opened := 0
+	e.journalWrap = func(s *ownerjournal.Store) Journal {
+		mu.Lock()
+		opened++
+		mu.Unlock()
+		return s
+	}
+	e.start()
+	first, done1, err := e.svc.begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done1()
+	second, done2, err := e.svc.begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done2()
+	mu.Lock()
+	opened = 0
+	mu.Unlock()
+	if err := e.svc.jfix(first, ownerjournal.ErrUncertain); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("the first call: %v", err)
+	}
+	if err := e.svc.jfix(second, ownerjournal.ErrUncertain); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("the second call: %v", err)
+	}
+	mu.Lock()
+	n := opened
+	mu.Unlock()
+	if n != 1 {
+		t.Errorf("the journal was reopened %d times for two calls that saw the same store fail, want once", n)
+	}
+	// A call that began after the reopening, and sees the new store fail,
+	// reopens it.
+	third, done3, err := e.svc.begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done3()
+	if err := e.svc.jfix(third, ownerjournal.ErrUncertain); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("the third call: %v", err)
+	}
+	mu.Lock()
+	n = opened
+	mu.Unlock()
+	if n != 2 {
+		t.Errorf("the journal was reopened %d times in all, want 2", n)
+	}
+}
+
+// faultyHandles makes one of the four writes through a handle answer
+// ErrUncertain, once. With landed set the write is made first, as a commit
+// that was made and not acknowledged is; without it, nothing is written.
+type faultyHandles struct {
+	op     string
+	landed bool
+	hits   int
+}
+
+func (h *faultyHandles) fail(op string) bool {
+	if h.op != op || h.hits > 0 {
+		return false
+	}
+	h.hits++
+	return true
+}
+
+func (h *faultyHandles) MarkDelivered(d *ownerjournal.Decision, at time.Time) (*ownerjournal.Delivery, error) {
+	if h.fail("MarkDelivered") {
+		if h.landed {
+			_, _ = d.MarkDelivered(at)
+		}
+		return nil, ownerjournal.ErrUncertain
+	}
+	return d.MarkDelivered(at)
+}
+
+func (h *faultyHandles) MarkRefusedByDoor(d *ownerjournal.Decision, at time.Time, code record.Code) error {
+	if h.fail("MarkRefusedByDoor") {
+		if h.landed {
+			_ = d.MarkRefusedByDoor(at, code)
+		}
+		return ownerjournal.ErrUncertain
+	}
+	return d.MarkRefusedByDoor(at, code)
+}
+
+func (h *faultyHandles) AppendUse(u *ownerjournal.Delivery, at time.Time, code record.Code) error {
+	if h.fail("AppendUse") {
+		if h.landed {
+			_ = u.AppendUse(at, code)
+		}
+		return ownerjournal.ErrUncertain
+	}
+	return u.AppendUse(at, code)
+}
+
+func (h *faultyHandles) AppendOutcome(u *ownerjournal.Delivery, at time.Time, state record.State, line string) error {
+	if h.fail("AppendOutcome") {
+		if h.landed {
+			_ = u.AppendOutcome(at, state, line)
+		}
+		return ownerjournal.ErrUncertain
+	}
+	return u.AppendOutcome(at, state, line)
+}
+
+// Each write made through a handle can be uncertain: the service reopens
+// the journal and takes up what the file says, says so to the caller and
+// does not tell it as a refusal, and nothing is lost or done twice.
+func TestAnUncertainWriteThroughAHandleIsRecovered(t *testing.T) {
+	for _, c := range []struct {
+		op string
+		// state is where the approval ends, and applies how often the ref
+		// was updated: a stop after the door used the approval and before
+		// the update leaves the mirror at the old value (OC9).
+		state   record.State
+		applies int
+	}{
+		{"MarkDelivered", record.StateApplied, 1},
+		{"AppendUse", record.StateNotApplied, 0},
+		{"AppendOutcome", record.StateApplied, 1},
+	} {
+		for _, landed := range []bool{false, true} {
+			name := c.op + " not written"
+			if landed {
+				name = c.op + " written"
+			}
+			t.Run(name, func(t *testing.T) {
+				e := newEnv(t)
+				e.start()
+				p := e.card("feature-a")
+				e.svc.cfg.Handles = &faultyHandles{op: c.op, landed: landed}
+				_, err := e.decide(p, true)
+				if !errors.Is(err, ErrJournalReopened) {
+					t.Fatalf("Decide returned %v, want ErrJournalReopened", err)
+				}
+				if code, ok := record.CodeOf(err); ok {
+					t.Fatalf("the uncertain write was reported as the refusal %s", code)
+				}
+				if got := e.state(p.ID); got != c.state {
+					t.Errorf("the door's state is %s, want %s", got, c.state)
+				}
+				if calls, _ := e.intake.appliesSeen(); calls != c.applies {
+					t.Errorf("applied %d times, want %d", calls, c.applies)
+				}
+				for kind, want := range map[ownerjournal.Kind]int{
+					ownerjournal.KindDecision: 1, ownerjournal.KindDelivered: 1, ownerjournal.KindOutcome: 1,
+				} {
+					if n := len(e.entries(kind)); n != want {
+						t.Errorf("%d %s entries, want %d", n, kind, want)
+					}
+				}
+				var consumed int
+				for _, en := range e.entries(ownerjournal.KindUse) {
+					if string(en.Body) == `{"code":""}` {
+						consumed++
+					}
+				}
+				if consumed != 1 {
+					t.Errorf("%d use entries that say the door consumed the approval, want 1", consumed)
+				}
+				if open, err := e.svc.journal().OpenUses(); err != nil || len(open) != 0 {
+					t.Errorf("open uses: %d, %v", len(open), err)
+				}
+				if n := e.merger.pinCount(); n != 0 {
+					t.Errorf("%d pins left", n)
+				}
+				if got := e.mail.repliesFor(p.RequestID); len(got) != 1 || got[0].State != c.state {
+					t.Errorf("the lead was told %+v, want one reply with %s", got, c.state)
+				}
+			})
+		}
+	}
+}
+
+// A decision the door refuses, journaled as refused by the door through a
+// handle that answers ErrUncertain, is recovered the same way.
+func TestAnUncertainRefusalMarkIsRecovered(t *testing.T) {
+	for _, landed := range []bool{false, true} {
+		name := "not written"
+		if landed {
+			name = "written"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			e.start()
+			p := e.card("feature-a")
+			// The door is out of reach, so the decision is journaled and not
+			// handed over; by the time it is, its own time has run out.
+			e.door.failDecide = errors.New("connection refused")
+			if _, err := e.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+				t.Fatalf("Decide returned %v", err)
+			}
+			e.door.failDecide = nil
+			e.advance(31 * time.Minute)
+			e.svc.cfg.Handles = &faultyHandles{op: "MarkRefusedByDoor", landed: landed}
+			if err := e.svc.Tick(context.Background()); !errors.Is(err, ErrJournalReopened) {
+				t.Fatalf("Tick returned %v, want ErrJournalReopened", err)
+			}
+			delivered := e.entries(ownerjournal.KindDelivered)
+			if len(delivered) != 1 || string(delivered[0].Body) != `{"code":"approval-expired"}` {
+				t.Fatalf("the delivered entries: %+v", delivered)
+			}
+			if undelivered, err := e.svc.journal().Undelivered(); err != nil || len(undelivered) != 0 {
+				t.Errorf("undelivered: %d, %v", len(undelivered), err)
+			}
+			if got := e.state(p.ID); got != record.StatePending {
+				t.Errorf("the door's state is %s, want the card still pending", got)
+			}
+		})
 	}
 }

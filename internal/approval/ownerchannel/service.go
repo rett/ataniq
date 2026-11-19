@@ -70,10 +70,18 @@ type Service struct {
 	wg   sync.WaitGroup
 	dead atomic.Bool
 
+	// recovering is set while the journal is being reopened and the service
+	// takes up what it says; dmu guards it. An uncertain answer while it is
+	// set stops the service: a store that fails again right after it was
+	// reopened is not tried again.
+	recovering bool
+
 	// mu guards the fields below. It is never held across a call out.
-	mu      sync.Mutex
-	closed  bool
-	store   Journal
+	mu     sync.Mutex
+	closed bool
+	store  Journal
+	// gen counts how often the store was replaced.
+	gen     int
 	high    time.Time
 	back    bool
 	pending map[string]pendingCache
@@ -190,11 +198,15 @@ func (s *Service) begin(ctx context.Context) (context.Context, func(), error) {
 		return nil, nil, ErrStopped
 	}
 	s.wg.Add(1)
+	gen := s.gen
 	s.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c, cancel := context.WithCancel(ctx)
+	// The call remembers which store it began with: when that store fails
+	// and another call has replaced it already, the call does not reopen
+	// the new one (see recoverJournal).
+	c, cancel := context.WithCancel(context.WithValue(ctx, genKey{}, gen))
 	stop := context.AfterFunc(s.ctx, cancel)
 	return c, func() {
 		stop()
@@ -258,11 +270,27 @@ func (s *Service) notice(line string) {
 	}
 }
 
+// genKey is the context key of the number of the store a call began with.
+type genKey struct{}
+
+// handles returns what the writes through the handles go to.
+func (s *Service) handles() HandleWrites {
+	if s.cfg.Handles != nil {
+		return s.cfg.Handles
+	}
+	return directHandles{}
+}
+
 // recoverJournal runs after the store answered ErrUncertain: it closes the
 // store, opens it again, and takes up what the file says. The caller holds
-// dmu. It returns [ErrJournalReopened], or ErrStopped when the store cannot
-// be reopened.
+// dmu. It returns [ErrJournalReopened], or [ErrStopped] when the store
+// cannot be reopened or is uncertain again while the service takes up what
+// the file says: one reopen for a failure, and no more.
 func (s *Service) recoverJournal(ctx context.Context) error {
+	if s.recovering {
+		s.dead.Store(true)
+		return fmt.Errorf("%w: the journal was uncertain again right after it was reopened", ErrStopped)
+	}
 	if s.cfg.Reopen == nil {
 		s.dead.Store(true)
 		return fmt.Errorf("%w: the journal needs reopening and the service has no way to do it", ErrStopped)
@@ -276,9 +304,17 @@ func (s *Service) recoverJournal(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.store = fresh
+	s.gen++
 	s.mu.Unlock()
-	if err := s.reconcile(ctx); err != nil && !errors.Is(err, ErrJournalReopened) {
-		s.notice("after reopening the journal: " + err.Error())
+	s.recovering = true
+	defer func() { s.recovering = false }()
+	if err := s.reconcile(ctx); err != nil {
+		if errors.Is(err, ErrStopped) {
+			return err
+		}
+		if !errors.Is(err, ErrJournalReopened) {
+			s.notice("after reopening the journal: " + err.Error())
+		}
 	}
 	return ErrJournalReopened
 }
@@ -294,13 +330,22 @@ func (s *Service) jerr(ctx context.Context, err error) error {
 }
 
 // jfix is jerr for a caller that does not hold dmu: an uncertain store is
-// recovered under it.
+// recovered under it. The caller's store may have been replaced by another
+// call while it waited for dmu: it began with the store of the number its
+// context holds, and when that is not the present one the failure was of a
+// store that is closed already, so the present one is not reopened.
 func (s *Service) jfix(ctx context.Context, err error) error {
 	if !errors.Is(err, ownerjournal.ErrUncertain) {
 		return err
 	}
 	s.dmu.Lock()
 	defer s.dmu.Unlock()
+	s.mu.Lock()
+	gen := s.gen
+	s.mu.Unlock()
+	if g, ok := ctx.Value(genKey{}).(int); ok && g != gen {
+		return ErrJournalReopened
+	}
 	return s.recoverJournal(ctx)
 }
 

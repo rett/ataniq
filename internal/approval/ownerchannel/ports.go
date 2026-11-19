@@ -44,6 +44,43 @@ type Journal interface {
 
 var _ Journal = (*ownerjournal.Store)(nil)
 
+// HandleWrites is the part of a store that is written through the handles
+// of a decision and of a delivery, which the [Journal] methods return and
+// which belong to the opened store, so the Journal interface cannot make
+// them fail. The service writes through this interface, and a test puts its
+// own in [Config.Handles] to make each of the four fail as a failed commit
+// does, with [ownerjournal.ErrUncertain]. The default is the handles' own
+// methods.
+type HandleWrites interface {
+	// MarkDelivered is [ownerjournal.Decision.MarkDelivered].
+	MarkDelivered(d *ownerjournal.Decision, at time.Time) (*ownerjournal.Delivery, error)
+	// MarkRefusedByDoor is [ownerjournal.Decision.MarkRefusedByDoor].
+	MarkRefusedByDoor(d *ownerjournal.Decision, at time.Time, code record.Code) error
+	// AppendUse is [ownerjournal.Delivery.AppendUse].
+	AppendUse(u *ownerjournal.Delivery, at time.Time, code record.Code) error
+	// AppendOutcome is [ownerjournal.Delivery.AppendOutcome].
+	AppendOutcome(u *ownerjournal.Delivery, at time.Time, state record.State, line string) error
+}
+
+// directHandles writes through the handles themselves.
+type directHandles struct{}
+
+func (directHandles) MarkDelivered(d *ownerjournal.Decision, at time.Time) (*ownerjournal.Delivery, error) {
+	return d.MarkDelivered(at)
+}
+
+func (directHandles) MarkRefusedByDoor(d *ownerjournal.Decision, at time.Time, code record.Code) error {
+	return d.MarkRefusedByDoor(at, code)
+}
+
+func (directHandles) AppendUse(u *ownerjournal.Delivery, at time.Time, code record.Code) error {
+	return u.AppendUse(at, code)
+}
+
+func (directHandles) AppendOutcome(u *ownerjournal.Delivery, at time.Time, state record.State, line string) error {
+	return u.AppendOutcome(at, state, line)
+}
+
 // Source says where a frame of the owner connection came from, as the
 // caller knows it. The service inspects no peer: the caller decides whether
 // the connection may decide, and passes the answer in Decider.
@@ -288,9 +325,15 @@ type Config struct {
 	// closes it with itself.
 	Journal Journal
 	// Reopen opens the same store again. The service calls it when the
-	// store answers [ownerjournal.ErrUncertain]. Without it, such an
-	// answer stops the service.
+	// store answers [ownerjournal.ErrUncertain], once for each failure:
+	// when the reopened store is uncertain again while the service takes up
+	// what the journal says was under way, the service stops with
+	// [ErrStopped]. Without Reopen, such an answer stops the service.
 	Reopen func() (Journal, error)
+	// Handles is optional. It is how the writes made through the handles
+	// of a decision and of a delivery reach the store; see [HandleWrites].
+	// The default writes through the handles themselves.
+	Handles HandleWrites
 
 	Door     door.Door
 	Merger   Merger

@@ -60,7 +60,7 @@ func (s *Service) resume(ctx context.Context, dl *ownerjournal.Delivery, p recor
 		// only the owner moves a record out of it.
 		return s.journalOutcome(ctx, dl, p, door.Outcome(st), false)
 	case record.StateExpired, record.StateVoid, record.StateWithdrawn:
-		if err := dl.AppendOutcome(s.now(), st, endLine(st)); err != nil && !errors.Is(err, ownerjournal.ErrSettled) {
+		if err := s.handles().AppendOutcome(dl, s.now(), st, endLine(st)); err != nil && !errors.Is(err, ownerjournal.ErrSettled) {
 			return ownerwire.DecideResult{}, s.jerr(ctx, err)
 		}
 		s.closeOut(ctx, p, st, endLine(st))
@@ -118,7 +118,7 @@ func (s *Service) use(ctx context.Context, dl *ownerjournal.Delivery, p record.P
 			// next look at the door's state says.
 			return ownerwire.DecideResult{}, wrapDoor(err)
 		}
-		if aerr := dl.AppendUse(s.now(), e.Code); aerr != nil {
+		if aerr := s.handles().AppendUse(dl, s.now(), e.Code); aerr != nil {
 			return ownerwire.DecideResult{}, s.jerr(ctx, aerr)
 		}
 		shown, serr := s.cfg.Door.Show(ctx, p.ID)
@@ -140,7 +140,7 @@ func (s *Service) use(ctx context.Context, dl *ownerjournal.Delivery, p record.P
 	if err := s.fault("door-used"); err != nil {
 		return ownerwire.DecideResult{}, err
 	}
-	if err := dl.AppendUse(s.now(), ""); err != nil && !errors.Is(err, ownerjournal.ErrConsumed) {
+	if err := s.handles().AppendUse(dl, s.now(), ""); err != nil && !errors.Is(err, ownerjournal.ErrConsumed) {
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
 	if err := s.fault("use-journaled"); err != nil {
@@ -160,7 +160,7 @@ func (s *Service) use(ctx context.Context, dl *ownerjournal.Delivery, p record.P
 // lacks it: the service may have stopped between the door's answer and the
 // entry.
 func (s *Service) ensureUse(ctx context.Context, dl *ownerjournal.Delivery) error {
-	err := dl.AppendUse(s.now(), "")
+	err := s.handles().AppendUse(dl, s.now(), "")
 	if err != nil && !errors.Is(err, ownerjournal.ErrConsumed) {
 		return s.jerr(ctx, err)
 	}
@@ -206,7 +206,7 @@ func (s *Service) journalOutcome(ctx context.Context, dl *ownerjournal.Delivery,
 		return ownerwire.DecideResult{}, err
 	}
 	lineOf := outcomeLine(state)
-	if err := dl.AppendOutcome(s.now(), state.State(), lineOf); err != nil && !errors.Is(err, ownerjournal.ErrSettled) {
+	if err := s.handles().AppendOutcome(dl, s.now(), state.State(), lineOf); err != nil && !errors.Is(err, ownerjournal.ErrSettled) {
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
 	if err := s.fault("outcome-journaled"); err != nil {

@@ -368,7 +368,7 @@ func (s *Service) handOver(ctx context.Context, d *ownerjournal.Decision) (hande
 		if !ok {
 			return handedOver{}, wrapDoor(err)
 		}
-		if merr := d.MarkRefusedByDoor(s.now(), e.Code); merr != nil {
+		if merr := s.handles().MarkRefusedByDoor(d, s.now(), e.Code); merr != nil {
 			return handedOver{}, s.jerr(ctx, merr)
 		}
 		return handedOver{refused: e}, nil
@@ -376,7 +376,7 @@ func (s *Service) handOver(ctx context.Context, d *ownerjournal.Decision) (hande
 	if err := s.fault("door-decided"); err != nil {
 		return handedOver{}, err
 	}
-	dl, err := d.MarkDelivered(s.now())
+	dl, err := s.handles().MarkDelivered(d, s.now())
 	if err != nil {
 		return handedOver{}, s.jerr(ctx, err)
 	}
