@@ -59,8 +59,6 @@
 //   - Only admitted requests count against the caps and the throttle.
 //   - It does not hold the note to the digest the request names: the
 //     vectors' request and pending record do not agree on it.
-//   - It trusts the times a decision carries, and does not hold the
-//     approval's lifetime to a maximum.
 //
 // # Ending a request
 //

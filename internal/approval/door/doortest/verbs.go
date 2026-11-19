@@ -204,7 +204,9 @@ func planText(command string, b *record.Binding) string {
 // record of another revision or epoch is void); the planner, the project,
 // the subject and the plan token repeated beside the digest
 // (binding-mismatch, naming the field); the decision's own times
-// (decision-invalid, approval-expired); and for an approve the sign-offs
+// (decision-invalid, approval-expired), which hold decided_at to the time
+// between the record's request and now and an approval's life to
+// [ApprovalLife]; and for an approve the sign-offs
 // against the flagged list (decision-invalid).
 func (d *Door) Decide(ctx context.Context, decision door.Record) (door.Decided, error) {
 	if err := ctx.Err(); err != nil {
@@ -243,9 +245,16 @@ func (d *Door) Decide(ctx context.Context, decision door.Record) (door.Decided, 
 	}
 	decidedAt, _ := record.ParseTime(dec.DecidedAt)
 	expiresAt, _ := record.ParseTime(dec.ExpiresAt)
+	requestedAt, _ := record.ParseTime(e.pending.Binding.RequestedAt)
 	switch {
+	case decidedAt.After(now):
+		return door.Decided{}, refuse(record.CodeDecisionInvalid, "decision.decided_at is in the future")
+	case decidedAt.Before(requestedAt):
+		return door.Decided{}, refuse(record.CodeDecisionInvalid, "decision.decided_at is before the record's requested_at")
 	case !expiresAt.After(decidedAt):
 		return door.Decided{}, refuse(record.CodeDecisionInvalid, "decision.expires_at is not after decision.decided_at")
+	case dec.Decision == record.DecisionApprove && expiresAt.Sub(decidedAt) > ApprovalLife:
+		return door.Decided{}, refuse(record.CodeDecisionInvalid, "an approval lasts no more than 30 minutes from decision.decided_at")
 	case !now.Before(expiresAt):
 		return door.Decided{}, refuse(record.CodeApprovalExpired, "the decision's own time ran out before it arrived")
 	}

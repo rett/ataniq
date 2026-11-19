@@ -27,6 +27,10 @@ const (
 	ThrottleFor  = 10 * time.Minute
 	// PendingLife is how long a pending record waits for a decision.
 	PendingLife = 24 * time.Hour
+	// ApprovalLife is the longest an approval may last from the moment it
+	// was decided: a decision whose expires_at is later than that after its
+	// decided_at is refused decision-invalid.
+	ApprovalLife = 30 * time.Minute
 )
 
 // Seat is the one seat the stand-in knows: what the real door reads from

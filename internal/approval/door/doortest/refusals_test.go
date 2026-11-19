@@ -279,6 +279,25 @@ var refusals = []refusal{
 	{"decide", "a decision that ends before it was made", record.CodeDecisionInvalid, record.StatePending, func(f *fixture) (string, error) {
 		return f.decide(f.pending("sample-feature"), true, func(d *record.Decision) { d.ExpiresAt = d.DecidedAt })
 	}},
+	{"decide", "an approve that lasts longer than the approval life", record.CodeDecisionInvalid, record.StatePending, func(f *fixture) (string, error) {
+		return f.decide(f.pending("sample-feature"), true, func(d *record.Decision) {
+			d.ExpiresAt = record.FormatTime(f.clock.Now().Add(ApprovalLife + time.Second))
+		})
+	}},
+	{"decide", "a decision made in the future", record.CodeDecisionInvalid, record.StatePending, func(f *fixture) (string, error) {
+		return f.decide(f.pending("sample-feature"), false, func(d *record.Decision) {
+			d.DecidedAt = record.FormatTime(f.clock.Now().Add(time.Hour))
+			d.ExpiresAt = record.FormatTime(f.clock.Now().Add(time.Hour + ApprovalLife))
+		})
+	}},
+	{"decide", "a decision made before the request", record.CodeDecisionInvalid, record.StatePending, func(f *fixture) (string, error) {
+		p := f.pending("sample-feature")
+		f.clock.Advance(10 * time.Minute)
+		return f.decide(p, false, func(d *record.Decision) {
+			d.DecidedAt = record.FormatTime(f.clock.Now().Add(-time.Hour))
+			d.ExpiresAt = record.FormatTime(f.clock.Now().Add(ApprovalLife))
+		})
+	}},
 	{"decide", "a decision that arrives after its own end", record.CodeApprovalExpired, record.StatePending, func(f *fixture) (string, error) {
 		p := f.pending("sample-feature")
 		dec := f.decision(p, true, nil)
