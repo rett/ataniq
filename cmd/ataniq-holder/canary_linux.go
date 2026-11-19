@@ -217,6 +217,9 @@ type canaryDeps struct {
 	// counterInterval is how often the 7501 counters are copied; zero is
 	// counterInterval.
 	counterInterval time.Duration
+	// pumpStarted, when set, is given the counter pump as the service is
+	// built.
+	pumpStarted func(*counterPump)
 }
 
 // leadHasRunMark is the durable mark in the holder's state folder that says a
@@ -588,7 +591,17 @@ wait:
 	}
 
 	// The start succeeded: the state file says so, with the waiver.
-	file := sc.st
+	if err := writeStateFile(cfg.stateDir, startedState(sc.st, st)); err != nil {
+		return fail(exitSandbox, "state-file-failed", "cannot write the state file after the start of the sandbox; the agent was stopped: %v", err)
+	}
+	announceStart(sc, epoch, st)
+	return launch.sess, exitOK
+}
+
+// startedState is the state file of a start that succeeded: the profile and
+// the notes of the start, and the waiver only when one was applied.
+func startedState(base stateFile, st sandboxstart.Started) stateFile {
+	file := base
 	file.SandboxStarted = true
 	file.ProfileVersion = st.ProfileVersion
 	file.ProfileDigest = st.ProfileDigest
@@ -596,25 +609,30 @@ wait:
 	if st.Waived {
 		file.Waiver = st.Waiver
 	}
-	if err := writeStateFile(cfg.stateDir, file); err != nil {
-		return fail(exitSandbox, "state-file-failed", "cannot write the state file after the start of the sandbox; the agent was stopped: %v", err)
-	}
+	return file
+}
+
+// announceStart tells of a start that succeeded: the event and the waiver's
+// text only when a waiver was applied (the event log holds codes, not the
+// waiver's text), and the notes of the start.
+func announceStart(sc startContext, epoch string, st sandboxstart.Started) {
 	if st.Waived {
-		// The event log holds codes, not the waiver's text.
-		_ = sc.log.Append(eventlog.KindHolder, eventlog.EventState, eventlog.Fields{Role: cfg.role, Epoch: epoch, State: "sandbox-started", Reason: "assertion-10-waived"})
-		out.line("%s", st.Waiver)
+		_ = sc.log.Append(eventlog.KindHolder, eventlog.EventState, eventlog.Fields{Role: sc.cfg.role, Epoch: epoch, State: "sandbox-started", Reason: "assertion-10-waived"})
+		sc.out.line("%s", st.Waiver)
 	}
 	for _, n := range st.Notes {
-		out.line("note of the start: %s", diagnostic(n))
+		sc.out.line("note of the start: %s", diagnostic(n))
 	}
-	return launch.sess, exitOK
 }
 
 // serve makes the bridge, starts the copy of the 7501 counters and, only with
 // --inject, gives the service its deliverer.
 func (m *canaryMode) serve(sess *session.Session, vcfg *serve.Config) {
 	bridge := injectbridge.New(sess, injectbridge.Config{Runtime: m.cfg.runtime, Version: m.cfg.runtimeVersion, Tracker: m.tracker})
-	pump := &counterPump{tracker: m.tracker, sess: sess}
+	pump := &counterPump{tracker: m.tracker, sess: sess, stopped: make(chan struct{})}
+	if m.d.canary.pumpStarted != nil {
+		m.d.canary.pumpStarted(pump)
+	}
 	every := m.d.canary.counterInterval
 	if every <= 0 {
 		every = counterInterval
@@ -631,6 +649,8 @@ func (m *canaryMode) serve(sess *session.Session, vcfg *serve.Config) {
 type counterPump struct {
 	tracker *osc7501.Tracker
 	sess    *session.Session
+	// stopped is closed when run returns.
+	stopped chan struct{}
 
 	mu   sync.Mutex
 	last injectbridge.Totals
@@ -658,6 +678,7 @@ func (p *counterPump) copy() {
 
 // run copies every interval and stops with the session.
 func (p *counterPump) run(every time.Duration) {
+	defer close(p.stopped)
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
