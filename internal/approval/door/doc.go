@@ -57,7 +57,9 @@
 // Decide and Settle are idempotent: for the same id and the same binding
 // digest they answer what they answered the first time. So a decision that
 // was journaled and perhaps not delivered (a crash) is delivered again
-// without harm.
+// without harm. That holds for the same decision bytes only: a different
+// decision for a record that already has one is refused decision-invalid,
+// and Show returns the decision the door kept.
 //
 // # Refusals and failures
 //

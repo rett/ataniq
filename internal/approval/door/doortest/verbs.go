@@ -196,7 +196,9 @@ func planText(command string, b *record.Binding) string {
 // Decide takes the owner's decision. Its checks, in order: the bytes
 // against their digest and the form (decision-invalid, record-too-large);
 // the id (decision-invalid); the binding digest (binding-mismatch). A
-// record that has a decision then answers what it answered the first time.
+// record that has a decision answers what it answered the first time when
+// this is the same decision (the same digest), and refuses another one
+// (decision-invalid) without changing anything.
 // Otherwise: the record's state (approval-expired, approval-void,
 // previous-epoch: the seat's revision and epoch are checked here, since a
 // record of another revision or epoch is void); the planner, the project,
@@ -227,7 +229,10 @@ func (d *Door) Decide(ctx context.Context, decision door.Record) (door.Decided, 
 		return door.Decided{}, refuse(record.CodeBindingMismatch, "decision.binding_sha256 is not the digest of the record's binding")
 	}
 	if e.decision != nil {
-		return e.decided, nil
+		if decision.SHA256 == e.decided.DecisionSHA256 {
+			return e.decided, nil
+		}
+		return door.Decided{}, refuse(record.CodeDecisionInvalid, "the record has another decision")
 	}
 	if e.state != record.StatePending {
 		return door.Decided{}, ended(e)

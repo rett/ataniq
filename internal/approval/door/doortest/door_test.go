@@ -38,21 +38,22 @@ func TestDecideIsIdempotent(t *testing.T) {
 		t.Errorf("state = %s; a second delivery moved the record", got)
 	}
 
-	// Another decision for the same id and binding digest gets the first
-	// one's answer, with the first one's digest to tell them apart: the
-	// record is not decided twice.
+	// Another decision for the same id and binding digest is refused, and
+	// the record is not decided twice.
 	deny := f.decision(p, false, nil)
-	again, err := f.d.Decide(f.ctx, deny)
-	if err != nil || again != first || again.DecisionSHA256 == deny.SHA256 {
-		t.Errorf("a deny after the approve: %+v, %v", again, err)
-	}
+	_, err = f.d.Decide(f.ctx, deny)
+	wantCode(t, err, record.CodeDecisionInvalid)
+	// A decision with another binding digest is still refused for that.
+	_, err = f.decide(p, true, func(d *record.Decision) { d.BindingSHA256 = record.Digest([]byte("other binding")) })
+	wantCode(t, err, record.CodeBindingMismatch)
 	shown, _ := f.d.Show(f.ctx, p.ID)
 	if !bytes.Equal(shown.Decision.Bytes, dec.Bytes) {
 		t.Error("the kept decision is not the first one")
 	}
 }
 
-// A deny delivered again, and an approve after it, both answer denied.
+// A deny delivered again answers denied, and an approve after it is
+// refused.
 func TestDecideIsIdempotentForADeny(t *testing.T) {
 	f := newFixture(t)
 	p := f.pending("sample-feature")
@@ -61,11 +62,15 @@ func TestDecideIsIdempotentForADeny(t *testing.T) {
 	if err != nil || first.State != record.StateDenied {
 		t.Fatalf("deny: %+v, %v", first, err)
 	}
-	for _, dec := range []door.Record{deny, f.decision(p, true, nil)} {
-		again, err := f.d.Decide(f.ctx, dec)
-		if err != nil || again != first {
-			t.Errorf("again: %+v, %v", again, err)
-		}
+	again, err := f.d.Decide(f.ctx, deny)
+	if err != nil || again != first {
+		t.Errorf("again: %+v, %v", again, err)
+	}
+	_, err = f.d.Decide(f.ctx, f.decision(p, true, nil))
+	wantCode(t, err, record.CodeDecisionInvalid)
+	shown, _ := f.d.Show(f.ctx, p.ID)
+	if !bytes.Equal(shown.Decision.Bytes, deny.Bytes) {
+		t.Error("the kept decision is not the first one")
 	}
 	if got := f.state(p.ID); got != record.StateDenied {
 		t.Errorf("state = %s", got)

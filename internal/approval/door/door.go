@@ -26,8 +26,9 @@ type Door interface {
 	// what the plan was made for).
 	Plan(ctx context.Context, in PlanInput) (Record, error)
 
-	// Decide hands the door the owner's decision. It is idempotent on the
-	// decision's id and binding digest. The refusals are decision-invalid,
+	// Decide hands the door the owner's decision. It is idempotent: the
+	// same decision again gets the first answer, and a different decision
+	// for a record that has one is refused decision-invalid. The refusals are decision-invalid,
 	// record-too-large, binding-mismatch, previous-epoch,
 	// approval-expired, approval-void and approval-consumed.
 	Decide(ctx context.Context, decision Record) (Decided, error)
