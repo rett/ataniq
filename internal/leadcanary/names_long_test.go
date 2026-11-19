@@ -20,8 +20,7 @@ func TestRoleOfRefusesALayoutNameOver63Bytes(t *testing.T) {
 	if r, err := leadcanary.RoleOf(over); err == nil {
 		t.Fatalf("RoleOf(%q) gave %v", over, r)
 	}
-	// A layout name of exactly 63 bytes is still
-	// accepted.
+	// A layout name of exactly 63 bytes is still accepted.
 	ok := "throwaway-" + strings.Repeat("a", 48) + "-lead"
 	if len(ok) != 63 {
 		t.Fatalf("test name is %d bytes", len(ok))
