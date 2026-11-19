@@ -3,10 +3,11 @@
 The terminal-first Bubble Tea console is the planned primary operator client; a
 web console with the same information architecture comes later. Both sit on the
 shared typed command and event contract. Today the console is a provisional
-cockpit with three modes. With `--demo` it is a fixture: everything it
-shows is fictional fixture data, the terminal pane replays a recording, it is
-not a live session, and nothing you type reaches a process. With `--attach` it
-shows a live scratch session that a holder keeps, for a scratch agent only (see
+cockpit with three modes. With `--demo` it shows sample cards and a recording:
+everything it shows is fictional fixture data, the terminal pane replays a
+recording, it is not a live session, and nothing you type reaches a process.
+With `--attach` it shows a live scratch session that a holder keeps, for a
+scratch agent only (see
 [Attaching to a holder](#attaching-to-a-holder)). With `--daemon` it shows the
 daemon's leads, read-only (see [The daemon view](#the-daemon-view)). No mode is
 a production backend. The console does not send instructions, steer or
@@ -188,12 +189,13 @@ gate and Deny pending gate are listed with the key g, which opens the
 approvals view from the list; a decision is made there, on the card (see
 [Approvals](#approvals)). Every other control is unavailable, and the list
 gives its reason. In the daemon view and with `--attach` every control is
-unavailable. The fixture lists these:
+unavailable. The fixture lists these, the first two as available and the rest
+with the reason shown:
 
 | Control | Key | Reason |
 | --- | --- | --- |
-| Approve pending gate | g | No grant is honoured until the owner channel is qualified (with `--demo`: g opens the approvals view). |
-| Deny pending gate | g | No grant is honoured until the owner channel is qualified (with `--demo`: g opens the approvals view). |
+| Approve pending gate | g | Available: g opens the approvals view; a decision is made there, on a sample card, and changes nothing. |
+| Deny pending gate | g | Available: g opens the approvals view; a decision is made there, on a sample card, and changes nothing. |
 | Full attach | a | Full attach needs a qualified holder and an exclusive input owner. Unqualified: the console has no live backend. |
 | Send to lead | Ctrl+K | Sending needs a qualified command and receipt path. Unqualified: the console has no live backend. |
 | Interrupt lead | Ctrl+K | Interrupting needs a qualified command and receipt path. Unqualified: the console has no live backend. |
@@ -216,7 +218,8 @@ focus, where every key goes to the session. Enter on the pending gate in the
 right pane opens the oldest waiting card. The pending gate, the timeline
 (asked, decided, applied) and the status line (waiting cards and the age of the
 oldest) follow the cards. The status line's approvals element is also shown in
-session focus.
+session focus, shortened to its count, or left out, when it would hide the
+return hint.
 
 The list shows the waiting cards, the recent decisions and the standing rules.
 Up, Down, j and k move, Enter opens a card, `L` opens the limit's screen for
@@ -247,7 +250,8 @@ card are:
 Approve opens a field that asks for a code of four characters. The code is
 drawn only in the card's title and is made again each time a card opens. An
 approval is made only by typing the code and pressing Enter; a denial needs no
-code. Approve does not open the field, and says why in one line, when:
+code. Approve does not open the field, and says why in one line, among
+other cases, when:
 
 - the card is not ready: the paths, the lists (or the refs) and the "differs
   from" block, where there is one, were not all read, a flagged path is not
@@ -268,8 +272,9 @@ The decision is sent once, the card shows "sending", and then the outcome.
 
 After the decision the card shows the advice of the two verdict runs. The
 list's header says how often the runs agreed with the owner's past decisions.
-Before the decision it shows nothing of them,
-except one header line on a card that exists because a run refused. The verdict
+Before the decision the card shows nothing of them, except one header line on
+a card that exists because a run refused. The card is read again after a
+decision, so the advice shows at once. The verdict
 is advice of this program and is in no record.
 
 ### The limit's screen
@@ -336,7 +341,7 @@ ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|
 ataniq-console --daemon DIR [--theme dark|light]
 ```
 
-- `--demo` starts the fixture cockpit. Without it, `--attach` or `--daemon` the
+- `--demo` starts the cockpit with sample cards that change nothing. Without it, `--attach` or `--daemon` the
   command reports that the backend is unavailable.
 - `--attach DIR` shows a live scratch session instead. DIR is the holder's
   runtime folder, the one that holds `attach.sock`. It needs `--ticket-file`,
@@ -394,8 +399,8 @@ only part of the console that opens a socket: it makes one connection to a unix
 socket and listens on nothing. The client names itself `ataniq-console` to the
 holder. This mode is not managed by the daemon and has no project data: the
 left pane, the Context block and the timeline say so, and every control is
-unavailable. In this mode the console does not connect to `ataniqd`, the read-only daemon
-skeleton of [the lead daemon guide](lead-daemon.md).
+unavailable. In this mode the console does not connect to `ataniqd`, the read-only
+daemon skeleton of [the lead daemon guide](lead-daemon.md).
 The header and the session frame carry a label in place of the fixture's, such
 as `live scratch session · lead NAME · writer · epoch 7`, and the Session block
 and the evidence pane show the role, the holder's runtime and version, the
@@ -628,7 +633,8 @@ Use over SSH is not qualified. The SSH use checked by hand so far is
 
 Nothing in the console is qualified. The fixture console hosts no live
 session: it only replays fixture recordings, and every control is
-unavailable. `--attach` shows a live scratch session, but it is provisional
+unavailable except Approve and Deny, which open the approvals view of sample
+cards that change nothing. `--attach` shows a live scratch session, but it is provisional
 and unqualified too: its tests run a fake agent in process, and no real agent
 has been attached through it, in a real terminal or over SSH. Use over SSH,
 terminal restoration after a startup error and any live control are not
