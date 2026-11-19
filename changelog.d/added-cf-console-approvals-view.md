@@ -7,9 +7,9 @@
   daily card limit of the project under the cursor. A decision is made only on
   the card: an approval needs a code typed from the card's title, a denial
   needs no code; while a field is open every key goes to the field, and Esc
-  goes back one step at a time. The
-  pending gate, the timeline (asked, decided, applied) and the status line
-  (waiting cards and the age of the oldest) follow the cards. When you return
+  goes back one step at a time. The pending gate, the timeline (asked,
+  decided, applied) and the status line (waiting cards and the age of the
+  oldest) follow the cards. When you return
   after a while the console shows a short summary of what happened while you
   were away, and rings the terminal's bell for a card that arrives while you
   are away; `--no-bell` turns the bell off. In this release only `--demo` has
