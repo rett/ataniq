@@ -321,7 +321,8 @@ func (t *Tracker) Tick(at time.Time) (Change, bool) {
 //
 // A decision is not an activity: MayDecide changes nothing, and the action
 // that sent the decision is recorded through [Tracker.Activity] like any
-// other.
+// other. A caller records that activity before it calls MayDecide for the
+// decision, so that the action itself counts toward the owner's presence.
 func (t *Tracker) MayDecide(at time.Time) (Stamp, error) {
 	s := t.stamp(at)
 	if !t.Present(at) {

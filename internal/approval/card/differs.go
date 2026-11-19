@@ -62,11 +62,11 @@ func (c Change) Changed() bool {
 // size. New's own further checks (the feature name first, and the host
 // strings that would need escaping) are not made on it, since nothing of
 // the earlier record is drawn except its id, which has the grammar of the
-// encoder's check. It must be another record for the same project, verb and target as now: the
-// same argv, and for a feature finish the same ref. Anything else is refused
-// record-invalid, since such a pair is no "differs from". Whether the owner
-// read the earlier card, and how long ago, is for the caller to know. The
-// record now is not checked here; [New] checks it.
+// encoder's check. It must be another record for the same project, verb and
+// target as now: the same argv, and for a feature finish the same ref.
+// Anything else is refused record-invalid, since such a pair is no "differs
+// from". Whether the owner read the earlier card, and how long ago, is for
+// the caller to know. The record now is not checked here; [New] checks it.
 func DiffersFrom(earlier, now record.Pending, readAt time.Time) (Differs, error) {
 	data, err := record.EncodePending(earlier)
 	if err != nil {

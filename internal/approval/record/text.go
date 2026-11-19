@@ -28,9 +28,11 @@ type Text string
 // Format writes t quoted, with every byte outside printable ASCII escaped,
 // whatever the verb is (%v, %+v, %#v, %s, %q, %x and %d alike). So printing
 // a Text, or a record that holds one such as a SignOff, a PathChange or a
-// Flag, never writes a raw byte of a lead: no control character, no
-// bidirectional override and no invalid UTF-8 reaches a log line or an error
-// message. string(t) is still the raw bytes, and it is the way to get them.
+// Flag, writes no raw byte of a lead through an exported field: no control
+// character, no bidirectional override and no invalid UTF-8 reaches a log
+// line or an error message. fmt cannot call Format on a Text held in an
+// unexported field, so a type that keeps one there prints it as it is.
+// string(t) is still the raw bytes, and it is the way to get them.
 func (t Text) Format(f fmt.State, _ rune) {
 	_, _ = io.WriteString(f, strconv.QuoteToASCII(string(t)))
 }

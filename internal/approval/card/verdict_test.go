@@ -31,6 +31,7 @@ func TestVerdictTextCleansAndBounds(t *testing.T) {
 		strings.Repeat("é", 100):  strings.Repeat("é", 39) + "…",
 		strings.Repeat("a ", 100): strings.Repeat("a ", 20)[:39] + "…",
 		"aaaa " + strings.Repeat("b", 34) + " cc": "aaaa " + strings.Repeat("b", 34) + "…",
+		strings.Repeat("a", 38) + " bb":           strings.Repeat("a", 38) + "…",
 	} {
 		if got := VerdictText(in); got != want {
 			t.Errorf("VerdictText(%q) = %q, want %q", in, got, want)

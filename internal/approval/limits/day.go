@@ -46,8 +46,8 @@ func dateOf(number int64) string {
 // and a held approve are not among them.
 //
 // A time dated after today also counts, as it does in RaisedToday. That can
-// only happen when the clock was set back, and a clock set back must not
-// give the day more room.
+// happen when the clock was set back, or when it ran fast and was corrected
+// later, and neither must give the day more room.
 func UsesToday(decided []time.Time, now time.Time) int {
 	today := todayNumber(now)
 	n := 0
@@ -65,8 +65,9 @@ func UsesToday(decided []time.Time, now time.Time) int {
 // another raise now. It does when lastRaise is on today's calendar day, read
 // in the location of now. The zero time means the limit was never raised.
 //
-// A raise dated after today also counts. That can only happen when the clock
-// was set back, and a clock set back must not open a second raise.
+// A raise dated after today also counts. That can happen when the clock was
+// set back, or when it ran fast and was corrected later, and neither must
+// open a second raise.
 func RaisedToday(lastRaise, now time.Time) bool {
 	if lastRaise.IsZero() {
 		return false

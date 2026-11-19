@@ -28,9 +28,11 @@ import (
 // mistake of the program and not of the data.
 type Reader struct {
 	// MaxDepth is how deep arrays and objects may nest. The records use 12.
+	// Set it: the zero value allows no nesting, so a Reader with MaxDepth 0
+	// refuses every object.
 	MaxDepth int
 	// Noun is how the error texts call the data, such as "record" or
-	// "payload".
+	// "payload". Set it: the zero value leaves it empty in the texts.
 	Noun string
 }
 

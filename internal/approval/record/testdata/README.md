@@ -23,8 +23,9 @@ base64 decoding when the note is written as `b64`, not of its JSON form), and
 the pending record carries the note itself. So the `note` of a pending record
 must digest to the `note_sha256` of the request it answers; in these vectors
 the `note` of `pending-valid.json` digests to the `note_sha256` of
-`request-valid.json`, and a test holds the pair. No file ends with
-a newline unless it says so below.
+`request-valid.json`, and a test holds the pair.
+
+No file ends with a newline unless it says so below.
 
 ## Valid records
 

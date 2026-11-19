@@ -48,9 +48,9 @@
 //
 // A package that carries payloads under the same rules (the owner
 // connection's frames) reads and writes them with [Reader], [Marshal],
-// [AppendMarshal] and [TextLen], and checks them with [ValidFlagKind],
-// [ValidMode], [IsLowerHex] and [IsControl], instead of keeping a copy that
-// could drift from the records' own.
+// [AppendMarshal], [TextLen] and [B64FrameBytes], and checks them with
+// [ValidFlagKind], [ValidMode], [IsLowerHex] and [IsControl], instead of
+// keeping a copy that could drift from the records' own.
 //
 // # Refusals
 //

@@ -247,8 +247,9 @@ func NewView(project string, limit int, days []Day, lastRaise, now time.Time) (V
 //
 // A limitOn that is nil, or that answers with a number under Min for a date,
 // marks the day as having reached its limit: a day whose limit is not known
-// is left out of the suggestion. DaysOf never sets Alert; a caller that
-// records alerts sets it on the days it gets back, or builds its days itself.
+// is left out of the suggestion. An answer above Max counts as Max. DaysOf
+// never sets Alert; a caller that records alerts sets it on the days it gets
+// back, or builds its days itself.
 func DaysOf(decided []time.Time, limitOn func(date string) int, now time.Time) []Day {
 	uses := map[string]int{}
 	for _, t := range decided {
@@ -261,6 +262,11 @@ func DaysOf(decided []time.Time, limitOn func(date string) int, now time.Time) [
 		limit := 0
 		if limitOn != nil {
 			limit = limitOn(date)
+		}
+		// A limit above Max cannot have been in force: the day counts
+		// against Max, as Judge does.
+		if limit > Max {
+			limit = Max
 		}
 		out = append(out, Day{Date: date, Uses: n, ReachedLimit: Reached(n, limit)})
 	}
