@@ -260,8 +260,9 @@ code. The step refuses and clears the field when:
 
 The decision is sent once, the card shows "sending", and then the outcome.
 
-After the decision the card shows the advice of two verdict runs and how often
-they agreed with the owner. Before the decision it shows nothing of them,
+After the decision the card shows the advice of the two verdict runs. The
+list's header says how often the runs agreed with the owner's past decisions.
+Before the decision it shows nothing of them,
 except one header line on a card that exists because a run refused. The verdict
 is advice of this program and is in no record.
 
