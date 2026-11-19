@@ -5,6 +5,7 @@
 ## Commands
 
 - Whole test suite: `make test`. Run it once after a set of related changes is merged, not after every edit.
+- `make test-canary` runs the tests of code behind the `ataniq_canary` build tag; `make test` stays untagged. While tagged code exists the whole suite is `make test` and then `make test-canary`. `make canary-build` is the one target that builds binaries with the tag, for the attended canary run (`qualification/canary/run/README.md`); no release and no CI job uses it. Never run `qualification/canary/run/canary-run.sh` without `--dry` or `--self-test`.
 - While working on a task, run only the check that covers what you changed.
 
 ## Rules

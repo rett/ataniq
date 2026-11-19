@@ -17,37 +17,52 @@ A holder is one process for one hosted agent. It owns the agent's pseudo-termina
 the screen (the patched `x/vt` in `third_party/patched`, wrapped by the same
 code as the console's session pane, so that holder and console cannot drift),
 two unix sockets, an event log and a final record. The agent runs as the
-holder's child with the terminal as its controlling terminal. A console attaches
-to the holder, gets a snapshot of the screen and then follows the output. The
-console can go away and come back; the agent keeps running, and the holder
-keeps reading its output, answering its terminal queries and updating its
-emulator.
+holder's child with the terminal as its controlling terminal, except in canary
+mode, in a build with the `ataniq_canary` tag: there the child is the first
+process of the sandbox, which starts with no controlling terminal and takes the
+terminal inside. A console attaches to the holder, gets a snapshot of the screen
+and then follows the output. The console can go away and come back; the agent
+keeps running, and the holder keeps reading its output, answering its terminal
+queries and updating its emulator.
 
 Three commands take part:
 
-- `ataniq-holder`, the holder. It refuses to run without `--scratch`.
+- `ataniq-holder`, the holder. It refuses to run without `--scratch`; a build
+  with the `ataniq_canary` tag has a second mode, `--canary`, in place of it
+  (see [the canary slice guide](canary-slice.md)).
 - `ataniq-scratch`, a development launcher that stands in for the daemon. It
   starts a holder, mints attach tickets and asks the holder to stop. The
   daemon skeleton `ataniqd` ([the lead daemon guide](lead-daemon.md)) does none
-  of that: it starts no holder and issues no ticket.
+  of that: it starts no holder and issues no ticket, except in a build with the
+  `ataniq_canary` tag, under `--canary`.
 - `ataniq-console --attach`, the console's attach client.
 
 Status: provisional and unqualified, for a scratch agent only. A scratch agent
 has no project, no lead role and a disposable configuration. Not built, or
-built elsewhere in the tree and not used by the holder:
+built elsewhere in the tree and not used by the holder. Each item has one
+exception: a build with the `ataniq_canary` tag, in canary mode (`--canary`),
+which [the canary slice guide](canary-slice.md) describes. Canary mode is for
+one throwaway lead in an attended session, is not a qualification, and is not
+in a release build.
 
 - the sandbox: the agent is an ordinary process of your user. The profile of
   [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal, and the
-  holder does not launch it;
+  holder does not launch it. In canary mode the holder runs the start sequence
+  of that profile and the agent is the sandbox's first process;
 - prompt injection: the input lock that a later injection will take exists, and
   the control socket answers an `inject` request with `disabled`. The holder
-  does not call the library of [the lead injection guide](lead-injection.md);
+  does not call the library of [the lead injection guide](lead-injection.md).
+  In canary mode with `--inject` and a deliverer, the holder delivers one
+  message at a time through that library's fence and answers with a result;
 - idle classification: the holder always reports `unknown`, and does not use
-  that library's classifier;
+  that library's classifier. This holds in canary mode too: the fence reads the
+  screen itself, inside a delivery, and the reported fact stays `unknown`;
 - a daemon that starts holders, and with it the typed command that issues
-  tickets (`ataniq-scratch` issues them instead);
+  tickets (`ataniq-scratch` issues them instead). In canary mode the daemon
+  starts the holder and issues the tickets;
 - any part in the exchange mirror and the intake of
-  [the lead intake guide](lead-intake.md), and real leads.
+  [the lead intake guide](lead-intake.md), and real leads. The intake is run by
+  hand in canary mode too.
 
 ## The same-user limit
 
@@ -293,6 +308,16 @@ writer, the holder's own terminal replies, and (later) an injection.
   (OSC 10, 11 and 12) are answered with the colours the writer's console sent when
   it attached, else white on black. Replies that wait for the input lock are
   bounded at 64 KiB; one that does not fit is dropped and counted.
+- A fence (the critical section an injection runs in) takes the same lock for
+  its whole length. Writer input waits for it, in the order it arrived, and is
+  delivered when the fence ends, unless a write inside the fence failed: that
+  breaks the input like any failed write, and the held input is refused. The
+  emulator's replies wait in their queue.
+  While a fence holds the lock the holder keeps reading the terminal but does
+  not apply the output to its screen until the fence says so, so that what the
+  fence reads and what it writes follow each other with nothing between; it
+  holds at most 4 MiB, and when that is full it waits and drops nothing
+  (`held_output_full`).
 - OSC 52, the clipboard sequence, is dropped and counted
   (`clipboard_requests_blocked`, `clipboard_blocked`). Nothing the agent prints
   reaches the outer terminal's clipboard.
@@ -319,7 +344,8 @@ keeps. A cap that is hit is counted, not silent.
 | Repeat (`CSI n b`) | a count over two lines and two characters is done in bulk or cut | `repeats_cut` |
 | One PTY read | 64 KiB; a longer burst is several chunks | none |
 | Terminal replies waiting for the input lock | 64 KiB | `reply_dropped_chunks`, `reply_dropped_bytes` |
-| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted) |
+| Output the reader holds while a fence has the input lock | 4 MiB; the reader waits for room and drops nothing | `held_output_full` |
+| Connections | one writer and one viewer; at most 4 connections waiting for their Hello; at most 4 tickets waiting for their Hello, and in practice 2, because the holder keeps one ticket for each place; 8 control requests at once | `attach_refused_busy` (the place is taken), `attach_refused_handshake_full`, `control_refused_other` (a control request that is refused, a ticket refused with `busy` and the 8-request cap included, and a request that cannot be read; a wrong epoch and a peer that is not the daemon have counters of their own, and a refused `inject` is logged but not counted, except in a build with the `ataniq_canary` tag whose holder has a deliverer: there the `busy` and `bad-request` refusals of `inject` are counted here) |
 | Send buffer | 1 MiB of output for each client, plus one queued snapshot outside it | `resyncs`, `too_slow_disconnects`, `stalled_disconnects` |
 | Frame payload | 64 KiB from a client, 1 MiB from the holder, 64 KiB on the control socket | `bad_frames`; the connection is closed |
 | Snapshot frame | 19 MiB | the snapshot is not taken (`snapshot_errors`) |
@@ -380,6 +406,19 @@ that could take them. Its sequence number starts at 1 in each holder process, so
 a restart shows as the number going back to 1. An event is one write and
 survives a crash of the holder, but is not synced to disk each time.
 
+In a build with the `ataniq_canary` tag, whose holder was given a deliverer
+(canary mode with `--inject`), an accepted `inject` request logs up to three
+`inject` events, each with the message ID, the command ID and the SHA-256 of
+the text in hex, never the text: one with the outcome `started`; one with the
+answer, its outcome and reason and the state `written-` and the amount written;
+and a third, only when the deliverer returned after the holder had already
+answered `uncertain`, whose outcome is `late-` and the outcome the deliverer
+reported (`late-invalid` for a result the wire cannot carry). Before the
+deliverer is called the holder checks that the first line of the text starts
+`[ataniq-msg id=<message id> ` for the same ID, and answers `bad-request`,
+with nothing written, when it does not. See
+[the canary slice guide](canary-slice.md#the-result-and-its-evidence).
+
 **The final record**, `final.json`, is written once, when the agent's direct child
 has exited and the waits are over. It is written through a temporary file and a
 rename. It holds:
@@ -405,7 +444,8 @@ secret. The file is mode 0600 and is not the event log.
 
 The holder exits 0 when the session ended and the final record was written, 1 on
 a holder failure, 2 on usage or a start-up refusal and 3 when the role is already
-held.
+held. In canary mode it exits 4 when the start sequence of the sandbox refused
+or failed.
 
 **The two proofs of "process tree gone"**, named in the final record
 (`tree_method`, and `tree_proof_is_weaker` for the second):

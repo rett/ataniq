@@ -72,6 +72,15 @@ func startArgv(spec leadunit.Spec, timeout time.Duration) ([]string, error) {
 			add(parts...)
 		}
 	}
+	if spec.Limits != nil {
+		for _, p := range leadunit.LimitProperties(*spec.Limits) {
+			parts, err := limitProperty(p)
+			if err != nil {
+				return nil, err
+			}
+			add(parts...)
+		}
+	}
 	add("Description", "s", spec.Description())
 	add("WorkingDirectory", "s", spec.WorkDir)
 	env := append([]string{"Environment", "as", strconv.Itoa(len(spec.Env))}, spec.Env...)
@@ -126,6 +135,21 @@ func boundProperty(p leadunit.Property) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("systemdmgr: no bus rendering for bound property %s=%q", p.Name, p.Value)
+}
+
+// limitProperty renders one of [leadunit.LimitProperties] as the name, the
+// signature and the value the bus takes: MemoryMax, MemorySwapMax and TasksMax
+// are all unsigned 64-bit numbers ("t"), written in decimal. A property this
+// table does not know, or a value that is not a decimal unsigned 64-bit number,
+// is an error, as for [fixedProperty].
+func limitProperty(p leadunit.Property) ([]string, error) {
+	switch p.Name {
+	case "MemoryMax", "MemorySwapMax", "TasksMax":
+		if n, err := strconv.ParseUint(p.Value, 10, 64); err == nil && strconv.FormatUint(n, 10) == p.Value {
+			return []string{p.Name, "t", p.Value}, nil
+		}
+	}
+	return nil, fmt.Errorf("systemdmgr: no bus rendering for limit property %s=%q", p.Name, p.Value)
 }
 
 // parentFromBindsTo reads the BindsTo value of a show answer, a list of unit

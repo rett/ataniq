@@ -58,8 +58,9 @@
 //     for no one: a goroutine that may still run could use them, and all end
 //     with the process.
 //
-// The daemon never starts, signals or stops a unit, at start-up, while it
-// serves or at shutdown: it does not call Start or Stop of the controller,
+// Apart from canary mode (below), which exists only in a build with the
+// ataniq_canary tag, the daemon never starts, signals or stops a unit, at
+// start-up, while it serves or at shutdown: it does not call Start or Stop of the controller,
 // and nothing in it can reach a unit manager's Start or Signal. A lead that
 // runs when the daemon goes away keeps running.
 //
@@ -107,7 +108,7 @@
 // nothing settles the intent until the daemon is restarted. Leads,
 // coordinators, the holder, the sandbox and the console are not part of it
 // either, and no operation of the protocol or flag of the binary starts,
-// stops or defines a lead.
+// stops or defines a lead (canary mode, in a build with the tag, aside).
 //
 // The version the hello operation reports is [DefaultVersion]. The
 // repository's VERSION file cannot be embedded from the command's folder
@@ -115,6 +116,46 @@
 // this feature), and the daemon reads no file at run time to learn it, so a
 // build that wants the real number sets it with a linker flag on the
 // command's variable.
+//
+// # Canary mode
+//
+// A build with the ataniq_canary tag adds one thing to the daemon, and nothing
+// to any other build: [Config].Canary (the files canary_*_linux.go; in a
+// build without the tag [CanaryConfig] is an empty struct and
+// canary_off_linux.go does nothing). With Canary nil the tagged daemon is the
+// skeleton this document describes: no extension is registered and no holder
+// command is built. With it set, the daemon is for one throwaway lead, the
+// lead of the canary config:
+//
+//   - at the config step, before anything is made, it validates the config
+//     (every limit is required), runs the shared root check
+//     ([leadcanary.Config.CheckRoots]: the default roots, nesting, the marker,
+//     the prefix) and requires its two folders to be the config's roots; a
+//     failure is a [StartupError] of [StepConfig];
+//   - it gives the lifecycle the canary preflight, the canary holder command
+//     (with its own lock file as the holder's daemon lock) and a Limits seam
+//     that answers the config's three limits for the config's role;
+//   - it opens <state root>/canary-evidence.jsonl, writes daemon-start once it
+//     listens, and registers the extension of five mutating operations,
+//     canary.define, canary.start, canary.ticket, canary.inject and
+//     canary.stop ([CanaryOperations]); hello lists them and says mutations
+//     true.
+//
+// Every operation takes strict params with the role, which must be the
+// config's. The errors add two codes to the protocol's, [CodeRefused] and
+// [CodeUnavailable]. A message is sent once per epoch: once the request frame
+// is written to the holder's control socket the message is spent, and an answer
+// that is lost is the uncertain result, not an error. A spent message stays
+// spent when the daemon is restarted inside the epoch: when canary mode starts
+// it reads back the inject-sent lines of the evidence, and an evidence file
+// that it cannot read back line by line refuses the start, at [StepState]. The
+// inject-sent line is written as soon as the frame is, before the wait for the
+// holder's answer, so a daemon killed while it waits leaves the epoch spent. A
+// line that cannot be written then is tried again after the wait; the message
+// counts as sent either way, and the log says so when the evidence does not
+// hold it. The ticket is written to the role's runtime folder for the console
+// and is in no answer and no evidence line. No file of the package imports the
+// injection tree.
 //
 // # What it does not prove
 //

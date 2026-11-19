@@ -21,8 +21,16 @@
 // the daemon answered, 20 when no daemon answers at the socket, 21 when the
 // daemon refuses this user, and 22 for an answer that is not valid.
 //
-// This build is read-only. It starts, stops and manages no unit and defines
-// no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,
+// A build with the ataniq_canary tag adds canary mode (canary_linux.go; every
+// other build has canary_off_linux.go and none of it): "ataniqd run --canary
+// CONFIG", whose roots are the config's (--state-dir and --runtime-dir are
+// refused), "ataniqd canary define|start|ticket|inject|stop --config CONFIG",
+// which calls the operation of the running daemon and prints its result as one
+// JSON line, and "ataniqd --version", which names the tag. Package leaddaemon
+// says what the daemon then does.
+//
+// A build without the tag is read-only. It starts, stops and manages no unit
+// and defines no lead; no flag does. Reconcile runs at start only, not on a timer. Leads,
 // coordinators, the holder, the sandbox and the console are not part of it.
 // It is provisional and unqualified: nothing in it has run against systemd.
 // The package documentation of internal/leaddaemon says what is and is not

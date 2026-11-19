@@ -14,7 +14,7 @@ The branching model is git-flow, as its author described it.
 ## Tests
 
 - While working on a task, run the targeted check that covers your change.
-- When a feature is complete, run the whole suite once on it before it is merged into `develop`: `make test`.
+- When a feature is complete, run the whole suite once on it before it is merged into `develop`: `make test`, and then `make test-canary` while tagged code (the `ataniq_canary` build tag) exists. `make test` is untagged; `make test-canary` runs the tests of the tagged code.
 
 ## Release documentation review
 

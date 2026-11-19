@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "serve": {
+    "upload_pack": [
+      "/usr/bin/bwrap",
+      "--die-with-parent", "--new-session", "--clearenv",
+      "--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net",
+      "--unshare-uts", "--unshare-cgroup",
+      "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL",
+      "--hostname", "ataniq-canary-sandbox",
+      "--ro-bind", "/usr", "/usr",
+      "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+      "--symlink", "usr/lib64", "/lib64",
+      "--dev", "/dev",
+      "--ro-bind", "{tree}", "/ataniq/clone/{project}",
+      "--chdir", "/",
+      "--setenv", "PATH", "/usr/bin:/bin",
+      "--setenv", "GIT_CONFIG_NOSYSTEM", "1",
+      "/usr/bin/git-upload-pack"
+    ],
+    "repository": "/ataniq/clone/{project}",
+    "measure": [
+      "/usr/bin/bwrap",
+      "--die-with-parent", "--new-session", "--clearenv",
+      "--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net",
+      "--unshare-uts", "--unshare-cgroup",
+      "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL",
+      "--hostname", "ataniq-canary-sandbox",
+      "--ro-bind", "/usr", "/usr",
+      "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+      "--symlink", "usr/lib64", "/lib64",
+      "--dev", "/dev",
+      "--ro-bind", "{tree}", "/ataniq/clone/{project}",
+      "--chdir", "/",
+      "--setenv", "PATH", "/usr/bin:/bin",
+      "/usr/bin/du", "-s", "-B1", "/ataniq/clone/{project}/.git/objects"
+    ],
+    "measure_env": ["PATH=/usr/bin:/bin"]
+  },
+  "verify": {
+    "prefix": [
+      "/usr/bin/bwrap",
+      "--die-with-parent", "--new-session", "--clearenv",
+      "--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net",
+      "--unshare-uts", "--unshare-cgroup",
+      "--disable-userns", "--assert-userns-disabled", "--cap-drop", "ALL",
+      "--hostname", "ataniq-canary-sandbox",
+      "--ro-bind", "/usr", "/usr",
+      "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+      "--symlink", "usr/lib64", "/lib64",
+      "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+      "--ro-bind", "{mirror}", "/ataniq/mirror/{project}.git",
+      "--bind", "{scratch}", "/ataniq/scratch",
+      "--bind", "{home}", "/ataniq/home",
+      "--chdir", "/ataniq/scratch",
+      "--setenv", "PATH", "/usr/bin:/bin",
+      "--setenv", "HOME", "/ataniq/home",
+      "--setenv", "TMPDIR", "/tmp"
+    ],
+    "env": ["PATH=/usr/bin:/bin"],
+    "mirror": "/ataniq/mirror/{project}.git",
+    "scratch": "/ataniq/scratch",
+    "home": "/ataniq/home"
+  }
+}

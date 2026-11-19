@@ -20,7 +20,9 @@ import (
 // build that wants the real number sets it with -ldflags "-X main.version=N".
 var version = leaddaemon.DefaultVersion
 
-const usage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
+var usage = baseUsage + canaryUsage
+
+const baseUsage = `usage: ataniqd run [--state-dir DIR] [--runtime-dir DIR]
        ataniqd status [--socket PATH] [--json]
        ataniqd version
 
@@ -119,6 +121,10 @@ func (a *app) run(args []string) int {
 		fmt.Fprint(a.stdout, usage)
 		return leaddaemon.ExitOK
 	}
+	// Commands and options that only a build with the ataniq_canary tag has.
+	if code, ok := a.canaryCommand(args); ok {
+		return code
+	}
 	fmt.Fprint(a.stderr, usage)
 	return leaddaemon.ExitUsage
 }
@@ -146,33 +152,42 @@ func (a *app) flags(name string, args []string, define func(*flag.FlagSet)) int 
 
 func (a *app) runCmd(args []string) int {
 	var stateDir, runtimeDir string
+	var canary canaryFlags
 	if code := a.flags("run", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&stateDir, "state-dir", "", "state folder")
 		fs.StringVar(&runtimeDir, "runtime-dir", "", "runtime folder")
+		canary.define(fs)
 	}); code >= 0 {
 		return code
 	}
-	var err error
-	if stateDir == "" {
-		if stateDir, err = leaddaemon.DefaultStateDir(a.getenv); err != nil {
-			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
-			return leaddaemon.ExitConfig
-		}
-	}
-	if runtimeDir == "" {
-		if runtimeDir, err = leaddaemon.DefaultRuntimeDir(a.getenv); err != nil {
-			fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
-			return leaddaemon.ExitConfig
-		}
-	}
-	err = leaddaemon.Run(context.Background(), leaddaemon.Config{
-		StateDir:   stateDir,
-		RuntimeDir: runtimeDir,
+	cfg := leaddaemon.Config{
 		NewManager: a.newManager,
 		Signals:    a.signals,
 		Version:    version,
 		Log:        a.stderr,
-	})
+	}
+	// With --canary (a build with the tag only) the roots are the config's.
+	applied, code := a.canaryRun(&canary, stateDir, runtimeDir, &cfg)
+	if code >= 0 {
+		return code
+	}
+	var err error
+	if !applied {
+		if stateDir == "" {
+			if stateDir, err = leaddaemon.DefaultStateDir(a.getenv); err != nil {
+				fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+				return leaddaemon.ExitConfig
+			}
+		}
+		if runtimeDir == "" {
+			if runtimeDir, err = leaddaemon.DefaultRuntimeDir(a.getenv); err != nil {
+				fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
+				return leaddaemon.ExitConfig
+			}
+		}
+		cfg.StateDir, cfg.RuntimeDir = stateDir, runtimeDir
+	}
+	err = leaddaemon.Run(context.Background(), cfg)
 	if err != nil {
 		fmt.Fprintf(a.stderr, "ataniqd: %s\n", leaddaemon.SafeText(err.Error()))
 	}

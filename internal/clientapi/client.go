@@ -29,6 +29,14 @@ var ErrResponseTooLarge = errors.New("clientapi: response line over the response
 // the connection.
 var ErrBadResponse = errors.New("clientapi: bad response")
 
+// ErrBadParams is wrapped by the error [Client.Call] returns, without sending
+// anything, for params that do not marshal to a JSON object.
+var ErrBadParams = errors.New("clientapi: params are not a JSON object")
+
+// ErrRequestTooLarge is returned by [Client.Call], without sending anything,
+// for a request line over [MaxRequestBytes].
+var ErrRequestTooLarge = errors.New("clientapi: request line over the request limit")
+
 // maxErrorCodeText is the most of a server's code that [Error.Error] prints.
 const maxErrorCodeText = 64
 
@@ -102,22 +110,50 @@ func (c *Client) closeConn() error {
 // Hello asks for the server's protocols, limits and operations.
 func (c *Client) Hello(ctx context.Context) (HelloResult, error) {
 	var r HelloResult
-	err := c.call(ctx, OpHello, &r)
+	err := c.call(ctx, OpHello, nil, &r)
 	return r, err
 }
 
 // Status asks for the daemon block and the leads.
 func (c *Client) Status(ctx context.Context) (StatusResult, error) {
 	var r StatusResult
-	err := c.call(ctx, OpStatus, &r)
+	err := c.call(ctx, OpStatus, nil, &r)
 	return r, err
+}
+
+// Call asks for an extension operation that the server's hello result lists.
+// params is marshalled into the request's params member, which must be a JSON
+// object: a nil params, or one that marshals to null (a nil map or pointer),
+// sends no params member, and one that marshals to anything but an object
+// returns an error that wraps [ErrBadParams]; a request line over
+// [MaxRequestBytes] returns [ErrRequestTooLarge]. Neither sends anything or
+// closes the client. The result is read into result as [Client.Hello] reads its own;
+// a nil result discards it. An error response is the [*Error] it is for the
+// other operations, and the failures of the transport and of the response's
+// form close the client, as they do there.
+func (c *Client) Call(ctx context.Context, op string, params, result any) error {
+	var raw json.RawMessage
+	if params != nil {
+		b, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrBadParams, err)
+		}
+		switch {
+		case bytes.Equal(b, []byte("null")):
+		case len(b) > 0 && b[0] == '{':
+			raw = b
+		default:
+			return ErrBadParams
+		}
+	}
+	return c.call(ctx, op, raw, result)
 }
 
 // call sends one request and reads its response into result. The context's
 // deadline and cancellation apply to the whole exchange. A failure of the
 // transport or of the response's form closes the client, as the stream can no
 // longer be trusted; an error response does not.
-func (c *Client) call(ctx context.Context, op string, result any) error {
+func (c *Client) call(ctx context.Context, op string, params json.RawMessage, result any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Load() {
@@ -155,9 +191,13 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 
 	c.seq++
 	id := "c-" + strconv.FormatUint(c.seq, 10)
-	line, err := json.Marshal(Request{Protocol: Protocol, RequestID: id, Op: op})
+	line, err := json.Marshal(Request{Protocol: Protocol, RequestID: id, Op: op, Params: params})
 	if err != nil {
 		return err
+	}
+	if len(line) > MaxRequestBytes {
+		c.seq--
+		return ErrRequestTooLarge
 	}
 	if _, err := c.conn.Write(append(line, '\n')); err != nil {
 		return fail(err)
@@ -187,6 +227,9 @@ func (c *Client) call(ctx context.Context, op string, result any) error {
 		}
 		if resp.Error != nil || len(resp.Result) == 0 {
 			return fail(fmt.Errorf("%w: result missing", ErrBadResponse))
+		}
+		if result == nil {
+			return nil
 		}
 		if err := json.Unmarshal(resp.Result, result); err != nil {
 			return fail(fmt.Errorf("%w: result does not fit the operation", ErrBadResponse))

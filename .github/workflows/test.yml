@@ -1,4 +1,6 @@
-# Runs the project's whole test suite on pull requests and on pushes to develop.
+# Runs the project's whole test suite on pull requests and on pushes to develop:
+# the job test is make test, and the job test-canary is the tests of the code
+# behind the canary build tag. Neither builds a release artifact or uploads one.
 name: test
 
 on:
@@ -34,3 +36,21 @@ jobs:
       - name: changelog fragments are folded
         if: startsWith(github.head_ref || github.ref_name, 'release/') || startsWith(github.head_ref || github.ref_name, 'hotfix/')
         run: make changelog-check
+  test-canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+      - run: make -n bootstrap
+      - run: make bootstrap
+      - run: make doctor
+      - run: make test-canary
