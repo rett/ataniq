@@ -334,7 +334,7 @@ ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|
 ataniq-console --daemon DIR [--theme dark|light]
 ```
 
-- `--demo` starts the fixture cockpit. Without it and without `--attach` the
+- `--demo` starts the fixture cockpit. Without it, `--attach` or `--daemon` the
   command reports that the backend is unavailable.
 - `--attach DIR` shows a live scratch session instead. DIR is the holder's
   runtime folder, the one that holds `attach.sock`. It needs `--ticket-file`,
@@ -392,7 +392,7 @@ only part of the console that opens a socket: it makes one connection to a unix
 socket and listens on nothing. The client names itself `ataniq-console` to the
 holder. This mode is not managed by the daemon and has no project data: the
 left pane, the Context block and the timeline say so, and every control is
-unavailable. The console does not connect to `ataniqd`, the read-only daemon
+unavailable. In this mode the console does not connect to `ataniqd`, the read-only daemon
 skeleton of [the lead daemon guide](lead-daemon.md).
 The header and the session frame carry a label in place of the fixture's, such
 as `live scratch session · lead NAME · writer · epoch 7`, and the Session block
