@@ -46,6 +46,8 @@ var (
 	// ErrPinUnclear means the git run that writes or removes the pin did
 	// not end by itself (the time ran out, or the context ended), so the
 	// pin may or may not have changed. The caller looks before it goes on.
+	// [Build] returns the merge with this error, so that the caller has the
+	// commit id to give [Unpin].
 	ErrPinUnclear = errors.New("mergebuild: the pin may or may not have changed")
 	// ErrMismatch means [Check] found that a commit is not the one [Build]
 	// writes for the values given. The error text says what differs, in
@@ -131,7 +133,10 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 // parent, and the merge commit is still the host's own.
 //
 // The same values give the same commit id. When the run that creates the
-// pin does not end by itself, the error wraps [ErrPinUnclear].
+// pin does not end by itself, the error wraps [ErrPinUnclear] and Build
+// returns the merge together with it (the commit is written, and its id is
+// what the caller needs to look at the pin and to [Unpin] it); with any
+// other error the Merge is empty.
 func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error) {
 	if err := checkKey(key); err != nil {
 		return Merge{}, err
@@ -177,7 +182,11 @@ func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error)
 	if err := c.updateRef(ctx, "create "+pinRef(key)+" "+commit); err != nil {
 		var exit *gitExit
 		if !errors.As(err, &exit) {
-			return Merge{}, fmt.Errorf("%w: %w", ErrPinUnclear, err)
+			// The commit is written; only the pin's state is unknown. The
+			// caller gets the merge with the error, since the commit id is
+			// what [Unpin] needs to remove a pin that may exist.
+			return Merge{Commit: commit, Tree: tree, Parents: [2]string{in.TargetTip, in.FeatureTip}},
+				fmt.Errorf("%w: %w", ErrPinUnclear, err)
 		}
 		// git refused, so it wrote nothing. Say so plainly when the reason
 		// is a pin that another writer made in the meantime.
