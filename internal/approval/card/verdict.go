@@ -119,7 +119,10 @@ func VerdictText(s string) string {
 // OwnerApproved reports whether the owner approved the request that is in
 // state s, and whether the state says that the owner decided at all. A
 // request approved under a rule or a grant, one that is pending, and one
-// that ended without a decision are not the owner's decisions.
+// that ended without a decision are not the owner's decisions. The states
+// after a use (consumed, applied, not applied, unknown) do not say how the
+// request was approved; they are taken as the owner's, since only a card
+// carries verdicts.
 func OwnerApproved(s record.State) (approved, decided bool) {
 	switch s {
 	case record.StateApproved, record.StateConsumed, record.StateApplied,
