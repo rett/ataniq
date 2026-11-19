@@ -150,25 +150,34 @@ func TestVerdictAgreementLine(t *testing.T) {
 }
 
 // A backend that wrongly supplies verdicts on a pending card must show none
-// of them, on the list or on the card.
+// of them, on the list or on the card. The after-the-decision block is drawn
+// on an undecided card too (a held card, and one whose last decision the door
+// refused); there the view decides whether verdicts show.
 func TestVerdictNeverVisibleOnAnUndecidedCard(t *testing.T) {
-	c := testCard("p-1")
-	c.Verdicts = block(true, true)
-	b := backendWith(t, []card.Card{c}, nil)
-	b.listing.Pending[0].Verdicts = c.Verdicts
-	r := newRig(t, b, 100, 40)
-	hidden := []string{"provider-a", "model-a", "run-1", "approved", "agreed with you", verdictAdvice, refusedLine}
-	r.notSeen(hidden...)
-	r.openFirst()
-	r.scrollAll()
-	for i := 0; i < len(r.m.cs.body); i++ {
-		r.key("up")
+	for _, after := range []card.After{
+		{},
+		{Held: true},
+		{State: record.StatePending, Line: "the door refused the last decision"},
+	} {
+		c := testCard("p-1")
+		c.After = after
+		c.Verdicts = block(true, true)
+		b := backendWith(t, []card.Card{c}, nil)
+		b.listing.Pending[0].Verdicts = c.Verdicts
+		r := newRig(t, b, 100, 40)
+		hidden := []string{"provider-a", "model-a", "run-1", "approved", "agreed with you", verdictAdvice, refusedLine}
 		r.notSeen(hidden...)
-	}
-	for _, row := range r.m.cs.body {
-		for _, bad := range hidden {
-			if strings.Contains(bodyRowText(row), bad) {
-				t.Fatalf("the body holds %q: %q", bad, bodyRowText(row))
+		r.openFirst()
+		r.scrollAll()
+		for i := 0; i < len(r.m.cs.body); i++ {
+			r.key("up")
+			r.notSeen(hidden...)
+		}
+		for _, row := range r.m.cs.body {
+			for _, bad := range hidden {
+				if strings.Contains(bodyRowText(row), bad) {
+					t.Fatalf("the body holds %q: %q", bad, bodyRowText(row))
+				}
 			}
 		}
 	}
