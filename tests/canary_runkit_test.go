@@ -10,6 +10,7 @@ package tests
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const canaryRunScript = "qualification/canary/run/canary-run.sh"
@@ -918,7 +922,7 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 		}
 	}
 	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
-		for _, word := range []string{"runcap", "wait_key", "ask", "affirm", "systemctl", "step_head"} {
+		for _, word := range []string{"runcap", "ask", "affirm", "systemctl", "step_head"} {
 			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 {
 				t.Errorf("the test entry reaches %s, which calls %s", name, word)
 			}
@@ -1293,5 +1297,205 @@ func TestCanaryRunKitPassBNeedsACleanPassA(t *testing.T) {
 				t.Errorf("the dry run of step 2 in pass B does not say what it needs of pass A:\n%s", strings.Join(b.lines, "\n"))
 			}
 		}
+	}
+}
+
+// This file checks what a signal does to a key the clean-up chain of the
+// canary run script waits for (the plan's N3: each step of the chain waits
+// for its key). It runs the script's test entry "wait-key", which waits as a
+// step of the chain does and with the chain's own answer to a signal; it
+// starts nothing: the PATH is an empty folder, so the script cannot run any
+// program at all.
+
+// canaryKeyWait is one run of the test entry wait-key.
+type canaryKeyWait struct {
+	t     *testing.T
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	mu    sync.Mutex
+	out   strings.Builder
+	done  chan struct{}
+}
+
+func startCanaryKeyWait(t *testing.T) *canaryKeyWait {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", filepath.Join(root(t), canaryRunScript), "--self-test", "wait-key")
+	cmd.Dir = t.TempDir()
+	cmd.Env = []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w := &canaryKeyWait{t: t, cmd: cmd, stdin: stdin, done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(buf)
+			w.mu.Lock()
+			w.out.Write(buf[:n])
+			w.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = cmd.Process.Kill()
+		<-w.done
+		_ = cmd.Wait()
+	})
+	return w
+}
+
+func (w *canaryKeyWait) text() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.String()
+}
+
+// waitFor waits until the output holds the text n times.
+func (w *canaryKeyWait) waitFor(text string, n int) {
+	w.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for strings.Count(w.text(), text) < n {
+		if time.Now().After(deadline) {
+			w.t.Fatalf("the output does not hold %q %d times:\n%s", text, n, w.text())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// ended reports whether the script ended within the time.
+func (w *canaryKeyWait) ended(within time.Duration) bool {
+	select {
+	case <-w.done:
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// finish waits for the script to end and returns its exit status.
+func (w *canaryKeyWait) finish() int {
+	w.t.Helper()
+	if !w.ended(10 * time.Second) {
+		w.t.Fatalf("the script did not end:\n%s", w.text())
+	}
+	err := w.cmd.Wait()
+	if err == nil {
+		return 0
+	}
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		w.t.Fatal(err)
+	}
+	return exit.ExitCode()
+}
+
+// In the clean-up chain a signal cannot stand in for the owner's key: the
+// wait goes on after it, for every signal the chain answers, and ends only
+// with a line.
+func TestCanaryRunKitChainKeyOutlastsASignal(t *testing.T) {
+	for name, sig := range map[string]syscall.Signal{
+		"interrupt": syscall.SIGINT, "terminate": syscall.SIGTERM, "hangup": syscall.SIGHUP,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := startCanaryKeyWait(t)
+			w.waitFor("Press Enter: ", 1)
+			for i := 1; i <= 3; i++ {
+				// The prompt is printed just before the read: give the
+				// script the moment to be reading.
+				time.Sleep(50 * time.Millisecond)
+				if err := w.cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				w.waitFor("the clean-up chain cannot be skipped", i)
+				if w.ended(200 * time.Millisecond) {
+					t.Fatalf("the wait ended with signal %d and no key:\n%s", i, w.text())
+				}
+			}
+			if strings.Contains(w.text(), "\nkey\n") || strings.Contains(w.text(), "no-key") {
+				t.Fatalf("a signal was taken for a key:\n%s", w.text())
+			}
+			if _, err := io.WriteString(w.stdin, "\n"); err != nil {
+				t.Fatal(err)
+			}
+			if code := w.finish(); code != 0 {
+				t.Errorf("exit status %d:\n%s", code, w.text())
+			}
+			out := w.text()
+			if !strings.HasSuffix(out, "\nkey\n") && !strings.HasSuffix(out, ">> key\n") {
+				t.Errorf("the key was not read after the signals:\n%s", out)
+			}
+			if strings.Contains(out, "not found") {
+				t.Errorf("the test entry looked for a program:\n%s", out)
+			}
+		})
+	}
+}
+
+// The end of the input ends the wait without a key, also after a signal: the
+// wait cannot go on for ever when the terminal is gone.
+func TestCanaryRunKitChainKeyEndsWithTheInput(t *testing.T) {
+	for _, signalFirst := range []bool{false, true} {
+		w := startCanaryKeyWait(t)
+		w.waitFor("Press Enter: ", 1)
+		if signalFirst {
+			time.Sleep(50 * time.Millisecond)
+			if err := w.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+				t.Fatal(err)
+			}
+			w.waitFor("the clean-up chain cannot be skipped", 1)
+		}
+		if err := w.stdin.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if code := w.finish(); code != 0 {
+			t.Errorf("exit status %d:\n%s", code, w.text())
+		}
+		if out := w.text(); !strings.HasSuffix(out, "\nno-key\n") || strings.Contains(out, "\nkey\n") {
+			t.Errorf("signal first %v: the end of the input was not the end of the wait:\n%s", signalFirst, out)
+		}
+	}
+}
+
+// The two readers of the script, the wait for a key and the question, read
+// through the one function that outlasts a signal, and the chain installs
+// the answer to a signal that the test entry uses.
+func TestCanaryRunKitChainReadsThroughOneReader(t *testing.T) {
+	text := canaryScriptText(t)
+	funcs := canaryFuncs(t, text)
+	for _, name := range []string{"wait_key", "ask"} {
+		if canaryCalls(funcs[name], "read_answer") != 1 || strings.Contains(funcs[name], "read -r") {
+			t.Errorf("%s does not read through read_answer alone", name)
+		}
+	}
+	if n := strings.Count(text, "read -r ANSWER"); n != 1 {
+		t.Errorf("the script reads an answer in %d places, want 1 (read_answer)", n)
+	}
+	reader := funcs["read_answer"]
+	for _, want := range []string{`[ "$IN_CHAIN" -eq 1 ] && on_terminal && `, `[ "$SIGNALLED" -eq 1 ]`, "continue", `return "$_rs"`} {
+		if !strings.Contains(reader, want) {
+			t.Errorf("read_answer does not hold: %s", want)
+		}
+	}
+	if !strings.Contains(funcs["on_terminal"], "[ -t 0 ]") {
+		t.Error("on_terminal does not ask whether standard input is a terminal")
+	}
+	if canaryCalls(funcs["on_exit"], "chain_trap") != 1 || strings.Count(text, "INT TERM HUP") != 2 {
+		t.Error("the chain does not install its answer to a signal through chain_trap")
+	}
+	if strings.Count(text, "TTY_ASSUMED=1") != 1 || !strings.Contains(funcs["self_test"], "TTY_ASSUMED=1") {
+		t.Error("the input is taken for a terminal outside the test entry")
 	}
 }

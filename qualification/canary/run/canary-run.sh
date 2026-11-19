@@ -13,8 +13,8 @@
 # N, so that the dry run prints the clean-up chain a real failure there runs.
 # --self-test NAME [VALUE...] is the test entry: it gives sample values to one
 # of the script's own functions, prints what the function answers and ends. It
-# only computes: no step runs, nothing is started or written, and no file is
-# read but the one given to pass-a-record.
+# only computes: no step runs, nothing is started or written, and nothing is
+# read but the file given to pass-a-record and, by wait-key, standard input.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -43,6 +43,8 @@ usage() {
     '                      what step 17 does with a result of the injection' \
     '         fields-hold FIELDS PATH=VALUE...' \
     '                      yes when the lines FIELDS hold every PATH=VALUE (step 12)' \
+    '         wait-key' \
+    '                      wait for one key as the clean-up chain does (reads standard input)' \
     '         pass-a-record FILE' \
     '                      what step 2 of pass B reads in a result.txt of pass A' \
     '         unit-stopped STATE' \
@@ -82,6 +84,8 @@ fi
 
 CUR=0          # the step that is running
 IN_CHAIN=0     # 1 while the clean-up chain runs
+SIGNALLED=0    # 1 when a signal came while the chain read from the terminal
+TTY_ASSUMED=0  # 1 in the test entry wait-key only: the input is taken for a terminal
 CHAIN_RAN=0
 FAIL_STEP=0
 FAIL_WHY=
@@ -154,13 +158,44 @@ wait_key() {
     return 0
   fi
   printf '   >> %s Press Enter: ' "$1"
-  if IFS= read -r ANSWER; then
+  if read_answer; then
     note "key: $1"
   else
     out ''
     note "no key could be read: $1"
     if [ "$IN_CHAIN" -eq 0 ]; then fail 'no key could be read from the terminal'; fi
+    return 1
   fi
+}
+
+# on_terminal reports whether standard input is a terminal. A real run has
+# one from its start; the test entry, which has none, says so with
+# TTY_ASSUMED.
+on_terminal() { [ "$TTY_ASSUMED" -eq 1 ] || [ -t 0 ]; }
+
+# chain_trap is the clean-up chain's answer to a signal: the chain goes on,
+# and the signal is remembered, so that it cannot stand in for a key.
+chain_trap() {
+  trap 'SIGNALLED=1; out ""; out "   the clean-up chain cannot be skipped"' INT TERM HUP
+}
+
+# read_answer reads one line from the terminal into ANSWER. In the clean-up
+# chain a signal (Ctrl-C) ends the read without a key; that is not the
+# owner's key, so the read is repeated while standard input is a terminal.
+# Only the end of the input ends it without a line.
+read_answer() {
+  while :; do
+    SIGNALLED=0
+    _rs=0
+    IFS= read -r ANSWER || _rs=$?
+    if [ "$_rs" -eq 0 ]; then return 0; fi
+    if [ "$IN_CHAIN" -eq 1 ] && on_terminal && { [ "$SIGNALLED" -eq 1 ] || [ "$_rs" -gt 128 ]; }; then
+      out '   a signal is not a key: this step still waits for yours'
+      printf '   >> '
+      continue
+    fi
+    return "$_rs"
+  done
 }
 
 # ask puts a question to the owner or the lead and records the answer and the
@@ -172,7 +207,7 @@ ask() {
     return 0
   fi
   printf '   ?? %s\n   > ' "$1"
-  if ! IFS= read -r ANSWER; then
+  if ! read_answer; then
     ANSWER=
     out ''
   fi
@@ -446,6 +481,17 @@ self_test() {
       # STATE: an active state as systemd names it; it may be empty.
       [ "$#" -eq 1 ] || usage
       if unit_stopped "$1"; then out stopped; else out not-stopped; fi
+      ;;
+    wait-key)
+      # No value. It waits for one key as a step of the clean-up chain does,
+      # with the chain's answer to a signal, and takes its standard input for
+      # a terminal. It prints "key" when a line was read and "no-key" when
+      # the input ended.
+      [ "$#" -eq 0 ] || usage
+      IN_CHAIN=1
+      TTY_ASSUMED=1
+      chain_trap
+      if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
       ;;
     pass-a-record)
       # FILE: a result.txt of pass A. The file is read and nothing else.
@@ -1850,7 +1896,7 @@ on_exit() {
   out '   no step of the chain can be skipped; each waits for its key and records its result'
   IN_CHAIN=1
   EPOCH_NO=1
-  trap 'out "   the clean-up chain cannot be skipped"' INT TERM HUP
+  chain_trap
   for _s in $_steps; do
     run_step "$_s"
   done
