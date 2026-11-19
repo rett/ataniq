@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // This file is a tripwire for the import rules of the console-first build:
@@ -275,7 +277,10 @@ func loadBoundaryFiles(t *testing.T, dir string) []boundaryFile {
 // word rule only. It returns the text of every regular file there that is not
 // among the files already loaded, without parsing it: a file of any kind, in
 // any folder, a testdata folder included, since sample data and test vectors
-// are a likely place for a model's name. An absent folder gives nothing.
+// are a likely place for a model's name. It leaves out hidden folders, as the
+// main loader does, and every file that is not text (it holds a NUL byte or
+// is not valid UTF-8), since random bytes can spell a word by chance. An
+// absent folder gives nothing.
 func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []boundaryFile {
 	t.Helper()
 	have := map[string]bool{}
@@ -291,6 +296,9 @@ func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []bounda
 		if err != nil {
 			return err
 		}
+		if d.IsDir() && p != top && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if !d.Type().IsRegular() {
 			return nil
 		}
@@ -305,6 +313,9 @@ func loadBoundaryTexts(t *testing.T, dir string, loaded []boundaryFile) []bounda
 		src, err := os.ReadFile(p)
 		if err != nil {
 			return err
+		}
+		if bytes.IndexByte(src, 0) >= 0 || !utf8.Valid(src) {
+			return nil
 		}
 		files = append(files, boundaryFile{path: rel, textual: true, text: string(src)})
 		return nil
@@ -1080,6 +1091,8 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"internal/approval/card/testdata/below/deep.go": "not Go at all, and " + strings.ToUpper(word) + "\n",
 		"internal/approval/later/notes.txt":             "One.\nTwo " + word + ".\n",
 		"internal/approval/.hidden/a.txt":               word + "\n",
+		"internal/approval/card/testdata/blob.bin":      "\x00\x01 " + word + "\n",
+		"internal/approval/card/testdata/latin1.txt":    "\xff\xfe " + word + "\n",
 		"internal/approvalx/testdata/vector.json":       word + "\n",
 		"internal/other/testdata/vector.json":           word + "\n",
 	} {
@@ -1112,7 +1125,6 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 		"cmd/sample/main_test.go test",
 		"cmd/sample/other_windows.go",
 		"cmd/sample/tagged.go tagged",
-		"internal/approval/.hidden/a.txt text",
 		"internal/approval/card/testdata/below/deep.go text",
 		"internal/approval/card/testdata/neutral.json text",
 		"internal/approval/card/testdata/sample.go text",
@@ -1126,7 +1138,7 @@ func TestConsoleFirstBoundaryLoader(t *testing.T) {
 	}
 	expectFindings(t, ruleCommands, files, "cmd/sample/main.go", "cmd/sample/other_windows.go")
 	expectFindings(t, ruleWords, files,
-		"internal/approval/.hidden/a.txt", "internal/approval/card/testdata/below/deep.go",
+		"internal/approval/card/testdata/below/deep.go",
 		"internal/approval/card/testdata/sample.go", "internal/approval/card/testdata/vector.json",
 		"internal/approval/later/notes.txt")
 	// No import rule finds anything in a file that is kept for its text.
