@@ -126,7 +126,9 @@
 //     handed over again and then marked. A held or a refused entry is never
 //     listed.
 //   - [Store.OpenUses] lists the delivered approvals with no outcome. The
-//     caller settles each from what the door and the mirror show.
+//     caller settles each from what the door and the mirror show: one the
+//     door consumed gets a use with an empty code first when the journal
+//     has none, and then its outcome.
 //   - [Store.UnknownOutcomes] lists the approvals whose outcome is unknown
 //     and waits for the owner.
 //   - [Store.Unjournaled] takes the decisions the door holds and returns
@@ -143,8 +145,8 @@
 //     ([Store.AppendLimit]); [Store.Limit] gives the present number and the
 //     time of the last raise, [Store.LimitChanges] every change.
 //   - A card use is an approve journaled as a decision, unless the door
-//     refused it. [Store.CardUses] gives their times and [Store.Days] the days of the limit's view, each
-//     with its uses and its marks.
+//     refused it. [Store.CardUses] gives their times and [Store.Days] the
+//     days of the limit's view, each with its uses and its marks.
 //   - A day's marks come from alert entries ([Store.AppendAlert]): one for
 //     a day that reached the limit, one for an alert of another kind.
 //   - For every request the caller journals whether it would have met the

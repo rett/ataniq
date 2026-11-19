@@ -13,6 +13,12 @@ import (
 // runs it once, which is the restart of owner-channel 6.3; a daemon may run
 // it from time to time after that, since each step is safe to repeat.
 //
+// An approval lasts 30 minutes from its decision (see
+// [Config.ApprovalLife]), and one that was decided and is waiting for a use
+// (the door was out of reach, or the repository could not be read) is tried
+// again only when a tick runs. The caller must run a tick well inside that
+// time, every few minutes, or such an approval expires unused.
+//
 //   - A journaled decision with no delivered entry is handed to the door,
 //     byte for byte, once. The door answers the same for the same bytes, so
 //     a decision that did reach it before the stop is not applied twice. A
@@ -26,6 +32,9 @@ import (
 //     door before the service stopped (see [Service.Dispose]): the journal
 //     takes it. Nothing is settled.
 //   - A held decision delivers nothing.
+//   - A project that has a card use today and has reached its limit gets
+//     the day's limit alert, once, when a stop lost it between the decision
+//     entry and the alert entry that follows it.
 //   - A decision the door holds and the journal lacks, or holds with other
 //     bytes than the journal's, did not come from the owner's console. That
 //     approval is refused and an alert is journaled; the others go on. This
@@ -102,10 +111,30 @@ func (s *Service) reconcile(ctx context.Context) error {
 	if _, err := st.ExpireHeld(s.now()); err != nil {
 		return s.jerr(ctx, err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return s.jerr(ctx, err)
 	}
+	if err := s.markReachedAgain(ctx); err != nil {
+		return err
+	}
 	return errors.Join(doorErrs...)
+}
+
+// markReachedAgain writes the limit alert of today for each project that has
+// a card use today and has no such alert. A stop between a decision entry
+// and the alert entry that follows it (they are two commits) would lose the
+// alert otherwise; markReached writes it once for the day.
+func (s *Service) markReachedAgain(ctx context.Context) error {
+	now := s.now()
+	s.mu.Lock()
+	projects, ids := s.idx.usedSince(startOfDay(now))
+	s.mu.Unlock()
+	for i, project := range projects {
+		if err := s.markReached(ctx, project, ids[i], now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // takeUpDisposals finishes what a [Service.Dispose] left half done: the
@@ -173,7 +202,7 @@ func (s *Service) checkDoor(ctx context.Context) error {
 	if err != nil {
 		return wrapDoor(err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return s.jerr(ctx, err)
 	}
 	var decided []ownerjournal.DoorDecision
@@ -248,7 +277,7 @@ func (s *Service) countOne(ctx context.Context, p record.Pending) error {
 	if err := s.countPending(ctx, p.Binding.Project, p.RequestID, p, true); err != nil {
 		return err
 	}
-	return s.syncIndex()
+	return s.syncIndex(ctx)
 }
 
 // noteEnded remembers when a card was first seen in a final state, by the

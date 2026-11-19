@@ -121,7 +121,7 @@ func (s *Service) use(ctx context.Context, dl *ownerjournal.Delivery, p record.P
 		// A refusal is journaled once for each code: the tick tries the
 		// use again while the approval lasts, and the journal does not
 		// grow with each try.
-		if serr := s.syncIndex(); serr != nil {
+		if serr := s.syncIndex(ctx); serr != nil {
 			return ownerwire.DecideResult{}, s.jerr(ctx, serr)
 		}
 		if !s.useRefusedBefore(p.ID, e.Code) {

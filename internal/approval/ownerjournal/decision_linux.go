@@ -636,15 +636,6 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 		if err != nil {
 			return err
 		}
-		if !unused {
-			consumed, err := u.consumed(t)
-			if err != nil {
-				return err
-			}
-			if !consumed {
-				return ErrNotConsumed
-			}
-		}
 		if n := len(outcomes); n != 0 {
 			var last outcomeBody
 			if err := parseBody(outcomes[n-1], &last); err != nil {
@@ -653,6 +644,15 @@ func (u *Delivery) AppendOutcome(at time.Time, state record.State, line string) 
 			resolves := state == record.StateApplied || state == record.StateNotApplied
 			if n != 1 || last.State != string(record.StateUnknown) || !resolves {
 				return ErrSettled
+			}
+		}
+		if !unused {
+			consumed, err := u.consumed(t)
+			if err != nil {
+				return err
+			}
+			if !consumed {
+				return ErrNotConsumed
 			}
 		}
 		_, err = t.add(Entry{Kind: KindOutcome, At: at, PendingID: u.d.rec.ID, Project: u.d.rec.Project, Ref: u.d.seq, Body: b})
@@ -716,9 +716,12 @@ func (s *Store) deliveryOf(q querier, e Entry) (*Delivery, bool, error) {
 // OpenUses returns the approvals that were delivered and have no outcome,
 // in the order they were decided. At a restart the caller settles each
 // from what the door and the mirror show: one the door never consumed is
-// simply still open; one that was consumed gets its outcome with
-// [Delivery.AppendOutcome]. A deny and a decision the door refused are
-// never among them.
+// simply still open; one that was consumed gets a use with an empty code
+// through [Delivery.AppendUse] when the journal has none (the process may
+// have stopped between the door's answer and that call), and then its
+// outcome with [Delivery.AppendOutcome], which refuses applied,
+// not-applied and unknown before that use. A deny and a decision the door
+// refused are never among them.
 func (s *Store) OpenUses() ([]*Delivery, error) {
 	var out []*Delivery
 	err := s.read(func(q querier) error {

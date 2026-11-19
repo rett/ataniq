@@ -1,7 +1,9 @@
 package ownerchannel
 
 import (
+	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"ataniq/internal/approval/ownerjournal"
@@ -25,6 +27,17 @@ type index struct {
 	counted       map[string]bool
 	bareRequests  int64
 	bareWouldMeet int64
+	// lastUse holds, for each project, the latest decision or held entry
+	// that may have been a card use, so that a restart can tell which
+	// projects to check for the day's limit alert.
+	lastUse map[string]projectUse
+}
+
+// projectUse is the latest card use of a project that the index read: the
+// time of its entry and the pending id.
+type projectUse struct {
+	at time.Time
+	id string
 }
 
 // idRecord is what the journal says of one pending id, the latest of each.
@@ -56,6 +69,7 @@ func newIndex() index {
 		byID:    make(map[string]*idRecord),
 		alerted: make(map[string]bool),
 		counted: make(map[string]bool),
+		lastUse: make(map[string]projectUse),
 	}
 }
 
@@ -66,6 +80,28 @@ func (x *index) rec(id string) *idRecord {
 		x.byID[id] = r
 	}
 	return r
+}
+
+// noteUse remembers the entry as its project's latest card use.
+func (x *index) noteUse(e ownerjournal.Entry) {
+	if last, ok := x.lastUse[e.Project]; !ok || !e.At.Before(last.at) {
+		x.lastUse[e.Project] = projectUse{at: e.At, id: e.PendingID}
+	}
+}
+
+// usedSince returns the projects whose latest card use is at or after from,
+// in the order of their names, with the pending id of that use.
+func (x *index) usedSince(from time.Time) (projects, ids []string) {
+	for p := range x.lastUse {
+		if !x.lastUse[p].at.Before(from) {
+			projects = append(projects, p)
+		}
+	}
+	sort.Strings(projects)
+	for _, p := range projects {
+		ids = append(ids, x.lastUse[p].id)
+	}
+	return projects, ids
 }
 
 // bodies of the entries the index reads.
@@ -102,9 +138,13 @@ func (x *index) add(e ownerjournal.Entry) {
 		r := x.rec(e.PendingID)
 		r.decided, r.approve, r.decidedAt = true, b.Approve, e.At
 		r.delivered, r.refusedByDoor = false, ""
+		if b.Approve {
+			x.noteUse(e)
+		}
 	case ownerjournal.KindHeld:
 		r := x.rec(e.PendingID)
 		r.decidedAt, r.refusedByDoor = e.At, ""
+		x.noteUse(e)
 	case ownerjournal.KindDelivered:
 		var b indexCode
 		if json.Unmarshal(e.Body, &b) != nil {
@@ -167,12 +207,12 @@ func (x *index) totals() (requests, wouldMeet int64) {
 }
 
 // syncIndex reads the journal entries the index has not seen.
-func (s *Service) syncIndex() error {
+func (s *Service) syncIndex(ctx context.Context) error {
 	for {
 		s.mu.Lock()
 		after := s.idx.seq
-		st := s.store
 		s.mu.Unlock()
+		st := s.journalIn(ctx)
 		entries, err := st.Entries(after, 500)
 		if err != nil {
 			return err

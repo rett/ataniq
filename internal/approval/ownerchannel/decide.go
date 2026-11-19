@@ -163,7 +163,7 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		// that is journaled and has not reached the door. This one is
 		// refused. It does not hand the other over: that is the work of a
 		// restart and of the tick.
-		return ownerwire.DecideResult{}, s.decidedRefusal(pending.ID)
+		return ownerwire.DecideResult{}, s.decidedRefusal(ctx, pending.ID)
 	case errors.Is(err, ownerjournal.ErrExpired):
 		return ownerwire.DecideResult{}, refuse(record.CodeApprovalExpired, "the card expired while it was held")
 	case err != nil:
@@ -185,8 +185,8 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 // decidedRefusal is the refusal of a decision for a card that has a decision
 // already, in plain words about what the earlier one is: an approve or a deny
 // that is journaled and on its way to the door gets that said.
-func (s *Service) decidedRefusal(id string) error {
-	if err := s.syncIndex(); err == nil {
+func (s *Service) decidedRefusal(ctx context.Context, id string) error {
+	if err := s.syncIndex(ctx); err == nil {
 		if r, ok := s.indexed(id); ok && r.decided && !r.delivered {
 			if r.approve {
 				return refuse(record.CodeDecisionInvalid, "an approve for this card is already on its way to the door")
@@ -300,7 +300,12 @@ func (s *Service) judge(project string, now time.Time) (held bool, uses, limit i
 // limitOf returns the limit in force for a project: the journal's, or the
 // default when it was never changed.
 func (s *Service) limitOf(project string) (int, error) {
-	l, err := s.journal().Limit(project)
+	return limitIn(s.journal(), project)
+}
+
+// limitIn is limitOf for the store st.
+func limitIn(st Journal, project string) (int, error) {
+	l, err := st.Limit(project)
 	if err != nil {
 		return 0, err
 	}
@@ -324,7 +329,7 @@ func (s *Service) hold(ctx context.Context, decision, pendingBytes []byte, p rec
 		case errors.Is(err, ownerjournal.ErrExpired):
 			return ownerwire.DecideResult{}, refuse(record.CodeApprovalExpired, "the card expired while it was held")
 		case errors.Is(err, ownerjournal.ErrDecided):
-			return ownerwire.DecideResult{}, s.decidedRefusal(p.ID)
+			return ownerwire.DecideResult{}, s.decidedRefusal(ctx, p.ID)
 		}
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}

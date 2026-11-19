@@ -213,10 +213,9 @@ func TestADecisionNeedsThePresenceOfTheOwner(t *testing.T) {
 
 	e.beat()
 	e.advance(9*time.Minute + 59*time.Second)
-	// Just inside the window, the decision goes through, and its action
-	// counts as activity.
+	// Just inside the window, with no beat since the last one, the decision
+	// goes through, and its action counts as activity.
 	e2 := e.card("feature-b")
-	e.beat()
 	if _, err := e.svc.Decide(ctx, src, frame(e2, false)); err != nil {
 		t.Fatal(err)
 	}

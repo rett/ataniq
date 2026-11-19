@@ -3,6 +3,7 @@ package ownerchannel
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -371,5 +372,77 @@ func TestTheLimitAlertIsNotLostByAStopAfterAHeldEntryIsJournaled(t *testing.T) {
 	}
 	if n := len(e.limitAlerts()); n != 1 {
 		t.Fatalf("%d limit alerts after the stop, want the day's one", n)
+	}
+}
+
+// alertFails is a store whose AppendAlert is refused while stop is set, as
+// a stop between a decision entry and the alert entry after it would leave
+// the journal: the decision is there and the alert is not.
+type alertFails struct {
+	*ownerjournal.Store
+	stop *atomic.Bool
+}
+
+var errNoAlert = errors.New("injected: the alert was not written")
+
+func (a *alertFails) AppendAlert(al ownerjournal.Alert) error {
+	if a.stop.Load() {
+		return errNoAlert
+	}
+	return a.Store.AppendAlert(al)
+}
+
+// The day's limit alert is written by the next tick when a stop lost it
+// after the decision entry that reached the limit, and after the held entry
+// of the approve that came next.
+func TestATickWritesTheLimitAlertThatAStopLost(t *testing.T) {
+	e := newEnv(t)
+	var stop atomic.Bool
+	e.journalWrap = func(s *ownerjournal.Store) Journal { return &alertFails{Store: s, stop: &stop} }
+	e.start()
+	e.setLimit(1)
+	stop.Store(true)
+
+	// The approve that reaches the limit is journaled, and its alert is not.
+	e.resetRef()
+	a := e.card("feature-a")
+	if _, err := e.decide(a, true); !errors.Is(err, errNoAlert) {
+		t.Fatalf("the approve returned %v, want the injected stop", err)
+	}
+	// The next approve is held, and its alert is not written either.
+	e.advance(time.Minute)
+	b := e.card("feature-b")
+	if res, err := e.decide(b, true); !errors.Is(err, errNoAlert) {
+		t.Fatalf("the held approve returned %+v %v, want the injected stop", res, err)
+	}
+	if n := len(e.entries(ownerjournal.KindHeld)); n != 1 {
+		t.Fatalf("%d held entries, want 1", n)
+	}
+	if n := len(e.entries(ownerjournal.KindAlert)); n != 0 {
+		t.Fatalf("%d alerts before the tick, want none", n)
+	}
+
+	stop.Store(false)
+	for i := 0; i < 2; i++ {
+		if err := e.svc.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		alerts := e.entries(ownerjournal.KindAlert)
+		if len(alerts) != 1 || alerts[0].Project != "project-a" {
+			t.Fatalf("after tick %d the alerts are %+v, want one for the project", i+1, alerts)
+		}
+	}
+	days, err := e.svc.journal().Days("project-a", e.clock.Now())
+	if err != nil || !days[len(days)-1].ReachedLimit {
+		t.Errorf("the day is not marked: %+v %v", days[len(days)-1], err)
+	}
+
+	// A day on which nothing was used writes no alert.
+	e.advance(48 * time.Hour)
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(e.entries(ownerjournal.KindAlert)); n != 1 {
+		t.Errorf("%d alerts after a quiet day, want still 1", n)
 	}
 }

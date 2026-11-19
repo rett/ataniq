@@ -383,7 +383,7 @@ func (s *Service) appendCount(ctx context.Context, c ownerjournal.Count, locked 
 	if len(c.Reason) > 500 {
 		c.Reason = c.Reason[:500]
 	}
-	if err := s.journal().AppendCount(c); err != nil {
+	if err := s.journalIn(ctx).AppendCount(c); err != nil {
 		if locked {
 			return s.jerr(ctx, err)
 		}
