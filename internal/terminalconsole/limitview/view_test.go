@@ -1,6 +1,7 @@
 package limitview
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -113,13 +114,55 @@ func TestEnterEqualSuggestion(t *testing.T) {
 	}
 }
 
-func TestEnterHigherSuggestionSaysType(t *testing.T) {
-	m := newModel(sampleView(t, 12, []int{9}, false)) // suggestion 18
-	if a := m.Update(key("enter")); a.Kind != None {
-		t.Fatalf("got %+v", a)
+func TestEnterHigherSuggestionGivesLimitsReason(t *testing.T) {
+	cases := []struct {
+		name   string
+		limit  int
+		uses   []int
+		raised bool
+		want   string // a part of the reason, to see that the right one was chosen
+	}{
+		{"can be typed", 12, []int{9}, false, "a higher number has to be typed"},
+		{"raised today", 12, []int{9}, true, "already raised"},
+		{"limit of one", 1, []int{9}, false, "cannot be raised"},
 	}
-	if !strings.Contains(screen(m), "a higher number has to be typed") {
-		t.Error("no note")
+	for _, c := range cases {
+		v := sampleView(t, c.limit, c.uses, c.raised)
+		if v.Suggestion <= v.Limit {
+			t.Fatalf("%s: suggestion %d is not higher than %d", c.name, v.Suggestion, v.Limit)
+		}
+		reason := limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion, Typed: true})
+		if reason == nil {
+			reason = limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion})
+		}
+		m := newModel(v)
+		if a := m.Update(key("enter")); a.Kind != None {
+			t.Fatalf("%s: got %+v", c.name, a)
+		}
+		s := screen(m)
+		if !strings.Contains(s, reason.Error()) || !strings.Contains(reason.Error(), c.want) {
+			t.Errorf("%s: screen lacks limits' reason %q:\n%s", c.name, reason, s)
+		}
+		if strings.Contains(s, "has to be typed") != (c.want == "a higher number has to be typed") {
+			t.Errorf("%s: the hint to type a number is wrong:\n%s", c.name, s)
+		}
+	}
+}
+
+func TestTypedPresentNumberSendsNothing(t *testing.T) {
+	for _, limit := range []int{12, 1, 40} {
+		m := newModel(sampleView(t, limit, []int{3}, false))
+		typeKeys(m, strconv.Itoa(limit))
+		if a := m.Update(key("enter")); a.Kind != None {
+			t.Fatalf("limit %d: got %+v", limit, a)
+		}
+		if !strings.Contains(screen(m), typedSame) {
+			t.Errorf("limit %d: no note that nothing changes", limit)
+		}
+		// A second Enter still sends nothing.
+		if a := m.Update(key("enter")); a.Kind != None {
+			t.Fatalf("limit %d: second Enter got %+v", limit, a)
+		}
 	}
 }
 

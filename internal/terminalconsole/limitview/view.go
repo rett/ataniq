@@ -59,8 +59,8 @@ const MaxProjectCells = 40
 const (
 	title        = "DAILY CARD LIMIT"
 	helpLine     = "Enter takes the suggestion if it is not higher; type digits then Enter for a number; Esc closes"
-	needTyped    = "the suggestion is higher than the present limit: a higher number has to be typed"
 	sameAsNow    = "the suggestion is the present limit: nothing to change"
+	typedSame    = "that is the present limit: nothing changes"
 	sentNote     = "change sent; waiting for the new limit"
 	reasonReach  = "reached the limit"
 	reasonAlert  = "had an alert"
@@ -150,7 +150,7 @@ func (m *Model) enter() Action {
 	if m.typed == "" {
 		switch {
 		case v.Suggestion > v.Limit:
-			m.note, m.warn = needTyped, false
+			m.note, m.warn = higherSuggestionNote(v), false
 			return Action{}
 		case v.Suggestion == v.Limit:
 			m.note, m.warn = sameAsNow, false
@@ -163,6 +163,10 @@ func (m *Model) enter() Action {
 		m.note, m.warn = "", false
 		return Action{}
 	}
+	if n == v.Limit {
+		m.note, m.warn = typedSame, false
+		return Action{}
+	}
 	c := limits.Change{To: n, Typed: true}
 	if err := limits.Check(v.Limit, v.RaisedToday, c); err != nil {
 		m.note, m.warn = err.Error(), false
@@ -173,6 +177,20 @@ func (m *Model) enter() Action {
 		return Action{}
 	}
 	return m.propose(c)
+}
+
+// higherSuggestionNote returns limits' own reason for why the suggestion,
+// which is higher than the present limit, is not taken by Enter: the reason
+// a typed raise is refused if one is (the limit was raised today, or it is
+// too small to raise), else the reason one key does not raise.
+func higherSuggestionNote(v limits.View) string {
+	if err := limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion, Typed: true}); err != nil {
+		return err.Error()
+	}
+	if err := limits.Check(v.Limit, v.RaisedToday, limits.Change{To: v.Suggestion}); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 // propose checks c once more with limits, so that no change leaves the view
