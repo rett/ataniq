@@ -18,9 +18,9 @@
 //     bounded by this package: no control character, no format character (so
 //     no escape sequence and no direction override), no invisible character,
 //     no combining mark at the start, and at most [MaxText] bytes. The lists
-//     are bounded too, and the view counts what it left out. The strings are for showing. They are not
-//     identifiers: cleaning can make two different names equal, so nothing
-//     may be decided by comparing them.
+//     are bounded too, and the view counts what it left out. The strings are
+//     for showing. They are not identifiers: cleaning can make two different
+//     names equal, so nothing may be decided by comparing them.
 //   - The text and the next step of a state are fixed texts of this package.
 //     Nothing the peer sent is in them, and no error text is.
 //   - Read sends no operation other than "hello" and "status".
