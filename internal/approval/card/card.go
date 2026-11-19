@@ -202,7 +202,7 @@ type Diff struct {
 	Rows []Row
 	// Truncated says that the record holds only the first part of the path
 	// list. The whole list is then read in pages ([PagePaths]), and the
-	// card may be approved only after the last page was read.
+	// card may be approved only after every page of the whole list was read.
 	Truncated bool
 	// ExecConfig names the set of rules the paths were flagged with.
 	ExecConfig ExecConfig

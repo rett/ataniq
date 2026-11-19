@@ -27,22 +27,44 @@ type Reading struct {
 	// A [ListKind] is the index. An empty list counts as read once the
 	// line that shows it empty was on the screen.
 	Lists [NumLists]bool
-	// PathPagesEnd is the review digest of the last page of the whole path
-	// list, once that page was read to its end, and empty before. It
-	// matters only for a card whose path list is cut. [Reading.ReadPage]
-	// sets it.
-	PathPagesEnd string
 	// Differs says that the "differs from" block was passed.
 	Differs bool
+
+	// The pages of the whole path list read so far, for one review digest
+	// and one page count. [Reading.ReadPage] keeps them; a card whose
+	// path list is cut asks for all of them.
+	pathDigest string
+	pathCount  int
+	pathPages  map[int]struct{}
 }
 
-// ReadPage notes that the reader read the page p to its end. Only the last
-// page of the path list changes anything: the pages are read in order, so
-// its end is the end of the list.
+// ReadPage notes that the reader read the page p to its end. Only a page of
+// the whole path list changes anything. Every page of that list has to be
+// read before a cut list counts, in any order and each once or more. The
+// pages read are those of one review digest and one page count: a page of
+// another digest, or of the same digest with another number of pages,
+// starts the count again with that page alone. A page whose number is not
+// between 0 and Pages-1 is ignored.
 func (r *Reading) ReadPage(p Page) {
-	if p.Kind == PagePaths && p.Pages >= 1 && p.N == p.Pages-1 {
-		r.PathPagesEnd = p.ReviewDigest
+	if p.Kind != PagePaths || p.N < 0 || p.N >= p.Pages {
+		return
 	}
+	// The set is copied before it changes, so that a copy of a Reading
+	// does not share it.
+	next := make(map[int]struct{}, len(r.pathPages)+1)
+	if r.pathDigest == p.ReviewDigest && r.pathCount == p.Pages {
+		for n := range r.pathPages {
+			next[n] = struct{}{}
+		}
+	}
+	next[p.N] = struct{}{}
+	r.pathDigest, r.pathCount, r.pathPages = p.ReviewDigest, p.Pages, next
+}
+
+// pathPagesRead reports whether every page of the path list of the review
+// digest was read.
+func (r Reading) pathPagesRead(digest string) bool {
+	return digest != "" && r.pathDigest == digest && r.pathCount >= 1 && len(r.pathPages) == r.pathCount
 }
 
 // Signed reports whether the reader signed off s.
@@ -86,9 +108,9 @@ const (
 	ReasonDiffers = "the block that says how this card differs from the earlier one was not read"
 	// ReasonPaths answers a path list that was not read to its end.
 	ReasonPaths = "the path list was not read to its end"
-	// ReasonPathPages answers a cut path list whose last page was not
+	// ReasonPathPages answers a cut path list of which a page was not
 	// read.
-	ReasonPathPages = "the path list is cut on the card, and its last page was not read"
+	ReasonPathPages = "the path list is cut on the card, and a page of the whole list was not read"
 	// ReasonUnsigned answers flagged paths without a sign-off. MayApprove
 	// puts their number before it.
 	ReasonUnsigned = "not signed off"
@@ -114,8 +136,8 @@ func reasonList(k ListKind) string {
 //   - the "differs from" block, when the card has one, was passed;
 //   - the path list and each of the four lists were read to their end; when
 //     the record holds only the first part of the path list, the path list
-//     counts only when the last page of the whole list was read, from the
-//     review the card was made from;
+//     counts only when every page of the whole list was read, from the
+//     review the card was made from (see [Reading.ReadPage]);
 //   - every flagged path is signed off, and no sign-off names a path that
 //     is not flagged;
 //   - at least [OpenDelay] has gone by since the card opened.
@@ -138,7 +160,7 @@ func (c Card) MayApprove(r Reading, now time.Time) (ok bool, reason string) {
 	}
 	if d := c.Diff; d != nil {
 		if d.Truncated {
-			if r.PathPagesEnd == "" || r.PathPagesEnd != d.ReviewDigest {
+			if !r.pathPagesRead(d.ReviewDigest) {
 				return false, ReasonPathPages
 			}
 		} else if !r.Paths {

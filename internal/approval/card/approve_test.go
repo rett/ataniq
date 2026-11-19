@@ -53,6 +53,18 @@ func TestMayApprove(t *testing.T) {
 	lastPage := func(r *Reading, digest string) {
 		r.ReadPage(Page{Kind: PagePaths, N: 12, Pages: 13, ReviewDigest: digest})
 	}
+	// allPages reads pages first to last-1 (skipping those in skip) of 13.
+	pages := func(r *Reading, digest string, skip ...int) {
+	next:
+		for n := 0; n < 13; n++ {
+			for _, s := range skip {
+				if n == s {
+					continue next
+				}
+			}
+			r.ReadPage(Page{Kind: PagePaths, N: n, Pages: 13, ReviewDigest: digest})
+		}
+	}
 
 	cases := []struct {
 		name   string
@@ -108,32 +120,63 @@ func TestMayApprove(t *testing.T) {
 			change: func(r *Reading) { r.Paths = false; lastPage(r, oneFlag.Binding.Summary.ReviewDigest) }, want: ReasonPaths},
 
 		// A truncated path list.
-		{name: "truncated, last page read", p: truncated,
-			change: func(r *Reading) { lastPage(r, digest) }},
-		{name: "truncated, last page read and the card's rows not", p: truncated,
-			change: func(r *Reading) { r.Paths = false; lastPage(r, digest) }},
-		{name: "truncated, no page read", p: truncated, want: ReasonPathPages},
-		{name: "truncated, every page but the last read", p: truncated,
+		{name: "truncated, every page read", p: truncated,
+			change: func(r *Reading) { pages(r, digest) }},
+		{name: "truncated, every page read and the card's rows not", p: truncated,
+			change: func(r *Reading) { r.Paths = false; pages(r, digest) }},
+		{name: "truncated, every page read, the last first", p: truncated,
 			change: func(r *Reading) {
-				for n := 0; n < 12; n++ {
-					r.ReadPage(Page{Kind: PagePaths, N: n, Pages: 13, ReviewDigest: digest})
-				}
-			}, want: ReasonPathPages},
+				lastPage(r, digest)
+				pages(r, digest, 12)
+			}},
+		{name: "truncated, a page read twice", p: truncated,
+			change: func(r *Reading) { pages(r, digest); pages(r, digest) }},
+		{name: "truncated, no page read", p: truncated, want: ReasonPathPages},
+		{name: "truncated, only the last page read", p: truncated,
+			change: func(r *Reading) { lastPage(r, digest) }, want: ReasonPathPages},
+		{name: "truncated, every page but the last read", p: truncated,
+			change: func(r *Reading) { pages(r, digest, 12) }, want: ReasonPathPages},
+		{name: "truncated, every page but the first read", p: truncated,
+			change: func(r *Reading) { pages(r, digest, 0) }, want: ReasonPathPages},
+		{name: "truncated, every page but one in the middle read", p: truncated,
+			change: func(r *Reading) { pages(r, digest, 6) }, want: ReasonPathPages},
+		{name: "truncated, pages of another review read after the others", p: truncated,
+			change: func(r *Reading) {
+				pages(r, digest, 12)
+				r.ReadPage(Page{Kind: PagePaths, N: 0, Pages: 13, ReviewDigest: otherDigest})
+				lastPage(r, digest)
+			},
+			want: ReasonPathPages},
+		{name: "truncated, the same review read again with another page count", p: truncated,
+			change: func(r *Reading) {
+				pages(r, digest, 12)
+				r.ReadPage(Page{Kind: PagePaths, N: 0, Pages: 14, ReviewDigest: digest})
+				lastPage(r, digest)
+			},
+			want: ReasonPathPages},
+		{name: "truncated, every page of another review read", p: truncated,
+			change: func(r *Reading) { pages(r, otherDigest) }, want: ReasonPathPages},
 		{name: "truncated, the last page of the patch read", p: truncated,
 			change: func(r *Reading) { r.ReadPage(Page{Kind: PagePatch, N: 12, Pages: 13, ReviewDigest: digest}) },
 			want:   ReasonPathPages},
 		{name: "truncated, the last page of another review read", p: truncated,
 			change: func(r *Reading) { lastPage(r, otherDigest) }, want: ReasonPathPages},
-		{name: "truncated, a last page without a digest", p: truncated,
-			change: func(r *Reading) { lastPage(r, "") }, want: ReasonPathPages},
+		{name: "truncated, every page without a digest", p: truncated,
+			change: func(r *Reading) { pages(r, "") }, want: ReasonPathPages},
+		{name: "truncated, a page past the end", p: truncated,
+			change: func(r *Reading) {
+				pages(r, digest, 12)
+				r.ReadPage(Page{Kind: PagePaths, N: 13, Pages: 13, ReviewDigest: digest})
+			},
+			want: ReasonPathPages},
 		{name: "truncated, a page of no pages", p: truncated,
 			change: func(r *Reading) { r.ReadPage(Page{Kind: PagePaths, N: -1, Pages: 0, ReviewDigest: digest}) },
 			want:   ReasonPathPages},
-		{name: "truncated, last page read and a list not", p: truncated,
-			change: func(r *Reading) { lastPage(r, digest); r.Lists[ListSubmodules] = false },
+		{name: "truncated, every page read and a list not", p: truncated,
+			change: func(r *Reading) { pages(r, digest); r.Lists[ListSubmodules] = false },
 			want:   "the list of submodules was not read to its end"},
-		{name: "truncated, last page read and the flag not signed off", p: truncated,
-			change: func(r *Reading) { lastPage(r, digest); r.SignedOff = nil }, want: "1 flagged path is not signed off"},
+		{name: "truncated, every page read and the flag not signed off", p: truncated,
+			change: func(r *Reading) { pages(r, digest); r.SignedOff = nil }, want: "1 flagged path is not signed off"},
 
 		// The "differs from" block.
 		{name: "differs, passed", p: later, in: Inputs{Earlier: earlier},
@@ -367,9 +410,9 @@ func TestDeny(t *testing.T) {
 	}
 }
 
-// A card whose path list is cut may be approved only after the last page
-// of the whole list was read; the card's own rows are not enough.
-func TestATruncatedPathListNeedsItsLastPage(t *testing.T) {
+// A card whose path list is cut may be approved only after every page of
+// the whole list was read; the card's own rows are not enough.
+func TestATruncatedPathListNeedsEveryPage(t *testing.T) {
 	p, _ := truncatedPending(t)
 	c := mustCard(t, p, Inputs{})
 	now := asked.Add(time5min)
@@ -385,7 +428,19 @@ func TestATruncatedPathListNeedsItsLastPage(t *testing.T) {
 		r.ReadPage(Page{Kind: PagePaths, N: n, Pages: pages, ReviewDigest: c.Diff.ReviewDigest})
 	}
 	if ok, reason := c.MayApprove(r, now); !ok {
-		t.Errorf("with the last page read: refused, %q", reason)
+		t.Errorf("with every page read: refused, %q", reason)
+	}
+}
+
+// A copy of a reading does not share the pages with the reading it came
+// from.
+func TestReadPageDoesNotShareWithACopy(t *testing.T) {
+	var r Reading
+	r.ReadPage(Page{Kind: PagePaths, N: 0, Pages: 2, ReviewDigest: "d"})
+	cp := r
+	cp.ReadPage(Page{Kind: PagePaths, N: 1, Pages: 2, ReviewDigest: "d"})
+	if !cp.pathPagesRead("d") || r.pathPagesRead("d") {
+		t.Errorf("copy read %v, original read %v", cp.pathPagesRead("d"), r.pathPagesRead("d"))
 	}
 }
 
