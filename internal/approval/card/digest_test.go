@@ -12,7 +12,7 @@ import (
 // with no code of the package.
 func shownByHand(binding, noteDigest, earlier string, held byte) string {
 	var data []byte
-	for _, part := range []string{binding, noteDigest, earlier, string([]byte{held})} {
+	for _, part := range []string{"ataniq.shown/1", binding, noteDigest, earlier, string([]byte{held})} {
 		n := len(part)
 		data = append(data, 0, 0, 0, 0, 0, 0, 0, byte(n))
 		data = append(data, part...)
@@ -69,7 +69,11 @@ func TestShownDigest(t *testing.T) {
 		t.Error("the digest of no bytes is not the known one")
 	}
 
-	// Each of the four parts moves the digest, and the four cards above
+	if ShownVersion != "ataniq.shown/1" {
+		t.Errorf("the version tag is %q", ShownVersion)
+	}
+
+	// Each of the parts moves the digest, and the four cards above
 	// have four digests.
 	seen := map[string]string{}
 	add := func(name string, c Card) {
