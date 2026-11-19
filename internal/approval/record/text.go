@@ -3,6 +3,9 @@ package record
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
+	"strconv"
 )
 
 // Text is a string of raw bytes that survives JSON under the record rules.
@@ -21,6 +24,16 @@ import (
 //
 // A Text is lead-written: show it only through the lead-text escaping.
 type Text string
+
+// Format writes t quoted, with every byte outside printable ASCII escaped,
+// whatever the verb is (%v, %+v, %#v, %s, %q, %x and %d alike). So printing
+// a Text, or a record that holds one such as a SignOff, a PathChange or a
+// Flag, never writes a raw byte of a lead: no control character, no
+// bidirectional override and no invalid UTF-8 reaches a log line or an error
+// message. string(t) is still the raw bytes, and it is the way to get them.
+func (t Text) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, strconv.QuoteToASCII(string(t)))
+}
 
 // Plain reports whether t is written as a JSON string and not as b64.
 func (t Text) Plain() bool { return plain(string(t)) }

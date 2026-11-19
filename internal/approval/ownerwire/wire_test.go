@@ -157,7 +157,7 @@ func refused(t testing.TB, err error, code record.Code, what string) {
 	if e.Code != code {
 		t.Errorf("%s: refused %s, want %s (%s)", what, e.Code, code, e.Detail)
 	}
-	if e.Detail == "" || !plain(e.Detail) {
+	if e.Detail == "" || !record.Text(e.Detail).Plain() {
 		t.Errorf("%s: the detail %q cannot be shown as it is", what, e.Detail)
 	}
 }
@@ -523,6 +523,11 @@ func TestARecordWhoseDigestIsNotItsBytesIsRefused(t *testing.T) {
 	_, err = EncodeShowResult(ShowResult{Record: big})
 	refused(t, err, record.CodeRecordTooLarge, "a record one byte over the cap")
 }
+
+var (
+	textType  = reflect.TypeOf(record.Text(""))
+	bytesType = reflect.TypeOf([]byte(nil))
+)
 
 // The listing carries no record bytes: no type it is made of has a field
 // that could hold them.
@@ -929,7 +934,12 @@ func TestLimitContent(t *testing.T) {
 		"a date with a time":    change(func(v *LimitView) { v.Days[0].Date = "2026-11-19T00:00:00Z" }),
 		"a date of no day":      change(func(v *LimitView) { v.Days[0].Date = "2026-02-30" }),
 		"a short date":          change(func(v *LimitView) { v.Days[0].Date = "2026-1-9" }),
-		"too many days":         change(func(v *LimitView) { v.Days = make([]LimitDay, MaxLimitDays+1) }),
+		"too many days": change(func(v *LimitView) {
+			v.Days = nil
+			for i := 0; i <= MaxLimitDays; i++ {
+				v.Days = append(v.Days, LimitDay{Date: "2026-11-19", Uses: 1})
+			}
+		}),
 	} {
 		_, err := EncodeLimitView(v)
 		refused(t, err, record.CodeRecordInvalid, name)
@@ -964,5 +974,63 @@ func TestADetailHoldsNoByteOfThePayload(t *testing.T) {
 		if strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "zq") {
 			t.Errorf("%s: the refusal repeats the payload: %v", name, err)
 		}
+	}
+}
+
+// The checks below were each found to survive their removal.
+
+// A record's bytes have one base64 form: padding bits that are not zero
+// are refused, though the digest of the bytes they decode to is right.
+func TestRecordBytesHaveOneBase64Form(t *testing.T) {
+	digest := record.Digest([]byte("a"))
+	ok := `{"held":false,"record":{"bytes":"YQ==","sha256":"` + digest + `"}}`
+	if _, err := DecodeShowResult([]byte(ok)); err != nil {
+		t.Fatalf("the canonical form is refused: %v", err)
+	}
+	for name, form := range map[string]string{"loose padding bits": "YR==", "no padding": "YQ", "a url alphabet": "Y-=="} {
+		in := `{"held":false,"record":{"bytes":"` + form + `","sha256":"` + digest + `"}}`
+		_, err := DecodeShowResult([]byte(in))
+		refused(t, err, record.CodeRecordInvalid, name)
+	}
+}
+
+// A string that is not valid UTF-8 is refused wherever it stands, also in a
+// field the form names, where only the check of the whole payload sees it.
+func TestInvalidUTF8InAKnownFieldIsRefused(t *testing.T) {
+	for name, c := range map[string]struct {
+		in     string
+		decode func([]byte) error
+	}{
+		"a pending id": {"{\"id\":\"ap-\xff\",\"page\":0,\"review_digest\":\"" + sampleDigest + "\"}",
+			func(b []byte) error { _, err := DecodePageParams(b); return err }},
+		"a project": {"{\"project\":\"project-\xff\"}",
+			func(b []byte) error { _, err := DecodeLimitParams(b); return err }},
+		"a line of the patch": {"{\"id\":\"" + sampleID + "\",\"lines\":[{\"cont\":false,\"text\":\"a\xffb\"}],\"page\":0,\"pages\":1,\"review_digest\":\"" + sampleDigest + "\"}",
+			func(b []byte) error { _, err := DecodePatchPage(b); return err }},
+	} {
+		err := c.decode([]byte(c.in))
+		refused(t, err, record.CodeRecordInvalid, name)
+		if err != nil && !strings.Contains(err.Error(), "not valid UTF-8") {
+			t.Errorf("%s: the refusal is not the UTF-8 one: %v", name, err)
+		}
+	}
+}
+
+// The payload reader nests 8 levels and no more. No payload form is that
+// deep, so the reader is tried with a type that is.
+func TestThePayloadReaderNestsEightLevels(t *testing.T) {
+	type deep7 struct {
+		L [][][][][][][]string `json:"l"`
+	}
+	type deep8 struct {
+		L [][][][][][][][]string `json:"l"`
+	}
+	// The object is level 0 and each list one level more.
+	if err := reader.Unmarshal([]byte(`{"l":[[[[[[["a"]]]]]]]}`), "deep", new(deep7)); err != nil {
+		t.Errorf("seven nested lists are refused: %v", err)
+	}
+	err := reader.Unmarshal([]byte(`{"l":[[[[[[[["a"]]]]]]]]}`), "deep", new(deep8))
+	if err == nil || !strings.Contains(err.Error(), "the payload nests too deep") {
+		t.Errorf("eight nested lists: %v, want the payload nests too deep", err)
 	}
 }

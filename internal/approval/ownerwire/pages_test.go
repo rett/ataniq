@@ -277,6 +277,14 @@ func TestSplitPatchRefusesALineInTooManyPieces(t *testing.T) {
 	if pages != nil {
 		t.Fatal("a refused split gave pages")
 	}
+	// A line of three pieces that starts after a line that leaves a sliver
+	// of a page is still three pieces: the sliver is skipped, not counted
+	// as a piece, and not used for a piece of the line.
+	pages, err = splitPatch(sampleID, sampleDigest, []string{strings.Repeat("a", 70), strings.Repeat("a", 300)}, limit, 3)
+	if err != nil {
+		t.Fatalf("a line of three pieces after a short one is refused: %v", err)
+	}
+	checkPatchPages(t, pages, limit, 3)
 	// A page with no room for one byte of a line is refused, not looped
 	// on.
 	_, err = splitPatch(sampleID, sampleDigest, line(50), frame+pieceFrame+1, MaxLinePieces)

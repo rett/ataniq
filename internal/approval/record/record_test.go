@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // validPending returns the valid pending vector, decoded.
@@ -1215,5 +1216,41 @@ func TestTimes(t *testing.T) {
 		if _, err := ParseTime(in); err == nil {
 			t.Errorf("ParseTime(%q) accepted", in)
 		}
+	}
+}
+
+// A lead's bytes never print raw: every common verb writes a Text, and each
+// record type that holds one, quoted and in ASCII.
+func TestLeadBytesPrintEscaped(t *testing.T) {
+	hostile := Text("a\x1b[31m‮\xff\x00\n z")
+	values := map[string]any{
+		"Text":        hostile,
+		"*Text":       &hostile,
+		"SignOff":     SignOff{Kind: FlagSymlink, Path: hostile},
+		"*SignOff":    &SignOff{Kind: FlagSymlink, Path: hostile},
+		"PathChange":  PathChange{Path: hostile, Status: "M"},
+		"*PathChange": &PathChange{Path: hostile, Status: "M"},
+		"Flag":        Flag{Kind: FlagAliased, Path: hostile, Pattern: "p"},
+		"[]SignOff":   []SignOff{{Kind: FlagSymlink, Path: hostile}},
+	}
+	for name, v := range values {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%10s", "%-12q", "%T"} {
+			got := fmt.Sprintf(verb, v)
+			if !utf8.ValidString(got) {
+				t.Errorf("%s with %s prints invalid UTF-8: %q", name, verb, got)
+			}
+			for i := 0; i < len(got); i++ {
+				if got[i] < 0x20 || got[i] >= 0x7f {
+					t.Errorf("%s with %s prints the raw byte %#x: %q", name, verb, got[i], got)
+					break
+				}
+			}
+		}
+	}
+	if got := fmt.Sprint(Text("a b")); got != `"a b"` {
+		t.Errorf("Sprint(Text) = %s, want a quoted form", got)
+	}
+	if string(hostile) != "a\x1b[31m‮\xff\x00\n z" {
+		t.Error("printing changed the Text")
 	}
 }

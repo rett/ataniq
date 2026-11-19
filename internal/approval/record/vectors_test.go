@@ -161,6 +161,13 @@ func TestVectorDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("request-valid.digests.json", "note_sha256", request.NoteSHA256)
+	// The pending record is bound to this request, and carries the note the
+	// request's note_sha256 names: the two vectors must agree on it.
+	if pending0, err := DecodePending(readVector(t, "pending-valid.json")); err != nil {
+		t.Fatal(err)
+	} else if got := Digest([]byte(pending0.Note)); got != request.NoteSHA256 {
+		t.Errorf("the note of pending-valid.json digests to %s, but request-valid.json names %s", got, request.NoteSHA256)
+	}
 
 	pendingBytes := readVector(t, "pending-valid.json")
 	pending, err := DecodePending(pendingBytes)

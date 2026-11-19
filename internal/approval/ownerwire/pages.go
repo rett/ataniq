@@ -1,7 +1,6 @@
 package ownerwire
 
 import (
-	"reflect"
 	"strconv"
 	"unicode/utf8"
 
@@ -80,7 +79,7 @@ func splitPaths(id, reviewDigest string, paths []record.PathChange, limit int) (
 	)
 	for i := range paths {
 		var err error
-		if buf, err = appendValue(buf[:0], reflect.ValueOf(&paths[i]).Elem(), "paths.paths["+strconv.Itoa(i)+"]"); err != nil {
+		if buf, err = record.AppendMarshal(buf[:0], &paths[i], "paths.paths["+strconv.Itoa(i)+"]"); err != nil {
 			return nil, &record.Error{Code: record.CodeRecordInvalid, Detail: err.Error()}
 		}
 		cost := len(buf) + 1 // the comma
@@ -193,9 +192,9 @@ func splitPatch(id, reviewDigest string, lines []string, limit, maxPieces int) (
 			}
 			// Encoded, a text is longer than its bytes, so a rest
 			// longer than the room needs no measuring.
-			if len(rest) <= room && textLen(record.Text(rest)) <= room {
+			if len(rest) <= room && record.TextLen(record.Text(rest)) <= room {
 				page = append(page, PatchLine{Text: record.Text(rest)})
-				used += pieceFrame + textLen(record.Text(rest))
+				used += pieceFrame + record.TextLen(record.Text(rest))
 				break
 			}
 			n := 0
@@ -248,7 +247,7 @@ func splitPatch(id, reviewDigest string, lines []string, limit, maxPieces int) (
 func fit(s string, room int) int {
 	// As b64: the frame, and four bytes of base64 for every three.
 	asB64 := 0
-	if over := len(b64Open) + len(b64Close); room >= over+4 {
+	if over := record.B64FrameBytes; room >= over+4 {
 		asB64 = (room - over) / 4 * 3
 	}
 	if asB64 > len(s) {
@@ -259,7 +258,7 @@ func fit(s string, room int) int {
 	asString, cost := 0, 2
 	for asString < len(s) {
 		r, size := utf8.DecodeRuneInString(s[asString:])
-		if (r == utf8.RuneError && size <= 1) || isControl(r) {
+		if (r == utf8.RuneError && size <= 1) || record.IsControl(r) {
 			break
 		}
 		step := size
@@ -279,7 +278,7 @@ func fit(s string, room int) int {
 	if asB64 > n && !record.Text(s[:asB64]).Plain() {
 		n = asB64
 	}
-	if n >= len(s) || (n > 0 && textLen(record.Text(s[:n])) > room) {
+	if n >= len(s) || (n > 0 && record.TextLen(record.Text(s[:n])) > room) {
 		return 0
 	}
 	return n

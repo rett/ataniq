@@ -47,7 +47,7 @@ func (c *checker) pendingID(s, where string) {
 }
 
 func (c *checker) sha256(s, where string) {
-	c.need(isHex(s, 64), where+" is not 64 lower-case hexadecimal digits")
+	c.need(record.IsLowerHex(s, 64), where+" is not 64 lower-case hexadecimal digits")
 }
 
 func (c *checker) time(s, where string) {
@@ -113,39 +113,6 @@ func (c *checker) page(id, digest string, page, pages int, empty bool, where str
 	c.need(pages >= 1 && pages <= MaxPages, where+".pages is not 1 to "+strconv.Itoa(MaxPages))
 	c.need(page >= 0 && page < pages, where+".page is not a page of .pages, counted from 0")
 	c.need(!empty || pages == 1, where+" holds nothing and is not the one page of an empty list")
-}
-
-func isHex(s string, n int) bool {
-	if len(s) != n {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-// validMode reports whether s is a git file mode as six octal digits.
-func validMode(s string) bool {
-	if len(s) != 6 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '7' {
-			return false
-		}
-	}
-	return true
-}
-
-func validFlagKind(k string) bool {
-	switch k {
-	case record.FlagExecConfig, record.FlagSymlink, record.FlagSubmodule, record.FlagAliased, record.FlagHistoryOnly:
-		return true
-	}
-	return false
 }
 
 // validDate reports whether s is a calendar day as YYYY-MM-DD.
@@ -230,8 +197,8 @@ func checkPathsPage(p *PathsPage) error {
 	for i := range p.Paths {
 		e, at := &p.Paths[i], "paths.paths["+strconv.Itoa(i)+"]"
 		c.need(e.Status == "A" || e.Status == "M" || e.Status == "D" || e.Status == "T", at+".status is not A, M, D or T")
-		c.need(validMode(e.OldMode), at+".old_mode is not six octal digits")
-		c.need(validMode(e.NewMode), at+".new_mode is not six octal digits")
+		c.need(record.ValidMode(e.OldMode), at+".old_mode is not six octal digits")
+		c.need(record.ValidMode(e.NewMode), at+".new_mode is not six octal digits")
 		c.count(e.Added, at+".added")
 		c.count(e.Removed, at+".removed")
 		c.count(e.NewBytes, at+".new_bytes")
@@ -266,7 +233,7 @@ func checkPatchPage(p *PatchPage) error {
 func checkDeciderParams(p *DeciderParams) error {
 	c := &checker{invalid: record.CodeRecordInvalid}
 	c.name(p.Client, "decider.client")
-	c.need(isHex(p.Session, 16), "decider.session is not 16 lower-case hexadecimal digits")
+	c.need(record.IsLowerHex(p.Session, 16), "decider.session is not 16 lower-case hexadecimal digits")
 	return c.result()
 }
 
@@ -285,7 +252,7 @@ func checkDecisionFrame(f *DecisionFrame) error {
 	seen := make(map[record.SignOff]struct{}, len(f.SignedOff))
 	for i, s := range f.SignedOff {
 		at := "decision.signed_off[" + strconv.Itoa(i) + "]"
-		c.need(validFlagKind(s.Kind), at+".kind is not a kind of flag")
+		c.need(record.ValidFlagKind(s.Kind), at+".kind is not a kind of flag")
 		_, dup := seen[s]
 		c.need(!dup, at+" repeats an earlier sign-off")
 		seen[s] = struct{}{}
