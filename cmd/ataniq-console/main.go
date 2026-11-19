@@ -12,10 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"ataniq/internal/approval/demo"
 	"ataniq/internal/leadattach"
 	"ataniq/internal/terminalconsole"
+	"ataniq/internal/terminalconsole/approvals"
 	tea "charm.land/bubbletea/v2"
 )
+
+// The sample backend satisfies the console's one view of approvals. The
+// console imports neither it nor any other backend: this command hands it one
+// as a value in the options, with --demo only.
+var _ approvals.Backend = (*demo.Backend)(nil)
 
 // maxLinger bounds --linger.
 const maxLinger = time.Hour
@@ -24,7 +31,7 @@ const maxLinger = time.Hour
 // and zoom keys on it.
 const defaultLinger = 30 * time.Second
 
-const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION]\n" +
+const usageLine = "Usage: ataniq-console --demo [--theme dark|light] [--return-key ctrl+KEY] [--recording NAME] [--linger DURATION] [--no-bell]\n" +
 	"       ataniq-console --attach DIR --ticket-file FILE [--viewer] [--shift-enter esc-cr|lf|csi-u|backslash-cr] [--theme dark|light] [--return-key ctrl+KEY]\n" +
 	"       ataniq-console --daemon DIR [--theme dark|light]\n" +
 	"--demo, --attach and --daemon exclude each other."
@@ -83,6 +90,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	ticketFile := flags.String("ticket-file", "", "with --attach: a 0600 file the single-use attach ticket is read from each time one is needed")
 	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
 	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
+	noBell := flags.Bool("no-bell", false, "with --demo: do not ring the terminal's bell when a sample card arrives while you are away (the bell is on by default)")
 	daemon := flags.String("daemon", "", "show the daemon's leads, read-only: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
@@ -131,7 +139,12 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	if *linger < 0 || *linger > maxLinger {
 		return usageError("--linger must be between 0 and 1h")
 	}
-	cfg = config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger}}
+	if given["no-bell"] && !*demo {
+		// The bell rings for a card, and only the sample backend of --demo
+		// has cards in this build.
+		return usageError("--no-bell needs --demo")
+	}
+	cfg = config{demo: *demo, options: terminalconsole.Options{Theme: *theme, ReturnKey: key, Recording: *recording, Linger: *linger, BellOff: *noBell}}
 	if given["daemon"] {
 		// The daemon's view replaces the fixture and attaches to nothing: no
 		// flag of either applies to it. The messages do not repeat the folder.
@@ -217,6 +230,16 @@ func attachModel(cfg config) *terminalconsole.Model {
 	return terminalconsole.NewWithOptions(nil, o)
 }
 
+// demoModel returns the console for --demo: the fixture cockpit with the
+// sample backend as its approvals. A decision on a sample card changes the
+// backend's memory and nothing else, and the header says so once the console
+// has read the sample cards.
+func demoModel(cfg config) *terminalconsole.Model {
+	o := cfg.options
+	o.Backend = demo.New(time.Now)
+	return terminalconsole.NewWithOptions(terminalconsole.Fixture{}, o)
+}
+
 func run(args []string, out, errout io.Writer) int {
 	cfg, code, ok := parse(args, errout)
 	if !ok {
@@ -229,7 +252,7 @@ func run(args []string, out, errout io.Writer) int {
 	case cfg.daemon != "":
 		model = daemonModel(cfg)
 	case cfg.demo:
-		model = terminalconsole.NewWithOptions(terminalconsole.Fixture{}, cfg.options)
+		model = demoModel(cfg)
 	default:
 		fmt.Fprintln(errout, "Terminal console backend is unavailable. Use --demo to inspect the read-only fixture.")
 		return 1

@@ -58,8 +58,8 @@ func daemonBase() terminalconsole.Projection {
 			{Name: "Owner channel", State: "unavailable: " + noOwnerChannel},
 		},
 		Controls: []terminalconsole.Control{
-			{Name: "Approve pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + "."},
-			{Name: "Deny pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + "."},
+			{Name: "Approve pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + ".", Approval: true},
+			{Name: "Deny pending gate", Key: "Ctrl+K", Reason: "There is " + noOwnerChannel + ".", Approval: true},
 			{Name: "Full attach", Key: "a", Reason: readOnly + " It attaches to no session."},
 			{Name: "Send to lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
 			{Name: "Interrupt lead", Key: "Ctrl+K", Reason: readOnly + " It sends nothing to a lead."},
