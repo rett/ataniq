@@ -325,6 +325,8 @@ func (d *Door) Use(ctx context.Context, in door.UseInput) (door.Used, error) {
 		e.move(record.StateVoid, record.CodeBindingMismatch)
 		return door.Used{}, refuse(record.CodeBindingMismatch, what+" is not what the approval is bound to")
 	}
+	// The stand-in makes the plan again from the binding it holds, so this
+	// check cannot fail here; the real door makes it from what it reads.
 	if record.PlanDigest(planText(d.command, b)) != b.PlanSHA256 {
 		e.move(record.StateVoid, record.CodeBindingMismatch)
 		return door.Used{}, refuse(record.CodeBindingMismatch, "the plan made again is not the plan that was approved")

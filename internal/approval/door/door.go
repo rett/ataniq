@@ -40,7 +40,12 @@ type Door interface {
 	Use(ctx context.Context, in UseInput) (Used, error)
 
 	// Settle records how applying a used approval went. It is idempotent
-	// on the id and the binding digest.
+	// on the id and the binding digest. A record settled unknown is the
+	// owner's to dispose of: only the owner moves a record out of unknown,
+	// and the host never does it by itself, though the door cannot tell who
+	// calls. The refusals are record-invalid (the outcome is not one of the
+	// three words), approval-void, binding-mismatch, approval-consumed,
+	// approval-expired and previous-epoch.
 	Settle(ctx context.Context, in SettleInput) (Settled, error)
 
 	// List returns one entry for every pending record, oldest first.
@@ -187,7 +192,7 @@ const (
 	OutcomeNotApplied Outcome = "not-applied"
 	// OutcomeUnknown says the host cannot tell. The approval stays spent
 	// until the owner disposes of it, which is a later settle with one of
-	// the other two.
+	// the other two. The host never makes that settle by itself.
 	OutcomeUnknown Outcome = "unknown"
 )
 

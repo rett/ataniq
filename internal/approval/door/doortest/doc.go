@@ -56,6 +56,10 @@
 //     token behind it.
 //   - It has no rule and no grant: no verb here leads to approved-by-rule or
 //     approved-by-grant, though the table of moves names them.
+//   - It cannot tell who calls Settle, so it lets any caller move a record
+//     out of unknown with applied or not-applied. Only the owner may do
+//     that; the host never does it by itself, and the service that holds
+//     the owner's disposal must keep to it.
 //   - Only admitted requests count against the caps and the throttle.
 //   - It does not hold the note to the digest the request names: the
 //     vectors' request and pending record do not agree on it.
