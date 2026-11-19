@@ -2,6 +2,7 @@ package ownerchannel
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -308,5 +309,67 @@ func TestTheLimitCountsTheCalendarDayOfTheClocksLocation(t *testing.T) {
 	res, err := e.decide(d, true)
 	if err != nil || res.Held || res.State != record.StateApplied {
 		t.Fatalf("the first approve of a new local day: %+v %v", res, err)
+	}
+}
+
+// limitAlerts returns the alert entries that say a day reached its limit.
+func (e *env) limitAlerts() []ownerjournal.Entry {
+	e.t.Helper()
+	var out []ownerjournal.Entry
+	for _, en := range e.entries(ownerjournal.KindAlert) {
+		if contains(string(en.Body), `"limit_reached":true`) {
+			out = append(out, en)
+		}
+	}
+	return out
+}
+
+// A stop between the journal's entry and the day's alert does not lose the
+// alert: the arrival strip reads it from the journal, and a restart does not
+// write it again.
+func TestTheLimitAlertIsNotLostByAStopAfterTheDecisionIsJournaled(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	e.setLimit(1)
+	p := e.card("feature-a")
+	e.fault = "decision-journaled"
+	if _, err := e.decide(p, true); !errors.Is(err, errInjected) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	if n := len(e.limitAlerts()); n != 1 {
+		t.Fatalf("%d limit alerts after the stop, want the day's one", n)
+	}
+	e.restart()
+	if n := len(e.limitAlerts()); n != 1 {
+		t.Errorf("%d limit alerts after the restart, want the day's one", n)
+	}
+	days, err := e.svc.journal().Days("project-a", e.clock.Now())
+	if err != nil || !days[len(days)-1].ReachedLimit {
+		t.Errorf("the day is %+v %v", days[len(days)-1], err)
+	}
+}
+
+// The same for an approve that is held.
+func TestTheLimitAlertIsNotLostByAStopAfterAHeldEntryIsJournaled(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	e.useUp(2, "feature-a", "feature-b")
+	if n := len(e.limitAlerts()); n != 0 {
+		t.Fatalf("%d limit alerts before the limit was lowered", n)
+	}
+	// The limit is lowered under the day's uses: the next approve is held,
+	// and the day has no alert yet.
+	e.setLimit(1)
+	e.resetRef()
+	c := e.card("feature-c")
+	e.fault = "held-journaled"
+	if _, err := e.decide(c, true); !errors.Is(err, errInjected) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	if e.heldCount() != 1 {
+		t.Fatalf("%d held cards", e.heldCount())
+	}
+	if n := len(e.limitAlerts()); n != 1 {
+		t.Fatalf("%d limit alerts after the stop, want the day's one", n)
 	}
 }

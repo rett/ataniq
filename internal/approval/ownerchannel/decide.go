@@ -169,13 +169,15 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 	case err != nil:
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
-	if err := s.fault("decision-journaled"); err != nil {
-		return ownerwire.DecideResult{}, err
-	}
+	// The day's alert is written before the point where the service may
+	// stop, so that a stop does not lose it.
 	if approve {
 		if err := s.markReached(ctx, pending.Binding.Project, pending.ID, now); err != nil {
 			return ownerwire.DecideResult{}, err
 		}
+	}
+	if err := s.fault("decision-journaled"); err != nil {
+		return ownerwire.DecideResult{}, err
 	}
 	return s.deliver(ctx, d, pending)
 }
@@ -326,10 +328,10 @@ func (s *Service) hold(ctx context.Context, decision, pendingBytes []byte, p rec
 		}
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
-	if err := s.fault("held-journaled"); err != nil {
+	if err := s.markReached(ctx, p.Binding.Project, p.ID, now); err != nil {
 		return ownerwire.DecideResult{}, err
 	}
-	if err := s.markReached(ctx, p.Binding.Project, p.ID, now); err != nil {
+	if err := s.fault("held-journaled"); err != nil {
 		return ownerwire.DecideResult{}, err
 	}
 	return ownerwire.DecideResult{State: record.StatePending, Line: limits.HeldReason(uses, limit), Held: true}, nil
