@@ -40,13 +40,31 @@ type entry struct {
 // project is the limit state of one sample project.
 type project struct {
 	limit int
-	// prior is the limit in force before today's change, and changedOn the
-	// day of that change.
-	prior     int
-	changedOn string
+	// history is the limit by day, oldest first: each entry holds the limit
+	// from its date on, and the first has the date "" (from the start). A
+	// day is judged against the limit that was in force on it.
+	history   []limitFrom
 	lastRaise time.Time
 	// uses are the times of the approves that counted.
 	uses []time.Time
+}
+
+// limitFrom is a limit in force from a day on, as a date from limits.Today.
+type limitFrom struct {
+	date  string
+	limit int
+}
+
+// limitOn returns the limit in force on a day.
+func (p *project) limitOn(date string) int {
+	limit := p.limit
+	for _, h := range p.history {
+		if h.date > date {
+			break
+		}
+		limit = h.limit
+	}
+	return limit
 }
 
 // Backend is the sample backend. Make one with [New]. It is safe for use
@@ -97,11 +115,11 @@ func New(now func() time.Time) *Backend {
 // c has used its whole limit today, which is what holds sample 8.
 func (b *Backend) seedProjects(now time.Time) {
 	day := func(back int) time.Time { return now.AddDate(0, 0, -back) }
-	a := &project{limit: limits.Default, prior: limits.Default}
+	a := &project{limit: limits.Default, history: []limitFrom{{"", limits.Default}}}
 	a.uses = append(a.uses, day(1), day(1), day(1), day(2), day(2), day(2), day(2), day(2), day(3), day(3))
-	bp := &project{limit: 6, prior: 6}
+	bp := &project{limit: 6, history: []limitFrom{{"", 6}}}
 	bp.uses = append(bp.uses, day(1), day(4), day(4))
-	c := &project{limit: 2, prior: 2}
+	c := &project{limit: 2, history: []limitFrom{{"", 2}}}
 	c.uses = append(c.uses, day(1), day(1), now, now)
 	b.projects[projectA], b.projects[projectB], b.projects[projectC] = a, bp, c
 }
@@ -297,13 +315,7 @@ func (b *Backend) view(name string, now time.Time) (limits.View, error) {
 	if !ok {
 		return limits.View{}, errors.New("demo: no such sample project")
 	}
-	limitOn := func(date string) int {
-		if date < limits.Today(now) {
-			return pr.prior
-		}
-		return pr.limit
-	}
-	days := limits.DaysOf(pr.uses, limitOn, now)
+	days := limits.DaysOf(pr.uses, pr.limitOn, now)
 	return limits.NewView(name, pr.limit, days, pr.lastRaise, now)
 }
 
@@ -330,8 +342,11 @@ func (b *Backend) SetLimit(name string, c limits.Change) (limits.View, error) {
 		return v, refuse(record.CodeLimitRefused, err.Error())
 	}
 	pr := b.projects[name]
-	if today := limits.Today(now); pr.changedOn != today {
-		pr.prior, pr.changedOn = pr.limit, today
+	today := limits.Today(now)
+	if n := len(pr.history); pr.history[n-1].date == today {
+		pr.history[n-1].limit = c.To
+	} else {
+		pr.history = append(pr.history, limitFrom{today, c.To})
 	}
 	if c.To > pr.limit {
 		pr.lastRaise = now

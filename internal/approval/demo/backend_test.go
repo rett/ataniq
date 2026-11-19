@@ -536,6 +536,39 @@ func TestLimitRulesPerProject(t *testing.T) {
 	}
 }
 
+func TestPastDaysAreJudgedByTheLimitOfThatDay(t *testing.T) {
+	b, c := newBackend(t)
+	b.Activity(c.t)
+	if _, err := b.SetLimit(projectB, limits.Change{To: 2}); err != nil {
+		t.Fatal(err)
+	}
+	// The next day, project b fills the lowered limit.
+	c.t = c.t.Add(13 * time.Hour)
+	b.Activity(c.t)
+	filled := limits.Today(c.t)
+	for _, id := range []string{"ap-sample-pair-1", "ap-sample-pair-2"} {
+		k := open(t, b, id)
+		if _, err := b.Decide(card.Decision{ID: id, BindingSHA256: k.BindingSHA256, Approve: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A day later, that day is judged against the lowered limit.
+	c.t = c.t.Add(24 * time.Hour)
+	v, err := b.Limit(projectB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range v.Days {
+		if d.Date == filled {
+			if d.Uses != 2 || !d.ReachedLimit {
+				t.Errorf("the day that filled the lowered limit: %+v", d)
+			}
+			return
+		}
+	}
+	t.Errorf("no day %s in %+v", filled, v.Days)
+}
+
 func TestLookedMovesTheMark(t *testing.T) {
 	b, c := newBackend(t)
 	if l, _ := b.List(); !l.LookedAt.IsZero() {
