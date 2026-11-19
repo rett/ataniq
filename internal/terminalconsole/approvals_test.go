@@ -1011,7 +1011,40 @@ func TestTheStripsHintIsDrawnOnlyWhereItTakesKeys(t *testing.T) {
 	r.seen("a digit opens its line")
 	r.focusSession()
 	r.notSeen("a digit opens its line")
+}
+
+func TestTheStripIsNotDrawnInSessionFocusAndComesBackOnReturn(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
+	r.poll()
+	r.press(ch('j')) // an arrival
 	r.seen("while you were away")
+	r.focusSession()
+	r.notSeen("while you were away", "approvals waiting")
+	// Keys of the session do not close it, since it is not there to close.
+	r.press(escKey)
+	r.notSeen("while you were away")
+	r.press(tea.KeyPressMsg{Code: '\\', Mod: tea.ModCtrl})
+	r.seen("while you were away")
+	r.press(escKey)
+	r.notSeen("while you were away")
+}
+
+func TestAnArrivalInsideApprovalsDoesNotShowTheStripWhenHeLeaves(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
+	r.poll()
+	r.open()
+	// He is away a long while with the list open, and the next key is an
+	// arrival inside the view.
+	r.clk.Advance(11 * time.Minute)
+	r.press(ch('j'))
+	if r.m.ap.strip.Visible() {
+		t.Fatal("an arrival inside approvals showed the strip")
+	}
+	r.press(escKey)
+	if r.m.apprOpen() || r.m.ap.strip.Visible() {
+		t.Fatal("the strip showed when he left approvals")
+	}
+	r.notSeen("while you were away")
 }
 
 func TestApprovalsBelowTheSmallestWindowSaysWhyApproveIsNotOffered(t *testing.T) {

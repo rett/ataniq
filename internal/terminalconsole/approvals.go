@@ -348,7 +348,12 @@ func (m *Model) activity() tea.Cmd {
 	}
 	now := m.clock()
 	a.ev = a.tracker.Activity(now)
-	a.strip.Arrive(a.ev, m.arrivalSummary(now))
+	if !m.apprOpen() {
+		// An arrival inside an approvals screen is not announced: he is
+		// looking at approvals, and the strip would otherwise show behind the
+		// view and appear when he leaves it.
+		a.strip.Arrive(a.ev, m.arrivalSummary(now))
+	}
 	if !a.ev.BeatDue || a.backend == nil {
 		return nil
 	}
@@ -630,10 +635,13 @@ func (m *Model) approvalsView() tea.View {
 }
 
 // drawStrip draws the arrival strip under the header, over the top rows of
-// the panes, while it shows.
+// the panes, while it shows. It is not drawn in session focus: every key goes
+// to the session there, so the strip could neither take a key nor be closed,
+// and it would cover the first rows of the session's terminal. It shows again
+// when the owner returns to console focus.
 func (m *Model) drawStrip(p *painter, l layout) {
 	s := m.ap.strip
-	if !s.Visible() || l.zoom {
+	if !s.Visible() || l.zoom || m.focus == sessionFocus {
 		return
 	}
 	rows := min(s.Rows(), max(0, l.canvas.Dy()-2))
