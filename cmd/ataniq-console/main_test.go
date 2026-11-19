@@ -228,8 +228,31 @@ func TestWithoutDemoOrAttachTheBackendIsUnavailable(t *testing.T) {
 	// Flags that need --attach do not make the command start anything.
 	for _, args := range [][]string{nil, {"--theme", "light"}, {"--return-key", "ctrl+g"}} {
 		var out, err bytes.Buffer
-		if code := run(args, &out, &err); code != 1 || err.String() != "Terminal console backend is unavailable. Use --demo to inspect the read-only fixture.\n" || out.Len() != 0 {
+		if code := run(args, &out, &err); code != 1 || err.String() != "Terminal console backend is unavailable. Use --demo to inspect sample cards; a decision on them changes nothing.\n" || out.Len() != 0 {
 			t.Fatalf("%q: %d %q", args, code, err.String())
 		}
+	}
+}
+
+// --demo is described as sample cards that change nothing, in the flag help
+// and in the message of a run without a backend; neither says "read-only
+// fixture", which the sample decisions made untrue.
+func TestDemoIsDescribedAsSampleCardsThatChangeNothing(t *testing.T) {
+	var out, err bytes.Buffer
+	run([]string{"--help"}, &out, &err)
+	help := out.String() + err.String()
+	if !strings.Contains(help, "sample cards") || !strings.Contains(help, "changes nothing") {
+		t.Fatalf("the help does not describe --demo as sample cards:\n%s", help)
+	}
+	out.Reset()
+	err.Reset()
+	run(nil, &out, &err)
+	for name, text := range map[string]string{"help": help, "message": err.String()} {
+		if strings.Contains(text, "read-only fixture") {
+			t.Fatalf("the %s still says read-only fixture: %q", name, text)
+		}
+	}
+	if !strings.Contains(err.String(), "sample cards") {
+		t.Fatalf("the message does not name sample cards: %q", err.String())
 	}
 }

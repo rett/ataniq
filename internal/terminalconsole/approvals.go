@@ -485,10 +485,10 @@ func (m *Model) apprUpdate(msg tea.Msg) tea.Cmd {
 // list: it moves the view's cursor to the card's place in the view's own list
 // with j and presses Enter. These are the only keys the cockpit ever sends the
 // view on its own, and they open a card for reading: a decision is made on the
-// card with its typed code. The keys are sent at most once, for the view's
-// first list. When that list does not hold the card (it was decided or
-// expired meanwhile), or the view is no longer at its list, nothing is opened
-// and nothing stays armed to fire later.
+// card (an approval with its typed code, a denial without one). The keys are
+// sent at most once, for the view's first list. When that list does not hold
+// the card (it was decided or expired meanwhile), or the view is no longer at
+// its list, nothing is opened and nothing stays armed to fire later.
 func (m *Model) driveOldest() tea.Cmd {
 	a := &m.ap
 	if !a.wantOldest || a.view == nil || a.gate == nil {
@@ -808,10 +808,11 @@ func (m *Model) approvalsLive() bool {
 }
 
 // controlReason is what the action list says of a control after its name: its
-// reason, or for a live control that it opens the approvals view.
+// reason, or for a live control that it opens the approvals view. The caller
+// puts its own word before it ("Available: ", or the control's name).
 func (m *Model) controlReason(c Control) string {
 	if c.Approval && m.ap.backend != nil {
-		return "available: g opens the approvals view; a decision is made there, on the card"
+		return "g opens the approvals view; a decision is made there, on the card"
 	}
 	return c.Reason
 }
@@ -823,7 +824,7 @@ func (m *Model) approvalsHelp() []string {
 	}
 	return []string{
 		"g: approvals, from console focus only. Enter on the pending gate opens the oldest waiting card",
-		"In approvals: Esc goes back, one step at a time. A decision is made on the card, with its typed code",
+		"In approvals: Esc goes back, one step at a time. A decision is made on the card: an approval with its typed code, a denial without one",
 	}
 }
 

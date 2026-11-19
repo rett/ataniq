@@ -411,7 +411,8 @@ func TestWithNoBackendTheActionListKeepsItsReasons(t *testing.T) {
 func TestWithABackendTheActionListsApproveAndDenyAreLiveAndOpenTheView(t *testing.T) {
 	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
 	r.press(ctrlK)
-	r.seen("ACTIONS (approve and deny open the approvals view)", "Approve pending gate [g]", "Available: available: g opens")
+	r.seen("ACTIONS (approve and deny open the approvals view)", "Approve pending gate [g]", "Available: g opens")
+	r.notSeen("vailable: available")
 	r.notSeen("No grant is honoured")
 	r.seen("Full attach [a]", "Unavailable: Full attach needs")
 	r.press(ch('g'))
@@ -1492,7 +1493,8 @@ func TestEnterOnTheGateOpensTheGatesCardWhenATickComesBeforeTheFirstListAnswers(
 
 // A first list that never returns must not keep the open view stale for good:
 // the drive is given up at the second tick that finds it unread, and the view
-// is refreshed again from the next tick on. One tick does not give it up.
+// is refreshed from that tick on. One tick does not give it up, also not on
+// a later open of the view.
 func TestTheDriveIsGivenUpWhenTheViewsFirstListNeverReturns(t *testing.T) {
 	b := newFakeApprovals(t)
 	b.add("ap-x", "project-a", 40*time.Minute)
@@ -1515,6 +1517,46 @@ func TestTheDriveIsGivenUpWhenTheViewsFirstListNeverReturns(t *testing.T) {
 	r.poll()
 	if r.m.ap.view.Pending() != 1 {
 		t.Fatalf("the view was not refreshed: %d pending", r.m.ap.view.Pending())
+	}
+	// A later open starts its count again: one tick does not give up the
+	// drive of the second open.
+	r.press(escKey)
+	if r.m.ap.view != nil {
+		t.Fatal("Esc did not close the view")
+	}
+	r.clk.Advance(100 * time.Millisecond)
+	r.m.Update(enterKey)
+	if r.m.ap.view == nil || !r.m.ap.wantOldest {
+		t.Fatal("the second open did not arm the drive")
+	}
+	r.poll()
+	if !r.m.ap.wantOldest {
+		t.Fatal("one tick of the second open gave the drive up: the count was not reset")
+	}
+}
+
+// Ticks that find the list read, though not yet taken in, do not count
+// towards giving the drive up: only an unread first list does.
+func TestTheDriveIsKeptWhileTheFirstListIsReadAndNotTakenIn(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-x", "project-a", 40*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	r.clk.Advance(100 * time.Millisecond)
+	_, cmd := r.m.Update(enterKey)
+	answers := r.collect(cmd) // the list is read, and not delivered
+	for i := 0; i < 3; i++ {
+		r.m.Update(apprTickMsg{at: r.clk.Now()})
+	}
+	if !r.m.ap.wantOldest {
+		t.Fatal("ticks after a read list gave the drive up")
+	}
+	for _, a := range answers {
+		r.send(a)
+	}
+	if len(b.opens) != 1 || b.opens[0] != "ap-x" {
+		t.Fatalf("opened %v, want the gate's card", b.opens)
 	}
 }
 
@@ -1550,5 +1592,15 @@ func TestEnterOnTheGateStillOpensItsCardWhenAKeyComesBeforeTheFirstListIsTakenIn
 				t.Fatalf("opened %v, want the gate's card", b.opens)
 			}
 		})
+	}
+}
+
+// The help says that an approval needs its typed code and that a denial needs
+// none.
+func TestTheApprovalsHelpSaysADenialNeedsNoCode(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
+	text := strings.Join(r.m.approvalsHelp(), "\n")
+	if !strings.Contains(text, "an approval with its typed code, a denial without one") {
+		t.Fatalf("the help does not tell the code of each decision:\n%s", text)
 	}
 }

@@ -35,5 +35,5 @@
 // that woke the console, it takes a key only while the cockpit says the
 // strip has the focus, and then only Esc and the digits that open one of its
 // lines. Opening a line decides nothing: a card is decided only on the card,
-// with its own key and a typed code.
+// with its own key; an approval also needs a typed code, a denial needs none.
 package arrival

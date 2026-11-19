@@ -1,6 +1,7 @@
 package approvals
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -268,5 +269,74 @@ func TestVerdictNotTakenFromARereadCardThatIsNotDecided(t *testing.T) {
 		if strings.Contains(bodyRowText(row), "provider-a") {
 			t.Fatalf("verdicts of an undecided card were taken: %q", bodyRowText(row))
 		}
+	}
+}
+
+// A card read again whose binding is not the one decided on, or whose read
+// failed, leaves the open card as it was: no verdicts are taken from it.
+func TestVerdictNotTakenFromAnotherBindingOrAFailedRead(t *testing.T) {
+	for _, name := range []string{"binding", "error"} {
+		t.Run(name, func(t *testing.T) {
+			c := testCard("p-1")
+			c.Refused = true
+			b := backendWith(t, []card.Card{c}, nil)
+			b.decide = func(card.Decision) (card.Outcome, error) {
+				d := c
+				d.Refused = false
+				d.After = card.After{State: record.StateDenied, Line: "denied"}
+				d.Verdicts = block(true, false)
+				if name == "binding" {
+					d.BindingSHA256 = strings.Repeat("b", 64)
+				}
+				b.mu.Lock()
+				b.cards["p-1"] = d
+				if name == "error" {
+					b.openErr = errors.New("read failed")
+				}
+				b.mu.Unlock()
+				return card.Outcome{State: record.StateDenied, Line: "denied"}, nil
+			}
+			r := newRig(t, b, 100, 40)
+			r.openFirst()
+			r.key("x")
+			r.key("enter")
+			r.bodyHas(refusedLine)
+			for _, row := range r.m.cs.body {
+				if strings.Contains(bodyRowText(row), "provider-a") {
+					t.Fatalf("verdicts were taken: %q", bodyRowText(row))
+				}
+			}
+		})
+	}
+}
+
+// A card read again for another id, or before the open card was decided,
+// leaves the open card as it was.
+func TestVerdictNotTakenFromAnotherIDOrAnUndecidedOpenCard(t *testing.T) {
+	for _, name := range []string{"id", "decided"} {
+		t.Run(name, func(t *testing.T) {
+			c := testCard("p-1")
+			c.Refused = true
+			b := backendWith(t, []card.Card{c}, nil)
+			r := newRig(t, b, 100, 40)
+			r.openFirst()
+			d := c
+			d.Refused = false
+			d.After = card.After{State: record.StateDenied, Line: "denied"}
+			d.Verdicts = block(true, false)
+			id := "p-1"
+			if name == "id" {
+				r.key("x")
+				r.key("enter")
+				id = "p-2"
+			}
+			r.feed(openedMsg{owner: r.m, id: id, reread: true, c: d})
+			r.bodyHas(refusedLine)
+			for _, row := range r.m.cs.body {
+				if strings.Contains(bodyRowText(row), "provider-a") {
+					t.Fatalf("verdicts were taken: %q", bodyRowText(row))
+				}
+			}
+		})
 	}
 }
