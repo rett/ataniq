@@ -1395,6 +1395,8 @@ func TestTheCockpitsSurfacesTakeTheWholeHostileSet(t *testing.T) {
 				{ID: "ap-r1", Project: h, Verb: h, Feature: h, Asked: apprT0.Add(-time.Hour), State: record.StateDenied, Line: h},
 				{ID: "ap-r2", Project: "p", Verb: "v", Feature: other, Asked: apprT0.Add(-50 * time.Minute), State: record.StateApplied, Line: h},
 				{ID: "ap-r3", Project: "p", Verb: "v", Feature: h, Asked: apprT0.Add(-40 * time.Minute), State: record.StateExpired, Line: h},
+				// A state the cockpit does not know is drawn as it comes.
+				{ID: "ap-r4", Project: "p", Verb: "v", Feature: other, Asked: apprT0.Add(-30 * time.Minute), State: record.State(h)},
 			}
 			for _, size := range [][2]int{{140, 45}, {100, 30}, {79, 23}} {
 				r := newApprRig(t, size[0], size[1], b, Options{})
