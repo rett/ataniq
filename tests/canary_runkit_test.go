@@ -1300,6 +1300,77 @@ func TestCanaryRunKitPassBNeedsACleanPassA(t *testing.T) {
 	}
 }
 
+// The 7501 counters (the seams note, sections 4 and 7): while the holder
+// runs they are only in its status answer, and no counters event is written;
+// after the child ends they are in final.json. So step 16 shows no counter
+// and says where they are read, and step 22 prints them from the final
+// record, with a line that can print when there is none.
+func TestCanaryRunKitSaysWhereTheCountersAreRead(t *testing.T) {
+	const none = "     (none is named for 7501)"
+	for name, c := range map[string]struct{ fields, want string }{
+		"three counters": {
+			"child.exit_status=0\ncounters.held_output_full=0\ncounters.osc7501-invalid=0\ncounters.osc7501-queries=1\ncounters.osc7501-reports=4\nversion=1",
+			"     counters.osc7501-invalid=0\n     counters.osc7501-queries=1\n     counters.osc7501-reports=4",
+		},
+		"no counter for 7501":    {"child.exit_status=0\ncounters.held_output_full=0\nversion=1", none},
+		"7501 in another value":  {"screen.text=sha256:7501\ndetail=counters.osc7501-reports=4\nversion=7501", none},
+		"an empty record":        {"", none},
+		"one line, no line feed": {"counters.osc7501-reports=2", "     counters.osc7501-reports=2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, code := canarySelfTest(t, "counters-7501", c.fields); code != 0 || got != c.want {
+				t.Errorf("exit status %d, got:\n%s\nwant:\n%s", code, got, c.want)
+			}
+		})
+	}
+
+	text := canaryScriptText(t)
+	funcs := canaryFuncs(t, text)
+	if strings.Count(funcs["step_22"], `counters_7501 "$_fin" || out '`+none+`'`) != 1 {
+		t.Error("step 22 does not print the counters of the final record with a line for none")
+	}
+	// A fallback after a pipeline never prints: the status is the last
+	// command's. No message of the script hangs on one.
+	if m := regexp.MustCompile(`(?m)^.*\|[^|\n]*\|\| out .*$`).FindString(text); m != "" && strings.Contains(m, " | ") {
+		t.Errorf("a message hangs on the status of a pipeline: %s", strings.TrimSpace(m))
+	}
+	sixteen := funcs["step_16"]
+	for _, word := range []string{"grep", "fld", "has_line", "counters_7501"} {
+		if canaryCalls(sixteen, word) != 0 {
+			t.Errorf("step 16 calls %s: it has no place to read the counters from while the holder runs", word)
+		}
+	}
+	if strings.Contains(sixteen, "events.jsonl") {
+		t.Error("step 16 reads the event log, which holds no counters")
+	}
+	for _, want := range []string{
+		"while the holder runs they are only in its status answer. No command of the kit reads",
+		"the event log holds no counters: the script cannot show them now.",
+		"Lead: read them in the console and answer below; the script records what you read.",
+		`after the child ends they are in $HSTATE/final.json: step 22 prints them from there.`,
+	} {
+		if strings.Count(sixteen, want) != 1 {
+			t.Errorf("step 16 does not say: %s", want)
+		}
+	}
+	if said, asked := strings.Index(sixteen, "the script cannot show them now."), strings.Index(sixteen, "ask 'Lead: was the OSC 7501 query answered"); said < 0 || asked < said {
+		t.Error("step 16 asks for the counters before it says where they are read")
+	}
+	out, _ := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json")
+	for _, b := range canaryBlocks(out) {
+		if !strings.HasPrefix(b.heading, "== step 16 [pass B]: ") {
+			continue
+		}
+		does, _ := b.line("does:")
+		if !strings.Contains(does, "no command of the kit reads") || !strings.Contains(does, "from final.json after the child ends (step 22)") {
+			t.Errorf("step 16 does not say where the counters are read: %s", does)
+		}
+		if b.count("say plainly where the 7501 counters are read") != 1 || b.count("events.jsonl that hold counters") != 0 {
+			t.Errorf("the dry run of step 16:\n%s", strings.Join(b.lines, "\n"))
+		}
+	}
+}
+
 // This file checks what a signal does to a key the clean-up chain of the
 // canary run script waits for (the plan's N3: each step of the chain waits
 // for its key). It runs the script's test entry "wait-key", which waits as a

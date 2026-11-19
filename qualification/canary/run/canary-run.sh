@@ -47,6 +47,8 @@ usage() {
     '                      wait for one key as the clean-up chain does (reads standard input)' \
     '         pass-a-record FILE' \
     '                      what step 2 of pass B reads in a result.txt of pass A' \
+    '         counters-7501 FIELDS' \
+    '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' >&2
   exit 2
@@ -291,6 +293,31 @@ $_kv
   done
 }
 
+# counters_7501 prints, from the lines $1 (what ataniq-canary fields prints
+# for the holder's final record), the counters named for 7501, and fails when
+# there is none, so that the caller can say so.
+counters_7501() {
+  _rest=$1
+  _none=1
+  while [ -n "$_rest" ]; do
+    _l=${_rest%%"
+"*}
+    case $_rest in
+      *"
+"*) _rest=${_rest#*"
+"} ;;
+      *) _rest= ;;
+    esac
+    case $_l in
+      counters.*7501*)
+        out "     $_l"
+        _none=0
+        ;;
+    esac
+  done
+  return "$_none"
+}
+
 # has_line reports whether one line of the file $1, which holds one JSON
 # object in a line, holds every further argument ("path=value"). Each line is
 # read as JSON by the tagged helper, never matched as text; a line that is not
@@ -497,6 +524,11 @@ self_test() {
       # FILE: a result.txt of pass A. The file is read and nothing else.
       [ "$#" -eq 1 ] || usage
       passa_record "$1"
+      ;;
+    counters-7501)
+      # FIELDS: what ataniq-canary fields prints for a final record.
+      [ "$#" -eq 1 ] || usage
+      counters_7501 "$1" || out '     (none is named for 7501)'
       ;;
     fields-hold)
       # FIELDS PATH=VALUE...: FIELDS is what ataniq-canary fields prints for
@@ -1249,14 +1281,19 @@ step_16() {
     return 0
   fi
   step_head 16 'Wait for the idle composer, and look at the report path' \
-    "ask the daemon's status; print the 7501 counters the holder's files show; the lead reads the holder's status in the console" \
+    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22)" \
     "the holder's status reads idle; the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9)" 'B1'
   wait_key 'Step 16 reads the status.'
   runcap role-status "$BIN/ataniqd" status --socket "$SOCK"
   if [ "$DRY" -eq 1 ]; then
-    dry "print the lines of $HSTATE/events.jsonl that hold counters named for 7501"
+    dry "say plainly where the 7501 counters are read: while the holder runs, only in its status answer, which no command of the kit reads (the event log holds no counters), so the lead records what the console shows; after the child ends, in $HSTATE/final.json, which step 22 prints"
   else
-    grep -h '7501' "$HSTATE/events.jsonl" 2>/dev/null | sed 's/^/   | /' || out '   no line of the event log names 7501 yet'
+    out '   Where the 7501 counters (queries, reports, unreadable payloads) are read:'
+    out '   - while the holder runs they are only in its status answer. No command of the kit reads'
+    out '     that answer, and the event log holds no counters: the script cannot show them now.'
+    out '     Lead: read them in the console and answer below; the script records what you read.'
+    out "   - after the child ends they are in $HSTATE/final.json: step 22 prints them from there."
+    note 'the 7501 counters are not read by the script at this step: the lead records what the console shows'
   fi
   ask "Lead: what does the holder's status read (idle, or what)"
   check "the holder's status reads idle" is_eq "$ANSWER" idle || return 0
@@ -1572,7 +1609,10 @@ step_22() {
     dry "print the 7501 counters of the holder's final record, $HSTATE/final.json"
   elif [ -f "$HSTATE/final.json" ]; then
     out "   the 7501 counters of the holder's final record:"
-    "$BIN/ataniq-canary" fields --file "$HSTATE/final.json" | grep '^counters\..*7501' | sed 's/^/     /' || out '     (none is named for 7501)'
+    _fin=$("$BIN/ataniq-canary" fields --file "$HSTATE/final.json" 2>/dev/null || :)
+    counters_7501 "$_fin" || out '     (none is named for 7501)'
+  else
+    out "   the holder left no final record ($HSTATE/final.json): there are no 7501 counters to print"
   fi
   result stopped
   done_step

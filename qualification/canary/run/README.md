@@ -344,9 +344,15 @@ listeners you stopped, and compare the live config folder with
 
 ## What the script does not check itself
 
-- The holder's status answer and its OSC 7501 counters are read by the lead in
-  the console and from the files the script prints (steps 12, 16 and 22): the
-  script has no client for the holder's control socket.
+- The holder's status answer. The script has no client for the holder's
+  control socket, and no command of the kit reads that answer. So at step 16
+  the lead reads in the console whether the status is idle and what the OSC
+  7501 counters (queries, reports, unreadable payloads) show, and the script
+  records what he reads; it says so plainly and shows no counter itself there.
+  While the holder runs the counters are only in that answer: the event log
+  holds none. After the child ends they are in `final.json` in the holder's
+  state folder, and step 22 prints them from it, or says that none is named
+  for 7501 or that there is no final record.
 - That `hello` lists the canary operations (step 10) is the lead's reading.
 - The script does not run git in the lead's tree after a lead has run in it.
   The commit is observed through the intake at step 20.
@@ -374,4 +380,5 @@ test entry:
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
+| `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
