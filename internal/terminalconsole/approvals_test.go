@@ -3,6 +3,7 @@ package terminalconsole
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -702,6 +703,29 @@ func TestTheStatusLineShowsAnArrivingCardInSessionFocus(t *testing.T) {
 	// The card gave no key to the session and rang nothing: he is present.
 	if len(r.sink.keys) != 0 || len(r.raw) != 0 {
 		t.Fatalf("keys %v, raw %q", r.sink.keys, r.raw)
+	}
+}
+
+func TestTheStatusLineKeepsTheReturnHintInSessionFocusWhenTheElementIsLong(t *testing.T) {
+	b := newFakeApprovals(t)
+	r := newApprRig(t, 100, 30, b, Options{})
+	r.poll()
+	r.focusSession()
+	// A count of six digits makes the element wider than the room the hint
+	// leaves: the element gives way, the hint does not.
+	for i := 0; i < 100000; i++ {
+		b.listing.Pending = append(b.listing.Pending, card.Item{ID: "ap-" + strconv.Itoa(i), Project: "project-a",
+			Asked: apprT0, Expires: apprT0.Add(30 * time.Minute)})
+	}
+	r.poll()
+	rows := r.rows()
+	last := rows[len(rows)-1]
+	hint := "SESSION FOCUS \u00b7 every key goes to the session \u00b7 " + r.m.opts.ReturnKey.String() + " returns"
+	if !strings.Contains(last, hint) {
+		t.Fatalf("status line %q lost the hint %q", last, hint)
+	}
+	if !strings.Contains(last, "approvals 100000") {
+		t.Fatalf("status line %q lost the count", last)
 	}
 }
 
