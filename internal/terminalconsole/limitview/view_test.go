@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 
 	"ataniq/internal/approval/limits"
 )
@@ -278,6 +279,71 @@ func TestSetViewShowsNewView(t *testing.T) {
 	}
 	if strings.Contains(s, sentNote) {
 		t.Error("old note kept")
+	}
+}
+
+func TestPendingBlocksSecondChange(t *testing.T) {
+	v := sampleView(t, 12, []int{9}, false)
+	m := newModel(v)
+	typeKeys(m, "18")
+	if a := m.Update(key("enter")); a.Kind != Propose {
+		t.Fatalf("got %+v", a)
+	}
+	typeKeys(m, "18")
+	m.Update(key("backspace"))
+	if m.Typed() != "" {
+		t.Errorf("edited while a change is out: %q", m.Typed())
+	}
+	if a := m.Update(key("enter")); a.Kind != None {
+		t.Fatalf("second change sent: %+v", a)
+	}
+	if !strings.Contains(screen(m), sentNote) {
+		t.Error("the note that a change is out was lost")
+	}
+	if a := m.Update(key("esc")); a.Kind != Close {
+		t.Errorf("Esc did not close: %+v", a)
+	}
+	// The parent's answer ends the wait.
+	m.SetView(v)
+	typeKeys(m, "18")
+	if a := m.Update(key("enter")); a.Kind != Propose {
+		t.Fatalf("no change after SetView: %+v", a)
+	}
+}
+
+func TestSetErrorShowsLineAndEndsWait(t *testing.T) {
+	m := newModel(sampleView(t, 12, []int{9}, false))
+	typeKeys(m, "18")
+	m.Update(key("enter"))
+	m.SetError("the backend is busy")
+	s := screen(m)
+	if !strings.Contains(s, "the backend is busy") || strings.Contains(s, sentNote) {
+		t.Errorf("error not shown:\n%s", s)
+	}
+	typeKeys(m, "18")
+	if a := m.Update(key("enter")); a.Kind != Propose {
+		t.Fatalf("no retry after SetError: %+v", a)
+	}
+}
+
+func TestSetErrorCleansAndBounds(t *testing.T) {
+	for _, line := range []string{
+		"bad\x1b[31m line\x1b]0;t\x07 \u202e\u200b\xff\n\x00end",
+		strings.Repeat("w", 1<<16),
+		strings.Repeat("宽", 1000),
+		"",
+		"\n\t",
+	} {
+		m := newModel(sampleView(t, 12, []int{9}, false))
+		m.SetError(line)
+		if m.note == "" || ansi.StringWidth(m.note) > MaxErrorCells || strings.ContainsAny(m.note, "\x1b\x00\n\x07\u202e\u200b\ufffd") {
+			t.Errorf("SetError(%.20q) kept %q", line, m.note)
+		}
+		for _, r := range screen(m) {
+			if r != '\n' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x202e || r == 0x200b) {
+				t.Errorf("screen for %.20q holds %U", line, r)
+			}
+		}
 	}
 }
 

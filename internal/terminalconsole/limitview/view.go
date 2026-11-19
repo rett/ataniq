@@ -55,6 +55,9 @@ const maxDigits = 3
 // MaxProjectCells bounds the project's name, in cells.
 const MaxProjectCells = 40
 
+// MaxErrorCells bounds the line SetError shows, in cells.
+const MaxErrorCells = 160
+
 // The view's own words.
 const (
 	title        = "DAILY CARD LIMIT"
@@ -69,6 +72,7 @@ const (
 	daysHeading  = "last 14 days (a day left out is not counted in the suggestion)"
 	raisedNote   = "the limit was already raised today"
 	nameFallback = "(unnamed)"
+	errFallback  = "the change was refused"
 )
 
 // Model is the screen. Make one with New, give it a View with SetView and its
@@ -87,6 +91,9 @@ type Model struct {
 	// warn says that note is a question and that another Enter with the same
 	// typed number confirms it.
 	warn bool
+	// pending says that a change was sent and the parent has not answered
+	// yet, with SetView or SetError. While it is set no second change is sent.
+	pending bool
 }
 
 // New returns a view with no View yet; it draws only its title until SetView.
@@ -97,7 +104,20 @@ func New(o Options) *Model { return &Model{colors: o.Colors} }
 // parent did with the last Action.
 func (m *Model) SetView(v limits.View) {
 	m.view, m.has = v, true
-	m.typed, m.note, m.warn = "", "", false
+	m.typed, m.note, m.warn, m.pending = "", "", false, false
+}
+
+// SetError shows line, which the parent wrote about its backend's refusal of
+// the last change, and lets the owner try again. The view cleans line (it
+// keeps only printable characters, one line of at most MaxErrorCells cells,
+// an ellipsis where it was cut) and shows nothing of the backend's own text
+// beyond that. An empty line shows a fixed one.
+func (m *Model) SetError(line string) {
+	m.typed, m.warn, m.pending = "", false, false
+	m.note = cleanText(line, MaxErrorCells)
+	if m.note == "" {
+		m.note = errFallback
+	}
 }
 
 // SetSize tells the view the size of its region.
@@ -125,6 +145,8 @@ func (m *Model) Update(msg tea.Msg) Action {
 	switch {
 	case k.Code == tea.KeyEscape:
 		return Action{Kind: Close}
+	case m.pending:
+		// A change is out: nothing is edited or sent until the parent answers.
 	case k.Code == tea.KeyEnter:
 		return m.enter()
 	case k.Code == tea.KeyBackspace:
@@ -200,7 +222,7 @@ func (m *Model) propose(c limits.Change) Action {
 		m.note, m.warn = err.Error(), false
 		return Action{}
 	}
-	m.typed, m.note, m.warn = "", sentNote, false
+	m.typed, m.note, m.warn, m.pending = "", sentNote, false, true
 	return Action{Kind: Propose, Change: c}
 }
 
@@ -209,6 +231,16 @@ func (m *Model) propose(c limits.Change) Action {
 // not UTF-8 are dropped), at most MaxProjectCells cells, an ellipsis where it
 // was cut.
 func CleanName(name string) string {
+	if s := cleanText(name, MaxProjectCells); s != "" {
+		return s
+	}
+	return nameFallback
+}
+
+// cleanText returns s with only its printable characters, trimmed, at most
+// maxCells cells, an ellipsis where it was cut. It is empty if nothing is
+// left.
+func cleanText(name string, maxCells int) string {
 	var b strings.Builder
 	for rest := name; rest != ""; {
 		r, n := utf8.DecodeRuneInString(rest)
@@ -221,17 +253,14 @@ func CleanName(name string) string {
 		}
 	}
 	s := strings.TrimSpace(b.String())
-	if s == "" {
-		return nameFallback
-	}
-	if ansi.StringWidth(s) <= MaxProjectCells {
+	if ansi.StringWidth(s) <= maxCells {
 		return s
 	}
 	var out strings.Builder
 	used := 0
 	for rest := s; rest != ""; {
 		c, w := ansi.FirstGraphemeCluster(rest, ansi.GraphemeWidth)
-		if c == "" || used+w > MaxProjectCells-1 {
+		if c == "" || used+w > maxCells-1 {
 			break
 		}
 		rest = rest[len(c):]
