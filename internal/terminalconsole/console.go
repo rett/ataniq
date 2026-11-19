@@ -105,8 +105,9 @@ type TimelineEntry struct{ Time, Text string }
 // Control is a control the cockpit lists but cannot offer. Key is how it
 // would be reached. Approval marks the controls that decide a pending gate
 // (approve and deny): with an approvals backend (Options.Backend) they are
-// live and open the approvals view, where a decision is made on the card with
-// its typed code, and without one they stay unavailable with their reason.
+// live and open the approvals view, where a decision is made on the card (an
+// approval with its typed code, a denial without one), and without one they
+// stay unavailable with their reason.
 type Control struct {
 	Name, Key, Reason string
 	Approval          bool

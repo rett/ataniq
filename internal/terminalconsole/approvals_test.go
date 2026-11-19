@@ -1553,3 +1553,13 @@ func TestEnterOnTheGateStillOpensItsCardWhenAKeyComesBeforeTheFirstListIsTakenIn
 		})
 	}
 }
+
+// The help says that an approval needs its typed code and that a denial needs
+// none.
+func TestTheApprovalsHelpSaysADenialNeedsNoCode(t *testing.T) {
+	r := newApprRig(t, 140, 45, oneCardBackend(t), Options{})
+	text := strings.Join(r.m.approvalsHelp(), "\n")
+	if !strings.Contains(text, "an approval with its typed code, a denial without one") {
+		t.Fatalf("the help does not tell the code of each decision:\n%s", text)
+	}
+}

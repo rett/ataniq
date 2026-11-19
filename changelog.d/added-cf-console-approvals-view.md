@@ -5,8 +5,9 @@
   standing rules, shows a card with its plan, diff summary, flagged paths and
   evidence, and opens the full patch in a pager. `L` in the list opens the
   daily card limit of the project under the cursor. A decision is made only on
-  the card, with a code typed from the card's title; while a field is open
-  every key goes to the field, and Esc goes back one step at a time. The
+  the card: an approval needs a code typed from the card's title, a denial
+  needs no code; while a field is open every key goes to the field, and Esc
+  goes back one step at a time. The
   pending gate, the timeline (asked, decided, applied) and the status line
   (waiting cards and the age of the oldest) follow the cards. When you return
   after a while the console shows a short summary of what happened while you

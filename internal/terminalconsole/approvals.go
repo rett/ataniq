@@ -485,8 +485,8 @@ func (m *Model) apprUpdate(msg tea.Msg) tea.Cmd {
 // list: it moves the view's cursor to the card's place in the view's own list
 // with j and presses Enter. These are the only keys the cockpit ever sends the
 // view on its own, and they open a card for reading: a decision is made on the
-// card with its typed code. The keys are sent at most once, for the view's
-// first list. When that list does not hold the card (it was decided or
+// card (an approval with its typed code, a denial without one). The keys are
+// sent at most once, for the view's first list. When that list does not hold the card (it was decided or
 // expired meanwhile), or the view is no longer at its list, nothing is opened
 // and nothing stays armed to fire later.
 func (m *Model) driveOldest() tea.Cmd {
@@ -824,7 +824,7 @@ func (m *Model) approvalsHelp() []string {
 	}
 	return []string{
 		"g: approvals, from console focus only. Enter on the pending gate opens the oldest waiting card",
-		"In approvals: Esc goes back, one step at a time. A decision is made on the card, with its typed code",
+		"In approvals: Esc goes back, one step at a time. A decision is made on the card: an approval with its typed code, a denial without one",
 	}
 }
 
