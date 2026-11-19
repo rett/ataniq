@@ -36,6 +36,11 @@ var (
 	ErrDamaged = errors.New("ownerjournal: the store is damaged")
 	// ErrClosed says that the store was closed.
 	ErrClosed = errors.New("ownerjournal: the store is closed")
+	// ErrUncertain says that a commit returned an error, so it is not known
+	// whether the entries are in the file, and that the store refuses every
+	// later call until it is closed and opened again. See the package
+	// comment.
+	ErrUncertain = errors.New("ownerjournal: a write may or may not have been made; reopen the store")
 )
 
 // applicationID marks a file as a store of this package ("ATOJ"), and
@@ -94,7 +99,9 @@ type Store struct {
 	db       *sql.DB
 	wal      atomic.Bool // set once the file is known to be a store; see verify
 	closed   bool
-	closeErr error
+	// uncertain is set when a commit returned an error; see [ErrUncertain].
+	uncertain bool
+	closeErr  error
 	// fault is called before and after each step of a write, with the
 	// step's name. It is nil outside tests. An error from it ends the
 	// write as a failed step would.

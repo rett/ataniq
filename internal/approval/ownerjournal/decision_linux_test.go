@@ -824,13 +824,13 @@ func TestACopyTakenWhileADecisionIsWrittenHoldsBothEntriesOrNeither(t *testing.T
 			for _, sh := range shots {
 				points = append(points, sh.point)
 			}
-			wantPoints := []string{"before:begin", "after:begin", "before:insert", "after:insert", "before:insert", "after:insert", "before:commit", "after:commit"}
+			wantPoints := []string{"before:begin", "after:begin", "before:insert", "after:insert", "before:insert", "after:insert", "before:commit", "commit", "after:commit"}
 			if !reflect.DeepEqual(points, wantPoints) {
 				t.Fatalf("the steps of the write: %v, want %v", points, wantPoints)
 			}
 			for i, sh := range shots {
 				want := before
-				if sh.point == "after:commit" {
+				if sh.point == "commit" || sh.point == "after:commit" {
 					want = after
 				}
 				c, err := Open(sh.path)
@@ -842,7 +842,7 @@ func TestACopyTakenWhileADecisionIsWrittenHoldsBothEntriesOrNeither(t *testing.T
 				}
 				// What the copy says is under way matches what it holds.
 				wantUndelivered := []int64{1}
-				if sh.point == "after:commit" && kind == KindDecision {
+				if (sh.point == "commit" || sh.point == "after:commit") && kind == KindDecision {
 					wantUndelivered = []int64{1, 3}
 				}
 				wantSeqs(t, "undelivered in the copy at "+sh.point, undeliveredSeqs(t, c), wantUndelivered...)

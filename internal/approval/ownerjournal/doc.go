@@ -34,8 +34,14 @@
 // An append writes all of its entries or none of them. When an append
 // returns an error, nothing was written, with one exception: an error from
 // the final write itself (the disk failed at that moment) leaves it open
-// whether the entries are there, and the queries of this package answer
-// that.
+// whether the entries are there. The file may still hold them, and a
+// restart would take them in. So after such an error the store answers
+// every later call, reads included, with [ErrUncertain], and goes on doing
+// so until it is closed and opened again. A caller that gets [ErrUncertain]
+// closes the store, opens it again and asks the restart queries
+// ([Store.Undelivered], [Store.OpenUses] and the others below), which then
+// say what is in the file. It does not report the failed append as a plain
+// refusal.
 //
 // # The file
 //

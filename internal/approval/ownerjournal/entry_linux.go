@@ -216,6 +216,9 @@ func (s *Store) write(fn func(t *txn) error) (_ []Entry, err error) {
 	if s.closed {
 		return nil, ErrClosed
 	}
+	if s.uncertain {
+		return nil, ErrUncertain
+	}
 	ctx := context.Background()
 	if err = s.hit("before:begin"); err != nil {
 		return nil, err
@@ -251,8 +254,17 @@ func (s *Store) write(fn func(t *txn) error) (_ []Entry, err error) {
 		return nil, err
 	}
 	committed = true
-	if err = tx.Commit(); err != nil {
-		return nil, fmt.Errorf("ownerjournal: the write may or may not have been made: %w", err)
+	err = tx.Commit()
+	if err == nil {
+		// The hook stands for a commit that returned an error.
+		err = s.hit("commit")
+	}
+	if err != nil {
+		// Whether the entries are in the file is not known here: the
+		// commit may have reached the disk before it failed. Nothing more
+		// is written or answered until the store is opened again.
+		s.uncertain = true
+		return nil, fmt.Errorf("%w: %v", ErrUncertain, err)
 	}
 	if err = s.hit("after:commit"); err != nil {
 		return nil, err
@@ -266,6 +278,9 @@ func (s *Store) read(fn func(q querier) error) error {
 	defer s.mu.Unlock()
 	if s.closed {
 		return ErrClosed
+	}
+	if s.uncertain {
+		return ErrUncertain
 	}
 	return fn(s.db)
 }
