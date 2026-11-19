@@ -17,10 +17,11 @@
 //
 //   - "merge-tree --write-tree", in the one form gitenv allows, computes the
 //     merged tree with no working tree. No attribute is read from any tree
-//     (in a SHA-1 repository, see below), so a ".gitattributes" a lead committed cannot make a conflicting merge
-//     end cleanly or change what a clean one holds. The repository's own
-//     "info/attributes" cannot be switched off, so the package refuses a
-//     repository in which it is not absent or empty, before git runs.
+//     (in a SHA-1 repository, see below), so a ".gitattributes" a lead
+//     committed cannot make a conflicting merge end cleanly or change what
+//     a clean one holds. The repository's own "info/attributes" cannot be
+//     switched off, so the package refuses a repository in which it is not
+//     absent or empty, before git runs.
 //   - A merge with a conflict is refused with the code "merge-conflict", and
 //     no commit and no ref is written. The lead resolves the conflict in its
 //     feature, where a review sees it as ordinary commits.

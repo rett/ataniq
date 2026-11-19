@@ -85,8 +85,7 @@ func pinRef(key string) string { return PinPrefix + key }
 // prepare does what [Build] and [Check] share before any merge: it checks
 // the values, then "info/attributes", then, with git, that the repository's
 // object format is SHA-1 ([ErrObjectFormat]) and that every id has its
-// length. ids are further object ids
-// under that last rule.
+// length. ids are further object ids under that last rule.
 func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, error) {
 	if err := in.check(); err != nil {
 		return nil, err
@@ -121,16 +120,16 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 //
 // In order: every value of in and the key are checked ([ErrValue]); the
 // repository's "info/attributes" must be absent or empty ([ErrAttributes]);
-// the repository must use SHA-1 ([ErrObjectFormat]); the two tips must be full ids of the repository's object format and name
-// commits ([ErrValue], [ErrNoCommit]); the key must have no pin yet
-// ([ErrPinExists]); the tips must share history ([ErrUnrelated]); the
-// target's tip must not already hold the feature's ([ErrNothingToMerge]),
-// since the merge would change nothing. Then git
-// merges the two commits, reading no attribute from any tree. A conflict is
-// refused with a [*record.Error] whose code is [record.CodeMergeConflict],
-// and then no commit and no ref is written (git leaves the trees and blobs
-// of its attempt in the object store, where nothing names them). Otherwise
-// Build writes the commit from a text it wrote in full (see the package
+// the repository must use SHA-1 ([ErrObjectFormat]); the two tips must be
+// full ids of the repository's object format and name commits ([ErrValue],
+// [ErrNoCommit]); the key must have no pin yet ([ErrPinExists]); the tips
+// must share history ([ErrUnrelated]); the target's tip must not already
+// hold the feature's ([ErrNothingToMerge]), since the merge would change
+// nothing. Then git merges the two commits, reading no attribute from any
+// tree. A conflict is refused with a [*record.Error] whose code is
+// [record.CodeMergeConflict], and then no commit and no ref is written (git
+// leaves the trees and blobs of its attempt in the object store, where
+// nothing names them). Otherwise Build writes the commit from a text it wrote in full (see the package
 // comment), checks that git stored exactly that text, and creates the ref
 // [PinPrefix]+key at the commit. It never moves an existing ref.
 //
