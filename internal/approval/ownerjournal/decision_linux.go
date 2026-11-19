@@ -716,9 +716,12 @@ func (s *Store) deliveryOf(q querier, e Entry) (*Delivery, bool, error) {
 // OpenUses returns the approvals that were delivered and have no outcome,
 // in the order they were decided. At a restart the caller settles each
 // from what the door and the mirror show: one the door never consumed is
-// simply still open; one that was consumed gets its outcome with
-// [Delivery.AppendOutcome]. A deny and a decision the door refused are
-// never among them.
+// simply still open; one that was consumed gets a use with an empty code
+// through [Delivery.AppendUse] when the journal has none (the process may
+// have stopped between the door's answer and that call), and then its
+// outcome with [Delivery.AppendOutcome], which refuses applied,
+// not-applied and unknown before that use. A deny and a decision the door
+// refused are never among them.
 func (s *Store) OpenUses() ([]*Delivery, error) {
 	var out []*Delivery
 	err := s.read(func(q querier) error {

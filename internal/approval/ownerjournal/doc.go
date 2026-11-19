@@ -126,7 +126,9 @@
 //     handed over again and then marked. A held or a refused entry is never
 //     listed.
 //   - [Store.OpenUses] lists the delivered approvals with no outcome. The
-//     caller settles each from what the door and the mirror show.
+//     caller settles each from what the door and the mirror show: one the
+//     door consumed gets a use with an empty code first when the journal
+//     has none, and then its outcome.
 //   - [Store.UnknownOutcomes] lists the approvals whose outcome is unknown
 //     and waits for the owner.
 //   - [Store.Unjournaled] takes the decisions the door holds and returns
