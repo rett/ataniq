@@ -79,8 +79,8 @@ func TestVerdictAgreement(t *testing.T) {
 	}
 }
 
-// New keeps verdicts off a card that is not decided, and on one that is.
-func TestVerdictOnlyOnDecidedCards(t *testing.T) {
+// Which states count as decided.
+func TestVerdictDecidedStates(t *testing.T) {
 	for _, s := range []record.State{"", record.StatePending, record.StateWithdrawn, record.StateExpired} {
 		c := Card{After: After{State: s}}
 		if c.Decided() {
