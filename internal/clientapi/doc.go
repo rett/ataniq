@@ -32,10 +32,11 @@
 // a params member that is not an object, or that repeats a top-level key, is
 // "invalid-request". The request passes the same peer check, caps, timeouts and
 // counters as the base operations. A panic in Handle, a result that cannot be
-// marshalled or panics while it is, one over the response cap, and an error body that is not
-// well-formed are answered "internal"; a well-formed error body is sent with
-// its own code, which an extension may choose (lower-case letters, digits and
-// dashes, starting with a letter) except the codes that end a connection.
+// marshalled or panics while it is, one over the response cap, and an error
+// body that is not well-formed are answered "internal"; a well-formed error
+// body is sent with its own code, which an extension may choose (lower-case
+// letters, digits and dashes, starting with a letter) except the codes that end
+// a connection.
 // [Client.Call] is the client side.
 //
 // # Wire

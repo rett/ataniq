@@ -23,7 +23,8 @@ There are two passes, and pass A comes first:
   recorded screens, so the fence can accept inside the real sandbox. In the
   first epoch a refusal fails the step: `refused` with the reason `untested`
   means the config does not declare a tested version, and exit status 30 means
-  the daemon refused the message before the fence was asked.
+  the daemon refused the message before the fence was asked. In pass B too,
+  exit status 30 fails step 17 and is not read as the fence's refusal.
 - **Pass B** uses one live agent, once, with a fresh login inside the sandbox,
   the cheapest model, and a cap of 30 minutes or 10 turns. A second run of
   pass B needs the owner's word again.
@@ -71,7 +72,7 @@ sh qualification/canary/run/canary-run.sh --pass B --config /path/to/canary-live
 | `--dry` | Print every step and start nothing. No command is run and no file is read or written; the values printed are samples, so it works with no binary built and no config. Read it before each pass. |
 | `--evidence DIR` | The folder in which the dated evidence folder is made, an absolute path. The default is `ataniq-canary-evidence` in your home folder. |
 | `--fail-at N` | A test hook, accepted with `--dry` only: a failure is injected at step N, so the dry run prints the clean-up chain a real failure there would run. |
-| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs, nothing is started or written, and nothing is read but the file given to `pass-a-record` and, by `wait-key`, standard input. The names are listed under the check of the kit, below. |
+| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs, nothing is started or written, and nothing is read but the file given to `pass-a-record` and `has-line` and, by `wait-key`, standard input; `has-line` runs the helper `ataniq-canary fields` of `build/canary` on each line of its file, and no other program. The names are listed under the check of the kit, below. |
 
 The script prints each step with its number, what it does, the expected result
 and the gate it serves. It waits for Enter before every step that runs
@@ -348,8 +349,8 @@ failed, undo in this order. The names come from
    `systemctl --user stop <unit>`, waits for your key and asks the state
    again, and when the unit is still not stopped the step fails and the
    delete command is not shown, because the holder and the agent may still
-   run with those folders bound. Then do 1 and 2 above first. Nothing else of the host was written: the
-   evidence folder is yours to keep.
+   run with those folders bound. Then do 1 and 2 above first. Nothing else of
+   the host was written: the evidence folder is yours to keep.
 
 In pass B, also: log out inside the sandbox if the pane still runs, revoke the
 login on the provider's account page whatever the logout showed, restart the
@@ -392,6 +393,7 @@ test entry:
 | `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
+| `--self-test has-line FILE PATH=VALUE...` | `yes` when one line of `FILE`, which holds one JSON object in each line, holds every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it, and `no` otherwise; a line that is not a whole JSON object is passed over. Step 12 finds the lines of its epoch with it. |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |

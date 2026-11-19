@@ -45,8 +45,9 @@ const (
 	// EventInjectRefused: the message was refused before it reached the
 	// holder (code says why).
 	EventInjectRefused Event = "inject-refused"
-	// EventInjectSent: the request frame is about to be written; the message
-	// is spent from here.
+	// EventInjectSent: the line is written right after the request frame is
+	// written and before the daemon waits for the answer; the message is spent
+	// from here.
 	EventInjectSent Event = "inject-sent"
 	// EventInjectResult: the result of the message, or the uncertain result
 	// that stands in for no answer.

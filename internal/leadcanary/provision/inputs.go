@@ -56,7 +56,8 @@ var ErrInputs = errors.New("provision: the sandbox inputs do not match the confi
 // not name must be the folders and files that provisioning made (see
 // [PathsOf]), the Qargi records must appear inside at [RecordsInside], which
 // the mount points were made for, and no extra placeholder may be named,
-// because the git metadata folder lists none. The run kit and the daemon call it before a start.
+// because the git metadata folder lists none. The run kit and the daemon call
+// it before a start.
 //
 // Every refusal names the field and never repeats a value of the file. A
 // refusal of ReadInputs is returned as it is (an *sandboxstart.InputsError); a

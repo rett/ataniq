@@ -16,15 +16,16 @@ import (
 //
 // It refuses, changing nothing, when the role is not defined (an error that
 // wraps leadregistry.ErrNoRole), not run by ataniq (ErrNotManaged), not
-// admitted by the registry (an error that wraps leadregistry.ErrLaunchRefused:
-// the shown state is not desired, stopped or ended, or an intent is pending),
-// refused by the preflight (ErrPreflight), given limits outside the bounds (an
-// error that wraps leadunit.ErrInvalidSpec, see below), or when the previous
-// unit is not proven gone: a loaded unit gives ErrUnitLoaded (and ErrForeignUnit when it
+// admitted by the registry (an error that wraps
+// leadregistry.ErrLaunchRefused: the shown state is not desired, stopped or
+// ended, or an intent is pending), refused by the preflight (ErrPreflight),
+// given limits outside the bounds (an error that wraps
+// leadunit.ErrInvalidSpec, see below), or when the previous unit is not
+// proven gone: a loaded unit gives ErrUnitLoaded (and ErrForeignUnit when it
 // is not the role's own), and a manager error or a control group that is not
-// proven empty gives ErrNoProof. A role that claims stopped, ended or desired
-// stays as it is in all of these; Reconcile is what shows a competing unit as
-// unknown.
+// proven empty gives ErrNoProof. A role that claims stopped, ended or
+// desired stays as it is in all of these; Reconcile is what shows a
+// competing unit as unknown.
 //
 // A coordinator is started only under its parent lead: the lead must be
 // defined, run by ataniq, shown starting, ready or degraded and not have a launch

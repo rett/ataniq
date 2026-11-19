@@ -133,12 +133,13 @@ type Inputs struct {
 	// which is idempotent); it also means there is no previous instance. It is
 	// not a key of the file, and ReadInputs refuses a file that names it. The
 	// holder fills it before every Run from a durable mark, not from the epoch
-	// number: it is true only while the file "lead-has-run" is absent from the
-	// holder's state folder (--state-dir), and the holder writes that mark, by
-	// handle and exclusively, before it calls Run. (The epoch counter is not
-	// the history of the folders: a start that failed after the launch and is
-	// retried is epoch 1 again, over folders a lead has run in.) Seams note,
-	// section 8, "Per-epoch inputs".
+	// number: it is true when the mark, the file "lead-has-run", is absent from
+	// the holder's state folder (--state-dir) when the holder looks. The mark
+	// is made, exclusively and synced, inside the launcher just before the
+	// plan's process starts, so a start that fails before the launch leaves
+	// none. (The epoch counter is not the history of the folders: a start
+	// that failed after the launch and is retried is epoch 1 again, over
+	// folders a lead has run in.) Seams note, section 8, "Per-epoch inputs".
 	NoLeadHasRun bool `json:"-"`
 	// PreviousInstanceStopped is the statement that no process of an earlier
 	// instance of the lead remains. The start sequence has no unit and no

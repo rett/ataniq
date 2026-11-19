@@ -290,7 +290,8 @@ func (r *run) preflight() error {
 	}
 	// The mount points in the home and the config folder, which the mount
 	// point work makes: a symbolic link there is refused now. Those in the
-	// tree cannot exist, the tree being empty.
+	// tree are not looked at: the tree must be empty, which the loop over the
+	// kept folders below requires.
 	in := profileInputs(r.cfg, r.p, hashHex(r.settings))
 	pts, err := mountpoints.List(in)
 	if err != nil {

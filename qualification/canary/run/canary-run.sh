@@ -14,7 +14,9 @@
 # --self-test NAME [VALUE...] is the test entry: it gives sample values to one
 # of the script's own functions, prints what the function answers and ends. It
 # only computes: no step runs, nothing is started or written, and nothing is
-# read but the file given to pass-a-record and, by wait-key, standard input.
+# read but the file given to pass-a-record and has-line and, by wait-key,
+# standard input; has-line runs the helper ataniq-canary fields of build/canary
+# on each line of its file, and no other program.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -535,7 +537,7 @@ is_number() {
 }
 
 # self_test is the test entry: it calls one function of the script with the
-# values given and prints its answer. It runs no step and no other program.
+# values given and prints its answer. It runs no step and no program but the helper has-line names.
 self_test() {
   _name=$1
   shift
@@ -581,6 +583,13 @@ self_test() {
       # FIELDS: what ataniq-canary fields prints for a final record.
       [ "$#" -eq 1 ] || usage
       counters_7501 "$1" || out '     (none is named for 7501)'
+      ;;
+    has-line)
+      # FILE PATH=VALUE...: FILE holds one JSON object in each line. The
+      # helper is the one of build/canary in the current folder.
+      [ "$#" -ge 2 ] || usage
+      BIN=build/canary
+      if has_line "$@"; then out yes; else out no; fi
       ;;
     fields-hold)
       # FIELDS PATH=VALUE...: FIELDS is what ataniq-canary fields prints for
@@ -1390,7 +1399,7 @@ step_17() {
   if [ "$PASS" = A ]; then
     _exp='the config declares the tested version and the stand-in draws a screen no recogniser knows, so the fence answers not-now with the reason not-ready and writes nothing (L6); the owner then pastes the message into the pane as one paste and presses Enter once; a refusal by the daemon (exit status 30) or by the fence (refused, untested: a wrong config) fails the step'
   else
-    _exp='the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner pastes the message as one paste'
+    _exp='a refusal by the daemon (exit status 30) fails the step; otherwise the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner pastes the message as one paste'
   fi
   step_head 17 'inject one message' \
     "inject one message: make one named file with one token, commit it on the branch $BRANCH" "$_exp" 'G1, G3'
@@ -1405,6 +1414,7 @@ step_17() {
       dry 'fail the step on exit status 30 (the daemon refused the message) and on refused, untested (a wrong config: the version is not a tested one)'
       dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; wait"
     else
+      dry 'fail the step on exit status 30 (the daemon refused the message: the fence was not asked)'
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
       dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; that is recorded"
@@ -1422,15 +1432,10 @@ step_17() {
     _w=$(fld "$LASTOUT" result.written)
     out "   result: outcome=$_o reason=${_r:-none} written=$_w"
     note "inject result: outcome=$_o reason=${_r:-none} written=$_w"
-  elif [ "$RC" -eq 30 ] && [ "$PASS" = B ]; then
-    _o=refused
-    _w=nothing
-    out '   result: the daemon refused the message (exit 30)'
-    note 'inject refused by the daemon (exit 30)'
   elif [ "$RC" -eq 30 ]; then
-    # Pass A: the daemon's refusal (admission, epoch or role) is not the
-    # fence's answer, and must not read as one.
-    fail 'the daemon refused the message (exit 30): the fence was not asked, so this is not the answer of L6'
+    # In both passes the daemon's refusal (admission, epoch or role) is not
+    # the fence's answer, and must not read as one.
+    fail 'the daemon refused the message (exit 30): the fence was not asked, so this is not the fence'"'"'s answer'
     return 0
   else
     fail "inject ended with exit status $RC"

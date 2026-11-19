@@ -59,13 +59,14 @@ func TestWireResultMapsEveryRowAndEveryContradiction(t *testing.T) {
 			if err := got.Validate(); err != nil {
 				t.Errorf("%q, %q: the result %+v is not valid: %v", o, w, got, err)
 			}
-			wantDetail := wire.SanitizeDetail("a sample detail | " + r.Readings())
+			// The readings hold the detail, so they stand alone.
+			wantDetail := wire.SanitizeDetail(r.Readings())
 			want, row := mappingRows[fencePair{o, w}]
 			if row {
 				rowsSeen++
 			} else {
 				want = wireWordsWant{"uncertain", "died", "unknown"}
-				wantDetail = wire.SanitizeDetail("contradictory result: a sample detail | " + r.Readings())
+				wantDetail = wire.SanitizeDetail("contradictory result: " + r.Readings())
 			}
 			if got.Outcome != want.outcome || got.Reason != want.reason || got.Written != want.written {
 				t.Errorf("%q, %q: mapped to %q, %q, %q, want %q, %q, %q", o, w, got.Outcome, got.Reason, got.Written, want.outcome, want.reason, want.written)
@@ -115,13 +116,23 @@ func TestWireResultNeverSaysMoreThanTheFenceDid(t *testing.T) {
 	}
 }
 
-// The detail is the fence's detail, " | " and its readings, in printable
-// ASCII and at most the wire's length, whatever the fence's words hold.
+// The detail is the fence's readings alone when they hold its detail, else
+// the detail, " | " and the readings, in printable ASCII and at most the
+// wire's length, whatever the fence's words hold.
 func TestWireResultDetail(t *testing.T) {
 	plain := inject.Result{Outcome: inject.OutcomeNotIdle, Written: inject.WrittenNothing, Detail: "the screen did not settle in time"}
 	got := WireResult(plain)
-	if want := "the screen did not settle in time | " + plain.Readings(); got.Detail != want {
+	if want := plain.Readings(); got.Detail != want {
 		t.Errorf("detail %q, want %q", got.Detail, want)
+	}
+	if strings.Count(got.Detail, "the screen did not settle in time") != 1 {
+		t.Errorf("detail %q spends the fence's detail twice", got.Detail)
+	}
+	// Readings that do not hold the detail (here a detail with a byte that
+	// the readings replace) get the detail in front, then " | ".
+	odd := inject.Result{Outcome: inject.OutcomeNotIdle, Written: inject.WrittenNothing, Detail: "caf\xe9"}
+	if got, want := WireResult(odd).Detail, wire.SanitizeDetail("caf\xe9 | "+odd.Readings()); got != want {
+		t.Errorf("detail %q, want %q", got, want)
 	}
 	if !strings.Contains(got.Detail, "before: not read; after: not read") {
 		t.Errorf("detail %q does not hold the readings", got.Detail)
