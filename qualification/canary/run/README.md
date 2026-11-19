@@ -38,11 +38,23 @@ This runs doctor and builds, with the canary build tag, into `build/canary/`
 (ignored by git): `ataniqd`, `ataniq-holder`, `ataniq-canary`,
 `ataniq-canary-standin`, `ataniq-console`, `ataniq-intake` and `ataniq-probe`.
 It runs none of them. The script takes its binaries from `build/canary/` of the
-checkout it lies in and from nowhere else, and before anything else it checks
-that the four that hold canary mode (`ataniqd`, `ataniq-holder`,
-`ataniq-canary`, `ataniq-canary-standin`) name the build tag in `--version`.
-The console, the intake and the probe hold no canary mode and have no such
-output; the script records the hash of all seven at step 3.
+checkout it lies in and from nowhere else. How it knows each one:
+
+| Binary | Reports the tag in `--version` | Hash recorded at step 3 |
+| --- | --- | --- |
+| `ataniqd` | yes, required | yes |
+| `ataniq-holder` | yes, required | yes |
+| `ataniq-canary` | yes, required | yes |
+| `ataniq-canary-standin` | yes, required | yes (and compared with the agent's copy at step 9 of pass A) |
+| `ataniq-console` | no: it holds no canary mode and has no `--version` | yes |
+| `ataniq-intake` | no: it holds no canary mode and has no `--version` | yes |
+| `ataniq-probe` | no: it holds no canary mode and has no `--version` | yes |
+
+Before anything else, and again at step 3, the script runs `--version` of each
+of the four that hold canary mode and refuses to go on when one does not name
+the build tag; a holder built without the tag, or one that does not know
+`--version`, stops the run there. The other three are known by their hash
+alone.
 
 ## Run
 
