@@ -116,24 +116,28 @@ func (m *Model) Update(msg tea.Msg) Action {
 	if !ok {
 		return Action{}
 	}
-	switch key := k.String(); key {
-	case "esc":
+	// Keys are matched by code, and only with no modifier: the text a key
+	// carries (an input method can commit any string) never stands for Enter,
+	// Esc or Backspace.
+	if k.Mod != 0 {
+		return Action{}
+	}
+	switch {
+	case k.Code == tea.KeyEscape:
 		return Action{Kind: Close}
-	case "enter":
+	case k.Code == tea.KeyEnter:
 		return m.enter()
-	case "backspace":
+	case k.Code == tea.KeyBackspace:
 		if m.typed != "" {
 			m.typed = m.typed[:len(m.typed)-1]
 		}
 		m.note, m.warn = "", false
-	default:
+	case k.Code >= '0' && k.Code <= '9' && k.Text == string(k.Code):
 		// A digit is exactly one ASCII digit as text, with no modifier.
-		if len(key) == 1 && key[0] >= '0' && key[0] <= '9' && k.Text == key {
-			if len(m.typed) < maxDigits {
-				m.typed += key
-			}
-			m.note, m.warn = "", false
+		if len(m.typed) < maxDigits {
+			m.typed += k.Text
 		}
+		m.note, m.warn = "", false
 	}
 	return Action{}
 }

@@ -271,6 +271,37 @@ func TestNoSingleKeyRaises(t *testing.T) {
 	}
 }
 
+func TestKeysMatchByCodeWithNoModifier(t *testing.T) {
+	// The suggestion is lower, so a real Enter would send a change.
+	m := newModel(sampleView(t, 20, []int{3}, false))
+	for _, k := range []tea.KeyPressMsg{
+		{Code: '1', Text: "1", Mod: tea.ModAlt},
+		{Code: '1', Text: "12"},
+		{Code: '1', Text: "1", Mod: tea.ModCtrl},
+		{Code: 'x', Text: "1"},
+		{Code: 'x', Text: "12"},
+		{Code: 'x', Text: "enter"},
+		{Code: 'x', Text: "esc"},
+		{Code: 'x', Text: "backspace"},
+		{Code: tea.KeyEnter, Mod: tea.ModAlt},
+		{Code: tea.KeyEscape, Mod: tea.ModShift},
+		{Code: tea.KeyBackspace, Mod: tea.ModCtrl},
+		{Code: '1'},
+	} {
+		if a := m.Update(k); a.Kind != None {
+			t.Errorf("key %+v acted: %+v", k, a)
+		}
+		if m.Typed() != "" {
+			t.Fatalf("key %+v typed %q", k, m.Typed())
+		}
+	}
+	typeKeys(m, "1")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyBackspace, Mod: tea.ModAlt})
+	if m.Typed() != "1" {
+		t.Errorf("modified Backspace edited: %q", m.Typed())
+	}
+}
+
 func TestOtherMessagesIgnored(t *testing.T) {
 	m := newModel(sampleView(t, 12, []int{3}, false))
 	for _, msg := range []tea.Msg{tea.PasteMsg{Content: "18"}, tea.MouseClickMsg{}, tea.WindowSizeMsg{Width: 1, Height: 1}, nil, "18"} {
