@@ -1465,3 +1465,38 @@ func TestEnterOnTheGateOpensTheGatesCardWhenATickComesBeforeTheFirstListAnswers(
 		}
 	}
 }
+
+func TestEnterOnTheGateStillOpensItsCardWhenAKeyComesBeforeTheFirstListIsTakenIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read bool // the list was read before the key, and not yet delivered
+	}{
+		{"the list is not read yet", false},
+		{"the list is read and not delivered", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newFakeApprovals(t)
+			b.add("ap-1", "project-a", 5*time.Minute)
+			r := newApprRig(t, 140, 45, b, Options{})
+			r.poll()
+			r.focusPane(paneEvidence)
+			r.clk.Advance(100 * time.Millisecond)
+			_, cmd := r.m.Update(enterKey) // the view's first list is out
+			var answers []tea.Msg
+			if tc.read {
+				answers = r.collect(cmd)
+			}
+			r.press(ch('k')) // a key reaches the view before the list does
+			if tc.read {
+				for _, a := range answers {
+					r.send(a)
+				}
+			} else {
+				r.pump(cmd)
+			}
+			if len(b.opens) != 1 || b.opens[0] != "ap-1" {
+				t.Fatalf("opened %v, want the gate's card", b.opens)
+			}
+		})
+	}
+}
