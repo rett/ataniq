@@ -43,7 +43,9 @@ package main
 // When the sequence refuses or fails, it has stopped and reaped the child
 // through the adapter, so the session is closed. The holder then removes the
 // state file, appends a refusal to the event log and exits with exitSandbox.
-// The mark lead-has-run stays: it says a lead may have run in the folders.
+// The mark lead-has-run is made by the launcher just before the plan's first
+// process starts: it stays after a failure from the launch on, and a start
+// that failed before the launch leaves none.
 // When the child had been launched, final.json is the session's record of the
 // sandbox's first process, which was stopped; it is not the record of an agent
 // that served.
@@ -353,6 +355,10 @@ func (m *canaryMode) state(st *stateFile) { st.Canary = true }
 type sessionLauncher struct {
 	base  session.Config
 	start func(session.Config) (*session.Session, error)
+	// mark makes the durable mark lead-has-run, exclusively and synced, right
+	// before the session starts the plan's first process. A launch whose mark
+	// cannot be made is refused, with nothing started.
+	mark func() error
 
 	// called is true once the session's start was called: it owns the role
 	// lock from then on, whether it succeeded or not.
@@ -366,6 +372,11 @@ func (l *sessionLauncher) Launch(argv []string) (sandboxstart.Child, error) {
 	}
 	cfg := l.base
 	cfg.Argv = argv
+	if l.mark != nil {
+		if err := l.mark(); err != nil {
+			return nil, errors.New("the mark " + leadHasRunMark + " cannot be made: " + err.Error())
+		}
+	}
 	l.called = true
 	s, err := l.start(cfg)
 	if err != nil {
@@ -459,13 +470,29 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 		in.HolderPaths = append(in.HolderPaths, cfg.stateDir)
 	}
 	in.PreviousInstanceStopped = aloneInControlGroup(m.d.procRoot, m.d.canary.cgroupRoot, os.Getpid())
-	// The mark is made exclusively: that it was absent and that it is written
-	// are one act, before the sequence runs.
-	first, err := markLeadHasRun(cfg.stateDir)
+	// NoLeadHasRun is decided here, before the sequence: no lead has run when
+	// the mark is absent (the role lock keeps another holder from racing this).
+	// The mark itself is made by the launcher, just before the plan's first
+	// process starts, so a start that fails before the launch leaves none and
+	// the next start prepares the folders again.
+	first, err := leadHasRunAbsent(cfg.stateDir)
 	if err != nil {
-		return fail(exitRefuse, "lead-has-run-mark-failed", "refused: cannot read or write the mark %s in the state folder: %v", leadHasRunMark, err)
+		return fail(exitRefuse, "lead-has-run-mark-failed", "refused: cannot read the mark %s in the state folder: %v", leadHasRunMark, err)
 	}
 	in.NoLeadHasRun = first
+	if first {
+		launch.mark = func() error {
+			// The mark is made exclusively. One that is there now appeared
+			// after the decision above, which nothing should do: the launch
+			// is refused. When the mark was there at the decision, it is
+			// there still and the launcher has nothing to make.
+			made, err := markLeadHasRun(cfg.stateDir)
+			if err == nil && !made {
+				err = errors.New("it appeared during the start")
+			}
+			return err
+		}
+	}
 
 	// A stop signal during the sequence ends it: the sequence stops the child
 	// it launched.
@@ -605,6 +632,23 @@ type countingDeliverer struct {
 func (d countingDeliverer) Deliver(ctx context.Context, messageID, text string) wire.InjectResult {
 	d.pump.copy()
 	return d.next.Deliver(ctx, messageID, text)
+}
+
+// leadHasRunAbsent says nothing is at the mark's name in the state folder,
+// asked by the folder's handle without following a link: a link, or anything
+// else, at the name is the mark of an earlier start.
+func leadHasRunAbsent(dir string) (bool, error) {
+	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(dfd)
+	var st unix.Stat_t
+	err = unix.Fstatat(dfd, leadHasRunMark, &st, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return true, nil
+	}
+	return false, err
 }
 
 // markLeadHasRun makes the mark lead-has-run in the state folder, by the
