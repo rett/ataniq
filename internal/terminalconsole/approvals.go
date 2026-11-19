@@ -81,6 +81,9 @@ type approvalsState struct {
 	gate       *gateBackend
 	wantOldest bool
 	oldestID   string
+	// unread counts the ticks that found the drive armed and the view's
+	// first list not read. A second one gives the drive up.
+	unread int
 
 	// limit is the limit's screen, open over the view for limitProject.
 	limit        *limitview.Model
@@ -238,6 +241,16 @@ func (m *Model) onApprTick(apprTickMsg) tea.Cmd {
 		return nil
 	}
 	cmds := []tea.Cmd{m.apprTickCmd(a.period)}
+	if a.wantOldest && a.gate != nil {
+		// A first list that does not come must not keep the view from being
+		// refreshed for good: the drive is given up at the second tick that
+		// finds no read, and the view refreshes from then on.
+		if _, reads := a.gate.noted(); reads == 0 {
+			if a.unread++; a.unread > 1 {
+				a.wantOldest = false
+			}
+		}
+	}
 	if a.view != nil && !a.wantOldest {
 		// While the gate's card is still to be opened the view is not
 		// refreshed: its first list is then the only one read, so that the
@@ -408,7 +421,7 @@ func (m *Model) openApprovals(oldest bool) tea.Cmd {
 		GraphemeWidths: m.graphemes,
 	})
 	a.limit = nil
-	a.wantOldest = false
+	a.wantOldest, a.unread = false, 0
 	if it, _, ok := m.oldestWaiting(); oldest && ok {
 		a.wantOldest, a.oldestID = true, it.ID
 	}
