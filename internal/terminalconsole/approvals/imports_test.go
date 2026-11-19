@@ -15,8 +15,8 @@ import (
 // package under it, may not import p. The package starts no program, opens
 // no file and no socket, makes no system call and uses neither cgo nor
 // unsafe. Of this repository it may import card, record, limits, leadtext and
-// pager and nothing else: not the cockpit, not a backend, not the door. Only direct imports are checked;
-// test files may import what they need.
+// pager and nothing else: not the cockpit, not a backend, not the door. Only
+// direct imports are checked; test files may import what they need.
 func importDenied(p string) bool {
 	switch p {
 	case "C", "os", "net", "syscall", "unsafe", "plugin", "io/ioutil", "path/filepath":

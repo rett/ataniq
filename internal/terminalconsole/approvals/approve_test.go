@@ -745,7 +745,7 @@ func TestTruncatedPathListIsReadThroughPages(t *testing.T) {
 	r.seen("the path list is cut: the card holds the first 3 of 12 paths")
 	r.readAll()
 	r.bodyHas("Whole path list: page 1 of 3")
-	r.seen("pkg0/file29.go", "[ ] pages")
+	r.seen("pkg0/file29.go", "[ and ] turn pages")
 	r.key("a")
 	r.seen("approve is off: " + card.ReasonPathPages)
 	// Page 1 is read; the others are not, and approve stays off. No key

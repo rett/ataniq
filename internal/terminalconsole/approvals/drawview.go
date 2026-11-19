@@ -143,7 +143,7 @@ func (m *Model) scrollLine() string {
 		s = "▼ " + itoa(below) + " more rows below"
 	}
 	if d := cs.c.Diff; d != nil && d.Truncated && cs.endedLine == "" {
-		s += " · [ ] pages"
+		s += " · [ and ] turn pages"
 	}
 	return s
 }
