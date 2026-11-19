@@ -211,7 +211,7 @@ func (s *Strip) Key(msg tea.KeyPressMsg, ev presence.Event, focused bool) (Actio
 		s.visible = false
 		return Close, NoLine
 	}
-	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+	if msg.Mod&^(tea.ModCapsLock|tea.ModNumLock) == 0 && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		if i := int(key[0] - '1'); i < s.drawn && i < len(s.rows) {
 			s.visible = false
 			return Open, s.rows[i].line

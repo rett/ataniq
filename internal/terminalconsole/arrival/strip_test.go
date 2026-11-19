@@ -260,7 +260,8 @@ func allKeys() []tea.KeyPressMsg {
 		ks = append(ks, tea.KeyPressMsg{Code: c})
 	}
 	for _, mod := range []tea.KeyMod{tea.ModCtrl, tea.ModAlt, tea.ModShift, tea.ModCtrl | tea.ModAlt} {
-		ks = append(ks, tea.KeyPressMsg{Code: '1', Mod: mod}, tea.KeyPressMsg{Code: tea.KeyEscape, Mod: mod},
+		ks = append(ks, tea.KeyPressMsg{Code: '1', Mod: mod}, tea.KeyPressMsg{Code: '1', Text: "1", Mod: mod},
+			tea.KeyPressMsg{Code: tea.KeyEscape, Mod: mod},
 			tea.KeyPressMsg{Code: 'c', Mod: mod})
 	}
 	return ks
@@ -274,6 +275,11 @@ func TestWithTheFocusOnlyEscAndTheDigitsOfItsLines(t *testing.T) {
 		s, _ := shown(t, full(), 100, 5)
 		a, l := s.Key(k, typing, true)
 		line, mine := own[k.String()]
+		if k.Mod != 0 {
+			// A key with a modifier is no one's but the cockpit's, even
+			// when it carries text.
+			mine = false
+		}
 		switch {
 		case !mine:
 			if a != None || l != NoLine || !s.Visible() {
