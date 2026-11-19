@@ -31,8 +31,9 @@ func TestSanitizeDetailCuts(t *testing.T) {
 	if got := wire.SanitizeDetail(long); got != long {
 		t.Fatalf("a detail at the cap changed, length %d", len(got))
 	}
-	// One byte over is cut; bytes are counted after the replacement, so a
-	// multi-byte character at the cut is cut in the middle, as ?.
+	// One byte over is cut first and the replacement comes after; the
+	// replacement keeps the byte count, so a multi-byte character at the cut is
+	// cut in the middle, as ?.
 	if got := wire.SanitizeDetail(long + "b"); got != long {
 		t.Fatalf("one over: length %d", len(got))
 	}
