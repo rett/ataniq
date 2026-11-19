@@ -23,6 +23,7 @@ const (
 	lineDenied   = "sample: denied; nothing was changed"
 	lineHeld     = "sample: held past the daily limit; nothing was changed"
 	lineExpired  = "sample: the request ended while it was open; nothing was changed"
+	lineLapsed   = "sample: the request expired; nothing was changed"
 )
 
 // entry is one sample card as the backend holds it.
@@ -124,10 +125,17 @@ func (b *Backend) seedProjects(now time.Time) {
 	b.projects[projectA], b.projects[projectB], b.projects[projectC] = a, bp, c
 }
 
-// settle ends the samples that end while open, when their time is up. The
+// settle ends the samples that end while open, when their time is up, and
+// expires every pending sample that is past its pending_expires_at. The
 // caller holds the lock.
 func (b *Backend) settle(now time.Time) {
 	for _, e := range b.cards {
+		if e.isPending() {
+			if at, err := record.ParseTime(e.sample.pending.Binding.PendingExpiresAt); err == nil && !now.Before(at) {
+				e.state, e.line, e.decidedAt, e.held = record.StateExpired, lineLapsed, at, false
+				continue
+			}
+		}
 		if e.endsAfter > 0 && !e.opened.IsZero() && e.isPending() && !now.Before(e.opened.Add(e.endsAfter)) {
 			e.state, e.line, e.decidedAt = record.StateExpired, lineExpired, now
 		}

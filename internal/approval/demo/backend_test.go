@@ -438,6 +438,24 @@ func TestHeldPastTheLimit(t *testing.T) {
 	}
 }
 
+func TestDecideRefusesAPastExpiry(t *testing.T) {
+	b, c := newBackend(t)
+	k := open(t, b, "ap-sample-clean")
+	c.t = c.t.Add(48 * time.Hour)
+	b.Activity(c.t)
+	_, err := b.Decide(card.Decision{ID: k.Title.ID, BindingSHA256: k.BindingSHA256, Approve: true})
+	if code(err) != record.CodeApprovalExpired {
+		t.Fatalf("past the expiry: %v", err)
+	}
+	// A held card past its expiry expires as any other.
+	if _, err := b.Decide(card.Decision{ID: "ap-sample-held", BindingSHA256: open(t, b, "ap-sample-held").BindingSHA256}); code(err) != record.CodeApprovalExpired {
+		t.Errorf("held card past the expiry: %v", err)
+	}
+	if k = open(t, b, "ap-sample-clean"); !k.Ended() {
+		t.Error("the card is not ended")
+	}
+}
+
 func TestHeldMarkIsClearedWhenTheCardIsDecided(t *testing.T) {
 	for _, approve := range []bool{true, false} {
 		b, c := newBackend(t)
