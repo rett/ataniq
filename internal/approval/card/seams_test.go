@@ -45,7 +45,7 @@ func TestTheSharedTypesHaveTheirFixedFields(t *testing.T) {
 			"Pending []card.Item; Recent []card.Item; Rules []card.Rule; Count card.Count; Sample bool; LookedAt time.Time"},
 		"Page": {fields(Page{}),
 			"Kind card.PageKind; N int; Pages int; ReviewDigest string; Paths []record.PathChange; Patch []string; Cont []bool"},
-		"VerdictBlock": {fields(VerdictBlock{}), ""},
+		"VerdictBlock": {fields(VerdictBlock{}), "Runs [2]card.Run; Refused bool"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s has the fields %q, want %q", name, tc.got, tc.want)
@@ -62,15 +62,6 @@ func TestTheSharedTypesHaveTheirFixedFields(t *testing.T) {
 		if !ok || f.Type != reflect.TypeOf(&VerdictBlock{}) {
 			t.Errorf("%s has no field Verdicts *VerdictBlock", name)
 		}
-	}
-	// The verdict block stands alone in verdict.go, which a later task
-	// fills without editing any other file of the package.
-	src, err := os.ReadFile("verdict.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "type VerdictBlock struct{}") || strings.Contains(string(src), "\nfunc ") {
-		t.Error("verdict.go does not hold the empty VerdictBlock alone")
 	}
 }
 

@@ -1,6 +1,7 @@
 package demo
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,8 +62,16 @@ func TestSamplesAreBuiltLikeRealCards(t *testing.T) {
 	if !l.Sample {
 		t.Error("Listing.Sample is false")
 	}
-	if len(l.Pending) < 8 || len(l.Recent) != 0 {
+	if len(l.Pending) < 8 || len(l.Recent) != len(verdictSampleIDs) {
 		t.Fatalf("pending %d, recent %d", len(l.Pending), len(l.Recent))
+	}
+	for _, it := range l.Recent {
+		if !slices.Contains(verdictSampleIDs, it.ID) {
+			t.Errorf("recent %q is not one of the decided samples", it.ID)
+		}
+		if c := open(t, b, it.ID); c.BindingSHA256 != it.BindingSHA256 {
+			t.Errorf("%s: list and card disagree on the digest", it.ID)
+		}
 	}
 	projects := map[string]bool{}
 	for _, it := range l.Pending {
@@ -334,7 +343,7 @@ func TestEndsWhileOpen(t *testing.T) {
 		t.Errorf("after: %+v", got.After)
 	}
 	l, _ := b.List()
-	if len(l.Recent) != 1 || l.Recent[0].ID != id {
+	if r := decidedHere(l.Recent); len(r) != 1 || r[0].ID != id || l.Recent[0].ID != id {
 		t.Errorf("recent: %+v", l.Recent)
 	}
 	b.Activity(c.t)
@@ -375,7 +384,7 @@ func TestDecideNeedsActivity(t *testing.T) {
 		t.Errorf("a second decision: %v", err)
 	}
 	l, _ := b.List()
-	if len(l.Recent) != 1 || l.Recent[0].State != record.StateApproved {
+	if r := decidedHere(l.Recent); len(r) != 1 || r[0].State != record.StateApproved {
 		t.Errorf("recent: %+v", l.Recent)
 	}
 }
@@ -442,7 +451,7 @@ func TestReasonRules(t *testing.T) {
 	if _, err := b.Decide(approve); code(err) != record.CodeDecisionInvalid {
 		t.Errorf("an approve with a reason: %v", err)
 	}
-	if l, _ := b.List(); len(l.Recent) != 0 {
+	if l, _ := b.List(); len(decidedHere(l.Recent)) != 0 {
 		t.Errorf("a refused decision was taken: %+v", l.Recent)
 	}
 }
@@ -535,10 +544,25 @@ func TestHeldMarkIsClearedWhenTheCardIsDecided(t *testing.T) {
 			t.Errorf("approve=%v: the card keeps its held mark", approve)
 		}
 		l, _ := b.List()
-		if len(l.Recent) != 1 || l.Recent[0].Held {
+		if r := decidedHere(l.Recent); len(r) != 1 || r[0].Held {
 			t.Errorf("approve=%v: the list row keeps its held mark: %+v", approve, l.Recent)
 		}
 	}
+}
+
+// verdictSampleIDs are the two samples that start out decided.
+var verdictSampleIDs = []string{"ap-sample-verdict-agreed", "ap-sample-verdict-differed"}
+
+// decidedHere returns the rows of a recent list without the two samples that
+// start out decided: what is left was decided or ended during the test.
+func decidedHere(rows []card.Item) []card.Item {
+	var out []card.Item
+	for _, it := range rows {
+		if !slices.Contains(verdictSampleIDs, it.ID) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func itemOf(l card.Listing, id string) card.Item {
