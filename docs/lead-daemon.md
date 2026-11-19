@@ -23,22 +23,34 @@ protocol operation can make it. Against a fresh state folder it knows no role
 at all, because no command of this build defines one. It answers two read-only
 questions on a local socket, `hello` and `status`.
 
+**The exception is canary mode.** In a build with the `ataniq_canary` tag, and
+only under `ataniqd run --canary CONFIG`, the daemon serves five more
+operations (`define`, `start`, `ticket`, `inject` and `stop`) for the one
+throwaway role that the config names, and then starts and stops that lead's
+unit. [The canary slice guide](canary-slice.md) describes it. Release builds
+do not contain canary mode, and a tagged build without `--canary` is the
+read-only skeleton this guide describes. Everything below is about that
+skeleton unless it says otherwise.
+
 These are not part of it: a real lead, the holder, a sandbox, injection of
 instructions into a session, any console integration and any Qargi
 integration. The list of what is not built is at the [end](#not-built).
 
 The tree has provisional code for some of these, and the daemon uses none of
-it: the scratch-only holder and the console's attach client
-([the lead holder guide](lead-holder.md)), the sandbox proposal
-([the lead sandbox guide](lead-sandbox.md)), the injection library
+it, except in a build with the `ataniq_canary` tag, under `--canary` (see
+[the canary slice guide](canary-slice.md)): the scratch-only holder and the
+console's attach client ([the lead holder guide](lead-holder.md)), the sandbox
+proposal ([the lead sandbox guide](lead-sandbox.md)), the injection library
 ([the lead injection guide](lead-injection.md)), and the exchange mirror with
-its intake command ([the lead intake guide](lead-intake.md)). None of that
-code imports a package of this guide, and no package of this guide imports
-it.
+its intake command ([the lead intake guide](lead-intake.md)). Without that tag
+and flag, none of that code imports a package of this guide, and no package of
+this guide imports it. In a tagged build the daemon's canary files import the
+holder's control wire, and the canary package they use for the admission
+imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `canary` and `--version`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -244,9 +256,11 @@ accepts that by owner decision. Reading `hello` and `status` therefore tells
 every process of the user that can reach the socket what is in the registry
 summary. A managed lead that runs in a sandbox must never see this socket.
 Keeping it away is the sandbox's job; nothing here asserts or tests it, and the
-daemon launches no sandbox. The profile in
+daemon launches no sandbox, except that in a build with the `ataniq_canary`
+tag, under `--canary`, the holder it starts launches one (see
+[the canary slice guide](canary-slice.md)). The profile in
 [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal that no
-lead runs in.
+lead runs in, except there.
 
 ### Wire format
 
@@ -364,7 +378,10 @@ would be a different protocol name.
 
 The server can carry extension operations that the program serving it
 registers (`Options.Extra`), each named with lower-case letters, digits and
-dashes around one dot. No release build registers one. When one is registered,
+dashes around one dot. No release build registers one; a build with the
+`ataniq_canary` tag, under `--canary`, registers the five canary operations and
+adds the error codes `refused` and `unavailable` (see
+[the canary slice guide](canary-slice.md#the-commands)). When one is registered,
 `hello` lists the two base operations and then the extensions', and says
 `"mutations":true` only when a registered extension declares that it changes
 something. A request for such an operation may carry `params`, one JSON object
@@ -610,7 +627,9 @@ The file is opened close-on-exec, and is never removed.
 
 Only the daemon's own locks are taken today: the daemon lock and the runtime
 folder lock, which use the same mechanism. No role lock is taken through this
-package: the daemon starts no holder, so nothing takes one. The scratch-only
+package: the daemon starts no holder, so nothing takes one (in a build with the
+`ataniq_canary` tag, under `--canary`, it starts one, and that holder takes the
+role's lock itself; see [the canary slice guide](canary-slice.md)). The scratch-only
 holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
 own scratch folder, taken by its own code and not at a role's path. The daemon
 never probes a role lock by taking and releasing it, and the package offers no
@@ -651,7 +670,10 @@ authenticate a peer.
 is its implementation for the systemd user manager, and
 [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) is the logic on
 top. **The daemon calls none of `Start`, `Signal` or the lifecycle's `Start`
-and `Stop`.** What follows is what the packages do and what their tests check
+and `Stop`,** except that in a build with the `ataniq_canary` tag, under
+`--canary`, the operations `canary.start` and `canary.stop` call the
+lifecycle's `Start` and `Stop` for the config's one lead role (see
+[the canary slice guide](canary-slice.md)). What follows is what the packages do and what their tests check
 against the fake.
 
 The scratch holder's unit is not one of these. `ataniq-scratch` starts its
@@ -1064,26 +1086,36 @@ What only a real run can confirm:
 
 ## Not built
 
-The daemon and the packages of this guide have none of the following. Where
-another part of the tree has provisional code for an item, the item names its
-guide; the daemon uses none of that code.
+The daemon and the packages of this guide have none of the following, except
+in a build with the `ataniq_canary` tag, under `--canary`, which joins some of
+them for one throwaway role (see [the canary slice guide](canary-slice.md); each
+item says where it differs). Where another part of the tree has provisional
+code for an item, the item names its guide; the daemon uses none of that code
+without the tag and the flag.
 
 - a holder that the daemon starts, and the command line for it. `ataniq-holder`
   refuses to run without `--scratch`, and `ataniq-scratch` is what starts it
-  (see [the lead holder guide](lead-holder.md));
+  (see [the lead holder guide](lead-holder.md)); in canary mode the daemon
+  starts `ataniq-holder --canary`;
 - a sandbox for a lead: the daemon launches none. The profile of
-  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal;
+  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal; in
+  canary mode the holder launches it, with assertion 10 waived;
 - readiness: nothing sets `ready`;
 - delivery of instructions and the wait for an idle turn, and the quiesce of
   delivery before a stop (the interface exists, nothing implements it). The
   library of [the lead injection guide](lead-injection.md) is not joined to
-  the daemon;
-- tickets: `ataniq-scratch` issues the attach tickets of a scratch holder;
+  the daemon; in canary mode the daemon sends one message per epoch through
+  the holder, with no queue;
+- tickets: `ataniq-scratch` issues the attach tickets of a scratch holder; in
+  canary mode `canary.ticket` issues them;
 - the exchange mirror and the intake: `ataniq-intake` is run by hand (see
-  [the lead intake guide](lead-intake.md)), and the daemon does not call it;
+  [the lead intake guide](lead-intake.md)), and the daemon does not call it,
+  canary mode included;
 - any mutating command: nothing defines a role, starts, stops or resolves an
   unknown role. The one write the daemon makes is the reconcile's: it records
-  what it finds about a role, and acknowledges a registry recovery;
+  what it finds about a role, and acknowledges a registry recovery. In canary
+  mode `canary.define`, `canary.start` and `canary.stop` define, start and stop
+  the config's one role;
 - the assignment record and Qargi's side of it;
 - observation of the tmux-manager's leads;
 - start at boot, and a unit file for the daemon itself: `ataniqd run` is
@@ -1100,4 +1132,7 @@ guide; the daemon uses none of that code.
 
 A start also needs a qualification record and a command line for the holder.
 The daemon passes a check and a command builder that always refuse, and they are
-never reached because nothing calls start.
+never reached because nothing calls start. In canary mode the daemon passes the
+canary preflight, which passes for the config's role only and records that
+there is no qualification record, and the canary holder command; `canary.start`
+calls start.

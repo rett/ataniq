@@ -42,15 +42,18 @@ See [the Codex qualification guide](docs/qualification-codex.md) and
 [the host manual](docs/qualification-host.md) for their scope and limits.
 `ataniqd` is a provisional, unqualified, read-only daemon skeleton with the
 packages a later managed-lead daemon will use; it starts, stops and manages no
-lead. See [the lead daemon guide](docs/lead-daemon.md).
+lead, except in a build with the `ataniq_canary` tag, under `--canary`. See
+[the lead daemon guide](docs/lead-daemon.md).
 A provisional scratch-only lead holder and its attach path are described in
 [the lead holder guide](docs/lead-holder.md).
 The [lead sandbox guide](docs/lead-sandbox.md) describes a proposal, unqualified,
-for the sandbox of a managed lead; nothing uses it yet. Its opt-in harness is in
+for the sandbox of a managed lead; nothing uses it yet, except in a build with
+the `ataniq_canary` tag, under `--canary`. Its opt-in harness is in
 [the lead sandbox qualification guide](docs/qualification-lead-sandbox.md).
 The [lead injection guide](docs/lead-injection.md) describes a provisional,
 unqualified library for fenced message injection into a terminal-hosted lead;
-nothing uses it yet.
+nothing uses it yet, except in a build with the `ataniq_canary` tag, under
+`--canary`.
 The reviewed intake of a managed lead's work through the exchange mirror, with
 the provisional command `ataniq-intake`, is described in
 [the lead intake guide](docs/lead-intake.md); the opt-in harness for a real
@@ -58,7 +61,12 @@ sandbox template is in
 [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
 These parts are built side by side and none calls another: the daemon starts no
 holder, the holder launches no sandbox and injects nothing, and the intake is
-run by hand.
+run by hand, except in a build with the `ataniq_canary` tag, under `--canary`.
+There, one attended session on a throwaway repository joins them: the daemon
+starts a holder, the holder starts the sandbox with the waiver of one assertion,
+a scratch agent receives one injected message and one commit comes back through
+the intake. It is not a qualification, it passes no case, and release builds do
+not contain it. See [the canary slice guide](docs/canary-slice.md).
 
 ## Architecture decisions
 
@@ -105,7 +113,9 @@ An already-exact Go driver works without this state. `make doctor` and the tests
 disable toolchain and dependency acquisition; they do not confine the trusted Go
 executable or change the host's Go telemetry policy. `make doctor` checks prerequisites offline; both
 `make test-dev` (development tooling) and `make test` (the complete offline suite)
-run doctor first.
+run doctor first. `make test` is built without the `ataniq_canary` tag; while
+tagged code exists, the whole suite is `make test` and then `make test-canary`,
+which runs the tests of the tagged code.
 
 ## License
 

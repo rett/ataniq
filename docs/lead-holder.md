@@ -27,29 +27,42 @@ queries and updating its emulator.
 
 Three commands take part:
 
-- `ataniq-holder`, the holder. It refuses to run without `--scratch`.
+- `ataniq-holder`, the holder. It refuses to run without `--scratch`; a build
+  with the `ataniq_canary` tag has a second mode, `--canary`, in place of it
+  (see [the canary slice guide](canary-slice.md)).
 - `ataniq-scratch`, a development launcher that stands in for the daemon. It
   starts a holder, mints attach tickets and asks the holder to stop. The
   daemon skeleton `ataniqd` ([the lead daemon guide](lead-daemon.md)) does none
-  of that: it starts no holder and issues no ticket.
+  of that: it starts no holder and issues no ticket, except in a build with the
+  `ataniq_canary` tag, under `--canary`.
 - `ataniq-console --attach`, the console's attach client.
 
 Status: provisional and unqualified, for a scratch agent only. A scratch agent
 has no project, no lead role and a disposable configuration. Not built, or
-built elsewhere in the tree and not used by the holder:
+built elsewhere in the tree and not used by the holder. Each item has one
+exception: a build with the `ataniq_canary` tag, in canary mode (`--canary`),
+which [the canary slice guide](canary-slice.md) describes. Canary mode is for
+one throwaway lead in an attended session, is not a qualification, and is not
+in a release build.
 
 - the sandbox: the agent is an ordinary process of your user. The profile of
   [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal, and the
-  holder does not launch it;
+  holder does not launch it. In canary mode the holder runs the start sequence
+  of that profile and the agent is the sandbox's first process;
 - prompt injection: the input lock that a later injection will take exists, and
   the control socket answers an `inject` request with `disabled`. The holder
-  does not call the library of [the lead injection guide](lead-injection.md);
+  does not call the library of [the lead injection guide](lead-injection.md).
+  In canary mode with `--inject` and a deliverer, the holder delivers one
+  message at a time through that library's fence and answers with a result;
 - idle classification: the holder always reports `unknown`, and does not use
-  that library's classifier;
+  that library's classifier. This holds in canary mode too: the fence reads the
+  screen itself, inside a delivery, and the reported fact stays `unknown`;
 - a daemon that starts holders, and with it the typed command that issues
-  tickets (`ataniq-scratch` issues them instead);
+  tickets (`ataniq-scratch` issues them instead). In canary mode the daemon
+  starts the holder and issues the tickets;
 - any part in the exchange mirror and the intake of
-  [the lead intake guide](lead-intake.md), and real leads.
+  [the lead intake guide](lead-intake.md), and real leads. The intake is run by
+  hand in canary mode too.
 
 ## The same-user limit
 
@@ -393,6 +406,19 @@ that could take them. Its sequence number starts at 1 in each holder process, so
 a restart shows as the number going back to 1. An event is one write and
 survives a crash of the holder, but is not synced to disk each time.
 
+In a build with the `ataniq_canary` tag, whose holder was given a deliverer
+(canary mode with `--inject`), an accepted `inject` request logs up to three
+`inject` events, each with the message ID, the command ID and the SHA-256 of
+the text in hex, never the text: one with the outcome `started`; one with the
+answer, its outcome and reason and the state `written-` and the amount written;
+and a third, only when the deliverer returned after the holder had already
+answered `uncertain`, whose outcome is `late-` and the outcome the deliverer
+reported (`late-invalid` for a result the wire cannot carry). Before the
+deliverer is called the holder checks that the first line of the text starts
+`[ataniq-msg id=<message id> ` for the same ID, and answers `bad-request`,
+with nothing written, when it does not. See
+[the canary slice guide](canary-slice.md#the-result-and-its-evidence).
+
 **The final record**, `final.json`, is written once, when the agent's direct child
 has exited and the waits are over. It is written through a temporary file and a
 rename. It holds:
@@ -418,7 +444,8 @@ secret. The file is mode 0600 and is not the event log.
 
 The holder exits 0 when the session ended and the final record was written, 1 on
 a holder failure, 2 on usage or a start-up refusal and 3 when the role is already
-held.
+held. In canary mode it exits 4 when the start sequence of the sandbox refused
+or failed.
 
 **The two proofs of "process tree gone"**, named in the final record
 (`tree_method`, and `tree_proof_is_weaker` for the second):

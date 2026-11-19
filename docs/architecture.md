@@ -31,7 +31,8 @@ Session hosting for a lead run as a terminal program follows the amendment in
 [runtime](design/runtime.md#lifecycle) and the one in the
 [client protocol](design/client-protocol.md#terminal-data-plane): a per-lead
 holder owns the PTY and a console attaches to it. Only a provisional,
-scratch-only holder and attach client exist; see
+scratch-only holder and attach client exist, except in a build with the
+`ataniq_canary` tag, under `--canary`; see
 [the lead holder guide](lead-holder.md). Sandbox qualification comes before any
 Ataniq-managed lead. A provider's remote control stays an optional launch
 profile during the transition, and a Codex lead is an interactive `codex` in its
@@ -39,19 +40,21 @@ own session. Codex is the first live provider target, subject to version-specifi
 capability and security evidence; qargi integration is limited to qualified
 public APIs. Unknown or disconnected state must remain explicit.
 The [lead sandbox guide](lead-sandbox.md) describes the sandbox profile for a
-managed lead as a proposal, unqualified; nothing uses it yet. Its opt-in
-harness is in
+managed lead as a proposal, unqualified; nothing uses it yet, except in a build
+with the `ataniq_canary` tag, under `--canary`. Its opt-in harness is in
 [the lead sandbox qualification guide](qualification-lead-sandbox.md).
 
 [Lead injection](lead-injection.md) describes the provisional library that
 pastes a message into a terminal-hosted lead and submits it only when its
 recognisers read the screen as idle; it is a library that no daemon and no
-holder uses yet, and it is unqualified.
+holder uses yet, and it is unqualified, except that a build with the
+`ataniq_canary` tag, under `--canary`, uses it for one message.
 
 [Lead intake](lead-intake.md) describes the exchange mirror and the reviewed,
 fast-forward-only intake by which a managed lead's work enters an upstream
 branch, with the provisional command `ataniq-intake`. No sandbox is shipped or
-qualified with it, and no daemon or holder calls it: the owner runs it by hand.
+qualified with it, and no daemon or holder calls it: the owner runs it by hand,
+and in the canary slice too (see [the canary slice guide](canary-slice.md)).
 The opt-in harness for a real sandbox template is in
 [the lead mirror qualification manual](qualification-lead-mirror.md).
 
@@ -70,7 +73,11 @@ will use are in the tree. They start, stop and manage no lead. See
 [the lead daemon guide](lead-daemon.md). The daemon, the holder, the sandbox
 proposal, the injection library and the intake are built side by side, and
 none calls another: the daemon starts no holder, the holder launches no sandbox
-and injects nothing, and the intake is run by hand.
+and injects nothing, and the intake is run by hand, except in a build with the
+`ataniq_canary` tag, under `--canary`. There, one attended session on a
+throwaway repository joins them, as [the canary slice guide](canary-slice.md)
+describes: it is not a qualification and not the week-long canary lead, and
+release builds do not contain it.
 
 ## Authentication and authority
 
