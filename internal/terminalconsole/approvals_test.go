@@ -2,10 +2,13 @@ package terminalconsole
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -1274,5 +1277,113 @@ func TestEnterOnTheGateWithNoBackendOpensNothing(t *testing.T) {
 	r.key(enterKey)
 	if r.m.apprOpen() {
 		t.Fatal("Enter on the gate opened the screen with no backend")
+	}
+}
+
+// hostileSet is the hostile set of the console-first build (seams note
+// section 11) as texts a backend could put in a listing: escape sequences
+// (CSI, OSC ended by BEL and by ST, DCS), C0 and C1 control bytes, direction
+// overrides and zero-width code points, bytes that are not UTF-8, one line of
+// 1 MiB, text shaped like the chrome, and feature names shaped to mislead.
+func hostileSet() []string {
+	var c0, c1 strings.Builder
+	for b := 0; b < 0x20; b++ {
+		c0.WriteByte(byte(b))
+		c0.WriteString("c0")
+	}
+	for b := 0x80; b <= 0x9f; b++ {
+		c1.WriteByte(byte(b))
+		c1.WriteRune(rune(b))
+		c1.WriteString("c1")
+	}
+	var long strings.Builder
+	for long.Len() < 1<<20 {
+		long.WriteString("word \x1b[31mred\x1b[0m \u202eover\u200bride \xff\xfe \x1b]0;t\x07 ")
+	}
+	return []string{
+		"\x1b[2J\x1b[H\x1b[31mred\x1b[0m\x1b[?1049h",
+		"\x1b]0;a title\x07after the title",
+		"\x1b]52;c;aGVsbG8=\x1b\\after the clipboard",
+		"\x1bP1$r0m\x1b\\after the dcs",
+		"\x1b", "\x1b[", "\x1b]",
+		c0.String(), c1.String(),
+		"\u202eevorppa\u202c", "zero\u200bwidth\u200cjoin\u200dno\u2060break\ufeffbom",
+		"\xff\xfe\xfd", "\xc0\xaf\xe0\x80\xaf", "\xed\xa0\x80", "half \xe6\x97",
+		long.String(),
+		"[a] approve   [x] deny", "APPROVED", "┃ APPROVED ┃",
+		"APPROVE feature-x · type ACDE and press Enter",
+		"approve", "a-then-code", "develop", "feature-x",
+	}
+}
+
+// checkNoRawLead fails when the frame holds anything a terminal would act on
+// that the console did not write itself: a sequence other than a style, a
+// control, a direction or zero-width code point, or bytes that are not UTF-8.
+func checkNoRawLead(t *testing.T, where, frame string) {
+	t.Helper()
+	var state byte
+	rest := frame
+	for len(rest) > 0 {
+		seq, width, n, ns := ansi.DecodeSequence(rest, state, nil)
+		state = ns
+		rest = rest[n:]
+		_ = width
+		switch {
+		case ansi.HasCsiPrefix(seq) && strings.HasSuffix(seq, "m"):
+			continue // a style
+		case ansi.HasCsiPrefix(seq), ansi.HasOscPrefix(seq), ansi.HasDcsPrefix(seq), ansi.HasApcPrefix(seq), ansi.HasEscPrefix(seq) && len(seq) > 1:
+			t.Fatalf("%s: a sequence the console did not write: %q", where, seq)
+		}
+		if seq == "\n" || seq == "\r" {
+			continue
+		}
+		if !utf8.ValidString(seq) {
+			t.Fatalf("%s: bytes that are not UTF-8: %q", where, seq)
+		}
+		for _, r := range seq {
+			if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) || r == utf8.RuneError {
+				t.Fatalf("%s: the code point %U in %q", where, r, seq)
+			}
+		}
+	}
+}
+
+func TestTheCockpitsSurfacesTakeTheWholeHostileSet(t *testing.T) {
+	set := hostileSet()
+	other := "feature-x"
+	for i, h := range set {
+		name := fmt.Sprintf("%02d", i)
+		t.Run(name, func(t *testing.T) {
+			b := newFakeApprovals(t)
+			b.add("ap-1", "project-a", 5*time.Minute)
+			b.add("ap-2", "project-b", 9*time.Minute)
+			// The hostile text is in every field the cockpit draws: the gate
+			// (the oldest pending card), the timeline's asked and decided
+			// entries, and the strip's held line.
+			for j := range b.listing.Pending {
+				it := &b.listing.Pending[j]
+				it.Project, it.Verb, it.Feature, it.Held = "project"+h, "verb"+h, h, true
+			}
+			b.listing.Pending[0].Feature = other
+			b.listing.Recent = []card.Item{
+				{ID: "ap-r1", Project: h, Verb: h, Feature: h, Asked: apprT0.Add(-time.Hour), State: record.StateDenied, Line: h},
+				{ID: "ap-r2", Project: "p", Verb: "v", Feature: other, Asked: apprT0.Add(-50 * time.Minute), State: record.StateApplied, Line: h},
+				{ID: "ap-r3", Project: "p", Verb: "v", Feature: h, Asked: apprT0.Add(-40 * time.Minute), State: record.StateExpired, Line: h},
+			}
+			for _, size := range [][2]int{{140, 45}, {100, 30}, {79, 23}} {
+				r := newApprRig(t, size[0], size[1], b, Options{})
+				r.poll()
+				r.press(ch('j')) // an arrival: the strip shows, with the held line
+				where := fmt.Sprintf("%dx%d", size[0], size[1])
+				checkNoRawLead(t, where+" first frame", r.m.View().Content)
+				// Every pane or page in turn.
+				for i := 0; i < paneCount; i++ {
+					r.press(tabKey)
+					checkNoRawLead(t, where+" pane", r.m.View().Content)
+				}
+				r.press(ch('g'))
+				checkNoRawLead(t, where+" approvals", r.m.View().Content)
+			}
+		})
 	}
 }
