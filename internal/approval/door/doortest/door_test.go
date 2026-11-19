@@ -619,3 +619,16 @@ func TestClock(t *testing.T) {
 		t.Errorf("set back: %v", c.Now())
 	}
 }
+
+// A plan refused for its note ends the request: the right note afterwards
+// is refused too.
+func TestARefusedNoteEndsTheRequest(t *testing.T) {
+	f := newFixture(t)
+	in := f.plan(f.admit("sample-feature"))
+	bad := in
+	bad.Note = "another note"
+	_, err := f.d.Plan(f.ctx, bad)
+	wantCode(t, err, record.CodeRequestInvalid)
+	_, err = f.d.Plan(f.ctx, in)
+	wantCode(t, err, record.CodeRequestInvalid)
+}
