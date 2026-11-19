@@ -63,8 +63,9 @@ type Model struct {
 	pages int
 	// tail is the first of the pages at the end of the patch that hold no
 	// piece (pages when the last page holds one), once tailKnown: once the
-	// last page was read and some page holds a piece. No row lies on a page from tail on, so the pager
-	// may let those pages go and need not read them again.
+	// last page was read and some page holds a piece. No row lies on a page
+	// from tail on, so the pager may let those pages go and need not read
+	// them again.
 	tail      int
 	tailKnown bool
 	// cache holds the joined and escaped lines that were looked at, by
