@@ -594,6 +594,50 @@ func TestEnterOnThePendingGateOpensTheOldestWaitingCard(t *testing.T) {
 	}
 }
 
+func TestEnterOnTheGateOpensTheCardTheGateNamedWhenTheOrderChanged(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-newer", "project-a", 2*time.Minute)
+	b.add("ap-oldest", "project-b", 40*time.Minute)
+	b.add("ap-middle", "project-a", 9*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	// The backend orders the cards differently by the time the view reads
+	// them: the gate's card is first now, not second.
+	p := b.listing.Pending
+	b.listing.Pending = []card.Item{p[1], p[2], p[0]}
+	r.press(enterKey)
+	if len(b.opens) != 1 || b.opens[0] != "ap-oldest" {
+		t.Fatalf("the gate named ap-oldest and the view opened %v", b.opens)
+	}
+}
+
+func TestEnterOnTheGateOpensNothingWhenTheViewsFirstListHasNoSuchCardAndNothingFiresLater(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-1", "project-a", 5*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	// The card was decided between the cockpit's reading and the view's.
+	gone := b.listing.Pending
+	b.listing.Pending = nil
+	r.press(enterKey)
+	if !r.m.apprOpen() || r.m.ap.view.CardOpen() || len(b.opens) != 0 {
+		t.Fatalf("a card opened from an empty list: %v", b.opens)
+	}
+	if r.m.ap.wantOldest {
+		t.Fatal("the drive stayed armed")
+	}
+	// The card comes back, and the view is refreshed on its timer: it is shown
+	// in the list and nothing is opened.
+	b.listing.Pending = gone
+	r.poll()
+	r.poll()
+	if r.m.ap.view.Pending() != 1 || r.m.ap.view.CardOpen() || len(b.opens) != 0 {
+		t.Fatalf("a later listing opened a card: %v\n%s", b.opens, r.view())
+	}
+}
+
 func TestThePendingGateIsTheOldestWaitingCard(t *testing.T) {
 	b := newFakeApprovals(t)
 	r := newApprRig(t, 140, 45, b, Options{})

@@ -4,8 +4,10 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -73,11 +75,12 @@ type approvalsState struct {
 	// whether the screen without a backend is open.
 	view      *approvals.Model
 	noChannel bool
-	// wantOldest is whether the view is to open the oldest waiting card as
-	// soon as it has its list, and oldestAt the card's place among the
-	// pending ones.
+	// gate is the backend the view is given: it notes what the view's own
+	// listing held. wantOldest is whether the view is to open the card the
+	// pending gate named, oldestID, once it has its first list.
+	gate       *gateBackend
 	wantOldest bool
-	oldestAt   int
+	oldestID   string
 
 	// limit is the limit's screen, open over the view for limitProject.
 	limit        *limitview.Model
@@ -98,6 +101,42 @@ type approvalsState struct {
 	ev      presence.Event
 	strip   *arrival.Strip
 	bell    *arrival.Bell
+}
+
+// gateBackend is the backend the approvals view is given. It wraps the
+// cockpit's backend and notes the pending ids of every listing it hands the
+// view, so that the cockpit can find the card of the pending gate in the list
+// the view really holds, and not in its own copy of an earlier reading. It
+// notes a failed reading as an empty one.
+type gateBackend struct {
+	approvals.Backend
+	mu    sync.Mutex
+	ids   []string
+	reads int
+}
+
+// List reads the backend's listing and notes its pending ids.
+func (g *gateBackend) List() (card.Listing, error) {
+	l, err := g.Backend.List()
+	var ids []string
+	if err == nil {
+		ids = make([]string, len(l.Pending))
+		for i, it := range l.Pending {
+			ids[i] = it.ID
+		}
+	}
+	g.mu.Lock()
+	g.ids, g.reads = ids, g.reads+1
+	g.mu.Unlock()
+	return l, err
+}
+
+// noted returns the ids of the last listing handed to the view and how many
+// listings that makes.
+func (g *gateBackend) noted() ([]string, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.ids, g.reads
 }
 
 // The cockpit's own messages for the approvals pieces.
@@ -342,8 +381,9 @@ func (m *Model) openApprovals(oldest bool) tea.Cmd {
 	if a.view != nil {
 		return nil
 	}
+	a.gate = &gateBackend{Backend: a.backend}
 	a.view = approvals.New(approvals.Options{
-		Backend:        a.backend,
+		Backend:        a.gate,
 		Colors:         m.apprColors(),
 		Now:            m.clock,
 		Random:         a.random,
@@ -352,8 +392,8 @@ func (m *Model) openApprovals(oldest bool) tea.Cmd {
 	})
 	a.limit = nil
 	a.wantOldest = false
-	if _, at, ok := m.oldestWaiting(); oldest && ok {
-		a.wantOldest, a.oldestAt = true, at
+	if it, _, ok := m.oldestWaiting(); oldest && ok {
+		a.wantOldest, a.oldestID = true, it.ID
 	}
 	w, h := m.apprSize()
 	return tea.Batch(a.view.SetSize(w, h), a.view.Init())
@@ -411,17 +451,32 @@ func (m *Model) apprUpdate(msg tea.Msg) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// driveOldest opens the oldest waiting card once the view has its list: it
-// moves the view's cursor to the card's place with j and presses Enter. These
-// are the only keys the cockpit ever sends the view on its own, and they open
-// a card for reading: a decision is made on the card with its typed code.
+// driveOldest opens the card of the pending gate once the view has its first
+// list: it moves the view's cursor to the card's place in the view's own list
+// with j and presses Enter. These are the only keys the cockpit ever sends the
+// view on its own, and they open a card for reading: a decision is made on the
+// card with its typed code. The keys are sent at most once, for the view's
+// first list. When that list does not hold the card (it was decided or
+// expired meanwhile), or the view is no longer at its list, nothing is opened
+// and nothing stays armed to fire later.
 func (m *Model) driveOldest() tea.Cmd {
 	a := &m.ap
-	if !a.wantOldest || a.view == nil || a.view.Pending() == 0 {
+	if !a.wantOldest || a.view == nil || a.gate == nil {
 		return nil
 	}
+	ids, reads := a.gate.noted()
+	if reads == 0 {
+		return nil // the view has not read its list yet
+	}
+	if a.view.Pending() == 0 && len(ids) > 0 {
+		return nil // the view has not taken in the list that was read
+	}
 	a.wantOldest = false
-	for i := 0; i < a.oldestAt && i < a.view.Pending()-1; i++ {
+	at := slices.Index(ids, a.oldestID)
+	if at < 0 || len(ids) != a.view.Pending() || a.limit != nil || a.view.CardOpen() {
+		return nil
+	}
+	for i := 0; i < at; i++ {
 		a.view.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	}
 	cmd, _ := a.view.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
