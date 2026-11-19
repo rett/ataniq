@@ -158,7 +158,8 @@ type ShowResult struct {
 	// Held is the mark "decided past the limit".
 	Held bool `json:"held"`
 	// Outcome is what came after the decision. A record not yet decided
-	// has none.
+	// has none, except a pending one whose last decision the door refused:
+	// its outcome is the state pending with a host-written line saying so.
 	Outcome *Outcome `json:"outcome,omitempty"`
 	// Earlier is the earlier record for the same verb and target that the
 	// owner opened in the last 24 hours, when there is one.
