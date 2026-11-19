@@ -64,8 +64,9 @@ func (d *Door) Admit(ctx context.Context, in door.Record) (door.Admission, error
 }
 
 // Plan writes the pending record for an admitted request. It refuses a
-// request that was not admitted, that has a record already or that has
-// ended (request-invalid), a feature tip other than the request's
+// request that was not admitted, that has a record already, that has ended
+// or whose note is not the one the request names by its digest
+// (request-invalid), a feature tip other than the request's
 // (feature-moved), and a merge whose parents are not the base and the
 // feature, or a target that is no longer at the base (binding-mismatch).
 // What the package record refuses in a pending record is refused with
@@ -96,6 +97,10 @@ func (d *Door) Plan(ctx context.Context, in door.PlanInput) (door.Record, error)
 	}
 	if r.ended {
 		return door.Record{}, refuse(record.CodeRequestInvalid, "the request has ended")
+	}
+	if record.Digest([]byte(in.Note)) != req.NoteSHA256 {
+		r.ended = true
+		return door.Record{}, refuse(record.CodeRequestInvalid, "the note is not the one the request names")
 	}
 	out, p, err := d.write(&req, &in, now)
 	if err != nil {
