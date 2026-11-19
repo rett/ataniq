@@ -354,8 +354,6 @@ func (m *Model) onPage(v pageMsg) {
 			return
 		case st == found:
 			m.tail, m.tailKnown = b.p+1, true
-		case st == edge:
-			m.tail, m.tailKnown = 0, true
 		}
 	}
 	if m.tooLong() {
