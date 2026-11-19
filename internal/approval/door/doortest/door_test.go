@@ -77,6 +77,21 @@ func TestDecideIsIdempotentForADeny(t *testing.T) {
 	}
 }
 
+// The 30-minute limit is for an approval only: a deny that lasts an hour is
+// taken, and an approve of the same length is refused.
+func TestADenyIsNotHeldToTheApprovalLife(t *testing.T) {
+	f := newFixture(t)
+	long := func(d *record.Decision) {
+		d.ExpiresAt = record.FormatTime(f.clock.Now().Add(time.Hour))
+	}
+	got, err := f.d.Decide(f.ctx, f.decision(f.pending("sample-feature"), false, long))
+	if err != nil || got.State != record.StateDenied {
+		t.Errorf("a deny of an hour: %+v, %v", got, err)
+	}
+	_, err = f.decide(f.pending("other-feature"), true, long)
+	wantCode(t, err, record.CodeDecisionInvalid)
+}
+
 // A settle told again answers the same, and an unknown outcome can be
 // settled once more, which is the owner disposing of it.
 func TestSettleIsIdempotent(t *testing.T) {

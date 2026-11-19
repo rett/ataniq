@@ -87,7 +87,7 @@ func TestEveryGitRunHasADeadline(t *testing.T) {
 	// could then not be run ("text file busy").
 	real := needGit(t)
 	t.Run("calls", func(t *testing.T) {
-		for _, hangOn := range []string{"rev-parse", "--batch-check", "for-each-ref", "merge-base", "merge-tree", "hash-object", "update-ref"} {
+		for _, hangOn := range []string{"rev-parse", "--batch-check", "for-each-ref", "merge-base", "--is-ancestor", "merge-tree", "hash-object", "update-ref"} {
 			t.Run("Build "+hangOn, func(t *testing.T) {
 				slow, mark := slowGit(t, real, hangOn)
 				t.Parallel()
@@ -138,7 +138,7 @@ func TestEveryGitRunHasADeadline(t *testing.T) {
 			})
 		}
 
-		for _, hangOn := range []string{"rev-parse", "--batch-check", "--batch", "merge-base", "merge-tree"} {
+		for _, hangOn := range []string{"rev-parse", "--batch-check", "--batch", "merge-base", "--is-ancestor", "merge-tree"} {
 			t.Run("Check "+hangOn, func(t *testing.T) {
 				slow, mark := slowGit(t, real, hangOn)
 				t.Parallel()

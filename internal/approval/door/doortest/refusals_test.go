@@ -203,7 +203,18 @@ var refusals = []refusal{
 		return f.planWith(func(in *door.PlanInput) { in.Evidence = nil })
 	}},
 	{"plan", "a note over its cap", record.CodeRecordTooLarge, "", func(f *fixture) (string, error) {
-		return f.planWith(func(in *door.PlanInput) { in.Note = record.Text(strings.Repeat("n", record.MaxNoteBytes+1)) })
+		note := record.Text(strings.Repeat("n", record.MaxNoteBytes+1))
+		req := f.request("sample-feature", func(r *record.Request) { r.NoteSHA256 = record.Digest([]byte(note)) })
+		if _, err := f.d.Admit(f.ctx, req); err != nil {
+			f.t.Fatal(err)
+		}
+		in := f.plan(req)
+		in.Note = note
+		_, err := f.d.Plan(f.ctx, in)
+		return "", err
+	}},
+	{"plan", "a note that is not the one the request names", record.CodeRequestInvalid, "", func(f *fixture) (string, error) {
+		return f.planWith(func(in *door.PlanInput) { in.Note = "another note" })
 	}},
 
 	// Decide.

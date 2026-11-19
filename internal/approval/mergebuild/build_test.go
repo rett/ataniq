@@ -16,7 +16,9 @@ import (
 var ctx = context.Background()
 
 // formats are the object formats every scene is tried in: the ones Build
-// and Check serve. SHA-256 is refused; see TestSHA256IsRefused.
+// and Check serve. SHA-256 is refused; see TestSHA256IsRefused. When the
+// refusal is lifted, restore "sha256" here, and that test then expects the
+// merge to conflict.
 var formats = []string{"sha1"}
 
 // A clean merge: the tree holds both sides' changes, the commit is the text

@@ -35,11 +35,12 @@ func differs(what string) error {
 //     refused.
 //
 // The values are checked first, as Build checks them ([ErrValue],
-// [ErrAttributes], [ErrNoCommit] for a tip that names no commit,
-// [ErrUnrelated]). Check
-// reads and computes; it writes no commit and no ref, and it does not look
-// at the pin (git leaves the tree of the merge it recomputes in the object
-// store, which for a commit that passes is the tree the commit names).
+// [ErrAttributes], [ErrObjectFormat], [ErrNoCommit] for a tip that names
+// no commit, [ErrUnrelated], [ErrNothingToMerge] for a target that already
+// holds the feature). Check reads and computes; it writes no commit and no
+// ref, and it does not look at the pin (git leaves the tree of the merge it
+// recomputes in the object store, which for a commit that passes is the tree
+// the commit names).
 func Check(ctx context.Context, repo Repo, commit string, in Inputs) error {
 	if !record.ValidObjectID(commit) {
 		return refuse("the commit to check is not a full object id")
@@ -84,6 +85,11 @@ func Check(ctx context.Context, repo Repo, commit string, in Inputs) error {
 
 	if err := c.related(ctx, in.TargetTip, in.FeatureTip); err != nil {
 		return err
+	}
+	if held, err := c.holds(ctx, in.TargetTip, in.FeatureTip); err != nil {
+		return err
+	} else if held {
+		return ErrNothingToMerge
 	}
 	merged, clean, err := c.mergeTree(ctx, in.TargetTip, in.FeatureTip)
 	if err != nil {

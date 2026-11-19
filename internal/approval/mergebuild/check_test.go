@@ -178,3 +178,24 @@ func TestCommitHead(t *testing.T) {
 		}
 	}
 }
+
+// A commit over a target that already holds the feature is refused, as
+// Build refuses to write one: only someone who made it by hand, with the
+// host's exact values, could present it.
+func TestCheckRefusesAFeatureTheTargetHolds(t *testing.T) {
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			noGoroutineLeft(t)
+			l := newLabFormat(t, format)
+			s := newScene(t, l, nil, nil)
+			// The target is the feature's child; the commit is the host's
+			// text for those two parents, around the target's own tree.
+			in := inputs(s.feature, s.base)
+			tree := l.tree("f.txt", featureText)
+			id := l.object("commit", []byte(wantText(tree, s.feature, s.base)))
+			if err := Check(ctx, l.repo, id, in); !errors.Is(err, ErrNothingToMerge) {
+				t.Errorf("Check returned %v, want ErrNothingToMerge", err)
+			}
+		})
+	}
+}

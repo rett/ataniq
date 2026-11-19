@@ -147,8 +147,11 @@ var hashObjectArgs = []string{"-tcommit", "-w", "--stdin"}
 // as "--all", merges two commits that share no history. "--stdin" reads the
 // merges to do from standard input. A name in place of an id would make the
 // merge depend on where a ref points when git runs. None of these can be
-// written in the form. The tests show each of these effects with the
-// installed git.
+// written in the form, with one limit: an id is checked for 40 or 64 hex
+// digits, not for the repository's object format, and in a SHA-256
+// repository git reads 40 hex digits as a ref name first. A caller passes
+// ids of the repository's own format. The tests show each of these effects
+// with the installed git.
 const mergeTree = "merge-tree"
 
 // mergeTreeWrite is the first argument of the one form of [mergeTree]: the

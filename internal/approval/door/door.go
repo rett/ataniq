@@ -28,9 +28,9 @@ type Door interface {
 
 	// Decide hands the door the owner's decision. It is idempotent: the
 	// same decision again gets the first answer, and a different decision
-	// for a record that has one is refused decision-invalid. The refusals are decision-invalid,
-	// record-too-large, binding-mismatch, previous-epoch,
-	// approval-expired, approval-void and approval-consumed.
+	// for a record that has one is refused decision-invalid. The refusals
+	// are decision-invalid, record-too-large, binding-mismatch,
+	// previous-epoch, approval-expired, approval-void and approval-consumed.
 	Decide(ctx context.Context, decision Record) (Decided, error)
 
 	// Use consumes the approval of one pending record and returns its
