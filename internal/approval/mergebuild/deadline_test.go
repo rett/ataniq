@@ -94,13 +94,31 @@ func TestEveryGitRunHasADeadline(t *testing.T) {
 				l := newLab(t)
 				s := newScene(t, l, nil, nil)
 				commits := l.count("commit")
+				var m Merge
 				o := hang(l, slow, mark, func(repo Repo) error {
-					m, err := Build(ctx, repo, inputs(s.target, s.feature), "k")
-					if err == nil || m != (Merge{}) {
+					var err error
+					m, err = Build(ctx, repo, inputs(s.target, s.feature), "k")
+					if err == nil {
 						t.Errorf("Build returned %+v, %v", m, err)
 					}
 					return err
 				})
+				// A pin that may exist comes with the merge, so that the
+				// caller can look and unpin; any other error comes with
+				// nothing. The merge is the one a normal build gives.
+				if hangOn == "update-ref" {
+					want, err := Build(ctx, l.repo, inputs(s.target, s.feature), "other")
+					if err != nil || m != want || m.Commit == "" {
+						t.Errorf("Build returned %+v with %v, want the merge %+v", m, o.err, want)
+					}
+					// Taken away again, so that the refs below are the
+					// slow run's own.
+					if err := Unpin(ctx, l.repo, "other", m.Commit); err != nil {
+						t.Errorf("Unpin: %v", err)
+					}
+				} else if m != (Merge{}) {
+					t.Errorf("Build returned %+v with %v", m, o.err)
+				}
 				check(t, o)
 				if got := l.refs(); got != "" {
 					t.Errorf("refs were written: %q", got)

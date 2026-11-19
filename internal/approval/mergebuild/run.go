@@ -272,6 +272,18 @@ func (c *call) related(ctx context.Context, ours, theirs string) error {
 	return err
 }
 
+// holds reports whether the commit ours has the commit theirs among its
+// ancestors, or is it: "merge-base --is-ancestor" ends with status 0 then
+// and with status 1 when it is not.
+func (c *call) holds(ctx context.Context, ours, theirs string) (bool, error) {
+	_, err := c.git(ctx, []string{"merge-base", "--is-ancestor", theirs, ours}, nil, smallOutput, nil)
+	var exit *gitExit
+	if errors.As(err, &exit) && exit.exit == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // checkAttributes is [gitenv.CheckInfoAttributes] with this package's error.
 func checkAttributes(gitDir string) error {
 	if err := gitenv.CheckInfoAttributes(gitDir); err != nil {

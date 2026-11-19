@@ -22,12 +22,23 @@ var (
 	// merge is computed in it. It wraps the error of
 	// [gitenv.CheckInfoAttributes].
 	ErrAttributes = errors.New("mergebuild: the repository's attribute file is refused")
+	// ErrObjectFormat means the repository's object format is not SHA-1,
+	// which [Build] and [Check] do not yet serve: the pinned environment
+	// pins the attribute source to the SHA-1 empty tree, and in a SHA-256
+	// repository git reads that 40-digit id as a name, so a ref of that
+	// name would become the attribute source. [Unpin] needs no merge and
+	// works in either format.
+	ErrObjectFormat = errors.New("mergebuild: the repository's object format is not served")
 	// ErrNoCommit means an id that should name a commit of the repository
 	// names another kind of object, or none.
 	ErrNoCommit = errors.New("mergebuild: an id does not name a commit of the repository")
 	// ErrUnrelated means the two tips share no history, so git has no base
 	// to merge them from.
 	ErrUnrelated = errors.New("mergebuild: the two tips share no history")
+	// ErrNothingToMerge means the target's tip already holds the feature's
+	// tip, so merging it would change nothing; the host builds no empty
+	// merge. (Two equal tips are refused earlier, as [ErrValue].)
+	ErrNothingToMerge = errors.New("mergebuild: the target already holds the feature")
 	// ErrPinExists means the key already has a pin. [Build] never
 	// overwrites one.
 	ErrPinExists = errors.New("mergebuild: the key already has a pin")
@@ -39,6 +50,8 @@ var (
 	// ErrPinUnclear means the git run that writes or removes the pin did
 	// not end by itself (the time ran out, or the context ended), so the
 	// pin may or may not have changed. The caller looks before it goes on.
+	// [Build] returns the merge with this error, so that the caller has the
+	// commit id to give [Unpin].
 	ErrPinUnclear = errors.New("mergebuild: the pin may or may not have changed")
 	// ErrMismatch means [Check] found that a commit is not the one [Build]
 	// writes for the values given. The error text says what differs, in
@@ -70,8 +83,9 @@ func PinRef(key string) (string, error) {
 func pinRef(key string) string { return PinPrefix + key }
 
 // prepare does what [Build] and [Check] share before any merge: it checks
-// the values, then "info/attributes", then, with git, that every id has
-// the length of the repository's object format. ids are further object ids
+// the values, then "info/attributes", then, with git, that the repository's
+// object format is SHA-1 ([ErrObjectFormat]) and that every id has its
+// length. ids are further object ids
 // under that last rule.
 func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, error) {
 	if err := in.check(); err != nil {
@@ -87,6 +101,13 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 	if err := c.format(ctx); err != nil {
 		return nil, err
 	}
+	// Until the pinned environment pins the empty tree of the repository's
+	// own format, a merge in a SHA-256 repository could read its attributes
+	// from a ref a name-lookup finds (see [ErrObjectFormat]), so none is
+	// computed there.
+	if c.idLen != 40 {
+		return nil, ErrObjectFormat
+	}
 	for _, id := range append([]string{in.TargetTip, in.FeatureTip}, ids...) {
 		if !c.isID(id) {
 			return nil, refuse("an object id does not have the length of the repository's object format")
@@ -100,9 +121,11 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 //
 // In order: every value of in and the key are checked ([ErrValue]); the
 // repository's "info/attributes" must be absent or empty ([ErrAttributes]);
-// the two tips must be full ids of the repository's object format and name
+// the repository must use SHA-1 ([ErrObjectFormat]); the two tips must be full ids of the repository's object format and name
 // commits ([ErrValue], [ErrNoCommit]); the key must have no pin yet
-// ([ErrPinExists]); the tips must share history ([ErrUnrelated]). Then git
+// ([ErrPinExists]); the tips must share history ([ErrUnrelated]); the
+// target's tip must not already hold the feature's ([ErrNothingToMerge]),
+// since the merge would change nothing. Then git
 // merges the two commits, reading no attribute from any tree. A conflict is
 // refused with a [*record.Error] whose code is [record.CodeMergeConflict],
 // and then no commit and no ref is written (git leaves the trees and blobs
@@ -116,7 +139,10 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 // parent, and the merge commit is still the host's own.
 //
 // The same values give the same commit id. When the run that creates the
-// pin does not end by itself, the error wraps [ErrPinUnclear].
+// pin does not end by itself, the error wraps [ErrPinUnclear] and Build
+// returns the merge together with it (the commit is written, and its id is
+// what the caller needs to look at the pin and to [Unpin] it); with any
+// other error the Merge is empty.
 func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error) {
 	if err := checkKey(key); err != nil {
 		return Merge{}, err
@@ -138,6 +164,11 @@ func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error)
 
 	if err := c.related(ctx, in.TargetTip, in.FeatureTip); err != nil {
 		return Merge{}, err
+	}
+	if held, err := c.holds(ctx, in.TargetTip, in.FeatureTip); err != nil {
+		return Merge{}, err
+	} else if held {
+		return Merge{}, ErrNothingToMerge
 	}
 	tree, clean, err := c.mergeTree(ctx, in.TargetTip, in.FeatureTip)
 	if err != nil {
@@ -162,7 +193,11 @@ func Build(ctx context.Context, repo Repo, in Inputs, key string) (Merge, error)
 	if err := c.updateRef(ctx, "create "+pinRef(key)+" "+commit); err != nil {
 		var exit *gitExit
 		if !errors.As(err, &exit) {
-			return Merge{}, fmt.Errorf("%w: %w", ErrPinUnclear, err)
+			// The commit is written; only the pin's state is unknown. The
+			// caller gets the merge with the error, since the commit id is
+			// what [Unpin] needs to remove a pin that may exist.
+			return Merge{Commit: commit, Tree: tree, Parents: [2]string{in.TargetTip, in.FeatureTip}},
+				fmt.Errorf("%w: %w", ErrPinUnclear, err)
 		}
 		// git refused, so it wrote nothing. Say so plainly when the reason
 		// is a pin that another writer made in the meantime.

@@ -15,8 +15,9 @@ import (
 
 var ctx = context.Background()
 
-// formats are the object formats every scene is tried in.
-var formats = []string{"sha1", "sha256"}
+// formats are the object formats every scene is tried in: the ones Build
+// and Check serve. SHA-256 is refused; see TestSHA256IsRefused.
+var formats = []string{"sha1"}
 
 // A clean merge: the tree holds both sides' changes, the commit is the text
 // the package comment lays out, and the pin points at it.
@@ -303,23 +304,49 @@ func TestBuildTreatsALeadMadeMergeAsHistory(t *testing.T) {
 		t.Errorf("Check of the host's merge returned %v", err)
 	}
 
-	// A feature that already holds the target, and one the target already
-	// holds, are merged all the same: the host's commit is always written.
-	for name, tips := range map[string][2]string{
-		"the feature holds the target": {s.base, s.feature},
-		"the target holds the feature": {s.feature, s.base},
-	} {
-		m, err := Build(ctx, l.repo, inputs(tips[0], tips[1]), "k-"+strings.ReplaceAll(name, " ", "-"))
-		if err != nil {
-			t.Errorf("%s: %v", name, err)
-			continue
-		}
-		if kind, _ := l.read(m.Commit); kind != "commit" || m.Commit == tips[0] || m.Commit == tips[1] {
-			t.Errorf("%s: the merge is %s", name, m.Commit)
-		}
-		if want := l.tree("f.txt", featureText); m.Tree != want {
-			t.Errorf("%s: the tree is %s, want the feature's, %s", name, m.Tree, want)
-		}
+	// A feature that already holds the target is merged all the same: the
+	// host's commit is always written, and it has the feature's tree.
+	fast, err := Build(ctx, l.repo, inputs(s.base, s.feature), "k-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind, _ := l.read(fast.Commit); kind != "commit" || fast.Commit == s.base || fast.Commit == s.feature {
+		t.Errorf("the merge is %s", fast.Commit)
+	}
+	if want := l.tree("f.txt", featureText); fast.Tree != want {
+		t.Errorf("the tree is %s, want the feature's, %s", fast.Tree, want)
+	}
+}
+
+// A feature that the target already holds changes nothing, and is refused
+// with its own error before anything is written: the target's tip being
+// the feature's parent, and further back in its history.
+func TestBuildRefusesAFeatureTheTargetHolds(t *testing.T) {
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			noGoroutineLeft(t)
+			l := newLabFormat(t, format)
+			s := newScene(t, l, nil, nil)
+			// The target is two commits past the feature's tip.
+			later := l.commit(l.tree("f.txt", mergedText), "more work", s.target)
+			commits := l.count("commit")
+
+			for name, tips := range map[string][2]string{
+				"the target is the feature's child": {s.feature, s.base},
+				"the target is further on":          {later, s.base},
+			} {
+				m, err := Build(ctx, l.repo, inputs(tips[0], tips[1]), "k")
+				if !errors.Is(err, ErrNothingToMerge) || m != (Merge{}) {
+					t.Errorf("%s: Build returned %+v, %v", name, m, err)
+				}
+			}
+			if got := l.count("commit"); got != commits {
+				t.Errorf("%d commits were written", got-commits)
+			}
+			if got := l.refs(); got != "" {
+				t.Errorf("refs were written: %q", got)
+			}
+		})
 	}
 }
 
@@ -461,5 +488,39 @@ func TestUnpin(t *testing.T) {
 	}
 	if got, want := l.refs(), m.Commit+" refs/ataniq/pending/pin-1"; got != want {
 		t.Errorf("the refs are %q, want %q", got, want)
+	}
+}
+
+// A SHA-256 repository is refused by Build and Check, before anything is
+// written. The reason is the attribute pin, a SHA-1 id: in a SHA-256
+// repository git reads it as a name, so a ref of that name (a tag or a
+// branch, which comes from upstream) is where attributes would be read.
+// The test plants such a tag at a commit whose tree says "* merge=union",
+// which without the refusal makes the conflicting merge end cleanly.
+func TestSHA256IsRefused(t *testing.T) {
+	noGoroutineLeft(t)
+	l := newLabFormat(t, "sha256")
+	s := newScene(t, l, side{".gitattributes", "* merge=union\n"}, nil)
+	const emptyTreeName = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	l.git("create refs/tags/"+emptyTreeName+" "+s.target+"\n", "update-ref", "--no-deref", "--stdin")
+	refs, commits, trees := l.refs(), l.count("commit"), l.count("tree")
+
+	in := inputs(s.clashTarget, s.clashFeature)
+	m, err := Build(ctx, l.repo, in, "k")
+	if !errors.Is(err, ErrObjectFormat) || m != (Merge{}) {
+		t.Errorf("Build returned %+v, %v; want ErrObjectFormat", m, err)
+	}
+	if err := Check(ctx, l.repo, s.clashTarget, in); !errors.Is(err, ErrObjectFormat) {
+		t.Errorf("Check returned %v; want ErrObjectFormat", err)
+	}
+	if l.refs() != refs || l.count("commit") != commits || l.count("tree") != trees {
+		t.Error("a refused call wrote a ref or an object")
+	}
+
+	// Unpin merges nothing and still works there.
+	pin := "refs/ataniq/pending/k"
+	l.git("create "+pin+" "+s.target+"\n", "update-ref", "--no-deref", "--stdin")
+	if err := Unpin(ctx, l.repo, "k", s.target); err != nil {
+		t.Errorf("Unpin: %v", err)
 	}
 }
