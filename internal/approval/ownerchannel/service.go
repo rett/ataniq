@@ -203,10 +203,13 @@ func (s *Service) begin(ctx context.Context) (context.Context, func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// The call remembers which store it began with: when that store fails
+	// The call remembers the number of the store it read last, which is
+	// the store it began with until it reads one: when that store fails
 	// and another call has replaced it already, the call does not reopen
-	// the new one (see recoverJournal).
-	c, cancel := context.WithCancel(context.WithValue(ctx, genKey{}, gen))
+	// the new one (see journalIn and jfix).
+	cell := &callStore{}
+	cell.gen.Store(int64(gen))
+	c, cancel := context.WithCancel(context.WithValue(ctx, genKey{}, cell))
 	stop := context.AfterFunc(s.ctx, cancel)
 	return c, func() {
 		stop()
@@ -263,6 +266,18 @@ func (s *Service) journal() Journal {
 	return s.store
 }
 
+// journalIn returns the store in use, like journal, and notes its number
+// for the call that holds ctx, so that a failure of this read is judged
+// against the store that was read, not the one the call began with.
+func (s *Service) journalIn(ctx context.Context) Journal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := ctx.Value(genKey{}).(*callStore); ok {
+		c.gen.Store(int64(s.gen))
+	}
+	return s.store
+}
+
 // notice tells the operator one line.
 func (s *Service) notice(line string) {
 	if s.cfg.Notice != nil {
@@ -270,8 +285,12 @@ func (s *Service) notice(line string) {
 	}
 }
 
-// genKey is the context key of the number of the store a call began with.
+// genKey is the context key of the callStore of a call.
 type genKey struct{}
+
+// callStore holds the number of the store a call read last. It is set in
+// [Service.begin] and by [Service.journalIn].
+type callStore struct{ gen atomic.Int64 }
 
 // handles returns what the writes through the handles go to.
 func (s *Service) handles() HandleWrites {
@@ -331,9 +350,10 @@ func (s *Service) jerr(ctx context.Context, err error) error {
 
 // jfix is jerr for a caller that does not hold dmu: an uncertain store is
 // recovered under it. The caller's store may have been replaced by another
-// call while it waited for dmu: it began with the store of the number its
-// context holds, and when that is not the present one the failure was of a
-// store that is closed already, so the present one is not reopened.
+// call while it waited for dmu: the call holds the number of the store it
+// read last (see journalIn), and when that is not the present one the
+// failure was of a store that is closed already, so the present one is not
+// reopened.
 func (s *Service) jfix(ctx context.Context, err error) error {
 	if !errors.Is(err, ownerjournal.ErrUncertain) {
 		return err
@@ -343,7 +363,7 @@ func (s *Service) jfix(ctx context.Context, err error) error {
 	s.mu.Lock()
 	gen := s.gen
 	s.mu.Unlock()
-	if g, ok := ctx.Value(genKey{}).(int); ok && g != gen {
+	if c, ok := ctx.Value(genKey{}).(*callStore); ok && int(c.gen.Load()) != gen {
 		return ErrJournalReopened
 	}
 	return s.recoverJournal(ctx)

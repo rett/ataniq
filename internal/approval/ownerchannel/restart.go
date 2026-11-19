@@ -102,7 +102,7 @@ func (s *Service) reconcile(ctx context.Context) error {
 	if _, err := st.ExpireHeld(s.now()); err != nil {
 		return s.jerr(ctx, err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return s.jerr(ctx, err)
 	}
 	return errors.Join(doorErrs...)
@@ -173,7 +173,7 @@ func (s *Service) checkDoor(ctx context.Context) error {
 	if err != nil {
 		return wrapDoor(err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return s.jerr(ctx, err)
 	}
 	var decided []ownerjournal.DoorDecision
@@ -248,7 +248,7 @@ func (s *Service) countOne(ctx context.Context, p record.Pending) error {
 	if err := s.countPending(ctx, p.Binding.Project, p.RequestID, p, true); err != nil {
 		return err
 	}
-	return s.syncIndex()
+	return s.syncIndex(ctx)
 }
 
 // noteEnded remembers when a card was first seen in a final state, by the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -716,6 +717,75 @@ func TestACallDoesNotReopenAStoreAnotherCallReplacedAlready(t *testing.T) {
 	mu.Unlock()
 	if n != 2 {
 		t.Errorf("the journal was reopened %d times in all, want 2", n)
+	}
+}
+
+// heldFails is a store whose HeldCards answers ErrUncertain while fails says
+// so.
+type heldFails struct {
+	*ownerjournal.Store
+	fails func() bool
+}
+
+func (h *heldFails) HeldCards(project string) ([]ownerjournal.HeldCard, error) {
+	if h.fails() {
+		return nil, ownerjournal.ErrUncertain
+	}
+	return h.Store.HeldCards(project)
+}
+
+// listHook is a door that runs a function once, at the first listing.
+type listHook struct {
+	door.Door
+	fired atomic.Bool
+	hook  func()
+}
+
+func (l *listHook) List(ctx context.Context) ([]door.Entry, error) {
+	// The flag is set first: the hook's own work lists the door too.
+	if l.fired.CompareAndSwap(false, true) {
+		l.hook()
+	}
+	return l.Door.List(ctx)
+}
+
+// A call is judged by the store it read last, not by the one it began with:
+// a listing that began with the first store, found it replaced by another
+// call, and then saw the replacement fail, reopens the replacement.
+func TestACallReopensTheStoreItReadWhenItWasReplacedAfterTheCallBegan(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	opened := 0
+	e.journalWrap = func(s *ownerjournal.Store) Journal {
+		mu.Lock()
+		opened++
+		n := opened
+		mu.Unlock()
+		// Only the second store, the one another call opens, fails.
+		return &heldFails{Store: s, fails: func() bool { return n == 2 }}
+	}
+	e.start()
+	e.card("feature-a")
+	e.svc.cfg.Door = &listHook{Door: e.door, hook: func() {
+		other, done, err := e.svc.begin(context.Background())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer done()
+		if err := e.svc.jfix(other, ownerjournal.ErrUncertain); !errors.Is(err, ErrJournalReopened) {
+			t.Errorf("the other call: %v", err)
+		}
+	}}
+	if _, err := e.svc.List(context.Background()); !errors.Is(err, ErrJournalReopened) {
+		t.Fatalf("List returned %v, want ErrJournalReopened", err)
+	}
+	mu.Lock()
+	n := opened
+	mu.Unlock()
+	// The first opening, the other call's, and the listing's own.
+	if n != 3 {
+		t.Errorf("the journal was opened %d times, want 3: the listing did not reopen the store it saw fail", n)
 	}
 }
 

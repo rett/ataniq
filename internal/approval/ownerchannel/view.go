@@ -24,7 +24,7 @@ func (s *Service) Looked(ctx context.Context) error {
 		return err
 	}
 	defer done()
-	if err := s.journal().AppendLooked(s.now()); err != nil {
+	if err := s.journalIn(ctx).AppendLooked(s.now()); err != nil {
 		return s.jfix(ctx, err)
 	}
 	return nil
@@ -49,10 +49,10 @@ func (s *Service) List(ctx context.Context) (ownerwire.Listing, error) {
 	}
 	defer done()
 	now := s.now()
-	if _, err := s.journal().ExpireHeld(now); err != nil {
+	if _, err := s.journalIn(ctx).ExpireHeld(now); err != nil {
 		return ownerwire.Listing{}, s.jfix(ctx, err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return ownerwire.Listing{}, s.jfix(ctx, err)
 	}
 	entries, err := s.cfg.Door.List(ctx)
@@ -75,7 +75,7 @@ func (s *Service) List(ctx context.Context) (ownerwire.Listing, error) {
 		rows = append(rows, row{p, e})
 		if project := p.Binding.Project; !seen[project] {
 			seen[project] = true
-			cards, err := s.journal().HeldCards(project)
+			cards, err := s.journalIn(ctx).HeldCards(project)
 			if err != nil {
 				return ownerwire.Listing{}, s.jfix(ctx, err)
 			}
@@ -121,7 +121,7 @@ func (s *Service) List(ctx context.Context) (ownerwire.Listing, error) {
 	s.mu.Lock()
 	out.Count.Requests, out.Count.WouldMeet = s.idx.totals()
 	s.mu.Unlock()
-	if at, err := s.journal().LookedAt(); err != nil {
+	if at, err := s.journalIn(ctx).LookedAt(); err != nil {
 		return ownerwire.Listing{}, s.jfix(ctx, err)
 	} else if !at.IsZero() {
 		out.LookedAt = stamp(at)
@@ -262,12 +262,12 @@ func (s *Service) Show(ctx context.Context, id string) (ownerwire.ShowResult, er
 		}
 		return ownerwire.ShowResult{}, wrapDoor(err)
 	}
-	if err := s.syncIndex(); err != nil {
+	if err := s.syncIndex(ctx); err != nil {
 		return ownerwire.ShowResult{}, s.jfix(ctx, err)
 	}
 	out := ownerwire.ShowResult{Record: ownerwire.NewRecord(append([]byte(nil), shown.Pending.Bytes...))}
 	if shown.Entry.State == record.StatePending {
-		cards, err := s.journal().HeldCards(p.Binding.Project)
+		cards, err := s.journalIn(ctx).HeldCards(p.Binding.Project)
 		if err != nil {
 			return ownerwire.ShowResult{}, s.jfix(ctx, err)
 		}

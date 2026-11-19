@@ -1,6 +1,7 @@
 package ownerchannel
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -167,12 +168,12 @@ func (x *index) totals() (requests, wouldMeet int64) {
 }
 
 // syncIndex reads the journal entries the index has not seen.
-func (s *Service) syncIndex() error {
+func (s *Service) syncIndex(ctx context.Context) error {
 	for {
 		s.mu.Lock()
 		after := s.idx.seq
-		st := s.store
 		s.mu.Unlock()
+		st := s.journalIn(ctx)
 		entries, err := st.Entries(after, 500)
 		if err != nil {
 			return err

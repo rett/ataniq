@@ -17,9 +17,9 @@ import (
 // whether the limit was raised today. Each day is marked as having reached
 // its limit when the journal has the alert for it, or when its uses are at
 // the highest limit that was in force that day.
-func (s *Service) limitView(project string, now time.Time) (limits.View, error) {
-	st := s.journal()
-	limit, err := s.limitOf(project)
+func (s *Service) limitView(ctx context.Context, project string, now time.Time) (limits.View, error) {
+	st := s.journalIn(ctx)
+	limit, err := limitIn(st, project)
 	if err != nil {
 		return limits.View{}, err
 	}
@@ -84,7 +84,7 @@ func (s *Service) Limit(ctx context.Context, project string) (ownerwire.LimitVie
 		return ownerwire.LimitView{}, err
 	}
 	defer done()
-	v, err := s.limitView(project, s.now())
+	v, err := s.limitView(ctx, project, s.now())
 	if err != nil {
 		return ownerwire.LimitView{}, s.jfix(ctx, err)
 	}
@@ -127,7 +127,7 @@ func (s *Service) LimitSet(ctx context.Context, src Source, p ownerwire.LimitSet
 	if _, err := s.mayDecide(src, now, true); err != nil {
 		return ownerwire.LimitView{}, refuse(record.CodeOwnerAway, "no activity of the owner inside the presence window")
 	}
-	v, err := s.limitView(p.Project, now)
+	v, err := s.limitView(ctx, p.Project, now)
 	if err != nil {
 		return ownerwire.LimitView{}, s.jerr(ctx, err)
 	}
@@ -148,7 +148,7 @@ func (s *Service) LimitSet(ctx context.Context, src Source, p ownerwire.LimitSet
 			return ownerwire.LimitView{}, s.jerr(ctx, err)
 		}
 	}
-	v, err = s.limitView(p.Project, now)
+	v, err = s.limitView(ctx, p.Project, now)
 	if err != nil {
 		return ownerwire.LimitView{}, s.jerr(ctx, err)
 	}
