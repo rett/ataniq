@@ -81,7 +81,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	flags := flag.NewFlagSet("ataniq-console", flag.ContinueOnError)
 	// The flag package includes raw argument text in errors. Do not display it.
 	flags.SetOutput(io.Discard)
-	demo := flags.Bool("demo", false, "show the read-only fixture cockpit")
+	demo := flags.Bool("demo", false, "show the cockpit with sample cards and a recorded session; a decision on a sample card changes nothing")
 	theme := flags.String("theme", "dark", "appearance: dark or light")
 	returnKey := flags.String("return-key", "", "key that leaves the session pane: ctrl+ and one letter, or ctrl+\\ or ctrl+] (default ctrl+\\)")
 	recording := flags.String("recording", terminalconsole.DefaultRecording, "fixture recording to replay: "+strings.Join(terminalconsole.Recordings(), ", "))
@@ -254,7 +254,7 @@ func run(args []string, out, errout io.Writer) int {
 	case cfg.demo:
 		model = demoModel(cfg)
 	default:
-		fmt.Fprintln(errout, "Terminal console backend is unavailable. Use --demo to inspect the read-only fixture.")
+		fmt.Fprintln(errout, "Terminal console backend is unavailable. Use --demo to inspect sample cards; a decision on them changes nothing.")
 		return 1
 	}
 	// Close ends the attach client's connection with a Detach, so that the
