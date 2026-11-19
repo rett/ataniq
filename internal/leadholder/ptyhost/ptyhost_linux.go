@@ -4,7 +4,11 @@
 // lead-hosting design, section 1.2): it opens the pair, starts the agent as a
 // session leader with the slave as its controlling terminal, and keeps the
 // master. The holder is the only process that holds the master; nothing here
-// hands the descriptor out.
+// hands the descriptor out. With Config.NoControllingTerminal the child still
+// leads a new session and still has the slave as descriptors 0, 1 and 2, but
+// it is not given a controlling terminal: a sandbox probe that runs first
+// inside the child's session takes the terminal itself. The option is off by
+// default, and then the start is as described above.
 //
 // The package uses only golang.org/x/sys/unix and the standard library, and
 // only on Linux. No shell is involved: the child is executed directly from
@@ -178,6 +182,15 @@ type Config struct {
 	// by MinRows..MaxRows.
 	Cols, Rows int
 
+	// NoControllingTerminal starts the child in a new session (Setsid) but
+	// without making the slave its controlling terminal (no Setctty). The
+	// child still has the slave as descriptors 0, 1 and 2, leads its session
+	// and has no controlling terminal until it takes one itself (a sandbox
+	// probe does, with TIOCSCTTY on descriptor 0). The zero value keeps the
+	// start unchanged: a new session with the slave as its controlling
+	// terminal.
+	NoControllingTerminal bool
+
 	// WriteTimeout bounds one Write (see Host.Write); zero means
 	// DefaultWriteTimeout.
 	WriteTimeout time.Duration
@@ -346,14 +359,17 @@ func Start(cfg Config) (*Host, error) {
 		env = []string{}
 	}
 	// The slave is the child's descriptors 0, 1 and 2, and Setctty makes
-	// descriptor 0 its controlling terminal after Setsid. Every other
-	// descriptor of ours is close-on-exec (the master and the slave were
-	// opened so); descriptors a caller opened without it are the caller's.
+	// descriptor 0 its controlling terminal after Setsid, unless
+	// NoControllingTerminal is set (Setsid alone: the child leads a new
+	// session with no controlling terminal). Every other descriptor of ours
+	// is close-on-exec (the master and the slave were opened so); descriptors
+	// a caller opened without it are the caller's.
+	sys := &syscall.SysProcAttr{Setsid: true, Setctty: !cfg.NoControllingTerminal, Ctty: 0}
 	pid, err := syscall.ForkExec(cfg.Argv[0], cfg.Argv, &syscall.ProcAttr{
 		Dir:   cfg.Dir,
 		Env:   env,
 		Files: []uintptr{uintptr(slaveFd), uintptr(slaveFd), uintptr(slaveFd)},
-		Sys:   &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0},
+		Sys:   sys,
 	})
 	_ = unix.Close(slaveFd)
 	if err != nil {
@@ -447,17 +463,73 @@ func (h *Host) Read(p []byte) (int, error) {
 // delivered). Writes are serialised, but the caller still holds its input
 // lock around Write so that the bytes of two sources do not interleave.
 func (h *Host) Write(p []byte) (int, error) {
+	return h.write(p, time.Time{}, false)
+}
+
+// WriteBy is Write with a second bound: its deadline is the earlier of the
+// host's write timeout from now (Config.WriteTimeout) and deadline. A
+// deadline that has passed when the write starts, including the zero time,
+// returns the timeout error (it wraps os.ErrDeadlineExceeded) with n 0,
+// writing nothing; it is not read as "no deadline". The host never retries or
+// completes a write that failed at the bound: n bytes, a prefix of p, were
+// accepted, and the caller must treat the input as broken as it does after a
+// timed-out Write. The time spent waiting for another writer (writes are
+// serialised) counts against deadline, but the wait for a write already in
+// progress is not cut short at deadline: each write WriteBy waits for ends
+// within the host's write timeout, and other waiting writers may go first. A
+// caller that must return by deadline cannot rely on WriteBy alone and keeps
+// other writers off the host. An empty p returns 0 and no error whatever the
+// deadline, even one that has passed.
+func (h *Host) WriteBy(p []byte, deadline time.Time) (int, error) {
+	return h.write(p, deadline, true)
+}
+
+// write is the one write: p to the master with a deadline of the host's write
+// timeout from now, or by when hasBy is set and by is earlier.
+func (h *Host) write(p []byte, by time.Time, hasBy bool) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 	h.wmu.Lock()
 	defer h.wmu.Unlock()
-	if err := h.master.SetWriteDeadline(time.Now().Add(h.writeTmo)); err != nil {
+	now := time.Now()
+	end := now.Add(h.writeTmo)
+	if hasBy && by.Before(end) {
+		end = by
+	}
+	// A bound that has passed is set as a past time that is not the zero
+	// time: the zero time would mean no deadline at all.
+	passed := !end.After(now)
+	if passed {
+		end = time.Unix(1, 0)
+	}
+	if err := h.master.SetWriteDeadline(end); err != nil {
 		return 0, fmt.Errorf("ptyhost: write: %w", err)
+	}
+	if passed {
+		return 0, fmt.Errorf("ptyhost: write: 0 of %d bytes accepted: %w", len(p), os.ErrDeadlineExceeded)
 	}
 	n, err := h.master.Write(p)
 	if err != nil {
 		return n, fmt.Errorf("ptyhost: write: %d of %d bytes accepted: %w", n, len(p), err)
+	}
+	return n, nil
+}
+
+// Queued returns how many bytes are queued for reading on the master, asked
+// of the kernel (FIONREAD) without reading them: a Read afterwards returns
+// them. It is the output of the child that the caller has not read yet; bytes
+// the child wrote that the kernel has not yet handed to the terminal's line
+// discipline are not counted. After Close it returns an error.
+func (h *Host) Queued() (int, error) {
+	var n int
+	err := h.ctl(func(fd int) error {
+		v, err := unix.IoctlGetInt(fd, unix.TIOCINQ) // FIONREAD under its other name
+		n = v
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("ptyhost: queued: %w", err)
 	}
 	return n, nil
 }

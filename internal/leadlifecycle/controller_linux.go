@@ -146,6 +146,14 @@ type Options struct {
 	// registry and a controller that share one monotonic time source and a
 	// request path that is not delayed between the intent and the send.
 	NoLateStartMargin bool
+	// Limits is optional. Start asks it once per launch, for the role that is
+	// being started, and puts the answer in the unit specification as
+	// [leadunit.Spec].Limits, so that the unit is created with those memory,
+	// swap and task limits. Nil, or an answer of nil, gives a unit with none,
+	// as before. The values come from the caller's configuration and are
+	// checked by [leadunit.Limits.Validate] before the registry changes: an
+	// answer outside the bounds refuses the start, changing nothing.
+	Limits func(role leadrole.Role) *leadunit.Limits
 }
 
 // Controller starts, stops and reconciles lead roles. Its methods are safe for
@@ -157,6 +165,7 @@ type Controller struct {
 	pre    Preflight
 	holder HolderCommand
 	quiet  Quiesce
+	limits func(role leadrole.Role) *leadunit.Limits
 	poll   time.Duration
 	bound  time.Duration
 	window time.Duration
@@ -187,7 +196,7 @@ func New(o Options) (*Controller, error) {
 	}
 	c := &Controller{
 		reg: o.Registry, mgr: o.Manager, clock: o.Clock, pre: o.Preflight,
-		holder: o.Holder, quiet: o.Quiesce, poll: o.PollInterval, bound: o.ProofBound,
+		holder: o.Holder, quiet: o.Quiesce, limits: o.Limits, poll: o.PollInterval, bound: o.ProofBound,
 		window: o.LateStartWindow, margin: o.LateStartMargin, locks: map[leadrole.Role]chan struct{}{},
 	}
 	if c.clock == nil {

@@ -66,11 +66,25 @@
 // writer ticket is accepted only while there is no writer). Any request may
 // carry a command id, which the holder records in its event log.
 //
+// An [OpInject] request carries a message id and a text ([CheckMessageID],
+// [CheckInjectText]), both or neither, and no other operation has them. The
+// answer of a delivery that was tried is an ok [Response] with an
+// [InjectResult]: three words from closed sets ([InjectOutcome],
+// [InjectReason], [InjectWritten]), of which only the combinations listed on
+// [InjectResult] are valid, on encode and on decode, and a detail of printable
+// ASCII. A refusal ([CodeDisabled], [CodeWrongEpoch], [CodeBusy],
+// [CodeBadRequest]) always means that nothing was written. The package judges
+// the form only: whether a delivery may happen, and what the text says, are
+// the holder's affair.
+//
 // # Versions
 //
-// Both sides send [ProtocolVersion] in Hello and Welcome. Any change to a
-// payload that an older decoder would refuse (a new field, a new required
-// field) is a new protocol version. Because the decoders are strict, a peer of
+// Both sides send [ProtocolVersion] in Hello and Welcome. Any change to an
+// attach payload that an older decoder would refuse (a new field, a new
+// required field) is a new protocol version. The control protocol has no
+// version: the daemon and the holder come from one build, and a holder that
+// cannot decode a request answers [CodeBadRequest], so a request with fields
+// it does not know writes nothing. Because the decoders are strict, a peer of
 // another version may fail to decode; [HelloVersion] and [WelcomeVersion]
 // read only the version from a payload that may have unknown fields, so that a
 // holder can answer a newer client with a refused-version notice and a client

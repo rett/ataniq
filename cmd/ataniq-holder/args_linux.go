@@ -49,6 +49,9 @@ type config struct {
 	cols, rows                                                 int
 	env                                                        []string // KEY=VALUE, in the order given
 	argv                                                       []string // argv[0] is an absolute path
+	// mode is what the flags of canary mode select. It is empty in a build
+	// without the ataniq_canary tag.
+	mode modeConfig
 }
 
 // value is one string flag: it knows whether it was given, and refuses a second
@@ -93,6 +96,9 @@ type flagParser struct {
 	scratch bool
 	vals    map[string]*value
 	env     envList
+	// mode holds the flags of canary mode, which parse adds (addModeFlags). It
+	// is empty in a build without the ataniq_canary tag.
+	mode modeFlags
 }
 
 // valueFlags are the flags that take one value, each required.
@@ -118,7 +124,9 @@ func newParser() *flagParser {
 	return p
 }
 
-// flagNames lists the flags the command accepts, sorted.
+// flagNames lists the flags of the scratch command line, the one the launcher
+// ataniq-scratch builds, sorted. A build with the ataniq_canary tag accepts the
+// flags of canary mode as well (canaryFlagNames); they are not in this list.
 func flagNames() []string {
 	var names []string
 	newParser().fs.VisitAll(func(f *flag.Flag) { names = append(names, f.Name) })
@@ -141,6 +149,7 @@ func parse(args []string) (config, error) {
 	var cfg config
 	before, after, found := splitDash(args)
 	p := newParser()
+	addModeFlags(p)
 	if err := p.fs.Parse(before); err != nil {
 		switch {
 		case errors.Is(err, flag.ErrHelp):
@@ -155,8 +164,9 @@ func parse(args []string) (config, error) {
 	}
 	// The guard that keeps a real lead off an unsandboxed holder comes before
 	// any other check of the line.
-	if !p.scratch {
-		return cfg, notScratch{}
+	mode, err := p.modeOf()
+	if err != nil {
+		return cfg, err
 	}
 	for _, n := range valueFlags {
 		if v := p.vals[n]; !v.set || v.s == "" {
@@ -221,7 +231,7 @@ func parse(args []string) (config, error) {
 		runtimeVersion: v("runtime-version"), profileDigest: v("profile-digest"), epoch: epoch,
 		tree: v("tree"), stateDir: v("state-dir"), runtimeDir: v("runtime-dir"),
 		roleLock: v("role-lock"), daemonLock: v("daemon-lock"), cols: cols, rows: rows,
-		env: []string(p.env), argv: after,
+		env: []string(p.env), argv: after, mode: mode,
 	}, nil
 }
 

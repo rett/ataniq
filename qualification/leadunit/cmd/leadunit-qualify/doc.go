@@ -11,14 +11,24 @@
 // and the description read back; the child's arguments, among them one with
 // $HOME and one with %h, reach it unchanged (the child records what it was
 // started with before it says it is ready); a second start with the same name
-// is refused; Inspect matches the start; a second unit, bound to the first
-// (Spec.Parent: BindsTo, PartOf and After), starts and Inspect reads the first
-// unit back as its parent; SIGTERM leaves the control group populated; after 2
-// s SIGKILL empties it; Empty is then true and the unit is not loaded; the
-// bound unit stops with it, with no signal sent to it, and Empty is true for
-// its control group; and Empty is true for a fresh, never-used unit name, which
-// is the one case that needs the user manager's own control group to be
-// derived.
+// is refused; Inspect matches the start; the unit, which is started with
+// memory, swap and task limits (the flags --memory-max, --swap-max and
+// --tasks-max, with the defaults the help states), reads them back from
+// "systemctl --user show" (normalised from infinity, suffixes and counts to
+// bytes and tasks) and from memory.max, memory.swap.max and pids.max in its
+// control group folder, each compared with what was specified, has its memory
+// limit lowered once to --memory-lowered with "systemctl --user set-property
+// --runtime" and read back both ways, is found to have its drop-in folder
+// (<unit>.d) in the transient or user.control folder of the user manager's
+// runtime folder while it runs (so that the check after the stop has something
+// to find gone), and after the stop nothing for it or for its bound unit
+// remains in them; a second unit, bound to the first (Spec.Parent: BindsTo,
+// PartOf and After), starts and Inspect reads the first unit back as its
+// parent; SIGTERM leaves the control group populated; after 2 s SIGKILL empties
+// it; Empty is then true and the unit is not loaded; the bound unit stops with
+// it, with no signal sent to it, and Empty is true for its control group; and
+// Empty is true for a fresh, never-used unit name, which is the one case that
+// needs the user manager's own control group to be derived.
 // It prints one JSON report with a line per check and an overall verdict, and
 // exits non-zero when any check fails. It always cleans up its own unit and
 // says what it did: it sends SIGKILL only to a unit whose description is this
@@ -38,8 +48,13 @@
 // a process can move itself into another control group of the user's
 // delegated subtree before its group is removed, and no check here sees that.
 // It does not look at the unit's environment beyond what the start call sent.
+// A memory or swap size that is not a whole number of 4096-byte pages is a
+// usage error, since the kernel keeps such a limit as whole pages and the files
+// would not read back as given; the files are compared with the limits exactly.
+// A host with a larger page size needs sizes that are also a multiple of it.
 // It needs the user manager of the calling user and reaches the system
-// manager nowhere.
+// manager nowhere. The harness runs systemctl only for the three properties and
+// the one set-property.
 //
 // The program is provisional and unqualified.
 package main

@@ -15,8 +15,11 @@ const (
 	OpStop Operation = "stop"
 	// OpReleaseWriter removes the current writer.
 	OpReleaseWriter Operation = "release-writer"
-	// OpInject is in the vocabulary only: in this feature the holder answers
-	// it with [CodeDisabled].
+	// OpInject asks the holder to deliver a message to its lead. The request
+	// carries the message's id and text; the answer is a [Response] with an
+	// [InjectResult], or a refusal ([CodeDisabled], [CodeWrongEpoch],
+	// [CodeBusy], [CodeBadRequest]) when nothing was written. A holder that
+	// has no deliverer answers [CodeDisabled].
 	OpInject Operation = "inject"
 )
 
@@ -36,7 +39,8 @@ const (
 	CodeWrongEpoch = "wrong-epoch"
 	// CodeBusy answers a ticket request for a role that is taken. A writer
 	// ticket is accepted only while there is no writer, and a viewer ticket
-	// only while there is no viewer.
+	// only while there is no viewer. It also answers an inject request while
+	// another delivery runs.
 	CodeBusy = "busy"
 	// CodeBadRequest answers a request that does not make sense.
 	CodeBadRequest = "bad-request"
@@ -54,12 +58,20 @@ const (
 // CommandID is optional for every operation: a token the daemon chooses for
 // the command, at most [MaxCommandID] bytes, that the holder writes in its
 // event log so that the command can be matched with the daemon's record.
+//
+// For OpInject, MessageID (see [CheckMessageID]) and Text (see
+// [CheckInjectText]) carry the message. They are allowed on OpInject only and
+// only together; an OpInject with neither is the form of an earlier version
+// and still decodes, and the holder answers it with [CodeBadRequest] when it
+// would deliver. A MessageID or a Text on any other operation is refused.
 type Request struct {
 	Op        Operation `json:"op" wire:"required"`
 	Epoch     uint64    `json:"epoch" wire:"required"`
 	Role      Role      `json:"role,omitempty"`
 	Ticket    string    `json:"ticket,omitempty"`
 	CommandID string    `json:"command_id,omitempty"`
+	MessageID string    `json:"message_id,omitempty"`
+	Text      string    `json:"text,omitempty"`
 }
 
 // checkCommandID checks a command id: 1 to [MaxCommandID] bytes of letters,
@@ -89,6 +101,9 @@ func (r *Request) validate() error {
 			return err
 		}
 	}
+	if r.Op != OpInject && (r.MessageID != "" || r.Text != "") {
+		return invalidf("message_id or text is set for op %q", string(r.Op))
+	}
 	if r.Op == OpTicket {
 		if err := r.Role.check("role"); err != nil {
 			return err
@@ -100,6 +115,12 @@ func (r *Request) validate() error {
 	}
 	if r.Ticket != "" {
 		return invalidf("ticket is set for op %q", string(r.Op))
+	}
+	if r.Op == OpInject && (r.MessageID != "" || r.Text != "") {
+		if err := CheckMessageID(r.MessageID); err != nil {
+			return err
+		}
+		return CheckInjectText(r.Text)
 	}
 	return nil
 }
@@ -161,19 +182,27 @@ func (s *Status) validate() error {
 }
 
 // Response is the payload of a control response: OK, or a refusal with a
-// code and a short text. A status answer carries Status; an answer to any
-// other operation is a bare OK.
+// code and a short text. A status answer carries Status; the answer of a
+// delivery that was tried carries Inject; an answer to any other operation is
+// a bare OK. Inject is only on an ok response and never together with Status.
 type Response struct {
-	OK     bool    `json:"ok"`
-	Code   string  `json:"code,omitempty"`
-	Text   string  `json:"text,omitempty"`
-	Status *Status `json:"status,omitempty"`
+	OK     bool          `json:"ok"`
+	Code   string        `json:"code,omitempty"`
+	Text   string        `json:"text,omitempty"`
+	Status *Status       `json:"status,omitempty"`
+	Inject *InjectResult `json:"inject,omitempty"`
 }
 
 func (r *Response) validate() error {
 	if r.OK {
 		if r.Code != "" || r.Text != "" {
 			return invalidf("an ok response has a refusal code or text")
+		}
+		if r.Status != nil && r.Inject != nil {
+			return invalidf("a response carries both a status and an inject result")
+		}
+		if r.Inject != nil {
+			return r.Inject.Validate()
 		}
 		if r.Status != nil {
 			return r.Status.validate()
@@ -182,6 +211,9 @@ func (r *Response) validate() error {
 	}
 	if r.Status != nil {
 		return invalidf("a refusal carries a status")
+	}
+	if r.Inject != nil {
+		return invalidf("a refusal carries an inject result")
 	}
 	if err := checkToken("code", r.Code, MaxToken); err != nil {
 		return err

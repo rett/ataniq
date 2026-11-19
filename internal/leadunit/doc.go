@@ -14,7 +14,11 @@
 // the unit. A [Spec] may name a Parent, the unit this one is bound to (the
 // coordinator of a lead is bound to the lead's unit): [BoundProperties] lists
 // the three properties that binding sets, and [State] reads the parent back
-// where the manager can.
+// where the manager can. A [Spec] may also carry [Limits]: a memory, a swap and
+// a task limit with the bounds [Spec.Validate] holds them to, which
+// [LimitProperties] lists as the properties they set; a [Spec] with none sets
+// no such property. [Fake.UnitLimits] shows a test the limits a unit was
+// started with.
 //
 // The package holds no systemd call, no process, no file and no socket. The
 // real manager lives elsewhere and implements [Manager]; [Fake] is an

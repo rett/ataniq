@@ -31,7 +31,10 @@ arguments you type.
 - The holder, the daemon and the lead's own sandbox are separate work, and
   none of them calls this command: see [the lead holder guide](lead-holder.md),
   [the lead daemon guide](lead-daemon.md) and
-  [the lead sandbox guide](lead-sandbox.md). Nothing here starts a lead.
+  [the lead sandbox guide](lead-sandbox.md). Nothing here starts a lead. In a
+  build with the `ataniq_canary` tag, under `--canary`, the daemon starts a
+  throwaway lead whose commit the owner takes in with this command by hand,
+  with a template of its own (see [the canary slice guide](canary-slice.md)).
 - Qualification of a sandbox is separate. See
   [the lead mirror qualification manual](qualification-lead-mirror.md).
 
@@ -777,13 +780,19 @@ intake record.
   read-only in its sandbox and the records folder is not mounted there. That is
   a job of the sandbox profile and is not checked here. The profile that
   [the lead sandbox guide](lead-sandbox.md) proposes binds the mirror
-  read-only; it is unqualified, and nothing launches a lead in it.
+  read-only; it is unqualified, and nothing launches a lead in it, except in a build with
+  the `ataniq_canary` tag, under `--canary`.
 - **Same-user processes outside a sandbox are not fenced.** The state root, the
   mirror and the records are protected by file modes of one user. A process of
   the same user that is not in a sandbox can write them.
 - **Not wired.** The fetch is not yet called by a daemon or a handoff: the
   daemon skeleton `ataniqd` is read-only and calls nothing here (see
-  [the lead daemon guide](lead-daemon.md)). You run the commands by hand.
+  [the lead daemon guide](lead-daemon.md)). You run the commands by hand. The
+  canary slice, which exists only in a build with the `ataniq_canary` tag and
+  under `--canary`, does not change that: it joins the daemon, the holder, the
+  sandbox and an injected message to a throwaway lead, and the owner still
+  types `fetch`, `review`, `verify` and `integrate` (see
+  [the canary slice guide](canary-slice.md)).
 - **Qualification is separate.** Nothing here qualifies a sandbox. The opt-in
   harness and its manual are in
   [the lead mirror qualification manual](qualification-lead-mirror.md).

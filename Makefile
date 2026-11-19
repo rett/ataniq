@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-canary canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -19,6 +19,39 @@ test: doctor
 
 test-patched: doctor
 	@sh scripts/go-tool.sh test $(PATCHED_PACKAGES)
+
+# The tests of the code behind the canary build tag, which make test does not
+# build. They run with the tag, over every package that holds a Go file whose
+# build constraint names it, found here by grep so that no list needs editing,
+# and over ./tests/, which holds the checks of the tag. The grep reads every
+# form Go builds with the tag: a go:build line or an old style plus build line,
+# indented or not, with a space or a tab after it. It skips the folders that
+# ./... skips (testdata and those that start with a dot or an underscore, such
+# as a worktree under a hidden folder) and no folder named build. The
+# placement test refuses a tagged file in any of those folders, so no tagged
+# test goes unrun. With no such package the target runs ./tests/ alone. It
+# builds no binary and runs nothing but tests.
+test-canary: doctor
+	@pkgs=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
+
+# The binaries of the attended canary run, built with the canary build tag into
+# build/canary/, which git ignores: the daemon, the holder, the provisioning
+# command, the stand-in agent, the console, the intake and the probe. They are
+# what qualification/canary/run/canary-run.sh runs and no more. This is the one
+# target that builds binaries with the tag; no release and no CI job uses it.
+# The stand-in and the probe are static, because both run inside the sandbox.
+# Building them runs nothing: the script is run only by the owner's hand (see
+# qualification/canary/run/README.md).
+canary-build: doctor
+	@mkdir -p build/canary
+	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniqd ./cmd/ataniqd
+	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-holder ./cmd/ataniq-holder
+	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-canary ./cmd/ataniq-canary
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-canary-standin ./cmd/ataniq-canary-standin
+	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-console ./cmd/ataniq-console
+	@sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-intake ./cmd/ataniq-intake
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 sh scripts/go-tool.sh build -tags ataniq_canary -trimpath -o build/canary/ataniq-probe ./cmd/ataniq-probe
 
 test-dev: doctor
 	@sh scripts/go-tool.sh test ./tests/...
