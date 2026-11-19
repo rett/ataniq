@@ -144,14 +144,14 @@ func (d *drawer) put(x, y, maxw int, s string, st uv.Style) int {
 // other one is drawn as a question mark: a control byte or code point, a
 // byte that is not UTF-8, a direction override, a code point without width
 // (a combining mark, a joiner, a variation selector), a space other than the
-// ASCII space. A tab is drawn as a space.
+// ASCII space, and the blank braille character. A tab is drawn as a space.
 func cellOf(r rune) (string, int) {
 	switch {
 	case r == '\t':
 		return " ", 1
 	case r >= 0x20 && r < 0x7f:
 		return string(r), 1
-	case r == utf8.RuneError, !unicode.IsPrint(r), unicode.Is(unicode.M, r),
+	case r == utf8.RuneError, r == 0x2800, !unicode.IsPrint(r), unicode.Is(unicode.M, r),
 		unicode.Is(unicode.Bidi_Control, r), unicode.Is(unicode.Join_Control, r),
 		unicode.Is(unicode.Variation_Selector, r),
 		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r):

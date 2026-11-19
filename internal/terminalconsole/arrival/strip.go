@@ -158,12 +158,21 @@ func (s *Strip) Arrive(ev presence.Event, sum Summary) bool {
 // Refresh gives a strip that is showing the summary as it is now, so that
 // its numbers stay true while it shows. A summary that became empty closes
 // it. Refresh never shows a strip: when none is showing it does nothing.
+// Digits open only lines the last [Strip.Draw] showed, so when a line
+// that was drawn is gone or has moved, no digit opens a line until the next
+// Draw.
 func (s *Strip) Refresh(sum Summary) {
 	if !s.visible {
 		return
 	}
-	s.rows = rowsOf(sum)
-	s.drawn = min(s.drawn, len(s.rows))
+	rows := rowsOf(sum)
+	for i := 0; i < s.drawn; i++ {
+		if i >= len(rows) || rows[i].line != s.rows[i].line {
+			s.drawn = 0 // the lines moved: draw before a digit opens one
+			break
+		}
+	}
+	s.rows = rows
 	s.visible = len(s.rows) > 0
 }
 
@@ -195,10 +204,13 @@ func (s *Strip) Dismiss() { s.visible = false }
 // line; the strip closes then too. No other key is the strip's: not Enter,
 // not a letter, not a digit with a modifier.
 //
-// The cockpit must not say the strip has the focus while a field is open
-// (the confirm field, the deny reason): every key belongs to the field
-// then. No key of the strip decides anything; opening a line only shows a
-// view.
+// The cockpit says the strip has the focus only in console focus, and never
+// while the session pane, an approvals view (the list, a card, the limit's
+// screen), an overlay or a field (the confirm field, the deny reason) has
+// the keys: the limit's screen takes digits, the confirm code holds 3 and 4,
+// and Esc goes back in every view. It dismisses the strip when an approvals
+// view opens. No key of the strip decides anything; opening a line only
+// shows a view.
 func (s *Strip) Key(msg tea.KeyPressMsg, ev presence.Event, focused bool) (Action, Line) {
 	if !s.visible || !focused || ev.Arrival {
 		return None, NoLine
@@ -208,7 +220,7 @@ func (s *Strip) Key(msg tea.KeyPressMsg, ev presence.Event, focused bool) (Actio
 		s.visible = false
 		return Close, NoLine
 	}
-	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+	if msg.Mod&^(tea.ModCapsLock|tea.ModNumLock) == 0 && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		if i := int(key[0] - '1'); i < s.drawn && i < len(s.rows) {
 			s.visible = false
 			return Open, s.rows[i].line

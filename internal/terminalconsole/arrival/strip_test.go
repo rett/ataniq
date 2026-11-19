@@ -216,6 +216,48 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+// TestRefreshKeepsDigitsTrueToTheLastDrawing: after Refresh a digit opens
+// only the line the last drawing showed beside it.
+func TestRefreshKeepsDigitsTrueToTheLastDrawing(t *testing.T) {
+	// The alerts clear: every line moves up one place, and 1 would open
+	// "waiting" while the screen showed "[1] alerts".
+	s, _ := shown(t, full(), 100, 5)
+	sum := full()
+	sum.Alerts, sum.LimitReached = nil, 0
+	s.Refresh(sum)
+	for _, d := range "1234" {
+		if a, l := s.Key(key(d), typing, true); a != None || l != NoLine {
+			t.Fatalf("digit %c after Refresh without a redraw: %v %v", d, a, l)
+		}
+	}
+	// Once drawn again, the digits name the lines on the screen.
+	draw(s, 100, 5, true)
+	if a, l := s.Key(key('1'), typing, true); a != Open || l != LineWaiting {
+		t.Errorf("digit 1 after a redraw: %v %v, want Open waiting", a, l)
+	}
+
+	// A part at the end drops out: a line that was drawn is gone, so no
+	// digit opens a line until the next drawing.
+	s, _ = shown(t, full(), 100, 5)
+	sum = full()
+	sum.Held = nil
+	s.Refresh(sum)
+	for _, d := range "1234" {
+		if a, l := s.Key(key(d), typing, true); a != None || l != NoLine {
+			t.Fatalf("digit %c after a line went: %v %v", d, a, l)
+		}
+	}
+
+	// Lines that stay where they were keep their digits.
+	s, _ = shown(t, full(), 100, 5)
+	sum = full()
+	sum.Waiting++
+	s.Refresh(sum)
+	if a, l := s.Key(key('2'), typing, true); a != Open || l != LineWaiting {
+		t.Errorf("digit 2 after a number changed: %v %v, want Open waiting", a, l)
+	}
+}
+
 // TestTheKeyThatWokeTheConsoleIsNotTaken: whatever the key of the arrival
 // is, and whether or not the strip has the focus, the strip refuses it and
 // stays as it is.
@@ -260,7 +302,8 @@ func allKeys() []tea.KeyPressMsg {
 		ks = append(ks, tea.KeyPressMsg{Code: c})
 	}
 	for _, mod := range []tea.KeyMod{tea.ModCtrl, tea.ModAlt, tea.ModShift, tea.ModCtrl | tea.ModAlt} {
-		ks = append(ks, tea.KeyPressMsg{Code: '1', Mod: mod}, tea.KeyPressMsg{Code: tea.KeyEscape, Mod: mod},
+		ks = append(ks, tea.KeyPressMsg{Code: '1', Mod: mod}, tea.KeyPressMsg{Code: '1', Text: "1", Mod: mod},
+			tea.KeyPressMsg{Code: tea.KeyEscape, Mod: mod},
 			tea.KeyPressMsg{Code: 'c', Mod: mod})
 	}
 	return ks
@@ -274,6 +317,11 @@ func TestWithTheFocusOnlyEscAndTheDigitsOfItsLines(t *testing.T) {
 		s, _ := shown(t, full(), 100, 5)
 		a, l := s.Key(k, typing, true)
 		line, mine := own[k.String()]
+		if k.Mod != 0 {
+			// A key with a modifier is no one's but the cockpit's, even
+			// when it carries text.
+			mine = false
+		}
 		switch {
 		case !mine:
 			if a != None || l != NoLine || !s.Visible() {

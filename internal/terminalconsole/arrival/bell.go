@@ -70,6 +70,21 @@ func (b *Bell) CardArrived(id string, present bool) (tea.Cmd, bool) {
 	return Ring(), true
 }
 
+// Known marks a card as one the owner already has, such as a card that was
+// waiting when the console started, so that the bell does not ring for it
+// when CardArrived is called with its id. It never rings. It follows the
+// same rules as CardArrived: an empty id or one longer than 128 bytes is
+// ignored, and a Bell remembers the last 1024 cards.
+func (b *Bell) Known(id string) {
+	if id == "" || len(id) > maxCardID {
+		return
+	}
+	if _, ok := b.seen[id]; ok {
+		return
+	}
+	b.remember(id)
+}
+
 // remember keeps id, and forgets the oldest id when the memory is full.
 func (b *Bell) remember(id string) {
 	if len(b.order) < bellMemory {

@@ -137,6 +137,8 @@ func checkCell(t *testing.T, where string, c *uv.Cell) {
 			unicode.Is(unicode.Variation_Selector, r), unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r),
 			unicode.Is(unicode.Zl, r), unicode.Is(unicode.Zp, r), unicode.Is(unicode.Co, r), unicode.Is(unicode.Cs, r):
 			t.Fatalf("%s: a cell holds the invisible or direction code point %U: %q", where, r, s)
+		case r == 0x2800:
+			t.Fatalf("%s: a cell holds the blank braille character: %q", where, s)
 		case r == utf8.RuneError:
 			t.Fatalf("%s: a cell holds U+FFFD: %q", where, s)
 		case !unicode.IsPrint(r):
