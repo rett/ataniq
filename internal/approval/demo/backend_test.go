@@ -489,6 +489,9 @@ func TestDecideRefusesAPastExpiry(t *testing.T) {
 	if k = open(t, b, "ap-sample-clean"); !k.Ended() {
 		t.Error("the card is not ended")
 	}
+	if k = open(t, b, "ap-sample-held"); !k.Ended() || k.After.Held {
+		t.Errorf("the expired held card: ended %v, held %v", k.Ended(), k.After.Held)
+	}
 }
 
 func TestARaiseTodayKeepsPastDaysAtTheirLimit(t *testing.T) {
