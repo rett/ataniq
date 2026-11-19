@@ -21,20 +21,22 @@ func TestVerdictTextCleansAndBounds(t *testing.T) {
 	for in, want := range map[string]string{
 		"model-a":                 "model-a",
 		"  a \t\n  b ":            "a b",
+		"a\tb":                    "a b",
 		"x\x1b[31my\x07z":         "x[31myz",
 		"a‮b​c":                   "abc",
 		"é":                      "e",
 		"bad\xffbyte":             "badbyte",
 		strings.Repeat("a", 40):   strings.Repeat("a", 40),
-		strings.Repeat("a", 41):   strings.Repeat("a", 40) + "…",
-		strings.Repeat("é", 100):  strings.Repeat("é", 40) + "…",
+		strings.Repeat("a", 41):   strings.Repeat("a", 39) + "…",
+		strings.Repeat("é", 100):  strings.Repeat("é", 39) + "…",
 		strings.Repeat("a ", 100): strings.Repeat("a ", 20)[:39] + "…",
+		"aaaa " + strings.Repeat("b", 34) + " cc": "aaaa " + strings.Repeat("b", 34) + "…",
 	} {
 		if got := VerdictText(in); got != want {
 			t.Errorf("VerdictText(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := VerdictText(strings.Repeat("中", 500)); utf8.RuneCountInString(got) != MaxVerdictText+1 {
+	if got := VerdictText(strings.Repeat("中", 500)); utf8.RuneCountInString(got) != MaxVerdictText {
 		t.Errorf("a long text kept %d characters", utf8.RuneCountInString(got))
 	}
 }

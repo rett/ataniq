@@ -1,7 +1,6 @@
 package card
 
 import (
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -84,37 +83,37 @@ type VerdictBlock struct {
 }
 
 // VerdictText cleans a string from data for drawing and bounds it to
-// [MaxVerdictText] characters, with an ellipsis where it was cut. It keeps
-// printable characters only: control characters, format characters (the
-// direction marks included), combining marks and unassigned code points are
-// dropped, and a run of spaces becomes one.
+// [MaxVerdictText] characters, the ellipsis included: a longer text is cut
+// to MaxVerdictText-1 characters and an ellipsis. It keeps printable
+// characters only: control characters, format characters (the direction
+// marks included), combining marks and unassigned code points are dropped.
+// White space, a tab and a line break among it, becomes a space, and a run
+// of spaces becomes one.
 func VerdictText(s string) string {
-	var b strings.Builder
-	n := 0
+	var out []rune
 	space := false
 	for _, r := range s {
-		if r == utf8.RuneError || !unicode.IsPrint(r) || unicode.IsMark(r) {
-			continue
-		}
-		if r == ' ' {
+		if unicode.IsSpace(r) {
 			space = true
 			continue
 		}
-		if space && b.Len() > 0 {
-			if n+1 >= MaxVerdictText {
-				return b.String() + "…"
-			}
-			b.WriteByte(' ')
-			n++
+		if r == utf8.RuneError || !unicode.IsPrint(r) || unicode.IsMark(r) {
+			continue
+		}
+		if space && len(out) > 0 {
+			out = append(out, ' ')
 		}
 		space = false
-		if n == MaxVerdictText {
-			return b.String() + "…"
-		}
-		b.WriteRune(r)
-		n++
+		out = append(out, r)
 	}
-	return b.String()
+	if len(out) <= MaxVerdictText {
+		return string(out)
+	}
+	out = out[:MaxVerdictText-1]
+	for len(out) > 0 && out[len(out)-1] == ' ' {
+		out = out[:len(out)-1]
+	}
+	return string(out) + "…"
 }
 
 // OwnerApproved reports whether the owner approved the request that is in
