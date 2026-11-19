@@ -573,6 +573,32 @@ func TestAnUnknownOutcomeWaitsAndIsSettledOnce(t *testing.T) {
 	wantSeqs(t, "open uses after he looked", openSeqs(t, s), three.Decision().Seq())
 }
 
+// An approval that ends without a use (expired, void or withdrawn) is
+// closed with no use journaled, and is no longer listed as open.
+func TestAnApprovalThatEndsUnusedIsClosedWithoutAUse(t *testing.T) {
+	s := mustOpen(t, newPath(t))
+	var seqs []int64
+	for i, state := range []record.State{record.StateExpired, record.StateVoid, record.StateWithdrawn} {
+		at := base.Add(time.Duration(i) * time.Minute)
+		approve, _ := approveOf(t, []string{"ap-one", "ap-two", "ap-three"}[i], "project-a", at)
+		d, err := s.AppendDecision(approve, Seen{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := d.MarkDelivered(at.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seqs = append(seqs, d.Seq())
+		wantSeqs(t, "open uses before "+string(state), openSeqs(t, s), seqs...)
+		if err := u.AppendOutcome(at.Add(time.Hour), state, ""); err != nil {
+			t.Fatalf("%s with no use: %v", state, err)
+		}
+		seqs = seqs[:len(seqs)-1]
+		wantSeqs(t, "open uses after "+string(state), openSeqs(t, s), seqs...)
+	}
+}
+
 func TestARefusedDecisionIsJournaledAndNeverListed(t *testing.T) {
 	s := mustOpen(t, newPath(t))
 	good := Refused{At: base, PendingID: "ap-one", Project: "project-a", Code: record.CodeOwnerAway,
