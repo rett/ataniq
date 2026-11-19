@@ -16,7 +16,14 @@ base64 with padding) otherwise; the other form is refused. The canonical
 form has the keys of every object sorted by their UTF-8 bytes, no
 whitespace, integers in plain decimal, and strings with only `\"` and `\\`
 escaped, so `<`, `>`, `&`, U+2028 and non-ASCII characters are written as
-they are. A digest is SHA-256 in lower-case hexadecimal. No file ends with
+they are. A digest is SHA-256 in lower-case hexadecimal.
+The note a lead sends with a request travels beside it, not in it: the
+request carries only `note_sha256`, the digest of the note's raw bytes (after
+base64 decoding when the note is written as `b64`, not of its JSON form), and
+the pending record carries the note itself. So the `note` of a pending record
+must digest to the `note_sha256` of the request it answers; in these vectors
+the `note` of `pending-valid.json` digests to the `note_sha256` of
+`request-valid.json`, and a test holds the pair. No file ends with
 a newline unless it says so below.
 
 ## Valid records
