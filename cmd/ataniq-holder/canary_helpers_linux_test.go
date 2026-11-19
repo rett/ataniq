@@ -304,10 +304,59 @@ func (c *canaryRig) noAgentNoClaim() {
 	pids := append([]int(nil), c.pids...)
 	c.mu.Unlock()
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-			c.t.Errorf("the launched process %d is still there after a failed start (%v)", pid, err)
+		c.t.Helper()
+		if state, gone := waitProcessGone(pid, zombieReapBound); !gone {
+			c.t.Errorf("the launched process %d is still there after a failed start (state %s)", pid, state)
 		}
 	}
+}
+
+// zombieReapBound is how long a process that has ended but is not yet reaped
+// is polled before it counts as still there.
+const zombieReapBound = 2 * time.Second
+
+// waitProcessGone reports whether the process is gone. A process that is
+// still present is read from /proc/<pid>/stat: a zombie (state Z) is polled
+// until it is reaped or the bound passes, and any other state is not gone at
+// once. It returns the last state read.
+func waitProcessGone(pid int, bound time.Duration) (state string, gone bool) {
+	deadline := time.Now().Add(bound)
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return "", true
+		}
+		state = procState(pid)
+		if state == "" {
+			// The file went with the process between the two calls.
+			if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+				return "", true
+			}
+			state = "unreadable"
+		}
+		if state != "Z" || time.Now().After(deadline) {
+			return state, false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// procState is the state letter in /proc/<pid>/stat, or "" when the file
+// cannot be read or has no state. The command name is in parentheses and may
+// hold spaces and parentheses, so the state is read after the last one.
+func procState(pid int) string {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return ""
+	}
+	i := strings.LastIndexByte(string(data), ')')
+	if i < 0 {
+		return ""
+	}
+	fields := strings.Fields(string(data)[i+1:])
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // ---- the fake system ----
