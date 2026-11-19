@@ -2,6 +2,7 @@ package canary
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/user"
 	"regexp"
@@ -151,11 +152,23 @@ func sameList(got, want []string) bool {
 	return true
 }
 
-// checkCommon holds for every sandbox the template starts: all the
-// namespaces that bubblewrap can unshare, a cleared environment, and no
-// option that shares or opens anything with the host.
+// checkCommon reports every error commonErrors returns.
 func checkCommon(t *testing.T, what string, flags []flag) {
 	t.Helper()
+	for _, e := range commonErrors(what, flags) {
+		t.Error(e)
+	}
+}
+
+// commonErrors returns what is wrong with a sandbox the template starts: all
+// the namespaces that bubblewrap can unshare, a cleared environment, and no
+// option that shares or opens anything with the host must hold. It returns the
+// errors so that a control test can run the real rule on a bad template.
+func commonErrors(what string, flags []flag) []string {
+	var errs []string
+	add := func(format string, args ...any) {
+		errs = append(errs, fmt.Sprintf(format, args...))
+	}
 	for _, name := range []string{
 		"--die-with-parent", "--new-session", "--clearenv",
 		"--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net",
@@ -163,26 +176,27 @@ func checkCommon(t *testing.T, what string, flags []flag) {
 		"--disable-userns", "--assert-userns-disabled",
 	} {
 		if !hasFlag(flags, name) {
-			t.Errorf("%s: %s is missing", what, name)
+			add("%s: %s is missing", what, name)
 		}
 	}
 	if !hasFlag(flags, "--cap-drop", "ALL") {
-		t.Errorf("%s: --cap-drop ALL is missing", what)
+		add("%s: --cap-drop ALL is missing", what)
 	}
 	if !hasFlag(flags, "--chdir") {
-		t.Errorf("%s: --chdir is missing: bubblewrap would name the caller's folder in its warning", what)
+		add("%s: --chdir is missing: bubblewrap would name the caller's folder in its warning", what)
 	}
 	if !hostnamePinned(flags) {
-		t.Errorf("%s: --hostname %s is missing: the host's name would be visible inside, or a name is written in the file", what, sandboxHost)
+		add("%s: --hostname %s is missing: the host's name would be visible inside, or a name is written in the file", what, sandboxHost)
 	}
 	if got := sources(flags, "--ro-bind"); len(got) == 0 || got[0] != "/usr" {
-		t.Errorf("%s: the first read-only bind is %q, want /usr", what, got)
+		add("%s: the first read-only bind is %q, want /usr", what, got)
 	}
 	for _, f := range flags {
 		if f.name == "--setenv" && f.args[0] != "PATH" && f.args[0] != "HOME" && f.args[0] != "TMPDIR" && f.args[0] != "GIT_CONFIG_NOSYSTEM" {
-			t.Errorf("%s: unexpected variable %s", what, f.args[0])
+			add("%s: unexpected variable %s", what, f.args[0])
 		}
 	}
+	return errs
 }
 
 func TestServeForm(t *testing.T) {
@@ -511,6 +525,14 @@ func TestHostNameIsPinned(t *testing.T) {
 		if got := hostnamePinned(flags); got != c.ok {
 			t.Errorf("--hostname %s: accepted %v, want %v", c.name, got, c.ok)
 		}
+		// The real form rule reports it too.
+		if got := hostnameError(commonErrors("control", flags)); got == c.ok {
+			t.Errorf("--hostname %s: the form rule's hostname error present %v, want %v", c.name, got, !c.ok)
+		}
+	}
+	same := []string{launcher, "--hostname", sandboxHost, "--hostname", sandboxHost, "/usr/bin/true"}
+	if flags, _ := split(t, same); hostnamePinned(flags) {
+		t.Error("the pinned --hostname given twice was accepted")
 	}
 	twice := []string{launcher, "--hostname", sandboxHost, "--hostname", "build-host-07", "/usr/bin/true"}
 	if flags, _ := split(t, twice); hostnamePinned(flags) {
@@ -520,4 +542,14 @@ func TestHostNameIsPinned(t *testing.T) {
 	if flags, _ := split(t, none); hostnamePinned(flags) {
 		t.Error("a missing --hostname was accepted")
 	}
+}
+
+// hostnameError reports whether one of the errors is the hostname rule's.
+func hostnameError(errs []string) bool {
+	for _, e := range errs {
+		if strings.Contains(e, "--hostname "+sandboxHost+" is missing") {
+			return true
+		}
+	}
+	return false
 }
