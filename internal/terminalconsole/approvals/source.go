@@ -36,7 +36,10 @@ func (s pageSource) Page(n int) (lines []string, cont []bool, pages int, err err
 		}
 		return nil, nil, 0, errors.New("approvals: the backend could not give the page")
 	}
-	if p.ReviewDigest != "" && s.digest != "" && p.ReviewDigest != s.digest {
+	// A page is taken in only when it is a page of the patch, the one asked
+	// for and of the review the card was made from; anything else is a
+	// review that changed.
+	if p.Kind != card.PagePatch || p.N != n || p.ReviewDigest == "" || p.ReviewDigest != s.digest {
 		return nil, nil, 0, errPageChanged
 	}
 	return p.Patch, p.Cont, p.Pages, nil
