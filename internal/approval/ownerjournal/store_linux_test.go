@@ -785,3 +785,54 @@ func TestAWriteAheadFileCutShortIsRecovered(t *testing.T) {
 		t.Fatalf("the whole write-ahead file gives %d entries, want %d", last, appends)
 	}
 }
+
+// SQLite opens the file by its path each time it makes a connection. When
+// the path has come to name another file than the one the store locked, the
+// connection is refused, whatever else is true of the file.
+func TestAConnectionIsRefusedWhenThePathNamesAnotherFile(t *testing.T) {
+	path := newPath(t)
+	other := filepath.Join(filepath.Dir(path), "other.journal")
+	o := mustOpen(t, other)
+	fill(t, o, 2)
+	mustClose(t, o)
+	s := mustOpen(t, path)
+	fill(t, s, 1)
+	if got := mustEntries(t, s); len(got) != 1 {
+		t.Fatalf("%d entries before the swap, want 1", len(got))
+	}
+	// Another private store of the same user now has the path's name.
+	if err := os.Rename(other, path); err != nil {
+		t.Fatal(err)
+	}
+	// Drop the idle connection so that the next call makes a new one.
+	s.db.SetMaxIdleConns(0)
+	got, err := s.Entries(0, 0)
+	if err == nil {
+		t.Fatalf("a connection was made to the other file and read %d entries", len(got))
+	}
+	if !strings.Contains(err.Error(), "another file than the one that was locked") {
+		t.Fatalf("the refusal: %v, want the path naming another file", err)
+	}
+}
+
+// Connect refuses a connection when SQLite is not using the file locks that
+// survive the closing of another descriptor. Once they are selected the
+// kernel cannot be made to refuse them, so the test says they are not in
+// use.
+func TestAConnectionIsRefusedWithoutTheFileLocksItNeeds(t *testing.T) {
+	path := newPath(t)
+	s := mustOpen(t, path)
+	fill(t, s, 1)
+	was := ofdLockingEnabled
+	ofdLockingEnabled = func() bool { return false }
+	defer func() { ofdLockingEnabled = was }()
+	s.db.SetMaxIdleConns(0)
+	if _, err := s.Entries(0, 0); err == nil || !strings.Contains(err.Error(), "file locks the store needs") {
+		t.Fatalf("a connection without the file locks: %v, want a refusal", err)
+	}
+	ofdLockingEnabled = was
+	s.db.SetMaxIdleConns(1)
+	if got := mustEntries(t, s); len(got) != 1 {
+		t.Fatalf("%d entries once the locks are in use again, want 1", len(got))
+	}
+}

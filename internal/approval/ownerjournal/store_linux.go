@@ -479,6 +479,12 @@ func (s *Store) checkPath() error {
 	return nil
 }
 
+// ofdLockingEnabled says whether SQLite is using the file locks that survive
+// the closing of another descriptor. It is a variable so that a test can
+// show what Connect does when they are not in use, which no setting of the
+// kernel here can bring about once they are selected.
+var ofdLockingEnabled = sqlite.OFDLockingEnabled
+
 // requireOFDLocking selects, for the whole process, the file locks that
 // survive the closing of another descriptor. The dispatch journal selects
 // the same; the choice cannot be changed once a database is open.
@@ -560,7 +566,7 @@ func (c *connector) Connect(ctx context.Context) (_ driver.Conn, err error) {
 	}
 	// SQLite falls back to the other kind of lock without an error when
 	// the kernel or the file system refuses these; by now it has locked.
-	if !sqlite.OFDLockingEnabled() {
+	if !ofdLockingEnabled() {
 		return nil, errors.New("ownerjournal: the file locks the store needs are not in use")
 	}
 	if c.check != nil {
