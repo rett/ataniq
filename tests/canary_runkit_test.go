@@ -963,9 +963,8 @@ func TestCanaryRunKitPassAExpectsNotNow(t *testing.T) {
 	}
 	// Exit status 30 fails the step in both passes before any action is taken
 	// from the result: it is not the fence's refusal.
-	if strings.Contains(body, `"$PASS" = B ]; then
-    _o=refused`) {
-		t.Error("step 17 reads the daemon's exit status 30 as the fence's refusal in pass B")
+	if n := strings.Count(body, "-eq 30"); n != 1 {
+		t.Errorf("step 17 tests exit status 30 %d times, want once, in both passes", n)
 	}
 	passB := at(`elif [ "$RC" -eq 30 ]; then`)
 	daemon := at("fail 'the daemon refused the message (exit 30)")
@@ -1343,6 +1342,11 @@ func TestCanaryRunKitSaysWhereTheCountersAreRead(t *testing.T) {
 		if canaryCalls(sixteen, word) != 0 {
 			t.Errorf("step 16 calls %s: it has no place to read the counters from while the holder runs", word)
 		}
+	}
+	// The holder reports unknown for idle in this feature: no check of the
+	// step fails on the value of the idle field.
+	if canaryCalls(sixteen, "check") != 0 || canaryCalls(sixteen, "is_eq") != 0 || strings.Contains(sixteen, "idle") && !strings.Contains(sixteen, `note "holder idle field: $ANSWER"`) {
+		t.Error("step 16 judges the idle field's value, or does not record it")
 	}
 	if strings.Contains(sixteen, "events.jsonl") {
 		t.Error("step 16 reads the event log, which holds no counters")

@@ -537,7 +537,8 @@ is_number() {
 }
 
 # self_test is the test entry: it calls one function of the script with the
-# values given and prints its answer. It runs no step and no program but the helper has-line names.
+# values given and prints its answer. It runs no step and no program but the
+# helper has-line names.
 self_test() {
   _name=$1
   shift
@@ -1342,7 +1343,7 @@ step_16() {
   fi
   step_head 16 'Wait for the idle composer, and look at the report path' \
     "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22)" \
-    "the holder's status reads idle; the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9)" 'B1'
+    "the holder's idle field reads unknown in this feature, and the answer is recorded, not judged (the fence judges idle itself inside a delivery); the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9)" 'B1'
   wait_key 'Step 16 reads the status.'
   runcap role-status "$BIN/ataniqd" status --socket "$SOCK"
   if [ "$DRY" -eq 1 ]; then
@@ -1355,8 +1356,8 @@ step_16() {
     out "   - after the child ends they are in $HSTATE/final.json: step 22 prints them from there."
     note 'the 7501 counters are not read by the script at this step: the lead records what the console shows'
   fi
-  ask "Lead: what does the holder's status read (idle, or what)"
-  check "the holder's status reads idle" is_eq "$ANSWER" idle || return 0
+  ask "Lead: what does the holder's idle field read (the holder reports unknown in this feature; the fence judges idle itself inside a delivery)"
+  note "holder idle field: $ANSWER"
   ask 'Lead: was the OSC 7501 query answered before the DA1 reply (yes, no, unknown)'
   ask 'Lead: how many reports were tracked (a number, or none: then the fence will end uncertain and the reason is known)'
   ask 'Lead: does the screen show an update notice (no, or what it says in your words)'

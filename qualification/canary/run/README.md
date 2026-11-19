@@ -361,9 +361,12 @@ listeners you stopped, and compare the live config folder with
 
 - The holder's status answer. The script has no client for the holder's
   control socket, and no command of the kit reads that answer. So at step 16
-  the lead reads in the console whether the status is idle and what the OSC
-  7501 counters (queries, reports, unreadable payloads) show, and the script
-  records what he reads; it says so plainly and shows no counter itself there.
+  the lead reads in the console what the idle field shows (the holder reports
+  `unknown` in this feature, and the fence judges idle itself inside a
+  delivery, so the script records the answer and does not judge it) and what
+  the OSC 7501 counters (queries, reports, unreadable payloads) show, and the
+  script records what he reads; it says so plainly and shows no counter itself
+  there.
   While the holder runs the counters are only in that answer: the event log
   holds none. After the child ends they are in `final.json` in the holder's
   state folder, and step 22 prints them from it, or says that none is named
