@@ -2,6 +2,7 @@ package ownerjournal
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"net/url"
@@ -691,5 +692,33 @@ func TestAGapInTheSequenceIsFoundEvenWhenTheDigestsHold(t *testing.T) {
 				t.Fatalf("Open: %v, want %v", err, ErrDamaged)
 			}
 		})
+	}
+}
+
+// The package's promise is that an append is on the disk when it returns.
+// A crash test that copies files or kills a process cannot see a write that
+// was never synced, because the kernel keeps the pages. So this test reads
+// the settings of the store's own connection, after Open and after a reopen,
+// and fails if either is lowered.
+func TestEveryCommitIsSynced(t *testing.T) {
+	path := newPath(t)
+	for i := 0; i < 2; i++ {
+		s := mustOpen(t, path)
+		err := s.read(func(q querier) error {
+			var synced int
+			if err := q.QueryRowContext(context.Background(), "PRAGMA synchronous").Scan(&synced); err != nil || synced != 2 {
+				t.Errorf("opening %d: synchronous is %d, %v; want 2 (FULL)", i+1, synced, err)
+			}
+			var mode string
+			if err := q.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+				t.Errorf("opening %d: journal_mode is %q, %v; want wal", i+1, mode, err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fill(t, s, 1)
+		mustClose(t, s)
 	}
 }
