@@ -31,6 +31,15 @@ import (
 // card stands. An outcome that is unknown stays and waits for the owner
 // ([Service.Dispose]).
 //
+// When the door refuses the decision and the record stays pending (the
+// decision's own time ran out before it arrived, say), the card is
+// undecided again: the result is the state pending, with a line that says
+// the door refused it and gives the door's code, and a new decision for
+// the card is accepted. [Service.Show] gives the same line until one is. A
+// decision for a card that has one on its way to the door, journaled and
+// not yet handed over, is refused with a line that says so; it does not
+// hand the other over, which is the work of a restart and of the tick.
+//
 // An error that is not a refusal means the step stopped part way (the
 // door out of reach, the journal reopened, the service stopped). What the
 // journal holds is then taken up again by [Service.Tick] or at the next
@@ -150,12 +159,11 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 	d, err := s.journal().AppendDecision(b, seen)
 	switch {
 	case errors.Is(err, ownerjournal.ErrDecided):
-		// A decision for this card was journaled and has not reached the
-		// door. Hand it over now, and refuse this one.
-		if rerr := s.reconcile(ctx); rerr != nil && !errors.Is(rerr, ErrDoorUnavailable) {
-			return ownerwire.DecideResult{}, rerr
-		}
-		return ownerwire.DecideResult{}, refuse(record.CodeDecisionInvalid, "the card has a decision already")
+		// The card has a decision that stands: one the door took, or one
+		// that is journaled and has not reached the door. This one is
+		// refused. It does not hand the other over: that is the work of a
+		// restart and of the tick.
+		return ownerwire.DecideResult{}, s.decidedRefusal(pending.ID)
 	case errors.Is(err, ownerjournal.ErrExpired):
 		return ownerwire.DecideResult{}, refuse(record.CodeApprovalExpired, "the card expired while it was held")
 	case err != nil:
@@ -170,6 +178,27 @@ func (s *Service) Decide(ctx context.Context, src Source, f ownerwire.DecisionFr
 		}
 	}
 	return s.deliver(ctx, d, pending)
+}
+
+// decidedRefusal is the refusal of a decision for a card that has a decision
+// already, in plain words about what the earlier one is: an approve or a deny
+// that is journaled and on its way to the door gets that said.
+func (s *Service) decidedRefusal(id string) error {
+	if err := s.syncIndex(); err == nil {
+		if r, ok := s.indexed(id); ok && r.decided && !r.delivered {
+			if r.approve {
+				return refuse(record.CodeDecisionInvalid, "an approve for this card is already on its way to the door")
+			}
+			return refuse(record.CodeDecisionInvalid, "a deny for this card is already on its way to the door")
+		}
+	}
+	return refuse(record.CodeDecisionInvalid, "the card has a decision already")
+}
+
+// lineRefusedByDoor is the host's line for a card whose last decision the
+// door refused while the record stayed pending. The code is the door's.
+func lineRefusedByDoor(c record.Code) string {
+	return "the earlier decision was refused by the door (" + string(c) + "): the card is pending, and can be decided again"
 }
 
 // refusal journals a refused decision.
@@ -293,7 +322,7 @@ func (s *Service) hold(ctx context.Context, decision, pendingBytes []byte, p rec
 		case errors.Is(err, ownerjournal.ErrExpired):
 			return ownerwire.DecideResult{}, refuse(record.CodeApprovalExpired, "the card expired while it was held")
 		case errors.Is(err, ownerjournal.ErrDecided):
-			return ownerwire.DecideResult{}, refuse(record.CodeDecisionInvalid, "the card has a decision already")
+			return ownerwire.DecideResult{}, s.decidedRefusal(p.ID)
 		}
 		return ownerwire.DecideResult{}, s.jerr(ctx, err)
 	}
@@ -341,6 +370,12 @@ func (s *Service) deliver(ctx context.Context, d *ownerjournal.Decision, p recor
 		return ownerwire.DecideResult{}, err
 	}
 	if res.refused != nil {
+		// The door refused the decision. When the record is still pending
+		// the card is undecided again: it comes back as pending, with the
+		// door's code, and may be decided again.
+		if shown, serr := s.cfg.Door.Show(ctx, p.ID); serr == nil && shown.Entry.State == record.StatePending {
+			return ownerwire.DecideResult{State: record.StatePending, Line: lineRefusedByDoor(res.refused.Code)}, nil
+		}
 		return ownerwire.DecideResult{}, res.refused
 	}
 	if !d.Approve() {

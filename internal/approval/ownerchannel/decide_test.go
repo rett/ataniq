@@ -389,13 +389,44 @@ func TestADecisionTwiceIsRefused(t *testing.T) {
 	_, _ = e.decide(p, true)
 	e.door.failDecide = nil
 	e.beat()
-	// The card has a journaled decision the door has not seen yet. Another
-	// one for it is refused, and the first is handed over.
+	// The card has a journaled approve the door has not seen yet. A deny
+	// for it is refused with a plain line that says the approve is on its
+	// way. The deny does not hand the approve over and apply it: that is
+	// the work of a restart and of the tick.
+	decides, _, _ := e.door.counts()
 	_, err := e.svc.Decide(context.Background(), src, frame(p, false))
 	wantCode(t, err, record.CodeDecisionInvalid)
-	if e.state(p.ID) != record.StateApplied {
-		t.Errorf("the first decision was not carried out: %s", e.state(p.ID))
+	if detail := detailOf(err); detail != "an approve for this card is already on its way to the door" {
+		t.Errorf("the deny was refused with %q", detail)
 	}
+	if after, _, _ := e.door.counts(); after != decides {
+		t.Errorf("the deny reached the door (%d decides, %d before)", after, decides)
+	}
+	if e.state(p.ID) != record.StatePending {
+		t.Errorf("the deny carried the approve out: %s", e.state(p.ID))
+	}
+	if calls, _ := e.intake.appliesSeen(); calls != 0 {
+		t.Errorf("applied %d times by a deny", calls)
+	}
+	// The same for a second approve.
+	_, err = e.svc.Decide(context.Background(), src, frame(p, true))
+	wantCode(t, err, record.CodeDecisionInvalid)
+	if detail := detailOf(err); detail != "an approve for this card is already on its way to the door" {
+		t.Errorf("the second approve was refused with %q", detail)
+	}
+	if n := len(e.entries(ownerjournal.KindDecision)); n != 1 {
+		t.Errorf("%d decision entries, want the one approve", n)
+	}
+	// The next tick hands the approve over.
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.state(p.ID) != record.StateApplied {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	// Once it was handed over the card is decided: the refusal says so.
+	_, err = e.svc.Decide(context.Background(), src, frame(p, false))
+	wantCode(t, err, record.CodeApprovalConsumed)
 }
 
 // OC31, last case: a later failed run on a merge with an approved, unused
@@ -741,5 +772,142 @@ func TestASettleTheDoorRefusedIsFinishedByTheOwner(t *testing.T) {
 	}
 	if n := e.merger.pinCount(); n != 0 {
 		t.Errorf("%d pins left", n)
+	}
+}
+
+// The door refuses a decision and the record stays pending (the decision's
+// own time ran out before it arrived). The card is undecided again: the
+// answer says so with the door's code, the card shows the same line, and a
+// new decision for it is accepted, journaled and carried out.
+func TestACardTheDoorRefusedADecisionForComesBackAndCanBeDecidedAgain(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.beat()
+	e.at["decision-journaled"] = func() { e.clock.Advance(31 * time.Minute) }
+	res, err := e.svc.Decide(context.Background(), src, frame(p, true))
+	delete(e.at, "decision-journaled")
+	if err != nil {
+		t.Fatalf("Decide returned %v, want the card back as pending", err)
+	}
+	if res.State != record.StatePending || res.Held {
+		t.Fatalf("the result is %+v, want pending and not held", res)
+	}
+	if !strings.Contains(res.Line, "refused by the door") || !strings.Contains(res.Line, string(record.CodeApprovalExpired)) {
+		t.Errorf("the line is %q, want the door's refusal and its code", res.Line)
+	}
+	if e.state(p.ID) != record.StatePending {
+		t.Fatalf("the door's state is %s", e.state(p.ID))
+	}
+	delivered := e.entries(ownerjournal.KindDelivered)
+	if len(delivered) != 1 || string(delivered[0].Body) != `{"code":"approval-expired"}` {
+		t.Fatalf("the delivered entries: %+v", delivered)
+	}
+	if uses, err := e.svc.journal().CardUses("project-a", start); err != nil || len(uses) != 0 {
+		t.Errorf("a refused decision counts as a card use: %v, %v", uses, err)
+	}
+	check := func(when string) {
+		t.Helper()
+		shown, err := e.svc.Show(context.Background(), p.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if shown.Outcome == nil || shown.Outcome.State != record.StatePending ||
+			!strings.Contains(shown.Outcome.Line, "refused by the door") || !strings.Contains(shown.Outcome.Line, string(record.CodeApprovalExpired)) {
+			t.Errorf("%s: the card shows %+v, want the refusal and its code", when, shown.Outcome)
+		}
+		listing, err := e.svc.List(context.Background())
+		if err != nil || len(listing.Pending) != 1 || listing.Pending[0].ID != p.ID {
+			t.Errorf("%s: the listing: %+v, %v", when, listing.Pending, err)
+		}
+	}
+	check("right after")
+	e.restart()
+	check("after a restart")
+
+	// Decided again, the card goes through.
+	res, err = e.decide(p, true)
+	if err != nil || res.State != record.StateApplied {
+		t.Fatalf("a new decision for the card: %+v %v", res, err)
+	}
+	if n := len(e.entries(ownerjournal.KindDecision)); n != 2 {
+		t.Errorf("%d decision entries, want the refused one and the new one", n)
+	}
+	if calls, moves := e.intake.appliesSeen(); calls != 1 || moves != 1 {
+		t.Errorf("applied %d times, moved %d", calls, moves)
+	}
+	if uses, err := e.svc.journal().CardUses("project-a", start); err != nil || len(uses) != 1 {
+		t.Errorf("the card uses: %v, %v", uses, err)
+	}
+	shown, err := e.svc.Show(context.Background(), p.ID)
+	if err != nil || shown.Outcome == nil || shown.Outcome.State != record.StateApplied {
+		t.Errorf("the card shows %+v, %v", shown.Outcome, err)
+	}
+}
+
+// The same refusal met by a tick that hands over a decision the door could
+// not be reached for. A deny is accepted for the card afterwards.
+func TestACardWhoseDecisionATickFoundRefusedCanBeDeniedAgain(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.door.failDecide = errors.New("down")
+	if _, err := e.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	e.door.failDecide = nil
+	e.advance(31 * time.Minute)
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if e.state(p.ID) != record.StatePending {
+		t.Fatalf("the door's state is %s", e.state(p.ID))
+	}
+	shown, err := e.svc.Show(context.Background(), p.ID)
+	if err != nil || shown.Outcome == nil || !strings.Contains(shown.Outcome.Line, string(record.CodeApprovalExpired)) {
+		t.Fatalf("the card shows %+v, %v", shown.Outcome, err)
+	}
+	res, err := e.decide(p, false)
+	if err != nil || res.State != record.StateDenied {
+		t.Fatalf("a deny for the card: %+v %v", res, err)
+	}
+	if e.state(p.ID) != record.StateDenied {
+		t.Errorf("the door's state is %s", e.state(p.ID))
+	}
+	if replies := e.mail.repliesFor("rq-test-01"); len(replies) != 1 || replies[0].State != record.StateDenied {
+		t.Errorf("the lead was told %+v", replies)
+	}
+	// Once a decision stands, the old line is gone with the pending state.
+	shown, err = e.svc.Show(context.Background(), p.ID)
+	if err != nil || shown.Outcome == nil || shown.Outcome.State != record.StateDenied {
+		t.Errorf("the card shows %+v, %v", shown.Outcome, err)
+	}
+}
+
+// A new decision for a card whose earlier one the door refused is on its
+// way: the card no longer shows the old refusal.
+func TestTheLineOfARefusedDecisionGoesWhenANewOneIsJournaled(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	p := e.card("feature-a")
+	e.door.failDecide = errors.New("down")
+	if _, err := e.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	e.door.failDecide = nil
+	e.advance(31 * time.Minute)
+	if err := e.svc.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if shown, err := e.svc.Show(context.Background(), p.ID); err != nil || shown.Outcome == nil {
+		t.Fatalf("the card shows %+v, %v", shown.Outcome, err)
+	}
+	e.door.failDecide = errors.New("down")
+	if _, err := e.decide(p, true); !errors.Is(err, ErrDoorUnavailable) {
+		t.Fatalf("Decide returned %v", err)
+	}
+	shown, err := e.svc.Show(context.Background(), p.ID)
+	if err != nil || shown.Outcome != nil {
+		t.Errorf("the card shows %+v (%v) while a new decision is on its way, want nothing", shown.Outcome, err)
 	}
 }

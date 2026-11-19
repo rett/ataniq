@@ -277,6 +277,11 @@ func (s *Service) Show(ctx context.Context, id string) (ownerwire.ShowResult, er
 				out.Held = true
 			}
 		}
+		// The door refused the last decision and the card is pending again:
+		// say so, with the door's code.
+		if r, ok := s.indexed(id); ok && r.refusedByDoor != "" && !out.Held {
+			out.Outcome = &ownerwire.Outcome{State: record.StatePending, Line: lineRefusedByDoor(r.refusedByDoor)}
+		}
 	} else {
 		_, text := s.recentOf(p, shown.Entry)
 		out.Outcome = &ownerwire.Outcome{State: shown.Entry.State, Line: text}

@@ -32,11 +32,15 @@ type idRecord struct {
 	// decidedAt is the time of the last decision or held entry.
 	decidedAt time.Time
 	// approve says whether the last decision entry was an approve, and
-	// decided whether there is a decision entry at all.
-	decided bool
-	approve bool
-	// refusedByDoor is the code the door refused the decision with, or
-	// empty.
+	// decided whether there is a decision entry at all. delivered says
+	// that the last decision entry has its delivered entry, whatever the
+	// door answered.
+	decided   bool
+	approve   bool
+	delivered bool
+	// refusedByDoor is the code the door refused the last decision with,
+	// while no decision or held entry came after it, or empty. The card is
+	// undecided again then.
 	refusedByDoor record.Code
 	// outcome is the last outcome entry.
 	outcomeState record.State
@@ -94,12 +98,19 @@ func (x *index) add(e ownerjournal.Entry) {
 		}
 		r := x.rec(e.PendingID)
 		r.decided, r.approve, r.decidedAt = true, b.Approve, e.At
+		r.delivered, r.refusedByDoor = false, ""
 	case ownerjournal.KindHeld:
-		x.rec(e.PendingID).decidedAt = e.At
+		r := x.rec(e.PendingID)
+		r.decidedAt, r.refusedByDoor = e.At, ""
 	case ownerjournal.KindDelivered:
 		var b indexCode
-		if json.Unmarshal(e.Body, &b) == nil && b.Code != "" {
-			x.rec(e.PendingID).refusedByDoor = record.Code(b.Code)
+		if json.Unmarshal(e.Body, &b) != nil {
+			return
+		}
+		r := x.rec(e.PendingID)
+		r.delivered = true
+		if b.Code != "" {
+			r.refusedByDoor = record.Code(b.Code)
 		}
 	case ownerjournal.KindOutcome:
 		var b indexOutcome
