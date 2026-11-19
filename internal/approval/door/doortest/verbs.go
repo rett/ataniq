@@ -517,9 +517,9 @@ func (d *Door) throttle(target string, now time.Time) bool {
 		if now.Before(until) {
 			return true
 		}
-		// The throttle is over, and the count starts again.
+		// The throttle is over. The times are kept, so that the next
+		// request is judged against the hour just past.
 		delete(d.throttled, target)
-		delete(d.asked, target)
 	}
 	d.asked[target] = since(d.asked[target], now.Add(-RepeatWindow))
 	if len(d.asked[target]) >= RepeatLimit {

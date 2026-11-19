@@ -396,8 +396,9 @@ func TestPendingCapCountsWhatIsNotFinal(t *testing.T) {
 }
 
 // The repeat throttle: three requests for one target in an hour are
-// taken, the fourth starts ten minutes of refusals, and after them the
-// count starts again. Another target is not touched by it.
+// taken, the fourth starts ten minutes of refusals, and after them each
+// request is judged against the hour just past, so the throttle starts
+// again while three are still in it. Another target is not touched by it.
 func TestRepeatThrottle(t *testing.T) {
 	f := newFixture(t)
 	ask := func() error {
@@ -420,13 +421,17 @@ func TestRepeatThrottle(t *testing.T) {
 	}
 	f.clock.Set(throttledAt.Add(ThrottleFor - time.Second))
 	wantCode(t, ask(), record.CodeRequestThrottled)
+	// The requests were at minutes 0, 10 and 20, and the throttle began at
+	// minute 30: at minute 40 there are still three in the hour.
 	f.clock.Set(throttledAt.Add(ThrottleFor))
-	for i := 0; i < RepeatLimit; i++ {
-		if err := ask(); err != nil {
-			t.Fatalf("request %d after the throttle: %v", i+1, err)
-		}
-		f.clock.Advance(time.Minute)
+	wantCode(t, ask(), record.CodeRequestThrottled)
+	// At minute 60 only two are left in the hour, so one is taken, and
+	// the next is one too many again.
+	f.clock.Set(throttledAt.Add(30 * time.Minute))
+	if err := ask(); err != nil {
+		t.Fatalf("with two left in the hour: %v", err)
 	}
+	f.clock.Advance(time.Minute)
 	wantCode(t, ask(), record.CodeRequestThrottled)
 
 	// Requests spread over more than an hour never reach the throttle.

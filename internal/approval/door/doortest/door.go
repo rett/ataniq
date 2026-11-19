@@ -21,7 +21,8 @@ const (
 	// RepeatLimit is how many requests for one verb and target are taken
 	// within RepeatWindow. The next is refused request-throttled, and so
 	// is every one for that verb and target for ThrottleFor after it.
-	// When that time is over the count starts again from none.
+	// When that time is over, requests are judged against the hour just
+	// past again: the throttle starts anew while three are still in it.
 	RepeatLimit  = 3
 	RepeatWindow = time.Hour
 	ThrottleFor  = 10 * time.Minute
