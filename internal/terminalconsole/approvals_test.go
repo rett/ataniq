@@ -1413,3 +1413,55 @@ func TestTheCockpitsSurfacesTakeTheWholeHostileSet(t *testing.T) {
 		})
 	}
 }
+
+// collect runs cmd, and the commands of every batch it returns, without
+// delivering any answer, and returns the answers in the order they finished.
+func (r *apprRig) collect(cmd tea.Cmd) []tea.Msg {
+	r.t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	r.b.inCmd = true
+	msg := cmd()
+	r.b.inCmd = false
+	switch v := msg.(type) {
+	case nil:
+		return nil
+	case tea.BatchMsg:
+		var out []tea.Msg
+		for _, c := range v {
+			out = append(out, r.collect(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func TestEnterOnTheGateOpensTheGatesCardWhenATickComesBeforeTheFirstListAnswers(t *testing.T) {
+	b := newFakeApprovals(t)
+	b.add("ap-x", "project-a", 40*time.Minute)
+	b.add("ap-y", "project-a", 9*time.Minute)
+	r := newApprRig(t, 140, 45, b, Options{})
+	r.poll()
+	r.focusPane(paneEvidence)
+	r.clk.Advance(100 * time.Millisecond)
+	_, enter := r.m.Update(enterKey) // the view's first list is out
+	// A tick comes before that list is answered, and its list reads newer
+	// state: the gate's card was decided, another came. That list is
+	// answered first, and the first one last.
+	older := b.listing.Pending
+	b.add("ap-z", "project-a", time.Minute)
+	b.listing.Pending = b.listing.Pending[1:]
+	_, tick := r.m.Update(apprTickMsg{at: r.clk.Now()})
+	answers := r.collect(tick)
+	b.listing.Pending = older
+	answers = append(answers, r.collect(enter)...)
+	for _, a := range answers {
+		r.send(a)
+	}
+	for _, id := range b.opens {
+		if id != "ap-x" {
+			t.Fatalf("the gate named ap-x and the view opened %v", b.opens)
+		}
+	}
+}
