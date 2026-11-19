@@ -181,13 +181,17 @@ mouse is reported. Not every terminal does.
 
 ### The action list
 
-Ctrl+K lists the controls the cockpit knows of. Every one is unavailable, and
-the list gives each one's reason. The fixture lists these:
+Ctrl+K lists the controls the cockpit knows of. With `--demo`, Approve pending
+gate and Deny pending gate are listed with the key g, which opens the
+approvals view from the list; a decision is made there, on the card (see
+[Approvals](#approvals)). Every other control is unavailable, and the list
+gives its reason. In the daemon view and with `--attach` every control is
+unavailable. The fixture lists these:
 
 | Control | Key | Reason |
 | --- | --- | --- |
-| Approve pending gate | Ctrl+K | No grant is honoured until the owner channel is qualified. |
-| Deny pending gate | Ctrl+K | No grant is honoured until the owner channel is qualified. |
+| Approve pending gate | g | No grant is honoured until the owner channel is qualified (with `--demo`: g opens the approvals view). |
+| Deny pending gate | g | No grant is honoured until the owner channel is qualified (with `--demo`: g opens the approvals view). |
 | Full attach | a | Full attach needs a qualified holder and an exclusive input owner. Unqualified: the console has no live backend. |
 | Send to lead | Ctrl+K | Sending needs a qualified command and receipt path. Unqualified: the console has no live backend. |
 | Interrupt lead | Ctrl+K | Interrupting needs a qualified command and receipt path. Unqualified: the console has no live backend. |
