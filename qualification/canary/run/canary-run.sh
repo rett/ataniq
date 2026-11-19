@@ -1114,11 +1114,24 @@ make_message() {
     "canary-token: $TOKEN" >"$BODY"
 }
 
+# paste_message tells the owner how to put the message into the pane himself.
+# It must arrive as one bracketed paste followed by one Enter: the stand-in
+# commits only from a paste, and the body has two lines, so typed line by line
+# the first Enter would submit half of it to a live agent.
+paste_message() {
+  out '   Owner: put the message into the pane yourself. Do NOT type it. Copy the whole text of this file:'
+  out "     $BODY"
+  out '   and paste it into the pane with your terminal'"'"'s paste, so that it arrives as ONE paste'
+  out '   (a bracketed paste; typed line by line, the first Enter would send half of it).'
+  out '   Then press Enter in the pane ONCE. The text of the file, to compare with what you paste:'
+  sed 's/^/     | /' "$BODY"
+}
+
 step_17() {
   if [ "$PASS" = A ]; then
-    _exp='the config declares the tested version and the stand-in draws a screen no recogniser knows, so the fence answers not-now with the reason not-ready and writes nothing (L6); the owner then types the message; a refusal by the daemon (exit status 30) or by the fence (refused, untested: a wrong config) fails the step'
+    _exp='the config declares the tested version and the stand-in draws a screen no recogniser knows, so the fence answers not-now with the reason not-ready and writes nothing (L6); the owner then pastes the message into the pane as one paste and presses Enter once; a refusal by the daemon (exit status 30) or by the fence (refused, untested: a wrong config) fails the step'
   else
-    _exp='the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner types'
+    _exp='the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner pastes the message as one paste'
   fi
   step_head 17 'inject one message' \
     "inject one message: make one named file with one token, commit it on the branch $BRANCH" "$_exp" 'G1, G3'
@@ -1131,11 +1144,11 @@ step_17() {
     if [ "$PASS" = A ]; then
       dry 'check: the result is not-now, not-ready, written nothing'
       dry 'fail the step on exit status 30 (the daemon refused the message) and on refused, untested (a wrong config: the version is not a tested one)'
-      dry "print the message's text for the owner to type in the pane himself; wait"
+      dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; wait"
     else
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
-      dry "on any refusal: the owner types the message himself, and that is recorded"
+      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; that is recorded"
     fi
     result ok
     done_step
@@ -1172,10 +1185,9 @@ step_17() {
       return 0
     fi
     check 'the fence answered not-now, not-ready and wrote nothing (L6: an unknown screen)' is_eq "$_act" owner-supplies || return 0
-    out '   Owner: type this message in the pane yourself, and submit it:'
-    sed 's/^/     /' "$BODY"
-    wait_key 'Owner: press Enter here when you have typed and submitted the message.'
-    note 'the owner typed the message'
+    paste_message
+    wait_key 'Owner: press Enter here when you have pasted and submitted the message.'
+    note 'the owner pasted the message'
     result 'not-now, not-ready, nothing: the owner supplied the message'
     done_step
     return 0
@@ -1203,12 +1215,13 @@ step_17() {
       ;;
     owner-supplies)
       out '   The fence refused. On the G3 fallback (the config states the observed version) that is correct.'
-      ask 'Owner: type typed after you typed the message in the pane yourself; anything else ends the pass and runs the clean-up chain'
-      if [ "$ANSWER" != typed ]; then
+      paste_message
+      ask 'Owner: type pasted here after you pasted the message in the pane and pressed Enter once; anything else ends the pass and runs the clean-up chain'
+      if [ "$ANSWER" != pasted ]; then
         fail 'the fence refused and the owner ended the pass'
         return 0
       fi
-      result "refused (${_r:-no reason}): the owner typed the message"
+      result "refused (${_r:-no reason}): the owner pasted the message"
       ;;
     *)
       out '   No key is pressed for this result.'
@@ -1226,7 +1239,7 @@ step_17() {
 step_18() {
   if [ "$PASS" = A ]; then
     step_head 18 'The agent acts: the stand-in' \
-      'the stand-in takes the token of the typed message and commits; the owner looks at the pane' \
+      'the stand-in takes the token of the pasted message and commits; the owner looks at the pane' \
       'one commit on the branch in the clone (step 20 fetches it)' 'G2'
     affirm 'Owner: the pane shows that the stand-in committed' yes || return 0
     result ok

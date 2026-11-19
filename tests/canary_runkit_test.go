@@ -992,3 +992,54 @@ func TestCanaryRunKitPassAExpectsNotNow(t *testing.T) {
 	}
 	t.Error("the dry run of pass A has no step 17")
 }
+
+// Where the owner supplies the message himself, the instruction must produce
+// the act the next step checks: the stand-in commits only from a bracketed
+// paste followed by Enter, and the body has two lines. So the script tells
+// him to paste the file it names as one paste and to press Enter once, and
+// never to type the message.
+func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
+	text := canaryScriptText(t)
+	funcs := canaryFuncs(t, text)
+	paste, ok := funcs["paste_message"]
+	if !ok {
+		t.Fatal("the script has no paste_message")
+	}
+	for _, want := range []string{
+		"Do NOT type it", `out "     $BODY"`, "with your terminal'\"'\"'s paste", "ONE paste",
+		"a bracketed paste", "press Enter in the pane ONCE", `"$BODY"`,
+	} {
+		if !strings.Contains(paste, want) {
+			t.Errorf("paste_message does not say %s", want)
+		}
+	}
+	body := funcs["step_17"]
+	if n := canaryCalls(body, "paste_message"); n != 2 {
+		t.Errorf("step 17 gives the paste instruction in %d places, want 2 (pass A, and a refusal in pass B)", n)
+	}
+	passA := body[strings.Index(body, `if [ "$_act" = wrong-config ]; then`):strings.Index(body, "case $_act in\n")]
+	if canaryCalls(passA, "paste_message") != 1 {
+		t.Error("pass A's branch of step 17 does not give the paste instruction")
+	}
+	supplies := body[strings.Index(body, "\n    owner-supplies)\n"):]
+	supplies = supplies[:strings.Index(supplies, "\n      ;;\n")]
+	if canaryCalls(supplies, "paste_message") != 1 || !strings.Contains(supplies, `if [ "$ANSWER" != pasted ]; then`) {
+		t.Errorf("the refusal arm of step 17 does not give the paste instruction and ask for \"pasted\":\n%s", supplies)
+	}
+	for _, old := range []string{"type this message", "typed the message", "types the message", "typed and submitted"} {
+		if strings.Contains(text, old) {
+			t.Errorf("the script still tells the owner to type the message: %q", old)
+		}
+	}
+	for _, pass := range []string{"A", "B"} {
+		out, _ := canaryDry(t, "--pass", pass, "--config", "/nonexistent/sample/canary.json")
+		for _, b := range canaryBlocks(out) {
+			if !strings.HasPrefix(b.heading, "== step 17 [pass "+pass+"]: ") {
+				continue
+			}
+			if b.count("print the file to paste from, ") != 1 || b.count("as one paste, and presses Enter once: he does not type it") != 1 {
+				t.Errorf("the dry run of step 17 in pass %s does not give the paste instruction:\n%s", pass, strings.Join(b.lines, "\n"))
+			}
+		}
+	}
+}

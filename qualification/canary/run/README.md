@@ -19,7 +19,7 @@ There are two passes, and pass A comes first:
 - **Pass A** uses the stand-in agent that `make canary-build` builds. It needs
   no credential. It runs two epochs: in the first the fence finds the screen
   unknown, answers `not-now` with the reason `not-ready` and writes nothing,
-  and the owner types the message; in the second the stand-in replays
+  and the owner pastes the message; in the second the stand-in replays
   recorded screens, so the fence can accept inside the real sandbox. In the
   first epoch a refusal fails the step: `refused` with the reason `untested`
   means the config does not declare a tested version, and exit status 30 means
@@ -94,7 +94,20 @@ Exactly one result of the injection gets the owner's Enter in the pane:
 then records `owner-enter` as a line of its own. On `uncertain` with the reason
 `died` nothing is pressed, whatever was written: the input may hold an open
 paste. The owner looks at the pane, the script records what he saw, and what
-happens next is his decision. On a refusal the owner types the message himself.
+happens next is his decision. On a refusal the owner puts the message into the
+pane himself.
+
+### When the owner supplies the message himself
+
+In the first epoch of pass A, and in pass B when the fence refuses, the owner
+puts the message into the pane. He does not type it. The script prints the
+path of the message file (`message-1.txt` in the evidence folder) and its
+text; the owner copies the whole text of that file and pastes it into the pane
+with his terminal's paste, so that it arrives as one bracketed paste, and then
+presses Enter in the pane once. The console forwards the paste as a paste.
+Typed keys do not do: the stand-in commits only from a paste followed by
+Enter, and the message has two lines, so with a live agent the Enter after the
+first line would submit half of it.
 
 ### When a step fails
 
