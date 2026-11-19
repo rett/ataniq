@@ -12,8 +12,8 @@ chose, with one exception: in a build with the `ataniq_canary` tag, under
 `--canary`, the holder runs a copy of the harness's start sequence for one
 throwaway lead in an attended session, with assertion 10 waived by name (see
 [the canary slice guide](canary-slice.md)). Release builds do not contain it,
-and it is not a qualification. This guide says what the code generates and what it checks. It does not
-say that the sandbox is qualified, safe or supported, and no part of it should
+and it is not a qualification. This guide says what the code generates and what it
+checks. It does not say that the sandbox is qualified, safe or supported, and no part of it should
 be read that way.
 
 The proposal follows the lead-hosting design (sections 3 and 7.3), revision 4:
@@ -923,8 +923,8 @@ number, and it comes last. The probe makes the inside half of each that has one
 (1 to 8 and 11), once each, before it executes the agent. The holder would make
 the outside half of 1, 3, 5 and 7, then 9 and 10
 (`assert.RunOutside`; only the qualification harness calls it, and no holder
-does yet, except the holder in canary mode), after the probe has reported and before it accepts the start, add
-them to the probe's results and judge the whole. The report has no field that
+does yet, except the holder in canary mode), after the probe has reported and
+before it accepts the start, add them to the probe's results and judge the whole. The report has no field that
 says the sandbox as a whole passed or is supported.
 
 | No. | What is checked | Where |

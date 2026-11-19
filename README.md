@@ -59,14 +59,15 @@ the provisional command `ataniq-intake`, is described in
 [the lead intake guide](docs/lead-intake.md); the opt-in harness for a real
 sandbox template is in
 [the lead mirror qualification manual](docs/qualification-lead-mirror.md).
-These parts are built side by side and none calls another: the daemon starts no
+These parts are built side by side and none calls another (the daemon starts no
 holder, the holder launches no sandbox and injects nothing, and the intake is
-run by hand, except in a build with the `ataniq_canary` tag, under `--canary`.
+run by hand), except in a build with the `ataniq_canary` tag, under `--canary`.
 There, one attended session on a throwaway repository joins them: the daemon
 starts a holder, the holder starts the sandbox with the waiver of one assertion,
 a scratch agent receives one injected message and one commit comes back through
-the intake. It is not a qualification, it passes no case, and release builds do
-not contain it. See [the canary slice guide](docs/canary-slice.md).
+the intake, which the owner still runs by hand. It is not a qualification, it
+passes no case, and release builds do not contain it. See
+[the canary slice guide](docs/canary-slice.md).
 
 ## Architecture decisions
 

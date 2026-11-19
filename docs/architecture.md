@@ -46,8 +46,8 @@ with the `ataniq_canary` tag, under `--canary`. Its opt-in harness is in
 
 [Lead injection](lead-injection.md) describes the provisional library that
 pastes a message into a terminal-hosted lead and submits it only when its
-recognisers read the screen as idle; it is a library that no daemon and no
-holder uses yet, and it is unqualified, except that a build with the
+recognisers read the screen as idle; it is unqualified, and it is a library
+that no daemon and no holder uses yet, except that a build with the
 `ataniq_canary` tag, under `--canary`, uses it for one message.
 
 [Lead intake](lead-intake.md) describes the exchange mirror and the reviewed,
@@ -72,12 +72,13 @@ registry, lock, unit-manager and lifecycle packages a later managed-lead daemon
 will use are in the tree. They start, stop and manage no lead. See
 [the lead daemon guide](lead-daemon.md). The daemon, the holder, the sandbox
 proposal, the injection library and the intake are built side by side, and
-none calls another: the daemon starts no holder, the holder launches no sandbox
-and injects nothing, and the intake is run by hand, except in a build with the
+none calls another (the daemon starts no holder, the holder launches no sandbox
+and injects nothing, and the intake is run by hand), except in a build with the
 `ataniq_canary` tag, under `--canary`. There, one attended session on a
-throwaway repository joins them, as [the canary slice guide](canary-slice.md)
-describes: it is not a qualification and not the week-long canary lead, and
-release builds do not contain it.
+throwaway repository joins the daemon, the holder, the sandbox and the injection
+library, and the owner still runs the intake by hand, as
+[the canary slice guide](canary-slice.md) describes: it is not a qualification
+and not the week-long canary lead, and release builds do not contain it.
 
 ## Authentication and authority
 
