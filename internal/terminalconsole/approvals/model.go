@@ -171,7 +171,7 @@ type (
 		// decision on it, to take in what comes after the decision.
 		reread bool
 		c      card.Card
-		err     error
+		err    error
 	}
 	pagedMsg struct {
 		owner *Model
