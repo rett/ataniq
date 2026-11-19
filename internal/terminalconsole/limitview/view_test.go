@@ -455,12 +455,30 @@ func TestSetErrorCleansAndBounds(t *testing.T) {
 	} {
 		m := newModel(sampleView(t, 12, []int{9}, false))
 		m.SetError(line)
-		if m.note == "" || ansi.StringWidth(m.note) > MaxErrorCells || strings.ContainsAny(m.note, "\x1b\x00\n\x07\u202e\u200b\ufffd") {
+		if m.note == "" || ansi.StringWidth(m.note) > 160 || strings.ContainsAny(m.note, "\x1b\x00\n\x07\u202e\u200b\ufffd") {
 			t.Errorf("SetError(%.20q) kept %q", line, m.note)
 		}
 		for _, r := range screen(m) {
 			if r != '\n' && (r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x202e || r == 0x200b) {
 				t.Errorf("screen for %.20q holds %U", line, r)
+			}
+		}
+	}
+}
+
+func TestLongErrorLeavesHelpLineWhole(t *testing.T) {
+	for _, line := range []string{strings.Repeat("w", 1<<16), strings.Repeat("word ", 1<<12), strings.Repeat("宽", 1<<12)} {
+		plain := newModel(sampleView(t, 12, []int{9}, false))
+		want := rowsAt(plain, 80, 24)
+		m := newModel(sampleView(t, 12, []int{9}, false))
+		m.SetError(line)
+		rows := rowsAt(m, 80, 24)
+		if strings.TrimSpace(rows[5]) == "" {
+			t.Errorf("note row 5 is empty for %.10q", line)
+		}
+		for i, r := range rows {
+			if i >= 7 && r != want[i] {
+				t.Errorf("row %d changed for %.10q: %q, want %q", i, line, r, want[i])
 			}
 		}
 	}
