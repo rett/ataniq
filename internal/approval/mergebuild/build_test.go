@@ -15,8 +15,9 @@ import (
 
 var ctx = context.Background()
 
-// formats are the object formats every scene is tried in.
-var formats = []string{"sha1", "sha256"}
+// formats are the object formats every scene is tried in: the ones Build
+// and Check serve. SHA-256 is refused; see TestSHA256IsRefused.
+var formats = []string{"sha1"}
 
 // A clean merge: the tree holds both sides' changes, the commit is the text
 // the package comment lays out, and the pin points at it.
@@ -461,5 +462,39 @@ func TestUnpin(t *testing.T) {
 	}
 	if got, want := l.refs(), m.Commit+" refs/ataniq/pending/pin-1"; got != want {
 		t.Errorf("the refs are %q, want %q", got, want)
+	}
+}
+
+// A SHA-256 repository is refused by Build and Check, before anything is
+// written. The reason is the attribute pin, a SHA-1 id: in a SHA-256
+// repository git reads it as a name, so a ref of that name (a tag or a
+// branch, which comes from upstream) is where attributes would be read.
+// The test plants such a tag at a commit whose tree says "* merge=union",
+// which without the refusal makes the conflicting merge end cleanly.
+func TestSHA256IsRefused(t *testing.T) {
+	noGoroutineLeft(t)
+	l := newLabFormat(t, "sha256")
+	s := newScene(t, l, side{".gitattributes", "* merge=union\n"}, nil)
+	const emptyTreeName = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	l.git("create refs/tags/"+emptyTreeName+" "+s.target+"\n", "update-ref", "--no-deref", "--stdin")
+	refs, commits, trees := l.refs(), l.count("commit"), l.count("tree")
+
+	in := inputs(s.clashTarget, s.clashFeature)
+	m, err := Build(ctx, l.repo, in, "k")
+	if !errors.Is(err, ErrObjectFormat) || m != (Merge{}) {
+		t.Errorf("Build returned %+v, %v; want ErrObjectFormat", m, err)
+	}
+	if err := Check(ctx, l.repo, s.clashTarget, in); !errors.Is(err, ErrObjectFormat) {
+		t.Errorf("Check returned %v; want ErrObjectFormat", err)
+	}
+	if l.refs() != refs || l.count("commit") != commits || l.count("tree") != trees {
+		t.Error("a refused call wrote a ref or an object")
+	}
+
+	// Unpin merges nothing and still works there.
+	pin := "refs/ataniq/pending/k"
+	l.git("create "+pin+" "+s.target+"\n", "update-ref", "--no-deref", "--stdin")
+	if err := Unpin(ctx, l.repo, "k", s.target); err != nil {
+		t.Errorf("Unpin: %v", err)
 	}
 }

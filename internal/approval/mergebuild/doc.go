@@ -16,8 +16,8 @@
 // ([boundedexec]), so every run has the pinned environment and a deadline:
 //
 //   - "merge-tree --write-tree", in the one form gitenv allows, computes the
-//     merged tree with no working tree. No attribute is read from any tree,
-//     so a ".gitattributes" a lead committed cannot make a conflicting merge
+//     merged tree with no working tree. No attribute is read from any tree
+//     (in a SHA-1 repository, see below), so a ".gitattributes" a lead committed cannot make a conflicting merge
 //     end cleanly or change what a clean one holds. The repository's own
 //     "info/attributes" cannot be switched off, so the package refuses a
 //     repository in which it is not absent or empty, before git runs.
@@ -58,6 +58,17 @@
 // repository's own object format; the package asks the repository for its
 // format once per call and refuses an id of the other length, which git
 // would read as the name of a ref.
+//
+// # Object format
+//
+// [Build] and [Check] serve SHA-1 repositories only and refuse any other
+// ([ErrObjectFormat]), before git merges anything. The reason is the
+// attribute pin: [gitenv] pins the attribute source to the SHA-1 empty
+// tree, an id that a SHA-256 repository reads as a name, so a ref of that
+// name (a tag or a branch from upstream) would become the attribute source
+// and could bend the merge. The refusal ends when the pinned environment
+// pins the empty tree of the repository's own format. [Unpin] merges
+// nothing and works in either format.
 //
 // # What it does not do
 //

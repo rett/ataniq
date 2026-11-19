@@ -22,6 +22,13 @@ var (
 	// merge is computed in it. It wraps the error of
 	// [gitenv.CheckInfoAttributes].
 	ErrAttributes = errors.New("mergebuild: the repository's attribute file is refused")
+	// ErrObjectFormat means the repository's object format is not SHA-1,
+	// which [Build] and [Check] do not yet serve: the pinned environment
+	// pins the attribute source to the SHA-1 empty tree, and in a SHA-256
+	// repository git reads that 40-digit id as a name, so a ref of that
+	// name would become the attribute source. [Unpin] needs no merge and
+	// works in either format.
+	ErrObjectFormat = errors.New("mergebuild: the repository's object format is not served")
 	// ErrNoCommit means an id that should name a commit of the repository
 	// names another kind of object, or none.
 	ErrNoCommit = errors.New("mergebuild: an id does not name a commit of the repository")
@@ -70,8 +77,9 @@ func PinRef(key string) (string, error) {
 func pinRef(key string) string { return PinPrefix + key }
 
 // prepare does what [Build] and [Check] share before any merge: it checks
-// the values, then "info/attributes", then, with git, that every id has
-// the length of the repository's object format. ids are further object ids
+// the values, then "info/attributes", then, with git, that the repository's
+// object format is SHA-1 ([ErrObjectFormat]) and that every id has its
+// length. ids are further object ids
 // under that last rule.
 func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, error) {
 	if err := in.check(); err != nil {
@@ -87,6 +95,13 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 	if err := c.format(ctx); err != nil {
 		return nil, err
 	}
+	// Until the pinned environment pins the empty tree of the repository's
+	// own format, a merge in a SHA-256 repository could read its attributes
+	// from a ref a name-lookup finds (see [ErrObjectFormat]), so none is
+	// computed there.
+	if c.idLen != 40 {
+		return nil, ErrObjectFormat
+	}
 	for _, id := range append([]string{in.TargetTip, in.FeatureTip}, ids...) {
 		if !c.isID(id) {
 			return nil, refuse("an object id does not have the length of the repository's object format")
@@ -100,7 +115,7 @@ func prepare(ctx context.Context, repo Repo, in Inputs, ids ...string) (*call, e
 //
 // In order: every value of in and the key are checked ([ErrValue]); the
 // repository's "info/attributes" must be absent or empty ([ErrAttributes]);
-// the two tips must be full ids of the repository's object format and name
+// the repository must use SHA-1 ([ErrObjectFormat]); the two tips must be full ids of the repository's object format and name
 // commits ([ErrValue], [ErrNoCommit]); the key must have no pin yet
 // ([ErrPinExists]); the tips must share history ([ErrUnrelated]). Then git
 // merges the two commits, reading no attribute from any tree. A conflict is
