@@ -272,7 +272,7 @@ func (b *Backend) Decide(d card.Decision) (card.Outcome, error) {
 		return card.Outcome{}, refuse(record.CodeDecisionInvalid, "the sign-offs are not the flagged list")
 	}
 	if !d.Approve {
-		e.state, e.line, e.decidedAt = record.StateDenied, lineDenied, now
+		e.state, e.line, e.decidedAt, e.held = record.StateDenied, lineDenied, now, false
 		return card.Outcome{State: e.state, Line: e.line}, nil
 	}
 	pr := b.projects[pending.Binding.Project]
@@ -283,7 +283,7 @@ func (b *Backend) Decide(d card.Decision) (card.Outcome, error) {
 		return card.Outcome{State: record.StatePending, Line: lineHeld, Held: true}, nil
 	}
 	pr.uses = append(pr.uses, now)
-	e.state, e.line, e.decidedAt = record.StateApproved, lineApproved, now
+	e.state, e.line, e.decidedAt, e.held = record.StateApproved, lineApproved, now, false
 	return card.Outcome{State: e.state, Line: e.line}, nil
 }
 

@@ -438,6 +438,32 @@ func TestHeldPastTheLimit(t *testing.T) {
 	}
 }
 
+func TestHeldMarkIsClearedWhenTheCardIsDecided(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		b, c := newBackend(t)
+		b.Activity(c.t)
+		id := "ap-sample-held"
+		k := open(t, b, id)
+		if approve {
+			// Room for the held card: the limit of project c is raised.
+			if _, err := b.SetLimit(projectC, limits.Change{To: 3, Typed: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := b.Decide(card.Decision{ID: id, BindingSHA256: k.BindingSHA256, Approve: approve})
+		if err != nil || out.Held {
+			t.Fatalf("approve=%v: %+v %v", approve, out, err)
+		}
+		if k = open(t, b, id); k.After.Held {
+			t.Errorf("approve=%v: the card keeps its held mark", approve)
+		}
+		l, _ := b.List()
+		if len(l.Recent) != 1 || l.Recent[0].Held {
+			t.Errorf("approve=%v: the list row keeps its held mark: %+v", approve, l.Recent)
+		}
+	}
+}
+
 func itemOf(l card.Listing, id string) card.Item {
 	for _, it := range append(append([]card.Item(nil), l.Pending...), l.Recent...) {
 		if it.ID == id {
