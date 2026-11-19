@@ -81,10 +81,12 @@ func FuzzDecodeNothing(f *testing.F) {
 
 func FuzzDecodeListing(f *testing.F) {
 	fuzzForm(f, "listing",
+		`{"count":{"requests":0,"would_meet":0},"not_listed":0,"pending":[],"recent":[],"rules":[]}`,
+		`{"count":{"requests":0,"would_meet":1},"not_listed":0,"pending":[],"recent":[],"rules":[]}`,
+		`{"count":{"requests":0,"would_meet":0},"not_listed":-1,"pending":[],"recent":[],"rules":[]}`,
 		`{"count":{"requests":0,"would_meet":0},"pending":[],"recent":[],"rules":[]}`,
-		`{"count":{"requests":0,"would_meet":1},"pending":[],"recent":[],"rules":[]}`,
-		`{"count":{"requests":0,"would_meet":0},"pending":[{"bytes":"YQ=="}],"recent":[],"rules":[]}`,
-		`{"count":{"requests":0,"would_meet":0},"looked_at":"","pending":[],"recent":[],"rules":[]}`)
+		`{"count":{"requests":0,"would_meet":0},"not_listed":0,"pending":[{"bytes":"YQ=="}],"recent":[],"rules":[]}`,
+		`{"count":{"requests":0,"would_meet":0},"looked_at":"","not_listed":0,"pending":[],"recent":[],"rules":[]}`)
 }
 
 func FuzzDecodeShowParams(f *testing.F) {

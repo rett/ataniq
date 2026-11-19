@@ -11,9 +11,10 @@ import (
 
 // The errors of the decision entries, found with errors.Is.
 var (
-	// ErrDecided says that the pending id already has a decision entry. A
-	// pending record is decided once; only a held entry may be followed
-	// by another entry for the same id.
+	// ErrDecided says that the pending id already has a decision entry
+	// that the door did not refuse. A pending record is decided once; only
+	// a held entry, or a decision the door refused while the record stayed
+	// pending, may be followed by another entry for the same id.
 	ErrDecided = errors.New("ownerjournal: the pending id already has a decision")
 	// ErrExpired says that the pending id's held entry was closed as
 	// expired, so nothing more can be decided for it.
@@ -261,10 +262,19 @@ func related(q querier, seq int64, kind Kind) ([]Entry, error) {
 	return queryEntries(q, "SELECT "+entryColumns+" FROM entries WHERE ref = ? AND kind = ? ORDER BY seq", seq, string(kind))
 }
 
+// refusedByDoorSQL is the condition, for the decision entry that the query
+// calls alias, that the door answered it with a refusal: it has a delivered
+// entry whose code is not empty. The same condition is in the layout's
+// trigger on decision entries.
+func refusedByDoorSQL(alias string) string {
+	return `EXISTS (SELECT 1 FROM entries x WHERE x.ref = ` + alias + `.seq AND x.kind = 'delivered' AND x.body <> CAST('{"code":""}' AS BLOB))`
+}
+
 // undecided checks that a pending id can still be decided: it has no
-// decision entry and was not closed as expired.
+// decision entry that stands (one the door refused does not), and it was
+// not closed as expired.
 func (t *txn) undecided(project, id string) error {
-	n, err := count(t.tx, "SELECT count(*) FROM entries WHERE project = ? AND pending_id = ? AND kind = 'decision'", project, id)
+	n, err := count(t.tx, "SELECT count(*) FROM entries d WHERE d.project = ? AND d.pending_id = ? AND d.kind = 'decision' AND NOT "+refusedByDoorSQL("d"), project, id)
 	if err != nil {
 		return err
 	}
@@ -308,8 +318,9 @@ func (t *txn) addActivity(e Entry, surface, session string, v Seen) error {
 // [Decision.MarkRefusedByDoor]. A decision that has neither is listed by
 // [Store.Undelivered].
 //
-// It refuses with [ErrDecided] a second decision for a pending id, and
-// with [ErrExpired] a decision for an id whose held entry was closed as
+// It refuses with [ErrDecided] a second decision for a pending id, unless
+// the door refused the first (see [Decision.MarkRefusedByDoor]), and with
+// [ErrExpired] a decision for an id whose held entry was closed as
 // expired.
 func (s *Store) AppendDecision(decision []byte, seen Seen) (*Decision, error) {
 	rec, at, err := readDecision(decision)
@@ -499,8 +510,11 @@ func (d *Decision) MarkDelivered(at time.Time) (*Delivery, error) {
 // MarkRefusedByDoor journals that the door answered the decision with a
 // refusal, for example because the pending record had ended meanwhile.
 // The decision is then closed: it is not handed over again after a
-// restart, and it has no use and no outcome. A failure to reach the door
-// is not a refusal; such a decision stays undelivered.
+// restart, and it has no use and no outcome. The pending record usually
+// stays pending at the door, and the card counts as undecided again: a new
+// decision or held entry for the id is accepted, the refused decision is no
+// card use, and [Store.Unjournaled] still knows it. A failure to reach the
+// door is not a refusal; such a decision stays undelivered.
 func (d *Decision) MarkRefusedByDoor(at time.Time, code record.Code) error {
 	if !validCode(code) {
 		return errors.New("ownerjournal: the door's code is not 1 to 64 lower-case letters and dashes")
@@ -864,8 +878,9 @@ func (s *Store) ActivityOf(seq int64) (Activity, error) {
 
 // Unjournaled takes the pending records the door holds as decided by the
 // owner and returns those the journal lacks, in the order given: the ones
-// with no decision entry, and, where a digest is given, the ones whose
-// journaled decision has other bytes. A held entry does not count: a held
+// with no decision entry, and, where a digest is given, the ones none of
+// whose journaled decisions (there are more than one only when the door
+// refused the earlier) has those bytes. A held entry does not count: a held
 // decision was never handed to the door.
 //
 // Every decision reaches the door through the journal, so one the journal
@@ -881,7 +896,11 @@ func (s *Store) Unjournaled(decided []DoorDecision) ([]DoorDecision, error) {
 			if err != nil {
 				return err
 			}
-			if len(entries) == 1 && (d.SHA256 == "" || d.SHA256 == record.Digest(entries[0].Record)) {
+			journaled := false
+			for _, e := range entries {
+				journaled = journaled || d.SHA256 == "" || d.SHA256 == record.Digest(e.Record)
+			}
+			if journaled {
 				continue
 			}
 			out = append(out, d)

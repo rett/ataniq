@@ -57,6 +57,11 @@ type Listing struct {
 	Recent []RecentItem `json:"recent"`
 	// Rules are the standing rules.
 	Rules []Rule `json:"rules"`
+	// NotListed is how many pending records were left out of Pending
+	// because the listing did not fit one page: the newest ones, so that
+	// the oldest, which end first, are shown. It is 0 when every pending
+	// record is listed. The field is always written.
+	NotListed int64 `json:"not_listed"`
 	// Count is the count from the first card.
 	Count Count `json:"count"`
 	// LookedAt is the "since he last looked" mark, a record's time. It is

@@ -241,7 +241,7 @@ func alertsSince(q querier, project string, from time.Time) ([]Alert, error) {
 
 // cardUses returns the times of a project's card uses at or after from.
 func cardUses(q querier, project string, from time.Time) ([]time.Time, error) {
-	entries, err := queryEntries(q, "SELECT "+entryColumns+" FROM entries WHERE kind = 'decision' AND project = ? AND at >= ? ORDER BY at, seq", project, from.UnixNano())
+	entries, err := queryEntries(q, "SELECT "+columnsOf("d")+" FROM entries d WHERE d.kind = 'decision' AND d.project = ? AND d.at >= ? AND NOT "+refusedByDoorSQL("d")+" ORDER BY d.at, d.seq", project, from.UnixNano())
 	if err != nil {
 		return nil, err
 	}
@@ -260,8 +260,9 @@ func cardUses(q querier, project string, from time.Time) ([]time.Time, error) {
 
 // CardUses returns the decision times of a project's card uses at or
 // after from, oldest first. A card use is an approve journaled as a
-// decision, whatever became of it later; a held approve and a deny are
-// not uses. The times are in UTC; the caller places them on days in its
+// decision, whatever became of it later, unless the door refused that
+// decision (it did not use the card); a held approve and a deny are not
+// uses. The times are in UTC; the caller places them on days in its
 // clock's location. With the start of today it gives what the limit
 // judges the next approve against.
 func (s *Store) CardUses(project string, from time.Time) ([]time.Time, error) {
