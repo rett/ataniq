@@ -47,6 +47,8 @@ usage() {
     '                      wait for one key as the clean-up chain does (reads standard input)' \
     '         pass-a-record FILE' \
     '                      what step 2 of pass B reads in a result.txt of pass A' \
+    '         outside-roots FOLDER ROOT...' \
+    '                      whether the evidence folder FOLDER lies outside every ROOT, links resolved' \
     '         counters-7501 FIELDS' \
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
@@ -436,6 +438,51 @@ inject_action() {
 
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
+# resolved prints the absolute path $1 as the kernel will follow it: the part
+# of it that exists is resolved with cd -P, so no symbolic link is left in it,
+# and the part that does not exist yet is kept as written (mkdir makes it as
+# plain folders). It fails when the path is not absolute or its existing part
+# cannot be entered.
+resolved() {
+  case $1 in /*) ;; *) return 1 ;; esac
+  _rp=$1
+  _tail=
+  while [ "${_rp%/}" != "$_rp" ] && [ "$_rp" != / ]; do _rp=${_rp%/}; done
+  while [ ! -d "$_rp" ] && [ "$_rp" != / ]; do
+    _tail=/${_rp##*/}$_tail
+    _rp=${_rp%/*}
+    [ -n "$_rp" ] || _rp=/
+  done
+  _rp=$(CDPATH='' cd -P -- "$_rp" 2>/dev/null && pwd -P) || return 1
+  case $_rp in
+    /) out "${_tail:-/}" ;;
+    *) out "$_rp$_tail" ;;
+  esac
+}
+
+# lies_in reports whether the path $1 is the folder $2 or lies below it, as
+# the two are written.
+lies_in() {
+  case $1/ in "$2"/*) return 0 ;; esac
+  return 1
+}
+
+# outside_roots reports whether the folder $1, which need not exist yet, lies
+# outside every further folder (the checkout and the canary's two roots).
+# The paths are compared as written and as resolved, so a symbolic link on
+# the way into one of the folders does not pass. A path with a "." or ".."
+# part is not taken: what it names cannot be told before it exists.
+outside_roots() {
+  _ev=$1
+  shift
+  case $_ev/ in */../* | */./*) return 1 ;; esac
+  _evp=$(resolved "$_ev") || return 1
+  for _root in "$@"; do
+    _rr=$(resolved "$_root") || _rr=$_root
+    if lies_in "$_ev" "$_root" || lies_in "$_evp" "$_rr"; then return 1; fi
+  done
+}
+
 # passa_record reads the result.txt of a pass A, $1, for step 2 of pass B. It
 # prints "clean" when the pass completed with no finding, "findings N" when
 # it completed with N findings, "unknown" when it completed and the number of
@@ -524,6 +571,11 @@ self_test() {
       # FILE: a result.txt of pass A. The file is read and nothing else.
       [ "$#" -eq 1 ] || usage
       passa_record "$1"
+      ;;
+    outside-roots)
+      # FOLDER ROOT...: absolute paths; FOLDER need not exist.
+      [ "$#" -ge 2 ] || usage
+      if outside_roots "$@"; then out outside; else out inside; fi
       ;;
     counters-7501)
       # FIELDS: what ataniq-canary fields prints for a final record.
@@ -716,11 +768,10 @@ if [ "$DRY" -eq 0 ]; then
     exit 1
     ;;
   esac
-  case $EV/ in "$REPO"/* | "$STATE"/* | "$RUNTIME"/*)
-    printf '%s\n' 'canary-run.sh: the evidence folder must not lie in the checkout or in a root of the canary' >&2
+  if ! outside_roots "$EV" "$REPO" "$STATE" "$RUNTIME"; then
+    printf '%s\n' 'canary-run.sh: the evidence folder must not lie in the checkout or in a root of the canary (symbolic links are resolved), and its path must hold no . or .. part' >&2
     exit 1
-    ;;
-  esac
+  fi
 fi
 
 # ------------------------------------------------------------- the steps ---

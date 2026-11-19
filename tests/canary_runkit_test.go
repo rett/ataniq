@@ -1371,6 +1371,103 @@ func TestCanaryRunKitSaysWhereTheCountersAreRead(t *testing.T) {
 	}
 }
 
+// The evidence folder must not lie in the checkout or in a root of the
+// canary. The comparison is of resolved paths: a symbolic link that leads
+// into one of them does not pass, whether the link is the folder's parent, a
+// part further up, or the root is itself reached through a link.
+func TestCanaryRunKitEvidenceFolderIsOutsideByResolvedPaths(t *testing.T) {
+	// The folders are made here, by the test; the script only compares.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := func(parts ...string) string { return filepath.Join(append([]string{dir}, parts...)...) }
+	for _, d := range []string{p("checkout", "sub"), p("state"), p("runtime"), p("evidence"), p("other", "deep")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		p("to-checkout"):         p("checkout"),
+		p("to-sub"):              p("checkout", "sub"),
+		p("to-state"):            p("state"),
+		p("to-evidence"):         p("evidence"),
+		p("other", "to-runtime"): p("runtime"),
+		p("checkout-link"):       p("checkout"),
+		p("dangling"):            p("nowhere"),
+		p("relative"):            "checkout",
+	} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots := []string{p("checkout"), p("state"), p("runtime")}
+	for name, c := range map[string]struct {
+		folder string
+		roots  []string
+		want   string
+	}{
+		"elsewhere":                         {p("evidence", "canary-pass-A-1"), roots, "outside"},
+		"elsewhere, the parent not made":    {p("not-made", "yet", "canary-pass-A-1"), roots, "outside"},
+		"a link to elsewhere":               {p("to-evidence", "canary-pass-A-1"), roots, "outside"},
+		"a name that only begins alike":     {p("checkout-two", "canary-pass-A-1"), roots, "outside"},
+		"in the checkout":                   {p("checkout", "canary-pass-A-1"), roots, "inside"},
+		"deep in the checkout":              {p("checkout", "sub", "x", "canary-pass-A-1"), roots, "inside"},
+		"in the state root":                 {p("state", "canary-pass-B-1"), roots, "inside"},
+		"in the runtime root":               {p("runtime", "canary-pass-B-1"), roots, "inside"},
+		"through a link to the checkout":    {p("to-checkout", "canary-pass-A-1"), roots, "inside"},
+		"through a link into the checkout":  {p("to-sub", "not-made", "canary-pass-A-1"), roots, "inside"},
+		"through a link to the state root":  {p("to-state", "canary-pass-A-1"), roots, "inside"},
+		"through a link further up":         {p("other", "to-runtime", "a", "b", "canary-pass-A-1"), roots, "inside"},
+		"through a relative link":           {p("relative", "canary-pass-A-1"), roots, "inside"},
+		"the root is named through a link":  {p("checkout", "canary-pass-A-1"), []string{p("checkout-link")}, "inside"},
+		"both through links":                {p("to-checkout", "canary-pass-A-1"), []string{p("checkout-link")}, "inside"},
+		"a parent part":                     {p("evidence", "..", "checkout", "canary-pass-A-1"), roots, "inside"},
+		"a parent part to elsewhere":        {p("evidence", "..", "evidence", "canary-pass-A-1"), roots, "inside"},
+		"a dot part":                        {p("evidence", ".", "canary-pass-A-1"), roots, "inside"},
+		"a path that is not absolute":       {"evidence/canary-pass-A-1", roots, "inside"},
+		"a root that does not exist":        {p("evidence", "canary-pass-A-1"), []string{p("no-such-root")}, "outside"},
+		"in a root that does not exist yet": {p("no-such-root", "canary-pass-A-1"), []string{p("no-such-root")}, "inside"},
+		"the root itself":                   {p("state"), roots, "inside"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// filepath.Join cleans a ".." away: put the parts back.
+			folder := c.folder
+			switch name {
+			case "a parent part":
+				folder = p("evidence") + "/../checkout/canary-pass-A-1"
+			case "a parent part to elsewhere":
+				folder = p("evidence") + "/../evidence/canary-pass-A-1"
+			case "a dot part":
+				folder = p("evidence") + "/./canary-pass-A-1"
+			}
+			got, code := canarySelfTest(t, append([]string{"outside-roots", folder}, c.roots...)...)
+			if code != 0 || got != c.want {
+				t.Errorf("%s against %v: %q (exit status %d), want %q", folder, c.roots, got, code, c.want)
+			}
+		})
+	}
+
+	// The real run checks its evidence folder with that function, against the
+	// checkout and both roots, before any step.
+	text := canaryScriptText(t)
+	check := `  if ! outside_roots "$EV" "$REPO" "$STATE" "$RUNTIME"; then` + "\n"
+	if strings.Count(text, check) != 1 || strings.Index(text, check) > strings.Index(text, "\nstep_1() {\n") {
+		t.Error("the script does not check its evidence folder against the checkout and the roots before step 1")
+	}
+	if after := text[strings.Index(text, check):]; !strings.HasPrefix(after[len(check):], "    printf '%s\\n' 'canary-run.sh: the evidence folder must not lie in the checkout or in a root of the canary") ||
+		!strings.Contains(after[:400], "\n    exit 1\n") {
+		t.Error("the script does not refuse an evidence folder inside the checkout or a root")
+	}
+	funcs := canaryFuncs(t, text)
+	if !strings.Contains(funcs["resolved"], `cd -P -- "$_rp"`) || !strings.Contains(funcs["resolved"], "pwd -P") {
+		t.Error("resolved does not resolve with cd -P")
+	}
+	if strings.Contains(text, `case $EV/ in "$REPO"/*`) {
+		t.Error("the script still compares the evidence folder as a string alone")
+	}
+}
+
 // This file checks what a signal does to a key the clean-up chain of the
 // canary run script waits for (the plan's N3: each step of the chain waits
 // for its key). It runs the script's test entry "wait-key", which waits as a

@@ -282,7 +282,9 @@ The script makes `<DIR>/canary-pass-<A|B>-<UTC time>` with mode 0700 and never
 publishes it. Choose `--evidence` so that the path names nothing private: the
 intake's verify sandbox can see the path of its work folder, which is made in
 the evidence folder for the length of step 20. It must not lie in the checkout
-or in a root of the canary. It holds:
+or in a root of the canary: the script compares the paths as written and with
+every symbolic link resolved (`cd -P`), so a link that leads into one of them
+is refused too, and it takes no path with a `.` or `..` part. It holds:
 
 | Name | Content |
 | --- | --- |
@@ -380,5 +382,6 @@ test entry:
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
+| `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
