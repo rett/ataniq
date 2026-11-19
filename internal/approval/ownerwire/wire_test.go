@@ -64,9 +64,10 @@ func sampleListing() Listing {
 			{ID: "ap-20261119-0001", Project: "project-a", Verb: record.VerbFeatureFinish, Feature: "small-change",
 				State: record.StateApplied, Line: "merged into develop", At: "2026-11-19T09:00:00Z"},
 		},
-		Rules:    []Rule{{ID: "prune-merged", Project: "project-a", Line: "merged branches are pruned", Uses: 3, On: true}},
-		Count:    Count{Requests: 9, WouldMeet: 4},
-		LookedAt: sampleDay,
+		Rules:     []Rule{{ID: "prune-merged", Project: "project-a", Line: "merged branches are pruned", Uses: 3, On: true}},
+		Count:     Count{Requests: 9, WouldMeet: 4},
+		NotListed: 2,
+		LookedAt:  sampleDay,
 	}
 }
 
@@ -561,8 +562,8 @@ func TestTheListingCarriesNoRecordBytes(t *testing.T) {
 		t.Fatalf("the walk saw %d types, want the listing's five", len(seen))
 	}
 	for _, in := range []string{
-		`{"count":{"requests":0,"would_meet":0},"pending":[],"recent":[],"rules":[],"record":{"bytes":"YQ==","sha256":"` + record.Digest([]byte("a")) + `"}}`,
-		`{"count":{"requests":0,"would_meet":0},"pending":[{"bytes":"YQ==","held":false,"id":"ap-1","pending_expires_at":"2026-11-21T14:06:40Z","project":"project-a","requested_at":"2026-11-20T14:06:40Z","sha256":"` + sampleDigest + `","verb":"branch prune"}],"recent":[],"rules":[]}`,
+		`{"count":{"requests":0,"would_meet":0},"not_listed":0,"pending":[],"recent":[],"rules":[],"record":{"bytes":"YQ==","sha256":"` + record.Digest([]byte("a")) + `"}}`,
+		`{"count":{"requests":0,"would_meet":0},"not_listed":0,"pending":[{"bytes":"YQ==","held":false,"id":"ap-1","pending_expires_at":"2026-11-21T14:06:40Z","project":"project-a","requested_at":"2026-11-20T14:06:40Z","sha256":"` + sampleDigest + `","verb":"branch prune"}],"recent":[],"rules":[]}`,
 	} {
 		_, err := DecodeListing([]byte(in))
 		refused(t, err, record.CodeRecordInvalid, "a listing with record bytes")
@@ -653,6 +654,7 @@ func TestListingContent(t *testing.T) {
 		"a rule with no id":                  change(func(l *Listing) { l.Rules[0].ID = "" }),
 		"a rule with negative uses":          change(func(l *Listing) { l.Rules[0].Uses = -1 }),
 		"a negative count":                   change(func(l *Listing) { l.Count.Requests = -1 }),
+		"a negative number left out":         change(func(l *Listing) { l.NotListed = -1 }),
 		"more that would meet than asked":    change(func(l *Listing) { l.Count.WouldMeet = l.Count.Requests + 1 }),
 		"a looked mark that is no time":      change(func(l *Listing) { l.LookedAt = "0" }),
 	} {
@@ -672,8 +674,8 @@ func TestListingContent(t *testing.T) {
 	_, err = DecodeListing(withMember(t, out, `"looked_at":""`))
 	refused(t, err, record.CodeRecordInvalid, "an empty looked mark")
 	// A list that is missing is not an empty list.
-	for _, key := range []string{"pending", "recent", "rules", "count"} {
-		in := `{"count":{"requests":0,"would_meet":0},"pending":[],"recent":[],"rules":[]}`
+	for _, key := range []string{"pending", "recent", "rules", "count", "not_listed"} {
+		in := `{"count":{"requests":0,"would_meet":0},"not_listed":0,"pending":[],"recent":[],"rules":[]}`
 		in = strings.Replace(in, `"`+key+`":`, `"zz":`, 1)
 		_, err := DecodeListing([]byte(in))
 		refused(t, err, record.CodeRecordInvalid, "a listing without "+key)
@@ -1032,5 +1034,36 @@ func TestThePayloadReaderNestsEightLevels(t *testing.T) {
 	err := reader.Unmarshal([]byte(`{"l":[[[[[[[["a"]]]]]]]]}`), "deep", new(deep8))
 	if err == nil || !strings.Contains(err.Error(), "the payload nests too deep") {
 		t.Errorf("eight nested lists: %v, want the payload nests too deep", err)
+	}
+}
+
+// The number of pending rows left out of a listing travels in a field of
+// its own, which is always written, so that a console does not have to guess
+// it from a rule row.
+func TestTheListingSaysHowManyPendingRowsWereLeftOut(t *testing.T) {
+	l := sampleListing()
+	out, err := EncodeListing(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"not_listed":2`) {
+		t.Errorf("the listing does not carry the number left out: %s", out)
+	}
+	got, err := DecodeListing(out)
+	if err != nil || got.NotListed != 2 {
+		t.Fatalf("decoded %d, %v", got.NotListed, err)
+	}
+	l.NotListed = 0
+	out, err = EncodeListing(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"not_listed":0`) {
+		t.Errorf("a zero is not written: %s", out)
+	}
+	// A string, a float and a null are not a number of rows.
+	for _, in := range []string{`"2"`, `2.5`, `null`, `true`} {
+		_, err := DecodeListing(bytes.Replace(out, []byte(`"not_listed":0`), []byte(`"not_listed":`+in), 1))
+		refused(t, err, record.CodeRecordInvalid, "not_listed "+in)
 	}
 }

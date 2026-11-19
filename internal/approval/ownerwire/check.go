@@ -154,6 +154,7 @@ func checkListing(l *Listing) error {
 		c.hostLine(r.Line, at+".line")
 		c.count(r.Uses, at+".uses")
 	}
+	c.count(l.NotListed, "listing.not_listed")
 	c.count(l.Count.Requests, "listing.count.requests")
 	c.count(l.Count.WouldMeet, "listing.count.would_meet")
 	c.need(l.Count.WouldMeet <= l.Count.Requests, "listing.count.would_meet is more than listing.count.requests")
