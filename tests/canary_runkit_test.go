@@ -961,9 +961,13 @@ func TestCanaryRunKitPassAExpectsNotNow(t *testing.T) {
 		}
 		return strings.Index(body, part)
 	}
-	// Exit status 30 stands for a refusal in pass B only; in pass A it fails
-	// the step before any action is taken from the result.
-	passB := at(`elif [ "$RC" -eq 30 ] && [ "$PASS" = B ]; then`)
+	// Exit status 30 fails the step in both passes before any action is taken
+	// from the result: it is not the fence's refusal.
+	if strings.Contains(body, `"$PASS" = B ]; then
+    _o=refused`) {
+		t.Error("step 17 reads the daemon's exit status 30 as the fence's refusal in pass B")
+	}
+	passB := at(`elif [ "$RC" -eq 30 ]; then`)
 	daemon := at("fail 'the daemon refused the message (exit 30)")
 	action := at(`_act=$(inject_action "$PASS" "$_o" "$_r" "$_w")`)
 	wrong := at(`if [ "$_act" = wrong-config ]; then`)
@@ -1665,5 +1669,74 @@ func TestCanaryRunKitChainReadsThroughOneReader(t *testing.T) {
 	}
 	if strings.Count(text, "TTY_ASSUMED=1") != 1 || !strings.Contains(funcs["self_test"], "TTY_ASSUMED=1") {
 		t.Error("the input is taken for a terminal outside the test entry")
+	}
+}
+
+// canaryHasLine runs the has-line entry on a file of the given lines, with a
+// stub helper that answers by line: a line holding "one" prints the fields of
+// epoch 1, "two" those of epoch 2, "partial" prints the fields of epoch 2
+// and then fails, as for a line that is not a whole JSON object.
+func canaryHasLine(t *testing.T, lines []string, pairs ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	bin := filepath.Join(work, "build", "canary")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stub := `#!/bin/sh
+read -r line
+case $line in
+  *one*) printf 'epoch=1\nstate=up\nreason=first\n' ;;
+  *two*) printf 'epoch=2\nstate=up\nreason=second\n' ;;
+  *partial*) printf 'epoch=2\nstate=up\nreason=second\n'; exit 1 ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "ataniq-canary"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	args := append([]string{filepath.Join(root(t), canaryRunScript), "--self-test", "has-line", file}, pairs...)
+	cmd := exec.Command(path, args...)
+	cmd.Dir = work
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("has-line %v: %v\n%s", pairs, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// A match on a later line passes, a line passed over for a partial match
+// does not stop the search, and a line that is not a whole object is passed
+// over.
+func TestCanaryRunKitHasLine(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lines []string
+		pairs []string
+		want  string
+	}{
+		{"a match on a later line", []string{"one", "two"}, []string{"epoch=2", "state=up"}, "yes"},
+		{"a partial line is passed over", []string{"one", "two"}, []string{"epoch=1", "reason=second"}, "no"},
+		{"a match on the first line", []string{"one", "two"}, []string{"epoch=1", "reason=first"}, "yes"},
+		{"no match", []string{"one", "two"}, []string{"epoch=3"}, "no"},
+		{"a line that is not a whole object is passed over", []string{"partial", "two"}, []string{"epoch=2", "reason=second"}, "yes"},
+		{"only such a line", []string{"partial"}, []string{"epoch=2"}, "no"},
+		{"no line", []string{}, []string{"epoch=2"}, "no"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := canaryHasLine(t, c.lines, c.pairs...); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
 	}
 }
