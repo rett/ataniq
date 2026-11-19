@@ -12,8 +12,9 @@ daemon's leads, read-only (see [The daemon view](#the-daemon-view)). No mode is
 a production backend. The console does not send instructions, steer or
 interrupt leads. It has an approvals view, but in this release a decision there
 changes nothing (see [Approvals](#approvals) and
-[What is a sample](#what-is-a-sample-and-what-is-not-qualified)). It integrates no provider and no durable command and receipt path, and
-it opens no network listener. Without `--demo`, `--attach` and `--daemon` the
+[What is a sample](#what-is-a-sample-and-what-is-not-qualified)). It
+integrates no provider and no durable command and receipt path, and it opens
+no network listener. Without `--demo`, `--attach` and `--daemon` the
 command reports that the backend is unavailable and exits with status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
@@ -284,9 +285,10 @@ suggestion, the present number and the suggestion. Its rules are:
   it is no higher than the present number. A very low number asks once more.
 - Raising is typed digits and then Enter, by half at most (12 rises to 18),
   once a day. No single key raises the number.
-- The suggestion is twice the busiest of the 14 days, never under 6. Days that
-  reached the limit, or had an alert, are left out.
-- Esc closes the screen. A refusal shows its one-line reason.
+- The suggestion is twice the busiest of the 14 days, never under 6 and never
+  above 40. Days that reached the limit, or had an alert, are left out.
+
+Esc closes the screen. A refusal shows its one-line reason.
 
 ### Arrival and the bell
 
