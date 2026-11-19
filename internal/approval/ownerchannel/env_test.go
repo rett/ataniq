@@ -55,6 +55,7 @@ type fakeIntake struct {
 	refs    map[string]string
 
 	resolveErr error
+	resolves   int
 	// featureTip is what Resolve answers for the feature's tip.
 	featureTip string
 	reviewErr  error
@@ -89,6 +90,7 @@ func newIntake(t testing.TB) *fakeIntake {
 func (f *fakeIntake) Resolve(_ context.Context, _ ResolveInput) (Resolved, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.resolves++
 	if f.resolveErr != nil {
 		return Resolved{}, f.resolveErr
 	}

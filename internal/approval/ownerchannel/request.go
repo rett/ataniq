@@ -157,15 +157,18 @@ func (f *flow) key() string { return pinKey(f.adm.RequestSHA256) }
 // build runs the steps that take the one verification slot.
 func (f *flow) build(ctx context.Context) (RequestStatus, error) {
 	s := f.s
+	// The name is checked before the intake is asked to resolve anything
+	// from it. Decoding the request checked it already; this is the check
+	// of the one place that hands it on.
+	if len(f.req.Argv) != 1 || !record.ValidFeatureName(f.req.Argv[0]) {
+		return f.refuse(ctx, record.CodeFeatureName, "the feature name is not 1 to 48 lower-case letters, digits and dashes")
+	}
 	res, err := s.cfg.Intake.Resolve(ctx, ResolveInput{Project: f.in.Project, Request: f.req})
 	if err != nil {
 		return f.failed(ctx, err, "the host could not read the feature and the target")
 	}
 	if res.FeatureTip != f.req.FeatureSHA {
 		return f.refuse(ctx, record.CodeFeatureMoved, "the feature's tip is not the one the request names")
-	}
-	if len(f.req.Argv) != 1 || !record.ValidFeatureName(f.req.Argv[0]) {
-		return f.refuse(ctx, record.CodeFeatureName, "the feature name is not 1 to 48 lower-case letters, digits and dashes")
 	}
 	built, err := s.cfg.Merger.Build(ctx, MergeInput{
 		Project:    f.in.Project,

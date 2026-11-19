@@ -144,7 +144,11 @@ func (e *env) submitRefusedOnce(name string) RequestStatus {
 func TestOC31NoCleanPassNoCard(t *testing.T) {
 	e := newEnv(t)
 	e.start()
+	// Each run has the suite record a clean run would have, so that only
+	// the verdict is what refuses it.
+	evidence := vectorPending(t).Binding.Evidence[0]
 	for i, v := range []Verification{{Detail: VerifyFailed}, {Detail: VerifyStopped}, {Detail: VerifyOutputCut}, {Detail: "something else"}} {
+		v.Evidence = evidence
 		e.verif.result = v
 		st := e.submit("feature-" + string(rune('a'+i)))
 		if st.State != RequestRefused || st.Code != record.CodeVerificationFailed {
@@ -369,5 +373,61 @@ func TestAnUndecodableRequestIsRefusedByItsForm(t *testing.T) {
 	}
 	if len(e.mail.all()) != 0 {
 		t.Error("a request with no readable id was answered")
+	}
+}
+
+// A feature whose tip is not the one the request names is refused before
+// anything is built or verified.
+func TestAMovedFeatureIsRefusedBeforeAnythingIsBuilt(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	e.intake.featureTip = "5555555555555555555555555555555555555555"
+	st := e.submit("feature-a")
+	if st.State != RequestRefused || st.Code != record.CodeFeatureMoved {
+		t.Fatalf("%+v", st)
+	}
+	if e.merger.builds != 0 {
+		t.Errorf("%d merges were built for a feature that moved", e.merger.builds)
+	}
+	if e.verif.runs != 0 {
+		t.Errorf("%d suite runs for a feature that moved", e.verif.runs)
+	}
+	if e.merger.pinCount() != 0 {
+		t.Error("a pin was made")
+	}
+}
+
+// The feature name is checked before the intake is asked to resolve
+// anything from it. Decoding refuses such a name first, so the flow is
+// driven by hand.
+func TestAFeatureNameOutsideTheGrammarIsRefusedBeforeResolve(t *testing.T) {
+	e := newEnv(t)
+	e.start()
+	b := e.request("feature-a", nil)
+	req, err := record.DecodeRequest(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Argv = []string{"Feature A"}
+	adm, err := e.svc.cfg.Door.Admit(context.Background(), door.RecordOf(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &flow{s: e.svc, in: e.collected(b), req: req, adm: adm}
+	st, err := f.build(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != RequestRefused || st.Code != record.CodeFeatureName {
+		t.Fatalf("%+v", st)
+	}
+	if e.intake.resolves != 0 {
+		t.Errorf("the intake was asked to resolve a feature named %q", req.Argv[0])
+	}
+	if e.merger.builds != 0 {
+		t.Errorf("%d merges were built", e.merger.builds)
+	}
+	if replies := e.mail.repliesFor(req.RequestID); len(replies) != 1 || replies[0].Code != record.CodeFeatureName {
+		t.Errorf("the lead was told %+v", replies)
 	}
 }
