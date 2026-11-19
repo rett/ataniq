@@ -125,10 +125,18 @@ func TestUsageNamesTheCanaryCommands(t *testing.T) {
 	if code := ta.run([]string{"--help"}); code != 0 {
 		t.Fatal(code)
 	}
-	for _, want := range []string{"This build is read-only", "ataniqd run --canary CONFIG", "ataniqd canary inject", "--body-file FILE", "--attach-role"} {
-		if !strings.Contains(ta.out.String(), want) {
+	got := ta.out.String()
+	// The release text says the build is read-only and that no flag changes
+	// that. A tagged build keeps the text and says, right after it, that it
+	// holds only without --canary.
+	override := "In this build (tag ataniq_canary) the text above holds only without --canary."
+	for _, want := range []string{override, "With run --canary the daemon is not read-only", "ataniqd run --canary CONFIG", "ataniqd canary inject", "--body-file FILE", "--attach-role"} {
+		if !strings.Contains(got, want) {
 			t.Errorf("the usage lacks %q", want)
 		}
+	}
+	if !strings.HasPrefix(got, baseUsage+"\n"+override+"\n") {
+		t.Errorf("the usage does not open with the release text and then the line that limits it:\n%s", got)
 	}
 }
 

@@ -27,8 +27,10 @@ const (
 )
 
 // Timeouts of the canary command, dial included. The inject wait is longer than
-// the daemon's 20 s wait for the holder, so the daemon's answer, uncertain
-// included, always arrives first.
+// the daemon's whole exchange with the holder, which is bounded by
+// [DefaultDialTimeout] for the dial and the write together and
+// [DefaultInjectWait] for the answer (25 s), so the daemon's answer, uncertain
+// included, arrives first.
 const (
 	// CanaryInjectTimeout bounds a canary inject call.
 	CanaryInjectTimeout = 30 * time.Second

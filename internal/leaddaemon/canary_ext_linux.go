@@ -44,8 +44,11 @@ func CanaryOperations() []string {
 const (
 	// CodeRefused: the daemon refused the operation and changed nothing that
 	// matters (the message did not pass the admission, a second message in the
-	// epoch, a role other than the config's, the registry or the lifecycle
-	// refused).
+	// epoch, injection that is off in the config, a role other than the
+	// config's, the registry or the lifecycle refused). One answer is the
+	// exception: when the registry refuses with a stale epoch or a state it
+	// does not change from, the refusal may follow a launch or a stop that
+	// was already carried out, and the text says to check the role's status.
 	CodeRefused clientapi.ErrorCode = "refused"
 	// CodeUnavailable: the operation could not be carried out: nothing reached
 	// the holder (the control socket could not be dialled or the request frame
@@ -126,6 +129,7 @@ const (
 	msgNotRunning   = "the role is not running"
 	msgSecond       = "a message was already sent in this epoch"
 	msgInFlight     = "a message is in flight"
+	msgInjectOff    = "injection is off in the canary config"
 	msgUnreachable  = "the holder could not be reached"
 	msgHolderNo     = "the holder refused the message"
 	msgTicketNo     = "the holder refused the ticket"
@@ -133,11 +137,16 @@ const (
 	msgTicketFile   = "the holder took the ticket but the ticket file could not be written"
 	msgFolder       = "the role's runtime folder is missing or not private"
 	msgRegistryNo   = "the registry refused"
+	msgForeignUnit  = "a unit with the role's name is not the role's recorded unit"
 	msgFailed       = "the operation failed; see the daemon's log"
 	msgStopping     = "the daemon is stopping"
 	attachRoleWrite = string(wire.RoleWriter)
 	attachRoleView  = string(wire.RoleViewer)
 )
+
+// msgRegistryCheck is the fixed text for a refusal of the registry that may
+// follow something the daemon already did.
+const msgRegistryCheck = "the registry refused; check the role's status before you retry"
 
 // canaryExt is the extension: the five operations of canary mode.
 type canaryExt struct {
@@ -153,10 +162,13 @@ type canaryExt struct {
 	logf      func(format string, a ...any)
 	profile   leadregistry.Requested
 
-	mu         sync.Mutex
-	spentEpoch uint64 // the epoch whose one message is spent; 0 for none
-	inFlight   bool   // a message is being sent
-	commands   uint64 // counter of the command ids
+	mu sync.Mutex
+	// spent holds the epochs whose one message is spent. It starts from the
+	// inject-sent lines of the evidence (see spentEpochs), so that a restart of
+	// the daemon inside an epoch admits no second message.
+	spent    map[uint64]bool
+	inFlight bool   // a message is being sent
+	commands uint64 // counter of the command ids
 }
 
 var _ clientapi.Extension = (*canaryExt)(nil)
@@ -167,9 +179,13 @@ func newCanaryExt(m *canaryMode, ctl *leadlifecycle.Controller, reg *leadregistr
 	// cannot fail for this config.
 	holderDir, _ := cfg.HolderRuntimeDir()
 	adm, _ := leadcanary.NewAdmission(cfg.Role)
+	spent := make(map[uint64]bool, len(m.spent))
+	for epoch := range m.spent {
+		spent[epoch] = true
+	}
 	return &canaryExt{
 		cfg: cfg, role: cfg.Role, holderDir: holderDir, ctl: ctl, reg: reg, ev: m.ev, adm: adm,
-		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf,
+		dial: m.dialFor, wait: m.injectFor, logf: m.d.logf, spent: spent,
 		profile: leadregistry.Requested{
 			// The registry's runtime enum is checked by the registry; the config
 			// names the key. The model, the effort and the access mode are not
@@ -290,7 +306,15 @@ func (x *canaryExt) record(en leadcanary.Entry) {
 }
 
 // failure maps the error of a registry or lifecycle call to a fixed answer and
-// logs the error itself.
+// logs the error itself. A refusal of the registry or of the lifecycle is the
+// error refused; what could not be carried out or is not known is unavailable.
+// An error may match more than one case (the lifecycle joins what it found
+// with what the registry then said), so the order is: the lifecycle's own
+// refusals, then what the lifecycle could not do or does not know, then a
+// refusal of the registry with nothing more specific about it. Of those, a
+// stale epoch and a refused state change may come after the lifecycle acted,
+// and their answer says to check the role's status and not that nothing
+// changed.
 func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 	x.logf("canary %s: %s", op, SafeText(err.Error()))
 	switch {
@@ -302,6 +326,9 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return refused("the role is not run by this daemon")
 	case errors.Is(err, leadlifecycle.ErrPreflight):
 		return refused("the preflight refused the start")
+	case errors.Is(err, leadlifecycle.ErrForeignUnit):
+		// Before ErrUnitLoaded, which the lifecycle wraps beside it.
+		return refused(msgForeignUnit)
 	case errors.Is(err, leadlifecycle.ErrUnitLoaded):
 		return refused("a unit with the role's name is loaded")
 	case errors.Is(err, leadunit.ErrInvalidSpec):
@@ -320,6 +347,15 @@ func (x *canaryExt) failure(op string, err error) *clientapi.ErrorBody {
 		return unavailable("the stop is not proven; the role is shown unknown")
 	case errors.Is(err, leadlifecycle.ErrIntentPending):
 		return unavailable("the launch intent is not settled yet")
+	case errors.Is(err, leadregistry.ErrEpochExhausted):
+		// Only a launch that has not begun meets it: nothing was done.
+		return refused(msgRegistryNo)
+	case errors.Is(err, leadregistry.ErrStaleEpoch),
+		errors.Is(err, leadregistry.ErrStateTransition):
+		// The lifecycle also returns these bare after it acted (a launch that
+		// is to be recorded, a stop that is to be shown proven), so the text
+		// does not say that nothing changed.
+		return refused(msgRegistryCheck)
 	}
 	return unavailable(msgFailed)
 }
@@ -437,11 +473,20 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 
 // inject sends the one message of the epoch.
 //
+// With "inject": false in the config the operation is refused at once: the
+// holder was started without its inject gate and would answer disabled, so the
+// daemon, which read the config, sends nothing and spends nothing.
+//
 // A refusal before the request frame is written leaves the message unspent: a
 // message that does not pass the admission, a role that is not running, a
 // second message, the holder's socket that cannot be dialled. Once the frame
-// is written the message is spent for the epoch whatever comes back, and only
-// an ok answer whose inject result decodes is a result: no answer within the
+// is written the message is spent for the epoch whatever comes back, and
+// whatever becomes of the daemon: the inject-sent line of the evidence, which
+// spends it for a daemon that starts later (see spentEpochs), is written right
+// after the frame and before the wait for the answer, so a daemon that is
+// killed while it waits leaves the epoch spent. When that line cannot be
+// written the message is on its way all the same and is never reported as
+// unsent (see sentUnrecorded). Only an ok answer whose inject result decodes is a result: no answer within the
 // wait, a closed connection, an answer that does not decode, an ok answer
 // without a result and a refusal code the daemon does not know are all the
 // uncertain result of [leadcanary.NoAnswerResult], not an error. The holder's
@@ -450,6 +495,10 @@ func (x *canaryExt) ticket(ctx context.Context, attach wire.Role) (any, *clienta
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
 	e, running := x.runningEntry()
 	epoch := e.Epoch
+	if !x.cfg.Inject {
+		x.refuse(p.MessageID, epoch, "inject-off")
+		return nil, refused(msgInjectOff)
+	}
 	text, err := x.adm.Admit(p.MessageID, p.Body)
 	if err != nil {
 		code := "bad-message"
@@ -466,7 +515,7 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 	}
 	x.mu.Lock()
 	switch {
-	case x.spentEpoch == epoch:
+	case x.spent[epoch]:
 		x.mu.Unlock()
 		x.refuse(p.MessageID, epoch, "second-message")
 		return nil, refused(msgSecond)
@@ -482,21 +531,26 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 		x.mu.Lock()
 		x.inFlight = false
 		if wrote {
-			x.spentEpoch = epoch
+			x.spent[epoch] = true
 		}
 		x.mu.Unlock()
 	}()
 
-	resp, wrote, err := callHolder(ctx, x.holderDir, wire.Request{
+	// The inject-sent line is written as soon as the frame is, before the
+	// wait: it is what spends the message for a daemon that starts later.
+	sent := false
+	resp, wrote, err := callHolderThen(ctx, x.holderDir, wire.Request{
 		Op: wire.OpInject, Epoch: epoch, MessageID: p.MessageID, Text: text,
 		CommandID: x.commandID("inject", epoch),
-	}, x.dial, x.wait)
+	}, x.dial, x.wait, func() { sent = x.recordSent(p.MessageID, epoch) })
 	if !wrote {
 		x.logf("canary inject: %s", SafeText(err.Error()))
 		x.refuse(p.MessageID, epoch, "holder-unreachable")
 		return nil, unavailable(msgUnreachable)
 	}
-	x.record(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: epoch, MessageID: p.MessageID})
+	if !sent {
+		x.sentUnrecorded(p.MessageID, epoch)
+	}
 
 	result := leadcanary.NoAnswerResult()
 	switch {
@@ -510,6 +564,36 @@ func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *cli
 	}
 	x.record(leadcanary.ResultEntry(p.MessageID, epoch, result))
 	return CanaryInjectResult{Role: x.role.String(), Epoch: epoch, MessageID: p.MessageID, Result: result}, nil
+}
+
+// recordSent writes the inject-sent line of a message whose request frame is
+// written and reports whether the line is in the evidence.
+func (x *canaryExt) recordSent(messageID string, epoch uint64) bool {
+	err := x.ev.Append(leadcanary.Entry{Event: leadcanary.EventInjectSent, Epoch: epoch, MessageID: messageID})
+	if err != nil {
+		x.logf("canary evidence: %s: %s", leadcanary.EventInjectSent, SafeText(err.Error()))
+	}
+	return err == nil
+}
+
+// sentUnrecorded is what the daemon does when the inject-sent line could not
+// be written right after the frame. The message is on its way, so nothing
+// about the operation changes: the epoch is spent in this daemon, the answer
+// is the result (or the holder's refusal) as with the line, and the message is
+// never reported as unsent. The line is tried once more, now that the wait is
+// over. When that fails too the log says what is lost: the evidence does not
+// spend the epoch, so a daemon that is restarted inside it would take a second
+// message, and the role is to be stopped before the daemon is.
+//
+// A write that failed part way leaves a part of a line in the file, and a
+// later line that is written starts with a newline: either way the next
+// daemon cannot read the file back and refuses to start, which keeps the
+// epoch closed.
+func (x *canaryExt) sentUnrecorded(messageID string, epoch uint64) {
+	if x.recordSent(messageID, epoch) {
+		return
+	}
+	x.logf("canary inject: the message of epoch %d is sent and the evidence has no inject-sent line for it: the epoch is spent in this daemon only, so stop the role before the daemon is restarted", epoch)
 }
 
 // holderRefusal reports whether code is one of the refusals that mean nothing

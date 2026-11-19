@@ -3,11 +3,13 @@
 package leaddaemon
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -535,13 +537,34 @@ func TestCanaryOnlyOneMessageGoesAtOnce(t *testing.T) {
 		<-release
 		submitted(req, conn)
 	})
+	// Registered after the holder's own cleanup, so it runs before it: a test
+	// that fails below still lets the holder go, and ends at once.
+	var once sync.Once
+	letGo := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(letGo)
+	// The first message goes from another goroutine, which must not end the
+	// test itself: it reports through the channel.
+	socket := c.running.socket
 	first := make(chan error, 1)
 	go func() {
-		_, err := c.inject("m-1", "text\n")
-		first <- err
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cl, err := clientapi.Dial(ctx, socket)
+		if err != nil {
+			first <- err
+			return
+		}
+		defer cl.Close()
+		var r CanaryInjectResult
+		first <- cl.Call(ctx, OpCanaryInject, CanaryInjectParams{Role: canaryRoleText, MessageID: "m-1", Body: "text\n"}, &r)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for len(c.holder.requests(wire.OpInject)) == 0 {
+		select {
+		case err := <-first:
+			t.Fatalf("the first message ended before it reached the holder: %v", err)
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("the first message did not arrive")
 		}
@@ -549,9 +572,14 @@ func TestCanaryOnlyOneMessageGoesAtOnce(t *testing.T) {
 	}
 	_, err := c.inject("m-2", "text\n")
 	wantCode(t, err, CodeRefused)
-	close(release)
-	if err := <-first; err != nil {
-		t.Fatal(err)
+	letGo()
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first message did not end")
 	}
 	if n := len(c.holder.requests(wire.OpInject)); n != 1 {
 		t.Fatalf("%d requests", n)
