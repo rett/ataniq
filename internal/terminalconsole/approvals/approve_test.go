@@ -853,3 +853,35 @@ func TestMessagesOfAnotherViewAreIgnored(t *testing.T) {
 		t.Fatal("a message of another view changed this one")
 	}
 }
+
+// A page turned to counts as read only once its last row was drawn, also
+// when it is shorter than the page before it and its end lies inside the
+// screen that showed the end of that one.
+func TestPageTurnedToIsNotReadBeforeItsEndIsDrawn(t *testing.T) {
+	c, _ := truncatedCard()
+	b := backendWith(t, []card.Card{c}, nil)
+	b.pages = func(id string, kind card.PageKind, n int) (card.Page, error) {
+		p := card.Page{Kind: kind, N: n, Pages: 2, ReviewDigest: "review-a"}
+		rows := []int{30, 25}[n]
+		for i := 0; i < rows; i++ {
+			p.Paths = append(p.Paths, record.PathChange{Path: record.Text(fmt.Sprintf("pkg%d/file%d.go", n, i)), Status: "M", OldMode: "100644", NewMode: "100644", Added: 1})
+		}
+		return p, nil
+	}
+	r := newRig(t, b, 80, 24)
+	r.openFirst()
+	r.readAll()
+	r.key("]")
+	r.bodyHas("Whole path list: page 2 of 2")
+	r.notSeen("pkg1/file24.go")
+	if ok, _ := r.m.cs.c.MayApprove(r.m.cs.reading, r.clk.Now()); ok {
+		t.Fatalf("approve was ready before the last row of page 2 was drawn:\n%s", r.screen())
+	}
+	r.key("a")
+	if r.m.FieldOpen() {
+		t.Fatal("the confirm field opened before the last row of page 2 was drawn")
+	}
+	r.seen("approve is off: " + card.ReasonPathPages)
+	r.readAll()
+	r.seen("pkg1/file24.go", "approve is ready")
+}

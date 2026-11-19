@@ -193,6 +193,7 @@ func (m *Model) onPaged(v pagedMsg) {
 	cs.pageLoading = false
 	turn := cs.turned
 	cs.turned = false
+	jump := false
 	d := cs.c.Diff
 	switch {
 	case v.err != nil:
@@ -210,22 +211,21 @@ func (m *Model) onPaged(v pagedMsg) {
 	default:
 		p := v.p
 		cs.page = &p
-		// The reader starts at the top of the page, so that the rows of
-		// it are shown in order and its end is not shown first.
-		if turn {
-			defer func() {
-				for i, r := range cs.body {
-					if r.ends&startPage != 0 {
-						cs.cursor, cs.top = i, i
-						m.clampCard()
-						break
-					}
-				}
-				m.markRead()
-			}()
-		}
+		jump = turn
 	}
 	m.buildBody()
+	// The reader starts at the top of a page turned to, before anything is
+	// counted as shown, so that the rows of it are shown in order and its
+	// end is not counted before it was drawn.
+	if jump {
+		for i, r := range cs.body {
+			if r.ends&startPage != 0 {
+				cs.cursor, cs.top = i, i
+				m.clampCard()
+				break
+			}
+		}
+	}
 	m.markRead()
 }
 
