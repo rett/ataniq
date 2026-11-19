@@ -27,8 +27,8 @@ func (Fixture) Snapshot() Projection {
 			{Time: "09:06", Text: "No owner channel is qualified; the gate stays pending"},
 		},
 		Controls: []Control{
-			{Name: "Approve pending gate", Key: "Ctrl+K", Reason: "No grant is honoured until the owner channel is qualified."},
-			{Name: "Deny pending gate", Key: "Ctrl+K", Reason: "No grant is honoured until the owner channel is qualified."},
+			{Name: "Approve pending gate", Key: "Ctrl+K", Reason: "No grant is honoured until the owner channel is qualified.", Approval: true},
+			{Name: "Deny pending gate", Key: "Ctrl+K", Reason: "No grant is honoured until the owner channel is qualified.", Approval: true},
 			{Name: "Full attach", Key: "a", Reason: "Full attach needs a qualified holder and an exclusive input owner. " + unqualified},
 			{Name: "Send to lead", Key: "Ctrl+K", Reason: "Sending needs a qualified command and receipt path. " + unqualified},
 			{Name: "Interrupt lead", Key: "Ctrl+K", Reason: "Interrupting needs a qualified command and receipt path. " + unqualified},

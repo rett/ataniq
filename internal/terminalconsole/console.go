@@ -28,6 +28,7 @@ package terminalconsole
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode"
@@ -36,6 +37,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"ataniq/internal/terminalconsole/approvals"
 	"ataniq/internal/terminalconsole/sessionpane"
 	"ataniq/internal/terminalconsole/sessionreplay"
 )
@@ -101,8 +103,14 @@ type Check struct{ Name, State string }
 type TimelineEntry struct{ Time, Text string }
 
 // Control is a control the cockpit lists but cannot offer. Key is how it
-// would be reached.
-type Control struct{ Name, Key, Reason string }
+// would be reached. Approval marks the controls that decide a pending gate
+// (approve and deny): with an approvals backend (Options.Backend) they are
+// live and open the approvals view, where a decision is made on the card with
+// its typed code, and without one they stay unavailable with their reason.
+type Control struct {
+	Name, Key, Reason string
+	Approval          bool
+}
 
 // Limits on a projection.
 const (
@@ -188,6 +196,7 @@ func NewWithOptions(source Source, o Options) *Model {
 	}
 	m := &Model{theme: o.Theme, page: "projects", opts: o}
 	m.label = clean(o.Label)
+	m.initApprovals(o)
 	m.after = tea.Tick
 	m.focus = consoleFocus
 	if o.Live != nil {
@@ -227,7 +236,7 @@ func (m *Model) apply(in Projection) {
 		m.timeline = append(m.timeline, TimelineEntry{Time: clean(e.Time), Text: clean(e.Text)})
 	}
 	for _, c := range in.Controls[:min(len(in.Controls), maxControls)] {
-		m.controls = append(m.controls, Control{Name: clean(c.Name), Key: clean(c.Key), Reason: clean(c.Reason)})
+		m.controls = append(m.controls, Control{Name: clean(c.Name), Key: clean(c.Key), Reason: clean(c.Reason), Approval: c.Approval})
 	}
 	ps := in.Projects
 	if len(ps) > maxProjects {
@@ -302,6 +311,26 @@ type Options struct {
 	// fixture. With a label nothing is called a fixture and no recording is
 	// replayed: the view has no session terminal.
 	Label string
+	// Backend is where the approvals come from. The console imports no
+	// backend of its own: the command hands it one, the sample backend with
+	// --demo. Nil means there is no owner channel in this build: the
+	// approvals screen says so and nothing can be decided. With a backend the
+	// cockpit reads its listing again every ApprovalsRefresh, shows the oldest
+	// waiting card as the pending gate and the decisions in the timeline, and
+	// opens the approvals view with g. See approvals.go.
+	Backend approvals.Backend
+	// ApprovalsRefresh is how often the listing is read again. Zero means
+	// DefaultApprovalsRefresh; a negative value means never.
+	ApprovalsRefresh time.Duration
+	// Now is the clock of the approvals pieces: presence, the arrival strip,
+	// the bell and the view's times. Nil means time.Now.
+	Now func() time.Time
+	// Random is the source of the run's session id and of the confirm code.
+	// Nil means the system's random source.
+	Random io.Reader
+	// BellOff turns the bell off. The bell rings once for a card that arrives
+	// while the owner is not present, and is on by default.
+	BellOff bool
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -312,15 +341,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = min(4096, max(0, v.Width))
 		m.height = min(4096, max(0, v.Height))
-		return m, m.onSize()
+		return m, tea.Batch(m.onSize(), m.resizeApprovals())
 	case tea.KeyPressMsg:
-		return m, m.onKey(v)
+		beat := m.activity()
+		return m, tea.Batch(beat, m.onKey(v))
 	case tea.PasteMsg:
+		if m.apprOpen() {
+			// A paste is the approvals view's: it refuses one in a field.
+			return m, m.forward(msg)
+		}
 		m.onPaste(v.Content)
 	case tea.MouseMsg:
-		return m, m.onMouse(v)
+		beat := m.activity()
+		if m.apprOpen() {
+			return m, beat
+		}
+		return m, tea.Batch(beat, m.onMouse(v))
 	case tea.ModeReportMsg:
 		m.onModeReport(v)
+		return m, tea.Batch(m.forward(msg), m.apprGraphemes())
 	case tickMsg:
 		return m, m.onTick(v)
 	case holdMsg:
@@ -339,6 +378,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onRefreshTick(v)
 	case refreshMsg:
 		m.onRefresh(v)
+	case apprTickMsg:
+		return m, m.onApprTick(v)
+	case apprListMsg:
+		return m, m.onApprList(v)
+	case apprLimitMsg:
+		m.onApprLimit(v)
+	default:
+		// What is left is the approvals view's own: the answers to its
+		// commands and what its pager asks for.
+		return m, m.forward(msg)
 	}
 	return m, nil
 }
@@ -363,6 +412,8 @@ func (m *Model) handleFallbackKey(v tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+k":
 		m.page = "actions"
 		m.scroll = 0
+	case "g":
+		return m.openApprovals(false)
 	case "esc", "backspace":
 		switch m.page {
 		case "conversation", "tasks":
@@ -493,15 +544,18 @@ func (m *Model) lines() []string {
 			lines = append(lines, l.Conversation...)
 		}
 	case "help":
-		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
+		lines = append(lines, "Help", "Up/down or j/k: navigate or scroll", "Enter: open project or conversation", "t: project tasks   Esc: back", "g: approvals", "a: full attach (unavailable)   Ctrl+K: actions", "q or Ctrl-C: quit", "A window of "+sizeText(MinCols, MinRows)+" or more shows the cockpit.")
 	case "actions":
-		if m.labelled() {
+		switch {
+		case m.approvalsLive():
+			lines = append(lines, "Actions (approve and deny open the approvals view)")
+		case m.labelled():
 			lines = append(lines, "Actions (all unavailable)")
-		} else {
+		default:
 			lines = append(lines, "Actions (all unavailable, fixture)")
 		}
 		for _, c := range m.controls {
-			lines = append(lines, c.Name+": "+c.Reason)
+			lines = append(lines, c.Name+": "+m.controlReason(c))
 		}
 		if len(m.controls) == 0 {
 			lines = append(lines, m.controlUnavailable)
@@ -515,6 +569,9 @@ func (m *Model) View() tea.View {
 	}
 	if m.width <= 0 || m.height <= 0 {
 		return m.newView("")
+	}
+	if m.apprOpen() {
+		return m.approvalsView()
 	}
 	if m.layout().cockpit {
 		return m.cockpitView()

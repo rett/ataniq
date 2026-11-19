@@ -76,6 +76,9 @@ func (m *Model) viewHelpLines(width int) (string, []line) {
 	} {
 		add(lnText, s)
 	}
+	for _, s := range m.approvalsHelp() {
+		add(lnText, s)
+	}
 	add(lnHead, "This view")
 	add(lnText, "This is "+m.label+". "+noSessionText+", and nothing typed here reaches a process.")
 	if m.refresh.source != nil {

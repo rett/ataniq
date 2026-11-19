@@ -42,6 +42,7 @@ func (m *Model) cockpitView() tea.View {
 		m.drawEvidence(p, l)
 		m.drawTimeline(p, l)
 		m.drawKeys(p, l)
+		m.drawStrip(p, l)
 		m.drawOverlay(p, l)
 	}
 	v := m.newView(buf.Render())
@@ -103,6 +104,11 @@ func (m *Model) focusName() string {
 
 func (m *Model) drawHeader(p *painter, l layout) {
 	left := "ATANIQ / DEMO FIXTURE · cockpit · " + fixtureLabel
+	if m.sample() {
+		// A sample is labelled in the header, before the label that may be
+		// cut at the narrowest window.
+		left = "ATANIQ / DEMO FIXTURE · cockpit · " + SampleLabel + " · " + fixtureLabel
+	}
 	if m.live.on() {
 		left = "ATANIQ / LIVE SCRATCH · cockpit · " + m.liveLabel() + " · through a holder"
 	} else if m.labelled() {
@@ -424,11 +430,18 @@ func (m *Model) evidenceLines(width int) []line {
 	}
 	add(lnText, "")
 	add(lnHead, "PENDING GATE")
-	for _, f := range []struct{ label, value string }{{"Action", m.gate.Action}, {"Scope", m.gate.Scope}, {"Target", m.gate.Target}, {"Approver", m.gate.Approver}} {
-		add(lnText, f.label+": "+orNone(f.value))
+	if m.ap.backend != nil {
+		// With a backend the gate is the oldest waiting card of its listing.
+		for _, l := range m.gateLines() {
+			add(l.k, l.s)
+		}
+	} else {
+		for _, f := range []struct{ label, value string }{{"Action", m.gate.Action}, {"Scope", m.gate.Scope}, {"Target", m.gate.Target}, {"Approver", m.gate.Approver}} {
+			add(lnText, f.label+": "+orNone(f.value))
+		}
+		add(stateKind(m.gate.State), "State: "+orNone(m.gate.State))
+		add(lnDim, "Approve and deny are unavailable. Ctrl+K lists each control with its reason.")
 	}
-	add(stateKind(m.gate.State), "State: "+orNone(m.gate.State))
-	add(lnDim, "Approve and deny are unavailable. Ctrl+K lists each control with its reason.")
 	add(lnText, "")
 	add(lnHead, "LEAD & DELEGATE")
 	_, _, s := m.selected()
@@ -461,15 +474,16 @@ func (m *Model) drawTimeline(p *painter, l layout) {
 		p.lines(in, []line{{"No timeline: a live scratch session is not managed by the daemon and has no journal.", lnDim}})
 		return
 	}
-	if len(m.timeline) == 0 {
+	timeline := m.allTimeline()
+	if len(timeline) == 0 {
 		p.lines(in, []line{{"No events", lnDim}})
 		return
 	}
 	// The newest entry is last; scrolling goes back in time.
-	end := len(m.timeline) - min(m.scrolls[paneTimeline], len(m.timeline)-1)
+	end := len(timeline) - min(m.scrolls[paneTimeline], len(timeline)-1)
 	start := max(0, end-in.Dy())
 	var ls []line
-	for _, e := range m.timeline[start:end] {
+	for _, e := range timeline[start:end] {
 		ls = append(ls, line{e.Time + "  " + e.Text, lnText})
 	}
 	p.lines(in, ls)
@@ -481,6 +495,12 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		return
 	}
 	s := "Tab pane · j/k move · Enter focus · a attach · Ctrl+K actions · r replay · ? help · q quit"
+	if m.ap.backend != nil && !m.live.on() && !m.labelled() {
+		// With a backend g opens approvals, and the status line carries the
+		// approvals element, so the bar is shortened to leave it room.
+		s = m.keyBar("Tab pane · j/k move · Enter focus · g approvals · Ctrl+K actions · r replay · ? help · q quit",
+			"Tab · Enter · g approvals · Ctrl+K · r · ? help · q quit", l.keys.Dx())
+	}
 	if m.live.on() {
 		s = "Tab pane · j/k move · Enter focus · F12 zoom · Ctrl+K actions · ? help · q quit"
 	} else if m.labelled() {
@@ -500,7 +520,23 @@ func (m *Model) drawKeys(p *painter, l layout) {
 			}
 		}
 	}
-	p.text(0, l.keys.Min.Y, l.keys.Dx(), s, p.style(lnDim))
+	room := l.keys.Dx()
+	if st := m.approvalsStatus(); st.Text != "" {
+		// The approvals element of the status line, at the right, in the
+		// alert style when a waiting card has little life left. It is
+		// information and takes no key, so it is drawn in session focus too:
+		// it is how a card that comes while the owner types shows.
+		w := ansi.StringWidth(st.Text)
+		if x := room - w; x > 0 {
+			kind := lnHead
+			if st.Alert {
+				kind = lnWarn
+			}
+			p.text(x, l.keys.Min.Y, w, st.Text, p.style(kind))
+			room = max(0, x-2)
+		}
+	}
+	p.text(0, l.keys.Min.Y, room, s, p.style(lnDim))
 }
 
 // overlayLines returns the title and wrapped lines of the open overlay.
@@ -520,11 +556,23 @@ func (m *Model) overlayLines(width int) (string, []line) {
 		}
 		for _, c := range m.controls {
 			head := c.Name
-			if c.Key != "" {
-				head += " [" + c.Key + "]"
+			key := c.Key
+			live := c.Approval && m.ap.backend != nil
+			if live {
+				key = "g"
+			}
+			if key != "" {
+				head += " [" + key + "]"
 			}
 			add(lnHead, head)
+			if live {
+				add(lnText, "Available: "+m.controlReason(c)+".")
+				continue
+			}
 			add(lnWarn, "Unavailable: "+c.Reason)
+		}
+		if m.approvalsLive() {
+			return "ACTIONS (approve and deny open the approvals view)", out
 		}
 		return "ACTIONS (all unavailable)", out
 	}
@@ -542,6 +590,9 @@ func (m *Model) overlayLines(width int) (string, []line) {
 		"F12: zoom the session pane to the window",
 		"?: this help   Esc: close   q, Ctrl+C: quit",
 	} {
+		add(lnText, s)
+	}
+	for _, s := range m.approvalsHelp() {
 		add(lnText, s)
 	}
 	add(lnHead, "Session focus")
