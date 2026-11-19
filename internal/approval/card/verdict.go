@@ -1,7 +1,152 @@
 package card
 
-// VerdictBlock is what the verdict runs said about a card. No verdict run
-// exists yet, so the block is empty. It is shown only after the owner
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"ataniq/internal/approval/record"
+)
+
+// MaxVerdictText is the most characters of a verdict run's id, provider or
+// model that a surface draws.
+const MaxVerdictText = 40
+
+// CheckKind names one check a verdict run made. The list is closed: a
+// surface draws only these names, never a name that came with the data.
+type CheckKind int
+
+// The checks of a verdict run.
+const (
+	// CheckPlan is whether the plan text matches the effects.
+	CheckPlan CheckKind = iota + 1
+	// CheckScope is whether the change stays within what the request
+	// said it would change.
+	CheckScope
+	// CheckFlagged is whether the flagged paths are explained.
+	CheckFlagged
+	// CheckSuite is whether the suite record is clean.
+	CheckSuite
+	numChecks = iota
+)
+
+// NumChecks is the number of checks in the closed list.
+const NumChecks = numChecks
+
+// String returns the check's name in the host's words, or "unknown" for a
+// value outside the closed list.
+func (k CheckKind) String() string {
+	switch k {
+	case CheckPlan:
+		return "plan"
+	case CheckScope:
+		return "scope"
+	case CheckFlagged:
+		return "flagged paths"
+	case CheckSuite:
+		return "suite"
+	}
+	return "unknown"
+}
+
+// Valid reports whether k is in the closed list.
+func (k CheckKind) Valid() bool { return k >= CheckPlan && k <= CheckSuite }
+
+// CheckResult is the answer of one check.
+type CheckResult struct {
+	Kind CheckKind
+	Pass bool
+}
+
+// Run is what one verdict run said. ID, Provider and Model are plain strings
+// from data; a surface draws them through [VerdictText].
+type Run struct {
+	ID       string
+	Provider string
+	Model    string
+	// Approve is true when the run approved and false when it rejected.
+	Approve bool
+	// Checks are the run's checks, from the closed list.
+	Checks []CheckResult
+}
+
+// VerdictBlock is what the two verdict runs said about a card. It is advice
+// of this program and is in no record. It is shown only after the owner
 // decided: Card.Verdicts, Item.Verdicts and Inputs.Verdicts point at it, and
-// [New] copies it to a card only when the card is decided.
-type VerdictBlock struct{}
+// [New] copies it to a card only when the card is decided. Nothing in it
+// asks to be believed, and nothing in it is under the binding's digest.
+type VerdictBlock struct {
+	// Runs are the two runs, in order.
+	Runs [2]Run
+	// Refused says that the card exists because a run refused. A surface
+	// may say so in one line even before the decision.
+	Refused bool
+}
+
+// VerdictText cleans a string from data for drawing and bounds it to
+// [MaxVerdictText] characters, with an ellipsis where it was cut. It keeps
+// printable characters only: control characters, format characters (the
+// direction marks included), combining marks and unassigned code points are
+// dropped, and a run of spaces becomes one.
+func VerdictText(s string) string {
+	var b strings.Builder
+	n := 0
+	space := false
+	for _, r := range s {
+		if r == utf8.RuneError || !unicode.IsPrint(r) || unicode.IsMark(r) {
+			continue
+		}
+		if r == ' ' {
+			space = true
+			continue
+		}
+		if space && b.Len() > 0 {
+			if n+1 >= MaxVerdictText {
+				return b.String() + "…"
+			}
+			b.WriteByte(' ')
+			n++
+		}
+		space = false
+		if n == MaxVerdictText {
+			return b.String() + "…"
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// OwnerApproved reports whether the owner approved the request that is in
+// state s, and whether the state says that the owner decided at all. A
+// request approved under a rule or a grant, one that is pending, and one
+// that ended without a decision are not the owner's decisions.
+func OwnerApproved(s record.State) (approved, decided bool) {
+	switch s {
+	case record.StateApproved, record.StateConsumed, record.StateApplied,
+		record.StateNotApplied, record.StateUnknown:
+		return true, true
+	case record.StateDenied:
+		return false, true
+	}
+	return false, false
+}
+
+// Agreed reports whether both runs said what the owner decided, and whether
+// the row counts: it counts only when it holds verdicts and the owner
+// decided it.
+func (it Item) Agreed() (agreed, counted bool) {
+	if it.Verdicts == nil {
+		return false, false
+	}
+	approved, decided := OwnerApproved(it.State)
+	if !decided {
+		return false, false
+	}
+	for _, r := range it.Verdicts.Runs {
+		if r.Approve != approved {
+			return false, true
+		}
+	}
+	return true, true
+}
