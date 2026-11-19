@@ -11,6 +11,9 @@
 # nothing: no command at all is run, no file is read or written, and the
 # values are samples. --fail-at N (with --dry only) injects a failure at step
 # N, so that the dry run prints the clean-up chain a real failure there runs.
+# --self-test NAME [VALUE...] is the test entry: it gives sample values to one
+# of the script's own functions, prints what the function answers and ends. It
+# only computes: no step runs, and nothing is started, read or written.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -24,12 +27,19 @@ CONFIG=
 DRY=0
 EVPARENT=
 FAILAT=0
+SELFTEST=0
 
 usage() {
   printf '%s\n' 'usage: canary-run.sh --pass A|B --config CONFIG [--dry] [--evidence DIR]' \
     '       --dry          print every step and start nothing' \
     '       --evidence DIR the folder in which the dated evidence folder is made' \
-    '       --fail-at N    with --dry only: inject a failure at step N (1 to 26)' >&2
+    '       --fail-at N    with --dry only: inject a failure at step N (1 to 26)' \
+    '       canary-run.sh --self-test NAME [VALUE...]' \
+    '                      a test entry: compute and print only, start nothing' \
+    '         balance CEILING SHARE FLOOR AVAILABLE' \
+    '                      the balanced memory limit of step 11 (bytes, percent, bytes, kB)' \
+    '         inject-action PASS OUTCOME REASON WRITTEN' \
+    '                      what step 17 does with a result of the injection' >&2
   exit 2
 }
 
@@ -40,11 +50,20 @@ while [ "$#" -gt 0 ]; do
     --evidence) [ "$#" -ge 2 ] || usage; EVPARENT=$2; shift 2 ;;
     --fail-at) [ "$#" -ge 2 ] || usage; FAILAT=$2; shift 2 ;;
     --dry) DRY=1; shift ;;
+    --self-test)
+      # The rest of the command line is the test entry's own.
+      [ "$#" -ge 2 ] || usage
+      SELFTEST=1
+      shift
+      break
+      ;;
     *) usage ;;
   esac
 done
-case $PASS in A | B) ;; *) usage ;; esac
-[ -n "$CONFIG" ] || usage
+if [ "$SELFTEST" -eq 0 ]; then
+  case $PASS in A | B) ;; *) usage ;; esac
+  [ -n "$CONFIG" ] || usage
+fi
 case $FAILAT in '' | *[!0-9]*) usage ;; esac
 [ "$FAILAT" -le 26 ] || usage
 if [ "$FAILAT" -ne 0 ] && [ "$DRY" -ne 1 ]; then
@@ -278,10 +297,72 @@ balance() {
   out $((_b / PAGE * PAGE))
 }
 
+# below_floor is R1's other half: the balanced value $1 is under the floor $2,
+# so the host is too busy, nothing is set and the unit is stopped.
+below_floor() { [ "$1" -lt "$2" ]; }
+
+# inject_action names what step 17 does with the result of an injection: $1 is
+# the pass, $2 the outcome, $3 the reason (empty for none), $4 what was
+# written. The answers:
+#   none            nothing to do: the message was submitted whole
+#   owner-enter     the owner presses Enter once in the pane (N3: this result
+#                   and no other)
+#   look            nothing is pressed; the owner looks at the pane and decides
+#   owner-supplies  the fence wrote nothing, and the owner puts the message in
+#                   the pane himself
+#   decide          no key is pressed; the owner decides whether the pass goes on
+#   unexpected      pass A: not the result the stand-in's unknown screen gives
+inject_action() {
+  case $1:$2/$3/$4 in
+    A:refused/*/nothing) out owner-supplies ;;
+    A:*) out unexpected ;;
+    B:submitted//whole) out none ;;
+    B:uncertain/not-submitted/partial) out owner-enter ;;
+    B:uncertain/died/*) out look ;;
+    B:refused/*) out owner-supplies ;;
+    *) out decide ;;
+  esac
+}
+
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
 done_step() { DONE_STEPS="$DONE_STEPS$CUR "; }
 was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
+
+# -------------------------------------------------------------- self-test ---
+
+# is_number reports whether every argument is a number in plain digits.
+is_number() {
+  for _n in "$@"; do
+    case $_n in '' | *[!0-9]*) return 1 ;; esac
+  done
+}
+
+# self_test is the test entry: it calls one function of the script with the
+# values given and prints its answer. It runs no step and no other program.
+self_test() {
+  _name=$1
+  shift
+  case $_name in
+    balance)
+      # CEILING SHARE FLOOR AVAILABLE: bytes, percent, bytes, kB of MemAvailable.
+      if [ "$#" -ne 4 ] || ! is_number "$@"; then usage; fi
+      _v=$(balance "$4" "$1" "$2")
+      out "value=$_v"
+      if below_floor "$_v" "$3"; then out 'floor=below'; else out 'floor=ok'; fi
+      ;;
+    inject-action)
+      [ "$#" -eq 4 ] || usage
+      inject_action "$1" "$2" "$3" "$4"
+      ;;
+    *) usage ;;
+  esac
+}
+
+if [ "$SELFTEST" -eq 1 ]; then
+  self_test "$@"
+  exit 0
+fi
 
 # -------------------------------------------------------------- headings ---
 
@@ -861,7 +942,7 @@ step_11() {
   BAL=$(balance "$_avail" "$MAXB" "$SHARE")
   out "   balancing: MemAvailable=${_avail} kB, in use in the slice=$_used, other scopes in the slice=$_others, ceiling=$MAXB, floor=$FLOORB, share=$SHARE%, value=$BAL"
   note "balancing: available_kb=$_avail slice_current=$_used other_scopes=$_others ceiling=$MAXB floor=$FLOORB share=$SHARE value=$BAL"
-  if [ "$BAL" -lt "$FLOORB" ]; then
+  if below_floor "$BAL" "$FLOORB"; then
     fail "the balanced value $BAL is below the floor $FLOORB: the host is too busy; the unit is stopped by the clean-up chain and the pass ends"
     return 0
   fi
@@ -1070,8 +1151,9 @@ step_17() {
     fail "inject ended with exit status $RC"
     return 0
   fi
+  _act=$(inject_action "$PASS" "$_o" "$_r" "$_w")
   if [ "$PASS" = A ]; then
-    check 'the fence refused and wrote nothing' is_eq "$_o/$_w" refused/nothing || return 0
+    check 'the fence refused and wrote nothing' is_eq "$_act" owner-supplies || return 0
     out '   Owner: type this message in the pane yourself, and submit it:'
     sed 's/^/     /' "$BODY"
     wait_key 'Owner: press Enter here when you have typed and submitted the message.'
@@ -1080,18 +1162,18 @@ step_17() {
     done_step
     return 0
   fi
-  case $_o/$_r/$_w in
-    submitted//whole)
+  case $_act in
+    none)
       result 'submitted, whole'
       ;;
-    uncertain/not-submitted/partial)
+    owner-enter)
       out '   Owner: press Enter ONCE in the pane now. This is the one result that gets your Enter.'
       wait_key 'Owner: press Enter here after you pressed Enter in the pane.'
       printf '%s owner-enter\n' "$(now)" >>"$EV/owner-enter.txt"
       note 'owner-enter'
       result 'uncertain, not-submitted, partial: owner-enter'
       ;;
-    uncertain/died/*)
+    look)
       out '   Press NOTHING in the pane: the input may hold an open paste.'
       ask 'Owner: look at the pane. What do you see, in your words'
       ask 'Owner: what happens next is your decision: type go-on to continue the pass, anything else ends it and runs the clean-up chain'
@@ -1101,7 +1183,7 @@ step_17() {
       fi
       result 'uncertain, died: no key was pressed'
       ;;
-    refused/*)
+    owner-supplies)
       out '   The fence refused. On the G3 fallback (the config states the observed version) that is correct.'
       ask 'Owner: type typed after you typed the message in the pane yourself; anything else ends the pass and runs the clean-up chain'
       if [ "$ANSWER" != typed ]; then

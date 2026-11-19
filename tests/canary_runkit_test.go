@@ -103,12 +103,22 @@ var canaryStubTools = []string{
 	"sleep", "env", "mktemp", "id", "sh",
 }
 
-// canaryDry runs the script with --dry and the further arguments in a fresh
-// folder, with a PATH and a build/canary folder that hold only recording
-// stubs. It returns the output and the exit status, and fails the test when a
-// stub was called or the run made any file.
+// canaryDry runs the script with --dry and the further arguments, as
+// canaryScript does.
 func canaryDry(t *testing.T, args ...string) (string, int) {
 	t.Helper()
+	return canaryScript(t, append([]string{"--dry"}, args...)...)
+}
+
+// canaryScript runs the script with the arguments (--dry and more, or the
+// --self-test entry) in a fresh folder, with a PATH and a build/canary folder
+// that hold only recording stubs. It returns the output and the exit status,
+// and fails the test when a stub was called or the run made any file.
+func canaryScript(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	if len(args) == 0 || (args[0] != "--dry" && args[0] != "--self-test") {
+		t.Fatalf("the tests run the script with --dry or --self-test only: %v", args)
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "stubs")
 	work := filepath.Join(dir, "work")
@@ -132,7 +142,7 @@ func canaryDry(t *testing.T, args ...string) (string, int) {
 	}
 	before := canaryTree(t, dir)
 
-	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), canaryRunScript), "--dry"}, args...)...)
+	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), canaryRunScript)}, args...)...)
 	cmd.Dir = work
 	cmd.Env = []string{"PATH=" + bin, "HOME=" + home, "XDG_RUNTIME_DIR=" + filepath.Join(dir, "run")}
 	cmd.Stdin = strings.NewReader("")
@@ -141,18 +151,18 @@ func canaryDry(t *testing.T, args ...string) (string, int) {
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			t.Fatalf("the dry run did not run: %v", err)
+			t.Fatalf("the script did not run: %v", err)
 		}
 		code = exit.ExitCode()
 	}
 	if called, err := os.ReadFile(calls); err == nil {
-		t.Fatalf("the dry run %v started something:\n%s", args, called)
+		t.Fatalf("the run %v started something:\n%s", args, called)
 	}
 	if after := canaryTree(t, dir); !slices.Equal(before, after) {
-		t.Fatalf("the dry run %v changed the folder:\nbefore %v\nafter  %v", args, before, after)
+		t.Fatalf("the run %v changed the folder:\nbefore %v\nafter  %v", args, before, after)
 	}
 	if bytes.Contains(out, []byte("not found")) {
-		t.Fatalf("the dry run %v looked for a program:\n%s", args, out)
+		t.Fatalf("the run %v looked for a program:\n%s", args, out)
 	}
 	return string(out), code
 }
@@ -599,5 +609,319 @@ func TestCanaryRunKitDryRefusesBadArguments(t *testing.T) {
 				t.Errorf("exit status %d:\n%s", code, out)
 			}
 		})
+	}
+}
+
+// This file checks the code a real run of the canary run script takes, not
+// the text its dry run prints: the dry run of a step is a branch of its own,
+// so a test of the dry text alone passes while the real branch is wrong. Two
+// means are used. The script's --self-test entry gives sample values to one of
+// the script's own functions (the same function the step calls) and prints
+// its answer; it only computes and starts nothing. And the script's text is
+// read: the body of a step is searched for what it must and must not hold.
+// Like the rest of the kit's tests, nothing here starts a unit, a namespace,
+// a service or an agent, and the script is never run as a pass without --dry.
+
+// canarySelfTest runs the script's test entry over the recording stubs and
+// returns its output without the last line feed, and the exit status.
+func canarySelfTest(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	out, code := canaryScript(t, append([]string{"--self-test"}, args...)...)
+	return strings.TrimSuffix(out, "\n"), code
+}
+
+// canaryScriptText is the script.
+func canaryScriptText(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root(t), canaryRunScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+var canaryFuncStart = regexp.MustCompile(`(?m)^([a-z_][a-z_0-9]*)\(\) \{(.*)$`)
+
+// canaryFuncs returns the body of every function the script defines, by name.
+// A function is written "name() {" at the start of a line and ends at the
+// next line that is "}" alone, or on its own line when that line ends in "}".
+func canaryFuncs(t *testing.T, script string) map[string]string {
+	t.Helper()
+	funcs := map[string]string{}
+	for _, m := range canaryFuncStart.FindAllStringSubmatchIndex(script, -1) {
+		name, rest := script[m[2]:m[3]], script[m[4]:m[5]]
+		if _, twice := funcs[name]; twice {
+			t.Fatalf("the script defines %s twice", name)
+		}
+		if strings.HasSuffix(strings.TrimSpace(rest), "}") {
+			funcs[name] = rest
+			continue
+		}
+		end := strings.Index(script[m[5]:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("the function %s does not end", name)
+		}
+		funcs[name] = script[m[5] : m[5]+end+1]
+	}
+	return funcs
+}
+
+// canaryCalls counts the places where the body names the word: the name of a
+// function or a builtin, not a part of a longer name. Comment lines do not
+// count.
+func canaryCalls(body, word string) int {
+	re := regexp.MustCompile(`(^|[^A-Za-z0-9_$-])` + regexp.QuoteMeta(word) + `($|[^A-Za-z0-9_=-])`)
+	n := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		n += len(re.FindAllStringIndex(line, -1))
+	}
+	return n
+}
+
+// canaryReach returns the names of the script's functions that the function
+// calls, directly or through another one, without the function itself.
+func canaryReach(funcs map[string]string, from string) []string {
+	seen := map[string]bool{from: true}
+	queue := []string{from}
+	var reach []string
+	for len(queue) > 0 {
+		body := funcs[queue[0]]
+		queue = queue[1:]
+		for name := range funcs {
+			if !seen[name] && canaryCalls(body, name) > 0 {
+				seen[name] = true
+				queue = append(queue, name)
+				reach = append(reach, name)
+			}
+		}
+	}
+	return reach
+}
+
+// R1: the balanced value is the smaller of the ceiling and the share of the
+// available memory, rounded down to whole pages, never above the ceiling;
+// below the floor nothing is set. The values are the plan's rule worked by
+// hand, not the script's own arithmetic.
+func TestCanaryRunKitBalanceIsR1(t *testing.T) {
+	const gib = 1 << 30
+	for _, c := range []struct {
+		name                           string
+		ceiling, share, floor, availKB int64
+		wantValue                      int64
+		wantFloor                      string
+	}{
+		{"the share is below the ceiling", 4 * gib, 50, gib, 6291456, 3 * gib, "ok"},
+		{"the ceiling caps a large host", 4 * gib, 50, gib, 64 * 1024 * 1024, 4 * gib, "ok"},
+		{"the share equals the ceiling", 4 * gib, 50, gib, 8 * 1024 * 1024, 4 * gib, "ok"},
+		{"rounded down to whole pages", 4 * gib, 50, gib, 6291461, 3*gib + 0, "ok"},
+		{"a page more is a page more", 4 * gib, 50, gib, 6291464, 3*gib + 4096, "ok"},
+		{"a ceiling between pages is rounded down, never up", 4*gib + 100, 50, gib, 64 * 1024 * 1024, 4 * gib, "ok"},
+		{"another share", 4 * gib, 25, gib, 8 * 1024 * 1024, 2 * gib, "ok"},
+		{"exactly the floor is not below it", 4 * gib, 50, gib, 2 * 1024 * 1024, gib, "ok"},
+		{"one page under the floor", 4 * gib, 50, gib, 2*1024*1024 - 8, gib - 4096, "below"},
+		{"a busy host", 4 * gib, 50, gib, 1000001, 512000000, "below"},
+		{"no memory at all", 4 * gib, 50, gib, 0, 0, "below"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out, code := canarySelfTest(t, "balance",
+				fmt.Sprint(c.ceiling), fmt.Sprint(c.share), fmt.Sprint(c.floor), fmt.Sprint(c.availKB))
+			want := fmt.Sprintf("value=%d\nfloor=%s", c.wantValue, c.wantFloor)
+			if code != 0 || out != want {
+				t.Errorf("exit status %d, got:\n%s\nwant:\n%s", code, out, want)
+			}
+			if c.wantValue > c.ceiling || c.wantValue%4096 != 0 {
+				t.Fatalf("the case is wrong: %d", c.wantValue)
+			}
+		})
+	}
+
+	// Step 11 uses these two functions and no arithmetic of its own.
+	body := canaryFuncs(t, canaryScriptText(t))["step_11"]
+	for _, want := range []string{
+		`BAL=$(balance "$_avail" "$MAXB" "$SHARE")`,
+		`if below_floor "$BAL" "$FLOORB"; then`,
+		`systemctl --user set-property --runtime "$UNIT" "MemoryMax=$BAL"`,
+	} {
+		if strings.Count(body, want) != 1 {
+			t.Errorf("step 11 does not hold once: %s", want)
+		}
+	}
+	if at, set := strings.Index(body, `if below_floor "$BAL" "$FLOORB"; then`), strings.Index(body, "set-property --runtime \"$UNIT\""); at < 0 || set < at {
+		t.Error("step 11 sets the limit before it compares the value with the floor")
+	}
+}
+
+// Step 11 is one step with one key (R1): the real branch waits once, before
+// define, and neither it nor anything it calls waits or asks again.
+func TestCanaryRunKitStepElevenHasOneKey(t *testing.T) {
+	funcs := canaryFuncs(t, canaryScriptText(t))
+	body, ok := funcs["step_11"]
+	if !ok {
+		t.Fatal("the script has no step_11")
+	}
+	if n := canaryCalls(body, "wait_key"); n != 1 {
+		t.Errorf("the body of step 11 waits for %d keys, want 1", n)
+	}
+	for _, word := range []string{"ask", "affirm", "read_answer", "sleep"} {
+		if n := canaryCalls(body, word); n != 0 {
+			t.Errorf("the body of step 11 calls %s", word)
+		}
+	}
+	if strings.Contains(body, "read -r") {
+		t.Error("the body of step 11 reads a line itself")
+	}
+	if key, define := strings.Index(body, "wait_key "), strings.Index(body, "runcap define "); key < 0 || define < key {
+		t.Error("step 11 does not wait for its key before define")
+	}
+	for _, name := range canaryReach(funcs, "step_11") {
+		for _, word := range []string{"wait_key", "ask", "affirm"} {
+			if canaryCalls(funcs[name], word) != 0 {
+				t.Errorf("step 11 calls %s, which calls %s", name, word)
+			}
+		}
+	}
+	for _, name := range []string{"runcap", "check", "read_limits", "balance", "below_floor", "fld"} {
+		if canaryCalls(body, name) == 0 {
+			t.Errorf("step 11 does not call %s: the test reads another script than it expects", name)
+		}
+	}
+}
+
+// The words of the wire (the seams note, section 3): each of the three is
+// from a closed set. The empty reason is "none".
+var (
+	canaryOutcomes = []string{"not-now", "refused", "submitted", "uncertain"}
+	canaryReasons  = []string{"", "not-ready", "blocked", "untested", "text", "not-submitted", "died"}
+	canaryWritten  = []string{"nothing", "partial", "whole", "unknown"}
+)
+
+// N3: exactly one result of the injection gets the owner's Enter, uncertain
+// with the reason not-submitted and written partial; died gets a look and no
+// key. Every combination of the wire's words is asked of the function step 17
+// uses, valid or not.
+func TestCanaryRunKitOnlyOneResultGetsTheEnter(t *testing.T) {
+	enters := 0
+	for _, o := range canaryOutcomes {
+		for _, r := range canaryReasons {
+			for _, w := range canaryWritten {
+				got, code := canarySelfTest(t, "inject-action", "B", o, r, w)
+				if code != 0 {
+					t.Fatalf("%s/%s/%s: exit status %d: %s", o, r, w, code, got)
+				}
+				want := got
+				switch {
+				case o == "uncertain" && r == "not-submitted" && w == "partial":
+					want = "owner-enter"
+					enters++
+				case o == "uncertain" && r == "died":
+					want = "look"
+				case o == "submitted" && r == "" && w == "whole":
+					want = "none"
+				case got == "owner-enter" || got == "look" || got == "none":
+					want = "another action than " + got
+				}
+				if got != want {
+					t.Errorf("pass B, %s/%s/%s: the action is %q, want %q", o, r, w, got, want)
+				}
+			}
+		}
+	}
+	if enters != 1 {
+		t.Fatalf("%d combinations get the Enter, want 1", enters)
+	}
+	// Pass A never asks for the owner's Enter in the pane.
+	for _, o := range canaryOutcomes {
+		for _, r := range canaryReasons {
+			for _, w := range canaryWritten {
+				if got, _ := canarySelfTest(t, "inject-action", "A", o, r, w); got == "owner-enter" || got == "" {
+					t.Errorf("pass A, %s/%s/%s: the action is %q", o, r, w, got)
+				}
+			}
+		}
+	}
+
+	// Step 17 takes its action from that function, and the owner-enter line
+	// and the instruction to press Enter are in the arm of that action only.
+	body := canaryFuncs(t, canaryScriptText(t))["step_17"]
+	if strings.Count(body, `_act=$(inject_action "$PASS" "$_o" "$_r" "$_w")`) != 1 {
+		t.Fatal("step 17 does not take its action from inject_action")
+	}
+	if strings.Count(body, "case $_act in\n") != 1 {
+		t.Fatal("step 17 does not branch on the action once")
+	}
+	arms := regexp.MustCompile(`(?m)^    ([a-z*|" -]+)\)\n`).FindAllStringSubmatchIndex(body, -1)
+	found := false
+	for i, m := range arms {
+		end := len(body)
+		if i+1 < len(arms) {
+			end = arms[i+1][0]
+		}
+		name, arm := body[m[2]:m[3]], body[m[1]:end]
+		enter := strings.Contains(arm, "owner-enter") || strings.Contains(arm, "press Enter ONCE")
+		if name == "owner-enter" {
+			found = true
+			for _, want := range []string{"press Enter ONCE in the pane", `>>"$EV/owner-enter.txt"`, "note 'owner-enter'", "wait_key "} {
+				if strings.Count(arm, want) != 1 {
+					t.Errorf("the owner-enter arm of step 17 does not hold once: %s", want)
+				}
+			}
+		} else if enter {
+			t.Errorf("the arm %q of step 17 asks for the owner's Enter:\n%s", name, arm)
+		}
+	}
+	if !found {
+		t.Fatal("step 17 has no arm for the action owner-enter")
+	}
+	if n := strings.Count(body, "owner-enter.txt"); n != 1 {
+		t.Errorf("step 17 writes the owner-enter line in %d places, want 1", n)
+	}
+	if before := body[:strings.Index(body, "case $_act in\n")]; strings.Contains(before, "press Enter ONCE") || strings.Contains(before, "owner-enter.txt") {
+		t.Error("step 17 asks for the owner's Enter before it branches on the action")
+	}
+}
+
+// The test entry computes and prints: it refuses what it does not know, and
+// it is not a way to run a pass.
+func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no name":            {},
+		"an unknown name":    {"step", "11"},
+		"too few values":     {"balance", "4294967296", "50", "1073741824"},
+		"too many values":    {"balance", "4294967296", "50", "1073741824", "6291456", "1"},
+		"a value in words":   {"balance", "4294967296", "half", "1073741824", "6291456"},
+		"a negative value":   {"balance", "4294967296", "50", "1073741824", "-1"},
+		"an action, 3 words": {"inject-action", "B", "uncertain", "died"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, code := canarySelfTest(t, args...)
+			if code != 2 || !strings.Contains(out, "canary-run.sh --self-test NAME [VALUE...]") || strings.Contains(out, "== step") {
+				t.Errorf("exit status %d:\n%s", code, out)
+			}
+		})
+	}
+	// With the test entry no step runs, whatever else the command line says.
+	out, code := canarySelfTest(t, "balance", "4294967296", "50", "1073741824", "6291456", "--pass", "A")
+	if code != 2 || strings.Contains(out, "== step") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	text := canaryScriptText(t)
+	at := strings.Index(text, "\nif [ \"$SELFTEST\" -eq 1 ]; then\n  self_test \"$@\"\n  exit 0\nfi\n")
+	if at < 0 {
+		t.Fatal("the script does not end after the test entry")
+	}
+	for _, later := range []string{"\nif [ \"$DRY\" -eq 1 ]; then\n  REPO=", "\ntrap on_exit EXIT\n", "\nstep_1\n"} {
+		if i := strings.Index(text, later); i < at {
+			t.Errorf("the test entry does not end the script before %q", strings.TrimSpace(later))
+		}
+	}
+	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
+		for _, word := range []string{"runcap", "wait_key", "ask", "affirm", "systemctl", "step_head"} {
+			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 {
+				t.Errorf("the test entry reaches %s, which calls %s", name, word)
+			}
+		}
 	}
 }

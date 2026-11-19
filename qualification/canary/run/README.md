@@ -55,6 +55,7 @@ sh qualification/canary/run/canary-run.sh --pass B --config /path/to/canary-live
 | `--dry` | Print every step and start nothing. No command is run and no file is read or written; the values printed are samples, so it works with no binary built and no config. Read it before each pass. |
 | `--evidence DIR` | The folder in which the dated evidence folder is made, an absolute path. The default is `ataniq-canary-evidence` in your home folder. |
 | `--fail-at N` | A test hook, accepted with `--dry` only: a failure is injected at step N, so the dry run prints the clean-up chain a real failure there would run. |
+| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs and nothing is started, read or written. The names are listed under the check of the kit, below. |
 
 The script prints each step with its number, what it does, the expected result
 and the gate it serves. It waits for Enter before every step that runs
@@ -327,5 +328,16 @@ sh scripts/go-tool.sh test ./tests/ -run CanaryRunKit
 ```
 
 It reads the Makefile target and the `AGENTS.md` lines, runs `sh -n` on the
-script, and runs the script with `--dry` only, with a `PATH` that holds stubs
-which record being called: none may be. It starts nothing.
+script, and runs the script with `--dry` or `--self-test` only, with a `PATH`
+that holds stubs which record being called: none may be. It starts nothing.
+
+The dry run of a step prints what the step would do; it is not the code a real
+run takes. So the check also reads the script's text (the body of step 11
+holds one wait for a key and no question; one arm of step 17, and no other,
+asks for the owner's Enter) and asks the script's own functions through the
+test entry:
+
+| Test entry | Prints |
+| --- | --- |
+| `--self-test balance CEILING SHARE FLOOR AVAILABLE` | `value=<bytes>`, the balanced memory limit of step 11 for a ceiling and a floor in bytes, a share in percent and `MemAvailable` in kB; then `floor=ok` or `floor=below`. |
+| `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `unexpected`. |

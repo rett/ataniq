@@ -12,7 +12,9 @@
   anything (the start, the read-back of the unit's limits and the balancing of
   the memory limit are one step with one key), never answers a prompt, and
   records each of the owner's own acts with the answer and the time. `--dry`
-  prints everything, runs no command and needs no binary and no config. The
+  prints everything, runs no command and needs no binary and no config;
+  `--self-test NAME [VALUE...]` is the test entry, which gives sample values to
+  one of the script's own functions, prints its answer and starts nothing. The
   evidence goes to a dated folder of mode 0700 with a manifest of names, sizes,
   times and hashes. A failure runs the clean-up chain: in pass B steps 22, 24,
   25 and 26 from step 6 on, and 21 and 23 as well from step 15 on; in pass A
@@ -20,5 +22,5 @@
   what each pass needs beforehand, with a filled example of the config and of
   the sandbox inputs file, what the evidence folder holds, and the undo by
   hand. `tests/canary_runkit_test.go` checks the target, the `AGENTS.md` lines
-  and the script, which it runs with `--dry` only, over stubs that must not be
-  called.
+  and the script, which it runs with `--dry` and `--self-test` only, over stubs
+  that must not be called.
