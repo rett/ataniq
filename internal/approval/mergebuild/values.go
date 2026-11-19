@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"ataniq/internal/approval/record"
 )
@@ -12,8 +14,10 @@ import (
 // The host reads it from the identity file Ataniq owns; it is never taken
 // from a commit, a branch or a request.
 type Identity struct {
-	// Name is the person's name. It is 1 to 256 bytes and holds no "<", no
-	// ">" and no control character (so no newline and no NUL).
+	// Name is the person's name. It is 1 to 256 bytes of valid UTF-8 and
+	// holds no "<", no ">", no control character (C0 or C1, so no newline
+	// and no NUL) and no format character (so no direction override and no
+	// zero-width code point).
 	Name string
 	// Email is the address, under the same rule as Name.
 	Email string
@@ -114,14 +118,15 @@ func validTarget(s string) bool {
 // validIdentityPart is the rule for a name and for an address. A newline
 // would start a header line of its own and an angle bracket would end the
 // name or the address early; the other control characters have no place in
-// either.
+// either. The text is drawn where an owner reads it, so bytes that are not
+// UTF-8, the C1 controls and the format characters (direction overrides and
+// isolates, zero-width code points, the byte-order mark) are refused too.
 func validIdentityPart(s string) bool {
-	if len(s) < 1 || len(s) > maxIdentityBytes {
+	if len(s) < 1 || len(s) > maxIdentityBytes || !utf8.ValidString(s) {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < 0x20 || c == 0x7f || c == '<' || c == '>' {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '<' || r == '>' {
 			return false
 		}
 	}
