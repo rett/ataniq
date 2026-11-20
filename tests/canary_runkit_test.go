@@ -2017,6 +2017,8 @@ func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
 		{"a line of another kind", []string{header, row, "note: something new"}, "gone 0\nother 1"},
 		{"a role that holds the words of a gone row", []string{header, "build  directory gone one 1d no no /x/run"}, "gone 0\nother 1"},
 		{"a role that holds the words and a path", []string{header, "/x/a  directory gone one 1d no no"}, "gone 0\nother 1"},
+		{"a role of five words, a path and the words of a gone row", []string{header, fmt.Sprintf("%-10s %-18s %-10s %-6s %-8s %s", "x y z no no /fake  directory gone", "one", "1d", "no", "no", "/x/run")}, "gone 0\nother 1"},
+		{"a role of the words of a gone row with a saved copy", []string{header, fmt.Sprintf("%-10s %-18s %-10s %-6s %-8s %s", "x y z no no /fake  directory gone, saved copy s (qargi review apply --from-saved s)", "one", "1d", "no", "no", "/x/run")}, "gone 0\nother 1"},
 		{"a gone row with a saved copy and one without", []string{header, "build old 20d no no /x/old  directory gone", gone}, "gone 2\nother 0"},
 		{"an empty file", []string{}, "header bad\ngone 0\nother 0"},
 	} {

@@ -607,7 +607,8 @@ list_scan() {
     NR == 1 { $1 = $1; if ($0 != "ROLE SLUG AGE APPLIED MERGED RUN") bad = 1; next }
     $0 ~ /^[ \t]*$/ { next }
     $0 ~ /^  residue: / { next }
-    NF >= 8 && substr($6, 1, 1) == "/" && $7 == "directory" && ($8 == "gone" || $8 ~ /^gone,/) && index($0, $6 "  directory gone") { gone++; next }
+    NF == 8 && substr($6, 1, 1) == "/" && $7 == "directory" && $8 == "gone" && substr($0, length($0) - length($6) - 15) == $6 "  directory gone" { gone++; next }
+    NF == 16 && substr($6, 1, 1) == "/" && $7 == "directory" && $8 == "gone," && $9 == "saved" && $10 == "copy" && $12 == "(qargi" && $15 == "--from-saved" && index($0, $6 "  directory gone, saved copy ") { gone++; next }
     NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || $4 == "yes" || $4 == "closed") { next }
     { other++ }
     END {
