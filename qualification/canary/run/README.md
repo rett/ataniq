@@ -130,9 +130,10 @@ the evidence (`log.txt`, and `out/` for the output it read) and fails the step
 with the reason when the fact is not true; the lead types nothing for it:
 
 - Step 1: no Qargi run of this project is open (`qargi local list`, the rows
-  whose `repo.path` is this checkout or its main work tree, both compared as
-  resolved paths, that are not applied and merged; a row of a run whose
-  directory is gone is counted and logged, not read; without `qargi` on `PATH`,
+  whose `repo.path` is in this checkout's repository, the main work tree of
+  each side compared as resolved paths, that are not applied and merged; a row of a run whose
+  directory is gone is counted and logged but not treated as open, because
+  its `repo.path` cannot be read; without `qargi` on `PATH`,
   or with a list that is not what `qargi local list` prints (another header, a
   line of another kind), the script says so in the log and asks the lead for
   `yes` as before), and no `ataniq-*` unit is loaded (slices are left out). A
