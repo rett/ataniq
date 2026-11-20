@@ -122,6 +122,50 @@ Typed keys do not do: the stand-in commits only from a paste followed by
 Enter, and the message has two lines, so with a live agent the Enter after the
 first line would submit half of it.
 
+### What the lead types, and what the script reads itself
+
+The script never answers a prompt and still refuses a standard input that is
+not a terminal. For a fact it can read, it reads it, records what it read in
+the evidence (`log.txt`, and `out/` for the output it read) and fails the step
+with the reason when the fact is not true; the lead types nothing for it:
+
+- Step 1: no Qargi run of this project is open (`qargi local list`, the rows
+  whose `repo.path` is in this checkout's repository, the main work tree of
+  each side compared as resolved paths, that are not applied and merged; a row of a run whose
+  directory is gone is counted and logged but not treated as open, because
+  its `repo.path` cannot be read; without `qargi` on `PATH`,
+  or with a list that is not what `qargi local list` prints (another header, a
+  line of another kind), the script says so in the log and asks the lead for
+  `yes` as before), and no `ataniq-*` unit is loaded (slices are left out). A
+  `git status` or `systemctl` that fails fails the step; it does not read as
+  empty.
+- Step 2: the report is of `leadunit-qualify` with the verdict `pass`, a `pass`
+  for every entry of `checks` and passing `limits-show-read-back` and
+  `limits-cgroup-read-back` checks (a report of a run without limits fails);
+  the summary of the plan is of a launched plan (`exit.launched` and
+  `exit.exited` true, `report_outcome` `line-read`) with the status `ok` or
+  `skipped` for every step, `exit.code` 0 and `ok` or `not-checked` for every
+  case result. The lead still types the two paths.
+- Step 3: the checkout's commit is the commit of `develop`, and no tracked
+  file has a change (untracked files are reported and do not fail the step).
+- Step 8: the output of `ataniq-intake branches` names the upstream branch.
+- Step 12: `holder.json` says the sandbox started, has profile version 4 and
+  the profile digest of the config's `holder.profile_digest`.
+- Step 20: the upstream branch is at the commit of the lead's branch, by the
+  intake's list and by `git rev-parse` on the mirror.
+
+The lead still types `yes` where no file holds the fact: that no agent session
+was told about the slice (step 1); that the probe reported once and every
+assertion is ok except 10 (step 12: the holder writes `sandbox_started` only
+after its own judgement of the probe's report passed with every assertion
+required, and the script reads that, but `holder.json` keeps no result and no
+file the script reads shows that the probe reported once, so the lead's word
+stays as a second reading of the report); that the daemon's start line and
+hello list the canary operations (step 10); and, in pass B, that each finding
+of pass A has its fix merged. The owner's prompts are as before: reading the
+template, the sign-off, the paste, the deletions and every other `Owner:`
+word.
+
 ### When a step fails
 
 - **Pass B:** a failure at step 6 or later runs the clean-up chain: steps 22
@@ -398,6 +442,7 @@ test entry:
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
 | `--self-test has-line FILE PATH=VALUE...` | `yes` when one line of `FILE`, which holds one JSON object in each line, holds every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it, and `no` otherwise; a line that is not a whole JSON object is passed over. Step 12 finds the lines of its epoch with it. |
+| `--self-test open-runs LIST REPO`, `list-scan LIST`, `loaded-units FILE`, `tracked-changes FILE`, `unit-facts FIELDS`, `plan-facts FIELDS`, `holder-start FIELDS VERSION DIGEST`, `upstream-id FILE NAME`, `lead-id FILE ROLE BRANCH` | What steps 1, 2, 3, 8, 12 and 20 read in place of the lead's word: the open runs of the project in a `qargi local list` text, the loaded units without slices, the lines of `git status --porcelain` that are not untracked, `ok ...` or `bad ...` for a fact report or `holder.json`, and the commit a `branches` text names for the upstream branch and for the lead's branch. |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |

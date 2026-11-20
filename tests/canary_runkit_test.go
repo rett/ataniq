@@ -1768,3 +1768,572 @@ func TestCanaryRunKitStep8ExpectsMirrorInside(t *testing.T) {
 		t.Error("step 8 does not check the remote against the mirror's place inside")
 	}
 }
+
+// canaryRead runs a self-test entry that reads text (awk, sed and cat of the
+// host, no stub): the entries of the machine reads that replace the lead's
+// words. It returns the output without the last line feed.
+func canaryRead(t *testing.T, args ...string) string {
+	t.Helper()
+	path, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(path, append([]string{filepath.Join(root(t), canaryRunScript), "--self-test"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSuffix(string(out), "\n")
+}
+
+func canaryWrite(t *testing.T, dir, name, text string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// The Lead: prompts that the script can answer itself are gone; the ones it
+// cannot are still there.
+func TestCanaryRunKitLeadWordsReplacedByReads(t *testing.T) {
+	script := canaryScriptText(t)
+	for _, gone := range []string{
+		"'Lead: no Qargi run is open' yes || return 0",
+		"shows every check passed",
+		"this is the develop commit the pass is to run",
+		"the mirror holds the upstream branch",
+		"profile version 4 with the pinned digest",
+		"is at the lead's commit\" yes",
+	} {
+		if strings.Contains(script, gone) {
+			t.Errorf("the script still asks the lead: %s", gone)
+		}
+	}
+	for _, kept := range []string{
+		"Lead: no agent session is open that has been told about the slice",
+		"Lead: the probe reported once and every assertion is ok except 10",
+		"Lead: the daemon's start line and hello list the canary operations",
+	} {
+		if !strings.Contains(script, kept) {
+			t.Errorf("the script lost a prompt that has no machine read: %s", kept)
+		}
+	}
+	// The dry run prints each machine check and asks for none of them.
+	out, code := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json")
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"check: no Qargi run of this project is open",
+		"check: the report parses, its verdict is pass",
+		"check: the summary parses, every step has the status ok or skipped",
+		"check: the checkout's commit is the commit of develop",
+		"check: the work tree has no change to a tracked file",
+		"check: the mirror lists the upstream branch",
+		"check: holder.json says the sandbox started",
+		"check: the upstream branch ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the dry run lacks %q", want)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		for _, word := range []string{"no Qargi run is open", "shows every check passed", "develop commit the pass", "the mirror holds the upstream", "pinned digest (type", "is at the lead's commit (type"} {
+			if strings.Contains(line, "ask and record") && strings.Contains(line, word) {
+				t.Errorf("the dry run still asks: %s", line)
+			}
+		}
+	}
+}
+
+func TestCanaryRunKitOpenRuns(t *testing.T) {
+	dir := t.TempDir()
+	run := func(name, repo string) string {
+		canaryWrite(t, dir, name+"/repo.path", repo+"\n")
+		return filepath.Join(dir, name)
+	}
+	mine1, mine2, mine3 := run("r1", "/sample/ataniq"), run("r2", "/sample/ataniq"), run("r3", "/sample/ataniq")
+	done, closed, other := run("r4", "/sample/ataniq"), run("r5", "/sample/ataniq"), run("r6", "/sample/other")
+	list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+		"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+		"build      one                1d         no     no       " + mine1,
+		"review     two                2d         no     no       " + mine2,
+		"build      three              3d         yes    no       " + mine3,
+		"build      four               4d         yes    yes      " + done,
+		"build      five               5d         closed -        " + closed,
+		"build      six                6d         no     no       " + other,
+		"build      gone               7d         no     no       /nonexistent/sample/gone",
+		"  residue: " + mine1 + "/home/.codex/auth.json (a link a start left)",
+		"",
+	}, "\n"))
+	got := canaryRead(t, "open-runs", list, "/sample/ataniq")
+	if want := mine1 + "\n" + mine2 + "\n" + mine3; got != want {
+		t.Errorf("open runs:\n%s\nwant:\n%s", got, want)
+	}
+	if got := canaryRead(t, "open-runs", list, "/sample/none"); got != "" {
+		t.Errorf("a project without a run has open runs: %q", got)
+	}
+}
+
+// qargi records a run's repo.path as the resolved --repo folder, which may be
+// a linked work tree. The repository the script is given may be reached through
+// a symbolic link, with a trailing slash, or be a linked work tree of the same
+// repository; the main work tree is compared on both sides.
+func TestCanaryRunKitOpenRunsOfLinkedWorkTrees(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, wa, wb, other := filepath.Join(dir, "main"), filepath.Join(dir, "wa"), filepath.Join(dir, "wb"), filepath.Join(dir, "other")
+	for _, args := range [][]string{
+		{"init", "-q", main},
+		{"-C", main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", main, "worktree", "add", "-q", "--detach", wa},
+		{"-C", main, "worktree", "add", "-q", "--detach", wb},
+		{"init", "-q", other},
+	} {
+		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for _, c := range []struct {
+		name, recorded string
+		repos          map[string]string
+	}{
+		{"a run recorded for a linked work tree", wa, map[string]string{
+			"the main checkout": main, "the same work tree": wa, "another work tree": wb, "a work tree with a slash": wb + "/",
+			"an unrelated repository": other, "an empty argument": ""}},
+		{"a run recorded for the main checkout", main, map[string]string{
+			"the main checkout": main, "a linked work tree": wa, "another work tree": wb,
+			"an unrelated repository": other, "an empty argument": ""}},
+	} {
+		canaryWrite(t, dir, "run1/repo.path", c.recorded+"\n")
+		run := filepath.Join(dir, "run1")
+		list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+			"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+			"build      one                1d         no     no       " + run,
+			"",
+		}, "\n"))
+		for name, repo := range c.repos {
+			want := run
+			if name == "an unrelated repository" || name == "an empty argument" {
+				want = ""
+			}
+			if got := canaryRead(t, "open-runs", list, repo); got != want {
+				t.Errorf("%s, REPO is %s: got %q, want %q", c.name, name, got, want)
+			}
+		}
+	}
+	// A run whose repo.path is empty or missing is not matched by an empty REPO.
+	canaryWrite(t, dir, "run1/repo.path", "")
+	run := filepath.Join(dir, "run1")
+	list := canaryWrite(t, dir, "list.txt", "ROLE       SLUG               AGE        APPLIED MERGED   RUN\nbuild      one                1d         no     no       "+run+"\n")
+	for _, repo := range []string{"", main} {
+		if got := canaryRead(t, "open-runs", list, repo); got != "" {
+			t.Errorf("a run without a repo.path matched REPO %q: %q", repo, got)
+		}
+	}
+}
+
+func TestCanaryRunKitOpenRunsCompareResolvedPaths(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(dir, "main")
+	linked := filepath.Join(dir, "linked")
+	link := filepath.Join(dir, "link")
+	for _, args := range [][]string{
+		{"init", "-q", main},
+		{"-C", main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", main, "worktree", "add", "-q", "--detach", linked},
+	} {
+		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.Symlink(main, link); err != nil {
+		t.Skip("no symbolic link")
+	}
+	canaryWrite(t, dir, "run1/repo.path", main+"\n")
+	run := filepath.Join(dir, "run1")
+	list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+		"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+		"build      one                1d         no     no       " + run,
+		"",
+	}, "\n"))
+	for _, c := range []struct{ name, repo, want string }{
+		{"the resolved path", main, run},
+		{"a trailing slash", main + "/", run},
+		{"a symbolic link", link, run},
+		{"a symbolic link and a trailing slash", link + "/", run},
+		{"a linked work tree", linked, run},
+		{"a linked work tree with a trailing slash", linked + "/", run},
+		{"a folder that is not the repository", dir, ""},
+		{"a folder that does not exist", filepath.Join(dir, "absent"), ""},
+	} {
+		if got := canaryRead(t, "open-runs", list, c.repo); got != c.want {
+			t.Errorf("open runs, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The list is read as qargi local list prints it: the exact header, and every
+// line of a kind it knows. Rows it passes over are counted; a drifted list is
+// not read, and the step then asks the lead as before.
+func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
+	dir := t.TempDir()
+	const header = "ROLE       SLUG               AGE        APPLIED MERGED   RUN"
+	row := "build      one                1d         no     no       /x/run"
+	gone := "build      old                20d        no     no       /x/old  directory gone, saved copy /x/saved (qargi review apply --from-saved saved)"
+	residue := "  residue: /x/run/home/.codex/auth.json (a link a start left)"
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"the list as printed", []string{header, row, residue, gone, ""}, "gone 1\nother 0"},
+		{"only the header", []string{header}, "gone 0\nother 0"},
+		{"a column inserted before RUN", []string{"ROLE       SLUG               AGE        APPLIED MERGED   EXTRA RUN", "build one 1d no no x /x/run"}, "header bad\ngone 0\nother 1"},
+		{"a column renamed", []string{"ROLE SLUG AGE APPLIED MERGED PATH", row}, "header bad\ngone 0\nother 0"},
+		{"a row of seven fields", []string{header, "build one 1d no no x /x/run"}, "gone 0\nother 1"},
+		{"a row with an unknown applied word", []string{header, "build one 1d maybe no /x/run"}, "gone 0\nother 1"},
+		{"a line of another kind", []string{header, row, "note: something new"}, "gone 0\nother 1"},
+		{"a role that holds the words of a gone row", []string{header, "build  directory gone one 1d no no /x/run"}, "gone 0\nother 1"},
+		{"a role that holds the words and a path", []string{header, "/x/a  directory gone one 1d no no"}, "gone 0\nother 1"},
+		{"a gone row with a saved copy and one without", []string{header, "build old 20d no no /x/old  directory gone", gone}, "gone 2\nother 0"},
+		{"an empty file", []string{}, "header bad\ngone 0\nother 0"},
+	} {
+		f := canaryWrite(t, dir, "list.txt", strings.Join(c.lines, "\n")+"\n")
+		if c.name == "an empty file" {
+			f = canaryWrite(t, dir, "list.txt", "")
+		}
+		if got := canaryRead(t, "list-scan", f); got != c.want {
+			t.Errorf("list scan, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The step 12 word is kept, and what the machine check covers is said: the
+// holder writes sandbox_started only after its own gate passed. The comment and
+// the README must not say that the probe's result is "in no file".
+func TestCanaryRunKitStep12SaysWhatTheCheckCovers(t *testing.T) {
+	script := canaryScriptText(t)
+	readme, err := os.ReadFile(filepath.Join(root(t), "qualification/canary/run/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(script, "are in no file") {
+		t.Error("the script says the probe's results are in no file")
+	}
+	for _, want := range []string{"sandbox_started=true only", "assertion 10, and only in canary mode", "affirm 'Lead: the probe reported once and every assertion is ok except 10'"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script lacks %q", want)
+		}
+	}
+	for _, want := range []string{"the holder writes `sandbox_started` only", "required, and the script reads that"} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("the README lacks %q", want)
+		}
+	}
+}
+
+func TestCanaryRunKitLoadedUnitsLeaveSlicesOut(t *testing.T) {
+	dir := t.TempDir()
+	only := canaryWrite(t, dir, "slices.txt", "ataniq-qualify-ab12.slice loaded active active x\nataniq-old.slice loaded inactive dead y\n")
+	if got := canaryRead(t, "loaded-units", only); got != "" {
+		t.Errorf("slices counted: %q", got)
+	}
+	mixed := canaryWrite(t, dir, "mixed.txt", "ataniq-old.slice loaded inactive dead y\nataniq-lead-x.service loaded active running z\n")
+	if got := canaryRead(t, "loaded-units", mixed); got != "ataniq-lead-x.service" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCanaryRunKitTrackedChangesOnly(t *testing.T) {
+	dir := t.TempDir()
+	clean := canaryWrite(t, dir, "clean.txt", "?? .codex/\n?? notes.txt\n")
+	if got := canaryRead(t, "tracked-changes", clean); got != "" {
+		t.Errorf("untracked entries refused: %q", got)
+	}
+	dirty := canaryWrite(t, dir, "dirty.txt", "?? .codex/\n M a.go\nA  b.go\n")
+	if got := canaryRead(t, "tracked-changes", dirty); got != " M a.go\nA  b.go" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCanaryRunKitFactsVerdicts(t *testing.T) {
+	unit := func(verdict string, results ...string) string {
+		lines := []string{"tool=leadunit-qualify", "verdict=" + verdict}
+		for i, r := range results {
+			lines = append(lines, "checks."+strconv.Itoa(i)+".name=c"+strconv.Itoa(i), "checks."+strconv.Itoa(i)+".result="+r)
+		}
+		return strings.Join(lines, "\n")
+	}
+	// withLimits is a report of a run with limits: the two read-back checks are
+	// among the checks (named as leadunit-qualify names them).
+	withLimits := func(tool, show, cgroup string) string {
+		return strings.Join([]string{
+			"tool=" + tool, "verdict=pass",
+			"checks.0.name=unit-starts", "checks.0.result=pass",
+			"checks.1.name=limits-show-read-back", "checks.1.result=" + show,
+			"checks.2.name=limits-cgroup-read-back", "checks.2.result=" + cgroup,
+		}, "\n")
+	}
+	const limitsOK = "ok verdict pass, 3 checks, every result pass, the limits read back"
+	for _, c := range []struct{ name, fields, want string }{
+		{"a run with limits", withLimits("leadunit-qualify", "pass", "pass"), limitsOK},
+		{"a run without limits", unit("pass", "pass", "pass"), "bad the report has no passing check limits-show-read-back (a run without limits?)"},
+		{"no cgroup read-back", strings.Replace(withLimits("leadunit-qualify", "pass", "pass"), "limits-cgroup-read-back", "other", 1), "bad the report has no passing check limits-cgroup-read-back (a run without limits?)"},
+		{"another tool", withLimits("other-tool", "pass", "pass"), "bad the report is of the tool other-tool, not leadunit-qualify"},
+		{"no tool", strings.Replace(withLimits("x", "pass", "pass"), "tool=x\n", "", 1), "bad the report is of the tool , not leadunit-qualify"},
+		{"a failed limit check", withLimits("leadunit-qualify", "pass", "fail"), "bad check 2 (limits-cgroup-read-back) has the result fail, not pass"},
+		{"a failed check", unit("pass", "pass", "fail"), "bad check 1 (c1) has the result fail, not pass"},
+		{"a failed verdict", unit("fail", "pass"), "bad the verdict is fail, not pass"},
+		{"no verdict", "tool=leadunit-qualify\nchecks.0.name=a\nchecks.0.result=pass", "bad the report has no verdict"},
+		{"no checks", "tool=leadunit-qualify\nverdict=pass", "bad the report has no checks"},
+		{"a check without a result", "tool=leadunit-qualify\nverdict=pass\nchecks.0.name=a", "bad 1 check(s) have no result"},
+	} {
+		if got := canaryRead(t, "unit-facts", c.fields); got != c.want {
+			t.Errorf("unit facts, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	plan := func(step, code, result string) string {
+		return strings.Join([]string{
+			"steps.0.name=validate-config", "steps.0.status=ok",
+			"steps.1.name=resolv-conf", "steps.1.status=" + step,
+			"exit.launched=true", "exit.exited=true", "exit.code=" + code, "report_outcome=line-read",
+			"cases.0.case=S1", "cases.0.results.0.id=holder-hidden", "cases.0.results.0.status=ok",
+			"cases.1.results.0.id=qualification-record", "cases.1.results.0.status=" + result,
+		}, "\n")
+	}
+	neverLaunched := strings.Join([]string{
+		"dry_run=true", "report_outcome=not-launched", "stop.state=not-launched",
+		"steps.0.name=validate-config", "steps.0.status=ok",
+		"steps.1.name=resolv-conf", "steps.1.status=skipped",
+		"exit.launched=false", "exit.exited=false", "exit.code=0",
+		"cases.0.case=S1", "cases.0.results.0.id=holder-hidden", "cases.0.results.0.status=not-checked",
+	}, "\n")
+	for _, c := range []struct{ name, fields, want string }{
+		{"a pass", plan("ok", "0", "ok"), "ok 2 steps ok or skipped, exit.code 0, 2 case results ok or not-checked"},
+		{"skipped and not checked", plan("skipped", "0", "not-checked"), "ok 2 steps ok or skipped, exit.code 0, 2 case results ok or not-checked"},
+		{"a failed step", plan("failed", "0", "ok"), "bad step 1 (resolv-conf) has the status failed"},
+		{"a nonzero exit", plan("ok", "1", "ok"), "bad exit.code is 1, not 0"},
+		{"a failed case result", plan("ok", "0", "fail"), "bad case result 1.0 (qualification-record) has the status fail"},
+		{"no exit", "steps.0.status=ok\nexit.launched=true\nexit.exited=true\nreport_outcome=line-read\ncases.0.results.0.status=ok", "bad the summary has no exit.code"},
+		{"no step", "exit.launched=true\nexit.exited=true\nreport_outcome=line-read\nexit.code=0", "bad the summary has no step"},
+		{"no case result", "steps.0.status=ok\nexit.launched=true\nexit.exited=true\nreport_outcome=line-read\nexit.code=0", "bad the summary has no case result"},
+		// The shape of the summary of a dry run, which launches nothing: every
+		// step is ok or skipped, exit.code is the zero value, and the case
+		// results are not-checked.
+		{"never launched", neverLaunched, "bad the plan was not launched (exit.launched is false)"},
+		{"launched, did not exit", strings.Replace(plan("ok", "0", "ok"), "exit.exited=true", "exit.exited=false", 1), "bad the plan did not exit (exit.exited is false)"},
+		{"no report line read", strings.Replace(plan("ok", "0", "ok"), "report_outcome=line-read", "report_outcome=not-launched", 1), "bad report_outcome is not-launched, not line-read"},
+		{"no launch field", strings.Replace(plan("ok", "0", "ok"), "exit.launched=true\n", "", 1), "bad the plan was not launched (exit.launched is )"},
+	} {
+		if got := canaryRead(t, "plan-facts", c.fields); got != c.want {
+			t.Errorf("plan facts, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCanaryRunKitHolderStartVerdict(t *testing.T) {
+	const digest = "0123abcd"
+	rec := func(started, version, dig string) string {
+		return "profile_digest=" + dig + "\nprofile_version=" + version + "\nsandbox_started=" + started + "\nwaiver=x"
+	}
+	for _, c := range []struct{ name, fields, version, digest, want string }{
+		{"a good start", rec("true", "4", digest), "4", digest, "ok sandbox started, profile version 4, profile digest is the pinned digest"},
+		{"not started", rec("false", "4", digest), "4", digest, "bad holder.json does not say the sandbox started (sandbox_started is not true)"},
+		{"another version", rec("true", "3", digest), "4", digest, "bad holder.json profile_version is not 4"},
+		{"another digest", rec("true", "4", "ffff"), "4", digest, "bad holder.json profile_digest is not the pinned digest of the config"},
+		{"no digest in the config", rec("true", "4", digest), "4", "", "bad the config names no profile digest"},
+		{"no sandbox_started line", "profile_version=4\nprofile_digest=" + digest, "4", digest, "bad holder.json does not say the sandbox started (sandbox_started is not true)"},
+	} {
+		if got := canaryRead(t, "holder-start", c.fields, c.version, c.digest); got != c.want {
+			t.Errorf("holder start, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCanaryRunKitBranchesNameTheCommits(t *testing.T) {
+	dir := t.TempDir()
+	const tip, base = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	text := canaryWrite(t, dir, "branches.txt", strings.Join([]string{
+		"Lead branches (text of the lead):",
+		"  lead  canary/one  " + tip,
+		"  lead  main  " + base,
+		"Upstream branches:",
+		"  main  " + base,
+		"",
+	}, "\n"))
+	empty := canaryWrite(t, dir, "empty.txt", "Lead branches (text of the lead):\n  (none)\nUpstream branches:\n  (none)\n")
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"upstream-id", text, "main"}, base},
+		{[]string{"upstream-id", text, "canary/one"}, ""},
+		{[]string{"upstream-id", text, "other"}, ""},
+		{[]string{"upstream-id", empty, "main"}, ""},
+		{[]string{"lead-id", text, "lead", "canary/one"}, tip},
+		{[]string{"lead-id", text, "lead", "absent"}, ""},
+		{[]string{"lead-id", text, "main", "main"}, ""},
+		{[]string{"lead-id", empty, "lead", "canary/one"}, ""},
+	} {
+		if got := canaryRead(t, c.args...); got != c.want {
+			t.Errorf("%v: got %q, want %q", c.args[:1], got, c.want)
+		}
+	}
+}
+
+// Each step that reads a fact itself fails the step when the fact is false:
+// the read is a check, and the steps call the helpers the cases above test.
+func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
+	funcs := canaryFuncs(t, canaryScriptText(t))
+	for _, c := range []struct{ fn, word string }{
+		{"no_open_runs", `open_runs "$LASTOUT" "$REPO"`},
+		{"no_open_runs", `list_gone "$LASTOUT"`},
+		{"step_1", "no_open_runs || return 0"},
+		{"step_1", `loaded_units "$LASTOUT"`},
+		{"facts_pass", "unit_facts_verdict"},
+		{"facts_pass", "plan_facts_verdict"},
+		{"step_2", `facts_pass "$_kind" "$ANSWER" || return 0`},
+		{"step_3", `is_eq "$_head" "$_dev"`},
+		{"step_3", `tracked_changes "$_wtf"`},
+		{"step_8", `lists_upstream "$LASTOUT" "$UPSTREAM"`},
+		{"step_12", "holder_start_verdict"},
+		{"step_12", "holder.profile_digest"},
+		{"step_20", `is_eq "$_up" "$_lead"`},
+		{"step_20", `--git-dir "$MIRROR" rev-parse`},
+	} {
+		if !strings.Contains(funcs[c.fn], c.word) {
+			t.Errorf("%s does not hold %s", c.fn, c.word)
+		}
+	}
+	// A failing command must not read as an empty answer: each listing that a
+	// step reads is followed by a check of its status.
+	for _, c := range []struct{ fn, cmd, check string }{
+		{"step_1", "runcap lead-units systemctl", "check 'the ataniq-lead-* units can be listed' is_rc 0"},
+		{"step_1", "runcap units-before systemctl", "check 'the ataniq units can be listed' is_rc 0"},
+		{"step_3", `runcap worktree git -C "$REPO" status --porcelain`, "check 'the work tree can be read' is_rc 0"},
+	} {
+		body := funcs[c.fn]
+		i := strings.Index(body, c.cmd)
+		if i < 0 {
+			t.Errorf("%s does not run %s", c.fn, c.cmd)
+			continue
+		}
+		rest := body[i:]
+		if nl := strings.Index(rest, "\n"); nl < 0 || !strings.HasPrefix(strings.TrimLeft(rest[nl:], " \n"), c.check) {
+			t.Errorf("%s: %s is not followed by %s", c.fn, c.cmd, c.check)
+		}
+	}
+	// And the order is not all: a command that exits non-zero must fail the
+	// step. The two lines run under the script's own runcap, check, is_rc and
+	// fail, over stubs of git and systemctl.
+	for _, c := range []struct{ fn, cmd string }{
+		{"step_1", "runcap lead-units systemctl"},
+		{"step_1", "runcap units-before systemctl"},
+		{"step_3", `runcap worktree git -C "$REPO" status --porcelain`},
+	} {
+		lines := strings.Split(funcs[c.fn], "\n")
+		var pair string
+		for i, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), c.cmd) && i+1 < len(lines) {
+				pair = strings.TrimSpace(l) + "\n" + strings.TrimSpace(lines[i+1])
+			}
+		}
+		if pair == "" {
+			t.Errorf("%s does not run %s", c.fn, c.cmd)
+			continue
+		}
+		for _, code := range []int{1, 0} {
+			out := canaryStepPair(t, pair, code)
+			failed := strings.Contains(out, "FAILED at step 1") && !strings.Contains(out, "STEP-PASSED") && strings.Contains(out, "findings=1")
+			passed := strings.Contains(out, "STEP-PASSED") && !strings.Contains(out, "FAILED") && strings.Contains(out, "findings=0")
+			if code != 0 && !failed {
+				t.Errorf("%s: %s exits %d and the step does not fail:\n%s", c.fn, c.cmd, code, out)
+			}
+			if code == 0 && !passed {
+				t.Errorf("%s: %s exits 0 and the step does not pass:\n%s", c.fn, c.cmd, out)
+			}
+		}
+	}
+	// Without qargi, or with a list it cannot read, the old prompt stays and the log says so.
+	body := funcs["no_open_runs"]
+	if strings.Count(body, "affirm 'Lead: no Qargi run is open'") != 2 || strings.Count(body, "note '") < 2 {
+		t.Error("the fallback of the open-run check does not ask and say so in the log")
+	}
+}
+
+// canaryDef returns the whole definition of the script's function.
+func canaryDef(t *testing.T, script, name string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\(\) \{.*$`)
+	m := re.FindStringIndex(script)
+	if m == nil {
+		t.Fatalf("the script lacks %s", name)
+	}
+	if strings.HasSuffix(strings.TrimSpace(script[m[0]:m[1]]), "}") {
+		return script[m[0]:m[1]] + "\n"
+	}
+	end := strings.Index(script[m[1]:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("the function %s does not end", name)
+	}
+	return script[m[0]:m[1]+end+3]
+}
+
+// canaryStepPair runs a runcap line and the check line after it, as a step
+// has them, under the script's own helpers, with git and systemctl stubs that
+// exit with code. It returns the output, then the number of findings.
+func canaryStepPair(t *testing.T, pair string, code int) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	script := canaryScriptText(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	for _, name := range []string{"git", "systemctl"} {
+		canaryWrite(t, bin, name, fmt.Sprintf("#!/bin/sh\nexit %d\n", code))
+		if err := os.Chmod(filepath.Join(bin, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ev", "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	b.WriteString("DRY=0 CUR=1 EPOCH_NO=1 IN_CHAIN=1 FINDINGS=0 LOG= RC=0 LASTOUT= LASTERR= REPO=/x\nEV=" + filepath.Join(dir, "ev") + "\n")
+	for _, name := range []string{"out", "note", "dry", "fail", "runcap", "check", "is_rc"} {
+		b.WriteString(canaryDef(t, script, name))
+	}
+	b.WriteString("s() {\n" + pair + "\n  echo STEP-PASSED\n}\ns\necho findings=$FINDINGS\n")
+	cmd := exec.Command(sh, "-c", b.String())
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	return string(out)
+}
