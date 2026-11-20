@@ -3072,7 +3072,9 @@ canary_owns() {
   case $_co_h in
     '' | not-a-regular-file | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) return 1 ;;
   esac
-  awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" "$EV/canary-config-now.txt" 2>/dev/null
+  # cat goes on past a missing file (no manifest of step 15); awk would stop.
+  cat "$EV/canary-config-after.txt" "$EV/canary-config-now.txt" 2>/dev/null |
+    awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }'
 }
 
 # canary_wrote_login succeeds when the canary's own login added or changed a

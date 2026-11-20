@@ -769,13 +769,18 @@ at the top of the folder, and judges only the files the login itself would
 write there (a credential, token, secret or authorisation file, the runtime's
 state file and its settings files, at the top of the folder). A difference in
 one of those is a finding when its new hash is one the canary's own config
-folder holds under the same name (the canary's own login), and so is any new or
+folder holds under the same name, in its manifest of step 15 or in the one read
+again at step 25 into `canary-config-now.txt` (the canary's own login, or a
+token it refreshed since), and so is any new or
 changed path under `projects/-work-*` (the sandbox's working folder). Any other
 difference is a question to the owner and the lead (a running session of his
 may have refreshed its token): their `yes` is not a finding, and the result line
-names the files they explained. When the canary's login wrote no file of its
-kind into its own folder, nothing proves another session wrote the difference,
-and it is a finding without the question. It reads the canary config only through `ataniq-canary show`, which
+names the files they explained. Only a credential-named file counts as proof
+that the canary wrote a login. When the canary's login wrote no credential file
+into its own folder, nothing proves another session wrote the difference, and
+it is a finding without the question. With no manifest of step 15 because no
+login was completed, the run asks the owner instead of counting a finding, but
+a hash match with the step-25 manifest still proves the file the canary's. It reads the canary config only through `ataniq-canary show`, which
 prints names, numbers and paths, the names of the agent's environment (`agent_env_names`) but never a value, and it
 records the config's hash. At step 26 the last screen kept in each copy of the
 holder's final record is replaced by its hash (`ataniq-canary scrub-screen`),
