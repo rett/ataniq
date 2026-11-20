@@ -5,7 +5,8 @@
 # beside this file first.
 #
 #   canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH]
-#                     [--bwrap PATH] [--build] [--dry]
+#                     [--bwrap PATH] [--build] [--template-review PATH]
+#                     [--unit-report PATH] [--plan-summary PATH] [--dry]
 #
 # It never answers a prompt and starts no unit, no daemon, no sandbox and no
 # agent: it makes folders and files, runs git on a throwaway repository,
@@ -14,6 +15,14 @@
 # `make canary-build` first; without it the binaries must be built. It
 # prints no secret. With --dry it prints what it would create and writes
 # nothing: no command is run.
+#
+# It also writes ROOT/answers.hint (mode 0600), a list of "key=path" lines:
+# the paths the run script suggests at its path prompts (Enter takes one). The
+# mirror report's path is the one qualify-mirror is told to write; the other
+# three are written only for a path given with --unit-report, --plan-summary
+# or --template-review, which must name an existing regular file (a hint that
+# cannot be known is not written). A hint is a suggestion: the run still
+# checks and records the file. No word the owner types is ever a hint.
 set -eu
 umask 077
 
@@ -31,6 +40,9 @@ PASTA=
 BWRAP=
 BUILD=0
 DRY=0
+TEMPLATE_REVIEW=
+UNIT_REPORT=
+PLAN_SUMMARY=
 
 # pasta_plan DEFAULT chooses the pasta file. The harness refuses a symbolic
 # link, so a link is copied: PASTA_COPY is then 1, PASTA_SRC the regular file
@@ -61,7 +73,8 @@ pasta_plan() {
 }
 
 usage() {
-  printf '%s\n' 'usage: canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build] [--dry]' \
+  printf '%s\n' 'usage: canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]' \
+    '                         [--template-review PATH] [--unit-report PATH] [--plan-summary PATH] [--dry]' \
     '       --root DIR    the folder to make (default: ataniq-canary-a in your cache folder);' \
     '                     it must be new or empty, outside /tmp and outside the checkout' \
     '       --pass A      the pass (only A is prepared: pass B has a live config of its own)' \
@@ -69,6 +82,8 @@ usage() {
     '       --pasta PATH  a regular file to use as pasta (default: /usr/bin/pasta; a link is copied)' \
     '       --bwrap PATH  the bubblewrap executable (default: the one on PATH)' \
     '       --build       run make canary-build first' \
+    '       --template-review PATH, --unit-report PATH, --plan-summary PATH' \
+    '                     an existing file the run script suggests at its path prompt (a hint)' \
     '       --dry         print what would be made and write nothing' \
     '       canary-prepare.sh --self-test pasta-plan PATH' \
     '                     what the pasta choice does with PATH as the default (computes only)' >&2
@@ -98,6 +113,9 @@ while [ "$#" -gt 0 ]; do
     --pasta) [ "$#" -ge 2 ] || usage; PASTA=$2; shift 2 ;;
     --bwrap) [ "$#" -ge 2 ] || usage; BWRAP=$2; shift 2 ;;
     --build) BUILD=1; shift ;;
+    --template-review) [ "$#" -ge 2 ] || usage; TEMPLATE_REVIEW=$2; shift 2 ;;
+    --unit-report) [ "$#" -ge 2 ] || usage; UNIT_REPORT=$2; shift 2 ;;
+    --plan-summary) [ "$#" -ge 2 ] || usage; PLAN_SUMMARY=$2; shift 2 ;;
     --dry) DRY=1; shift ;;
     *) usage ;;
   esac
@@ -133,6 +151,29 @@ if [ "$BUILD" -eq 0 ]; then cc_check_bin "$BIN"; fi
 
 pasta_plan /usr/bin/pasta
 
+# The paths given for a hint: absolute, no control character; a file that is
+# not there is no hint, and the output says so.
+HINT_TEMPLATE_REVIEW=
+HINT_UNIT_REPORT=
+HINT_PLAN_SUMMARY=
+hint_path() {
+  [ -n "$2" ] || return 0
+  case $2 in /*) ;; *) cc_die "$1 is not an absolute path: $2" ;; esac
+  case $2 in *[[:cntrl:]]*) cc_die "$1 has a control character" ;; esac
+  if [ -L "$2" ] || [ ! -f "$2" ]; then
+    cc_say "no hint is written for $1: not a regular file: $2"
+    return 0
+  fi
+  case $1 in
+    --template-review) HINT_TEMPLATE_REVIEW=$2 ;;
+    --unit-report) HINT_UNIT_REPORT=$2 ;;
+    --plan-summary) HINT_PLAN_SUMMARY=$2 ;;
+  esac
+}
+hint_path --template-review "$TEMPLATE_REVIEW"
+hint_path --unit-report "$UNIT_REPORT"
+hint_path --plan-summary "$PLAN_SUMMARY"
+
 if [ -z "$BWRAP" ]; then
   BWRAP=$(command -v bwrap 2>/dev/null) || BWRAP=/usr/bin/bwrap
 fi
@@ -166,6 +207,7 @@ if [ "$DRY" -eq 1 ]; then
   fi
   cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest; run: ataniq-canary check-inputs"
   cc_say "[dry]   $ROOT/mirror-qual/config.json for qualify-mirror, with the acknowledgement left false for you"
+  cc_say "[dry]   $ROOT/answers.hint (0600): the paths the run suggests at its path prompts: mirror-report=$ROOT/mirror-qual/report.json, and the unit report, plan summary and template review when given"
   cc_say "[dry]   $ROOT/$CC_MARKER, the mark that canary-reset.sh looks for"
   cc_say "[dry]   print the commands you type next"
   exit 0
@@ -316,6 +358,15 @@ cat >"$ROOT/mirror-qual/config.json" <<EOF
 EOF
 chmod 0600 -- "$ROOT/mirror-qual/config.json"
 
+# The hints for the run script's path prompts: suggested paths and nothing
+# else, no word and no secret.
+HINTFILE=$ROOT/answers.hint
+printf 'mirror-report=%s\n' "$ROOT/mirror-qual/report.json" >"$HINTFILE"
+if [ -n "$HINT_UNIT_REPORT" ]; then printf 'unit-report=%s\n' "$HINT_UNIT_REPORT" >>"$HINTFILE"; fi
+if [ -n "$HINT_PLAN_SUMMARY" ]; then printf 'plan-summary=%s\n' "$HINT_PLAN_SUMMARY" >>"$HINTFILE"; fi
+if [ -n "$HINT_TEMPLATE_REVIEW" ]; then printf 'template-review=%s\n' "$HINT_TEMPLATE_REVIEW" >>"$HINTFILE"; fi
+chmod 0600 -- "$HINTFILE"
+
 # The mark of this prepare, last: a prepare that failed is not reset.
 printf '%s\nproject %s\n' "$CC_MARKER_LINE" "$CC_PROJECT" >"$ROOT/$CC_MARKER"
 chmod 0600 -- "$ROOT/$CC_MARKER"
@@ -333,6 +384,8 @@ Done. Nothing was started. What you type next, in the checkout ($REPO):
 
 2. The attended run (read its dry run first, add --dry):
      sh qualification/canary/run/canary-run.sh --pass A --config $CONFIG --evidence $ROOT/evidence
+   At its path prompts it shows "(Enter for: PATH)" from $HINTFILE; a path you
+   type wins, and every word it asks for (yes, read, integrate, ...) is yours.
 
 A failed or finished attempt is put back with:
      sh qualification/canary/run/canary-reset.sh --root $ROOT

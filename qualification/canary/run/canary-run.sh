@@ -17,8 +17,16 @@
 # read but the file given to pass-a-record and has-line and, by wait-key,
 # standard input; has-line runs the helper ataniq-canary fields of build/canary
 # on each line of its file, and wait-daemon and stop-daemon run the ataniqd
-# status of build/canary; stop-daemon and roots-deleted read keys from
-# standard input; no other program is run.
+# status of build/canary; stop-daemon, roots-deleted, ask-path and affirm-word
+# read keys from standard input, and ask-path reads the hint file it is given;
+# no other program is run.
+#
+# At a path prompt (the two fact reports, the template's review, the report of
+# qualify-mirror) the script shows "(Enter for: PATH)" when answers.hint beside
+# the config names a path for it, and takes an empty line as that path; a typed
+# path wins. The file is still checked and recorded, and the log says whether
+# the answer was a hint or typed. No hint is ever read for a word (yes, read,
+# integrate, confirmed, reset or an attestation): those are only typed.
 #
 # A step that waits for something the owner starts or stops in another
 # terminal (the daemon at step 10 and step 26, the console's ticket at step 14,
@@ -64,6 +72,8 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
+    '         ask-path HINTFILE KEY | affirm-word HINTFILE WORD' \
+    '                      a path prompt with its hint, and a typed word with the hint file in place' \
     '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
     '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
     '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
@@ -146,6 +156,8 @@ LASTOUT=
 LASTERR=
 RC=0
 ANSWER=
+ANSWER_SRC=typed # how the last answer came: typed, or hint (a path prompt, an empty line)
+HINTS=           # the hint file next to the config, a real run only
 LINGER0=
 PASSA=
 TOKEN=
@@ -241,21 +253,69 @@ read_answer() {
   done
 }
 
-# ask puts a question to the owner or the lead and records the answer and the
-# time. The answer is in ANSWER.
+# ask puts a question to the owner or the lead and records the answer, how it
+# came (typed, or hint) and the time. The answer is in ANSWER. The optional
+# second argument is a hint, a suggested path: only ask_path gives one. It is
+# shown as "(Enter for: PATH)" and an empty line, an Enter, takes it; a typed
+# answer always wins, and the end of the input takes nothing.
 ask() {
   ANSWER=
+  ANSWER_SRC=typed
   if [ "$DRY" -eq 1 ]; then
     dry "ask and record the answer and the time: $1"
     return 0
   fi
-  printf '   ?? %s\n   > ' "$1"
+  printf '   ?? %s\n' "$1"
+  if [ -n "${2:-}" ]; then printf '   (Enter for: %s)\n' "$2"; fi
+  printf '   > '
+  _askok=1
   if ! read_answer; then
     ANSWER=
+    _askok=0
     out ''
   fi
-  printf '%s\tstep %s\t%s\t%s\n' "$(now)" "$CUR" "$1" "$ANSWER" >>"$EV/answers.txt"
-  note "answer recorded: $1"
+  if [ "$_askok" -eq 1 ] && [ -z "$ANSWER" ] && [ -n "${2:-}" ]; then
+    ANSWER=$2
+    ANSWER_SRC=hint
+    out "   (the hint is taken: $ANSWER)"
+  fi
+  if [ -n "$EV" ]; then
+    printf '%s\tstep %s\t%s\t%s\t%s\n' "$(now)" "$CUR" "$1" "$ANSWER" "$ANSWER_SRC" >>"$EV/answers.txt"
+  fi
+  note "answer recorded ($ANSWER_SRC): $1"
+}
+
+# hint_for KEY prints the path the hint file suggests for KEY (a line
+# "KEY=/path"), or nothing: no file, no line, a path that is not absolute or
+# holds a control character. The file is a list of suggested paths and holds
+# nothing else; it is never read for a word that the owner types.
+hint_for() {
+  [ -n "$HINTS" ] && [ -f "$HINTS" ] && [ ! -L "$HINTS" ] || return 0
+  while IFS= read -r _hl || [ -n "$_hl" ]; do
+    case $_hl in
+      "$1="/*)
+        _hv=${_hl#*=}
+        case $_hv in
+          *[[:cntrl:]]*) return 0 ;;
+        esac
+        printf '%s\n' "$_hv"
+        return 0
+        ;;
+    esac
+  done <"$HINTS"
+}
+
+# ask_path asks for a path: $1 is the question, $2 the key of the hint. This
+# and no other question takes a hint, so a word (yes, read, integrate,
+# confirmed, reset) is always typed. The file is still checked and recorded by
+# the step, a hint or not.
+ask_path() {
+  if [ "$DRY" -eq 1 ]; then
+    dry "when answers.hint next to the config names a path for $2, show \"(Enter for: PATH)\" and take an empty answer as that path; a typed path always wins"
+    ask "$1"
+    return 0
+  fi
+  ask "$1" "$(hint_for "$2")"
 }
 
 # affirm asks and fails the step unless the answer is the word.
@@ -992,6 +1052,25 @@ self_test() {
       IN_CHAIN=1
       if roots_deleted_by_owner; then out deleted; else out failed; fi
       ;;
+    ask-path)
+      # HINTFILE KEY: asks a path prompt with the hint of KEY in HINTFILE
+      # (which may not exist) and prints what the answer was and how it came.
+      # The answer is read from standard input.
+      [ "$#" -eq 2 ] || usage
+      HINTS=$1
+      ask_path 'Lead: a path' "$2"
+      out "answer=$ANSWER"
+      out "source=$ANSWER_SRC"
+      ;;
+    affirm-word)
+      # HINTFILE WORD: asks for the typed word WORD with the hint file in
+      # place, as every word of the run is asked, and prints accepted or
+      # refused. The answer is read from standard input.
+      [ "$#" -eq 2 ] || usage
+      HINTS=$1
+      IN_CHAIN=1
+      if affirm 'Lead: a word' "$2"; then out accepted; else out refused; fi
+      ;;
     pass-a-record)
       # FILE: a result.txt of pass A. The file is read and nothing else.
       [ "$#" -eq 1 ] || usage
@@ -1205,6 +1284,9 @@ else
     fi
   done
   CFG_SHOW=$("$BIN/ataniq-canary" show --config "$CONFIG")
+  # The hint file lies beside the config: a list of suggested paths for the
+  # path prompts, written by canary-prepare.sh. It is optional.
+  case $CONFIG in */*) HINTS=${CONFIG%/*}/answers.hint ;; *) HINTS=./answers.hint ;; esac
 fi
 
 ROLE=$(cfg role)
@@ -1380,7 +1462,8 @@ step_2() {
       unit) _what='the report of leadunit-qualify with the limits (cs-facts-unit, second run)' ;;
       *) _what='the summary of the launched plan (cs-facts-plan)' ;;
     esac
-    ask "Lead: the path of $_what"
+    case $_kind in unit) _hk=unit-report ;; *) _hk=plan-summary ;; esac
+    ask_path "Lead: the path of $_what" "$_hk"
     check "the file is present: $_what" test -f "$ANSWER" || return 0
     fact facts.txt "$ANSWER"
     facts_pass "$_kind" "$ANSWER" || return 0
@@ -1486,13 +1569,13 @@ step_4() {
       return 0
     fi
   fi
-  ask "Lead: the path of the template's review on file"
+  ask_path "Lead: the path of the template's review on file" template-review
   check 'the review is present' test -f "$ANSWER" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Owner: you have read the template and its note' read || return 0
   out '   Owner: run qualify-mirror once now, yourself, in your own terminal, with the lead present'
   out '   (docs/qualification-lead-mirror.md), with this template and a new output file.'
-  ask 'Owner: the path of the report qualify-mirror wrote'
+  ask_path 'Owner: the path of the report qualify-mirror wrote' mirror-report
   check 'the report is present' test -f "$ANSWER" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Lead: the qualify-mirror run passed' yes || return 0

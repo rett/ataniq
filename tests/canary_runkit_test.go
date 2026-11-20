@@ -983,10 +983,20 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 			t.Errorf("the test entry does not end the script before %q", strings.TrimSpace(later))
 		}
 	}
+	// The test entry runs no step and no command of a step. The two entries
+	// ask-path and affirm-word put a question to the standard input, as the
+	// hint tests need, and so reach the questions (ask, ask_path, affirm):
+	// they write nothing (no evidence folder), and nothing else reaches them.
+	asks := map[string]bool{"self_test": true, "ask": true, "ask_path": true, "affirm": true}
 	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
-		for _, word := range []string{"runcap", "ask", "affirm", "systemctl", "step_head"} {
+		for _, word := range []string{"runcap", "systemctl", "step_head", "fact", "manifest_of"} {
 			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 {
 				t.Errorf("the test entry reaches %s, which calls %s", name, word)
+			}
+		}
+		for _, word := range []string{"ask", "ask_path", "affirm"} {
+			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 && !asks[name] {
+				t.Errorf("the test entry reaches %s, which calls the question %s", name, word)
 			}
 		}
 	}
@@ -4190,5 +4200,318 @@ func TestCanaryRunKitStepsWatchWhatTheOwnerDoes(t *testing.T) {
 				t.Errorf("pass %s step 26: the dry run does not say the two asks again", pass)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hints. At a path prompt, and there only, the run script shows a suggested
+// path from answers.hint beside the config, and takes an empty line as that
+// path. The test entries ask-path and affirm-word give the script's own
+// functions a hint file and the owner's keys on standard input.
+
+// canaryRunWith runs the run script's test entry in a fresh folder with the
+// text as its standard input and returns its output and exit status.
+func canaryRunWith(t *testing.T, stdin string, args ...string) (string, int) {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), canaryRunScript), "--self-test"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir}
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("the script did not run: %v", err)
+		}
+		code = exit.ExitCode()
+	}
+	return string(out), code
+}
+
+// canaryHintFile writes a hint file with the lines and returns its path.
+func canaryHintFile(t *testing.T, lines ...string) string {
+	t.Helper()
+	return canaryWrite(t, t.TempDir(), "answers.hint", strings.Join(lines, "\n")+"\n")
+}
+
+func TestCanaryRunKitHintIsTakenByAnEmptyAnswer(t *testing.T) {
+	hints := canaryHintFile(t, "unit-report=/sample/facts/unit.json", "template-review=/sample/drafts/review.md", "other=/sample/x")
+	for name, c := range map[string]struct {
+		key, stdin           string
+		wantAnswer, wantFrom string
+		shows                bool
+	}{
+		"an empty line takes the hint":     {"unit-report", "\n", "/sample/facts/unit.json", "hint", true},
+		"a typed path wins":                {"unit-report", "/sample/typed/unit.json\n", "/sample/typed/unit.json", "typed", true},
+		"the end of the input takes none":  {"unit-report", "", "", "typed", true},
+		"another key, another hint":        {"template-review", "\n", "/sample/drafts/review.md", "hint", true},
+		"no hint for the key, no answer":   {"plan-summary", "\n", "", "typed", false},
+		"no hint for an unknown key":       {"nothing", "\n", "", "typed", false},
+		"a typed path wins over no hint":   {"plan-summary", "/sample/typed/plan.json\n", "/sample/typed/plan.json", "typed", false},
+		"spaces are an answer, not a hint": {"unit-report", " \n", " ", "typed", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, code := canaryRunWith(t, c.stdin, "ask-path", hints, c.key)
+			if code != 0 {
+				t.Fatalf("exit status %d:\n%s", code, out)
+			}
+			out = strings.ReplaceAll(out, "   > ", "   > \n") // the prompt has no line feed when nothing echoes the key
+			if !strings.Contains(out, "\nanswer="+c.wantAnswer+"\nsource="+c.wantFrom+"\n") {
+				t.Errorf("the answer is not %q (%s):\n%s", c.wantAnswer, c.wantFrom, out)
+			}
+			if got := strings.Contains(out, "(Enter for: "); got != c.shows {
+				t.Errorf("the prompt shows the hint: %v, want %v:\n%s", got, c.shows, out)
+			}
+			if c.shows && c.key == "unit-report" && !strings.Contains(out, "(Enter for: /sample/facts/unit.json)") {
+				t.Errorf("the prompt does not name the hint:\n%s", out)
+			}
+		})
+	}
+
+	// A hint that is not a safe suggestion is not shown: no file, a link, a
+	// path that is not absolute, a control character, a line that is only a
+	// part of a key.
+	dir := t.TempDir()
+	if err := os.Symlink(hints, filepath.Join(dir, "link.hint")); err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"no file":             filepath.Join(dir, "none.hint"),
+		"a link":              filepath.Join(dir, "link.hint"),
+		"not absolute":        canaryHintFile(t, "unit-report=relative/unit.json"),
+		"empty":               canaryHintFile(t, "unit-report="),
+		"a control character": canaryHintFile(t, "unit-report=/sample/a\x1b[2Jb"),
+		"a longer key":        canaryHintFile(t, "unit-report-x=/sample/a"),
+		"a comment":           canaryHintFile(t, "# unit-report=/sample/a"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, code := canaryRunWith(t, "\n", "ask-path", file, "unit-report")
+			out = strings.ReplaceAll(out, "   > ", "   > \n")
+			if code != 0 || !strings.Contains(out, "\nanswer=\nsource=typed\n") || strings.Contains(out, "Enter for") {
+				t.Errorf("exit status %d:\n%s", code, out)
+			}
+		})
+	}
+}
+
+// A word is typed: no hint, whatever the hint file holds, stands in for yes,
+// read, integrate, confirmed or reset, and an empty answer is not one.
+func TestCanaryRunKitHintNeverAnswersAWord(t *testing.T) {
+	words := []string{"yes", "read", "integrate", "confirmed", "reset"}
+	var lines []string
+	for _, w := range words {
+		lines = append(lines, w+"=/sample/"+w, "unit-report=/sample/"+w)
+	}
+	hints := canaryHintFile(t, lines...)
+	for _, word := range words {
+		for name, c := range map[string]struct{ stdin, want string }{
+			"an empty answer":        {"\n", "refused"},
+			"the end of the input":   {"", "refused"},
+			"the word, typed":        {word + "\n", "accepted"},
+			"another word":           {"maybe\n", "refused"},
+			"the hint's path":        {"/sample/" + word + "\n", "refused"},
+			"the word with a space":  {word + " \n", "refused"},
+			"the word in capitals":   {strings.ToUpper(word) + "\n", "refused"},
+			"an empty one, then yes": {"\n" + word + "\n", "refused"},
+		} {
+			t.Run(word+", "+name, func(t *testing.T) {
+				out, code := canaryRunWith(t, c.stdin, "affirm-word", hints, word)
+				if code != 0 {
+					t.Fatalf("exit status %d:\n%s", code, out)
+				}
+				if got := canaryLastWord(out); got != c.want {
+					t.Errorf("the answer is %q, want %q:\n%s", got, c.want, out)
+				}
+				if strings.Contains(out, "Enter for") || strings.Contains(out, "the hint is taken") {
+					t.Errorf("a word prompt shows or takes a hint:\n%s", out)
+				}
+			})
+		}
+	}
+}
+
+// The code says the same: the one function that gives a question a hint is
+// ask_path, only the four path prompts call it, and no word is asked through
+// it.
+func TestCanaryRunKitHintsReachOnlyThePathPrompts(t *testing.T) {
+	text := canaryScriptText(t)
+	funcs := canaryFuncs(t, text)
+	if n := strings.Count(text, "hint_for"); n != 3 {
+		t.Errorf("hint_for is named %d times, want 3 (its comment, its definition and ask_path)", n)
+	}
+	if canaryCalls(funcs["ask_path"], "hint_for") != 1 || canaryCalls(funcs["affirm"], "hint_for") != 0 || canaryCalls(funcs["ask"], "hint_for") != 0 {
+		t.Error("a hint reaches a question other than through ask_path")
+	}
+	if body := funcs["affirm"]; strings.Count(body, "ask ") != 1 || !strings.Contains(body, `ask "$1 (type: $2)"`) {
+		t.Errorf("affirm asks with more than the question:\n%s", body)
+	}
+	if body := funcs["ask"]; !strings.Contains(body, `[ "$_askok" -eq 1 ] && [ -z "$ANSWER" ] && [ -n "${2:-}" ]`) {
+		t.Errorf("ask takes a hint when the input ends:\n%s", body)
+	}
+	// Only ask_path calls ask with a second argument.
+	twoArgs := regexp.MustCompile(`(?m)^\s*ask ("[^"]*"|'[^']*') \S`)
+	for name, body := range funcs {
+		if name != "ask_path" && twoArgs.MatchString(body) {
+			t.Errorf("%s asks a question with a second argument", name)
+		}
+	}
+	// The four path prompts, by key.
+	calls := regexp.MustCompile(`(?m)^\s*ask_path .*? (\S+)$`).FindAllStringSubmatch(text, -1)
+	var keys []string
+	for _, m := range calls {
+		if !strings.Contains(m[0], `"$2"`) {
+			keys = append(keys, m[1])
+		}
+	}
+	slices.Sort(keys)
+	if want := []string{`"$_hk"`, "mirror-report", "template-review"}; !slices.Equal(keys, want) {
+		t.Errorf("ask_path is called with %v, want %v", keys, want)
+	}
+	if step2 := funcs["step_2"]; !strings.Contains(step2, "unit-report") || !strings.Contains(step2, "plan-summary") {
+		t.Error("step 2 does not take the hints of the two fact reports")
+	}
+	// Pass B's question for the evidence folder of pass A stays unhinted.
+	if !strings.Contains(funcs["step_2"], "ask 'Lead: the evidence folder of pass A'") {
+		t.Error("the folder of pass A is not asked as before")
+	}
+	// The dry run reads no file, so it reads no hint file.
+	if funcs["hint_for"] == "" || !strings.Contains(funcs["ask_path"], `[ "$DRY" -eq 1 ]`) {
+		t.Error("ask_path does not leave the dry run alone")
+	}
+	for pass := range map[string]bool{"A": true, "B": true} {
+		out, _ := canaryDry(t, "--pass", pass, "--config", "/nonexistent/sample/canary.json")
+		if n := strings.Count(out, `show "(Enter for: PATH)"`); n != 4 {
+			t.Errorf("pass %s: the dry run says the hint %d times, want 4", pass, n)
+		}
+	}
+}
+
+// What a path answer records: its source is in answers.txt, and the log
+// says whether it was a hint or typed.
+func TestCanaryRunKitAnswerRecordsHintOrTyped(t *testing.T) {
+	script := canaryScriptText(t)
+	for _, c := range []struct{ stdin, answer, source string }{
+		{"\n", "/sample/facts/unit.json", "hint"},
+		{"/sample/typed.json\n", "/sample/typed.json", "typed"},
+	} {
+		dir := t.TempDir()
+		ev := filepath.Join(dir, "ev")
+		if err := os.MkdirAll(ev, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		hints := canaryHintFile(t, "unit-report=/sample/facts/unit.json")
+		var b strings.Builder
+		b.WriteString("DRY=0 CUR=2 IN_CHAIN=0 SIGNALLED=0 TTY_ASSUMED=0 ANSWER= ANSWER_SRC=typed\nEV=" + ev + "\nLOG=" + ev + "/log.txt\nHINTS=" + hints + "\n")
+		for _, name := range []string{"out", "now", "note", "dry", "on_terminal", "read_answer", "ask", "hint_for", "ask_path"} {
+			b.WriteString(canaryDef(t, script, name))
+		}
+		b.WriteString("ask_path 'Lead: the path of the report' unit-report\necho \"got=$ANSWER from=$ANSWER_SRC\"\n")
+		cmd := exec.Command("/bin/sh", "-c", b.String())
+		cmd.Dir = dir
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir}
+		cmd.Stdin = strings.NewReader(c.stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "got="+c.answer+" from="+c.source) {
+			t.Errorf("%q: %s", c.stdin, out)
+		}
+		answers, _ := os.ReadFile(filepath.Join(ev, "answers.txt"))
+		fields := strings.Split(strings.TrimSuffix(string(answers), "\n"), "\t")
+		if len(fields) != 5 || fields[1] != "step 2" || fields[2] != "Lead: the path of the report" || fields[3] != c.answer || fields[4] != c.source {
+			t.Errorf("answers.txt: %q", answers)
+		}
+		if log, _ := os.ReadFile(filepath.Join(ev, "log.txt")); !strings.Contains(string(log), "answer recorded ("+c.source+"): Lead: the path of the report") {
+			t.Errorf("log.txt: %q", log)
+		}
+	}
+}
+
+// Prepare writes the hint file beside the config: mode 0600, key=path lines,
+// the mirror report's path always, the others only for a file that was named
+// and is there, and nothing that is not a path.
+func TestCanaryRunKitPrepareWritesTheHints(t *testing.T) {
+	e := canaryStubKit(t)
+	drafts := filepath.Join(e.dir, "drafts")
+	review := canaryWrite(t, drafts, "template-review.md", "verdict: sound\n")
+	unit := canaryWrite(t, drafts, "unit.json", "{}\n")
+	plan := canaryWrite(t, drafts, "plan.json", "{}\n")
+
+	r := filepath.Join(e.dir, "set-up")
+	out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...)
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	hint := filepath.Join(r, "answers.hint")
+	if got := canaryMode(t, hint); got != 0o600 {
+		t.Errorf("answers.hint has mode %o, want 600", got)
+	}
+	data, err := os.ReadFile(hint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without a path given, only the one prepare itself chooses: the review
+	// is taken from the argument and from nothing else.
+	if want := "mirror-report=" + r + "/mirror-qual/report.json\n"; string(data) != want {
+		t.Errorf("answers.hint:\n%s\nwant\n%s", data, want)
+	}
+	if !strings.Contains(out, hint) {
+		t.Errorf("the output does not name answers.hint:\n%s", out)
+	}
+
+	r2 := filepath.Join(e.dir, "set-up-two")
+	out, code = e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r2, "--template-review", review, "--unit-report", unit, "--plan-summary", plan)...)
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	data, err = os.ReadFile(filepath.Join(r2, "answers.hint"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "mirror-report=" + r2 + "/mirror-qual/report.json\nunit-report=" + unit + "\nplan-summary=" + plan + "\ntemplate-review=" + review + "\n"
+	if string(data) != want {
+		t.Errorf("answers.hint:\n%s\nwant\n%s", data, want)
+	}
+	// Every line is a key from the list and an absolute path; nothing else
+	// (no word, no secret) is in it.
+	for _, l := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		k, v, ok := strings.Cut(l, "=")
+		if !ok || !slices.Contains([]string{"mirror-report", "unit-report", "plan-summary", "template-review"}, k) || !strings.HasPrefix(v, "/") {
+			t.Errorf("answers.hint holds %q", l)
+		}
+	}
+
+	// A file that is not there is no hint, and the output says so; a path that
+	// is not absolute is refused.
+	r3 := filepath.Join(e.dir, "set-up-three")
+	out, code = e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r3, "--template-review", filepath.Join(drafts, "missing.md"))...)
+	if code != 0 || !strings.Contains(out, "no hint is written for --template-review") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	if data, _ := os.ReadFile(filepath.Join(r3, "answers.hint")); strings.Contains(string(data), "template-review") {
+		t.Errorf("a hint for a file that is not there:\n%s", data)
+	}
+	for _, flag := range []string{"--template-review", "--unit-report", "--plan-summary"} {
+		r4 := filepath.Join(e.dir, "set-up-four")
+		out, code = e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r4, flag, "relative/path")...)
+		if code != 1 || !strings.Contains(out, flag+" is not an absolute path") {
+			t.Errorf("%s: exit status %d:\n%s", flag, code, out)
+		}
+		if _, err := os.Stat(r4); err == nil {
+			t.Errorf("%s: a refused prepare made the root", flag)
+		}
+	}
+
+	// The dry run says so and writes nothing.
+	r5 := filepath.Join(e.dir, "set-up-five")
+	out, code = e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r5, "--dry")...)
+	if code != 0 || !strings.Contains(out, "[dry]   "+r5+"/answers.hint (0600)") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(r5); err == nil {
+		t.Error("the dry run made the root")
 	}
 }
