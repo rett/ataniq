@@ -352,10 +352,10 @@ wrong command line. The checks:
 
 | Check | A fix means |
 | --- | --- |
-| The root is prepared (the mark and `config.json`) | Run `canary-prepare.sh`. |
+| The root is prepared (the mark and `config.json`) | Run `canary-prepare.sh` on the root when it is new or empty; a folder that holds anything is refused by prepare, so the fix then says to use a fresh `--root`. |
 | The seven binaries are built, the four tagged ones name the tag, and they are built from the checkout's `HEAD`: by the commit `--version` names when it names one (it names none today), else by the time of each file against the newest commit that touches `cmd`, `internal`, `go.mod`, `go.sum` or `third_party`; the line says which | `make canary-build`. |
 | The checkout is at `develop` with no tracked change (what step 3 asks) | `git checkout develop`, or look at `git status`. |
-| The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin (the command is printed), or prepare again. |
+| The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin and run `ataniq-canary check-inputs` (one command, as prepare does after it pins), or prepare again on a fresh root. |
 | `state/` and `runtime/` are empty (a mirror only) | They hold an earlier attempt: run `canary-reset.sh`. |
 | No `ataniq-*` unit is loaded (slices left out) and no `ataniqd` or `ataniq-holder` runs | Stop it. |
 | No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |

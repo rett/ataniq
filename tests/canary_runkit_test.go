@@ -5332,7 +5332,7 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 	}{
 		"the root is not prepared": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, ".canary-prepared")) }, nil, 1,
-			[]string{"FIX:  the root is not prepared", "-- type: sh " + "%RUN%/canary-prepare.sh --root %ROOT%", "skip: the holder and the profile digest pin", "skip: state/ and runtime/"},
+			[]string{"FIX:  the root is not prepared", "and it holds files, so canary-prepare.sh refuses it: %ROOT% -- type: sh " + "%RUN%/canary-prepare.sh --root <a new or empty folder>", "use a fresh --root", "skip: the holder and the profile digest pin", "skip: state/ and runtime/"},
 		},
 		"the root has another mark": {
 			func(t *testing.T, p *pf) { canaryWrite(t, p.root, ".canary-prepared", "something else\n") }, nil, 1,
@@ -5390,7 +5390,7 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 		"the pin is stale": {
 			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "digest", strings.Repeat("cd", 32)+"\n") }, nil, 1,
 			[]string{"FIX:  the profile digest pinned in config.json (" + strings.Repeat("ab", 32) + ") is not the one ataniq-canary computes now (" + strings.Repeat("cd", 32) + ")",
-				"-- type: sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"" + strings.Repeat("cd", 32) + "\"/' %ROOT%/config.json"},
+				"-- type: sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"" + strings.Repeat("cd", 32) + "\"/' %ROOT%/config.json && %BIN%/ataniq-canary check-inputs --config %ROOT%/config.json --inputs %ROOT%/conf/sandbox-inputs.json"},
 		},
 		"the config cannot be shown": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.dir, "show.out")) }, nil, 1,
@@ -5546,6 +5546,40 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 				if strings.HasPrefix(l, "FIX:  ") && !strings.Contains(l, " -- type: ") {
 					t.Errorf("a FIX line without its command: %q", l)
 				}
+			}
+		})
+	}
+}
+
+// A root that is not prepared is fixed by preparing it only when prepare takes
+// it: a new or empty folder. A folder that holds anything is refused by
+// canary-prepare.sh, so the fix names a fresh root instead.
+func TestCanaryRunKitPreflightNotPreparedFix(t *testing.T) {
+	for name, c := range map[string]struct {
+		make func(t *testing.T, dir string) string
+		want string
+	}{
+		"an empty folder": {func(t *testing.T, dir string) string {
+			r := filepath.Join(dir, "empty-root")
+			if err := os.Mkdir(r, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}, "-- type: sh %RUN%/canary-prepare.sh --root %ROOT%\n"},
+		"a folder that is not there": {func(t *testing.T, dir string) string { return filepath.Join(dir, "no-root") }, "-- type: sh %RUN%/canary-prepare.sh --root %ROOT%\n"},
+		"a folder with a file": {func(t *testing.T, dir string) string {
+			r := filepath.Join(dir, "full-root")
+			canaryWrite(t, r, "something", "x")
+			return r
+		}, "-- type: sh %RUN%/canary-prepare.sh --root <a new or empty folder>   (use a fresh --root; remove %ROOT% yourself if you do not need it)\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newCanaryPF(t)
+			r := c.make(t, p.dir)
+			out, code := p.runRaw("--root", r)
+			want := strings.NewReplacer("%RUN%", p.runDir, "%ROOT%", r).Replace(c.want)
+			if code != 1 || !strings.Contains(out, "FIX:  the root is not prepared") || !strings.Contains(out, want) {
+				t.Errorf("exit status %d, want the fix %q:\n%s", code, want, out)
 			}
 		})
 	}

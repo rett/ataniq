@@ -120,6 +120,11 @@ check_prepared() {
   if [ "$_first" = "$CC_MARKER_LINE" ] && [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ]; then
     PREPARED=1
     ok "the root is prepared ($CC_MARKER, config.json): $ROOT"
+  elif [ -d "$ROOT" ] && [ -n "$(find "$ROOT" -mindepth 1 -maxdepth 1 2>/dev/null | sed -n 1p)" ]; then
+    # canary-prepare.sh makes a new set-up and refuses a folder that holds
+    # anything, so the same root cannot be prepared: a fresh one is.
+    fix "the root is not prepared (no $CC_MARKER with its config.json), and it holds files, so canary-prepare.sh refuses it: $ROOT" \
+      "sh $_d/canary-prepare.sh --root <a new or empty folder>   (use a fresh --root; remove $ROOT yourself if you do not need it)"
   else
     fix "the root is not prepared (no $CC_MARKER with its config.json): $ROOT" \
       "sh $_d/canary-prepare.sh --root $ROOT"
@@ -241,8 +246,10 @@ check_holder_and_pin() {
     return 0
   fi
   if [ "$_pin" != "$_now" ]; then
+    # Prepare pins the digest and then runs check-inputs; the fix does both,
+    # so that a pin made over inputs the config does not match is refused.
     fix "the profile digest pinned in config.json ($_pin) is not the one ataniq-canary computes now ($_now)" \
-      "sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"$_now\"/' $CONFIG"
+      "sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"$_now\"/' $CONFIG && $BIN/ataniq-canary check-inputs --config $CONFIG --inputs $INPUTS"
     return 0
   fi
   if ! "$BIN/ataniq-canary" show --config "$CONFIG" >/dev/null 2>&1; then
