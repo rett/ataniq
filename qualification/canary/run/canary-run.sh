@@ -16,7 +16,16 @@
 # only computes: no step runs, nothing is started or written, and nothing is
 # read but the file given to pass-a-record and has-line and, by wait-key,
 # standard input; has-line runs the helper ataniq-canary fields of build/canary
-# on each line of its file, and no other program.
+# on each line of its file, and wait-daemon and stop-daemon run the ataniqd
+# status of build/canary; stop-daemon and roots-deleted read keys from
+# standard input; no other program is run.
+#
+# A step that waits for something the owner starts or stops in another
+# terminal (the daemon at step 10 and step 26, the console's ticket at step 14,
+# the listeners at steps 6 and 24) asks for it again every second for up to 60
+# seconds instead of failing at once; the two variables CANARY_RUN_WAIT_TRIES
+# and CANARY_RUN_WAIT_INTERVAL change that for the tests only. The script
+# still answers nothing and starts nothing: it only watches.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -55,6 +64,8 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
+    '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
+    '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
     '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
     '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
     '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
@@ -89,6 +100,24 @@ if [ "$FAILAT" -ne 0 ] && [ "$DRY" -ne 1 ]; then
   printf '%s\n' 'canary-run.sh: --fail-at is a test hook and needs --dry' >&2
   exit 2
 fi
+
+# How long a step waits for what the owner starts or stops in another terminal:
+# WAIT_TRIES asks, WAIT_INTERVAL seconds apart (60 asks, one second apart). The
+# two variables are for the tests only, which make it short.
+WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}
+WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}
+case $WAIT_TRIES in '' | *[!0-9]*)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_TRIES is not a number' >&2
+  exit 2
+  ;;
+esac
+case $WAIT_INTERVAL in '' | *[!0-9.]* | *.*.* | .)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_INTERVAL is not a number of seconds' >&2
+  exit 2
+  ;;
+esac
+# After a refusal the owner is asked again this many more times.
+ASK_AGAIN=5
 
 # ---------------------------------------------------------------- state ---
 
@@ -249,8 +278,14 @@ runcap() {
     RC=0
     return 0
   fi
-  LASTOUT=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.out
-  LASTERR=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.err
+  if [ -n "$EV" ]; then
+    LASTOUT=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.out
+    LASTERR=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.err
+  else
+    # The test entry keeps no evidence.
+    LASTOUT=/dev/null
+    LASTERR=/dev/null
+  fi
   out "   run: $*"
   RC=0
   "$@" >"$LASTOUT" 2>"$LASTERR" || RC=$?
@@ -543,6 +578,109 @@ unit_stopped() {
 done_step() { DONE_STEPS="$DONE_STEPS$CUR "; }
 was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
 
+# ------------------------------------------- what the owner does elsewhere ---
+
+# The owner starts the daemon, attaches the console, stops the listeners and
+# stops the daemon in terminals of his own, and each takes a moment. The
+# script only watches: it asks quietly, answers nothing and starts nothing.
+
+# poll_until WHAT COMMAND [ARG...] runs COMMAND (output dropped) until it
+# succeeds, for at most WAIT_TRIES more asks, WAIT_INTERVAL seconds apart. It
+# says "waiting for WHAT..." once, and only when the first ask did not
+# succeed, then prints a dot for every 5 asks. It returns 0 as soon as COMMAND
+# succeeds and 1 after the last ask; the caller decides what a failure is.
+poll_until() {
+  _puw=$1
+  shift
+  if "$@" >/dev/null 2>&1; then return 0; fi
+  out "   waiting for $_puw..."
+  _pun=0
+  _pud=0
+  while [ "$_pun" -lt "$WAIT_TRIES" ]; do
+    sleep "$WAIT_INTERVAL"
+    _pun=$((_pun + 1))
+    if "$@" >/dev/null 2>&1; then
+      if [ "$_pud" -eq 1 ]; then out ''; fi
+      note "waited for $_puw: it came at try $_pun of $WAIT_TRIES"
+      return 0
+    fi
+    if [ $((_pun % 5)) -eq 0 ]; then
+      printf '.'
+      _pud=1
+    fi
+  done
+  if [ "$_pud" -eq 1 ]; then out ''; fi
+  note "gave up waiting for $_puw after $_pun tries, $WAIT_INTERVAL s apart"
+  return 1
+}
+
+# daemon_answers succeeds while a daemon answers at the socket, and
+# daemon_gone when none does (the status's exit status 20). Both leave the
+# status's exit status in DAEMON_RC.
+daemon_answers() {
+  DAEMON_RC=0
+  "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+  [ "$DAEMON_RC" -eq 0 ]
+}
+daemon_gone() {
+  DAEMON_RC=0
+  "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+  [ "$DAEMON_RC" -eq 20 ]
+}
+
+# ticket_taken succeeds when the ticket file $1 is absent or empty: the
+# console empties it when it takes the single-use ticket. Nothing is read.
+ticket_taken() { [ ! -s "$1" ]; }
+
+# root_present reports whether the path $1 is there, a dangling link too.
+root_present() { [ -e "$1" ] || [ -L "$1" ]; }
+
+# daemon_stopped_by_owner is the daemon's half of step 26. The owner stops the
+# daemon himself, in its terminal, and presses Enter. The script then asks the
+# daemon's status every second for up to a minute (a daemon takes a moment to
+# end, and he may still be pressing Ctrl-C). One that still answers after that
+# is not a failure of the pass: it says so and asks again, up to ASK_AGAIN
+# more times, and records each ask. It fails only after that.
+daemon_stopped_by_owner() {
+  _again=0
+  wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.' || return 1
+  while :; do
+    if poll_until 'the daemon to stop' daemon_gone; then
+      note "the daemon is gone (round $((_again + 1)))"
+      return 0
+    fi
+    note "the daemon still answers (exit $DAEMON_RC), round $((_again + 1)) of $((ASK_AGAIN + 1))"
+    if [ "$_again" -ge "$ASK_AGAIN" ]; then
+      fail "a daemon still answers at $SOCK (exit $DAEMON_RC, want 20) after $((ASK_AGAIN + 1)) rounds"
+      return 1
+    fi
+    _again=$((_again + 1))
+    out '   the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter'
+    wait_key 'Owner: press Enter after you stopped the daemon.' || return 1
+  done
+}
+
+# roots_deleted_by_owner is the roots' half of step 26: the owner deletes the
+# two roots himself and presses Enter. A root that is still there is said, and
+# he is asked again, up to ASK_AGAIN more times, each ask recorded.
+roots_deleted_by_owner() {
+  _again=0
+  wait_key 'Owner: press Enter when both are deleted.' || return 1
+  while root_present "$STATE" || root_present "$RUNTIME"; do
+    for _rt in "$STATE" "$RUNTIME"; do
+      if root_present "$_rt"; then out "   still there: $_rt"; fi
+    done
+    note "a root still exists, round $((_again + 1)) of $((ASK_AGAIN + 1))"
+    if [ "$_again" -ge "$ASK_AGAIN" ]; then
+      fail "a root of the canary still exists after $((ASK_AGAIN + 1)) rounds"
+      return 1
+    fi
+    _again=$((_again + 1))
+    out '   a root of the canary still exists: delete it as shown above, then press Enter'
+    wait_key 'Owner: press Enter when both are deleted.' || return 1
+  done
+}
+
 # ---------------------------------------------- machine reads of the lead ---
 
 # The helpers below are what the script reads itself in place of a word of the
@@ -823,6 +961,36 @@ self_test() {
       TTY_ASSUMED=1
       chain_trap
       if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
+      ;;
+    wait-daemon)
+      # No value. It asks the ataniqd of build/canary in the current folder
+      # for its status as step 10 does, with the polling, and prints "listens"
+      # or "silent". The socket is a sample path.
+      [ "$#" -eq 0 ] || usage
+      BIN=build/canary
+      SOCK=/sample/canary/runtime/daemon.sock
+      CUR=10
+      if poll_until 'the daemon to listen' daemon_answers; then out listens; else out silent; fi
+      ;;
+    stop-daemon)
+      # No value. The daemon's half of step 26 as it runs there, with the
+      # keys read from standard input and the failure that ends the step
+      # printed and returned (as in the clean-up chain), not ending the run.
+      [ "$#" -eq 0 ] || usage
+      BIN=build/canary
+      SOCK=/sample/canary/runtime/daemon.sock
+      CUR=26
+      IN_CHAIN=1
+      if daemon_stopped_by_owner; then out stopped; else out failed; fi
+      ;;
+    roots-deleted)
+      # STATE RUNTIME: the roots' half of step 26, as above.
+      [ "$#" -eq 2 ] || usage
+      STATE=$1
+      RUNTIME=$2
+      CUR=26
+      IN_CHAIN=1
+      if roots_deleted_by_owner; then out deleted; else out failed; fi
       ;;
     pass-a-record)
       # FILE: a result.txt of pass A. The file is read and nothing else.
@@ -1346,6 +1514,12 @@ step_5() {
   done_step
 }
 
+# listener_lines reads the text of ss -ltnu on standard input and prints the
+# non-loopback listening sockets, sorted.
+listener_lines() {
+  awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort
+}
+
 # listeners writes the non-loopback listening sockets, sorted, to a file.
 listeners() {
   runcap "$1" ss -ltnu
@@ -1353,8 +1527,13 @@ listeners() {
     dry "keep the sockets on non-loopback addresses, sorted, in $2"
     return 0
   fi
-  awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' "$LASTOUT" | LC_ALL=C sort >"$2"
+  listener_lines <"$LASTOUT" >"$2"
 }
+
+# listeners_are FILE succeeds when the sockets that listen now are the ones in
+# FILE. It asks quietly and keeps nothing: the owner stops and restarts his
+# listeners in a terminal of his own, which takes a moment.
+listeners_are() { ss -ltnu 2>/dev/null | listener_lines | cmp -s - "$1"; }
 
 step_6() {
   if [ "$PASS" = A ]; then
@@ -1388,6 +1567,11 @@ step_6() {
     done <"$EV/listeners-before.txt"
   fi
   wait_key 'Owner: stop the listeners you marked, yourself. The script stops nothing.'
+  if [ "$DRY" -eq 1 ]; then
+    dry 'ask ss -ltnu every second for up to 60 s until the list is the one of the listeners he kept; say "waiting for the listeners to stop..." once'
+  else
+    poll_until 'the listeners to stop' listeners_are "$EV/listeners-expected.txt" || :
+  fi
   listeners listeners-kept "$EV/listeners-kept.txt"
   check 'the second list holds only the listeners the owner kept' cmp -s "$EV/listeners-expected.txt" "$EV/listeners-kept.txt" || return 0
   _line='departure from L3: this pass runs on the open network of the profile as built; the owner accepted it under G7'
@@ -1519,8 +1703,15 @@ step_10() {
     'it listens; status shows no role; hello lists the canary operations' 'G4'
   out '   Owner: in your own terminal, run:'
   out "     $BIN/ataniqd run --canary $CONFIG"
+  out '   Start it first and wait for its listening line, then press Enter here. If it is not up yet'
+  out '   when you press Enter, this step asks for it every second for up to a minute.'
   wait_key 'Owner: start the daemon now, yourself; then come back here.'
   DAEMON_UP=1
+  if [ "$DRY" -eq 1 ]; then
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s, say \"waiting for the daemon to listen...\" once and print a dot every 5 s; go on as soon as it answers"
+  else
+    poll_until 'the daemon to listen' daemon_answers || :
+  fi
   runcap daemon-status "$BIN/ataniqd" status --socket "$SOCK"
   check 'the daemon listens' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
@@ -1716,6 +1907,18 @@ step_14() {
   if [ "$DRY" -eq 1 ]; then _tf=$HRUN/ticket; else _tf=$(fld "$LASTOUT" ticket_file); fi
   out '   Owner: in your own terminal, attach the console as the writer:'
   out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
+  if [ "$DRY" -eq 1 ]; then
+    dry "watch the ticket file $_tf every second for up to 60 s: the console empties it when it takes the ticket (no content is read); say what was seen and go on to the question either way"
+  else
+    out '   The script now watches the ticket file, which the console empties when it takes the ticket.'
+    if poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
+      out '   ok: the ticket was taken'
+      note 'the console took the ticket (the ticket file is empty)'
+    else
+      out '   the ticket file still holds a ticket: the console has not taken it (the question below is still yours to answer)'
+      note 'the ticket file still held a ticket after the wait'
+    fi
+  fi
   affirm 'Owner: the pane shows the agent' yes || return 0
   out '   Owner: in a third terminal, run the same command once more: the ticket is used.'
   affirm 'Owner: the used ticket was refused' yes || return 0
@@ -2172,6 +2375,11 @@ step_24() {
     sed 's/^/     /' "$EV/listeners-stopped.txt" 2>/dev/null || out '     (the list was not written: look at what you stopped)'
   fi
   wait_key 'Owner: restart what you stopped, yourself; then press Enter.'
+  if [ "$DRY" -eq 1 ]; then
+    dry 'ask ss -ltnu every second for up to 60 s until the list is the first list of step 6; say "waiting for the listeners to come back..." once'
+  else
+    poll_until 'the listeners to come back' listeners_are "$EV/listeners-before.txt" || :
+  fi
   listeners listeners-after "$EV/listeners-after.txt"
   check 'the list equals the first list of step 6' cmp -s "$EV/listeners-before.txt" "$EV/listeners-after.txt" || :
   result restored
@@ -2233,13 +2441,14 @@ step_26() {
     dry 'search the evidence for a login URL or code; print file names and line numbers only; the owner decides what to remove'
     dry "remove the scratch folder of the intake's verify"
     dry "wait for Enter: Owner: stop the daemon yourself (Ctrl-C in its terminal)"
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s, say \"waiting for the daemon to stop...\" once and print a dot every 5 s; go on as soon as no daemon answers"
     dry "run: $BIN/ataniqd status --socket $SOCK"
-    dry 'check: no daemon answers (exit 20)'
+    dry 'check: no daemon answers (exit 20); when one still answers do not fail: say "the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter", wait for Enter and ask again, up to 5 more times, recording each ask; fail only after that'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"
     dry "when the unit is not stopped (its state is neither inactive nor failed): print systemctl --user stop $UNIT for the owner, wait for Enter, and read the state again"
     dry 'fail the step when the unit is still not stopped: the command that deletes the roots is then not shown'
     dry "wait for Enter: Owner: delete the canary's two roots yourself: rm -rf -- $STATE $RUNTIME"
-    dry 'check: both roots are gone'
+    dry 'check: both roots are gone; when one still exists say so, wait for Enter and ask again, up to 5 more times, recording each ask; fail only after that'
     if [ "$PASS" = B ]; then dry 'ask and record the answer and the time: Owner: under H4, the two logins of the spike are logged out and its home is deleted'; fi
     dry "write names, sizes, times and hashes of every file of the evidence to $EV/MANIFEST.txt"
     result ok
@@ -2273,9 +2482,8 @@ step_26() {
   if [ "$DAEMON_UP" -eq 0 ]; then
     out '   nothing to act on: this run did not ask for the daemon to be started. The status is still asked.'
   fi
-  wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.'
+  daemon_stopped_by_owner || :
   runcap daemon-gone "$BIN/ataniqd" status --socket "$SOCK"
-  if [ "$RC" -ne 20 ]; then fail "a daemon still answers at $SOCK (exit $RC, want 20)"; fi
   if [ "$PROVISIONED" -eq 0 ] && [ ! -e "$STATE" ] && [ ! -e "$RUNTIME" ]; then
     out "   nothing to act on: neither root exists and this run provisioned nothing"
     note 'nothing to act on: no folder to delete'
@@ -2297,8 +2505,7 @@ step_26() {
       note "the unit is $_ust"
       out "   Owner: delete the canary's two roots yourself, in your own terminal. The script deletes neither:"
       out "     rm -rf -- $STATE $RUNTIME"
-      wait_key 'Owner: press Enter when both are deleted.'
-      if [ -e "$STATE" ] || [ -e "$RUNTIME" ]; then fail 'a root of the canary still exists'; fi
+      roots_deleted_by_owner || :
     fi
   fi
   if [ "$PASS" = B ]; then

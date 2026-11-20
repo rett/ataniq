@@ -1557,9 +1557,18 @@ type canaryKeyWait struct {
 
 func startCanaryKeyWait(t *testing.T) *canaryKeyWait {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", filepath.Join(root(t), canaryRunScript), "--self-test", "wait-key")
-	cmd.Dir = t.TempDir()
-	cmd.Env = []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}
+	return startCanaryKit(t, canaryRunScript, t.TempDir(), []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}, "--self-test", "wait-key")
+}
+
+// startCanaryKit starts a script of the kit (path from the repository root)
+// in the folder dir with exactly the environment env, and returns it running,
+// with its standard input a pipe the test writes the keys to and its output
+// collected.
+func startCanaryKit(t *testing.T, rel, dir string, env []string, args ...string) *canaryKeyWait {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), rel)}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -3872,5 +3881,314 @@ func TestCanaryRunKitResetChecksTwiceAndOpensModesWithFind(t *testing.T) {
 	}
 	if !strings.Contains(text, "rm -rf -- \"./$_k\"") || strings.Contains(text, "rm -rf -- \"$ROOT") || strings.Contains(text, "rm -rf -- \"${ROOT") {
 		t.Error("the reset deletes through a path that goes through the root")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What the owner does in another terminal. A step that waits for something he
+// starts or stops there (the daemon, the console's ticket, the listeners) asks
+// for it again for up to a minute instead of failing at once, and step 26
+// asks again before it fails. The tests run the script's own functions through
+// its test entry, over a stub ataniqd that counts its calls, with the wait
+// made short by the two variables that are for the tests only. Nothing starts
+// a daemon, a unit or a sandbox.
+
+// canaryDaemonKit is a folder whose build/canary holds a stub ataniqd. The
+// stub counts its calls in the file count and answers by the count: in mode
+// "up" it says no daemon (exit status 20) until call number at and answers
+// (exit status 0) from then on; in mode "down" it answers until call at-1 and
+// says no daemon from call at on. at 0 means it never changes.
+type canaryDaemonKit struct{ dir string }
+
+func newCanaryDaemonKit(t *testing.T, mode string, at int) canaryDaemonKit {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "build", "canary")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	count := filepath.Join(dir, "count")
+	stub := fmt.Sprintf(`#!/bin/sh
+n=$(cat '%[1]s' 2>/dev/null || echo 0)
+n=$((n + 1))
+echo $n >'%[1]s'
+[ "$1" = status ] || exit 97
+if [ '%[2]s' = up ]; then
+  if [ %[3]d -ne 0 ] && [ "$n" -ge %[3]d ]; then exit 0; fi
+  exit 20
+fi
+if [ %[3]d -ne 0 ] && [ "$n" -ge %[3]d ]; then exit 20; fi
+exit 0
+`, count, mode, at)
+	if err := os.WriteFile(filepath.Join(bin, "ataniqd"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return canaryDaemonKit{dir: dir}
+}
+
+// calls is the number of times the stub was asked.
+func (k canaryDaemonKit) calls(t *testing.T) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(k.dir, "count"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// start starts the test entry in the kit's folder with the short wait and
+// returns the running script, whose standard input the test writes the keys
+// to.
+func (k canaryDaemonKit) start(t *testing.T, tries int, args ...string) *canaryKeyWait {
+	t.Helper()
+	env := []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, "CANARY_RUN_WAIT_TRIES=" + strconv.Itoa(tries), "CANARY_RUN_WAIT_INTERVAL=0"}
+	return startCanaryKit(t, canaryRunScript, k.dir, env, append([]string{"--self-test"}, args...)...)
+}
+
+// run runs the test entry with the keys as its standard input, all at once,
+// and returns its output and exit status.
+func (k canaryDaemonKit) run(t *testing.T, tries int, keys string, args ...string) (string, int) {
+	t.Helper()
+	w := k.start(t, tries, args...)
+	if _, err := io.WriteString(w.stdin, keys); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.stdin.Close()
+	code := w.finish()
+	return w.text(), code
+}
+
+// Step 10: the owner presses Enter before the daemon in his other terminal is
+// up. The script says once that it waits, and goes on as soon as the daemon
+// answers; only a daemon that never answers is a failure, after the wait.
+func TestCanaryRunKitStep10PollsForTheDaemon(t *testing.T) {
+	const waiting = "waiting for the daemon to listen..."
+	for name, c := range map[string]struct {
+		at, tries     int
+		want          string
+		calls, dots   int
+		saysWaiting   bool
+		asksDuringRun bool
+	}{
+		"answers at once":           {at: 1, tries: 12, want: "listens", calls: 1},
+		"answers on the third ask":  {at: 3, tries: 12, want: "listens", calls: 3, saysWaiting: true},
+		"answers late, after dots":  {at: 12, tries: 12, want: "listens", calls: 12, saysWaiting: true, dots: 2},
+		"answers on the last ask":   {at: 13, tries: 12, want: "listens", calls: 13, saysWaiting: true, dots: 2},
+		"never answers":             {at: 0, tries: 12, want: "silent", calls: 13, saysWaiting: true, dots: 2},
+		"never answers, short wait": {at: 0, tries: 4, want: "silent", calls: 5, saysWaiting: true},
+		"answers one ask too late":  {at: 6, tries: 4, want: "silent", calls: 5, saysWaiting: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := newCanaryDaemonKit(t, "up", c.at)
+			out, code := k.run(t, c.tries, "", "wait-daemon")
+			if code != 0 {
+				t.Fatalf("exit status %d:\n%s", code, out)
+			}
+			if got := strings.Count(out, waiting); got != map[bool]int{true: 1, false: 0}[c.saysWaiting] {
+				t.Errorf("%q is said %d times:\n%s", waiting, got, out)
+			}
+			if got := k.calls(t); got != c.calls {
+				t.Errorf("the daemon was asked %d times, want %d", got, c.calls)
+			}
+			if got := strings.Count(strings.ReplaceAll(out, waiting, ""), "."); got != c.dots {
+				t.Errorf("%d dots, want %d (one for every 5 asks):\n%s", got, c.dots, out)
+			}
+			if got := canaryLastWord(out); got != c.want {
+				t.Errorf("the answer is %q, want %q:\n%s", got, c.want, out)
+			}
+		})
+	}
+}
+
+// canaryLastWord is the last word of the output: what a test entry ends with.
+func canaryLastWord(out string) string {
+	f := strings.Fields(out)
+	if len(f) == 0 {
+		return ""
+	}
+	return f[len(f)-1]
+}
+
+// The wait is a minute, one ask a second, unless the tests shorten it; a bad
+// value of the variables is refused, not taken.
+func TestCanaryRunKitWaitDefaultsAndVariables(t *testing.T) {
+	text := canaryScriptText(t)
+	for _, want := range []string{"WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}", "WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}", "ASK_AGAIN=5", `[ $((_pun % 5)) -eq 0 ]`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the script does not hold %q", want)
+		}
+	}
+	for name, env := range map[string]string{
+		"tries in words": "CANARY_RUN_WAIT_TRIES=many", "negative tries": "CANARY_RUN_WAIT_TRIES=-1",
+		"interval in words": "CANARY_RUN_WAIT_INTERVAL=soon", "two dots": "CANARY_RUN_WAIT_INTERVAL=1.2.3", "a lone dot": "CANARY_RUN_WAIT_INTERVAL=.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := newCanaryDaemonKit(t, "up", 0)
+			cmd := exec.Command("/bin/sh", filepath.Join(root(t), canaryRunScript), "--self-test", "wait-daemon")
+			cmd.Dir = k.dir
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, env}
+			out, err := cmd.CombinedOutput()
+			exit, ok := err.(*exec.ExitError)
+			if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "CANARY_RUN_WAIT_") {
+				t.Errorf("%s: %v\n%s", env, err, out)
+			}
+			if k.calls(t) != 0 {
+				t.Error("the daemon was asked with a bad variable")
+			}
+		})
+	}
+}
+
+// Step 26, the daemon: it still answers after the owner's Enter, so the script
+// says so and asks again, up to 5 more times, and fails only after that.
+func TestCanaryRunKitStep26AsksAgainWhileTheDaemonAnswers(t *testing.T) {
+	const still = "the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter"
+	enters := func(n int) string { return strings.Repeat("\n", n) }
+	for name, c := range map[string]struct {
+		at, tries, keys int
+		want            string
+		said, prompts   int
+	}{
+		"stopped before the Enter":      {at: 1, tries: 2, keys: 1, want: "stopped", said: 0, prompts: 1},
+		"stopped while the wait polls":  {at: 3, tries: 5, keys: 1, want: "stopped", said: 0, prompts: 1},
+		"stopped after one more ask":    {at: 5, tries: 2, keys: 2, want: "stopped", said: 1, prompts: 2},
+		"stopped after the last ask":    {at: 16, tries: 2, keys: 6, want: "stopped", said: 5, prompts: 6},
+		"never stopped":                 {at: 0, tries: 2, keys: 9, want: "failed", said: 5, prompts: 6},
+		"the input ends while it waits": {at: 0, tries: 2, keys: 2, want: "failed", said: 2, prompts: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := newCanaryDaemonKit(t, "down", c.at)
+			out, code := k.run(t, c.tries, enters(c.keys), "stop-daemon")
+			if code != 0 {
+				t.Fatalf("exit status %d:\n%s", code, out)
+			}
+			if got := strings.Count(out, still); got != c.said {
+				t.Errorf("%q is said %d times, want %d:\n%s", still, got, c.said, out)
+			}
+			if got := strings.Count(out, "Press Enter: "); got != c.prompts {
+				t.Errorf("%d keys were asked for, want %d:\n%s", got, c.prompts, out)
+			}
+			if got := canaryLastWord(out); got != c.want {
+				t.Errorf("the answer is %q, want %q:\n%s", got, c.want, out)
+			}
+			if c.want == "failed" && c.keys > 6 && !strings.Contains(out, "FAILED at step 26: a daemon still answers") {
+				t.Errorf("the step does not fail with the old reason after 6 asks:\n%s", out)
+			}
+			if c.want == "stopped" && strings.Contains(out, "FAILED") {
+				t.Errorf("a step that stopped has failed:\n%s", out)
+			}
+		})
+	}
+}
+
+// Step 26, the roots: one that is still there when the owner says he deleted
+// them is said, and he is asked again, up to 5 more times.
+func TestCanaryRunKitStep26AsksAgainWhileARootExists(t *testing.T) {
+	k := newCanaryDaemonKit(t, "down", 0)
+	state, runtime := filepath.Join(k.dir, "state"), filepath.Join(k.dir, "runtime")
+	for _, d := range []string{state, runtime} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, code := k.run(t, 1, strings.Repeat("\n", 9), "roots-deleted", state, runtime)
+	if code != 0 || canaryLastWord(out) != "failed" {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	if n := strings.Count(out, "a root of the canary still exists: delete it as shown above, then press Enter"); n != 5 {
+		t.Errorf("the owner is told %d times, want 5:\n%s", n, out)
+	}
+	if n := strings.Count(out, "still there: "+state); n != 6 {
+		t.Errorf("the state root is named %d times, want 6:\n%s", n, out)
+	}
+	if !strings.Contains(out, "FAILED at step 26: a root of the canary still exists") {
+		t.Errorf("the step does not fail after the asks:\n%s", out)
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Error("the script deleted a root")
+	}
+
+	// The owner deletes one while the script asks again, and then the other.
+	w := k.start(t, 1, "roots-deleted", state, runtime)
+	w.waitFor("Press Enter: ", 1)
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(w.stdin, "\n")
+	w.waitFor("Press Enter: ", 2)
+	if !strings.Contains(w.text(), "still there: "+runtime) || strings.Contains(w.text(), "still there: "+state) {
+		t.Errorf("the script does not name the root that is left:\n%s", w.text())
+	}
+	if err := os.Remove(runtime); err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(w.stdin, "\n")
+	if code := w.finish(); code != 0 || canaryLastWord(w.text()) != "deleted" || strings.Contains(w.text(), "FAILED") {
+		t.Errorf("exit status %d:\n%s", code, w.text())
+	}
+}
+
+// The other steps that wait for the owner's own act watch for it: the dry run
+// says how, and the real branch calls the polling function.
+func TestCanaryRunKitStepsWatchWhatTheOwnerDoes(t *testing.T) {
+	funcs := canaryFuncs(t, canaryScriptText(t))
+	for _, c := range []struct{ fn, word string }{
+		{"step_10", "poll_until 'the daemon to listen' daemon_answers"},
+		{"step_10", "check 'the daemon listens' is_rc 0"},
+		{"step_14", "poll_until 'the console to take the ticket' ticket_taken"},
+		{"step_6", "poll_until 'the listeners to stop' listeners_are"},
+		{"step_24", "poll_until 'the listeners to come back' listeners_are"},
+		{"daemon_stopped_by_owner", "poll_until 'the daemon to stop' daemon_gone"},
+		{"step_26", "daemon_stopped_by_owner"},
+		{"step_26", "roots_deleted_by_owner"},
+	} {
+		if !strings.Contains(funcs[c.fn], c.word) {
+			t.Errorf("%s does not hold %s", c.fn, c.word)
+		}
+	}
+	// What is watched is never answered: the polling and the asking again
+	// read no answer and type nothing.
+	for _, fn := range []string{"poll_until", "daemon_answers", "daemon_gone", "ticket_taken", "listeners_are", "daemon_stopped_by_owner", "roots_deleted_by_owner"} {
+		body := funcs[fn]
+		for _, bad := range []string{"ANSWER", "affirm", `ask "`, "ask '", "read ", "systemd-run", "ataniqd run", "canary start", "rm "} {
+			if strings.Contains(body, bad) {
+				t.Errorf("%s holds %q", fn, bad)
+			}
+		}
+	}
+	// The ticket is never read: only its size is asked.
+	if body := funcs["ticket_taken"]; !strings.Contains(body, `[ ! -s "$1" ]`) || strings.Contains(body, "cat") {
+		t.Errorf("ticket_taken: %s", body)
+	}
+	// A wait that runs out at step 14 goes on to the owner's question: the
+	// ticket file is not a failure.
+	step14 := funcs["step_14"]
+	from, to := strings.Index(step14, "poll_until"), strings.Index(step14, "affirm 'Owner: the pane shows the agent'")
+	if from < 0 || to < from || strings.Contains(step14[from:to], "fail ") {
+		t.Error("step 14 fails on the ticket file, or does not ask its question after the watch")
+	}
+
+	for pass, steps := range map[string][]int{"A": {10, 14, 26}, "B": {6, 10, 14, 24, 26}} {
+		out, _ := canaryDry(t, "--pass", pass, "--config", "/nonexistent/sample/canary.json")
+		for _, b := range canaryBlocks(out) {
+			m := canaryStepHeading.FindStringSubmatch(b.heading)
+			if m == nil || m[3] != "" {
+				continue
+			}
+			n, _ := strconv.Atoi(m[1])
+			if !slices.Contains(steps, n) {
+				continue
+			}
+			if got := b.count("every second for up to 60 s"); got < 1 {
+				t.Errorf("pass %s step %d: the dry run does not say it asks every second for up to 60 s:\n%s", pass, n, strings.Join(b.lines, "\n"))
+			}
+			if n == 26 && b.count("ask again, up to 5 more times") != 2 {
+				t.Errorf("pass %s step 26: the dry run does not say the two asks again", pass)
+			}
+		}
 	}
 }
