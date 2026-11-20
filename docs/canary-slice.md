@@ -160,7 +160,7 @@ The owner's tool, run by hand. The daemon never runs it.
 | `provision --config CONFIG` | Makes the folders of the lead (below), clones the throwaway repository from the mirror into the tree, copies the managed settings, the guard hook and the replay screens, and writes the marker last. It refuses the default roots, a root that already carries the marker and a lead that has started. |
 | `replay-on --config CONFIG` | Writes the replay switch file and nothing else. It is the only subcommand allowed after a first start. |
 | `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
-| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It changes nothing. |
+| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker`, and the managed-settings file that `sources.managed_settings` names must hold that text, which assertion 8 searches for inside. It changes nothing. |
 | `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
@@ -340,6 +340,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "<a text the managed-settings file holds, for claude>",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -361,6 +362,13 @@ with the sources from `ataniq-canary show`, and checks it with
   the caller with no access for group or others. The start sequence
   makes `report` (the report FIFO's folder) and `bound` in it and removes them
   when the start ends.
+- `sources.managed_marker` is required for the runtime `claude`: the text of
+  the guard hook that the managed-settings file holds (assertion 8 searches
+  the file inside for it). The holder refuses a start without it, or with a
+  file that lacks the text, at its first step; `check-inputs` refuses the
+  same, naming `sources.managed_marker` or `sources.managed_settings`, and,
+  for the rest of that step, the field the holder would name. The marker is
+  not part of the profile digest.
 - `time_limit_seconds` (1 to 3600) is how long the start waits for the probe's
   report line.
 - Two statements about the start itself, that no lead has run in the folders

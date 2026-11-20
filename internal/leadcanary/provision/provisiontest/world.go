@@ -27,6 +27,11 @@ import (
 // everything the code prints, to show that no file content is printed.
 const Secret = "sample-secret-content-0123456789"
 
+// Marker is the text of the guard hook that a managed-settings file holds in
+// the tests of the sandbox inputs: the inputs name it as
+// sources.managed_marker.
+const Marker = "sample-guard-hook"
+
 // Branch is the branch the mirror holds and the tree starts from.
 const Branch = "main"
 
@@ -160,6 +165,18 @@ func WriteFile(t testing.TB, path string, data []byte, mode os.FileMode) {
 	if err := os.Chmod(path, mode); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// WriteManagedSettings writes a managed-settings file at path, the one the
+// inputs name as sources.managed_settings, that holds text (Marker is the
+// marker the inputs of the tests name). The folder is made when it is not
+// there.
+func WriteManagedSettings(t testing.TB, path, text string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	WriteFile(t, path, []byte(`{"hooks":{"PreToolUse":[{"command":"`+text+`"}]}}`+"\n"), 0o600)
 }
 
 // Git runs /usr/bin/git in dir with an explicit environment, for the setup of

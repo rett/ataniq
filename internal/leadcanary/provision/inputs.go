@@ -3,12 +3,17 @@
 package provision
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/sandboxstart"
+	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/profile"
+	"ataniq/internal/leadsandbox/safefile"
 )
 
 // placeholderRoot stands in the profile inputs below for the host sources
@@ -56,8 +61,16 @@ var ErrInputs = errors.New("provision: the sandbox inputs do not match the confi
 // not name must be the folders and files that provisioning made (see
 // [PathsOf]), the Qargi records must appear inside at [RecordsInside], which
 // the mount points were made for, and no extra placeholder may be named,
-// because the git metadata folder lists none. The run kit and the daemon call
-// it before a start.
+// because the git metadata folder lists none. It then makes what the holder
+// makes of the file at the start of its sequence (the validate step), as far
+// as that needs no launch and no host access: the same spec trial, on the
+// inputs as the holder sets them from the config (the agent's command line
+// and environment, the pinned digest), so that every refusal of that step
+// that the file alone decides is a refusal here. For the runtime claude the
+// file must also name the managed-settings marker (sources.managed_marker),
+// and the managed-settings file that sources.managed_settings names must
+// hold that text, which assertion 8 searches for inside. The run kit and the
+// daemon call it before a start.
 //
 // Every refusal names the field and never repeats a value of the file. A
 // refusal of ReadInputs is returned as it is (an *sandboxstart.InputsError); a
@@ -96,10 +109,72 @@ func checkInputs(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 		{"sources.projection_dir", in.Sources.ProjectionDir == p.ProjectionDir},
 		{"sources.qargi_records_inside", in.Sources.QargiRecordsInside == RecordsInside},
 		{"sources.extra_placeholders", len(in.Sources.ExtraPlaceholders) == 0},
+		// The spec refuses a claude start without it (assert.Spec.checkManaged).
+		{"sources.managed_marker", in.Runtime != string(profile.Claude) || in.Sources.ManagedMarker != ""},
 	} {
 		if !c.ok {
 			return bad(c.field)
 		}
+	}
+	if err := checkTrial(cfg, in); err != nil {
+		return err
+	}
+	return checkMarkerInSettings(in)
+}
+
+// checkTrial runs the spec trial of the holder's validate step on the inputs
+// with the fields the holder sets from the config (cmd/ataniq-holder: the
+// agent's command line and environment and the pinned digest; its two socket
+// paths only add to the names the spec checks and need the serving package).
+// The refusal names the field of the profile or the spec, or says the text of
+// the fixed refusals of that step that are not about a field; it never holds a
+// value of the file.
+func checkTrial(cfg leadcanary.Config, in sandboxstart.Inputs) error {
+	in.AgentArgv = append([]string(nil), cfg.Agent.Argv...)
+	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.Agent.Env)
+	in.ExpectedDigest = cfg.Holder.ProfileDigest
+	err := sandboxstart.TrialValidate(in, uint32(os.Geteuid()), uint32(os.Getegid()))
+	if err == nil {
+		return nil
+	}
+	var ie *sandboxstart.InputsError
+	var pr *profile.Refusal
+	var ar *assert.Refusal
+	switch {
+	case errors.As(err, &ie) && ie.Field != "":
+		return fmt.Errorf("%w: %s (refused by the holder's validate step)", ErrInputs, ie.Field)
+	case errors.As(err, &pr):
+		return fmt.Errorf("%w: %s (refused by the holder's validate step)", ErrInputs, pr.Field)
+	case errors.As(err, &ar):
+		return fmt.Errorf("%w: %s (refused by the holder's validate step)", ErrInputs, ar.Field)
+	}
+	// The other refusals of the step are fixed texts that hold no value.
+	return fmt.Errorf("%w: %v (refused by the holder's validate step)", ErrInputs, err)
+}
+
+// checkMarkerInSettings checks, for the runtime claude, that the
+// managed-settings file the inputs name holds the marker text: assertion 8
+// searches the file inside for it, and the file bound there is this one. The
+// refusals name the field and never the file's path or content.
+func checkMarkerInSettings(in sandboxstart.Inputs) error {
+	if in.Runtime != string(profile.Claude) {
+		return nil
+	}
+	bad := func(why string) error {
+		return fmt.Errorf("%w: sources.managed_settings %s", ErrInputs, why)
+	}
+	dir, name := filepath.Split(in.Sources.ManagedSettings)
+	root, err := safefile.OpenRootNoLinks(filepath.Clean(dir))
+	if err != nil {
+		return bad("cannot be read: its folder cannot be opened")
+	}
+	defer root.Close()
+	data, err := root.ReadFile(name, MaxManagedSettingsBytes)
+	if err != nil {
+		return bad("cannot be read: it is not a regular file of the bounded size")
+	}
+	if !bytes.Contains(data, []byte(in.Sources.ManagedMarker)) {
+		return bad("does not hold the text of sources.managed_marker, which assertion 8 searches for")
 	}
 	return nil
 }
