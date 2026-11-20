@@ -113,6 +113,37 @@ paste. The owner looks at the pane, the script records what he saw, and what
 happens next is his decision. On a refusal the owner puts the message into the
 pane himself.
 
+### Step 14: the console, then the ticket
+
+The attach ticket lives 30 seconds from its mint, and the console, while its
+ticket file is absent or empty, only shows "waiting for a ticket". So the order
+is the console's first. The script prints the exact command, with the real
+holder runtime folder and the ticket file `ticket` in it (the file the daemon
+writes into, so both are known before the mint), and waits for the owner's
+Enter. He starts the console in a terminal of his own (T3), sees it wait, and
+presses Enter in T1; only then does the script run `ataniqd canary ticket`. It
+checks that the ticket file the mint names is the one it printed (a step whose
+ticket went to another file fails), watches that file until the console empties
+it (the console empties it when it takes the ticket; the script reads only its
+size), and asks `yes` for the pane showing the agent. That `yes` is the owner's
+attestation.
+
+In the first epoch the owner then starts the same command once more in a fourth
+terminal (T4). The first console emptied the ticket file, so the second one
+finds no ticket: it does not attach and shows only "waiting for a ticket"; he
+quits it with `q` and answers `yes` to what he saw. The script reads that the
+ticket file is still empty and that the number of `attach` events in the holder's
+event log is the same as before the second console. The kit has no command that
+presents a ticket twice to the holder, so it does not claim that a used ticket
+is refused: it shows that a console without a ticket does not attach. The
+second console is tried in the first epoch only.
+
+Before the second epoch the owner closes the console of the first epoch (`Ctrl+\`
+leaves the session pane, then `q`): a console left open waits on the same ticket
+file and would take the ticket of the second epoch. The script says so before it
+stops the unit, and again at the second epoch's step 14. It cannot see whether
+the console is closed.
+
 ### When the owner supplies the message himself
 
 In the first epoch of pass A, and in pass B when the fence refuses, the owner
@@ -367,8 +398,9 @@ wrong command line. The checks:
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
 When ready it prints the three things you type, with the real paths and the
-terminal of each: the daemon command in T2, the attach command in T3 (the ticket
-file is the placeholder the run prints at step 14) and the run command in T1.
+terminal of each: the daemon command in T2, the attach command in T3 (with its
+ticket file, `ticket` in the holder's runtime folder; start it before the Enter
+at step 14, which mints) and the run command in T1.
 Four terminals are needed, because the daemon stays in front of its terminal
 until you stop it with Ctrl-C at step 26: T1 the script, T2 the daemon, T3 the
 console, and T4 for the second console of step 14 and the integrate command of
@@ -699,6 +731,7 @@ test entry:
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test mirror-remote URL PROJECT` | `yes` when `URL` (with or without `file://`) is the mirror's place inside the sandbox for `PROJECT` (`/ataniq/mirror/PROJECT.git`), the one remote step 8 accepts for the lead's tree, and `no` otherwise. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
+| `--self-test count-lines FILE PATH=VALUE...` | How many lines of `FILE`, which holds one JSON object in each line, hold every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it; a line that is not a whole JSON object is passed over, and a file that is not there counts 0. Step 14 counts the `attach` events of the holder's event log with it, before and after the second console. |
 | `--self-test ticket-taken FILE` | `taken` when the ticket file `FILE` is absent or empty (the console empties it when it takes the ticket), `waiting` when it holds something, and `waiting` for an empty name: step 14 never says "the ticket was taken" for a ticket result that names no file. Only the size is looked at. |
 | `--self-test wait-daemon` | Step 10's polling: it asks the `ataniqd status` of `build/canary` of the current folder as the step does and prints `listens` when it answered within the wait, `silent` when not; "waiting for the daemon to listen..." is said once and a dot follows every 5 asks. |
 | `--self-test stop-daemon` | The daemon's half of step 26: the keys come from standard input, a daemon that still answers is said and asked again up to 5 more times (an end of input is a failure too when a daemon still answers), and the end prints `stopped` or `failed` (the failure that ends the step is printed and returned, not ending the run). |

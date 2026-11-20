@@ -31,17 +31,20 @@ STEP  WHAT YOU DO
         @BIN@/ataniqd run --canary @CONFIG@
       (The script waits up to a minute for it, but start it first.) Then: yes.
  12   Lead: yes (the probe reported once, every assertion ok except 10).
- 14   T3: attach the console with the ticket file the script prints:
-        @BIN@/ataniq-console --attach @HOLDER_RUN@ --ticket-file <TICKET FILE>
-      then yes (the pane shows the agent). In T4 run the same command once
-      more; then yes (the used ticket was refused).
+ 14   T3: start the console BEFORE you press Enter at step 14; it waits for
+      a ticket (the script mints into the file named here):
+        @BIN@/ataniq-console --attach @HOLDER_RUN@ \
+          --ticket-file @HOLDER_RUN@/ticket
+      Then Enter in T1 (the script mints; a ticket lives 30 s), then yes (the
+      pane shows the agent). T4: the same command once more; it must NOT
+      attach and only says "waiting for a ticket": quit it (q), then yes.
  17   Paste the message file the script names into the pane as ONE paste
       (do not type it), press Enter in the pane once, then Enter in T1.
  18   yes (the pane shows the stand-in committed).
  20   T4: the integrate command the script prints (with its TIP and DIGEST
       and one --accept-path per path listed); then yes.
- 2nd  Second epoch: Enter at each step; attach again at step 14 (yes, yes);
-      the stand-in replays, nothing to paste.
+ 2nd  Second epoch: first close the console in T3 (Ctrl+\ then q); Enter at
+      each step; at step 14 start it again in T3 (yes); nothing to paste.
  26   Enter; clean (when the evidence holds no login URL or code).
       At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
       Delete the roots yourself, then Enter in T1:

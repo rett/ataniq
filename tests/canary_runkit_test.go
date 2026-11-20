@@ -4230,10 +4230,183 @@ func TestCanaryRunKitTicketTakenNeedsAFile(t *testing.T) {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
 		}
 	}
+	// Step 14 knows the name before it watches: it is derived from the holder's
+	// runtime folder, which must be known, not read back from the mint.
 	step14 := canaryFuncs(t, canaryScriptText(t))["step_14"]
-	if i, j := strings.Index(step14, `[ -z "$_tf" ]`), strings.Index(step14, "poll_until"); i < 0 || j < i {
-		t.Error("step 14 does not look for an empty ticket file name before it watches the file")
+	i, j, k := strings.Index(step14, `test -n "$HRUN"`), strings.Index(step14, "_tf=$HRUN/ticket"), strings.Index(step14, "poll_until")
+	if i < 0 || j < i || k < j {
+		t.Error("step 14 does not know the ticket file's name, from a folder that is known, before it watches the file")
 	}
+}
+
+// Step 14: the console is started first and the script mints after the
+// owner's Enter, because a ticket lives 30 seconds and the console waits for
+// one. The command is printed with its real folder and ticket file before the
+// mint; the mint's own answer is checked against that file; the second
+// console is the owner's test that nothing attaches, and the script reads the
+// ticket file and the attach events of the holder's event log.
+func TestCanaryRunKitStep14StartsTheConsoleBeforeTheMint(t *testing.T) {
+	body := canaryFuncs(t, canaryScriptText(t))["step_14"]
+	at := func(sub string) int {
+		i := strings.Index(body, sub)
+		if i < 0 {
+			t.Fatalf("step 14 does not hold %q", sub)
+		}
+		return i
+	}
+	show := at(`out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"`)
+	key := at("wait_key 'Owner: press Enter when the console is up and says it waits for a ticket.")
+	mint := at(`runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer`)
+	same := at(`is_eq "$(fld "$LASTOUT" ticket_file)" "$_tf"`)
+	watch := at("poll_until 'the console to take the ticket' ticket_taken")
+	yes := at("affirm 'Owner: the pane shows the agent' yes")
+	if !(show < key && key < mint && mint < same && same < watch && watch < yes) {
+		t.Errorf("step 14 does not show the command, wait for the key, mint, compare the file and watch it, in that order")
+	}
+	if n := strings.Count(body, "runcap ticket"); n != 1 {
+		t.Errorf("step 14 mints in %d places, want 1", n)
+	}
+	// The second console: counted before, asked, and counted after.
+	before := at(`_att0=$(count_lines "$HSTATE/events.jsonl" event=attach)`)
+	second := at("affirm 'Owner: the second console did not attach and shows \"waiting for a ticket\"' yes")
+	after := at(`_att1=$(count_lines "$HSTATE/events.jsonl" event=attach)`)
+	cmp := at(`is_eq "$_att1" "$_att0"`)
+	empty := strings.LastIndex(body, `ticket_taken "$_tf"`)
+	if !(yes < before && before < second && second < after && after < cmp) || empty < second {
+		t.Error("step 14 does not count the attach events before the second console and after it, and compare them, after the owner's answer")
+	}
+	if !strings.Contains(body, `if [ "$EPOCH_NO" -eq 1 ]; then`) {
+		t.Error("the second console is not tried in the first epoch only")
+	}
+	// What the script cannot show it does not claim: a used ticket is never
+	// presented to the holder by the kit.
+	for _, bad := range []string{"used ticket", "was refused", "is used"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("step 14 claims %q", bad)
+		}
+	}
+	// What the owner sees and what the script reads: the dry run.
+	out, code := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	var first, secondEpoch *canaryBlock
+	for _, b := range canaryBlocks(out) {
+		m := canaryStepHeading.FindStringSubmatch(b.heading)
+		if m == nil || m[1] != "14" {
+			continue
+		}
+		b := b
+		if m[3] == "" {
+			first = &b
+		} else {
+			secondEpoch = &b
+		}
+	}
+	if first == nil || secondEpoch == nil {
+		t.Fatalf("the dry run has no step 14 of both epochs:\n%s", out)
+	}
+	console := "build/canary/ataniq-console --attach /sample/canary/runtime/leads/throwaway-one-lead --ticket-file /sample/canary/runtime/leads/throwaway-one-lead/ticket"
+	lineOf := func(b *canaryBlock, sub string) int {
+		for i, l := range b.lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	for name, b := range map[string]*canaryBlock{"first epoch": first, "second epoch": secondEpoch} {
+		shown, keyed, minted := lineOf(b, console), lineOf(b, "wait for Enter: Owner: press Enter when the console is up"), lineOf(b, "run: build/canary/ataniqd canary ticket")
+		if shown < 0 || !(shown < keyed && keyed < minted) {
+			t.Errorf("%s: the dry run does not show the console command with its real folder and ticket file, then wait for Enter, then mint:\n%s", name, strings.Join(b.lines, "\n"))
+		}
+		if lineOf(b, "waiting for a ticket") < 0 || lineOf(b, "a ticket lives 30 seconds") < 0 {
+			t.Errorf("%s: the dry run does not tell the owner what the console says and how long the ticket lives", name)
+		}
+		if lineOf(b, "used ticket") >= 0 {
+			t.Errorf("%s: the dry run still asks about a used ticket", name)
+		}
+	}
+	if lineOf(first, "does NOT attach") < 0 || lineOf(first, `Owner: the second console did not attach and shows "waiting for a ticket" (type: yes)`) < 0 ||
+		lineOf(first, "the attach events of") < 0 || lineOf(first, "no second attach happened") < 0 {
+		t.Errorf("the first epoch's dry run does not hold the second console's test:\n%s", strings.Join(first.lines, "\n"))
+	}
+	if lineOf(secondEpoch, "does NOT attach") >= 0 || lineOf(secondEpoch, "the console of the first epoch must be closed") < 0 {
+		t.Errorf("the second epoch's dry run has the second console, or does not tell the owner to close the first one:\n%s", strings.Join(secondEpoch.lines, "\n"))
+	}
+	// Between the epochs the owner is told, before the unit is stopped, to close
+	// the console that is open: it would take the next ticket.
+	i, j := strings.Index(out, "Owner: close the console of the first epoch now"), strings.Index(out, "Close the first console first.")
+	if i < 0 || j < i {
+		t.Error("the second epoch does not tell the owner to close the first console before it stops the unit")
+	}
+}
+
+// count-lines is the reading step 14 makes of the event log: how many lines
+// hold every PATH=VALUE, each line read as JSON by the helper.
+func TestCanaryRunKitCountLines(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	bin := filepath.Join(work, "build", "canary")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stub := `#!/bin/sh
+read -r line
+case $line in
+  *attach*) printf 'event=attach\nreason=writer\n' ;;
+  *detach*) printf 'event=detach\n' ;;
+  *partial*) printf 'event=attach\n'; exit 1 ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "ataniq-canary"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	count := func(lines []string, pairs ...string) string {
+		file := filepath.Join(dir, "events.jsonl")
+		if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return canaryCount(t, work, dir, append([]string{file}, pairs...)...)
+	}
+	for _, c := range []struct {
+		name  string
+		lines []string
+		pairs []string
+		want  string
+	}{
+		{"two attaches and a detach", []string{"attach", "detach", "attach"}, []string{"event=attach"}, "2"},
+		{"one", []string{"detach", "attach"}, []string{"event=attach"}, "1"},
+		{"every pair must hold", []string{"attach", "attach"}, []string{"event=attach", "reason=viewer"}, "0"},
+		{"a line that is not a whole object is passed over", []string{"partial", "attach"}, []string{"event=attach"}, "1"},
+		{"no line holds it", []string{"detach"}, []string{"event=attach"}, "0"},
+	} {
+		if got := count(c.lines, c.pairs...); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+	// A file that is not there counts 0, so the first attach is counted from 0.
+	if got := canaryCount(t, work, dir, filepath.Join(dir, "absent"), "event=attach"); got != "0" {
+		t.Errorf("a file that is not there: %s, want 0", got)
+	}
+}
+
+// canaryCount runs the count-lines test entry in the folder work.
+func canaryCount(t *testing.T, work, home string, args ...string) string {
+	t.Helper()
+	path, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	cmd := exec.Command(path, append([]string{filepath.Join(root(t), canaryRunScript), "--self-test", "count-lines"}, args...)...)
+	cmd.Dir = work
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("count-lines %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Step 26, the daemon: it still answers after the owner's Enter, so the script
@@ -5271,7 +5444,7 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
 		"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
-		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file <the ticket file step 14 prints>",
+		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file " + p.root + "/runtime/leads/throwaway-one-lead/ticket",
 		"BEFORE you press Enter at step 10",
 		"The run never starts the daemon or the console for you.",
 		// The daemon stays in front of its terminal until Ctrl-C at step 26,
@@ -5279,8 +5452,10 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		// their own.
 		"1. In a second terminal (T2), the daemon",
 		"It stays in front of that terminal until you stop it with",
-		"2. At step 14 (and again in the second epoch), in a third terminal (T3), the console",
-		"more in a fourth terminal (T4), where the integrate command of step 20 goes too:",
+		"2. At step 14 (and again in the second epoch), in a third terminal (T3), the console, started",
+		"BEFORE you press Enter at step 14: it waits for a ticket, and the run mints one only after",
+		"your Enter (a ticket lives 30 seconds).",
+		"fourth terminal (T4), in the first epoch, where the integrate command of step 20 goes too:",
 		"3. In this terminal (T1), the run",
 	} {
 		if !strings.Contains(out, want) {
@@ -5844,8 +6019,10 @@ func TestCanaryRunKitChecklistTemplate(t *testing.T) {
 	// and sends neither the console nor the intake to the daemon's.
 	for _, want := range []string{
 		"Four terminals: T1 runs\nthe script, T2 the daemon (it stays in front until Ctrl-C at step 26), T3 the\nconsole, T4 the second console of step 14 and the integrate command of 20.",
-		"14   T3: attach the console",
-		"In T4 run the same command once\n      more",
+		"14   T3: start the console BEFORE you press Enter at step 14; it waits for\n      a ticket",
+		"--ticket-file @HOLDER_RUN@/ticket",
+		"it must NOT\n      attach and only says \"waiting for a ticket\"",
+		"2nd  Second epoch: first close the console in T3 (Ctrl+\\ then q)",
 		"20   T4: the integrate command",
 		"(in T2)",
 	} {
@@ -5902,7 +6079,7 @@ func TestCanaryRunKitPrepareWritesTheChecklist(t *testing.T) {
 		"sh " + runDir + "/canary-run.sh --pass A --config " + r + "/config.json --dry\n",
 		"sh " + runDir + "/canary-run.sh --pass A --config " + r + "/config.json --evidence " + r + "/evidence\n",
 		"        " + e.bin + "/ataniqd run --canary " + r + "/config.json\n",
-		"        " + e.bin + "/ataniq-console --attach " + r + "/runtime/leads/throwaway-one-lead --ticket-file <TICKET FILE>\n",
+		"        " + e.bin + "/ataniq-console --attach " + r + "/runtime/leads/throwaway-one-lead \\\n          --ticket-file " + r + "/runtime/leads/throwaway-one-lead/ticket\n",
 		"        rm -rf -- " + r + "/state " + r + "/runtime\n",
 		"sh " + runDir + "/canary-reset.sh --root " + r + " ",
 		r + "/answers.hint: Enter takes it",

@@ -21,7 +21,8 @@
 # ataniq-canary fields helper of build/canary on the file they are given;
 # stop-daemon, roots-deleted, ask-path, ask-file and affirm-word read keys from
 # standard input, and ask-path and ask-file read the hint file they are given;
-# no other program is run.
+# no other program is run. count-lines runs the helper ataniq-canary fields of
+# build/canary on each line of the file it is given, as has-line does.
 #
 # At a path prompt (the two fact reports, the template's review, the report of
 # qualify-mirror) the script shows "(Enter for: PATH)" when answers.hint beside
@@ -95,6 +96,8 @@ usage() {
     '                      a path prompt with its hint, and a typed word with the hint file in place' \
     '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
     '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
+    '         count-lines FILE PATH=VALUE...' \
+    '                      how many lines of FILE hold every PATH=VALUE (step 14 counts attach events)' \
     '         ticket-taken FILE' \
     '                      whether step 14 takes the ticket file for taken (an empty name never is)' \
     '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
@@ -532,6 +535,23 @@ has_line() {
     if fields_hold "$_got" "$@"; then return 0; fi
   done <"$_file"
   return 1
+}
+
+# count_lines FILE PATH=VALUE... prints how many lines of FILE, which holds one
+# JSON object in each line, hold every PATH=VALUE, each line read as JSON by the
+# tagged helper as has_line does (a line that is not a whole JSON object is
+# passed over). A file that is not there counts 0.
+count_lines() {
+  _cf=$1
+  shift
+  _cn=0
+  if [ -f "$_cf" ]; then
+    while IFS= read -r _cl || [ -n "$_cl" ]; do
+      _cg=$(printf '%s\n' "$_cl" | "$BIN/ataniq-canary" fields --file - 2>/dev/null) || continue
+      if fields_hold "$_cg" "$@"; then _cn=$((_cn + 1)); fi
+    done <"$_cf"
+  fi
+  printf '%s\n' "$_cn"
 }
 
 # fact appends the name, size, time and hash of a file to a list in the
@@ -1200,6 +1220,14 @@ self_test() {
       TTY_ASSUMED=1
       chain_trap
       if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
+      ;;
+    count-lines)
+      # FILE PATH=VALUE...: how many lines of FILE hold every PATH=VALUE, as
+      # step 14 counts the attach events. The helper is the one of build/canary
+      # in the current folder.
+      [ "$#" -ge 2 ] || usage
+      BIN=build/canary
+      count_lines "$@"
       ;;
     ticket-taken)
       # FILE (which may be an empty string): whether step 14 takes the ticket
@@ -2190,34 +2218,78 @@ step_13() {
   done_step
 }
 
+# step_14: the console reads its ticket from a file and, while the file is
+# empty or absent, only says "waiting for a ticket"; a ticket lives 30 seconds
+# from its mint (serve.DefaultTicketLifetime). So the owner starts the console
+# first and the script mints after his Enter: the command is printed before the
+# mint, with its folder and ticket file known beforehand. The folder is the
+# holder's runtime folder of the config (what the daemon's ticket command
+# writes in), and the ticket file is the file named "ticket" in it
+# (leaddaemon.TicketFileName); the mint's own answer is then checked against
+# the file printed, and a step whose ticket went to another file fails.
+#
+# What the script can read of the console is only the ticket file's size (the
+# console empties it when it takes the ticket) and the holder's event log (one
+# attach event for each attach). A console that is started again finds the file
+# empty and attaches nothing: that is what the second console shows, and the
+# script reads that the file is empty and that the number of attach events has
+# not changed. The kit has no command that presents a used ticket to the
+# holder, so it does not claim that a used ticket is refused. The test is made
+# in the first epoch only. The owner's yes at the end of each part is the
+# attestation; the script answers nothing.
 step_14() {
-  step_head 14 'Mint a writer ticket and attach the console' \
-    'run ataniqd canary ticket for a writer; the owner attaches the console himself in his own terminal, then tries the used ticket once more' \
-    'the pane shows the agent; a used ticket is refused' 'none'
-  wait_key 'Step 14 mints a writer ticket.'
+  step_head 14 'Attach the console, then mint a writer ticket' \
+    'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a writer (the ticket lives 30 seconds) and watches the ticket file; in the first epoch the owner then starts the same console once more in a fourth terminal: it finds the ticket file empty and does not attach' \
+    'the console attaches and the pane shows the agent; in the first epoch the second console does not attach and says it waits for a ticket, the ticket file is empty and the event log shows no second attach' 'none'
+  check "the holder's runtime folder is known" test -n "$HRUN" || return 0
+  _tf=$HRUN/ticket
+  if [ "$EPOCH_NO" -eq 2 ]; then
+    out '   Owner: the console of the first epoch must be closed (Ctrl+\ leaves the session pane, then q): one left open waits on the same ticket file and takes this epoch'"'"'s ticket for itself.'
+  fi
+  out '   Owner: in a third terminal (T3), start the console now, with this command. It waits for a ticket and'
+  out '   says "waiting for a ticket". Do not start it later than your Enter below: a ticket lives 30 seconds.'
+  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
+  wait_key 'Owner: press Enter when the console is up and says it waits for a ticket. The ticket is minted then.'
   runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer
   check 'the ticket was minted' is_rc 0 || return 0
-  if [ "$DRY" -eq 1 ]; then _tf=$HRUN/ticket; else _tf=$(fld "$LASTOUT" ticket_file); fi
-  out '   Owner: in a third terminal (T3), attach the console as the writer:'
-  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
   if [ "$DRY" -eq 1 ]; then
+    dry "check: the ticket file the mint names is the one printed above, $_tf (the console was told that file)"
     dry "watch the ticket file $_tf every second for up to 60 s: the console empties it when it takes the ticket (no content is read); say what was seen and go on to the question either way"
   else
+    check "the ticket file the mint names is the one printed above ($_tf)" is_eq "$(fld "$LASTOUT" ticket_file)" "$_tf" || return 0
     out '   The script now watches the ticket file, which the console empties when it takes the ticket.'
-    if [ -z "$_tf" ]; then
-      out '   the ticket result names no ticket file, so there is nothing to watch (the question below is still yours to answer)'
-      note 'the ticket result named no ticket file'
-    elif poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
+    if poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
       out '   ok: the ticket was taken'
       note 'the console took the ticket (the ticket file is empty)'
     else
-      out '   the ticket file still holds a ticket: the console has not taken it (the question below is still yours to answer)'
+      out '   the ticket file still holds a ticket: the console has not taken it, and a ticket lives 30 seconds (the question below is still yours to answer)'
       note 'the ticket file still held a ticket after the wait'
     fi
   fi
   affirm 'Owner: the pane shows the agent' yes || return 0
-  out '   Owner: in a fourth terminal (T4), run the same command once more: the ticket is used.'
-  affirm 'Owner: the used ticket was refused' yes || return 0
+  if [ "$EPOCH_NO" -eq 1 ]; then
+    if [ "$DRY" -eq 1 ]; then
+      dry "count the attach events of $HSTATE/events.jsonl now (each line read as JSON by ataniq-canary fields)"
+    else
+      _att0=$(count_lines "$HSTATE/events.jsonl" event=attach)
+      note "attach events before the second console: $_att0"
+    fi
+    out '   Owner: in a fourth terminal (T4), run the same console command once more. The first console emptied the'
+    out '   ticket file when it took the ticket, so this one finds none: it does NOT attach. All it shows is its'
+    out '   status "waiting for a ticket". Read that line, then quit it (q). Leave the first console open: the'
+    out '   message of step 17 is pasted into it.'
+    affirm 'Owner: the second console did not attach and shows "waiting for a ticket"' yes || return 0
+    if [ "$DRY" -eq 1 ]; then
+      dry "check: the ticket file $_tf is still empty, and the attach events of $HSTATE/events.jsonl are as many as before: no second attach happened"
+    else
+      check 'the ticket file is still empty: no second ticket is waiting' ticket_taken "$_tf" || return 0
+      _att1=$(count_lines "$HSTATE/events.jsonl" event=attach)
+      note "attach events after the second console: $_att1"
+      check "the event log shows no second attach ($_att1 attach events, $_att0 before)" is_eq "$_att1" "$_att0" || return 0
+    fi
+  else
+    out '   (the second console is tried in the first epoch only)'
+  fi
   result ok
   done_step
 }
@@ -2829,7 +2901,9 @@ second_epoch() {
   out '   does:     stop with proof; write the replay switch file; steps 11, 12 and 14 again; inject once; then step 22 in full'
   out '   expected: the fence reaches submitted, no reason, whole, inside the real sandbox; order.txt says 7501-first; the stand-in committed. A refusal is recorded with the detail and is a finding for a fix task before pass B'
   out '   serves:   G1, B1'
-  wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up).'
+  out '   Owner: close the console of the first epoch now (Ctrl+\ leaves the session pane, then q).'
+  out '   One left open waits on the same ticket file and would take the ticket of the second epoch.'
+  wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up). Close the first console first.'
   CUR=22
   stop_role || return 0
   CUR=20
