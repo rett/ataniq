@@ -1744,3 +1744,27 @@ func TestCanaryRunKitHasLine(t *testing.T) {
 		})
 	}
 }
+
+// Provisioning sets the tree's origin to the mirror's place inside the
+// sandbox, so step 8 expects that URL and refuses the host path.
+func TestCanaryRunKitStep8ExpectsMirrorInside(t *testing.T) {
+	const inside = "/ataniq/mirror/throwaway-one.git"
+	for _, c := range []struct{ url, want string }{
+		{inside, "yes"},
+		{"file://" + inside, "yes"},
+		{"/sample/canary/state/mirrors/throwaway-one.git", "no"},
+		{"/ataniq/mirror/other.git", "no"},
+	} {
+		out, code := canarySelfTest(t, "mirror-remote", c.url, "throwaway-one")
+		if code != 0 || out != c.want {
+			t.Errorf("%s: exit status %d, got %q, want %q", c.url, code, out, c.want)
+		}
+	}
+	body := canaryFuncs(t, canaryScriptText(t))["step_8"]
+	if strings.Contains(body, `is_eq "${_u#file://}"`) {
+		t.Error("step 8 compares the remote with the host mirror path")
+	}
+	if !strings.Contains(body, `remote_is_mirror "$_u" "$PROJECT"`) || strings.Contains(body, "_u=$MIRROR") {
+		t.Error("step 8 does not check the remote against the mirror's place inside")
+	}
+}

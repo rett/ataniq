@@ -124,6 +124,9 @@ TAG=ataniq_canary
 WAIVER='assertion 10 waived: canary slice, no qualification record'
 BRANCH=canary/one
 AGENT_INSIDE=/ataniq/agent
+# The mirror's place inside the sandbox (profile.MirrorInside): provisioning sets
+# the tree's origin to it, not to the host path.
+MIRROR_ROOT_INSIDE=/ataniq/mirror
 CAP_SECONDS=1800
 CAP_TURNS=10
 PAGE=4096
@@ -269,6 +272,11 @@ check() {
 }
 
 is_eq() { [ "$1" = "$2" ]; }
+# mirror_inside prints the mirror's place inside the sandbox for a project.
+mirror_inside() { printf '%s/%s.git' "$MIRROR_ROOT_INSIDE" "$1"; }
+# remote_is_mirror reports whether URL (with or without file://) is the
+# mirror's place inside the sandbox for PROJECT.
+remote_is_mirror() { [ "${1#file://}" = "$(mirror_inside "$2")" ]; }
 is_rc() { [ "$RC" -eq "$1" ]; }
 is_empty_file() { [ ! -s "$1" ]; }
 is_absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
@@ -549,6 +557,11 @@ self_test() {
       _v=$(balance "$4" "$1" "$2")
       out "value=$_v"
       if below_floor "$_v" "$3"; then out 'floor=below'; else out 'floor=ok'; fi
+      ;;
+    mirror-remote)
+      # URL PROJECT: whether URL is the mirror's place inside for PROJECT.
+      [ "$#" -eq 2 ] || usage
+      if remote_is_mirror "$1" "$2"; then out yes; else out no; fi
       ;;
     inject-action)
       [ "$#" -eq 4 ] || usage
@@ -1010,7 +1023,7 @@ step_8() {
   if [ "$PASS" = A ]; then _exp2='; the replay screens are in the lead'"'"'s home and the switch file is not'; else _exp2=; fi
   step_head 8 "Provision the lead's folders" \
     "check that the mirror exists; run ataniq-canary provision; check the tree's remote, the roots and the marker; check the sandbox inputs file with ataniq-canary check-inputs" \
-    "the folders exist; the tree's only remote is the mirror; the state and runtime roots are not the defaults; the marker is present; the project is throwaway-one$_exp2" 'G5'
+    "the folders exist; the tree's only remote is the mirror's place inside the sandbox; the state and runtime roots are not the defaults; the marker is present; the project is throwaway-one$_exp2" 'G5'
   wait_key 'Step 8 provisions the folders.'
   check "the mirror exists (ataniq-intake init, then the upstream branch): $MIRROR" test -d "$MIRROR" || return 0
   runcap mirror-branches "$BIN/ataniq-intake" branches --state "$STATE" --project "$PROJECT"
@@ -1029,8 +1042,8 @@ step_8() {
   if [ "$DRY" -eq 0 ]; then _n=$(awk 'END { print NR }' "$LASTOUT"); _r=$(cat "$LASTOUT"); else _n=1; _r=origin; fi
   check 'the tree has one remote' is_eq "$_n" 1 || return 0
   runcap tree-remote-url git -C "$TREE" remote get-url "$_r"
-  if [ "$DRY" -eq 0 ]; then _u=$(cat "$LASTOUT"); else _u=$MIRROR; fi
-  check "the tree's only remote is the mirror" is_eq "${_u#file://}" "$MIRROR" || return 0
+  if [ "$DRY" -eq 0 ]; then _u=$(cat "$LASTOUT"); else _u=$(mirror_inside "$PROJECT"); fi
+  check "the tree's only remote is the mirror's place inside the sandbox ($(mirror_inside "$PROJECT"))" remote_is_mirror "$_u" "$PROJECT" || return 0
   if [ "$PASS" = A ]; then
     for _f in 1.json 1.txt 2.json 2.txt; do
       check "the replay screen $_f is in the lead's home" test -f "$REPLAY/$_f" || return 0
