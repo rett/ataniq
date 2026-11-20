@@ -5100,6 +5100,14 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file <the ticket file step 14 prints>",
 		"BEFORE you press Enter at step 10",
 		"The run never starts the daemon or the console for you.",
+		// The daemon stays in front of its terminal until Ctrl-C at step 26,
+		// so the console and the second console of step 14 have terminals of
+		// their own.
+		"1. In a second terminal (T2), the daemon",
+		"It stays in front of that terminal until you stop it with",
+		"2. At step 14 (and again in the second epoch), in a third terminal (T3), the console",
+		"more in a fourth terminal (T4), where the integrate command of step 20 goes too:",
+		"3. In this terminal (T1), the run",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the output does not hold %q:\n%s", want, out)
@@ -5573,9 +5581,26 @@ func TestCanaryRunKitChecklistTemplate(t *testing.T) {
 	for name := range used {
 		t.Errorf("the template holds @%s@, which prepare does not fill", name)
 	}
+	// The daemon runs in the foreground of its terminal until Ctrl-C at step
+	// 26: the page names a terminal for each of the four things the owner runs,
+	// and sends neither the console nor the intake to the daemon's.
+	for _, want := range []string{
+		"Four terminals: T1 runs\nthe script, T2 the daemon (it stays in front until Ctrl-C at step 26), T3 the\nconsole, T4 the second console of step 14 and the integrate command of 20.",
+		"14   T3: attach the console",
+		"In T4 run the same command once\n      more",
+		"20   T4: the integrate command",
+		"(in T2)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the template does not say %q", want)
+		}
+	}
+	if strings.Contains(text, "T2 is yours") || strings.Contains(text, "T2: ") {
+		t.Error("the template sends the owner to the daemon's terminal for something else")
+	}
 	// What the owner is told about the two orders that failed an attempt.
 	for _, want := range []string{
-		"Start the daemon in the second terminal BEFORE pressing Enter at step\n      10, wait for the listening line",
+		"Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the\n      listening line",
 		"At step 26 stop the daemon with Ctrl-C first",
 		"Enter alone\nis refused",
 		"answers nothing for you and starts nothing",
@@ -5625,7 +5650,7 @@ func TestCanaryRunKitPrepareWritesTheChecklist(t *testing.T) {
 		r + "/answers.hint: Enter takes it",
 		"build/qualify-mirror --config " + r + "/mirror-qual/config.json \\\n        --out " + r + "/mirror-qual/report.json\n",
 		"in " + root(t) + ":\n",
-		"Start the daemon in the second terminal BEFORE pressing Enter at step\n      10, wait for the listening line",
+		"Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the\n      listening line",
 		"At step 26 stop the daemon with Ctrl-C first",
 	} {
 		if !strings.Contains(text, want) {

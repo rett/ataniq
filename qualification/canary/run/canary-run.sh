@@ -1954,7 +1954,8 @@ step_10() {
   step_head 10 'The owner starts the daemon' \
     "the owner starts the daemon with --canary by hand, in his own terminal; the script then asks its status" \
     'it listens; status shows no role; hello lists the canary operations' 'G4'
-  out '   Owner: in your own terminal, run:'
+  out '   Owner: in a second terminal (T2), run it; it stays in front of that terminal until you stop it'
+  out '   with Ctrl-C at step 26, so the console and the intake need terminals of their own:'
   out "     $BIN/ataniqd run --canary $CONFIG"
   out '   Start it first and wait for its listening line, then press Enter here. If it is not up yet'
   out '   when you press Enter, this step asks for it every second for up to a minute.'
@@ -2158,7 +2159,7 @@ step_14() {
   runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer
   check 'the ticket was minted' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then _tf=$HRUN/ticket; else _tf=$(fld "$LASTOUT" ticket_file); fi
-  out '   Owner: in your own terminal, attach the console as the writer:'
+  out '   Owner: in a third terminal (T3), attach the console as the writer:'
   out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
   if [ "$DRY" -eq 1 ]; then
     dry "watch the ticket file $_tf every second for up to 60 s: the console empties it when it takes the ticket (no content is read); say what was seen and go on to the question either way"
@@ -2173,7 +2174,7 @@ step_14() {
     fi
   fi
   affirm 'Owner: the pane shows the agent' yes || return 0
-  out '   Owner: in a third terminal, run the same command once more: the ticket is used.'
+  out '   Owner: in a fourth terminal (T4), run the same command once more: the ticket is used.'
   affirm 'Owner: the used ticket was refused' yes || return 0
   result ok
   done_step

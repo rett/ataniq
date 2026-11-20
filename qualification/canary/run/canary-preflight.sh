@@ -17,10 +17,11 @@
 # It prints one line per check, "ok:" or "FIX:" with the exact command to type
 # on the same line (a check it cannot make for want of an earlier one is a
 # "skip:" line, which the fix before it clears), and ends with "READY" or
-# "NOT READY (n to fix)". When ready it prints the three things the owner types: the daemon command for
-# the second terminal, the attach command with the placeholder the run prints,
-# and the run command. The exit status is 0 when ready, 1 when not, 2 for a
-# wrong command line.
+# "NOT READY (n to fix)". When ready it prints the three things the owner
+# types and the terminal of each: the daemon command (T2, which it keeps until
+# Ctrl-C at step 26), the attach command with the placeholder the run prints
+# (T3; T4 for the second console of step 14) and the run command (T1). The
+# exit status is 0 when ready, 1 when not, 2 for a wrong command line.
 #
 # For the tests only, three variables name the places it looks at on the host:
 # CANARY_PREFLIGHT_PROC (the folder of the processes, /proc),
@@ -447,13 +448,15 @@ cc_say "READY"
 cc_say
 cc_say 'What you type, and where. The run never starts the daemon or the console for you.'
 cc_say
-cc_say '1. In a second terminal, the daemon, started BEFORE you press Enter at step 10'
-cc_say '   (wait for its listening line; stop it with Ctrl-C at step 26, before that step'"'"'s Enter):'
+cc_say '1. In a second terminal (T2), the daemon, started BEFORE you press Enter at step 10'
+cc_say '   (wait for its listening line). It stays in front of that terminal until you stop it with'
+cc_say '   Ctrl-C at step 26, before that step'"'"'s Enter, so T2 is busy from here on:'
 cc_say "     $BIN/ataniqd run --canary $CONFIG"
 cc_say
-cc_say '2. At step 14 (and again in the second epoch), in the second terminal, the console'
-cc_say '   attach, with the ticket file the run prints there:'
+cc_say '2. At step 14 (and again in the second epoch), in a third terminal (T3), the console'
+cc_say '   attach, with the ticket file the run prints there. Step 14 asks for the same command once'
+cc_say '   more in a fourth terminal (T4), where the integrate command of step 20 goes too:'
 cc_say "     $BIN/ataniq-console --attach $HOLDER_RUN --ticket-file <the ticket file step 14 prints>"
 cc_say
-cc_say '3. In this terminal, the run (read its dry run first, add --dry):'
+cc_say '3. In this terminal (T1), the run (read its dry run first, add --dry):'
 cc_say "     sh $_d/canary-run.sh --pass A --config $CONFIG --evidence $EVIDENCE"

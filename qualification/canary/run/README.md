@@ -231,8 +231,10 @@ standard input that is not a terminal.
 - **`canary-preflight.sh`** (below) says what to fix before the run, and what
   you type when all is well.
 - **`CHECKLIST.txt`** is written by `canary-prepare.sh` into the root: one
-  page with the real paths, what to start and in which terminal, and what each
-  prompt of pass A expects you to type.
+  page with the real paths, what to start and in which of the four terminals
+  (T1 the script, T2 the daemon, T3 the console, T4 the second console of step
+  14 and the integrate command of step 20), and what each prompt of pass A
+  expects you to type.
 
 ## Before a pass
 
@@ -352,9 +354,13 @@ wrong command line. The checks:
 | `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
-When ready it prints the three things you type: the daemon command for the
-second terminal, the attach command (the ticket file is the placeholder the run
-prints at step 14) and the run command, with the real paths.
+When ready it prints the three things you type, with the real paths and the
+terminal of each: the daemon command in T2, the attach command in T3 (the ticket
+file is the placeholder the run prints at step 14) and the run command in T1.
+Four terminals are needed, because the daemon stays in front of its terminal
+until you stop it with Ctrl-C at step 26: T1 the script, T2 the daemon, T3 the
+console, and T4 for the second console of step 14 and the integrate command of
+step 20.
 
 ### Reset
 
