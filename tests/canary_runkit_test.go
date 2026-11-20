@@ -4154,6 +4154,75 @@ func TestCanaryRunKitStep26AsksAgainWhileARootExists(t *testing.T) {
 	}
 }
 
+// Step 26 when no key can be read (Ctrl-D, or the terminal hangs up): the
+// clean-up chain's wait for a key records nothing then, so the step looks once
+// itself. A daemon that still answers, or a root that still exists, is a
+// failure with the reason; with nothing left there is nothing to record.
+func TestCanaryRunKitStep26EndOfInputStillFails(t *testing.T) {
+	t.Run("a daemon still answers", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "down", 0)
+		out, code := k.run(t, 1, "", "stop-daemon")
+		if code != 0 || canaryLastWord(out) != "failed" {
+			t.Fatalf("exit status %d:\n%s", code, out)
+		}
+		if !strings.Contains(out, "FAILED at step 26: a daemon still answers at ") || !strings.Contains(out, "no key could be read") {
+			t.Errorf("the step does not fail when the input ends and a daemon answers:\n%s", out)
+		}
+		if got := k.calls(t); got != 1 {
+			t.Errorf("the daemon was asked %d times, want 1 (one look, no polling)", got)
+		}
+	})
+	t.Run("a daemon still answers after the first Enter", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "down", 0)
+		out, code := k.run(t, 1, "\n", "stop-daemon")
+		if code != 0 || canaryLastWord(out) != "failed" || !strings.Contains(out, "FAILED at step 26: a daemon still answers at ") || !strings.Contains(out, "no key could be read") {
+			t.Errorf("exit status %d:\n%s", code, out)
+		}
+	})
+	t.Run("no daemon answers", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "up", 0)
+		out, code := k.run(t, 1, "", "stop-daemon")
+		if code != 0 || strings.Contains(out, "FAILED") {
+			t.Errorf("exit status %d, and a step with nothing left to find has failed:\n%s", code, out)
+		}
+	})
+	t.Run("a root still exists", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "down", 0)
+		state, runtime := filepath.Join(k.dir, "state"), filepath.Join(k.dir, "runtime")
+		if err := os.Mkdir(state, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		out, code := k.run(t, 1, "", "roots-deleted", state, runtime)
+		if code != 0 || canaryLastWord(out) != "failed" {
+			t.Fatalf("exit status %d:\n%s", code, out)
+		}
+		if !strings.Contains(out, "FAILED at step 26: a root of the canary still exists; no key could be read") {
+			t.Errorf("the step does not fail when the input ends and a root exists:\n%s", out)
+		}
+		if _, err := os.Stat(state); err != nil {
+			t.Error("the script deleted a root")
+		}
+	})
+	t.Run("no root exists", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "down", 0)
+		out, code := k.run(t, 1, "", "roots-deleted", filepath.Join(k.dir, "state"), filepath.Join(k.dir, "runtime"))
+		if code != 0 || strings.Contains(out, "FAILED") {
+			t.Errorf("exit status %d:\n%s", code, out)
+		}
+	})
+	t.Run("a dangling link is a root that exists", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "down", 0)
+		state := filepath.Join(k.dir, "state")
+		if err := os.Symlink(filepath.Join(k.dir, "nowhere"), state); err != nil {
+			t.Fatal(err)
+		}
+		out, _ := k.run(t, 1, "", "roots-deleted", state, filepath.Join(k.dir, "runtime"))
+		if !strings.Contains(out, "FAILED at step 26: a root of the canary still exists") {
+			t.Errorf("a dangling link is not counted:\n%s", out)
+		}
+	})
+}
+
 // The other steps that wait for the owner's own act watch for it: the dry run
 // says how, and the real branch calls the polling function.
 func TestCanaryRunKitStepsWatchWhatTheOwnerDoes(t *testing.T) {

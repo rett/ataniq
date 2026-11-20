@@ -759,6 +759,20 @@ ticket_taken() { [ ! -s "$1" ]; }
 # root_present reports whether the path $1 is there, a dangling link too.
 root_present() { [ -e "$1" ] || [ -L "$1" ]; }
 
+# daemon_no_key and roots_no_key are what step 26 does when no key can be read
+# (the input ended: Ctrl-D, or the terminal hung up). In the clean-up chain
+# wait_key then records nothing, so the step looks once itself and fails when
+# a daemon still answers or a root still exists: a missing key must not hide
+# either. The caller returns after it, as it does after any failure.
+daemon_no_key() {
+  daemon_gone || fail "a daemon still answers at $SOCK (exit $DAEMON_RC, want 20); no key could be read"
+}
+roots_no_key() {
+  if root_present "$STATE" || root_present "$RUNTIME"; then
+    fail 'a root of the canary still exists; no key could be read'
+  fi
+}
+
 # daemon_stopped_by_owner is the daemon's half of step 26. The owner stops the
 # daemon himself, in its terminal, and presses Enter. The script then asks the
 # daemon's status every second for up to a minute (a daemon takes a moment to
@@ -767,7 +781,10 @@ root_present() { [ -e "$1" ] || [ -L "$1" ]; }
 # more times, and records each ask. It fails only after that.
 daemon_stopped_by_owner() {
   _again=0
-  wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.' || return 1
+  if ! wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.'; then
+    daemon_no_key
+    return 1
+  fi
   while :; do
     if poll_until 'the daemon to stop' daemon_gone; then
       note "the daemon is gone (round $((_again + 1)))"
@@ -780,7 +797,10 @@ daemon_stopped_by_owner() {
     fi
     _again=$((_again + 1))
     out '   the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter'
-    wait_key 'Owner: press Enter after you stopped the daemon.' || return 1
+    if ! wait_key 'Owner: press Enter after you stopped the daemon.'; then
+      daemon_no_key
+      return 1
+    fi
   done
 }
 
@@ -789,7 +809,10 @@ daemon_stopped_by_owner() {
 # he is asked again, up to ASK_AGAIN more times, each ask recorded.
 roots_deleted_by_owner() {
   _again=0
-  wait_key 'Owner: press Enter when both are deleted.' || return 1
+  if ! wait_key 'Owner: press Enter when both are deleted.'; then
+    roots_no_key
+    return 1
+  fi
   while root_present "$STATE" || root_present "$RUNTIME"; do
     for _rt in "$STATE" "$RUNTIME"; do
       if root_present "$_rt"; then out "   still there: $_rt"; fi
@@ -801,7 +824,10 @@ roots_deleted_by_owner() {
     fi
     _again=$((_again + 1))
     out '   a root of the canary still exists: delete it as shown above, then press Enter'
-    wait_key 'Owner: press Enter when both are deleted.' || return 1
+    if ! wait_key 'Owner: press Enter when both are deleted.'; then
+      roots_no_key
+      return 1
+    fi
   done
 }
 
