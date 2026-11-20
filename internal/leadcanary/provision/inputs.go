@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -119,7 +120,7 @@ func checkInputs(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 	if err := checkTrial(cfg, in); err != nil {
 		return err
 	}
-	return checkMarkerInSettings(in)
+	return checkMarkerInSettings(cfg, in)
 }
 
 // The names of the holder's two sockets in its runtime folder, as the serving
@@ -177,15 +178,29 @@ func checkTrial(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 // managed-settings file the inputs name holds the marker text: assertion 8
 // searches the file inside for it, and the file bound there is this one. The
 // refusals name the field and never the file's path or content.
-func checkMarkerInSettings(in sandboxstart.Inputs) error {
+//
+// The file the inputs name is the lead's provisioned copy, which exists only
+// once `ataniq-canary provision` has run. While its folder does not exist yet
+// the file it will be copied from, the config's provision.managed_settings, is
+// read instead: provisioning copies it unchanged, and its hash is the inputs'
+// managed_settings_sha256, so the two cannot differ unseen. Once the folder is
+// there the provisioned copy is read, and a copy that is missing, not regular
+// or without the marker is refused as before.
+func checkMarkerInSettings(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 	if in.Runtime != string(profile.Claude) {
 		return nil
 	}
 	bad := func(why string) error {
 		return fmt.Errorf("%w: sources.managed_settings %s", ErrInputs, why)
 	}
-	dir, name := filepath.Split(in.Sources.ManagedSettings)
+	file := in.Sources.ManagedSettings
+	dir, name := filepath.Split(file)
 	root, err := safefile.OpenRootNoLinks(filepath.Clean(dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		// Not provisioned yet: read the file provisioning copies.
+		dir, name = filepath.Split(cfg.Provision.ManagedSettings)
+		root, err = safefile.OpenRootNoLinks(filepath.Clean(dir))
+	}
 	if err != nil {
 		return bad("cannot be read: its folder cannot be opened")
 	}

@@ -223,6 +223,78 @@ func TestCheckInputsRefusesASettingsFileThatCannotBeRead(t *testing.T) {
 	}
 }
 
+// Before provisioning the lead's copy of the managed settings is not there
+// and neither is its folder: the check reads the file the config's
+// provision.managed_settings names, which provisioning copies. After
+// provisioning it reads the provisioned copy. A missing marker is refused in
+// both cases.
+func TestCheckInputsReadsTheConfigsSettingsBeforeProvisioningAndTheCopyAfter(t *testing.T) {
+	// removeCopyFolder makes the state of a root that is not provisioned: no
+	// folder of the lead.
+	removeCopyFolder := func(t *testing.T, in sandboxstart.Inputs) {
+		t.Helper()
+		if err := os.RemoveAll(filepath.Dir(in.Sources.ManagedSettings)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("before provisioning, the config's file holds the marker", func(t *testing.T) {
+		w := provisiontest.New(t)
+		in := goodInputs(t, w)
+		removeCopyFolder(t, in)
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, provisiontest.Marker)
+		if err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600)); err != nil {
+			t.Fatalf("error %v: the config's own file holds the marker", err)
+		}
+	})
+	t.Run("before provisioning, the config's file lacks the marker", func(t *testing.T) {
+		w := provisiontest.New(t)
+		in := goodInputs(t, w)
+		removeCopyFolder(t, in)
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, "a-different-text")
+		err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600))
+		if !errors.Is(err, ErrInputs) || !contains(err.Error(), "sources.managed_marker") {
+			t.Fatalf("error %v: want a refusal that names the marker", err)
+		}
+		for _, leak := range []string{provisiontest.Marker, "a-different-text", w.Cfg.Provision.ManagedSettings, w.Dir} {
+			if contains(err.Error(), leak) {
+				t.Errorf("the refusal holds %q: %v", leak, err)
+			}
+		}
+	})
+	t.Run("before provisioning, the config's file is not there", func(t *testing.T) {
+		w := provisiontest.New(t)
+		in := goodInputs(t, w)
+		removeCopyFolder(t, in)
+		if err := os.Remove(w.Cfg.Provision.ManagedSettings); err != nil {
+			t.Fatal(err)
+		}
+		err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600))
+		if !errors.Is(err, ErrInputs) || !contains(err.Error(), "sources.managed_settings") {
+			t.Fatalf("error %v: want a refusal that names sources.managed_settings", err)
+		}
+	})
+	t.Run("after provisioning, the copy holds the marker", func(t *testing.T) {
+		w := provisiontest.New(t)
+		in := goodInputs(t, w)
+		// The config's file lacks the marker: only the copy is read now.
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, "a-different-text")
+		if err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600)); err != nil {
+			t.Fatalf("error %v: the copy holds the marker", err)
+		}
+	})
+	t.Run("after provisioning, the copy lacks the marker", func(t *testing.T) {
+		w := provisiontest.New(t)
+		in := goodInputs(t, w)
+		// The config's file holds it: it must not be read in the copy's place.
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, provisiontest.Marker)
+		provisiontest.WriteManagedSettings(t, in.Sources.ManagedSettings, "a-different-text")
+		err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600))
+		if !errors.Is(err, ErrInputs) || !contains(err.Error(), "sources.managed_marker") {
+			t.Fatalf("error %v: want a refusal that names the marker", err)
+		}
+	})
+}
+
 // Another runtime has no guard hook to name: no marker and no file to search.
 func TestCheckInputsNeedsNoMarkerForAnotherRuntime(t *testing.T) {
 	w := provisiontest.New(t)

@@ -160,7 +160,7 @@ The owner's tool, run by hand. The daemon never runs it.
 | `provision --config CONFIG` | Makes the folders of the lead (below), clones the throwaway repository from the mirror into the tree, copies the managed settings, the guard hook and the replay screens, and writes the marker last. It refuses the default roots, a root that already carries the marker and a lead that has started. |
 | `replay-on --config CONFIG` | Writes the replay switch file and nothing else. It is the only subcommand allowed after a first start. |
 | `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
-| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker` (the holder refuses it without, at that step), and the managed-settings file that `sources.managed_settings` names must hold that text (the holder does not read the file then: assertion 8 finds a file without it inside, after the launch, and this check refuses it earlier). It changes nothing. |
+| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker` (the holder refuses it without, at that step), and the managed-settings file that `sources.managed_settings` names must hold that text (before provisioning that file does not exist yet, and the file `provision.managed_settings` names, which provisioning copies, is read instead; once provisioned, the copy is read) (the holder does not read the file then: assertion 8 finds a file without it inside, after the launch, and this check refuses it earlier). It changes nothing. |
 | `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
@@ -338,7 +338,7 @@ with the sources from `ataniq-canary show`, and checks it with
   "executables": {
     "pasta": "/usr/bin/pasta",
     "bwrap": "/usr/bin/bwrap",
-    "probe": "/srv/checkout/build/canary/ataniq-probe"
+    "probe": "/srv/canary/bin/ataniq-probe"
   },
   "sources": {
     "agent_install": "/srv/canary/agent-install",
@@ -353,7 +353,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "assignment_dir": "/srv/canary/state/leads/throwaway-one-lead/assignment",
     "projection_dir": "/srv/canary/state/leads/throwaway-one-lead/projection"
   },
-  "never_mounted": ["/srv/sample/checkout", "/srv/sample/dot-ssh"],
+  "never_mounted": ["/srv/checkout", "/srv/sample/dot-ssh"],
   "provider_host": "provider.example.invalid",
   "terminal": {"term": "xterm-256color"},
   "time_limit_seconds": 60
