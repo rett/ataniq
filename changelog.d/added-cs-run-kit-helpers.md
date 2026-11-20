@@ -18,7 +18,7 @@
   unless the mirror lists the upstream branch, `holder.json` says the sandbox
   started with the pinned profile version and digest, and the upstream branch
   is at the lead's commit. When it cannot read a fact (no `qargi`, a list it
-  does not know) it asks the lead as before and says so in the log. The
-  `--self-test` entry gains `open-runs`, `list-scan`, `loaded-units`,
-  `tracked-changes`, `unit-facts`, `plan-facts`, `holder-start`, `upstream-id`
-  and `lead-id`.
+  does not know, an open run whose `repo.path` cannot be read) it asks the
+  lead as before and says so in the log. The `--self-test` entry gains
+  `open-runs`, `unread-runs`, `list-scan`, `loaded-units`, `tracked-changes`,
+  `unit-facts`, `plan-facts`, `holder-start`, `upstream-id` and `lead-id`.

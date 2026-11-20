@@ -55,7 +55,7 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
-    '         open-runs LIST REPO | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
+    '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
     '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
     '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
     '                      what steps 1, 2, 3, 8, 12 and 20 read themselves in place of a word' >&2
@@ -575,22 +575,43 @@ repo_roots() {
   esac
 }
 
-# open_runs LIST REPO prints the folder of each run that "qargi local list"
-# (the text in the file LIST) shows as open and whose repo.path is in the same
-# repository as REPO: the main work tree of each side is compared, as resolved
-# paths, so a run prepared from a linked work tree is seen from the main
-# checkout and from another work tree. A run is open unless it is applied (or
+# open_rows LIST prints the folder of each run that "qargi local list" (the
+# text in the file LIST) shows as open: a run is open unless it is applied (or
 # closed) and, when applied, merged. Residue lines and the rows of a run whose
 # folder is gone ("directory gone") are not rows of an open run it can read;
 # list_gone counts the second kind, and the caller says so.
+open_rows() {
+  awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1"
+}
+
+# open_runs LIST REPO prints the folder of each open run (open_rows) whose
+# repo.path is in the same repository as REPO: the main work tree of each side
+# is compared, as resolved paths, so a run prepared from a linked work tree is
+# seen from the main checkout and from another work tree. An open run whose
+# repo.path cannot be read is not printed here: open_unread names it, and the
+# caller does not take the list as proof.
 open_runs() {
   _roots=$(repo_roots "$2" | tail -n 1)
   [ -n "$_roots" ] || return 0
-  awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1" |
+  open_rows "$1" |
     while IFS= read -r _r; do
       _rp=$(repo_roots "$(cat "$_r/repo.path" 2>/dev/null || :)" | tail -n 1)
       [ -n "$_rp" ] || continue
       if [ "$_rp" = "$_roots" ]; then printf '%s\n' "$_r"; fi
+    done
+}
+
+# open_unread LIST prints the folder of each open run (open_rows) whose
+# repo.path cannot be read: the file is missing, unreadable or empty. Whose
+# repository such a run belongs to is not known, so the check of the open runs
+# does not pass on this list.
+open_unread() {
+  open_rows "$1" |
+    while IFS= read -r _r; do
+      _rp=$(cat "$_r/repo.path" 2>/dev/null || :)
+      case $_rp in
+        '') printf '%s\n' "$_r" ;;
+      esac
     done
 }
 
@@ -822,6 +843,11 @@ self_test() {
       # LIST REPO: the open runs of REPO in the text of qargi local list.
       [ "$#" -eq 2 ] || usage
       open_runs "$1" "$2"
+      ;;
+    unread-runs)
+      # LIST: the open runs of qargi local list whose repo.path cannot be read.
+      [ "$#" -eq 1 ] || usage
+      open_unread "$1"
       ;;
     list-scan)
       # LIST: how list_scan reads the text of qargi local list.
@@ -1069,7 +1095,7 @@ fi
 # qargi, or with a list it cannot read, it asks the lead as before and says so.
 no_open_runs() {
   if [ "$DRY" -eq 1 ]; then
-    dry "check: no Qargi run of this project is open (qargi local list, the rows whose repo.path is $REPO that are not applied and merged); without qargi on PATH, or when the list cannot be read, ask the lead as before and say so in the log"
+    dry "check: no Qargi run of this project is open (qargi local list, the rows whose repo.path is $REPO that are not applied and merged); without qargi on PATH, when the list cannot be read, or when an open run has no readable repo.path, ask the lead as before and say so in the log"
     return 0
   fi
   if ! command -v qargi >/dev/null 2>&1; then
@@ -1096,6 +1122,14 @@ no_open_runs() {
     note "open runs of this project: $(printf '%s' "$_open" | tr '\n' ' ')"
     fail 'a Qargi run of this project is open (see above): verify and close it first'
     return 1
+  fi
+  _unread=$(open_unread "$LASTOUT")
+  if [ -n "$_unread" ]; then
+    printf '%s\n' "$_unread" | sed 's/^/   open run without a readable repo.path: /'
+    out '   the repository of the run(s) above is not known: the lead is asked'
+    note "open runs of qargi local list whose repo.path cannot be read: $(printf '%s' "$_unread" | tr '\n' ' '): the machine check of the open runs is not possible, the lead is asked"
+    affirm 'Lead: no Qargi run is open' yes || return 1
+    return 0
   fi
   out '   ok: no Qargi run of this project is open'
   note "ok: no Qargi run of $REPO is open (qargi local list, $LASTOUT)"

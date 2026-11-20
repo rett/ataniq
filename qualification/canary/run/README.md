@@ -135,8 +135,9 @@ with the reason when the fact is not true; the lead types nothing for it:
   directory is gone is counted and logged but not treated as open, because
   its `repo.path` cannot be read; without `qargi` on `PATH`,
   or with a list that is not what `qargi local list` prints (another header, a
-  line of another kind), the script says so in the log and asks the lead for
-  `yes` as before), and no `ataniq-*` unit is loaded (slices are left out). A
+  line of another kind), or when an open run has a `repo.path` that is
+  missing, unreadable or empty (its repository is not known), the script says
+  so in the log and asks the lead for `yes` as before), and no `ataniq-*` unit is loaded (slices are left out). A
   `git status` or `systemctl` that fails fails the step; it does not read as
   empty.
 - Step 2: the report is of `leadunit-qualify` with the verdict `pass`, a `pass`
@@ -550,7 +551,7 @@ test entry:
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
 | `--self-test has-line FILE PATH=VALUE...` | `yes` when one line of `FILE`, which holds one JSON object in each line, holds every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it, and `no` otherwise; a line that is not a whole JSON object is passed over. Step 12 finds the lines of its epoch with it. |
-| `--self-test open-runs LIST REPO`, `list-scan LIST`, `loaded-units FILE`, `tracked-changes FILE`, `unit-facts FIELDS`, `plan-facts FIELDS`, `holder-start FIELDS VERSION DIGEST`, `upstream-id FILE NAME`, `lead-id FILE ROLE BRANCH` | What steps 1, 2, 3, 8, 12 and 20 read in place of the lead's word: the open runs of the project in a `qargi local list` text, the loaded units without slices, the lines of `git status --porcelain` that are not untracked, `ok ...` or `bad ...` for a fact report or `holder.json`, and the commit a `branches` text names for the upstream branch and for the lead's branch. |
+| `--self-test open-runs LIST REPO`, `unread-runs LIST`, `list-scan LIST`, `loaded-units FILE`, `tracked-changes FILE`, `unit-facts FIELDS`, `plan-facts FIELDS`, `holder-start FIELDS VERSION DIGEST`, `upstream-id FILE NAME`, `lead-id FILE ROLE BRANCH` | What steps 1, 2, 3, 8, 12 and 20 read in place of the lead's word: the open runs of the project in a `qargi local list` text and the open runs whose `repo.path` cannot be read, the loaded units without slices, the lines of `git status --porcelain` that are not untracked, `ok ...` or `bad ...` for a fact report or `holder.json`, and the commit a `branches` text names for the upstream branch and for the lead's branch. |
 | `canary-prepare.sh --self-test pasta-plan PATH` | `use PATH` for a regular executable file, `copy SOURCE` for a link (SOURCE is the regular file it leads to), or a refusal. |
 | `canary-reset.sh --self-test typed-word WORD` | `go` when WORD is exactly `reset`, and `stop` otherwise. The prompt of the reset decides with it. |
 | `canary-reset.sh --self-test procs-of ROOT PROCDIR` | The numbers of the processes of `PROCDIR` (the shape of `/proc`) that are an `ataniqd` or an `ataniq-holder` (the program is the whole of the first argument, so a path with a space counts) with a path of `ROOT` in their command line (as written, or resolved) or `ROOT` or a folder below it as their current folder; one of the user whose current folder cannot be read is listed too. A `PROCDIR` with no process folder is a refusal (exit status 1). |
