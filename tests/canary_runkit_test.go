@@ -5661,3 +5661,53 @@ func TestCanaryRunKitChecklistCoversTheOwnerPrompts(t *testing.T) {
 		}
 	}
 }
+
+// The guide names what the kit offers: every test entry of the run script and
+// of the helpers, the variables that are for the tests only, the new commands
+// and files, and the section "Easier on the owner".
+func TestCanaryRunKitReadmeDocumentsTheEntriesAndTheCommands(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), "qualification/canary/run/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(data)
+	entry := regexp.MustCompile(`(?m)^    ([a-z][a-z0-9-]*)\)$`)
+	body := canaryFuncs(t, canaryScriptText(t))["self_test"]
+	names := entry.FindAllStringSubmatch(body, -1)
+	if len(names) < 20 {
+		t.Fatalf("found %d test entries in the script: the pattern is stale", len(names))
+	}
+	for _, m := range names {
+		if !strings.Contains(readme, "`--self-test "+m[1]) && !strings.Contains(readme, "`"+m[1]+"`") && !strings.Contains(readme, "`"+m[1]+" ") &&
+			!strings.Contains(readme, ", "+"`--self-test "+m[1]) && !strings.Contains(readme, "| "+m[1]) && !strings.Contains(readme, "`, `"+m[1]) {
+			t.Errorf("the README does not document the test entry %s", m[1])
+		}
+	}
+	for _, want := range []string{
+		"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_PREFLIGHT_PROC", "CANARY_PREFLIGHT_TIOCSTI", "CANARY_PREFLIGHT_ATANIQ",
+		"## Easier on the owner", "canary-preflight.sh", "answers.hint", "CHECKLIST.txt", "--template-review PATH", "--unit-report PATH", "--plan-summary PATH",
+		"READY", "NOT READY (n to fix)", "for the tests only",
+	} {
+		if !strings.Contains(readme, want) {
+			t.Errorf("the README does not mention %q", want)
+		}
+	}
+	// The variables the scripts read are the ones the README names.
+	for _, rel := range []string{canaryRunScript, canaryPreflightScript} {
+		text, err := os.ReadFile(filepath.Join(root(t), rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range regexp.MustCompile(`\$\{(CANARY_[A-Z_]+):-`).FindAllStringSubmatch(string(text), -1) {
+			if !strings.Contains(readme, m[1]) {
+				t.Errorf("%s reads %s and the README does not name it", rel, m[1])
+			}
+		}
+	}
+	// The README's own commands exist.
+	for _, name := range []string{"canary-preflight.sh", "canary-prepare.sh", "canary-reset.sh", "canary-run.sh", "canary-lib.sh", "checklist.txt.in"} {
+		if _, err := os.Stat(filepath.Join(root(t), "qualification/canary/run", name)); err != nil {
+			t.Errorf("the kit has no %s", name)
+		}
+	}
+}
