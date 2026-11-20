@@ -314,19 +314,13 @@ func (a *attempt) cleanup() error { return a.closeAll() }
 // The step bodies, in the order of the steps.
 
 func (a *attempt) validate() error {
-	if err := a.in.checkFields(); err != nil {
-		return err
-	}
 	a.uid, a.gid = a.sys.IDs()
 	a.runtimeDir = RuntimeFolder(a.in.RuntimeRoot, a.in.LayoutRole)
 	a.reportDir = ReportFolder(a.in.RuntimeRoot, a.in.LayoutRole)
 	a.fifo = ReportFIFO(a.in.RuntimeRoot, a.in.LayoutRole)
 	a.boundDir = boundFolder(a.in.RuntimeRoot, a.in.LayoutRole)
-	pin, err := a.in.profileInputs(a.uid, a.gid)
+	pin, err := a.in.checkedProfileInputs(a.uid, a.gid)
 	if err != nil {
-		return err
-	}
-	if err := pin.Validate(); err != nil {
 		return err
 	}
 	a.pin = pin
