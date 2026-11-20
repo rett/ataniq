@@ -16,7 +16,43 @@
 # only computes: no step runs, nothing is started or written, and nothing is
 # read but the file given to pass-a-record and has-line and, by wait-key,
 # standard input; has-line runs the helper ataniq-canary fields of build/canary
-# on each line of its file, and no other program.
+# on each line of its file, and wait-daemon and stop-daemon run the ataniqd
+# status of build/canary, review-verdict, mirror-verdict and ask-file run the
+# ataniq-canary fields helper of build/canary on the file they are given;
+# stop-daemon, roots-deleted, ask-path, ask-file and affirm-word read keys from
+# standard input, and ask-path and ask-file read the hint file they are given;
+# no other program is run. count-lines runs the helper ataniq-canary fields of
+# build/canary on each line of the file it is given, as has-line does, and
+# journal-save runs journalctl (the one on PATH, a stub in the tests) and writes
+# its lines to EVIDENCE/out, a folder the test makes.
+#
+# At a path prompt (the two fact reports, the template's review, the report of
+# qualify-mirror) the script shows "(Enter for: PATH)" when answers.hint beside
+# the config names a path for it, and takes an empty line as that path; a typed
+# path wins. The file is still checked and recorded, and the log says whether
+# the answer was a hint or typed. No hint is ever read for a word (yes, read,
+# integrate, confirmed, reset or an attestation): those are only typed.
+#
+# At those path prompts the file is also looked at before anything is recorded:
+# the two fact reports as before (already parsed), the template's review must
+# not be a qualify-mirror report and must hold the template's hash or the word
+# verdict, and the report of qualify-mirror must be JSON whose template.sha256
+# is the hash step 4 just computed. A refused file is said, with the reason,
+# and the question is asked again, up to 3 more times, before the step fails.
+#
+# A step that waits for something the owner starts or stops in another
+# terminal (the daemon at step 10 and step 26, the console's ticket at step 14,
+# the listeners at steps 6 and 24) asks for it again every second for up to 60
+# seconds instead of failing at once. Each ask of the daemon's status is cut
+# off by timeout(1) after 5 seconds (a socket that accepts and never answers
+# would otherwise hold each ask for about 10 seconds, the binary's own limit),
+# and the wait as a whole ends after the 60 seconds plus one such ask, so the
+# longest of these waits is about 65 seconds (step 12's wait for the holder's
+# record asks the unit, not the daemon, 1.5 times as often: about 90 seconds). The three variables CANARY_RUN_WAIT_TRIES,
+# CANARY_RUN_WAIT_INTERVAL and CANARY_RUN_STATUS_TIMEOUT change that for the
+# test entry --self-test only: a real run (and --dry) ignores them, so that
+# nothing in the environment can shorten what the script waits for. The script
+# still answers nothing and starts nothing: it only watches.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
 # B a failure from step 6 on runs steps 22, 24, 25 and 26, and 21 and 23 as
@@ -55,6 +91,20 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
+    '         review-verdict FILE HASH | mirror-verdict FILE HASH' \
+    '                      what step 4 makes of a file given as the review or the report (build/canary helper)' \
+    '         ask-file HINTFILE KEY review|mirror HASH' \
+    '                      a path prompt of step 4 with its refusals and asking again (paths from standard input)' \
+    '         ask-path HINTFILE KEY | affirm-word HINTFILE WORD' \
+    '                      a path prompt with its hint, and a typed word with the hint file in place' \
+    '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
+    '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
+    '         journal-save EVIDENCE START UNIT' \
+    '                      what step 22 keeps of the journal of the unit (journalctl on PATH; writes EVIDENCE/out only)' \
+    '         count-lines FILE PATH=VALUE...' \
+    '                      how many lines of FILE hold every PATH=VALUE (step 14 counts attach events)' \
+    '         ticket-taken FILE' \
+    '                      whether step 14 takes the ticket file for taken (an empty name never is)' \
     '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
     '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
     '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
@@ -90,6 +140,41 @@ if [ "$FAILAT" -ne 0 ] && [ "$DRY" -ne 1 ]; then
   exit 2
 fi
 
+# How long a step waits for what the owner starts or stops in another terminal:
+# WAIT_TRIES asks, WAIT_INTERVAL seconds apart (60 asks, one second apart), and
+# an ask of the daemon's status is cut off after STATUS_TIMEOUT seconds. The
+# three variables are read by the test entry (--self-test) only, which makes
+# the wait short; a real run keeps the values here whatever the environment
+# holds.
+WAIT_TRIES=60
+WAIT_INTERVAL=1
+STATUS_TIMEOUT=5
+if [ "$SELFTEST" -eq 1 ]; then
+  WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}
+  WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}
+  STATUS_TIMEOUT=${CANARY_RUN_STATUS_TIMEOUT:-5}
+fi
+case $WAIT_TRIES in '' | *[!0-9]*)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_TRIES is not a number' >&2
+  exit 2
+  ;;
+esac
+case $WAIT_INTERVAL in '' | *[!0-9.]* | *.*.* | .)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_INTERVAL is not a number of seconds' >&2
+  exit 2
+  ;;
+esac
+case $STATUS_TIMEOUT in '' | *[!0-9]* | 0)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_STATUS_TIMEOUT is not a number of seconds above 0' >&2
+  exit 2
+  ;;
+esac
+# After a refusal the owner is asked again this many more times: at step 26
+# (the daemon, the two roots) and, for a path whose file is refused, at the
+# path prompts of steps 2 and 4.
+ASK_AGAIN=5
+ASK_AGAIN_PATH=3
+
 # ---------------------------------------------------------------- state ---
 
 CUR=0          # the step that is running
@@ -117,7 +202,10 @@ LASTOUT=
 LASTERR=
 RC=0
 ANSWER=
+ANSWER_SRC=typed # how the last answer came: typed, or hint (a path prompt, an empty line)
+HINTS=           # the hint file next to the config, a real run only
 LINGER0=
+T_START=       # the local time of the first start of the unit: the journal is read from it
 PASSA=
 TOKEN=
 BODY=
@@ -212,21 +300,117 @@ read_answer() {
   done
 }
 
-# ask puts a question to the owner or the lead and records the answer and the
-# time. The answer is in ANSWER.
+# ask puts a question to the owner or the lead and records the answer, how it
+# came (typed, or hint) and the time. The answer is in ANSWER. The optional
+# second argument is a hint, a suggested path: only ask_path gives one. It is
+# shown as "(Enter for: PATH)" and an empty line, an Enter, takes it; a typed
+# answer always wins, and the end of the input takes nothing.
 ask() {
   ANSWER=
+  ANSWER_SRC=typed
   if [ "$DRY" -eq 1 ]; then
     dry "ask and record the answer and the time: $1"
     return 0
   fi
-  printf '   ?? %s\n   > ' "$1"
+  printf '   ?? %s\n' "$1"
+  if [ -n "${2:-}" ]; then printf '   (Enter for: %s)\n' "$2"; fi
+  printf '   > '
+  _askok=1
   if ! read_answer; then
     ANSWER=
+    _askok=0
     out ''
   fi
-  printf '%s\tstep %s\t%s\t%s\n' "$(now)" "$CUR" "$1" "$ANSWER" >>"$EV/answers.txt"
-  note "answer recorded: $1"
+  if [ "$_askok" -eq 1 ] && [ -z "$ANSWER" ] && [ -n "${2:-}" ]; then
+    ANSWER=$2
+    ANSWER_SRC=hint
+    out "   (the hint is taken: $ANSWER)"
+  fi
+  if [ -n "$EV" ]; then
+    printf '%s\tstep %s\t%s\t%s\t%s\n' "$(now)" "$CUR" "$1" "$ANSWER" "$ANSWER_SRC" >>"$EV/answers.txt"
+  fi
+  note "answer recorded ($ANSWER_SRC): $1"
+}
+
+# hint_for KEY prints the path the hint file suggests for KEY (a line
+# "KEY=/path"), or nothing: no file, no line, a path that is not absolute or
+# holds a control character. The file is a list of suggested paths and holds
+# nothing else; it is never read for a word that the owner types.
+hint_for() {
+  [ -n "$HINTS" ] && [ -f "$HINTS" ] && [ ! -L "$HINTS" ] || return 0
+  while IFS= read -r _hl || [ -n "$_hl" ]; do
+    case $_hl in
+      "$1="/*)
+        _hv=${_hl#*=}
+        case $_hv in
+          *[[:cntrl:]]*) return 0 ;;
+        esac
+        printf '%s\n' "$_hv"
+        return 0
+        ;;
+    esac
+  done <"$HINTS"
+}
+
+# ask_path asks for a path: $1 is the question, $2 the key of the hint. This
+# and no other question takes a hint, so a word (yes, read, integrate,
+# confirmed, reset) is always typed. The file is still checked and recorded by
+# the step, a hint or not.
+ask_path() {
+  if [ "$DRY" -eq 1 ]; then
+    dry "when answers.hint next to the config names a path for $2, show \"(Enter for: PATH)\" and take an empty answer as that path; a typed path always wins"
+    ask "$1"
+    return 0
+  fi
+  ask "$1" "$(hint_for "$2")"
+}
+
+# ask_file KEY QUESTION DESC VERIFIER [ARG...] asks for the path of a file as
+# ask_path does (KEY names the hint) and looks at the file before the step
+# records anything: it must be there, and VERIFIER FILE [ARG...] must print
+# "ok TEXT" for it ("bad REASON" otherwise; DESC says in a dry run what it
+# looks at). A refused file is said, with the reason, and the question is asked
+# again, up to ASK_AGAIN_PATH more times; the step fails only after that. The
+# accepted path is in ANSWER.
+ask_file() {
+  _afk=$1
+  _afq=$2
+  _afd=$3
+  _afv=$4
+  shift 4
+  if [ "$DRY" -eq 1 ]; then
+    ask_path "$_afq" "$_afk"
+    dry "check: the file is present"
+    dry "check: $_afd"
+    dry "when the file is refused, say why and ask again, up to $ASK_AGAIN_PATH more times; fail only after that"
+    return 0
+  fi
+  _afn=0
+  while :; do
+    ask_path "$_afq" "$_afk"
+    if [ -z "$ANSWER" ]; then
+      _afr='bad no path was given'
+    elif [ ! -f "$ANSWER" ]; then
+      _afr="bad the file is not present: $ANSWER"
+    else
+      _afr=$("$_afv" "$ANSWER" "$@") || _afr='bad the check of the file could not run'
+    fi
+    case $_afr in
+      'ok '*)
+        out "   ok: $ANSWER: ${_afr#ok }"
+        note "ok: $ANSWER (${ANSWER_SRC}): ${_afr#ok }"
+        return 0
+        ;;
+    esac
+    out "   refused: ${_afr#bad }"
+    note "the file was refused (ask $((_afn + 1)) of $((ASK_AGAIN_PATH + 1))): ${_afr#bad }"
+    if [ "$_afn" -ge "$ASK_AGAIN_PATH" ]; then
+      fail "the file was refused $((ASK_AGAIN_PATH + 1)) times: ${_afr#bad }"
+      return 1
+    fi
+    _afn=$((_afn + 1))
+    out "   ask again ($_afn of $ASK_AGAIN_PATH): a path you type is taken as it is"
+  done
 }
 
 # affirm asks and fails the step unless the answer is the word.
@@ -249,8 +433,14 @@ runcap() {
     RC=0
     return 0
   fi
-  LASTOUT=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.out
-  LASTERR=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.err
+  if [ -n "$EV" ]; then
+    LASTOUT=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.out
+    LASTERR=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-$_name.err
+  else
+    # The test entry keeps no evidence.
+    LASTOUT=/dev/null
+    LASTERR=/dev/null
+  fi
   out "   run: $*"
   RC=0
   "$@" >"$LASTOUT" 2>"$LASTERR" || RC=$?
@@ -351,6 +541,60 @@ has_line() {
     if fields_hold "$_got" "$@"; then return 0; fi
   done <"$_file"
   return 1
+}
+
+# count_lines FILE PATH=VALUE... prints how many lines of FILE, which holds one
+# JSON object in each line, hold every PATH=VALUE, each line read as JSON by the
+# tagged helper as has_line does (a line that is not a whole JSON object is
+# passed over). A file that is not there counts 0.
+count_lines() {
+  _cf=$1
+  shift
+  _cn=0
+  if [ -f "$_cf" ]; then
+    while IFS= read -r _cl || [ -n "$_cl" ]; do
+      _cg=$(printf '%s\n' "$_cl" | "$BIN/ataniq-canary" fields --file - 2>/dev/null) || continue
+      if fields_hold "$_cg" "$@"; then _cn=$((_cn + 1)); fi
+    done <"$_cf"
+  fi
+  printf '%s\n' "$_cn"
+}
+
+# unit_journal LINES prints the last LINES lines of the unit's journal since
+# the first start of this run. The holder runs as the unit's main process and
+# says why it ended on its standard error, which is the journal: the event log
+# and the evidence hold only a code ("sandbox-start-failed"), so a holder that
+# exits at its start leaves its reason nowhere else. The journal can name the
+# canary's folders: it goes into the evidence folder, which is never published,
+# and step 26's scrub looks through it.
+unit_journal() {
+  journalctl --user --unit "$UNIT" --since "$T_START" --no-pager --output=short-iso --lines="$1"
+}
+
+# show_unit_journal prints the tail of the journal, for a step that fails
+# because the unit is not what it should be.
+show_unit_journal() {
+  if [ -z "$T_START" ]; then return 0; fi
+  out "   the journal of the unit since $T_START (the last 40 lines): the holder says why it ended there"
+  runcap unit-journal-tail unit_journal 40
+}
+
+# save_unit_journal keeps the journal in the evidence (step 22), whatever
+# became of the unit.
+save_unit_journal() {
+  if [ "$DRY" -eq 1 ]; then
+    dry "run: journalctl --user --unit $UNIT --since <the time of the first start> --no-pager --output=short-iso --lines=500, into $EV/out/22-e1-unit-journal.out (what the holder said on its standard error; when no start was asked there is nothing to read)"
+    return 0
+  fi
+  if [ -z "$T_START" ]; then return 0; fi
+  _jf=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-unit-journal.out
+  if unit_journal 500 >"$_jf" 2>"$_jf.err"; then
+    out "   the unit's journal since $T_START, as the holder wrote it on its standard error, is in $_jf ($(awk 'END { print NR }' "$_jf") lines)"
+    note "kept the journal of the unit in $_jf"
+  else
+    out "   the unit's journal could not be read (journalctl failed: $_jf.err); the holder's reason for an early end may be missing from the evidence"
+    note 'the journal of the unit could not be read'
+  fi
 }
 
 # fact appends the name, size, time and hash of a file to a list in the
@@ -456,6 +700,63 @@ inject_action() {
 
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
+# holder_wait waits for the holder's own record of the start of this epoch. The
+# holder writes holder.json twice: before the start sequence, with the epoch and
+# without sandbox_started, and after it, with the waiver and sandbox_started
+# true. The first write names the epoch already, so the wait ends only when the
+# file names the epoch AND says sandbox_started is true, or when the unit is no
+# longer active or activating (then it ends at once: the journal says why; an
+# empty answer, as a failed systemctl gives, is asked again, within the same
+# tries, and is never taken for the end), or
+# after 1.5 times WAIT_TRIES asks, WAIT_INTERVAL seconds apart (90 asks, one
+# second apart: more than the 60 seconds the inputs' report limit allows). It
+# sets HW_END to started, ended or timeout.
+holder_wait() {
+  _hwn=0
+  _hwmax=$((WAIT_TRIES * 3 / 2))
+  HW_END=
+  while :; do
+    if [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" = "$START_EPOCH" ] &&
+      [ "$(fld "$HSTATE/holder.json" sandbox_started 2>/dev/null)" = true ]; then
+      HW_END=started
+      return 0
+    fi
+    case $(show_prop ActiveState 2>/dev/null) in
+      active | activating | '') ;;
+      *)
+        HW_END=ended
+        return 0
+        ;;
+    esac
+    if [ "$_hwn" -ge "$_hwmax" ]; then
+      HW_END=timeout
+      return 0
+    fi
+    _hwn=$((_hwn + 1))
+    sleep "$WAIT_INTERVAL"
+  done
+}
+
+# holder_started is the wait of step 12: it fails the step, with the unit's
+# journal on the screen first, when the wait ends without the holder's record
+# of a started sandbox.
+holder_started() {
+  holder_wait
+  case $HW_END in
+    started) return 0 ;;
+    ended)
+      show_unit_journal
+      fail "the unit ended before $HSTATE/holder.json named epoch $START_EPOCH with sandbox_started true: the holder did not finish the start (the journal above says why)"
+      return 1
+      ;;
+    *)
+      show_unit_journal
+      fail "$HSTATE/holder.json did not name epoch $START_EPOCH with sandbox_started true within $((WAIT_TRIES * 3 / 2)) asks: the holder is still starting or wrote no record (the journal above says what it said)"
+      return 1
+      ;;
+  esac
+}
+
 # resolved prints the absolute path $1 as the kernel will follow it: the part
 # of it that exists is resolved with cd -P, so no symbolic link is left in it,
 # and the part that does not exist yet is kept as written (mkdir makes it as
@@ -542,6 +843,146 @@ unit_stopped() {
 
 done_step() { DONE_STEPS="$DONE_STEPS$CUR "; }
 was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
+
+# ------------------------------------------- what the owner does elsewhere ---
+
+# The owner starts the daemon, attaches the console, stops the listeners and
+# stops the daemon in terminals of his own, and each takes a moment. The
+# script only watches: it asks quietly, answers nothing and starts nothing.
+
+# poll_until WHAT COMMAND [ARG...] runs COMMAND (output dropped) until it
+# succeeds, for at most WAIT_TRIES more asks, WAIT_INTERVAL seconds apart, and
+# no longer than WAIT_TRIES * WAIT_INTERVAL seconds (rounded up) plus the one
+# ask's own limit, whatever the asks take: a command that hangs is cut off by
+# its caller (daemon_answers, daemon_gone), and the clock ends the wait. It says
+# "waiting for WHAT..." once, and only when the first ask did not succeed, then
+# prints a dot for every 5 asks. It returns 0 as soon as COMMAND succeeds and 1
+# after the last ask; the caller decides what a failure is.
+poll_until() {
+  _puw=$1
+  shift
+  _pul=$(awk -v t="$WAIT_TRIES" -v i="$WAIT_INTERVAL" -v c="$STATUS_TIMEOUT" 'BEGIN { x = t * i; n = int(x); if (n < x) n++; print n + c }')
+  _pus=$(date +%s)
+  if "$@" >/dev/null 2>&1; then return 0; fi
+  out "   waiting for $_puw..."
+  _pun=0
+  _pud=0
+  while [ "$_pun" -lt "$WAIT_TRIES" ] && [ $(($(date +%s) - _pus)) -le "$_pul" ]; do
+    sleep "$WAIT_INTERVAL"
+    _pun=$((_pun + 1))
+    if "$@" >/dev/null 2>&1; then
+      if [ "$_pud" -eq 1 ]; then out ''; fi
+      note "waited for $_puw: it came at try $_pun of $WAIT_TRIES"
+      return 0
+    fi
+    if [ $((_pun % 5)) -eq 0 ]; then
+      printf '.'
+      _pud=1
+    fi
+  done
+  if [ "$_pud" -eq 1 ]; then out ''; fi
+  note "gave up waiting for $_puw after $_pun tries, $WAIT_INTERVAL s apart"
+  return 1
+}
+
+# daemon_answers succeeds while a daemon answers at the socket, and
+# daemon_gone when none does (the status's exit status 20). Both leave the
+# status's exit status in DAEMON_RC. Each ask is run by timeout(1) (coreutils,
+# as sha256sum and stat are) and cut off after STATUS_TIMEOUT seconds, which
+# gives the exit status 124: a socket that accepts and never answers is then
+# neither an answering daemon nor a gone one.
+daemon_status() {
+  DAEMON_RC=0
+  timeout -k 1 "$STATUS_TIMEOUT" "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+}
+daemon_answers() {
+  daemon_status
+  [ "$DAEMON_RC" -eq 0 ]
+}
+daemon_gone() {
+  daemon_status
+  [ "$DAEMON_RC" -eq 20 ]
+}
+
+# ticket_taken succeeds when the ticket file $1 is absent or empty: the
+# console empties it when it takes the single-use ticket. Nothing is read. An
+# empty name is no file, so it never counts as taken.
+ticket_taken() { [ -n "$1" ] && [ ! -s "$1" ]; }
+
+# root_present reports whether the path $1 is there, a dangling link too.
+root_present() { [ -e "$1" ] || [ -L "$1" ]; }
+
+# daemon_no_key and roots_no_key are what step 26 does when no key can be read
+# (the input ended: Ctrl-D, or the terminal hung up). In the clean-up chain
+# wait_key then records nothing, so the step looks once itself and fails when
+# a daemon still answers or a root still exists: a missing key must not hide
+# either. The caller returns after it, as it does after any failure.
+daemon_no_key() {
+  daemon_gone || fail "a daemon still answers at $SOCK (exit $DAEMON_RC, want 20); no key could be read"
+}
+roots_no_key() {
+  if root_present "$STATE" || root_present "$RUNTIME"; then
+    fail 'a root of the canary still exists; no key could be read'
+  fi
+}
+
+# daemon_stopped_by_owner is the daemon's half of step 26. The owner stops the
+# daemon himself, in its terminal, and presses Enter. The script then asks the
+# daemon's status every second for up to a minute (a daemon takes a moment to
+# end, and he may still be pressing Ctrl-C). One that still answers after that
+# is not a failure of the pass: it says so and asks again, up to ASK_AGAIN
+# more times, and records each ask. It fails only after that.
+daemon_stopped_by_owner() {
+  _again=0
+  if ! wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.'; then
+    daemon_no_key
+    return 1
+  fi
+  while :; do
+    if poll_until 'the daemon to stop' daemon_gone; then
+      note "the daemon is gone (round $((_again + 1)))"
+      return 0
+    fi
+    note "the daemon still answers (exit $DAEMON_RC), round $((_again + 1)) of $((ASK_AGAIN + 1))"
+    if [ "$_again" -ge "$ASK_AGAIN" ]; then
+      fail "a daemon still answers at $SOCK (exit $DAEMON_RC, want 20) after $((ASK_AGAIN + 1)) rounds"
+      return 1
+    fi
+    _again=$((_again + 1))
+    out '   the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter'
+    if ! wait_key 'Owner: press Enter after you stopped the daemon.'; then
+      daemon_no_key
+      return 1
+    fi
+  done
+}
+
+# roots_deleted_by_owner is the roots' half of step 26: the owner deletes the
+# two roots himself and presses Enter. A root that is still there is said, and
+# he is asked again, up to ASK_AGAIN more times, each ask recorded.
+roots_deleted_by_owner() {
+  _again=0
+  if ! wait_key 'Owner: press Enter when both are deleted.'; then
+    roots_no_key
+    return 1
+  fi
+  while root_present "$STATE" || root_present "$RUNTIME"; do
+    for _rt in "$STATE" "$RUNTIME"; do
+      if root_present "$_rt"; then out "   still there: $_rt"; fi
+    done
+    note "a root still exists, round $((_again + 1)) of $((ASK_AGAIN + 1))"
+    if [ "$_again" -ge "$ASK_AGAIN" ]; then
+      fail "a root of the canary still exists after $((ASK_AGAIN + 1)) rounds"
+      return 1
+    fi
+    _again=$((_again + 1))
+    out '   a root of the canary still exists: delete it as shown above, then press Enter'
+    if ! wait_key 'Owner: press Enter when both are deleted.'; then
+      roots_no_key
+      return 1
+    fi
+  done
+}
 
 # ---------------------------------------------- machine reads of the lead ---
 
@@ -776,6 +1217,62 @@ sandbox_started=true
   printf '%s\n' "ok sandbox started, profile version $2, profile digest is the pinned digest"
 }
 
+# review_verdict FILE HASH reads the file named as the template's review and
+# prints "ok TEXT" or "bad REASON". It is a cheap look, not a judgement of the
+# review: a report of qualify-mirror (a JSON file with cases and a template) is
+# the other file step 4 asks for, so it is refused here, as is any JSON file or
+# a file that is not text; the review must hold the template's hash or the word
+# verdict.
+review_verdict() {
+  [ -s "$1" ] || { printf '%s\n' 'bad the file is empty'; return 0; }
+  _rvfirst=$(awk 'NF { s = $0; sub(/^[ \t]+/, "", s); print substr(s, 1, 1); exit }' "$1")
+  case $_rvfirst in
+    '{')
+      if _rvf=$("$BIN/ataniq-canary" fields --file "$1" 2>/dev/null) &&
+        printf '%s\n' "$_rvf" | awk '
+          index($0, "cases.") == 1 || index($0, "cases=") == 1 { c = 1 }
+          index($0, "template.") == 1 || index($0, "template=") == 1 { t = 1 }
+          END { exit !(c && t) }'; then
+        printf '%s\n' 'bad this is a qualify-mirror report (it has cases and a template), not the template'"'"'s review: the report is asked for next'
+      else
+        printf '%s\n' 'bad this is a JSON file: the review is a text or markdown file'
+      fi
+      return 0
+      ;;
+  esac
+  # shellcheck disable=SC2094  # cmp only reads the file
+  if ! tr -d '\000' <"$1" | cmp -s - "$1"; then
+    printf '%s\n' 'bad this is not a text file (it holds a NUL byte)'
+    return 0
+  fi
+  if grep -qF -- "$2" "$1"; then
+    printf '%s\n' "ok the review holds the template's hash"
+  elif grep -qiw -- verdict "$1"; then
+    printf '%s\n' 'ok the review holds the word verdict'
+  else
+    printf '%s\n' "bad the file neither holds the template's hash nor the word verdict, so it does not look like the review"
+  fi
+}
+
+# mirror_verdict FILE HASH reads the file named as the report of qualify-mirror
+# and prints "ok TEXT" or "bad REASON": it must be one JSON object whose
+# template.sha256 is the hash step 4 just computed, so a report made with
+# another template, or a file that is not a report, is refused.
+mirror_verdict() {
+  if ! _mvf=$("$BIN/ataniq-canary" fields --file "$1" 2>/dev/null); then
+    printf '%s\n' 'bad the file is not one JSON object: the report of qualify-mirror is JSON'
+    return 0
+  fi
+  _mvh=$(printf '%s\n' "$_mvf" | awk 'index($0, "template.sha256=") == 1 { print substr($0, 17); exit }')
+  if [ -z "$_mvh" ]; then
+    printf '%s\n' 'bad the file has no template.sha256: it is not the report of qualify-mirror'
+  elif [ "$_mvh" != "$2" ]; then
+    printf '%s\n' "bad the report's template.sha256 ($_mvh) is not the hash of the template ($2): it was made with another template"
+  else
+    printf '%s\n' "ok the report names the template's hash"
+  fi
+}
+
 # -------------------------------------------------------------- self-test ---
 
 # is_number reports whether every argument is a number in plain digits.
@@ -823,6 +1320,111 @@ self_test() {
       TTY_ASSUMED=1
       chain_trap
       if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
+      ;;
+    journal-save)
+      # EVIDENCE START UNIT: what step 22 keeps of the unit's journal: the
+      # journalctl on PATH (a stub in the tests) is asked for the unit since
+      # START, and the lines go to EVIDENCE/out, a folder that exists.
+      [ "$#" -eq 3 ] || usage
+      EV=$1
+      T_START=$2
+      UNIT=$3
+      CUR=22
+      EPOCH_NO=1
+      save_unit_journal
+      ;;
+    count-lines)
+      # FILE PATH=VALUE...: how many lines of FILE hold every PATH=VALUE, as
+      # step 14 counts the attach events. The helper is the one of build/canary
+      # in the current folder.
+      [ "$#" -ge 2 ] || usage
+      BIN=build/canary
+      count_lines "$@"
+      ;;
+    ticket-taken)
+      # FILE (which may be an empty string): whether step 14 takes the ticket
+      # file for taken. It looks at the size of the file and reads nothing.
+      [ "$#" -eq 1 ] || usage
+      if ticket_taken "$1"; then out taken; else out waiting; fi
+      ;;
+    wait-daemon)
+      # No value. It asks the ataniqd of build/canary in the current folder
+      # for its status as step 10 does, with the polling, and prints "listens"
+      # or "silent". The socket is a sample path.
+      [ "$#" -eq 0 ] || usage
+      BIN=build/canary
+      SOCK=/sample/canary/runtime/daemon.sock
+      CUR=10
+      if poll_until 'the daemon to listen' daemon_answers; then out listens; else out silent; fi
+      ;;
+    stop-daemon)
+      # No value. The daemon's half of step 26 as it runs there, with the
+      # keys read from standard input and the failure that ends the step
+      # printed and returned (as in the clean-up chain), not ending the run.
+      [ "$#" -eq 0 ] || usage
+      BIN=build/canary
+      SOCK=/sample/canary/runtime/daemon.sock
+      CUR=26
+      IN_CHAIN=1
+      if daemon_stopped_by_owner; then out stopped; else out failed; fi
+      ;;
+    roots-deleted)
+      # STATE RUNTIME: the roots' half of step 26, as above.
+      [ "$#" -eq 2 ] || usage
+      STATE=$1
+      RUNTIME=$2
+      CUR=26
+      IN_CHAIN=1
+      if roots_deleted_by_owner; then out deleted; else out failed; fi
+      ;;
+    review-verdict)
+      # FILE HASH: what step 4 makes of FILE as the template's review. The
+      # helper is the one of build/canary in the current folder.
+      [ "$#" -eq 2 ] || usage
+      BIN=build/canary
+      review_verdict "$1" "$2"
+      ;;
+    mirror-verdict)
+      # FILE HASH: what step 4 makes of FILE as the report of qualify-mirror.
+      [ "$#" -eq 2 ] || usage
+      BIN=build/canary
+      mirror_verdict "$1" "$2"
+      ;;
+    ask-file)
+      # HINTFILE KEY KIND HASH: asks for a path as step 4 does (KIND review or
+      # mirror) with the paths read from standard input, and prints
+      # "accepted PATH" or "failed". The failure that ends the step is printed
+      # and returned, not ending the run.
+      [ "$#" -eq 4 ] || usage
+      HINTS=$1
+      BIN=build/canary
+      IN_CHAIN=1
+      CUR=4
+      case $3 in
+        review) _verifier=review_verdict ;;
+        mirror) _verifier=mirror_verdict ;;
+        *) usage ;;
+      esac
+      if ask_file "$2" 'Lead: a path' 'the file is looked at' "$_verifier" "$4"; then out "accepted $ANSWER"; else out failed; fi
+      ;;
+    ask-path)
+      # HINTFILE KEY: asks a path prompt with the hint of KEY in HINTFILE
+      # (which may not exist) and prints what the answer was and how it came.
+      # The answer is read from standard input.
+      [ "$#" -eq 2 ] || usage
+      HINTS=$1
+      ask_path 'Lead: a path' "$2"
+      out "answer=$ANSWER"
+      out "source=$ANSWER_SRC"
+      ;;
+    affirm-word)
+      # HINTFILE WORD: asks for the typed word WORD with the hint file in
+      # place, as every word of the run is asked, and prints accepted or
+      # refused. The answer is read from standard input.
+      [ "$#" -eq 2 ] || usage
+      HINTS=$1
+      IN_CHAIN=1
+      if affirm 'Lead: a word' "$2"; then out accepted; else out refused; fi
       ;;
     pass-a-record)
       # FILE: a result.txt of pass A. The file is read and nothing else.
@@ -888,6 +1490,20 @@ self_test() {
       # FILE ROLE BRANCH: the commit of the lead's branch in a branches text.
       [ "$#" -eq 3 ] || usage
       lead_branch_id "$1" "$2" "$3"
+      ;;
+    holder-wait)
+      # HSTATE EPOCH UNIT: step 12's wait for holder.json, as the script asks
+      # it (the helper of build/canary and the unit tool on PATH are stubs in
+      # the tests). It prints "ok" or "failed", and HW_END.
+      [ "$#" -eq 3 ] || usage
+      BIN=build/canary
+      HSTATE=$1
+      START_EPOCH=$2
+      UNIT=$3
+      T_START='2026-11-19 12:00:00'
+      CUR=12
+      IN_CHAIN=1
+      if holder_started; then out "result=ok end=$HW_END"; else out "result=failed end=$HW_END"; fi
       ;;
     has-line)
       # FILE PATH=VALUE...: FILE holds one JSON object in each line. The
@@ -1037,6 +1653,9 @@ else
     fi
   done
   CFG_SHOW=$("$BIN/ataniq-canary" show --config "$CONFIG")
+  # The hint file lies beside the config: a list of suggested paths for the
+  # path prompts, written by canary-prepare.sh. It is optional.
+  case $CONFIG in */*) HINTS=${CONFIG%/*}/answers.hint ;; *) HINTS=./answers.hint ;; esac
 fi
 
 ROLE=$(cfg role)
@@ -1171,34 +1790,21 @@ step_1() {
   done_step
 }
 
-# facts_pass reads one fact report (KIND unit: the report of leadunit-qualify;
-# plan: the summary of the launched plan) and fails the step unless it shows
-# that everything passed. What was read is in the evidence.
-facts_pass() {
-  if [ "$DRY" -eq 1 ]; then
-    if [ "$1" = unit ]; then
-      dry 'check: the report parses, its verdict is pass and every entry of checks has the result pass'
-    else
-      dry 'check: the summary parses, every step has the status ok or skipped, exit.code is 0 and every case result is ok or not-checked'
-    fi
+# facts_verdict FILE KIND reads one fact report (KIND unit: the report of
+# leadunit-qualify; plan: the summary of the launched plan) and prints "ok TEXT"
+# when it shows that everything passed and "bad REASON" otherwise. What was read
+# is in the evidence. ask_file calls it before step 2 records the file.
+facts_verdict() {
+  _fl=$EV/out/02-facts-$2.fields
+  if ! "$BIN/ataniq-canary" fields --file "$1" >"$_fl" 2>"$_fl.err"; then
+    printf '%s\n' "bad the file cannot be read as one JSON object: $1"
     return 0
   fi
-  _fl=$EV/out/02-facts-$1.fields
-  if ! "$BIN/ataniq-canary" fields --file "$2" >"$_fl" 2>"$_fl.err"; then
-    fail "the file cannot be read as one JSON object: $2"
-    return 1
-  fi
   _flds=$(cat "$_fl")
-  if [ "$1" = unit ]; then _v=$(unit_facts_verdict "$_flds"); else _v=$(plan_facts_verdict "$_flds"); fi
+  if [ "$2" = unit ]; then _v=$(unit_facts_verdict "$_flds"); else _v=$(plan_facts_verdict "$_flds"); fi
   case $_v in
-    'ok '*)
-      out "   ok: $2: ${_v#ok }"
-      note "ok: $1 facts $2 (fields read: $_fl): ${_v#ok }"
-      ;;
-    *)
-      fail "the $1 facts do not show a pass: ${_v#bad }"
-      return 1
-      ;;
+    'ok '*) printf '%s\n' "ok ${_v#ok } (fields read: $_fl)" ;;
+    *) printf '%s\n' "bad the $2 facts do not show a pass: ${_v#bad }" ;;
   esac
 }
 
@@ -1212,10 +1818,15 @@ step_2() {
       unit) _what='the report of leadunit-qualify with the limits (cs-facts-unit, second run)' ;;
       *) _what='the summary of the launched plan (cs-facts-plan)' ;;
     esac
-    ask "Lead: the path of $_what"
-    check "the file is present: $_what" test -f "$ANSWER" || return 0
+    if [ "$_kind" = unit ]; then
+      _hk=unit-report
+      _look='the report parses, its verdict is pass and every entry of checks has the result pass'
+    else
+      _hk=plan-summary
+      _look='the summary parses, every step has the status ok or skipped, exit.code is 0 and every case result is ok or not-checked'
+    fi
+    ask_file "$_hk" "Lead: the path of $_what" "$_look" facts_verdict "$_kind" || return 0
     fact facts.txt "$ANSWER"
-    facts_pass "$_kind" "$ANSWER" || return 0
   done
   if [ "$PASS" = B ]; then
     ask 'Lead: the evidence folder of pass A'
@@ -1318,14 +1929,17 @@ step_4() {
       return 0
     fi
   fi
-  ask "Lead: the path of the template's review on file"
-  check 'the review is present' test -f "$ANSWER" || return 0
+  if [ "$DRY" -eq 1 ]; then _th='<hash>'; else _th=$(cat "$EV/template.sha256"); fi
+  ask_file template-review "Lead: the path of the template's review on file" \
+    "the review is a text or markdown file that is not a qualify-mirror report (no JSON file with cases and a template) and holds the template's hash ($_th) or the word verdict" \
+    review_verdict "$_th" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Owner: you have read the template and its note' read || return 0
   out '   Owner: run qualify-mirror once now, yourself, in your own terminal, with the lead present'
   out '   (docs/qualification-lead-mirror.md), with this template and a new output file.'
-  ask 'Owner: the path of the report qualify-mirror wrote'
-  check 'the report is present' test -f "$ANSWER" || return 0
+  ask_file mirror-report 'Owner: the path of the report qualify-mirror wrote' \
+    "the report is one JSON object whose template.sha256 is the hash computed above ($_th)" \
+    mirror_verdict "$_th" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Lead: the qualify-mirror run passed' yes || return 0
   result ok
@@ -1346,6 +1960,12 @@ step_5() {
   done_step
 }
 
+# listener_lines reads the text of ss -ltnu on standard input and prints the
+# non-loopback listening sockets, sorted.
+listener_lines() {
+  awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' | LC_ALL=C sort
+}
+
 # listeners writes the non-loopback listening sockets, sorted, to a file.
 listeners() {
   runcap "$1" ss -ltnu
@@ -1353,8 +1973,13 @@ listeners() {
     dry "keep the sockets on non-loopback addresses, sorted, in $2"
     return 0
   fi
-  awk 'NR > 1 && $5 !~ /^(127\.|\[::1\]|\[::ffff:127\.)/ { print $1, $5 }' "$LASTOUT" | LC_ALL=C sort >"$2"
+  listener_lines <"$LASTOUT" >"$2"
 }
+
+# listeners_are FILE succeeds when the sockets that listen now are the ones in
+# FILE. It asks quietly and keeps nothing: the owner stops and restarts his
+# listeners in a terminal of his own, which takes a moment.
+listeners_are() { ss -ltnu 2>/dev/null | listener_lines | cmp -s - "$1"; }
 
 step_6() {
   if [ "$PASS" = A ]; then
@@ -1388,6 +2013,11 @@ step_6() {
     done <"$EV/listeners-before.txt"
   fi
   wait_key 'Owner: stop the listeners you marked, yourself. The script stops nothing.'
+  if [ "$DRY" -eq 1 ]; then
+    dry 'ask ss -ltnu every second for up to 60 s until the list is the one of the listeners he kept; say "waiting for the listeners to stop..." once'
+  else
+    poll_until 'the listeners to stop' listeners_are "$EV/listeners-expected.txt" || :
+  fi
   listeners listeners-kept "$EV/listeners-kept.txt"
   check 'the second list holds only the listeners the owner kept' cmp -s "$EV/listeners-expected.txt" "$EV/listeners-kept.txt" || return 0
   _line='departure from L3: this pass runs on the open network of the profile as built; the owner accepted it under G7'
@@ -1474,13 +2104,14 @@ agent_host() {
 
 step_9() {
   if [ "$PASS" = A ]; then
-    step_head 9 'Version check: hash the stand-in' \
-      "hash the agent executable in the inputs file's install folder and the stand-in of $BIN" \
-      'the hash is the one make canary-build produced; both values are recorded; a mismatch refuses the start' 'G3, M9'
-    wait_key 'Step 9 hashes the stand-in.'
+    step_head 9 'Version check: hash the stand-in and the probe' \
+      "hash the agent executable in the inputs file's install folder and the stand-in of $BIN, and the probe the inputs file names and the probe of $BIN" \
+      'each hash is the one make canary-build produced; the values are recorded; a mismatch refuses the start' 'G3, M9'
+    wait_key 'Step 9 hashes the stand-in and the probe.'
     if [ "$DRY" -eq 1 ]; then
       dry "hash the agent executable (the install folder of $INPUTS, then ${AGENT0#"$AGENT_INSIDE"/}) and $BIN/ataniq-canary-standin, and record both"
-      _a=x _b=x
+      dry "hash the probe the inputs file's executables.probe names (the copy prepare makes in the root) and $BIN/ataniq-probe, and record both"
+      _a=x _b=x _pa=x _pb=x
     else
       _host=$(agent_host)
       check 'the agent executable is present' test -f "$_host" || return 0
@@ -1489,8 +2120,16 @@ step_9() {
       printf 'agent %s\nbuilt %s\n' "$_a" "$_b" >"$EV/standin-hash.txt"
       out "   agent: $_a"
       out "   built: $_b"
+      _probe=$(fld "$INPUTS" executables.probe)
+      check 'the probe the inputs name is present' test -f "$_probe" || return 0
+      _pa=$(sha256sum <"$_probe" | awk '{print $1}')
+      _pb=$(sha256sum <"$BIN/ataniq-probe" | awk '{print $1}')
+      printf 'probe %s\nprobe-built %s\n' "$_pa" "$_pb" >>"$EV/standin-hash.txt"
+      out "   probe: $_pa"
+      out "   built probe: $_pb"
     fi
     check 'the agent is the stand-in that make canary-build produced' is_eq "$_a" "$_b" || return 0
+    check 'the probe is the one that make canary-build produced' is_eq "$_pa" "$_pb" || return 0
   else
     step_head 9 'Version check: the bound agent executable' \
       'run the bound agent executable with --version, outside the sandbox, with an empty environment and a home that is an empty temporary folder' \
@@ -1517,10 +2156,18 @@ step_10() {
   step_head 10 'The owner starts the daemon' \
     "the owner starts the daemon with --canary by hand, in his own terminal; the script then asks its status" \
     'it listens; status shows no role; hello lists the canary operations' 'G4'
-  out '   Owner: in your own terminal, run:'
+  out '   Owner: in a second terminal (T2), run it; it stays in front of that terminal until you stop it'
+  out '   with Ctrl-C at step 26, so the console and the intake need terminals of their own:'
   out "     $BIN/ataniqd run --canary $CONFIG"
+  out '   Start it first and wait for its listening line, then press Enter here. If it is not up yet'
+  out '   when you press Enter, this step asks for it every second for up to a minute.'
   wait_key 'Owner: start the daemon now, yourself; then come back here.'
   DAEMON_UP=1
+  if [ "$DRY" -eq 1 ]; then
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s (each ask cut off by timeout after 5 s, so about 65 s at most), say \"waiting for the daemon to listen...\" once and print a dot every 5 s; go on as soon as it answers"
+  else
+    poll_until 'the daemon to listen' daemon_answers || :
+  fi
   runcap daemon-status "$BIN/ataniqd" status --socket "$SOCK"
   check 'the daemon listens' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
@@ -1566,12 +2213,16 @@ step_11() {
   fi
   STARTED=1
   STOPPED=0
+  # The journal is read from the first start of the run, local time as
+  # journalctl --since takes it.
+  if [ "$DRY" -eq 0 ] && [ -z "$T_START" ]; then T_START=$(date '+%Y-%m-%d %H:%M:%S'); fi
   runcap start "$BIN/ataniqd" canary start --config "$CONFIG"
   check 'start succeeded' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
     dry 'check: the start result names the role state starting, this unit and the waiver'
     dry 'keep the epoch the start result names: step 12 reads the records of that epoch only'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"
+    dry "when the unit is not active (the holder ended at its start), print the last 40 lines of its journal, journalctl --user --unit $UNIT --since <the time of the start>, before the step fails: the holder's reason is only there"
     dry 'check: the unit is active'
     dry "read MemoryMax, MemorySwapMax, TasksMax and ControlGroup with systemctl --user show $UNIT, normalised to bytes and counts"
     dry "read memory.max, memory.swap.max and pids.max in the unit's control group folder under /sys/fs/cgroup"
@@ -1590,7 +2241,7 @@ step_11() {
   _state=$(fld "$START_OUT" state)
   case $_state in
     starting | running) out "   ok: the role is $_state" ;;
-    *) fail "the role is \"$_state\", not starting"; return 0 ;;
+    *) show_unit_journal; fail "the role is \"$_state\", not starting"; return 0 ;;
   esac
   check 'the start result names this unit' is_eq "$(fld "$START_OUT" unit)" "$UNIT" || return 0
   check 'the start result shows the waiver in full' is_eq "$(fld "$START_OUT" waiver)" "$WAIVER" || return 0
@@ -1600,7 +2251,7 @@ step_11() {
   _active=$(show_prop ActiveState)
   case $_active in
     active | activating) out "   ok: the unit is $_active" ;;
-    *) fail "the unit is \"$_active\", not active"; return 0 ;;
+    *) show_unit_journal; fail "the unit is \"$_active\", not active"; return 0 ;;
   esac
   read_limits
   check 'MemoryMax is the config, by systemd' is_eq "$M1" "$MAXB" || return 0
@@ -1637,7 +2288,7 @@ step_12() {
     'the probe reported once; every assertion is ok except 10, which is waived by name; the profile is version 4 with the pinned digest; the waiver shows in holder.json, the event log, the evidence and the status line' 'G5'
   wait_key "Step 12 reads the holder's files."
   if [ "$DRY" -eq 1 ]; then
-    dry "wait until $HSTATE/holder.json names the epoch of the start of step 11 (the folder still holds the last epoch's file until the new holder writes its own); fail when it never does"
+    dry "wait until $HSTATE/holder.json names the epoch of the start of step 11 and says sandbox_started is true (the holder writes the file twice, before and after its start; the folder still holds the last epoch's file until the new holder writes its own), for up to 90 s, or until the unit is no longer active; fail when it never does, with the unit's journal printed first"
     dry "print the values of $HSTATE/holder.json with ataniq-canary fields"
     dry "check: its field waiver is exactly: $WAIVER"
     dry "check: a line of $HSTATE/events.jsonl with that epoch holds the state sandbox-started with the reason assertion-10-waived"
@@ -1647,11 +2298,7 @@ step_12() {
     # The state folder is the same in every epoch, so each record is matched
     # by the epoch of this start: a file or a line of an earlier epoch does
     # not pass for this one.
-    _try=0
-    while [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" != "$START_EPOCH" ] && [ "$_try" -lt 30 ]; do
-      _try=$((_try + 1))
-      sleep 1
-    done
+    holder_started || return 0
     runcap holder-json "$BIN/ataniq-canary" fields --file "$HSTATE/holder.json"
     check 'holder.json can be read' is_rc 0 || return 0
     check "holder.json is the one of this start: its epoch is $START_EPOCH" is_eq "$(fld "$HSTATE/holder.json" epoch)" "$START_EPOCH" || return 0
@@ -1706,19 +2353,99 @@ step_13() {
   done_step
 }
 
+# step_14: the console reads its ticket from a file and, while the file is
+# empty or absent, only says "waiting for a ticket"; a ticket lives 30 seconds
+# from its mint (serve.DefaultTicketLifetime). So the owner starts the console
+# first and the script mints after his Enter: the command is printed before the
+# mint, with its folder and ticket file known beforehand. The folder is the
+# holder's runtime folder of the config (what the daemon's ticket command
+# writes in), and the ticket file is the file named "ticket" in it
+# (leaddaemon.TicketFileName); the mint's own answer is then checked against
+# the file printed, and a step whose ticket went to another file fails.
+#
+# What the script can read of the console is only the ticket file's size (the
+# console empties it when it takes the ticket) and the holder's event log (one
+# attach event for each attach). A console that is started again finds the file
+# empty and attaches nothing: that is what the second console shows, and the
+# script reads that the file is empty and that the number of attach events has
+# not changed. The kit has no command that presents a used ticket to the
+# holder, so it does not claim that a used ticket is refused. The test is made
+# in the first epoch only. The owner's yes at the end of each part is the
+# attestation; the script answers nothing.
 step_14() {
-  step_head 14 'Mint a writer ticket and attach the console' \
-    'run ataniqd canary ticket for a writer; the owner attaches the console himself in his own terminal, then tries the used ticket once more' \
-    'the pane shows the agent; a used ticket is refused' 'none'
-  wait_key 'Step 14 mints a writer ticket.'
-  runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer
+  # The first epoch's console is the writer: the owner pastes there, and the
+  # writer's Hello sets the size of the session. In the second epoch the fence
+  # writes and the owner only watches, so the ticket is a viewer's: a viewer's
+  # Hello does not set the size, and the screen the stand-in drew once at its
+  # start stays the size it was recorded at (the fence recognises no other).
+  if [ "$EPOCH_NO" -eq 2 ]; then _role=viewer; else _role=writer; fi
+  if [ "$_role" = viewer ]; then
+    step_head 14 'Attach the console, then mint a viewer ticket' \
+      'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a viewer (the ticket lives 30 seconds) and watches the ticket file; in this epoch the console only watches (read-only: no key, no paste and no size is sent), because the fence writes the message' \
+      'the console attaches read-only and the pane shows the agent; the owner pastes nothing in this epoch' 'none'
+  else
+    step_head 14 'Attach the console, then mint a writer ticket' \
+      'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a writer (the ticket lives 30 seconds) and watches the ticket file; in the first epoch the owner then starts the same console once more in a fourth terminal: it finds the ticket file empty and does not attach' \
+      'the console attaches and the pane shows the agent; in the first epoch the second console does not attach and says it waits for a ticket, the ticket file is empty and the event log shows no second attach' 'none'
+  fi
+  check "the holder's runtime folder is known" test -n "$HRUN" || return 0
+  _tf=$HRUN/ticket
+  if [ "$EPOCH_NO" -eq 2 ]; then
+    out '   Owner: the console of the first epoch must be closed (Ctrl+\ leaves the session pane, then q): one left open waits on the same ticket file and takes this epoch'"'"'s ticket for itself.'
+    out '   In this epoch the console attaches as a read-only VIEWER: you only watch, you paste nothing, and the size of'
+    out '   the window does not matter.'
+  else
+    out '   Owner: this console is the WRITER: you paste into it at step 17. Its window must be at least 100 columns by 30 rows'
+    out '   (below that the console drops a paste). The size of its session pane becomes the agent'"'"'s terminal size.'
+    out '   pasta may write two lines on the agent'"'"'s pane above the stand-in'"'"'s prompt (about an AVX2 build and a'
+    out '   nameserver address): that is expected, not a fault.'
+  fi
+  out '   Owner: in a third terminal (T3), start the console now, with this command. It waits for a ticket and'
+  out '   says "waiting for a ticket". Do not start it later than your Enter below: a ticket lives 30 seconds.'
+  _viewer=
+  if [ "$EPOCH_NO" -eq 2 ]; then _viewer=' --viewer'; fi
+  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf$_viewer"
+  wait_key 'Owner: press Enter when the console is up and says it waits for a ticket. The ticket is minted then.'
+  runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role "$_role"
   check 'the ticket was minted' is_rc 0 || return 0
-  if [ "$DRY" -eq 1 ]; then _tf=$HRUN/ticket; else _tf=$(fld "$LASTOUT" ticket_file); fi
-  out '   Owner: in your own terminal, attach the console as the writer:'
-  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
+  if [ "$DRY" -eq 1 ]; then
+    dry "check: the ticket file the mint names is the one printed above, $_tf (the console was told that file)"
+    dry "watch the ticket file $_tf every second for up to 60 s: the console empties it when it takes the ticket (no content is read); say what was seen and go on to the question either way"
+  else
+    check "the ticket file the mint names is the one printed above ($_tf)" is_eq "$(fld "$LASTOUT" ticket_file)" "$_tf" || return 0
+    out '   The script now watches the ticket file, which the console empties when it takes the ticket.'
+    if poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
+      out '   ok: the ticket was taken'
+      note 'the console took the ticket (the ticket file is empty)'
+    else
+      out '   the ticket file still holds a ticket: the console has not taken it, and a ticket lives 30 seconds (the question below is still yours to answer)'
+      note 'the ticket file still held a ticket after the wait'
+    fi
+  fi
   affirm 'Owner: the pane shows the agent' yes || return 0
-  out '   Owner: in a third terminal, run the same command once more: the ticket is used.'
-  affirm 'Owner: the used ticket was refused' yes || return 0
+  if [ "$EPOCH_NO" -eq 1 ]; then
+    if [ "$DRY" -eq 1 ]; then
+      dry "count the attach events of $HSTATE/events.jsonl now (each line read as JSON by ataniq-canary fields)"
+    else
+      _att0=$(count_lines "$HSTATE/events.jsonl" event=attach)
+      note "attach events before the second console: $_att0"
+    fi
+    out '   Owner: in a fourth terminal (T4), run the same console command once more. The first console emptied the'
+    out '   ticket file when it took the ticket, so this one finds none: it does NOT attach. All it shows is its'
+    out '   status "waiting for a ticket". Read that line, then quit it (q). Leave the first console open: the'
+    out '   message of step 17 is pasted into it.'
+    affirm 'Owner: the second console did not attach and shows "waiting for a ticket"' yes || return 0
+    if [ "$DRY" -eq 1 ]; then
+      dry "check: the ticket file $_tf is still empty, and the attach events of $HSTATE/events.jsonl are as many as before: no second attach happened"
+    else
+      check 'the ticket file is still empty: no second ticket is waiting' ticket_taken "$_tf" || return 0
+      _att1=$(count_lines "$HSTATE/events.jsonl" event=attach)
+      note "attach events after the second console: $_att1"
+      check "the event log shows no second attach ($_att1 attach events, $_att0 before)" is_eq "$_att1" "$_att0" || return 0
+    fi
+  else
+    out '   (the second console is tried in the first epoch only)'
+  fi
   result ok
   done_step
 }
@@ -1821,12 +2548,20 @@ make_message() {
 # commits only from a paste, and the body has two lines, so typed line by line
 # the first Enter would submit half of it to a live agent.
 paste_message() {
-  out '   Owner: put the message into the pane yourself. Do NOT type it. Copy the whole text of this file:'
+  out '   Owner: first give the session pane the focus: select the session terminal and press Enter. The focus bar'
+  out '   then names the session (Ctrl+\ leaves it). A paste while the console has the focus itself is dropped'
+  out '   without a word, and the first Enter only moves the focus.'
+  out '   Then put the message into the pane yourself. Do NOT type it. Copy the whole text of this file:'
   out "     $BODY"
   out '   and paste it into the pane with your terminal'"'"'s paste, so that it arrives as ONE paste'
   out '   (a bracketed paste; typed line by line, the first Enter would send half of it).'
+  out '   Copy the file'"'"'s text (cat the file), not the lines of this screen: the stand-in takes the token only'
+  out '   from a line that starts with "canary-token: ". "no token" in the pane means the paste was not the'
+  out '   file'"'"'s text: paste again.'
   out '   Then press Enter in the pane ONCE. The text of the file, to compare with what you paste:'
-  sed 's/^/     | /' "$BODY"
+  out "----- begin of ${BODY##*/} -----"
+  cat "$BODY"
+  out '----- end -----'
 }
 
 step_17() {
@@ -1846,12 +2581,12 @@ step_17() {
     if [ "$PASS" = A ]; then
       dry 'check: the result is not-now, not-ready, written nothing'
       dry 'fail the step on exit status 30 (the daemon refused the message) and on refused, untested (a wrong config: the version is not a tested one)'
-      dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; wait"
+      dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus, because a paste into an unfocused console is dropped silently; wait"
     else
       dry 'fail the step on exit status 30 (the daemon refused the message: the fence was not asked)'
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
-      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; that is recorded"
+      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; that is recorded"
     fi
     result ok
     done_step
@@ -2076,7 +2811,7 @@ stop_role() {
 
 step_22() {
   step_head 22 'stop, revert, and list what is left' \
-    "run ataniqd canary stop; then systemctl --user revert on the unit; list the user manager's units and unit files for ataniq-*; list the unit's name under the user manager's transient/ and user.control/ runtime folders" \
+    "run ataniqd canary stop; then systemctl --user revert on the unit; keep the unit's journal (what the holder said on its standard error) in the evidence; list the user manager's units and unit files for ataniq-*; list the unit's name under the user manager's transient/ and user.control/ runtime folders" \
     'stopped, with a proof text naming the invocation and its empty control group; no unit, no unit file and no drop-in remains, in either folder; lingering is as it was' 'G4'
   wait_key 'Step 22 stops the unit and lists what is left.'
   if [ "$STARTED" -eq 0 ] && [ "$DRY" -eq 0 ]; then
@@ -2090,6 +2825,7 @@ step_22() {
     stop_role || :
   fi
   runcap revert systemctl --user revert "$UNIT"
+  save_unit_journal
   runcap units-after systemctl --user list-units --all --no-legend --plain 'ataniq-*'
   if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-after-$EPOCH_NO.txt"; fi
   check 'no unit remains: the units are those of step 1' cmp -s "$EV/units-before.txt" "$EV/units-after-$EPOCH_NO.txt" || :
@@ -2172,6 +2908,11 @@ step_24() {
     sed 's/^/     /' "$EV/listeners-stopped.txt" 2>/dev/null || out '     (the list was not written: look at what you stopped)'
   fi
   wait_key 'Owner: restart what you stopped, yourself; then press Enter.'
+  if [ "$DRY" -eq 1 ]; then
+    dry 'ask ss -ltnu every second for up to 60 s until the list is the first list of step 6; say "waiting for the listeners to come back..." once'
+  else
+    poll_until 'the listeners to come back' listeners_are "$EV/listeners-before.txt" || :
+  fi
   listeners listeners-after "$EV/listeners-after.txt"
   check 'the list equals the first list of step 6' cmp -s "$EV/listeners-before.txt" "$EV/listeners-after.txt" || :
   result restored
@@ -2231,15 +2972,17 @@ step_26() {
     dry "copy, when present: $STATE/registry/registry.jsonl; $HSTATE/events.jsonl, events.jsonl.1, holder.json, final.json, final.json.previous; $EVIDENCE; $REPLAY/order.txt and result.txt"
     dry 'run ataniq-canary scrub-screen on each copy of a final record: the screen text is replaced by its hash'
     dry 'search the evidence for a login URL or code; print file names and line numbers only; the owner decides what to remove'
+    dry 'ask and record the answer and the time: Owner and lead: look at the lines listed, and remove from the evidence what holds a login URL or code; type clean when the evidence holds none'
     dry "remove the scratch folder of the intake's verify"
     dry "wait for Enter: Owner: stop the daemon yourself (Ctrl-C in its terminal)"
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s (each ask cut off by timeout after 5 s, so about 65 s at most), say \"waiting for the daemon to stop...\" once and print a dot every 5 s; go on as soon as no daemon answers"
     dry "run: $BIN/ataniqd status --socket $SOCK"
-    dry 'check: no daemon answers (exit 20)'
+    dry 'check: no daemon answers (exit 20); when one still answers do not fail: say "the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter", wait for Enter and ask again, up to 5 more times, recording each ask; fail only after that'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"
     dry "when the unit is not stopped (its state is neither inactive nor failed): print systemctl --user stop $UNIT for the owner, wait for Enter, and read the state again"
     dry 'fail the step when the unit is still not stopped: the command that deletes the roots is then not shown'
     dry "wait for Enter: Owner: delete the canary's two roots yourself: rm -rf -- $STATE $RUNTIME"
-    dry 'check: both roots are gone'
+    dry 'check: both roots are gone; when one still exists say so, wait for Enter and ask again, up to 5 more times, recording each ask; fail only after that'
     if [ "$PASS" = B ]; then dry 'ask and record the answer and the time: Owner: under H4, the two logins of the spike are logged out and its home is deleted'; fi
     dry "write names, sizes, times and hashes of every file of the evidence to $EV/MANIFEST.txt"
     result ok
@@ -2273,9 +3016,8 @@ step_26() {
   if [ "$DAEMON_UP" -eq 0 ]; then
     out '   nothing to act on: this run did not ask for the daemon to be started. The status is still asked.'
   fi
-  wait_key 'Owner: stop the daemon yourself (Ctrl-C in its terminal), if it runs.'
+  daemon_stopped_by_owner || :
   runcap daemon-gone "$BIN/ataniqd" status --socket "$SOCK"
-  if [ "$RC" -ne 20 ]; then fail "a daemon still answers at $SOCK (exit $RC, want 20)"; fi
   if [ "$PROVISIONED" -eq 0 ] && [ ! -e "$STATE" ] && [ ! -e "$RUNTIME" ]; then
     out "   nothing to act on: neither root exists and this run provisioned nothing"
     note 'nothing to act on: no folder to delete'
@@ -2297,8 +3039,7 @@ step_26() {
       note "the unit is $_ust"
       out "   Owner: delete the canary's two roots yourself, in your own terminal. The script deletes neither:"
       out "     rm -rf -- $STATE $RUNTIME"
-      wait_key 'Owner: press Enter when both are deleted.'
-      if [ -e "$STATE" ] || [ -e "$RUNTIME" ]; then fail 'a root of the canary still exists'; fi
+      roots_deleted_by_owner || :
     fi
   fi
   if [ "$PASS" = B ]; then
@@ -2322,12 +3063,19 @@ second_epoch() {
   CUR=20
   out ''
   out '== second epoch of pass A (after step 20): the stand-in replays the recorded screens'
-  out '   does:     stop with proof; write the replay switch file; steps 11, 12 and 14 again; inject once; then step 22 in full'
+  out '   does:     stop with proof; write the replay switch file; steps 11, 12 and 14 again (the console attaches as a read-only viewer); inject once; then step 22 in full'
   out '   expected: the fence reaches submitted, no reason, whole, inside the real sandbox; order.txt says 7501-first; the stand-in committed. A refusal is recorded with the detail and is a finding for a fix task before pass B'
   out '   serves:   G1, B1'
-  wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up).'
+  out '   Owner: close the console of the first epoch now (Ctrl+\ leaves the session pane, then q).'
+  out '   One left open waits on the same ticket file and would take the ticket of the second epoch.'
+  out '   In this epoch you only WATCH: the console of step 14 is a read-only viewer and you paste nothing, the fence writes the message.'
+  wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up). Close the first console first.'
   CUR=22
   stop_role || return 0
+  # Step 22 reverts the unit at the end of the pass; the second start must not
+  # load a drop-in of the first one (step 11 sets MemoryMax with --runtime), so
+  # the unit is reverted here too, between the epochs.
+  runcap revert-between-epochs systemctl --user revert "$UNIT"
   CUR=20
   wait_key 'Write the replay switch file.'
   runcap replay-on "$BIN/ataniq-canary" replay-on --config "$CONFIG"
@@ -2341,6 +3089,7 @@ second_epoch() {
   out '== step 17 [pass A, second epoch]: inject once'
   out '   does:     inject one message; read the result, the stand-in'"'"'s order.txt and result.txt'
   out '   expected: submitted, no reason, whole; order.txt says 7501-first; result.txt says committed'
+  out '   Owner: nothing to paste or press here: watch the pane in the viewer console while the fence writes.'
   out '   serves:   G1, G3'
   make_message
   wait_key 'Inject the one message of the second epoch.'

@@ -82,6 +82,11 @@ func newCanaryRig(t *testing.T) *canaryRig {
 	r.state, r.tree = filepath.Join(lead, "holder"), filepath.Join(lead, "tree")
 	r.runtime = filepath.Join(c.runRoot, "leads", canaryLayoutRole)
 	r.roleLock = filepath.Join(c.stateRoot, "roles", canaryProject, "lead.lock")
+	// Every folder here is made by hand, which is what hid the folder of the role
+	// lock from the tests until the first attended run: no production code made
+	// it. A folder that the holder expects is also checked against what
+	// provisioning really makes, in canary_provisioned_linux_test.go, which
+	// makes none by hand.
 	for _, d := range []string{c.stateRoot, c.runRoot, r.state, r.tree, r.runtime, filepath.Dir(r.roleLock)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)

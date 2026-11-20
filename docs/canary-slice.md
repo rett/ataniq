@@ -23,7 +23,9 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
    starts the sandbox's first process under its pseudo-terminal. That process
    is a scratch agent: the stand-in that `make canary-build` builds, or, in
    pass B, one live agent.
-4. The owner mints a ticket and attaches the console as writer.
+4. The owner mints a ticket and attaches the console: as the writer in the first
+   epoch (he pastes there), as a read-only viewer in the second epoch of pass A
+   (the fence writes and he only watches; a viewer does not resize the session).
 5. The daemon sends the lead one message through the holder's control socket.
    The holder's fence ([the lead injection guide](lead-injection.md)) pastes it
    only when the screen reads as idle.
@@ -160,7 +162,7 @@ The owner's tool, run by hand. The daemon never runs it.
 | `provision --config CONFIG` | Makes the folders of the lead (below), clones the throwaway repository from the mirror into the tree, copies the managed settings, the guard hook and the replay screens, and writes the marker last. It refuses the default roots, a root that already carries the marker and a lead that has started. |
 | `replay-on --config CONFIG` | Writes the replay switch file and nothing else. It is the only subcommand allowed after a first start. |
 | `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
-| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It changes nothing. |
+| `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It also runs, on the file, the trial of the profile and of the spec that the holder runs in its first step, `validate-config`, as far as that needs no launch and no host access, with the agent command line, environment and pinned digest the holder takes from the config, so that what the holder would refuse there is refused here and not at the start. For the runtime `claude` the file must also name `sources.managed_marker` (the holder refuses it without, at that step), and the managed-settings file that `sources.managed_settings` names must hold that text (before provisioning that file does not exist yet, and the file `provision.managed_settings` names, which provisioning copies, is read instead; once provisioned, the copy is read) (the holder does not read the file then: assertion 8 finds a file without it inside, after the launch, and this check refuses it earlier). It changes nothing. |
 | `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
@@ -176,9 +178,13 @@ everything before it writes anything, makes every folder with mode 0700 by
 handle, and refuses a symbolic link at any path it would make. Besides the
 folders of the lead's layout it makes the holder's runtime folder
 `<runtime root>/leads/<layout role>`, which must exist before the holder
-starts, and `<home>/canary-replay/` with the replay screens in it. A failed run
-leaves what it made and no marker, and a second run refuses that; the log it
-prints says what to remove.
+starts, the folder of the lead's role lock `<state root>/roles/<project>`
+(with `<state root>/roles` above it; the holder makes the lock file
+`lead.lock` in it, with an open that makes the file and not the folder, so
+without this folder it refuses at its first start), and
+`<home>/canary-replay/` with the replay screens in it. A failed run leaves what
+it made and no marker, and a second run refuses that; the log it prints says
+what to remove.
 
 ### `ataniqd run --canary`
 
@@ -235,8 +241,12 @@ Exit status of `ataniqd canary`:
 The two error codes `refused` and `unavailable` are new, and carry fixed texts
 that never echo what the caller sent.
 
-`ataniqd canary start` is refused when the holder's runtime folder is missing
-or not private; provisioning makes it.
+`ataniqd canary start` is refused, before it changes anything, when the
+holder's runtime folder, the holder's state folder or the folder of the role
+lock (`<state root>/roles/<project>`) is missing or not private; provisioning
+makes all three. Each has its own fixed refusal text, with no path in it; the
+detail is in the daemon's log. Without the check, a missing folder showed only
+as a unit that ended at once, with the reason in the journal.
 
 ## The config file
 
@@ -330,12 +340,13 @@ with the sources from `ataniq-canary show`, and checks it with
   "executables": {
     "pasta": "/usr/bin/pasta",
     "bwrap": "/usr/bin/bwrap",
-    "probe": "/srv/checkout/build/canary/ataniq-probe"
+    "probe": "/srv/canary/bin/ataniq-probe"
   },
   "sources": {
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -344,7 +355,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "assignment_dir": "/srv/canary/state/leads/throwaway-one-lead/assignment",
     "projection_dir": "/srv/canary/state/leads/throwaway-one-lead/projection"
   },
-  "never_mounted": ["/srv/sample/checkout", "/srv/sample/dot-ssh"],
+  "never_mounted": ["/srv/checkout", "/srv/sample/dot-ssh"],
   "provider_host": "provider.example.invalid",
   "terminal": {"term": "xterm-256color"},
   "time_limit_seconds": 60
@@ -357,6 +368,14 @@ with the sources from `ataniq-canary show`, and checks it with
   the caller with no access for group or others. The start sequence
   makes `report` (the report FIFO's folder) and `bound` in it and removes them
   when the start ends.
+- `sources.managed_marker` is required for the runtime `claude`: the text of
+  the guard hook that the managed-settings file holds (assertion 8 searches
+  the file inside for it). The holder refuses a start without it at its first
+  step; a file that lacks the text fails assertion 8 inside, after the launch.
+  `check-inputs` refuses both before the start, naming
+  `sources.managed_marker` or `sources.managed_settings`, and, for the rest of
+  that step, the field the holder would name. The marker is not part of the
+  profile digest.
 - `time_limit_seconds` (1 to 3600) is how long the start waits for the probe's
   report line.
 - Two statements about the start itself, that no lead has run in the folders
@@ -443,6 +462,11 @@ or writes anything:
   file and the layout, a `--state-dir` or `--runtime-dir` that is not exactly
   the layout's holder folder and runtime folder, and `--inject` without a
   non-empty `--expected-mode`.
+
+It then takes the role lock, `<state root>/roles/<project>/lead.lock`: it makes
+the file when it is not there, and not its folder, which provisioning makes. A
+folder that is missing is refused, with exit status 2, as `--role-lock cannot be
+taken as the role lock`.
 
 ## The message and the token
 

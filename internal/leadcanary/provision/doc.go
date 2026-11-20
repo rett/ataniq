@@ -38,8 +38,8 @@
 //     refuses the run too, and so does a folder that is there already and
 //     holds something ([ErrNotEmpty]): a folder is kept only when it is
 //     empty, the tree included. The exceptions are the folders that hold
-//     other things by design: leads, the lead's own folder, mailbox, pub and
-//     mirrors.
+//     other things by design: leads, the lead's own folder, mailbox, pub,
+//     roles and mirrors.
 //
 // Nothing has been written until all of that has passed. Then it makes, with
 // mode 0700 and by handle (every lookup is beneath a handle opened once, with
@@ -48,7 +48,10 @@
 //   - the layout's folders: leads, the lead's folder, holder (the holder's
 //     state folder, left empty), home, config and the runtime's config
 //     folder, tree, qargi (the records), requests, mail, mailbox and the
-//     lead's mailbox, pub and the project's published folder, and mirrors;
+//     lead's mailbox, pub and the project's published folder, roles and the
+//     project's folder of the role lock (<state root>/roles/<project>, left
+//     empty: the holder makes the lock file in it at its first start, with an
+//     open that makes the file and not the folder), and mirrors;
 //   - the sources of the bind table the layout does not name, in the lead's
 //     folder (see [Paths]): skills and instructions.md (empty), git-identity/config
 //     (the name and address of the config), qargi-install/guard-hook (the
@@ -75,7 +78,8 @@
 //     none. It also leaves what it made, and a second run refuses that: remove
 //     <state root>/leads/<layout role>, the lead's mailbox
 //     (<state root>/mailbox/<layout role>), its published folder
-//     (<state root>/pub/<project>) and the runtime root, and run again. Do not
+//     (<state root>/pub/<project>), the folder of its role lock
+//     (<state root>/roles/<project>) and the runtime root, and run again. Do not
 //     remove the state root: it holds the mirror, which provisioning needs
 //     and does not make, so the mirror stays.
 //

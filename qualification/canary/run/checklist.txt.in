@@ -1,0 +1,60 @@
+CANARY RUN, PASS A: YOUR CHECKLIST    (written by canary-prepare.sh)
+Root @ROOT@
+The script answers nothing for you and starts nothing. Four terminals: T1 runs
+the script, T2 the daemon (it stays in front until Ctrl-C at step 26), T3 the
+console, T4 the second console of step 14 and the integrate command of 20.
+
+BEFORE
+ 1. sh @PREFLIGHT@ --root @ROOT@
+    It must say READY; every FIX line gives the command to type.
+ 2. qualify-mirror is your own step: set "i_run_this_on_purpose" to true in
+    @ROOT@/mirror-qual/config.json, then in @REPO@:
+      sh scripts/go-tool.sh build -o build/qualify-mirror \
+        ./qualification/leadmirror/cmd/qualify-mirror
+      build/qualify-mirror --config @ROOT@/mirror-qual/config.json \
+        --out @ROOT@/mirror-qual/report.json
+ 3. T1: read the dry run, then run:
+      sh @RUN@ --pass A --config @CONFIG@ --dry
+      sh @RUN@ --pass A --config @CONFIG@ --evidence @EVIDENCE@
+
+AT EACH PROMPT   Enter = go on. A word is typed by you, exactly, and Enter alone
+is refused: yes, read, clean. A path prompt shows "(Enter for: PATH)" from
+@HINTS@: Enter takes it, a path you type wins, a wrong file is asked again.
+
+STEP  WHAT YOU DO
+  1   Lead: yes (no agent session was told about the slice).
+  2   Paths of the unit report and the plan summary, then Enter at the rest.
+  4   Path of the template review; read; qualify-mirror report path; yes.
+  8   Enter (the sandbox inputs file is already written by prepare).
+  9   Enter (the stand-in and probe copies are compared with the built ones).
+ 10   Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the
+      listening line, then Enter in T1:
+        @BIN@/ataniqd run --canary @CONFIG@
+      (The script waits up to a minute for it, but start it first.) Then: yes.
+ 12   Lead: yes (the probe reported once, every assertion ok except 10).
+ 14   T3: start the console BEFORE you press Enter at step 14; it waits for
+      a ticket (the script mints into the file named here):
+        @BIN@/ataniq-console --attach @HOLDER_RUN@ \
+          --ticket-file @HOLDER_RUN@/ticket
+      Then Enter in T1 (the script mints; a ticket lives 30 s), then yes (the
+      pane shows the agent). T4: the same command once more; it must NOT
+      attach and only says "waiting for a ticket": quit it (q), then yes.
+      T3 is the WRITER: keep its window 100x30 or more, or a paste is dropped.
+ 17   In T3 give the session pane the focus first (Enter on it; a paste into
+      an unfocused console is dropped), then paste the message file the script
+      names as ONE paste (do not type it), Enter in the pane once, Enter in T1.
+      Paste the file's text (cat it), not T1's lines; "no token": paste again.
+ 18   yes (the pane shows the stand-in committed).
+ 20   T4: the integrate command the script prints (with its TIP and DIGEST
+      and one --accept-path per path listed); then yes.
+ 2nd  Second epoch: first close the console in T3 (Ctrl+\ then q); Enter at
+      each step; at step 14 start it again in T3 (yes), with --viewer added
+      as the script prints: a read-only VIEWER, nothing to paste.
+ 26   Enter; clean (when the evidence holds no login URL or code).
+      At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
+      Delete the roots yourself, then Enter in T1:
+        rm -rf -- @ROOT@/state @ROOT@/runtime
+
+IF IT FAILS   Stop the daemon with Ctrl-C (T2), answer the clean-up prompts,
+  then: sh @RESET@ --root @ROOT@  (type the word reset)
+  and run preflight again.

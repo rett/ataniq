@@ -62,8 +62,13 @@ type Config struct {
 	// switch file in its ReplayDir; an empty Home is plain mode. It is also
 	// the HOME of git.
 	Home string
-	In   io.Reader
-	Out  io.Writer
+	// GitConfigGlobal is the file git reads its identity from, from
+	// GIT_CONFIG_GLOBAL: inside the sandbox it is the file provisioning
+	// wrote. It is the only other variable passed on to git. The empty
+	// string passes none.
+	GitConfigGlobal string
+	In              io.Reader
+	Out             io.Writer
 	// TermFD is the descriptor of the terminal to put in raw mode, restored
 	// when Run returns; a negative value leaves the terminal alone.
 	TermFD int
@@ -267,7 +272,7 @@ func (l *loop) submit() error {
 	result := "no token"
 	var line string // what replay mode records, when it tried a commit
 	if p.ok {
-		hash, err := commitTree(l.c.Dir, l.c.Home, p.token)
+		hash, err := commitTree(l.c.Dir, gitAccount{l.c.Home, l.c.GitConfigGlobal}, p.token)
 		if err != nil {
 			result = "commit failed: " + string(echo([]byte(err.Error())))
 			line = "failed: " + failReason(err)

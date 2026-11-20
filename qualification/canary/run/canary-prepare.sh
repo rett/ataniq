@@ -5,7 +5,8 @@
 # beside this file first.
 #
 #   canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH]
-#                     [--bwrap PATH] [--build] [--dry]
+#                     [--bwrap PATH] [--build] [--template-review PATH]
+#                     [--unit-report PATH] [--plan-summary PATH] [--dry]
 #
 # It never answers a prompt and starts no unit, no daemon, no sandbox and no
 # agent: it makes folders and files, runs git on a throwaway repository,
@@ -14,12 +15,38 @@
 # `make canary-build` first; without it the binaries must be built. It
 # prints no secret. With --dry it prints what it would create and writes
 # nothing: no command is run.
+#
+# The managed-settings file it writes names the guard hook, /ataniq/qargi/guard-hook
+# (where the sandbox binds the no-op hook it also writes), and the inputs file
+# carries sources.managed_marker "guard-hook", a text that file holds: the holder
+# refuses a claude start without the marker, and its assertion 8 searches the
+# file for it. The managed-settings file is written before its hash is taken,
+# and the hash is the one the inputs file records.
+#
+# It also writes ROOT/answers.hint (mode 0600), a list of "key=path" lines:
+# the paths the run script suggests at its path prompts (Enter takes one). The
+# mirror report's path is the one qualify-mirror is told to write; the other
+# three are written only for a path given with --unit-report, --plan-summary
+# or --template-review, which must name an existing regular file (a hint that
+# cannot be known is not written). A hint is a suggestion: the run still
+# checks and records the file. No word the owner types is ever a hint.
+#
+# It writes ROOT/CHECKLIST.txt (mode 0600) too, from the template
+# checklist.txt.in beside this file with the real paths filled in: one page for
+# the owner, what to start and where, and what each prompt of the run expects.
 set -eu
 umask 077
 
 # shellcheck disable=SC2034  # read by canary-lib.sh
 CC_NAME=canary-prepare.sh
-_d=$(cd -P -- "${0%/*}" && pwd -P)
+# The folder of this script, with no fork: a name with no slash (sh canary-x.sh
+# in its own folder) is in the current folder, and "/name" is in /.
+case $0 in
+  */*) _d=${0%/*} ;;
+  *) _d=. ;;
+esac
+[ -n "$_d" ] || _d=/
+_d=$(cd -P -- "$_d" && pwd -P)
 REPO=$(cd -P -- "$_d/../../.." && pwd -P)
 # shellcheck source=canary-lib.sh
 . "$_d/canary-lib.sh"
@@ -31,6 +58,9 @@ PASTA=
 BWRAP=
 BUILD=0
 DRY=0
+TEMPLATE_REVIEW=
+UNIT_REPORT=
+PLAN_SUMMARY=
 
 # pasta_plan DEFAULT chooses the pasta file. The harness refuses a symbolic
 # link, so a link is copied: PASTA_COPY is then 1, PASTA_SRC the regular file
@@ -61,7 +91,8 @@ pasta_plan() {
 }
 
 usage() {
-  printf '%s\n' 'usage: canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build] [--dry]' \
+  printf '%s\n' 'usage: canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]' \
+    '                         [--template-review PATH] [--unit-report PATH] [--plan-summary PATH] [--dry]' \
     '       --root DIR    the folder to make (default: ataniq-canary-a in your cache folder);' \
     '                     it must be new or empty, outside /tmp and outside the checkout' \
     '       --pass A      the pass (only A is prepared: pass B has a live config of its own)' \
@@ -69,6 +100,8 @@ usage() {
     '       --pasta PATH  a regular file to use as pasta (default: /usr/bin/pasta; a link is copied)' \
     '       --bwrap PATH  the bubblewrap executable (default: the one on PATH)' \
     '       --build       run make canary-build first' \
+    '       --template-review PATH, --unit-report PATH, --plan-summary PATH' \
+    '                     an existing file the run script suggests at its path prompt (a hint)' \
     '       --dry         print what would be made and write nothing' \
     '       canary-prepare.sh --self-test pasta-plan PATH' \
     '                     what the pasta choice does with PATH as the default (computes only)' >&2
@@ -98,6 +131,9 @@ while [ "$#" -gt 0 ]; do
     --pasta) [ "$#" -ge 2 ] || usage; PASTA=$2; shift 2 ;;
     --bwrap) [ "$#" -ge 2 ] || usage; BWRAP=$2; shift 2 ;;
     --build) BUILD=1; shift ;;
+    --template-review) [ "$#" -ge 2 ] || usage; TEMPLATE_REVIEW=$2; shift 2 ;;
+    --unit-report) [ "$#" -ge 2 ] || usage; UNIT_REPORT=$2; shift 2 ;;
+    --plan-summary) [ "$#" -ge 2 ] || usage; PLAN_SUMMARY=$2; shift 2 ;;
     --dry) DRY=1; shift ;;
     *) usage ;;
   esac
@@ -123,7 +159,10 @@ esac
 # A new root, or an empty folder that already exists.
 if [ -d "$ROOT" ]; then
   if [ -n "$(find "$ROOT" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
-    cc_die "the root is not empty: $ROOT (prepare makes a new set-up; canary-reset.sh puts a failed one back)"
+    if [ -e "$ROOT/$CC_MARKER" ]; then
+      cc_die "the root is not empty: $ROOT (prepare makes a new set-up; this root carries the mark of a finished prepare, so canary-reset.sh puts it back; to remove it by hand instead, first check that this folder is the one you meant, then: chmod -R u+w $ROOT, then rm -r $ROOT)"
+    fi
+    cc_die "the root is not empty: $ROOT (this folder was not made by canary-prepare.sh; check it before you remove anything)"
   fi
 fi
 
@@ -132,6 +171,29 @@ case $BIN in /*) ;; *) cc_die "--bin is not an absolute path: $BIN" ;; esac
 if [ "$BUILD" -eq 0 ]; then cc_check_bin "$BIN"; fi
 
 pasta_plan /usr/bin/pasta
+
+# The paths given for a hint: absolute, no control character; a file that is
+# not there is no hint, and the output says so.
+HINT_TEMPLATE_REVIEW=
+HINT_UNIT_REPORT=
+HINT_PLAN_SUMMARY=
+hint_path() {
+  [ -n "$2" ] || return 0
+  case $2 in /*) ;; *) cc_die "$1 is not an absolute path: $2" ;; esac
+  case $2 in *[[:cntrl:]]*) cc_die "$1 has a control character" ;; esac
+  if [ -L "$2" ] || [ ! -f "$2" ]; then
+    cc_say "no hint is written for $1: not a regular file: $2"
+    return 0
+  fi
+  case $1 in
+    --template-review) HINT_TEMPLATE_REVIEW=$2 ;;
+    --unit-report) HINT_UNIT_REPORT=$2 ;;
+    --plan-summary) HINT_PLAN_SUMMARY=$2 ;;
+  esac
+}
+hint_path --template-review "$TEMPLATE_REVIEW"
+hint_path --unit-report "$UNIT_REPORT"
+hint_path --plan-summary "$PLAN_SUMMARY"
 
 if [ -z "$BWRAP" ]; then
   BWRAP=$(command -v bwrap 2>/dev/null) || BWRAP=/usr/bin/bwrap
@@ -155,10 +217,11 @@ if [ "$DRY" -eq 1 ]; then
   cc_say "[dry]   $ROOT/upstream: a throwaway repository, one commit on develop, author example.invalid"
   cc_say "[dry]   run: ataniq-intake init --state $ROOT/state --project $CC_PROJECT, then push develop into the mirror"
   cc_say "[dry]   $CONFIG (0600): pass A, stand-in agent, runtime claude 2.1.325, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
-  cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com"
-  cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-a as 2, report.txt)"
-  cc_say "[dry]   $ROOT/conf/managed-settings.json and a no-op $ROOT/conf/guard-hook"
+  cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook"
+  cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-c as 2, report.txt)"
+  cc_say "[dry]   $ROOT/conf/managed-settings.json (valid JSON, naming the PreToolUse hook /ataniq/qargi/guard-hook, the text of the marker) and a no-op $ROOT/conf/guard-hook"
   cc_say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of the built stand-in"
+  cc_say "[dry]   $ROOT/bin/ataniq-probe (0700), a copy of $BIN/ataniq-probe: the inputs file names the copy, because the probe is a bind source and the checkout is never mounted"
   if [ "$PASTA_COPY" -eq 1 ]; then
     cc_say "[dry]   $PASTA_USE, a copy of $PASTA_SRC (the subject is then a copy of passt, not pasta itself)"
   else
@@ -166,6 +229,8 @@ if [ "$DRY" -eq 1 ]; then
   fi
   cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest; run: ataniq-canary check-inputs"
   cc_say "[dry]   $ROOT/mirror-qual/config.json for qualify-mirror, with the acknowledgement left false for you"
+  cc_say "[dry]   $ROOT/answers.hint (0600): the paths the run suggests at its path prompts: mirror-report=$ROOT/mirror-qual/report.json, and the unit report, plan summary and template review when given"
+  cc_say "[dry]   $ROOT/CHECKLIST.txt (0600): one page for you, from checklist.txt.in, with these paths filled in"
   cc_say "[dry]   $ROOT/$CC_MARKER, the mark that canary-reset.sh looks for"
   cc_say "[dry]   print the commands you type next"
   exit 0
@@ -177,11 +242,26 @@ if [ "$BUILD" -eq 1 ]; then
   cc_check_bin "$BIN"
 fi
 
+# half_made_root runs when the script ends. After a failure it says, as the
+# last line, how to remove the root by hand; it removes nothing itself.
+half_made_root() {
+  _rc=$?
+  if [ "$_rc" -ne 0 ] && [ -n "${ROOT_MADE:-}" ]; then
+    printf '%s\n' "$CC_NAME: failed; the half-made root $ROOT has no mark, so canary-reset.sh refuses it: look at it, then remove it by hand (chmod -R u+w $ROOT, then rm -r $ROOT), or prepare again with another --root" >&2
+  fi
+  exit "$_rc"
+}
+
 # the parents get 0700 from the umask
 # shellcheck disable=SC2174
 if [ ! -d "$ROOT" ]; then mkdir -p -m 0700 -- "$ROOT"; fi
 chmod 0700 -- "$ROOT"
 cc_say "making $ROOT"
+# From here a failure leaves a half-made root. Prepare never deletes anything:
+# the last line says how to remove it by hand. The mark that canary-reset.sh
+# requires is written only by a prepare that finished.
+ROOT_MADE=1
+trap half_made_root EXIT
 mkdir -m 0700 -- "$ROOT/evidence" "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin"
 
 # The throwaway repository: one small commit on develop.
@@ -204,18 +284,37 @@ mkdir -m 0700 -- "$ROOT/conf/replay-screens"
 for _x in json txt; do
   [ -f "$SCREENS/idle-before-paste.$_x" ] || cc_die "the recorded screens are missing in the checkout: $SCREENS"
   cp -- "$SCREENS/idle-before-paste.$_x" "$ROOT/conf/replay-screens/1.$_x"
-  cp -- "$SCREENS/collapsed-paste-footer-a.$_x" "$ROOT/conf/replay-screens/2.$_x"
+  cp -- "$SCREENS/collapsed-paste-footer-c.$_x" "$ROOT/conf/replay-screens/2.$_x"
 done
 printf '%s\n' 'state=idle:app=claude-code' >"$ROOT/conf/replay-screens/report.txt"
 chmod 0600 -- "$ROOT/conf/replay-screens/"*
 
-printf '%s\n' '{"permissions":{"defaultMode":"default"}}' >"$ROOT/conf/managed-settings.json"
+# The managed settings name the guard hook as the PreToolUse hook command: the
+# provisioned copy of conf/guard-hook is bound at /ataniq/qargi/guard-hook
+# (profile.QargiInside and the guard hook's name), and the holder's assertion 8
+# searches this file for the marker text, GUARD_MARKER, which the inputs file
+# carries as sources.managed_marker (the spec requires it for claude). The
+# marker is a text this file holds, so the two cannot drift apart: it is the
+# name of the hook inside the sandbox.
+GUARD_MARKER=guard-hook
+GUARD_INSIDE=/ataniq/qargi/$GUARD_MARKER
+printf '%s\n' "{\"permissions\":{\"defaultMode\":\"default\"},\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$GUARD_INSIDE\"}]}]}}" >"$ROOT/conf/managed-settings.json"
+grep -qF -- "$GUARD_MARKER" "$ROOT/conf/managed-settings.json" ||
+  cc_die 'the managed-settings file does not hold the marker text it is written for'
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$ROOT/conf/guard-hook"
 chmod 0600 -- "$ROOT/conf/managed-settings.json"
 chmod 0700 -- "$ROOT/conf/guard-hook"
 
 cp -- "$BIN/ataniq-canary-standin" "$ROOT/agent-install/ataniq-canary-standin"
 chmod 0700 -- "$ROOT/agent-install/ataniq-canary-standin"
+
+# The probe is a bind source, and the checkout (where --bin lies by default) is
+# the first entry of never_mounted, which the holder's validate step refuses as
+# a bind source: the inputs file names this copy in the root, as it names the
+# copy of pasta. Step 9 of the run compares it with the built probe.
+cp -- "$BIN/ataniq-probe" "$ROOT/bin/ataniq-probe"
+chmod 0700 -- "$ROOT/bin/ataniq-probe"
+PROBE_USE=$ROOT/bin/ataniq-probe
 
 if [ "$PASTA_COPY" -eq 1 ]; then
   cp -- "$PASTA_SRC" "$PASTA_USE"
@@ -269,11 +368,12 @@ cat >"$INPUTS" <<EOF
   "version": 1, "canary": true, "project": "$CC_PROJECT", "layout_role": "${CC_PROJECT}-lead",
   "state_root": "$ROOT/state", "runtime_root": "$ROOT/runtime",
   "runtime": "claude", "runtime_version": "2.1.325",
-  "executables": {"pasta": "$PASTA_USE", "bwrap": "$BWRAP", "probe": "$BIN/ataniq-probe"},
+  "executables": {"pasta": "$PASTA_USE", "bwrap": "$BWRAP", "probe": "$PROBE_USE"},
   "sources": {
     "agent_install": "$ROOT/agent-install",
     "managed_settings": "$LEAD/managed-settings.json",
     "managed_settings_sha256": "$SETTINGS_SHA",
+    "managed_marker": "$GUARD_MARKER",
     "lead_skills": "$LEAD/skills",
     "instruction_file": "$LEAD/instructions.md",
     "git_identity_dir": "$LEAD/git-identity",
@@ -316,13 +416,45 @@ cat >"$ROOT/mirror-qual/config.json" <<EOF
 EOF
 chmod 0600 -- "$ROOT/mirror-qual/config.json"
 
+# The hints for the run script's path prompts: suggested paths and nothing
+# else, no word and no secret.
+HINTFILE=$ROOT/answers.hint
+printf 'mirror-report=%s\n' "$ROOT/mirror-qual/report.json" >"$HINTFILE"
+if [ -n "$HINT_UNIT_REPORT" ]; then printf 'unit-report=%s\n' "$HINT_UNIT_REPORT" >>"$HINTFILE"; fi
+if [ -n "$HINT_PLAN_SUMMARY" ]; then printf 'plan-summary=%s\n' "$HINT_PLAN_SUMMARY" >>"$HINTFILE"; fi
+if [ -n "$HINT_TEMPLATE_REVIEW" ]; then printf 'template-review=%s\n' "$HINT_TEMPLATE_REVIEW" >>"$HINTFILE"; fi
+chmod 0600 -- "$HINTFILE"
+
+# The owner's page: the template of the kit with the real paths. A value goes
+# into the sed expression with \, & and | escaped; the paths of a root hold no
+# such character, and --bin is escaped here.
+sed_value() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
+CHECKLIST=$ROOT/CHECKLIST.txt
+[ -f "$_d/checklist.txt.in" ] || cc_die "the checklist template is missing: $_d/checklist.txt.in"
+sed \
+  -e "s|@ROOT@|$(sed_value "$ROOT")|g" \
+  -e "s|@REPO@|$(sed_value "$REPO")|g" \
+  -e "s|@BIN@|$(sed_value "$BIN")|g" \
+  -e "s|@CONFIG@|$(sed_value "$CONFIG")|g" \
+  -e "s|@EVIDENCE@|$(sed_value "$ROOT/evidence")|g" \
+  -e "s|@HINTS@|$(sed_value "$HINTFILE")|g" \
+  -e "s|@HOLDER_RUN@|$(sed_value "$ROOT/runtime/leads/${CC_PROJECT}-lead")|g" \
+  -e "s|@RUN@|$(sed_value "$_d/canary-run.sh")|g" \
+  -e "s|@PREFLIGHT@|$(sed_value "$_d/canary-preflight.sh")|g" \
+  -e "s|@RESET@|$(sed_value "$_d/canary-reset.sh")|g" \
+  "$_d/checklist.txt.in" >"$CHECKLIST"
+chmod 0600 -- "$CHECKLIST"
+if grep -q '@[A-Z_]*@' "$CHECKLIST"; then cc_die "the checklist template holds a placeholder that was not filled: $CHECKLIST"; fi
+
 # The mark of this prepare, last: a prepare that failed is not reset.
 printf '%s\nproject %s\n' "$CC_MARKER_LINE" "$CC_PROJECT" >"$ROOT/$CC_MARKER"
 chmod 0600 -- "$ROOT/$CC_MARKER"
 
 cat <<EOF
 
-Done. Nothing was started. What you type next, in the checkout ($REPO):
+Done. Nothing was started. Your one page, with these paths filled in:
+     $CHECKLIST
+What you type next, in the checkout ($REPO):
 
 1. The mirror qualification is your own step. Read docs/qualification-lead-mirror.md
    and the template note, then set "i_run_this_on_purpose" to true in
@@ -333,6 +465,8 @@ Done. Nothing was started. What you type next, in the checkout ($REPO):
 
 2. The attended run (read its dry run first, add --dry):
      sh qualification/canary/run/canary-run.sh --pass A --config $CONFIG --evidence $ROOT/evidence
+   At its path prompts it shows "(Enter for: PATH)" from $HINTFILE; a path you
+   type wins, and every word it asks for (yes, read, integrate, ...) is yours.
 
 A failed or finished attempt is put back with:
      sh qualification/canary/run/canary-reset.sh --root $ROOT
