@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadholder/sandboxstart"
@@ -117,10 +118,35 @@ func checkInputs(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 			return bad(c.field)
 		}
 	}
+	if err := checkLiveAgentFile(cfg, in); err != nil {
+		return err
+	}
 	if err := checkTrial(cfg, in); err != nil {
 		return err
 	}
 	return checkMarkerInSettings(cfg, in)
+}
+
+// checkLiveAgentFile holds a live agent's command to the bind: agent.argv[0]
+// must be a file under /ataniq/agent (the agent's bind inside), and the file of
+// that name must exist in sources.agent_install as a regular file that is not a
+// link, so that the run's version step, which strips the bind's name from
+// argv[0] and runs the file in the install folder, runs the very agent that
+// starts. The stand-in's tests name no such file, so only a live agent is held
+// to it. The refusal names the field and never a path.
+func checkLiveAgentFile(cfg leadcanary.Config, in sandboxstart.Inputs) error {
+	if cfg.Agent.Kind != leadcanary.AgentLive {
+		return nil
+	}
+	rest, ok := strings.CutPrefix(cfg.Agent.Argv[0], profile.AgentInside+"/")
+	if !ok || rest == "" {
+		return fmt.Errorf("%w: agent.argv[0] (not under %s)", ErrInputs, profile.AgentInside)
+	}
+	fi, err := os.Lstat(filepath.Join(in.Sources.AgentInstall, rest))
+	if err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("%w: agent.argv[0] (no regular file of that name in sources.agent_install)", ErrInputs)
+	}
+	return nil
 }
 
 // The names of the holder's two sockets in its runtime folder, as the serving
