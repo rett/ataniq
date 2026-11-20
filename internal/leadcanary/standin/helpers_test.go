@@ -238,3 +238,16 @@ func waitUntil(t testing.TB, what string, cond func() bool) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+// newRepoWithoutIdentity is newRepo as the sandbox has it: the repository's own
+// configuration names no user, the home is empty, and git may not guess a
+// user (user.useConfigOnly), so that the identity can only come from a file
+// that GIT_CONFIG_GLOBAL names.
+func newRepoWithoutIdentity(t testing.TB) testRepo {
+	t.Helper()
+	r := newRepo(t)
+	runGit(t, r.Dir, "config", "--unset", "user.name")
+	runGit(t, r.Dir, "config", "--unset", "user.email")
+	runGit(t, r.Dir, "config", "user.useConfigOnly", "true")
+	return r
+}

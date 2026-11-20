@@ -152,7 +152,26 @@ func TestCommitRefusesATokenFileThatIsALink(t *testing.T) {
 // environment, then runs the real git: the environment holds only what the
 // stand-in sets, and the arguments carry no text of a message.
 func TestCommitUsesGitPathWithAMinimalEnvironment(t *testing.T) {
+	for _, withGlobal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "home only", true: "with GIT_CONFIG_GLOBAL"}[withGlobal], func(t *testing.T) {
+			commitUsesGitPathWithAMinimalEnvironment(t, withGlobal)
+		})
+	}
+}
+
+// withGlobal passes a GIT_CONFIG_GLOBAL to Commit: it, and only it, joins the
+// names the environment holds. The variable is also set in the process
+// environment, where it must not be read from.
+func commitUsesGitPathWithAMinimalEnvironment(t *testing.T, withGlobal bool) {
 	r := newRepo(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/nonexistent/from-the-process")
+	global := ""
+	if withGlobal {
+		global = filepath.Join(t.TempDir(), "config")
+		if err := os.WriteFile(global, []byte("[user]\n\tname = Sample\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	real := GitPath
 	rec := filepath.Join(t.TempDir(), "record")
 	wrapper := filepath.Join(t.TempDir(), "git")
@@ -163,7 +182,7 @@ func TestCommitUsesGitPathWithAMinimalEnvironment(t *testing.T) {
 	t.Setenv("ATANIQ_SAMPLE_SECRET", "leak")
 	GitPath = wrapper
 	defer func() { GitPath = real }()
-	if err := Commit(r.Dir, r.Home, testToken); err != nil {
+	if err := CommitWithConfig(r.Dir, r.Home, global, testToken); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(rec)
@@ -171,7 +190,7 @@ func TestCommitUsesGitPathWithAMinimalEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := string(b)
-	if strings.Contains(record, "leak") || strings.Contains(record, "ATANIQ_SAMPLE_SECRET") {
+	if strings.Contains(record, "leak") || strings.Contains(record, "ATANIQ_SAMPLE_SECRET") || strings.Contains(record, "from-the-process") {
 		t.Fatalf("git inherited the environment:\n%s", record)
 	}
 	var calls int
@@ -186,7 +205,11 @@ func TestCommitUsesGitPathWithAMinimalEnvironment(t *testing.T) {
 			name, _, _ := strings.Cut(l, "=")
 			got[name] = true
 		}
-		for _, name := range []string{"PATH", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "HOME"} {
+		names := []string{"PATH", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "HOME"}
+		if withGlobal {
+			names = append(names, "GIT_CONFIG_GLOBAL")
+		}
+		for _, name := range names {
 			if !got[name] {
 				t.Errorf("git call %q lacks %s", lines[0], name)
 			}
@@ -207,7 +230,32 @@ func TestCommitUsesGitPathWithAMinimalEnvironment(t *testing.T) {
 	if calls < 4 {
 		t.Fatalf("%d git calls recorded", calls)
 	}
+	if withGlobal && !strings.Contains(record, "GIT_CONFIG_GLOBAL="+global+"\n") {
+		t.Fatalf("git was not given the file %s:\n%s", global, record)
+	}
 	if !strings.Contains(record, "ARGS -c core.hooksPath=/dev/null") {
 		t.Fatalf("no call carries the fixed configuration:\n%s", record)
+	}
+}
+
+// The sandbox's layout: the tree has no identity of its own, the home is empty,
+// and the identity is only in the file GIT_CONFIG_GLOBAL names. Without that
+// file passed on, git has no identity (useConfigOnly keeps it from guessing
+// one from the host's account and name, which would make the test depend on
+// the host).
+func TestCommitCarriesTheIdentityOfTheGlobalConfigFile(t *testing.T) {
+	r := newRepoWithoutIdentity(t)
+	ident := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(ident, []byte("[user]\n\tname = Provisioned\n\temail = provisioned@example.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Commit(r.Dir, r.Home, testToken); err == nil {
+		t.Fatal("Commit made a commit with no identity anywhere")
+	}
+	if err := CommitWithConfig(r.Dir, r.Home, ident, testToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := runGit(t, r.Dir, "log", "-1", "--format=%an <%ae> %cn <%ce>"); got != "Provisioned <provisioned@example.invalid> Provisioned <provisioned@example.invalid>" {
+		t.Fatalf("the commit carries %q", got)
 	}
 }

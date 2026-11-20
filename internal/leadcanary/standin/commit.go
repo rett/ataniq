@@ -33,18 +33,28 @@ const (
 // it; nothing else does.
 var GitPath = "/usr/bin/git"
 
+// gitAccount is what the stand-in passes on of its own environment to git:
+// the account's HOME and the file GIT_CONFIG_GLOBAL names. Either may be
+// empty.
+type gitAccount struct{ home, configGlobal string }
+
 // gitEnv is the whole environment of every git process: nothing is inherited.
-// HOME is passed on, when there is one, so that git finds the identity that
-// provisioning configured; the system configuration is not read.
-func gitEnv(home string) []string {
+// HOME and GIT_CONFIG_GLOBAL are passed on, when there are any, so that git
+// finds the identity that provisioning configured (inside the sandbox it is
+// in the file GIT_CONFIG_GLOBAL names, and there is no other); the system
+// configuration is not read. No other variable is passed on.
+func gitEnv(a gitAccount) []string {
 	env := []string{
 		"PATH=/usr/bin:/bin",
 		"LC_ALL=C",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
 	}
-	if home != "" {
-		env = append(env, "HOME="+home)
+	if a.home != "" {
+		env = append(env, "HOME="+a.home)
+	}
+	if a.configGlobal != "" {
+		env = append(env, "GIT_CONFIG_GLOBAL="+a.configGlobal)
 	}
 	return env
 }
@@ -59,12 +69,12 @@ var gitConfig = []string{
 
 // git runs GitPath in dir with the fixed configuration, the explicit
 // environment and no input. It returns what git wrote to standard output.
-func git(dir, home string, args ...string) (string, error) {
+func git(dir string, a gitAccount, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, GitPath, append(append([]string(nil), gitConfig...), args...)...)
 	cmd.Dir = dir
-	cmd.Env = gitEnv(home)
+	cmd.Env = gitEnv(a)
 	var out, errOut limitedBuffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := cmd.Run(); err != nil {
@@ -126,18 +136,26 @@ func stage(reason string, err error) error { return &stageError{reason, err} }
 // other text reaches git or a file. TokenFile must be a regular file or not
 // exist: a link, a pipe or any other kind of file is refused, without waiting
 // for it. An empty commit is allowed, so a token that is already in the file
-// is committed again. home is the HOME of git's environment.
+// is committed again. home is the HOME of git's environment; git gets no
+// GIT_CONFIG_GLOBAL (see CommitWithConfig).
 func Commit(dir, home, token string) error {
-	_, err := commitTree(dir, home, token)
+	return CommitWithConfig(dir, home, "", token)
+}
+
+// CommitWithConfig is Commit with configGlobal, when it is not empty, as the
+// GIT_CONFIG_GLOBAL of git's environment: the file that holds the identity
+// of the commit when neither the tree nor HOME does.
+func CommitWithConfig(dir, home, configGlobal, token string) error {
+	_, err := commitTree(dir, gitAccount{home, configGlobal}, token)
 	return err
 }
 
 // commitTree is Commit; it also returns the short name of the new commit.
-func commitTree(dir, home, token string) (string, error) {
+func commitTree(dir string, a gitAccount, token string) (string, error) {
 	if !ValidToken(token) {
 		return "", stage(reasonToken, errors.New("standin: not a valid token"))
 	}
-	top, err := git(dir, home, "rev-parse", "--show-toplevel")
+	top, err := git(dir, a, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", stage(reasonTree, err)
 	}
@@ -145,24 +163,24 @@ func commitTree(dir, home, token string) (string, error) {
 	if !filepath.IsAbs(top) {
 		return "", stage(reasonTree, fmt.Errorf("standin: git names the top of the tree as %q", top))
 	}
-	if _, err := git(top, home, "rev-parse", "--verify", "--quiet", "refs/heads/"+Branch); err == nil {
-		_, err = git(top, home, "switch", Branch)
+	if _, err := git(top, a, "rev-parse", "--verify", "--quiet", "refs/heads/"+Branch); err == nil {
+		_, err = git(top, a, "switch", Branch)
 		if err != nil {
 			return "", stage(reasonBranch, err)
 		}
-	} else if _, err = git(top, home, "switch", "--create", Branch); err != nil {
+	} else if _, err = git(top, a, "switch", "--create", Branch); err != nil {
 		return "", stage(reasonBranch, err)
 	}
 	if err := writeRegular(filepath.Join(top, TokenFile), token+"\n", 0o644); err != nil {
 		return "", stage(reasonFile, err)
 	}
-	if _, err := git(top, home, "add", "--", TokenFile); err != nil {
+	if _, err := git(top, a, "add", "--", TokenFile); err != nil {
 		return "", stage(reasonAdd, err)
 	}
-	if _, err := git(top, home, "commit", "--no-verify", "--allow-empty", "--message", Subject, "--", TokenFile); err != nil {
+	if _, err := git(top, a, "commit", "--no-verify", "--allow-empty", "--message", Subject, "--", TokenFile); err != nil {
 		return "", stage(reasonCommit, err)
 	}
-	short, err := git(top, home, "rev-parse", "--short", "HEAD")
+	short, err := git(top, a, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return "", stage(reasonCommit, err)
 	}
