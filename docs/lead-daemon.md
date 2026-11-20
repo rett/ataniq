@@ -684,8 +684,12 @@ through this manager, and that name is no role's unit name (see
 ### Properties of a unit
 
 Every unit is a transient user unit with these fixed properties: `Type=exec`,
-`CollectMode=inactive-or-failed`, `KillMode=control-group`, `Restart=no`,
-`TimeoutStopSec=2s` and `NoNewPrivileges=yes`. The description is
+`CollectMode=inactive-or-failed`, `KillMode=control-group`, `Restart=no`
+and `TimeoutStopSec=2s`. A lead unit has no `NoNewPrivileges` on purpose: with it,
+the command that pasta runs in its user namespace keeps no `CAP_SETUID`, so the
+nested bubblewrap cannot set up its uid map and the sandbox start is refused.
+The agent still has no-new-privs, because bubblewrap sets it on the command it
+execs. The description is
 `ataniq lead epoch=<n> intent=<id>`, and a reader gets the epoch and the intent
 back from it. The command is an absolute executable with its arguments, a
 working directory and an explicit environment. The manager sends the command

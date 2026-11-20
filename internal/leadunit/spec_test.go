@@ -180,7 +180,6 @@ func TestFixedProperties(t *testing.T) {
 		{"KillMode", "control-group"},
 		{"Restart", "no"},
 		{"TimeoutStopSec", "2s"},
-		{"NoNewPrivileges", "yes"},
 	}
 	got := FixedProperties()
 	if !reflect.DeepEqual(got, want) {
@@ -189,6 +188,19 @@ func TestFixedProperties(t *testing.T) {
 	got[0].Value = "changed"
 	if FixedProperties()[0].Value != "exec" {
 		t.Fatal("FixedProperties shares its slice between calls")
+	}
+}
+
+// A lead unit with no-new-privs stops the nested launch: bubblewrap inside
+// pasta's user namespace loses CAP_SETUID and cannot set up its uid map, so
+// the sandbox start is refused. Bubblewrap sets no-new-privs on the agent
+// itself. Add the property back only with a nested pasta and bubblewrap
+// launch check inside a unit.
+func TestFixedPropertiesHaveNoNoNewPrivileges(t *testing.T) {
+	for _, p := range FixedProperties() {
+		if p.Name == "NoNewPrivileges" {
+			t.Fatalf("FixedProperties sets NoNewPrivileges=%s: with no-new-privs on the unit, bubblewrap inside pasta's user namespace has no CAP_SETUID and the sandbox start fails with a uid map error; bubblewrap sets no-new-privs on the agent itself", p.Value)
+		}
 	}
 }
 
