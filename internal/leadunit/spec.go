@@ -93,8 +93,9 @@ type Property struct {
 // With no-new-privs on the unit, the command there keeps only
 // CAP_NET_BIND_SERVICE, CAP_NET_ADMIN and CAP_SYS_ADMIN and no CAP_SETUID, so
 // bubblewrap fails to set up its uid map and the start is refused; without it
-// the command is root there with the full set. The agent still has no-new-privs,
-// because bubblewrap sets it on the command it execs. Do not add the property
+// the command is root there with the full set. Bubblewrap sets no-new-privs on the
+// agent it execs, as observed with bubblewrap 0.13.1; no probe assertion checks
+// that yet, and a later one should. Do not add the property
 // back without a nested pasta and bubblewrap launch check inside a unit.
 func FixedProperties() []Property {
 	return []Property{

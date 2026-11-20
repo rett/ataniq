@@ -268,6 +268,16 @@ func TestStartArgvCarriesEveryFixedProperty(t *testing.T) {
 	}
 }
 
+func TestFixedPropertyRendersNoNewPrivileges(t *testing.T) {
+	for value, want := range map[string]string{"yes": "true", "no": "false"} {
+		parts, err := fixedProperty(leadunit.Property{Name: "NoNewPrivileges", Value: value})
+		if err != nil {
+			t.Fatalf("%s: %v", value, err)
+		}
+		mustEqual(t, parts, []string{"NoNewPrivileges", "b", want})
+	}
+}
+
 func TestFixedPropertyRefusesWhatItDoesNotKnow(t *testing.T) {
 	for _, p := range []leadunit.Property{
 		{Name: "MemoryMax", Value: "1G"},
