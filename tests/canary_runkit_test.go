@@ -347,6 +347,24 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 			t.Errorf("%s does not say: %s", name, oneTarget)
 		}
 	}
+	// The two helpers are fenced too: the reset deletes after a typed word, the
+	// prepare writes under the cache folder.
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"`qualification/canary/run/canary-reset.sh` also deletes directories",
+			"only by the owner's hand, never by an agent",
+			"`--dry` and `--self-test`",
+			"`qualification/canary/run/canary-prepare.sh`",
+		} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s does not say: %s", name, want)
+			}
+		}
+	}
 	if _, err := os.Stat(filepath.Join(root(t), "qualification/canary/run/README.md")); err != nil {
 		t.Error(err)
 	}
