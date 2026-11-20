@@ -448,13 +448,13 @@ check_mirror_report() {
 # 10. The tools step 3 runs and timeout, the sysctl and lingering it reads.
 check_host() {
   _absent=
-  for _t in systemctl loginctl git bwrap pasta; do
+  for _t in systemctl loginctl git bwrap pasta ss; do
     command -v "$_t" >/dev/null 2>&1 || _absent="$_absent $_t"
   done
   if [ -n "$_absent" ]; then
-    fix "not on PATH (step 3 runs them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
+    fix "not on PATH (steps 3 and 6 run them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
   else
-    ok "systemctl, loginctl, git, bwrap and pasta are on PATH"
+    ok "systemctl, loginctl, git, bwrap, pasta and ss are on PATH"
   fi
   if command -v timeout >/dev/null 2>&1; then
     ok "timeout is on PATH (the run cuts off each ask of the daemon's status with it)"
@@ -522,4 +522,12 @@ cc_say "     $BIN/ataniq-console --attach $HOLDER_RUN --ticket-file $HOLDER_RUN/
 cc_say '   (In the second epoch the run prints this command with --viewer added: use that one.)'
 cc_say
 cc_say '3. In this terminal (T1), the run (read its dry run first, add --dry):'
-cc_say "     sh $_d/canary-run.sh --pass A --config $CONFIG --evidence $EVIDENCE"
+# The pass the root was made for: a stand-in agent is pass A, a live agent is
+# pass B. A config that cannot say gets a placeholder, never a guess.
+_kind=$("$BIN/ataniq-canary" show --config "$CONFIG" 2>/dev/null | awk 'index($0, "agent_kind=") == 1 { print substr($0, 12); exit }')
+case $_kind in
+  stand-in) _pass=A ;;
+  live) _pass=B ;;
+  *) _pass='<A or B>' ;;
+esac
+cc_say "     sh $_d/canary-run.sh --pass $_pass --config $CONFIG --evidence $EVIDENCE"

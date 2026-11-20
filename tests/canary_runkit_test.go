@@ -886,6 +886,10 @@ func TestCanaryRunKitOnlyOneResultGetsTheEnter(t *testing.T) {
 					want = "look"
 				case o == "submitted" && r == "" && w == "whole":
 					want = "none"
+				case o == "refused" || (o == "not-now" && w == "nothing"):
+					// Nothing was written: the owner supplies the message, on
+					// a refusal and on a not-now alike (the screen was not ready).
+					want = "owner-supplies"
 				case got == "owner-enter" || got == "look" || got == "none":
 					want = "another action than " + got
 				}
@@ -2548,7 +2552,7 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 				// prints for the owner to type are text.
 				if bad == "systemctl" && rel == canaryPreflightScript {
 					ok := false
-					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap and pasta are on PATH"} {
+					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap, pasta and ss are on PATH"} {
 						ok = ok || strings.Contains(l, allowed)
 					}
 					if ok {
@@ -5470,7 +5474,7 @@ cat '`+p.dir+`/version-extra' 2>/dev/null || :
 	canaryWrite(t, p.root, "mirror-qual/report.json", "{}\n")
 	canaryWrite(t, p.root, "mirror-qual/report.json.fields", "format=1\ntemplate.sha256="+hex.EncodeToString(sum[:]))
 	canaryWrite(t, p.root, "answers.hint", "mirror-report="+p.root+"/mirror-qual/report.json\n")
-	canaryWrite(t, p.dir, "show.out", "holder_runtime_dir="+p.root+"/runtime/leads/throwaway-one-lead\nproject=throwaway-one\n")
+	canaryWrite(t, p.dir, "show.out", "holder_runtime_dir="+p.root+"/runtime/leads/throwaway-one-lead\nproject=throwaway-one\nagent_kind=stand-in\n")
 
 	// The tools: real ones linked, the rest stubs that record their calls.
 	for _, name := range canaryPFTools {
@@ -5489,6 +5493,7 @@ echo Linger=no
 `)
 	p.stub(p.tools, "bwrap", "exit 97\n")
 	p.stub(p.tools, "pasta", "exit 97\n")
+	p.stub(p.tools, "ss", "exit 97\n")
 	p.stub(p.tools, "qargi", `[ "$1" = local ] && [ "$2" = list ] || exit 97
 [ -f '`+p.dir+`/qargi-fail' ] && exit 1
 cat '`+p.dir+`/qargi-list'
@@ -5905,7 +5910,11 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 		},
 		"pasta is not on PATH": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "pasta")) }, nil, 1,
-			[]string{"FIX:  not on PATH (step 3 runs them): pasta -- type: put them on PATH"},
+			[]string{"FIX:  not on PATH (steps 3 and 6 run them): pasta -- type: put them on PATH"},
+		},
+		"ss is not on PATH": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "ss")) }, nil, 1,
+			[]string{"FIX:  not on PATH (steps 3 and 6 run them): ss -- type: put them on PATH"},
 		},
 		"timeout is not on PATH": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "timeout")) }, nil, 1,
