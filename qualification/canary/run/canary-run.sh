@@ -549,18 +549,49 @@ was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
 # lead. Each takes the text of a program's output or of a report, and none runs
 # a program.
 
-# open_runs LIST REPO prints the folder of each run that "qargi local list"
-# (the text in the file LIST) shows as open and whose repo.path is REPO. A run
-# is open unless it is applied (or closed) and, when applied, merged. The rows
-# of a run whose folder is gone, and the lines that are not a row, are passed
-# over.
-open_runs() {
-  awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1" |
-    while IFS= read -r _r; do
-      if [ "$(cat "$_r/repo.path" 2>/dev/null || :)" = "$2" ]; then printf '%s\n' "$_r"; fi
-    done
+# real_dir prints the resolved path of a folder (symbolic links followed, no
+# trailing slash), or the argument itself when it cannot be entered.
+real_dir() {
+  [ -n "$1" ] || return 0
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
 }
 
+# repo_roots REPO prints the resolved path of REPO and, when REPO is a linked
+# work tree, the resolved path of the repository's main work tree. qargi
+# records a run's repo.path as the resolved path of the repository it was
+# started in, which is the main work tree.
+repo_roots() {
+  _rr=$(real_dir "$1")
+  printf '%s\n' "$_rr"
+  _gc=$(cd "$_rr" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || return 0
+  case $_gc in
+    */.git)
+      _gc=${_gc%/.git}
+      if [ "$_gc" != "$_rr" ]; then printf '%s\n' "$_gc"; fi
+      ;;
+  esac
+}
+
+# open_runs LIST REPO prints the folder of each run that "qargi local list"
+# (the text in the file LIST) shows as open and whose repo.path is REPO or the
+# main work tree of REPO, both sides compared as resolved paths. A run is open
+# unless it is applied (or closed) and, when applied, merged. The lines that
+# are not a row are passed over; a row of a run whose folder is gone ("directory
+# gone") is passed over and counted on standard error, for the caller's log.
+open_runs() {
+  _roots=$(repo_roots "$2")
+  awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1" |
+    while IFS= read -r _r; do
+      _rp=$(real_dir "$(cat "$_r/repo.path" 2>/dev/null || :)")
+      case "
+$_roots
+" in
+        *"
+$_rp
+"*) printf '%s\n' "$_r" ;;
+      esac
+    done
+}
 
 # list_looks_right reports whether the file is what "qargi local list" prints:
 # its first line is the header.
@@ -1031,8 +1062,10 @@ step_1() {
   no_open_runs || return 0
   affirm 'Lead: no agent session is open that has been told about the slice' yes || return 0
   runcap lead-units systemctl --user list-units --all --no-legend --plain 'ataniq-lead-*'
+  check 'the ataniq-lead-* units can be listed' is_rc 0 || return 0
   check 'no ataniq-lead-* unit exists' is_empty_file "$LASTOUT" || return 0
   runcap units-before systemctl --user list-units --all --no-legend --plain 'ataniq-*'
+  check 'the ataniq units can be listed' is_rc 0 || return 0
   if [ "$DRY" -eq 0 ]; then
     awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-before.txt"
     _loaded=$(loaded_units "$LASTOUT")
@@ -1145,6 +1178,7 @@ step_3() {
   if [ "$DRY" -eq 0 ]; then _head=$(cat "$LASTOUT"); else _head=; fi
   runcap branch git -C "$REPO" rev-parse --abbrev-ref HEAD
   runcap worktree git -C "$REPO" status --porcelain
+  check 'the work tree can be read' is_rc 0 || return 0
   _wtf=$LASTOUT
   runcap develop git -C "$REPO" rev-parse --verify 'develop^{commit}'
   check 'the branch develop can be read' is_rc 0 || return 0

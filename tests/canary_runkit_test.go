@@ -1883,6 +1883,56 @@ func TestCanaryRunKitOpenRuns(t *testing.T) {
 	}
 }
 
+// qargi records a run's repo.path as the resolved path of the main work tree.
+// The repository the script is given may be reached through a symbolic link,
+// with a trailing slash, or be a linked work tree of the same repository.
+func TestCanaryRunKitOpenRunsCompareResolvedPaths(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := filepath.Join(dir, "main")
+	linked := filepath.Join(dir, "linked")
+	link := filepath.Join(dir, "link")
+	for _, args := range [][]string{
+		{"init", "-q", main},
+		{"-C", main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", main, "worktree", "add", "-q", "--detach", linked},
+	} {
+		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.Symlink(main, link); err != nil {
+		t.Skip("no symbolic link")
+	}
+	canaryWrite(t, dir, "run1/repo.path", main+"\n")
+	run := filepath.Join(dir, "run1")
+	list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+		"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+		"build      one                1d         no     no       " + run,
+		"",
+	}, "\n"))
+	for _, c := range []struct{ name, repo, want string }{
+		{"the resolved path", main, run},
+		{"a trailing slash", main + "/", run},
+		{"a symbolic link", link, run},
+		{"a symbolic link and a trailing slash", link + "/", run},
+		{"a linked work tree", linked, run},
+		{"a linked work tree with a trailing slash", linked + "/", run},
+		{"a folder that is not the repository", dir, ""},
+		{"a folder that does not exist", filepath.Join(dir, "absent"), ""},
+	} {
+		if got := canaryRead(t, "open-runs", list, c.repo); got != c.want {
+			t.Errorf("open runs, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCanaryRunKitLoadedUnitsLeaveSlicesOut(t *testing.T) {
 	dir := t.TempDir()
 	only := canaryWrite(t, dir, "slices.txt", "ataniq-qualify-ab12.slice loaded active active x\nataniq-old.slice loaded inactive dead y\n")
@@ -2037,6 +2087,24 @@ func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
 	} {
 		if !strings.Contains(funcs[c.fn], c.word) {
 			t.Errorf("%s does not hold %s", c.fn, c.word)
+		}
+	}
+	// A failing command must not read as an empty answer: each listing that a
+	// step reads is followed by a check of its status.
+	for _, c := range []struct{ fn, cmd, check string }{
+		{"step_1", "runcap lead-units systemctl", "check 'the ataniq-lead-* units can be listed' is_rc 0"},
+		{"step_1", "runcap units-before systemctl", "check 'the ataniq units can be listed' is_rc 0"},
+		{"step_3", `runcap worktree git -C "$REPO" status --porcelain`, "check 'the work tree can be read' is_rc 0"},
+	} {
+		body := funcs[c.fn]
+		i := strings.Index(body, c.cmd)
+		if i < 0 {
+			t.Errorf("%s does not run %s", c.fn, c.cmd)
+			continue
+		}
+		rest := body[i:]
+		if nl := strings.Index(rest, "\n"); nl < 0 || !strings.HasPrefix(strings.TrimLeft(rest[nl:], " \n"), c.check) {
+			t.Errorf("%s: %s is not followed by %s", c.fn, c.cmd, c.check)
 		}
 	}
 	// Without qargi, or with a list it cannot read, the old prompt stays and the log says so.
