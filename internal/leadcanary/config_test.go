@@ -485,12 +485,70 @@ func TestAgentKinds(t *testing.T) {
 	for _, k := range []leadcanary.AgentKind{leadcanary.AgentStandIn, leadcanary.AgentLive} {
 		c := f.config(t)
 		c.Agent.Kind = k
+		if k == leadcanary.AgentLive {
+			c.Agent.FooterMode = "manual"
+			c.Agent.Argv = []string{"/ataniq/agent/claude"}
+		}
 		if err := c.Validate(); err != nil {
 			t.Fatalf("%s: %v", k, err)
 		}
 	}
 	if leadcanary.AgentStandIn != "stand-in" || leadcanary.AgentLive != "live" {
 		t.Fatal("the kinds are stand-in and live")
+	}
+}
+
+// A live agent with inject on is held to the recogniser's names of the mode.
+func TestLiveFooterModeValues(t *testing.T) {
+	f := newFixture(t)
+	live := func(mode string, inject bool) leadcanary.Config {
+		c := f.config(t)
+		c.Agent.Kind = leadcanary.AgentLive
+		c.Agent.FooterMode = mode
+		c.Agent.Argv = []string{"/ataniq/agent/claude"}
+		c.Inject = inject
+		return c
+	}
+	for _, ok := range []string{"manual", "auto"} {
+		if err := live(ok, true).Validate(); err != nil {
+			t.Fatalf("%s: %v", ok, err)
+		}
+	}
+	for _, mode := range []string{"manual mode on", "sample mode on", "Manual", "auto mode on (shift+tab to cycle)", "plan"} {
+		err := live(mode, true).Validate()
+		wantConfigError(t, err, "agent.footer_mode")
+		if !strings.Contains(err.Error(), `"manual"`) || !strings.Contains(err.Error(), `"auto"`) {
+			t.Fatalf("%q: the message does not name the two values: %v", mode, err)
+		}
+	}
+	// With inject off nothing is injected, so no mode is read; the stand-in is
+	// never held to it.
+	if err := live("sample mode on", false).Validate(); err != nil {
+		t.Fatalf("inject off: %v", err)
+	}
+	c := f.config(t)
+	c.Agent.FooterMode = "sample mode on"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("stand-in: %v", err)
+	}
+}
+
+// A live agent's command is the file in the install folder, under the bind.
+func TestLiveArgv0UnderTheBind(t *testing.T) {
+	f := newFixture(t)
+	for _, argv0 := range []string{"/usr/bin/claude", "/ataniq/agent", "/ataniq/agent/", "/ataniq/agentx/claude", "/ataniq/agent/../x"} {
+		c := f.config(t)
+		c.Agent.Kind = leadcanary.AgentLive
+		c.Agent.FooterMode = "manual"
+		c.Agent.Argv = []string{argv0}
+		wantConfigError(t, c.Validate(), "agent.argv[0]")
+	}
+	c := f.config(t)
+	c.Agent.Kind = leadcanary.AgentLive
+	c.Agent.FooterMode = "manual"
+	c.Agent.Argv = []string{"/ataniq/agent/bin/claude", "--model", "x"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

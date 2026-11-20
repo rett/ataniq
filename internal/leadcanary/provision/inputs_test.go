@@ -155,6 +155,40 @@ func TestTheInputsOfTheConfigPassTheProfile(t *testing.T) {
 	}
 }
 
+// A live agent's command must be a file that exists in the install folder: the
+// run's version step runs that file, and a wrapper that is not it would pass
+// the config's checks and break the step.
+func TestCheckInputsHoldsALiveAgentToAFileOfTheInstallFolder(t *testing.T) {
+	w := provisiontest.New(t)
+	w.Cfg.Agent.Kind = leadcanary.AgentLive
+	w.Cfg.Agent.FooterMode = "manual"
+	w.Cfg.Agent.Argv = []string{"/ataniq/agent/claude"}
+	in := goodInputs(t, w)
+	in.Sources.AgentInstall = t.TempDir()
+
+	// No file of that name: refused, naming the field and not the path.
+	err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600))
+	if !errors.Is(err, ErrInputs) || !contains(err.Error(), "agent.argv[0]") || contains(err.Error(), in.Sources.AgentInstall) {
+		t.Fatalf("error %v: want a mismatch that names agent.argv[0] and no path", err)
+	}
+	// A link, even to a file, is no file of the folder.
+	other := filepath.Join(t.TempDir(), "real")
+	provisiontest.WriteFile(t, other, []byte("x"), 0o700)
+	if err := os.Symlink(other, filepath.Join(in.Sources.AgentInstall, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600)); !errors.Is(err, ErrInputs) {
+		t.Fatalf("a link: error %v", err)
+	}
+	if err := os.Remove(filepath.Join(in.Sources.AgentInstall, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	provisiontest.WriteFile(t, filepath.Join(in.Sources.AgentInstall, "claude"), []byte("x"), 0o700)
+	if err := CheckInputs(w.Cfg, writeInputs(t, in, 0o600)); err != nil {
+		t.Fatalf("the file is there: %v", err)
+	}
+}
+
 // An inputs file as the prepare script wrote it before the marker: no
 // sources.managed_marker. The holder refuses it at validate-config, so
 // check-inputs must refuse it, naming the key.

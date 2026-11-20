@@ -1,12 +1,24 @@
 #!/bin/sh
-# Prepare the set-up of pass A of the canary run: the roots, the throwaway
+# Prepare the set-up of a pass of the canary run: the roots, the throwaway
 # mirror, the config, the sandbox inputs, the replay screens, the managed
-# settings and the stand-in copy, and the profile digest. Read README.md
-# beside this file first.
+# settings and, for pass A, the stand-in copy or, for pass B, the copy of the
+# tested claude, and the profile digest. Read README.md beside this file first.
 #
 #   canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH]
 #                     [--bwrap PATH] [--build] [--template-review PATH]
 #                     [--unit-report PATH] [--plan-summary PATH] [--dry]
+#   canary-prepare.sh --pass B --claude PATH [--model NAME] [the same]
+#
+# Pass B is the live agent: --claude names the tested claude executable (one
+# regular file: not a link, not the version manager's shim), which is copied to
+# ROOT/agent-install/claude after `env -i HOME=<a new empty folder> COPY
+# --version` names the tested version the config declares (this is the one
+# program prepare runs besides ataniq-intake and ataniq-canary, and it runs it
+# only for pass B and only without --dry). The config is a live one (agent.kind
+# live, the executable as argv[0], DISABLE_AUTOUPDATER=1 in agent.env,
+# footer_mode manual, inject true), and the pin is taken last, after the
+# environment and everything else the digest covers is in place. It also writes
+# ROOT/netcheck.sh, which the owner runs by hand: prepare never runs it.
 #
 # It never answers a prompt and starts no unit, no daemon, no sandbox and no
 # agent: it makes folders and files, runs git on a throwaway repository,
@@ -53,6 +65,11 @@ REPO=$(cd -P -- "$_d/../../.." && pwd -P)
 
 ROOT=
 PASS=A
+CLAUDE_SRC=
+MODEL=
+# The tested version of the runtime, the one the config and the inputs file
+# declare; pass B holds the claude copy to it.
+RUNTIME_VERSION=2.1.325
 BIN=$REPO/build/canary
 PASTA=
 BWRAP=
@@ -93,9 +110,13 @@ pasta_plan() {
 usage() {
   printf '%s\n' 'usage: canary-prepare.sh [--root DIR] [--pass A] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]' \
     '                         [--template-review PATH] [--unit-report PATH] [--plan-summary PATH] [--dry]' \
-    '       --root DIR    the folder to make (default: ataniq-canary-a in your cache folder);' \
-    '                     it must be new or empty, outside /tmp and outside the checkout' \
-    '       --pass A      the pass (only A is prepared: pass B has a live config of its own)' \
+    '       canary-prepare.sh --pass B --claude PATH [--model NAME] [the same arguments]' \
+    '       --root DIR    the folder to make (default: ataniq-canary-a, or -b for pass B, in your cache' \
+    '                     folder); it must be new or empty, outside /tmp and outside the checkout' \
+    '       --pass A|B    the pass: A the stand-in (default), B the live agent (needs --claude)' \
+    '       --claude PATH pass B: the tested claude executable, one regular file (a link is refused);' \
+    '                     it is copied to ROOT/agent-install/claude after its --version is checked' \
+    '       --model NAME  pass B: add --model NAME to the agent command (default: no model flag; you pick)' \
     '       --bin DIR     the built binaries (default: build/canary of the checkout)' \
     '       --pasta PATH  a regular file to use as pasta (default: /usr/bin/pasta; a link is copied)' \
     '       --bwrap PATH  the bubblewrap executable (default: the one on PATH)' \
@@ -127,6 +148,8 @@ while [ "$#" -gt 0 ]; do
   case $1 in
     --root) [ "$#" -ge 2 ] || usage; ROOT=$2; shift 2 ;;
     --pass) [ "$#" -ge 2 ] || usage; PASS=$2; shift 2 ;;
+    --claude) [ "$#" -ge 2 ] || usage; CLAUDE_SRC=$2; shift 2 ;;
+    --model) [ "$#" -ge 2 ] || usage; MODEL=$2; shift 2 ;;
     --bin) [ "$#" -ge 2 ] || usage; BIN=$2; shift 2 ;;
     --pasta) [ "$#" -ge 2 ] || usage; PASTA=$2; shift 2 ;;
     --bwrap) [ "$#" -ge 2 ] || usage; BWRAP=$2; shift 2 ;;
@@ -139,7 +162,21 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ "$PASS" = A ] || cc_die "only pass A is prepared; pass B uses a live agent and a config of its own (README.md, The config)"
+case $PASS in
+  A | B) ;;
+  *) cc_die "--pass is A or B: $PASS" ;;
+esac
+if [ "$PASS" = A ]; then
+  [ -z "$CLAUDE_SRC$MODEL" ] || cc_die "--claude and --model are for --pass B; pass A runs the stand-in"
+else
+  [ -n "$CLAUDE_SRC" ] || cc_die "--pass B needs --claude PATH, the tested claude executable (README.md, The set-up of pass B)"
+  if [ -n "$MODEL" ]; then
+    case $MODEL in
+      -* | *[!A-Za-z0-9._:+-]*) cc_die "--model is a model name of letters, digits and . _ : + - that does not start with -: $MODEL" ;;
+    esac
+    [ "${#MODEL}" -le 64 ] || cc_die '--model is longer than 64 characters'
+  fi
+fi
 
 if [ -z "$ROOT" ]; then
   _cache=${XDG_CACHE_HOME:-}
@@ -149,7 +186,7 @@ if [ -z "$ROOT" ]; then
       *) cc_die 'no --root, and neither XDG_CACHE_HOME nor an absolute HOME names the cache folder' ;;
     esac
   fi
-  ROOT=$_cache/ataniq-canary-a
+  if [ "$PASS" = B ]; then ROOT=$_cache/ataniq-canary-b; else ROOT=$_cache/ataniq-canary-a; fi
 fi
 cc_check_root "$ROOT"
 case $REPO in
@@ -171,6 +208,19 @@ case $BIN in /*) ;; *) cc_die "--bin is not an absolute path: $BIN" ;; esac
 if [ "$BUILD" -eq 0 ]; then cc_check_bin "$BIN"; fi
 
 pasta_plan /usr/bin/pasta
+
+# claude_plan checks the file --claude names, with no program run: an absolute
+# path to one regular executable file. A link is refused because the manager's
+# `claude` is a shim or a link and the copy must be the tested file itself.
+claude_plan() {
+  case $CLAUDE_SRC in /*) ;; *) cc_die "--claude is not an absolute path: $CLAUDE_SRC" ;; esac
+  case $CLAUDE_SRC in *[[:cntrl:]]*) cc_die '--claude has a control character' ;; esac
+  if [ -L "$CLAUDE_SRC" ]; then cc_die "--claude is a link (the manager's shim or a link to a version): give the executable file itself: $CLAUDE_SRC"; fi
+  if [ -d "$CLAUDE_SRC" ]; then cc_die "--claude is a folder, not the executable file: $CLAUDE_SRC"; fi
+  if [ ! -f "$CLAUDE_SRC" ]; then cc_die "--claude is not a regular file: $CLAUDE_SRC"; fi
+  if [ ! -x "$CLAUDE_SRC" ]; then cc_die "--claude is not executable: $CLAUDE_SRC"; fi
+}
+if [ "$PASS" = B ]; then claude_plan; fi
 
 # The paths given for a hint: absolute, no control character; a file that is
 # not there is no hint, and the output says so.
@@ -216,21 +266,38 @@ if [ "$DRY" -eq 1 ]; then
   cc_say "[dry]   folder $ROOT (0700) with state/ and runtime/ (0700), evidence/, conf/, agent-install/, bin/"
   cc_say "[dry]   $ROOT/upstream: a throwaway repository, one commit on develop, author example.invalid"
   cc_say "[dry]   run: ataniq-intake init --state $ROOT/state --project $CC_PROJECT, then push develop into the mirror"
-  cc_say "[dry]   $CONFIG (0600): pass A, stand-in agent, runtime claude 2.1.325, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
-  cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook"
+  if [ "$PASS" = B ]; then
+    _argv='["/ataniq/agent/claude"]'
+    if [ -n "$MODEL" ]; then _argv="[\"/ataniq/agent/claude\", \"--model\", \"$MODEL\"]"; fi
+    cc_say "[dry]   $CONFIG (0600): pass B, live agent, runtime claude $RUNTIME_VERSION, argv $_argv, env [\"DISABLE_AUTOUPDATER=1\"], footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
+    if [ -z "$MODEL" ]; then cc_say "[dry]   no --model flag in the agent command: you pick the model (the run's step 15 prints the arguments and asks you)"; fi
+    cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook, sources.agent_install $ROOT/agent-install, terminal xterm-256color, truecolor, C.UTF-8"
+  else
+    cc_say "[dry]   $CONFIG (0600): pass A, stand-in agent, runtime claude $RUNTIME_VERSION, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
+    cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook"
+  fi
   cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-c as 2, report.txt)"
   cc_say "[dry]   $ROOT/conf/managed-settings.json (valid JSON, naming the PreToolUse hook /ataniq/qargi/guard-hook, the text of the marker) and a no-op $ROOT/conf/guard-hook"
-  cc_say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of the built stand-in"
+  if [ "$PASS" = B ]; then
+    cc_say "[dry]   run: env -i HOME=<a new empty folder> $ROOT/agent-install/claude --version, on the copy of $CLAUDE_SRC (the output must name $RUNTIME_VERSION); then $ROOT/agent-install/claude (0700) is the agent executable the sandbox binds"
+  else
+    cc_say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of the built stand-in"
+  fi
   cc_say "[dry]   $ROOT/bin/ataniq-probe (0700), a copy of $BIN/ataniq-probe: the inputs file names the copy, because the probe is a bind source and the checkout is never mounted"
   if [ "$PASTA_COPY" -eq 1 ]; then
     cc_say "[dry]   $PASTA_USE, a copy of $PASTA_SRC (the subject is then a copy of passt, not pasta itself)"
   else
     cc_say "[dry]   pasta: $PASTA_USE (used as it is)"
   fi
-  cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest; run: ataniq-canary check-inputs"
+  cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest (last: the environment is part of the digest); run: ataniq-canary check-inputs"
   cc_say "[dry]   $ROOT/mirror-qual/config.json for qualify-mirror, with the acknowledgement left false for you"
   cc_say "[dry]   $ROOT/answers.hint (0600): the paths the run suggests at its path prompts: mirror-report=$ROOT/mirror-qual/report.json, and the unit report, plan summary and template review when given"
-  cc_say "[dry]   $ROOT/CHECKLIST.txt (0600): one page for you, from checklist.txt.in, with these paths filled in"
+  if [ "$PASS" = B ]; then
+    cc_say "[dry]   $ROOT/netcheck.sh (0700): the network and executable checks for you to run by hand (prepare and the run never run it)"
+    cc_say "[dry]   $ROOT/CHECKLIST.txt (0600): one page for you, from checklist-b.txt.in, with these paths filled in"
+  else
+    cc_say "[dry]   $ROOT/CHECKLIST.txt (0600): one page for you, from checklist.txt.in, with these paths filled in"
+  fi
   cc_say "[dry]   $ROOT/$CC_MARKER, the mark that canary-reset.sh looks for"
   cc_say "[dry]   print the commands you type next"
   exit 0
@@ -263,6 +330,26 @@ cc_say "making $ROOT"
 ROOT_MADE=1
 trap half_made_root EXIT
 mkdir -m 0700 -- "$ROOT/evidence" "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin"
+
+# Pass B: the tested claude, copied first so that a wrong version stops the
+# prepare before anything else is made. The version is asked of the COPY, as
+# step 9 of the run asks it of the file the sandbox binds: an empty
+# environment (no PATH) and a home that is a new empty folder.
+if [ "$PASS" = B ]; then
+  CLAUDE_COPY=$ROOT/agent-install/claude
+  cp -- "$CLAUDE_SRC" "$CLAUDE_COPY"
+  chmod 0700 -- "$CLAUDE_COPY"
+  _vh=$(mktemp -d) || cc_die 'mktemp -d failed: no home for the version check'
+  _vrc=0
+  _vout=$(env -i HOME="$_vh" "$CLAUDE_COPY" --version 2>&1) || _vrc=$?
+  rmdir -- "$_vh" 2>/dev/null || cc_say "note: the version check left files in $_vh; look at them and remove the folder yourself"
+  if [ "$_vrc" -ne 0 ] || ! printf '%s\n' "$_vout" | grep -qwF -- "$RUNTIME_VERSION"; then
+    cc_say "claude --version (the copy $CLAUDE_COPY, exit status $_vrc) printed:"
+    printf '%s\n' "$_vout" | head -n 20 | sed 's/^/    /'
+    cc_die "the copy does not name the tested version $RUNTIME_VERSION: give the executable of that version (the config and the inputs declare it)"
+  fi
+  cc_say "claude copy: $CLAUDE_COPY names $RUNTIME_VERSION in its --version"
+fi
 
 # The throwaway repository: one small commit on develop.
 mkdir -m 0700 -- "$ROOT/upstream"
@@ -305,8 +392,10 @@ printf '%s\n' '#!/bin/sh' 'exit 0' >"$ROOT/conf/guard-hook"
 chmod 0600 -- "$ROOT/conf/managed-settings.json"
 chmod 0700 -- "$ROOT/conf/guard-hook"
 
-cp -- "$BIN/ataniq-canary-standin" "$ROOT/agent-install/ataniq-canary-standin"
-chmod 0700 -- "$ROOT/agent-install/ataniq-canary-standin"
+if [ "$PASS" = A ]; then
+  cp -- "$BIN/ataniq-canary-standin" "$ROOT/agent-install/ataniq-canary-standin"
+  chmod 0700 -- "$ROOT/agent-install/ataniq-canary-standin"
+fi
 
 # The probe is a bind source, and the checkout (where --bin lies by default) is
 # the first entry of never_mounted, which the holder's validate step refuses as
@@ -325,6 +414,25 @@ fi
 SETTINGS_SHA=$(sha256sum <"$ROOT/conf/managed-settings.json" | awk '{print $1}')
 ZERO=0000000000000000000000000000000000000000000000000000000000000000
 
+# The agent block: the stand-in of pass A, the live claude of pass B. The
+# live one has the executable itself as argv[0] (never a wrapper: step 9 runs
+# that file), the model flag only when --model gave one, and
+# DISABLE_AUTOUPDATER=1 in the environment so that the agent does not draw an
+# update notice on the screen the fence reads (the variable is part of the
+# profile digest, so the pin is taken after it is here).
+if [ "$PASS" = B ]; then
+  AGENT_KIND=live
+  AGENT_ARGV='["/ataniq/agent/claude"]'
+  if [ -n "$MODEL" ]; then AGENT_ARGV="[\"/ataniq/agent/claude\", \"--model\", \"$MODEL\"]"; fi
+  AGENT_ENV='["DISABLE_AUTOUPDATER=1"]'
+  TERMINAL='{"term": "xterm-256color", "colorterm": "truecolor", "lang": "C.UTF-8"}'
+else
+  AGENT_KIND=stand-in
+  AGENT_ARGV='["/ataniq/agent/ataniq-canary-standin"]'
+  AGENT_ENV='[]'
+  TERMINAL='{"term": "xterm-256color"}'
+fi
+
 write_config() {
   cat >"$CONFIG" <<EOF
 {
@@ -340,12 +448,12 @@ write_config() {
     "profile_digest": "$1"
   },
   "agent": {
-    "kind": "stand-in",
+    "kind": "$AGENT_KIND",
     "runtime": "claude",
-    "runtime_version": "2.1.325",
+    "runtime_version": "$RUNTIME_VERSION",
     "footer_mode": "manual",
-    "argv": ["/ataniq/agent/ataniq-canary-standin"],
-    "env": []
+    "argv": $AGENT_ARGV,
+    "env": $AGENT_ENV
   },
   "inject": true,
   "limits": {"memory_max_bytes": 4294967296, "swap_max_bytes": 0, "tasks_max": 512, "memory_floor_bytes": 1073741824, "memory_share_percent": 50},
@@ -367,7 +475,7 @@ cat >"$INPUTS" <<EOF
 {
   "version": 1, "canary": true, "project": "$CC_PROJECT", "layout_role": "${CC_PROJECT}-lead",
   "state_root": "$ROOT/state", "runtime_root": "$ROOT/runtime",
-  "runtime": "claude", "runtime_version": "2.1.325",
+  "runtime": "claude", "runtime_version": "$RUNTIME_VERSION",
   "executables": {"pasta": "$PASTA_USE", "bwrap": "$BWRAP", "probe": "$PROBE_USE"},
   "sources": {
     "agent_install": "$ROOT/agent-install",
@@ -384,7 +492,7 @@ cat >"$INPUTS" <<EOF
   },
   "never_mounted": [$NEVER],
   "provider_host": "api.anthropic.com",
-  "terminal": {"term": "xterm-256color"},
+  "terminal": $TERMINAL,
   "time_limit_seconds": 60
 }
 EOF
@@ -425,12 +533,37 @@ if [ -n "$HINT_PLAN_SUMMARY" ]; then printf 'plan-summary=%s\n' "$HINT_PLAN_SUMM
 if [ -n "$HINT_TEMPLATE_REVIEW" ]; then printf 'template-review=%s\n' "$HINT_TEMPLATE_REVIEW" >>"$HINTFILE"; fi
 chmod 0600 -- "$HINTFILE"
 
+# netcheck.sh, pass B only: the owner's hand-run check of the network and of
+# the executable in the shape of the sandbox. Prepare writes it and never runs
+# it. Its first lines carry the real values, single-quoted; the body is the
+# template netcheck.sh.in beside this file.
+sq() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
+NETCHECK=$ROOT/netcheck.sh
+if [ "$PASS" = B ]; then
+  [ -f "$_d/netcheck.sh.in" ] || cc_die "the netcheck template is missing: $_d/netcheck.sh.in"
+  {
+    printf '%s\n' '#!/bin/sh' '# Written by canary-prepare.sh. Run it by hand, once, before pass B (README.md).' \
+      "SELF='$(sq "$NETCHECK")'" "PASTA='$(sq "$PASTA_USE")'" "BWRAP='$(sq "$BWRAP")'" \
+      "INSTALL='$(sq "$ROOT/agent-install")'" "VERSION='$RUNTIME_VERSION'"
+    cat "$_d/netcheck.sh.in"
+  } >"$NETCHECK"
+  chmod 0700 -- "$NETCHECK"
+  sh -n "$NETCHECK" || cc_die "the netcheck script written does not parse: $NETCHECK"
+fi
+
 # The owner's page: the template of the kit with the real paths. A value goes
 # into the sed expression with \, & and | escaped; the paths of a root hold no
 # such character, and --bin is escaped here.
 sed_value() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
 CHECKLIST=$ROOT/CHECKLIST.txt
-[ -f "$_d/checklist.txt.in" ] || cc_die "the checklist template is missing: $_d/checklist.txt.in"
+CHECKLIST_TEMPLATE=checklist.txt.in
+if [ "$PASS" = B ]; then CHECKLIST_TEMPLATE=checklist-b.txt.in; fi
+[ -f "$_d/$CHECKLIST_TEMPLATE" ] || cc_die "the checklist template is missing: $_d/$CHECKLIST_TEMPLATE"
+if [ -n "$MODEL" ]; then
+  MODELNOTE="Model: $MODEL (--model); step 15 asks you to confirm it."
+else
+  MODELNOTE="Model: none chosen (no --model flag): add one, see README.md."
+fi
 sed \
   -e "s|@ROOT@|$(sed_value "$ROOT")|g" \
   -e "s|@REPO@|$(sed_value "$REPO")|g" \
@@ -442,13 +575,43 @@ sed \
   -e "s|@RUN@|$(sed_value "$_d/canary-run.sh")|g" \
   -e "s|@PREFLIGHT@|$(sed_value "$_d/canary-preflight.sh")|g" \
   -e "s|@RESET@|$(sed_value "$_d/canary-reset.sh")|g" \
-  "$_d/checklist.txt.in" >"$CHECKLIST"
+  -e "s|@NETCHECK@|$(sed_value "$NETCHECK")|g" \
+  -e "s|@MODELNOTE@|$(sed_value "$MODELNOTE")|g" \
+  -e "s|@FOOTER@|manual|g" \
+  "$_d/$CHECKLIST_TEMPLATE" >"$CHECKLIST"
 chmod 0600 -- "$CHECKLIST"
 if grep -q '@[A-Z_]*@' "$CHECKLIST"; then cc_die "the checklist template holds a placeholder that was not filled: $CHECKLIST"; fi
 
 # The mark of this prepare, last: a prepare that failed is not reset.
 printf '%s\nproject %s\n' "$CC_MARKER_LINE" "$CC_PROJECT" >"$ROOT/$CC_MARKER"
 chmod 0600 -- "$ROOT/$CC_MARKER"
+
+if [ "$PASS" = B ]; then
+  cat <<EOF
+
+Done. Nothing was started. Your one page, with these paths filled in:
+     $CHECKLIST
+What you type next, in the checkout ($REPO):
+
+1. The mirror qualification and the template review are as in pass A (the same
+   files serve): see docs/qualification-lead-mirror.md if they are not on file.
+
+2. The network and the executable, by hand (it starts pasta, bubblewrap, curl
+   and, under a throwaway unit, claude --version; it prints PASS or FINDING):
+     sh $NETCHECK
+
+3. The preflight, which must say READY:
+     sh qualification/canary/run/canary-preflight.sh --root $ROOT
+
+4. The attended run (read its dry run first, add --dry):
+     sh qualification/canary/run/canary-run.sh --pass B --config $CONFIG --evidence $ROOT/evidence
+   Every word it asks for (yes, read, logged-in, ...) is yours.
+
+A failed or finished attempt is put back with:
+     sh qualification/canary/run/canary-reset.sh --root $ROOT
+EOF
+  exit 0
+fi
 
 cat <<EOF
 

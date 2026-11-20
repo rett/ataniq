@@ -65,6 +65,7 @@ func TestShowPrintsTheValuesTheRunScriptNeeds(t *testing.T) {
 		"agent_footer_mode":          "sample mode on",
 		"agent_argc":                 "1",
 		"agent_argv_0":               "/opt/sample/agent",
+		"agent_env_names":            "",
 		"mirror":                     w.Mirror,
 		"upstream_branch":            provisiontest.Branch,
 		"lead_dir":                   p.LeadDir,
@@ -93,14 +94,18 @@ func TestShowPrintsTheValuesTheRunScriptNeeds(t *testing.T) {
 
 func TestShowLeavesOutWhatTheScriptMustNotSee(t *testing.T) {
 	w := provisiontest.New(t)
-	w.Cfg.Agent.Env = []string{"SAMPLE_VARIABLE=sample-env-value"}
+	w.Cfg.Agent.Env = []string{"SAMPLE_VARIABLE=sample-env-value", "OTHER_VARIABLE=other-env-value"}
 	w.WriteConfig(t)
 	code, out, errOut := do(t, w, "show", "--config", w.ConfigPath)
 	if code != 0 {
 		t.Fatalf("status %d: %s", code, errOut)
 	}
+	// The names are printed, in order; the values never.
+	if !strings.Contains(out, "\nagent_env_names=SAMPLE_VARIABLE,OTHER_VARIABLE\n") {
+		t.Errorf("show does not print the names of the environment: %q", out)
+	}
 	for _, hidden := range []string{
-		"sample-env-value", "SAMPLE_VARIABLE", w.Cfg.Holder.ProfileDigest,
+		"sample-env-value", "other-env-value", w.Cfg.Holder.ProfileDigest,
 		w.Cfg.Provision.GitEmail, "Quoted", provisiontest.Secret,
 		w.Settings, w.Hook, w.Screens,
 	} {

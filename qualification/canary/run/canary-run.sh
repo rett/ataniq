@@ -469,6 +469,10 @@ check() {
 }
 
 is_eq() { [ "$1" = "$2" ]; }
+# is_under_agent_bind succeeds when the path is a file name under /ataniq/agent/:
+# step 9 strips that prefix and runs the file of the install folder, so a live
+# agent's first argument must be such a name (the executable itself, no wrapper).
+is_under_agent_bind() { [ "${1#"$AGENT_INSIDE"/}" != "$1" ] && [ -n "${1#"$AGENT_INSIDE"/}" ]; }
 # mirror_inside prints the mirror's place inside the sandbox for a project.
 mirror_inside() { printf '%s/%s.git' "$MIRROR_ROOT_INSIDE" "$1"; }
 # remote_is_mirror reports whether URL (with or without file://) is the
@@ -2158,6 +2162,7 @@ step_9() {
     if [ "$DRY" -eq 1 ]; then
       dry "make an empty temporary folder as the home; run: env -i HOME=<that folder> <install folder of $INPUTS>/${AGENT0#"$AGENT_INSIDE"/} --version; remove the folder"
     else
+      check "the agent command's first element is a file under $AGENT_INSIDE/ (the executable itself, no wrapper)" is_under_agent_bind "$AGENT0" || return 0
       _host=$(agent_host)
       check 'the agent executable is present' test -f "$_host" || return 0
       _tmp=$(mktemp -d)
