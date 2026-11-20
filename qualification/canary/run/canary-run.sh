@@ -2529,6 +2529,10 @@ step_15() {
   out '   login into THIS terminal. If the login fails, start it again in the pane (the agent'"'"'s own login command).'
   out '   The cap'"'"'s timer has started already: the minutes of the login are part of the 30.'
   ask 'Owner: type logged-in when the login is done in the pane, or failed to give up (the pass then ends and the clean-up chain runs)'
+  while [ "$DRY" -eq 0 ] && [ "$ANSWER" != logged-in ] && [ "$ANSWER" != failed ] && [ "${_askok:-1}" -eq 1 ]; do
+    out '   ask again: only logged-in or failed is taken here (a wrong word must not spend the login)'
+    ask 'Owner: type logged-in when the login is done in the pane, or failed to give up'
+  done
   if [ "$DRY" -eq 0 ] && [ "$ANSWER" != logged-in ]; then
     fail "the login did not succeed (answer \"$ANSWER\")"
     return 0
@@ -2580,7 +2584,12 @@ step_16() {
   out '   - the console window is large enough that the composer and the footer both show (a resize redraws the'
   out '     agent; the fence has never read a live screen at another size);'
   out '   - then leave the session pane (Ctrl+\) and touch neither key nor mouse there for 3 seconds.'
-  affirm 'Owner: the pane shows the empty composer, the expected mode and no notice' yes || return 0
+  ask 'Owner: does the pane show the empty composer, the expected mode and no notice (yes; or go-on: the fence will then answer not-now and you paste the message at step 17; anything else ends the pass)'
+  case $ANSWER in
+    yes) ;;
+    go-on) note 'the pane was not ready; the owner goes on to the paste path' ;;
+    *) [ "$DRY" -eq 1 ] || { fail "the pane was not made ready: \"$ANSWER\""; return 0; } ;;
+  esac
   result ok
   done_step
 }
@@ -2787,9 +2796,13 @@ step_19() {
 # read as a plain file, never with git (the lead has run in the tree).
 show_token_file() {
   _stf=$TREE/canary-token.txt
-  if [ -f "$_stf" ] && [ ! -L "$_stf" ]; then
-    out '   the gate failed. canary-token.txt in the lead'"'"'s folder holds (first 3 lines, nothing else):'
-    head -c 200 <"$_stf" | sed -n '1,3p' | tr -c '[:print:]\n' '?' | sed 's/^/     | /'
+  # The agent may still run and may swap the file: the file is opened once,
+  # under a timeout (a FIFO would hang), and the opened file is checked (a plain
+  # file whose real path is the path, so no symlink), never the name before.
+  _stp=$(realpath -- "$TREE" 2>/dev/null) && _stp=$_stp/canary-token.txt || _stp=
+  if [ -n "$_stp" ] && _stc=$(timeout 2 sh -c 'exec 3<"$1" || exit 1; [ "$(readlink /proc/self/fd/3)" = "$1" ] && [ -f /proc/self/fd/3 ] || exit 1; head -c 200 <&3' sh "$_stp" 2>/dev/null); then
+    out '   the gate failed. canary-token.txt, the working file (not the committed one), in the lead'"'"'s folder holds (first 3 lines, nothing else):'
+    printf '%s\n' "$_stc" | sed -n '1,3p' | tr -c '[:print:]\n' '?' | sed 's/^/     | /'
   else
     out '   the gate failed. There is no canary-token.txt, as a plain file, at the top of the lead'"'"'s folder'
     out "   ($_stf): the agent wrote it elsewhere, or not at all."
@@ -2955,9 +2968,12 @@ step_23() {
   fi
   if [ "$DRY" -eq 1 ] && [ "$IN_CHAIN" -eq 1 ]; then dry 'say so and record it when the login was revoked already, or the owner answers that no login was made: nothing to act on'; fi
   if [ "$DRY" -eq 1 ]; then
-    dry 'print the time of this pass'"'"'s start and of its login, and the warning that only the login made at that time may be revoked'
+    dry 'print the time of this pass'"'"'s start and of its login, about, in UTC and in local time, and the warning that only the login made at that time may be revoked'
   else
-    out "   This pass started at $STAMP (UTC); the login was reported done at ${LOGIN_AT:-(no login time was recorded)}."
+    out "   This pass started at $STAMP (UTC); the login was reported done at about ${LOGIN_AT:-(no login time was recorded)} (UTC)."
+    if [ -n "${LOGIN_AT:-}" ]; then
+      out "   In your local time that is about $(date -d "$LOGIN_AT" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo '(the local time could not be worked out)'): the account page shows its own zone."
+    fi
   fi
   out '   Revoke ONLY the login the account page lists as made at that time, and no other row, and do not use "log out everywhere":'
   out '   your own running sessions, the lead'"'"'s among them, use logins of the same account, and a wrong row ends them.'
@@ -3028,12 +3044,41 @@ manifest_changes() {
 # the top of the folder (./NAME) whose name is a credential, a token, a secret
 # or an authorisation file, or the runtime's state file or a settings file.
 # Anything deeper (transcripts, caches, per-session files) is not judged: the
-# running sessions of the owner write those.
+# running sessions of the owner write those, except a project folder named for
+# the sandbox's working folder (./projects/-work-*): only the canary's agent
+# works in /work, so its transcripts there mean the sandbox touched this folder.
 meaningful_path() {
   case $1 in
+    ./projects/-work-*) return 0 ;;
     ./*/*) return 1 ;;
     ./*[Cc]redential* | ./*[Tt]oken* | ./*[Ss]ecret* | ./*[Oo]auth* | ./*[Aa]uth* | ./.claude.json* | ./settings*.json) return 0 ;;
   esac
+  return 1
+}
+
+# canary_owns succeeds when the file at path $1 in the after-manifest of step 25
+# has a hash that the canary's own config manifest (step 15) holds too: the
+# canary's own credential, proven, and not another session's refresh. The hash
+# of an empty file and the mark of a non-regular file never count.
+canary_owns() {
+  _co_h=$(awk -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } q == p { print $1; exit }' "$EV/manifest-after.txt" 2>/dev/null)
+  case $_co_h in
+    '' | not-a-regular-file | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) return 1 ;;
+  esac
+  awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" 2>/dev/null
+}
+
+# canary_wrote_login succeeds when the canary's own login added or changed a
+# file of the login's kind in the canary's config folder between step 15's two
+# manifests. When it did not, nothing can prove a file in the real folder to be
+# the canary's, and the isolation of the config folder is suspect.
+canary_wrote_login() {
+  [ -f "$EV/canary-config-after.txt" ] || return 1
+  [ -f "$EV/canary-config-before.txt" ] || : >"$EV/canary-config-before.txt"
+  manifest_changes "$EV/canary-config-before.txt" "$EV/canary-config-after.txt" >"$EV/canary-config-changes.txt"
+  while IFS="$(printf '\t')" read -r _cwk _cwp <&5; do
+    if [ "$_cwk" != removed ] && meaningful_path "$_cwp"; then return 0; fi
+  done 5<"$EV/canary-config-changes.txt"
   return 1
 }
 
@@ -3044,7 +3089,7 @@ step_25() {
   fi
   step_head 25 'Manifest, after' \
     'write names, sizes, times and hashes of the same folder as step 7 and compare the two manifests' \
-    'no difference; the owner'"'"'s own running sessions write the folder, so every difference is counted and only the files of the login'"'"'s own kind (the credential and the runtime'"'"'s state and settings files, at the top of the folder) are judged, and a difference in one of those is a finding, reported as it is; nothing is repaired by the script' 'G2'
+    'no difference; the owner'"'"'s own running sessions write the folder, so every difference is counted and only the files of the login'"'"'s own kind (the credential and the runtime'"'"'s state and settings files, at the top of the folder) are judged, and a difference in one of those is a finding only when its new hash is one that the canary'"'"'s own config folder holds (otherwise it is a question to the owner and the lead, but a finding without the question when the canary'"'"'s own login wrote no file of its kind in its own folder, and the files the owner explained are named in the result), and so is a new path under projects/-work-; nothing is repaired by the script' 'G2'
   if [ "$DRY" -eq 0 ] && [ ! -f "$EV/manifest-before.txt" ]; then
     wait_key 'Step 7 wrote no manifest in this run.'
     result 'nothing to act on: no manifest was written before'
@@ -3074,20 +3119,46 @@ step_25() {
     out '   files at the top of the folder that differ (names only):'
     awk -F'\t' '$2 ~ /^\.\/[^\/]*$/ { print "     " $1 " " $2 }' "$EV/manifest-changes.txt"
     _mean=0
-    while IFS="$(printf '\t')" read -r _k _p; do
+    _expl=
+    _cw=1
+    canary_wrote_login || _cw=0
+    # The loop reads the changes file on fd 4: ask reads the owner from stdin.
+    while IFS="$(printf '\t')" read -r _k _p <&4; do
       if meaningful_path "$_p"; then
-        _mean=$((_mean + 1))
-        out "   MEANINGFUL: $_k $_p"
+        if [ "${_p#./projects/-work-}" != "$_p" ] || { [ "$_k" != removed ] && canary_owns "$_p"; }; then
+          _mean=$((_mean + 1))
+          out "   MEANINGFUL: $_k $_p"
+        elif [ "$_cw" -eq 0 ]; then
+          _mean=$((_mean + 1))
+          out "   MEANINGFUL (the canary's login wrote no file of its kind in its own folder, so nothing proves this one is another session's): $_k $_p"
+        else
+          out "   changed, not the canary's file (a running session's refresh looks so): $_k $_p"
+          ask "Owner and lead: is the change of $_p explained by your own running sessions, one that ran during this pass (type yes, or say what is not)"
+          if [ "$ANSWER" = yes ]; then
+            note "the change of $_p is explained by the owner's own sessions"
+            _expl="$_expl $_p"
+          else
+            _mean=$((_mean + 1))
+          fi
+        fi
       fi
-    done <"$EV/manifest-changes.txt"
+    done 4<"$EV/manifest-changes.txt"
     if [ "$_mean" -gt 0 ]; then
-      out "   $_mean file(s) of the login's kind differ. A running session of the owner refreshing its own token looks the"
-      out '   same; the lines above give the names, and the evidence holds both manifests and the changes.'
+      out "   $_mean file(s) of the login's kind differ (the canary's own credential, a name the owner and the lead did not"
+      out '   explain, or a transcript of the sandbox'"'"'s working folder); the evidence holds both manifests and the changes.'
       FINDINGS=$((FINDINGS + 1))
-      result "a difference in $_mean file(s) of the login's kind, reported as it is"
+      if [ -n "$_expl" ]; then
+        result "a difference in $_mean file(s) of the login's kind, reported as it is (explained by the owner as his own sessions:$_expl)"
+      else
+        result "a difference in $_mean file(s) of the login's kind, reported as it is"
+      fi
     else
       note "the real config folder: $_added added, $_gone removed, $_chg changed, none of the login's kind"
-      result "no file of the login's kind differs ($_added added, $_gone removed, $_chg changed: the owner's own sessions)"
+      if [ -n "$_expl" ]; then
+        result "no unexplained file of the login's kind differs ($_added added, $_gone removed, $_chg changed; explained by the owner as his own sessions:$_expl)"
+      else
+        result "no file of the login's kind differs ($_added added, $_gone removed, $_chg changed: the owner's own sessions)"
+      fi
     fi
   fi
   done_step
@@ -3150,7 +3221,7 @@ step_26() {
   done
   rm -rf -- "$EV/intake-work"
   out '   lines of the evidence that look like a login URL or a code (file and line number only):'
-  grep -rnIE 'https?://|[A-Z0-9]{4}-[A-Z0-9]{4}|sk-ant-|code=|[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}' "$EV" 2>/dev/null | cut -d: -f1,2 | sed 's/^/     /' || :
+  grep -rnIE 'https?://|[A-Z0-9]{4}-[A-Z0-9]{4}|sk-ant-|[?&]code=|[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}' "$EV" 2>/dev/null | cut -d: -f1,2 | sed 's/^/     /' || :
   ask 'Owner and lead: look at the lines listed, and remove from the evidence what holds a login URL or code; type clean when the evidence holds none'
   if [ "$ANSWER" != clean ]; then fail "the evidence is not confirmed clean of a login URL or code: \"$ANSWER\""; fi
   if [ "$DAEMON_UP" -eq 0 ]; then
