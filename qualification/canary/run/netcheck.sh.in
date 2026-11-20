@@ -4,7 +4,7 @@
 # it by hand, once, before pass B.
 #
 # It checks, in the shape of the sandbox profile (pasta, then bubblewrap with
-# the read-only root, no capabilities, UID 0, the host's resolv.conf bound):
+# the read-only root, no capabilities, UID 0, the resolv.conf the holder would derive from, bound):
 #   1. that each of four hosts resolves and answers an unauthenticated GET
 #      (any HTTP status is a pass; a resolve or connect error is the finding);
 #   2. that the claude executable of the install folder, bound at
@@ -18,8 +18,19 @@
 # POSIX sh. The script calls itself with --core to run the sandbox, so that the
 # same line runs directly and under systemd-run.
 HOSTS='api.anthropic.com claude.ai platform.claude.com console.anthropic.com'
-RESOLV=/run/systemd/resolve/resolv.conf
-[ -r "$RESOLV" ] || RESOLV=/etc/resolv.conf
+# The holder uses resolved's upstream file only when the host's file is the
+# local stub (it resolves to the stub file, or its one nameserver is
+# 127.0.0.53) and the upstream file exists; otherwise the host's file.
+RESOLV=/etc/resolv.conf
+_stub=0
+[ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
+if [ "$_stub" -eq 0 ] && [ -r /etc/resolv.conf ]; then
+  _ns=$(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf)
+  [ "$_ns" = 127.0.0.53 ] && _stub=1
+fi
+if [ "$_stub" -eq 1 ] && [ -r /run/systemd/resolve/resolv.conf ]; then
+  RESOLV=/run/systemd/resolve/resolv.conf
+fi
 SH=$(command -v sh) || SH=/bin/sh
 
 # core runs the command given as arguments inside pasta and bubblewrap in the

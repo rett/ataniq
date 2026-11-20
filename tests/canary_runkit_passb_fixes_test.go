@@ -173,6 +173,7 @@ func TestCanaryRunKitStep25EmptyAndMissingProof(t *testing.T) {
 	}{
 		{"empty hash on both sides", canaryEmptyHash + " 0 2 ./.credentials.json\n", canaryEmptyHash + " 0 1 ./.credentials.json\n", 1},
 		{"no canary manifest", "hc 1 1 ./.credentials.json\n", "", 1},
+		{"a canary that wrote nothing of its kind", "hc 1 1 ./.credentials.json\n", "x9 1 1 ./notes.txt\n", 1},
 		{"the same hash under another name", "hc 1 1 ./.credentials.json\n", "hc 1 1 ./other\n", 1},
 		{"a matching hash under the same name", "hc 1 1 ./.credentials.json\n", "hc 1 1 ./.credentials.json\n", 1},
 	} {
@@ -199,14 +200,14 @@ done_step() { echo DONE-STEP; }`
 			// The owner answers no to the question, so every case is a finding;
 			// what differs is whether the question is asked.
 			asked := strings.Contains(o, "changed, not the canary's file")
-			wantAsked := strings.HasPrefix(c.name, "empty")
+			wantAsked := strings.HasPrefix(c.name, "empty") || c.name == "no canary manifest"
 			if asked != wantAsked {
 				t.Errorf("question asked=%v, want %v:\n%s", asked, wantAsked, o)
 			}
 			if c.name == "a matching hash under the same name" && !strings.Contains(o, "MEANINGFUL: changed") {
 				t.Errorf("the canary's own file is not judged:\n%s", o)
 			}
-			if c.name == "no canary manifest" && !strings.Contains(o, "the canary's login wrote no file of its kind") {
+			if c.name == "a canary that wrote nothing of its kind" && !strings.Contains(o, "the canary's login wrote no file of its kind") {
 				t.Errorf("a canary that wrote nothing is not a finding without the question:\n%s", o)
 			}
 			if !strings.Contains(o, "findings="+string(rune('0'+c.findings))) {
@@ -243,7 +244,7 @@ func TestCanaryRunKitStep26CodeTerm(t *testing.T) {
 
 // step25Real runs step 25 with the script's real ask and read_answer: the
 // owner's answers come from stdin, as in a run.
-func step25Real(t *testing.T, canaryAfter, stdin string) (out, answers string, code int) {
+func step25Real(t *testing.T, canaryAfter, canaryNow, stdin string) (out, answers string, code int) {
 	t.Helper()
 	dir := t.TempDir()
 	ev := filepath.Join(dir, "ev")
@@ -251,15 +252,18 @@ func step25Real(t *testing.T, canaryAfter, stdin string) (out, answers string, c
 	after := "a1 2 2 ./.credentials.json\nb0 1 1 ./settings.json\nc1 2 2 ./history.jsonl\nd1 2 2 ./.claude.json\n"
 	canaryWrite(t, ev, "manifest-before.txt", before)
 	canaryWrite(t, ev, "live-config-folder.txt", "/x\n")
-	canaryWrite(t, ev, "canary-config-after.txt", canaryAfter)
+	if canaryAfter != "" {
+		canaryWrite(t, ev, "canary-config-after.txt", canaryAfter)
+	}
 	a := canaryWrite(t, dir, "after.txt", after)
+	now := canaryWrite(t, dir, "now.txt", canaryNow)
 	script := canaryScriptText(t)
 	var b strings.Builder
-	b.WriteString("DRY=0 PASS=B CUR=25 IN_CHAIN=0 TTY_ASSUMED=0 FINDINGS=0 LOG= EV=" + ev + "\n")
+	b.WriteString("DRY=0 PASS=B CUR=25 IN_CHAIN=0 TTY_ASSUMED=0 FINDINGS=0 LOG= EV=" + ev + " LCONFIG=" + dir + "\n")
 	for _, n := range []string{"out", "note", "dry", "fail", "now", "ask", "read_answer", "on_terminal", "manifest_changes", "meaningful_path", "canary_owns", "canary_wrote_login", "step_25"} {
 		b.WriteString(canaryDef(t, script, n))
 	}
-	b.WriteString("step_head() { :; }\nwait_key() { :; }\nmanifest_of() { cp " + a + " \"$2\"; }\nresult() { echo \"RESULT: $*\"; }\ndone_step() { echo DONE-STEP; }\nstep_25\necho findings=$FINDINGS\n")
+	b.WriteString("step_head() { :; }\nwait_key() { :; }\nmanifest_of() { case \"$2\" in *canary-config-now.txt) cp " + now + " \"$2\" ;; *) cp " + a + " \"$2\" ;; esac; }\nresult() { echo \"RESULT: $*\"; }\ndone_step() { echo DONE-STEP; }\nstep_25\necho findings=$FINDINGS\n")
 	cmd := exec.Command("sh", "-c", b.String())
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
@@ -281,8 +285,8 @@ func step25Real(t *testing.T, canaryAfter, stdin string) (out, answers string, c
 func TestCanaryRunKitStep25QuestionReadsTheOwner(t *testing.T) {
 	// The canary's own login wrote .claude.json (hash d1), so that file is
 	// proven and the credential, a mismatch, is a question.
-	canary := "d1 2 2 ./.claude.json\n"
-	o, ans, code := step25Real(t, canary, "yes\n")
+	canary := "d1 2 2 ./.claude.json\nz9 2 2 ./.credentials.json\n"
+	o, ans, code := step25Real(t, canary, "", "yes\n")
 	if code != 0 || !strings.Contains(o, "DONE-STEP") {
 		t.Fatalf("exit %d:\n%s", code, o)
 	}
@@ -296,12 +300,12 @@ func TestCanaryRunKitStep25QuestionReadsTheOwner(t *testing.T) {
 		t.Errorf("the result does not name the explained file:\n%s", o)
 	}
 	// Another answer is a finding and is recorded as typed.
-	o, ans, _ = step25Real(t, canary, "no idea\n")
+	o, ans, _ = step25Real(t, canary, "", "no idea\n")
 	if !strings.Contains(o, "findings=1") || !strings.Contains(o, "2 file(s) of the login's kind differ") || !strings.Contains(ans, "\tno idea\ttyped\n") || strings.Contains(ans, "changed\t") {
 		t.Errorf("another answer is not counted and recorded:\n%s\n%q", o, ans)
 	}
 	// With nothing the canary wrote of its kind, there is no question at all.
-	o, ans, _ = step25Real(t, "x9 1 1 ./notes.txt\n", "yes\n")
+	o, ans, _ = step25Real(t, "x9 1 1 ./notes.txt\n", "", "yes\n")
 	if ans != "" || strings.Contains(o, "??") || !strings.Contains(o, "2 file(s) of the login's kind differ") {
 		t.Errorf("a canary that wrote nothing still gets the question or is not judged:\n%s\n%q", o, ans)
 	}

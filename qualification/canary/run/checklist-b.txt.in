@@ -1,21 +1,18 @@
 CANARY RUN, PASS B: YOUR CHECKLIST    (written by canary-prepare.sh)
 Root @ROOT@
 Live agent, one login, one message, 30 minutes or 10 turns. The script answers
-nothing for you. T1 runs it, T2 the daemon (in front until Ctrl-C at step 26),
-T3 the console (the writer), T4 the second console and the integrate command.
+nothing for you. T1 runs it, T2 the daemon (until Ctrl-C at 26), T3 the console
+(the writer), T4 the second console and the integrate command.
 
 BEFORE   (prepare made the files; the steps below are yours)
- 1. sh @NETCHECK@      by hand, once: DNS, HTTPS and claude --version
+ 1. qualify-mirror for THIS root, as in pass A: set "i_run_this_on_purpose"
+    to true in @ROOT@/mirror-qual/config.json, build and run it as
+    prepare printed (in @REPO@; it writes @ROOT@/mirror-qual/report.json),
+    then rm -rf -- @ROOT@/mirror-qual/state; or preflight --mirror-report FILE.
+ 2. sh @NETCHECK@      by hand, once: DNS, HTTPS and claude --version
     in the sandbox's shape, then under the unit limits. Every line PASS.
- 2. qualify-mirror for THIS root, as in pass A: set "i_run_this_on_purpose"
-    to true in @ROOT@/mirror-qual/config.json, then in @REPO@:
-      sh scripts/go-tool.sh build -o build/qualify-mirror \
-        ./qualification/leadmirror/cmd/qualify-mirror
-      build/qualify-mirror --config @ROOT@/mirror-qual/config.json \
-        --out @ROOT@/mirror-qual/report.json
-    Or give preflight --mirror-report FILE (a report of the same template).
  3. sh @PREFLIGHT@ --root @ROOT@     must say READY (each FIX gives its fix).
- 4. Pass A's evidence says "pass A: complete" and "findings: 0".
+ 4. Pass A's evidence says "pass A: complete", "findings: 0".
  5. T1: read the dry run, then run:
       sh @RUN@ --pass B --config @CONFIG@ --dry
       sh @RUN@ --pass B --config @CONFIG@ --evidence @EVIDENCE@
@@ -35,16 +32,20 @@ STEP  WHAT YOU DO (the steps pass B adds)
       Then logged-in. The 30 minutes have started: be quick.
  16   Lead: what the console shows. The pane must show the empty composer,
       mode "@FOOTER@", no notice; Shift+Tab until the mode fits. Leave the
-      pane (Ctrl+\), touch nothing for 3 seconds. Then yes.
- 17   Follow what the script says of the paste; paste the message file as ONE
-      paste with the pane in focus, Enter in the pane once, then in T1.
+      pane (Ctrl+\), touch nothing for 3 seconds. Then yes (go-on if the pane
+      cannot be made ready: you paste at 17; any other word ends the pass).
+ 17   Follow what the script says. If it prints the message file: paste it as
+      ONE paste with the pane in focus, Enter in the pane once, then type
+      pasted in T1 (an Enter alone there ends the pass).
  21   Type the agent's logout in the pane, then logged-out.
  23   Account page: revoke ONLY the login made now (never "log out
       everywhere": your own sessions use the same account). Then revoked.
  24   Restart what you stopped at step 6, then Enter.
- 25   Enter; the script judges the login's own files, not the other changes.
- 26   Ctrl-C the daemon (T2), Enter; clean; then
-        rm -rf -- @ROOT@/state @ROOT@/runtime
+ 25   Enter. If it asks about a file: yes only if one of your own sessions
+      ran during this pass; else say what you see (an Enter is a finding).
+ 26   Enter; check the listed lines, then clean; Ctrl-C the daemon (T2),
+      Enter; then rm -rf -- @ROOT@/state @ROOT@/runtime, Enter; H4: done
+      (or not-applicable).
 
 ADVICE
   - Answer approval prompts with plain Yes, never "do not ask again".

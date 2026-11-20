@@ -526,7 +526,7 @@ func TestCanaryRunKitPassBPrepareWritesTheChecklist(t *testing.T) {
 				t.Errorf("the page lacks %q:\n%s", want, text)
 			}
 		}
-		if model == "" && !strings.Contains(text, "Model: none chosen. Prepare again with --model NAME") {
+		if model == "" && !strings.Contains(text, "Model: none chosen. Prepare a NEW root with --model NAME") {
 			t.Errorf("the page does not say that no model was chosen:\n%s", text)
 		}
 		if model != "" && !strings.Contains(text, "Model: "+model+" (--model)") {
@@ -545,7 +545,7 @@ func passBPF(t *testing.T) (*canaryPF, string) {
 	t.Helper()
 	p := newCanaryPF(t)
 	show := "holder_runtime_dir=" + p.root + "/runtime/leads/throwaway-one-lead\nproject=throwaway-one\nagent_kind=live\nagent_runtime_version=" + passBVersion +
-		"\nagent_footer_mode=manual\nagent_argv_0=/ataniq/agent/claude\nagent_env_names=DISABLE_AUTOUPDATER\n"
+		"\nagent_footer_mode=manual\nagent_argv_0=/ataniq/agent/claude\nagent_argv_1=--model\nagent_argv_2=sample-model\nagent_env_names=DISABLE_AUTOUPDATER\n"
 	canaryWrite(t, p.dir, "show.out", show)
 	canaryWrite(t, p.root, "conf/sandbox-inputs.json.fields", "runtime=claude\nsources.managed_marker=guard-hook\nsources.agent_install="+p.root+"/agent-install\n")
 	claude := passBClaude(t, filepath.Join(p.root, "agent-install"), "claude", passBVersion+" (Claude Code)", "", "")
@@ -871,7 +871,7 @@ func TestCanaryRunKitPassBChecklistNamesQualifyMirror(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(r, "mirror-qual", "config.json")); err != nil {
 		t.Errorf("prepare wrote no mirror-qual/config.json: %v", err)
 	}
-	if !strings.Contains(page, "the pin does not cover argv") {
+	if !strings.Contains(page, "(not pinned)") {
 		t.Errorf("the checklist does not say how to add a model:\n%s", page)
 	}
 }

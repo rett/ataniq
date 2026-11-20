@@ -2507,7 +2507,7 @@ step_15() {
   printf '%s\n' "$CFG_SHOW" | while IFS= read -r _l; do
     case $_l in agent_argv_*) out "     $_l" ;; esac
   done
-  affirm 'Owner: the arguments above name the cheapest model (no --model shown: answer no and prepare again)' yes || return 0
+  affirm 'Owner: the arguments above name the cheapest model (no --model shown: answer no, then prepare a new root with --model NAME)' yes || return 0
   manifest_of "$LCONFIG" "$EV/canary-config-before.txt"
   if [ "$DRY" -eq 1 ]; then
     dry "start the timer of $CAP_SECONDS s and the tally of $CAP_TURNS turns"
@@ -2657,7 +2657,7 @@ step_17() {
       dry 'fail the step on exit status 30 (the daemon refused the message: the fence was not asked)'
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
-      dry "on any refusal, and on not-now with written nothing: say what to clear first, print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; that is recorded"
+      dry "on any refusal, and on not-now with written nothing: say what to clear first, print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; then ask for the word pasted (an empty line is asked again, up to 3 times; any other word ends the pass); that is recorded"
     fi
     result ok
     done_step
@@ -2723,6 +2723,12 @@ step_17() {
       out '   text in the composer) so that the composer is empty, then paste.'
       paste_message
       ask 'Owner: type pasted here after you pasted the message in the pane and pressed Enter once; anything else ends the pass and runs the clean-up chain'
+      _re=0
+      while [ -z "$ANSWER" ] && [ "${_askok:-1}" -eq 1 ] && [ "$_re" -lt 3 ]; do
+        _re=$((_re + 1))
+        out '   ask again: an empty line is not an answer (the login is spent: type pasted, or anything else to end the pass)'
+        ask 'Owner: type pasted after you pasted the message in the pane and pressed Enter once; anything else ends the pass'
+      done
       if [ "$ANSWER" != pasted ]; then
         fail "the fence wrote nothing ($_o) and the owner ended the pass"
         return 0
@@ -3057,7 +3063,8 @@ meaningful_path() {
 }
 
 # canary_owns succeeds when the file at path $1 in the after-manifest of step 25
-# has a hash that the canary's own config manifest (step 15) holds too: the
+# has a hash that the canary's own config manifests (step 15, and step 25 for a
+# token the canary refreshed since) hold too: the
 # canary's own credential, proven, and not another session's refresh. The hash
 # of an empty file and the mark of a non-regular file never count.
 canary_owns() {
@@ -3065,7 +3072,7 @@ canary_owns() {
   case $_co_h in
     '' | not-a-regular-file | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) return 1 ;;
   esac
-  awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" 2>/dev/null
+  awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" "$EV/canary-config-now.txt" 2>/dev/null
 }
 
 # canary_wrote_login succeeds when the canary's own login added or changed a
@@ -3076,8 +3083,14 @@ canary_wrote_login() {
   [ -f "$EV/canary-config-after.txt" ] || return 1
   [ -f "$EV/canary-config-before.txt" ] || : >"$EV/canary-config-before.txt"
   manifest_changes "$EV/canary-config-before.txt" "$EV/canary-config-after.txt" >"$EV/canary-config-changes.txt"
+  # Only a credential proves the login stayed in the canary's folder: the state
+  # and settings files are written by any start of the runtime.
   while IFS="$(printf '\t')" read -r _cwk _cwp <&5; do
-    if [ "$_cwk" != removed ] && meaningful_path "$_cwp"; then return 0; fi
+    [ "$_cwk" != removed ] || continue
+    case $_cwp in
+      ./*/*) ;;
+      ./*[Cc]redential* | ./*[Tt]oken* | ./*[Ss]ecret* | ./*[Oo]auth* | ./*[Aa]uth*) return 0 ;;
+    esac
   done 5<"$EV/canary-config-changes.txt"
   return 1
 }
@@ -3099,12 +3112,15 @@ step_25() {
   if [ "$DRY" -eq 1 ]; then
     if [ "$IN_CHAIN" -eq 1 ]; then dry 'say so and record it when step 7 wrote no manifest in this run: nothing to compare'; fi
     manifest_of '<the folder of step 7>' "$EV/manifest-after.txt"
+    manifest_of '<the canary'"'"'s own config folder>' "$EV/canary-config-now.txt"
     dry 'compare the two manifests; count the files added, removed and changed; print the top-level names that differ; a difference in a credential, token, secret, authorisation, state or settings file at the top of the folder is a finding; every other path is only counted (no content); repair nothing'
     result 'no difference'
     done_step
     return 0
   fi
   manifest_of "$(cat "$EV/live-config-folder.txt")" "$EV/manifest-after.txt"
+  # The canary's own folder as it is now: a token it refreshed after step 15.
+  if [ -d "$LCONFIG" ]; then manifest_of "$LCONFIG" "$EV/canary-config-now.txt"; else : >"$EV/canary-config-now.txt"; fi
   manifest_changes "$EV/manifest-before.txt" "$EV/manifest-after.txt" >"$EV/manifest-changes.txt"
   if [ ! -s "$EV/manifest-changes.txt" ]; then
     result 'no difference'
@@ -3121,7 +3137,9 @@ step_25() {
     _mean=0
     _expl=
     _cw=1
-    canary_wrote_login || _cw=0
+    # No manifest of step 15: no login was completed, so nothing of the
+    # canary's can be in the folder; a difference is a question, not a finding.
+    if [ -f "$EV/canary-config-after.txt" ]; then canary_wrote_login || _cw=0; fi
     # The loop reads the changes file on fd 4: ask reads the owner from stdin.
     while IFS="$(printf '\t')" read -r _k _p <&4; do
       if meaningful_path "$_p"; then
