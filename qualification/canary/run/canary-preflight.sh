@@ -9,9 +9,9 @@
 # needs no terminal. The one thing it writes is a temporary copy of the list
 # `qargi local list` prints, in a folder made with mktemp under TMPDIR and
 # removed when it ends. It runs `--version` of the four tagged binaries,
-# `ataniq-canary show`, `fields` and `profile-digest`, `systemctl --user
-# list-units`, `loginctl show-user`, `qargi local list`, git, and the run
-# script's own test entry (`canary-run.sh --self-test`, which only computes)
+# `ataniq-canary show`, `fields`, `profile-digest` and `check-inputs`,
+# `systemctl --user list-units`, `loginctl show-user`, `qargi local list`, git,
+# and the run script's own test entry (`canary-run.sh --self-test`, which only computes)
 # to read the open runs as the run does.
 #
 # It prints one line per check, "ok:" or "FIX:" with the exact command to type
@@ -257,7 +257,47 @@ check_holder_and_pin() {
     fix "ataniq-canary cannot read the config" "$_cmd"
     return 0
   fi
+  PINNED=1
   ok "the holder is the built one and the profile digest pin is the one computed now"
+}
+
+# 4b. The sandbox inputs, as step 8 and the holder's start read them: the
+# helper's own check against the config (the same ataniq-canary check-inputs
+# that prepare ends with), and, for the runtime claude, the guard hook's marker:
+# sources.managed_marker must be there (the holder's spec refuses a claude start
+# without it) and the managed-settings file the config names must hold that text
+# (assertion 8 searches it). Neither is in the profile digest, so the pin above
+# cannot show a missing one. An inputs file from an earlier prepare may lack the
+# marker; it cannot be mended by the owner's hand without changing the pinned
+# managed settings, so the fix is a fresh root.
+PINNED=0
+check_inputs() {
+  if [ "$PINNED" -eq 0 ]; then
+    skip "the sandbox inputs (needs the holder and the profile digest pin)"
+    return 0
+  fi
+  _fresh="sh $_d/canary-prepare.sh --root <a new or empty folder>   (an inputs file from an earlier prepare may lack what the holder now needs: use a fresh --root)"
+  if ! _why=$("$BIN/ataniq-canary" check-inputs --config "$CONFIG" --inputs "$INPUTS" 2>&1); then
+    # The first line of the refusal, with no control character, at most 200 bytes.
+    _why=$(printf '%s\n' "$_why" | awk 'NR == 1 { gsub(/[[:cntrl:]]/, ""); print substr($0, 1, 200); exit }')
+    fix "ataniq-canary check-inputs refuses the sandbox inputs (${_why:-no reason given}): $INPUTS" "$_fresh"
+    return 0
+  fi
+  if [ "$(field "$INPUTS" runtime)" = claude ]; then
+    _mm=$(field "$INPUTS" sources.managed_marker)
+    if [ -z "$_mm" ]; then
+      fix "the sandbox inputs have no sources.managed_marker, which the holder needs to start claude (validate-config refuses it at step 11): $INPUTS" "$_fresh"
+      return 0
+    fi
+    _ms=$(field "$CONFIG" provision.managed_settings)
+    if [ -z "$_ms" ] || [ ! -f "$_ms" ] || ! grep -qF -- "$_mm" "$_ms" 2>/dev/null; then
+      fix "the managed-settings file ${_ms:-the config names} does not hold the marker text $_mm (assertion 8 searches it)" "$_fresh"
+      return 0
+    fi
+    ok "ataniq-canary check-inputs accepts the sandbox inputs, which name the marker $_mm that the managed settings hold"
+    return 0
+  fi
+  ok "ataniq-canary check-inputs accepts the sandbox inputs"
 }
 
 # 5. state/ and runtime/ are clean.
@@ -446,6 +486,7 @@ check_prepared
 check_built
 check_checkout
 check_holder_and_pin
+check_inputs
 check_clean_roots
 check_quiet
 check_open_runs

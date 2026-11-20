@@ -313,7 +313,7 @@ on `develop`, by a made-up author at `example.invalid`), the mirror
 `state/mirrors/throwaway-one.git` (made with `ataniq-intake init`, with
 `develop` pushed into it), `conf/` (the sandbox inputs file and the config's
 other files: the replay screens copied from the recorded set of claude 2.1.325,
-a minimal managed-settings file and a no-op guard hook), `agent-install/` with
+a managed-settings file that names the guard hook as its PreToolUse hook, and a no-op guard hook; the inputs file carries `sources.managed_marker`, `guard-hook`, a text the managed settings hold), `agent-install/` with
 a copy of the built stand-in, `config.json`, `mirror-qual/config.json`,
 `answers.hint` (the hints for the path prompts: `mirror-report` always, the
 path `qualify-mirror` is told to write; `unit-report`, `plan-summary` and
@@ -356,6 +356,7 @@ wrong command line. The checks:
 | The seven binaries are built, the four tagged ones name the tag, and they are built from the checkout's `HEAD`: by the commit `--version` names when it names one (it names none today), else by the time of each file against the newest commit that touches `cmd`, `internal`, `go.mod`, `go.sum` or `third_party`; the line says which | `make canary-build`. |
 | The checkout is at `develop` with no tracked change (what step 3 asks) | `git checkout develop`, or look at `git status`. |
 | The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin and run `ataniq-canary check-inputs` (one command, as prepare does after it pins), or prepare again on a fresh root. |
+| The sandbox inputs: `ataniq-canary check-inputs` accepts them, and, for `claude`, they name `sources.managed_marker` and the managed-settings file the config names holds that text (the holder refuses a start without it, and neither shows in the digest). Skipped while the pin above needs a fix | The inputs are from an earlier prepare: use a fresh root (the line says why). |
 | `state/` and `runtime/` are empty (a mirror only) | They hold an earlier attempt: run `canary-reset.sh`. |
 | No `ataniq-*` unit is loaded (slices left out) and no `ataniqd` or `ataniq-holder` runs | Stop it. |
 | No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |
@@ -515,6 +516,7 @@ documents. For the config above:
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -536,6 +538,18 @@ documents. For the config above:
   that differs and never its value.
 - `managed_settings_sha256` is the SHA-256 of the managed-settings file, which
   provisioning copies unchanged from `provision.managed_settings`.
+- `managed_marker` is required for the runtime `claude`: the holder's start
+  refuses without it (validate-config), and its assertion 8 searches the
+  managed-settings file for this text, so the file must hold it. It is the name
+  of the guard hook inside the sandbox, which the file names as its PreToolUse
+  hook command: `canary-prepare.sh` writes
+  `{"permissions":{"defaultMode":"default"},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/ataniq/qargi/guard-hook"}]}]}}`
+  and the marker `guard-hook`. The marker is not part of the profile digest, so
+  adding it to an inputs file needs no new pin, but changing the managed-settings
+  file changes `managed_settings_sha256` and the digest. `check-inputs` and
+  `profile-digest` do not run the holder's trial of the spec, so the preflight
+  looks for the marker itself. An inputs file from an earlier prepare lacks it:
+  use a fresh root.
 - `qargi_records_inside` is `/ataniq/records`, the inside path provisioning
   prepares the folders for.
 - `never_mounted` lists what no bind source may touch: your checkout, the real

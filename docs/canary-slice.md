@@ -336,6 +336,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -357,6 +358,9 @@ with the sources from `ataniq-canary show`, and checks it with
   the caller with no access for group or others. The start sequence
   makes `report` (the report FIFO's folder) and `bound` in it and removes them
   when the start ends.
+- `managed_marker` is required for the runtime `claude`: a text the
+  managed-settings file must hold (the name of its guard hook). The start is
+  refused without it, and the probe's assertion 8 searches the file for it.
 - `time_limit_seconds` (1 to 3600) is how long the start waits for the probe's
   report line.
 - Two statements about the start itself, that no lead has run in the folders

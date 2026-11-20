@@ -16,6 +16,13 @@
 # prints no secret. With --dry it prints what it would create and writes
 # nothing: no command is run.
 #
+# The managed-settings file it writes names the guard hook, /ataniq/qargi/guard-hook
+# (where the sandbox binds the no-op hook it also writes), and the inputs file
+# carries sources.managed_marker "guard-hook", a text that file holds: the holder
+# refuses a claude start without the marker, and its assertion 8 searches the
+# file for it. The managed-settings file is written before its hash is taken,
+# and the hash is the one the inputs file records.
+#
 # It also writes ROOT/answers.hint (mode 0600), a list of "key=path" lines:
 # the paths the run script suggests at its path prompts (Enter takes one). The
 # mirror report's path is the one qualify-mirror is told to write; the other
@@ -207,9 +214,9 @@ if [ "$DRY" -eq 1 ]; then
   cc_say "[dry]   $ROOT/upstream: a throwaway repository, one commit on develop, author example.invalid"
   cc_say "[dry]   run: ataniq-intake init --state $ROOT/state --project $CC_PROJECT, then push develop into the mirror"
   cc_say "[dry]   $CONFIG (0600): pass A, stand-in agent, runtime claude 2.1.325, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
-  cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com"
+  cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook"
   cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-a as 2, report.txt)"
-  cc_say "[dry]   $ROOT/conf/managed-settings.json and a no-op $ROOT/conf/guard-hook"
+  cc_say "[dry]   $ROOT/conf/managed-settings.json (valid JSON, naming the PreToolUse hook /ataniq/qargi/guard-hook, the text of the marker) and a no-op $ROOT/conf/guard-hook"
   cc_say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of the built stand-in"
   if [ "$PASTA_COPY" -eq 1 ]; then
     cc_say "[dry]   $PASTA_USE, a copy of $PASTA_SRC (the subject is then a copy of passt, not pasta itself)"
@@ -263,7 +270,18 @@ done
 printf '%s\n' 'state=idle:app=claude-code' >"$ROOT/conf/replay-screens/report.txt"
 chmod 0600 -- "$ROOT/conf/replay-screens/"*
 
-printf '%s\n' '{"permissions":{"defaultMode":"default"}}' >"$ROOT/conf/managed-settings.json"
+# The managed settings name the guard hook as the PreToolUse hook command: the
+# provisioned copy of conf/guard-hook is bound at /ataniq/qargi/guard-hook
+# (profile.QargiInside and the guard hook's name), and the holder's assertion 8
+# searches this file for the marker text, GUARD_MARKER, which the inputs file
+# carries as sources.managed_marker (the spec requires it for claude). The
+# marker is a text this file holds, so the two cannot drift apart: it is the
+# name of the hook inside the sandbox.
+GUARD_MARKER=guard-hook
+GUARD_INSIDE=/ataniq/qargi/$GUARD_MARKER
+printf '%s\n' "{\"permissions\":{\"defaultMode\":\"default\"},\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$GUARD_INSIDE\"}]}]}}" >"$ROOT/conf/managed-settings.json"
+grep -qF -- "$GUARD_MARKER" "$ROOT/conf/managed-settings.json" ||
+  cc_die 'the managed-settings file does not hold the marker text it is written for'
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$ROOT/conf/guard-hook"
 chmod 0600 -- "$ROOT/conf/managed-settings.json"
 chmod 0700 -- "$ROOT/conf/guard-hook"
@@ -328,6 +346,7 @@ cat >"$INPUTS" <<EOF
     "agent_install": "$ROOT/agent-install",
     "managed_settings": "$LEAD/managed-settings.json",
     "managed_settings_sha256": "$SETTINGS_SHA",
+    "managed_marker": "$GUARD_MARKER",
     "lead_skills": "$LEAD/skills",
     "instruction_file": "$LEAD/instructions.md",
     "git_identity_dir": "$LEAD/git-identity",

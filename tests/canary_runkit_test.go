@@ -2852,6 +2852,30 @@ func TestCanaryRunKitPrepareMakesTheSetUp(t *testing.T) {
 		in.Sources["managed_settings_sha256"] != hex.EncodeToString(sum[:]) || in.Sources["agent_install"] != r+"/agent-install" {
 		t.Errorf("sandbox-inputs.json:\n%s", inputs)
 	}
+	// The managed settings are valid JSON that name the guard hook as the
+	// PreToolUse hook command at the place the sandbox binds the hook, and hold
+	// the marker text the inputs file carries: the holder refuses a claude start
+	// without the marker, and its assertion 8 searches the file for it. The hash
+	// the inputs file records is the hash of the file as written.
+	var ms struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Hooks []struct{ Type, Command string }
+			}
+		}
+	}
+	if err := json.Unmarshal(settings, &ms); err != nil {
+		t.Fatalf("managed-settings.json is not JSON: %v\n%s", err, settings)
+	}
+	if len(ms.Hooks.PreToolUse) != 1 || len(ms.Hooks.PreToolUse[0].Hooks) != 1 || ms.Hooks.PreToolUse[0].Hooks[0].Type != "command" || ms.Hooks.PreToolUse[0].Hooks[0].Command != "/ataniq/qargi/guard-hook" {
+		t.Errorf("managed-settings.json does not name the guard hook as the PreToolUse command:\n%s", settings)
+	}
+	if in.Sources["managed_marker"] != "guard-hook" || !strings.Contains(string(settings), in.Sources["managed_marker"]) {
+		t.Errorf("the inputs file's sources.managed_marker is %q, which the managed settings must hold:\n%s\n%s", in.Sources["managed_marker"], inputs, settings)
+	}
+	if hook, _ := os.ReadFile(filepath.Join(r, "conf/guard-hook")); !strings.HasPrefix(string(hook), "#!/bin/sh\n") || canaryMode(t, filepath.Join(r, "conf/guard-hook"))&0o100 == 0 {
+		t.Errorf("conf/guard-hook is not an executable script: %q", hook)
+	}
 	// What was copied, and what was recorded.
 	screens := filepath.Join(root(t), "internal/inject/screen/testdata/claude-2.1.325")
 	for dst, src := range map[string]string{
@@ -5059,6 +5083,7 @@ func newCanaryPF(t *testing.T) *canaryPF {
   --version) cat '`+p.dir+`/version-ataniq-canary' 2>/dev/null || echo 'ataniq-canary (build tag ataniq_canary)' ;;
   fields) [ "$2" = --file ] && [ -f "$3.fields" ] || { echo 'not one JSON object' >&2; exit 1; }; cat "$3.fields" ;;
   profile-digest) cat '`+p.dir+`/digest' ;;
+  check-inputs) [ -f '`+p.dir+`/check-inputs-fail' ] && { cat '`+p.dir+`/check-inputs-fail' >&2; exit 1; }; echo ok ;;
   show) cat '`+p.dir+`/show.out' ;;
   *) exit 97 ;;
 esac
@@ -5078,8 +5103,10 @@ cat '`+p.dir+`/version-extra' 2>/dev/null || :
 	// The prepared root.
 	canaryWrite(t, p.root, ".canary-prepared", "ataniq-canary-prepare 1\nproject throwaway-one\n")
 	canaryWrite(t, p.root, "config.json", "{}\n")
-	canaryWrite(t, p.root, "config.json.fields", "holder.executable="+p.bin+"/ataniq-holder\nholder.profile_digest="+strings.Repeat("ab", 32)+"\nholder.sandbox_inputs="+p.root+"/conf/sandbox-inputs.json\n")
+	canaryWrite(t, p.root, "config.json.fields", "holder.executable="+p.bin+"/ataniq-holder\nholder.profile_digest="+strings.Repeat("ab", 32)+"\nholder.sandbox_inputs="+p.root+"/conf/sandbox-inputs.json\nprovision.managed_settings="+p.root+"/conf/managed-settings.json\n")
 	canaryWrite(t, p.root, "conf/sandbox-inputs.json", "{}\n")
+	canaryWrite(t, p.root, "conf/sandbox-inputs.json.fields", "runtime=claude\nsources.managed_marker=guard-hook\n")
+	canaryWrite(t, p.root, "conf/managed-settings.json", "{\"hooks\":{\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"/ataniq/qargi/guard-hook\"}]}]}}\n")
 	for _, d := range []string{"state/mirrors/throwaway-one.git", "runtime", "evidence", "mirror-qual"} {
 		if err := os.MkdirAll(filepath.Join(p.root, d), 0o700); err != nil {
 			t.Fatal(err)
@@ -5238,8 +5265,8 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		}
 		checks++
 	}
-	if checks != 15 {
-		t.Errorf("%d checks, want 15:\n%s", checks, out)
+	if checks != 16 {
+		t.Errorf("%d checks, want 16:\n%s", checks, out)
 	}
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
@@ -5270,7 +5297,7 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		switch {
 		case c == "systemctl --user list-units --all --no-legend --plain ataniq-*", c == "qargi local list", strings.HasPrefix(c, "loginctl show-user "):
 		case strings.HasSuffix(c, " --version") && slices.Contains(canaryRunBinaries, strings.TrimSuffix(c, " --version")):
-		case strings.HasPrefix(c, "ataniq-canary fields --file "), strings.HasPrefix(c, "ataniq-canary profile-digest --config "), strings.HasPrefix(c, "ataniq-canary show --config "):
+		case strings.HasPrefix(c, "ataniq-canary fields --file "), strings.HasPrefix(c, "ataniq-canary profile-digest --config "), strings.HasPrefix(c, "ataniq-canary show --config "), strings.HasPrefix(c, "ataniq-canary check-inputs --config "):
 		default:
 			t.Errorf("the preflight made the call %q", c)
 		}
@@ -5391,6 +5418,35 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "digest", strings.Repeat("cd", 32)+"\n") }, nil, 1,
 			[]string{"FIX:  the profile digest pinned in config.json (" + strings.Repeat("ab", 32) + ") is not the one ataniq-canary computes now (" + strings.Repeat("cd", 32) + ")",
 				"-- type: sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"" + strings.Repeat("cd", 32) + "\"/' %ROOT%/config.json && %BIN%/ataniq-canary check-inputs --config %ROOT%/config.json --inputs %ROOT%/conf/sandbox-inputs.json"},
+		},
+		"check-inputs refuses the inputs": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "check-inputs-fail", "ataniq-canary: sources.managed_settings: does not match\x01 the config\nsecond line\n")
+			}, nil, 1,
+			[]string{"FIX:  ataniq-canary check-inputs refuses the sandbox inputs (ataniq-canary: sources.managed_settings: does not match the config): %ROOT%/conf/sandbox-inputs.json -- type: sh %RUN%/canary-prepare.sh --root <a new or empty folder>", "use a fresh --root"},
+		},
+		"the inputs have no marker": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "conf/sandbox-inputs.json.fields", "runtime=claude\n")
+			}, nil, 1,
+			[]string{"FIX:  the sandbox inputs have no sources.managed_marker, which the holder needs to start claude (validate-config refuses it at step 11): %ROOT%/conf/sandbox-inputs.json -- type: sh %RUN%/canary-prepare.sh --root <a new or empty folder>", "use a fresh --root"},
+		},
+		"the managed settings lack the marker": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "conf/managed-settings.json", "{\"permissions\":{\"defaultMode\":\"default\"}}\n")
+			}, nil, 1,
+			[]string{"FIX:  the managed-settings file %ROOT%/conf/managed-settings.json does not hold the marker text guard-hook (assertion 8 searches it) -- type: sh %RUN%/canary-prepare.sh --root <a new or empty folder>"},
+		},
+		"the managed settings are gone": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, "conf/managed-settings.json")) }, nil, 1,
+			[]string{"FIX:  the managed-settings file %ROOT%/conf/managed-settings.json does not hold the marker text guard-hook"},
+		},
+		"the inputs are checked only after the pin": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "digest", strings.Repeat("cd", 32)+"\n")
+				canaryWrite(t, p.dir, "check-inputs-fail", "refused\n")
+			}, nil, 1,
+			[]string{"FIX:  the profile digest pinned in config.json", "skip: the sandbox inputs (needs the holder and the profile digest pin)"},
 		},
 		"the config cannot be shown": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.dir, "show.out")) }, nil, 1,
@@ -5548,6 +5604,23 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The guard hook's marker is a claude matter: for another runtime the inputs
+// need none, and the preflight asks the helper's check only.
+func TestCanaryRunKitPreflightMarkerIsForClaude(t *testing.T) {
+	p := newCanaryPF(t)
+	canaryWrite(t, p.root, "conf/sandbox-inputs.json.fields", "runtime=other\n")
+	out, code := p.run()
+	if code != 0 || !strings.Contains(out, "ok:   ataniq-canary check-inputs accepts the sandbox inputs\n") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	// And with claude, the ok line names the marker the settings hold.
+	p = newCanaryPF(t)
+	out, code = p.run()
+	if code != 0 || !strings.Contains(out, "ok:   ataniq-canary check-inputs accepts the sandbox inputs, which name the marker guard-hook that the managed settings hold\n") {
+		t.Errorf("exit status %d:\n%s", code, out)
 	}
 }
 
