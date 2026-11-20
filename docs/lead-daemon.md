@@ -688,8 +688,9 @@ Every unit is a transient user unit with these fixed properties: `Type=exec`,
 and `TimeoutStopSec=2s`. A lead unit has no `NoNewPrivileges` on purpose: with it,
 the command that pasta runs in its user namespace keeps no `CAP_SETUID`, so the
 nested bubblewrap cannot set up its uid map and the sandbox start is refused.
-The agent still has no-new-privs, because bubblewrap sets it on the command it
-execs. The description is
+Bubblewrap sets no-new-privs on the agent it execs, as observed with
+bubblewrap 0.13.1; no probe assertion checks that yet, and a later one should.
+The description is
 `ataniq lead epoch=<n> intent=<id>`, and a reader gets the epoch and the intent
 back from it. The command is an absolute executable with its arguments, a
 working directory and an explicit environment. The manager sends the command
