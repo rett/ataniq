@@ -390,7 +390,7 @@ sh qualification/canary/run/canary-prepare.sh --pass B --claude PATH [--model NA
 | `--root DIR` | The folder that holds the whole set-up, an absolute path. The default is `ataniq-canary-a` in your cache folder. It must be new or empty. It is refused when it is a link, in `/tmp` or `/var/tmp`, or inside the repository checkout (or holds it), and when its path has a character outside letters, digits and `. _ / + -`. |
 | `--pass A` or `--pass B` | The pass; A is the default. A makes the stand-in set-up; B makes the live one and needs `--claude` (see "The set-up of pass B"). The default `--root` is `ataniq-canary-a`, or `ataniq-canary-b` for B, in your cache folder. |
 | `--claude PATH` | Pass B only: the tested claude executable, an absolute path to one regular file. A link, a folder or a file that is not executable is refused (the manager's `claude` is a shim or a link). It is copied to `ROOT/agent-install/claude` (mode 0700) and the copy's `--version` must name 2.1.325 (the version the config declares). |
-| `--model NAME` | Pass B only: add `--model NAME` to `agent.argv` (letters, digits and `. _ : + -`, not starting with `-`, at most 64 characters). Without it there is no model flag and the agent runs its default: pick the cheapest model yourself (step 15 asks you to confirm it). |
+| `--model NAME` | Pass B only: add `--model NAME` to `agent.argv` (letters, digits and `. _ : + -`, not starting with `-`, at most 64 characters). Without it there is no model flag and the agent runs its default: prepare says "Model: none chosen. Prepare again with --model NAME, or add \"--model\", \"NAME\" to agent.argv (the pin does not cover argv)", and step 15 asks you to answer no when no model argument is shown. |
 | `--bin DIR` | The built binaries, `build/canary` of the checkout by default. All seven must be there; a missing one is named. |
 | `--build` | Run `make canary-build` first. Without it nothing is built. |
 | `--template-review PATH`, `--unit-report PATH`, `--plan-summary PATH` | An existing regular file, an absolute path, that the run suggests at the matching path prompt (a hint, below). The review of the template is named by you or the lead and taken from here and from nothing else; the docs name no fixed file for the two reports. A file that is not there is no hint, and the output says so. |
@@ -432,8 +432,8 @@ carries the mark of a finished prepare is the one `canary-reset.sh` puts back.
 is made (the roots, the mirror, the throwaway repository, the probe and pasta
 copies, the managed settings with the marker and the no-op guard hook, the
 replay screens that pass B's provisioning needs, `answers.hint`, the config of
-`qualify-mirror` and the mark), for the live agent. Nothing else is written by
-hand.
+`qualify-mirror` and the mark), for the live agent. The one thing it does not do is
+run `qualify-mirror`: that is yours, for this root (the end of step 1).
 
 1. **Prepare.** `PATH` is the tested claude (2.1.325) as one regular file, not
    the version manager's `claude` (a shim or a link), and not the folder you use
@@ -457,7 +457,7 @@ hand.
    environment is part of the digest), and then `check-inputs` runs. It also
    writes `ROOT/CHECKLIST.txt` (from `checklist-b.txt.in`: the order, the pass B
    commands and the steps pass B adds, with what you type at each) and
-   `ROOT/netcheck.sh`.
+   `ROOT/netcheck.sh`. Then run `qualify-mirror` for this root, exactly as pass A's step 2 does: set `i_run_this_on_purpose` to true in `ROOT/mirror-qual/config.json`, build `build/qualify-mirror` and run it with `--config ROOT/mirror-qual/config.json --out ROOT/mirror-qual/report.json` (prepare prints the commands with the root's paths); or give the preflight `--mirror-report FILE`, an existing report for the same template. The preflight wants that report.
 2. **`netcheck.sh`, by hand.** `sh ROOT/netcheck.sh` is for you to run; prepare,
    the preflight and the run script never run it, and no agent does. It starts
    pasta and bubblewrap in the profile's shape (the root's own pasta copy and

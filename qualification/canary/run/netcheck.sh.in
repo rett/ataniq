@@ -25,12 +25,18 @@ SH=$(command -v sh) || SH=/bin/sh
 # core runs the command given as arguments inside pasta and bubblewrap in the
 # shape of the profile, with the install folder bound at /ataniq/agent.
 core() {
+  # The binds the profile marks optional are made only where the host has the path.
+  _opt=
+  [ -e /etc/ssl ] && _opt="$_opt --ro-bind /etc/ssl /etc/ssl"
+  [ -e /etc/ca-certificates ] && _opt="$_opt --ro-bind /etc/ca-certificates /etc/ca-certificates"
+  [ -e /etc/nsswitch.conf ] && _opt="$_opt --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf"
+  [ -e /usr/lib64 ] && _opt="$_opt --symlink usr/lib64 /lib64"
+  # shellcheck disable=SC2086  # the optional binds are split on purpose
   "$PASTA" -f -q --config-net -t none -u none -T none -U none --no-map-gw -- \
     "$BWRAP" --die-with-parent --unshare-all --share-net --unshare-user --uid 0 --gid 0 \
     --cap-drop ALL --clearenv --tmpfs / --ro-bind /usr /usr \
-    --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
-    --ro-bind /etc/ssl /etc/ssl --ro-bind /etc/ca-certificates /etc/ca-certificates \
-    --ro-bind /etc/hosts /etc/hosts --ro-bind /etc/nsswitch.conf /etc/nsswitch.conf \
+    --symlink usr/bin /bin --symlink usr/lib /lib $_opt \
+    --ro-bind /etc/hosts /etc/hosts \
     --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/group /etc/group \
     --ro-bind "$RESOLV" /etc/resolv.conf \
     --dev /dev --proc /proc --tmpfs /tmp --setenv PATH /usr/bin \

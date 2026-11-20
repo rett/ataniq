@@ -482,7 +482,7 @@ func TestCanaryRunKitPassBChecklistTemplate(t *testing.T) {
 	// pass B adds (one line each, with what he types) and the advice.
 	for _, want := range []string{
 		"sh @NETCHECK@", "sh @PREFLIGHT@ --root @ROOT@", "sh @RUN@ --pass B --config @CONFIG@ --dry", "sh @RUN@ --pass B --config @CONFIG@ --evidence @EVIDENCE@",
-		"write nothing by hand", "T3 the console", "confirmed", "logged-in", "logged-out", "revoked", "plain Yes", `never "do not ask again"`,
+		"qualify-mirror for THIS root", "mirror-qual/report.json", "--mirror-report", "T3 the console", "confirmed", "logged-in", "logged-out", "revoked", "plain Yes", `never "do not ask again"`,
 		"window large", "never \"log out", "@MODELNOTE@", `mode "@FOOTER@"`, "@RESET@",
 	} {
 		if !strings.Contains(text, want) {
@@ -526,7 +526,7 @@ func TestCanaryRunKitPassBPrepareWritesTheChecklist(t *testing.T) {
 				t.Errorf("the page lacks %q:\n%s", want, text)
 			}
 		}
-		if model == "" && !strings.Contains(text, "Model: none chosen (no --model flag)") {
+		if model == "" && !strings.Contains(text, "Model: none chosen. Prepare again with --model NAME") {
 			t.Errorf("the page does not say that no model was chosen:\n%s", text)
 		}
 		if model != "" && !strings.Contains(text, "Model: "+model+" (--model)") {
@@ -840,6 +840,54 @@ func TestCanaryRunKitPassBDocs(t *testing.T) {
 	}
 	if !strings.Contains(slice, "`manual` or `auto`") {
 		t.Error("docs/canary-slice.md does not say what footer_mode takes")
+	}
+}
+
+// The checklist of a fresh pass B root names qualify-mirror and the root's own
+// report path, which the preflight wants.
+func TestCanaryRunKitPassBChecklistNamesQualifyMirror(t *testing.T) {
+	e := canaryStubKit(t)
+	claude := passBGoodClaude(t, e.dir)
+	r := filepath.Join(e.dir, "set-up-b")
+	out, code := e.run(t, canaryPrepareScript, "", e.prepareB(t, r, claude)...)
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	pageData, err := os.ReadFile(filepath.Join(r, "CHECKLIST.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(pageData)
+	for name, text := range map[string]string{"the checklist": page, "the printed next steps": out} {
+		for _, want := range []string{"qualify-mirror", r + "/mirror-qual/config.json", r + "/mirror-qual/report.json", "--mirror-report", "i_run_this_on_purpose"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q:\n%s", name, want, text)
+			}
+		}
+		if strings.Contains(text, "same files") {
+			t.Errorf("%s says the pass A files serve", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r, "mirror-qual", "config.json")); err != nil {
+		t.Errorf("prepare wrote no mirror-qual/config.json: %v", err)
+	}
+	if !strings.Contains(page, "the pin does not cover argv") {
+		t.Errorf("the checklist does not say how to add a model:\n%s", page)
+	}
+}
+
+// netcheck.sh binds each path the profile marks optional only where it exists.
+func TestCanaryRunKitPassBNetcheckBindsOptionalPathsOnlyWhenPresent(t *testing.T) {
+	text := readFileText(t, passBNetcheckTemplate)
+	for _, p := range []string{"/etc/ssl", "/etc/ca-certificates", "/etc/nsswitch.conf", "/usr/lib64"} {
+		if !strings.Contains(text, "[ -e "+p+" ] &&") {
+			t.Errorf("the bind of %s is not conditional on the path", p)
+		}
+	}
+	for _, bad := range []string{"--ro-bind /etc/ssl /etc/ssl \\", "--symlink usr/lib64 /lib64 \\"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("an unconditional bind is left: %q", bad)
+		}
 	}
 }
 

@@ -289,7 +289,11 @@ if [ "$DRY" -eq 1 ]; then
   else
     cc_say "[dry]   pasta: $PASTA_USE (used as it is)"
   fi
-  cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest (last: the environment is part of the digest); run: ataniq-canary check-inputs"
+  if [ "$PASS" = B ]; then
+    cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest (last: the environment is part of the digest); run: ataniq-canary check-inputs"
+  else
+    cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest; run: ataniq-canary check-inputs"
+  fi
   cc_say "[dry]   $ROOT/mirror-qual/config.json for qualify-mirror, with the acknowledgement left false for you"
   cc_say "[dry]   $ROOT/answers.hint (0600): the paths the run suggests at its path prompts: mirror-report=$ROOT/mirror-qual/report.json, and the unit report, plan summary and template review when given"
   if [ "$PASS" = B ]; then
@@ -562,7 +566,7 @@ if [ "$PASS" = B ]; then CHECKLIST_TEMPLATE=checklist-b.txt.in; fi
 if [ -n "$MODEL" ]; then
   MODELNOTE="Model: $MODEL (--model); step 15 asks you to confirm it."
 else
-  MODELNOTE="Model: none chosen (no --model flag): add one, see README.md."
+  MODELNOTE='Model: none chosen. Prepare again with --model NAME, or add "--model", "NAME" to agent.argv (the pin does not cover argv).'
 fi
 sed \
   -e "s|@ROOT@|$(sed_value "$ROOT")|g" \
@@ -593,8 +597,13 @@ Done. Nothing was started. Your one page, with these paths filled in:
      $CHECKLIST
 What you type next, in the checkout ($REPO):
 
-1. The mirror qualification and the template review are as in pass A (the same
-   files serve): see docs/qualification-lead-mirror.md if they are not on file.
+1. The mirror qualification of this root, as in pass A, with the lead present:
+   set "i_run_this_on_purpose" to true in $ROOT/mirror-qual/config.json
+   yourself (see docs/qualification-lead-mirror.md), then:
+     sh scripts/go-tool.sh build -o build/qualify-mirror ./qualification/leadmirror/cmd/qualify-mirror
+     build/qualify-mirror --config $ROOT/mirror-qual/config.json --out $ROOT/mirror-qual/report.json
+   Then remove $ROOT/mirror-qual/state yourself. Or give the preflight
+   --mirror-report FILE: an existing report of the same template.
 
 2. The network and the executable, by hand (it starts pasta, bubblewrap, curl
    and, under a throwaway unit, claude --version; it prints PASS or FINDING):
