@@ -507,11 +507,7 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	// The fields no file can set.
 	in := m.in
 	in.AgentArgv = append([]string(nil), cfg.argv...)
-	in.AgentEnv = nil
-	for _, kv := range cfg.env {
-		name, val, _ := strings.Cut(kv, "=")
-		in.AgentEnv = append(in.AgentEnv, profile.EnvVar{Name: name, Value: val})
-	}
+	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.env)
 	in.ExpectedDigest = cfg.profileDigest
 	in.HolderPaths = []string{
 		filepath.Join(cfg.runtimeDir, serve.AttachSocket),

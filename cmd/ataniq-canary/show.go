@@ -12,7 +12,6 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadholder/sandboxstart"
-	"ataniq/internal/leadsandbox/profile"
 )
 
 // This file holds the two subcommands the attended run script uses for what a
@@ -131,10 +130,7 @@ func profileDigest(cfg leadcanary.Config, file string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	for _, kv := range cfg.Agent.Env {
-		name, val, _ := strings.Cut(kv, "=")
-		in.AgentEnv = append(in.AgentEnv, profile.EnvVar{Name: name, Value: val})
-	}
+	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.Agent.Env)
 	d, err := sandboxstart.ProfileDigest(in, uint32(os.Geteuid()), uint32(os.Getegid()))
 	if err != nil {
 		return fmt.Errorf("the profile digest cannot be computed: %w", err)
