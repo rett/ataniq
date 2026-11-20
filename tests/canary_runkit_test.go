@@ -3490,7 +3490,7 @@ func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
 				t.Errorf("a refused word made a mirror:\n%s", calls)
 			}
 			// What the reset keeps, whatever the word.
-			for _, k := range []string{"config.json", "evidence/pass", "conf/extra", "conf/sandbox-inputs.json", "bin/extra", "mirror-qual/state/x", "upstream/README.txt", ".canary-prepared", "agent-install/ataniq-canary-standin"} {
+			for _, k := range []string{"config.json", "evidence/pass", "conf/extra", "conf/sandbox-inputs.json", "bin/extra", "mirror-qual/state/x", "upstream/README.txt", ".canary-prepared", "agent-install/ataniq-canary-standin", "answers.hint", "CHECKLIST.txt"} {
 				if _, err := os.Stat(filepath.Join(r, k)); err != nil {
 					t.Errorf("the reset lost %s: %v", k, err)
 				}
@@ -5453,5 +5453,211 @@ func TestCanaryRunKitPreflightEvidenceFolder(t *testing.T) {
 	out, code = p.run("--evidence", ev)
 	if code != 0 || !strings.Contains(out, "--evidence "+ev) {
 		t.Errorf("exit status %d:\n%s", code, out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The owner's page. canary-prepare.sh writes ROOT/CHECKLIST.txt from the
+// template checklist.txt.in of the kit, with the real paths: what to start and
+// where, and what each prompt of pass A expects.
+
+const canaryChecklistTemplate = "qualification/canary/run/checklist.txt.in"
+
+var canaryPlaceholder = regexp.MustCompile(`@([A-Z_]+)@`)
+
+func TestCanaryRunKitChecklistTemplate(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), canaryChecklistTemplate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	// One page, and no line wider than a terminal.
+	if len(lines) > 60 {
+		t.Errorf("the checklist has %d lines, want one page (60 at most)", len(lines))
+	}
+	for i, l := range lines {
+		if len([]rune(l)) > 80 {
+			t.Errorf("line %d is %d columns wide: %q", i+1, len([]rune(l)), l)
+		}
+	}
+	// No private name: no home path of anyone, no home folder of this machine.
+	for _, bad := range []string{"/home/", "/Users/", "/root/", "$HOME", "~/", ".ssh", ".claude", ".codex"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("the template holds %q", bad)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && len(home) > 1 && strings.Contains(text, home) {
+		t.Errorf("the template holds this machine's home folder %q", home)
+	}
+	// The placeholders are the ones prepare fills, and each is used.
+	used := map[string]bool{}
+	for _, m := range canaryPlaceholder.FindAllStringSubmatch(text, -1) {
+		used[m[1]] = true
+	}
+	for _, name := range []string{"ROOT", "REPO", "BIN", "CONFIG", "EVIDENCE", "HINTS", "HOLDER_RUN", "RUN", "PREFLIGHT", "RESET"} {
+		if !used[name] {
+			t.Errorf("the template does not use @%s@", name)
+		}
+		delete(used, name)
+	}
+	for name := range used {
+		t.Errorf("the template holds @%s@, which prepare does not fill", name)
+	}
+	// What the owner is told about the two orders that failed an attempt.
+	for _, want := range []string{
+		"Start the daemon in the second terminal BEFORE pressing Enter at step\n      10, wait for the listening line",
+		"At step 26 stop the daemon with Ctrl-C first",
+		"Enter alone\nis refused",
+		"answers nothing for you and starts nothing",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the template does not say %q", want)
+		}
+	}
+}
+
+func TestCanaryRunKitPrepareWritesTheChecklist(t *testing.T) {
+	e := canaryStubKit(t)
+	r := filepath.Join(e.dir, "set-up")
+	out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...)
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	path := filepath.Join(r, "CHECKLIST.txt")
+	if got := canaryMode(t, path); got != 0o600 {
+		t.Errorf("CHECKLIST.txt has mode %o, want 600", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	tmpl, err := os.ReadFile(filepath.Join(root(t), canaryChecklistTemplate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(text, "\n") != strings.Count(string(tmpl), "\n") {
+		t.Error("the page has not the lines of the template")
+	}
+	if strings.Contains(text, "@") {
+		t.Errorf("a placeholder is left:\n%s", text)
+	}
+	runDir := filepath.Join(root(t), "qualification/canary/run")
+	for _, want := range []string{
+		"Root " + r + "\n",
+		"sh " + runDir + "/canary-preflight.sh --root " + r + "\n",
+		"sh " + runDir + "/canary-run.sh --pass A --config " + r + "/config.json --dry\n",
+		"sh " + runDir + "/canary-run.sh --pass A --config " + r + "/config.json --evidence " + r + "/evidence\n",
+		"        " + e.bin + "/ataniqd run --canary " + r + "/config.json\n",
+		"        " + e.bin + "/ataniq-console --attach " + r + "/runtime/leads/throwaway-one-lead --ticket-file <TICKET FILE>\n",
+		"        rm -rf -- " + r + "/state " + r + "/runtime\n",
+		"sh " + runDir + "/canary-reset.sh --root " + r + " ",
+		r + "/answers.hint: Enter takes it",
+		"build/qualify-mirror --config " + r + "/mirror-qual/config.json \\\n        --out " + r + "/mirror-qual/report.json\n",
+		"in " + root(t) + ":\n",
+		"Start the daemon in the second terminal BEFORE pressing Enter at step\n      10, wait for the listening line",
+		"At step 26 stop the daemon with Ctrl-C first",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the page does not hold %q:\n%s", want, text)
+		}
+	}
+	if !strings.Contains(out, path) {
+		t.Errorf("the output does not name the page:\n%s", out)
+	}
+	// The dry run says so and writes nothing.
+	r2 := filepath.Join(e.dir, "set-up-dry")
+	if out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r2, "--dry")...); code != 0 || !strings.Contains(out, "[dry]   "+r2+"/CHECKLIST.txt (0600)") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	// A path with a character sed would take for its own is put in as written.
+	odd := filepath.Join(e.dir, "a|b&c")
+	if err := os.MkdirAll(odd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range canaryRunBinaries {
+		data, err := os.ReadFile(filepath.Join(e.bin, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odd, name), data, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r3 := filepath.Join(e.dir, "set-up-odd")
+	args := e.prepareArgs(t, r3)
+	for i, a := range args {
+		if a == e.bin {
+			args[i] = odd
+		}
+	}
+	if out, code := e.run(t, canaryPrepareScript, "", args...); code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	if data, _ := os.ReadFile(filepath.Join(r3, "CHECKLIST.txt")); !strings.Contains(string(data), "        "+odd+"/ataniqd run --canary "+r3+"/config.json\n") {
+		t.Errorf("the page does not hold the folder with the odd name:\n%s", data)
+	}
+}
+
+// Every prompt of pass A has its row, and every word it asks for is in the page:
+// both are read from the dry run of the script, so a prompt that is added
+// without a row fails here.
+func TestCanaryRunKitChecklistCoversTheOwnerPrompts(t *testing.T) {
+	e := canaryStubKit(t)
+	r := filepath.Join(e.dir, "set-up")
+	if out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...); code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	page, err := os.ReadFile(filepath.Join(r, "CHECKLIST.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := map[int]bool{}
+	row := regexp.MustCompile(`(?m)^ {1,2}([0-9]+) {2,}\S`)
+	for _, m := range row.FindAllStringSubmatch(string(page), -1) {
+		n, _ := strconv.Atoi(m[1])
+		rows[n] = true
+	}
+	out, code := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	words := map[string]bool{}
+	typed := regexp.MustCompile(`\(type: ([a-z-]+)\)|type ([a-z-]+) when`)
+	want := map[int]bool{}
+	for _, b := range canaryBlocks(out) {
+		m := canaryStepHeading.FindStringSubmatch(b.heading)
+		if m == nil || m[3] != "" || strings.Contains(b.heading, "skipped") {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		body := strings.Join(b.lines, "\n")
+		if strings.Contains(body, "ask and record the answer") || strings.Contains(body, "wait for Enter: Owner") || strings.Contains(body, "the owner pastes") {
+			want[n] = true
+		}
+		for _, w := range typed.FindAllStringSubmatch(body, -1) {
+			words[w[1]+w[2]] = true
+		}
+	}
+	for _, n := range []int{1, 2, 4, 8, 10, 12, 14, 17, 18, 20, 26} {
+		if !want[n] {
+			t.Errorf("the dry run of pass A has no prompt of the owner at step %d: the test's list is stale", n)
+		}
+	}
+	for n := range want {
+		if !rows[n] {
+			t.Errorf("pass A asks the owner something at step %d and the page has no row for it:\n%s", n, page)
+		}
+	}
+	for w := range words {
+		if !strings.Contains(string(page), w) {
+			t.Errorf("pass A asks for the word %q and the page does not say it", w)
+		}
+	}
+	for _, w := range []string{"yes", "read", "clean"} {
+		if !words[w] {
+			t.Errorf("the dry run of pass A no longer asks for %q: the test's list is stale", w)
+		}
 	}
 }

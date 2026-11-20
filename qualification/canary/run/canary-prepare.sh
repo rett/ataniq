@@ -23,6 +23,10 @@
 # or --template-review, which must name an existing regular file (a hint that
 # cannot be known is not written). A hint is a suggestion: the run still
 # checks and records the file. No word the owner types is ever a hint.
+#
+# It writes ROOT/CHECKLIST.txt (mode 0600) too, from the template
+# checklist.txt.in beside this file with the real paths filled in: one page for
+# the owner, what to start and where, and what each prompt of the run expects.
 set -eu
 umask 077
 
@@ -208,6 +212,7 @@ if [ "$DRY" -eq 1 ]; then
   cc_say "[dry]   run: ataniq-canary profile-digest, write it into holder.profile_digest; run: ataniq-canary check-inputs"
   cc_say "[dry]   $ROOT/mirror-qual/config.json for qualify-mirror, with the acknowledgement left false for you"
   cc_say "[dry]   $ROOT/answers.hint (0600): the paths the run suggests at its path prompts: mirror-report=$ROOT/mirror-qual/report.json, and the unit report, plan summary and template review when given"
+  cc_say "[dry]   $ROOT/CHECKLIST.txt (0600): one page for you, from checklist.txt.in, with these paths filled in"
   cc_say "[dry]   $ROOT/$CC_MARKER, the mark that canary-reset.sh looks for"
   cc_say "[dry]   print the commands you type next"
   exit 0
@@ -367,13 +372,36 @@ if [ -n "$HINT_PLAN_SUMMARY" ]; then printf 'plan-summary=%s\n' "$HINT_PLAN_SUMM
 if [ -n "$HINT_TEMPLATE_REVIEW" ]; then printf 'template-review=%s\n' "$HINT_TEMPLATE_REVIEW" >>"$HINTFILE"; fi
 chmod 0600 -- "$HINTFILE"
 
+# The owner's page: the template of the kit with the real paths. A value goes
+# into the sed expression with \, & and | escaped; the paths of a root hold no
+# such character, and --bin is escaped here.
+sed_value() { printf '%s' "$1" | sed 's/[\\&|]/\\&/g'; }
+CHECKLIST=$ROOT/CHECKLIST.txt
+[ -f "$_d/checklist.txt.in" ] || cc_die "the checklist template is missing: $_d/checklist.txt.in"
+sed \
+  -e "s|@ROOT@|$(sed_value "$ROOT")|g" \
+  -e "s|@REPO@|$(sed_value "$REPO")|g" \
+  -e "s|@BIN@|$(sed_value "$BIN")|g" \
+  -e "s|@CONFIG@|$(sed_value "$CONFIG")|g" \
+  -e "s|@EVIDENCE@|$(sed_value "$ROOT/evidence")|g" \
+  -e "s|@HINTS@|$(sed_value "$HINTFILE")|g" \
+  -e "s|@HOLDER_RUN@|$(sed_value "$ROOT/runtime/leads/${CC_PROJECT}-lead")|g" \
+  -e "s|@RUN@|$(sed_value "$_d/canary-run.sh")|g" \
+  -e "s|@PREFLIGHT@|$(sed_value "$_d/canary-preflight.sh")|g" \
+  -e "s|@RESET@|$(sed_value "$_d/canary-reset.sh")|g" \
+  "$_d/checklist.txt.in" >"$CHECKLIST"
+chmod 0600 -- "$CHECKLIST"
+if grep -q '@[A-Z_]*@' "$CHECKLIST"; then cc_die "the checklist template holds a placeholder that was not filled: $CHECKLIST"; fi
+
 # The mark of this prepare, last: a prepare that failed is not reset.
 printf '%s\nproject %s\n' "$CC_MARKER_LINE" "$CC_PROJECT" >"$ROOT/$CC_MARKER"
 chmod 0600 -- "$ROOT/$CC_MARKER"
 
 cat <<EOF
 
-Done. Nothing was started. What you type next, in the checkout ($REPO):
+Done. Nothing was started. Your one page, with these paths filled in:
+     $CHECKLIST
+What you type next, in the checkout ($REPO):
 
 1. The mirror qualification is your own step. Read docs/qualification-lead-mirror.md
    and the template note, then set "i_run_this_on_purpose" to true in

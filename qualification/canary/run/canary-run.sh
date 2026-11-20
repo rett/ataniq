@@ -2666,6 +2666,7 @@ step_26() {
     dry "copy, when present: $STATE/registry/registry.jsonl; $HSTATE/events.jsonl, events.jsonl.1, holder.json, final.json, final.json.previous; $EVIDENCE; $REPLAY/order.txt and result.txt"
     dry 'run ataniq-canary scrub-screen on each copy of a final record: the screen text is replaced by its hash'
     dry 'search the evidence for a login URL or code; print file names and line numbers only; the owner decides what to remove'
+    dry 'ask and record the answer and the time: Owner and lead: look at the lines listed, and remove from the evidence what holds a login URL or code; type clean when the evidence holds none'
     dry "remove the scratch folder of the intake's verify"
     dry "wait for Enter: Owner: stop the daemon yourself (Ctrl-C in its terminal)"
     dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s, say \"waiting for the daemon to stop...\" once and print a dot every 5 s; go on as soon as no daemon answers"

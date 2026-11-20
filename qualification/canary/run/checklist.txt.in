@@ -1,0 +1,50 @@
+CANARY RUN, PASS A: YOUR CHECKLIST    (written by canary-prepare.sh)
+Root @ROOT@
+The script answers nothing for you and starts nothing. Two terminals: T1 runs
+the script, T2 is yours for the daemon, the console and the intake.
+
+BEFORE
+ 1. sh @PREFLIGHT@ --root @ROOT@
+    It must say READY; every FIX line gives the command to type.
+ 2. qualify-mirror is your own step: set "i_run_this_on_purpose" to true in
+    @ROOT@/mirror-qual/config.json, then in @REPO@:
+      sh scripts/go-tool.sh build -o build/qualify-mirror \
+        ./qualification/leadmirror/cmd/qualify-mirror
+      build/qualify-mirror --config @ROOT@/mirror-qual/config.json \
+        --out @ROOT@/mirror-qual/report.json
+ 3. T1: read the dry run, then run:
+      sh @RUN@ --pass A --config @CONFIG@ --dry
+      sh @RUN@ --pass A --config @CONFIG@ --evidence @EVIDENCE@
+
+AT EACH PROMPT   Enter = go on. A word is typed by you, exactly, and Enter alone
+is refused: yes, read, clean. A path prompt shows "(Enter for: PATH)" from
+@HINTS@: Enter takes it, a path you type wins, a wrong file is asked again.
+
+STEP  WHAT YOU DO
+  1   Lead: yes (no agent session was told about the slice).
+  2   Paths of the unit report and the plan summary, then Enter at the rest.
+  4   Path of the template review; read; qualify-mirror report path; yes.
+  8   Enter (the sandbox inputs file is already written by prepare).
+ 10   Start the daemon in the second terminal BEFORE pressing Enter at step
+      10, wait for the listening line, then Enter in T1:
+        @BIN@/ataniqd run --canary @CONFIG@
+      (The script waits up to a minute for it, but start it first.) Then: yes.
+ 12   Lead: yes (the probe reported once, every assertion ok except 10).
+ 14   T2: attach the console with the ticket file the script prints:
+        @BIN@/ataniq-console --attach @HOLDER_RUN@ --ticket-file <TICKET FILE>
+      then yes (the pane shows the agent). In a third terminal run the same
+      command once more; then yes (the used ticket was refused).
+ 17   Paste the message file the script names into the pane as ONE paste
+      (do not type it), press Enter in the pane once, then Enter in T1.
+ 18   yes (the pane shows the stand-in committed).
+ 20   T2: the integrate command the script prints (with its TIP and DIGEST
+      and one --accept-path per path listed); then yes.
+ 2nd  Second epoch: Enter at each step; attach again at step 14 (yes, yes);
+      the stand-in replays, nothing to paste.
+ 26   Enter; clean (when the evidence holds no login URL or code).
+      At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
+      Delete the roots yourself, then Enter in T1:
+        rm -rf -- @ROOT@/state @ROOT@/runtime
+
+IF IT FAILS   Stop the daemon with Ctrl-C, answer the clean-up prompts, then
+  sh @RESET@ --root @ROOT@    (type the word reset) and run preflight again.
