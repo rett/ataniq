@@ -110,8 +110,13 @@ Exactly one result of the injection gets the owner's Enter in the pane:
 then records `owner-enter` as a line of its own. On `uncertain` with the reason
 `died` nothing is pressed, whatever was written: the input may hold an open
 paste. The owner looks at the pane, the script records what he saw, and what
-happens next is his decision. On a refusal the owner puts the message into the
-pane himself.
+happens next is his decision. On a refusal, and on `not-now` with written
+`nothing` (the screen was not ready), the owner puts the message into the pane
+himself; he first clears what the pane shows (a dialog, a notice, text in the
+composer). Before step 17, step 16 asks the owner to make the pane ready: the
+empty composer, no dialog, the last row reading the mode the config expects
+with no notice on it, then leave the session pane and touch neither key nor
+mouse there for 3 seconds (the fence needs 2 seconds of quiet).
 
 ### Step 14: the console, then the ticket
 
@@ -172,8 +177,8 @@ the console is closed.
 
 ### When the owner supplies the message himself
 
-In the first epoch of pass A, and in pass B when the fence refuses, the owner
-puts the message into the pane. He does not type it. The script prints the
+In the first epoch of pass A, and in pass B when the fence refuses or answers
+`not-now` having written nothing, the owner puts the message into the pane. He does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
 text between two marker lines (`----- begin of message-1.txt -----` and
 `----- end -----`, the text with no prefix); the owner copies the file's text
@@ -441,7 +446,7 @@ wrong command line. The checks:
 | No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |
 | `/ataniq` does not exist | Remove it yourself. |
 | The report of `qualify-mirror` exists, parses and names the template's hash (the path: `--mirror-report`, else the hint in `answers.hint`, else `mirror-qual/report.json`) | Run `qualify-mirror` (the commands are printed; the acknowledgement stays yours). |
-| `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
+| `systemctl`, `loginctl`, `git`, `bwrap`, `pasta` and `ss` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
 | `timeout` (coreutils) is on `PATH`: the run cuts off each ask of the daemon's status with it | Install coreutils, or put `timeout` on `PATH`. |
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
@@ -667,7 +672,12 @@ is refused too, and it takes no path with a `.` or `..` part. It holds:
 
 The script never prints or copies the content of a credential or of a file of
 the live runtime's config folder: the manifests hold names, sizes, times and
-hashes. It reads the canary config only through `ataniq-canary show`, which
+hashes. The owner's own running sessions write that folder all the time, so
+step 25 counts what was added, removed and changed, lists the names that differ
+at the top of the folder, and judges only the files the login itself would
+write there (a credential, token, secret or authorisation file, the runtime's
+state file and its settings files, at the top of the folder): a difference in one
+of those is a finding. It reads the canary config only through `ataniq-canary show`, which
 prints names, numbers and paths and leaves out the agent's environment, and it
 records the config's hash. At step 26 the last screen kept in each copy of the
 holder's final record is replaced by its hash (`ataniq-canary scrub-screen`),
