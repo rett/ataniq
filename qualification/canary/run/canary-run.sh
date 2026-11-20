@@ -54,7 +54,11 @@ usage() {
     '         counters-7501 FIELDS' \
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
-    '                      whether that active state lets step 26 show the delete command' >&2
+    '                      whether that active state lets step 26 show the delete command' \
+    '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
+    '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
+    '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
+    '                      what steps 1, 2, 3, 8, 12 and 20 read themselves in place of a word' >&2
   exit 2
 }
 
@@ -124,9 +128,13 @@ TAG=ataniq_canary
 WAIVER='assertion 10 waived: canary slice, no qualification record'
 BRANCH=canary/one
 AGENT_INSIDE=/ataniq/agent
+# The mirror's place inside the sandbox (profile.MirrorInside): provisioning sets
+# the tree's origin to it, not to the host path.
+MIRROR_ROOT_INSIDE=/ataniq/mirror
 CAP_SECONDS=1800
 CAP_TURNS=10
 PAGE=4096
+PROFILE_VERSION=4
 
 out() { printf '%s\n' "$*"; }
 
@@ -269,6 +277,11 @@ check() {
 }
 
 is_eq() { [ "$1" = "$2" ]; }
+# mirror_inside prints the mirror's place inside the sandbox for a project.
+mirror_inside() { printf '%s/%s.git' "$MIRROR_ROOT_INSIDE" "$1"; }
+# remote_is_mirror reports whether URL (with or without file://) is the
+# mirror's place inside the sandbox for PROJECT.
+remote_is_mirror() { [ "${1#file://}" = "$(mirror_inside "$2")" ]; }
 is_rc() { [ "$RC" -eq "$1" ]; }
 is_empty_file() { [ ! -s "$1" ]; }
 is_absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
@@ -278,6 +291,9 @@ fld() {
   "$BIN/ataniq-canary" fields --file "$1" |
     awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'
 }
+
+# fld_all prints every line of a JSON file, through the tagged helper.
+fld_all() { "$BIN/ataniq-canary" fields --file "$1"; }
 
 # fields_hold reports whether the lines $1, which are what ataniq-canary
 # fields prints for one JSON object, hold each further argument ("path=value")
@@ -527,6 +543,239 @@ unit_stopped() {
 done_step() { DONE_STEPS="$DONE_STEPS$CUR "; }
 was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
 
+# ---------------------------------------------- machine reads of the lead ---
+
+# The helpers below are what the script reads itself in place of a word of the
+# lead. Each takes the text of a program's output or of a report, and none runs
+# a program.
+
+# real_dir prints the resolved path of a folder (symbolic links followed, no
+# trailing slash), or the argument itself when it cannot be entered.
+real_dir() {
+  [ -n "$1" ] || return 0
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
+}
+
+# repo_roots REPO prints the resolved path of REPO and, when REPO is in a work
+# tree whose repository has its main work tree in another folder (a linked
+# work tree), the resolved path of that main work tree as the last line. It
+# prints nothing for an empty argument. qargi records a run's repo.path as the
+# resolved --repo folder the run was started in, which may be a linked work
+# tree, so both sides of a comparison are taken to their main work tree.
+repo_roots() {
+  [ -n "$1" ] || return 0
+  _rr=$(real_dir "$1")
+  printf '%s\n' "$_rr"
+  _gc=$(cd "$_rr" 2>/dev/null && _g=$(git rev-parse --git-common-dir 2>/dev/null) && [ -n "$_g" ] && cd "$_g" 2>/dev/null && pwd -P) || return 0
+  case $_gc in
+    */.git)
+      _gc=${_gc%/.git}
+      if [ "$_gc" != "$_rr" ]; then printf '%s\n' "$_gc"; fi
+      ;;
+  esac
+}
+
+# open_rows LIST prints the folder of each run that "qargi local list" (the
+# text in the file LIST) shows as open: a run is open unless it is applied (or
+# closed) and, when applied, merged. Residue lines and the rows of a run whose
+# folder is gone ("directory gone") are not rows of an open run it can read;
+# list_gone counts the second kind, and the caller says so.
+open_rows() {
+  awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1"
+}
+
+# open_runs LIST REPO prints the folder of each open run (open_rows) whose
+# repo.path is in the same repository as REPO: the main work tree of each side
+# is compared, as resolved paths, so a run prepared from a linked work tree is
+# seen from the main checkout and from another work tree. An open run whose
+# repo.path cannot be read is not printed here: open_unread names it, and the
+# caller does not take the list as proof.
+open_runs() {
+  _roots=$(repo_roots "$2" | tail -n 1)
+  [ -n "$_roots" ] || return 0
+  open_rows "$1" |
+    while IFS= read -r _r; do
+      _rp=$(repo_roots "$(cat "$_r/repo.path" 2>/dev/null || :)" | tail -n 1)
+      [ -n "$_rp" ] || continue
+      if [ "$_rp" = "$_roots" ]; then printf '%s\n' "$_r"; fi
+    done
+}
+
+# open_unread LIST prints the folder of each open run (open_rows) whose
+# repo.path cannot be read: the file is missing, unreadable or empty. Whose
+# repository such a run belongs to is not known, so the check of the open runs
+# does not pass on this list.
+open_unread() {
+  open_rows "$1" |
+    while IFS= read -r _r; do
+      _rp=$(cat "$_r/repo.path" 2>/dev/null || :)
+      case $_rp in
+        '') printf '%s\n' "$_r" ;;
+      esac
+    done
+}
+
+# list_scan LIST classifies the lines of the text of "qargi local list" in the
+# file LIST, as "qargi local list" prints them: the header (ROLE SLUG AGE
+# APPLIED MERGED RUN, exactly), a row of six fields whose APPLIED is no, yes or
+# closed and whose RUN is a path, a residue line, a row whose run directory is
+# gone ("directory gone"), and a blank line. It prints "header bad" when the
+# header is another, "gone N" for the rows of a run whose directory is gone
+# (their repo.path cannot be read), and "other N" for every line it does not
+# know.
+list_scan() {
+  awk '
+    NR == 1 { $1 = $1; if ($0 != "ROLE SLUG AGE APPLIED MERGED RUN") bad = 1; next }
+    $0 ~ /^[ \t]*$/ { next }
+    $0 ~ /^  residue: / { next }
+    NF == 8 && substr($6, 1, 1) == "/" && $7 == "directory" && $8 == "gone" && substr($0, length($0) - length($6) - 15) == $6 "  directory gone" { gone++; next }
+    NF == 16 && substr($6, 1, 1) == "/" && $7 == "directory" && $8 == "gone," && $9 == "saved" && $10 == "copy" && $12 == "(qargi" && $15 == "--from-saved" && index($0, $6 "  directory gone, saved copy ") { gone++; next }
+    NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || $4 == "yes" || $4 == "closed") { next }
+    { other++ }
+    END {
+      if (NR == 0 || bad) print "header bad"
+      print "gone " gone + 0
+      print "other " other + 0
+    }' "$1"
+}
+
+# list_looks_right reports whether the file is what "qargi local list" prints:
+# the header is the one it prints, and every other line is one list_scan knows.
+# A list that drifted (another column, a line of another kind) is not read.
+list_looks_right() {
+  case $(list_scan "$1") in
+    *'header bad'*) return 1 ;;
+    *'other 0') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# list_gone prints how many rows of the list are of a run whose directory is
+# gone, which open_runs passes over because the run's repo.path is not there.
+list_gone() { list_scan "$1" | awk '$1 == "gone" { print $2 }'; }
+
+# loaded_units prints the unit names of the file (systemctl list-units
+# --plain --no-legend), the slices left out: the slices of the earlier
+# qualification are inert.
+loaded_units() { awk '$1 != "" && $1 !~ /\.slice$/ { print $1 }' "$1"; }
+
+# untracked_only and tracked_changes read the text of git status --porcelain:
+# the first prints the untracked entries, the second every other line.
+untracked_only() { awk 'substr($0, 1, 2) == "??"' "$1"; }
+tracked_changes() { awk 'substr($0, 1, 2) != "??" && $0 != ""' "$1"; }
+
+# unit_facts_verdict FIELDS reads the lines that ataniq-canary fields prints for
+# the report of leadunit-qualify. It prints "ok TEXT" when the tool is
+# leadunit-qualify, the verdict is pass, every entry of checks has the result
+# pass, and the checks that a run with limits has (limits-show-read-back and
+# limits-cgroup-read-back) are there and pass, and "bad REASON" otherwise. A
+# report of a run without limits has none of those two checks.
+unit_facts_verdict() {
+  printf '%s\n' "$1" | awk '
+    { v = substr($0, index($0, "=") + 1) }
+    /^tool=/ { tool = v }
+    /^verdict=/ { verdict = v; hv = 1 }
+    /^checks\.[0-9]+\./ {
+      split($0, a, "."); i = a[2]; seen[i] = 1
+      if ($0 ~ /^checks\.[0-9]+\.name=/) nm[i] = v
+      if ($0 ~ /^checks\.[0-9]+\.result=/) {
+        hr[i] = 1; rs[i] = v
+        if (v != "pass" && bad == "") bad = "check " i " (" nm[i] ") has the result " v ", not pass"
+      }
+    }
+    END {
+      if (tool != "leadunit-qualify") { print "bad the report is of the tool " tool ", not leadunit-qualify"; exit }
+      if (!hv) { print "bad the report has no verdict"; exit }
+      if (verdict != "pass") { print "bad the verdict is " verdict ", not pass"; exit }
+      n = 0; miss = 0
+      for (i in seen) { n++; if (!(i in hr)) miss++ }
+      if (n == 0) { print "bad the report has no checks"; exit }
+      if (bad != "") { print "bad " bad; exit }
+      if (miss > 0) { print "bad " miss " check(s) have no result"; exit }
+      m = split("limits-show-read-back limits-cgroup-read-back", want, " ")
+      for (k = 1; k <= m; k++) {
+        found = 0
+        for (i in seen) if (nm[i] == want[k] && rs[i] == "pass") found = 1
+        if (!found) { print "bad the report has no passing check " want[k] " (a run without limits?)"; exit }
+      }
+      print "ok verdict pass, " n " checks, every result pass, the limits read back"
+    }'
+}
+
+# plan_facts_verdict FIELDS reads the lines for the summary.json of the
+# launched plan. It prints "ok TEXT" when the plan was launched and exited
+# (exit.launched and exit.exited are true, report_outcome is line-read), every
+# step has the status ok or skipped, exit.code is 0 and every case result is ok
+# or not-checked, and "bad REASON" otherwise. A summary of a plan that was never
+# launched has exit.code 0 and passes everything else, so the launch is read
+# first.
+plan_facts_verdict() {
+  printf '%s\n' "$1" | awk '
+    { v = substr($0, index($0, "=") + 1) }
+    /^steps\.[0-9]+\.name=/ { split($0, a, "."); sn[a[2]] = v }
+    /^steps\.[0-9]+\.status=/ {
+      split($0, a, "."); s++; st = v
+      if (st != "ok" && st != "skipped" && bad == "") bad = "step " a[2] " (" sn[a[2]] ") has the status " st
+    }
+    /^cases\.[0-9]+\.results\.[0-9]+\.id=/ { split($0, a, "."); cid[a[2] "." a[4]] = v }
+    /^cases\.[0-9]+\.results\.[0-9]+\.status=/ {
+      split($0, a, "."); c++; st = v
+      if (st != "ok" && st != "not-checked" && bad == "") bad = "case result " a[2] "." a[4] " (" cid[a[2] "." a[4]] ") has the status " st
+    }
+    /^exit\.code=/ { ec = v; he = 1 }
+    /^exit\.launched=/ { el = v }
+    /^exit\.exited=/ { ex = v }
+    /^report_outcome=/ { ro = v }
+    END {
+      if (s == 0) { print "bad the summary has no step"; exit }
+      if (el != "true") { print "bad the plan was not launched (exit.launched is " el ")"; exit }
+      if (ex != "true") { print "bad the plan did not exit (exit.exited is " ex ")"; exit }
+      if (ro != "line-read") { print "bad report_outcome is " ro ", not line-read"; exit }
+      if (!he) { print "bad the summary has no exit.code"; exit }
+      if (ec != "0") { print "bad exit.code is " ec ", not 0"; exit }
+      if (c == 0) { print "bad the summary has no case result"; exit }
+      if (bad != "") { print "bad " bad; exit }
+      print "ok " s " steps ok or skipped, exit.code 0, " c " case results ok or not-checked"
+    }'
+}
+
+# upstream_branch_id FILE NAME and lead_branch_id FILE ROLE BRANCH print the
+# commit that the text of "ataniq-intake branches" (in FILE) names for the
+# upstream branch NAME and for the lead's branch, and nothing when it names
+# none. The rows are "  NAME  ID" under "Upstream branches:" and "  ROLE
+# BRANCH  ID" before it.
+upstream_branch_id() {
+  awk -v n="$2" '
+    $0 == "Upstream branches:" { up = 1; next }
+    up && substr($0, 1, 1) == " " && $1 == n { print $2; exit }
+    up && substr($0, 1, 1) != " " { up = 0 }' "$1"
+}
+lead_branch_id() {
+  awk -v r="$2" -v b="$3" '
+    $0 == "Upstream branches:" { exit }
+    substr($0, 1, 1) == " " && $1 == r && $2 == b && NF >= 3 { print $3; exit }' "$1"
+}
+lists_upstream() { [ -n "$(upstream_branch_id "$1" "$2")" ]; }
+
+# holder_start_verdict FIELDS VERSION DIGEST reads the lines for holder.json.
+# It prints "ok TEXT" when the sandbox has started, the profile version is
+# VERSION and the profile digest is DIGEST, and "bad REASON" otherwise.
+holder_start_verdict() {
+  _f=$1
+  case "
+$_f
+" in
+    *"
+sandbox_started=true
+"*) ;;
+    *) printf '%s\n' 'bad holder.json does not say the sandbox started (sandbox_started is not true)'; return 0 ;;
+  esac
+  fields_hold "$_f" "profile_version=$2" || { printf '%s\n' "bad holder.json profile_version is not $2"; return 0; }
+  [ -n "$3" ] || { printf '%s\n' 'bad the config names no profile digest'; return 0; }
+  fields_hold "$_f" "profile_digest=$3" || { printf '%s\n' 'bad holder.json profile_digest is not the pinned digest of the config'; return 0; }
+  printf '%s\n' "ok sandbox started, profile version $2, profile digest is the pinned digest"
+}
+
 # -------------------------------------------------------------- self-test ---
 
 # is_number reports whether every argument is a number in plain digits.
@@ -549,6 +798,11 @@ self_test() {
       _v=$(balance "$4" "$1" "$2")
       out "value=$_v"
       if below_floor "$_v" "$3"; then out 'floor=below'; else out 'floor=ok'; fi
+      ;;
+    mirror-remote)
+      # URL PROJECT: whether URL is the mirror's place inside for PROJECT.
+      [ "$#" -eq 2 ] || usage
+      if remote_is_mirror "$1" "$2"; then out yes; else out no; fi
       ;;
     inject-action)
       [ "$#" -eq 4 ] || usage
@@ -584,6 +838,56 @@ self_test() {
       # FIELDS: what ataniq-canary fields prints for a final record.
       [ "$#" -eq 1 ] || usage
       counters_7501 "$1" || out '     (none is named for 7501)'
+      ;;
+    open-runs)
+      # LIST REPO: the open runs of REPO in the text of qargi local list.
+      [ "$#" -eq 2 ] || usage
+      open_runs "$1" "$2"
+      ;;
+    unread-runs)
+      # LIST: the open runs of qargi local list whose repo.path cannot be read.
+      [ "$#" -eq 1 ] || usage
+      open_unread "$1"
+      ;;
+    list-scan)
+      # LIST: how list_scan reads the text of qargi local list.
+      [ "$#" -eq 1 ] || usage
+      list_scan "$1"
+      ;;
+    loaded-units)
+      # FILE: the loaded units, slices left out, in a list-units text.
+      [ "$#" -eq 1 ] || usage
+      loaded_units "$1"
+      ;;
+    tracked-changes)
+      # FILE: the lines of a porcelain status that are not untracked.
+      [ "$#" -eq 1 ] || usage
+      tracked_changes "$1"
+      ;;
+    unit-facts)
+      # FIELDS: what fields prints for the report of leadunit-qualify.
+      [ "$#" -eq 1 ] || usage
+      unit_facts_verdict "$1"
+      ;;
+    plan-facts)
+      # FIELDS: what fields prints for the summary of the launched plan.
+      [ "$#" -eq 1 ] || usage
+      plan_facts_verdict "$1"
+      ;;
+    holder-start)
+      # FIELDS VERSION DIGEST: what fields prints for holder.json.
+      [ "$#" -eq 3 ] || usage
+      holder_start_verdict "$1" "$2" "$3"
+      ;;
+    upstream-id)
+      # FILE NAME: the commit of the upstream branch in a branches text.
+      [ "$#" -eq 2 ] || usage
+      upstream_branch_id "$1" "$2"
+      ;;
+    lead-id)
+      # FILE ROLE BRANCH: the commit of the lead's branch in a branches text.
+      [ "$#" -eq 3 ] || usage
+      lead_branch_id "$1" "$2" "$3"
       ;;
     has-line)
       # FILE PATH=VALUE...: FILE holds one JSON object in each line. The
@@ -786,10 +1090,55 @@ fi
 
 # ------------------------------------------------------------- the steps ---
 
+# no_open_runs checks, with qargi local list, that no run of this project is
+# open (a run is the project's when its repo.path is this checkout). Without
+# qargi, or with a list it cannot read, it asks the lead as before and says so.
+no_open_runs() {
+  if [ "$DRY" -eq 1 ]; then
+    dry "check: no Qargi run of this project is open (qargi local list, the rows whose repo.path is $REPO that are not applied and merged); without qargi on PATH, when the list cannot be read, or when an open run has no readable repo.path, ask the lead as before and say so in the log"
+    return 0
+  fi
+  if ! command -v qargi >/dev/null 2>&1; then
+    out '   qargi is not on PATH: the open runs cannot be read; the lead is asked'
+    note 'qargi is not on PATH: the machine check of the open runs is not possible, the lead is asked'
+    affirm 'Lead: no Qargi run is open' yes || return 1
+    return 0
+  fi
+  runcap qargi-runs qargi local list
+  if [ "$RC" -ne 0 ] || ! list_looks_right "$LASTOUT"; then
+    out '   the output of qargi local list cannot be read: the lead is asked'
+    note 'the output of qargi local list cannot be read: the machine check of the open runs is not possible, the lead is asked'
+    affirm 'Lead: no Qargi run is open' yes || return 1
+    return 0
+  fi
+  _gone=$(list_gone "$LASTOUT")
+  if [ "${_gone:-0}" -gt 0 ]; then
+    out "   $_gone run(s) in the list have a directory that is gone: their repo.path cannot be read, they are not counted"
+    note "$_gone run(s) of qargi local list have a directory that is gone: not counted as open runs of this project"
+  fi
+  _open=$(open_runs "$LASTOUT" "$REPO")
+  if [ -n "$_open" ]; then
+    printf '%s\n' "$_open" | sed 's/^/   open run: /'
+    note "open runs of this project: $(printf '%s' "$_open" | tr '\n' ' ')"
+    fail 'a Qargi run of this project is open (see above): verify and close it first'
+    return 1
+  fi
+  _unread=$(open_unread "$LASTOUT")
+  if [ -n "$_unread" ]; then
+    printf '%s\n' "$_unread" | sed 's/^/   open run without a readable repo.path: /'
+    out '   the repository of the run(s) above is not known: the lead is asked'
+    note "open runs of qargi local list whose repo.path cannot be read: $(printf '%s' "$_unread" | tr '\n' ' '): the machine check of the open runs is not possible, the lead is asked"
+    affirm 'Lead: no Qargi run is open' yes || return 1
+    return 0
+  fi
+  out '   ok: no Qargi run of this project is open'
+  note "ok: no Qargi run of $REPO is open (qargi local list, $LASTOUT)"
+}
+
 step_1() {
   step_head 1 'Quiet window, and the evidence folder' \
     "make the evidence folder $EV (mode 0700); ask for the quiet window; list the user manager's ataniq units" \
-    'the lead confirms each; no ataniq-lead-* unit exists' 'G4, L10'
+    'the script reads that no Qargi run of this project is open and no ataniq unit is loaded; the lead confirms that no agent session was told about the slice; no ataniq-lead-* unit exists' 'G4, L10'
   wait_key 'Step 1 makes the evidence folder and lists units.'
   if [ "$DRY" -eq 1 ]; then
     dry "make $EV and $EV/out with mode 0700 (refused if it exists)"
@@ -801,28 +1150,72 @@ step_1() {
     note "pass $PASS begins; config $(sha256sum <"$CONFIG" | awk '{print $1}') (hash only)"
   fi
   out "   the evidence folder is $EV: it is never published"
-  affirm 'Lead: no Qargi run is open' yes || return 0
+  no_open_runs || return 0
   affirm 'Lead: no agent session is open that has been told about the slice' yes || return 0
   runcap lead-units systemctl --user list-units --all --no-legend --plain 'ataniq-lead-*'
+  check 'the ataniq-lead-* units can be listed' is_rc 0 || return 0
   check 'no ataniq-lead-* unit exists' is_empty_file "$LASTOUT" || return 0
   runcap units-before systemctl --user list-units --all --no-legend --plain 'ataniq-*'
-  if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-before.txt"; fi
+  check 'the ataniq units can be listed' is_rc 0 || return 0
+  if [ "$DRY" -eq 0 ]; then
+    awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-before.txt"
+    _loaded=$(loaded_units "$LASTOUT")
+    if [ -n "$_loaded" ]; then printf '%s\n' "$_loaded" | sed 's/^/   loaded: /'; fi
+  else
+    _loaded=
+  fi
+  check 'no ataniq-* unit is loaded (the slices of the earlier qualification are left out)' is_eq "$_loaded" '' || return 0
   runcap unit-files-before systemctl --user list-unit-files --no-legend 'ataniq-*'
   if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/unit-files-before.txt"; fi
   result ok
   done_step
 }
 
+# facts_pass reads one fact report (KIND unit: the report of leadunit-qualify;
+# plan: the summary of the launched plan) and fails the step unless it shows
+# that everything passed. What was read is in the evidence.
+facts_pass() {
+  if [ "$DRY" -eq 1 ]; then
+    if [ "$1" = unit ]; then
+      dry 'check: the report parses, its verdict is pass and every entry of checks has the result pass'
+    else
+      dry 'check: the summary parses, every step has the status ok or skipped, exit.code is 0 and every case result is ok or not-checked'
+    fi
+    return 0
+  fi
+  _fl=$EV/out/02-facts-$1.fields
+  if ! "$BIN/ataniq-canary" fields --file "$2" >"$_fl" 2>"$_fl.err"; then
+    fail "the file cannot be read as one JSON object: $2"
+    return 1
+  fi
+  _flds=$(cat "$_fl")
+  if [ "$1" = unit ]; then _v=$(unit_facts_verdict "$_flds"); else _v=$(plan_facts_verdict "$_flds"); fi
+  case $_v in
+    'ok '*)
+      out "   ok: $2: ${_v#ok }"
+      note "ok: $1 facts $2 (fields read: $_fl): ${_v#ok }"
+      ;;
+    *)
+      fail "the $1 facts do not show a pass: ${_v#bad }"
+      return 1
+      ;;
+  esac
+}
+
 step_2() {
   step_head 2 'Facts on file' \
     'ask for the two fact reports (the unit manager with the limits, the launched plan) and, in pass B, for the evidence folder of pass A; record names, sizes, times and hashes' \
-    'each is present and passed; a miss stops the run' 'G4, G5, G2'
+    'each is present and passed, which the script reads from the files; a miss stops the run' 'G4, G5, G2'
   wait_key 'Step 2 reads the reports you name.'
-  for _what in 'the report of leadunit-qualify with the limits (cs-facts-unit, second run)' 'the summary of the launched plan (cs-facts-plan)'; do
+  for _kind in unit plan; do
+    case $_kind in
+      unit) _what='the report of leadunit-qualify with the limits (cs-facts-unit, second run)' ;;
+      *) _what='the summary of the launched plan (cs-facts-plan)' ;;
+    esac
     ask "Lead: the path of $_what"
     check "the file is present: $_what" test -f "$ANSWER" || return 0
     fact facts.txt "$ANSWER"
-    affirm "Lead: $_what shows every check passed" yes || return 0
+    facts_pass "$_kind" "$ANSWER" || return 0
   done
   if [ "$PASS" = B ]; then
     ask 'Lead: the evidence folder of pass A'
@@ -873,9 +1266,27 @@ step_3() {
   if [ "$DRY" -eq 0 ]; then LINGER0=$(cat "$LASTOUT"); fi
   runcap commit git -C "$REPO" rev-parse HEAD
   check 'the checkout has a commit' is_rc 0 || return 0
+  if [ "$DRY" -eq 0 ]; then _head=$(cat "$LASTOUT"); else _head=; fi
   runcap branch git -C "$REPO" rev-parse --abbrev-ref HEAD
   runcap worktree git -C "$REPO" status --porcelain
-  affirm 'Lead: this is the develop commit the pass is to run, and the work tree is as it should be' yes || return 0
+  check 'the work tree can be read' is_rc 0 || return 0
+  _wtf=$LASTOUT
+  runcap develop git -C "$REPO" rev-parse --verify 'develop^{commit}'
+  check 'the branch develop can be read' is_rc 0 || return 0
+  if [ "$DRY" -eq 0 ]; then _dev=$(cat "$LASTOUT"); else _dev=; fi
+  check "the checkout's commit is the commit of develop ($_dev)" is_eq "$_head" "$_dev" || return 0
+  if [ "$DRY" -eq 0 ]; then
+    _un=$(untracked_only "$_wtf")
+    if [ -n "$_un" ]; then
+      printf '%s\n' "$_un" | sed 's/^/   untracked (reported, not refused): /'
+      note "untracked entries: $(printf '%s' "$_un" | tr '\n' ' ')"
+    fi
+    _tr=$(tracked_changes "$_wtf")
+    if [ -n "$_tr" ]; then printf '%s\n' "$_tr" | sed 's/^/   changed: /'; fi
+  else
+    _tr=
+  fi
+  check 'the work tree has no change to a tracked file' is_eq "$_tr" '' || return 0
   for _b in ataniqd ataniq-holder ataniq-canary ataniq-canary-standin; do
     runcap "version-$_b" "$BIN/$_b" --version
     check "$_b names the build tag in --version" grep -q "$TAG" "$LASTOUT" || return 0
@@ -1010,12 +1421,12 @@ step_8() {
   if [ "$PASS" = A ]; then _exp2='; the replay screens are in the lead'"'"'s home and the switch file is not'; else _exp2=; fi
   step_head 8 "Provision the lead's folders" \
     "check that the mirror exists; run ataniq-canary provision; check the tree's remote, the roots and the marker; check the sandbox inputs file with ataniq-canary check-inputs" \
-    "the folders exist; the tree's only remote is the mirror; the state and runtime roots are not the defaults; the marker is present; the project is throwaway-one$_exp2" 'G5'
+    "the folders exist; the tree's only remote is the mirror's place inside the sandbox; the state and runtime roots are not the defaults; the marker is present; the project is throwaway-one$_exp2" 'G5'
   wait_key 'Step 8 provisions the folders.'
   check "the mirror exists (ataniq-intake init, then the upstream branch): $MIRROR" test -d "$MIRROR" || return 0
   runcap mirror-branches "$BIN/ataniq-intake" branches --state "$STATE" --project "$PROJECT"
   check 'the mirror can be listed' is_rc 0 || return 0
-  affirm "Lead: the mirror holds the upstream branch $UPSTREAM of the throwaway repository" yes || return 0
+  check "the mirror lists the upstream branch $UPSTREAM of the throwaway repository" lists_upstream "$LASTOUT" "$UPSTREAM" || return 0
   PROVISIONED=1
   runcap provision "$BIN/ataniq-canary" provision --config "$CONFIG"
   check 'provisioning succeeded' is_rc 0 || return 0
@@ -1029,8 +1440,8 @@ step_8() {
   if [ "$DRY" -eq 0 ]; then _n=$(awk 'END { print NR }' "$LASTOUT"); _r=$(cat "$LASTOUT"); else _n=1; _r=origin; fi
   check 'the tree has one remote' is_eq "$_n" 1 || return 0
   runcap tree-remote-url git -C "$TREE" remote get-url "$_r"
-  if [ "$DRY" -eq 0 ]; then _u=$(cat "$LASTOUT"); else _u=$MIRROR; fi
-  check "the tree's only remote is the mirror" is_eq "${_u#file://}" "$MIRROR" || return 0
+  if [ "$DRY" -eq 0 ]; then _u=$(cat "$LASTOUT"); else _u=$(mirror_inside "$PROJECT"); fi
+  check "the tree's only remote is the mirror's place inside the sandbox ($(mirror_inside "$PROJECT"))" remote_is_mirror "$_u" "$PROJECT" || return 0
   if [ "$PASS" = A ]; then
     for _f in 1.json 1.txt 2.json 2.txt; do
       check "the replay screen $_f is in the lead's home" test -f "$REPLAY/$_f" || return 0
@@ -1255,7 +1666,29 @@ step_12() {
     check "the daemon's evidence shows the waiver on the start line of epoch $START_EPOCH" \
       has_line "$EVIDENCE" "epoch=$START_EPOCH" 'event=start' "waiver=$WAIVER" || return 0
   fi
-  affirm 'Lead: the record shows the probe reported once, every assertion ok except 10, and profile version 4 with the pinned digest' yes || return 0
+  if [ "$DRY" -eq 1 ]; then
+    dry "check: holder.json says the sandbox started, has profile_version $PROFILE_VERSION and has the profile_digest of the config's holder.profile_digest (the pinned digest)"
+  else
+    _hv=$(holder_start_verdict "$(fld_all "$HSTATE/holder.json")" "$PROFILE_VERSION" "$(fld "$CONFIG" holder.profile_digest)")
+    case $_hv in
+      'ok '*)
+        out "   ok: ${_hv#ok }"
+        note "ok: holder.json: ${_hv#ok }"
+        ;;
+      *)
+        fail "${_hv#bad }"
+        return 0
+        ;;
+    esac
+  fi
+  # What the check above covers: the holder writes sandbox_started=true only
+  # after its own judgement of the probe's report passed with every assertion
+  # required (a result that is failed, not checked or missing is a problem; only
+  # assertion 10, and only in canary mode, is excused, with the waiver). What it
+  # does not cover is the report itself: holder.json keeps no result, and this
+  # script reads no file that shows the probe reported once. The lead's word
+  # stays as a reading of the probe's report, a second one next to the holder's.
+  affirm 'Lead: the probe reported once and every assertion is ok except 10' yes || return 0
   result ok
   done_step
 }
@@ -1574,7 +2007,19 @@ step_20() {
   out '   and one --accept-path for each path review listed under "Needs your sign-off".'
   affirm 'Owner: integrate succeeded' yes || return 0
   runcap branches-after "$BIN/ataniq-intake" branches --state "$STATE" --project "$PROJECT" --role "$LAYOUT"
-  affirm "Lead: the upstream branch $UPSTREAM is at the lead's commit" yes || return 0
+  if [ "$DRY" -eq 0 ]; then
+    _lead=$(lead_branch_id "$LASTOUT" "$LAYOUT" "$BRANCH")
+    _up=$(upstream_branch_id "$LASTOUT" "$UPSTREAM")
+  else
+    _lead=
+    _up=
+  fi
+  runcap upstream-tip git --git-dir "$MIRROR" rev-parse --verify "refs/heads/$UPSTREAM^{commit}"
+  check "git reads the upstream branch $UPSTREAM in the mirror" is_rc 0 || return 0
+  if [ "$DRY" -eq 0 ]; then _tip=$(cat "$LASTOUT"); else _tip=; fi
+  check "the intake names the lead's branch $BRANCH" test -n "$_lead" || return 0
+  check "the upstream branch $UPSTREAM is at the lead's commit ($_lead), by the intake's list" is_eq "$_up" "$_lead" || return 0
+  check "the upstream branch $UPSTREAM is at the lead's commit, by git on the mirror" is_eq "$_tip" "$_lead" || return 0
   if [ "$DRY" -eq 1 ]; then
     dry "check: $_rec holds a verification record and an intake record"
   else

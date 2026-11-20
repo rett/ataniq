@@ -122,6 +122,51 @@ Typed keys do not do: the stand-in commits only from a paste followed by
 Enter, and the message has two lines, so with a live agent the Enter after the
 first line would submit half of it.
 
+### What the lead types, and what the script reads itself
+
+The script never answers a prompt and still refuses a standard input that is
+not a terminal. For a fact it can read, it reads it, records what it read in
+the evidence (`log.txt`, and `out/` for the output it read) and fails the step
+with the reason when the fact is not true; the lead types nothing for it:
+
+- Step 1: no Qargi run of this project is open (`qargi local list`, the rows
+  whose `repo.path` is in this checkout's repository, the main work tree of
+  each side compared as resolved paths, that are not applied and merged; a row of a run whose
+  directory is gone is counted and logged but not treated as open, because
+  its `repo.path` cannot be read; without `qargi` on `PATH`,
+  or with a list that is not what `qargi local list` prints (another header, a
+  line of another kind), or when an open run has a `repo.path` that is
+  missing, unreadable or empty (its repository is not known), the script says
+  so in the log and asks the lead for `yes` as before), and no `ataniq-*` unit is loaded (slices are left out). A
+  `git status` or `systemctl` that fails fails the step; it does not read as
+  empty.
+- Step 2: the report is of `leadunit-qualify` with the verdict `pass`, a `pass`
+  for every entry of `checks` and passing `limits-show-read-back` and
+  `limits-cgroup-read-back` checks (a report of a run without limits fails);
+  the summary of the plan is of a launched plan (`exit.launched` and
+  `exit.exited` true, `report_outcome` `line-read`) with the status `ok` or
+  `skipped` for every step, `exit.code` 0 and `ok` or `not-checked` for every
+  case result. The lead still types the two paths.
+- Step 3: the checkout's commit is the commit of `develop`, and no tracked
+  file has a change (untracked files are reported and do not fail the step).
+- Step 8: the output of `ataniq-intake branches` names the upstream branch.
+- Step 12: `holder.json` says the sandbox started, has profile version 4 and
+  the profile digest of the config's `holder.profile_digest`.
+- Step 20: the upstream branch is at the commit of the lead's branch, by the
+  intake's list and by `git rev-parse` on the mirror.
+
+The lead still types `yes` where no file holds the fact: that no agent session
+was told about the slice (step 1); that the probe reported once and every
+assertion is ok except 10 (step 12: the holder writes `sandbox_started` only
+after its own judgement of the probe's report passed with every assertion
+required, and the script reads that, but `holder.json` keeps no result and no
+file the script reads shows that the probe reported once, so the lead's word
+stays as a second reading of the report); that the daemon's start line and
+hello list the canary operations (step 10); and, in pass B, that each finding
+of pass A has its fix merged. The owner's prompts are as before: reading the
+template, the sign-off, the paste, the deletions and every other `Owner:`
+word.
+
 ### When a step fails
 
 - **Pass B:** a failure at step 6 or later runs the clean-up chain: steps 22
@@ -160,7 +205,7 @@ ends a wait without a key, and that is recorded as such.
    (see [the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
    Step 4 asks for the review and the report. Pass B reuses pass A's record
    when the template's hash is unchanged. `/ataniq` must not exist on the host.
-3. **The mirror exists** before provisioning. Make it with
+3. **The mirror exists** before provisioning (`canary-prepare.sh` makes it, below). Make it with
    `build/canary/ataniq-intake init --state <state root> --project throwaway-one`
    and put the throwaway repository's upstream branch in it. It is then at
    `<state root>/mirrors/throwaway-one.git`, which is what `provision.mirror`
@@ -175,6 +220,97 @@ ends a wait without a key, and that is recorded as such.
    the file with `ataniq-canary check-inputs`.
 6. **The quiet window:** no Qargi run is open, no `ataniq-lead-*` unit exists,
    and no agent session is open that has been told about the slice.
+
+## Prepare and reset
+
+Two helpers write the set-up of pass A, and put it back. Neither answers a
+prompt, and neither starts a unit, a daemon, a sandbox or an agent. They lie
+beside the run script and share `canary-lib.sh`, which is only sourced. They
+use the tools the run script uses, and besides them `chmod`, `readlink` and
+`ls`.
+
+```sh
+sh qualification/canary/run/canary-prepare.sh --dry
+sh qualification/canary/run/canary-prepare.sh [--root DIR] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `--root DIR` | The folder that holds the whole set-up, an absolute path. The default is `ataniq-canary-a` in your cache folder. It must be new or empty. It is refused when it is a link, in `/tmp` or `/var/tmp`, or inside the repository checkout (or holds it), and when its path has a character outside letters, digits and `. _ / + -`. |
+| `--pass A` | The pass. Only A is prepared: pass B has a live agent and a config of its own. |
+| `--bin DIR` | The built binaries, `build/canary` of the checkout by default. All seven must be there; a missing one is named. |
+| `--build` | Run `make canary-build` first. Without it nothing is built. |
+| `--pasta PATH` | A regular executable file to use as pasta. Without it `/usr/bin/pasta` is used; when that is a link, which the harness refuses, the regular file it leads to is copied to `ROOT/bin/pasta` and the output says so: the subject is then a copy of `passt`, not `pasta` itself. A link given with `--pasta` is refused. |
+| `--bwrap PATH` | The bubblewrap executable. The default is the one on `PATH`. |
+| `--dry` | Print what would be made, run nothing and write nothing. |
+
+It makes, below the root, `state/` and `runtime/` (mode 0700, the two roots of
+the config), `evidence/`, `upstream/` (a throwaway repository with one commit
+on `develop`, by a made-up author at `example.invalid`), the mirror
+`state/mirrors/throwaway-one.git` (made with `ataniq-intake init`, with
+`develop` pushed into it), `conf/` (the sandbox inputs file and the config's
+other files: the replay screens copied from the recorded set of claude 2.1.325,
+a minimal managed-settings file and a no-op guard hook), `agent-install/` with
+a copy of the built stand-in, `config.json`, `mirror-qual/config.json` and the
+mark `.canary-prepared`. The config is the one under "The config" below,
+with the stand-in agent, the runtime `claude` 2.1.325, `footer_mode` `manual`,
+`inject` true and the proposed limits; the provider host is `api.anthropic.com`,
+a name that resolves, because the reserved example names fail assertion 4. It
+runs `ataniq-canary profile-digest` and writes the pin into
+`holder.profile_digest`, then runs `ataniq-canary check-inputs`. It prints no
+secret, and ends with the commands you type next.
+
+`qualify-mirror` stays your own step: the script writes its config with
+`"i_run_this_on_purpose": false`, and the acknowledgement is yours to change
+([the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
+A prepare that fails part way leaves what it made and no mark; remove the root
+by hand and run it again.
+
+```sh
+sh qualification/canary/run/canary-reset.sh --root DIR --dry
+sh qualification/canary/run/canary-reset.sh --root DIR [--bin DIR]
+```
+
+`canary-reset.sh` puts a failed or finished attempt back to a clean slate for
+a rerun. It is run by your hand, in your terminal: it refuses without a
+terminal on standard input (`--dry` needs none). It refuses when any `ataniq-*`
+unit is loaded (slices are left out; a `systemctl` that fails is a refusal
+too), when an `ataniqd` or `ataniq-holder` of this root runs (a path of the root
+in its arguments, as written or with links resolved and relative paths taken
+from the process's folder, or the root or a folder below it as its current
+folder; one of yours whose current folder cannot be read counts as of this
+root, and a `/proc` that cannot be read is a refusal), when the root does
+not carry the mark that its own `canary-prepare.sh` wrote, and for a root with
+the refusals of prepare (a link, `/tmp`, the checkout), or a `state/` or
+`runtime/` that is a link or resolves outside the root. It deletes only the two
+roots, `ROOT/state` and `ROOT/runtime` (the provisioned state, and the mirror
+inside `state/`). It keeps `config.json`, `upstream`, `bin`, `conf`,
+`evidence`, `mirror-qual`, `agent-install` and everything else of the root.
+
+It first shows the two folders, the number of entries below each and the
+entries down to three levels, and what it keeps. It deletes only after you
+type the word `reset` and Enter on the terminal; any other answer, an end of
+input included, stops it with nothing deleted. The script never answers that
+prompt. The prompt can wait, so the checks (the units, the processes, and that
+`state/` and `runtime/` are still folders of the root, not links) are made again
+after the word and before the first deletion. It then enters the root once
+(links resolved, and it must be the path you gave) and names `state/` and
+`runtime/` relative to that folder from there on, so a root swapped for a link
+while the checks run makes it refuse, and nothing outside the root is ever
+deleted. The folders' modes are opened with `find`, which does not follow a
+link; a change in the meantime is a refusal with nothing more deleted. It then makes `state/` and `runtime/` again (mode 0700) and the mirror
+with `ataniq-intake init` and `develop` pushed from `ROOT/upstream`, with the
+code `canary-prepare.sh` uses, and computes nothing else: the config and the
+pin stay as they were. That step is checked, not fully pinned: the `mkdir`,
+the `chmod` and the push into the mirror name their folders relative to the
+folder entered, but `ataniq-intake init` needs an absolute `--state`, so the
+reset checks again that `ROOT/state` and the folder entered are still `ROOT`
+right before that call. A process of your own user that swaps the root for a
+link within the few milliseconds between that check and that call could still
+make the folders of an empty mirror outside the root; it deletes nothing.
+With `--dry` it prints the plan and deletes nothing.
+After a failed pass, stop what is running first
+([Undo by hand](#undo-by-hand)); the reset refuses while a unit is loaded.
 
 ### The config
 
@@ -233,7 +369,9 @@ path.
   footer mode and arguments, the model argument among them: step 15 prints the
   arguments and the owner confirms the model.
 - `holder.profile_digest` is the pinned digest of the profile, 64 hex digits;
-  the holder refuses a plan whose digest differs.
+  the holder refuses a plan whose digest differs. Compute it with
+  `ataniq-canary profile-digest --config CONFIG --inputs FILE`, where FILE is
+  the config's `holder.sandbox_inputs` (the command refuses another file).
 - The five limits are required and have no default. The values shown are the
   proposed ones: a ceiling of 4 GiB, no swap, 512 tasks, a floor of 1 GiB and a
   share of one half.
@@ -381,9 +519,26 @@ listeners you stopped, and compare the live config folder with
 sh scripts/go-tool.sh test ./tests/ -run CanaryRunKit
 ```
 
-It reads the Makefile target and the `AGENTS.md` lines, runs `sh -n` on the
-script, and runs the script with `--dry` or `--self-test` only, with a `PATH`
+It reads the Makefile target and the `AGENTS.md` lines, runs `sh -n` on every
+script of the kit (and checks that each is plain POSIX shell), and runs the run
+script with `--dry` or `--self-test` only, with a `PATH`
 that holds stubs which record being called: none may be. It starts nothing.
+
+The two helpers are run in a folder of their own outside `/tmp` (your cache
+folder, else `/dev/shm`) with stub binaries that record their calls. Prepare
+runs for real there with the stubs of `ataniq-intake` and `ataniq-canary` and
+makes its files; the reset runs with `--dry`, with its refusals, and through
+`--self-test`. The typed word is tried under `script(1)`, which gives the
+reset a terminal; that test is skipped where `script` is not there. The same
+way a unit, a stand-in `ataniqd` or a link in place of `state/` or `runtime/`
+appears while the prompt waits, and the reset must refuse after the word and
+leave the folder outside the root as it was, modes included. A stub
+`systemctl` that swaps the root, or `state/`, for a link on its second call
+(after the checks of `state/` and `runtime/`, before the deletion) is refused
+the same way. A stub `mkdir` that swaps the root, for a link or for a folder of
+its own, just before or just after the reset makes `state/` and `runtime/`
+again is refused too, and nothing is made outside the root. A stand-in
+`ataniqd` (`sleep` under that name) in the root also refuses the real run.
 
 The dry run of a step prints what the step would do; it is not the code a real
 run takes. So the check also reads the script's text (the body of step 11
@@ -397,6 +552,10 @@ test entry:
 | `--self-test inject-action PASS OUTCOME REASON WRITTEN` | What step 17 does with that result of the injection: `none`, `owner-enter`, `look`, `owner-supplies`, `decide` or, in pass A, `wrong-config` or `unexpected`. |
 | `--self-test fields-hold FIELDS PATH=VALUE...` | `yes` when the lines `FIELDS`, which are what `ataniq-canary fields` prints for one line of a record, hold every `PATH=VALUE` as a whole line, and `no` otherwise. Step 12 matches the lines of its epoch with it. |
 | `--self-test has-line FILE PATH=VALUE...` | `yes` when one line of `FILE`, which holds one JSON object in each line, holds every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it, and `no` otherwise; a line that is not a whole JSON object is passed over. Step 12 finds the lines of its epoch with it. |
+| `--self-test open-runs LIST REPO`, `unread-runs LIST`, `list-scan LIST`, `loaded-units FILE`, `tracked-changes FILE`, `unit-facts FIELDS`, `plan-facts FIELDS`, `holder-start FIELDS VERSION DIGEST`, `upstream-id FILE NAME`, `lead-id FILE ROLE BRANCH` | What steps 1, 2, 3, 8, 12 and 20 read in place of the lead's word: the open runs of the project in a `qargi local list` text and the open runs whose `repo.path` cannot be read, the loaded units without slices, the lines of `git status --porcelain` that are not untracked, `ok ...` or `bad ...` for a fact report or `holder.json`, and the commit a `branches` text names for the upstream branch and for the lead's branch. |
+| `canary-prepare.sh --self-test pasta-plan PATH` | `use PATH` for a regular executable file, `copy SOURCE` for a link (SOURCE is the regular file it leads to), or a refusal. |
+| `canary-reset.sh --self-test typed-word WORD` | `go` when WORD is exactly `reset`, and `stop` otherwise. The prompt of the reset decides with it. |
+| `canary-reset.sh --self-test procs-of ROOT PROCDIR` | The numbers of the processes of `PROCDIR` (the shape of `/proc`) that are an `ataniqd` or an `ataniq-holder` (the program is the whole of the first argument, so a path with a space counts) with a path of `ROOT` in their command line (as written, or resolved) or `ROOT` or a folder below it as their current folder; one of the user whose current folder cannot be read is listed too. A `PROCDIR` with no process folder is a refusal (exit status 1). |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |

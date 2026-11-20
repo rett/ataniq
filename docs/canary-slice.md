@@ -159,8 +159,9 @@ The owner's tool, run by hand. The daemon never runs it.
 | --- | --- |
 | `provision --config CONFIG` | Makes the folders of the lead (below), clones the throwaway repository from the mirror into the tree, copies the managed settings, the guard hook and the replay screens, and writes the marker last. It refuses the default roots, a root that already carries the marker and a lead that has started. |
 | `replay-on --config CONFIG` | Writes the replay switch file and nothing else. It is the only subcommand allowed after a first start. |
-| `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest. It changes nothing. |
+| `show --config CONFIG` | Prints, as `key=value` lines, the names, numbers and paths of the config that the run script needs. It never prints the agent's environment, the git identity or the profile digest (`profile-digest` prints the digest). It changes nothing. |
 | `check-inputs --config CONFIG --inputs FILE` | Checks the sandbox inputs file against the config and names the field that differs, never its value. It changes nothing. |
+| `profile-digest --config CONFIG --inputs FILE` | Prints the sandbox profile digest the holder will compute for the config and the inputs file, as one line of 64 lower-case hex digits, to pin in `holder.profile_digest` before the first start. It refuses a file that is not the config's `holder.sandbox_inputs` (the resolved paths are compared), because that is the file the holder reads; it then checks the file against the config as `check-inputs` does and computes the digest with the holder's own code, with the agent's environment of the config. It prints no environment value and no path of its own (a refusal to read the file repeats the path given to `--inputs`, as `check-inputs` does), and it changes nothing. |
 | `fields --file FILE` | Prints every value of one JSON object as a sorted `path=value` line. |
 | `scrub-screen --file FILE` | Replaces the screen text in a copy of the holder's final record by its SHA-256 and prints the hash. |
 | `--version` | Prints the name and the build tag. |
@@ -296,7 +297,7 @@ here is a real path.
 | `holder.executable` | The holder binary of `build/canary/`. |
 | `holder.cols`, `holder.rows` | The holder's screen: 20 to 500 columns and 5 to 200 rows. |
 | `holder.sandbox_inputs` | The path of the sandbox inputs file (below). The daemon never reads it; it names it to the holder. |
-| `holder.profile_digest` | The pinned digest of the sandbox profile, 64 lower-case hex digits. The holder refuses a plan whose digest differs. |
+| `holder.profile_digest` | The pinned digest of the sandbox profile, 64 lower-case hex digits. The holder refuses a plan whose digest differs. Compute it with `ataniq-canary profile-digest --config CONFIG --inputs FILE`; a wrong pin otherwise fails the real start at step 12. |
 | `agent.kind` | `stand-in` or `live`. It goes into every line of the evidence. |
 | `agent.runtime`, `agent.runtime_version` | Given to the holder as `--runtime` and `--runtime-version`: plain text of 1 to 64 bytes. The runtime must be a key the registry accepts for a lead. |
 | `agent.footer_mode` | The permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes. |
