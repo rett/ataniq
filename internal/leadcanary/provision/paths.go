@@ -83,6 +83,16 @@ type Paths struct {
 	MirrorsDir   string
 	Mirror       string
 
+	// RolesDir is <state root>/roles, which holds the role locks, and RoleDir
+	// the folder of the lead's own lock, <state root>/roles/<project>: the
+	// holder takes RoleLock in it with the flag that makes the file and not
+	// the folder, so RoleDir must be there before the holder starts. RoleLock
+	// is the lock file itself, which the holder makes at its first start;
+	// provisioning does not.
+	RolesDir string
+	RoleDir  string
+	RoleLock string
+
 	// The sources the layout does not name.
 	LeadSkills      string
 	InstructionFile string
@@ -128,6 +138,8 @@ func PathsOf(cfg leadcanary.Config) (Paths, error) {
 		return Paths{}, fmt.Errorf("provision: %w", err)
 	}
 	lead := l.LeadDir()
+	roleLock := cfg.Role.LockPath(cfg.StateRoot)
+	roleDir := path.Dir(roleLock)
 	replay := path.Join(l.Home(), standin.ReplayDir)
 	return Paths{
 		Layout: l, Runtime: rt,
@@ -139,6 +151,7 @@ func PathsOf(cfg leadcanary.Config) (Paths, error) {
 		MailboxesDir: l.MailboxesDir(), Mailbox: l.Mailbox(),
 		PublishedDir: l.PublishedDir(), Published: l.Published(),
 		MirrorsDir: l.MirrorsDir(), Mirror: l.Mirror(),
+		RolesDir: path.Dir(roleDir), RoleDir: roleDir, RoleLock: roleLock,
 
 		LeadSkills:      path.Join(lead, SkillsName),
 		InstructionFile: path.Join(lead, InstructionsName),

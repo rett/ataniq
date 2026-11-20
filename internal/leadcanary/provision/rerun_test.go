@@ -31,9 +31,9 @@ func TestAfterAFailedRunTheAdviceOfThePackageCommentLeadsToAGoodRun(t *testing.T
 		t.Fatal("the refused second run changed something")
 	}
 	// The advice: remove the lead's folder, its mailbox and published
-	// folders and the runtime root. Not the state root, which holds the
-	// mirror.
-	for _, d := range []string{p.LeadDir, p.Mailbox, p.Published, p.RuntimeRoot} {
+	// folders, the folder of its role lock and the runtime root. Not the
+	// state root, which holds the mirror.
+	for _, d := range []string{p.LeadDir, p.Mailbox, p.Published, p.RoleDir, p.RuntimeRoot} {
 		if !exists(d) && d != p.RuntimeRoot {
 			t.Fatalf("%s was not made by the failed run; the test shows less than it says", d)
 		}

@@ -176,9 +176,13 @@ everything before it writes anything, makes every folder with mode 0700 by
 handle, and refuses a symbolic link at any path it would make. Besides the
 folders of the lead's layout it makes the holder's runtime folder
 `<runtime root>/leads/<layout role>`, which must exist before the holder
-starts, and `<home>/canary-replay/` with the replay screens in it. A failed run
-leaves what it made and no marker, and a second run refuses that; the log it
-prints says what to remove.
+starts, the folder of the lead's role lock `<state root>/roles/<project>`
+(with `<state root>/roles` above it; the holder makes the lock file
+`lead.lock` in it, with an open that makes the file and not the folder, so
+without this folder it refuses at its first start), and
+`<home>/canary-replay/` with the replay screens in it. A failed run leaves what
+it made and no marker, and a second run refuses that; the log it prints says
+what to remove.
 
 ### `ataniqd run --canary`
 
@@ -443,6 +447,11 @@ or writes anything:
   file and the layout, a `--state-dir` or `--runtime-dir` that is not exactly
   the layout's holder folder and runtime folder, and `--inject` without a
   non-empty `--expected-mode`.
+
+It then takes the role lock, `<state root>/roles/<project>/lead.lock`: it makes
+the file when it is not there, and not its folder, which provisioning makes. A
+folder that is missing is refused, with exit status 2, as `--role-lock cannot be
+taken as the role lock`.
 
 ## The message and the token
 
