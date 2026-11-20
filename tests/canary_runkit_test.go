@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ataniq/internal/leadsandbox/profile"
 )
 
 const canaryRunScript = "qualification/canary/run/canary-run.sh"
@@ -367,6 +369,35 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root(t), "qualification/canary/run/README.md")); err != nil {
 		t.Error(err)
+	}
+}
+
+// The script keeps two values of the sandbox profile as plain assignments, and
+// no shell can import a Go constant: the mirror's place inside the sandbox (the
+// check of step 8 and of the tree's remote) and the profile version that step
+// 12 reads in holder.json. A change of the constant without the script would
+// fail a good run, so the test ties them.
+func TestCanaryRunKitConstantsMatchTheProfile(t *testing.T) {
+	lines := strings.Split(canaryScriptText(t), "\n")
+	for _, want := range []string{
+		"MIRROR_ROOT_INSIDE=" + profile.MirrorRootInside,
+		"PROFILE_VERSION=" + strconv.Itoa(profile.Version),
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("%s has no line %q: the script and the profile package drifted", canaryRunScript, want)
+		}
+	}
+	// Each is assigned once, so the line above is the value the script uses.
+	for _, name := range []string{"MIRROR_ROOT_INSIDE=", "PROFILE_VERSION="} {
+		n := 0
+		for _, l := range lines {
+			if strings.HasPrefix(l, name) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s assigns %s %d times, want once", canaryRunScript, strings.TrimSuffix(name, "="), n)
+		}
 	}
 }
 
