@@ -72,7 +72,7 @@ sh qualification/canary/run/canary-run.sh --pass B --config /path/to/canary-live
 | `--dry` | Print every step and start nothing. No command is run and no file is read or written; the values printed are samples, so it works with no binary built and no config. Read it before each pass. |
 | `--evidence DIR` | The folder in which the dated evidence folder is made, an absolute path. The default is `ataniq-canary-evidence` in your home folder. |
 | `--fail-at N` | A test hook, accepted with `--dry` only: a failure is injected at step N, so the dry run prints the clean-up chain a real failure there would run. |
-| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs, nothing is started or written, and nothing is read but the file given to `pass-a-record` and `has-line` and, by `wait-key`, standard input; `has-line` runs the helper `ataniq-canary fields` of `build/canary` on each line of its file, and no other program. The names are listed under the check of the kit, below. |
+| `--self-test NAME [VALUE...]` | The test entry, used alone: it gives the values to one of the script's own functions, prints the answer and ends. It only computes: no step runs, nothing is started or written, and nothing is read but the file given to `pass-a-record` and `has-line`, standard input (the keys of `wait-key`, `stop-daemon`, `roots-deleted`, `ask-path`, `ask-file` and `affirm-word`) and the hint file of `ask-path` and `ask-file`; `has-line`, `review-verdict`, `mirror-verdict` and `ask-file` run the helper `ataniq-canary fields` of `build/canary` on the file they are given, `wait-daemon` and `stop-daemon` the `ataniqd status` of `build/canary`, and no other program. The names are listed under the check of the kit, below. |
 
 The script prints each step with its number, what it does, the expected result
 and the gate it serves. It waits for Enter before every step that runs
@@ -85,6 +85,9 @@ time. It opens no browser and holds no credential.
 
 The steps are those of the plan's table, with the same numbers, 1 to 26. A step
 that a pass does not run is printed as skipped in that pass.
+
+Besides the tools every step names, the polling of the daemon's status uses
+`timeout` of coreutils (the preflight checks that it is on `PATH`).
 
 ### The memory limit at step 11
 
@@ -110,6 +113,37 @@ paste. The owner looks at the pane, the script records what he saw, and what
 happens next is his decision. On a refusal the owner puts the message into the
 pane himself.
 
+### Step 14: the console, then the ticket
+
+The attach ticket lives 30 seconds from its mint, and the console, while its
+ticket file is absent or empty, only shows "waiting for a ticket". So the order
+is the console's first. The script prints the exact command, with the real
+holder runtime folder and the ticket file `ticket` in it (the file the daemon
+writes into, so both are known before the mint), and waits for the owner's
+Enter. He starts the console in a terminal of his own (T3), sees it wait, and
+presses Enter in T1; only then does the script run `ataniqd canary ticket`. It
+checks that the ticket file the mint names is the one it printed (a step whose
+ticket went to another file fails), watches that file until the console empties
+it (the console empties it when it takes the ticket; the script reads only its
+size), and asks `yes` for the pane showing the agent. That `yes` is the owner's
+attestation.
+
+In the first epoch the owner then starts the same command once more in a fourth
+terminal (T4). The first console emptied the ticket file, so the second one
+finds no ticket: it does not attach and shows only "waiting for a ticket"; he
+quits it with `q` and answers `yes` to what he saw. The script reads that the
+ticket file is still empty and that the number of `attach` events in the holder's
+event log is the same as before the second console. The kit has no command that
+presents a ticket twice to the holder, so it does not claim that a used ticket
+is refused: it shows that a console without a ticket does not attach. The
+second console is tried in the first epoch only.
+
+Before the second epoch the owner closes the console of the first epoch (`Ctrl+\`
+leaves the session pane, then `q`): a console left open waits on the same ticket
+file and would take the ticket of the second epoch. The script says so before it
+stops the unit, and again at the second epoch's step 14. It cannot see whether
+the console is closed.
+
 ### When the owner supplies the message himself
 
 In the first epoch of pass A, and in pass B when the fence refuses, the owner
@@ -117,7 +151,12 @@ puts the message into the pane. He does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
 text; the owner copies the whole text of that file and pastes it into the pane
 with his terminal's paste, so that it arrives as one bracketed paste, and then
-presses Enter in the pane once. The console forwards the paste as a paste.
+presses Enter in the pane once. The console forwards the paste as a paste, and
+only from session focus: a paste while the console has the focus itself is
+dropped without a word (and the first Enter only moves the focus), so the owner
+first gives the session pane the focus (selects the session terminal and presses
+Enter; the focus bar then names the session, and Ctrl+\ leaves it). The script
+says so before it names the file.
 Typed keys do not do: the stand-in commits only from a paste followed by
 Enter, and the message has two lines, so with a live agent the Enter after the
 first line would submit half of it.
@@ -146,7 +185,8 @@ with the reason when the fact is not true; the lead types nothing for it:
   the summary of the plan is of a launched plan (`exit.launched` and
   `exit.exited` true, `report_outcome` `line-read`) with the status `ok` or
   `skipped` for every step, `exit.code` 0 and `ok` or `not-checked` for every
-  case result. The lead still types the two paths.
+  case result. The lead still gives the two paths (an Enter takes the hint
+  shown at the prompt, a typed path wins; see Easier on the owner).
 - Step 3: the checkout's commit is the commit of `develop`, and no tracked
   file has a change (untracked files are reported and do not fail the step).
 - Step 8: the output of `ataniq-intake branches` names the upstream branch.
@@ -177,6 +217,12 @@ word.
 - A failure before that starts no chain; undo by hand what the earlier steps
   left (below).
 
+When step 11 finds that the unit is not active (the holder ended at its start),
+or that the role is not starting, it prints the last 40 lines of the unit's
+journal before it fails: the holder says why it ended on its standard error, and
+the event log holds only a code (`sandbox-start-failed`). The step 22 that the
+chain runs keeps the journal in the evidence.
+
 A step of the chain that has nothing to act on says so, and that is recorded.
 No step of the chain can be skipped: each waits for its key and records its
 result, and an interrupt (Ctrl-C) during the run starts the chain as a failure
@@ -184,6 +230,63 @@ does. Inside the chain an interrupt skips nothing and is not a key: the script
 says so and the step goes on waiting for the owner's Enter, as long as
 standard input is a terminal. Only the end of the input (the terminal is gone)
 ends a wait without a key, and that is recorded as such.
+
+## Easier on the owner
+
+The first two attempts of pass A failed on the process, not on the code: the
+wrong file at a path prompt, Enter at step 10 before the daemon in the second
+terminal was up, the daemon stopped late at step 26, and three terminals and a
+paper checklist. The run is easier on the owner in these ways, and in none of
+them does the script answer for him: it never answers a prompt, never starts the
+daemon, a unit, a sandbox or an agent, never defaults a typed word (`yes`,
+`read`, `integrate`, `confirmed`, `reset`, an attestation), and still refuses a
+standard input that is not a terminal.
+
+- **It waits for what you do elsewhere.** A step that waits for something you
+  start or stop in another terminal asks for it quietly every second for up to
+  60 seconds, says "waiting for ..." once and prints a dot every 5 seconds, and
+  goes on as soon as it is there: the daemon after your Enter at step 10, the
+  daemon's end at step 26, the console taking the ticket at step 14 (the console
+  empties the ticket file when it takes the ticket; the script asks only
+  whether the file is empty, never reads it, and goes on to your question
+  whether or not it was seen), and the listeners at steps 6 and 24 (pass B).
+  Step 10 fails, with the old message, only after the minute. Each ask of the
+  daemon's status is run by `timeout(1)` (coreutils, as `sha256sum` and `stat`
+  are; the preflight checks it is there) and cut off after 5 seconds, which
+  reads as neither "answers" nor "gone" (its exit status 124 is named when step
+  26 fails). Without that cut-off a socket that accepts and never answers would
+  hold each ask for about 10 seconds, the binary's own limit. The wait as a
+  whole ends after the 60 seconds plus one ask's 5 seconds, so a daemon that
+  hangs costs about 65 seconds at most per wait, not 60 asks of 10 seconds.
+- **Step 26 asks again.** A daemon that still answers after your Enter is not a
+  failure of the pass: the script says "the daemon still answers: stop it with
+  Ctrl-C in its terminal, then press Enter" and asks again, up to 5 more times,
+  each recorded in the log. A root that still exists when you say both are
+  deleted is said and asked again the same way. The step fails only after the
+  last ask.
+- **Hints at the path prompts, and only there.** `canary-prepare.sh` writes
+  `ROOT/answers.hint` (mode 0600, lines `key=path`, no secret). `canary-run.sh`
+  reads the one beside the config. At the four path prompts (the two fact
+  reports at step 2, the template's review and the report of `qualify-mirror`
+  at step 4) it shows `(Enter for: PATH)` and takes an empty line as that path.
+  A path you type always wins, the end of the input takes nothing, the file is
+  still checked and recorded, and `answers.txt` and the log say whether the
+  answer was a hint or typed. No word is ever a hint: an empty answer at
+  `yes`, `read` or any other word is refused as before.
+- **A wrong file is refused before it is recorded.** The template's review
+  must not be a report of `qualify-mirror` (a JSON file with `cases` and a
+  `template` is refused by name), must be a text or markdown file, and must hold
+  the template's hash or the word `verdict`. The report must be one JSON
+  object whose `template.sha256` is the hash step 4 just computed. The two fact
+  reports are checked as before. A refused file is said with its reason and the
+  question is asked again, up to 3 more times, before the step fails.
+- **`canary-preflight.sh`** (below) says what to fix before the run, and what
+  you type when all is well.
+- **`CHECKLIST.txt`** is written by `canary-prepare.sh` into the root: one
+  page with the real paths, what to start and in which of the four terminals
+  (T1 the script, T2 the daemon, T3 the console, T4 the second console of step
+  14 and the integrate command of step 20), and what each prompt of pass A
+  expects you to type.
 
 ## Before a pass
 
@@ -223,7 +326,8 @@ ends a wait without a key, and that is recorded as such.
 
 ## Prepare and reset
 
-Two helpers write the set-up of pass A, and put it back. Neither answers a
+Two helpers write the set-up of pass A, and put it back (a third, the
+preflight, looks at it before the run). Neither answers a
 prompt, and neither starts a unit, a daemon, a sandbox or an agent. They lie
 beside the run script and share `canary-lib.sh`, which is only sourced. They
 use the tools the run script uses, and besides them `chmod`, `readlink` and
@@ -240,6 +344,7 @@ sh qualification/canary/run/canary-prepare.sh [--root DIR] [--bin DIR] [--pasta 
 | `--pass A` | The pass. Only A is prepared: pass B has a live agent and a config of its own. |
 | `--bin DIR` | The built binaries, `build/canary` of the checkout by default. All seven must be there; a missing one is named. |
 | `--build` | Run `make canary-build` first. Without it nothing is built. |
+| `--template-review PATH`, `--unit-report PATH`, `--plan-summary PATH` | An existing regular file, an absolute path, that the run suggests at the matching path prompt (a hint, below). The review of the template is named by you or the lead and taken from here and from nothing else; the docs name no fixed file for the two reports. A file that is not there is no hint, and the output says so. |
 | `--pasta PATH` | A regular executable file to use as pasta. Without it `/usr/bin/pasta` is used; when that is a link, which the harness refuses, the regular file it leads to is copied to `ROOT/bin/pasta` and the output says so: the subject is then a copy of `passt`, not `pasta` itself. A link given with `--pasta` is refused. |
 | `--bwrap PATH` | The bubblewrap executable. The default is the one on `PATH`. |
 | `--dry` | Print what would be made, run nothing and write nothing. |
@@ -250,9 +355,13 @@ on `develop`, by a made-up author at `example.invalid`), the mirror
 `state/mirrors/throwaway-one.git` (made with `ataniq-intake init`, with
 `develop` pushed into it), `conf/` (the sandbox inputs file and the config's
 other files: the replay screens copied from the recorded set of claude 2.1.325,
-a minimal managed-settings file and a no-op guard hook), `agent-install/` with
-a copy of the built stand-in, `config.json`, `mirror-qual/config.json` and the
-mark `.canary-prepared`. The config is the one under "The config" below,
+a managed-settings file that names the guard hook as its PreToolUse hook, and a no-op guard hook; the inputs file carries `sources.managed_marker`, `guard-hook`, a text the managed settings hold), `agent-install/` with
+a copy of the built stand-in, `config.json`, `mirror-qual/config.json`,
+`answers.hint` (the hints for the path prompts: `mirror-report` always, the
+path `qualify-mirror` is told to write; `unit-report`, `plan-summary` and
+`template-review` only for the matching argument; mode 0600, no word and no
+secret), `CHECKLIST.txt` (your one page, from `checklist.txt.in` in this folder,
+mode 0600) and the mark `.canary-prepared`. The config is the one under "The config" below,
 with the stand-in agent, the runtime `claude` 2.1.325, `footer_mode` `manual`,
 `inject` true and the proposed limits; the provider host is `api.anthropic.com`,
 a name that resolves, because the reserved example names fail assertion 4. It
@@ -265,6 +374,50 @@ secret, and ends with the commands you type next.
 ([the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
 A prepare that fails part way leaves what it made and no mark; remove the root
 by hand and run it again.
+
+### The preflight
+
+```sh
+sh qualification/canary/run/canary-preflight.sh --root DIR [--bin DIR] [--evidence DIR] [--mirror-report FILE]
+```
+
+`canary-preflight.sh` looks at what the run would trip over and says what to
+type. It is read-only: it starts nothing (no unit, daemon, sandbox or agent),
+answers nothing, needs no terminal, and changes nothing of the root, the checkout
+or the host (git does not even refresh the checkout's index). Its one file is a
+temporary copy of the list `qargi local list` prints, in a folder made with
+`mktemp` under `TMPDIR` and removed at the end. It prints one line per check,
+`ok:` or `FIX:` with the exact command to type on the same line (`skip:` for a
+check that needs a fix before it), and ends with `READY` or
+`NOT READY (n to fix)`; the exit status is 0 when ready, 1 when not and 2 for a
+wrong command line. The checks:
+
+| Check | A fix means |
+| --- | --- |
+| The root is prepared (the mark and `config.json`) | Run `canary-prepare.sh` on the root when it is new or empty; a folder that holds anything is refused by prepare, so the fix then says to use a fresh `--root`. |
+| The seven binaries are built, the four tagged ones name the tag, and they are built from the checkout's `HEAD`: by the commit `--version` names when it names one (it names none today), else by the time of each file against the newest commit that touches `cmd`, `internal`, `go.mod`, `go.sum` or `third_party`; the line says which | `make canary-build`. |
+| The checkout is at `develop` with no tracked change (what step 3 asks) | `git checkout develop`, or look at `git status`. |
+| The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin and run `ataniq-canary check-inputs` (one command, as prepare does after it pins), or prepare again on a fresh root. |
+| The sandbox inputs: `ataniq-canary check-inputs` accepts them, and, for `claude`, they name `sources.managed_marker` and the managed-settings file the config names holds that text (the holder refuses a start without it, and neither shows in the digest). Skipped while the pin above needs a fix | The inputs are from an earlier prepare: use a fresh root (the line says why). |
+| `state/` and `runtime/` are empty (a mirror only) | They hold an earlier attempt: run `canary-reset.sh`. |
+| No `ataniq-*` unit is loaded (slices left out) and no `ataniqd` or `ataniq-holder` runs | Stop it. |
+| No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |
+| `/ataniq` does not exist | Remove it yourself. |
+| The report of `qualify-mirror` exists, parses and names the template's hash (the path: `--mirror-report`, else the hint in `answers.hint`, else `mirror-qual/report.json`) | Run `qualify-mirror` (the commands are printed; the acknowledgement stays yours). |
+| `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
+| `timeout` (coreutils) is on `PATH`: the run cuts off each ask of the daemon's status with it | Install coreutils, or put `timeout` on `PATH`. |
+| The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
+
+When ready it prints the three things you type, with the real paths and the
+terminal of each: the daemon command in T2, the attach command in T3 (with its
+ticket file, `ticket` in the holder's runtime folder; start it before the Enter
+at step 14, which mints) and the run command in T1.
+Four terminals are needed, because the daemon stays in front of its terminal
+until you stop it with Ctrl-C at step 26: T1 the script, T2 the daemon, T3 the
+console, and T4 for the second console of step 14 and the integrate command of
+step 20.
+
+### Reset
 
 ```sh
 sh qualification/canary/run/canary-reset.sh --root DIR --dry
@@ -406,6 +559,7 @@ documents. For the config above:
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
@@ -427,6 +581,18 @@ documents. For the config above:
   that differs and never its value.
 - `managed_settings_sha256` is the SHA-256 of the managed-settings file, which
   provisioning copies unchanged from `provision.managed_settings`.
+- `managed_marker` is required for the runtime `claude`: the holder's start
+  refuses without it (validate-config), and its assertion 8 searches the
+  managed-settings file for this text, so the file must hold it. It is the name
+  of the guard hook inside the sandbox, which the file names as its PreToolUse
+  hook command: `canary-prepare.sh` writes
+  `{"permissions":{"defaultMode":"default"},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/ataniq/qargi/guard-hook"}]}]}}`
+  and the marker `guard-hook`. The marker is not part of the profile digest, so
+  adding it to an inputs file needs no new pin, but changing the managed-settings
+  file changes `managed_settings_sha256` and the digest. `check-inputs` and
+  `profile-digest` do not run the holder's trial of the spec, so the preflight
+  looks for the marker itself. An inputs file from an earlier prepare lacks it:
+  use a fresh root.
 - `qargi_records_inside` is `/ataniq/records`, the inside path provisioning
   prepares the folders for.
 - `never_mounted` lists what no bind source may touch: your checkout, the real
@@ -445,8 +611,8 @@ is refused too, and it takes no path with a `.` or `..` part. It holds:
 | Name | Content |
 | --- | --- |
 | `log.txt` | Every step, key, command, check and result, each with its time. |
-| `answers.txt` | Each answer the owner or the lead typed, with the question, the step and the time. |
-| `out/` | The standard output and standard error of every command the script ran, by step. |
+| `answers.txt` | Each answer the owner or the lead gave, one line with the time, the step, the question, the answer and how it came: `typed`, or `hint` when an empty line took the suggested path of a path prompt. |
+| `out/` | The standard output and standard error of every command the script ran, by step. Step 22 adds `22-e<epoch>-unit-journal.out`: the unit's journal since its first start (`journalctl --user --unit UNIT`, at most 500 lines), which is where the holder's standard error goes, so the reason a holder ended at its start is in the evidence. It can name the canary's folders, like the rest of the evidence, and step 26's scrub looks through it. |
 | `facts.txt`, `template-records.txt`, `binaries.txt`, `sandbox-executables.txt`, `standin-hash.txt` | Names, sizes, times and hashes of the reports, the binaries and the executables. Never content. |
 | `template.sha256` | The hash of the intake template. |
 | `units-before.txt` and the `units-after` and `unit-files` lists | The user manager's `ataniq-*` units and unit files at step 1 and after each stop. |
@@ -515,6 +681,24 @@ listeners you stopped, and compare the live config folder with
   state folder, and step 22 prints them from it, or says that none is named
   for 7501 or that there is no final record.
 - That `hello` lists the canary operations (step 10) is the lead's reading.
+- That the console of the first epoch is closed before the second epoch's step
+  14. The script tells the owner to close it, and cannot see whether he did; a
+  console left open waits on the same ticket file and takes the second epoch's
+  ticket for itself.
+- Step 12 reads the waiver in `holder.json` before it waits for `sandbox-started`.
+  The holder writes `holder.json` twice, before its start sequence (with no
+  waiver) and after it, and the report's time limit is 60 seconds, so a step that
+  reads the file in between could see the first. The owner's key before step 12
+  makes that unlikely; this is reasoned, not seen, and it is a known limit (the
+  waiver check belongs after the wait).
+- A stop may leave no final record. The unit's `TimeoutStopSec` is 2 seconds
+  and the stop's SIGTERM to every process of the unit is followed by SIGKILL
+  after 2 seconds, while the holder waits up to 2 seconds for the stream and 5
+  for the tree after its child's exit. A holder that needs more than 2 seconds
+  to conclude is killed before it writes `final.json`. The script copes with the
+  missing file (it says the holder left no final record), so pass A does not
+  fail, but the 7501 counters of step 22 are then not printed. Reasoned, not
+  seen.
 - The script does not run git in the lead's tree after a lead has run in it.
   The commit is observed through the intake at step 20.
 
@@ -525,9 +709,17 @@ sh scripts/go-tool.sh test ./tests/ -run CanaryRunKit
 ```
 
 It reads the Makefile target and the `AGENTS.md` lines, runs `sh -n` on every
-script of the kit (and checks that each is plain POSIX shell), and runs the run
+script of the kit (the run script, the two helpers, the preflight and the
+library; it checks that each is plain POSIX shell, and `shellcheck -x -s sh
+canary-*.sh` from this folder is clean), and runs the run
 script with `--dry` or `--self-test` only, with a `PATH`
 that holds stubs which record being called: none may be. It starts nothing.
+The tests of the polling, of the asking again and of the hints give the script's
+own functions a stub `ataniqd` that counts its calls (it answers on the third
+call, or never), the keys on standard input and a short wait, through the test
+entries below; the preflight runs over a fake checkout (a git repository with
+copies of the scripts and chosen commit times) and a prepared root, with every
+program it asks stubbed, and must leave both as they were.
 
 The two helpers are run in a folder of their own outside `/tmp` (your cache
 folder, else `/dev/shm`) with stub binaries that record their calls. Prepare
@@ -566,4 +758,29 @@ test entry:
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |
 | `--self-test outside-roots FOLDER ROOT...` | `outside` when the folder, which need not exist, lies outside every root, compared as written and with symbolic links resolved, and `inside` otherwise. The script checks its evidence folder against the checkout and the canary's two roots with it. |
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
+| `--self-test mirror-remote URL PROJECT` | `yes` when `URL` (with or without `file://`) is the mirror's place inside the sandbox for `PROJECT` (`/ataniq/mirror/PROJECT.git`), the one remote step 8 accepts for the lead's tree, and `no` otherwise. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
+| `--self-test journal-save EVIDENCE START UNIT` | What step 22 keeps of the unit's journal: it asks the `journalctl` on `PATH` (a stub in the tests) for `UNIT` since `START` and writes the lines to `EVIDENCE/out/22-e1-unit-journal.out`, a folder that exists; it says how many lines, or that the journal could not be read; with an empty `START` (no start was asked) it does nothing. |
+| `--self-test count-lines FILE PATH=VALUE...` | How many lines of `FILE`, which holds one JSON object in each line, hold every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it; a line that is not a whole JSON object is passed over, and a file that is not there counts 0. Step 14 counts the `attach` events of the holder's event log with it, before and after the second console. |
+| `--self-test ticket-taken FILE` | `taken` when the ticket file `FILE` is absent or empty (the console empties it when it takes the ticket), `waiting` when it holds something, and `waiting` for an empty name: step 14 never says "the ticket was taken" for a ticket result that names no file. Only the size is looked at. |
+| `--self-test wait-daemon` | Step 10's polling: it asks the `ataniqd status` of `build/canary` of the current folder as the step does and prints `listens` when it answered within the wait, `silent` when not; "waiting for the daemon to listen..." is said once and a dot follows every 5 asks. |
+| `--self-test stop-daemon` | The daemon's half of step 26: the keys come from standard input, a daemon that still answers is said and asked again up to 5 more times (an end of input is a failure too when a daemon still answers), and the end prints `stopped` or `failed` (the failure that ends the step is printed and returned, not ending the run). |
+| `--self-test roots-deleted STATE RUNTIME` | The roots' half of step 26 the same way: `deleted` or `failed`; a root that is still there is named and asked again up to 5 more times. |
+| `--self-test ask-path HINTFILE KEY` | A path prompt with the hint of `KEY` in `HINTFILE` (it may not exist), the answer read from standard input: prints `answer=` and `source=hint` or `source=typed`. |
+| `--self-test affirm-word HINTFILE WORD` | A typed word asked as every word of the run is, with the hint file in place: `accepted` for exactly `WORD`, `refused` for anything else, an empty answer and the end of the input included. |
+| `--self-test review-verdict FILE HASH`, `mirror-verdict FILE HASH` | What step 4 makes of `FILE` as the template's review or as the report of `qualify-mirror` for the template hash `HASH`: `ok TEXT` or `bad REASON` (uses the `ataniq-canary fields` of `build/canary`). |
+| `--self-test ask-file HINTFILE KEY review\|mirror HASH` | A path prompt of step 4 with its refusals and asking again, the paths read from standard input: prints `accepted PATH` or `failed`. |
+
+Three variables are for the tests only, and only the test entry reads them.
+`CANARY_RUN_WAIT_TRIES` (default 60), `CANARY_RUN_WAIT_INTERVAL` (seconds,
+default 1) and `CANARY_RUN_STATUS_TIMEOUT` (seconds above 0, default 5) set how
+long a step waits for what the owner does in another terminal: that many asks,
+that many seconds apart, each ask of the daemon's status cut off after that many
+seconds; a value that is not a number is refused with exit status 2. They are
+read by `--self-test` and by nothing else: a real run and a `--dry` run keep 60,
+1 and 5 whatever the environment holds, so nothing in the environment can
+shorten what the script waits for. For
+`canary-preflight.sh`, `CANARY_PREFLIGHT_PROC` (default `/proc`),
+`CANARY_PREFLIGHT_TIOCSTI` (default `/proc/sys/dev/tty/legacy_tiocsti`) and
+`CANARY_PREFLIGHT_ATANIQ` (default `/ataniq`) name the places it looks at on the
+host, which a test cannot make.

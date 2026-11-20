@@ -344,7 +344,7 @@ with the sources from `ataniq-canary show`, and checks it with
     "agent_install": "/srv/canary/agent-install",
     "managed_settings": "/srv/canary/state/leads/throwaway-one-lead/managed-settings.json",
     "managed_settings_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "managed_marker": "<a text the managed-settings file holds, for claude>",
+    "managed_marker": "guard-hook",
     "lead_skills": "/srv/canary/state/leads/throwaway-one-lead/skills",
     "instruction_file": "/srv/canary/state/leads/throwaway-one-lead/instructions.md",
     "git_identity_dir": "/srv/canary/state/leads/throwaway-one-lead/git-identity",
