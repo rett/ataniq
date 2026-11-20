@@ -48,8 +48,8 @@ STEP  WHAT YOU DO
  20   T4: the integrate command the script prints (with its TIP and DIGEST
       and one --accept-path per path listed); then yes.
  2nd  Second epoch: first close the console in T3 (Ctrl+\ then q); Enter at
-      each step; at step 14 start it again in T3 (yes): a read-only VIEWER,
-      you only watch, nothing to paste.
+      each step; at step 14 start it again in T3 (yes), with --viewer added
+      as the script prints: a read-only VIEWER, nothing to paste.
  26   Enter; clean (when the evidence holds no login URL or code).
       At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
       Delete the roots yourself, then Enter in T1:

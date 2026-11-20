@@ -289,6 +289,10 @@ standard input that is not a terminal.
   hold each ask for about 10 seconds, the binary's own limit. The wait as a
   whole ends after the 60 seconds plus one ask's 5 seconds, so a daemon that
   hangs costs about 65 seconds at most per wait, not 60 asks of 10 seconds.
+  Step 12's wait for the holder's record asks the unit, not the daemon, and
+  is allowed 90 asks one second apart: about 90 seconds at most. An empty
+  answer from `systemctl` is asked again within those asks, never taken for
+  the unit's end.
 - **Step 26 asks again.** A daemon that still answers after your Enter is not a
   failure of the pass: the script says "the daemon still answers: stop it with
   Ctrl-C in its terminal, then press Enter" and asks again, up to 5 more times,

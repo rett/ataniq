@@ -47,7 +47,8 @@
 # off by timeout(1) after 5 seconds (a socket that accepts and never answers
 # would otherwise hold each ask for about 10 seconds, the binary's own limit),
 # and the wait as a whole ends after the 60 seconds plus one such ask, so the
-# longest wait is about 65 seconds. The three variables CANARY_RUN_WAIT_TRIES,
+# longest of these waits is about 65 seconds (step 12's wait for the holder's
+# record asks the unit, not the daemon, 1.5 times as often: about 90 seconds). The three variables CANARY_RUN_WAIT_TRIES,
 # CANARY_RUN_WAIT_INTERVAL and CANARY_RUN_STATUS_TIMEOUT change that for the
 # test entry --self-test only: a real run (and --dry) ignores them, so that
 # nothing in the environment can shorten what the script waits for. The script
@@ -704,7 +705,9 @@ show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 # without sandbox_started, and after it, with the waiver and sandbox_started
 # true. The first write names the epoch already, so the wait ends only when the
 # file names the epoch AND says sandbox_started is true, or when the unit is no
-# longer active or activating (then it ends at once: the journal says why), or
+# longer active or activating (then it ends at once: the journal says why; an
+# empty answer, as a failed systemctl gives, is asked again, within the same
+# tries, and is never taken for the end), or
 # after 1.5 times WAIT_TRIES asks, WAIT_INTERVAL seconds apart (90 asks, one
 # second apart: more than the 60 seconds the inputs' report limit allows). It
 # sets HW_END to started, ended or timeout.
@@ -719,7 +722,7 @@ holder_wait() {
       return 0
     fi
     case $(show_prop ActiveState 2>/dev/null) in
-      active | activating) ;;
+      active | activating | '') ;;
       *)
         HW_END=ended
         return 0
@@ -2399,7 +2402,9 @@ step_14() {
   fi
   out '   Owner: in a third terminal (T3), start the console now, with this command. It waits for a ticket and'
   out '   says "waiting for a ticket". Do not start it later than your Enter below: a ticket lives 30 seconds.'
-  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
+  _viewer=
+  if [ "$EPOCH_NO" -eq 2 ]; then _viewer=' --viewer'; fi
+  out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf$_viewer"
   wait_key 'Owner: press Enter when the console is up and says it waits for a ticket. The ticket is minted then.'
   runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role "$_role"
   check 'the ticket was minted' is_rc 0 || return 0
