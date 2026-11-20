@@ -23,7 +23,9 @@ with the `ataniq_canary` tag, under `--canary`, these joins exist:
    starts the sandbox's first process under its pseudo-terminal. That process
    is a scratch agent: the stand-in that `make canary-build` builds, or, in
    pass B, one live agent.
-4. The owner mints a ticket and attaches the console as writer.
+4. The owner mints a ticket and attaches the console: as the writer in the first
+   epoch (he pastes there), as a read-only viewer in the second epoch of pass A
+   (the fence writes and he only watches; a viewer does not resize the session).
 5. The daemon sends the lead one message through the holder's control socket.
    The holder's fence ([the lead injection guide](lead-injection.md)) pastes it
    only when the screen reads as idle.

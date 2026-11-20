@@ -39,14 +39,17 @@ STEP  WHAT YOU DO
       Then Enter in T1 (the script mints; a ticket lives 30 s), then yes (the
       pane shows the agent). T4: the same command once more; it must NOT
       attach and only says "waiting for a ticket": quit it (q), then yes.
+      T3 is the WRITER: keep its window 100x30 or more, or a paste is dropped.
  17   In T3 give the session pane the focus first (Enter on it; a paste into
       an unfocused console is dropped), then paste the message file the script
       names as ONE paste (do not type it), Enter in the pane once, Enter in T1.
+      Paste the file's text (cat it), not T1's lines; "no token": paste again.
  18   yes (the pane shows the stand-in committed).
  20   T4: the integrate command the script prints (with its TIP and DIGEST
       and one --accept-path per path listed); then yes.
  2nd  Second epoch: first close the console in T3 (Ctrl+\ then q); Enter at
-      each step; at step 14 start it again in T3 (yes); nothing to paste.
+      each step; at step 14 start it again in T3 (yes): a read-only VIEWER,
+      you only watch, nothing to paste.
  26   Enter; clean (when the evidence holds no login URL or code).
       At step 26 stop the daemon with Ctrl-C first (in T2), then Enter in T1.
       Delete the roots yourself, then Enter in T1:
