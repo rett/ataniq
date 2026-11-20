@@ -2015,6 +2015,10 @@ func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
 		{"a row of seven fields", []string{header, "build one 1d no no x /x/run"}, "gone 0\nother 1"},
 		{"a row with an unknown applied word", []string{header, "build one 1d maybe no /x/run"}, "gone 0\nother 1"},
 		{"a line of another kind", []string{header, row, "note: something new"}, "gone 0\nother 1"},
+		{"a role that holds the words of a gone row", []string{header, "build  directory gone one 1d no no /x/run"}, "gone 0\nother 1"},
+		{"a role that holds the words and a path", []string{header, "/x/a  directory gone one 1d no no"}, "gone 0\nother 1"},
+		{"a gone row with a saved copy and one without", []string{header, "build old 20d no no /x/old  directory gone", gone}, "gone 2\nother 0"},
+		{"an empty file", []string{}, "header bad\ngone 0\nother 0"},
 	} {
 		f := canaryWrite(t, dir, "list.txt", strings.Join(c.lines, "\n")+"\n")
 		if c.name == "an empty file" {
