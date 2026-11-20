@@ -2160,7 +2160,7 @@ step_9() {
       "the output holds the config's version ($RVERSION) as a whole word, and the install folder is the canary's own; both values are recorded; a mismatch refuses the start (the fallback is the config change of G3)" 'G3, M9'
     wait_key 'Step 9 runs the agent executable with --version, outside the sandbox.'
     if [ "$DRY" -eq 1 ]; then
-      dry "make an empty temporary folder as the home; run: env -i HOME=<that folder> <install folder of $INPUTS>/${AGENT0#"$AGENT_INSIDE"/} --version; remove the folder"
+      dry "make an empty temporary folder as the home; run: env -i HOME=<that folder> <install folder of $INPUTS>/${AGENT0#"$AGENT_INSIDE"/} --version; remove the folder; first, the check that argv[0] is a file under /ataniq/agent"
     else
       check "the agent command's first element is a file under $AGENT_INSIDE/ (the executable itself, no wrapper)" is_under_agent_bind "$AGENT0" || return 0
       _host=$(agent_host)
@@ -2507,7 +2507,7 @@ step_15() {
   printf '%s\n' "$CFG_SHOW" | while IFS= read -r _l; do
     case $_l in agent_argv_*) out "     $_l" ;; esac
   done
-  affirm 'Owner: the model argument is the cheapest model' yes || return 0
+  affirm 'Owner: the arguments above name the cheapest model (no --model shown: answer no and prepare again)' yes || return 0
   manifest_of "$LCONFIG" "$EV/canary-config-before.txt"
   if [ "$DRY" -eq 1 ]; then
     dry "start the timer of $CAP_SECONDS s and the tally of $CAP_TURNS turns"
