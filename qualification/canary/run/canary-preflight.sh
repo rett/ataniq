@@ -35,7 +35,14 @@ export GIT_OPTIONAL_LOCKS
 
 # shellcheck disable=SC2034  # read by canary-lib.sh
 CC_NAME=canary-preflight.sh
-_d=$(cd -P -- "${0%/*}" && pwd -P)
+# The folder of this script, with no fork: a name with no slash (sh canary-x.sh
+# in its own folder) is in the current folder, and "/name" is in /.
+case $0 in
+  */*) _d=${0%/*} ;;
+  *) _d=. ;;
+esac
+[ -n "$_d" ] || _d=/
+_d=$(cd -P -- "$_d" && pwd -P)
 REPO=$(cd -P -- "$_d/../../.." && pwd -P)
 # shellcheck source=canary-lib.sh
 . "$_d/canary-lib.sh"

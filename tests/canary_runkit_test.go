@@ -2547,6 +2547,66 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 	}
 }
 
+// The scripts find their folder (and so canary-lib.sh and the checkout) from
+// their own name. Run by its bare name from its own folder, $0 has no slash:
+// the folder must be the current one, not the name of the file. The same
+// scripts run by a relative path, an absolute one and a bare name in a folder
+// reached through a link all work.
+func TestCanaryRunKitHelpersRunByBareName(t *testing.T) {
+	runDir := filepath.Join(root(t), "qualification/canary/run")
+	link := filepath.Join(canaryOffTmp(t), "kit-link")
+	if err := os.Symlink(runDir, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		script string
+		args   []string
+		want   string
+	}{
+		{"canary-preflight.sh", nil, "usage: canary-preflight.sh --root DIR"},
+		{"canary-reset.sh", []string{"--self-test", "typed-word", "reset"}, "go"},
+		{"canary-prepare.sh", []string{"--self-test", "pasta-plan", "/bin/sh"}, ""},
+	} {
+		for how, dirAndName := range map[string][2]string{
+			"bare name":           {runDir, c.script},
+			"dot slash":           {runDir, "./" + c.script},
+			"through a link":      {link, c.script},
+			"absolute":            {t.TempDir(), filepath.Join(runDir, c.script)},
+			"relative with a dir": {filepath.Dir(runDir), "run/" + c.script},
+		} {
+			t.Run(c.script+" "+how, func(t *testing.T) {
+				cmd := exec.Command("/bin/sh", append([]string{dirAndName[1]}, c.args...)...)
+				cmd.Dir = dirAndName[0]
+				cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
+				out, _ := cmd.CombinedOutput()
+				text := string(out)
+				for _, bad := range []string{"Not a directory", "No such file", "cannot cd", "can't cd", "not found"} {
+					if strings.Contains(text, bad) {
+						t.Fatalf("the script does not find its folder:\n%s", text)
+					}
+				}
+				if !strings.Contains(text, c.want) || (c.want == "" && !strings.Contains(text, "use ") && !strings.Contains(text, "copy ")) {
+					t.Errorf("the script did not run:\n%s", text)
+				}
+			})
+		}
+	}
+	// The pattern is the same in the three, and runs no program to make it.
+	for _, rel := range []string{canaryPrepareScript, canaryResetScript, canaryPreflightScript} {
+		data, err := os.ReadFile(filepath.Join(root(t), rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, "case $0 in\n  */*) _d=${0%/*} ;;\n  *) _d=. ;;\nesac\n[ -n \"$_d\" ] || _d=/\n_d=$(cd -P -- \"$_d\" && pwd -P)\n") {
+			t.Errorf("%s does not find its folder as the others do", rel)
+		}
+		if strings.Contains(text, `cd -P -- "${0%/*}"`) {
+			t.Errorf("%s takes the folder of $0 as it is", rel)
+		}
+	}
+}
+
 // canaryOffTmp makes a folder outside /tmp and /var/tmp, which the helpers
 // refuse as a root: in the user's cache folder, else in /dev/shm. It is
 // removed with the test.
