@@ -141,6 +141,18 @@
 //     canary.stop ([CanaryOperations]); hello lists them and says mutations
 //     true.
 //
+// canary.start looks, before it changes anything, at the folders that
+// provisioning makes and the holder's unit needs before it has written
+// anything: the role's runtime folder, the holder's state folder (the unit's
+// working directory) and the folder of the role lock
+// (<state root>/roles/<project>, where the holder makes the lock file but not
+// the folder). Each must be a folder of the caller with mode 0700, and one
+// that is not is a [CodeRefused] with a fixed text that names it; a start that
+// went on would answer "starting" for a unit that ends at once, with the
+// reason in the journal alone. A path that cannot be worked out from the config
+// is refused like a missing folder, never skipped; the detail goes to the
+// daemon's log and no path is in the client's message.
+//
 // Every operation takes strict params with the role, which must be the
 // config's. The errors add two codes to the protocol's, [CodeRefused] and
 // [CodeUnavailable]. A message is sent once per epoch: once the request frame

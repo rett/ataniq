@@ -36,7 +36,14 @@ func newCanaryFixture(t *testing.T) canaryFixture {
 	t.Helper()
 	base := shortDir(t)
 	f := canaryFixture{base: base, state: base + "/s", runtime: base + "/r", holder: base + "/r/leads/throwaway-one-lead"}
-	for _, d := range []string{f.state, f.runtime, f.runtime + "/leads", f.holder, base + "/conf"} {
+	// Besides the roots, the folders that provisioning makes and canary.start
+	// checks: the runtime folder, the holder's state folder and the folder of
+	// the role lock.
+	for _, d := range []string{
+		f.state, f.runtime, f.runtime + "/leads", f.holder, base + "/conf",
+		f.state + "/leads", f.state + "/leads/throwaway-one-lead", f.state + "/leads/throwaway-one-lead/holder",
+		f.state + "/roles", f.state + "/roles/throwaway-one",
+	} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -91,6 +98,24 @@ func (f canaryFixture) writeBytes(t *testing.T, b []byte) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// wantStateRootAsProvisioned checks that a refused daemon made nothing in the
+// state root: it holds the marker and the two folders the fixture made, and no
+// daemon lock, registry or evidence file.
+func (f canaryFixture) wantStateRootAsProvisioned(t *testing.T) {
+	t.Helper()
+	entries, err := os.ReadDir(f.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if got, want := strings.Join(names, " "), canaryroot.MarkerName+" leads roles"; got != want {
+		t.Fatalf("the state root holds %q, want %q", got, want)
+	}
 }
 
 func (f canaryFixture) socket() string { return f.runtime + "/daemon.sock" }
@@ -156,9 +181,7 @@ func TestRunCanaryRefusesTheRootFlags(t *testing.T) {
 			t.Fatalf("%v: a daemon listened", args)
 		}
 	}
-	if entries, _ := os.ReadDir(f.state); len(entries) != 1 {
-		t.Fatalf("the state root holds %d entries", len(entries))
-	}
+	f.wantStateRootAsProvisioned(t)
 }
 
 func TestRunCanaryRefusesAConfigThatIsNotRight(t *testing.T) {
@@ -191,9 +214,7 @@ func TestRunCanaryRefusesAConfigThatIsNotRight(t *testing.T) {
 			if code != leaddaemon.ExitConfig || !strings.Contains(ta.err.String(), tc.want) {
 				t.Fatalf("exit %d, stderr %q", code, ta.err.String())
 			}
-			if entries, _ := os.ReadDir(f.state); len(entries) != 1 {
-				t.Fatalf("the state root holds %d entries", len(entries))
-			}
+			f.wantStateRootAsProvisioned(t)
 		})
 	}
 }

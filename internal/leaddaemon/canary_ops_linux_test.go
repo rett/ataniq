@@ -5,6 +5,7 @@ package leaddaemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"ataniq/internal/leadholder/canaryroot"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadlock"
+	"ataniq/internal/leadrole"
 	"ataniq/internal/leadunit"
 )
 
@@ -243,12 +245,122 @@ func TestCanaryStartNeedsTheRuntimeFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var r CanaryStartResult
-	wantCode(t, c.call(OpCanaryStart, c.role(), &r), CodeRefused)
+	ce := wantCode(t, c.call(OpCanaryStart, c.role(), &r), CodeRefused)
+	if ce.Message != msgFolder {
+		t.Errorf("the refusal says %q, want %q", ce.Message, msgFolder)
+	}
 	if _, _, epoch, _ := c.shown(); epoch != 0 {
 		t.Fatalf("epoch %d: the registry changed", epoch)
 	}
 	if len(c.fake.StartedSpecs()) != 0 {
 		t.Fatal("a unit was started")
+	}
+}
+
+// With the three folders that provisioning makes, the start goes on to the
+// lifecycle: one unit is started, and the fixed refusal texts of the three
+// folders are three different texts.
+func TestCanaryStartWithTheFoldersOfProvisioning(t *testing.T) {
+	c := newCanaryEnv(t)
+	c.start()
+	c.define()
+	var r CanaryStartResult
+	if err := c.call(OpCanaryStart, c.role(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.State != "starting" || r.Epoch != 1 {
+		t.Fatalf("the start answered %+v", r)
+	}
+	if got := len(c.fake.StartedSpecs()); got != 1 {
+		t.Fatalf("%d units started, want 1", got)
+	}
+	if msgFolder == msgStateFolder || msgFolder == msgRoleFolder || msgStateFolder == msgRoleFolder {
+		t.Fatal("two folders share a refusal text")
+	}
+}
+
+// A config whose layout cannot be worked out (the daemon validates it when it
+// starts, so this is not expected) does not make the start skip the holder's
+// state folder: it is refused with the folder's fixed text, the path is not in
+// the client's message, and the detail goes to the log.
+func TestCanaryStartRefusesWhenTheLayoutCannotBeWorkedOut(t *testing.T) {
+	role, err := leadrole.Parse(canaryRoleText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderDir := filepath.Join(t.TempDir(), "holder-runtime")
+	if err := os.Mkdir(holderDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var logged []string
+	x := &canaryExt{
+		// A state root that is not an absolute path: Layout refuses it.
+		cfg:       leadcanary.Config{Role: role, StateRoot: "relative/state"},
+		role:      role,
+		holderDir: holderDir,
+		logf:      func(format string, a ...any) { logged = append(logged, fmt.Sprintf(format, a...)) },
+	}
+	if _, err := x.cfg.Layout(); err == nil {
+		t.Fatal("the layout of the bad config was accepted")
+	}
+	// A nil controller: a start that went on would panic on it.
+	res, eb := x.start(context.Background())
+	if res != nil || eb == nil || eb.Code != CodeRefused || eb.Message != msgStateFolder {
+		t.Fatalf("start answered %v, %+v", res, eb)
+	}
+	if strings.Contains(eb.Message, "relative") {
+		t.Fatalf("the refusal names a path: %q", eb.Message)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "the holder's state folder") {
+		t.Fatalf("the log has %q", logged)
+	}
+}
+
+// The start is refused, with nothing changed, for each folder that provisioning
+// makes and the holder's unit needs before it writes anything. A holder whose
+// role lock folder is missing ends at once with the reason in the journal only,
+// and the daemon's start had answered that it was starting.
+func TestCanaryStartNeedsTheFoldersOfTheHolder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(c *canaryEnv) string
+		text string
+		// mode, when set, changes the folder's mode instead of removing it.
+		mode os.FileMode
+	}{
+		{"holder state folder", func(c *canaryEnv) string {
+			return filepath.Join(c.state, "leads", "throwaway-one-lead", "holder")
+		}, msgStateFolder, 0},
+		{"role lock folder", func(c *canaryEnv) string { return filepath.Join(c.state, "roles", "throwaway-one") }, msgRoleFolder, 0},
+		{"role lock folder with a wrong mode", func(c *canaryEnv) string { return filepath.Join(c.state, "roles", "throwaway-one") }, msgRoleFolder, 0o755},
+		{"holder state folder with a wrong mode", func(c *canaryEnv) string {
+			return filepath.Join(c.state, "leads", "throwaway-one-lead", "holder")
+		}, msgStateFolder, 0o750},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCanaryEnv(t)
+			c.start()
+			c.define()
+			dir := tc.path(c)
+			if tc.mode != 0 {
+				if err := os.Chmod(dir, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Remove(dir); err != nil {
+				t.Fatal(err)
+			}
+			var r CanaryStartResult
+			ce := wantCode(t, c.call(OpCanaryStart, c.role(), &r), CodeRefused)
+			if ce.Message != tc.text {
+				t.Errorf("the refusal says %q, want %q", ce.Message, tc.text)
+			}
+			if _, _, epoch, _ := c.shown(); epoch != 0 {
+				t.Fatalf("epoch %d: the registry changed", epoch)
+			}
+			if len(c.fake.StartedSpecs()) != 0 {
+				t.Fatal("a unit was started")
+			}
+		})
 	}
 }
 

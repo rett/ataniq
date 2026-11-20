@@ -239,8 +239,12 @@ Exit status of `ataniqd canary`:
 The two error codes `refused` and `unavailable` are new, and carry fixed texts
 that never echo what the caller sent.
 
-`ataniqd canary start` is refused when the holder's runtime folder is missing
-or not private; provisioning makes it.
+`ataniqd canary start` is refused, before it changes anything, when the
+holder's runtime folder, the holder's state folder or the folder of the role
+lock (`<state root>/roles/<project>`) is missing or not private; provisioning
+makes all three. Each has its own fixed refusal text, with no path in it; the
+detail is in the daemon's log. Without the check, a missing folder showed only
+as a unit that ended at once, with the reason in the journal.
 
 ## The config file
 

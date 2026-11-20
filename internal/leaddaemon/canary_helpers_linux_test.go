@@ -53,7 +53,16 @@ func newCanaryEnv(t *testing.T) *canaryEnv {
 		t.Fatal(err)
 	}
 	holderDir := filepath.Join(e.runtime, "leads", "throwaway-one-lead")
-	for _, d := range []string{e.state, e.runtime, filepath.Join(e.runtime, "leads"), holderDir} {
+	// What provisioning makes and canary.start checks: the runtime folder, the
+	// holder's state folder and the folder of the role lock. (Made by hand
+	// here, over an in-memory unit manager; the tests of cmd/ataniq-holder that
+	// run on a tree provisioning made take these folders from provisioning.)
+	holderState := filepath.Join(e.state, "leads", "throwaway-one-lead", "holder")
+	for _, d := range []string{
+		e.state, e.runtime, filepath.Join(e.runtime, "leads"), holderDir,
+		filepath.Join(e.state, "leads"), filepath.Dir(holderState), holderState,
+		filepath.Join(e.state, "roles"), filepath.Join(e.state, "roles", "throwaway-one"),
+	} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
