@@ -85,7 +85,9 @@ func New(t testing.TB) *World {
 	srcs := filepath.Join(dir, "src")
 	mkdir(t, srcs)
 	w.Settings = filepath.Join(srcs, "managed.json")
-	WriteFile(t, w.Settings, []byte(`{"note":"`+Secret+`"}`+"\n"), 0o600)
+	// The file holds the guard hook's marker, as a managed-settings file does
+	// for claude: provisioning copies it and the inputs name that copy.
+	WriteFile(t, w.Settings, []byte(`{"note":"`+Secret+`","guard":"`+Marker+`"}`+"\n"), 0o600)
 	w.Hook = filepath.Join(srcs, "guard")
 	WriteFile(t, w.Hook, []byte("#!/bin/sh\nexit 0\n"), 0o700)
 	w.Screens = filepath.Join(srcs, "screens")
