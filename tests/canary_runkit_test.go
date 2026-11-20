@@ -5482,7 +5482,10 @@ func (p *canaryPF) gitEnv(date string) []string {
 
 func (p *canaryPF) gitDated(date string, args ...string) string {
 	p.t.Helper()
-	cmd := exec.Command(p.gitPath, append([]string{"-C", p.repo}, args...)...)
+	// No background maintenance: a commit starts "git maintenance run --auto
+	// --detach", whose lock file may appear in the folder while a run is
+	// compared with the folder as it was.
+	cmd := exec.Command(p.gitPath, append([]string{"-C", p.repo, "-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
 	cmd.Env = p.gitEnv(date)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
