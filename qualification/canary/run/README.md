@@ -117,6 +117,9 @@ composer). Before step 17, step 16 asks the owner to make the pane ready: the
 empty composer, no dialog, the last row reading the mode the config expects
 with no notice on it, then leave the session pane and touch neither key nor
 mouse there for 3 seconds (the fence needs 2 seconds of quiet).
+The owner answers `yes` to that check; `go-on` means the pane could not be made
+ready: the fence then answers `not-now` and he pastes the message at step 17
+(any other answer ends the pass).
 
 ### Step 14: the console, then the ticket
 
@@ -760,8 +763,15 @@ hashes. The owner's own running sessions write that folder all the time, so
 step 25 counts what was added, removed and changed, lists the names that differ
 at the top of the folder, and judges only the files the login itself would
 write there (a credential, token, secret or authorisation file, the runtime's
-state file and its settings files, at the top of the folder): a difference in one
-of those is a finding. It reads the canary config only through `ataniq-canary show`, which
+state file and its settings files, at the top of the folder). A difference in
+one of those is a finding when its new hash is one the canary's own config
+folder holds under the same name (the canary's own login), and so is any new or
+changed path under `projects/-work-*` (the sandbox's working folder). Any other
+difference is a question to the owner and the lead (a running session of his
+may have refreshed its token): their `yes` is not a finding, and the result line
+names the files they explained. When the canary's login wrote no file of its
+kind into its own folder, nothing proves another session wrote the difference,
+and it is a finding without the question. It reads the canary config only through `ataniq-canary show`, which
 prints names, numbers and paths and leaves out the agent's environment, and it
 records the config's hash. At step 26 the last screen kept in each copy of the
 holder's final record is replaced by its hash (`ataniq-canary scrub-screen`),

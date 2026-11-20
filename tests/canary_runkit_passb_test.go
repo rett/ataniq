@@ -341,7 +341,7 @@ func TestCanaryRunKitStep25JudgesOnlyTheLoginsFiles(t *testing.T) {
 			canaryWrite(t, ev, "manifest-before.txt", before)
 			canaryWrite(t, ev, "live-config-folder.txt", "/x\n")
 			after := canaryWrite(t, dir, "after.txt", c.after)
-			canaryWrite(t, ev, "canary-config-after.txt", "hc 1 1 ./.credentials.json\n"+canaryEmptyHash+" 0 1 ./empty\n")
+			canaryWrite(t, ev, "canary-config-after.txt", "hc 1 1 ./.credentials.json\nhc 1 1 ./.claude.json\n"+canaryEmptyHash+" 0 1 ./empty\n")
 			answer := "yes"
 			if strings.Contains(c.name, "answered no") {
 				answer = "no"
@@ -353,7 +353,7 @@ wait_key() { :; }
 manifest_of() { cp ` + after + ` "$2"; }
 result() { echo "RESULT: $*"; }
 done_step() { echo DONE-STEP; }`
-			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "canary_owns", "step_25"}, pre, "step_25")
+			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "canary_owns", "canary_wrote_login", "step_25"}, pre, "step_25")
 			if code != 0 || !strings.Contains(o, "DONE-STEP") {
 				t.Fatalf("exit status %d:\n%s", code, o)
 			}

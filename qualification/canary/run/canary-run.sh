@@ -2799,8 +2799,8 @@ show_token_file() {
   # The agent may still run and may swap the file: the file is opened once,
   # under a timeout (a FIFO would hang), and the opened file is checked (a plain
   # file whose real path is the path, so no symlink), never the name before.
-  _stp=$(realpath -- "$TREE" 2>/dev/null)/canary-token.txt
-  if _stc=$(timeout 2 sh -c 'exec 3<"$1" || exit 1; [ "$(readlink /proc/self/fd/3)" = "$1" ] && [ -f /proc/self/fd/3 ] || exit 1; head -c 200 <&3' sh "$_stp" 2>/dev/null); then
+  _stp=$(realpath -- "$TREE" 2>/dev/null) && _stp=$_stp/canary-token.txt || _stp=
+  if [ -n "$_stp" ] && _stc=$(timeout 2 sh -c 'exec 3<"$1" || exit 1; [ "$(readlink /proc/self/fd/3)" = "$1" ] && [ -f /proc/self/fd/3 ] || exit 1; head -c 200 <&3' sh "$_stp" 2>/dev/null); then
     out '   the gate failed. canary-token.txt, the working file (not the committed one), in the lead'"'"'s folder holds (first 3 lines, nothing else):'
     printf '%s\n' "$_stc" | sed -n '1,3p' | tr -c '[:print:]\n' '?' | sed 's/^/     | /'
   else
@@ -3065,7 +3065,21 @@ canary_owns() {
   case $_co_h in
     '' | not-a-regular-file | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) return 1 ;;
   esac
-  awk -v h="$_co_h" '$1 == h { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" 2>/dev/null
+  awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }' "$EV/canary-config-after.txt" 2>/dev/null
+}
+
+# canary_wrote_login succeeds when the canary's own login added or changed a
+# file of the login's kind in the canary's config folder between step 15's two
+# manifests. When it did not, nothing can prove a file in the real folder to be
+# the canary's, and the isolation of the config folder is suspect.
+canary_wrote_login() {
+  [ -f "$EV/canary-config-after.txt" ] || return 1
+  [ -f "$EV/canary-config-before.txt" ] || : >"$EV/canary-config-before.txt"
+  manifest_changes "$EV/canary-config-before.txt" "$EV/canary-config-after.txt" >"$EV/canary-config-changes.txt"
+  while IFS="$(printf '\t')" read -r _cwk _cwp <&5; do
+    if [ "$_cwk" != removed ] && meaningful_path "$_cwp"; then return 0; fi
+  done 5<"$EV/canary-config-changes.txt"
+  return 1
 }
 
 step_25() {
@@ -3075,7 +3089,7 @@ step_25() {
   fi
   step_head 25 'Manifest, after' \
     'write names, sizes, times and hashes of the same folder as step 7 and compare the two manifests' \
-    'no difference; the owner'"'"'s own running sessions write the folder, so every difference is counted and only the files of the login'"'"'s own kind (the credential and the runtime'"'"'s state and settings files, at the top of the folder) are judged, and a difference in one of those is a finding only when its new hash is one that the canary'"'"'s own config folder holds (otherwise it is a question to the owner and the lead), and so is a new path under projects/-work-; nothing is repaired by the script' 'G2'
+    'no difference; the owner'"'"'s own running sessions write the folder, so every difference is counted and only the files of the login'"'"'s own kind (the credential and the runtime'"'"'s state and settings files, at the top of the folder) are judged, and a difference in one of those is a finding only when its new hash is one that the canary'"'"'s own config folder holds (otherwise it is a question to the owner and the lead, but a finding without the question when the canary'"'"'s own login wrote no file of its kind in its own folder, and the files the owner explained are named in the result), and so is a new path under projects/-work-; nothing is repaired by the script' 'G2'
   if [ "$DRY" -eq 0 ] && [ ! -f "$EV/manifest-before.txt" ]; then
     wait_key 'Step 7 wrote no manifest in this run.'
     result 'nothing to act on: no manifest was written before'
@@ -3105,30 +3119,46 @@ step_25() {
     out '   files at the top of the folder that differ (names only):'
     awk -F'\t' '$2 ~ /^\.\/[^\/]*$/ { print "     " $1 " " $2 }' "$EV/manifest-changes.txt"
     _mean=0
-    while IFS="$(printf '\t')" read -r _k _p; do
+    _expl=
+    _cw=1
+    canary_wrote_login || _cw=0
+    # The loop reads the changes file on fd 4: ask reads the owner from stdin.
+    while IFS="$(printf '\t')" read -r _k _p <&4; do
       if meaningful_path "$_p"; then
         if [ "${_p#./projects/-work-}" != "$_p" ] || { [ "$_k" != removed ] && canary_owns "$_p"; }; then
           _mean=$((_mean + 1))
           out "   MEANINGFUL: $_k $_p"
+        elif [ "$_cw" -eq 0 ]; then
+          _mean=$((_mean + 1))
+          out "   MEANINGFUL (the canary's login wrote no file of its kind in its own folder, so nothing proves this one is another session's): $_k $_p"
         else
           out "   changed, not the canary's file (a running session's refresh looks so): $_k $_p"
-          ask "Owner and lead: is the change of $_p explained by your own running sessions (type yes, or say what is not)"
+          ask "Owner and lead: is the change of $_p explained by your own running sessions, one that ran during this pass (type yes, or say what is not)"
           if [ "$ANSWER" = yes ]; then
             note "the change of $_p is explained by the owner's own sessions"
+            _expl="$_expl $_p"
           else
             _mean=$((_mean + 1))
           fi
         fi
       fi
-    done <"$EV/manifest-changes.txt"
+    done 4<"$EV/manifest-changes.txt"
     if [ "$_mean" -gt 0 ]; then
       out "   $_mean file(s) of the login's kind differ (the canary's own credential, a name the owner and the lead did not"
       out '   explain, or a transcript of the sandbox'"'"'s working folder); the evidence holds both manifests and the changes.'
       FINDINGS=$((FINDINGS + 1))
-      result "a difference in $_mean file(s) of the login's kind, reported as it is"
+      if [ -n "$_expl" ]; then
+        result "a difference in $_mean file(s) of the login's kind, reported as it is (explained by the owner as his own sessions:$_expl)"
+      else
+        result "a difference in $_mean file(s) of the login's kind, reported as it is"
+      fi
     else
       note "the real config folder: $_added added, $_gone removed, $_chg changed, none of the login's kind"
-      result "no file of the login's kind differs ($_added added, $_gone removed, $_chg changed: the owner's own sessions)"
+      if [ -n "$_expl" ]; then
+        result "no unexplained file of the login's kind differs ($_added added, $_gone removed, $_chg changed; explained by the owner as his own sessions:$_expl)"
+      else
+        result "no file of the login's kind differs ($_added added, $_gone removed, $_chg changed: the owner's own sessions)"
+      fi
     fi
   fi
   done_step

@@ -173,7 +173,8 @@ func TestCanaryRunKitStep25EmptyAndMissingProof(t *testing.T) {
 	}{
 		{"empty hash on both sides", canaryEmptyHash + " 0 2 ./.credentials.json\n", canaryEmptyHash + " 0 1 ./.credentials.json\n", 1},
 		{"no canary manifest", "hc 1 1 ./.credentials.json\n", "", 1},
-		{"a matching hash", "hc 1 1 ./.credentials.json\n", "hc 1 1 ./other\n", 1},
+		{"the same hash under another name", "hc 1 1 ./.credentials.json\n", "hc 1 1 ./other\n", 1},
+		{"a matching hash under the same name", "hc 1 1 ./.credentials.json\n", "hc 1 1 ./.credentials.json\n", 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -191,16 +192,22 @@ ask() { ANSWER=no; }
 manifest_of() { cp ` + a + ` "$2"; }
 result() { echo "RESULT: $*"; }
 done_step() { echo DONE-STEP; }`
-			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "canary_owns", "step_25"}, pre, "step_25")
+			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "canary_owns", "canary_wrote_login", "step_25"}, pre, "step_25")
 			if code != 0 {
 				t.Fatalf("exit status %d:\n%s", code, o)
 			}
 			// The owner answers no to the question, so every case is a finding;
 			// what differs is whether the question is asked.
 			asked := strings.Contains(o, "changed, not the canary's file")
-			wantAsked := c.name != "a matching hash"
+			wantAsked := strings.HasPrefix(c.name, "empty")
 			if asked != wantAsked {
 				t.Errorf("question asked=%v, want %v:\n%s", asked, wantAsked, o)
+			}
+			if c.name == "a matching hash under the same name" && !strings.Contains(o, "MEANINGFUL: changed") {
+				t.Errorf("the canary's own file is not judged:\n%s", o)
+			}
+			if c.name == "no canary manifest" && !strings.Contains(o, "the canary's login wrote no file of its kind") {
+				t.Errorf("a canary that wrote nothing is not a finding without the question:\n%s", o)
 			}
 			if !strings.Contains(o, "findings="+string(rune('0'+c.findings))) {
 				t.Errorf("findings are not %d:\n%s", c.findings, o)
@@ -231,5 +238,84 @@ func TestCanaryRunKitStep26CodeTerm(t *testing.T) {
 	}
 	if strings.Contains(got, "miss.txt") {
 		t.Errorf("the kit's own lines are matched:\n%s", got)
+	}
+}
+
+// step25Real runs step 25 with the script's real ask and read_answer: the
+// owner's answers come from stdin, as in a run.
+func step25Real(t *testing.T, canaryAfter, stdin string) (out, answers string, code int) {
+	t.Helper()
+	dir := t.TempDir()
+	ev := filepath.Join(dir, "ev")
+	before := "a0 1 1 ./.credentials.json\nb0 1 1 ./settings.json\nc0 1 1 ./history.jsonl\nd0 1 1 ./.claude.json\n"
+	after := "a1 2 2 ./.credentials.json\nb0 1 1 ./settings.json\nc1 2 2 ./history.jsonl\nd1 2 2 ./.claude.json\n"
+	canaryWrite(t, ev, "manifest-before.txt", before)
+	canaryWrite(t, ev, "live-config-folder.txt", "/x\n")
+	canaryWrite(t, ev, "canary-config-after.txt", canaryAfter)
+	a := canaryWrite(t, dir, "after.txt", after)
+	script := canaryScriptText(t)
+	var b strings.Builder
+	b.WriteString("DRY=0 PASS=B CUR=25 IN_CHAIN=0 TTY_ASSUMED=0 FINDINGS=0 LOG= EV=" + ev + "\n")
+	for _, n := range []string{"out", "note", "dry", "fail", "now", "ask", "read_answer", "on_terminal", "manifest_changes", "meaningful_path", "canary_owns", "canary_wrote_login", "step_25"} {
+		b.WriteString(canaryDef(t, script, n))
+	}
+	b.WriteString("step_head() { :; }\nwait_key() { :; }\nmanifest_of() { cp " + a + " \"$2\"; }\nresult() { echo \"RESULT: $*\"; }\ndone_step() { echo DONE-STEP; }\nstep_25\necho findings=$FINDINGS\n")
+	cmd := exec.Command("sh", "-c", b.String())
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir}
+	o, err := cmd.CombinedOutput()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatal(err)
+		}
+		code = 1
+	}
+	ans, _ := os.ReadFile(filepath.Join(ev, "answers.txt"))
+	return string(o), string(ans), code
+}
+
+// The owner's question in step 25 is answered by the owner on stdin: the loop
+// over the changes file consumes none of his lines, and no changes line stands
+// in for an answer.
+func TestCanaryRunKitStep25QuestionReadsTheOwner(t *testing.T) {
+	// The canary's own login wrote .claude.json (hash d1), so that file is
+	// proven and the credential, a mismatch, is a question.
+	canary := "d1 2 2 ./.claude.json\n"
+	o, ans, code := step25Real(t, canary, "yes\n")
+	if code != 0 || !strings.Contains(o, "DONE-STEP") {
+		t.Fatalf("exit %d:\n%s", code, o)
+	}
+	if strings.Count(ans, "\n") != 1 || !strings.Contains(ans, "\tyes\ttyped\n") || strings.Contains(ans, "changed\t") || strings.Contains(ans, "added\t") {
+		t.Errorf("answers.txt does not hold exactly the owner's yes:\n%q", ans)
+	}
+	if !strings.Contains(o, "findings=1") || !strings.Contains(o, "MEANINGFUL: changed ./.claude.json") || !strings.Contains(o, "1 file(s) of the login's kind differ") {
+		t.Errorf("the owner's yes does not leave exactly the canary's own file as a finding:\n%s", o)
+	}
+	if !strings.Contains(o, "explained by the owner as his own sessions: ./.credentials.json") {
+		t.Errorf("the result does not name the explained file:\n%s", o)
+	}
+	// Another answer is a finding and is recorded as typed.
+	o, ans, _ = step25Real(t, canary, "no idea\n")
+	if !strings.Contains(o, "findings=1") || !strings.Contains(o, "2 file(s) of the login's kind differ") || !strings.Contains(ans, "\tno idea\ttyped\n") || strings.Contains(ans, "changed\t") {
+		t.Errorf("another answer is not counted and recorded:\n%s\n%q", o, ans)
+	}
+	// With nothing the canary wrote of its kind, there is no question at all.
+	o, ans, _ = step25Real(t, "x9 1 1 ./notes.txt\n", "yes\n")
+	if ans != "" || strings.Contains(o, "??") || !strings.Contains(o, "2 file(s) of the login's kind differ") {
+		t.Errorf("a canary that wrote nothing still gets the question or is not judged:\n%s\n%q", o, ans)
+	}
+}
+
+// show_token_file does not open a file at the root when the folder cannot be
+// resolved.
+func TestCanaryRunKitShowTokenFileUnresolvableFolder(t *testing.T) {
+	dir := t.TempDir()
+	o, code := canaryStepHarness(t, dir, []string{"out", "show_token_file"}, "TREE="+filepath.Join(dir, "gone", "tree"), "show_token_file")
+	if code != 0 || !strings.Contains(o, "no canary-token.txt") {
+		t.Errorf("exit %d:\n%s", code, o)
+	}
+	if body := funcsOf(t)["show_token_file"]; strings.Contains(body, `)/canary-token.txt`) {
+		t.Errorf("the path is still built from a failing command substitution:\n%s", body)
 	}
 }
