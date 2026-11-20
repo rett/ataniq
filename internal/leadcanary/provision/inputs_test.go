@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -362,4 +363,74 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// provision keeps the names of the holder's two sockets itself and does not
+// import the serving package (which pulls in the session pane): this test
+// file, which is built only with the tag, is where the two meet, so that a
+// rename in the serving package fails here.
+func TestTheHolderSocketNamesAreThoseOfTheServingPackage(t *testing.T) {
+	if attachSocket != serve.AttachSocket || controlSocket != serve.ControlSocket {
+		t.Errorf("provision names %q and %q, the serving package %q and %q",
+			attachSocket, controlSocket, serve.AttachSocket, serve.ControlSocket)
+	}
+	rt := sandboxstart.RuntimeFolder("/run/sample", "sample-lead")
+	want := []string{filepath.Join(rt, serve.AttachSocket), filepath.Join(rt, serve.ControlSocket)}
+	if got := holderSocketPaths("/run/sample", "sample-lead"); !reflect.DeepEqual(got, want) {
+		t.Errorf("the socket paths are %v, the holder's are %v", got, want)
+	}
+}
+
+// The holder adds its two socket paths to the spec's mount substrings, whose
+// list is capped, so a never_mounted list that fits without them can be
+// refused at the start. check-inputs must agree with the holder's trial for
+// every length around the cap, and the range must hold a length each way.
+func TestCheckInputsAgreesWithTheHolderAtTheEdgeOfTheMountSubstringLimit(t *testing.T) {
+	w := provisiontest.New(t)
+	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
+	var accepted, refused []int
+	for n := 55; n <= 66; n++ {
+		in := goodInputs(t, w)
+		in.NeverMounted = nil
+		for i := 0; i < n; i++ {
+			in.NeverMounted = append(in.NeverMounted, "/opt/sample/never-"+strconv.Itoa(i))
+		}
+		// The holder's view: the fields it sets from the config, including
+		// its two sockets as the serving package names them.
+		view := in
+		view.AgentArgv = append([]string(nil), w.Cfg.Agent.Argv...)
+		view.AgentEnv = sandboxstart.AgentEnvOf(w.Cfg.Agent.Env)
+		view.ExpectedDigest = w.Cfg.Holder.ProfileDigest
+		rt := sandboxstart.RuntimeFolder(in.RuntimeRoot, in.LayoutRole)
+		view.HolderPaths = []string{filepath.Join(rt, serve.AttachSocket), filepath.Join(rt, serve.ControlSocket)}
+		holderErr := sandboxstart.TrialValidate(view, uid, gid)
+		checkErr := CheckInputs(w.Cfg, writeInputs(t, in, 0o600))
+		if (holderErr == nil) != (checkErr == nil) {
+			t.Errorf("never_mounted of %d entries: the holder's trial says %v, check-inputs says %v", n, holderErr, checkErr)
+		}
+		if holderErr == nil {
+			accepted = append(accepted, n)
+		} else {
+			refused = append(refused, n)
+		}
+	}
+	if len(accepted) == 0 || len(refused) == 0 {
+		t.Fatalf("the range holds no edge: accepted %v, refused %v", accepted, refused)
+	}
+	// Lengths that check-inputs accepted while the sockets were left out of
+	// the trial (the other holder paths alone allow 61 entries).
+	for _, n := range []int{60, 61, 62} {
+		if !containsInt(refused, n) {
+			t.Errorf("a never_mounted list of %d entries is not refused by the holder's trial (accepted %v)", n, accepted)
+		}
+	}
+}
+
+func containsInt(list []int, n int) bool {
+	for _, v := range list {
+		if v == n {
+			return true
+		}
+	}
+	return false
 }
