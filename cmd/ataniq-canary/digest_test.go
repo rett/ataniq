@@ -118,6 +118,17 @@ func TestProfileDigestIsWhatTheHoldersFunctionSays(t *testing.T) {
 	}
 }
 
+// The marker is the text assertion 8 searches for; it is not part of the
+// profile, so a pin does not change when the marker does.
+func TestProfileDigestDoesNotCoverTheManagedMarker(t *testing.T) {
+	w := provisiontest.New(t)
+	a := mustDigest(t, w, nil)
+	b := mustDigest(t, w, func(in *sandboxstart.Inputs) { in.Sources.ManagedMarker = "guard" })
+	if a != b {
+		t.Fatalf("the digest follows the marker: %s then %s", a, b)
+	}
+}
+
 func TestProfileDigestChangesWithItsInputs(t *testing.T) {
 	w := provisiontest.New(t)
 	base := mustDigest(t, w, nil)

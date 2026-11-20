@@ -143,9 +143,16 @@ func (p *terminal) waitFor(t testing.TB, from int, s string) int {
 // terminal for its controlling terminal.
 func start(t testing.TB, tm *terminal, dir, home string, args ...string) (*exec.Cmd, <-chan error) {
 	t.Helper()
+	return startEnv(t, tm, dir, []string{"HOME=" + home}, args...)
+}
+
+// startEnv is start with the environment given: only that, and the switch
+// that makes the test binary run the command.
+func startEnv(t testing.TB, tm *terminal, dir string, env []string, args ...string) (*exec.Cmd, <-chan error) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Dir = dir
-	cmd.Env = []string{asBinary + "=1", "HOME=" + home}
+	cmd.Env = append([]string{asBinary + "=1"}, env...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tm.slave, tm.slave, tm.slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := cmd.Start(); err != nil {
@@ -225,6 +232,33 @@ func TestCommandPlainModeCommitsAndExitsOnSIGTERM(t *testing.T) {
 	}
 }
 
+// The sandbox names the identity file with GIT_CONFIG_GLOBAL and the tree has
+// no identity of its own: the command hands the variable to git.
+func TestCommandCommitsWithTheIdentityGitConfigGlobalNames(t *testing.T) {
+	dir, home := tree(t)
+	git(t, dir, "config", "--unset", "user.name")
+	git(t, dir, "config", "--unset", "user.email")
+	git(t, dir, "config", "user.useConfigOnly", "true") // no guess from the host's account
+	ident := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(ident, []byte("[user]\n\tname = Provisioned\n\temail = provisioned@example.invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tm := openTerminal(t)
+	cmd, done := startEnv(t, tm, dir, []string{"HOME=" + home, "GIT_CONFIG_GLOBAL=" + ident})
+	i := tm.waitFor(t, 0, "> ")
+	tm.waitFor(t, i-2, "\x1b[?2004h")
+	msg := "[ataniq-msg id=3 from=ataniq kind=canary]\ncanary-token: " + sampleToken + "\n"
+	if _, err := tm.master.WriteString("\x1b[200~" + msg + "\x1b[201~\r"); err != nil {
+		t.Fatal(err)
+	}
+	tm.waitFor(t, i, "committed canary/one")
+	if got := git(t, dir, "log", "-1", "--format=%an <%ae>"); got != "Provisioned <provisioned@example.invalid>" {
+		t.Fatalf("identity %q", got)
+	}
+	cmd.Process.Signal(syscall.SIGTERM)
+	wait(t, done)
+}
+
 func TestCommandChoosesReplayModeFromTheSwitchFile(t *testing.T) {
 	dir, home := tree(t)
 	rd := filepath.Join(home, "canary-replay")
@@ -279,7 +313,7 @@ func TestCommandChoosesReplayModeFromTheSwitchFile(t *testing.T) {
 
 func TestCommandExitsZeroAtEndOfInput(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if status := run(nil, strings.NewReader("abc"), &out, &errOut, "", -1); status != 0 {
+	if status := run(nil, strings.NewReader("abc"), &out, &errOut, "", "", -1); status != 0 {
 		t.Fatalf("status %d, stderr %q", status, errOut.String())
 	}
 }
@@ -291,7 +325,7 @@ func TestCommandNeedsATerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if status := run(nil, f, &out, &errOut, "", int(f.Fd())); status != 1 {
+	if status := run(nil, f, &out, &errOut, "", "", int(f.Fd())); status != 1 {
 		t.Fatalf("status %d, want 1", status)
 	}
 	if out.Len() != 0 || !strings.Contains(errOut.String(), "terminal") {
@@ -301,12 +335,12 @@ func TestCommandNeedsATerminal(t *testing.T) {
 
 func TestCommandVersionAndUsage(t *testing.T) {
 	var out, errOut bytes.Buffer
-	if status := run([]string{"--version"}, strings.NewReader(""), &out, &errOut, "", -1); status != 0 || !strings.Contains(out.String(), "ataniq_canary") {
+	if status := run([]string{"--version"}, strings.NewReader(""), &out, &errOut, "", "", -1); status != 0 || !strings.Contains(out.String(), "ataniq_canary") {
 		t.Fatalf("--version: status %d, output %q", status, out.String())
 	}
 	out.Reset()
 	for _, args := range [][]string{{"--help"}, {"x"}, {"--version", "x"}} {
-		if status := run(args, strings.NewReader(""), &out, &errOut, "", -1); status != 2 || out.Len() != 0 {
+		if status := run(args, strings.NewReader(""), &out, &errOut, "", "", -1); status != 2 || out.Len() != 0 {
 			t.Errorf("%v: status %d, output %q", args, status, out.String())
 		}
 	}

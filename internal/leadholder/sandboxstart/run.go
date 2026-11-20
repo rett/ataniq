@@ -319,41 +319,64 @@ func (a *attempt) validate() error {
 	a.reportDir = ReportFolder(a.in.RuntimeRoot, a.in.LayoutRole)
 	a.fifo = ReportFIFO(a.in.RuntimeRoot, a.in.LayoutRole)
 	a.boundDir = boundFolder(a.in.RuntimeRoot, a.in.LayoutRole)
-	pin, err := a.in.checkedProfileInputs(a.uid, a.gid)
+	pin, err := a.in.trial(a.uid, a.gid)
 	if err != nil {
 		return err
 	}
 	a.pin = pin
-	if a.in.ExpectedDigest != "" {
-		if err := checkDigest("the pinned profile digest", a.in.ExpectedDigest); err != nil {
-			return err
-		}
-	}
-	if len(a.in.AgentArgv) == 0 {
-		return errors.New("no agent command line was given")
-	}
-	for _, p := range a.in.HolderPaths {
-		if err := profile.CheckPath("holder path", p); err != nil {
-			return err
-		}
-	}
-	// A trial of the spec, with the facts that hold before anything is made: the
-	// provider host, the managed-settings marker and the names the spec checks.
-	if _, err := assert.NewSpec(pin, []profile.EnvVar{{Name: "PWD", Value: profile.TreeInside(pin.Project)}}, assert.HostFacts{
-		HolderPaths:    a.holderPaths(),
-		LoopbackTCP:    "127.0.0.1:1",
-		AbstractSocket: "ataniq-start-trial",
-		ProviderHost:   a.in.ProviderHost,
-		ManagedMarker:  a.in.Sources.ManagedMarker,
-	}); err != nil {
-		return err
-	}
 	exes, err := a.sys.CheckHost(a.in)
 	if err != nil {
 		return err
 	}
 	a.exes = exes
 	return nil
+}
+
+// trial is every refusal of the validate step that needs no host access and
+// starts nothing: the inputs' fields, the profile, the pinned digest, the
+// agent's command line, the holder's paths, and a trial of the spec with the
+// facts that hold before anything is made (the provider host, the
+// managed-settings marker and the names the spec checks). It returns the
+// checked profile inputs. uid and gid are the calling user's.
+func (in Inputs) trial(uid, gid uint32) (profile.Inputs, error) {
+	pin, err := in.checkedProfileInputs(uid, gid)
+	if err != nil {
+		return profile.Inputs{}, err
+	}
+	if in.ExpectedDigest != "" {
+		if err := checkDigest("the pinned profile digest", in.ExpectedDigest); err != nil {
+			return profile.Inputs{}, err
+		}
+	}
+	if len(in.AgentArgv) == 0 {
+		return profile.Inputs{}, errors.New("no agent command line was given")
+	}
+	for _, p := range in.HolderPaths {
+		if err := profile.CheckPath("holder path", p); err != nil {
+			return profile.Inputs{}, err
+		}
+	}
+	if _, err := assert.NewSpec(pin, []profile.EnvVar{{Name: "PWD", Value: profile.TreeInside(pin.Project)}}, assert.HostFacts{
+		HolderPaths:    in.holderPaths(pin),
+		LoopbackTCP:    "127.0.0.1:1",
+		AbstractSocket: "ataniq-start-trial",
+		ProviderHost:   in.ProviderHost,
+		ManagedMarker:  in.Sources.ManagedMarker,
+	}); err != nil {
+		return profile.Inputs{}, err
+	}
+	return pin, nil
+}
+
+// TrialValidate runs the part of the start's validate step that needs no host
+// access and starts nothing (see trial), on the inputs as the holder sets them
+// before the start: the caller sets AgentArgv, AgentEnv, ExpectedDigest and
+// HolderPaths as the holder does, because it refuses an empty AgentArgv and
+// the others are checked. A refusal is the one the holder gives at that step.
+// uid and gid are the calling user's.
+func TrialValidate(in Inputs, uid, gid uint32) error {
+	_, err := in.trial(uid, gid)
+	return err
 }
 
 func checkDigest(what, d string) error {
@@ -372,10 +395,12 @@ func checkDigest(what, d string) error {
 // the report folder and the FIFO, the lead's holder folder of the layout, and
 // what the holder named. The runtime folder itself is not among them, because
 // the plan binds two sources in its "bound" folder.
-func (a *attempt) holderPaths() []string {
-	out := []string{a.reportDir, a.fifo, a.pin.Layout().Holder()}
-	return append(out, a.in.HolderPaths...)
+func (in Inputs) holderPaths(pin profile.Inputs) []string {
+	out := []string{ReportFolder(in.RuntimeRoot, in.LayoutRole), ReportFIFO(in.RuntimeRoot, in.LayoutRole), pin.Layout().Holder()}
+	return append(out, in.HolderPaths...)
 }
+
+func (a *attempt) holderPaths() []string { return a.in.holderPaths(a.pin) }
 
 func (a *attempt) toolVersions() error {
 	a.versions = a.sys.ToolVersions(a.ctx, ToolPaths{Pasta: a.in.Executables.Pasta, Bwrap: a.in.Executables.Bwrap})
