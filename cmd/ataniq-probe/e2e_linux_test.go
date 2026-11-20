@@ -248,7 +248,7 @@ func TestInsideRealSystemFailsAndStartsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the report line is refused: %v\n%q", err, line)
 	}
-	if rep.Digest != spec.Digest || len(rep.Results) != 8 {
+	if rep.Digest != spec.Digest || len(rep.Results) != 9 {
 		t.Errorf("report %+v", rep)
 	}
 	if !assert.Failed(rep, spec) {

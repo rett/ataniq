@@ -15,7 +15,8 @@ const (
 // Assertion is one row of the table of start-up assertions (the lead-hosting
 // design, section 3.8).
 type Assertion struct {
-	// Number is the position in the design, 1 to 10.
+	// Number is the number of the assertion, 1 to 11. The design lists the
+	// eleventh between 7 and 8; here it keeps its number and comes last.
 	Number int
 	// ID is a stable name for the assertion. It is the ID of the result of
 	// the inside half (or of the only half). The result of the outside half
@@ -35,7 +36,7 @@ type Assertion struct {
 const OutsideSuffix = ".outside"
 
 // NumAssertions is the number of assertions.
-const NumAssertions = 10
+const NumAssertions = 11
 
 // The IDs of the assertions.
 const (
@@ -49,6 +50,7 @@ const (
 	IDManagedSettings     = "managed-settings"
 	IDRoleLockLingering   = "role-lock-lingering"
 	IDQualificationRecord = "qualification-record"
+	IDParentFolders       = "parent-folders"
 )
 
 var assertions = [NumAssertions]Assertion{
@@ -58,10 +60,12 @@ var assertions = [NumAssertions]Assertion{
 	{4, IDProviderResolves, "A provider host name resolves.", Inside, []string{"S4"}},
 	{5, IDTIOCSTIBlocked, "dev.tty.legacy_tiocsti is 0, or the seccomp filter is loaded.", Both, []string{"S7"}},
 	{6, IDOwnerPathsAbsent, "The owner's real provider folders, ~/.ssh, the owner's checkout and the other runtime's config folder do not exist inside.", Inside, []string{"S1"}},
-	{7, IDTreeGitReadOnly, "The tree is the lead's own clone, and its .git/config, .git/hooks and .git/info are not writable inside.", Inside, []string{"S16"}},
+	{7, IDTreeGitReadOnly, "Before the sandbox starts, with the previous instance proven stopped, the holder's walk of 3.6 found no symlink or wrong type at any bind destination inside a lead-writable folder. Inside, the tree is the lead's own clone, and its .git/config, .git/hooks and .git/info are not writable.", Both, []string{"S16", "S21"}},
 	{8, IDManagedSettings, "The managed-settings file is present and read-only; for claude it contains the guard hook.", Inside, []string{"S18"}},
 	{9, IDRoleLockLingering, "The role lock is held, and lingering is on.", Outside, []string{"H7", "L3"}},
 	{10, IDQualificationRecord, "A current qualification record exists for this runtime, version and profile digest. A missing or stale record blocks the start and shows as unsupported.", Outside, []string{"S11"}},
+	// The case of assertion 11 is S1, by amendment H2 of the coordinator note.
+	{11, IDParentFolders, "The four parent folders of 3.3 are present; /ataniq/mailbox and /coord are not writable inside, and no coordinator's tree or home is visible.", Inside, []string{"S1"}},
 }
 
 // Assertions returns the table, in order of number. The caller may change the
@@ -75,7 +79,7 @@ func Assertions() []Assertion {
 	return out
 }
 
-// ByNumber returns the assertion with the number n (1 to 10).
+// ByNumber returns the assertion with the number n (1 to 11).
 func ByNumber(n int) (Assertion, bool) {
 	if n < 1 || n > NumAssertions {
 		return Assertion{}, false

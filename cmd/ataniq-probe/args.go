@@ -2,14 +2,22 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 )
 
 // Exit statuses of the command itself. An agent's own status is its own once
-// it is executed; the probe's 97 and 98 mean the agent was not started, except
+// it is executed; the probe's 96, 97 and 98 mean nothing was started, except
 // that the waiting parent of a new session passes the agent's status on.
 const (
+	// exitWalk: the pass-through mode refused a bind source: the folder a
+	// walk starts from could not be opened without following a link, or the
+	// path beneath it is a link, is missing, is not what the walk names, lies
+	// at a mount point or could not be walked by handle. Nothing was executed.
+	// It is a status of its own so that a holder can tell a source that is not
+	// what the plan binds from a failure to set the step up.
+	exitWalk = 96
 	// exitFailed: the inside checks did not pass; the agent is not started.
 	exitFailed = 97
 	// exitSetup: a usage error or any failure to do what the command is for
@@ -28,14 +36,27 @@ const (
 	optReportFD = "--report-fd"
 	optRead     = "--read"
 	optWrite    = "--write"
+	optWalkDir  = "--walk-dir"
+	optWalkFile = "--walk-file"
 	optEnd      = "--"
 
 	// minFD and maxFD bound every descriptor number given: 0 to 2 are the
 	// standard streams, and the plan refuses a number above 1023.
 	minFD = 3
 	maxFD = 1023
-	// maxPassFDs is the most descriptors the pass-through mode places.
-	maxPassFDs = 8
+	// maxPassFDs is the most descriptors the pass-through mode places, of
+	// every kind together, and a hard cap. The launch plan asks for one per
+	// bind row Ataniq supplies (23 in the bind table of the profile today),
+	// one per extra placeholder of the tree (the profile allows 64), the
+	// seccomp file and the report channel: 89 at most. 128 is the next power
+	// of two, which leaves 39 for rows the table gains before the number has
+	// to be looked at again, and stays far below the 1024 descriptors a
+	// process usually may have open (the step holds two per walk for a
+	// moment, and one per folder the walks start from).
+	maxPassFDs = 128
+	// maxWalkPath bounds how much of a walk's folder or path a message
+	// repeats.
+	maxWalkPath = 150
 )
 
 // usageError is a refused command line. Its text is one line, without the
@@ -49,9 +70,12 @@ func usagef(format string, args ...any) error {
 }
 
 // quote shows an argument in a message, clipped.
-func quote(s string) string {
-	if len(s) > 60 {
-		s = s[:60] + "..."
+func quote(s string) string { return quoteN(s, 60) }
+
+// quoteN shows an argument in a message, clipped to n bytes.
+func quoteN(s string, n int) string {
+	if len(s) > n {
+		s = s[:n] + "..."
 	}
 	return strconv.Quote(s)
 }
@@ -170,21 +194,59 @@ type fdFile struct {
 	Write bool
 }
 
+// fdWalk is one bind source the pass-through mode walks by handle:
+// --walk-dir or --walk-file FD ROOT REL.
+type fdWalk struct {
+	FD int
+	// Root is the folder the walk starts from, opened by name: absolute and
+	// clean.
+	Root string
+	// Rel is the path of the source beneath Root: relative and clean, without
+	// "..", and "." only for a folder that is Root itself.
+	Rel string
+	// Dir says the source must be a folder; else it must be a regular file.
+	Dir bool
+}
+
+// option is the option that names the walk.
+func (w fdWalk) option() string {
+	if w.Dir {
+		return optWalkDir
+	}
+	return optWalkFile
+}
+
 // passArgs is the command line of the pass-through mode.
 type passArgs struct {
 	Files []fdFile
+	Walks []fdWalk
 	// Command is the argument vector executed: Command[0] is an absolute
 	// path.
 	Command []string
 }
 
+// targets are the descriptor numbers the command line asks for, the walks
+// first, as they are opened.
+func (a passArgs) targets() []int {
+	out := make([]int, 0, len(a.Walks)+len(a.Files))
+	for _, w := range a.Walks {
+		out = append(out, w.FD)
+	}
+	for _, f := range a.Files {
+		out = append(out, f.FD)
+	}
+	return out
+}
+
 // parsePassFDs reads the arguments after "pass-fds":
 //
-//	[--read FD=PATH]... [--write FD=PATH]... -- COMMAND ARGV...
+//	[--read FD=PATH]... [--write FD=PATH]... [--walk-dir FD ROOT REL]... [--walk-file FD ROOT REL]... -- COMMAND ARGV...
 //
 // strictly. Options may come in any order. FD is 3 to 1023 and each at most
-// once; PATH is absolute; there are at most 8 files; COMMAND is an absolute
-// path. Anything else is a *usageError.
+// once, whatever the option; PATH is absolute; ROOT is absolute and clean; REL
+// is relative and clean, without "..", and "." only with --walk-dir; there are
+// at most 128 descriptors in all; COMMAND is an absolute path. Anything else
+// is a *usageError.
 func parsePassFDs(args []string) (passArgs, error) {
 	var a passArgs
 	seen := map[int]bool{}
@@ -193,6 +255,24 @@ func parsePassFDs(args []string) (passArgs, error) {
 		switch args[i] {
 		case optEnd:
 			end = i
+		case optWalkDir, optWalkFile:
+			opt := args[i]
+			if i+3 >= len(args) || args[i+1] == optEnd || args[i+2] == optEnd || args[i+3] == optEnd {
+				return a, usagef("%s needs three values: FD ROOT REL", opt)
+			}
+			w, err := parseWalk(opt, args[i+1], args[i+2], args[i+3])
+			if err != nil {
+				return a, err
+			}
+			i += 3
+			if seen[w.FD] {
+				return a, usagef("descriptor %d is given twice", w.FD)
+			}
+			if len(a.Files)+len(a.Walks) >= maxPassFDs {
+				return a, usagef("more than %d descriptors", maxPassFDs)
+			}
+			seen[w.FD] = true
+			a.Walks = append(a.Walks, w)
 		case optRead, optWrite:
 			opt := args[i]
 			if i+1 >= len(args) || args[i+1] == optEnd {
@@ -206,7 +286,7 @@ func parsePassFDs(args []string) (passArgs, error) {
 			if seen[f.FD] {
 				return a, usagef("descriptor %d is given twice", f.FD)
 			}
-			if len(a.Files) >= maxPassFDs {
+			if len(a.Files)+len(a.Walks) >= maxPassFDs {
 				return a, usagef("more than %d descriptors", maxPassFDs)
 			}
 			seen[f.FD] = true
@@ -242,4 +322,29 @@ func parseFDFile(opt, val string) (fdFile, error) {
 		return fdFile{}, usagef("%s %s: the path must be absolute", opt, quote(val))
 	}
 	return fdFile{FD: fd, Path: path, Write: opt == optWrite}, nil
+}
+
+// parseWalk reads the three values of --walk-dir or --walk-file. The paths are
+// checked as text only: what they name is looked at when the walk is made.
+func parseWalk(opt, num, root, rel string) (fdWalk, error) {
+	fd, err := parseFD(num)
+	if err != nil {
+		return fdWalk{}, usagef("%s %s: the descriptor %v", opt, quote(num), err)
+	}
+	w := fdWalk{FD: fd, Root: root, Rel: rel, Dir: opt == optWalkDir}
+	if !absolute(root) || path.Clean(root) != root {
+		return fdWalk{}, usagef("%s %d: the folder %s must be an absolute, clean path", opt, fd, quote(root))
+	}
+	switch {
+	case rel == "" || absolute(rel):
+		return fdWalk{}, usagef("%s %d: the path %s must be relative to the folder", opt, fd, quote(rel))
+	case rel == ".":
+		if !w.Dir {
+			return fdWalk{}, usagef("%s %d: the path \".\" names the folder, not a file", opt, fd)
+		}
+	case path.Clean(rel) != rel || rel == ".." || strings.HasPrefix(rel, "../"):
+		// A clean relative path holds ".." only at its start.
+		return fdWalk{}, usagef("%s %d: the path %s must be clean and must not leave the folder", opt, fd, quote(rel))
+	}
+	return w, nil
 }

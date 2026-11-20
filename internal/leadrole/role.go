@@ -244,3 +244,22 @@ func (r *Role) UnmarshalJSON(data []byte) error {
 	*r = parsed
 	return nil
 }
+
+// ThrowawayPrefix begins the name of a project that exists only for a canary
+// slice run: its state, its journal and its lead are meant to be deleted.
+//
+// ValidProject still accepts such a name, because the grammar of a project
+// name is not changed. The prefix is reserved by the callers, not by the
+// grammar: a daemon that defines real leads must refuse a project with this
+// prefix, and only canary mode (a build with the ataniq_canary tag) accepts
+// it, and accepts nothing else.
+const ThrowawayPrefix = "throwaway-"
+
+// IsThrowaway reports whether project is a valid project name that starts with
+// ThrowawayPrefix and has at least one character after it. The prefix alone,
+// a name that is not valid and a name with the prefix in the middle are not
+// throwaway.
+func IsThrowaway(project string) bool {
+	rest, ok := strings.CutPrefix(project, ThrowawayPrefix)
+	return ok && rest != "" && ValidProject(project)
+}

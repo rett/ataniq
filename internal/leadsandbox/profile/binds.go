@@ -38,6 +38,10 @@ const (
 	RoleMirror          = "mirror"
 	RoleQargi           = "qargi"
 	RoleRecords         = "qargi-records"
+	RoleRequests        = "requests"
+	RoleMailbox         = "mailbox"
+	RoleMail            = "mail"
+	RolePublished       = "published"
 	RoleAssignment      = "assignment"
 	RoleProjection      = "projection"
 	RoleExtra           = "extra-placeholder"
@@ -142,7 +146,10 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 		rw(ConfigInside(rt), cfg, RoleConfig),
 		ro(SkillsInside(rt), in.LeadSkills, RoleSkills, true),
 		ro(InstructionInside(rt), in.InstructionFile, RoleInstructions, false),
-		ro(GitIdentityInside, in.GitIdentityFile, RoleGitIdentity, false),
+		// The git identity is bound as its folder, not as the file: a bind
+		// of a single file keeps the file it was made from when the holder
+		// replaces the file by rename.
+		ro(GitIdentityDirInside, in.GitIdentityDir, RoleGitIdentity, true),
 		rw(treeInside, l.Tree(), RoleTree),
 	)
 	// The three protected git paths keep their targets in the tree, but their
@@ -157,9 +164,19 @@ func (in Inputs) table(treeInside, mirrorInside string) []Bind {
 		ro(mirrorInside, l.Mirror(), RoleMirror, true),
 		ro(QargiInside, in.QargiInstall, RoleQargi, true),
 	)
-	if in.QargiRecords != "" {
-		t = append(t, rw(in.QargiRecordsInside, in.QargiRecords, RoleRecords))
-	}
+	// The lead's working Qargi records: the layout's folder, at the inside
+	// path the caller gives (the path Qargi's layout names).
+	t = append(t, rw(in.QargiRecordsInside, l.QargiRecords(), RoleRecords))
+	// The four folders of the lead's requests, mailbox, mail and of what the
+	// project's coordinators publish. A bind cannot be added to a running
+	// sandbox, so they are rows of every table, whether or not the lead has
+	// coordinators. Their sources are the layout's, never the caller's.
+	t = append(t,
+		rw(RequestsInside, l.Requests(), RoleRequests),
+		ro(MailboxInside, l.Mailbox(), RoleMailbox, true),
+		rw(MailInside, l.Mail(), RoleMail),
+		ro(CoordInside, l.Published(), RolePublished, true),
+	)
 	t = append(t,
 		ro(AssignmentInside, in.AssignmentDir, RoleAssignment, true),
 		ro(ProjectionInside, in.ProjectionDir, RoleProjection, true),
@@ -323,6 +340,7 @@ func (in Inputs) checkTable() error {
 		return err
 	}
 	never := in.neverMounted()
+	state := in.Layout().StateFolders()
 	var rwSrc []Bind
 	for _, b := range t {
 		if b.Source == "" {
@@ -332,9 +350,11 @@ func (in Inputs) checkTable() error {
 			return refuse("bind "+b.Inside, "%s", reasonOf(err))
 		}
 		// The profile knows the state root: a source in another lead's
-		// state (its login, its home, its tree) or in another project's
-		// mirror is never right, whatever the caller lists as never-mounted.
-		if why := in.otherStateReason(b.Source); why != "" {
+		// state (its login, its home, its tree), in the lead's holder folder,
+		// in another project's mirror, in another role's mailbox, in another
+		// project's published folder or in a coordinator's tree, home or login
+		// is never right, whatever the caller lists as never-mounted.
+		if why := state.Reason(b.Source, b.SourceRole); why != "" {
 			return refuse("bind "+b.Inside, "the source %s %s", b.Source, why)
 		}
 		if b.Kind == KindRwBind {

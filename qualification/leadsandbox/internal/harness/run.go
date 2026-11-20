@@ -23,8 +23,10 @@ import (
 	"ataniq/internal/leadsandbox/sandboxnet"
 )
 
-// GateError is a refusal to start: one of the two gates before a launch is
-// closed, or the configuration is refused. Nothing was created.
+// GateError is a refusal to start a run: a gate is closed (coordinator_reviewed
+// is not true, case S21 is requested without scratch_folders_disposable, or
+// standard input is not a terminal and --unattended was not given). Nothing was
+// created.
 type GateError struct{ Reason string }
 
 // Error implements error.
@@ -69,6 +71,12 @@ type Options struct {
 	// HostHas says whether the host has a path (for the optional symbolic
 	// link rows of the bind table); nil means a no-follow stat.
 	HostHas func(path string) bool
+	// CheckMountPoints is the walk of the bind targets that lie in folders the
+	// lead writes (the start walk of the design, section 3.6), made by the
+	// steps check and recheck and by case S21; nil means mountpoints.Check. The
+	// tests of the harness replace it to stand in for a walk that accepts what
+	// it must refuse.
+	CheckMountPoints func(in profile.Inputs) (mountpoints.Report, error)
 	// CheckBindSources checks the bind sources of the plan, right before the
 	// launch, without following a link (rule G1); nil means
 	// mountpoints.CheckBindSources. It gets the resolved row of every mount of
@@ -103,6 +111,9 @@ func (o *Options) setDefaults() {
 	}
 	if o.Resolver == nil {
 		o.Resolver = mountpoints.RealResolver
+	}
+	if o.CheckMountPoints == nil {
+		o.CheckMountPoints = mountpoints.Check
 	}
 	if o.CheckBindSources == nil {
 		o.CheckBindSources = mountpoints.CheckBindSources
@@ -173,22 +184,31 @@ type attempt struct {
 	planOpt  plan.Options
 	planEv   PlanEvidence
 	spec     assert.Spec
+	// walk is what the last check of the mount points found (the steps check
+	// and recheck): the fact the outside half of assertion 7 is made from.
+	walk assert.StartWalk
 
 	proc     Process
 	launched bool
 	broken   bool
+	// refused is set when a step that is otherwise soft found a reason not to
+	// launch at all (a bubblewrap too old for the plan): the attempt stays
+	// broken.
+	refused bool
 	// lineRead is set once the one report line was accepted: only then is
 	// the channel asked whether anything followed it.
 	lineRead bool
 
-	reportEv    ReportEvidence
-	outsideEv   *OutsideEvidence
-	exitEv      ExitEvidence
-	stopEv      StopEvidence
-	termEv      TerminalEvidence
-	termData    []byte
-	canaryEv    CanaryEvidence
-	bindEv      BindSourcesEvidence
+	reportEv  ReportEvidence
+	outsideEv *OutsideEvidence
+	exitEv    ExitEvidence
+	stopEv    StopEvidence
+	termEv    TerminalEvidence
+	termData  []byte
+	canaryEv  CanaryEvidence
+	bindEv    BindSourcesEvidence
+	// planted is what case S21 found; nil when the case was not requested.
+	planted     *PlantedPathsEvidence
 	files       []string
 	evidenceErr error
 }
@@ -208,6 +228,9 @@ func Execute(ctx context.Context, cfg *Config, opt Options) (*Outcome, error) {
 	if opt.Run {
 		if !cfg.CoordinatorReviewed {
 			return nil, &GateError{Reason: "a run needs \"coordinator_reviewed\": true in the configuration, the statement that a coordinator reviewed it and the plan it gives"}
+		}
+		if cfg.requests(CaseS21) && !cfg.ScratchFoldersDisposable {
+			return nil, &GateError{Reason: "case S21 plants entries in the folders under the state root and puts them back: a run that requests it needs \"scratch_folders_disposable\": true in the configuration, the statement that they are disposable scratch folders and not a live lead's"}
 		}
 		if !opt.Unattended && (opt.StdinIsTerminal == nil || !opt.StdinIsTerminal()) {
 			return nil, &GateError{Reason: "standard input is not a terminal; a run needs one unless --unattended is given"}
@@ -271,6 +294,8 @@ func (a *attempt) execute(ctx context.Context) (*Outcome, error) {
 		a.skipLaunch("dry run: nothing is started")
 	case a.broken:
 		a.skipLaunch("an earlier step failed")
+	case a.cfg.onlyPlanted():
+		a.skipLaunch("the only case requested is S21, which never launches")
 	default:
 		a.launchPhase(ctx)
 	}
@@ -329,6 +354,17 @@ func (a *attempt) pre(ctx context.Context) {
 	defs := []def{
 		{StepVersions, true, true, func(ctx context.Context) error {
 			a.versions = a.opt.Launcher.ToolVersions(ctx, ToolPaths{Pasta: a.cfg.Executables.Pasta, Bwrap: a.cfg.Executables.Bwrap})
+			// The plan binds every source Ataniq supplies from a descriptor:
+			// a bubblewrap whose release is known to be too old for that is
+			// refused here, and that failure is not a soft one.
+			note, err := checkBwrapBindFD(a.versions.Bwrap)
+			if err != nil {
+				a.refused = true
+				return err
+			}
+			if note != "" {
+				a.notes = append(a.notes, note)
+			}
 			if len(a.versions.Errors) > 0 {
 				return fmt.Errorf("%d tool version(s) could not be read: %s", len(a.versions.Errors), strings.Join(a.versions.Errors, "; "))
 			}
@@ -345,7 +381,8 @@ func (a *attempt) pre(ctx context.Context) {
 			return mountpoints.Prepare(a.in, mountpoints.PrepareOptions{NoLeadHasRun: true})
 		}},
 		{StepCheck, false, false, func(context.Context) error {
-			rep, err := mountpoints.Check(a.in)
+			rep, err := a.opt.CheckMountPoints(a.in)
+			a.recordWalk(StepCheck, rep, err)
 			if err != nil {
 				return err
 			}
@@ -371,14 +408,24 @@ func (a *attempt) pre(ctx context.Context) {
 		}},
 		{StepBuild, false, false, func(context.Context) error { return a.buildPlan() }},
 		{StepVerify, false, false, func(context.Context) error { return a.verifyPlan() }},
+		{StepPlanted, true, false, a.plantedPaths},
 		{StepSpec, true, false, func(context.Context) error { return a.writeSpec() }},
 		{StepRecheck, true, false, func(context.Context) error { return a.recheck() }},
 		{StepBindSources, true, false, func(context.Context) error { return a.checkBindSources() }},
 	}
 	for _, d := range defs {
 		switch {
+		case d.name == StepPlanted && !a.cfg.requests(CaseS21):
+			a.rec.skip(d.name, "case S21 was not requested")
+			continue
 		case a.broken:
 			a.rec.skip(d.name, "an earlier step failed")
+			a.plantedNotRun(d.name, "an earlier step failed")
+			continue
+		case d.name == StepPlanted && a.dry():
+			const why = "dry run: case S21 plants entries in the scratch folders and does nothing in a dry run"
+			a.rec.skip(d.name, why)
+			a.plantedNotRun(d.name, why)
 			continue
 		case a.dry() && d.runOnly:
 			a.rec.skip(d.name, "dry run: nothing is started, opened or written into the scratch folders")
@@ -391,9 +438,16 @@ func (a *attempt) pre(ctx context.Context) {
 			continue
 		}
 		ok := a.step(d.name, func() error { return d.fn(ctx) })
-		if !ok && d.soft {
+		if !ok && d.soft && !a.refused {
 			a.broken = false
 		}
+	}
+}
+
+// plantedNotRun records, for case S21, why its step made no plant.
+func (a *attempt) plantedNotRun(step, why string) {
+	if step == StepPlanted && a.cfg.requests(CaseS21) {
+		a.planted = &PlantedPathsEvidence{NotRun: why, Plants: []PlantFact{}, NotCovered: []PlantNotCovered{}}
 	}
 }
 
@@ -502,10 +556,19 @@ func (a *attempt) buildPlan() error {
 	if err != nil {
 		return err
 	}
+	// The walk of every bind source Ataniq supplies, from the inputs alone:
+	// the plan's pass-through step makes these walks and bubblewrap binds the
+	// descriptors they return. They are the walks the check of the bind sources
+	// makes on the same rows; none is built by hand.
+	walks, err := mountpoints.PlanWalks(a.in)
+	if err != nil {
+		return err
+	}
 	a.planOpt = plan.Options{
 		PastaPath: a.cfg.Executables.Pasta, BwrapPath: a.cfg.Executables.Bwrap,
 		AgentArgv: a.cfg.Command(), HostPresent: present, HostSources: a.res.HostSources(),
-		ReportPath: a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
+		SourceWalks: walks,
+		ReportPath:  a.fifoPath, ReportDir: a.chanDir, ReportFD: ReportFD,
 	}
 	if a.in.SeccompEnabled() {
 		a.planOpt.SeccompFD = SeccompFD
@@ -525,13 +588,17 @@ func (a *attempt) buildPlan() error {
 func (a *attempt) verifyPlan() error {
 	var errs []error
 	probs := plan.Verify(a.pl, a.in, a.planOpt)
-	noWritable := true
+	noWritable, byDescriptor := true, true
 	for _, p := range probs {
-		if p.Kind == plan.ProbLeadWritable {
+		switch p.Kind {
+		case plan.ProbLeadWritable:
 			noWritable = false
+		case plan.ProbBindByPath, plan.ProbBindFD, plan.ProbWalk:
+			byDescriptor = false
 		}
 	}
 	a.bindEv.NoSourceInReadWriteSource = &noWritable
+	a.bindEv.NoAtaniqSourceBoundByPath = &byDescriptor
 	if len(probs) > 0 {
 		show := probs
 		if len(show) > 5 {
@@ -581,6 +648,19 @@ func (a *attempt) writeSpec() error {
 		return fmt.Errorf("collect the identities of the owner and holder paths: %w", err)
 	}
 	facts.Identities = ids
+	// Assertion 11 needs the identities of the coordinators' folders in the
+	// same way: the two roots of the layout and their ancestors, and the
+	// folder, tree and home of every coordinator and every shared login that
+	// exists under them now.
+	folders, err := assert.CoordinatorFolders(a.in, a.opt.System.DirNames)
+	if err != nil {
+		return fmt.Errorf("list the coordinators' folders: %w", err)
+	}
+	coordIDs, err := assert.CollectIdentities(append(assert.CoordinatorIdentityPaths(a.in, facts), folders...), a.opt.System.Identity)
+	if err != nil {
+		return fmt.Errorf("collect the identities of the coordinators' folders: %w", err)
+	}
+	facts.CoordinatorIdentities = coordIDs
 	spec, err := assert.NewSpec(a.in, plan.InsideEnvironment(a.pl), facts)
 	if err != nil {
 		return err
@@ -600,7 +680,8 @@ func (a *attempt) writeSpec() error {
 // the sources again, which must resolve as they did when the plan was built.
 // Nothing that runs a lead process lies between this and the launch.
 func (a *attempt) recheck() error {
-	rep, err := mountpoints.Check(a.in)
+	rep, err := a.opt.CheckMountPoints(a.in)
+	a.recordWalk(StepRecheck, rep, err)
 	if err != nil {
 		return err
 	}
@@ -626,6 +707,43 @@ func (a *attempt) recheck() error {
 	return nil
 }
 
+// recordWalk keeps what a check of the mount points found as the fact the
+// outside half of assertion 7 is made from. The check is the holder's walk of
+// the design (section 3.6): mountpoints.Check looks at every bind destination
+// inside a lead-writable folder without following a link, and at the git
+// metadata folder. The last one made counts, which in a run is the one of the
+// step recheck, right before the launch.
+//
+// The design wants the walk made with the previous instance proven stopped.
+// The harness makes no unit and has no control group, so it proves nothing
+// about a process of an earlier lead. When the configuration states that no
+// lead has run in these folders (no_lead_has_run, the statement the
+// preparation of the mount points also rests on), there is no previous
+// instance, and the fact says so in those words. Without the statement the
+// fact says the previous instance is not proven stopped, and the result of a
+// walk that found nothing is not-checked.
+func (a *attempt) recordWalk(step string, rep mountpoints.Report, err error) {
+	if err != nil {
+		a.walk = assert.StartWalk{Detail: fmt.Sprintf("step %s: the check of the mount points refused the inputs: %v", step, err)}
+		return
+	}
+	w := assert.StartWalk{Made: true, Problems: len(rep.Problems), PreviousStopped: a.cfg.NoLeadHasRun}
+	switch {
+	case len(rep.Problems) > 0:
+		first := rep.Problems[0]
+		w.FirstPath = first.Path
+		w.Detail = fmt.Sprintf("step %s: %s", step, first.Error())
+		if rep.Truncated {
+			w.Detail += " (and more problems than the check lists)"
+		}
+	case a.cfg.NoLeadHasRun:
+		w.Detail = fmt.Sprintf("step %s; the harness has no unit and no control group: that there is no previous instance is the configuration's statement that no lead has run in these folders (no_lead_has_run)", step)
+	default:
+		w.Detail = fmt.Sprintf("step %s; the harness has no unit and no control group, and the configuration does not state that no lead has run in these folders (no_lead_has_run): it does not prove that no process of an earlier lead remains", step)
+	}
+	a.walk = w
+}
+
 // planBindRows pairs each mount of the plan that has a source with the row of
 // the last resolution it comes from, in the order of the mounts, and refuses a
 // plan that binds a path other than the one the check would open for the row
@@ -633,11 +751,25 @@ func (a *attempt) recheck() error {
 // that is checked. A row Ataniq supplies is bound from its Source, which the
 // resolution has found to be its real path; a row of the host from the real
 // path the plan was given.
+//
+// It also refuses a plan whose way of binding a row is not the row's: a row
+// Ataniq supplies must be bound from a descriptor, by a walk of the plan that
+// is the walk the check makes for the row (the same folder, the same path
+// beneath it, the same type), and a row of the host must be bound by path. So
+// the walk the pass-through step makes is the walk that was checked.
 func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
+	return a.planBindRowsOf(a.res2)
+}
+
+// planBindRowsOf is planBindRows for the resolution given: the last one of a
+// start is the second of the attempt, and the start that case S21 makes for
+// each planted entry has its own.
+func (a *attempt) planBindRowsOf(res mountpoints.Resolution) ([]mountpoints.ResolvedSource, error) {
 	byInside := map[string]mountpoints.ResolvedSource{}
-	for _, s := range a.res2.Sources {
+	for _, s := range res.Sources {
 		byInside[s.Inside] = s
 	}
+	walks := a.planWalks()
 	var rows []mountpoints.ResolvedSource
 	for _, m := range a.pl.Mounts {
 		if m.Source == "" {
@@ -650,16 +782,39 @@ func (a *attempt) planBindRows() ([]mountpoints.ResolvedSource, error) {
 		case m.Source != row.Bound():
 			return nil, fmt.Errorf("the plan binds %s from %s and the check would open %s: the path that is bound must be the path that is checked", m.Inside, m.Source, row.Bound())
 		}
+		w, walked := walks[m.Inside]
+		switch host := row.Role == profile.RoleHost; {
+		case host && (walked || m.FD != 0):
+			return nil, fmt.Errorf("the plan binds the row of the host %s from a descriptor: a row of the host is bound by its real path", m.Inside)
+		case host:
+		case !walked || m.FD == 0 || m.FD != w.FD:
+			return nil, fmt.Errorf("the plan does not bind %s from a descriptor of its pass-through step: a source Ataniq supplies is never bound by path", m.Inside)
+		case w.Root != row.Walk.Root || w.Rel != row.Walk.Rel || w.Dir != row.Walk.Dir:
+			return nil, fmt.Errorf("the plan walks to the source of %s from %s by %s and the check walks from %s by %s: the walk the step makes must be the walk that is checked", m.Inside, w.Root, w.Rel, row.Walk.Root, row.Walk.Rel)
+		}
 		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
+// planWalks are the walks of the plan by the inside path of their row.
+func (a *attempt) planWalks() map[string]plan.Walk {
+	walks := map[string]plan.Walk{}
+	for _, w := range a.pl.Walks {
+		walks[w.Inside] = w
+	}
+	return walks
+}
+
 // checkBindSources is the last check before the launch (rule G1): the path
-// bound for every row of the plan is opened from the root of the file system
-// without following a link, and a link anywhere on a path refuses the launch.
-// It comes after the second resolution and nothing that runs a lead process
-// lies between it and the launch.
+// bound for every row of the plan is walked to without following a link (a
+// source below the state root beneath the state root's handle, any other from
+// the root of the file system), and a link anywhere on a path, a missing source
+// and a source of another type than its row binds refuse the launch. It comes
+// after the second resolution and nothing that runs a lead process lies
+// between it and the launch. For a source Ataniq supplies it is a check before
+// the walk that counts: the plan's pass-through step, which the launch starts,
+// walks to the source again by handle and gives bubblewrap the descriptor.
 func (a *attempt) checkBindSources() error {
 	rows, err := a.planBindRows()
 	if err != nil {
@@ -671,10 +826,14 @@ func (a *attempt) checkBindSources() error {
 }
 
 // recordBindSources puts the facts of the check into the evidence: each source
-// of the plan, with the problem the check found about its path, or the fact
-// that no component of it is a link. The path checked is the path bound, for
-// every row. A report that was cut short, or that holds a problem naming no row,
-// does not say about the sources it did not reach, so those have no fact.
+// of the plan, with how the plan binds it (from a descriptor, with the walk of
+// the pass-through step, or by path), and with the problem the check found
+// about its path, or the facts that no component of it is a link and that it is
+// of the type the row binds. A link and a wrong type are facts of their own; a
+// source that is missing or cannot be read has neither. The path checked is the
+// path bound, for every row. A report that was cut short, or that holds a
+// problem naming no row, does not say about the sources it did not reach, so
+// those have no fact.
 func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mountpoints.Report) {
 	byRow := map[string]*mountpoints.Problem{}
 	unscoped := false
@@ -690,23 +849,36 @@ func (a *attempt) recordBindSources(rows []mountpoints.ResolvedSource, rep mount
 	}
 	a.bindEv.LinksChecked = true
 	a.bindEv.Sources = []BindSourceFact{}
+	walks := a.planWalks()
 	for _, row := range rows {
 		f := BindSourceFact{Inside: row.Inside, Source: row.Bound(), CheckedPath: row.Bound()}
+		if w, ok := walks[row.Inside]; ok {
+			f.BoundByDescriptor, f.Descriptor, f.WalkRoot, f.WalkRel, f.WalkType = true, w.FD, w.Root, w.Rel, walkType(w.Dir)
+		}
+		// The check reads the type of a source Ataniq supplies; it does not
+		// look at the type of a row of the host.
+		typed := row.Role != profile.RoleHost
+		no, yes := false, true
 		switch p, bad := byRow[row.Inside]; {
 		case bad:
 			f.Problem = assert.EscapeDetail(p.Error())
-			if errors.Is(p, mountpoints.ErrSymlink) {
-				found := false
-				f.NoSymbolicLinkComponent = &found
+			switch {
+			case errors.Is(p, mountpoints.ErrSymlink):
+				f.NoSymbolicLinkComponent = &no
+			case errors.Is(p, mountpoints.ErrWrongType) && typed:
+				f.HasExpectedType = &no
 			}
 			// Any other problem (missing, unreadable) says nothing about
-			// links, so no fact is given either way.
+			// links or about the type, so no fact is given either way; and a
+			// wrong type says nothing about links, as the walk stopped there.
 		case rep.Truncated, unscoped:
 			// The report was cut short, or a problem names no row: this source
 			// may be among the problems not listed, or was never checked.
 		default:
-			none := true
-			f.NoSymbolicLinkComponent = &none
+			f.NoSymbolicLinkComponent = &yes
+			if typed {
+				f.HasExpectedType = &yes
+			}
 		}
 		a.bindEv.Sources = append(a.bindEv.Sources, f)
 	}
@@ -897,7 +1069,7 @@ func (a *attempt) outside() error {
 	// The canary is read before it is closed (cleanup closes it).
 	results := assert.RunOutside(assert.OutsideInput{
 		Spec: a.spec, Role: a.cfg.State.Role, User: a.in.OwnerUser, Version: a.cfg.RuntimeVersion,
-		Now: a.opt.Now(), Binds: binds, HolderPaths: a.spec.HolderPaths, Canary: a.canary, Sys: a.opt.System,
+		Now: a.opt.Now(), Binds: binds, HolderPaths: a.spec.HolderPaths, Canary: a.canary, Walk: a.walk, Sys: a.opt.System,
 	})
 	a.canaryEv = canaryEvidence(a.canary)
 	a.outsideEv = &OutsideEvidence{Format: EvidenceFormat, Results: results, Canary: a.canaryEv}
@@ -1012,6 +1184,7 @@ func (a *attempt) summary() Summary {
 	if s.BindSources.Sources == nil {
 		s.BindSources.Sources = []BindSourceFact{}
 	}
-	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources)})
+	s.PlantedPaths = a.planted
+	s.Cases = casesFor(a.cfg.Cases, results, map[string][]CaseResult{"G1": g1Results(s.BindSources), CaseS21: s21Results(a.planted)})
 	return s
 }

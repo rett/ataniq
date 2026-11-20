@@ -20,11 +20,13 @@ func TestRunInsideAllOK(t *testing.T) {
 			if rep.Version != ReportVersion || rep.Digest != s.Digest {
 				t.Errorf("report header %d %s", rep.Version, rep.Digest)
 			}
-			if len(rep.Results) != 8 {
-				t.Fatalf("got %d results, want 8", len(rep.Results))
+			// The inside half of 1 to 8, then 11.
+			numbers := []int{1, 2, 3, 4, 5, 6, 7, 8, 11}
+			if len(rep.Results) != len(numbers) {
+				t.Fatalf("got %d results, want %d", len(rep.Results), len(numbers))
 			}
 			for i, res := range rep.Results {
-				if res.Number != i+1 || res.ID != idOf(i+1) {
+				if res.Number != numbers[i] || res.ID != idOf(numbers[i]) {
 					t.Errorf("result %d is %d %s", i, res.Number, res.ID)
 				}
 				if res.Status != StatusOK {
@@ -389,7 +391,7 @@ func TestRunInsideRefusedSpec(t *testing.T) {
 	f := goodSystem(s)
 	s.Tree = "relative"
 	rep := RunInside(s, f)
-	if len(rep.Results) != 8 {
+	if len(rep.Results) != 9 {
 		t.Fatalf("got %d results", len(rep.Results))
 	}
 	for _, res := range rep.Results {
@@ -398,7 +400,7 @@ func TestRunInsideRefusedSpec(t *testing.T) {
 		}
 	}
 	// Even a spec that lists everything as optional does not allow it.
-	s.Optional = []int{1, 2, 3, 4, 5, 6, 7, 8}
+	s.Optional = []int{1, 2, 3, 4, 5, 6, 7, 8, 11}
 	if !Failed(rep, s) {
 		t.Errorf("a refused spec allowed a start")
 	}
@@ -506,14 +508,26 @@ func TestProblemsRequireAll(t *testing.T) {
 	if !FailedAll(rep, s) {
 		t.Fatal("the inside report alone must not satisfy RequireAll")
 	}
-	if p := Problems(rep, s, RequireAll); len(p) != 5 {
-		t.Errorf("want 5 missing outside results, got %v", p)
+	if p := Problems(rep, s, RequireAll); len(p) != 6 {
+		t.Errorf("want 6 missing outside results, got %v", p)
 	}
 }
 
 func TestInsideHasNoExec(t *testing.T) {
 	// The inside checks never start a process.
 	assertNoImport(t, "os/exec")
+}
+
+func TestStartWalkIsAFactAndNotAnImport(t *testing.T) {
+	// The outside half of assertion 7 is the holder's walk, given as a fact:
+	// the package imports neither the package that makes it nor the plan.
+	for _, path := range []string{
+		"ataniq/internal/leadsandbox/mountpoints",
+		"ataniq/internal/leadsandbox/safefile",
+		"ataniq/internal/leadsandbox/plan",
+	} {
+		assertNoImport(t, path)
+	}
 }
 
 func TestDetailListsAFewFindingsAndCountsTheRest(t *testing.T) {

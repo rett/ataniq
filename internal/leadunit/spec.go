@@ -21,6 +21,59 @@ const (
 // [ValidateUnitName] return.
 var ErrInvalidSpec = errors.New("leadunit: invalid spec")
 
+// The bounds that [Spec.Validate] holds a [Limits] to. They are the edges of
+// what a unit may be given, not defaults: no limit value is a constant of this
+// package or of the code that sets one, and each comes from configuration.
+const (
+	// MinMemoryMax is the least MemoryMax a unit may have: 256 MiB.
+	MinMemoryMax uint64 = 256 << 20
+	// MaxMemoryMax is the most MemoryMax a unit may have: 64 GiB.
+	MaxMemoryMax uint64 = 64 << 30
+	// MinTasksMax is the least TasksMax a unit may have: 16.
+	MinTasksMax uint64 = 16
+	// MaxTasksMax is the most TasksMax a unit may have: 65,536.
+	MaxTasksMax uint64 = 65536
+	// MinSwapMax is the least SwapMax a unit may have: 0, which means no
+	// swap.
+	MinSwapMax uint64 = 0
+	// MaxSwapMax is the most SwapMax a unit may have: 64 GiB.
+	MaxSwapMax uint64 = 64 << 30
+)
+
+// Limits are the memory, swap and task limits of a unit, in bytes and in
+// tasks. A [Spec] without Limits (nil) sets none of the three properties. A
+// [Spec] with Limits sets all three, so that a value of 0 is never "not set":
+// a SwapMax of 0 is the limit "no swap" and renders as MemorySwapMax=0. The
+// manager sets them as MemoryMax, MemorySwapMax and TasksMax in the call that
+// creates the unit.
+type Limits struct {
+	// MemoryMax is the memory limit in bytes, from [MinMemoryMax] to
+	// [MaxMemoryMax].
+	MemoryMax uint64
+	// SwapMax is the swap limit in bytes, from [MinSwapMax] to [MaxSwapMax];
+	// 0 means no swap.
+	SwapMax uint64
+	// TasksMax is the limit on the number of tasks, from [MinTasksMax] to
+	// [MaxTasksMax].
+	TasksMax uint64
+}
+
+// Validate returns an error wrapping [ErrInvalidSpec] for a value outside the
+// bounds: [Spec.Validate] holds Limits to it, and a caller that has limits
+// before it has a specification can ask the same question.
+func (l Limits) Validate() error {
+	if l.MemoryMax < MinMemoryMax || l.MemoryMax > MaxMemoryMax {
+		return fmt.Errorf("%w: memory limit %d is outside %d to %d bytes", ErrInvalidSpec, l.MemoryMax, MinMemoryMax, MaxMemoryMax)
+	}
+	if l.SwapMax < MinSwapMax || l.SwapMax > MaxSwapMax {
+		return fmt.Errorf("%w: swap limit %d is outside %d to %d bytes", ErrInvalidSpec, l.SwapMax, MinSwapMax, MaxSwapMax)
+	}
+	if l.TasksMax < MinTasksMax || l.TasksMax > MaxTasksMax {
+		return fmt.Errorf("%w: tasks limit %d is outside %d to %d", ErrInvalidSpec, l.TasksMax, MinTasksMax, MaxTasksMax)
+	}
+	return nil
+}
+
 // Property is one unit property as a name and a value, as systemd takes it.
 type Property struct {
 	// Name is the property name, for example "KillMode".
@@ -58,6 +111,20 @@ func BoundProperties(parent string) []Property {
 		{Name: "BindsTo", Value: parent},
 		{Name: "PartOf", Value: parent},
 		{Name: "After", Value: parent},
+	}
+}
+
+// LimitProperties returns the properties that carry limits, in the order they
+// are set: MemoryMax, MemorySwapMax and TasksMax, each with its value as a
+// decimal number of bytes or tasks. A unit with [Spec.Limits] gets these in
+// addition to [FixedProperties]; a swap limit of 0 is MemorySwapMax=0, no
+// swap. The caller owns the returned slice. LimitProperties does not validate
+// l: [Spec.Validate] does.
+func LimitProperties(l Limits) []Property {
+	return []Property{
+		{Name: "MemoryMax", Value: strconv.FormatUint(l.MemoryMax, 10)},
+		{Name: "MemorySwapMax", Value: strconv.FormatUint(l.SwapMax, 10)},
+		{Name: "TasksMax", Value: strconv.FormatUint(l.TasksMax, 10)},
 	}
 }
 
@@ -106,6 +173,10 @@ type Spec struct {
 	// it must be a unit name that [ValidateUnitName] accepts and not the
 	// name of the unit itself.
 	Parent string
+	// Limits is the optional memory, swap and task limit of the unit. Nil sets
+	// no limit property and leaves the call as it is without limits; when it
+	// is given all three are set. See [Limits].
+	Limits *Limits
 }
 
 // ValidateUnitName returns an error wrapping [ErrInvalidSpec] unless name is a
@@ -181,7 +252,9 @@ func validEnvName(name string) bool {
 // is the unit's own name; an empty or relative argv[0]; a relative or
 // empty working directory; an environment entry that is not KEY=VALUE with a
 // KEY of [A-Za-z_][A-Za-z0-9_]* or that repeats a key; a NUL or a newline in
-// any string; or any value of [Hardening].
+// any string; any value of [Hardening]; or Limits with a value outside the
+// bounds ([MinMemoryMax] to [MaxMemoryMax] bytes of memory, [MinSwapMax] to
+// [MaxSwapMax] bytes of swap, [MinTasksMax] to [MaxTasksMax] tasks).
 func (s Spec) Validate() error {
 	if err := ValidateUnitName(s.Unit); err != nil {
 		return err
@@ -236,6 +309,11 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("%w: hardening[%d] is not a known hardening property", ErrInvalidSpec, i)
 		}
 	}
+	if s.Limits != nil {
+		if err := s.Limits.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -280,5 +358,9 @@ func (s Spec) clone() Spec {
 	s.Argv = append([]string(nil), s.Argv...)
 	s.Env = append([]string(nil), s.Env...)
 	s.Hardening = append([]Hardening(nil), s.Hardening...)
+	if s.Limits != nil {
+		l := *s.Limits
+		s.Limits = &l
+	}
 	return s
 }

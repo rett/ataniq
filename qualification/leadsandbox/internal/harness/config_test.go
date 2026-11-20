@@ -238,6 +238,18 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 		}, "not a regular file"},
 		{"executable is missing", func(f *harnesstest.Fixture) { os.Remove(f.Config.Executables.Bwrap) }, "cannot open"},
 		{"managed settings changed", func(f *harnesstest.Fixture) { f.Write(f.Config.Sources.ManagedSettings, "changed", 0o644) }, "SHA-256"},
+		{"git identity file missing from its folder", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+		}, "git/config: no such file or directory (it must exist)"},
+		{"git identity file is a link", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+			os.Symlink(f.Config.Sources.ManagedSettings, f.Config.Sources.GitIdentityDir+"/config")
+		}, "git/config is not a regular file"},
+		{"git identity file is a folder", func(f *harnesstest.Fixture) {
+			os.Remove(f.Config.Sources.GitIdentityDir + "/config")
+			os.Mkdir(f.Config.Sources.GitIdentityDir+"/config", 0o755)
+		}, "git/config is not a regular file"},
+		{"git identity folder is missing", func(f *harnesstest.Fixture) { os.RemoveAll(f.Config.Sources.GitIdentityDir) }, "sources.git_identity_dir"},
 		{"state root is a link", func(f *harnesstest.Fixture) {
 			link := f.Base + "/state-link"
 			os.Symlink(f.State, link)
@@ -245,27 +257,29 @@ func TestHostChecksRefuseBeforeAnythingIsCreated(t *testing.T) {
 		}, "not a real path"},
 		{"records folder is a link", func(f *harnesstest.Fixture) {
 			f.Mkdir(f.Owned+"/records-real", 0o700)
-			if err := os.Symlink(f.Owned+"/records-real", f.Layout().Records()); err != nil {
+			if err := os.Remove(f.Layout().QargiRecords()); err != nil {
 				t.Fatal(err)
 			}
-			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+			if err := os.Symlink(f.Owned+"/records-real", f.Layout().QargiRecords()); err != nil {
+				t.Fatal(err)
+			}
 		}, "not a folder"},
 		{"records folder below a link", func(f *harnesstest.Fixture) {
-			f.Mkdir(f.Owned+"/lead-real/records", 0o700)
+			f.Mkdir(f.Owned+"/lead-real/qargi", 0o700)
 			if err := os.RemoveAll(f.Layout().LeadDir()); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(f.Owned+"/lead-real", f.Layout().LeadDir()); err != nil {
 				t.Fatal(err)
 			}
-			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
 		}, "not a real path"},
 		{"records folder too open", func(f *harnesstest.Fixture) {
-			f.Mkdir(f.Layout().Records(), 0o755)
-			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+			f.Mkdir(f.Layout().QargiRecords(), 0o755)
 		}, "must be 0700"},
 		{"records folder is missing", func(f *harnesstest.Fixture) {
-			f.Config.Sources.QargiRecordsInside = "/ataniq/records"
+			if err := os.Remove(f.Layout().QargiRecords()); err != nil {
+				t.Fatal(err)
+			}
 		}, "it must exist"},
 		{"seccomp digest wrong", func(f *harnesstest.Fixture) {
 			f.Write(f.Owned+"/filter.bpf", "filter", 0o644)

@@ -85,7 +85,8 @@ func TestDecodeSpecStrict(t *testing.T) {
 		field string
 	}{
 		{"unknown field", withField("sandbox_passed", "true"), "spec"},
-		{"wrong version", withField("version", "2"), "version"},
+		{"wrong version", withField("version", fmt.Sprint(SpecVersion+1)), "version"},
+		{"the version before", withField("version", fmt.Sprint(SpecVersion-1)), "version"},
 		{"version as text", withField("version", `"1"`), "spec"},
 		{"trailing data", append(append([]byte(nil), good...), []byte(`{}`)...), "spec"},
 		{"not json", []byte("version: 1"), "spec"},
@@ -294,9 +295,10 @@ func profileInputs(rt profile.Runtime) profile.Inputs {
 		ManagedSettingsSHA256: strings.Repeat("c1", 32),
 		LeadSkills:            "/srv/owned/skills/arc-lead",
 		InstructionFile:       "/srv/owned/instructions/arc-lead/" + rt.InstructionFileName(),
-		GitIdentityFile:       "/srv/owned/git/arc-lead/config",
+		GitIdentityDir:        "/srv/owned/git/arc-lead",
 		GitMeta:               "/srv/state/leads/arc-lead/gitmeta",
 		QargiInstall:          "/srv/owned/qargi",
+		QargiRecordsInside:    "/home/lead/.qargi",
 		AssignmentDir:         "/srv/owned/assignment/ataniq",
 		ProjectionDir:         "/srv/owned/projection/ataniq",
 		ResolvConf:            "/srv/owned/resolv/arc-lead/resolv.conf",

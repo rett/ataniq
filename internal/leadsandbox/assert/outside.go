@@ -141,6 +141,66 @@ func CheckHolderBinds(binds []profile.Bind, holderPaths []string) Result {
 	return r
 }
 
+// StartWalk is a fact the holder gives: what its walk of the bind destinations
+// found (the lead-hosting design, section 3.6), right before the start. It is
+// the outside half of assertion 7. This package does not make the walk and
+// does not import the package that does (mountpoints, whose Check is the
+// walk): the holder makes it and says here what it found, as it gives the
+// canary for assertion 3. The zero value is a walk that was not made, which is
+// not-checked.
+type StartWalk struct {
+	// Made says the walk ran to its end, over every bind destination inside a
+	// lead-writable folder. A walk that was not made, or that stopped before
+	// its end without a problem to name, is not-checked.
+	Made bool
+	// PreviousStopped says the walk was made with the previous instance of the
+	// lead proven stopped (its unit gone and its control group empty), or
+	// that the lead has no previous instance. A walk made while a process of
+	// the lead may remain says nothing about what the sandbox will find: a
+	// walk that found no problem is then not-checked, never ok. A problem
+	// that was found is failed either way.
+	PreviousStopped bool
+	// Problems is how many problems the walk found: a symbolic link or a
+	// wrong type at a bind destination, or anything else the walk refuses.
+	Problems int
+	// FirstPath is the host path of the first problem. It is named in the
+	// detail of a failed result.
+	FirstPath string
+	// Detail says more, in the holder's words: what the first problem is, why
+	// the walk was not made, or how the previous instance is known to have
+	// stopped. It is escaped and bounded like every detail.
+	Detail string
+}
+
+// CheckStartWalk is the outside half of assertion 7: before the sandbox
+// starts, with the previous instance proven stopped, the holder's walk found
+// no symbolic link or wrong type at any bind destination inside a
+// lead-writable folder. The result is made from the fact alone. It is failed
+// when the walk found a problem, with the first path; not-checked when the
+// walk was not made, when it was not made with the previous instance proven
+// stopped, and when the fact contradicts itself (a count below zero); and ok
+// only for a walk that was made, with the previous instance proven stopped,
+// and found nothing.
+func CheckStartWalk(w StartWalk) Result {
+	more := ""
+	if w.Detail != "" {
+		more = ": " + w.Detail
+	}
+	switch {
+	case w.Problems < 0:
+		return outside(7, true, StatusNotChecked, "the walk of the bind destinations reports %d problems, which is no count%s", w.Problems, more)
+	case w.Problems > 0 && w.FirstPath == "":
+		return outside(7, true, StatusFailed, "the walk of the bind destinations found %d problems; the first names no path%s", w.Problems, more)
+	case w.Problems > 0:
+		return outside(7, true, StatusFailed, "the walk of the bind destinations found %d problems; the first is at %q%s", w.Problems, clipPath(w.FirstPath), more)
+	case !w.Made:
+		return outside(7, true, StatusNotChecked, "the walk of the bind destinations was not made%s", more)
+	case !w.PreviousStopped:
+		return outside(7, true, StatusNotChecked, "the walk of the bind destinations found no problem, but it was not made with the previous instance proven stopped, so it says nothing about the start%s", more)
+	}
+	return outside(7, true, StatusOK, "with the previous instance proven stopped, the walk found no symbolic link or wrong type at a bind destination inside a lead-writable folder%s", more)
+}
+
 // checkCanarySettle is how long CheckCanary settles the canary; a test lowers
 // it.
 var checkCanarySettle = DefaultSettleTimeout
@@ -253,6 +313,11 @@ type OutsideInput struct {
 	// outside half of assertion 3 after the probe has reported.
 	Canary *Canary
 
+	// Walk is what the holder's walk of the bind destinations found before
+	// the start, for the outside half of assertion 7. The zero value is a
+	// walk that was not made: not-checked.
+	Walk StartWalk
+
 	Sys     System
 	Lock    RoleLock
 	Linger  Lingering
@@ -260,8 +325,9 @@ type OutsideInput struct {
 }
 
 // RunOutside runs the outside checks and returns their results: the outside
-// half of 1, of 3 and of 5, then 9 and 10. Call it after the probe has
-// reported and before the canary is closed. The holder adds them to the
+// half of 1, of 3, of 5 and of 7, then 9 and 10. Call it after the probe has
+// reported and before the canary is closed. The walk of assertion 7 is not
+// made here: it was made before the start, and its result is in the input. The holder adds them to the
 // probe's report with Report.With and judges the whole with FailedAll.
 func RunOutside(in OutsideInput) []Result {
 	if len(in.HolderPaths) == 0 {
@@ -271,6 +337,7 @@ func RunOutside(in OutsideInput) []Result {
 		CheckHolderBinds(in.Binds, in.HolderPaths),
 		CheckCanary(in.Canary),
 		CheckTIOCSTIOutside(in.Sys, in.Spec.SeccompExpected),
+		CheckStartWalk(in.Walk),
 		CheckRoleLockAndLingering(in.Lock, in.Linger, in.Role, in.User),
 		CheckQualification(in.Records, in.Spec.Runtime, in.Version, in.Spec.Digest, in.Now),
 	}

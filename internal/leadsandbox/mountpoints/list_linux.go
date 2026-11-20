@@ -12,12 +12,18 @@ import (
 // RootKind names the lead-writable host folder a mount point lies in.
 type RootKind string
 
-// The folders a lead can write.
+// The folders a lead can write: the sources of the read-write rows of the
+// bind table. RootQargi is the folder of the lead's working Qargi records,
+// <state>/leads/<role>/qargi. RootRequests and RootMail are the requests and
+// the mail folder: no row of the table has a target inside them, so they hold
+// no mount point, and [List] never returns one of these two kinds.
 const (
-	RootHome    RootKind = "home"
-	RootConfig  RootKind = "config"
-	RootTree    RootKind = "tree"
-	RootRecords RootKind = "records"
+	RootHome     RootKind = "home"
+	RootConfig   RootKind = "config"
+	RootTree     RootKind = "tree"
+	RootQargi    RootKind = "qargi"
+	RootRequests RootKind = "requests"
+	RootMail     RootKind = "mail"
 )
 
 // Point is one bind target that lies in a lead-writable host folder.
@@ -103,7 +109,11 @@ func rootOf(t []profile.Bind, inside string) (dir string, kind RootKind, ok bool
 		case profile.RoleTree:
 			return b.Source, RootTree, true
 		case profile.RoleRecords:
-			return b.Source, RootRecords, true
+			return b.Source, RootQargi, true
+		case profile.RoleRequests:
+			return b.Source, RootRequests, true
+		case profile.RoleMail:
+			return b.Source, RootMail, true
 		}
 	}
 	return "", "", false

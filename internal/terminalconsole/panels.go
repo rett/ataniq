@@ -42,6 +42,7 @@ func (m *Model) cockpitView() tea.View {
 		m.drawEvidence(p, l)
 		m.drawTimeline(p, l)
 		m.drawKeys(p, l)
+		m.drawStrip(p, l)
 		m.drawOverlay(p, l)
 	}
 	v := m.newView(buf.Render())
@@ -88,6 +89,9 @@ func (m *Model) sessionLabel() string {
 	if m.live.on() {
 		return m.liveLabel()
 	}
+	if m.labelled() {
+		return m.viewLabel()
+	}
 	return fixtureLabel
 }
 
@@ -100,8 +104,18 @@ func (m *Model) focusName() string {
 
 func (m *Model) drawHeader(p *painter, l layout) {
 	left := "ATANIQ / DEMO FIXTURE · cockpit · " + fixtureLabel
+	if m.sample() {
+		// A sample is labelled in the header, before the label that may be
+		// cut at the narrowest window.
+		left = "ATANIQ / DEMO FIXTURE · cockpit · " + SampleLabel + " · " + fixtureLabel
+	}
 	if m.live.on() {
 		left = "ATANIQ / LIVE SCRATCH · cockpit · " + m.liveLabel() + " · through a holder"
+	} else if m.labelled() {
+		left = "ATANIQ · cockpit · " + m.viewLabel()
+	}
+	if age := m.ageText(); age != "" && !m.labelled() && !m.live.on() {
+		left += " · " + age
 	}
 	n := p.text(0, 0, l.header.Dx(), left, p.style(lnHead))
 	if room := l.header.Dx() - n - 2; room >= ansi.StringWidth(tagline) {
@@ -117,6 +131,10 @@ func (m *Model) drawZoom(p *painter, l layout) {
 	keys := m.focusName() + " · return " + m.opts.ReturnKey.String() + " · F12 leaves zoom"
 	if m.focus == consoleFocus {
 		keys = m.focusName() + " · Enter focuses the session · F12 leaves zoom"
+	}
+	if m.labelled() {
+		// There is no session to focus in a labelled view.
+		keys = m.focusName() + " · F12 leaves zoom"
 	}
 	label := " · " + m.sessionLabel()
 	w := l.header.Dx()
@@ -148,7 +166,7 @@ func (m *Model) treeRows() []treeRow {
 	for pi, pr := range m.projects {
 		rows = append(rows, treeRow{text: pr.Name, selectable: true, project: pi, lead: m.leadSelections[pi]})
 		for li, ld := range pr.Leads {
-			rows = append(rows, treeRow{text: ld.Name, selectable: true, project: pi, lead: li, indent: 1})
+			rows = append(rows, treeRow{text: leadText(ld), selectable: true, project: pi, lead: li, indent: 1})
 			for _, s := range ld.Subagents {
 				rows = append(rows, treeRow{text: s, indent: 2, delegate: true})
 			}
@@ -165,6 +183,19 @@ func (m *Model) drawTree(p *painter, l layout) {
 	focused := m.pane == paneTree
 	p.box(l.tree, "Projects & leads", "", focused)
 	in := inset(l.tree)
+	if m.problem != "" {
+		// The plain state and its next step stand where the tree would be.
+		ls := []line{}
+		for i, s := range m.problemLines(in.Dx()) {
+			k := lnText
+			if i == 0 {
+				k = lnWarn
+			}
+			ls = append(ls, line{s, k})
+		}
+		p.lines(in, ls)
+		return
+	}
 	rows := m.treeRows()
 	if len(rows) == 0 {
 		p.lines(in, []line{{"No projects", lnDim}})
@@ -247,13 +278,18 @@ func (m *Model) drawMeta(p *painter, l layout) {
 	if m.rep.pane != nil {
 		title, blocked = orNone(m.rep.pane.Title()), m.rep.pane.ClipboardBlocked()
 	}
-	p.lines(inset(l.meta), []line{
+	ls := []line{
 		{"Project: " + orNone(project) + "   Lead: " + orNone(lead), lnText},
 		{"Provider: " + orNone(s.Provider) + "   Host: " + orNone(s.Host), lnText},
 		{"Session: " + orNone(s.ID), lnText},
 		{"Attachment: " + orNone(s.Attachment), lnWarn},
-		{"Title: " + title + "   Clipboard requests blocked: " + strconv.Itoa(blocked), lnDim},
-	})
+	}
+	if !m.labelled() {
+		// A labelled view has no session terminal, so no title and no
+		// clipboard requests.
+		ls = append(ls, line{"Title: " + title + "   Clipboard requests blocked: " + strconv.Itoa(blocked), lnDim})
+	}
+	p.lines(inset(l.meta), ls)
 }
 
 func (m *Model) drawSession(p *painter, l layout) {
@@ -278,6 +314,10 @@ func (m *Model) drawPane(p *painter, area uv.Rectangle) {
 			ls = []line{{"The live session starts when the window size is known.", lnWarn}}
 		}
 		p.centred(area, "LIVE SESSION UNAVAILABLE", ls)
+		return
+	}
+	if m.rep.pane == nil && m.labelled() {
+		p.centred(area, "NO SESSION TERMINAL", []line{{noSessionText, lnDim}})
 		return
 	}
 	if m.rep.pane == nil {
@@ -344,6 +384,10 @@ func (m *Model) drawFocusBar(p *painter, l layout) {
 	if m.sessionEnded() {
 		second = "The terminal stream has ended"
 	}
+	if m.labelled() {
+		first = m.focusName() + " · read-only view"
+		second = noSessionText + " · a full attach (unavailable)"
+	}
 	p.lines(in, []line{{first, lnHead}, {second, lnDim}})
 }
 
@@ -370,6 +414,13 @@ func (m *Model) evidenceLines(width int) []line {
 			out = append(out, line{w, k})
 		}
 	}
+	if len(m.facts) > 0 {
+		add(lnHead, "SOURCE")
+		for _, c := range m.facts {
+			add(stateKind(c.State), c.Name+": "+c.State)
+		}
+		add(lnText, "")
+	}
 	add(lnHead, "ATTACHMENT CONTRACT")
 	if len(m.contract) == 0 {
 		add(lnDim, "No contract data")
@@ -379,11 +430,18 @@ func (m *Model) evidenceLines(width int) []line {
 	}
 	add(lnText, "")
 	add(lnHead, "PENDING GATE")
-	for _, f := range []struct{ label, value string }{{"Action", m.gate.Action}, {"Scope", m.gate.Scope}, {"Target", m.gate.Target}, {"Approver", m.gate.Approver}} {
-		add(lnText, f.label+": "+orNone(f.value))
+	if m.ap.backend != nil {
+		// With a backend the gate is the oldest waiting card of its listing.
+		for _, l := range m.gateLines() {
+			add(l.k, l.s)
+		}
+	} else {
+		for _, f := range []struct{ label, value string }{{"Action", m.gate.Action}, {"Scope", m.gate.Scope}, {"Target", m.gate.Target}, {"Approver", m.gate.Approver}} {
+			add(lnText, f.label+": "+orNone(f.value))
+		}
+		add(stateKind(m.gate.State), "State: "+orNone(m.gate.State))
+		add(lnDim, "Approve and deny are unavailable. Ctrl+K lists each control with its reason.")
 	}
-	add(stateKind(m.gate.State), "State: "+orNone(m.gate.State))
-	add(lnDim, "Approve and deny are unavailable. Ctrl+K lists each control with its reason.")
 	add(lnText, "")
 	add(lnHead, "LEAD & DELEGATE")
 	_, _, s := m.selected()
@@ -416,15 +474,16 @@ func (m *Model) drawTimeline(p *painter, l layout) {
 		p.lines(in, []line{{"No timeline: a live scratch session is not managed by the daemon and has no journal.", lnDim}})
 		return
 	}
-	if len(m.timeline) == 0 {
+	timeline := m.allTimeline()
+	if len(timeline) == 0 {
 		p.lines(in, []line{{"No events", lnDim}})
 		return
 	}
 	// The newest entry is last; scrolling goes back in time.
-	end := len(m.timeline) - min(m.scrolls[paneTimeline], len(m.timeline)-1)
+	end := len(timeline) - min(m.scrolls[paneTimeline], len(timeline)-1)
 	start := max(0, end-in.Dy())
 	var ls []line
-	for _, e := range m.timeline[start:end] {
+	for _, e := range timeline[start:end] {
 		ls = append(ls, line{e.Time + "  " + e.Text, lnText})
 	}
 	p.lines(in, ls)
@@ -436,8 +495,16 @@ func (m *Model) drawKeys(p *painter, l layout) {
 		return
 	}
 	s := "Tab pane · j/k move · Enter focus · a attach · Ctrl+K actions · r replay · ? help · q quit"
+	if m.ap.backend != nil && !m.live.on() && !m.labelled() {
+		// With a backend g opens approvals, and the status line carries the
+		// approvals element, so the bar is shortened to leave it room.
+		s = m.keyBar("Tab pane · j/k move · Enter focus · g approvals · Ctrl+K actions · r replay · ? help · q quit",
+			"Tab · Enter · g approvals · Ctrl+K · r · ? help · q quit", l.keys.Dx())
+	}
 	if m.live.on() {
 		s = "Tab pane · j/k move · Enter focus · F12 zoom · Ctrl+K actions · ? help · q quit"
+	} else if m.labelled() {
+		s = "Tab pane · j/k move · Enter select · a attach · Ctrl+K actions · ? help · q quit"
 	}
 	if m.focus == sessionFocus {
 		s = "SESSION FOCUS · every key goes to the session · " + m.opts.ReturnKey.String() + " returns · F12 zoom"
@@ -453,7 +520,35 @@ func (m *Model) drawKeys(p *painter, l layout) {
 			}
 		}
 	}
-	p.text(0, l.keys.Min.Y, l.keys.Dx(), s, p.style(lnDim))
+	room := l.keys.Dx()
+	if st := m.approvalsStatus(); st.Text != "" {
+		// The approvals element of the status line, at the right, in the
+		// alert style when a waiting card has little life left. It is
+		// information and takes no key, so it is drawn in session focus too:
+		// it is how a card that comes while the owner types shows. In session
+		// focus the key that returns is what the line is for, so the element
+		// is shortened to its count, or left out, before it cuts into that
+		// hint.
+		text, keep := st.Text, 0
+		if m.focus == sessionFocus {
+			if i := strings.LastIndex(s, "returns"); i >= 0 {
+				keep = ansi.StringWidth(s[:i+len("returns")])
+			}
+			if room-ansi.StringWidth(text)-2 < keep {
+				text, _, _ = strings.Cut(text, " (")
+			}
+		}
+		w := ansi.StringWidth(text)
+		if x := room - w; x > 0 && (keep == 0 || x-2 >= keep) {
+			kind := lnHead
+			if st.Alert {
+				kind = lnWarn
+			}
+			p.text(x, l.keys.Min.Y, w, text, p.style(kind))
+			room = max(0, x-2)
+		}
+	}
+	p.text(0, l.keys.Min.Y, room, s, p.style(lnDim))
 }
 
 // overlayLines returns the title and wrapped lines of the open overlay.
@@ -473,13 +568,28 @@ func (m *Model) overlayLines(width int) (string, []line) {
 		}
 		for _, c := range m.controls {
 			head := c.Name
-			if c.Key != "" {
-				head += " [" + c.Key + "]"
+			key := c.Key
+			live := c.Approval && m.ap.backend != nil
+			if live {
+				key = "g"
+			}
+			if key != "" {
+				head += " [" + key + "]"
 			}
 			add(lnHead, head)
+			if live {
+				add(lnText, "Available: "+m.controlReason(c)+".")
+				continue
+			}
 			add(lnWarn, "Unavailable: "+c.Reason)
 		}
+		if m.approvalsLive() {
+			return "ACTIONS (approve and deny open the approvals view)", out
+		}
 		return "ACTIONS (all unavailable)", out
+	}
+	if m.labelled() {
+		return m.viewHelpLines(width)
 	}
 	add(lnHead, "Console focus")
 	for _, s := range []string{
@@ -492,6 +602,9 @@ func (m *Model) overlayLines(width int) (string, []line) {
 		"F12: zoom the session pane to the window",
 		"?: this help   Esc: close   q, Ctrl+C: quit",
 	} {
+		add(lnText, s)
+	}
+	for _, s := range m.approvalsHelp() {
 		add(lnText, s)
 	}
 	add(lnHead, "Session focus")

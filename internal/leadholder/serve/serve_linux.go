@@ -85,6 +85,23 @@
 // output lock or its input lock (Input, Paste, Resize, Screen, Counters,
 // SubscribeScreen) is called with mu held.
 //
+// # Injection
+//
+// The control socket's inject operation is the only way to the injection, and
+// the attach socket has none. What the service does with it depends on the
+// build. A release build answers disabled and never looks at the request's
+// text. A build with the ataniq_canary tag answers disabled too, unless
+// [Config] was given a Deliverer (the gate): with one, a request for this
+// epoch with a message id and a text is delivered, one at a time (a second
+// request while one runs is busy), within [InjectTimeout], and answered ok with
+// the deliverer's result, or with uncertain, died, unknown when the deliverer
+// panics, outlasts the time or returns a result the wire cannot carry. So a
+// refusal of inject always means that nothing was written. A deliverer that
+// outlasts the time keeps the gate shut until it returns. The two inject events
+// carry the message id, the command id and the SHA-256 of the text, never the
+// text. This package imports nothing from the injection tree: a Deliverer
+// returns the wire's result.
+//
 // # Events and counters
 //
 // Events go to the event log through a bounded queue and a goroutine of their
@@ -178,6 +195,10 @@ type Config struct {
 	// DaemonLock is the path of the daemon's lock file: the control socket
 	// accepts the process whose pid it holds while it is locked.
 	DaemonLock string
+
+	// InjectConfig is the injection's seam: empty in a release build, and in
+	// a build with the ataniq_canary tag the deliverer that opens the gate.
+	InjectConfig
 
 	// TicketLifetime is how long a registered ticket stays valid.
 	TicketLifetime time.Duration
@@ -280,6 +301,9 @@ type Server struct {
 	conns       map[net.Conn]struct{}
 	closed      bool // teardown began: nothing new is accepted
 	finishing   bool // the session is over
+
+	// inj is the injection's own state (inject_off_linux.go, inject_canary_linux.go).
+	inj injectState
 
 	// The emulator state the clients were told of.
 	lastModes    sessionpane.ModeSet

@@ -73,7 +73,7 @@ func TestChannelDeliversOneLineAndLeavesWhatFollows(t *testing.T) {
 	}
 	defer w.Close()
 	got := <-c.out
-	if got.Err != nil || got.Report.Digest != digest || len(got.Report.Results) != 8 || string(got.Data) != string(line) || got.EOF {
+	if got.Err != nil || got.Report.Digest != digest || len(got.Report.Results) != 9 || string(got.Data) != string(line) || got.EOF {
 		t.Fatalf("got %+v", got)
 	}
 	// The bytes after the newline were not taken by the read of the line.

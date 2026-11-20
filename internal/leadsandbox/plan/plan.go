@@ -20,6 +20,15 @@ const (
 	// pages, else a quarter of the stack limit) and the plan cannot see the
 	// environment the launcher passes, so the cap stays well under that
 	// minimum. A plan above it is refused rather than left to fail at exec.
+	//
+	// Binding by descriptor does not change the reasoning. The host path of a
+	// source Ataniq supplies is still written once: it moved from the
+	// bubblewrap arguments (--ro-bind SRC DEST) to the pass-through step
+	// (--walk-dir FD ROOT REL), where ROOT and REL together are as long as
+	// SRC, and the bubblewrap arguments carry the number in its place
+	// (--ro-bind-fd FD DEST). Per such row that adds the option word of the
+	// walk and two numbers, under 40 bytes; with the most rows a profile can
+	// have (see MaxPassFDs) under 4 KiB, a sixteenth of the cap.
 	MaxArgvBytes = 64 << 10
 	// MinSeccompFD is the lowest descriptor number the seccomp file may use:
 	// 0, 1 and 2 are the standard streams.
@@ -29,19 +38,48 @@ const (
 	// MinReportFD and MaxReportFD bound the descriptor of the report channel.
 	MinReportFD = 3
 	MaxReportFD = 1023
+	// MinBindFD is the lowest descriptor number the plan gives a bind source.
+	// The numbers are the plan's own choice, not the caller's: the sources
+	// that Ataniq supplies get the numbers from MinBindFD up, in the order of
+	// the bind table, and a number that is the seccomp or the report
+	// descriptor of the options is passed over, so the three kinds never
+	// collide. The numbers start at 10 and not at 3 so that they stay clear of
+	// the low numbers a caller picks for the other two, and of 3 and 4, which
+	// the probe refuses as a target when its Go runtime holds them (a standard
+	// stream that was non-blocking at its start).
+	MinBindFD = 10
+	// MaxBindFD is the highest descriptor number a bind source may get.
+	MaxBindFD = 1023
+	// MaxPassFDs is the most descriptors the pass-through step places, of
+	// every kind together: the cap of the probe's pass-fds mode, which a test
+	// of the probe compares with this number. A plan needs one per bind row
+	// Ataniq supplies (23 in the bind table today), one per extra placeholder
+	// (the profile allows 64), the seccomp file and the report channel: 89 at
+	// most. 128 leaves room for rows the table gains. A plan above it is
+	// refused rather than left to fail in the step.
+	MaxPassFDs = 128
 )
 
 // The pass-through step: PROBE_HOST pass-fds [--read FD=PATH]... [--write
-// FD=PATH]... -- COMMAND. The probe binary's pass-fds mode is the contract:
-// it opens each PATH read-only (--read) or write-only without creating it
-// (--write) at exactly the descriptor FD, leaves every other descriptor above
-// 2 closed, and executes the command after the "--".
+// FD=PATH]... [--walk-dir FD ROOT REL]... [--walk-file FD ROOT REL]... --
+// COMMAND. The probe binary's pass-fds mode is the contract: it opens each
+// PATH read-only (--read) or write-only without creating it (--write) at
+// exactly the descriptor FD; it opens each ROOT without following a symbolic
+// link, walks REL beneath that handle in one openat2 lookup that follows
+// none, checks on the descriptor that the source is a folder (--walk-dir) or
+// a regular file (--walk-file) and places that descriptor at exactly FD; it
+// leaves every other descriptor above 2 closed, and executes the command
+// after the "--". A source its walk refuses ends the step before the command.
 const (
 	// PassFDsMode is the mode argument of the probe binary.
 	PassFDsMode = "pass-fds"
-	// PassFDsRead and PassFDsWrite are its options.
+	// PassFDsRead and PassFDsWrite are its options for a file.
 	PassFDsRead  = "--read"
 	PassFDsWrite = "--write"
+	// PassFDsWalkDir and PassFDsWalkFile are its options for a bind source
+	// that is walked by handle: a folder, or a regular file.
+	PassFDsWalkDir  = "--walk-dir"
+	PassFDsWalkFile = "--walk-file"
 	// ProbeReportFD is the probe's option for the report descriptor.
 	ProbeReportFD = "--report-fd"
 )
@@ -59,7 +97,10 @@ const (
 	// NoteNestedUserns states owner decision R17.
 	NoteNestedUserns = "nested user namespaces stay available (owner decision R17): --disable-userns and --assert-userns-disabled are not passed, so code inside can create user namespaces and reach kernel code that is reachable only through them; this is a larger kernel surface than with them disabled"
 	// NoteBindSources states rule G1 of the sandbox plan.
-	NoteBindSources = "bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because bubblewrap resolves a source on the host, outside every sandbox, and follows a symbolic link there; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; the path that is bound is the path that is checked: a source Ataniq supplies is its real path as the inputs name it, and a row of the host (/usr, the /etc files) is bound from the real path the holder resolved (Options.HostSources); this package checks the text of the sources, and the holder checks each bound path without following links right before the start (mountpoints.CheckBindSources)"
+	NoteBindSources = "bind sources (rule G1): no source of a bind lies in or below a host folder the lead can write, because a source is resolved on the host, outside every sandbox, where a symbolic link would be followed; a folder the lead writes is bound whole from an Ataniq-owned parent, and the tree's .git/config, .git/hooks and .git/info are bound from Ataniq's copy of them; a source Ataniq supplies is its real path as the inputs name it and is bound from a descriptor (see the note on descriptors), and a row of the host (/usr, the /etc files) is bound by path, from the real path the holder resolved (Options.HostSources), which bubblewrap resolves by name; this package checks the text of the sources, and the holder checks each source without following links right before the start (mountpoints.CheckBindSources), as a check before the walk that counts"
+	// NoteBindFDs states how the sources Ataniq supplies are bound (rule B1),
+	// and what nothing here shows.
+	NoteBindFDs = "bind sources by descriptor (rule B1): every bind source Ataniq supplies is bound from a descriptor (--bind-fd, --ro-bind-fd), never by path; the pass-fds step, the last host-side code before bubblewrap, opens the folder each walk starts from without following a symbolic link, walks the path beneath that handle in one openat2 lookup that follows none (RESOLVE_BENEATH, RESOLVE_NO_SYMLINKS), checks on the descriptor it got that the source is the folder or the regular file the row binds, and places that descriptor at the number bubblewrap is given; a source its walk refuses ends the step before bubblewrap starts; whether bubblewrap mounts the object behind the descriptor, and closes the descriptor before the command inside starts, are qualification items that nothing here shows [qualify]"
 	// NoteNoSeccomp is the note of a plan without a seccomp file.
 	NoteNoSeccomp = "no seccomp filter: none has been reviewed"
 	// NoteSession explains why bubblewrap does not make the session.
@@ -110,16 +151,32 @@ type Options struct {
 	// real path to bind in its place: the path the caller resolved with
 	// mountpoints.ResolveSources ([mountpoints.ResolvedSource].Real; the
 	// method Resolution.HostSources makes this map). The key is the row's
-	// inside path. bubblewrap binds the path the plan names and follows a
-	// link in it, and the check that no source has a link
-	// (mountpoints.CheckBindSources) opens the real path of such a row, so the
-	// plan must bind that path: for every row the path that is bound is the
-	// path that is checked. Every host row the plan emits must have an entry
+	// inside path. A row of the host is bound by path: bubblewrap binds the
+	// path the plan names and follows a link in it, and the check that no
+	// source has a link (mountpoints.CheckBindSources) opens the real path of
+	// such a row, so the plan must bind that path: the path that is bound is
+	// the path that is checked. Every host row the plan emits must have an entry
 	// (a row that is not optional, or is optional and HostPresent says the
 	// host has it); an entry for any other key, or for an optional row the
 	// host lacks, is refused. A value is an absolute clean path, and is checked
 	// like any other source (never-mounted paths, lead-writable folders).
 	HostSources map[string]string
+
+	// SourceWalks says, for each bind row that Ataniq supplies (every bind
+	// row that is not a row of the host), how the pass-through step reaches
+	// its source by handle: the folder to open by name, the path to walk
+	// beneath it and the type the source must have. The caller takes them
+	// from mountpoints.SourceWalks (mountpoints.PlanWalks gives them in this
+	// type), which derives them from the inputs alone; they are data here, as
+	// HostSources is, because this package does not import mountpoints.
+	// There must be exactly one walk per such row, in any order: its Inside
+	// is the row's inside path, its Root joined with its Rel is the row's
+	// source, and its Dir says what the row binds. A walk for any other inside
+	// path (a row of the host, a row without a source, no row), two walks for
+	// one row, a row without a walk, a walk that does not lead to the source
+	// or names the other type, a Root that lies in or below a folder the lead
+	// can write, and a Root or Rel that is not a clean path are refused.
+	SourceWalks []SourceWalk
 
 	// SeccompFD is the descriptor number the pass-through step will open the
 	// seccomp file at, from MinSeccompFD to MaxSeccompFD. It is required when
@@ -176,6 +233,57 @@ type File struct {
 	SHA256 string
 }
 
+// SourceWalk says how the source of one bind row that Ataniq supplies is
+// reached by handle (rule B1 of the design, revision 4, section 3.6). It is
+// the data of mountpoints.SourceWalk that the plan needs, and names paths
+// only.
+type SourceWalk struct {
+	// Inside is the inside path of the row.
+	Inside string
+	// Root is the host folder the pass-through step opens by name, without
+	// following a symbolic link in any component: absolute and clean. It is
+	// a folder no sandbox can write: the state root for a source below it,
+	// else the folder that holds the source.
+	Root string
+	// Rel is the path of the source beneath Root: relative and clean, without
+	// "..", and "." only when the source is Root itself.
+	Rel string
+	// Dir says the source must be a folder; else it must be a regular file.
+	Dir bool
+}
+
+// Path is the host path of the source: Root joined with Rel.
+func (w SourceWalk) Path() string { return joinWalk(w.Root, w.Rel) }
+
+// joinWalk joins the folder a walk starts from with the path beneath it.
+func joinWalk(root, rel string) string {
+	switch {
+	case rel == ".":
+		return root
+	case root == "/":
+		return "/" + rel
+	}
+	return root + "/" + rel
+}
+
+// Walk is a bind source the pass-through step of the plan walks to, with the
+// descriptor number it places the source at, which is the number bubblewrap
+// binds the row from.
+type Walk struct {
+	// FD is the descriptor number, from MinBindFD up.
+	FD int
+	// Inside is the inside path of the row that is bound from the descriptor.
+	Inside string
+	// Root and Rel are the folder the step opens and the path it walks
+	// beneath it; Dir says the source must be a folder, else a regular file.
+	Root string
+	Rel  string
+	Dir  bool
+}
+
+// Path is the host path of the source: Root joined with Rel.
+func (w Walk) Path() string { return joinWalk(w.Root, w.Rel) }
+
 // Mount is one emitted row of the bind table.
 type Mount struct {
 	// Kind is the row's kind (tmpfs, dev, proc, ro-bind, rw-bind, symlink).
@@ -184,9 +292,14 @@ type Mount struct {
 	Inside string
 	// Source is the host path of a bind row; empty for the other kinds.
 	Source string
+	// FD is the descriptor the row is bound from (--bind-fd, --ro-bind-fd): the
+	// number of the row's entry in Plan.Walks. It is set for every bind row
+	// Ataniq supplies and is zero for a row of the host, which is bound by
+	// path, and for a row without a source.
+	FD int
 	// LeadWritable says the source lies below a host folder the lead can
 	// write (the source of a read-write bind row): the lead could replace the
-	// source with a symbolic link, which bubblewrap follows. Rule G1 says no
+	// source with a symbolic link or with anything else. Rule G1 says no
 	// source does, so it is false for every row of a valid plan: Build refuses
 	// a table with such a row and Verify reports one (ProbLeadWritable). It
 	// is not the profile's Bind.LeadWritable, which says the mount point (the
@@ -208,7 +321,8 @@ type Plan struct {
 	Pasta []string
 	// PassFDs is the pass-through step: the host path of the probe binary,
 	// "pass-fds", one --read FD=PATH or --write FD=PATH per entry of Files,
-	// and "--".
+	// one --walk-dir FD ROOT REL or --walk-file FD ROOT REL per entry of
+	// Walks, and "--".
 	PassFDs []string
 	// Bwrap is the bubblewrap executable and its arguments, ending in "--".
 	Bwrap []string
@@ -225,6 +339,11 @@ type Plan struct {
 	// PassFDs: the seccomp file when the inputs name one (read), then the
 	// report channel (write).
 	Files []File
+	// Walks are the bind sources the pass-through step walks to by handle, in
+	// the order of PassFDs, which is the order of the bind table: one per
+	// bind row Ataniq supplies, with the descriptor number the row is bound
+	// from. The step opens them before the files.
+	Walks []Walk
 	// Digest is the profile digest (profile.Inputs.Digest).
 	Digest string
 	// Mounts lists the rows of the bind table the plan emits, in order (not
@@ -275,6 +394,11 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	}
 	var mounts []Mount
 	writable := writableSources(binds)
+	walks := wantWalks(in, binds, opt)
+	walkFD := map[string]int{}
+	for _, w := range walks {
+		walkFD[w.Inside] = w.FD
+	}
 	for _, b := range binds {
 		if b.Kind == profile.KindRemountRO {
 			continue // last, after --chdir
@@ -282,8 +406,14 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 		if b.Optional && !opt.HostPresent[b.Inside] {
 			continue
 		}
-		e.bind(b)
-		mounts = append(mounts, Mount{Kind: b.Kind, Inside: b.Inside, Source: b.Source, LeadWritable: belowAny(b.Source, writable), Optional: b.Optional})
+		fd := walkFD[b.Inside]
+		if suppliedRow(b) && fd == 0 {
+			// The options were checked, so every such row has a walk: a row
+			// Ataniq supplies is never emitted by path.
+			return nil, refuse("bind "+b.Inside, "the row has no descriptor to be bound from")
+		}
+		e.bind(b, fd)
+		mounts = append(mounts, Mount{Kind: b.Kind, Inside: b.Inside, Source: b.Source, FD: fd, LeadWritable: belowAny(b.Source, writable), Optional: b.Optional})
 	}
 	e.opt("--chdir", workDir)
 	e.opt("--remount-ro", "/")
@@ -295,12 +425,13 @@ func Build(in profile.Inputs, opt Options) (*Plan, error) {
 	files := wantFiles(in, opt)
 	p := &Plan{
 		Pasta:   append([]string{opt.PastaPath}, sandboxnet.PastaArgs()...),
-		PassFDs: passFDs(in.ProbeBinary, files),
+		PassFDs: passFDs(in.ProbeBinary, files, walks),
 		Bwrap:   append([]string{opt.BwrapPath}, e.args...),
 		Inner:   probeCommand(opt),
 		Env:     env,
 		Mounts:  mounts,
 		Files:   files,
+		Walks:   walks,
 		Digest:  digest,
 		WorkDir: workDir,
 		Notes:   notes(in, opt, workDir, leftOut(binds, opt)),
@@ -341,9 +472,48 @@ func wantFiles(in profile.Inputs, opt Options) []File {
 	return append(files, File{FD: opt.ReportFD, Path: opt.ReportPath, Mode: FileWrite, Purpose: PurposeReport})
 }
 
+// suppliedRow says a row of the table is a bind whose source Ataniq supplies:
+// a read-only or read-write bind that is not a row of the host. Such a row is
+// bound from a descriptor the pass-through step walked to, and has a walk.
+func suppliedRow(b profile.Bind) bool {
+	return (b.Kind == profile.KindRoBind || b.Kind == profile.KindRwBind) && !isHostRow(b)
+}
+
+// wantWalks lists what the pass-through step walks for these inputs and
+// options, in the order of the table: one walk per bind row Ataniq supplies,
+// from the walk the options give for it, with its descriptor number. The
+// numbers are the lowest from MinBindFD up, a number that is the seccomp or
+// the report descriptor of the options passed over, so they depend on the
+// table and the options alone. The options must have passed check: a row the
+// options give no walk for is left out.
+func wantWalks(in profile.Inputs, table []profile.Bind, opt Options) []Walk {
+	given := map[string]SourceWalk{}
+	for _, w := range opt.SourceWalks {
+		given[w.Inside] = w
+	}
+	taken := map[int]bool{opt.ReportFD: true}
+	if in.SeccompEnabled() {
+		taken[opt.SeccompFD] = true
+	}
+	var walks []Walk
+	next := MinBindFD
+	for _, b := range table {
+		w, ok := given[b.Inside]
+		if !suppliedRow(b) || !ok {
+			continue
+		}
+		for taken[next] {
+			next++
+		}
+		walks = append(walks, Walk{FD: next, Inside: b.Inside, Root: w.Root, Rel: w.Rel, Dir: w.Dir})
+		next++
+	}
+	return walks
+}
+
 // passFDs is the pass-through step for the files, reads before writes (the
-// order wantFiles gives).
-func passFDs(probeHost string, files []File) []string {
+// order wantFiles gives), then the walks in the order wantWalks gives.
+func passFDs(probeHost string, files []File, walks []Walk) []string {
 	step := []string{probeHost, PassFDsMode}
 	for _, f := range files {
 		opt := PassFDsRead
@@ -351,6 +521,13 @@ func passFDs(probeHost string, files []File) []string {
 			opt = PassFDsWrite
 		}
 		step = append(step, opt, strconv.Itoa(f.FD)+"="+f.Path)
+	}
+	for _, w := range walks {
+		opt := PassFDsWalkFile
+		if w.Dir {
+			opt = PassFDsWalkDir
+		}
+		step = append(step, opt, strconv.Itoa(w.FD), w.Root, w.Rel)
 	}
 	return append(step, "--")
 }
@@ -412,6 +589,9 @@ func (o Options) check(in profile.Inputs, f *facts) (string, error) {
 	if err := o.checkReport(in, f.table); err != nil {
 		return "", err
 	}
+	if err := o.checkWalks(in, f.table); err != nil {
+		return "", err
+	}
 	for _, e := range f.env {
 		if e.Name == "PWD" {
 			return "", refuse("environment", "PWD is in the allowlist; bubblewrap sets PWD itself, to the working folder")
@@ -467,8 +647,10 @@ func (o Options) applyHostSources(in profile.Inputs, f *facts) error {
 			return err
 		}
 		// A real path is held to the rules of any other source: never-mounted
-		// paths, the other runtime's config folder, other leads' state and
-		// other projects' mirror folders. (Verify checks every mount again.)
+		// paths, the other runtime's config folder and the rules about other
+		// state (other leads, the holder folder, other projects' mirrors and
+		// published folders, the mailboxes, the coordinators' trees, homes and
+		// logins). (Verify checks every mount again.)
 		if err := in.CheckSource(o.HostSources[k]); err != nil {
 			var r *profile.Refusal
 			if errors.As(err, &r) {
@@ -572,13 +754,127 @@ func (o Options) checkReport(in profile.Inputs, table []profile.Bind) error {
 		}
 	}
 	l := in.Layout()
-	for _, d := range []string{path.Join(l.StateRoot, "leads"), l.MirrorsDir()} {
+	for _, d := range []string{path.Join(l.StateRoot, "leads"), l.MirrorsDir(), l.MailboxesDir(), l.PublishedDir(), l.CoordsDir(), l.CoordLoginDir()} {
 		if within(o.ReportPath, d) || within(d, o.ReportPath) {
-			return refuse("report path", "is, lies below or lies above the state folder %s, which holds leads' and projects' files", d)
+			return refuse("report path", "is, lies below or lies above the state folder %s, which holds leads', roles', coordinators' and projects' files", d)
 		}
 	}
 	if o.ReportPath == o.ReportDir || path.Dir(o.ReportPath) != o.ReportDir {
 		return refuse("report path", "is not directly inside the report folder %s that the holder owns", o.ReportDir)
+	}
+	return nil
+}
+
+// checkWalks checks the walks of the options against the table: exactly one
+// walk per bind row Ataniq supplies, which leads to the row's source and names
+// the type the row binds, and none for anything else. It is the text of the
+// walks that is checked: that Root is a folder no sandbox can write is the
+// caller's to see to, and the package refuses only the Root it can see is
+// wrong, one in or below a folder the lead writes. It also holds the number of
+// descriptors to the cap of the pass-through step.
+func (o Options) checkWalks(in profile.Inputs, table []profile.Bind) error {
+	const field = "source walks"
+	rows := map[string]profile.Bind{}
+	supplied := 0
+	for _, b := range table {
+		if suppliedRow(b) {
+			rows[b.Inside] = b
+			supplied++
+		}
+	}
+	writable := writableSources(table)
+	seen := map[string]bool{}
+	for n, w := range o.SourceWalks {
+		b, ok := rows[w.Inside]
+		switch {
+		case !ok:
+			return refuse(field, "walk %d is for %q, which is not the inside path of a bind row Ataniq supplies (a row of the host is bound by path and has no walk)", n+1, clip(w.Inside))
+		case seen[w.Inside]:
+			return refuse(field, "the row at %s has two walks", w.Inside)
+		}
+		seen[w.Inside] = true
+		what := "walk of " + w.Inside
+		if err := checkPath("folder of the "+what, w.Root); err != nil {
+			return err
+		}
+		if err := checkRel("path of the "+what, w.Rel, w.Dir); err != nil {
+			return err
+		}
+		if w.Path() != b.Source {
+			return refuse(field, "the walk of %s does not lead to the source of the row: the folder and the path beneath it must name %s", w.Inside, b.Source)
+		}
+		if w.Dir != b.IsDir {
+			return refuse(field, "the walk of %s is for %s and the row binds %s", w.Inside, kindWord(w.Dir), kindWord(b.IsDir))
+		}
+		for _, d := range writable {
+			if within(w.Root, d) {
+				return refuse(field, "the walk of %s starts from %s, which is, or lies below, %s, a folder the lead can write: a walk starts from a folder no sandbox can write (rule B1)", w.Inside, w.Root, d)
+			}
+		}
+	}
+	for _, b := range table {
+		if suppliedRow(b) && !seen[b.Inside] {
+			return refuse(field, "the row at %s has no walk: every bind source Ataniq supplies is bound from a descriptor the pass-through step walked to, so the caller gives the walk of each (mountpoints.SourceWalks)", b.Inside)
+		}
+	}
+	files := 1
+	if in.SeccompEnabled() {
+		files++
+	}
+	return checkFDCount(supplied, files)
+}
+
+// checkFDCount holds the descriptors of a plan to the cap of the pass-through
+// step and to the numbers a bind source may get. A valid profile stays under
+// both (see MaxPassFDs); the check is here so that the plan does not rely on
+// it.
+func checkFDCount(walks, files int) error {
+	if n := walks + files; n > MaxPassFDs {
+		return refuse("pass-through step", "would place %d descriptors (%d bind sources and %d files), above its cap of %d", n, walks, files, MaxPassFDs)
+	}
+	// The numbers run from MinBindFD up and pass over at most two.
+	if last := MinBindFD + walks + 1; last > MaxBindFD {
+		return refuse("pass-through step", "%d bind sources need descriptor numbers above %d", walks, MaxBindFD)
+	}
+	return nil
+}
+
+// kindWord names what a walk or a row binds.
+func kindWord(dir bool) string {
+	if dir {
+		return "a folder"
+	}
+	return "a regular file"
+}
+
+// checkRel refuses the path of a walk beneath its folder unless it is relative
+// and clean, without "..", free of control characters and no longer than a
+// path may be; "." names the folder itself and is accepted for a folder only.
+// A path that starts with "--" is refused too: it is an operand of the
+// pass-through step, and the plan keeps every operand unlike an option so that
+// its parse stays unambiguous.
+func checkRel(field, rel string, dir bool) error {
+	switch {
+	case rel == "":
+		return refuse(field, "is empty")
+	case rel == ".":
+		if !dir {
+			return refuse(field, "is \".\", which names the folder and not a file")
+		}
+		return nil
+	case strings.HasPrefix(rel, "/"):
+		return refuse(field, "is absolute: it is the path beneath the folder")
+	case strings.HasPrefix(rel, "--"):
+		return refuse(field, "starts with --, which the plan refuses so that its parse stays unambiguous")
+	}
+	// The rest is the rule of any path of the profile, on the path as it
+	// would lie below the root: clean, so without ".." and ".", and bounded.
+	if err := profile.CheckPath(field, "/"+rel); err != nil {
+		var r *profile.Refusal
+		if errors.As(err, &r) {
+			return refuse(field, "%s", r.Reason)
+		}
+		return err
 	}
 	return nil
 }
@@ -737,7 +1033,7 @@ func noteReport(fd int) string {
 }
 
 func notes(in profile.Inputs, opt Options, workDir string, left []string) []string {
-	n := []string{NoteShareNet, NoteNestedUserns, NoteBindSources}
+	n := []string{NoteShareNet, NoteNestedUserns, NoteBindSources, NoteBindFDs}
 	if in.SeccompEnabled() {
 		n = append(n, fmt.Sprintf("seccomp file named by the caller (sha256 %s), opened read-only as descriptor %d by the pass-fds step after pasta and passed to bubblewrap with --seccomp: this package neither reads nor generates a filter", in.SeccompSHA256, opt.SeccompFD))
 	} else {

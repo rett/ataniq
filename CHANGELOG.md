@@ -6,6 +6,299 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-11-19
+
+### Added
+
+- The provisional terminal console has an approvals view. `g` opens it from
+  console focus (never from session focus, where every key goes to the
+  session), and Enter on the pending gate in the right pane opens the oldest
+  waiting card. The view lists the waiting cards, the recent decisions and the
+  standing rules, shows a card with its plan, diff summary, flagged paths and
+  evidence, and opens the full patch in a pager. `L` in the list opens the
+  daily card limit of the project under the cursor. A decision is made only on
+  the card: an approval needs a code typed from the card's title, a denial
+  needs no code; while a field is open every key goes to the field, and Esc
+  goes back one step at a time. The pending gate, the timeline (asked,
+  decided, applied) and the status line (waiting cards and the age of the
+  oldest) follow the cards. When you return
+  after a while the console shows a short summary of what happened while you
+  were away, and rings the terminal's bell for a card that arrives while you
+  are away; `--no-bell` turns the bell off. In this release only `--demo` has
+  cards: they are sample cards, the header says "sample cards: a decision
+  changes nothing", and a decision on one changes nothing outside the console.
+  No approval is possible in a release build: without `--demo` the approvals
+  view says "no owner channel in this build". The view is provisional and
+  claims no qualification.
+- The terminal console guide now describes the approvals view, the card and its
+  confirm step, the daily limit's screen, the arrival summary and the bell, and
+  presence, and lists plainly what is a sample and what is not qualified. No
+  approval is possible in a release build, the sample cards change nothing, and
+  the daemon view is read-only.
+- The provisional terminal console can show the daemon's leads:
+  `ataniq-console --daemon DIR`, where DIR is the folder that holds the
+  daemon's socket, shows the projects with their lead and coordinators and
+  each one's state, and asks the daemon again every few seconds. The view is
+  read-only: every control stays unavailable with its reason, and there is no
+  session terminal in it. With no daemon, a slow one or one that speaks
+  another protocol, it shows that plainly with the next step in place of the
+  leads, and keeps asking. `--daemon` cannot be combined with `--demo`,
+  `--attach` or `--return-key`. The view is provisional and is not a
+  qualification.
+- Add four subcommands to `ataniq-canary`, the provisioning command of the
+  canary slice, which exists only in a build with the `ataniq_canary` tag:
+  `show --config CONFIG` prints, as `key=value` lines, the names, numbers and
+  paths of the config that the attended run script needs (the role, the layout
+  role, the unit, both roots, the holder's folders, the evidence file, the
+  limits, the agent kind and arguments, the mirror, the lead's home and tree,
+  the sandbox inputs path and the sources provisioning makes) and never the
+  agent's environment, the git identity or the profile digest; `check-inputs
+  --config CONFIG --inputs FILE` checks the sandbox inputs file against the
+  config and names the field that differs, never its value; `fields --file
+  FILE` prints every value of one JSON object as a sorted `path=value` line,
+  with a string that is not plain ASCII printed quoted; `scrub-screen --file
+  FILE` replaces the screen text in a copy of the holder's final record by its
+  SHA-256 and prints the hash, never the text. The first three change nothing
+  on the host, and the last rewrites only the file it is given.
+- Add the canary slice, one short attended session that joins the parts built
+  side by side: `ataniqd run --canary CONFIG` serves the one throwaway lead of
+  its config and `ataniqd canary define|start|ticket|inject|stop` drive it, the
+  daemon starts a holder in a transient user unit with memory, swap and task
+  limits, `ataniq-holder --canary` starts the lead sandbox with the waiver of
+  assertion 10 (`assertion 10 waived: canary slice, no qualification record`,
+  the text in `holder.json` and the daemon's evidence, a code in the holder's event log), a
+  stand-in agent receives one injected message through the fence, and one commit
+  comes back through `ataniq-intake`. `ataniq-canary` provisions the folders and
+  `qualification/canary/run/canary-run.sh` is the attended run. Every result of
+  the message spends the epoch's one message. It is not a qualification, passes
+  no case and is not the week-long canary lead: its result is a list of facts,
+  and a real run is the owner's act. Canary mode exists only in a build with
+  the `ataniq_canary` tag and under `--canary`, so release builds do not
+  contain it: they have no such flag or command, and their holder answers
+  `inject` with `disabled`. It accepts only the project prefix `throwaway-`,
+  which is now reserved, so a daemon that defines real leads must refuse a
+  project that carries it, and only the three gates of the binary, the place
+  (roots that are not the defaults, with a marker file) and the invocation let
+  the waiver or the injection open. While tagged code exists the whole suite is
+  `make test` and then `make test-canary`. The guide is `docs/canary-slice.md`.
+- Add canary mode to the lead holder, in a build with the `ataniq_canary` tag
+  only: `ataniq-holder --canary --sandbox-inputs FILE` starts the agent through
+  the start sequence of the lead sandbox with no controlling terminal, writes
+  the waiver of assertion 10 into `holder.json` and the event log, and shows the
+  OSC 7501 counters in its status; `--inject` opens injection through the
+  control socket and `--expected-mode` names the footer mode a delivery needs.
+  A start the sequence refuses exits with status 4 and leaves no agent and no
+  `holder.json`. `ataniq-holder --version` prints the name and the version, and
+  in a tagged build the tag. Without the tag the holder is unchanged apart from
+  `--version`: the four flags are unknown and it hosts a scratch agent only.
+  Canary mode also refuses `--inject` without a non-empty `--expected-mode`, and
+  a `--runtime`, `--runtime-version`, `--tree`, `--state-dir` or `--runtime-dir`
+  that does not match the sandbox inputs and the lead's layout; it starts the
+  plan's first process in `/`; and it makes its `lead-has-run` mark only just
+  before that process starts, so a start that fails earlier leaves none.
+- Add `ataniq-canary profile-digest --config CONFIG --inputs FILE` to the
+  canary slice's command, which exists only in a build with the
+  `ataniq_canary` tag. It prints the sandbox profile digest the holder will
+  compute for the config and the inputs file, as one line of 64 lower-case hex
+  digits, so the owner can pin it in `holder.profile_digest` before the first
+  start; the holder refuses a start whose digest is not the pin, so a wrong
+  pin fails the real start at step 12. It refuses a file that is not the
+  config's `holder.sandbox_inputs`, the file the holder reads (the resolved
+  paths are compared), checks the file against the config as `check-inputs`
+  does, computes the digest with the holder's own code, starts and writes
+  nothing, and prints no environment value and no path of its own (a refusal
+  to read the file repeats the path given to `--inputs`, as `check-inputs`
+  does).
+- Add two helper scripts to the canary run kit, in
+  `qualification/canary/run/`. `canary-prepare.sh [--root DIR] [--dry]` writes
+  the set-up of pass A under a new root (default `ataniq-canary-a` in the cache
+  folder): the roots, a throwaway mirror, the config, the sandbox inputs, the
+  replay screens and the stand-in copy, and it pins `holder.profile_digest`
+  with `ataniq-canary profile-digest`. `canary-reset.sh --root DIR [--dry]`
+  deletes only `ROOT/state` and `ROOT/runtime` of a prepared root after the
+  owner types `reset` on a terminal, refuses while an `ataniq-*` unit is loaded
+  or an `ataniqd` or `ataniq-holder` of the root runs, and makes the two roots
+  and the mirror again. Both are run only by the owner's hand, and neither
+  starts a unit, a daemon, a sandbox or an agent; `--dry` prints the plan and
+  writes nothing.
+- The run script now reads the facts of steps 1, 2, 3, 8, 12 and 20 itself,
+  where the lead used to type `yes`, and fails the step when the fact is false.
+  Step 1 fails on an open Qargi run of the checkout or a loaded `ataniq-*`
+  unit, step 2 unless the two fact reports passed, step 3 unless HEAD is the
+  commit of `develop` and no tracked file has a change, and steps 8, 12 and 20
+  unless the mirror lists the upstream branch, `holder.json` says the sandbox
+  started with the pinned profile version and digest, and the upstream branch
+  is at the lead's commit. When it cannot read a fact (no `qargi`, a list it
+  does not know, an open run whose `repo.path` cannot be read) it asks the
+  lead as before and says so in the log. The `--self-test` entry gains
+  `open-runs`, `unread-runs`, `list-scan`, `loaded-units`, `tracked-changes`,
+  `unit-facts`, `plan-facts`, `holder-start`, `upstream-id` and `lead-id`.
+- Add the kit of the attended canary run. `make canary-build` runs doctor and
+  builds, with the `ataniq_canary` tag, into `build/canary/` (ignored) the
+  binaries the run uses (`ataniqd`, `ataniq-holder`, `ataniq-canary`,
+  `ataniq-canary-standin`, `ataniq-console`, `ataniq-intake`, `ataniq-probe`;
+  the stand-in and the probe static) and runs none of them; it is the one target
+  that builds binaries with the tag, and no release and no CI job uses it.
+  `qualification/canary/run/canary-run.sh --pass A|B --config CONFIG [--dry]
+  [--evidence DIR]` is the run script, a POSIX shell script that starts a real
+  unit, sandbox and agent and is run only by the owner's hand with the lead
+  present. It prints each of the 26 steps with what it does, the expected
+  result and the gate it serves, waits for Enter before every step that runs
+  anything (the start, the read-back of the unit's limits and the balancing of
+  the memory limit are one step with one key), never answers a prompt, and
+  records each of the owner's own acts with the answer and the time. `--dry`
+  prints everything, runs no command and needs no binary and no config;
+  `--self-test NAME [VALUE...]` is the test entry, which gives sample values to
+  one of the script's own functions, prints its answer and starts nothing. The
+  evidence goes to a dated folder of mode 0700 with a manifest of names, sizes,
+  times and hashes. A failure runs the clean-up chain: in pass B steps 22, 24,
+  25 and 26 from step 6 on, and 21 and 23 as well from step 15 on; in pass A
+  steps 22 and 26 from step 11 on. `qualification/canary/run/README.md` says
+  what each pass needs beforehand, with a filled example of the config and of
+  the sandbox inputs file, what the evidence folder holds, and the undo by
+  hand. `tests/canary_runkit_test.go` checks the target, the `AGENTS.md` lines
+  and the script, which it runs with `--dry` and `--self-test` only, over stubs
+  that must not be called.
+- The lead holder's session has the critical section an injection fence needs:
+  it holds the input lock for a whole function, holds writer input in the order
+  it came and delivers it afterwards (unless a write inside the fence failed,
+  which breaks the input like any failed write and refuses the held input),
+  applies the agent's output only when the fence says so (at most 4 MiB is
+  held, counted in `held_output_full`; the reader waits for room and drops
+  nothing, and the end of the fence applies the backlog for at most 250 ms and
+  leaves the rest to one goroutine, in order), answers the OSC strings the
+  console pane does not know through handlers the holder installs, and shows the
+  fence the screen as text with its faint runs, the parser and mode state, and
+  the time since the screen last changed. Nothing in a release build calls it.
+  The session's input lock and output reader were reworked in every build,
+  release holders included: with no fence the reader applies each slice as it
+  did, a failed write breaks the input as before, the pty host starts the agent
+  as before unless a caller asks otherwise, and the session's counters gain
+  `held_output_full` (always 0 without a fence). No release code path uses the
+  fence, so nothing a release's callers see is meant to change, but the lock and
+  the reader are new code in those builds.
+- Add `make test-canary` and a second CI job, `test-canary`, for the tests of
+  code behind the build tag `ataniq_canary`, which compiles canary mode. The
+  target runs doctor, then the tests with the tag over every package that holds
+  a Go file whose build constraint names it, found at run time from every form
+  of constraint line Go builds with the tag and skipping the folders `./...`
+  skips, and over `./tests/`. `make test` stays untagged and does not build that
+  code, so while tagged code exists the whole suite is `make test` and then
+  `make test-canary`. The job runs the target after the same checkout, bootstrap
+  and doctor steps, has read-only permissions and keeps or uploads nothing. No
+  release and no other target builds with the tag. `tests/canary_tag_test.go`
+  holds the line: reading every folder but `.git`, the top-level `build` and a
+  nested module inside a folder `./...` skips (so a module the build uses, such
+  as a directory replacement, is read), a file whose constraint names the tag
+  lies only under the paths set for it and in no folder `./...` skips
+  (`testdata`, a dot or an underscore), every file that names the tag in a
+  constraint does so in a `//go:build` line that the go command applies (a plus
+  build line alone is refused, and the header is not read past code that follows
+  a block comment), and every file of a package that exists only with the tag
+  carries a `//go:build` line that needs it, each constraint read as the go
+  command reads it; the tag is named only in the recipes of `test-canary` and
+  `canary-build` in the `Makefile`, which names those two targets nowhere else
+  and includes no other file, and nowhere under `.github/` or `scripts/`;
+  without the tag no command depends on those packages and `ataniqd` depends on
+  nothing under `internal/inject`; tagged code uses no module that untagged code
+  does not; and no file under `.github/` names `canary-build` or the tag, and no
+  run line there names `qualification/canary/`, no workflow uses a local action
+  outside `.github/`, also when it is written in a flow mapping or a block
+  scalar, while the `test-canary` job runs the make target, uses only
+  `actions/checkout` and `actions/setup-go`, has no `if` or `continue-on-error`,
+  holds only listed keys, as `test.yml` holds only listed top-level keys (so
+  that no `env`, `shell`, `defaults` or `working-directory` changes what the
+  target does or whether it runs), and is written without flow style, complex or
+  merge keys, anchors, aliases or tags. The keys of the workflow files are read
+  the same quoted or not and with white space before the colon.
+- Add memory, swap and task limits to the lead unit specification
+  (`leadunit.Limits`, `Spec.Limits`). A specification with limits starts its
+  unit with `MemoryMax=`, `MemorySwapMax=` and `TasksMax=` set in the start
+  call; one without limits is unchanged. The values come from configuration and
+  are held to bounds (memory 256 MiB to 64 GiB, swap 0 to 64 GiB where 0 means
+  no swap, tasks 16 to 65,536). The in-memory manager records them, and the
+  lifecycle's new optional `Options.Limits` function gives the limits of a role
+  at each launch; the start checks them with `Limits.Validate` before the
+  registry changes and refuses limits outside the bounds like a preflight
+  refusal.
+  `leadunit-qualify` starts its unit with limits from its flags
+  (`--memory-max`, `--swap-max`, `--tasks-max`, `--memory-lowered`; a memory or
+  swap size must be a whole number of 4096-byte pages), reads them back from
+  `systemctl --user show` and the control group files, lowers the memory limit
+  once, checks that the runtime folders hold the unit's drop-in folder while it
+  runs and that nothing is left after the stop; it has not been run.
+- Add the message and the result to the control wire of the lead holder: an
+  `inject` request may carry a `message_id` and a `text`, both or neither and on
+  no other operation, and an ok response may carry an `inject` result with a
+  closed outcome, reason and written amount. The holder still answers `inject`
+  with `disabled`; the lead injection guide describes the format.
+
+### Changed
+
+- Owner-side git reads now ignore attributes from any tree for diffs, logs and
+  merges: the pinned git environment sets the attribute source to the empty
+  tree for `diff`, `diff-tree`, `log` and `merge-tree`, so a `.gitattributes`
+  a lead committed can no longer mark a file as binary in a diff or change
+  how a merge joins two sides. `log` now gets `--no-ext-diff` and
+  `--no-textconv` as `diff` does, so a patch in a log starts no textconv
+  program named in the repository's config. The environment also accepts
+  `merge-tree` in one form only (`--write-tree`, the output flags
+  `--name-only`, `--no-messages` and `-z`, `--end-of-options` and two full
+  object ids, so no option can change what is merged), and `hash-object` in
+  the one form that writes a commit, for a merge built by the host, and gains
+  a check that refuses a repository whose own `info/attributes` is not empty,
+  since git reads that file whatever the attribute source is. Provisional:
+  shown by tests on the installed git only, and not part of any
+  qualification.
+- Let the client protocol package carry extension operations that the program
+  serving it registers. A request may carry `params`, one JSON object; `hello`
+  lists the extension operations after `hello` and `status` and says
+  `mutations: true` only when a registered extension changes something, and the
+  package gains a `Call` method for them. No release build registers one, so
+  `hello` still lists two operations and says `mutations: false`.
+- Change the lead sandbox proposal to revision 4 of the lead-hosting design. It
+  is still a proposal that awaits qualification and the owner's decision on the
+  profile; nothing here is qualified, safe or supported, and nothing uses it
+  yet. The layout: every lead has the folder of its working Qargi records
+  (`<state>/leads/<role>/qargi`, always bound read-write, at an inside path the
+  inputs give) and four parent folders, `/ataniq/requests`, `/ataniq/mailbox`,
+  `/ataniq/mail` and `/coord`, which are only bound folders; the git identity is
+  bound as the folder that holds it, at `/ataniq/git`; the profile version is 4.
+  There are eleven start-up assertions: assertion 11 looks at the four parent
+  folders and that no coordinator's tree or home is visible, and assertion 7 is
+  checked on both sides. Rule B1 of the design is applied to the checks: they
+  walk by handle without following links, from the state root the caller owns
+  or, for a source outside it, from the root of the file system. A bind source
+  Ataniq supplies now reaches bubblewrap as a descriptor (`--bind-fd`,
+  `--ro-bind-fd`): the pass-through step, `ataniq-probe pass-fds`, walks to it
+  by handle (`--walk-dir FD ROOT REL`, `--walk-file FD ROOT REL`), and a walk it
+  refuses is exit 96 before bubblewrap starts. The step now takes at most 128
+  descriptors in all, no longer 8 files. A row of the host (`/usr`, the `/etc`
+  files other than `resolv.conf`) is still bound by path. Whether bubblewrap
+  mounts the object behind a descriptor is a qualification item, and the harness
+  takes a bubblewrap release of 0.10.0 as its assumed minimum. In the harness
+  configuration `git_identity_file` is now `git_identity_dir`, a folder that
+  holds the file `config` and nothing else, and `qargi_records_inside` is
+  required; the evidence files have format 3 (format 2 added the walks and the
+  descriptors of the bind sources, format 3 the facts of case S21). The harness
+  gains the opt-in case S21, planted bind paths: at every path the start walk
+  looks at (the mount points and the tree's `.git` folder) it plants a symbolic
+  link to a path outside and then an entry of the wrong type, runs the checks of
+  a start, records whether the start was refused, by which check and with which
+  problem and path, puts the original entry back and looks at the result, in its
+  own step, `planted-bind-paths`, before the probe spec. It never launches (a
+  run whose only case is S21 skips the launch phase), and it needs `--run`,
+  `coordinator_reviewed` and the new configuration key
+  `scratch_folders_disposable`, the statement that the folders under the state
+  root are disposable scratch folders and not a live lead's; a dry run does
+  nothing for it and says so. Its results are `planted-paths-refused`,
+  `planted-paths-refused-other-runtime` (the other runtime's start, by the walk
+  alone, at the paths in folders the configuration names) and
+  `planted-paths-restored`, each ok, failed or not-checked; its facts are
+  `planted_paths` in `summary.json` (evidence format 3). It is made from
+  outside, as a stand-in for a lead that plants from inside. `AGENTS.md` names
+  the qualification build, `make qualification-leadsandbox-build`.
+
 ## [0.0.10] - 2026-11-17
 
 ### Added

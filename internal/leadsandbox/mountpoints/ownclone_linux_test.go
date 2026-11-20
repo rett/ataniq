@@ -80,6 +80,12 @@ func TestOwnCloneRefusals(t *testing.T) {
 		{"home mode", func(f *fixture) { os.Chmod(f.home, 0o750) }, ErrMode, func(f *fixture) string { return f.home }},
 		{"config mode", func(f *fixture) { os.Chmod(f.cfg, 0o770) }, ErrMode, func(f *fixture) string { return f.cfg }},
 		{"setgid tree", func(f *fixture) { os.Chmod(f.tree, 0o700|os.ModeSetgid) }, ErrMode, func(f *fixture) string { return f.tree }},
+		{"records mode", func(f *fixture) { os.Chmod(f.layout().QargiRecords(), 0o750) }, ErrMode, func(f *fixture) string { return f.layout().QargiRecords() }},
+		{"records missing", func(f *fixture) { f.remove(f.layout().QargiRecords()) }, ErrMissing, func(f *fixture) string { return f.layout().QargiRecords() }},
+		{"records is a link", func(f *fixture) {
+			os.Rename(f.layout().QargiRecords(), f.out+"/qargi")
+			f.symlink(f.out+"/qargi", f.layout().QargiRecords())
+		}, ErrSymlink, func(f *fixture) string { return f.layout().QargiRecords() }},
 		{"tree is a link", func(f *fixture) {
 			os.Rename(f.tree, f.out+"/tree")
 			f.symlink(f.out+"/tree", f.tree)
@@ -92,6 +98,22 @@ func TestOwnCloneRefusals(t *testing.T) {
 			os.Rename(f.cfg, f.out+"/cfg")
 			f.symlink(f.out+"/cfg", f.cfg)
 		}, ErrSymlink, func(f *fixture) string { return f.cfg }},
+		{"requests mode", func(f *fixture) { os.Chmod(f.layout().Requests(), 0o755) }, ErrMode, func(f *fixture) string { return f.layout().Requests() }},
+		{"mail mode", func(f *fixture) { os.Chmod(f.layout().Mail(), 0o701) }, ErrMode, func(f *fixture) string { return f.layout().Mail() }},
+		{"requests missing", func(f *fixture) { f.remove(f.layout().Requests()) }, ErrMissing, func(f *fixture) string { return f.layout().Requests() }},
+		{"mail missing", func(f *fixture) { f.remove(f.layout().Mail()) }, ErrMissing, func(f *fixture) string { return f.layout().Mail() }},
+		{"requests is a link", func(f *fixture) {
+			os.Rename(f.layout().Requests(), f.out+"/requests")
+			f.symlink(f.out+"/requests", f.layout().Requests())
+		}, ErrSymlink, func(f *fixture) string { return f.layout().Requests() }},
+		{"mail is a link", func(f *fixture) {
+			os.Rename(f.layout().Mail(), f.out+"/mail")
+			f.symlink(f.out+"/mail", f.layout().Mail())
+		}, ErrSymlink, func(f *fixture) string { return f.layout().Mail() }},
+		{"mail is a file", func(f *fixture) {
+			f.remove(f.layout().Mail())
+			f.write(f.layout().Mail(), "x")
+		}, ErrWrongType, func(f *fixture) string { return f.layout().Mail() }},
 		{"tree is a file", func(f *fixture) {
 			f.remove(f.tree)
 			f.write(f.tree, "x")
@@ -132,7 +154,7 @@ func TestOwnCloneOwner(t *testing.T) {
 	f := newFixture(t, profile.Claude)
 	other := uint32(os.Getuid()) + 1
 	rep := f.ownClone(other)
-	for _, p := range []string{f.tree, f.home, f.cfg} {
+	for _, p := range []string{f.tree, f.home, f.cfg, f.layout().QargiRecords(), f.layout().Requests(), f.layout().Mail()} {
 		wantProblem(t, rep, ErrOwner, p)
 	}
 	if rep.Has(ErrMode) {

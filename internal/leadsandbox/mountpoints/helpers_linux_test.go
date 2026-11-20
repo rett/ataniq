@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,7 +42,7 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 	f.home, f.tree = l.Home(), l.Tree()
 	f.gitMeta = l.GitMeta()
 	f.cfg, _ = l.ConfigDir(rt)
-	for _, d := range []string{f.home, f.cfg, f.tree} {
+	for _, d := range []string{f.home, f.cfg, f.tree, l.QargiRecords(), l.Requests(), l.Mail(), l.Mailbox(), l.Published()} {
 		f.mkdir(d, 0o700)
 	}
 	f.mkdir(f.out, 0o755)
@@ -72,9 +73,10 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 		ManagedSettingsSHA256: strings.Repeat("c1", 32),
 		LeadSkills:            own("skills", true),
 		InstructionFile:       own("instructions/"+rt.InstructionFileName(), false),
-		GitIdentityFile:       own("git/config", false),
+		GitIdentityDir:        filepath.Dir(own("git/config", false)),
 		GitMeta:               l.GitMeta(),
 		QargiInstall:          own("qargi", true),
+		QargiRecordsInside:    "/ataniq/records", // outside the home: no mount point of its own
 		AssignmentDir:         own("assignment", true),
 		ProjectionDir:         own("projection", true),
 		ResolvConf:            own("resolv.conf", false),
@@ -93,6 +95,19 @@ func newFixture(t *testing.T, rt profile.Runtime) *fixture {
 		t.Fatalf("fixture inputs: %v", err)
 	}
 	return f
+}
+
+// layout is the host layout of the fixture's lead.
+func (f *fixture) layout() profile.Layout { return f.in.Layout() }
+
+// list is List for the fixture's inputs.
+func (f *fixture) list() []Point {
+	f.t.Helper()
+	pts, err := List(f.in)
+	if err != nil {
+		f.t.Fatalf("List: %v", err)
+	}
+	return pts
 }
 
 func (f *fixture) mkdir(p string, mode os.FileMode) {
@@ -264,12 +279,26 @@ func (f *fixture) handMadeGitMeta() {
 }
 
 // ownRows are rows of a host that is not the host's own: each is checked by
-// its own path (its Source, which equals its Real). The inside paths are
-// invented, "/row/<n>" with n from 1.
+// its own path (its Source, which equals its Real), from the root of the file
+// system. The inside paths are invented, "/row/<n>" with n from 1. Each row
+// binds the type its path has when the row is made (a file when nothing is
+// there, or a link), so that a test about links and paths is not about types.
 func ownRows(paths ...string) []ResolvedSource {
 	rows := make([]ResolvedSource, len(paths))
 	for i, p := range paths {
-		rows[i] = ResolvedSource{Inside: fmt.Sprintf("/row/%d", i+1), Source: p, Real: p, Role: profile.RoleAgent}
+		fi, err := os.Lstat(p)
+		rows[i] = fsRow(fmt.Sprintf("/row/%d", i+1), p, err == nil && fi.IsDir())
 	}
 	return rows
+}
+
+// fsRow is the row of a source outside the state root, as [ResolveSources]
+// gives it: walked from the source's own parent folder, binding a folder or a
+// regular file.
+func fsRow(inside, p string, dir bool) ResolvedSource {
+	w := SourceWalk{Inside: inside, Root: path.Dir(p), Rel: path.Base(p), Dir: dir}
+	if p == "/" {
+		w.Rel = "."
+	}
+	return ResolvedSource{Inside: inside, Source: p, Real: p, Role: profile.RoleAgent, Walk: w}
 }

@@ -331,6 +331,109 @@ func TestHostSystemDirEmpty(t *testing.T) {
 	}
 }
 
+func TestHostSystemDirNames(t *testing.T) {
+	dir := t.TempDir()
+	h := HostSystem{}
+	if names, err := h.DirNames(dir, 4); err != nil || len(names) != 0 {
+		t.Errorf("an empty folder: %v %v", names, err)
+	}
+	for _, name := range []string{"b", "a", "c"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".hidden"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Every entry, sorted, a hidden one and a file included.
+	names, err := h.DirNames(dir, 4)
+	if err != nil || strings.Join(names, ",") != ".hidden,a,b,c" {
+		t.Errorf("four entries with the limit 4: %v %v", names, err)
+	}
+	// One more than the limit is refused whole, not cut short.
+	names, err = h.DirNames(dir, 3)
+	if !errors.Is(err, ErrTooLarge) || len(names) != 0 {
+		t.Errorf("four entries with the limit 3: %v %v", names, err)
+	}
+	if _, err := h.DirNames(dir, 0); err == nil {
+		t.Error("a limit of 0 was accepted")
+	}
+	if _, err := h.DirNames(filepath.Join(dir, ".hidden"), 4); !absent(err) {
+		t.Errorf("a file read as a folder: %v", err)
+	}
+	if _, err := h.DirNames(filepath.Join(dir, "none"), 4); !absent(err) {
+		t.Errorf("a missing folder: %v", err)
+	}
+	// A link to a folder is not followed.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if names, err := h.DirNames(link, 4); err == nil {
+		t.Errorf("DirNames followed a link: %v", names)
+	}
+}
+
+// The holder's list of the coordinators' folders, and their identities, on
+// real folders.
+func TestCoordinatorFoldersOnTheHost(t *testing.T) {
+	state, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := profileInputs("claude")
+	in.StateRoot = state
+	l := in.Layout()
+	for _, d := range []string{
+		l.CoordsDir() + "/ataniq/feature-a/tree", l.CoordsDir() + "/ataniq/feature-a/home",
+		l.CoordsDir() + "/ataniq/feature-b/tree",
+		l.CoordLoginDir() + "/ataniq/claude",
+	} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := HostSystem{}
+	folders, err := CoordinatorFolders(in, h.DirNames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		l.CoordsDir() + "/ataniq/feature-a", l.CoordsDir() + "/ataniq/feature-a/tree", l.CoordsDir() + "/ataniq/feature-a/home",
+		l.CoordsDir() + "/ataniq/feature-b", l.CoordsDir() + "/ataniq/feature-b/tree", l.CoordsDir() + "/ataniq/feature-b/home",
+		l.CoordLoginDir() + "/ataniq/claude",
+	}
+	if strings.Join(folders, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got %v, want %v", folders, want)
+	}
+	ids, err := CollectIdentities(append(CoordinatorIdentityPaths(in, HostFacts{}), folders...), h.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[FileIdentity]bool{}
+	for _, id := range ids {
+		have[id] = true
+	}
+	for _, p := range []string{l.CoordsDir(), l.CoordLoginDir(), state, want[1], want[2], want[4], want[6]} {
+		id, err := h.Identity(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !have[id] {
+			t.Errorf("the identity of %s is not in the list", p)
+		}
+	}
+	// A link in the place of a project folder is not a folder and is not
+	// followed: what it points to is not listed a second time under its name.
+	if err := os.Symlink(l.CoordsDir()+"/ataniq", l.CoordsDir()+"/linked"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := CoordinatorFolders(in, h.DirNames)
+	if err != nil || strings.Join(again, "\n") != strings.Join(want, "\n") {
+		t.Errorf("with a link beside the project folder: %v %v", again, err)
+	}
+}
+
 func TestHostSystemIdentity(t *testing.T) {
 	dir := t.TempDir()
 	h := HostSystem{}

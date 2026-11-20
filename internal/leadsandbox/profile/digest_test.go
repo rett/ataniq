@@ -31,7 +31,7 @@ func otherHost(rt Runtime) Inputs {
 	in.ManagedSettings = "/run/ataniq/managed.json"
 	in.LeadSkills = "/opt/ataniq/skills"
 	in.InstructionFile = "/opt/ataniq/instructions.md"
-	in.GitIdentityFile = "/run/ataniq/gitconfig"
+	in.GitIdentityDir = "/run/ataniq/git"
 	in.QargiInstall = "/opt/qargi"
 	in.AssignmentDir = "/run/ataniq/assignment"
 	in.ProjectionDir = "/run/ataniq/projection"
@@ -54,14 +54,16 @@ func TestDigestShape(t *testing.T) {
 }
 
 const (
-	goldenClaude = "f7128872ebcd1aae1c78a216e80e62ef43a3bb559781b456b8ad82c8e7006b2b"
-	goldenCodex  = "3bc34618dc4f97f70476dbedab917ccf31f317ca527cf0cbd18d27c31177f94b"
+	goldenClaude = "2cd0df4fb5cb55e28954e3a07173ad49a627489a363aea4d5860c1f39ba3858f"
+	goldenCodex  = "d303f0857fe4d836ba2e55d9933986f602b6f64f3cf2eec2a11e04181b5f443a"
 )
 
-func TestVersionIsThree(t *testing.T) {
-	// The three read-only .git rows changed their sources (rule G1).
-	if Version != 3 {
-		t.Errorf("Version = %d, want 3", Version)
+func TestVersionIsFour(t *testing.T) {
+	// The layout of the lead-hosting design, revision 4: the requests,
+	// mailbox, mail and coordinator rows and the records row are in every
+	// table, and the git identity is bound as its folder.
+	if Version != 4 {
+		t.Errorf("Version = %d, want 4", Version)
 	}
 }
 
@@ -147,9 +149,8 @@ func TestDigestChangesWithTheProfile(t *testing.T) {
 		{"a seccomp file", withSeccomp(strings.Repeat("a", 64))},
 		{"an extra placeholder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc"}} }},
 		{"an extra placeholder as a folder", func(in *Inputs) { in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/s/envrc", Dir: true}} }},
-		{"the Qargi records", func(in *Inputs) {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.qargi"
-		}},
+		{"the inside path of the Qargi records", func(in *Inputs) { in.QargiRecordsInside = "/ataniq/records" }},
+		{"another inside path of the Qargi records", func(in *Inputs) { in.QargiRecordsInside = "/home/lead/.local/qargi" }},
 		{"an environment name", func(in *Inputs) { in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}} }},
 		{"the managed-settings digest", func(in *Inputs) { in.ManagedSettingsSHA256 = strings.Repeat("d", 64) }},
 		{"PATH", func(in *Inputs) { in.Path = "/home/lead/.local/bin:/usr/bin" }},
@@ -351,13 +352,43 @@ func TestDefinitionHoldsNoHostPath(t *testing.T) {
 
 func TestDigestWithRecordsIsIndependentOfTheProject(t *testing.T) {
 	for _, rt := range Runtimes() {
-		a, b := fixture(rt), fixture(rt)
-		for _, in := range []*Inputs{&a, &b} {
-			in.QargiRecords, in.QargiRecordsInside = "/srv/state/leads/arc-lead/records", "/home/lead/.qargi"
+		for _, inside := range []string{"/home/lead/.qargi", "/ataniq/records"} {
+			a, b := fixture(rt), fixture(rt)
+			a.QargiRecordsInside, b.QargiRecordsInside = inside, inside
+			b.Project = "another-project"
+			if mustDigest(t, a) != mustDigest(t, b) {
+				t.Errorf("%s: two projects, two digests, with the records at %s", rt, inside)
+			}
 		}
-		b.Project = "another-project"
-		if mustDigest(t, a) != mustDigest(t, b) {
-			t.Errorf("%s: two projects, two digests, with records", rt)
+	}
+}
+
+// Every lead has the records row: it is in the table and in the digest for both
+// runtimes, from the layout's folder, at the inside path the caller gives.
+func TestTheRecordsRowIsInEveryTableAndDigest(t *testing.T) {
+	for _, rt := range Runtimes() {
+		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": fullInputs(rt)} {
+			def := in.definition()
+			n, at := 0, -1
+			for i, b := range def.Binds {
+				if b.SourceRole == RoleRecords {
+					n++
+					at = i
+				}
+			}
+			if n != 1 || def.Binds[at].Inside != in.QargiRecordsInside || def.Binds[at].Kind != KindRwBind {
+				t.Fatalf("%s %s: %d records rows in the definition", rt, name, n)
+			}
+			for _, b := range mustBinds(t, in) {
+				if b.SourceRole == RoleRecords && b.Source != "/srv/state/leads/arc-lead/qargi" {
+					t.Errorf("%s %s: the records row comes from %s", rt, name, b.Source)
+				}
+			}
+			base := def.digest()
+			def.Binds = append(def.Binds[:at:at], def.Binds[at+1:]...)
+			if def.digest() == base {
+				t.Errorf("%s %s: the digest is the same without the records row", rt, name)
+			}
 		}
 	}
 }
@@ -484,5 +515,106 @@ func TestDigestIsIndependentOfThePlaceholderOrder(t *testing.T) {
 	d.ExtraPlaceholders = []Placeholder{{Rel: "x/y", Source: "/s/y"}, {Rel: "x", Source: "/s/x", Dir: true}}
 	if _, err := d.Digest(); err == nil {
 		t.Error("a placeholder below another one is accepted")
+	}
+}
+
+// fullInputs are the fixture with every optional input given (the owner
+// identity, a seccomp file, extra placeholders and an extra variable) and the
+// Qargi records at another inside path, outside the home.
+func fullInputs(rt Runtime) Inputs {
+	in := fixture(rt)
+	in.Identity, in.OwnerUID, in.OwnerGID, in.OwnerUser = IdentityOwner, 1000, 1000, "owner"
+	in.SeccompFile, in.SeccompSHA256 = "/srv/owned/seccomp/reviewed.bpf", strings.Repeat("ab", 32)
+	in.QargiRecordsInside = "/ataniq/records"
+	in.ExtraPlaceholders = []Placeholder{
+		{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
+		{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
+	}
+	in.ExtraEnv = []EnvVar{{"GOFLAGS", "-mod=mod"}}
+	return in
+}
+
+// The four folders are fixed at the lead's start, because a bind cannot be
+// added to a running sandbox: the rows are in the table and in the digest for
+// both runtimes, with and without every optional input, and the digest shows
+// each of them.
+func TestTheFourLayoutRowsAreInEveryTableAndDigest(t *testing.T) {
+	want := []Bind{
+		{Kind: KindRwBind, Inside: "/ataniq/requests", Source: "/srv/state/leads/arc-lead/requests", SourceRole: RoleRequests, IsDir: true},
+		{Kind: KindRoBind, Inside: "/ataniq/mailbox", Source: "/srv/state/mailbox/arc-lead", SourceRole: RoleMailbox, IsDir: true},
+		{Kind: KindRwBind, Inside: "/ataniq/mail", Source: "/srv/state/leads/arc-lead/mail", SourceRole: RoleMail, IsDir: true},
+		{Kind: KindRoBind, Inside: "/coord", Source: "/srv/state/pub/ataniq", SourceRole: RolePublished, IsDir: true},
+	}
+	find := func(t []Bind, inside string) (int, bool) {
+		for i, b := range t {
+			if b.Inside == inside {
+				return i, true
+			}
+		}
+		return 0, false
+	}
+	for _, rt := range Runtimes() {
+		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": fullInputs(rt)} {
+			table := mustBinds(t, in)
+			def := in.definition()
+			base := def.digest()
+			if got := mustDigest(t, in); got != base {
+				t.Fatalf("%s %s: Digest = %s, the definition's is %s", rt, name, got, base)
+			}
+			for _, w := range want {
+				i, ok := find(table, w.Inside)
+				if !ok {
+					t.Errorf("%s %s: the table has no row %s", rt, name, w.Inside)
+					continue
+				}
+				if table[i] != w {
+					t.Errorf("%s %s: row %s = %+v, want %+v", rt, name, w.Inside, table[i], w)
+				}
+				// The definition has the row, with its role in place of the
+				// host path, and the digest changes when the row is taken out,
+				// when it changes its kind and when it changes its role.
+				j, ok := find(def.Binds, w.Inside)
+				inDigest := w
+				inDigest.Source = ""
+				if !ok || def.Binds[j] != inDigest {
+					t.Errorf("%s %s: the definition lacks the row %s", rt, name, w.Inside)
+					continue
+				}
+				for change, mutate := range map[string]func(*definition){
+					"taken out": func(d *definition) { d.Binds = append(d.Binds[:j:j], d.Binds[j+1:]...) },
+					"another kind": func(d *definition) {
+						d.Binds = append([]Bind(nil), d.Binds...)
+						if d.Binds[j].Kind = KindRoBind; w.Kind == KindRoBind {
+							d.Binds[j].Kind = KindRwBind
+						}
+					},
+					"another role": func(d *definition) {
+						d.Binds = append([]Bind(nil), d.Binds...)
+						d.Binds[j].SourceRole = RoleExtra
+					},
+				} {
+					d := in.definition()
+					mutate(&d)
+					if d.digest() == base {
+						t.Errorf("%s %s: the row %s %s keeps the digest", rt, name, w.Inside, change)
+					}
+				}
+			}
+		}
+	}
+	// The same four rows for another role, project and state root: other
+	// sources, the same digest.
+	for _, rt := range Runtimes() {
+		table := mustBinds(t, otherHost(rt))
+		for inside, source := range map[string]string{
+			"/ataniq/requests": "/var/lib/other/state/leads/second-lead/requests",
+			"/ataniq/mailbox":  "/var/lib/other/state/mailbox/second-lead",
+			"/ataniq/mail":     "/var/lib/other/state/leads/second-lead/mail",
+			"/coord":           "/var/lib/other/state/pub/another-project",
+		} {
+			if i, ok := find(table, inside); !ok || table[i].Source != source {
+				t.Errorf("%s: the row %s of another lead does not come from %s", rt, inside, source)
+			}
+		}
 	}
 }

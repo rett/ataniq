@@ -102,8 +102,11 @@ func TestParsePassFDs(t *testing.T) {
 	for fd := 3; fd < 3+maxPassFDs; fd++ {
 		many = append(many, "--read", itoa(fd)+"=/f")
 	}
-	if _, err := parsePassFDs(append(many, "--", "/bin/true")); err != nil {
-		t.Errorf("8 files: %v", err)
+	if got, err := parsePassFDs(append(many, "--", "/bin/true")); err != nil || len(got.Files) != maxPassFDs {
+		t.Errorf("%d files: %v", maxPassFDs, err)
+	}
+	if maxPassFDs != 128 {
+		t.Errorf("the cap is %d: the documentation and the changelog say 128", maxPassFDs)
 	}
 
 	bad := []struct {
@@ -127,7 +130,7 @@ func TestParsePassFDs(t *testing.T) {
 		{"relative path", []string{"--read", "4=f", "--", "/bin/true"}, "path must be absolute"},
 		{"empty path", []string{"--read", "4=", "--", "/bin/true"}, "path must be absolute"},
 		{"same fd twice", []string{"--read", "4=/f", "--write", "4=/g", "--", "/bin/true"}, "descriptor 4 is given twice"},
-		{"nine files", append(append([]string{}, many...), "--read", "99=/f", "--", "/bin/true"), "more than 8 descriptors"},
+		{"one file more than the cap", append(append([]string{}, many...), "--read", "999=/f", "--", "/bin/true"), "more than 128 descriptors"},
 	}
 	for _, tc := range bad {
 		_, err := parsePassFDs(tc.args)
@@ -166,6 +169,8 @@ func TestAgreesWithThePlan(t *testing.T) {
 		{"mode", modePassFDs, plan.PassFDsMode},
 		{"read", optRead, plan.PassFDsRead},
 		{"write", optWrite, plan.PassFDsWrite},
+		{"walk to a folder", optWalkDir, plan.PassFDsWalkDir},
+		{"walk to a file", optWalkFile, plan.PassFDsWalkFile},
 		{"report fd", optReportFD, plan.ProbeReportFD},
 	} {
 		if c.got != c.want {
@@ -174,5 +179,13 @@ func TestAgreesWithThePlan(t *testing.T) {
 	}
 	if minFD != 3 || maxFD != 1023 {
 		t.Errorf("descriptor bounds %d..%d", minFD, maxFD)
+	}
+	// The plan refuses to ask for more descriptors than the probe places, and
+	// gives a bind source no number the probe would not take.
+	if maxPassFDs != plan.MaxPassFDs {
+		t.Errorf("the probe places at most %d descriptors, the plan asks for at most %d", maxPassFDs, plan.MaxPassFDs)
+	}
+	if plan.MinBindFD < minFD || plan.MaxBindFD > maxFD {
+		t.Errorf("the plan gives bind sources the numbers %d to %d, the probe takes %d to %d", plan.MinBindFD, plan.MaxBindFD, minFD, maxFD)
 	}
 }

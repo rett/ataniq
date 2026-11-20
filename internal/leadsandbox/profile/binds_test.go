@@ -35,13 +35,18 @@ var goldenRows = []string{
 	"rw-bind /home/lead/CFG src=config writable-in=/home/lead",
 	"ro-bind /home/lead/CFG/skills src=skills writable-in=/home/lead/CFG",
 	"ro-bind /home/lead/CFG/INSTR src=instructions writable-in=/home/lead/CFG",
-	"ro-bind /ataniq/git/config src=git-identity",
+	"ro-bind /ataniq/git src=git-identity",
 	"rw-bind /work/ataniq src=tree",
 	"ro-bind /work/ataniq/.git/config src=git-meta writable-in=/work/ataniq",
 	"ro-bind /work/ataniq/.git/hooks src=git-meta writable-in=/work/ataniq",
 	"ro-bind /work/ataniq/.git/info src=git-meta writable-in=/work/ataniq",
 	"ro-bind /ataniq/mirror/ataniq.git src=mirror",
 	"ro-bind /ataniq/qargi src=qargi",
+	"rw-bind /home/lead/.qargi src=qargi-records writable-in=/home/lead",
+	"rw-bind /ataniq/requests src=requests",
+	"ro-bind /ataniq/mailbox src=mailbox",
+	"rw-bind /ataniq/mail src=mail",
+	"ro-bind /coord src=published",
 	"ro-bind /ataniq/assignment src=assignment",
 	"ro-bind /ataniq/projection src=projection",
 	"remount-ro /",
@@ -101,13 +106,18 @@ func TestBindTableSourcesAndAccess(t *testing.T) {
 		{"/home/lead/.claude", "/srv/state/leads/arc-lead/config/claude", KindRwBind, true},
 		{"/home/lead/.claude/skills", in.LeadSkills, KindRoBind, true},
 		{"/home/lead/.claude/CLAUDE.md", in.InstructionFile, KindRoBind, false},
-		{"/ataniq/git/config", in.GitIdentityFile, KindRoBind, false},
+		{"/ataniq/git", in.GitIdentityDir, KindRoBind, true},
 		{"/work/ataniq", "/srv/state/leads/arc-lead/tree", KindRwBind, true},
 		{"/work/ataniq/.git/config", "/srv/state/leads/arc-lead/gitmeta/config", KindRoBind, false},
 		{"/work/ataniq/.git/hooks", "/srv/state/leads/arc-lead/gitmeta/hooks", KindRoBind, true},
 		{"/work/ataniq/.git/info", "/srv/state/leads/arc-lead/gitmeta/info", KindRoBind, true},
 		{"/ataniq/mirror/ataniq.git", "/srv/state/mirrors/ataniq.git", KindRoBind, true},
 		{"/ataniq/qargi", in.QargiInstall, KindRoBind, true},
+		{"/home/lead/.qargi", "/srv/state/leads/arc-lead/qargi", KindRwBind, true},
+		{"/ataniq/requests", "/srv/state/leads/arc-lead/requests", KindRwBind, true},
+		{"/ataniq/mailbox", "/srv/state/mailbox/arc-lead", KindRoBind, true},
+		{"/ataniq/mail", "/srv/state/leads/arc-lead/mail", KindRwBind, true},
+		{"/coord", "/srv/state/pub/ataniq", KindRoBind, true},
 		{"/ataniq/assignment", in.AssignmentDir, KindRoBind, true},
 		{"/ataniq/projection", in.ProjectionDir, KindRoBind, true},
 	}
@@ -153,8 +163,6 @@ func TestLeadWritableFlags(t *testing.T) {
 		{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 		{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 	}
-	in.QargiRecords = "/srv/state/leads/arc-lead/records"
-	in.QargiRecordsInside = "/home/lead/.qargi"
 	table := mustBinds(t, in)
 	flagged := map[string]string{}
 	for _, b := range table {
@@ -201,15 +209,20 @@ func TestLeadWritableFlags(t *testing.T) {
 	}
 }
 
-func TestOptionalRecordsOutsideTheHome(t *testing.T) {
+// The records are bound at the inside path the caller gives: outside the home
+// the row has no mount point in a folder the lead writes.
+func TestRecordsOutsideTheHome(t *testing.T) {
 	in := fixture(Codex)
-	in.QargiRecords = "/srv/state/leads/arc-lead/records"
 	in.QargiRecordsInside = "/ataniq/records"
 	table := mustBinds(t, in)
 	for _, b := range table {
+		if b.Inside == "/home/lead/.qargi" {
+			t.Errorf("the fixture's inside path is still bound: %+v", b)
+		}
 		if b.Inside == "/ataniq/records" {
-			if b.Kind != KindRwBind || b.LeadWritable || b.SourceRole != RoleRecords {
-				t.Errorf("records row = %+v", b)
+			want := Bind{Kind: KindRwBind, Inside: "/ataniq/records", Source: "/srv/state/leads/arc-lead/qargi", SourceRole: RoleRecords, IsDir: true}
+			if b != want {
+				t.Errorf("records row = %+v, want %+v", b, want)
 			}
 			return
 		}
@@ -376,8 +389,6 @@ func TestReadOnlyOverBindsFollowTheirReadWriteParent(t *testing.T) {
 	for _, rt := range Runtimes() {
 		in := fixture(rt)
 		in.ExtraPlaceholders = []Placeholder{{Rel: ".envrc", Source: "/srv/owned/p/envrc"}}
-		in.QargiRecords = "/srv/state/leads/arc-lead/records"
-		in.QargiRecordsInside = "/home/lead/.qargi"
 		table := mustBinds(t, in)
 		pos := map[string]int{}
 		for i, b := range table {
@@ -438,8 +449,7 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 			{Rel: ".mcp.json", Source: "/srv/owned/placeholders/mcp.json"},
 			{Rel: ".vscode", Source: "/srv/owned/placeholders/vscode", Dir: true},
 		}
-		in.QargiRecords = "/srv/state/leads/arc-lead/records"
-		in.QargiRecordsInside = "/home/lead/.qargi"
+		in.QargiRecordsInside = "/ataniq/records"
 		for name, in := range map[string]Inputs{"plain": fixture(rt), "full": in} {
 			table := mustBinds(t, in)
 			var writable []Bind
@@ -448,8 +458,10 @@ func TestNoSourceInALeadWritableFolder(t *testing.T) {
 					writable = append(writable, b)
 				}
 			}
-			if len(writable) < 3 {
-				t.Fatalf("%s %s: only %d read-write rows", rt, name, len(writable))
+			// The home, the config folder, the tree, the records, the
+			// requests and the mail folder.
+			if len(writable) != 6 {
+				t.Fatalf("%s %s: %d read-write rows, want 6", rt, name, len(writable))
 			}
 			for _, b := range table {
 				if b.Source == "" {
@@ -520,6 +532,15 @@ func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
 		{"a row from the home", "/ataniq/qargi", "/srv/state/leads/arc-lead/home/qargi"},
 		{"a row from the config folder", "/ataniq/assignment", "/srv/state/leads/arc-lead/config/claude/a"},
 		{"a row that is a writable folder's source", "/ataniq/projection", "/srv/state/leads/arc-lead/tree"},
+		// The read-write rows of the layout: requests, mail and the records.
+		{"a row from the requests folder", "/ataniq/agent", "/srv/state/leads/arc-lead/requests/agent"},
+		{"a row that is the requests folder", "/ataniq/spec", "/srv/state/leads/arc-lead/requests"},
+		{"a row from the mail folder", "/ataniq/mailbox", "/srv/state/leads/arc-lead/mail/a-feature"},
+		{"a row that is the mail folder", "/coord", "/srv/state/leads/arc-lead/mail"},
+		{"a row from the records folder", "/ataniq/qargi", "/srv/state/leads/arc-lead/qargi/bin"},
+		{"a row that is the records folder", "/ataniq/assignment", "/srv/state/leads/arc-lead/qargi"},
+		{"the requests folder from the mail folder", "/ataniq/requests", "/srv/state/leads/arc-lead/mail/requests"},
+		{"the mail folder from the records folder", "/ataniq/mail", "/srv/state/leads/arc-lead/qargi/mail"},
 	} {
 		c := append([]Bind(nil), good...)
 		c[index(tt.inside)].Source = tt.source
@@ -539,5 +560,58 @@ func TestValidateTableRefusesASourceInALeadWritableFolder(t *testing.T) {
 	c[index("/ataniq/qargi")].Source = "/srv/state/leads"
 	if err := ValidateTable(c); err != nil {
 		t.Errorf("a source above a writable folder: %v", err)
+	}
+}
+
+// The git identity is bound as the folder that holds the file, and
+// GIT_CONFIG_GLOBAL names the file in it: a bind of the single file would keep
+// the old file when the holder replaces it by rename. The managed-settings file
+// and the instruction file stay binds of a single file.
+func TestGitIdentityIsBoundAsAFolder(t *testing.T) {
+	if GitIdentityInside != GitIdentityDirInside+"/"+GitIdentityFileName {
+		t.Errorf("GitIdentityInside = %q, not %q in %q", GitIdentityInside, GitIdentityFileName, GitIdentityDirInside)
+	}
+	for _, rt := range Runtimes() {
+		in := fixture(rt)
+		byInside := map[string]Bind{}
+		n := 0
+		for _, b := range mustBinds(t, in) {
+			byInside[b.Inside] = b
+			if b.SourceRole == RoleGitIdentity {
+				n++
+			}
+		}
+		want := Bind{Kind: KindRoBind, Inside: "/ataniq/git", Source: in.GitIdentityDir, SourceRole: RoleGitIdentity, IsDir: true}
+		if got := byInside[GitIdentityDirInside]; got != want || n != 1 {
+			t.Errorf("%s: the identity row is %+v (%d rows with the role), want %+v", rt, got, n, want)
+		}
+		if b, ok := byInside[GitIdentityInside]; ok {
+			t.Errorf("%s: the identity file is bound on its own: %+v", rt, b)
+		}
+		env, err := in.Environment()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var global string
+		for _, e := range env {
+			if e.Name == EnvGitConfig {
+				global = e.Value
+			}
+		}
+		if global != "/ataniq/git/config" || !below(global, byInside[GitIdentityDirInside].Inside) {
+			t.Errorf("%s: GIT_CONFIG_GLOBAL = %q, want the file config in the folder bound at /ataniq/git", rt, global)
+		}
+		// The two other Ataniq-owned files are binds of a single file.
+		for _, inside := range []string{in.ManagedInside(), InstructionInside(rt)} {
+			if b, ok := byInside[inside]; !ok || b.IsDir || b.Kind != KindRoBind {
+				t.Errorf("%s: %s = %+v (present %v), want a read-only bind of a file", rt, inside, b, ok)
+			}
+		}
+	}
+	// The folder is a source like any other: not in a folder the lead writes.
+	in := fixture(Claude)
+	in.GitIdentityDir = "/srv/state/leads/arc-lead/home/.config/git"
+	if err := in.Validate(); err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Errorf("an identity folder in the lead's home: %v", err)
 	}
 }

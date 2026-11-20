@@ -23,22 +23,34 @@ protocol operation can make it. Against a fresh state folder it knows no role
 at all, because no command of this build defines one. It answers two read-only
 questions on a local socket, `hello` and `status`.
 
+**The exception is canary mode.** In a build with the `ataniq_canary` tag, and
+only under `ataniqd run --canary CONFIG`, the daemon serves five more
+operations (`define`, `start`, `ticket`, `inject` and `stop`) for the one
+throwaway role that the config names, and then starts and stops that lead's
+unit. [The canary slice guide](canary-slice.md) describes it. Release builds
+do not contain canary mode, and a tagged build without `--canary` is the
+read-only skeleton this guide describes. Everything below is about that
+skeleton unless it says otherwise.
+
 These are not part of it: a real lead, the holder, a sandbox, injection of
 instructions into a session, any console integration and any Qargi
 integration. The list of what is not built is at the [end](#not-built).
 
 The tree has provisional code for some of these, and the daemon uses none of
-it: the scratch-only holder and the console's attach client
-([the lead holder guide](lead-holder.md)), the sandbox proposal
-([the lead sandbox guide](lead-sandbox.md)), the injection library
+it, except in a build with the `ataniq_canary` tag, under `--canary` (see
+[the canary slice guide](canary-slice.md)): the scratch-only holder and the
+console's attach client ([the lead holder guide](lead-holder.md)), the sandbox
+proposal ([the lead sandbox guide](lead-sandbox.md)), the injection library
 ([the lead injection guide](lead-injection.md)), and the exchange mirror with
-its intake command ([the lead intake guide](lead-intake.md)). None of that
-code imports a package of this guide, and no package of this guide imports
-it.
+its intake command ([the lead intake guide](lead-intake.md)). Without that tag
+and flag, none of that code imports a package of this guide, and no package of
+this guide imports it. In a tagged build the daemon's canary files import the
+holder's control wire, and the canary package they use for the admission
+imports the injection library's message rules.
 
 | Package or command | What it is | What the daemon does with it today |
 | --- | --- | --- |
-| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`. | It is the daemon. |
+| [`cmd/ataniqd`](../cmd/ataniqd/doc.go) | The command: `run`, `status`, `version`; in a build with the `ataniq_canary` tag also `run --canary`, `canary` and `--version`. | It is the daemon. |
 | [`internal/leaddaemon`](../internal/leaddaemon/doc.go) | Start-up order, shutdown, exit codes, the status handler and the status client. | All of it. |
 | [`internal/clientapi`](../internal/clientapi/doc.go) | The client protocol `ataniq.client/1`: socket, server, client. | Serves `hello` and `status`. |
 | [`internal/leadregistry`](../internal/leadregistry/doc.go) | The durable journal of lead roles. | Opens it and reads it. The reconcile at start writes what it finds about a role; nothing defines a role or launches one. |
@@ -244,15 +256,18 @@ accepts that by owner decision. Reading `hello` and `status` therefore tells
 every process of the user that can reach the socket what is in the registry
 summary. A managed lead that runs in a sandbox must never see this socket.
 Keeping it away is the sandbox's job; nothing here asserts or tests it, and the
-daemon launches no sandbox. The profile in
+daemon launches no sandbox, except that in a build with the `ataniq_canary`
+tag, under `--canary`, the holder it starts launches one (see
+[the canary slice guide](canary-slice.md)). The profile in
 [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal that no
-lead runs in.
+lead runs in, except there.
 
 ### Wire format
 
 One JSON object per line, in UTF-8, each line ended by one LF. Unknown fields
-in a request are ignored; a top-level key that appears twice makes the request
-invalid. A connection may carry several requests, answered in order.
+in a request are ignored, including `params` on `hello` and `status`; a
+top-level key that appears twice makes the request invalid. A connection may
+carry several requests, answered in order.
 
 A request:
 
@@ -345,7 +360,7 @@ write time. It does not bound what the handler does.
 | `invalid-request` | Not UTF-8, not a JSON object, a missing or mistyped field, a bad `request_id`, a repeated key. | Stays open. |
 | `too-large` | The request line is over the cap. | Closed. |
 | `unsupported-protocol` | Another protocol name; the error lists the supported ones. | Stays open. |
-| `unsupported-operation` | Any operation but `hello` and `status`. | Stays open. |
+| `unsupported-operation` | Any operation but `hello`, `status` and the operations of a registered extension (see below). | Stays open. |
 | `unauthorized` | The peer's user id differs, or cannot be read. | Closed. |
 | `busy` | The server is at its connection cap. | Closed. |
 | `internal` | The handler failed or panicked, or the response would be too large. | Stays open. |
@@ -355,10 +370,27 @@ in a response is the `request_id`, and only when it is valid.
 
 ### No mutation
 
-Version 1 is read-only. `hello` says `"mutations":false` and lists its two
-operations. There is no command, no command id, no approval and no event
-stream. Every other operation, whatever its name, gets `unsupported-operation`.
-A version that adds any of them would be a different protocol name.
+Version 1 is read-only. In every release build `hello` says
+`"mutations":false` and lists its two operations. There is no command, no
+command id, no approval and no event stream. Every other operation, whatever its
+name, gets `unsupported-operation`. A version that adds commands to every build
+would be a different protocol name.
+
+The server can carry extension operations that the program serving it
+registers (`Options.Extra`), each named with lower-case letters, digits and
+dashes around one dot. No release build registers one; a build with the
+`ataniq_canary` tag, under `--canary`, registers the five canary operations and
+adds the error codes `refused` and `unavailable` (see
+[the canary slice guide](canary-slice.md#the-commands)). When one is registered,
+`hello` lists the two base operations and then the extensions', and says
+`"mutations":true` only when a registered extension declares that it changes
+something. A request for such an operation may carry `params`, one JSON object
+inside the same line cap, and passes the same peer check, caps, timeouts and
+counters; a `params` that is not an object is `invalid-request`. An extension
+may answer with codes of its own, never `unauthorized`, `busy`, `too-large` or
+`unsupported-protocol`; a malformed error body from it is answered `internal`,
+and so is a panic in it, also while its result is marshalled. The protocol
+stays provisional.
 
 ## The registry
 
@@ -595,8 +627,10 @@ The file is opened close-on-exec, and is never removed.
 
 Only the daemon's own locks are taken today: the daemon lock and the runtime
 folder lock, which use the same mechanism. No role lock is taken through this
-package: the daemon starts no holder, so nothing takes one. The scratch-only
-holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
+package: the daemon starts no holder, so nothing takes one (in a build with the
+`ataniq_canary` tag, under `--canary`, it starts one, and that holder takes the
+role's lock itself; see [the canary slice guide](canary-slice.md)). The
+scratch-only holder of [the lead holder guide](lead-holder.md) holds a `role.lock` in its
 own scratch folder, taken by its own code and not at a role's path. The daemon
 never probes a role lock by taking and releasing it, and the package offers no
 such call.
@@ -636,8 +670,11 @@ authenticate a peer.
 is its implementation for the systemd user manager, and
 [`internal/leadlifecycle`](../internal/leadlifecycle/doc.go) is the logic on
 top. **The daemon calls none of `Start`, `Signal` or the lifecycle's `Start`
-and `Stop`.** What follows is what the packages do and what their tests check
-against the fake.
+and `Stop`,** except that in a build with the `ataniq_canary` tag, under
+`--canary`, the operations `canary.start` and `canary.stop` call the
+lifecycle's `Start` and `Stop` for the config's one lead role (see
+[the canary slice guide](canary-slice.md)). What follows is what the packages do
+and what their tests check against the fake.
 
 The scratch holder's unit is not one of these. `ataniq-scratch` starts its
 holder in a transient user unit `ataniq-scratch-NAME` with `systemd-run`, not
@@ -653,6 +690,25 @@ Every unit is a transient user unit with these fixed properties: `Type=exec`,
 back from it. The command is an absolute executable with its arguments, a
 working directory and an explicit environment. The manager sends the command
 with systemd's no-expand flag so that `$VAR` in an argument is not expanded.
+
+A unit specification may also carry three **limits**, `MemoryMax=`,
+`MemorySwapMax=` and `TasksMax=`. They come from configuration, never from a
+value in the code, and are absent when none is given: a specification with no
+limits sets none of the three and its start call is the call without them.
+When limits are given all three are set, each as an unsigned 64-bit number on
+the bus, and a swap limit of 0 means no swap (`MemorySwapMax=0`), not "not
+set". The specification refuses a memory limit outside 256 MiB to 64 GiB, a
+task limit outside 16 to 65,536 and a swap limit outside 0 to 64 GiB, and
+`Limits.Validate` asks the same question of limits alone. The fake records the
+limits of a unit it starts.
+
+The lifecycle's options have an optional function that gives the limits of a
+role. Start asks it once, after the preflight and before the registry changes,
+checks the answer with `Limits.Validate` and puts a copy of it in the unit
+specification. With no function, or an answer of nil, the unit has no limits.
+Limits outside the bounds are refused like a preflight refusal: nothing is
+changed, no epoch is used, no launch intent is journaled and the error wraps
+`ErrInvalidSpec`.
 
 A unit specification may name a parent unit. The unit is then also **bound** to
 it with `BindsTo=`, `PartOf=` and `After=`, so that stopping the parent stops
@@ -945,6 +1001,18 @@ sh scripts/go-tool.sh build -o build/leadunit-qualify ./qualification/leadunit/c
 ./build/leadunit-qualify
 ```
 
+The limits come from the flags `--memory-max` (default 1G), `--swap-max`
+(default 0, no swap), `--tasks-max` (default 128) and `--memory-lowered`
+(default 768M, the value the running unit is lowered to), whose defaults the
+help states; a value outside the bounds of the unit specification is a usage
+error, and so is a memory or swap size that is not a whole number of 4096-byte
+pages, because the kernel keeps such a limit as whole pages and the control
+group files are compared with the limit exactly, with no direction of rounding
+assumed. The harness's checks of them read the host only through two seams, one
+that runs `systemctl` and one that reads files and folders, which every test
+replaces with a fake, so that no test runs `systemctl` or reads a control
+group. Each check is a named line in the report.
+
 Without `--run` it prints what it would do and exits 0, without touching
 systemd. With `--run --state-dir DIR` (an existing folder of the caller, mode
 0700) it starts one transient user unit with a unique name,
@@ -956,6 +1024,18 @@ manager against it:
   among them;
 - a second start with the same name is refused;
 - `Inspect` matches the start;
+- the unit's memory, swap and task limits, set when the unit was created, read
+  back with `systemctl --user show` (normalised from `infinity`, size suffixes
+  and counts to bytes and tasks) and from `memory.max`, `memory.swap.max` and
+  `pids.max` in the unit's control group folder, each compared with the
+  specification exactly;
+- the memory limit lowered once with `systemctl --user set-property --runtime`
+  and read back both ways;
+- while the unit runs, after that, `systemd/transient` or `systemd/user.control`
+  of the user's runtime folder holds the drop-in folder `<unit>.d` that
+  `set-property` wrote (the check `runtime-folders-hold-the-unit`, which fails,
+  and so skips the check after the stop, when neither does; the unit's own file
+  does not count), so that the check after the stop has something to find gone;
 - a second unit bound to the first (`BindsTo`, `PartOf`, `After`) starts, and
   `Inspect` reads the first unit back as its parent;
 - SIGTERM to a process that ignores it leaves the control group populated;
@@ -963,6 +1043,9 @@ manager against it:
   loaded;
 - the bound unit stops with its parent, with no signal sent to it, and `Empty`
   is true for its group;
+- nothing for either unit remains under `systemd/transient` and
+  `systemd/user.control` of the user's runtime folder after the stop, and the
+  check names the entries that were seen while the unit ran and are gone;
 - `Empty` is true for a fresh unit name that was never used.
 
 It prints one JSON report with a line per check and a verdict, and always
@@ -992,31 +1075,47 @@ What only a real run can confirm:
 - what `PartOf=` does on a restart of the parent;
 - that `BindsTo` is printed as one space-separated list;
 - how long a failed unit stays loaded before it is collected;
+- that the manager's limit properties (`MemoryMax`, `MemorySwapMax` and
+  `TasksMax` as unsigned 64-bit numbers) are accepted by the user manager, that
+  the control group files carry them (which needs the memory and pids
+  controllers delegated to the unit), how `systemctl show` prints them, and
+  where `set-property --runtime` writes on a transient unit and whether the
+  stop removes it;
 - that a unit gets, besides the explicit environment, only what systemd adds
   (`HOME`, `LOGNAME`, `USER`, `SHELL`, `INVOCATION_ID` and the like).
 
 ## Not built
 
-The daemon and the packages of this guide have none of the following. Where
-another part of the tree has provisional code for an item, the item names its
-guide; the daemon uses none of that code.
+The daemon and the packages of this guide have none of the following, except
+in a build with the `ataniq_canary` tag, under `--canary`, which joins some of
+them for one throwaway role (see [the canary slice guide](canary-slice.md); each
+item says where it differs). Where another part of the tree has provisional
+code for an item, the item names its guide; the daemon uses none of that code
+without the tag and the flag.
 
 - a holder that the daemon starts, and the command line for it. `ataniq-holder`
   refuses to run without `--scratch`, and `ataniq-scratch` is what starts it
-  (see [the lead holder guide](lead-holder.md));
+  (see [the lead holder guide](lead-holder.md)); in canary mode the daemon
+  starts `ataniq-holder --canary`;
 - a sandbox for a lead: the daemon launches none. The profile of
-  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal;
+  [the lead sandbox guide](lead-sandbox.md) is an unqualified proposal; in
+  canary mode the holder launches it, with assertion 10 waived;
 - readiness: nothing sets `ready`;
 - delivery of instructions and the wait for an idle turn, and the quiesce of
   delivery before a stop (the interface exists, nothing implements it). The
   library of [the lead injection guide](lead-injection.md) is not joined to
-  the daemon;
-- tickets: `ataniq-scratch` issues the attach tickets of a scratch holder;
+  the daemon; in canary mode the daemon sends one message per epoch through
+  the holder, with no queue;
+- tickets: `ataniq-scratch` issues the attach tickets of a scratch holder; in
+  canary mode `canary.ticket` issues them;
 - the exchange mirror and the intake: `ataniq-intake` is run by hand (see
-  [the lead intake guide](lead-intake.md)), and the daemon does not call it;
+  [the lead intake guide](lead-intake.md)), and the daemon does not call it,
+  canary mode included;
 - any mutating command: nothing defines a role, starts, stops or resolves an
   unknown role. The one write the daemon makes is the reconcile's: it records
-  what it finds about a role, and acknowledges a registry recovery;
+  what it finds about a role, and acknowledges a registry recovery. In canary
+  mode `canary.define`, `canary.start` and `canary.stop` define, start and stop
+  the config's one role;
 - the assignment record and Qargi's side of it;
 - observation of the tmux-manager's leads;
 - start at boot, and a unit file for the daemon itself: `ataniqd run` is
@@ -1033,4 +1132,7 @@ guide; the daemon uses none of that code.
 
 A start also needs a qualification record and a command line for the holder.
 The daemon passes a check and a command builder that always refuse, and they are
-never reached because nothing calls start.
+never reached because nothing calls start. In canary mode the daemon passes the
+canary preflight, which passes for the config's role only and records that
+there is no qualification record, and the canary holder command; `canary.start`
+calls start.

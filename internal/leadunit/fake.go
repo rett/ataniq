@@ -197,6 +197,8 @@ type fakeUnit struct {
 	procs      []*fakeProc
 	// parent is the unit this one is bound to ("" for none).
 	parent string
+	// limits is the limits the unit was started with; nil for none.
+	limits *Limits
 	// stopping is set by the stop that follows the end of the parent: the unit
 	// is deactivating until its group is empty.
 	stopping bool
@@ -613,6 +615,21 @@ func (f *Fake) Loaded(unit string) bool {
 	return f.units[unit] != nil
 }
 
+// UnitLimits returns the limits the loaded unit was started with ([Spec.Limits])
+// and true; ok is false when the unit is not loaded or was started without
+// limits. A unit added by [Fake.AddForeign] has none. [State] does not carry
+// them, as the real manager's inspection does not read them back.
+func (f *Fake) UnitLimits(unit string) (l Limits, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settle()
+	u := f.units[unit]
+	if u == nil || u.limits == nil {
+		return Limits{}, false
+	}
+	return *u.limits, true
+}
+
 func (f *Fake) newProc(script ProcScript) *fakeProc {
 	f.nextPID++
 	return &fakeProc{pid: f.nextPID, script: script}
@@ -926,6 +943,10 @@ func (f *Fake) launch(spec Spec) State {
 	prev := f.lastCG[spec.Unit]
 	u := f.newUnit(spec.Unit, spec.Description(), procs)
 	u.parent = spec.Parent
+	if spec.Limits != nil {
+		l := *spec.Limits
+		u.limits = &l
+	}
 	if (script.reuseCG || f.leftover[spec.Unit]) && prev != "" {
 		u.cgroupID = prev
 	}
