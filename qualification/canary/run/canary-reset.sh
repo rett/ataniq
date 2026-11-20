@@ -52,6 +52,7 @@ usage() {
     '       --dry       print the plan and delete nothing' \
     '       canary-reset.sh --self-test NAME VALUE...' \
     '         typed-word WORD         go when WORD is the word that confirms, else stop' \
+    '         same-dir ENTERED NAME   same when the folder NAME leads to is ENTERED, else different' \
     '         procs-of ROOT PROCDIR   the daemon and holder processes of ROOT in PROCDIR' >&2
   exit 2
 }
@@ -160,6 +161,16 @@ still_quiet() {
 if [ "${1:-}" = --self-test ]; then
   case ${2:-} in
     typed-word) [ "$#" -eq 3 ] || usage; typed_word "$3"; exit 0 ;;
+    same-dir)
+      # Enters ENTERED as the main flow enters ROOT, then asks the check about NAME.
+      [ "$#" -eq 4 ] || usage
+      cd -P -- "$3" || {
+        printf '%s\n' "refused: $3 cannot be entered"
+        exit 1
+      }
+      if cc_same_dir "$4"; then printf '%s\n' same; else printf '%s\n' different; fi
+      exit 0
+      ;;
     procs-of)
       [ "$#" -eq 4 ] || usage
       procs_of "$3" "$4" || {
@@ -252,11 +263,12 @@ still_quiet "$ROOT" /proc
 
 # The checks leave a window in which ROOT itself could be replaced by a link
 # to a folder elsewhere. The script therefore enters ROOT once, with every
-# link resolved, checks that it is where it was, and from then on names the two
+# link resolved, checks that it is where it was (cc_same_dir asks the kernel;
+# canary-lib.sh says why pwd -P cannot), and from then on names the two
 # folders relative to the folder it is in: a later swap of ROOT leads nowhere,
 # because the paths no longer go through ROOT.
 cd -P -- "$ROOT" || cc_die "$ROOT cannot be entered, so nothing is deleted"
-[ "$(pwd -P)" = "$ROOT" ] || cc_die "$ROOT was replaced while the checks ran, so nothing is deleted"
+cc_same_dir "$ROOT" || cc_die "$ROOT was replaced while the checks ran, so nothing is deleted"
 
 # The two folders may hold read-only entries (a tree of git objects): their
 # folders are opened with find, which never follows a link (not even one on
@@ -272,7 +284,7 @@ done
 cc_say "deleted $ROOT/state and $ROOT/runtime"
 # Nothing is made unless the folder entered above is still ROOT; the make
 # checks again right before ataniq-intake (see cc_make_state in canary-lib.sh).
-[ "$(pwd -P)" = "$ROOT" ] || cc_die "$ROOT was replaced after the deletion, so nothing is made again"
+cc_same_dir "$ROOT" || cc_die "$ROOT was replaced after the deletion, so nothing is made again"
 cc_make_state "$ROOT" "$BIN" pinned
 cc_say "made $ROOT/state and $ROOT/runtime again, and the mirror with the branch develop"
 cc_say 'Reset done. Nothing was started. The run script is typed as before.'
