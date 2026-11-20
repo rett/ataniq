@@ -1933,6 +1933,39 @@ func TestCanaryRunKitOpenRunsCompareResolvedPaths(t *testing.T) {
 	}
 }
 
+// The list is read as qargi local list prints it: the exact header, and every
+// line of a kind it knows. Rows it passes over are counted; a drifted list is
+// not read, and the step then asks the lead as before.
+func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
+	dir := t.TempDir()
+	const header = "ROLE       SLUG               AGE        APPLIED MERGED   RUN"
+	row := "build      one                1d         no     no       /x/run"
+	gone := "build      old                20d        no     no       /x/old  directory gone, saved copy /x/saved (qargi review apply --from-saved saved)"
+	residue := "  residue: /x/run/home/.codex/auth.json (a link a start left)"
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"the list as printed", []string{header, row, residue, gone, ""}, "gone 1\nother 0"},
+		{"only the header", []string{header}, "gone 0\nother 0"},
+		{"a column inserted before RUN", []string{"ROLE       SLUG               AGE        APPLIED MERGED   EXTRA RUN", "build one 1d no no x /x/run"}, "header bad\ngone 0\nother 1"},
+		{"a column renamed", []string{"ROLE SLUG AGE APPLIED MERGED PATH", row}, "header bad\ngone 0\nother 0"},
+		{"a row of seven fields", []string{header, "build one 1d no no x /x/run"}, "gone 0\nother 1"},
+		{"a row with an unknown applied word", []string{header, "build one 1d maybe no /x/run"}, "gone 0\nother 1"},
+		{"a line of another kind", []string{header, row, "note: something new"}, "gone 0\nother 1"},
+		{"an empty file", []string{}, "header bad\ngone 0\nother 0"},
+	} {
+		f := canaryWrite(t, dir, "list.txt", strings.Join(c.lines, "\n")+"\n")
+		if c.name == "an empty file" {
+			f = canaryWrite(t, dir, "list.txt", "")
+		}
+		if got := canaryRead(t, "list-scan", f); got != c.want {
+			t.Errorf("list scan, %s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCanaryRunKitLoadedUnitsLeaveSlicesOut(t *testing.T) {
 	dir := t.TempDir()
 	only := canaryWrite(t, dir, "slices.txt", "ataniq-qualify-ab12.slice loaded active active x\nataniq-old.slice loaded inactive dead y\n")
@@ -1965,13 +1998,29 @@ func TestCanaryRunKitFactsVerdicts(t *testing.T) {
 		}
 		return strings.Join(lines, "\n")
 	}
+	// withLimits is a report of a run with limits: the two read-back checks are
+	// among the checks (named as leadunit-qualify names them).
+	withLimits := func(tool, show, cgroup string) string {
+		return strings.Join([]string{
+			"tool=" + tool, "verdict=pass",
+			"checks.0.name=unit-starts", "checks.0.result=pass",
+			"checks.1.name=limits-show-read-back", "checks.1.result=" + show,
+			"checks.2.name=limits-cgroup-read-back", "checks.2.result=" + cgroup,
+		}, "\n")
+	}
+	const limitsOK = "ok verdict pass, 3 checks, every result pass, the limits read back"
 	for _, c := range []struct{ name, fields, want string }{
-		{"a pass", unit("pass", "pass", "pass"), "ok verdict pass, 2 checks, every result pass"},
+		{"a run with limits", withLimits("leadunit-qualify", "pass", "pass"), limitsOK},
+		{"a run without limits", unit("pass", "pass", "pass"), "bad the report has no passing check limits-show-read-back (a run without limits?)"},
+		{"no cgroup read-back", strings.Replace(withLimits("leadunit-qualify", "pass", "pass"), "limits-cgroup-read-back", "other", 1), "bad the report has no passing check limits-cgroup-read-back (a run without limits?)"},
+		{"another tool", withLimits("other-tool", "pass", "pass"), "bad the report is of the tool other-tool, not leadunit-qualify"},
+		{"no tool", strings.Replace(withLimits("x", "pass", "pass"), "tool=x\n", "", 1), "bad the report is of the tool , not leadunit-qualify"},
+		{"a failed limit check", withLimits("leadunit-qualify", "pass", "fail"), "bad check 2 (limits-cgroup-read-back) has the result fail, not pass"},
 		{"a failed check", unit("pass", "pass", "fail"), "bad check 1 (c1) has the result fail, not pass"},
 		{"a failed verdict", unit("fail", "pass"), "bad the verdict is fail, not pass"},
-		{"no verdict", "checks.0.name=a\nchecks.0.result=pass", "bad the report has no verdict"},
-		{"no checks", "verdict=pass", "bad the report has no checks"},
-		{"a check without a result", "verdict=pass\nchecks.0.name=a", "bad 1 check(s) have no result"},
+		{"no verdict", "tool=leadunit-qualify\nchecks.0.name=a\nchecks.0.result=pass", "bad the report has no verdict"},
+		{"no checks", "tool=leadunit-qualify\nverdict=pass", "bad the report has no checks"},
+		{"a check without a result", "tool=leadunit-qualify\nverdict=pass\nchecks.0.name=a", "bad 1 check(s) have no result"},
 	} {
 		if got := canaryRead(t, "unit-facts", c.fields); got != c.want {
 			t.Errorf("unit facts, %s: got %q, want %q", c.name, got, c.want)
@@ -2072,6 +2121,7 @@ func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
 	funcs := canaryFuncs(t, canaryScriptText(t))
 	for _, c := range []struct{ fn, word string }{
 		{"no_open_runs", `open_runs "$LASTOUT" "$REPO"`},
+		{"no_open_runs", `list_gone "$LASTOUT"`},
 		{"step_1", "no_open_runs || return 0"},
 		{"step_1", `loaded_units "$LASTOUT"`},
 		{"facts_pass", "unit_facts_verdict"},

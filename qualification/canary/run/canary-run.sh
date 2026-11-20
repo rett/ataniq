@@ -55,7 +55,7 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
-    '         open-runs LIST REPO | loaded-units FILE | tracked-changes FILE' \
+    '         open-runs LIST REPO | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
     '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
     '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
     '                      what steps 1, 2, 3, 8, 12 and 20 read themselves in place of a word' >&2
@@ -575,9 +575,10 @@ repo_roots() {
 # open_runs LIST REPO prints the folder of each run that "qargi local list"
 # (the text in the file LIST) shows as open and whose repo.path is REPO or the
 # main work tree of REPO, both sides compared as resolved paths. A run is open
-# unless it is applied (or closed) and, when applied, merged. The lines that
-# are not a row are passed over; a row of a run whose folder is gone ("directory
-# gone") is passed over and counted on standard error, for the caller's log.
+# unless it is applied (or closed) and, when applied, merged. Residue lines and
+# the rows of a run whose folder is gone ("directory gone") are not rows of an
+# open run it can read; list_gone counts the second kind, and the caller says
+# so.
 open_runs() {
   _roots=$(repo_roots "$2")
   awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1" |
@@ -593,9 +594,43 @@ $_rp
     done
 }
 
+# list_scan LIST classifies the lines of the text of "qargi local list" in the
+# file LIST, as "qargi local list" prints them: the header (ROLE SLUG AGE
+# APPLIED MERGED RUN, exactly), a row of six fields whose APPLIED is no, yes or
+# closed and whose RUN is a path, a residue line, a row whose run directory is
+# gone ("directory gone"), and a blank line. It prints "header bad" when the
+# header is another, "gone N" for the rows of a run whose directory is gone
+# (their repo.path cannot be read), and "other N" for every line it does not
+# know.
+list_scan() {
+  awk '
+    NR == 1 { $1 = $1; if ($0 != "ROLE SLUG AGE APPLIED MERGED RUN") bad = 1; next }
+    $0 ~ /^[ \t]*$/ { next }
+    $0 ~ /^  residue: / { next }
+    $0 ~ /  directory gone/ && substr($0, 1, 1) != " " { gone++; next }
+    NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || $4 == "yes" || $4 == "closed") { next }
+    { other++ }
+    END {
+      if (NR == 0 || bad) print "header bad"
+      print "gone " gone + 0
+      print "other " other + 0
+    }' "$1"
+}
+
 # list_looks_right reports whether the file is what "qargi local list" prints:
-# its first line is the header.
-list_looks_right() { case $(sed -n 1p "$1") in 'ROLE '*' RUN') return 0 ;; *) return 1 ;; esac; }
+# the header is the one it prints, and every other line is one list_scan knows.
+# A list that drifted (another column, a line of another kind) is not read.
+list_looks_right() {
+  case $(list_scan "$1") in
+    *'header bad'*) return 1 ;;
+    *'other 0') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# list_gone prints how many rows of the list are of a run whose directory is
+# gone, which open_runs passes over because the run's repo.path is not there.
+list_gone() { list_scan "$1" | awk '$1 == "gone" { print $2 }'; }
 
 # loaded_units prints the unit names of the file (systemctl list-units
 # --plain --no-legend), the slices left out: the slices of the earlier
@@ -608,21 +643,26 @@ untracked_only() { awk 'substr($0, 1, 2) == "??"' "$1"; }
 tracked_changes() { awk 'substr($0, 1, 2) != "??" && $0 != ""' "$1"; }
 
 # unit_facts_verdict FIELDS reads the lines that ataniq-canary fields prints for
-# the report of leadunit-qualify. It prints "ok TEXT" when the verdict is pass
-# and every entry of checks has the result pass, and "bad REASON" otherwise.
+# the report of leadunit-qualify. It prints "ok TEXT" when the tool is
+# leadunit-qualify, the verdict is pass, every entry of checks has the result
+# pass, and the checks that a run with limits has (limits-show-read-back and
+# limits-cgroup-read-back) are there and pass, and "bad REASON" otherwise. A
+# report of a run without limits has none of those two checks.
 unit_facts_verdict() {
   printf '%s\n' "$1" | awk '
     { v = substr($0, index($0, "=") + 1) }
+    /^tool=/ { tool = v }
     /^verdict=/ { verdict = v; hv = 1 }
     /^checks\.[0-9]+\./ {
       split($0, a, "."); i = a[2]; seen[i] = 1
       if ($0 ~ /^checks\.[0-9]+\.name=/) nm[i] = v
       if ($0 ~ /^checks\.[0-9]+\.result=/) {
-        hr[i] = 1
+        hr[i] = 1; rs[i] = v
         if (v != "pass" && bad == "") bad = "check " i " (" nm[i] ") has the result " v ", not pass"
       }
     }
     END {
+      if (tool != "leadunit-qualify") { print "bad the report is of the tool " tool ", not leadunit-qualify"; exit }
       if (!hv) { print "bad the report has no verdict"; exit }
       if (verdict != "pass") { print "bad the verdict is " verdict ", not pass"; exit }
       n = 0; miss = 0
@@ -630,7 +670,13 @@ unit_facts_verdict() {
       if (n == 0) { print "bad the report has no checks"; exit }
       if (bad != "") { print "bad " bad; exit }
       if (miss > 0) { print "bad " miss " check(s) have no result"; exit }
-      print "ok verdict pass, " n " checks, every result pass"
+      m = split("limits-show-read-back limits-cgroup-read-back", want, " ")
+      for (k = 1; k <= m; k++) {
+        found = 0
+        for (i in seen) if (nm[i] == want[k] && rs[i] == "pass") found = 1
+        if (!found) { print "bad the report has no passing check " want[k] " (a run without limits?)"; exit }
+      }
+      print "ok verdict pass, " n " checks, every result pass, the limits read back"
     }'
 }
 
@@ -775,6 +821,11 @@ self_test() {
       # LIST REPO: the open runs of REPO in the text of qargi local list.
       [ "$#" -eq 2 ] || usage
       open_runs "$1" "$2"
+      ;;
+    list-scan)
+      # LIST: how list_scan reads the text of qargi local list.
+      [ "$#" -eq 1 ] || usage
+      list_scan "$1"
       ;;
     loaded-units)
       # FILE: the loaded units, slices left out, in a list-units text.
@@ -1032,6 +1083,11 @@ no_open_runs() {
     note 'the output of qargi local list cannot be read: the machine check of the open runs is not possible, the lead is asked'
     affirm 'Lead: no Qargi run is open' yes || return 1
     return 0
+  fi
+  _gone=$(list_gone "$LASTOUT")
+  if [ "${_gone:-0}" -gt 0 ]; then
+    out "   $_gone run(s) in the list have a directory that is gone: their repo.path cannot be read, they are not counted"
+    note "$_gone run(s) of qargi local list have a directory that is gone: not counted as open runs of this project"
   fi
   _open=$(open_runs "$LASTOUT" "$REPO")
   if [ -n "$_open" ]; then
