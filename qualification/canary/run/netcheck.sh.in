@@ -21,6 +21,10 @@ HOSTS='api.anthropic.com claude.ai platform.claude.com console.anthropic.com'
 # The holder uses resolved's upstream file only when the host's file is the
 # local stub (it resolves to the stub file, or its one nameserver is
 # 127.0.0.53) and the upstream file exists; otherwise the host's file.
+# This is an approximation of the holder's rule (sandboxnet/resolv.go), which
+# decides on its parsed list: it drops duplicates, maps ::ffff:127.0.0.53 to
+# IPv4 and drops unusable lines. Here the raw nameserver lines are compared, so
+# those rare layouts may bind the host file where the holder uses the upstream.
 RESOLV=/etc/resolv.conf
 _stub=0
 [ "$(readlink -f /etc/resolv.conf 2>/dev/null)" = /run/systemd/resolve/stub-resolv.conf ] && _stub=1
