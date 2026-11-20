@@ -204,7 +204,7 @@ ends a wait without a key, and that is recorded as such.
    (see [the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
    Step 4 asks for the review and the report. Pass B reuses pass A's record
    when the template's hash is unchanged. `/ataniq` must not exist on the host.
-3. **The mirror exists** before provisioning. Make it with
+3. **The mirror exists** before provisioning (`canary-prepare.sh` makes it, below). Make it with
    `build/canary/ataniq-intake init --state <state root> --project throwaway-one`
    and put the throwaway repository's upstream branch in it. It is then at
    `<state root>/mirrors/throwaway-one.git`, which is what `provision.mirror`
@@ -219,6 +219,51 @@ ends a wait without a key, and that is recorded as such.
    the file with `ataniq-canary check-inputs`.
 6. **The quiet window:** no Qargi run is open, no `ataniq-lead-*` unit exists,
    and no agent session is open that has been told about the slice.
+
+## Prepare and reset
+
+Two helpers write the set-up of pass A, and put it back. Neither answers a
+prompt, and neither starts a unit, a daemon, a sandbox or an agent. They lie
+beside the run script and share `canary-lib.sh`, which is only sourced. They
+use the tools the run script uses, and besides them `chmod`, `readlink` and
+`ls`.
+
+```sh
+sh qualification/canary/run/canary-prepare.sh --dry
+sh qualification/canary/run/canary-prepare.sh [--root DIR] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `--root DIR` | The folder that holds the whole set-up, an absolute path. The default is `ataniq-canary-a` in your cache folder. It must be new or empty. It is refused when it is a link, in `/tmp` or `/var/tmp`, or inside the repository checkout (or holds it), and when its path has a character outside letters, digits and `. _ / + -`. |
+| `--pass A` | The pass. Only A is prepared: pass B has a live agent and a config of its own. |
+| `--bin DIR` | The built binaries, `build/canary` of the checkout by default. All seven must be there; a missing one is named. |
+| `--build` | Run `make canary-build` first. Without it nothing is built. |
+| `--pasta PATH` | A regular executable file to use as pasta. Without it `/usr/bin/pasta` is used; when that is a link, which the harness refuses, the regular file it leads to is copied to `ROOT/bin/pasta` and the output says so: the subject is then a copy of `passt`, not `pasta` itself. A link given with `--pasta` is refused. |
+| `--bwrap PATH` | The bubblewrap executable. The default is the one on `PATH`. |
+| `--dry` | Print what would be made, run nothing and write nothing. |
+
+It makes, below the root, `state/` and `runtime/` (mode 0700, the two roots of
+the config), `evidence/`, `upstream/` (a throwaway repository with one commit
+on `develop`, by a made-up author at `example.invalid`), the mirror
+`state/mirrors/throwaway-one.git` (made with `ataniq-intake init`, with
+`develop` pushed into it), `conf/` (the sandbox inputs file and the config's
+other files: the replay screens copied from the recorded set of claude 2.1.325,
+a minimal managed-settings file and a no-op guard hook), `agent-install/` with
+a copy of the built stand-in, `config.json`, `mirror-qual/config.json` and the
+mark `.canary-prepared`. The config is the one under "The config" below,
+with the stand-in agent, the runtime `claude` 2.1.325, `footer_mode` `manual`,
+`inject` true and the proposed limits; the provider host is `api.anthropic.com`,
+a name that resolves, because the reserved example names fail assertion 4. It
+runs `ataniq-canary profile-digest` and writes the pin into
+`holder.profile_digest`, then runs `ataniq-canary check-inputs`. It prints no
+secret, and ends with the commands you type next.
+
+`qualify-mirror` stays your own step: the script writes its config with
+`"i_run_this_on_purpose": false`, and the acknowledgement is yours to change
+([the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
+A prepare that fails part way leaves what it made and no mark; remove the root
+by hand and run it again.
 
 ### The config
 

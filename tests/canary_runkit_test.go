@@ -9,6 +9,9 @@ package tests
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -350,20 +353,34 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 }
 
 func TestCanaryRunKitScriptIsPlainShell(t *testing.T) {
-	path := filepath.Join(root(t), canaryRunScript)
+	canaryPlainShell(t, canaryRunScript, true)
+	// It never names the tag's build: it only runs what canary-build built.
+	text := canaryScriptText(t)
+	if strings.Contains(text, "go-tool.sh") || strings.Contains(text, "go build") {
+		t.Error("the script builds something")
+	}
+}
+
+// canaryPlainShell checks one script of the kit (path from the repository
+// root): it parses with sh -n and uses no form of another shell. A run script
+// starts with #!/bin/sh and sets -eu; the shared library (runnable false) is
+// only sourced.
+func canaryPlainShell(t *testing.T, rel string, runnable bool) {
+	t.Helper()
+	path := filepath.Join(root(t), rel)
 	if out, err := exec.Command("/bin/sh", "-n", path).CombinedOutput(); err != nil {
-		t.Fatalf("sh -n: %v\n%s", err, out)
+		t.Fatalf("sh -n %s: %v\n%s", rel, err, out)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.HasPrefix(text, "#!/bin/sh\n") {
-		t.Error("the script does not start with #!/bin/sh")
+	if runnable && !strings.HasPrefix(text, "#!/bin/sh\n") {
+		t.Errorf("%s does not start with #!/bin/sh", rel)
 	}
-	if !strings.Contains(text, "\nset -eu\n") {
-		t.Error("the script does not set -eu")
+	if runnable && !strings.Contains(text, "\nset -eu\n") {
+		t.Errorf("%s does not set -eu", rel)
 	}
 	// The forms of another shell that sh -n of a larger shell accepts.
 	for name, re := range map[string]*regexp.Regexp{
@@ -377,12 +394,8 @@ func TestCanaryRunKitScriptIsPlainShell(t *testing.T) {
 		"read -p":       regexp.MustCompile(`read -[a-qs-z]`),
 	} {
 		if loc := re.FindStringIndex(text); loc != nil {
-			t.Errorf("the script uses %s, which is not POSIX sh: %q", name, text[loc[0]:min(len(text), loc[1]+40)])
+			t.Errorf("%s uses %s, which is not POSIX sh: %q", rel, name, text[loc[0]:min(len(text), loc[1]+40)])
 		}
-	}
-	// It never names the tag's build: it only runs what canary-build built.
-	if strings.Contains(text, "go-tool.sh") || strings.Contains(text, "go build") {
-		t.Error("the script builds something")
 	}
 }
 
@@ -2300,7 +2313,7 @@ func canaryDef(t *testing.T, script, name string) string {
 	if end < 0 {
 		t.Fatalf("the function %s does not end", name)
 	}
-	return script[m[0]:m[1]+end+3]
+	return script[m[0] : m[1]+end+3]
 }
 
 // canaryStepPair runs a runcap line and the check line after it, as a step
@@ -2338,4 +2351,543 @@ func canaryStepPair(t *testing.T, pair string, code int) string {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	return string(out)
+}
+
+// ---------------------------------------------------------------------------
+// The helpers of the kit: canary-prepare.sh and canary-reset.sh. Their tests
+// run them in a folder of their own with stub binaries that record being
+// called, and with --dry or --self-test, or (prepare) for real: prepare
+// starts nothing, it makes files and runs the stubs of ataniq-intake and
+// ataniq-canary. Nothing here starts a unit, a namespace or an agent.
+
+const (
+	canaryPrepareScript = "qualification/canary/run/canary-prepare.sh"
+	canaryLibScript     = "qualification/canary/run/canary-lib.sh"
+	canaryStubDigest    = "abababababababababababababababababababababababababababababababab"
+)
+
+func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
+	canaryPlainShell(t, canaryPrepareScript, true)
+	canaryPlainShell(t, canaryLibScript, false)
+	// The kit's scripts are these and no others: a new one is listed here.
+	entries, err := os.ReadDir(filepath.Join(root(t), "qualification/canary/run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shells []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sh") {
+			shells = append(shells, e.Name())
+		}
+	}
+	if want := []string{"canary-lib.sh", "canary-prepare.sh", "canary-run.sh"}; !slices.Equal(shells, want) {
+		t.Errorf("the scripts of the kit are %v, want %v", shells, want)
+	}
+	// The helpers never answer a prompt and start no unit, daemon or sandbox.
+	for _, rel := range []string{canaryPrepareScript, canaryLibScript} {
+		data, err := os.ReadFile(filepath.Join(root(t), rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range strings.Split(string(data), "\n") {
+			l = strings.TrimSpace(l)
+			if strings.HasPrefix(l, "#") {
+				continue
+			}
+			for _, bad := range []string{"systemd-run", "systemctl", "unshare", "yes |", "echo reset", "printf 'reset"} {
+				if strings.Contains(l, bad) {
+					t.Errorf("%s: %q: %s", rel, l, bad)
+				}
+			}
+			// A binary run by name is one of the two the helpers need.
+			for _, run := range []string{"\"$BIN/", "\"$2/", "\"$BWRAP\"", "\"$PASTA_USE\"", "\"$PASTA\""} {
+				if strings.HasPrefix(l, run) && !strings.HasPrefix(l, "\"$BIN/ataniq-canary\" ") && !strings.HasPrefix(l, "\"$2/ataniq-intake\" ") {
+					t.Errorf("%s runs a program other than ataniq-canary and ataniq-intake: %q", rel, l)
+				}
+			}
+		}
+	}
+}
+
+// canaryOffTmp makes a folder outside /tmp and /var/tmp, which the helpers
+// refuse as a root: in the user's cache folder, else in /dev/shm. It is
+// removed with the test.
+func canaryOffTmp(t *testing.T) string {
+	t.Helper()
+	var bases []string
+	if c, err := os.UserCacheDir(); err == nil {
+		bases = append(bases, c)
+	}
+	bases = append(bases, "/dev/shm")
+	for _, b := range bases {
+		if err := os.MkdirAll(b, 0o700); err != nil {
+			continue
+		}
+		dir, err := os.MkdirTemp(b, "ataniq-runkit-test-")
+		if err != nil {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(dir)
+		if err != nil || strings.HasPrefix(real, "/tmp/") || strings.HasPrefix(real, "/var/tmp/") {
+			os.RemoveAll(dir)
+			continue
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		return real
+	}
+	t.Skip("no writable folder outside /tmp for the root of a prepare")
+	return ""
+}
+
+// canaryHelperEnv is the place a helper test runs in: a folder outside /tmp
+// that holds the stub binaries (bin), the stub tools (tools) and the calls
+// file.
+type canaryHelperEnv struct {
+	dir, bin, tools, calls string
+}
+
+// canaryStubKit writes the stubs. Every stub of the seven binaries records
+// its call; ataniq-intake init makes the mirror folder as a bare repository,
+// ataniq-canary prints a fixed digest. The others are never called.
+func canaryStubKit(t *testing.T) canaryHelperEnv {
+	t.Helper()
+	dir := canaryOffTmp(t)
+	e := canaryHelperEnv{dir: dir, bin: filepath.Join(dir, "bin"), tools: filepath.Join(dir, "tools"), calls: filepath.Join(dir, "calls")}
+	for _, d := range []string{e.bin, e.tools, filepath.Join(dir, "home")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record := "#!/bin/sh\necho \"$(basename \"$0\") $*\" >>'" + e.calls + "'\n"
+	stubs := map[string]string{
+		"ataniq-intake": record + `[ "$1" = init ] || exit 97
+mkdir -p "$3/mirrors"
+git init -q --bare "$3/mirrors/$5.git"
+`,
+		"ataniq-canary": record + `case $1 in
+  profile-digest) echo ` + canaryStubDigest + ` ;;
+  check-inputs) echo ok ;;
+  *) exit 97 ;;
+esac
+`,
+	}
+	for _, name := range canaryRunBinaries {
+		body, ok := stubs[name]
+		if !ok {
+			body = record + "exit 97\n"
+		}
+		if name == "ataniq-canary-standin" {
+			body = "#!/bin/sh\n# stand-in stub\n" + record + "exit 97\n"
+		}
+		if err := os.WriteFile(filepath.Join(e.bin, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A systemctl that records and reports the units in the file "units".
+	units := filepath.Join(dir, "units")
+	sysctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + e.calls + "'\ncase $* in\n  *list-units*) [ -f '" + units + "' ] && cat '" + units + "'; exit 0 ;;\nesac\nexit 97\n"
+	if err := os.WriteFile(filepath.Join(e.tools, "systemctl"), []byte(sysctl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// run runs the script with the arguments, with the stub tools before the
+// host's on PATH, and returns the output and the exit status.
+func (e canaryHelperEnv) run(t *testing.T, rel string, stdin string, args ...string) (string, int) {
+	t.Helper()
+	home := filepath.Join(e.dir, "home")
+	cmd := exec.Command("/bin/sh", append([]string{filepath.Join(root(t), rel)}, args...)...)
+	cmd.Dir = e.dir
+	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + home, "XDG_RUNTIME_DIR=" + filepath.Join(e.dir, "run")}
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("the script did not run: %v", err)
+		}
+		code = exit.ExitCode()
+	}
+	return string(out), code
+}
+
+func (e canaryHelperEnv) callLines(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(e.calls)
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// pasta writes a regular executable that stands for pasta.
+func (e canaryHelperEnv) pasta(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(e.dir, "pasta-file")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func (e canaryHelperEnv) prepareArgs(t *testing.T, root string, more ...string) []string {
+	t.Helper()
+	return append([]string{"--root", root, "--bin", e.bin, "--pasta", e.pasta(t), "--bwrap", "/usr/bin/bwrap"}, more...)
+}
+
+func canaryMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	st, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return st.Mode().Perm()
+}
+
+func TestCanaryRunKitPrepareMakesTheSetUp(t *testing.T) {
+	e := canaryStubKit(t)
+	r := filepath.Join(e.dir, "set-up")
+	out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...)
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	modes := map[string]os.FileMode{
+		"":                                    0o700,
+		"state":                               0o700,
+		"runtime":                             0o700,
+		"evidence":                            0o700,
+		"config.json":                         0o600,
+		"conf/sandbox-inputs.json":            0o600,
+		"conf/managed-settings.json":          0o600,
+		"conf/guard-hook":                     0o700,
+		"conf/replay-screens/1.json":          0o600,
+		"conf/replay-screens/2.txt":           0o600,
+		"conf/replay-screens/report.txt":      0o600,
+		"agent-install/ataniq-canary-standin": 0o700,
+		"mirror-qual/config.json":             0o600,
+		".canary-prepared":                    0o600,
+	}
+	for name, want := range modes {
+		if got := canaryMode(t, filepath.Join(r, name)); got != want {
+			t.Errorf("%s: mode %o, want %o", name, got, want)
+		}
+	}
+	// The config: pass A, the stand-in, the proposed limits, the pin from the
+	// stub's digest, and every path below the root.
+	var cfg struct {
+		Role        string
+		StateRoot   string `json:"state_root"`
+		RuntimeRoot string `json:"runtime_root"`
+		Holder      struct {
+			Executable    string
+			SandboxInputs string `json:"sandbox_inputs"`
+			ProfileDigest string `json:"profile_digest"`
+		}
+		Agent struct {
+			Kind, Runtime  string
+			FooterMode     string `json:"footer_mode"`
+			RuntimeVersion string `json:"runtime_version"`
+			Argv           []string
+		}
+		Inject    bool
+		Limits    map[string]int64
+		Provision struct {
+			Mirror         string
+			UpstreamBranch string `json:"upstream_branch"`
+			GitEmail       string `json:"git_email"`
+			ReplayScreens  string `json:"replay_screens"`
+		}
+	}
+	cfgData, err := os.ReadFile(filepath.Join(r, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(cfgData))
+	if err := dec.Decode(&cfg); err != nil {
+		t.Fatalf("config.json: %v\n%s", err, cfgData)
+	}
+	cfg.Provision.ReplayScreens = strings.TrimPrefix(cfg.Provision.ReplayScreens, r)
+	for what, ok := range map[string]bool{
+		"the digest is the stub's":    cfg.Holder.ProfileDigest == canaryStubDigest,
+		"the stand-in":                cfg.Agent.Kind == "stand-in" && cfg.Agent.Runtime == "claude" && cfg.Agent.RuntimeVersion == "2.1.325" && cfg.Agent.FooterMode == "manual",
+		"the agent's command":         len(cfg.Agent.Argv) == 1 && cfg.Agent.Argv[0] == "/ataniq/agent/ataniq-canary-standin",
+		"inject":                      cfg.Inject,
+		"the roots":                   cfg.StateRoot == r+"/state" && cfg.RuntimeRoot == r+"/runtime",
+		"the inputs file":             cfg.Holder.SandboxInputs == r+"/conf/sandbox-inputs.json",
+		"the holder":                  cfg.Holder.Executable == e.bin+"/ataniq-holder",
+		"the mirror and branch":       cfg.Provision.Mirror == r+"/state/mirrors/throwaway-one.git" && cfg.Provision.UpstreamBranch == "develop",
+		"an example.invalid identity": strings.HasSuffix(cfg.Provision.GitEmail, "@example.invalid"),
+		"the limits": cfg.Limits["memory_max_bytes"] == 4<<30 && cfg.Limits["swap_max_bytes"] == 0 && cfg.Limits["tasks_max"] == 512 &&
+			cfg.Limits["memory_floor_bytes"] == 1<<30 && cfg.Limits["memory_share_percent"] == 50,
+	} {
+		if !ok {
+			t.Errorf("config.json: %s is wrong:\n%s", what, cfgData)
+		}
+	}
+	inputs, err := os.ReadFile(filepath.Join(r, "conf/sandbox-inputs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in struct {
+		Canary       bool
+		ProviderHost string `json:"provider_host"`
+		Executables  map[string]string
+		Sources      map[string]string
+	}
+	if err := json.Unmarshal(inputs, &in); err != nil {
+		t.Fatalf("sandbox-inputs.json: %v\n%s", err, inputs)
+	}
+	settings, _ := os.ReadFile(filepath.Join(r, "conf/managed-settings.json"))
+	sum := sha256.Sum256(settings)
+	if !in.Canary || in.ProviderHost != "api.anthropic.com" || in.Executables["pasta"] != e.pasta(t) || in.Executables["probe"] != e.bin+"/ataniq-probe" ||
+		in.Sources["managed_settings_sha256"] != hex.EncodeToString(sum[:]) || in.Sources["agent_install"] != r+"/agent-install" {
+		t.Errorf("sandbox-inputs.json:\n%s", inputs)
+	}
+	// What was copied, and what was recorded.
+	screens := filepath.Join(root(t), "internal/inject/screen/testdata/claude-2.1.325")
+	for dst, src := range map[string]string{
+		"conf/replay-screens/1.json":          filepath.Join(screens, "idle-before-paste.json"),
+		"conf/replay-screens/1.txt":           filepath.Join(screens, "idle-before-paste.txt"),
+		"conf/replay-screens/2.json":          filepath.Join(screens, "collapsed-paste-footer-a.json"),
+		"conf/replay-screens/2.txt":           filepath.Join(screens, "collapsed-paste-footer-a.txt"),
+		"agent-install/ataniq-canary-standin": filepath.Join(e.bin, "ataniq-canary-standin"),
+	} {
+		a, _ := os.ReadFile(filepath.Join(r, dst))
+		b, err := os.ReadFile(src)
+		if err != nil || len(a) == 0 || !bytes.Equal(a, b) {
+			t.Errorf("%s is not a copy of %s", dst, src)
+		}
+	}
+	if marker, _ := os.ReadFile(filepath.Join(r, ".canary-prepared")); !strings.HasPrefix(string(marker), "ataniq-canary-prepare 1\n") {
+		t.Errorf("the marker: %q", marker)
+	}
+	// The mirror holds develop, and the throwaway commit is by a fake author.
+	git := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}
+		o, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, o)
+		}
+		return strings.TrimSpace(string(o))
+	}
+	up := git("-C", filepath.Join(r, "upstream"), "rev-parse", "refs/heads/develop")
+	if mirror := git("-C", filepath.Join(r, "state/mirrors/throwaway-one.git"), "rev-parse", "refs/heads/develop"); mirror != up {
+		t.Errorf("the mirror's develop is %s, the upstream's %s", mirror, up)
+	}
+	if who := git("-C", filepath.Join(r, "upstream"), "log", "--format=%ae %ce"); who != "author@example.invalid author@example.invalid" {
+		t.Errorf("the throwaway commit's people: %q", who)
+	}
+	if n := git("-C", filepath.Join(r, "upstream"), "rev-list", "--count", "develop"); n != "1" {
+		t.Errorf("the upstream has %s commits, want 1", n)
+	}
+	// Only the two stubs of the work were called, with these arguments.
+	wantCalls := []string{
+		"ataniq-intake init --state " + r + "/state --project throwaway-one",
+		"ataniq-canary profile-digest --config " + r + "/config.json --inputs " + r + "/conf/sandbox-inputs.json",
+		"ataniq-canary check-inputs --config " + r + "/config.json --inputs " + r + "/conf/sandbox-inputs.json",
+	}
+	if got := e.callLines(t); !slices.Equal(got, wantCalls) {
+		t.Errorf("calls:\n%v\nwant\n%v", got, wantCalls)
+	}
+	// The output names the next commands and holds no secret.
+	for _, want := range []string{"canary-run.sh --pass A --config " + r + "/config.json --evidence " + r + "/evidence", "build/qualify-mirror --config " + r + "/mirror-qual/config.json", "canary-reset.sh --root " + r, "Nothing was started"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the output does not say %q:\n%s", want, out)
+		}
+	}
+	// The qualify-mirror acknowledgement is the owner's.
+	if mq, _ := os.ReadFile(filepath.Join(r, "mirror-qual/config.json")); !strings.Contains(string(mq), `"i_run_this_on_purpose": false`) {
+		t.Errorf("mirror-qual/config.json writes the owner's acknowledgement:\n%s", mq)
+	}
+	if _, err := os.Stat(filepath.Join(r, "mirror-qual/state")); err == nil {
+		t.Error("prepare made the qualification state")
+	}
+}
+
+func TestCanaryRunKitPrepareRefuses(t *testing.T) {
+	e := canaryStubKit(t)
+	nonEmpty := filepath.Join(e.dir, "full")
+	if err := os.MkdirAll(nonEmpty, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canaryWrite(t, nonEmpty, "x", "x")
+	link := filepath.Join(e.dir, "link")
+	if err := os.Symlink(nonEmpty, link); err != nil {
+		t.Fatal(err)
+	}
+	inRepo, err := os.MkdirTemp(root(t), "canary-prepare-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(inRepo) })
+	tmpRoot, err := os.MkdirTemp("/tmp", "canary-prepare-test-")
+	if err != nil {
+		t.Skip("no /tmp to try")
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpRoot) })
+	noBin := filepath.Join(e.dir, "bin-missing-one")
+	if err := os.MkdirAll(noBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canaryWrite(t, noBin, "ataniqd", "x")
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"a root that is not empty", e.prepareArgs(t, nonEmpty), "not empty"},
+		{"a root in the repository", e.prepareArgs(t, filepath.Join(inRepo, "root")), "repository checkout"},
+		{"the repository itself", e.prepareArgs(t, root(t)), "repository checkout"},
+		{"a root in /tmp", e.prepareArgs(t, filepath.Join(tmpRoot, "root")), "/tmp"},
+		{"a root that is /tmp itself", e.prepareArgs(t, "/tmp"), "/tmp"},
+		{"a relative root", e.prepareArgs(t, "set-up"), "not an absolute path"},
+		{"a root with a .. part", e.prepareArgs(t, e.dir+"/a/../b"), ".. part"},
+		{"a root with a quote", e.prepareArgs(t, filepath.Join(e.dir, "a\"b")), "character"},
+		{"a root that is a link", e.prepareArgs(t, link), "symbolic link"},
+		{"pass B", e.prepareArgs(t, filepath.Join(e.dir, "b"), "--pass", "B"), "only pass A"},
+		{"a missing binary", append([]string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}), "not built in"},
+		{"a pasta link", []string{"--root", filepath.Join(e.dir, "d"), "--bin", e.bin, "--pasta", link}, "link is refused"},
+		{"an unknown argument", []string{"--root", filepath.Join(e.dir, "e"), "--yes"}, "usage:"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, dry := range [][]string{nil, {"--dry"}} {
+				out, code := e.run(t, canaryPrepareScript, "", append(slices.Clone(c.args), dry...)...)
+				if code == 0 || !strings.Contains(out, c.want) {
+					t.Errorf("dry %v: exit status %d, want a refusal naming %q:\n%s", dry, code, c.want, out)
+				}
+			}
+			if calls := e.callLines(t); len(calls) != 0 {
+				t.Errorf("a refusal ran %v", calls)
+			}
+		})
+	}
+	if names, _ := os.ReadDir(nonEmpty); len(names) != 1 {
+		t.Errorf("the refused root was changed: %v", names)
+	}
+	if _, err := os.Stat(filepath.Join(inRepo, "root")); err == nil {
+		t.Error("a root was made in the repository")
+	}
+}
+
+// A prepare that fails leaves no marker, so that canary-reset.sh does not
+// take its folder for a finished one; and an empty folder that already
+// exists is a fine root.
+func TestCanaryRunKitPrepareFailureLeavesNoMarker(t *testing.T) {
+	e := canaryStubKit(t)
+	r := filepath.Join(e.dir, "set-up")
+	if err := os.MkdirAll(r, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	failing := "#!/bin/sh\necho \"ataniq-canary $*\" >>'" + e.calls + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(e.bin, "ataniq-canary"), []byte(failing), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...)
+	if code == 0 || !strings.Contains(out, "profile-digest failed") {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(r, ".canary-prepared")); err == nil {
+		t.Error("a failed prepare wrote its marker")
+	}
+	// A digest that is not 64 hex digits is no digest.
+	bad := "#!/bin/sh\necho not-a-digest\n"
+	if err := os.WriteFile(filepath.Join(e.bin, "ataniq-canary"), []byte(bad), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r2 := filepath.Join(e.dir, "set-up-2")
+	if out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r2)...); code == 0 || !strings.Contains(out, "did not print one digest") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+}
+
+func TestCanaryRunKitPrepareDryWritesNothing(t *testing.T) {
+	e := canaryStubKit(t)
+	e.pasta(t)
+	before := canaryTree(t, e.dir)
+	r := filepath.Join(e.dir, "set-up")
+	for _, existing := range []bool{false, true} {
+		if existing {
+			if err := os.MkdirAll(r, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			before = canaryTree(t, e.dir)
+		}
+		out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r, "--dry")...)
+		if code != 0 {
+			t.Fatalf("exit status %d:\n%s", code, out)
+		}
+		for _, want := range []string{"[dry]", r + "/config.json", r + "/conf/sandbox-inputs.json", "api.anthropic.com", "canary-reset.sh", ".canary-prepared"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("the dry run does not name %q:\n%s", want, out)
+			}
+		}
+		if after := canaryTree(t, e.dir); !slices.Equal(before, after) {
+			t.Errorf("the dry run changed the folder:\nbefore %v\nafter  %v", before, after)
+		}
+		if calls := e.callLines(t); len(calls) != 0 {
+			t.Errorf("the dry run ran %v", calls)
+		}
+	}
+	// --build in a dry run says what it would run and runs nothing.
+	out, code := e.run(t, canaryPrepareScript, "", "--root", filepath.Join(e.dir, "other"), "--pasta", e.pasta(t), "--bwrap", "/usr/bin/bwrap", "--build", "--dry")
+	if code != 0 || !strings.Contains(out, "make canary-build") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+}
+
+// An empty folder is a root, and a fresh prepare in it works.
+func TestCanaryRunKitPrepareTakesAnEmptyFolder(t *testing.T) {
+	e := canaryStubKit(t)
+	r := filepath.Join(e.dir, "empty")
+	if err := os.MkdirAll(r, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := e.run(t, canaryPrepareScript, "", e.prepareArgs(t, r)...); code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	if got := canaryMode(t, r); got != 0o700 {
+		t.Errorf("the root has mode %o, want 700", got)
+	}
+}
+
+// The harness refuses a link as pasta, so the script copies what a link leads
+// to and says so; a regular file is used as it is; a missing one is refused.
+func TestCanaryRunKitPastaPlan(t *testing.T) {
+	e := canaryStubKit(t)
+	reg := e.pasta(t)
+	link := filepath.Join(e.dir, "pasta-link")
+	if err := os.Symlink(reg, link); err != nil {
+		t.Fatal(err)
+	}
+	chain := filepath.Join(e.dir, "pasta-chain")
+	if err := os.Symlink("pasta-link", chain); err != nil {
+		t.Fatal(err)
+	}
+	dangling := filepath.Join(e.dir, "pasta-dangling")
+	if err := os.Symlink("nowhere", dangling); err != nil {
+		t.Fatal(err)
+	}
+	plain := canaryWrite(t, e.dir, "not-executable", "x")
+	for _, c := range []struct {
+		name, path, want string
+		ok               bool
+	}{
+		{"a regular file", reg, "use " + reg, true},
+		{"a link", link, "copy " + reg, true},
+		{"a link of a link", chain, "copy " + reg, true},
+		{"a missing file", filepath.Join(e.dir, "none"), "give --pasta", false},
+		{"a dangling link", dangling, "give --pasta", false},
+		{"a file that does not run", plain, "give --pasta", false},
+	} {
+		out, code := e.run(t, canaryPrepareScript, "", "--self-test", "pasta-plan", c.path)
+		if (code == 0) != c.ok || !strings.Contains(out, c.want) {
+			t.Errorf("%s: exit status %d, want %q:\n%s", c.name, code, c.want, out)
+		}
+	}
+	if out, code := e.run(t, canaryPrepareScript, "", "--self-test", "pasta-plan"); code != 2 || !strings.Contains(out, "usage:") {
+		t.Errorf("a pasta plan with no path: exit status %d:\n%s", code, out)
+	}
 }
