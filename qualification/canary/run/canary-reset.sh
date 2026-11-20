@@ -14,7 +14,9 @@
 # shows what it will delete and deletes only after the owner types the word
 # reset: the script never answers that prompt. It makes the checks of the units,
 # the processes and the two folders again after the word, before the first
-# deletion. With --dry it prints the plan
+# deletion, then enters the root and deletes relative to it, so that a root
+# swapped for a link meanwhile is refused and nothing outside is touched.
+# With --dry it prints the plan
 # and deletes nothing. It starts nothing.
 #
 # --self-test NAME VALUE...: the test entry, which only computes and prints.
@@ -191,6 +193,8 @@ done
 cc_git -C "$ROOT/upstream" rev-parse --verify -q refs/heads/develop >/dev/null ||
   cc_die "the throwaway repository has no branch develop: $ROOT/upstream"
 [ -x "$BIN/ataniq-intake" ] && [ -f "$BIN/ataniq-intake" ] || cc_die "no ataniq-intake in $BIN (make canary-build builds it): the mirror could not be made again"
+# The reset changes its folder before it deletes, so BIN is made absolute now.
+BIN=$(cd -P -- "$BIN" && pwd -P) || cc_die "$BIN cannot be entered"
 
 # The roots, the units and the processes: checked now, and again after the
 # word is typed, before anything is deleted.
@@ -239,18 +243,28 @@ fi
 # The same checks again: the word may have been typed minutes after the plan.
 still_quiet "$ROOT" /proc
 
+# The checks leave a window in which ROOT itself could be replaced by a link
+# to a folder elsewhere. The script therefore enters ROOT once, with every
+# link resolved, checks that it is where it was, and from then on names the two
+# folders relative to the folder it is in: a later swap of ROOT leads nowhere,
+# because the paths no longer go through ROOT.
+cd -P -- "$ROOT" || cc_die "$ROOT cannot be entered, so nothing is deleted"
+[ "$(pwd -P)" = "$ROOT" ] || cc_die "$ROOT was replaced while the checks ran, so nothing is deleted"
+
 # The two folders may hold read-only entries (a tree of git objects): their
 # folders are opened with find, which never follows a link (not even one on
 # its command line, as chmod -R does), one folder at a time so that a folder
 # is opened before find reads it. Files need no mode to be removed.
 for _k in state runtime; do
-  if [ -L "$ROOT/$_k" ]; then cc_die "$ROOT/$_k became a symbolic link, so nothing more is deleted"; fi
-  if [ -d "$ROOT/$_k" ]; then
-    find "$ROOT/$_k" -type d -exec chmod u+rwx {} \;
-    rm -rf -- "${ROOT:?}/$_k"
+  if [ -L "$_k" ]; then cc_die "$ROOT/$_k became a symbolic link, so nothing more is deleted"; fi
+  if [ -d "$_k" ]; then
+    find "./$_k" -type d -exec chmod u+rwx {} \;
+    rm -rf -- "./$_k"
   fi
 done
 cc_say "deleted $ROOT/state and $ROOT/runtime"
+# Nothing is made unless the folder entered above is still ROOT.
+[ "$(pwd -P)" = "$ROOT" ] || cc_die "$ROOT was replaced after the deletion, so nothing is made again"
 cc_make_state "$ROOT" "$BIN"
 cc_say "made $ROOT/state and $ROOT/runtime again, and the mirror with the branch develop"
 cc_say 'Reset done. Nothing was started. The run script is typed as before.'

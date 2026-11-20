@@ -3467,6 +3467,85 @@ func TestCanaryRunKitResetChecksAgainAfterTheWord(t *testing.T) {
 	}
 }
 
+// The window after the second check: while systemctl and the process scan
+// run, a same-user process swaps what the reset is about to delete. The stub
+// systemctl does it on its second call (the first is before the plan). The
+// root replaced by a link to a folder that holds a state/ and a runtime/ is
+// refused, and a state/ replaced by a link is refused by the deletion's own
+// check; in both nothing outside the root is deleted or made, and the real
+// folders are not touched. Removing the entry into the root, or the link
+// check of the deletion loop, fails one of these.
+func TestCanaryRunKitResetSwapAfterTheSecondCheck(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
+	for _, c := range []struct {
+		name, want string
+		swap       func(r, outside string) string // the shell lines of the second systemctl call
+	}{
+		{"root", "was replaced", func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"state", "/state became a symbolic link", func(r, outside string) string {
+			return "mv '" + r + "/state' '" + r + "/state-moved'\nln -s '" + outside + "/state' '" + r + "/state'\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := canaryStubKit(t)
+			r := e.prepared(t)
+			outside := filepath.Join(e.dir, "outside")
+			for _, k := range []string{"state/sub/precious", "runtime/precious"} {
+				canaryWrite(t, outside, k, "x")
+			}
+			if err := os.Chmod(filepath.Join(outside, "state/sub"), 0o500); err != nil {
+				t.Fatal(err)
+			}
+			modes := func() string {
+				var b strings.Builder
+				for _, p := range canaryTree(t, outside) {
+					fmt.Fprintf(&b, "%s %v\n", p, canaryMode(t, p))
+				}
+				return b.String()
+			}
+			before := modes()
+			sysctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + e.calls + "'\n" + c.swap(r, outside) + "exit 0\n"
+			out, err := canaryTyped(t, scriptCmd, e, r, "reset", func() {
+				tmp := filepath.Join(e.tools, "systemctl.new")
+				if err := os.WriteFile(tmp, []byte(sysctl), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(tmp, filepath.Join(e.tools, "systemctl")); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err == nil || !strings.Contains(out, c.want) {
+				t.Errorf("after the swap the reset did not refuse with %q: %v\n%s", c.want, err, out)
+			}
+			if strings.Contains(out, "\ndeleted ") || strings.Contains(out, "made ") {
+				t.Errorf("the reset went on after the swap:\n%s", out)
+			}
+			if after := modes(); after != before {
+				t.Errorf("the folder outside the root changed:\nbefore\n%safter\n%s", before, after)
+			}
+			for _, k := range []string{"state/sub/precious", "runtime/precious"} {
+				if _, err := os.Stat(filepath.Join(outside, k)); err != nil {
+					t.Errorf("a file outside the root is gone: %v", err)
+				}
+			}
+			// What the swap moved aside is the root's own: it is kept.
+			kept := filepath.Join(r+"-real", "state/leads/throwaway-one-lead/home/file")
+			moved := filepath.Join(r+"-real", "runtime/leads/throwaway-one-lead/run")
+			if c.name == "state" {
+				kept = filepath.Join(r, "state-moved/leads/throwaway-one-lead/home/file")
+				moved = filepath.Join(r, "runtime/leads/throwaway-one-lead/run")
+			}
+			for _, p := range []string{kept, moved} {
+				if _, err := os.Stat(p); err != nil {
+					t.Errorf("the provisioned state of the root is gone: %v", err)
+				}
+			}
+		})
+	}
+}
+
 // The checks are one function, and the main flow calls it twice: once before
 // the plan and once after the word, before the first deletion; the deletion
 // opens modes with find and not with chmod -R.
@@ -3499,7 +3578,15 @@ func TestCanaryRunKitResetChecksTwiceAndOpensModesWithFind(t *testing.T) {
 	if strings.Contains(text, "chmod -R u+") {
 		t.Error("the reset opens modes with chmod -R, which follows a link given to it")
 	}
-	if !strings.Contains(text, `find "$ROOT/$_k" -type d -exec chmod u+rwx {} \;`) {
+	if !strings.Contains(text, `find "./$_k" -type d -exec chmod u+rwx {} \;`) {
 		t.Error("the reset does not open the modes with find")
+	}
+	// The deletion runs relative to the root entered once, after the second check.
+	enter := strings.LastIndex(text, `cd -P -- "$ROOT"`)
+	if !(second < enter && enter < del) || !strings.Contains(text, `[ "$(pwd -P)" = "$ROOT" ]`) {
+		t.Error("the reset does not enter the root, and check where it is, between the second check and the deletion")
+	}
+	if !strings.Contains(text, "rm -rf -- \"./$_k\"") || strings.Contains(text, "rm -rf -- \"$ROOT") || strings.Contains(text, "rm -rf -- \"${ROOT") {
+		t.Error("the reset deletes through a path that goes through the root")
 	}
 }
