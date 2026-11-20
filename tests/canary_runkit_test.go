@@ -2245,9 +2245,95 @@ func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
 			t.Errorf("%s: %s is not followed by %s", c.fn, c.cmd, c.check)
 		}
 	}
+	// And the order is not all: a command that exits non-zero must fail the
+	// step. The two lines run under the script's own runcap, check, is_rc and
+	// fail, over stubs of git and systemctl.
+	for _, c := range []struct{ fn, cmd string }{
+		{"step_1", "runcap lead-units systemctl"},
+		{"step_1", "runcap units-before systemctl"},
+		{"step_3", `runcap worktree git -C "$REPO" status --porcelain`},
+	} {
+		lines := strings.Split(funcs[c.fn], "\n")
+		var pair string
+		for i, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), c.cmd) && i+1 < len(lines) {
+				pair = strings.TrimSpace(l) + "\n" + strings.TrimSpace(lines[i+1])
+			}
+		}
+		if pair == "" {
+			t.Errorf("%s does not run %s", c.fn, c.cmd)
+			continue
+		}
+		for _, code := range []int{1, 0} {
+			out := canaryStepPair(t, pair, code)
+			failed := strings.Contains(out, "FAILED at step 1") && !strings.Contains(out, "STEP-PASSED") && strings.Contains(out, "findings=1")
+			passed := strings.Contains(out, "STEP-PASSED") && !strings.Contains(out, "FAILED") && strings.Contains(out, "findings=0")
+			if code != 0 && !failed {
+				t.Errorf("%s: %s exits %d and the step does not fail:\n%s", c.fn, c.cmd, code, out)
+			}
+			if code == 0 && !passed {
+				t.Errorf("%s: %s exits 0 and the step does not pass:\n%s", c.fn, c.cmd, out)
+			}
+		}
+	}
 	// Without qargi, or with a list it cannot read, the old prompt stays and the log says so.
 	body := funcs["no_open_runs"]
 	if strings.Count(body, "affirm 'Lead: no Qargi run is open'") != 2 || strings.Count(body, "note '") < 2 {
 		t.Error("the fallback of the open-run check does not ask and say so in the log")
 	}
+}
+
+// canaryDef returns the whole definition of the script's function.
+func canaryDef(t *testing.T, script, name string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `\(\) \{.*$`)
+	m := re.FindStringIndex(script)
+	if m == nil {
+		t.Fatalf("the script lacks %s", name)
+	}
+	if strings.HasSuffix(strings.TrimSpace(script[m[0]:m[1]]), "}") {
+		return script[m[0]:m[1]] + "\n"
+	}
+	end := strings.Index(script[m[1]:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("the function %s does not end", name)
+	}
+	return script[m[0]:m[1]+end+3]
+}
+
+// canaryStepPair runs a runcap line and the check line after it, as a step
+// has them, under the script's own helpers, with git and systemctl stubs that
+// exit with code. It returns the output, then the number of findings.
+func canaryStepPair(t *testing.T, pair string, code int) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	script := canaryScriptText(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	for _, name := range []string{"git", "systemctl"} {
+		canaryWrite(t, bin, name, fmt.Sprintf("#!/bin/sh\nexit %d\n", code))
+		if err := os.Chmod(filepath.Join(bin, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ev", "out"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	b.WriteString("DRY=0 CUR=1 EPOCH_NO=1 IN_CHAIN=1 FINDINGS=0 LOG= RC=0 LASTOUT= LASTERR= REPO=/x\nEV=" + filepath.Join(dir, "ev") + "\n")
+	for _, name := range []string{"out", "note", "dry", "fail", "runcap", "check", "is_rc"} {
+		b.WriteString(canaryDef(t, script, name))
+	}
+	b.WriteString("s() {\n" + pair + "\n  echo STEP-PASSED\n}\ns\necho findings=$FINDINGS\n")
+	cmd := exec.Command(sh, "-c", b.String())
+	cmd.Dir = dir
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	return string(out)
 }
