@@ -3097,23 +3097,87 @@ func TestCanaryRunKitResetWordIsExact(t *testing.T) {
 func TestCanaryRunKitResetFindsTheRootsProcesses(t *testing.T) {
 	e := canaryStubKit(t)
 	proc := filepath.Join(e.dir, "proc")
-	r := e.dir + "/set-up"
-	for pid, args := range map[string][]string{
-		"100": {"/x/build/canary/ataniqd", "run", "--canary", r + "/config.json"},
-		"101": {"/x/build/canary/ataniq-holder", "--state", r + "/state/leads/x"},
-		"102": {"/x/build/canary/ataniqd", "run", "--canary", r + "-other/config.json"},
-		"103": {"sleep", r + "/state"},
-		"104": {"/x/build/canary/ataniq-holder", "--state", "/elsewhere"},
-		"105": {"vi", r + "/ataniqd"},
-		"106": {"/x/build/canary/ataniqd", r},
-	} {
-		canaryWrite(t, proc, pid+"/cmdline", strings.Join(args, "\x00")+"\x00")
+	// The root lies below a folder that a link also names.
+	r := filepath.Join(e.dir, "parent", "set-up")
+	canaryWrite(t, r, "config.json", "{}")
+	canaryWrite(t, r, "state/x", "x")
+	canaryWrite(t, e.dir, "parent/set-up0/x", "x")
+	canaryWrite(t, e.dir, "parent/other/x", "x")
+	canaryWrite(t, e.dir, "elsewhere/x", "x")
+	if err := os.Symlink(filepath.Join(e.dir, "parent"), filepath.Join(e.dir, "parentlink")); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(e.dir, "elsewhere")
+	ourUID, otherUID := os.Getuid(), os.Getuid()+1
+	status := func(uid int) string {
+		return fmt.Sprintf("Name:\tataniqd\nUid:\t%d\t%d\t%d\t%d\n", uid, uid, uid, uid)
+	}
+	type fake struct {
+		args []string
+		cwd  string // a folder; "dangling" for a link that leads nowhere; "" for no link
+		uid  int    // 0: no status file
+	}
+	const dangling = "dangling"
+	d := "/x/build/canary/ataniqd"
+	h := "/x/build/canary/ataniq-holder"
+	fakes := map[string]fake{
+		// Named in the arguments, as before.
+		"100": {args: []string{d, "run", "--canary", r + "/config.json"}, cwd: elsewhere},
+		"101": {args: []string{h, "--state", r + "/state/leads/x"}, cwd: elsewhere},
+		"106": {args: []string{d, r}, cwd: elsewhere},
+		// Not this root: a name that only begins like it, an unrelated daemon, other commands.
+		"102": {args: []string{d, "run", "--canary", r + "-other/config.json"}, cwd: elsewhere},
+		"103": {args: []string{"sleep", r + "/state"}, cwd: r},
+		"104": {args: []string{h, "--state", "/elsewhere"}, cwd: elsewhere},
+		"105": {args: []string{"vi", r + "/ataniqd"}, cwd: r},
+		"115": {args: []string{d, "run", "--canary", "/somewhere/else/config.json"}, cwd: elsewhere},
+		"116": {args: []string{d, "run", "--canary", "config.json"}, cwd: filepath.Join(e.dir, "parent", "set-up0")},
+		// A relative config path, from the root or from a folder below it.
+		"107": {args: []string{d, "run", "--canary", "config.json"}, cwd: r},
+		"110": {args: []string{h, "--state", "x"}, cwd: filepath.Join(r, "state")},
+		// A relative path that leads to the root from another folder.
+		"111": {args: []string{d, "run", "--canary", "../set-up/config.json"}, cwd: filepath.Join(e.dir, "parent", "other")},
+		// The root named through a symbolic link of its parent, as a word and as the value of a flag.
+		"108": {args: []string{d, "run", "--canary", filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
+		"109": {args: []string{d, "run", "--canary=" + filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
+		// A current folder that cannot be read: the process of this user is taken for a match; another user's is not; no status is read as ours.
+		"112": {args: []string{d, "run"}, cwd: dangling, uid: ourUID},
+		"113": {args: []string{d, "run"}},
+		"114": {args: []string{d, "run"}, cwd: dangling, uid: otherUID},
+	}
+	for pid, f := range fakes {
+		canaryWrite(t, proc, pid+"/cmdline", strings.Join(f.args, "\x00")+"\x00")
+		switch f.cwd {
+		case "":
+		case dangling:
+			if err := os.Symlink(filepath.Join(e.dir, "nowhere"), filepath.Join(proc, pid, "cwd")); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			if err := os.Symlink(f.cwd, filepath.Join(proc, pid, "cwd")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if f.uid != 0 {
+			canaryWrite(t, proc, pid+"/status", status(f.uid))
+		}
 	}
 	canaryWrite(t, proc, "self/cmdline", "")
 	canaryWrite(t, proc, "stat", "x")
+	want := "100 101 106 107 108 109 110 111 112 113"
 	out, code := e.run(t, canaryResetScript, "", "--self-test", "procs-of", r, proc)
-	if code != 0 || strings.Fields(out)[0] != "100" || strings.Join(strings.Fields(out), " ") != "100 101 106" {
-		t.Errorf("exit status %d, processes: %q, want 100 101 106", code, out)
+	if got := strings.Join(strings.Fields(out), " "); code != 0 || got != want {
+		t.Errorf("exit status %d, processes: %q, want %s", code, got, want)
+	}
+	// No /proc, or one with no process folder in it: nothing can be said, so it refuses.
+	empty := filepath.Join(e.dir, "empty-proc")
+	canaryWrite(t, empty, "stat", "x")
+	canaryWrite(t, empty, "self/cmdline", "")
+	for _, p := range []string{filepath.Join(e.dir, "no-proc"), empty} {
+		out, code := e.run(t, canaryResetScript, "", "--self-test", "procs-of", r, p)
+		if code == 0 || !strings.Contains(out, "refused") {
+			t.Errorf("procs-of %s: exit status %d, want a refusal:\n%s", p, code, out)
+		}
 	}
 }
 

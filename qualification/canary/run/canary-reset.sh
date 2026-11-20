@@ -10,7 +10,7 @@
 # deletes config.json, upstream, bin, conf, evidence or mirror-qual, and
 # nothing outside the root. It refuses without a terminal on standard input,
 # while an ataniq-* unit is loaded or an ataniqd or ataniq-holder of the root
-# runs, and for a root that does not carry the mark of its own prepare. It
+# runs (named in its arguments, or running in the root), and for a root that does not carry the mark of its own prepare. It
 # shows what it will delete and deletes only after the owner types the word
 # reset: the script never answers that prompt. With --dry it prints the plan
 # and deletes nothing. It starts nothing.
@@ -19,7 +19,9 @@
 #   typed-word WORD         "go" when WORD is exactly reset, otherwise "stop"
 #   procs-of ROOT PROCDIR   the numbers of the processes of PROCDIR (a copy of
 #                           the shape of /proc) that are an ataniqd or an
-#                           ataniq-holder of ROOT
+#                           ataniq-holder of ROOT (named in its arguments or
+#                           running in ROOT); a refusal when PROCDIR holds no
+#                           process folder
 set -eu
 umask 077
 
@@ -50,10 +52,42 @@ typed_word() {
   if [ "$1" = "$WORD" ]; then printf '%s\n' go; else printf '%s\n' stop; fi
 }
 
+# arg_in_root ROOT CWD WORD succeeds when the command-line word WORD names
+# ROOT or a path below it, compared with every symbolic link resolved: a word
+# that is not absolute is taken from CWD (nothing matches when CWD is empty).
+arg_in_root() {
+  case $3 in
+    /*) _ap=$3 ;;
+    *) [ -n "$2" ] || return 1; _ap=$2/$3 ;;
+  esac
+  _ap=$(readlink -f -- "$_ap" 2>/dev/null) || return 1
+  cc_inside "$_ap" "$1"
+}
+
+# proc_is_ours PROCFOLDER succeeds when the process is run by this user, or
+# when its owner cannot be read (it is then taken for ours).
+proc_is_ours() {
+  _pu=$(awk '$1 == "Uid:" { print $2 " " $3; exit }' "$1/status" 2>/dev/null) || _pu=
+  [ -n "$_pu" ] || return 0
+  case " $_pu " in
+    *" $(id -u) "*) return 0 ;;
+  esac
+  return 1
+}
+
 # procs_of ROOT PROCDIR prints the process numbers of PROCDIR whose command is
-# an ataniqd or an ataniq-holder with a path below ROOT in its arguments.
+# an ataniqd or an ataniq-holder that has to do with ROOT: a path below ROOT
+# in its arguments as written, or resolved (a word that is not absolute is
+# taken from the process's folder), or ROOT or a folder below it as its
+# current folder. A process of this user whose current folder cannot be read
+# is taken for a match, which refuses rather than risks a delete under a live
+# daemon. It fails when PROCDIR holds no process folder (no /proc, or one that
+# cannot be read): nothing can then be said.
 procs_of() {
+  _seen=0
   for _pd in "$2"/[0-9]*; do
+    [ -e "$_pd" ] || continue
+    _seen=1
     [ -r "$_pd/cmdline" ] || continue
     _cl=$(tr '\0' ' ' <"$_pd/cmdline" 2>/dev/null) || continue
     _first=${_cl%% *}
@@ -62,15 +96,42 @@ procs_of() {
       *) continue ;;
     esac
     case $_cl in
-      *"$1/"* | *"$1 "*) printf '%s\n' "${_pd##*/}" ;;
+      *"$1/"* | *"$1 "*) printf '%s\n' "${_pd##*/}"; continue ;;
     esac
+    _cwd=$(cd -P -- "$_pd/cwd" 2>/dev/null && pwd -P) || _cwd=
+    if [ -n "$_cwd" ]; then
+      if cc_inside "$_cwd" "$1"; then printf '%s\n' "${_pd##*/}"; continue; fi
+    elif proc_is_ours "$_pd"; then
+      printf '%s\n' "${_pd##*/}"
+      continue
+    fi
+    _words=$(tr '\0' '\n' <"$_pd/cmdline" 2>/dev/null) || _words=
+    _hit=0
+    while IFS= read -r _w; do
+      [ -n "$_w" ] || continue
+      if arg_in_root "$1" "$_cwd" "$_w"; then _hit=1; break; fi
+      case $_w in
+        -*=*) if arg_in_root "$1" "$_cwd" "${_w#*=}"; then _hit=1; break; fi ;;
+      esac
+    done <<EOF
+$_words
+EOF
+    if [ "$_hit" -eq 1 ]; then printf '%s\n' "${_pd##*/}"; fi
   done
+  [ "$_seen" -eq 1 ]
 }
 
 if [ "${1:-}" = --self-test ]; then
   case ${2:-} in
     typed-word) [ "$#" -eq 3 ] || usage; typed_word "$3"; exit 0 ;;
-    procs-of) [ "$#" -eq 4 ] || usage; procs_of "$3" "$4"; exit 0 ;;
+    procs-of)
+      [ "$#" -eq 4 ] || usage
+      procs_of "$3" "$4" || {
+        printf '%s\n' "refused: no process folder in $4 (no /proc, or one that cannot be read)"
+        exit 1
+      }
+      exit 0
+      ;;
   esac
   usage
 fi
@@ -121,7 +182,8 @@ _units=$(systemctl --user list-units --all --no-legend --plain 'ataniq-*') ||
   cc_die 'systemctl --user list-units failed: the loaded units cannot be read, so nothing is deleted'
 _units=$(printf '%s\n' "$_units" | awk '$1 != "" && $1 !~ /\.slice$/ { print $1 }')
 [ -z "$_units" ] || cc_die "an ataniq-* unit is loaded, so nothing is deleted (stop it first, README.md, Undo by hand): $(printf '%s' "$_units" | tr '\n' ' ')"
-_pids=$(procs_of "$ROOT" /proc)
+_pids=$(procs_of "$ROOT" /proc) ||
+  cc_die 'the processes cannot be read (no /proc, or one that cannot be read), so nothing is deleted'
 [ -z "$_pids" ] || cc_die "an ataniqd or ataniq-holder of this root runs (process $(printf '%s' "$_pids" | tr '\n' ' ')), so nothing is deleted"
 
 # The plan: what goes, what stays, what is made again.
