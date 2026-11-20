@@ -290,7 +290,11 @@ It first shows the two folders, the number of entries below each and the
 entries down to three levels, and what it keeps. It deletes only after you
 type the word `reset` and Enter on the terminal; any other answer, an end of
 input included, stops it with nothing deleted. The script never answers that
-prompt. It then makes `state/` and `runtime/` again (mode 0700) and the mirror
+prompt. The prompt can wait, so the checks (the units, the processes, and that
+`state/` and `runtime/` are still folders of the root, not links) are made again
+after the word and before the first deletion, and the folders' modes are opened
+with `find`, which does not follow a link; a change in the meantime is a refusal
+with nothing more deleted. It then makes `state/` and `runtime/` again (mode 0700) and the mirror
 with `ataniq-intake init` and `develop` pushed from `ROOT/upstream`, with the
 code `canary-prepare.sh` uses, and computes nothing else: the config and the
 pin stay as they were. With `--dry` it prints the plan and deletes nothing.
@@ -513,7 +517,11 @@ folder, else `/dev/shm`) with stub binaries that record their calls. Prepare
 runs for real there with the stubs of `ataniq-intake` and `ataniq-canary` and
 makes its files; the reset runs with `--dry`, with its refusals, and through
 `--self-test`. The typed word is tried under `script(1)`, which gives the
-reset a terminal; that test is skipped where `script` is not there.
+reset a terminal; that test is skipped where `script` is not there. The same
+way a unit, a stand-in `ataniqd` or a link in place of `state/` or `runtime/`
+appears while the prompt waits, and the reset must refuse after the word and
+leave the folder outside the root as it was, modes included. A stand-in
+`ataniqd` (`sleep` under that name) in the root also refuses the real run.
 
 The dry run of a step prints what the step would do; it is not the code a real
 run takes. So the check also reads the script's text (the body of step 11

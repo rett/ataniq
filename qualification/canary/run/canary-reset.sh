@@ -12,7 +12,9 @@
 # while an ataniq-* unit is loaded or an ataniqd or ataniq-holder of the root
 # runs (named in its arguments, or running in the root), and for a root that does not carry the mark of its own prepare. It
 # shows what it will delete and deletes only after the owner types the word
-# reset: the script never answers that prompt. With --dry it prints the plan
+# reset: the script never answers that prompt. It makes the checks of the units,
+# the processes and the two folders again after the word, before the first
+# deletion. With --dry it prints the plan
 # and deletes nothing. It starts nothing.
 #
 # --self-test NAME VALUE...: the test entry, which only computes and prints.
@@ -121,6 +123,31 @@ EOF
   [ "$_seen" -eq 1 ]
 }
 
+# still_quiet ROOT PROCDIR refuses (ends the script, nothing deleted) unless
+# the two roots are folders that really lie in ROOT (a link, or a path that
+# resolves elsewhere, is refused; one that is gone is nothing to delete), no
+# ataniq-* unit is loaded and no ataniqd or ataniq-holder of ROOT runs, as
+# PROCDIR (/proc) tells. The reset calls it before the plan and again after
+# the owner typed the word: the prompt can wait for minutes, and a unit or a
+# daemon may be started, or a root replaced by a link, meanwhile.
+still_quiet() {
+  for _k in state runtime; do
+    if [ -L "$1/$_k" ]; then cc_die "$1/$_k is a symbolic link"; fi
+    if [ -e "$1/$_k" ]; then
+      [ -d "$1/$_k" ] || cc_die "$1/$_k is not a folder"
+      _got=$(cd -P -- "$1/$_k" && pwd -P) || cc_die "$1/$_k cannot be entered"
+      [ "$_got" = "$1/$_k" ] || cc_die "$1/$_k resolves to another path"
+    fi
+  done
+  _units=$(systemctl --user list-units --all --no-legend --plain 'ataniq-*') ||
+    cc_die 'systemctl --user list-units failed: the loaded units cannot be read, so nothing is deleted'
+  _units=$(printf '%s\n' "$_units" | awk '$1 != "" && $1 !~ /\.slice$/ { print $1 }')
+  [ -z "$_units" ] || cc_die "an ataniq-* unit is loaded, so nothing is deleted (stop it first, README.md, Undo by hand): $(printf '%s' "$_units" | tr '\n' ' ')"
+  _pids=$(procs_of "$1" "$2") ||
+    cc_die 'the processes cannot be read (no /proc, or one that cannot be read), so nothing is deleted'
+  [ -z "$_pids" ] || cc_die "an ataniqd or ataniq-holder of this root runs (process $(printf '%s' "$_pids" | tr '\n' ' ')), so nothing is deleted"
+}
+
 if [ "${1:-}" = --self-test ]; then
   case ${2:-} in
     typed-word) [ "$#" -eq 3 ] || usage; typed_word "$3"; exit 0 ;;
@@ -163,28 +190,11 @@ done
 [ -d "$ROOT/upstream" ] || cc_die "the root's upstream is not a folder: $ROOT/upstream"
 cc_git -C "$ROOT/upstream" rev-parse --verify -q refs/heads/develop >/dev/null ||
   cc_die "the throwaway repository has no branch develop: $ROOT/upstream"
-
-# Only the two roots go, each a folder that really lies in the root (a link,
-# or a path that resolves elsewhere, is refused); one that is gone is nothing
-# to delete.
-for _k in state runtime; do
-  if [ -L "$ROOT/$_k" ]; then cc_die "$ROOT/$_k is a symbolic link"; fi
-  if [ -e "$ROOT/$_k" ]; then
-    [ -d "$ROOT/$_k" ] || cc_die "$ROOT/$_k is not a folder"
-    _got=$(cd -P -- "$ROOT/$_k" && pwd -P) || cc_die "$ROOT/$_k cannot be entered"
-    [ "$_got" = "$ROOT/$_k" ] || cc_die "$ROOT/$_k resolves to another path"
-  fi
-done
 [ -x "$BIN/ataniq-intake" ] && [ -f "$BIN/ataniq-intake" ] || cc_die "no ataniq-intake in $BIN (make canary-build builds it): the mirror could not be made again"
 
-# Nothing of the attempt may still run.
-_units=$(systemctl --user list-units --all --no-legend --plain 'ataniq-*') ||
-  cc_die 'systemctl --user list-units failed: the loaded units cannot be read, so nothing is deleted'
-_units=$(printf '%s\n' "$_units" | awk '$1 != "" && $1 !~ /\.slice$/ { print $1 }')
-[ -z "$_units" ] || cc_die "an ataniq-* unit is loaded, so nothing is deleted (stop it first, README.md, Undo by hand): $(printf '%s' "$_units" | tr '\n' ' ')"
-_pids=$(procs_of "$ROOT" /proc) ||
-  cc_die 'the processes cannot be read (no /proc, or one that cannot be read), so nothing is deleted'
-[ -z "$_pids" ] || cc_die "an ataniqd or ataniq-holder of this root runs (process $(printf '%s' "$_pids" | tr '\n' ' ')), so nothing is deleted"
+# The roots, the units and the processes: checked now, and again after the
+# word is typed, before anything is deleted.
+still_quiet "$ROOT" /proc
 
 # The plan: what goes, what stays, what is made again.
 cc_say "Reset of $ROOT"
@@ -226,10 +236,17 @@ if [ "$(typed_word "$ANSWER")" != go ]; then
   cc_die 'the word was not typed: nothing is deleted'
 fi
 
-# The two folders may hold read-only entries (a tree of git objects).
+# The same checks again: the word may have been typed minutes after the plan.
+still_quiet "$ROOT" /proc
+
+# The two folders may hold read-only entries (a tree of git objects): their
+# folders are opened with find, which never follows a link (not even one on
+# its command line, as chmod -R does), one folder at a time so that a folder
+# is opened before find reads it. Files need no mode to be removed.
 for _k in state runtime; do
+  if [ -L "$ROOT/$_k" ]; then cc_die "$ROOT/$_k became a symbolic link, so nothing more is deleted"; fi
   if [ -d "$ROOT/$_k" ]; then
-    chmod -R u+rwX -- "$ROOT/$_k"
+    find "$ROOT/$_k" -type d -exec chmod u+rwx {} \;
     rm -rf -- "${ROOT:?}/$_k"
   fi
 done
