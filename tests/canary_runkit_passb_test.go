@@ -368,7 +368,6 @@ done_step() { echo DONE-STEP; }`
 func TestCanaryRunKitPreflightNamesThePass(t *testing.T) {
 	for _, c := range []struct{ show, pass string }{
 		{"agent_kind=stand-in\n", "A"},
-		{"agent_kind=live\n", "B"},
 		{"project=throwaway-one\n", "<A or B>"},
 	} {
 		p := newCanaryPF(t)
@@ -380,5 +379,11 @@ func TestCanaryRunKitPreflightNamesThePass(t *testing.T) {
 		if want := "canary-run.sh --pass " + c.pass + " --config "; !strings.Contains(out, want) {
 			t.Errorf("%q: the output does not hold %q:\n%s", c.show, want, out)
 		}
+	}
+	// A live root (the live checks of the preflight need what passBPF sets up).
+	p, _ := passBPF(t)
+	out, code := p.run()
+	if want := "canary-run.sh --pass B --config "; code != 0 || !strings.Contains(out, want) {
+		t.Errorf("live: exit status %d, the output does not hold %q:\n%s", code, want, out)
 	}
 }

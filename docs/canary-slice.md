@@ -275,7 +275,7 @@ here is a real path.
     "kind": "stand-in",
     "runtime": "<a runtime key the registry accepts for a lead>",
     "runtime_version": "1.2.3",
-    "footer_mode": "sample mode on",
+    "footer_mode": "manual",
     "argv": ["/ataniq/agent/ataniq-canary-standin"],
     "env": []
   },
@@ -310,9 +310,9 @@ here is a real path.
 | `holder.profile_digest` | The pinned digest of the sandbox profile, 64 lower-case hex digits. The holder refuses a plan whose digest differs. Compute it with `ataniq-canary profile-digest --config CONFIG --inputs FILE`; a wrong pin otherwise fails the real start at step 12. |
 | `agent.kind` | `stand-in` or `live`. It goes into every line of the evidence. |
 | `agent.runtime`, `agent.runtime_version` | Given to the holder as `--runtime` and `--runtime-version`: plain text of 1 to 64 bytes. The runtime must be a key the registry accepts for a lead. |
-| `agent.footer_mode` | The permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes. |
-| `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. |
-| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. |
+| `agent.footer_mode` | The recogniser's short name of the permission mode the fence expects in the agent's footer (`--expected-mode`), 1 to 128 bytes: `manual` or `auto` for claude 2.1.325, never the footer's own text ("manual mode on" is the text of the `manual` footer, and every inject then ends `not-now`). A `live` agent with `inject` true is refused at `show` and `check-inputs` unless it is `manual` or `auto`; the stand-in's value is free. |
+| `agent.argv` | The agent's command as seen inside the sandbox, an absolute executable first, at most 64 elements. For a `live` agent the first element is `/ataniq/agent/NAME`, the executable itself and no wrapper: step 9 runs the file `NAME` of the inputs file's `sources.agent_install` (the install folder is that key of the inputs file, not a field of the config), and `check-inputs` refuses a first element that is not such a file there. |
+| `agent.env` | The agent's whole environment as `KEY=VALUE`, at most 64; one `--env` flag each. The holder inherits nothing for it. It is part of the profile digest, so the pin is taken after it is final; a live claude needs `DISABLE_AUTOUPDATER=1` here, or it may draw an update notice on the screen the fence reads. `ataniq-canary show` prints the names (`agent_env_names`), never a value. |
 | `inject` | `true` opens the injection gate: the holder gets `--inject`. With `false` the daemon refuses `canary.inject` at once and spends nothing. |
 | `limits` | The unit's limits (next section). |
 | `provision` | What provisioning copies and sets: the mirror, the upstream branch, the lead's git identity, the managed-settings file, the guard hook's executable and the folder of replay screens. The daemon only checks it. |
