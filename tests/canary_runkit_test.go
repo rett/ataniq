@@ -3097,30 +3097,145 @@ func TestCanaryRunKitResetWordIsExact(t *testing.T) {
 func TestCanaryRunKitResetFindsTheRootsProcesses(t *testing.T) {
 	e := canaryStubKit(t)
 	proc := filepath.Join(e.dir, "proc")
-	r := e.dir + "/set-up"
-	for pid, args := range map[string][]string{
-		"100": {"/x/build/canary/ataniqd", "run", "--canary", r + "/config.json"},
-		"101": {"/x/build/canary/ataniq-holder", "--state", r + "/state/leads/x"},
-		"102": {"/x/build/canary/ataniqd", "run", "--canary", r + "-other/config.json"},
-		"103": {"sleep", r + "/state"},
-		"104": {"/x/build/canary/ataniq-holder", "--state", "/elsewhere"},
-		"105": {"vi", r + "/ataniqd"},
-		"106": {"/x/build/canary/ataniqd", r},
-	} {
-		canaryWrite(t, proc, pid+"/cmdline", strings.Join(args, "\x00")+"\x00")
+	// The root lies below a folder that a link also names.
+	r := filepath.Join(e.dir, "parent", "set-up")
+	canaryWrite(t, r, "config.json", "{}")
+	canaryWrite(t, r, "state/x", "x")
+	canaryWrite(t, e.dir, "parent/set-up0/x", "x")
+	canaryWrite(t, e.dir, "parent/other/x", "x")
+	canaryWrite(t, e.dir, "elsewhere/x", "x")
+	if err := os.Symlink(filepath.Join(e.dir, "parent"), filepath.Join(e.dir, "parentlink")); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(e.dir, "elsewhere")
+	ourUID, otherUID := os.Getuid(), os.Getuid()+1
+	status := func(uid int) string {
+		return fmt.Sprintf("Name:\tataniqd\nUid:\t%d\t%d\t%d\t%d\n", uid, uid, uid, uid)
+	}
+	type fake struct {
+		args []string
+		cwd  string // a folder; "dangling" for a link that leads nowhere; "" for no link
+		uid  int    // 0: no status file
+	}
+	const dangling = "dangling"
+	d := "/x/build/canary/ataniqd"
+	h := "/x/build/canary/ataniq-holder"
+	fakes := map[string]fake{
+		// Named in the arguments, as before.
+		"100": {args: []string{d, "run", "--canary", r + "/config.json"}, cwd: elsewhere},
+		"101": {args: []string{h, "--state", r + "/state/leads/x"}, cwd: elsewhere},
+		"106": {args: []string{d, r}, cwd: elsewhere},
+		// Not this root: a name that only begins like it, an unrelated daemon, other commands.
+		"102": {args: []string{d, "run", "--canary", r + "-other/config.json"}, cwd: elsewhere},
+		"103": {args: []string{"sleep", r + "/state"}, cwd: r},
+		"104": {args: []string{h, "--state", "/elsewhere"}, cwd: elsewhere},
+		"105": {args: []string{"vi", r + "/ataniqd"}, cwd: r},
+		"115": {args: []string{d, "run", "--canary", "/somewhere/else/config.json"}, cwd: elsewhere},
+		"116": {args: []string{d, "run", "--canary", "config.json"}, cwd: filepath.Join(e.dir, "parent", "set-up0")},
+		// A relative config path, from the root or from a folder below it.
+		"107": {args: []string{d, "run", "--canary", "config.json"}, cwd: r},
+		"110": {args: []string{h, "--state", "x"}, cwd: filepath.Join(r, "state")},
+		// A relative path that leads to the root from another folder.
+		"111": {args: []string{d, "run", "--canary", "../set-up/config.json"}, cwd: filepath.Join(e.dir, "parent", "other")},
+		// Only the current folder ties the daemon to the root: no word of its arguments is relative or in the root.
+		"117": {args: []string{d}, cwd: r},
+		"118": {args: []string{d, "/somewhere/else/config.json"}, cwd: filepath.Join(r, "state")},
+		// A binary path that holds a space is one program name; a space in the path of another program does not make it an ataniqd.
+		"119": {args: []string{"/opt/my builds/ataniqd"}, cwd: r},
+		"120": {args: []string{"/opt/my ataniqd/tool"}, cwd: r},
+		// The root named through a symbolic link of its parent, as a word and as the value of a flag.
+		"108": {args: []string{d, "run", "--canary", filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
+		"109": {args: []string{d, "run", "--canary=" + filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
+		// A current folder that cannot be read: the process of this user is taken for a match; another user's is not; no status is read as ours.
+		"112": {args: []string{d, "run"}, cwd: dangling, uid: ourUID},
+		"113": {args: []string{d, "run"}},
+		"114": {args: []string{d, "run"}, cwd: dangling, uid: otherUID},
+	}
+	for pid, f := range fakes {
+		canaryWrite(t, proc, pid+"/cmdline", strings.Join(f.args, "\x00")+"\x00")
+		switch f.cwd {
+		case "":
+		case dangling:
+			if err := os.Symlink(filepath.Join(e.dir, "nowhere"), filepath.Join(proc, pid, "cwd")); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			if err := os.Symlink(f.cwd, filepath.Join(proc, pid, "cwd")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if f.uid != 0 {
+			canaryWrite(t, proc, pid+"/status", status(f.uid))
+		}
 	}
 	canaryWrite(t, proc, "self/cmdline", "")
 	canaryWrite(t, proc, "stat", "x")
+	want := "100 101 106 107 108 109 110 111 112 113 117 118 119"
 	out, code := e.run(t, canaryResetScript, "", "--self-test", "procs-of", r, proc)
-	if code != 0 || strings.Fields(out)[0] != "100" || strings.Join(strings.Fields(out), " ") != "100 101 106" {
-		t.Errorf("exit status %d, processes: %q, want 100 101 106", code, out)
+	if got := strings.Join(strings.Fields(out), " "); code != 0 || got != want {
+		t.Errorf("exit status %d, processes: %q, want %s", code, got, want)
+	}
+	// No /proc, or one with no process folder in it: nothing can be said, so it refuses.
+	empty := filepath.Join(e.dir, "empty-proc")
+	canaryWrite(t, empty, "stat", "x")
+	canaryWrite(t, empty, "self/cmdline", "")
+	for _, p := range []string{filepath.Join(e.dir, "no-proc"), empty} {
+		out, code := e.run(t, canaryResetScript, "", "--self-test", "procs-of", r, p)
+		if code == 0 || !strings.Contains(out, "refused") {
+			t.Errorf("procs-of %s: exit status %d, want a refusal:\n%s", p, code, out)
+		}
+	}
+}
+
+// The reset's main flow asks the real /proc: a process that is named ataniqd
+// and runs in the root (a relative config path, so nothing of the root is in
+// its arguments) refuses the reset, in the dry run and without one, and
+// nothing is deleted. Removing the process check from the flow fails this.
+func TestCanaryRunKitResetRefusesWhileADaemonRuns(t *testing.T) {
+	if _, err := os.Stat("/proc/self/cwd"); err != nil {
+		t.Skip("no /proc")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep")
+	}
+	e := canaryStubKit(t)
+	r := e.prepared(t)
+	start := func(dir string, args ...string) {
+		t.Helper()
+		cmd := &exec.Cmd{Path: sleep, Args: append([]string{"ataniqd"}, args...), Dir: dir}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	}
+	// One of this user in another folder is not this root's.
+	start(e.dir, "300")
+	if out, code := e.run(t, canaryResetScript, "", "--root", r, "--bin", e.bin, "--dry"); code != 0 {
+		t.Fatalf("a daemon elsewhere refused the dry run: exit status %d:\n%s", code, out)
+	}
+	start(r, "300")
+	for _, more := range [][]string{{"--dry"}, nil} {
+		out, code := e.run(t, canaryResetScript, "", append([]string{"--root", r, "--bin", e.bin}, more...)...)
+		if code == 0 || !strings.Contains(out, "ataniqd or ataniq-holder of this root runs") {
+			t.Errorf("%v: exit status %d, want the refusal of the process check:\n%s", more, code, out)
+		}
+		if strings.Contains(out, "DELETE") || strings.Contains(out, "Type the word") {
+			t.Errorf("%v: the reset went on:\n%s", more, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r, "state/leads/throwaway-one-lead/home/file")); err != nil {
+		t.Errorf("a refusal deleted the provisioned state: %v", err)
 	}
 }
 
 // The word typed in a terminal deletes, and the script's part is what it
 // shows: this runs it under util-linux script, which gives it a terminal, and
 // types the words from the test. It is skipped where script cannot.
-func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
+// canaryNeedScript is the path of script(1), or skips the test where it cannot
+// give a command a terminal.
+func canaryNeedScript(t *testing.T) string {
+	t.Helper()
 	scriptCmd, err := exec.LookPath("script")
 	if err != nil {
 		t.Skip("no script(1) to give the reset a terminal")
@@ -3128,6 +3243,73 @@ func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
 	if err := exec.Command(scriptCmd, "-qec", "true", "/dev/null").Run(); err != nil {
 		t.Skip("script(1) cannot make a terminal here")
 	}
+	return scriptCmd
+}
+
+// canaryLockedBuf is a buffer that one goroutine writes and another reads.
+type canaryLockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *canaryLockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *canaryLockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// canaryTyped runs the reset of the root r under script(1), waits until it
+// asks for the word, calls during (which may change the folder, as the owner's
+// other terminal might while the prompt waits), types the word and returns
+// what the script printed and how it ended.
+func canaryTyped(t *testing.T, scriptCmd string, e canaryHelperEnv, r, word string, during func()) (string, error) {
+	t.Helper()
+	run := "sh " + filepath.Join(root(t), canaryResetScript) + " --root " + r + " --bin " + e.bin
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	defer wr.Close()
+	cmd := exec.Command(scriptCmd, "-qec", run, "/dev/null")
+	cmd.Dir = e.dir
+	cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + filepath.Join(e.dir, "home"), "TERM=dumb"}
+	cmd.Stdin = rd
+	var buf canaryLockedBuf
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	asked := false
+	for i := 0; i < 100 && !asked; i++ {
+		time.Sleep(100 * time.Millisecond)
+		asked = strings.Contains(buf.String(), "Type the word reset")
+	}
+	if !asked {
+		cmd.Process.Kill()
+		cmd.Wait()
+		t.Fatalf("the script did not ask for the word:\n%s", buf.String())
+	}
+	if during != nil {
+		during()
+	}
+	io.WriteString(wr, word+"\n")
+	err = cmd.Wait()
+	return buf.String(), err
+}
+
+// The word typed in a terminal deletes, and the script's part is what it
+// shows: this runs it under util-linux script, which gives it a terminal, and
+// types the words from the test. It is skipped where script cannot.
+func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
 	for _, c := range []struct {
 		word   string
 		delete bool
@@ -3135,27 +3317,12 @@ func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
 		t.Run(c.word, func(t *testing.T) {
 			e := canaryStubKit(t)
 			r := e.prepared(t)
-			run := "sh " + filepath.Join(root(t), canaryResetScript) + " --root " + r + " --bin " + e.bin
-			rd, wr, err := os.Pipe()
-			if err != nil {
+			// A folder that has no mode at all, which only a chmod before the read opens.
+			canaryWrite(t, r, "state/closed/inner", "x")
+			if err := os.Chmod(filepath.Join(r, "state/closed"), 0); err != nil {
 				t.Fatal(err)
 			}
-			defer rd.Close()
-			defer wr.Close()
-			cmd := exec.Command(scriptCmd, "-qec", run, "/dev/null")
-			cmd.Dir = e.dir
-			cmd.Env = []string{"PATH=" + e.tools + ":/usr/bin:/bin", "HOME=" + filepath.Join(e.dir, "home"), "TERM=dumb"}
-			cmd.Stdin = rd
-			var buf bytes.Buffer
-			cmd.Stdout = &buf
-			cmd.Stderr = &buf
-			if err := cmd.Start(); err != nil {
-				t.Fatal(err)
-			}
-			time.Sleep(700 * time.Millisecond)
-			io.WriteString(wr, c.word+"\n")
-			err = cmd.Wait()
-			out := buf.String()
+			out, err := canaryTyped(t, scriptCmd, e, r, c.word, nil)
 			if c.delete != (err == nil) {
 				t.Fatalf("word %q: %v\n%s", c.word, err, out)
 			}
@@ -3202,5 +3369,307 @@ func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The prompt can wait for minutes. What changes meanwhile (a unit or a daemon
+// started in another terminal, a state/ swapped for a link to a folder
+// outside the root) is seen after the word is typed: nothing is deleted, and
+// nothing outside the root is deleted or has its mode changed.
+func TestCanaryRunKitResetChecksAgainAfterTheWord(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
+	sleep, sleepErr := exec.LookPath("sleep")
+	_, procErr := os.Stat("/proc/self/cwd")
+	for _, c := range []struct {
+		name, want string
+		during     func(t *testing.T, e canaryHelperEnv, r, outside string)
+	}{
+		{"unit", "an ataniq-* unit is loaded", func(t *testing.T, e canaryHelperEnv, r, outside string) {
+			canaryWrite(t, e.dir, "units", "ataniq-lead-throwaway-one.service loaded active running a lead\n")
+		}},
+		{"daemon", "ataniqd or ataniq-holder of this root runs", func(t *testing.T, e canaryHelperEnv, r, outside string) {
+			if sleepErr != nil || procErr != nil {
+				t.Skip("no sleep or no /proc to run a stand-in daemon")
+			}
+			cmd := &exec.Cmd{Path: sleep, Args: []string{"ataniq-holder", "300"}, Dir: r}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+		}},
+		{"state-link", "/state is a symbolic link", func(t *testing.T, e canaryHelperEnv, r, outside string) {
+			if err := os.Rename(filepath.Join(r, "state"), filepath.Join(e.dir, "state-moved")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(r, "state")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"runtime-link", "/runtime is a symbolic link", func(t *testing.T, e canaryHelperEnv, r, outside string) {
+			if err := os.Rename(filepath.Join(r, "runtime"), filepath.Join(e.dir, "runtime-moved")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(r, "runtime")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := canaryStubKit(t)
+			r := e.prepared(t)
+			// A folder outside the root, read-only as a clone's is, that a link may lead to.
+			outside := filepath.Join(e.dir, "outside")
+			canaryWrite(t, outside, "sub/precious", "x")
+			if err := os.Chmod(filepath.Join(outside, "sub/precious"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(outside, "sub"), 0o500); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(outside, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			modes := func() string {
+				var b strings.Builder
+				for _, p := range []string{outside, filepath.Join(outside, "sub"), filepath.Join(outside, "sub/precious")} {
+					fmt.Fprintf(&b, "%s %v\n", p, canaryMode(t, p))
+				}
+				return b.String()
+			}
+			before := modes()
+			out, err := canaryTyped(t, scriptCmd, e, r, "reset", func() { c.during(t, e, r, outside) })
+			if err == nil || !strings.Contains(out, c.want) {
+				t.Errorf("after the word the reset did not refuse with %q: %v\n%s", c.want, err, out)
+			}
+			if strings.Contains(out, "\ndeleted ") || strings.Contains(out, "made ") {
+				t.Errorf("the reset went on after the change:\n%s", out)
+			}
+			if after := modes(); after != before {
+				t.Errorf("the modes outside the root changed:\nbefore\n%safter\n%s", before, after)
+			}
+			if _, err := os.Stat(filepath.Join(outside, "sub/precious")); err != nil {
+				t.Errorf("a file outside the root is gone: %v", err)
+			}
+			// The root's own folders are where they were: kept, or moved by the test, and not touched.
+			kept := filepath.Join(r, "state/leads/throwaway-one-lead/home/file")
+			switch c.name {
+			case "state-link":
+				kept = filepath.Join(e.dir, "state-moved/leads/throwaway-one-lead/home/file")
+			case "runtime-link":
+				kept = filepath.Join(r, "state/leads/throwaway-one-lead/home/file")
+				if _, err := os.Stat(filepath.Join(e.dir, "runtime-moved/leads/throwaway-one-lead/run")); err != nil {
+					t.Errorf("the moved runtime/ lost its entry: %v", err)
+				}
+			}
+			if _, err := os.Stat(kept); err != nil {
+				t.Errorf("a refusal deleted the provisioned state: %v", err)
+			}
+			for _, c := range e.callLines(t) {
+				if !strings.HasPrefix(c, "systemctl --user list-units") {
+					t.Errorf("the reset ran %q", c)
+				}
+			}
+		})
+	}
+}
+
+// The window after the second check: while systemctl and the process scan
+// run, a same-user process swaps what the reset is about to delete. The stub
+// systemctl does it on its second call (the first is before the plan). The
+// root replaced by a link to a folder that holds a state/ and a runtime/ is
+// refused, and a state/ replaced by a link is refused by the deletion's own
+// check; in both nothing outside the root is deleted (what the make-again step
+// does is the test after this one), and the real
+// folders are not touched. Removing the entry into the root, or the link
+// check of the deletion loop, fails one of these.
+func TestCanaryRunKitResetSwapAfterTheSecondCheck(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
+	for _, c := range []struct {
+		name, want string
+		swap       func(r, outside string) string // the shell lines of the second systemctl call
+	}{
+		{"root", "was replaced", func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"state", "/state became a symbolic link", func(r, outside string) string {
+			return "mv '" + r + "/state' '" + r + "/state-moved'\nln -s '" + outside + "/state' '" + r + "/state'\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := canaryStubKit(t)
+			r := e.prepared(t)
+			outside := filepath.Join(e.dir, "outside")
+			for _, k := range []string{"state/sub/precious", "runtime/precious"} {
+				canaryWrite(t, outside, k, "x")
+			}
+			if err := os.Chmod(filepath.Join(outside, "state/sub"), 0o500); err != nil {
+				t.Fatal(err)
+			}
+			modes := func() string {
+				var b strings.Builder
+				for _, p := range canaryTree(t, outside) {
+					fmt.Fprintf(&b, "%s %v\n", p, canaryMode(t, p))
+				}
+				return b.String()
+			}
+			before := modes()
+			sysctl := "#!/bin/sh\necho \"systemctl $*\" >>'" + e.calls + "'\n" + c.swap(r, outside) + "exit 0\n"
+			out, err := canaryTyped(t, scriptCmd, e, r, "reset", func() {
+				tmp := filepath.Join(e.tools, "systemctl.new")
+				if err := os.WriteFile(tmp, []byte(sysctl), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(tmp, filepath.Join(e.tools, "systemctl")); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err == nil || !strings.Contains(out, c.want) {
+				t.Errorf("after the swap the reset did not refuse with %q: %v\n%s", c.want, err, out)
+			}
+			if strings.Contains(out, "\ndeleted ") || strings.Contains(out, "made ") {
+				t.Errorf("the reset went on after the swap:\n%s", out)
+			}
+			if after := modes(); after != before {
+				t.Errorf("the folder outside the root changed:\nbefore\n%safter\n%s", before, after)
+			}
+			for _, k := range []string{"state/sub/precious", "runtime/precious"} {
+				if _, err := os.Stat(filepath.Join(outside, k)); err != nil {
+					t.Errorf("a file outside the root is gone: %v", err)
+				}
+			}
+			// What the swap moved aside is the root's own: it is kept.
+			kept := filepath.Join(r+"-real", "state/leads/throwaway-one-lead/home/file")
+			moved := filepath.Join(r+"-real", "runtime/leads/throwaway-one-lead/run")
+			if c.name == "state" {
+				kept = filepath.Join(r, "state-moved/leads/throwaway-one-lead/home/file")
+				moved = filepath.Join(r, "runtime/leads/throwaway-one-lead/run")
+			}
+			for _, p := range []string{kept, moved} {
+				if _, err := os.Stat(p); err != nil {
+					t.Errorf("the provisioned state of the root is gone: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// The make-again step is checked right before each step, not fully pinned: a
+// swap of the root by a same-user process during the mkdir is refused after
+// it, and nothing is created outside the root. A stub mkdir on PATH swaps the
+// root when it is asked for ./state (the step names its folders relative to
+// the folder it entered), before or after it makes them: for a link to a
+// folder outside, and for a new folder of its own that has a state/ (only the
+// check of the folder entered sees that one). What is not tested, because the
+// stub cannot be run between a check and the next call: a swap in the
+// milliseconds between the last check and ataniq-intake. Removing the pwd -P
+// check of the make-again step fails the last case.
+func TestCanaryRunKitResetSwapDuringTheMakeAgain(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
+	for _, c := range []struct {
+		name  string
+		after bool // swap after the real mkdir, not before
+		swap  func(r, outside string) string
+	}{
+		{"link-before-mkdir", false, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"link-after-mkdir", true, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"folder-after-mkdir", true, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\n/bin/mkdir -p '" + r + "/state'\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := canaryStubKit(t)
+			r := e.prepared(t)
+			outside := filepath.Join(e.dir, "outside")
+			canaryWrite(t, outside, "keep/precious", "x")
+			list := func() string {
+				var b strings.Builder
+				for _, p := range canaryTree(t, outside) {
+					fmt.Fprintf(&b, "%s %v\n", p, canaryMode(t, p))
+				}
+				return b.String()
+			}
+			before := list()
+			realMkdir := "PATH=/usr/bin:/bin\n"
+			var stub string
+			if c.after {
+				stub = "#!/bin/sh\n" + realMkdir + "mkdir \"$@\" || exit $?\ncase \" $* \" in *' ./state '*)\n" + c.swap(r, outside) + ";;\nesac\n"
+			} else {
+				stub = "#!/bin/sh\n" + realMkdir + "case \" $* \" in *' ./state '*)\n" + c.swap(r, outside) + ";;\nesac\nexec mkdir \"$@\"\n"
+			}
+			out, err := canaryTyped(t, scriptCmd, e, r, "reset", func() {
+				tmp := filepath.Join(e.tools, "mkdir.new")
+				if err := os.WriteFile(tmp, []byte(stub), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(tmp, filepath.Join(e.tools, "mkdir")); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err == nil || !strings.Contains(out, "was replaced while the folders were made") {
+				t.Errorf("after the swap the reset did not refuse: %v\n%s", err, out)
+			}
+			if strings.Contains(out, "again, and the mirror") {
+				t.Errorf("the reset went on after the swap:\n%s", out)
+			}
+			if after := list(); after != before {
+				t.Errorf("the folder outside the root changed:\nbefore\n%safter\n%s", before, after)
+			}
+			// Nothing of the mirror was made where the root's name points.
+			if _, err := os.Stat(filepath.Join(r, "state", "mirrors")); err == nil {
+				t.Errorf("ataniq-intake ran after the swap: %s/state/mirrors exists", r)
+			}
+			if calls, _ := os.ReadFile(e.calls); strings.Contains(string(calls), "ataniq-intake init") {
+				t.Errorf("ataniq-intake init was called after the swap:\n%s", calls)
+			}
+		})
+	}
+}
+
+// The checks are one function, and the main flow calls it twice: once before
+// the plan and once after the word, before the first deletion; the deletion
+// opens modes with find and not with chmod -R.
+func TestCanaryRunKitResetChecksTwiceAndOpensModesWithFind(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(root(t), canaryResetScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	call := `still_quiet "$ROOT" /proc`
+	if n := strings.Count(text, call+"\n"); n != 2 {
+		t.Fatalf("the main flow calls %q %d times, want 2", call, n)
+	}
+	first := strings.Index(text, call)
+	prompt := strings.Index(text, "Type the word %s")
+	second := strings.LastIndex(text, call)
+	del := strings.Index(text, "rm -rf")
+	if !(first < prompt && prompt < second && second < del) {
+		t.Errorf("the calls are not before the plan and prompt, and after the word and before the deletion: %d %d %d %d", first, prompt, second, del)
+	}
+	if judged := strings.Index(text, `typed_word "$ANSWER"`); judged < 0 || judged > second {
+		t.Error("the second check is not after the word is judged")
+	}
+	fn := canaryDef(t, text, "still_quiet")
+	for _, want := range []string{`procs_of "$1" "$2"`, "systemctl --user list-units", "is a symbolic link", "resolves to another path"} {
+		if !strings.Contains(fn, want) {
+			t.Errorf("still_quiet does not hold %q", want)
+		}
+	}
+	if strings.Contains(text, "chmod -R u+") {
+		t.Error("the reset opens modes with chmod -R, which follows a link given to it")
+	}
+	if !strings.Contains(text, `find "./$_k" -type d -exec chmod u+rwx {} \;`) {
+		t.Error("the reset does not open the modes with find")
+	}
+	// The deletion runs relative to the root entered once, after the second check.
+	enter := strings.LastIndex(text, `cd -P -- "$ROOT"`)
+	if !(second < enter && enter < del) || !strings.Contains(text, `[ "$(pwd -P)" = "$ROOT" ]`) {
+		t.Error("the reset does not enter the root, and check where it is, between the second check and the deletion")
+	}
+	if !strings.Contains(text, "rm -rf -- \"./$_k\"") || strings.Contains(text, "rm -rf -- \"$ROOT") || strings.Contains(text, "rm -rf -- \"${ROOT") {
+		t.Error("the reset deletes through a path that goes through the root")
 	}
 }
