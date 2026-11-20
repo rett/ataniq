@@ -212,6 +212,12 @@ word.
 - A failure before that starts no chain; undo by hand what the earlier steps
   left (below).
 
+When step 11 finds that the unit is not active (the holder ended at its start),
+or that the role is not starting, it prints the last 40 lines of the unit's
+journal before it fails: the holder says why it ended on its standard error, and
+the event log holds only a code (`sandbox-start-failed`). The step 22 that the
+chain runs keeps the journal in the evidence.
+
 A step of the chain that has nothing to act on says so, and that is recorded.
 No step of the chain can be skipped: each waits for its key and records its
 result, and an interrupt (Ctrl-C) during the run starts the chain as a failure
@@ -601,7 +607,7 @@ is refused too, and it takes no path with a `.` or `..` part. It holds:
 | --- | --- |
 | `log.txt` | Every step, key, command, check and result, each with its time. |
 | `answers.txt` | Each answer the owner or the lead gave, one line with the time, the step, the question, the answer and how it came: `typed`, or `hint` when an empty line took the suggested path of a path prompt. |
-| `out/` | The standard output and standard error of every command the script ran, by step. |
+| `out/` | The standard output and standard error of every command the script ran, by step. Step 22 adds `22-e<epoch>-unit-journal.out`: the unit's journal since its first start (`journalctl --user --unit UNIT`, at most 500 lines), which is where the holder's standard error goes, so the reason a holder ended at its start is in the evidence. It can name the canary's folders, like the rest of the evidence, and step 26's scrub looks through it. |
 | `facts.txt`, `template-records.txt`, `binaries.txt`, `sandbox-executables.txt`, `standin-hash.txt` | Names, sizes, times and hashes of the reports, the binaries and the executables. Never content. |
 | `template.sha256` | The hash of the intake template. |
 | `units-before.txt` and the `units-after` and `unit-files` lists | The user manager's `ataniq-*` units and unit files at step 1 and after each stop. |
@@ -731,6 +737,7 @@ test entry:
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test mirror-remote URL PROJECT` | `yes` when `URL` (with or without `file://`) is the mirror's place inside the sandbox for `PROJECT` (`/ataniq/mirror/PROJECT.git`), the one remote step 8 accepts for the lead's tree, and `no` otherwise. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
+| `--self-test journal-save EVIDENCE START UNIT` | What step 22 keeps of the unit's journal: it asks the `journalctl` on `PATH` (a stub in the tests) for `UNIT` since `START` and writes the lines to `EVIDENCE/out/22-e1-unit-journal.out`, a folder that exists; it says how many lines, or that the journal could not be read; with an empty `START` (no start was asked) it does nothing. |
 | `--self-test count-lines FILE PATH=VALUE...` | How many lines of `FILE`, which holds one JSON object in each line, hold every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it; a line that is not a whole JSON object is passed over, and a file that is not there counts 0. Step 14 counts the `attach` events of the holder's event log with it, before and after the second console. |
 | `--self-test ticket-taken FILE` | `taken` when the ticket file `FILE` is absent or empty (the console empties it when it takes the ticket), `waiting` when it holds something, and `waiting` for an empty name: step 14 never says "the ticket was taken" for a ticket result that names no file. Only the size is looked at. |
 | `--self-test wait-daemon` | Step 10's polling: it asks the `ataniqd status` of `build/canary` of the current folder as the step does and prints `listens` when it answered within the wait, `silent` when not; "waiting for the daemon to listen..." is said once and a dot follows every 5 asks. |

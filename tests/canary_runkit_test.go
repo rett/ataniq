@@ -109,7 +109,7 @@ func canaryRuns(pass string, n int) bool {
 var canaryStubTools = []string{
 	"systemctl", "ss", "loginctl", "git", "bwrap", "pasta", "date", "mkdir", "rmdir", "rm", "cp",
 	"sha256sum", "stat", "awk", "sed", "grep", "cat", "find", "sort", "cut", "tr", "cmp", "diff",
-	"sleep", "env", "mktemp", "id", "sh", "timeout",
+	"sleep", "env", "mktemp", "id", "sh", "timeout", "journalctl",
 }
 
 // canaryDry runs the script with --dry and the further arguments, as
@@ -4339,6 +4339,119 @@ func TestCanaryRunKitStep14StartsTheConsoleBeforeTheMint(t *testing.T) {
 	i, j := strings.Index(out, "Owner: close the console of the first epoch now"), strings.Index(out, "Close the first console first.")
 	if i < 0 || j < i {
 		t.Error("the second epoch does not tell the owner to close the first console before it stops the unit")
+	}
+}
+
+// The holder says why it ended on its standard error, which is the unit's
+// journal, and nothing else records it. Step 11 prints the tail of the journal
+// before it fails because the unit is not active, and step 22 keeps the journal
+// in the evidence. The first is read from the text (the step runs systemd); the
+// second runs through its test entry over a stub journalctl.
+func TestCanaryRunKitKeepsTheUnitJournal(t *testing.T) {
+	text := canaryScriptText(t)
+	funcs := canaryFuncs(t, text)
+	if !strings.Contains(funcs["unit_journal"], `journalctl --user --unit "$UNIT" --since "$T_START" --no-pager --output=short-iso --lines="$1"`) {
+		t.Errorf("unit_journal does not ask journalctl for the unit since the start, bounded: %s", funcs["unit_journal"])
+	}
+	step11 := funcs["step_11"]
+	start := strings.Index(step11, "runcap start ")
+	stamp := strings.Index(step11, `T_START=$(date '+%Y-%m-%d %H:%M:%S')`)
+	if stamp < 0 || start < stamp || !strings.Contains(step11, `[ -z "$T_START" ]`) {
+		t.Error("step 11 does not note the time of the first start, once, before it starts the unit")
+	}
+	for _, want := range []string{`show_unit_journal; fail "the unit is \"$_active\", not active"`, `show_unit_journal; fail "the role is \"$_state\", not starting"`} {
+		if !strings.Contains(step11, want) {
+			t.Errorf("step 11 does not print the journal before it fails: %s", want)
+		}
+	}
+	if body := funcs["show_unit_journal"]; !strings.Contains(body, "unit_journal 40") {
+		t.Errorf("the tail printed at step 11 is not bounded to 40 lines: %s", body)
+	}
+	step22 := funcs["step_22"]
+	if r, j := strings.Index(step22, `runcap revert systemctl --user revert "$UNIT"`), strings.Index(step22, "save_unit_journal"); r < 0 || j < r {
+		t.Error("step 22 does not keep the journal after the stop and the revert")
+	}
+	// The dry run says both.
+	out, code := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	for _, b := range canaryBlocks(out) {
+		m := canaryStepHeading.FindStringSubmatch(b.heading)
+		if m == nil {
+			continue
+		}
+		switch m[1] {
+		case "11":
+			if b.count("print the last 40 lines of its journal, journalctl --user --unit ataniq-lead-throwaway-one.service --since") != 1 {
+				t.Errorf("the dry run of step 11 does not say it prints the journal's tail:\n%s", strings.Join(b.lines, "\n"))
+			}
+		case "22":
+			if b.count("journalctl --user --unit ataniq-lead-throwaway-one.service --since <the time of the first start> --no-pager --output=short-iso --lines=500") != 1 {
+				t.Errorf("the dry run of step 22 does not say it keeps the journal:\n%s", strings.Join(b.lines, "\n"))
+			}
+		}
+	}
+
+	// The entry over a stub journalctl.
+	for name, c := range map[string]struct {
+		stub, start string
+		wantOut     []string
+		wantFile    string // what the journal file holds ("" when nothing is kept)
+	}{
+		"the journal is kept": {
+			stub: "echo \"$*\" >>\"$CALLS\"\nprintf 'line one\\nline two\\n'\n", start: "2026-11-19 12:00:00",
+			wantOut: []string{"as the holder wrote it on its standard error, is in %EV%/out/22-e1-unit-journal.out (2 lines)"}, wantFile: "line one\nline two\n",
+		},
+		"journalctl fails": {
+			stub: "echo \"$*\" >>\"$CALLS\"\necho 'no access' >&2\nexit 1\n", start: "2026-11-19 12:00:00",
+			wantOut: []string{"the unit's journal could not be read (journalctl failed: %EV%/out/22-e1-unit-journal.out.err)"}, wantFile: "",
+		},
+		"no start was asked": {stub: "echo \"$*\" >>\"$CALLS\"\necho x\n", start: "", wantOut: nil, wantFile: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			ev := filepath.Join(dir, "ev")
+			tools := filepath.Join(dir, "tools")
+			calls := filepath.Join(dir, "calls")
+			for _, d := range []string{filepath.Join(ev, "out"), tools} {
+				if err := os.MkdirAll(d, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(tools, "journalctl"), []byte("#!/bin/sh\n"+c.stub), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, tool := range []string{"awk", "date", "sed", "cat", "printf"} {
+				if real, err := exec.LookPath(tool); err == nil {
+					os.Symlink(real, filepath.Join(tools, tool))
+				}
+			}
+			cmd := exec.Command("/bin/sh", filepath.Join(root(t), canaryRunScript), "--self-test", "journal-save", ev, c.start, "ataniq-lead-throwaway-one.service")
+			cmd.Dir = dir
+			cmd.Env = []string{"PATH=" + tools, "HOME=" + dir, "CALLS=" + calls}
+			o, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v\n%s", err, o)
+			}
+			for _, want := range c.wantOut {
+				if !strings.Contains(string(o), strings.ReplaceAll(want, "%EV%", ev)) {
+					t.Errorf("the output does not hold %q:\n%s", want, o)
+				}
+			}
+			got, _ := os.ReadFile(filepath.Join(ev, "out", "22-e1-unit-journal.out"))
+			if string(got) != c.wantFile {
+				t.Errorf("the journal in the evidence is %q, want %q", got, c.wantFile)
+			}
+			asked, _ := os.ReadFile(calls)
+			if c.start == "" {
+				if len(asked) != 0 {
+					t.Errorf("journalctl was asked with no start: %s", asked)
+				}
+			} else if want := "--user --unit ataniq-lead-throwaway-one.service --since " + c.start + " --no-pager --output=short-iso --lines=500\n"; string(asked) != want {
+				t.Errorf("journalctl was asked %q, want %q", asked, want)
+			}
+		})
 	}
 }
 

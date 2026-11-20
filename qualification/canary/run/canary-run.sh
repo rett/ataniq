@@ -22,7 +22,9 @@
 # stop-daemon, roots-deleted, ask-path, ask-file and affirm-word read keys from
 # standard input, and ask-path and ask-file read the hint file they are given;
 # no other program is run. count-lines runs the helper ataniq-canary fields of
-# build/canary on each line of the file it is given, as has-line does.
+# build/canary on each line of the file it is given, as has-line does, and
+# journal-save runs journalctl (the one on PATH, a stub in the tests) and writes
+# its lines to EVIDENCE/out, a folder the test makes.
 #
 # At a path prompt (the two fact reports, the template's review, the report of
 # qualify-mirror) the script shows "(Enter for: PATH)" when answers.hint beside
@@ -96,6 +98,8 @@ usage() {
     '                      a path prompt with its hint, and a typed word with the hint file in place' \
     '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
     '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
+    '         journal-save EVIDENCE START UNIT' \
+    '                      what step 22 keeps of the journal of the unit (journalctl on PATH; writes EVIDENCE/out only)' \
     '         count-lines FILE PATH=VALUE...' \
     '                      how many lines of FILE hold every PATH=VALUE (step 14 counts attach events)' \
     '         ticket-taken FILE' \
@@ -200,6 +204,7 @@ ANSWER=
 ANSWER_SRC=typed # how the last answer came: typed, or hint (a path prompt, an empty line)
 HINTS=           # the hint file next to the config, a real run only
 LINGER0=
+T_START=       # the local time of the first start of the unit: the journal is read from it
 PASSA=
 TOKEN=
 BODY=
@@ -552,6 +557,43 @@ count_lines() {
     done <"$_cf"
   fi
   printf '%s\n' "$_cn"
+}
+
+# unit_journal LINES prints the last LINES lines of the unit's journal since
+# the first start of this run. The holder runs as the unit's main process and
+# says why it ended on its standard error, which is the journal: the event log
+# and the evidence hold only a code ("sandbox-start-failed"), so a holder that
+# exits at its start leaves its reason nowhere else. The journal can name the
+# canary's folders: it goes into the evidence folder, which is never published,
+# and step 26's scrub looks through it.
+unit_journal() {
+  journalctl --user --unit "$UNIT" --since "$T_START" --no-pager --output=short-iso --lines="$1"
+}
+
+# show_unit_journal prints the tail of the journal, for a step that fails
+# because the unit is not what it should be.
+show_unit_journal() {
+  if [ -z "$T_START" ]; then return 0; fi
+  out "   the journal of the unit since $T_START (the last 40 lines): the holder says why it ended there"
+  runcap unit-journal-tail unit_journal 40
+}
+
+# save_unit_journal keeps the journal in the evidence (step 22), whatever
+# became of the unit.
+save_unit_journal() {
+  if [ "$DRY" -eq 1 ]; then
+    dry "run: journalctl --user --unit $UNIT --since <the time of the first start> --no-pager --output=short-iso --lines=500, into $EV/out/22-e1-unit-journal.out (what the holder said on its standard error; when no start was asked there is nothing to read)"
+    return 0
+  fi
+  if [ -z "$T_START" ]; then return 0; fi
+  _jf=$EV/out/$(printf '%02d' "$CUR")-e$EPOCH_NO-unit-journal.out
+  if unit_journal 500 >"$_jf" 2>"$_jf.err"; then
+    out "   the unit's journal since $T_START, as the holder wrote it on its standard error, is in $_jf ($(awk 'END { print NR }' "$_jf") lines)"
+    note "kept the journal of the unit in $_jf"
+  else
+    out "   the unit's journal could not be read (journalctl failed: $_jf.err); the holder's reason for an early end may be missing from the evidence"
+    note 'the journal of the unit could not be read'
+  fi
 }
 
 # fact appends the name, size, time and hash of a file to a list in the
@@ -1220,6 +1262,18 @@ self_test() {
       TTY_ASSUMED=1
       chain_trap
       if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
+      ;;
+    journal-save)
+      # EVIDENCE START UNIT: what step 22 keeps of the unit's journal: the
+      # journalctl on PATH (a stub in the tests) is asked for the unit since
+      # START, and the lines go to EVIDENCE/out, a folder that exists.
+      [ "$#" -eq 3 ] || usage
+      EV=$1
+      T_START=$2
+      UNIT=$3
+      CUR=22
+      EPOCH_NO=1
+      save_unit_journal
       ;;
     count-lines)
       # FILE PATH=VALUE...: how many lines of FILE hold every PATH=VALUE, as
@@ -2078,12 +2132,16 @@ step_11() {
   fi
   STARTED=1
   STOPPED=0
+  # The journal is read from the first start of the run, local time as
+  # journalctl --since takes it.
+  if [ "$DRY" -eq 0 ] && [ -z "$T_START" ]; then T_START=$(date '+%Y-%m-%d %H:%M:%S'); fi
   runcap start "$BIN/ataniqd" canary start --config "$CONFIG"
   check 'start succeeded' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
     dry 'check: the start result names the role state starting, this unit and the waiver'
     dry 'keep the epoch the start result names: step 12 reads the records of that epoch only'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"
+    dry "when the unit is not active (the holder ended at its start), print the last 40 lines of its journal, journalctl --user --unit $UNIT --since <the time of the start>, before the step fails: the holder's reason is only there"
     dry 'check: the unit is active'
     dry "read MemoryMax, MemorySwapMax, TasksMax and ControlGroup with systemctl --user show $UNIT, normalised to bytes and counts"
     dry "read memory.max, memory.swap.max and pids.max in the unit's control group folder under /sys/fs/cgroup"
@@ -2102,7 +2160,7 @@ step_11() {
   _state=$(fld "$START_OUT" state)
   case $_state in
     starting | running) out "   ok: the role is $_state" ;;
-    *) fail "the role is \"$_state\", not starting"; return 0 ;;
+    *) show_unit_journal; fail "the role is \"$_state\", not starting"; return 0 ;;
   esac
   check 'the start result names this unit' is_eq "$(fld "$START_OUT" unit)" "$UNIT" || return 0
   check 'the start result shows the waiver in full' is_eq "$(fld "$START_OUT" waiver)" "$WAIVER" || return 0
@@ -2112,7 +2170,7 @@ step_11() {
   _active=$(show_prop ActiveState)
   case $_active in
     active | activating) out "   ok: the unit is $_active" ;;
-    *) fail "the unit is \"$_active\", not active"; return 0 ;;
+    *) show_unit_journal; fail "the unit is \"$_active\", not active"; return 0 ;;
   esac
   read_limits
   check 'MemoryMax is the config, by systemd' is_eq "$M1" "$MAXB" || return 0
@@ -2647,7 +2705,7 @@ stop_role() {
 
 step_22() {
   step_head 22 'stop, revert, and list what is left' \
-    "run ataniqd canary stop; then systemctl --user revert on the unit; list the user manager's units and unit files for ataniq-*; list the unit's name under the user manager's transient/ and user.control/ runtime folders" \
+    "run ataniqd canary stop; then systemctl --user revert on the unit; keep the unit's journal (what the holder said on its standard error) in the evidence; list the user manager's units and unit files for ataniq-*; list the unit's name under the user manager's transient/ and user.control/ runtime folders" \
     'stopped, with a proof text naming the invocation and its empty control group; no unit, no unit file and no drop-in remains, in either folder; lingering is as it was' 'G4'
   wait_key 'Step 22 stops the unit and lists what is left.'
   if [ "$STARTED" -eq 0 ] && [ "$DRY" -eq 0 ]; then
@@ -2661,6 +2719,7 @@ step_22() {
     stop_role || :
   fi
   runcap revert systemctl --user revert "$UNIT"
+  save_unit_journal
   runcap units-after systemctl --user list-units --all --no-legend --plain 'ataniq-*'
   if [ "$DRY" -eq 0 ]; then awk '{print $1}' "$LASTOUT" | LC_ALL=C sort >"$EV/units-after-$EPOCH_NO.txt"; fi
   check 'no unit remains: the units are those of step 1' cmp -s "$EV/units-before.txt" "$EV/units-after-$EPOCH_NO.txt" || :
