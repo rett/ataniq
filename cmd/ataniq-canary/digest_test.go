@@ -11,17 +11,34 @@ import (
 
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
-	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadholder/sandboxstart"
+	"ataniq/internal/leadregistry"
 )
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}\n$`)
 
+// configInputs writes the inputs file changed by mod at the config's
+// holder.sandbox_inputs, the one file profile-digest accepts, and returns its
+// path.
+func configInputs(t *testing.T, w *provisiontest.World, mod func(*sandboxstart.Inputs)) string {
+	t.Helper()
+	data, err := os.ReadFile(inputsFile(t, w, mod))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := w.Cfg.Holder.SandboxInputs
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	provisiontest.WriteFile(t, dest, data, 0o600)
+	return dest
+}
+
 // digestRun runs profile-digest on the world's config and the inputs file
-// changed by mod.
+// changed by mod, written where the config says the holder reads it.
 func digestRun(t *testing.T, w *provisiontest.World, mod func(*sandboxstart.Inputs)) (int, string, string) {
 	t.Helper()
-	return do(t, w, "profile-digest", "--config", w.ConfigPath, "--inputs", inputsFile(t, w, mod))
+	return do(t, w, "profile-digest", "--config", w.ConfigPath, "--inputs", configInputs(t, w, mod))
 }
 
 func mustDigest(t *testing.T, w *provisiontest.World, mod func(*sandboxstart.Inputs)) string {
@@ -81,7 +98,7 @@ func TestProfileDigestIsWhatTheHoldersFunctionSays(t *testing.T) {
 	if len(pairs) != 2 {
 		t.Fatalf("the holder command has the --env pairs %q, want the config's two", pairs)
 	}
-	in, err := sandboxstart.ReadInputs(inputsFile(t, w, nil))
+	in, err := sandboxstart.ReadInputs(configInputs(t, w, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +156,51 @@ func TestProfileDigestRefusesInputsThatDifferByFieldWithoutTheValue(t *testing.T
 				if strings.Contains(errOut, v) {
 					t.Errorf("the refusal repeats a value of the file: %q", errOut)
 				}
+			}
+		})
+	}
+}
+
+// The digest is the one of the file the holder reads, holder.sandbox_inputs:
+// a second file that agrees with the config, and so passes check-inputs, can
+// still give another pin (a field that is in the digest and not in the
+// check), so the command refuses it and prints nothing.
+func TestProfileDigestRefusesAFileThatIsNotTheConfigsSandboxInputs(t *testing.T) {
+	w := provisiontest.New(t)
+	other := inputsFile(t, w, func(in *sandboxstart.Inputs) { in.Sources.ManagedSettingsSHA256 = strings.Repeat("0b", 32) })
+	if code, _, errOut := do(t, w, "check-inputs", "--config", w.ConfigPath, "--inputs", other); code != 0 {
+		t.Fatalf("the other file does not pass check-inputs: status %d, err %q", code, errOut)
+	}
+	configInputs(t, w, nil)
+	code, out, errOut := do(t, w, "profile-digest", "--config", w.ConfigPath, "--inputs", other)
+	if code != exitFailed || out != "" || !strings.Contains(errOut, "holder.sandbox_inputs") {
+		t.Fatalf("status %d, out %q, err %q", code, out, errOut)
+	}
+	if strings.Contains(errOut, other) {
+		t.Errorf("the refusal names the other file: %q", errOut)
+	}
+}
+
+// The paths are compared resolved: the file reached through an unclean path
+// or through a link to its folder is the same file and gives the digest. (A
+// link to the file itself is refused by the reading, as for check-inputs.)
+func TestProfileDigestAcceptsTheSameFileByAnotherPath(t *testing.T) {
+	w := provisiontest.New(t)
+	file := configInputs(t, w, nil)
+	want := mustDigest(t, w, nil)
+	folder := filepath.Dir(file)
+	linked := filepath.Join(t.TempDir(), "folder")
+	if err := os.Symlink(folder, linked); err != nil {
+		t.Skip("no symbolic link")
+	}
+	for name, path := range map[string]string{
+		"an unclean path":      filepath.Join(folder, "..", filepath.Base(folder), filepath.Base(file)),
+		"a link to the folder": filepath.Join(linked, filepath.Base(file)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, out, errOut := do(t, w, "profile-digest", "--config", w.ConfigPath, "--inputs", path)
+			if code != 0 || errOut != "" || strings.TrimSuffix(out, "\n") != want {
+				t.Fatalf("status %d, out %q, err %q, want %s", code, out, errOut, want)
 			}
 		})
 	}

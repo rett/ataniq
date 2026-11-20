@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"ataniq/internal/leadsandbox/profile"
 )
 
 const canaryRunScript = "qualification/canary/run/canary-run.sh"
@@ -347,8 +349,55 @@ func TestCanaryRunKitInstructionLines(t *testing.T) {
 			t.Errorf("%s does not say: %s", name, oneTarget)
 		}
 	}
+	// The two helpers are fenced too: the reset deletes after a typed word, the
+	// prepare writes under the cache folder.
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		data, err := os.ReadFile(filepath.Join(root(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"`qualification/canary/run/canary-reset.sh` also deletes directories",
+			"only by the owner's hand, never by an agent",
+			"`--dry` and `--self-test`",
+			"`qualification/canary/run/canary-prepare.sh`",
+		} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("%s does not say: %s", name, want)
+			}
+		}
+	}
 	if _, err := os.Stat(filepath.Join(root(t), "qualification/canary/run/README.md")); err != nil {
 		t.Error(err)
+	}
+}
+
+// The script keeps two values of the sandbox profile as plain assignments, and
+// no shell can import a Go constant: the mirror's place inside the sandbox (the
+// check of step 8 and of the tree's remote) and the profile version that step
+// 12 reads in holder.json. A change of the constant without the script would
+// fail a good run, so the test ties them.
+func TestCanaryRunKitConstantsMatchTheProfile(t *testing.T) {
+	lines := strings.Split(canaryScriptText(t), "\n")
+	for _, want := range []string{
+		"MIRROR_ROOT_INSIDE=" + profile.MirrorRootInside,
+		"PROFILE_VERSION=" + strconv.Itoa(profile.Version),
+	} {
+		if !slices.Contains(lines, want) {
+			t.Errorf("%s has no line %q: the script and the profile package drifted", canaryRunScript, want)
+		}
+	}
+	// Each is assigned once, so the line above is the value the script uses.
+	for _, name := range []string{"MIRROR_ROOT_INSIDE=", "PROFILE_VERSION="} {
+		n := 0
+		for _, l := range lines {
+			if strings.HasPrefix(l, name) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s assigns %s %d times, want once", canaryRunScript, strings.TrimSuffix(name, "="), n)
+		}
 	}
 }
 
@@ -1896,6 +1945,52 @@ func TestCanaryRunKitOpenRuns(t *testing.T) {
 	}
 }
 
+// An open run whose repo.path cannot be read (missing, empty or unreadable)
+// is not skipped as if it were another project's: unread-runs names it, so
+// that step 1 asks the lead instead of passing. A readable repo.path, a run
+// that is applied and merged or closed, and a run whose directory is gone are
+// not named.
+func TestCanaryRunKitOpenRunWithoutRepoPathIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	canaryWrite(t, dir, "r1/repo.path", "/sample/ataniq\n")
+	canaryWrite(t, dir, "r2/repo.path", "\n")
+	canaryWrite(t, dir, "r4/repo.path", "")
+	canaryWrite(t, dir, "r5/other", "x")
+	canaryWrite(t, dir, "r6/repo.path", "/sample/ataniq\n")
+	canaryWrite(t, dir, "r7/repo.path", "")
+	r := func(n string) string { return filepath.Join(dir, n) }
+	// r3 has no folder at all, r5 has no repo.path file.
+	list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+		"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+		"build      one                1d         no     no       " + r("r1"),
+		"build      two                1d         no     no       " + r("r2"),
+		"build      three              1d         yes    no       " + r("r3"),
+		"build      four               1d         no     no       " + r("r4"),
+		"build      five               1d         no     no       " + r("r5"),
+		"build      six                1d         yes    yes      " + r("r6"),
+		"build      seven              1d         closed -        " + r("r7"),
+		"build      gone               7d         no     no       /nonexistent/sample/gone  directory gone",
+		"",
+	}, "\n"))
+	want := strings.Join([]string{r("r2"), r("r3"), r("r4"), r("r5")}, "\n")
+	if got := canaryRead(t, "unread-runs", list); got != want {
+		t.Errorf("unread runs:\n%s\nwant:\n%s", got, want)
+	}
+	// The readable run of the project is still an open run; the unread ones are
+	// not open runs of the project either, which is why they are named apart.
+	if got := canaryRead(t, "open-runs", list, "/sample/ataniq"); got != r("r1") {
+		t.Errorf("open runs of the project: got %q, want %q", got, r("r1"))
+	}
+	ok := canaryWrite(t, dir, "ok.txt", "ROLE       SLUG               AGE        APPLIED MERGED   RUN\nbuild      one                1d         no     no       "+r("r1")+"\n")
+	if got := canaryRead(t, "unread-runs", ok); got != "" {
+		t.Errorf("a readable repo.path is named: %q", got)
+	}
+	// Step 1 asks the lead for such a list: the dry plan says so.
+	if out, _ := canaryDry(t, "--pass", "B", "--config", "/nonexistent/sample/canary.json"); !strings.Contains(out, "when an open run has no readable repo.path, ask the lead as before") {
+		t.Error("the dry run of step 1 does not say that an open run without a readable repo.path is asked")
+	}
+}
+
 // qargi records a run's repo.path as the resolved --repo folder, which may be
 // a linked work tree. The repository the script is given may be reached through
 // a symbolic link, with a trailing slash, or be a linked work tree of the same
@@ -2291,9 +2386,10 @@ func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
 			}
 		}
 	}
-	// Without qargi, or with a list it cannot read, the old prompt stays and the log says so.
+	// Without qargi, with a list it cannot read, or with an open run whose
+	// repo.path cannot be read, the old prompt stays and the log says so.
 	body := funcs["no_open_runs"]
-	if strings.Count(body, "affirm 'Lead: no Qargi run is open'") != 2 || strings.Count(body, "note '") < 2 {
+	if strings.Count(body, "affirm 'Lead: no Qargi run is open'") != 3 || strings.Count(body, "note '") < 2 || !strings.Contains(body, "open_unread") {
 		t.Error("the fallback of the open-run check does not ask and say so in the log")
 	}
 }
