@@ -2443,7 +2443,16 @@ func canaryOffTmp(t *testing.T) string {
 			os.RemoveAll(dir)
 			continue
 		}
-		t.Cleanup(func() { os.RemoveAll(dir) })
+		t.Cleanup(func() {
+			// A provisioned clone has read-only folders: open them first.
+			filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+				if err == nil && d.IsDir() {
+					os.Chmod(p, 0o700)
+				}
+				return nil
+			})
+			os.RemoveAll(dir)
+		})
 		return real
 	}
 	t.Skip("no writable folder outside /tmp for the root of a prepare")
@@ -3126,7 +3135,6 @@ func TestCanaryRunKitResetDeletesAfterTheWord(t *testing.T) {
 		t.Run(c.word, func(t *testing.T) {
 			e := canaryStubKit(t)
 			r := e.prepared(t)
-			t.Cleanup(func() { os.Chmod(filepath.Join(r, "state/leads/throwaway-one-lead/home/objects"), 0o700) })
 			run := "sh " + filepath.Join(root(t), canaryResetScript) + " --root " + r + " --bin " + e.bin
 			rd, wr, err := os.Pipe()
 			if err != nil {
