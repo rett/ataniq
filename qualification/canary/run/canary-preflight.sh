@@ -1,0 +1,459 @@
+#!/bin/sh
+# Look, before the attended run, at what the run would trip over, and say what
+# to type to fix it. Read README.md beside this file first.
+#
+#   canary-preflight.sh --root DIR [--bin DIR] [--evidence DIR] [--mirror-report FILE]
+#
+# It is read-only. It changes nothing of the root, the checkout or the host,
+# starts no unit, no daemon, no sandbox and no agent, answers nothing, and
+# needs no terminal. The one thing it writes is a temporary copy of the list
+# `qargi local list` prints, in a folder made with mktemp under TMPDIR and
+# removed when it ends. It runs `--version` of the four tagged binaries,
+# `ataniq-canary show`, `fields` and `profile-digest`, `systemctl --user
+# list-units`, `loginctl show-user`, `qargi local list`, git, and the run
+# script's own test entry (`canary-run.sh --self-test`, which only computes)
+# to read the open runs as the run does.
+#
+# It prints one line per check, "ok:" or "FIX:" with the exact command to type
+# on the same line (a check it cannot make for want of an earlier one is a
+# "skip:" line, which the fix before it clears), and ends with "READY" or
+# "NOT READY (n to fix)". When ready it prints the three things the owner types: the daemon command for
+# the second terminal, the attach command with the placeholder the run prints,
+# and the run command. The exit status is 0 when ready, 1 when not, 2 for a
+# wrong command line.
+#
+# For the tests only, three variables name the places it looks at on the host:
+# CANARY_PREFLIGHT_PROC (the folder of the processes, /proc),
+# CANARY_PREFLIGHT_TIOCSTI (the file of the sysctl dev.tty.legacy_tiocsti) and
+# CANARY_PREFLIGHT_ATANIQ (the path that must not exist, /ataniq).
+set -eu
+umask 077
+# git must not even refresh the index of the checkout it looks at.
+GIT_OPTIONAL_LOCKS=0
+export GIT_OPTIONAL_LOCKS
+
+# shellcheck disable=SC2034  # read by canary-lib.sh
+CC_NAME=canary-preflight.sh
+_d=$(cd -P -- "${0%/*}" && pwd -P)
+REPO=$(cd -P -- "$_d/../../.." && pwd -P)
+# shellcheck source=canary-lib.sh
+. "$_d/canary-lib.sh"
+
+ROOT=
+BIN=$REPO/build/canary
+EVIDENCE=
+MIRROR_REPORT=
+RUNSH=$_d/canary-run.sh
+TEMPLATE=$REPO/qualification/canary/templates/canary-intake.json
+FIXES=0
+PROC=${CANARY_PREFLIGHT_PROC:-/proc}
+TIOCSTI=${CANARY_PREFLIGHT_TIOCSTI:-/proc/sys/dev/tty/legacy_tiocsti}
+ATANIQ=${CANARY_PREFLIGHT_ATANIQ:-/ataniq}
+
+usage() {
+  printf '%s\n' 'usage: canary-preflight.sh --root DIR [--bin DIR] [--evidence DIR] [--mirror-report FILE]' \
+    '       --root DIR           the folder canary-prepare.sh made' \
+    '       --bin DIR            the built binaries (default: build/canary of the checkout)' \
+    '       --evidence DIR       the folder the run writes its evidence in (default: DIR/evidence)' \
+    '       --mirror-report FILE the report of qualify-mirror (default: the hint in DIR/answers.hint,' \
+    '                            else DIR/mirror-qual/report.json)' >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --root) [ "$#" -ge 2 ] || usage; ROOT=$2; shift 2 ;;
+    --bin) [ "$#" -ge 2 ] || usage; BIN=$2; shift 2 ;;
+    --evidence) [ "$#" -ge 2 ] || usage; EVIDENCE=$2; shift 2 ;;
+    --mirror-report) [ "$#" -ge 2 ] || usage; MIRROR_REPORT=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[ -n "$ROOT" ] || usage
+case $BIN in /*) ;; *) cc_die "--bin is not an absolute path: $BIN" ;; esac
+cc_check_root "$ROOT"
+[ -n "$EVIDENCE" ] || EVIDENCE=$ROOT/evidence
+case $EVIDENCE in /*) ;; *) cc_die "--evidence is not an absolute path: $EVIDENCE" ;; esac
+CONFIG=$ROOT/config.json
+INPUTS=$ROOT/conf/sandbox-inputs.json
+
+# One line per check.
+ok() { cc_say "ok:   $1"; }
+skip() { cc_say "skip: $1"; }
+fix() {
+  FIXES=$((FIXES + 1))
+  cc_say "FIX:  $1 -- type: $2"
+}
+
+TMPD=
+cleanup() {
+  if [ -n "$TMPD" ]; then rm -rf -- "$TMPD"; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+# field FILE KEY prints the value of one path of a JSON file, through the
+# tagged helper, and nothing when it cannot be read.
+field() {
+  "$BIN/ataniq-canary" fields --file "$1" 2>/dev/null |
+    awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'
+}
+
+BUILT=1
+
+# ---------------------------------------------------------------- checks ---
+
+# 1. The root is prepared.
+PREPARED=0
+check_prepared() {
+  _mark=$ROOT/$CC_MARKER
+  _first=
+  if [ -f "$_mark" ] && [ ! -L "$_mark" ]; then read -r _first <"$_mark" || _first=; fi
+  if [ "$_first" = "$CC_MARKER_LINE" ] && [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ]; then
+    PREPARED=1
+    ok "the root is prepared ($CC_MARKER, config.json): $ROOT"
+  else
+    fix "the root is not prepared (no $CC_MARKER with its config.json): $ROOT" \
+      "sh $_d/canary-prepare.sh --root $ROOT"
+  fi
+}
+
+# 2. The binaries are built, and from the checkout's HEAD.
+newest_code_time() {
+  cc_git -C "$REPO" log -1 --format=%ct -- cmd internal go.mod go.sum third_party 2>/dev/null | awk 'NR == 1 { print $1 }'
+}
+check_built() {
+  _missing=
+  for _b in $CC_BINARIES; do
+    if [ ! -f "$BIN/$_b" ] || [ -L "$BIN/$_b" ] || [ ! -x "$BIN/$_b" ]; then _missing="$_missing $_b"; fi
+  done
+  if [ -n "$_missing" ]; then
+    BUILT=0
+    fix "not built in $BIN:$_missing" "make -C $REPO canary-build"
+    return 0
+  fi
+  for _b in ataniqd ataniq-holder ataniq-canary ataniq-canary-standin; do
+    case $("$BIN/$_b" --version 2>/dev/null || :) in
+      *ataniq_canary*) ;;
+      *)
+        BUILT=0
+        fix "$_b --version does not name the build tag ataniq_canary" "make -C $REPO canary-build"
+        return 0
+        ;;
+    esac
+  done
+  _head=$(cc_git -C "$REPO" rev-parse HEAD 2>/dev/null) || _head=
+  if [ -z "$_head" ]; then
+    BUILT=0
+    fix "the checkout's HEAD commit cannot be read: $REPO" "git -C $REPO log -1"
+    return 0
+  fi
+  # A binary that names the commit it was built from is compared by that
+  # commit; one that does not is compared by the time of its file against the
+  # newest commit that touches the code.
+  _named=
+  for _b in ataniqd ataniq-holder ataniq-canary ataniq-canary-standin; do
+    _c=$("$BIN/$_b" --version 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9a-f]+$/ && length($i) == 40) { print $i; exit } }')
+    if [ -n "$_c" ]; then
+      _named=1
+      if [ "$_c" != "$_head" ]; then
+        BUILT=0
+        fix "$_b was built from $_c, not from the HEAD commit $_head (by its --version)" "make -C $REPO canary-build"
+        return 0
+      fi
+    fi
+  done
+  if [ -n "$_named" ]; then
+    ok "the binaries were built from the HEAD commit $_head (by the commit their --version names)"
+    return 0
+  fi
+  _newest=$(newest_code_time)
+  case $_newest in
+    '' | *[!0-9]*)
+      BUILT=0
+      fix "the newest commit that touches the code cannot be read: $REPO" "git -C $REPO log -1 -- cmd internal go.mod go.sum third_party"
+      return 0
+      ;;
+  esac
+  for _b in $CC_BINARIES; do
+    _t=$(stat -c %Y -- "$BIN/$_b")
+    if [ "$_t" -lt "$_newest" ]; then
+      BUILT=0
+      fix "$_b is older than the newest commit that touches the code (by file time: --version names no commit)" "make -C $REPO canary-build"
+      return 0
+    fi
+  done
+  ok "the binaries are newer than the newest commit that touches the code (by file time: --version names no commit; HEAD is $_head)"
+}
+
+# 3. The checkout is where step 3 of the run wants it: at develop, no tracked change.
+check_checkout() {
+  _head=$(cc_git -C "$REPO" rev-parse HEAD 2>/dev/null) || _head=
+  _dev=$(cc_git -C "$REPO" rev-parse --verify 'develop^{commit}' 2>/dev/null) || _dev=
+  if [ -z "$_dev" ]; then
+    fix "the branch develop cannot be read in $REPO (step 3 compares HEAD with it)" "git -C $REPO branch -a"
+    return 0
+  fi
+  if [ "$_head" != "$_dev" ]; then
+    fix "the checkout's commit is not the commit of develop (step 3 refuses it)" "git -C $REPO checkout develop"
+    return 0
+  fi
+  _changed=$(cc_git -C "$REPO" status --porcelain 2>/dev/null | awk 'substr($0, 1, 2) != "??" && $0 != ""' | sed -n 1p)
+  if [ -n "$_changed" ]; then
+    fix "a tracked file of the checkout has a change (step 3 refuses it): $_changed" "git -C $REPO status"
+    return 0
+  fi
+  ok "the checkout is at develop and no tracked file has a change"
+}
+
+# 4. The holder the config names, and the pin of the profile digest.
+check_holder_and_pin() {
+  if [ "$PREPARED" -eq 0 ] || [ "$BUILT" -eq 0 ]; then
+    skip "the holder and the profile digest pin (needs a prepared root and the built binaries)"
+    return 0
+  fi
+  _holder=$(field "$CONFIG" holder.executable)
+  if [ -z "$_holder" ]; then
+    fix "config.json names no holder (holder.executable)" "sh $_d/canary-prepare.sh --root <a new folder>"
+    return 0
+  fi
+  if [ ! -f "$_holder" ] || [ ! -x "$_holder" ]; then
+    fix "the holder the config names is not an executable file: $_holder" "make -C $REPO canary-build"
+    return 0
+  fi
+  if [ "$_holder" != "$BIN/ataniq-holder" ]; then
+    fix "the holder the config names is not the one of $BIN (step 3 refuses it): $_holder" \
+      "sh $_d/canary-prepare.sh --root <a new folder> --bin $BIN"
+    return 0
+  fi
+  _pin=$(field "$CONFIG" holder.profile_digest)
+  if ! _now=$("$BIN/ataniq-canary" profile-digest --config "$CONFIG" --inputs "$INPUTS" 2>/dev/null); then
+    _cmd="$BIN/ataniq-canary profile-digest --config $CONFIG --inputs $INPUTS"
+    fix "ataniq-canary cannot compute the profile digest from the config and the sandbox inputs" "$_cmd"
+    return 0
+  fi
+  if [ "$_pin" != "$_now" ]; then
+    fix "the profile digest pinned in config.json ($_pin) is not the one ataniq-canary computes now ($_now)" \
+      "sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"$_now\"/' $CONFIG"
+    return 0
+  fi
+  if ! "$BIN/ataniq-canary" show --config "$CONFIG" >/dev/null 2>&1; then
+    _cmd="$BIN/ataniq-canary show --config $CONFIG"
+    fix "ataniq-canary cannot read the config" "$_cmd"
+    return 0
+  fi
+  ok "the holder is the built one and the profile digest pin is the one computed now"
+}
+
+# 5. state/ and runtime/ are clean.
+check_clean_roots() {
+  if [ "$PREPARED" -eq 0 ]; then
+    skip "state/ and runtime/ (needs a prepared root)"
+    return 0
+  fi
+  for _k in state runtime; do
+    if [ -L "$ROOT/$_k" ] || [ ! -d "$ROOT/$_k" ]; then
+      fix "$ROOT/$_k is not a folder of the root" "sh $_d/canary-reset.sh --root $ROOT"
+      return 0
+    fi
+  done
+  _extra=$(find "$ROOT/state" -mindepth 1 -maxdepth 1 ! -name mirrors | sed -n 1p)
+  _run=$(find "$ROOT/runtime" -mindepth 1 -maxdepth 1 | sed -n 1p)
+  if [ -n "$_extra" ] || [ -n "$_run" ]; then
+    fix "state/ or runtime/ holds an earlier attempt (${_extra:-$_run}): the run provisions into empty folders" \
+      "sh $_d/canary-reset.sh --root $ROOT   (run canary-reset.sh)"
+    return 0
+  fi
+  if [ ! -d "$ROOT/state/mirrors/$CC_PROJECT.git" ]; then
+    fix "the mirror is missing: $ROOT/state/mirrors/$CC_PROJECT.git" "sh $_d/canary-reset.sh --root $ROOT   (run canary-reset.sh)"
+    return 0
+  fi
+  ok "state/ and runtime/ are empty (the mirror is made, nothing is provisioned)"
+}
+
+# 6. No unit is loaded and no daemon or holder runs.
+check_quiet() {
+  if ! _units=$(systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>/dev/null); then
+    fix "systemctl --user cannot list the units (is the user manager running?)" "systemctl --user list-units --all 'ataniq-*'"
+  else
+    _loaded=$(printf '%s\n' "$_units" | awk '$1 != "" && $1 !~ /\.slice$/ { print $1 }' | tr '\n' ' ')
+    if [ -n "$_loaded" ]; then
+      fix "an ataniq-* unit is loaded: $_loaded" "systemctl --user stop $_loaded"
+    else
+      ok "no ataniq-* unit is loaded"
+    fi
+  fi
+  _pids=
+  _seen=0
+  for _pd in "$PROC"/[0-9]*; do
+    [ -e "$_pd" ] || continue
+    _seen=1
+    [ -r "$_pd/cmdline" ] || continue
+    _first=$(tr '\0' '\n' <"$_pd/cmdline" 2>/dev/null | head -n 1) || continue
+    case ${_first##*/} in
+      ataniqd | ataniq-holder) _pids="$_pids ${_pd##*/}" ;;
+    esac
+  done
+  if [ "$_seen" -eq 0 ]; then
+    fix "$PROC cannot be read, so the processes cannot be listed" "ls $PROC"
+  elif [ -n "$_pids" ]; then
+    fix "an ataniqd or ataniq-holder runs (process$_pids)" "stop it with Ctrl-C in its terminal, or: kill -INT$_pids"
+  else
+    ok "no ataniqd and no ataniq-holder runs"
+  fi
+}
+
+# 7. No Qargi run of this repository is open: the run script's own reading.
+check_open_runs() {
+  if ! command -v qargi >/dev/null 2>&1; then
+    ok "qargi is not on PATH: the run asks the lead to confirm that no run is open"
+    return 0
+  fi
+  TMPD=$(mktemp -d)
+  _list=$TMPD/list
+  if ! qargi local list >"$_list" 2>/dev/null; then
+    ok "qargi local list failed: the run asks the lead to confirm that no run is open"
+    return 0
+  fi
+  _scan=$(sh "$RUNSH" --self-test list-scan "$_list")
+  case $_scan in
+    *'header bad'* | *'other '[1-9]*)
+      ok "the list of qargi local list cannot be read as the run reads it: the run asks the lead to confirm that no run is open"
+      return 0
+      ;;
+  esac
+  _open=$(sh "$RUNSH" --self-test open-runs "$_list" "$REPO" | tr '\n' ' ')
+  if [ -n "$_open" ]; then
+    fix "a Qargi run of this repository is open: $_open" "qargi local list   (verify and close the run)"
+    return 0
+  fi
+  _unread=$(sh "$RUNSH" --self-test unread-runs "$_list" | tr '\n' ' ')
+  if [ -n "$_unread" ]; then
+    ok "no open run is known, but one has no readable repo.path ($_unread): the run asks the lead"
+    return 0
+  fi
+  ok "no Qargi run of this repository is open"
+}
+
+# 8. /ataniq does not exist on the host (the note of the template).
+check_no_ataniq_dir() {
+  if [ -e "$ATANIQ" ] || [ -L "$ATANIQ" ]; then
+    fix "$ATANIQ exists on the host (the template's note: it must not)" "ls -la $ATANIQ   (then remove it yourself)"
+  else
+    ok "$ATANIQ does not exist"
+  fi
+}
+
+# 9. The report of qualify-mirror is there and is of this template.
+mirror_report_path() {
+  if [ -n "$MIRROR_REPORT" ]; then
+    printf '%s\n' "$MIRROR_REPORT"
+    return 0
+  fi
+  _hf=$ROOT/answers.hint
+  if [ -f "$_hf" ] && [ ! -L "$_hf" ]; then
+    while IFS= read -r _hl || [ -n "$_hl" ]; do
+      case $_hl in
+        mirror-report=/*)
+          printf '%s\n' "${_hl#*=}"
+          return 0
+          ;;
+      esac
+    done <"$_hf"
+  fi
+  printf '%s\n' "$ROOT/mirror-qual/report.json"
+}
+check_mirror_report() {
+  _rep=$(mirror_report_path)
+  _cmd="edit $ROOT/mirror-qual/config.json yourself (i_run_this_on_purpose true), then: sh scripts/go-tool.sh build -o build/qualify-mirror ./qualification/leadmirror/cmd/qualify-mirror && build/qualify-mirror --config $ROOT/mirror-qual/config.json --out $_rep   (in $REPO)"
+  if [ "$BUILT" -eq 0 ]; then
+    skip "the report of qualify-mirror (needs the built binaries to read it)"
+    return 0
+  fi
+  if [ ! -f "$_rep" ]; then
+    fix "the report of qualify-mirror is not there: $_rep" "$_cmd"
+    return 0
+  fi
+  if ! "$BIN/ataniq-canary" fields --file "$_rep" >/dev/null 2>&1; then
+    fix "the report of qualify-mirror does not parse as one JSON object: $_rep" "$_cmd"
+    return 0
+  fi
+  _want=$(sha256sum <"$TEMPLATE" | awk '{ print $1 }')
+  _got=$(field "$_rep" template.sha256)
+  if [ -z "$_got" ]; then
+    fix "the report has no template.sha256: $_rep" "$_cmd"
+  elif [ "$_got" != "$_want" ]; then
+    fix "the report is of another template ($_got, the template is $_want): $_rep" "$_cmd"
+  else
+    ok "the report of qualify-mirror parses and names the template's hash: $_rep"
+  fi
+}
+
+# 10. The tools step 3 runs, the sysctl and lingering it reads.
+check_host() {
+  _absent=
+  for _t in systemctl loginctl git bwrap pasta; do
+    command -v "$_t" >/dev/null 2>&1 || _absent="$_absent $_t"
+  done
+  if [ -n "$_absent" ]; then
+    fix "not on PATH (step 3 runs them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
+  else
+    ok "systemctl, loginctl, git, bwrap and pasta are on PATH"
+  fi
+  _tiocsti=$(cat "$TIOCSTI" 2>/dev/null) || _tiocsti=
+  if [ "$_tiocsti" = 0 ]; then
+    ok "the sysctl dev.tty.legacy_tiocsti is 0"
+  else
+    fix "the sysctl dev.tty.legacy_tiocsti is \"${_tiocsti:-unreadable}\", not 0 (step 3 refuses it)" "sudo sysctl dev.tty.legacy_tiocsti=0"
+  fi
+  if _linger=$(loginctl show-user "$(id -un)" --property=Linger 2>/dev/null); then
+    ok "lingering can be read ($_linger; the run records it and checks it is the same at the end)"
+  else
+    fix "lingering cannot be read with loginctl (step 3 needs it)" "loginctl show-user $(id -un) --property=Linger"
+  fi
+}
+
+# 11. The evidence folder is writable.
+check_evidence() {
+  if [ -d "$EVIDENCE" ] && [ -w "$EVIDENCE" ] && [ -x "$EVIDENCE" ]; then
+    ok "the evidence folder is writable: $EVIDENCE"
+  else
+    fix "the evidence folder is not a writable folder: $EVIDENCE" "mkdir -p -m 0700 $EVIDENCE   (or chmod u+rwx $EVIDENCE)"
+  fi
+}
+
+check_prepared
+check_built
+check_checkout
+check_holder_and_pin
+check_clean_roots
+check_quiet
+check_open_runs
+check_no_ataniq_dir
+check_mirror_report
+check_host
+check_evidence
+
+cc_say
+if [ "$FIXES" -gt 0 ]; then
+  cc_say "NOT READY ($FIXES to fix)"
+  exit 1
+fi
+
+# The three things the owner types, with the real paths.
+HOLDER_RUN=$("$BIN/ataniq-canary" show --config "$CONFIG" 2>/dev/null | awk 'index($0, "holder_runtime_dir=") == 1 { print substr($0, 20); exit }')
+[ -n "$HOLDER_RUN" ] || HOLDER_RUN='<the holder runtime folder the run prints>'
+cc_say "READY"
+cc_say
+cc_say 'What you type, and where. The run never starts the daemon or the console for you.'
+cc_say
+cc_say '1. In a second terminal, the daemon, started BEFORE you press Enter at step 10'
+cc_say '   (wait for its listening line; stop it with Ctrl-C at step 26, before that step'"'"'s Enter):'
+cc_say "     $BIN/ataniqd run --canary $CONFIG"
+cc_say
+cc_say '2. At step 14 (and again in the second epoch), in the second terminal, the console'
+cc_say '   attach, with the ticket file the run prints there:'
+cc_say "     $BIN/ataniq-console --attach $HOLDER_RUN --ticket-file <the ticket file step 14 prints>"
+cc_say
+cc_say '3. In this terminal, the run (read its dry run first, add --dry):'
+cc_say "     sh $_d/canary-run.sh --pass A --config $CONFIG --evidence $EVIDENCE"

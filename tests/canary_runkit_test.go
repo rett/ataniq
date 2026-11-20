@@ -2485,6 +2485,7 @@ const (
 func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 	canaryPlainShell(t, canaryPrepareScript, true)
 	canaryPlainShell(t, canaryResetScript, true)
+	canaryPlainShell(t, canaryPreflightScript, true)
 	canaryPlainShell(t, canaryLibScript, false)
 	// The kit's scripts are these and no others: a new one is listed here.
 	entries, err := os.ReadDir(filepath.Join(root(t), "qualification/canary/run"))
@@ -2497,11 +2498,11 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 			shells = append(shells, e.Name())
 		}
 	}
-	if want := []string{"canary-lib.sh", "canary-prepare.sh", "canary-reset.sh", "canary-run.sh"}; !slices.Equal(shells, want) {
+	if want := []string{"canary-lib.sh", "canary-preflight.sh", "canary-prepare.sh", "canary-reset.sh", "canary-run.sh"}; !slices.Equal(shells, want) {
 		t.Errorf("the scripts of the kit are %v, want %v", shells, want)
 	}
 	// The helpers never answer a prompt and start no unit, daemon or sandbox.
-	for _, rel := range []string{canaryPrepareScript, canaryResetScript, canaryLibScript} {
+	for _, rel := range []string{canaryPrepareScript, canaryResetScript, canaryPreflightScript, canaryLibScript} {
 		data, err := os.ReadFile(filepath.Join(root(t), rel))
 		if err != nil {
 			t.Fatal(err)
@@ -2516,6 +2517,17 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 				// systemctl.
 				if bad == "systemctl" && rel == canaryResetScript && (strings.HasPrefix(l, "cc_die ") || strings.Contains(l, "systemctl --user list-units --all --no-legend --plain 'ataniq-*'")) {
 					continue
+				}
+				// The preflight asks the list of units, and the commands it
+				// prints for the owner to type are text.
+				if bad == "systemctl" && rel == canaryPreflightScript {
+					ok := false
+					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap and pasta are on PATH"} {
+						ok = ok || strings.Contains(l, allowed)
+					}
+					if ok {
+						continue
+					}
 				}
 				if strings.Contains(l, bad) {
 					t.Errorf("%s: %q: %s", rel, l, bad)
@@ -4762,5 +4774,684 @@ func TestCanaryRunKitStepsLookBeforeTheyRecord(t *testing.T) {
 				t.Errorf("pass %s: the dry run does not say %q", pass, want)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// canary-preflight.sh: the read-only look before the attended run. The tests
+// build a fake checkout (a git repository that holds copies of the kit's
+// scripts, with controlled commit times) and a prepared root, stub every
+// program the preflight asks (systemctl, loginctl, qargi, the helper
+// ataniq-canary and the binaries' --version), and run it with a PATH of its
+// own. Nothing starts a unit, a daemon or a sandbox, and the run must leave the
+// checkout and the root as they were.
+
+const canaryPreflightScript = "qualification/canary/run/canary-preflight.sh"
+
+// canaryPF is one such place.
+type canaryPF struct {
+	t                                                     *testing.T
+	dir, repo, runDir, bin, root, tools, tmp, proc, calls string
+	template                                              string
+	gitPath                                               string
+}
+
+// canaryPFTools are the real programs the scripts use, linked into the tools
+// folder, which is the whole PATH of a run: so that a program a test leaves
+// out (qargi) is not found anywhere else.
+var canaryPFTools = []string{"sh", "awk", "sed", "tr", "find", "stat", "sha256sum", "cat", "id", "mktemp", "rm", "head", "tail", "cmp", "grep", "git", "env", "date", "ls", "sort", "readlink", "mkdir", "cp", "wc", "sleep"}
+
+const canaryPFDate = "2021-01-01T00:00:00Z"
+
+func newCanaryPF(t *testing.T) *canaryPF {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	dir := canaryOffTmp(t)
+	p := &canaryPF{t: t, dir: dir, gitPath: gitPath}
+	p.repo, p.root = filepath.Join(dir, "repo"), filepath.Join(dir, "root")
+	p.runDir = filepath.Join(p.repo, "qualification/canary/run")
+	p.bin = filepath.Join(p.repo, "build/canary")
+	p.tools, p.tmp, p.proc, p.calls = filepath.Join(dir, "tools"), filepath.Join(dir, "tmp"), filepath.Join(dir, "proc"), filepath.Join(dir, "calls")
+	p.template = filepath.Join(p.repo, "qualification/canary/templates/canary-intake.json")
+	for _, d := range []string{p.tools, p.tmp, filepath.Join(dir, "home"), p.bin} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The checkout: the scripts, a template, the code's paths, one commit.
+	for _, name := range []string{"canary-lib.sh", "canary-preflight.sh", "canary-run.sh"} {
+		data, err := os.ReadFile(filepath.Join(root(t), "qualification/canary/run", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		canaryWrite(t, p.runDir, name, string(data))
+	}
+	canaryWrite(t, p.repo, "qualification/canary/templates/canary-intake.json", "{\"template\": true}\n")
+	for name, text := range map[string]string{"cmd/main.go": "package main\n", "internal/x.go": "package x\n", "go.mod": "module x\n", "go.sum": "\n", "third_party/t.txt": "t\n", "README.md": "readme\n", ".gitignore": "build/\n"} {
+		canaryWrite(t, p.repo, name, text)
+	}
+	p.git("init", "-q", "-b", "develop")
+	p.git("add", "-A")
+	p.commit(canaryPFDate, "first")
+
+	// The binaries, which record being called.
+	p.stub(p.bin, "ataniq-canary", `case $1 in
+  --version) cat '`+p.dir+`/version-ataniq-canary' 2>/dev/null || echo 'ataniq-canary (build tag ataniq_canary)' ;;
+  fields) [ "$2" = --file ] && [ -f "$3.fields" ] || { echo 'not one JSON object' >&2; exit 1; }; cat "$3.fields" ;;
+  profile-digest) cat '`+p.dir+`/digest' ;;
+  show) cat '`+p.dir+`/show.out' ;;
+  *) exit 97 ;;
+esac
+`)
+	for _, name := range []string{"ataniqd", "ataniq-holder", "ataniq-canary-standin"} {
+		p.stub(p.bin, name, `[ "$1" = --version ] || exit 97
+cat '`+p.dir+`/version-`+name+`' 2>/dev/null || echo '`+name+` (build tag ataniq_canary)'
+cat '`+p.dir+`/version-extra' 2>/dev/null || :
+`)
+	}
+	for _, name := range []string{"ataniq-console", "ataniq-intake", "ataniq-probe"} {
+		p.stub(p.bin, name, "exit 97\n")
+	}
+	canaryWrite(t, p.dir, "digest", strings.Repeat("ab", 32)+"\n")
+	p.age(time.Now())
+
+	// The prepared root.
+	canaryWrite(t, p.root, ".canary-prepared", "ataniq-canary-prepare 1\nproject throwaway-one\n")
+	canaryWrite(t, p.root, "config.json", "{}\n")
+	canaryWrite(t, p.root, "config.json.fields", "holder.executable="+p.bin+"/ataniq-holder\nholder.profile_digest="+strings.Repeat("ab", 32)+"\nholder.sandbox_inputs="+p.root+"/conf/sandbox-inputs.json\n")
+	canaryWrite(t, p.root, "conf/sandbox-inputs.json", "{}\n")
+	for _, d := range []string{"state/mirrors/throwaway-one.git", "runtime", "evidence", "mirror-qual"} {
+		if err := os.MkdirAll(filepath.Join(p.root, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := sha256.Sum256([]byte("{\"template\": true}\n"))
+	canaryWrite(t, p.root, "mirror-qual/report.json", "{}\n")
+	canaryWrite(t, p.root, "mirror-qual/report.json.fields", "format=1\ntemplate.sha256="+hex.EncodeToString(sum[:]))
+	canaryWrite(t, p.root, "answers.hint", "mirror-report="+p.root+"/mirror-qual/report.json\n")
+	canaryWrite(t, p.dir, "show.out", "holder_runtime_dir="+p.root+"/runtime/leads/throwaway-one-lead\nproject=throwaway-one\n")
+
+	// The tools: real ones linked, the rest stubs that record their calls.
+	for _, name := range canaryPFTools {
+		if real, err := exec.LookPath(name); err == nil {
+			if err := os.Symlink(real, filepath.Join(p.tools, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	p.stub(p.tools, "systemctl", `[ "$1" = --user ] && [ "$2" = list-units ] || exit 97
+[ -f '`+p.dir+`/units-fail' ] && exit 1
+cat '`+p.dir+`/units' 2>/dev/null || :
+`)
+	p.stub(p.tools, "loginctl", `[ -f '`+p.dir+`/loginctl-fail' ] && exit 1
+echo Linger=no
+`)
+	p.stub(p.tools, "bwrap", "exit 97\n")
+	p.stub(p.tools, "pasta", "exit 97\n")
+	p.stub(p.tools, "qargi", `[ "$1" = local ] && [ "$2" = list ] || exit 97
+[ -f '`+p.dir+`/qargi-fail' ] && exit 1
+cat '`+p.dir+`/qargi-list'
+`)
+	canaryWrite(t, p.dir, "qargi-list", "ROLE SLUG AGE APPLIED MERGED RUN\n")
+	canaryWrite(t, p.dir, "tiocsti", "0\n")
+	canaryWrite(t, p.proc, "1/cmdline", "init\x00")
+	return p
+}
+
+// stub writes an executable shell script that records its call.
+func (p *canaryPF) stub(dir, name, body string) {
+	p.t.Helper()
+	text := "#!/bin/sh\necho \"" + name + " $*\" >>'" + p.calls + "'\n" + body
+	path := canaryWrite(p.t, dir, name, text)
+	if err := os.Chmod(path, 0o700); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+func (p *canaryPF) gitEnv(date string) []string {
+	return []string{"PATH=" + filepath.Dir(p.gitPath) + ":/usr/bin:/bin", "HOME=" + p.dir, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid",
+		"GIT_AUTHOR_DATE=" + date, "GIT_COMMITTER_DATE=" + date}
+}
+
+func (p *canaryPF) gitDated(date string, args ...string) string {
+	p.t.Helper()
+	cmd := exec.Command(p.gitPath, append([]string{"-C", p.repo}, args...)...)
+	cmd.Env = p.gitEnv(date)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		p.t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (p *canaryPF) git(args ...string) string { return p.gitDated(canaryPFDate, args...) }
+
+// commit commits what is added, at the date.
+func (p *canaryPF) commit(date, msg string) { p.gitDated(date, "commit", "-q", "-m", msg) }
+
+// change writes a file of the checkout, adds it and commits it at the date.
+func (p *canaryPF) change(file, text, date string) {
+	p.t.Helper()
+	canaryWrite(p.t, p.repo, file, text)
+	p.git("add", file)
+	p.commit(date, "change "+file)
+}
+
+// age sets the time of every binary of the kit.
+func (p *canaryPF) age(when time.Time) {
+	p.t.Helper()
+	for _, name := range canaryRunBinaries {
+		if err := os.Chtimes(filepath.Join(p.bin, name), when, when); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// run runs the preflight with the arguments after --root and returns the output
+// and the exit status, and fails the test when it changed the checkout or the
+// root or left a file in its temporary folder.
+func (p *canaryPF) run(extra ...string) (string, int) {
+	p.t.Helper()
+	return p.runRaw(append([]string{"--root", p.root}, extra...)...)
+}
+
+func (p *canaryPF) runRaw(args ...string) (string, int) {
+	p.t.Helper()
+	snapshot := func() ([]string, []byte) {
+		paths := append(canaryTree(p.t, p.repo), canaryTree(p.t, p.root)...)
+		index, _ := os.ReadFile(filepath.Join(p.repo, ".git", "index"))
+		return paths, index
+	}
+	beforePaths, beforeIndex := snapshot()
+	cmd := exec.Command(filepath.Join(p.tools, "sh"), append([]string{filepath.Join(p.runDir, "canary-preflight.sh")}, args...)...)
+	cmd.Dir = p.dir
+	cmd.Env = []string{"PATH=" + p.tools, "HOME=" + filepath.Join(p.dir, "home"), "TMPDIR=" + p.tmp, "XDG_RUNTIME_DIR=" + filepath.Join(p.dir, "run"),
+		"CANARY_PREFLIGHT_PROC=" + p.proc, "CANARY_PREFLIGHT_TIOCSTI=" + filepath.Join(p.dir, "tiocsti"), "CANARY_PREFLIGHT_ATANIQ=" + filepath.Join(p.dir, "no-ataniq")}
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if err != nil {
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			p.t.Fatalf("the preflight did not run: %v", err)
+		}
+		code = exit.ExitCode()
+	}
+	afterPaths, afterIndex := snapshot()
+	if !slices.Equal(beforePaths, afterPaths) || !bytes.Equal(beforeIndex, afterIndex) {
+		p.t.Errorf("the preflight changed the checkout or the root:\nbefore %v\nafter  %v", beforePaths, afterPaths)
+	}
+	if left := canaryTree(p.t, p.tmp); len(left) != 1 {
+		p.t.Errorf("the preflight left files in its temporary folder: %v", left)
+	}
+	return string(out), code
+}
+
+// callsMade is what the stubs recorded.
+func (p *canaryPF) callsMade() []string {
+	data, err := os.ReadFile(p.calls)
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+// The preflight of a good set-up says READY and what to type, with the real
+// paths; it changes nothing and runs nothing but the read-only questions.
+func TestCanaryRunKitPreflightReady(t *testing.T) {
+	p := newCanaryPF(t)
+	out, code := p.run()
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	body, _, _ := strings.Cut(out, "\nREADY\n")
+	if !strings.HasSuffix(strings.TrimSpace(out), p.runDir+"/canary-run.sh --pass A --config "+p.root+"/config.json --evidence "+p.root+"/evidence") {
+		t.Errorf("the output does not end with the run command:\n%s", out)
+	}
+	checks := 0
+	for _, l := range strings.Split(strings.TrimSpace(body), "\n") {
+		if l == "" {
+			continue
+		}
+		if !strings.HasPrefix(l, "ok:   ") {
+			t.Errorf("a line of a ready set-up is not ok: %q", l)
+		}
+		checks++
+	}
+	if checks != 14 {
+		t.Errorf("%d checks, want 14:\n%s", checks, out)
+	}
+	for _, want := range []string{
+		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
+		"     " + p.bin + "/ataniqd run --canary " + p.root + "/config.json",
+		"     " + p.bin + "/ataniq-console --attach " + p.root + "/runtime/leads/throwaway-one-lead --ticket-file <the ticket file step 14 prints>",
+		"BEFORE you press Enter at step 10",
+		"The run never starts the daemon or the console for you.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the output does not hold %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "NOT READY") || strings.Contains(out, "FIX:") {
+		t.Errorf("a ready set-up has a fix:\n%s", out)
+	}
+	// Only read-only questions were asked: of systemd the list of units, of
+	// logind one user's lingering, of qargi the list; of the binaries their
+	// version and, of the helper, what it prints.
+	for _, c := range p.callsMade() {
+		switch {
+		case c == "systemctl --user list-units --all --no-legend --plain ataniq-*", c == "qargi local list", strings.HasPrefix(c, "loginctl show-user "):
+		case strings.HasSuffix(c, " --version") && slices.Contains(canaryRunBinaries, strings.TrimSuffix(c, " --version")):
+		case strings.HasPrefix(c, "ataniq-canary fields --file "), strings.HasPrefix(c, "ataniq-canary profile-digest --config "), strings.HasPrefix(c, "ataniq-canary show --config "):
+		default:
+			t.Errorf("the preflight made the call %q", c)
+		}
+	}
+}
+
+// The command line: a root, outside /tmp and the checkout, is needed; nothing
+// else is taken; it never asks for a terminal and needs no word.
+func TestCanaryRunKitPreflightArguments(t *testing.T) {
+	p := newCanaryPF(t)
+	for name, c := range map[string]struct {
+		args []string
+		code int
+		want string
+	}{
+		"no root":                {nil, 2, "usage: canary-preflight.sh --root DIR"},
+		"an unknown flag":        {[]string{"--root", p.root, "--yes"}, 2, "usage: canary-preflight.sh"},
+		"a flag without a value": {[]string{"--root"}, 2, "usage: canary-preflight.sh"},
+		"a relative root":        {[]string{"--root", "root"}, 1, "the root is not an absolute path"},
+		"a root in /tmp":         {[]string{"--root", "/tmp/canary-preflight-test"}, 1, "the root is in /tmp"},
+		"a root in the checkout": {[]string{"--root", p.repo + "/root"}, 1, "lie one in the other"},
+		"a relative bin":         {[]string{"--root", p.root, "--bin", "build/canary"}, 1, "--bin is not an absolute path"},
+		"a relative evidence":    {[]string{"--root", p.root, "--evidence", "evidence"}, 1, "--evidence is not an absolute path"},
+		"a root with a bad char": {[]string{"--root", p.root + "/a b"}, 1, "character outside"},
+		"a root that is a link":  {[]string{"--root", p.dir + "/link"}, 1, "symbolic link"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.Symlink(p.root, filepath.Join(p.dir, "link")); err != nil && !os.IsExist(err) {
+				t.Fatal(err)
+			}
+			out, code := p.runRaw(c.args...)
+			if code != c.code || !strings.Contains(out, c.want) || strings.Contains(out, "ok:") {
+				t.Errorf("exit status %d:\n%s", code, out)
+			}
+		})
+	}
+	// It never asks a question of the terminal: no read of an answer, no test
+	// of standard input, no word of the run in it.
+	data, err := os.ReadFile(filepath.Join(root(t), canaryPreflightScript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"ANSWER", "[ -t 0 ]", "read -r ANSWER", "affirm", "wait_key"} {
+		if strings.Contains(string(data), bad) {
+			t.Errorf("the preflight holds %q", bad)
+		}
+	}
+}
+
+// Every check that finds something says FIX, with the exact command, and the
+// end says how many.
+func TestCanaryRunKitPreflightFixes(t *testing.T) {
+	type pf = canaryPF
+	for name, c := range map[string]struct {
+		mutate func(t *testing.T, p *pf)
+		extra  []string
+		fixes  int
+		want   []string
+	}{
+		"the root is not prepared": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, ".canary-prepared")) }, nil, 1,
+			[]string{"FIX:  the root is not prepared", "-- type: sh " + "%RUN%/canary-prepare.sh --root %ROOT%", "skip: the holder and the profile digest pin", "skip: state/ and runtime/"},
+		},
+		"the root has another mark": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.root, ".canary-prepared", "something else\n") }, nil, 1,
+			[]string{"FIX:  the root is not prepared"},
+		},
+		"a binary is not built": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.bin, "ataniq-probe")) }, nil, 1,
+			[]string{"FIX:  not built in %BIN%: ataniq-probe -- type: make -C %REPO% canary-build", "skip: the holder and the profile digest pin", "skip: the report of qualify-mirror"},
+		},
+		"a binary is a link": {
+			func(t *testing.T, p *pf) {
+				os.Remove(filepath.Join(p.bin, "ataniq-intake"))
+				os.Symlink(filepath.Join(p.bin, "ataniq-probe"), filepath.Join(p.bin, "ataniq-intake"))
+			}, nil, 1, []string{"not built in %BIN%: ataniq-intake"},
+		},
+		"a tagged binary does not name the tag": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "version-ataniq-holder", "ataniq-holder dev\n") }, nil, 1,
+			[]string{"FIX:  ataniq-holder --version does not name the build tag ataniq_canary -- type: make -C %REPO% canary-build"},
+		},
+		"the binary names another commit": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "version-extra", "commit "+strings.Repeat("a", 40)+"\n")
+			}, nil, 1,
+			[]string{"FIX:  ataniqd was built from " + strings.Repeat("a", 40) + ", not from the HEAD commit %HEAD% (by its --version)"},
+		},
+		"the checkout is not at develop": {
+			func(t *testing.T, p *pf) {
+				p.git("checkout", "-q", "-b", "other")
+				p.change("README.md", "other\n", "2021-06-01T00:00:00Z")
+			}, nil, 1,
+			[]string{"FIX:  the checkout's commit is not the commit of develop (step 3 refuses it) -- type: git -C %REPO% checkout develop"},
+		},
+		"there is no develop": {
+			func(t *testing.T, p *pf) { p.git("branch", "-m", "develop", "main") }, nil, 1,
+			[]string{"FIX:  the branch develop cannot be read in %REPO%"},
+		},
+		"a tracked file has a change": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.repo, "README.md", "changed\n") }, nil, 1,
+			[]string{"FIX:  a tracked file of the checkout has a change (step 3 refuses it):", "-- type: git -C %REPO% status"},
+		},
+		"the config names no holder": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.root, "config.json.fields", "holder.profile_digest=x\n") }, nil, 1,
+			[]string{"FIX:  config.json names no holder (holder.executable)"},
+		},
+		"the holder is not there": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "config.json.fields", "holder.executable="+p.dir+"/none/ataniq-holder\n")
+			}, nil, 1, []string{"FIX:  the holder the config names is not an executable file: %DIR%/none/ataniq-holder"},
+		},
+		"the holder is another one": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "config.json.fields", "holder.executable="+p.bin+"/ataniqd\n")
+			}, nil, 1, []string{"FIX:  the holder the config names is not the one of %BIN% (step 3 refuses it): %BIN%/ataniqd"},
+		},
+		"the pin is stale": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "digest", strings.Repeat("cd", 32)+"\n") }, nil, 1,
+			[]string{"FIX:  the profile digest pinned in config.json (" + strings.Repeat("ab", 32) + ") is not the one ataniq-canary computes now (" + strings.Repeat("cd", 32) + ")",
+				"-- type: sed -i 's/\"profile_digest\": \"[0-9a-f]*\"/\"profile_digest\": \"" + strings.Repeat("cd", 32) + "\"/' %ROOT%/config.json"},
+		},
+		"the config cannot be shown": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.dir, "show.out")) }, nil, 1,
+			[]string{"FIX:  ataniq-canary cannot read the config -- type: %BIN%/ataniq-canary show --config %ROOT%/config.json"},
+		},
+		"state holds an earlier attempt": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.root, "state/leads/throwaway-one-lead/x", "x") }, nil, 1,
+			[]string{"FIX:  state/ or runtime/ holds an earlier attempt (%ROOT%/state/leads)", "-- type: sh %RUN%/canary-reset.sh --root %ROOT%   (run canary-reset.sh)"},
+		},
+		"runtime holds an earlier attempt": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.root, "runtime/daemon.sock", "x") }, nil, 1,
+			[]string{"FIX:  state/ or runtime/ holds an earlier attempt (%ROOT%/runtime/daemon.sock)", "run canary-reset.sh"},
+		},
+		"the mirror is gone": {
+			func(t *testing.T, p *pf) { os.RemoveAll(filepath.Join(p.root, "state/mirrors")) }, nil, 1,
+			[]string{"FIX:  the mirror is missing: %ROOT%/state/mirrors/throwaway-one.git", "run canary-reset.sh"},
+		},
+		"state is not a folder": {
+			func(t *testing.T, p *pf) {
+				os.RemoveAll(filepath.Join(p.root, "state"))
+				os.Symlink(p.dir, filepath.Join(p.root, "state"))
+			}, nil, 1, []string{"FIX:  %ROOT%/state is not a folder of the root -- type: sh %RUN%/canary-reset.sh --root %ROOT%"},
+		},
+		"a unit is loaded": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "units", "ataniq-lead-throwaway-one.service loaded active running x\nataniq-old.slice loaded active active x\n")
+			}, nil, 1,
+			[]string{"FIX:  an ataniq-* unit is loaded: ataniq-lead-throwaway-one.service  -- type: systemctl --user stop ataniq-lead-throwaway-one.service "},
+		},
+		"the units cannot be listed": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "units-fail", "x") }, nil, 1,
+			[]string{"FIX:  systemctl --user cannot list the units", "-- type: systemctl --user list-units --all 'ataniq-*'"},
+		},
+		"a daemon runs": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.proc, "7/cmdline", "/x/build/canary/ataniqd\x00run\x00--canary\x00c.json\x00")
+			}, nil, 1,
+			[]string{"FIX:  an ataniqd or ataniq-holder runs (process 7)", "-- type: stop it with Ctrl-C in its terminal, or: kill -INT 7"},
+		},
+		"a holder runs": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.proc, "8/cmdline", "ataniq-holder\x00--x\x00") }, nil, 1,
+			[]string{"FIX:  an ataniqd or ataniq-holder runs (process 8)"},
+		},
+		"the processes cannot be listed": {
+			func(t *testing.T, p *pf) { os.RemoveAll(p.proc); os.MkdirAll(p.proc, 0o700) }, nil, 1,
+			[]string{"FIX:  " + "%DIR%/proc cannot be read, so the processes cannot be listed"},
+		},
+		"a Qargi run of this repository is open": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "runs/r1/repo.path", p.repo+"\n")
+				canaryWrite(t, p.dir, "qargi-list", "ROLE SLUG AGE APPLIED MERGED RUN\nbuild feat 1h no no "+p.dir+"/runs/r1\n")
+			}, nil, 1,
+			[]string{"FIX:  a Qargi run of this repository is open: %DIR%/runs/r1 ", "-- type: qargi local list   (verify and close the run)"},
+		},
+		"/ataniq exists": {
+			func(t *testing.T, p *pf) { os.Mkdir(filepath.Join(p.dir, "no-ataniq"), 0o700) }, nil, 1,
+			[]string{"FIX:  %DIR%/no-ataniq exists on the host (the template's note: it must not) -- type: ls -la %DIR%/no-ataniq"},
+		},
+		"there is no report of qualify-mirror": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, "mirror-qual/report.json")) }, nil, 1,
+			[]string{"FIX:  the report of qualify-mirror is not there: %ROOT%/mirror-qual/report.json", "build/qualify-mirror --config %ROOT%/mirror-qual/config.json --out %ROOT%/mirror-qual/report.json   (in %REPO%)"},
+		},
+		"the report does not parse": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, "mirror-qual/report.json.fields")) }, nil, 1,
+			[]string{"FIX:  the report of qualify-mirror does not parse as one JSON object"},
+		},
+		"the report is of another template": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "mirror-qual/report.json.fields", "template.sha256="+strings.Repeat("c", 64)+"\n")
+			}, nil, 1,
+			[]string{"FIX:  the report is of another template (" + strings.Repeat("c", 64) + ", the template is "},
+		},
+		"the report has no template": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.root, "mirror-qual/report.json.fields", "format=1\n") }, nil, 1,
+			[]string{"FIX:  the report has no template.sha256"},
+		},
+		"the report is elsewhere, by the hint": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.root, "answers.hint", "mirror-report="+p.dir+"/elsewhere.json\n")
+			}, nil, 1, []string{"FIX:  the report of qualify-mirror is not there: %DIR%/elsewhere.json"},
+		},
+		"the report is elsewhere, by the argument": {
+			func(t *testing.T, p *pf) {}, []string{"--mirror-report", "%DIR%/given.json"}, 1,
+			[]string{"FIX:  the report of qualify-mirror is not there: %DIR%/given.json"},
+		},
+		"the sysctl is 1": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "tiocsti", "1\n") }, nil, 1,
+			[]string{"FIX:  the sysctl dev.tty.legacy_tiocsti is \"1\", not 0 (step 3 refuses it) -- type: sudo sysctl dev.tty.legacy_tiocsti=0"},
+		},
+		"the sysctl is empty": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "tiocsti", "") }, nil, 1,
+			[]string{"FIX:  the sysctl dev.tty.legacy_tiocsti is \"unreadable\""},
+		},
+		"lingering cannot be read": {
+			func(t *testing.T, p *pf) { canaryWrite(t, p.dir, "loginctl-fail", "x") }, nil, 1,
+			[]string{"FIX:  lingering cannot be read with loginctl (step 3 needs it) -- type: loginctl show-user "},
+		},
+		"pasta is not on PATH": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "pasta")) }, nil, 1,
+			[]string{"FIX:  not on PATH (step 3 runs them): pasta -- type: put them on PATH"},
+		},
+		"the evidence folder is missing": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, "evidence")) }, nil, 1,
+			[]string{"FIX:  the evidence folder is not a writable folder: %ROOT%/evidence -- type: mkdir -p -m 0700 %ROOT%/evidence"},
+		},
+		"the evidence folder is given and missing": {
+			func(t *testing.T, p *pf) {}, []string{"--evidence", "%DIR%/ev"}, 1,
+			[]string{"FIX:  the evidence folder is not a writable folder: %DIR%/ev"},
+		},
+		"three things are wrong": {
+			func(t *testing.T, p *pf) {
+				canaryWrite(t, p.dir, "tiocsti", "1\n")
+				os.Mkdir(filepath.Join(p.dir, "no-ataniq"), 0o700)
+				canaryWrite(t, p.dir, "units", "ataniq-lead-throwaway-one.service loaded active running x\n")
+			}, nil, 3, []string{"NOT READY (3 to fix)"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newCanaryPF(t)
+			c.mutate(t, p)
+			expand := func(s string) string {
+				r := strings.NewReplacer("%RUN%", p.runDir, "%ROOT%", p.root, "%BIN%", p.bin, "%REPO%", p.repo, "%DIR%", p.dir, "%HEAD%", p.git("rev-parse", "HEAD"))
+				return r.Replace(s)
+			}
+			extra := slices.Clone(c.extra)
+			for i := range extra {
+				extra[i] = expand(extra[i])
+			}
+			out, code := p.run(extra...)
+			if code != 1 {
+				t.Errorf("exit status %d, want 1:\n%s", code, out)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(out, expand(want)) {
+					t.Errorf("the output does not hold %q:\n%s", expand(want), out)
+				}
+			}
+			if got, want := strings.Count(out, "FIX:  "), c.fixes; got != want {
+				t.Errorf("%d fixes, want %d:\n%s", got, want, out)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(out), fmt.Sprintf("NOT READY (%d to fix)", c.fixes)) {
+				t.Errorf("the output does not end with NOT READY (%d to fix):\n%s", c.fixes, out)
+			}
+			if strings.Contains(out, "\nREADY\n") || strings.Contains(out, "What you type") {
+				t.Errorf("a set-up with a fix says READY:\n%s", out)
+			}
+			// No FIX line is more than one line, and every one has a command.
+			for _, l := range strings.Split(out, "\n") {
+				if strings.HasPrefix(l, "FIX:  ") && !strings.Contains(l, " -- type: ") {
+					t.Errorf("a FIX line without its command: %q", l)
+				}
+			}
+		})
+	}
+}
+
+// The binaries must be built from the checkout's HEAD: by the commit their
+// --version names when it names one, else by the time of their files against the
+// newest commit that touches the code (not a commit that touches only the docs),
+// and the output says which.
+func TestCanaryRunKitPreflightBuiltFromHead(t *testing.T) {
+	year := func(y int) time.Time { return time.Date(y, 6, 1, 0, 0, 0, 0, time.UTC) }
+	for name, c := range map[string]struct {
+		setup func(p *canaryPF)
+		want  string // the ok line, or the fix line, up to its command
+		ready bool
+	}{
+		"newer than the code, by file time": {func(p *canaryPF) { p.age(year(2022)) }, "ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;", true},
+		"older than a commit of the code": {func(p *canaryPF) {
+			p.change("cmd/main.go", "package main\n// newer\n", "2023-01-01T00:00:00Z")
+			p.age(year(2022))
+		}, "FIX:  ataniqd is older than the newest commit that touches the code (by file time: --version names no commit) -- type: make -C", false},
+		"older than a commit of go.mod": {func(p *canaryPF) {
+			p.change("go.mod", "module y\n", "2023-01-01T00:00:00Z")
+			p.age(year(2022))
+		}, "is older than the newest commit that touches the code", false},
+		"older than a commit of a vendored module": {func(p *canaryPF) {
+			p.change("third_party/t.txt", "u\n", "2023-01-01T00:00:00Z")
+			p.age(year(2022))
+		}, "is older than the newest commit that touches the code", false},
+		"a commit of the docs only does not count": {func(p *canaryPF) {
+			p.change("README.md", "docs\n", "2023-01-01T00:00:00Z")
+			p.age(year(2022))
+		}, "ok:   the binaries are newer than the newest commit that touches the code (by file time", true},
+		"one binary is older": {func(p *canaryPF) {
+			p.age(year(2022))
+			old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+			os.Chtimes(filepath.Join(p.bin, "ataniq-console"), old, old)
+		}, "FIX:  ataniq-console is older than the newest commit that touches the code", false},
+		"the version names the HEAD commit": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "version-extra", "commit "+p.git("rev-parse", "HEAD")+"\n")
+			p.age(year(2010))
+		}, "ok:   the binaries were built from the HEAD commit ", true},
+		"the version names an older commit": {func(p *canaryPF) {
+			first := p.git("rev-parse", "HEAD")
+			p.change("README.md", "docs\n", "2021-02-01T00:00:00Z")
+			canaryWrite(p.t, p.dir, "version-extra", "commit "+first+"\n")
+		}, "FIX:  ataniqd was built from ", false},
+		"a short hash is not a commit": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "version-extra", "commit "+p.git("rev-parse", "--short", "HEAD")+"\n")
+		}, "ok:   the binaries are newer than the newest commit that touches the code (by file time", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newCanaryPF(t)
+			c.setup(p)
+			out, code := p.run()
+			if !strings.Contains(out, c.want) {
+				t.Errorf("the output does not hold %q:\n%s", c.want, out)
+			}
+			if (code == 0) != c.ready {
+				t.Errorf("exit status %d, want ready %v:\n%s", code, c.ready, out)
+			}
+		})
+	}
+}
+
+// What qargi says about the open runs is read as the run reads it: with the
+// run script's own helpers. An open run of this repository is a fix; every
+// other answer leaves the run to ask the lead or has nothing open.
+func TestCanaryRunKitPreflightOpenRuns(t *testing.T) {
+	header := "ROLE SLUG AGE APPLIED MERGED RUN\n"
+	for name, c := range map[string]struct {
+		setup func(p *canaryPF)
+		want  string
+	}{
+		"no run":                  {func(p *canaryPF) {}, "ok:   no Qargi run of this repository is open"},
+		"qargi is not there":      {func(p *canaryPF) { os.Remove(filepath.Join(p.tools, "qargi")) }, "ok:   qargi is not on PATH: the run asks the lead"},
+		"qargi fails":             {func(p *canaryPF) { canaryWrite(p.t, p.dir, "qargi-fail", "x") }, "ok:   qargi local list failed: the run asks the lead"},
+		"a list it cannot read":   {func(p *canaryPF) { canaryWrite(p.t, p.dir, "qargi-list", "NOT THE HEADER\n") }, "ok:   the list of qargi local list cannot be read as the run reads it"},
+		"a line it does not know": {func(p *canaryPF) { canaryWrite(p.t, p.dir, "qargi-list", header+"something else entirely\n") }, "ok:   the list of qargi local list cannot be read as the run reads it"},
+		"a run applied and merged": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "runs/r1/repo.path", p.repo+"\n")
+			canaryWrite(p.t, p.dir, "qargi-list", header+"build feat 1h yes yes "+p.dir+"/runs/r1\n")
+		}, "ok:   no Qargi run of this repository is open"},
+		"an open run of another repository": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "runs/r1/repo.path", p.dir+"/other\n")
+			canaryWrite(p.t, p.dir, "qargi-list", header+"build feat 1h no no "+p.dir+"/runs/r1\n")
+		}, "ok:   no Qargi run of this repository is open"},
+		"an open run without a repo.path": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "qargi-list", header+"build feat 1h no no "+p.dir+"/runs/r2\n")
+			os.MkdirAll(filepath.Join(p.dir, "runs/r2"), 0o700)
+		}, "ok:   no open run is known, but one has no readable repo.path ("},
+		"a run whose folder is gone": {func(p *canaryPF) {
+			canaryWrite(p.t, p.dir, "qargi-list", header+"build feat 1h no no "+p.dir+"/runs/gone  directory gone\n")
+		}, "ok:   no Qargi run of this repository is open"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newCanaryPF(t)
+			c.setup(p)
+			out, code := p.run()
+			if code != 0 || !strings.Contains(out, c.want) {
+				t.Errorf("exit status %d, want the line %q:\n%s", code, c.want, out)
+			}
+		})
+	}
+	// A run of this repository from a linked work tree is seen from the main one.
+	p := newCanaryPF(t)
+	p.git("worktree", "add", "-q", "-b", "wt", filepath.Join(p.dir, "wt"))
+	canaryWrite(t, p.dir, "runs/r1/repo.path", filepath.Join(p.dir, "wt")+"\n")
+	canaryWrite(t, p.dir, "qargi-list", header+"build feat 1h no no "+p.dir+"/runs/r1\n")
+	out, code := p.run()
+	if code != 1 || !strings.Contains(out, "FIX:  a Qargi run of this repository is open: "+p.dir+"/runs/r1") {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+}
+
+// Evidence folder: given, and not writable.
+func TestCanaryRunKitPreflightEvidenceFolder(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	p := newCanaryPF(t)
+	ev := filepath.Join(p.dir, "ev")
+	if err := os.Mkdir(ev, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	out, code := p.run("--evidence", ev)
+	if code != 1 || !strings.Contains(out, "FIX:  the evidence folder is not a writable folder: "+ev) {
+		t.Errorf("exit status %d:\n%s", code, out)
+	}
+	if err := os.Chmod(ev, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code = p.run("--evidence", ev)
+	if code != 0 || !strings.Contains(out, "--evidence "+ev) {
+		t.Errorf("exit status %d:\n%s", code, out)
 	}
 }
