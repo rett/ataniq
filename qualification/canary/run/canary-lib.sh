@@ -93,6 +93,25 @@ cc_git() {
   env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git "$@"
 }
 
+# cc_same_dir FOLDER succeeds when the folder the script is in is still the
+# folder the name FOLDER leads to now. It asks the kernel each time: the inode
+# number of "." against that of "FOLDER/.", each from its own ls (ls sorts
+# several operands, so one call could not tell them apart), and FOLDER must
+# resolve to itself, which refuses a link (an inode number alone could meet the
+# same number on another file system). Comparing the output of pwd -P with
+# FOLDER is no such check: dash prints the path it cached at the last cd -P
+# and does not ask the kernel again, so it stays true after FOLDER was moved
+# away and another folder put at its name. A folder that cannot be read is a
+# refusal.
+cc_same_dir() {
+  # shellcheck disable=SC2012  # ls -di is the POSIX way to read an inode number
+  _sa=$(ls -di -- . 2>/dev/null | awk 'NR == 1 { print $1 }')
+  # shellcheck disable=SC2012  # same
+  _sb=$(ls -di -- "$1/." 2>/dev/null | awk 'NR == 1 { print $1 }')
+  [ -n "$_sa" ] && [ "$_sa" = "$_sb" ] || return 1
+  [ "$(cd -P -- "$1" 2>/dev/null && pwd -P)" = "$1" ]
+}
+
 # cc_make_state ROOT BIN [pinned] makes the two roots, ROOT/state and
 # ROOT/runtime, with mode 0700, and the mirror of the throwaway repository
 # with ataniq-intake init, and puts the upstream branch develop of
@@ -116,7 +135,9 @@ cc_make_state() {
   mkdir -m 0700 -- "$_p/state" "$_p/runtime"
   chmod 0700 -- "$_p/state" "$_p/runtime"
   if [ "${3:-}" = pinned ]; then
-    [ "$(cd -P -- "$1/state" && pwd -P)" = "$1/state" ] && [ "$(pwd -P)" = "$1" ] ||
+    [ "$(cd -P -- "$1/state" && pwd -P)" = "$1/state" ] ||
+      cc_die "$1 was replaced while the folders were made, so nothing more is made"
+    cc_same_dir "$1" ||
       cc_die "$1 was replaced while the folders were made, so nothing more is made"
   fi
   "$2/ataniq-intake" init --state "$1/state" --project "$CC_PROJECT" >/dev/null ||

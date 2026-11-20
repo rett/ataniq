@@ -296,7 +296,12 @@ prompt. The prompt can wait, so the checks (the units, the processes, and that
 after the word and before the first deletion. It then enters the root once
 (links resolved, and it must be the path you gave) and names `state/` and
 `runtime/` relative to that folder from there on, so a root swapped for a link
-while the checks run makes it refuse, and nothing outside the root is ever
+while the checks run makes it refuse. That the folder entered is still the one
+the root's name leads to is checked by asking the kernel, each time: the inode
+number of `.` against that of `ROOT/.`, and the root must resolve to itself. It
+is not checked by comparing the output of `pwd -P` with the root, which `dash`
+answers from the path it cached at the last `cd -P` and not from the kernel.
+Nothing is deleted unless it holds, and nothing outside the root is ever
 deleted. The folders' modes are opened with `find`, which does not follow a
 link; a change in the meantime is a refusal with nothing more deleted. It then makes `state/` and `runtime/` again (mode 0700) and the mirror
 with `ataniq-intake init` and `develop` pushed from `ROOT/upstream`, with the
@@ -304,8 +309,8 @@ code `canary-prepare.sh` uses, and computes nothing else: the config and the
 pin stay as they were. That step is checked, not fully pinned: the `mkdir`,
 the `chmod` and the push into the mirror name their folders relative to the
 folder entered, but `ataniq-intake init` needs an absolute `--state`, so the
-reset checks again that `ROOT/state` and the folder entered are still `ROOT`
-right before that call. A process of your own user that swaps the root for a
+reset checks again that `ROOT/state` is still where it was and that the folder
+entered is still the one `ROOT` names, right before that call. A process of your own user that swaps the root for a
 link within the few milliseconds between that check and that call could still
 make the folders of an empty mirror outside the root; it deletes nothing.
 With `--dry` it prints the plan and deletes nothing.
@@ -555,6 +560,7 @@ test entry:
 | `--self-test open-runs LIST REPO`, `unread-runs LIST`, `list-scan LIST`, `loaded-units FILE`, `tracked-changes FILE`, `unit-facts FIELDS`, `plan-facts FIELDS`, `holder-start FIELDS VERSION DIGEST`, `upstream-id FILE NAME`, `lead-id FILE ROLE BRANCH` | What steps 1, 2, 3, 8, 12 and 20 read in place of the lead's word: the open runs of the project in a `qargi local list` text and the open runs whose `repo.path` cannot be read, the loaded units without slices, the lines of `git status --porcelain` that are not untracked, `ok ...` or `bad ...` for a fact report or `holder.json`, and the commit a `branches` text names for the upstream branch and for the lead's branch. |
 | `canary-prepare.sh --self-test pasta-plan PATH` | `use PATH` for a regular executable file, `copy SOURCE` for a link (SOURCE is the regular file it leads to), or a refusal. |
 | `canary-reset.sh --self-test typed-word WORD` | `go` when WORD is exactly `reset`, and `stop` otherwise. The prompt of the reset decides with it. |
+| `canary-reset.sh --self-test same-dir ENTERED NAME` | It enters `ENTERED` with `cd -P`, as the reset enters the root, and prints `same` when the folder `NAME` leads to now is that folder, and `different` otherwise: a folder moved away with a new one at the name, a link to another folder or to the folder entered, and a name that leads nowhere are `different`. `ENTERED` that cannot be entered is a refusal (exit status 1). The reset makes that check after it enters the root, after the deletion and right before `ataniq-intake`, with this function. |
 | `canary-reset.sh --self-test procs-of ROOT PROCDIR` | The numbers of the processes of `PROCDIR` (the shape of `/proc`) that are an `ataniqd` or an `ataniq-holder` (the program is the whole of the first argument, so a path with a space counts) with a path of `ROOT` in their command line (as written, or resolved) or `ROOT` or a folder below it as their current folder; one of the user whose current folder cannot be read is listed too. A `PROCDIR` with no process folder is a refusal (exit status 1). |
 | `--self-test wait-key` | It waits for one key as a step of the clean-up chain does, with the chain's answer to a signal and its standard input taken for a terminal, and prints `key` when a line was read or `no-key` when the input ended. |
 | `--self-test pass-a-record FILE` | What step 2 of pass B reads in that `result.txt` of pass A: `clean`, `findings <N>`, `unknown` (complete, with no number of findings) or `incomplete`. It reads the file and nothing else. |

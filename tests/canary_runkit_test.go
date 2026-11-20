@@ -3657,8 +3657,8 @@ func TestCanaryRunKitResetSwapAfterTheSecondCheck(t *testing.T) {
 // folder outside, and for a new folder of its own that has a state/ (only the
 // check of the folder entered sees that one). What is not tested, because the
 // stub cannot be run between a check and the next call: a swap in the
-// milliseconds between the last check and ataniq-intake. Removing the pwd -P
-// check of the make-again step fails the last case.
+// milliseconds between the last check and ataniq-intake. Removing the
+// same-folder check of the make-again step fails the last case.
 func TestCanaryRunKitResetSwapDuringTheMakeAgain(t *testing.T) {
 	scriptCmd := canaryNeedScript(t)
 	for _, c := range []struct {
@@ -3725,6 +3725,111 @@ func TestCanaryRunKitResetSwapDuringTheMakeAgain(t *testing.T) {
 	}
 }
 
+// The helper that decides "is the folder I entered still the one this name
+// leads to" asks for the inode numbers, through the reset's test entry: the
+// folder itself is the same; a folder moved away with a new one put at its
+// name is different; a link to another folder, and a link to the very folder
+// entered, are different (a name that is a link is not the folder); a name
+// that is gone, or a folder entered that is gone, is different too.
+func TestCanaryRunKitResetSameDirAsksTheKernel(t *testing.T) {
+	e := canaryStubKit(t)
+	d := filepath.Join(e.dir, "same-dir")
+	for _, p := range []string{"a", "other"} {
+		if err := os.MkdirAll(filepath.Join(d, p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ask := func(entered, name string) string {
+		t.Helper()
+		out, code := e.run(t, canaryResetScript, "", "--self-test", "same-dir", entered, name)
+		if code != 0 {
+			t.Fatalf("same-dir %s %s: exit status %d:\n%s", entered, name, code, out)
+		}
+		return strings.TrimSpace(out)
+	}
+	a, other := filepath.Join(d, "a"), filepath.Join(d, "other")
+	if got := ask(a, a); got != "same" {
+		t.Errorf("the folder against its own name: %q, want same", got)
+	}
+	if got := ask(a, other); got != "different" {
+		t.Errorf("a folder against the name of another: %q, want different", got)
+	}
+	if got := ask(a, filepath.Join(d, "none")); got != "different" {
+		t.Errorf("a name that leads nowhere: %q, want different", got)
+	}
+	// The folder is moved away and a new one put at its name.
+	moved := filepath.Join(d, "a-moved")
+	if err := os.Rename(a, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(a, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := ask(moved, a); got != "different" {
+		t.Errorf("a folder moved away, a new one at its name: %q, want different", got)
+	}
+	if got := ask(a, a); got != "same" {
+		t.Errorf("the new folder against its name: %q, want same", got)
+	}
+	// The name becomes a link, to another folder and to the folder entered.
+	if err := os.Remove(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := ask(moved, a); got != "different" {
+		t.Errorf("a link to another folder: %q, want different", got)
+	}
+	if got := ask(other, a); got != "different" {
+		t.Errorf("a link to the folder entered: %q, want different", got)
+	}
+	// A folder that cannot be entered is a refusal of the test entry.
+	if out, code := e.run(t, canaryResetScript, "", "--self-test", "same-dir", filepath.Join(d, "gone"), a); code == 0 || !strings.Contains(out, "refused") {
+		t.Errorf("a folder that cannot be entered: exit status %d, want a refusal:\n%s", code, out)
+	}
+	if out, code := e.run(t, canaryResetScript, "", "--self-test", "same-dir", a); code != 2 || !strings.Contains(out, "usage:") {
+		t.Errorf("same-dir with one folder: exit status %d:\n%s", code, out)
+	}
+}
+
+// The kit's scripts hold no bare comparison of the output of pwd -P with a
+// path. Under dash, pwd -P prints the path cached at the last cd -P and does
+// not ask the kernel again, so [ "$(pwd -P)" = "$ROOT" ] after the folder was
+// moved away is still true: such a check is a no-op there (it passed under
+// bash, which asks the kernel, and CI's dash did not refuse). The check that
+// the folder entered is still the one a name leads to is cc_same_dir, which
+// compares inode numbers. A pwd -P that follows a cd -P in the same
+// command substitution is right in either shell and is not matched.
+func TestCanaryRunKitNoBarePwdComparison(t *testing.T) {
+	bare := regexp.MustCompile(`\$\(\s*pwd(\s+-[LP])?\s*\)"?\s*(=|==|!=)\s|\s(=|==|!=)\s+"?\$\(\s*pwd(\s+-[LP])?\s*\)`)
+	for _, rel := range []string{canaryResetScript, canaryLibScript} {
+		data, err := os.ReadFile(filepath.Join(root(t), rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if bare.MatchString(line) {
+				t.Errorf("%s:%d compares a bare pwd with a path (dash does not ask the kernel again; use cc_same_dir): %s", rel, i+1, line)
+			}
+		}
+	}
+	// The pattern itself catches the form that was there.
+	for _, line := range []string{
+		`[ "$(pwd -P)" = "$ROOT" ] || cc_die x`,
+		`  [ "$(cd -P -- "$1/state" && pwd -P)" = "$1/state" ] && [ "$(pwd -P)" = "$1" ] ||`,
+		`[ "$ROOT" = "$(pwd -P)" ] || cc_die x`,
+		`[ "$(pwd)" != "$ROOT" ] && exit 1`,
+	} {
+		if !bare.MatchString(line) {
+			t.Errorf("the pattern does not catch %q", line)
+		}
+	}
+	if bare.MatchString(`  [ "$(cd -P -- "$1/state" && pwd -P)" = "$1/state" ] && cc_same_dir "$1" ||`) {
+		t.Error("the pattern catches a cd -P and pwd -P in one substitution")
+	}
+}
+
 // The checks are one function, and the main flow calls it twice: once before
 // the plan and once after the word, before the first deletion; the deletion
 // opens modes with find and not with chmod -R.
@@ -3762,7 +3867,7 @@ func TestCanaryRunKitResetChecksTwiceAndOpensModesWithFind(t *testing.T) {
 	}
 	// The deletion runs relative to the root entered once, after the second check.
 	enter := strings.LastIndex(text, `cd -P -- "$ROOT"`)
-	if !(second < enter && enter < del) || !strings.Contains(text, `[ "$(pwd -P)" = "$ROOT" ]`) {
+	if !(second < enter && enter < del) || strings.Count(text, `cc_same_dir "$ROOT" || cc_die`) != 2 {
 		t.Error("the reset does not enter the root, and check where it is, between the second check and the deletion")
 	}
 	if !strings.Contains(text, "rm -rf -- \"./$_k\"") || strings.Contains(text, "rm -rf -- \"$ROOT") || strings.Contains(text, "rm -rf -- \"${ROOT") {
