@@ -178,7 +178,8 @@ the console is closed.
 ### When the owner supplies the message himself
 
 In the first epoch of pass A, and in pass B when the fence refuses or answers
-`not-now` having written nothing, the owner puts the message into the pane. He does not type it. The script prints the
+`not-now` having written nothing, the owner puts the message into the pane. He
+does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
 text between two marker lines (`----- begin of message-1.txt -----` and
 `----- end -----`, the text with no prefix); the owner copies the file's text
@@ -749,7 +750,7 @@ is refused too, and it takes no path with a `.` or `..` part. It holds:
 | `owner-enter.txt` | The `owner-enter` line of step 17, when the one result that gets it occurred. |
 | `intake-records/` | The verification and intake records of step 20. |
 | `kept/` | Copies made at step 26: the registry journal, the holder's event log, state file and final record, the daemon's evidence file, the stand-in's `order.txt` and `result.txt`. |
-| Pass B: `listeners-*.txt`, `departures.txt`, `live-config-folder.txt`, `manifest-before.txt`, `manifest-after.txt`, `canary-config-*.txt` | The listening sockets before and after, the line that records the open network as a departure from L3, and the manifests: names, sizes, times and hashes. |
+| Pass B: `listeners-*.txt`, `departures.txt`, `live-config-folder.txt`, `manifest-before.txt`, `manifest-after.txt`, `manifest-changes.txt`, `canary-config-*.txt` | The listening sockets before and after, the line that records the open network as a departure from L3, and the manifests: names, sizes, times and hashes. |
 | `result.txt` | `pass A: complete` or the step the pass failed at, and the number of findings. |
 | `MANIFEST.txt` | Names, sizes, times and hashes of every file of the evidence. |
 

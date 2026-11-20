@@ -81,7 +81,7 @@ func TestCanaryRunKitPassBStep16PreChecks(t *testing.T) {
 		"an update or install notice there means not-now",
 		"Shift+Tab",
 		"leave the session pane (Ctrl+\\) and touch neither key nor mouse there for 3 seconds",
-		"the pane shows the empty composer, the expected mode and no notice (type: yes)",
+		"does the pane show the empty composer, the expected mode and no notice (yes; or go-on:",
 	} {
 		if !strings.Contains(sixteen, want) {
 			t.Errorf("step 16 of pass B does not say %q:\n%s", want, sixteen)
@@ -97,7 +97,7 @@ func TestCanaryRunKitPassBStep16PreChecks(t *testing.T) {
 	}
 	// The pre-check is the last thing step 16 asks: the owner's yes is nearest to step 17.
 	f := funcsOf(t)["step_16"]
-	if a, l := strings.Index(f, "affirm 'Owner: the pane shows the empty composer"), strings.LastIndex(f, "ask 'Lead:"); a < 0 || a < l {
+	if a, l := strings.Index(f, "ask 'Owner: does the pane show the empty composer"), strings.LastIndex(f, "ask 'Lead:"); a < 0 || a < l {
 		t.Error("step 16 does not end with the owner's yes to the pre-checks")
 	}
 	// Pass A does not run step 16 and its step 14 keeps its own text.
@@ -292,7 +292,7 @@ listeners() {
 // the login to revoke by its time and warns about the other rows.
 func TestCanaryRunKitStep23And26(t *testing.T) {
 	f := funcsOf(t)
-	for _, want := range []string{"sk-ant-", "code=", "[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}", "https?://", "[A-Z0-9]{4}-[A-Z0-9]{4}"} {
+	for _, want := range []string{"sk-ant-", "[?&]code=", "[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}", "https?://", "[A-Z0-9]{4}-[A-Z0-9]{4}"} {
 		if !strings.Contains(f["step_26"], want) {
 			t.Errorf("step 26's search does not hold %q", want)
 		}
@@ -308,7 +308,7 @@ done_step() { echo DONE-STEP; }`
 	if code != 0 || !strings.Contains(o, "DONE-STEP") {
 		t.Fatalf("exit status %d:\n%s", code, o)
 	}
-	for _, want := range []string{"started at 20260101T000000Z", "done at 2026-01-01T00:10:00Z", "Revoke ONLY the login", "no other row", "log out everywhere", "a wrong row ends them"} {
+	for _, want := range []string{"started at 20260101T000000Z", "done at about 2026-01-01T00:10:00Z (UTC)", "In your local time that is about", "Revoke ONLY the login", "no other row", "log out everywhere", "a wrong row ends them"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("step 23 does not say %q:\n%s", want, o)
 		}
@@ -327,9 +327,11 @@ func TestCanaryRunKitStep25JudgesOnlyTheLoginsFiles(t *testing.T) {
 	}{
 		{"nothing", before, 0, []string{"RESULT: no difference"}},
 		{"only the owner's sessions", noise, 0, []string{"1 added, 1 removed, 2 changed", "no file of the login's kind differs", "     changed ./history.jsonl"}},
-		{"the credential file", strings.Replace(noise, "h1 10 100", "h1y 12 300", 1), 1, []string{"MEANINGFUL: changed ./.credentials.json", "of the login's kind"}},
-		{"a new state file", noise + "s1 5 5 ./.claude.json\n", 1, []string{"MEANINGFUL: added ./.claude.json"}},
-		{"a token file removed", strings.Replace(noise, "h2 10 100 ./settings.json\n", "", 1), 1, []string{"MEANINGFUL: removed ./settings.json"}},
+		{"the credential file, the canary's own", strings.Replace(noise, "h1 10 100", "hc 12 300", 1), 1, []string{"MEANINGFUL: changed ./.credentials.json", "of the login's kind"}},
+		{"a new state file, the canary's own", noise + "hc 5 5 ./.claude.json\n", 1, []string{"MEANINGFUL: added ./.claude.json"}},
+		{"a changed file that is not the canary's is a question, answered yes", strings.Replace(noise, "h1 10 100", "h1y 12 300", 1), 0, []string{"changed, not the canary's file", "ASKED:Owner and lead: is the change of ./.credentials.json"}},
+		{"a token file removed is a question, answered no", strings.Replace(noise, "h2 10 100 ./settings.json\n", "", 1), 1, []string{"changed, not the canary's file", "ASKED:Owner and lead: is the change of ./settings.json"}},
+		{"a new transcript of the sandbox's working folder", noise + "h7 5 5 ./projects/-work-throwaway/s.jsonl\n", 1, []string{"MEANINGFUL: added ./projects/-work-throwaway/s.jsonl"}},
 		{"deep names are not judged", noise + "t1 5 5 ./projects/a/oauth-token-notes.txt\n", 0, []string{"2 added, 1 removed, 2 changed"}},
 	}
 	for _, c := range cases {
@@ -339,13 +341,19 @@ func TestCanaryRunKitStep25JudgesOnlyTheLoginsFiles(t *testing.T) {
 			canaryWrite(t, ev, "manifest-before.txt", before)
 			canaryWrite(t, ev, "live-config-folder.txt", "/x\n")
 			after := canaryWrite(t, dir, "after.txt", c.after)
+			canaryWrite(t, ev, "canary-config-after.txt", "hc 1 1 ./.credentials.json\n"+canaryEmptyHash+" 0 1 ./empty\n")
+			answer := "yes"
+			if strings.Contains(c.name, "answered no") {
+				answer = "no"
+			}
 			pre := `PASS=B
+ask() { ANSWER=` + answer + `; echo "ASKED:$1"; }
 step_head() { :; }
 wait_key() { :; }
 manifest_of() { cp ` + after + ` "$2"; }
 result() { echo "RESULT: $*"; }
 done_step() { echo DONE-STEP; }`
-			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "step_25"}, pre, "step_25")
+			o, code := canaryStepHarness(t, dir, []string{"out", "note", "dry", "fail", "manifest_changes", "meaningful_path", "canary_owns", "step_25"}, pre, "step_25")
 			if code != 0 || !strings.Contains(o, "DONE-STEP") {
 				t.Fatalf("exit status %d:\n%s", code, o)
 			}

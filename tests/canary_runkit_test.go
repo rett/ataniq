@@ -1124,7 +1124,7 @@ func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
 	}
 	body := funcs["step_17"]
 	if n := canaryCalls(body, "paste_message"); n != 2 {
-		t.Errorf("step 17 gives the paste instruction in %d places, want 2 (pass A, and a refusal in pass B)", n)
+		t.Errorf("step 17 gives the paste instruction in %d places, want 2 (pass A, and in pass B a refusal or not-now/nothing)", n)
 	}
 	passA := body[strings.Index(body, `if [ "$_act" = wrong-config ]; then`):strings.Index(body, "case $_act in\n")]
 	if canaryCalls(passA, "paste_message") != 1 {
