@@ -604,9 +604,12 @@ unit_facts_verdict() {
 }
 
 # plan_facts_verdict FIELDS reads the lines for the summary.json of the
-# launched plan. It prints "ok TEXT" when every step has the status ok or
-# skipped, exit.code is 0 and every case result is ok or not-checked, and "bad
-# REASON" otherwise.
+# launched plan. It prints "ok TEXT" when the plan was launched and exited
+# (exit.launched and exit.exited are true, report_outcome is line-read), every
+# step has the status ok or skipped, exit.code is 0 and every case result is ok
+# or not-checked, and "bad REASON" otherwise. A summary of a plan that was never
+# launched has exit.code 0 and passes everything else, so the launch is read
+# first.
 plan_facts_verdict() {
   printf '%s\n' "$1" | awk '
     { v = substr($0, index($0, "=") + 1) }
@@ -621,8 +624,14 @@ plan_facts_verdict() {
       if (st != "ok" && st != "not-checked" && bad == "") bad = "case result " a[2] "." a[4] " (" cid[a[2] "." a[4]] ") has the status " st
     }
     /^exit\.code=/ { ec = v; he = 1 }
+    /^exit\.launched=/ { el = v }
+    /^exit\.exited=/ { ex = v }
+    /^report_outcome=/ { ro = v }
     END {
       if (s == 0) { print "bad the summary has no step"; exit }
+      if (el != "true") { print "bad the plan was not launched (exit.launched is " el ")"; exit }
+      if (ex != "true") { print "bad the plan did not exit (exit.exited is " ex ")"; exit }
+      if (ro != "line-read") { print "bad report_outcome is " ro ", not line-read"; exit }
       if (!he) { print "bad the summary has no exit.code"; exit }
       if (ec != "0") { print "bad exit.code is " ec ", not 0"; exit }
       if (c == 0) { print "bad the summary has no case result"; exit }

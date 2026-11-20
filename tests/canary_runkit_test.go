@@ -1931,20 +1931,34 @@ func TestCanaryRunKitFactsVerdicts(t *testing.T) {
 		return strings.Join([]string{
 			"steps.0.name=validate-config", "steps.0.status=ok",
 			"steps.1.name=resolv-conf", "steps.1.status=" + step,
-			"exit.code=" + code,
+			"exit.launched=true", "exit.exited=true", "exit.code=" + code, "report_outcome=line-read",
 			"cases.0.case=S1", "cases.0.results.0.id=holder-hidden", "cases.0.results.0.status=ok",
 			"cases.1.results.0.id=qualification-record", "cases.1.results.0.status=" + result,
 		}, "\n")
 	}
+	neverLaunched := strings.Join([]string{
+		"dry_run=true", "report_outcome=not-launched", "stop.state=not-launched",
+		"steps.0.name=validate-config", "steps.0.status=ok",
+		"steps.1.name=resolv-conf", "steps.1.status=skipped",
+		"exit.launched=false", "exit.exited=false", "exit.code=0",
+		"cases.0.case=S1", "cases.0.results.0.id=holder-hidden", "cases.0.results.0.status=not-checked",
+	}, "\n")
 	for _, c := range []struct{ name, fields, want string }{
 		{"a pass", plan("ok", "0", "ok"), "ok 2 steps ok or skipped, exit.code 0, 2 case results ok or not-checked"},
 		{"skipped and not checked", plan("skipped", "0", "not-checked"), "ok 2 steps ok or skipped, exit.code 0, 2 case results ok or not-checked"},
 		{"a failed step", plan("failed", "0", "ok"), "bad step 1 (resolv-conf) has the status failed"},
 		{"a nonzero exit", plan("ok", "1", "ok"), "bad exit.code is 1, not 0"},
 		{"a failed case result", plan("ok", "0", "fail"), "bad case result 1.0 (qualification-record) has the status fail"},
-		{"no exit", "steps.0.status=ok\ncases.0.results.0.status=ok", "bad the summary has no exit.code"},
-		{"no step", "exit.code=0", "bad the summary has no step"},
-		{"no case result", "steps.0.status=ok\nexit.code=0", "bad the summary has no case result"},
+		{"no exit", "steps.0.status=ok\nexit.launched=true\nexit.exited=true\nreport_outcome=line-read\ncases.0.results.0.status=ok", "bad the summary has no exit.code"},
+		{"no step", "exit.launched=true\nexit.exited=true\nreport_outcome=line-read\nexit.code=0", "bad the summary has no step"},
+		{"no case result", "steps.0.status=ok\nexit.launched=true\nexit.exited=true\nreport_outcome=line-read\nexit.code=0", "bad the summary has no case result"},
+		// The shape of the summary of a dry run, which launches nothing: every
+		// step is ok or skipped, exit.code is the zero value, and the case
+		// results are not-checked.
+		{"never launched", neverLaunched, "bad the plan was not launched (exit.launched is false)"},
+		{"launched, did not exit", strings.Replace(plan("ok", "0", "ok"), "exit.exited=true", "exit.exited=false", 1), "bad the plan did not exit (exit.exited is false)"},
+		{"no report line read", strings.Replace(plan("ok", "0", "ok"), "report_outcome=line-read", "report_outcome=not-launched", 1), "bad report_outcome is not-launched, not line-read"},
+		{"no launch field", strings.Replace(plan("ok", "0", "ok"), "exit.launched=true\n", "", 1), "bad the plan was not launched (exit.launched is )"},
 	} {
 		if got := canaryRead(t, "plan-facts", c.fields); got != c.want {
 			t.Errorf("plan facts, %s: got %q, want %q", c.name, got, c.want)
