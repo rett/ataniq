@@ -237,6 +237,8 @@ func TestEvidenceAgentKindGoesIntoEveryLine(t *testing.T) {
 	f := newFixture(t)
 	cfg := f.config(t)
 	cfg.Agent.Kind = leadcanary.AgentLive
+	cfg.Agent.FooterMode = "manual"
+	cfg.Agent.Argv = []string{"/ataniq/agent/claude"}
 	ev, err := leadcanary.OpenEvidence(cfg, nil)
 	if err != nil {
 		t.Fatal(err)

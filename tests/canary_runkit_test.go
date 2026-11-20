@@ -886,6 +886,10 @@ func TestCanaryRunKitOnlyOneResultGetsTheEnter(t *testing.T) {
 					want = "look"
 				case o == "submitted" && r == "" && w == "whole":
 					want = "none"
+				case o == "refused" || (o == "not-now" && w == "nothing"):
+					// Nothing was written: the owner supplies the message, on
+					// a refusal and on a not-now alike (the screen was not ready).
+					want = "owner-supplies"
 				case got == "owner-enter" || got == "look" || got == "none":
 					want = "another action than " + got
 				}
@@ -1120,7 +1124,7 @@ func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
 	}
 	body := funcs["step_17"]
 	if n := canaryCalls(body, "paste_message"); n != 2 {
-		t.Errorf("step 17 gives the paste instruction in %d places, want 2 (pass A, and a refusal in pass B)", n)
+		t.Errorf("step 17 gives the paste instruction in %d places, want 2 (pass A, and in pass B a refusal or not-now/nothing)", n)
 	}
 	passA := body[strings.Index(body, `if [ "$_act" = wrong-config ]; then`):strings.Index(body, "case $_act in\n")]
 	if canaryCalls(passA, "paste_message") != 1 {
@@ -2548,7 +2552,7 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 				// prints for the owner to type are text.
 				if bad == "systemctl" && rel == canaryPreflightScript {
 					ok := false
-					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap and pasta are on PATH"} {
+					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap, pasta and ss are on PATH", "_tools='systemctl loginctl", "_list='systemctl, loginctl"} {
 						ok = ok || strings.Contains(l, allowed)
 					}
 					if ok {
@@ -3007,7 +3011,7 @@ func TestCanaryRunKitPrepareRefuses(t *testing.T) {
 		{"a root with a .. part", e.prepareArgs(t, e.dir+"/a/../b"), ".. part"},
 		{"a root with a quote", e.prepareArgs(t, filepath.Join(e.dir, "a\"b")), "character"},
 		{"a root that is a link", e.prepareArgs(t, link), "symbolic link"},
-		{"pass B", e.prepareArgs(t, filepath.Join(e.dir, "b"), "--pass", "B"), "only pass A"},
+		{"pass B without --claude", e.prepareArgs(t, filepath.Join(e.dir, "b"), "--pass", "B"), "--pass B needs --claude"},
 		{"a missing binary", append([]string{"--root", filepath.Join(e.dir, "c"), "--bin", noBin, "--pasta", e.pasta(t)}), "not built in"},
 		{"a pasta link", []string{"--root", filepath.Join(e.dir, "d"), "--bin", e.bin, "--pasta", link}, "link is refused"},
 		{"an unknown argument", []string{"--root", filepath.Join(e.dir, "e"), "--yes"}, "usage:"},
@@ -5470,7 +5474,7 @@ cat '`+p.dir+`/version-extra' 2>/dev/null || :
 	canaryWrite(t, p.root, "mirror-qual/report.json", "{}\n")
 	canaryWrite(t, p.root, "mirror-qual/report.json.fields", "format=1\ntemplate.sha256="+hex.EncodeToString(sum[:]))
 	canaryWrite(t, p.root, "answers.hint", "mirror-report="+p.root+"/mirror-qual/report.json\n")
-	canaryWrite(t, p.dir, "show.out", "holder_runtime_dir="+p.root+"/runtime/leads/throwaway-one-lead\nproject=throwaway-one\n")
+	canaryWrite(t, p.dir, "show.out", "holder_runtime_dir="+p.root+"/runtime/leads/throwaway-one-lead\nproject=throwaway-one\nagent_kind=stand-in\n")
 
 	// The tools: real ones linked, the rest stubs that record their calls.
 	for _, name := range canaryPFTools {
@@ -5489,6 +5493,7 @@ echo Linger=no
 `)
 	p.stub(p.tools, "bwrap", "exit 97\n")
 	p.stub(p.tools, "pasta", "exit 97\n")
+	p.stub(p.tools, "ss", "exit 97\n")
 	p.stub(p.tools, "qargi", `[ "$1" = local ] && [ "$2" = list ] || exit 97
 [ -f '`+p.dir+`/qargi-fail' ] && exit 1
 cat '`+p.dir+`/qargi-list'

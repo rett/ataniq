@@ -193,6 +193,8 @@ PROVISIONED=0
 DAEMON_UP=0
 CAPPED=0       # pass B met the cap of 30 minutes or 10 turns
 T0=0           # pass B: when the cap's timer started (seconds)
+LOGIN_AT=      # pass B: the time the owner said the login was done
+RESAMPLE_SECONDS=5 # step 6: the wait before the listeners are listed once more
 TURNS=0
 FINDINGS=0
 DONE_STEPS=' ' # the steps that ended, for the chain's "already done"
@@ -467,6 +469,10 @@ check() {
 }
 
 is_eq() { [ "$1" = "$2" ]; }
+# is_under_agent_bind succeeds when the path is a file name under /ataniq/agent/:
+# step 9 strips that prefix and runs the file of the install folder, so a live
+# agent's first argument must be such a name (the executable itself, no wrapper).
+is_under_agent_bind() { [ "${1#"$AGENT_INSIDE"/}" != "$1" ] && [ -n "${1#"$AGENT_INSIDE"/}" ]; }
 # mirror_inside prints the mirror's place inside the sandbox for a project.
 mirror_inside() { printf '%s/%s.git' "$MIRROR_ROOT_INSIDE" "$1"; }
 # remote_is_mirror reports whether URL (with or without file://) is the
@@ -675,8 +681,9 @@ below_floor() { [ "$1" -lt "$2" ]; }
 #   owner-enter     the owner presses Enter once in the pane (N3: this result
 #                   and no other)
 #   look            nothing is pressed; the owner looks at the pane and decides
-#   owner-supplies  the fence wrote nothing, and the owner puts the message in
-#                   the pane himself
+#   owner-supplies  the fence wrote nothing (refused, or not-now with written
+#                   nothing: the screen was not ready), and the owner puts the
+#                   message in the pane himself, as in pass A's first epoch
 #   decide          no key is pressed; the owner decides whether the pass goes on
 #   wrong-config    pass A: the fence refused an untested version, so the
 #                   config does not declare a tested one
@@ -694,6 +701,9 @@ inject_action() {
     B:uncertain/not-submitted/partial) out owner-enter ;;
     B:uncertain/died/*) out look ;;
     B:refused/*) out owner-supplies ;;
+    # Nothing was written, so the owner may supply the message himself, as in
+    # pass A's first epoch. It is recorded as the fence's not-now.
+    B:not-now/*/nothing) out owner-supplies ;;
     *) out decide ;;
   esac
 }
@@ -1598,6 +1608,7 @@ limit_memory_share_percent=50
 agent_kind=$_kind
 agent_runtime=sample-runtime
 agent_runtime_version=1.2.3
+agent_footer_mode=manual
 agent_argc=3
 agent_argv_0=$_agent
 agent_argv_1=--model
@@ -2019,6 +2030,19 @@ step_6() {
     poll_until 'the listeners to stop' listeners_are "$EV/listeners-expected.txt" || :
   fi
   listeners listeners-kept "$EV/listeners-kept.txt"
+  if [ "$DRY" -eq 1 ]; then
+    dry "when the second list is not the one expected, wait $RESAMPLE_SECONDS s and list once more before the step fails; print the sockets that appeared and the ones that are gone"
+  elif ! cmp -s "$EV/listeners-expected.txt" "$EV/listeners-kept.txt"; then
+    out "   the second list is not the one expected; listing once more in $RESAMPLE_SECONDS s (a socket may come and go, as a DHCP renewal or a browser makes one)..."
+    note 'the second list differed: listing once more'
+    sleep "$RESAMPLE_SECONDS"
+    listeners listeners-kept-again "$EV/listeners-kept.txt"
+    if ! cmp -s "$EV/listeners-expected.txt" "$EV/listeners-kept.txt"; then
+      out '   appeared since the list of the owner'"'"'s kept listeners (+) and gone (-):'
+      LC_ALL=C comm -13 "$EV/listeners-expected.txt" "$EV/listeners-kept.txt" | sed 's/^/     + /'
+      LC_ALL=C comm -23 "$EV/listeners-expected.txt" "$EV/listeners-kept.txt" | sed 's/^/     - /'
+    fi
+  fi
   check 'the second list holds only the listeners the owner kept' cmp -s "$EV/listeners-expected.txt" "$EV/listeners-kept.txt" || return 0
   _line='departure from L3: this pass runs on the open network of the profile as built; the owner accepted it under G7'
   if [ "$DRY" -eq 1 ]; then
@@ -2136,8 +2160,9 @@ step_9() {
       "the output holds the config's version ($RVERSION) as a whole word, and the install folder is the canary's own; both values are recorded; a mismatch refuses the start (the fallback is the config change of G3)" 'G3, M9'
     wait_key 'Step 9 runs the agent executable with --version, outside the sandbox.'
     if [ "$DRY" -eq 1 ]; then
-      dry "make an empty temporary folder as the home; run: env -i HOME=<that folder> <install folder of $INPUTS>/${AGENT0#"$AGENT_INSIDE"/} --version; remove the folder"
+      dry "make an empty temporary folder as the home; run: env -i HOME=<that folder> <install folder of $INPUTS>/${AGENT0#"$AGENT_INSIDE"/} --version; remove the folder; first, the check that argv[0] is a file under /ataniq/agent"
     else
+      check "the agent command's first element is a file under $AGENT_INSIDE/ (the executable itself, no wrapper)" is_under_agent_bind "$AGENT0" || return 0
       _host=$(agent_host)
       check 'the agent executable is present' test -f "$_host" || return 0
       _tmp=$(mktemp -d)
@@ -2397,8 +2422,16 @@ step_14() {
   else
     out '   Owner: this console is the WRITER: you paste into it at step 17. Its window must be at least 100 columns by 30 rows'
     out '   (below that the console drops a paste). The size of its session pane becomes the agent'"'"'s terminal size.'
-    out '   pasta may write two lines on the agent'"'"'s pane above the stand-in'"'"'s prompt (about an AVX2 build and a'
-    out '   nameserver address): that is expected, not a fault.'
+    if [ "$PASS" = B ]; then
+      out '   The fence recognises only screens shaped like the recorded ones (120 columns by 36 rows); that holds for pass A'"'"'s'
+      out '   replay. The live agent has never been read at another size: keep the window large enough that the composer'
+      out '   and the footer row both show. A resize redraws the agent; do not resize it between step 16 and step 17.'
+      out '   pasta may write two lines on the agent'"'"'s pane before the agent'"'"'s first screen (about an AVX2 build and a'
+      out '   nameserver address): that is expected, not a fault.'
+    else
+      out '   pasta may write two lines on the agent'"'"'s pane above the stand-in'"'"'s prompt (about an AVX2 build and a'
+      out '   nameserver address): that is expected, not a fault.'
+    fi
   fi
   out '   Owner: in a third terminal (T3), start the console now, with this command. It waits for a ticket and'
   out '   says "waiting for a ticket". Do not start it later than your Enter below: a ticket lives 30 seconds.'
@@ -2468,13 +2501,13 @@ step_15() {
     return 0
   fi
   step_head 15 'Model, cap and login' \
-    "print the agent's arguments for the owner to confirm the model is the cheapest; start the 30-minute timer; the owner logs in inside the sandbox, in the pane; list the files that changed in the canary's config folder, by name" \
+    "print the agent's arguments for the owner to confirm the model is the cheapest; start the 30-minute timer; the owner logs in inside the sandbox, in the pane, and answers logged-in or failed (failed ends the pass); list the files that changed in the canary's config folder, by name" \
     "the login writes only the canary's config folder: the script lists the files that changed there, by name" 'G2'
   out "   the agent's arguments, from the config:"
   printf '%s\n' "$CFG_SHOW" | while IFS= read -r _l; do
     case $_l in agent_argv_*) out "     $_l" ;; esac
   done
-  affirm 'Owner: the model argument is the cheapest model' yes || return 0
+  affirm 'Owner: the arguments above name the cheapest model (no --model shown: answer no, then prepare a new root with --model NAME)' yes || return 0
   manifest_of "$LCONFIG" "$EV/canary-config-before.txt"
   if [ "$DRY" -eq 1 ]; then
     dry "start the timer of $CAP_SECONDS s and the tally of $CAP_TURNS turns"
@@ -2483,13 +2516,35 @@ step_15() {
     note "the cap's timer starts"
   fi
   out '   Owner: log in inside the sandbox now, in the pane, yourself. The script holds no credential and opens no browser.'
-  wait_key 'Owner: press Enter here when the login is done.'
+  out '   The login URL is long and wraps over several rows. It has to leave the pane by hand:'
+  out '   - the agent'"'"'s own copy key does nothing (the session'"'"'s clipboard requests are dropped) and a click on the'
+  out '     link does nothing (hyperlinks are not drawn);'
+  out '   - while the agent holds the mouse, the console makes no selection in session focus: leave the session pane'
+  out '     first (Ctrl+\), then drag over all the rows of the URL, and the console copies on release;'
+  out '   - the console copies a wrapped line as two lines: paste it into the browser'"'"'s address bar and remove the'
+  out '     line break (and any space) it left in the URL;'
+  out '   - the copy needs your outer terminal to accept the console'"'"'s clipboard write, which the console cannot tell:'
+  out '     if nothing arrives, read the URL off the pane and join its rows by hand.'
+  out '   Paste the code back with the session pane in focus (the window at least 100 by 30). Paste nothing of the'
+  out '   login into THIS terminal. If the login fails, start it again in the pane (the agent'"'"'s own login command).'
+  out '   The cap'"'"'s timer has started already: the minutes of the login are part of the 30.'
+  ask 'Owner: type logged-in when the login is done in the pane, or failed to give up (the pass then ends and the clean-up chain runs)'
+  while [ "$DRY" -eq 0 ] && [ "$ANSWER" != logged-in ] && [ "$ANSWER" != failed ] && [ "${_askok:-1}" -eq 1 ]; do
+    out '   ask again: only logged-in or failed is taken here (a wrong word must not spend the login)'
+    ask 'Owner: type logged-in when the login is done in the pane, or failed to give up'
+  done
+  if [ "$DRY" -eq 0 ] && [ "$ANSWER" != logged-in ]; then
+    fail "the login did not succeed (answer \"$ANSWER\")"
+    return 0
+  fi
+  LOGIN_AT=$(now)
+  note "the owner said the login is done at $LOGIN_AT"
   manifest_of "$LCONFIG" "$EV/canary-config-after.txt"
   if [ "$DRY" -eq 1 ]; then
     dry "list by name the files of $LCONFIG that the login changed (names only)"
   else
     out "   files the login changed in $LCONFIG, by name:"
-    awk 'NR == FNR { before[$0] = 1; next } !($0 in before) { $1 = $2 = $3 = ""; sub(/^ +/, ""); print "     " $0 }' \
+    awk 'FILENAME == ARGV[1] { before[$0] = 1; next } !($0 in before) { $1 = $2 = $3 = ""; sub(/^ +/, ""); print "     " $0 }' \
       "$EV/canary-config-before.txt" "$EV/canary-config-after.txt"
   fi
   result ok
@@ -2502,8 +2557,8 @@ step_16() {
     return 0
   fi
   step_head 16 'Wait for the idle composer, and look at the report path' \
-    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22)" \
-    "the holder's idle field reads unknown in this feature, and the answer is recorded, not judged (the fence judges idle itself inside a delivery); the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9)" 'B1'
+    "ask the daemon's status; the lead reads the holder's status and its 7501 counters in the console and the script records what he reads: while the holder runs the counters are only in its status answer, which no command of the kit reads, and the event log holds none; the script prints them itself from final.json after the child ends (step 22); then the owner looks at the pane before step 17 (the empty composer, no dialog, the expected mode on the last row, no notice) and answers yes"  \
+    "the holder's idle field reads unknown in this feature, and the answer is recorded, not judged (the fence judges idle itself inside a delivery); the OSC 7501 query was answered before the DA1 reply, and at least one report was tracked; if no report ever arrives, that is recorded: the fence will then end uncertain, and the reason is known; an update notice on the screen is recorded if it shows (L9); the owner's look at the pane is answered yes" 'B1'
   wait_key 'Step 16 reads the status.'
   runcap role-status "$BIN/ataniqd" status --socket "$SOCK"
   if [ "$DRY" -eq 1 ]; then
@@ -2521,6 +2576,20 @@ step_16() {
   ask 'Lead: was the OSC 7501 query answered before the DA1 reply (yes, no, unknown)'
   ask 'Lead: how many reports were tracked (a number, or none: then the fence will end uncertain and the reason is known)'
   ask 'Lead: does the screen show an update notice (no, or what it says in your words)'
+  out '   Owner: before step 17 the pane must show the EMPTY composer and nothing else:'
+  out '   - no dialog (answer the trust question and "press Enter to continue" yourself);'
+  out "   - the LAST row reads exactly the mode the config expects ($(cfg agent_footer_mode)) and the usual hints,"
+  out '     with no other text on that row (an update or install notice there means not-now);'
+  out '     if it shows auto mode, press Shift+Tab until it shows the expected mode;'
+  out '   - the console window is large enough that the composer and the footer both show (a resize redraws the'
+  out '     agent; the fence has never read a live screen at another size);'
+  out '   - then leave the session pane (Ctrl+\) and touch neither key nor mouse there for 3 seconds.'
+  ask 'Owner: does the pane show the empty composer, the expected mode and no notice (yes; or go-on: the fence will then answer not-now and you paste the message at step 17; anything else ends the pass)'
+  case $ANSWER in
+    yes) ;;
+    go-on) note 'the pane was not ready; the owner goes on to the paste path' ;;
+    *) [ "$DRY" -eq 1 ] || { fail "the pane was not made ready: \"$ANSWER\""; return 0; } ;;
+  esac
   result ok
   done_step
 }
@@ -2539,7 +2608,9 @@ make_message() {
   TOKEN=canary-$_low-$EPOCH_NO
   MSGID=canary-$(printf '%s' "$PASS" | tr '[:upper:]' '[:lower:]')-$EPOCH_NO-$_low
   BODY=$EV/message-$EPOCH_NO.txt
-  printf '%s\n%s\n' "Write the token below and a line feed to the file canary-token.txt at the top of the tree, and commit that one file on the branch $BRANCH. Do nothing else." \
+  # A live agent must write the value only: the label line is the stand-in's
+  # and the daemon's admission's, and the gate in step 20 is an exact line.
+  printf '%s\n%s\n' "Create the file canary-token.txt in the top folder of this repository. It must hold exactly one line: the value after the label on the next line of this message (the value only, without the label), then one line feed. Create the branch $BRANCH, commit that one file on it, and do nothing else." \
     "canary-token: $TOKEN" >"$BODY"
 }
 
@@ -2568,7 +2639,7 @@ step_17() {
   if [ "$PASS" = A ]; then
     _exp='the config declares the tested version and the stand-in draws a screen no recogniser knows, so the fence answers not-now with the reason not-ready and writes nothing (L6); the owner then pastes the message into the pane as one paste and presses Enter once; a refusal by the daemon (exit status 30) or by the fence (refused, untested: a wrong config) fails the step'
   else
-    _exp='a refusal by the daemon (exit status 30) fails the step; otherwise the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version and the owner pastes the message as one paste'
+    _exp='a refusal by the daemon (exit status 30) fails the step; otherwise the result is recorded in the neutral words; exactly one result gets the owner'"'"'s Enter: uncertain with the reason not-submitted and written partial, recorded as its own line owner-enter; on uncertain with the reason died nothing is pressed, the owner looks at the pane and decides; on the G3 fallback the fence refuses an untested version, and on not-now with written nothing (the screen was not ready) the owner clears the pane and pastes the message as one paste'
   fi
   step_head 17 'inject one message' \
     "inject one message: make one named file with one token, commit it on the branch $BRANCH" "$_exp" 'G1, G3'
@@ -2586,7 +2657,7 @@ step_17() {
       dry 'fail the step on exit status 30 (the daemon refused the message: the fence was not asked)'
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
-      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; that is recorded"
+      dry "on any refusal, and on not-now with written nothing: say what to clear first, print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; then ask for the word pasted (an empty line is asked again, up to 3 times; any other word ends the pass); that is recorded"
     fi
     result ok
     done_step
@@ -2647,14 +2718,22 @@ step_17() {
       result 'uncertain, died: no key was pressed'
       ;;
     owner-supplies)
-      out '   The fence refused. On the G3 fallback (the config states the observed version) that is correct.'
+      out "   The fence wrote nothing ($_o, ${_r:-no reason}). On refused/untested that is the G3 fallback (the config states the observed version)."
+      out '   On not-now the screen was not ready: first clear what the pane shows (a dialog, an update or install notice,'
+      out '   text in the composer) so that the composer is empty, then paste.'
       paste_message
       ask 'Owner: type pasted here after you pasted the message in the pane and pressed Enter once; anything else ends the pass and runs the clean-up chain'
+      _re=0
+      while [ -z "$ANSWER" ] && [ "${_askok:-1}" -eq 1 ] && [ "$_re" -lt 3 ]; do
+        _re=$((_re + 1))
+        out '   ask again: an empty line is not an answer (the login is spent: type pasted, or anything else to end the pass)'
+        ask 'Owner: type pasted after you pasted the message in the pane and pressed Enter once; anything else ends the pass'
+      done
       if [ "$ANSWER" != pasted ]; then
-        fail 'the fence refused and the owner ended the pass'
+        fail "the fence wrote nothing ($_o) and the owner ended the pass"
         return 0
       fi
-      result "refused (${_r:-no reason}): the owner pasted the message"
+      result "$_o (${_r:-no reason}): the owner pasted the message"
       ;;
     *)
       out '   No key is pressed for this result.'
@@ -2714,6 +2793,28 @@ step_19() {
   done_step
 }
 
+# show_token_file prints what canary-token.txt holds in the lead's folder, the
+# first 3 lines and nothing else, after the gate failed, so that the owner and
+# the lead see which wrong reading happened (the label too, a blank line, a
+# comment). The gate itself is not changed: it stays an exact line. The agent
+# wrote the file, so the text is cut to 200 bytes and every byte that is not
+# printable becomes a question mark before it reaches the terminal. The file is
+# read as a plain file, never with git (the lead has run in the tree).
+show_token_file() {
+  _stf=$TREE/canary-token.txt
+  # The agent may still run and may swap the file: the file is opened once,
+  # under a timeout (a FIFO would hang), and the opened file is checked (a plain
+  # file whose real path is the path, so no symlink), never the name before.
+  _stp=$(realpath -- "$TREE" 2>/dev/null) && _stp=$_stp/canary-token.txt || _stp=
+  if [ -n "$_stp" ] && _stc=$(timeout 2 sh -c 'exec 3<"$1" || exit 1; [ "$(readlink /proc/self/fd/3)" = "$1" ] && [ -f /proc/self/fd/3 ] || exit 1; head -c 200 <&3' sh "$_stp" 2>/dev/null); then
+    out '   the gate failed. canary-token.txt, the working file (not the committed one), in the lead'"'"'s folder holds (first 3 lines, nothing else):'
+    printf '%s\n' "$_stc" | sed -n '1,3p' | tr -c '[:print:]\n' '?' | sed 's/^/     | /'
+  else
+    out '   the gate failed. There is no canary-token.txt, as a plain file, at the top of the lead'"'"'s folder'
+    out "   ($_stf): the agent wrote it elsewhere, or not at all."
+  fi
+}
+
 step_20() {
   step_head 20 'The intake: fetch, review, verify, integrate' \
     "run ataniq-intake fetch, review and verify (the gate only checks that the file holds the token) with the canary's template; the owner signs off by typing integrate himself" \
@@ -2735,6 +2836,7 @@ step_20() {
   check 'the review succeeded' is_rc 0 || return 0
   runcap verify "$BIN/ataniq-intake" verify --state "$STATE" --project "$PROJECT" --role "$LAYOUT" --branch "$BRANCH" \
     --gate "token=grep -qxF $TOKEN canary-token.txt" --sandbox "$TEMPLATE" --records "$_rec" --work "$_work"
+  if [ "$DRY" -eq 0 ] && [ "$RC" -ne 0 ]; then show_token_file; fi
   check 'the gate passed: the file holds the token' is_rc 0 || return 0
   out '   Owner: the sign-off is yours. In your own terminal, with the tip and the digest that review printed above:'
   out "     $BIN/ataniq-intake integrate --state $STATE --project $PROJECT --role $LAYOUT --branch $BRANCH --target $UPSTREAM \\"
@@ -2871,6 +2973,16 @@ step_23() {
     return 0
   fi
   if [ "$DRY" -eq 1 ] && [ "$IN_CHAIN" -eq 1 ]; then dry 'say so and record it when the login was revoked already, or the owner answers that no login was made: nothing to act on'; fi
+  if [ "$DRY" -eq 1 ]; then
+    dry 'print the time of this pass'"'"'s start and of its login, about, in UTC and in local time, and the warning that only the login made at that time may be revoked'
+  else
+    out "   This pass started at $STAMP (UTC); the login was reported done at about ${LOGIN_AT:-(no login time was recorded)} (UTC)."
+    if [ -n "${LOGIN_AT:-}" ]; then
+      out "   In your local time that is about $(date -d "$LOGIN_AT" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo '(the local time could not be worked out)'): the account page shows its own zone."
+    fi
+  fi
+  out '   Revoke ONLY the login the account page lists as made at that time, and no other row, and do not use "log out everywhere":'
+  out '   your own running sessions, the lead'"'"'s among them, use logins of the same account, and a wrong row ends them.'
   ask 'Owner: revoke the login on the account page yourself; type revoked when it is gone from the list, or no-login when no login was ever made in this pass'
   case $ANSWER in
     revoked) result revoked ;;
@@ -2919,6 +3031,72 @@ step_24() {
   done_step
 }
 
+# manifest_changes BEFORE AFTER prints, tab separated and sorted by path, one
+# line for each file that is only in AFTER (added), only in BEFORE (removed) or
+# in both with another hash, size or time (changed). A manifest line is hash,
+# size, time and then the path, which may hold spaces.
+manifest_changes() {
+  awk '
+    { k = $1 " " $2 " " $3; p = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", p) }
+    FILENAME == ARGV[1] { b[p] = k; next }
+    { a[p] = k }
+    END {
+      for (p in a) { if (!(p in b)) print "added\t" p; else if (a[p] != b[p]) print "changed\t" p }
+      for (p in b) if (!(p in a)) print "removed\t" p
+    }' "$1" "$2" | LC_ALL=C sort -t "$(printf '\t')" -k2
+}
+
+# meaningful_path succeeds for the path of a file the login writes: a file at
+# the top of the folder (./NAME) whose name is a credential, a token, a secret
+# or an authorisation file, or the runtime's state file or a settings file.
+# Anything deeper (transcripts, caches, per-session files) is not judged: the
+# running sessions of the owner write those, except a project folder named for
+# the sandbox's working folder (./projects/-work-*): only the canary's agent
+# works in /work, so its transcripts there mean the sandbox touched this folder.
+meaningful_path() {
+  case $1 in
+    ./projects/-work-*) return 0 ;;
+    ./*/*) return 1 ;;
+    ./*[Cc]redential* | ./*[Tt]oken* | ./*[Ss]ecret* | ./*[Oo]auth* | ./*[Aa]uth* | ./.claude.json* | ./settings*.json) return 0 ;;
+  esac
+  return 1
+}
+
+# canary_owns succeeds when the file at path $1 in the after-manifest of step 25
+# has a hash that the canary's own config manifests (step 15, and step 25 for a
+# token the canary refreshed since) hold too: the
+# canary's own credential, proven, and not another session's refresh. The hash
+# of an empty file and the mark of a non-regular file never count.
+canary_owns() {
+  _co_h=$(awk -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } q == p { print $1; exit }' "$EV/manifest-after.txt" 2>/dev/null)
+  case $_co_h in
+    '' | not-a-regular-file | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855) return 1 ;;
+  esac
+  # cat goes on past a missing file (no manifest of step 15); awk would stop.
+  cat "$EV/canary-config-after.txt" "$EV/canary-config-now.txt" 2>/dev/null |
+    awk -v h="$_co_h" -v p="$1" '{ q = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", q) } $1 == h && q == p { f = 1 } END { exit !f }'
+}
+
+# canary_wrote_login succeeds when the canary's own login added or changed a
+# file of the login's kind in the canary's config folder between step 15's two
+# manifests. When it did not, nothing can prove a file in the real folder to be
+# the canary's, and the isolation of the config folder is suspect.
+canary_wrote_login() {
+  [ -f "$EV/canary-config-after.txt" ] || return 1
+  [ -f "$EV/canary-config-before.txt" ] || : >"$EV/canary-config-before.txt"
+  manifest_changes "$EV/canary-config-before.txt" "$EV/canary-config-after.txt" >"$EV/canary-config-changes.txt"
+  # Only a credential proves the login stayed in the canary's folder: the state
+  # and settings files are written by any start of the runtime.
+  while IFS="$(printf '\t')" read -r _cwk _cwp <&5; do
+    [ "$_cwk" != removed ] || continue
+    case $_cwp in
+      ./*/*) ;;
+      ./*[Cc]redential* | ./*[Tt]oken* | ./*[Ss]ecret* | ./*[Oo]auth* | ./*[Aa]uth*) return 0 ;;
+    esac
+  done 5<"$EV/canary-config-changes.txt"
+  return 1
+}
+
 step_25() {
   if [ "$PASS" = A ]; then
     skip 25 'Manifest, after: the same folder as step 7' 'G2'
@@ -2926,7 +3104,7 @@ step_25() {
   fi
   step_head 25 'Manifest, after' \
     'write names, sizes, times and hashes of the same folder as step 7 and compare the two manifests' \
-    'no difference; a difference is reported as it is; nothing is repaired by the script' 'G2'
+    'no difference; the owner'"'"'s own running sessions write the folder, so every difference is counted and only the files of the login'"'"'s own kind (the credential and the runtime'"'"'s state and settings files, at the top of the folder) are judged, and a difference in one of those is a finding only when its new hash is one that the canary'"'"'s own config folder holds (otherwise it is a question to the owner and the lead, but a finding without the question when the canary'"'"'s own login wrote no file of its kind in its own folder, and the files the owner explained are named in the result), and so is a new path under projects/-work-; nothing is repaired by the script' 'G2'
   if [ "$DRY" -eq 0 ] && [ ! -f "$EV/manifest-before.txt" ]; then
     wait_key 'Step 7 wrote no manifest in this run.'
     result 'nothing to act on: no manifest was written before'
@@ -2936,19 +3114,72 @@ step_25() {
   if [ "$DRY" -eq 1 ]; then
     if [ "$IN_CHAIN" -eq 1 ]; then dry 'say so and record it when step 7 wrote no manifest in this run: nothing to compare'; fi
     manifest_of '<the folder of step 7>' "$EV/manifest-after.txt"
-    dry 'compare the two manifests; print the lines that differ (hash, size, time, name: no content); repair nothing'
+    manifest_of '<the canary'"'"'s own config folder>' "$EV/canary-config-now.txt"
+    dry 'compare the two manifests; count the files added, removed and changed; print the top-level names that differ; a difference in a credential, token, secret, authorisation, state or settings file at the top of the folder is a finding; every other path is only counted (no content); repair nothing'
     result 'no difference'
     done_step
     return 0
   fi
   manifest_of "$(cat "$EV/live-config-folder.txt")" "$EV/manifest-after.txt"
-  if cmp -s "$EV/manifest-before.txt" "$EV/manifest-after.txt"; then
+  # The canary's own folder as it is now: a token it refreshed after step 15.
+  if [ -d "$LCONFIG" ]; then manifest_of "$LCONFIG" "$EV/canary-config-now.txt"; else : >"$EV/canary-config-now.txt"; fi
+  manifest_changes "$EV/manifest-before.txt" "$EV/manifest-after.txt" >"$EV/manifest-changes.txt"
+  if [ ! -s "$EV/manifest-changes.txt" ]; then
     result 'no difference'
   else
-    out '   the manifests differ (hash, size, time, name). Nothing is repaired:'
-    diff "$EV/manifest-before.txt" "$EV/manifest-after.txt" | sed 's/^/   | /' || :
-    FINDINGS=$((FINDINGS + 1))
-    result 'a difference, reported as it is'
+    _added=$(awk -F'\t' '$1 == "added"' "$EV/manifest-changes.txt" | awk 'END { print NR }')
+    _gone=$(awk -F'\t' '$1 == "removed"' "$EV/manifest-changes.txt" | awk 'END { print NR }')
+    _chg=$(awk -F'\t' '$1 == "changed"' "$EV/manifest-changes.txt" | awk 'END { print NR }')
+    out "   the manifests differ: $_added added, $_gone removed, $_chg changed. The owner's own running sessions of the"
+    out '   runtime (the lead'"'"'s among them) write this folder all the time, so a count alone is not a leak. What would'
+    out '   be one: a change in the login'"'"'s own files, the credential and the runtime'"'"'s state and settings files at the'
+    out '   top of the folder. Those are judged here; every other path is only counted. Nothing is repaired.'
+    out '   files at the top of the folder that differ (names only):'
+    awk -F'\t' '$2 ~ /^\.\/[^\/]*$/ { print "     " $1 " " $2 }' "$EV/manifest-changes.txt"
+    _mean=0
+    _expl=
+    _cw=1
+    # No manifest of step 15: no login was completed, so nothing of the
+    # canary's can be in the folder; a difference is a question, not a finding.
+    if [ -f "$EV/canary-config-after.txt" ]; then canary_wrote_login || _cw=0; fi
+    # The loop reads the changes file on fd 4: ask reads the owner from stdin.
+    while IFS="$(printf '\t')" read -r _k _p <&4; do
+      if meaningful_path "$_p"; then
+        if [ "${_p#./projects/-work-}" != "$_p" ] || { [ "$_k" != removed ] && canary_owns "$_p"; }; then
+          _mean=$((_mean + 1))
+          out "   MEANINGFUL: $_k $_p"
+        elif [ "$_cw" -eq 0 ]; then
+          _mean=$((_mean + 1))
+          out "   MEANINGFUL (the canary's login wrote no file of its kind in its own folder, so nothing proves this one is another session's): $_k $_p"
+        else
+          out "   changed, not the canary's file (a running session's refresh looks so): $_k $_p"
+          ask "Owner and lead: is the change of $_p explained by your own running sessions, one that ran during this pass (type yes, or say what is not)"
+          if [ "$ANSWER" = yes ]; then
+            note "the change of $_p is explained by the owner's own sessions"
+            _expl="$_expl $_p"
+          else
+            _mean=$((_mean + 1))
+          fi
+        fi
+      fi
+    done 4<"$EV/manifest-changes.txt"
+    if [ "$_mean" -gt 0 ]; then
+      out "   $_mean file(s) of the login's kind differ (the canary's own credential, a name the owner and the lead did not"
+      out '   explain, or a transcript of the sandbox'"'"'s working folder); the evidence holds both manifests and the changes.'
+      FINDINGS=$((FINDINGS + 1))
+      if [ -n "$_expl" ]; then
+        result "a difference in $_mean file(s) of the login's kind, reported as it is (explained by the owner as his own sessions:$_expl)"
+      else
+        result "a difference in $_mean file(s) of the login's kind, reported as it is"
+      fi
+    else
+      note "the real config folder: $_added added, $_gone removed, $_chg changed, none of the login's kind"
+      if [ -n "$_expl" ]; then
+        result "no unexplained file of the login's kind differs ($_added added, $_gone removed, $_chg changed; explained by the owner as his own sessions:$_expl)"
+      else
+        result "no file of the login's kind differs ($_added added, $_gone removed, $_chg changed: the owner's own sessions)"
+      fi
+    fi
   fi
   done_step
 }
@@ -3010,7 +3241,7 @@ step_26() {
   done
   rm -rf -- "$EV/intake-work"
   out '   lines of the evidence that look like a login URL or a code (file and line number only):'
-  grep -rnIE 'https?://|[A-Z0-9]{4}-[A-Z0-9]{4}' "$EV" 2>/dev/null | cut -d: -f1,2 | sed 's/^/     /' || :
+  grep -rnIE 'https?://|[A-Z0-9]{4}-[A-Z0-9]{4}|sk-ant-|[?&]code=|[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{20,}' "$EV" 2>/dev/null | cut -d: -f1,2 | sed 's/^/     /' || :
   ask 'Owner and lead: look at the lines listed, and remove from the evidence what holds a login URL or code; type clean when the evidence holds none'
   if [ "$ANSWER" != clean ]; then fail "the evidence is not confirmed clean of a login URL or code: \"$ANSWER\""; fi
   if [ "$DAEMON_UP" -eq 0 ]; then

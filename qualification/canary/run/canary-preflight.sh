@@ -5,8 +5,10 @@
 #   canary-preflight.sh --root DIR [--bin DIR] [--evidence DIR] [--mirror-report FILE]
 #
 # It is read-only. It changes nothing of the root, the checkout or the host,
-# starts no unit, no daemon, no sandbox and no agent, answers nothing, and
-# needs no terminal. The one thing it writes is a temporary copy of the list
+# starts no unit, no daemon, no sandbox and no agent session, answers nothing,
+# and needs no terminal. For a pass-B root (a live agent) it also runs the
+# root's own claude copy once with `--version`, in an empty environment and a
+# new empty home folder, as step 9 of the run does (and nothing else of it). The one thing it writes is a temporary copy of the list
 # `qargi local list` prints, in a folder made with mktemp under TMPDIR and
 # removed when it ends. It runs `--version` of the four tagged binaries,
 # `ataniq-canary show`, `fields`, `profile-digest` and `check-inputs`,
@@ -95,8 +97,10 @@ fix() {
 }
 
 TMPD=
+VHOME=
 cleanup() {
   if [ -n "$TMPD" ]; then rm -rf -- "$TMPD"; fi
+  if [ -n "$VHOME" ]; then rm -rf -- "$VHOME"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
@@ -301,6 +305,75 @@ check_inputs() {
   ok "ataniq-canary check-inputs accepts the sandbox inputs"
 }
 
+# 4c. A live agent (pass B), what prepare --pass B makes and a hand edit can
+# break: the footer mode is one the recogniser names (the config's validation
+# refuses anything else with inject on, this says it in words), the agent's
+# environment names DISABLE_AUTOUPDATER (names only, from `ataniq-canary show`;
+# a value is never read or printed), and the claude executable is there, one
+# regular file under the install folder, and prints the tested version as step
+# 9 of the run asks it: `--version` with an empty environment and a home that
+# is a new empty folder. That is the one program of this script that is not the
+# kit's own; it is the file the sandbox binds, run outside the sandbox.
+show_field() {
+  "$BIN/ataniq-canary" show --config "$CONFIG" 2>/dev/null |
+    awk -v k="$1" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'
+}
+check_live_agent() {
+  if [ "$PINNED" -eq 0 ]; then return 0; fi
+  [ "$(show_field agent_kind)" = live ] || return 0
+  _fresh="sh $_d/canary-prepare.sh --pass B --claude <the tested claude file> --root <a new or empty folder>"
+  _mode=$(show_field agent_footer_mode)
+  case $_mode in
+    manual | auto) ok "agent.footer_mode is $_mode, a name the screen recogniser reports" ;;
+    *) fix "agent.footer_mode is \"$_mode\", not manual or auto (the recogniser's names of the mode, not the footer's text): every inject would end not-now" \
+      "edit agent.footer_mode in $CONFIG to manual (it is not in the pin)" ;;
+  esac
+  case ",$(show_field agent_env_names)," in
+    *,DISABLE_AUTOUPDATER,*) ok "agent.env names DISABLE_AUTOUPDATER (names only; no value is read)" ;;
+    *) fix "agent.env does not name DISABLE_AUTOUPDATER: the agent may draw an update notice on the screen the fence reads, and the env is part of the pin" "$_fresh" ;;
+  esac
+  _hasmodel=0
+  _i=0
+  while [ "$_i" -lt 64 ]; do
+    _av=$(show_field "agent_argv_$_i")
+    [ -n "$_av" ] || break
+    [ "$_av" = --model ] && _hasmodel=1
+    _i=$((_i + 1))
+  done
+  if [ "$_hasmodel" -eq 1 ]; then
+    ok "agent.argv names --model (step 15 asks you to confirm the model)"
+  else
+    fix "agent.argv has no --model: the agent would start on its default model, and step 15 ends the pass when no model is shown" \
+      "edit agent.argv in $CONFIG: add \"--model\", \"NAME\" (not in the pin), then run preflight again; or prepare a NEW root with --model NAME"
+  fi
+  _a0=$(show_field agent_argv_0)
+  _rest=${_a0#/ataniq/agent/}
+  if [ "$_rest" = "$_a0" ] || [ -z "$_rest" ]; then
+    fix "agent.argv[0] is not a file under /ataniq/agent/ ($_a0): step 9 runs the file the install folder holds under that name" "$_fresh"
+    return 0
+  fi
+  _inst=$(field "$INPUTS" sources.agent_install)
+  _claude=$_inst/$_rest
+  if [ -z "$_inst" ] || [ -L "$_claude" ] || [ ! -f "$_claude" ] || [ ! -x "$_claude" ]; then
+    fix "the claude copy is not an executable regular file at $_claude (sources.agent_install and agent.argv[0] name it)" "$_fresh"
+    return 0
+  fi
+  _want=$(show_field agent_runtime_version)
+  VHOME=$(mktemp -d) || {
+    fix "mktemp -d failed: no home for claude --version" "mktemp -d"
+    return 0
+  }
+  _vrc=0
+  _vout=$(env -i HOME="$VHOME" "$_claude" --version 2>&1) || _vrc=$?
+  rmdir -- "$VHOME" 2>/dev/null && VHOME=
+  if [ "$_vrc" -eq 0 ] && [ -n "$_want" ] && printf '%s\n' "$_vout" | grep -qwF -- "$_want"; then
+    ok "the claude copy prints the tested version $_want (--version with an empty environment): $_claude"
+  else
+    _vout=$(printf '%s\n' "$_vout" | awk 'NR == 1 { gsub(/[[:cntrl:]]/, ""); print substr($0, 1, 100); exit }')
+    fix "the claude copy $_claude does not print the tested version ${_want:-unknown} (exit status $_vrc, first line: ${_vout:-none})" "$_fresh"
+  fi
+}
+
 # 5. state/ and runtime/ are clean.
 check_clean_roots() {
   if [ "$PREPARED" -eq 0 ]; then
@@ -448,13 +521,22 @@ check_mirror_report() {
 # 10. The tools step 3 runs and timeout, the sysctl and lingering it reads.
 check_host() {
   _absent=
-  for _t in systemctl loginctl git bwrap pasta; do
+  _tools='systemctl loginctl git bwrap pasta'
+  _steps='step 3 runs them'
+  _list='systemctl, loginctl, git, bwrap and pasta'
+  # ss is run only by step 6, which only pass B (a live agent) does.
+  if [ "$(show_field agent_kind)" = live ]; then
+    _tools="$_tools ss"
+    _steps='steps 3 and 6 run them'
+    _list='systemctl, loginctl, git, bwrap, pasta and ss'
+  fi
+  for _t in $_tools; do
     command -v "$_t" >/dev/null 2>&1 || _absent="$_absent $_t"
   done
   if [ -n "$_absent" ]; then
-    fix "not on PATH (step 3 runs them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
+    fix "not on PATH ($_steps):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
   else
-    ok "systemctl, loginctl, git, bwrap and pasta are on PATH"
+    ok "$_list are on PATH"
   fi
   if command -v timeout >/dev/null 2>&1; then
     ok "timeout is on PATH (the run cuts off each ask of the daemon's status with it)"
@@ -488,6 +570,7 @@ check_built
 check_checkout
 check_holder_and_pin
 check_inputs
+check_live_agent
 check_clean_roots
 check_quiet
 check_open_runs
@@ -522,4 +605,12 @@ cc_say "     $BIN/ataniq-console --attach $HOLDER_RUN --ticket-file $HOLDER_RUN/
 cc_say '   (In the second epoch the run prints this command with --viewer added: use that one.)'
 cc_say
 cc_say '3. In this terminal (T1), the run (read its dry run first, add --dry):'
-cc_say "     sh $_d/canary-run.sh --pass A --config $CONFIG --evidence $EVIDENCE"
+# The pass the root was made for: a stand-in agent is pass A, a live agent is
+# pass B. A config that cannot say gets a placeholder, never a guess.
+_kind=$("$BIN/ataniq-canary" show --config "$CONFIG" 2>/dev/null | awk 'index($0, "agent_kind=") == 1 { print substr($0, 12); exit }')
+case $_kind in
+  stand-in) _pass=A ;;
+  live) _pass=B ;;
+  *) _pass='<A or B>' ;;
+esac
+cc_say "     sh $_d/canary-run.sh --pass $_pass --config $CONFIG --evidence $EVIDENCE"

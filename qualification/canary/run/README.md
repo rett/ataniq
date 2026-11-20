@@ -110,8 +110,16 @@ Exactly one result of the injection gets the owner's Enter in the pane:
 then records `owner-enter` as a line of its own. On `uncertain` with the reason
 `died` nothing is pressed, whatever was written: the input may hold an open
 paste. The owner looks at the pane, the script records what he saw, and what
-happens next is his decision. On a refusal the owner puts the message into the
-pane himself.
+happens next is his decision. On a refusal, and on `not-now` with written
+`nothing` (the screen was not ready), the owner puts the message into the pane
+himself; he first clears what the pane shows (a dialog, a notice, text in the
+composer). Before step 17, step 16 asks the owner to make the pane ready: the
+empty composer, no dialog, the last row reading the mode the config expects
+with no notice on it, then leave the session pane and touch neither key nor
+mouse there for 3 seconds (the fence needs 2 seconds of quiet).
+The owner answers `yes` to that check; `go-on` means the pane could not be made
+ready: the fence then answers `not-now` and he pastes the message at step 17
+(any other answer ends the pass).
 
 ### Step 14: the console, then the ticket
 
@@ -172,8 +180,9 @@ the console is closed.
 
 ### When the owner supplies the message himself
 
-In the first epoch of pass A, and in pass B when the fence refuses, the owner
-puts the message into the pane. He does not type it. The script prints the
+In the first epoch of pass A, and in pass B when the fence refuses or answers
+`not-now` having written nothing, the owner puts the message into the pane. He
+does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
 text between two marker lines (`----- begin of message-1.txt -----` and
 `----- end -----`, the text with no prefix); the owner copies the file's text
@@ -349,19 +358,25 @@ standard input that is not a terminal.
    `<state root>/mirrors/throwaway-one.git`, which is what `provision.mirror`
    must name. The state root must exist with mode 0700 and must not be the
    default one.
-4. **The config** is written (below), mode 0600, outside both roots.
+4. **The config** is written (below), mode 0600, outside both roots. For pass
+   B, `canary-prepare.sh --pass B --claude PATH` writes it, the inputs file and
+   the install folder (see "The set-up of pass B"); the hand-made way is a
+   short note there.
 5. **The sandbox inputs file** is written (below), mode 0600, at the path the
    config's `holder.sandbox_inputs` names. Its `sources` name folders that
    provisioning makes, so the paths are known from the config alone:
    `build/canary/ataniq-canary show --config CONFIG` prints them as
    `source_...` lines, and step 8 prints them again and waits before it checks
-   the file with `ataniq-canary check-inputs`.
+   the file with `ataniq-canary check-inputs`. The inputs file comes first and
+   the pin last: the config's `holder.profile_digest` is computed from the
+   inputs file and the config's `agent.env`, so every edit of either is
+   followed by a new pin.
 6. **The quiet window:** no Qargi run is open, no `ataniq-lead-*` unit exists,
    and no agent session is open that has been told about the slice.
 
 ## Prepare and reset
 
-Two helpers write the set-up of pass A, and put it back (a third, the
+Two helpers write the set-up of a pass (A with the stand-in, B with the live agent), and put it back (a third, the
 preflight, looks at it before the run). Neither answers a
 prompt, and neither starts a unit, a daemon, a sandbox or an agent. They lie
 beside the run script and share `canary-lib.sh`, which is only sourced. They
@@ -371,12 +386,15 @@ use the tools the run script uses, and besides them `chmod`, `readlink` and
 ```sh
 sh qualification/canary/run/canary-prepare.sh --dry
 sh qualification/canary/run/canary-prepare.sh [--root DIR] [--bin DIR] [--pasta PATH] [--bwrap PATH] [--build]
+sh qualification/canary/run/canary-prepare.sh --pass B --claude PATH [--model NAME] [the same arguments]
 ```
 
 | Argument | Meaning |
 | --- | --- |
 | `--root DIR` | The folder that holds the whole set-up, an absolute path. The default is `ataniq-canary-a` in your cache folder. It must be new or empty. It is refused when it is a link, in `/tmp` or `/var/tmp`, or inside the repository checkout (or holds it), and when its path has a character outside letters, digits and `. _ / + -`. |
-| `--pass A` | The pass. Only A is prepared: pass B has a live agent and a config of its own. |
+| `--pass A` or `--pass B` | The pass; A is the default. A makes the stand-in set-up; B makes the live one and needs `--claude` (see "The set-up of pass B"). The default `--root` is `ataniq-canary-a`, or `ataniq-canary-b` for B, in your cache folder. |
+| `--claude PATH` | Pass B only: the tested claude executable, an absolute path to one regular file. A link, a folder or a file that is not executable is refused (the manager's `claude` is a shim or a link). It is copied to `ROOT/agent-install/claude` (mode 0700) and the copy's `--version` must name 2.1.325 (the version the config declares). |
+| `--model NAME` | Pass B only: add `--model NAME` to `agent.argv` (letters, digits and `. _ : + -`, not starting with `-`, at most 64 characters). Without it there is no model flag and the agent runs its default: prepare says "Model: none chosen. Prepare a NEW root with --model NAME, or add \"--model\", \"NAME\" to agent.argv in config.json by hand (not pinned) and run preflight again", the preflight of a live root says FIX until `agent.argv` holds `--model`, and step 15 asks you to answer no when no model argument is shown. |
 | `--bin DIR` | The built binaries, `build/canary` of the checkout by default. All seven must be there; a missing one is named. |
 | `--build` | Run `make canary-build` first. Without it nothing is built. |
 | `--template-review PATH`, `--unit-report PATH`, `--plan-summary PATH` | An existing regular file, an absolute path, that the run suggests at the matching path prompt (a hint, below). The review of the template is named by you or the lead and taken from here and from nothing else; the docs name no fixed file for the two reports. A file that is not there is no hint, and the output says so. |
@@ -395,7 +413,7 @@ a copy of the built stand-in, `bin/` with a copy of the built probe (mode 0700; 
 `answers.hint` (the hints for the path prompts: `mirror-report` always, the
 path `qualify-mirror` is told to write; `unit-report`, `plan-summary` and
 `template-review` only for the matching argument; mode 0600, no word and no
-secret), `CHECKLIST.txt` (your one page, from `checklist.txt.in` in this folder,
+secret), `CHECKLIST.txt` (your one page, from `checklist.txt.in` in this folder, or `checklist-b.txt.in` for pass B,
 mode 0600) and the mark `.canary-prepared`. The config is the one under "The config" below,
 with the stand-in agent, the runtime `claude` 2.1.325, `footer_mode` `manual`,
 `inject` true and the proposed limits; the provider host is `api.anthropic.com`,
@@ -412,6 +430,72 @@ A prepare that fails part way leaves what it made and no mark, and
 (`chmod -R u+w ROOT`, then `rm -r ROOT`) and run prepare again. A root that
 carries the mark of a finished prepare is the one `canary-reset.sh` puts back.
 
+### The set-up of pass B
+
+`canary-prepare.sh --pass B --claude PATH` makes a pass B root the way pass A's
+is made (the roots, the mirror, the throwaway repository, the probe and pasta
+copies, the managed settings with the marker and the no-op guard hook, the
+replay screens that pass B's provisioning needs, `answers.hint`, the config of
+`qualify-mirror` and the mark), for the live agent. The one thing it does not do is
+run `qualify-mirror`: that is yours, for this root (the end of step 1).
+
+1. **Prepare.** `PATH` is the tested claude (2.1.325) as one regular file, not
+   the version manager's `claude` (a shim or a link), and not the folder you use
+   for your sessions. Prepare copies it to `ROOT/agent-install/claude` and runs
+   `env -i HOME="$(mktemp -d)" ROOT/agent-install/claude --version` on the copy,
+   as step 9 will, and stops with the output shown if it does not name 2.1.325.
+   `--dry` prints what it would make and writes nothing.
+   ```sh
+   sh qualification/canary/run/canary-prepare.sh --pass B --claude PATH [--model NAME] [--root DIR] --dry
+   sh qualification/canary/run/canary-prepare.sh --pass B --claude PATH [--model NAME] [--root DIR]
+   ```
+   It writes `config.json` with `agent.kind` `live`, `agent.argv`
+   `["/ataniq/agent/claude"]` (plus `--model NAME` when you gave it), `agent.env`
+   `["DISABLE_AUTOUPDATER=1"]`, `footer_mode` `manual` (the recogniser's name of
+   the mode, `manual` or `auto`, not the footer's text) and `inject` true;
+   `conf/sandbox-inputs.json` with `sources.agent_install` `ROOT/agent-install`,
+   the terminal values `xterm-256color`, `truecolor` and `C.UTF-8` (the ones the
+   recorded screens were taken with), and the managed settings with
+   `defaultMode` `default`. The pin comes last: `holder.profile_digest` is
+   computed after the environment and everything else is in place (the
+   environment is part of the digest), and then `check-inputs` runs. It also
+   writes `ROOT/CHECKLIST.txt` (from `checklist-b.txt.in`: the order, the pass B
+   commands and the steps pass B adds, with what you type at each) and
+   `ROOT/netcheck.sh`. Then run `qualify-mirror` for this root, exactly as pass A's step 2 does: set `i_run_this_on_purpose` to true in `ROOT/mirror-qual/config.json`, build `build/qualify-mirror` and run it with `--config ROOT/mirror-qual/config.json --out ROOT/mirror-qual/report.json` (prepare prints the commands with the root's paths); or give the preflight `--mirror-report FILE`, an existing report for the same template. The preflight wants that report.
+2. **`netcheck.sh`, by hand.** `sh ROOT/netcheck.sh` is for you to run; prepare,
+   the preflight and the run script never run it, and no agent does (it starts
+   pasta, bubblewrap and a throwaway user unit and makes four unauthenticated
+   requests, and has no `--dry`). It binds resolved's upstream resolv.conf only
+   when the host's `/etc/resolv.conf` is the local stub, as the holder does, and
+   the host's file otherwise. It starts
+   pasta and bubblewrap in the profile's shape (the root's own pasta copy and
+   the real bubblewrap) and, for each of `api.anthropic.com`, `claude.ai`,
+   `platform.claude.com` and `console.anthropic.com`, resolves it and makes one
+   unauthenticated GET (any HTTP status is a pass; a resolve or connect error is
+   the finding). It then runs `claude --version` in that shape with the install
+   folder bound, and again under `systemd-run --user` with the unit's limits,
+   and prints one line, `PASS` or `FINDING`, per host and per version check.
+   It makes no other request.
+3. **Preflight.** `sh qualification/canary/run/canary-preflight.sh --root ROOT`.
+   For a pass B root it also checks that the claude copy is a regular file under
+   the install folder, that its `--version` prints 2.1.325, that `agent.env`
+   names `DISABLE_AUTOUPDATER` (names only, from `ataniq-canary show`; no value
+   is read), that `agent.argv` holds `--model` and that `footer_mode` is `manual` or `auto`; its last lines name
+   `--pass B`.
+4. **Run.** `sh qualification/canary/run/canary-run.sh --pass B --config ROOT/config.json --evidence ROOT/evidence`
+   (read its dry run first). `canary-reset.sh --root ROOT` puts a pass B root
+   back as it does a pass A one.
+
+Advice from the pre-mortem: answer the agent's approval prompts with a plain
+Yes, never "do not ask again"; keep the console window large (100 by 30 or
+more) and do not resize it once step 16 has been read.
+
+If you make the files by hand instead, keep this order: the inputs file first
+(it names `sources.agent_install`, the folder that holds the claude copy, and the
+terminal values), then the config, and the pin last, with `profile-digest` and
+then `check-inputs`; a change of `agent.env` changes the digest. `argv[0]` is the
+executable itself, `/ataniq/agent/claude`, and never a wrapper.
+
 ### The preflight
 
 ```sh
@@ -419,7 +503,7 @@ sh qualification/canary/run/canary-preflight.sh --root DIR [--bin DIR] [--eviden
 ```
 
 `canary-preflight.sh` looks at what the run would trip over and says what to
-type. It is read-only: it starts nothing (no unit, daemon, sandbox or agent),
+type. It is read-only: it starts nothing (no unit, daemon, sandbox or agent session; for a pass B root it runs the claude copy once, with `--version`),
 answers nothing, needs no terminal, and changes nothing of the root, the checkout
 or the host (git does not even refresh the checkout's index). Its one file is a
 temporary copy of the list `qargi local list` prints, in a folder made with
@@ -436,12 +520,13 @@ wrong command line. The checks:
 | The checkout is at `develop` with no tracked change (what step 3 asks) | `git checkout develop`, or look at `git status`. |
 | The holder the config names exists and is the built one, and the profile digest pinned in `config.json` equals `ataniq-canary profile-digest` now, and the config shows | Write the new pin and run `ataniq-canary check-inputs` (one command, as prepare does after it pins), or prepare again on a fresh root. |
 | The sandbox inputs: `ataniq-canary check-inputs` accepts them, and, for `claude`, they name `sources.managed_marker` and the managed-settings file the config names holds that text (the holder refuses a start without it, and neither shows in the digest). Skipped while the pin above needs a fix | The inputs are from an earlier prepare: use a fresh root (the line says why). |
+| For a pass B root (`agent_kind` `live`): `agent.footer_mode` is `manual` or `auto`; `agent.env` names `DISABLE_AUTOUPDATER` (names only); `agent.argv` holds `--model`; the claude copy is an executable regular file under `sources.agent_install` and prints the tested version for `--version` (run with an empty environment and a new empty home, as step 9 does; it is the one program besides the kit's own that the preflight runs) | The command is printed (edit `footer_mode` or `agent.argv` in the config, or prepare a fresh root with `--pass B --claude PATH`). |
 | `state/` and `runtime/` are empty (a mirror only) | They hold an earlier attempt: run `canary-reset.sh`. |
 | No `ataniq-*` unit is loaded (slices left out) and no `ataniqd` or `ataniq-holder` runs | Stop it. |
 | No open Qargi run of this repository, read with the run script's own helpers through its `--self-test` entry. Without `qargi`, with a list it cannot read, or with an open run whose `repo.path` is unreadable, the line is `ok:` and says that the run asks the lead | Verify and close the run. |
 | `/ataniq` does not exist | Remove it yourself. |
 | The report of `qualify-mirror` exists, parses and names the template's hash (the path: `--mirror-report`, else the hint in `answers.hint`, else `mirror-qual/report.json`) | Run `qualify-mirror` (the commands are printed; the acknowledgement stays yours). |
-| `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
+| `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH` (and `ss` for a live root: only step 6 runs it), the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
 | `timeout` (coreutils) is on `PATH`: the run cuts off each ask of the daemon's status with it | Install coreutils, or put `timeout` on `PATH`. |
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
@@ -531,7 +616,7 @@ path.
     "kind": "stand-in",
     "runtime": "<a runtime key the registry accepts for a lead>",
     "runtime_version": "1.2.3",
-    "footer_mode": "sample mode on",
+    "footer_mode": "manual",
     "argv": ["/ataniq/agent/ataniq-canary-standin"],
     "env": []
   },
@@ -563,9 +648,20 @@ path.
   compares the copy's hash with the built one, and does the same for the probe
   the inputs file names (`executables.probe`, a copy of `build/canary/ataniq-probe`
   that is not below the checkout, which `never_mounted` keeps out of the sandbox). For pass B the config is a
-  second file with `"kind": "live"`, the live agent's install folder, version,
-  footer mode and arguments, the model argument among them: step 15 prints the
-  arguments and the owner confirms the model.
+  second file with `"kind": "live"`, the live agent's version, footer mode,
+  environment and arguments, the model argument among them: step 15 prints the
+  arguments and the owner confirms the model. The install folder is not in the
+  config: it is `sources.agent_install` of the inputs file, and `argv[0]` is
+  `/ataniq/agent/` and the name of the executable in it (no wrapper: step 9
+  strips that prefix and runs the file, and `check-inputs` refuses a name that
+  is not a file there).
+- `agent.footer_mode` is the recogniser's name of the mode the footer must
+  show, `manual` or `auto` for claude 2.1.325, not the footer's text. A live
+  agent with `inject` true is refused at `show` and `check-inputs` with any
+  other value.
+- `agent.env` is the agent's whole environment and is part of the profile
+  digest: for the live claude it is `["DISABLE_AUTOUPDATER=1"]`, so that no
+  update notice reaches the screen the fence reads. The pin comes last.
 - `holder.profile_digest` is the pinned digest of the profile, 64 hex digits;
   the holder refuses a plan whose digest differs. Compute it with
   `ataniq-canary profile-digest --config CONFIG --inputs FILE`, where FILE is
@@ -661,14 +757,31 @@ is refused too, and it takes no path with a `.` or `..` part. It holds:
 | `owner-enter.txt` | The `owner-enter` line of step 17, when the one result that gets it occurred. |
 | `intake-records/` | The verification and intake records of step 20. |
 | `kept/` | Copies made at step 26: the registry journal, the holder's event log, state file and final record, the daemon's evidence file, the stand-in's `order.txt` and `result.txt`. |
-| Pass B: `listeners-*.txt`, `departures.txt`, `live-config-folder.txt`, `manifest-before.txt`, `manifest-after.txt`, `canary-config-*.txt` | The listening sockets before and after, the line that records the open network as a departure from L3, and the manifests: names, sizes, times and hashes. |
+| Pass B: `listeners-*.txt`, `departures.txt`, `live-config-folder.txt`, `manifest-before.txt`, `manifest-after.txt`, `manifest-changes.txt`, `canary-config-*.txt` | The listening sockets before and after, the line that records the open network as a departure from L3, and the manifests: names, sizes, times and hashes. |
 | `result.txt` | `pass A: complete` or the step the pass failed at, and the number of findings. |
 | `MANIFEST.txt` | Names, sizes, times and hashes of every file of the evidence. |
 
 The script never prints or copies the content of a credential or of a file of
 the live runtime's config folder: the manifests hold names, sizes, times and
-hashes. It reads the canary config only through `ataniq-canary show`, which
-prints names, numbers and paths and leaves out the agent's environment, and it
+hashes. The owner's own running sessions write that folder all the time, so
+step 25 counts what was added, removed and changed, lists the names that differ
+at the top of the folder, and judges only the files the login itself would
+write there (a credential, token, secret or authorisation file, the runtime's
+state file and its settings files, at the top of the folder). A difference in
+one of those is a finding when its new hash is one the canary's own config
+folder holds under the same name, in its manifest of step 15 or in the one read
+again at step 25 into `canary-config-now.txt` (the canary's own login, or a
+token it refreshed since), and so is any new or
+changed path under `projects/-work-*` (the sandbox's working folder). Any other
+difference is a question to the owner and the lead (a running session of his
+may have refreshed its token): their `yes` is not a finding, and the result line
+names the files they explained. Only a credential-named file counts as proof
+that the canary wrote a login. When the canary's login wrote no credential file
+into its own folder, nothing proves another session wrote the difference, and
+it is a finding without the question. With no manifest of step 15 because no
+login was completed, the run asks the owner instead of counting a finding, but
+a hash match with the step-25 manifest still proves the file the canary's. It reads the canary config only through `ataniq-canary show`, which
+prints names, numbers and paths, the names of the agent's environment (`agent_env_names`) but never a value, and it
 records the config's hash. At step 26 the last screen kept in each copy of the
 holder's final record is replaced by its hash (`ataniq-canary scrub-screen`),
 and the evidence is searched for anything that looks like a login URL or code;
