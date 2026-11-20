@@ -987,14 +987,14 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 	// ask-path and affirm-word put a question to the standard input, as the
 	// hint tests need, and so reach the questions (ask, ask_path, affirm):
 	// they write nothing (no evidence folder), and nothing else reaches them.
-	asks := map[string]bool{"self_test": true, "ask": true, "ask_path": true, "affirm": true}
+	asks := map[string]bool{"self_test": true, "ask": true, "ask_path": true, "ask_file": true, "affirm": true}
 	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
 		for _, word := range []string{"runcap", "systemctl", "step_head", "fact", "manifest_of"} {
 			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 {
 				t.Errorf("the test entry reaches %s, which calls %s", name, word)
 			}
 		}
-		for _, word := range []string{"ask", "ask_path", "affirm"} {
+		for _, word := range []string{"ask", "ask_path", "ask_file", "affirm"} {
 			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 && !asks[name] {
 				t.Errorf("the test entry reaches %s, which calls the question %s", name, word)
 			}
@@ -2341,9 +2341,9 @@ func TestCanaryRunKitStepsCallTheirReads(t *testing.T) {
 		{"no_open_runs", `list_gone "$LASTOUT"`},
 		{"step_1", "no_open_runs || return 0"},
 		{"step_1", `loaded_units "$LASTOUT"`},
-		{"facts_pass", "unit_facts_verdict"},
-		{"facts_pass", "plan_facts_verdict"},
-		{"step_2", `facts_pass "$_kind" "$ANSWER" || return 0`},
+		{"facts_verdict", "unit_facts_verdict"},
+		{"facts_verdict", "plan_facts_verdict"},
+		{"step_2", `facts_verdict "$_kind" || return 0`},
 		{"step_3", `is_eq "$_head" "$_dev"`},
 		{"step_3", `tracked_changes "$_wtf"`},
 		{"step_8", `lists_upstream "$LASTOUT" "$UPSTREAM"`},
@@ -4357,17 +4357,24 @@ func TestCanaryRunKitHintsReachOnlyThePathPrompts(t *testing.T) {
 			t.Errorf("%s asks a question with a second argument", name)
 		}
 	}
-	// The four path prompts, by key.
-	calls := regexp.MustCompile(`(?m)^\s*ask_path .*? (\S+)$`).FindAllStringSubmatch(text, -1)
+	// ask_path is called by ask_file and by the test entry, and ask_file by the
+	// four path prompts, by key.
+	if n := len(regexp.MustCompile(`(?m)^\s*ask_path "\$_afq" "\$_afk"$`).FindAllString(text, -1)); n != 2 {
+		t.Errorf("ask_file calls ask_path %d times (the dry run and the real one), want 2", n)
+	}
+	calls := regexp.MustCompile(`(?m)^\s*ask_file (\S+)`).FindAllStringSubmatch(text, -1)
 	var keys []string
 	for _, m := range calls {
-		if !strings.Contains(m[0], `"$2"`) {
+		if m[1] != `"$2"` {
 			keys = append(keys, m[1])
 		}
 	}
 	slices.Sort(keys)
 	if want := []string{`"$_hk"`, "mirror-report", "template-review"}; !slices.Equal(keys, want) {
-		t.Errorf("ask_path is called with %v, want %v", keys, want)
+		t.Errorf("ask_file is called with %v, want %v", keys, want)
+	}
+	if n := len(regexp.MustCompile(`(?m)^\s*ask_path `).FindAllString(text, -1)); n != 3 {
+		t.Errorf("ask_path is called in %d places, want 3 (ask_file twice, the test entry once)", n)
 	}
 	if step2 := funcs["step_2"]; !strings.Contains(step2, "unit-report") || !strings.Contains(step2, "plan-summary") {
 		t.Error("step 2 does not take the hints of the two fact reports")
@@ -4513,5 +4520,247 @@ func TestCanaryRunKitPrepareWritesTheHints(t *testing.T) {
 	}
 	if _, err := os.Stat(r5); err == nil {
 		t.Error("the dry run made the root")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A wrong file is refused before it is recorded. At step 4 the template's
+// review must not be a report of qualify-mirror, and the report must be JSON
+// whose template.sha256 is the hash step 4 just computed; a refused file is
+// said and the question asked again, up to 3 more times. The checks run through
+// the test entries review-verdict, mirror-verdict and ask-file, over a stub of
+// the helper ataniq-canary fields that prints, for a file, the lines of a
+// sidecar file FILE.fields (the lines the real helper prints for that JSON:
+// "cases.0.id=...", "template.sha256=..."), or fails when there is none, as
+// the helper does for a file that is not one JSON object.
+
+const canaryTemplateHash = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+
+type canaryFilesKit struct{ dir string }
+
+func newCanaryFilesKit(t *testing.T) canaryFilesKit {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "build", "canary")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stub := "#!/bin/sh\n[ \"$1\" = fields ] && [ \"$2\" = --file ] || exit 97\n[ -f \"$3.fields\" ] || { echo 'not one JSON object' >&2; exit 1; }\ncat \"$3.fields\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "ataniq-canary"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return canaryFilesKit{dir: dir}
+}
+
+// file writes a file of the kit and, when fields is not empty, the lines the
+// helper prints for it, and returns its path.
+func (k canaryFilesKit) file(t *testing.T, name, text, fields string) string {
+	t.Helper()
+	p := canaryWrite(t, k.dir, name, text)
+	if fields != "" {
+		canaryWrite(t, k.dir, name+".fields", fields+"\n")
+	}
+	return p
+}
+
+func (k canaryFilesKit) run(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	w := startCanaryKit(t, canaryRunScript, k.dir, []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir}, append([]string{"--self-test"}, args...)...)
+	if _, err := io.WriteString(w.stdin, stdin); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.stdin.Close()
+	if code := w.finish(); code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, w.text())
+	}
+	return w.text()
+}
+
+func TestCanaryRunKitReviewIsNotTheMirrorReport(t *testing.T) {
+	k := newCanaryFilesKit(t)
+	const mirrorFields = "cases.0.id=s16-fetch\nformat=1\nrole=coder\ntemplate.sha256=" + canaryTemplateHash
+	const mirrorJSON = `{"format": 1, "template": {"sha256": "` + canaryTemplateHash + `"}, "role": "coder", "cases": [{"id": "s16-fetch"}]}` + "\n"
+	for name, c := range map[string]struct {
+		text, fields, want, why string
+	}{
+		"the report of qualify-mirror":               {mirrorJSON, mirrorFields, "bad", "qualify-mirror report"},
+		"the report after blank lines and spaces":    {"\n\n   " + mirrorJSON, mirrorFields, "bad", "qualify-mirror report"},
+		"a report of another template":               {mirrorJSON, "cases.0.id=x\ntemplate.sha256=" + strings.Repeat("c", 64), "bad", "qualify-mirror report"},
+		"another JSON file":                          {"{\"a\": 1}\n", "a=1", "bad", "a JSON file"},
+		"JSON the helper cannot read":                {"{ nope\n", "", "bad", "a JSON file"},
+		"a review that holds the hash":               {"# Review of canary-intake.json\n\nsha256: " + canaryTemplateHash + "\n", "", "ok", "the template's hash"},
+		"a review that holds the hash, no verdict":   {"the template " + canaryTemplateHash + " reads clean\n", "", "ok", "the template's hash"},
+		"a review that holds the word verdict":       {"# Review\n\nVerdict: sound\n", "", "ok", "verdict"},
+		"the word in capitals":                       {"VERDICT\n", "", "ok", "verdict"},
+		"a markdown list that starts with a bracket": {"[x] read the binds\n[x] verdict: fine\n", "", "ok", "verdict"},
+		"neither the hash nor the word":              {"Looks fine to me.\nThe verdicts are in the other file.\n", "", "bad", "neither"},
+		"another hash":                               {"sha256: " + strings.Repeat("c", 64) + "\n", "", "bad", "neither"},
+		"a file with a NUL byte":                     {"verdict\x00\n", "", "bad", "NUL"},
+		"an empty file":                              {"", "", "bad", "empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := k.file(t, strings.ReplaceAll(name, " ", "-")+".md", c.text, c.fields)
+			out := strings.TrimSpace(k.run(t, "", "review-verdict", p, canaryTemplateHash))
+			if !strings.HasPrefix(out, c.want+" ") || !strings.Contains(out, c.why) {
+				t.Errorf("the verdict is %q, want %s ... %s", out, c.want, c.why)
+			}
+			if strings.Contains(out, "\n") {
+				t.Errorf("the verdict is more than a line: %q", out)
+			}
+		})
+	}
+}
+
+func TestCanaryRunKitMirrorReportNamesTheTemplate(t *testing.T) {
+	k := newCanaryFilesKit(t)
+	const body = `{"format": 1}` + "\n"
+	for name, c := range map[string]struct{ text, fields, want, why string }{
+		"the report of this template":        {body, "format=1\nrole=coder\ntemplate.sha256=" + canaryTemplateHash, "ok", "template's hash"},
+		"a report of another template":       {body, "template.sha256=" + strings.Repeat("c", 64), "bad", "another template"},
+		"a report with no template":          {body, "format=1\nrole=coder", "bad", "no template.sha256"},
+		"a report that names it elsewhere":   {body, "role=" + canaryTemplateHash, "bad", "no template.sha256"},
+		"a longer key":                       {body, "template.sha256x=" + canaryTemplateHash, "bad", "no template.sha256"},
+		"the review, which is not JSON":      {"# Review\n\nVerdict: sound\n" + canaryTemplateHash + "\n", "", "bad", "not one JSON object"},
+		"an empty file":                      {"", "", "bad", "not one JSON object"},
+		"an empty hash in the report":        {body, "template.sha256=", "bad", "no template.sha256"},
+		"the hash with a different suffix":   {body, "template.sha256=" + canaryTemplateHash + "0", "bad", "another template"},
+		"the hash with a different prefix":   {body, "template.sha256=0" + canaryTemplateHash, "bad", "another template"},
+		"the hash as a value of another key": {body, "format=1\ntemplate.sha256x=1\nx.template.sha256=" + canaryTemplateHash, "bad", "no template.sha256"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := k.file(t, strings.ReplaceAll(name, " ", "-")+".json", c.text, c.fields)
+			out := strings.TrimSpace(k.run(t, "", "mirror-verdict", p, canaryTemplateHash))
+			if !strings.HasPrefix(out, c.want+" ") || !strings.Contains(out, c.why) {
+				t.Errorf("the verdict is %q, want %s ... %s", out, c.want, c.why)
+			}
+		})
+	}
+}
+
+// A refused file is said with its reason and the question is asked again, up
+// to 3 more times; a typed path always wins over the hint; the step fails only
+// after the last refusal, and nothing is recorded before a file is accepted.
+func TestCanaryRunKitAsksAgainForAWrongFile(t *testing.T) {
+	k := newCanaryFilesKit(t)
+	report := k.file(t, "report.json", `{"format": 1}`+"\n", "cases.0.id=x\ntemplate.sha256="+canaryTemplateHash)
+	review := k.file(t, "review.md", "Verdict: sound\n", "")
+	other := k.file(t, "other-report.json", `{"format": 1}`+"\n", "template.sha256="+strings.Repeat("c", 64))
+	missing := filepath.Join(k.dir, "missing.md")
+	hints := canaryHintFile(t, "template-review="+report, "mirror-report="+other)
+	line := func(ps ...string) string { return strings.Join(ps, "\n") + "\n" }
+
+	for name, c := range map[string]struct {
+		kind, key, stdin string
+		want             string
+		refused          int
+		prompts          int
+	}{
+		"right at the first ask":                           {"review", "template-review", line(review), "accepted " + review, 0, 1},
+		"a mirror report, then the review":                 {"review", "template-review", line(report, review), "accepted " + review, 1, 2},
+		"the hint is the wrong file, Enter is not enough":  {"review", "template-review", line("", review), "accepted " + review, 1, 2},
+		"a missing file, then an empty answer, then right": {"review", "other-key", line(missing, "", review), "accepted " + review, 2, 3},
+		"right at the last ask":                            {"review", "template-review", line(report, missing, report, review), "accepted " + review, 3, 4},
+		"wrong four times":                                 {"review", "template-review", line(report, missing, report, report, review), "failed", 4, 4},
+		"the input ends":                                   {"review", "template-review", "", "failed", 4, 4},
+		"the report of another template":                   {"mirror", "mirror-report", line("", report), "accepted " + report, 1, 2},
+		"the review where the report is":                   {"mirror", "mirror-report", line(review, report), "accepted " + report, 1, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := k.run(t, c.stdin, "ask-file", hints, c.key, c.kind, canaryTemplateHash)
+			out = strings.ReplaceAll(out, "   > ", "   > \n")
+			trimmed := strings.TrimSpace(out)
+			if got := trimmed[strings.LastIndex(trimmed, "\n")+1:]; got != c.want {
+				t.Errorf("the answer is %q, want %q:\n%s", got, c.want, out)
+			}
+			if got := strings.Count(out, "   refused: "); got != c.refused {
+				t.Errorf("%d refusals, want %d:\n%s", got, c.refused, out)
+			}
+			if got := strings.Count(out, "   ?? Lead: a path"); got != c.prompts {
+				t.Errorf("%d questions, want %d:\n%s", got, c.prompts, out)
+			}
+			if got, want := strings.Count(out, "ask again ("), c.prompts-1; got != want {
+				t.Errorf("the owner is told %d times that he is asked again, want %d:\n%s", got, want, out)
+			}
+			if c.want == "failed" && !strings.Contains(out, "FAILED at step 4: the file was refused 4 times") {
+				t.Errorf("the step does not fail after four refusals:\n%s", out)
+			}
+			if c.want != "failed" && strings.Contains(out, "FAILED") {
+				t.Errorf("an accepted file failed the step:\n%s", out)
+			}
+		})
+	}
+
+	// The reasons are the ones the checks give.
+	out := k.run(t, line(report, missing, other), "ask-file", hints, "other-key", "review", canaryTemplateHash)
+	for _, want := range []string{"this is a qualify-mirror report", "the file is not present: " + missing, "this is a qualify-mirror report"} {
+		if !strings.Contains(out, "refused: "+want) {
+			t.Errorf("the refusal %q is not said:\n%s", want, out)
+		}
+	}
+	out = k.run(t, line(other), "ask-file", hints, "other-key", "mirror", canaryTemplateHash)
+	if !strings.Contains(out, "it was made with another template") {
+		t.Errorf("the report of another template is not refused for its template:\n%s", out)
+	}
+
+	// With the end of the input, the hint is not taken for an answer.
+	out = k.run(t, "", "ask-file", hints, "template-review", "review", canaryTemplateHash)
+	if strings.Contains(out, "the hint is taken") {
+		t.Errorf("the end of the input took the hint:\n%s", out)
+	}
+}
+
+// Step 2 and step 4 look at the file before they record it: the questions go
+// through ask_file, the record (fact) follows, and the checks the old code made
+// after the record are gone.
+func TestCanaryRunKitStepsLookBeforeTheyRecord(t *testing.T) {
+	funcs := canaryFuncs(t, canaryScriptText(t))
+	for _, c := range []struct{ fn, ask, record string }{
+		{"step_2", "ask_file ", `fact facts.txt "$ANSWER"`},
+		{"step_4", "ask_file template-review", "fact template-records.txt"},
+		{"step_4", "ask_file mirror-report", "fact template-records.txt"},
+	} {
+		body := funcs[c.fn]
+		first, last := strings.Index(body, c.ask), strings.LastIndex(body, c.record)
+		if first < 0 || last < first {
+			t.Errorf("%s does not ask (%s) before it records (%s)", c.fn, c.ask, c.record)
+		}
+	}
+	step4 := funcs["step_4"]
+	if i, j := strings.Index(step4, "fact template-records.txt"), strings.Index(step4, "ask_file template-review"); j < 0 || i < j {
+		t.Error("step 4 records a file before the review's question is asked")
+	}
+	if i, j := strings.Index(step4, "ask_file mirror-report"), strings.LastIndex(step4, "fact template-records.txt"); i < 0 || j < i {
+		t.Error("step 4 records the report before its question is asked")
+	}
+	if strings.Contains(step4, "the review is present") || strings.Contains(step4, "the report is present") || strings.Contains(funcs["step_2"], "the file is present: $_what") {
+		t.Error("a step checks the file's presence after it recorded the question's answer")
+	}
+	for _, c := range []struct{ fn, word string }{
+		{"step_4", `review_verdict "$_th"`},
+		{"step_4", `mirror_verdict "$_th"`},
+		{"mirror_verdict", `"$_mvh" != "$2"`},
+		{"mirror_verdict", `template.sha256=`},
+		{"review_verdict", `cases.`},
+		{"review_verdict", "verdict"},
+	} {
+		if !strings.Contains(funcs[c.fn], c.word) {
+			t.Errorf("%s does not hold %s", c.fn, c.word)
+		}
+	}
+	// The hash step 4 compares with is the one it computed and wrote.
+	if !strings.Contains(step4, `_th=$(cat "$EV/template.sha256")`) {
+		t.Error("step 4 does not take the hash it wrote")
+	}
+	// The dry run says what each path prompt looks at and that it asks again.
+	for _, pass := range []string{"A", "B"} {
+		out, _ := canaryDry(t, "--pass", pass, "--config", "/nonexistent/sample/canary.json")
+		if n := strings.Count(out, "when the file is refused, say why and ask again, up to 3 more times; fail only after that"); n != 4 {
+			t.Errorf("pass %s: the dry run says it %d times, want 4 (steps 2 and 4)", pass, n)
+		}
+		for _, want := range []string{"is a text or markdown file that is not a qualify-mirror report", "is one JSON object whose template.sha256 is the hash computed above"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("pass %s: the dry run does not say %q", pass, want)
+			}
+		}
 	}
 }

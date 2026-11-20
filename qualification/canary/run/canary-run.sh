@@ -17,8 +17,10 @@
 # read but the file given to pass-a-record and has-line and, by wait-key,
 # standard input; has-line runs the helper ataniq-canary fields of build/canary
 # on each line of its file, and wait-daemon and stop-daemon run the ataniqd
-# status of build/canary; stop-daemon, roots-deleted, ask-path and affirm-word
-# read keys from standard input, and ask-path reads the hint file it is given;
+# status of build/canary, review-verdict, mirror-verdict and ask-file run the
+# ataniq-canary fields helper of build/canary on the file they are given;
+# stop-daemon, roots-deleted, ask-path, ask-file and affirm-word read keys from
+# standard input, and ask-path and ask-file read the hint file they are given;
 # no other program is run.
 #
 # At a path prompt (the two fact reports, the template's review, the report of
@@ -27,6 +29,13 @@
 # path wins. The file is still checked and recorded, and the log says whether
 # the answer was a hint or typed. No hint is ever read for a word (yes, read,
 # integrate, confirmed, reset or an attestation): those are only typed.
+#
+# At those path prompts the file is also looked at before anything is recorded:
+# the two fact reports as before (already parsed), the template's review must
+# not be a qualify-mirror report and must hold the template's hash or the word
+# verdict, and the report of qualify-mirror must be JSON whose template.sha256
+# is the hash step 4 just computed. A refused file is said, with the reason,
+# and the question is asked again, up to 3 more times, before the step fails.
 #
 # A step that waits for something the owner starts or stops in another
 # terminal (the daemon at step 10 and step 26, the console's ticket at step 14,
@@ -72,6 +81,10 @@ usage() {
     '                      the 7501 counters step 22 prints from the lines FIELDS' \
     '         unit-stopped STATE' \
     '                      whether that active state lets step 26 show the delete command' \
+    '         review-verdict FILE HASH | mirror-verdict FILE HASH' \
+    '                      what step 4 makes of a file given as the review or the report (build/canary helper)' \
+    '         ask-file HINTFILE KEY review|mirror HASH' \
+    '                      a path prompt of step 4 with its refusals and asking again (paths from standard input)' \
     '         ask-path HINTFILE KEY | affirm-word HINTFILE WORD' \
     '                      a path prompt with its hint, and a typed word with the hint file in place' \
     '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
@@ -126,8 +139,11 @@ case $WAIT_INTERVAL in '' | *[!0-9.]* | *.*.* | .)
   exit 2
   ;;
 esac
-# After a refusal the owner is asked again this many more times.
+# After a refusal the owner is asked again this many more times: at step 26
+# (the daemon, the two roots) and, for a path whose file is refused, at the
+# path prompts of steps 2 and 4.
 ASK_AGAIN=5
+ASK_AGAIN_PATH=3
 
 # ---------------------------------------------------------------- state ---
 
@@ -316,6 +332,54 @@ ask_path() {
     return 0
   fi
   ask "$1" "$(hint_for "$2")"
+}
+
+# ask_file KEY QUESTION DESC VERIFIER [ARG...] asks for the path of a file as
+# ask_path does (KEY names the hint) and looks at the file before the step
+# records anything: it must be there, and VERIFIER FILE [ARG...] must print
+# "ok TEXT" for it ("bad REASON" otherwise; DESC says in a dry run what it
+# looks at). A refused file is said, with the reason, and the question is asked
+# again, up to ASK_AGAIN_PATH more times; the step fails only after that. The
+# accepted path is in ANSWER.
+ask_file() {
+  _afk=$1
+  _afq=$2
+  _afd=$3
+  _afv=$4
+  shift 4
+  if [ "$DRY" -eq 1 ]; then
+    ask_path "$_afq" "$_afk"
+    dry "check: the file is present"
+    dry "check: $_afd"
+    dry "when the file is refused, say why and ask again, up to $ASK_AGAIN_PATH more times; fail only after that"
+    return 0
+  fi
+  _afn=0
+  while :; do
+    ask_path "$_afq" "$_afk"
+    if [ -z "$ANSWER" ]; then
+      _afr='bad no path was given'
+    elif [ ! -f "$ANSWER" ]; then
+      _afr="bad the file is not present: $ANSWER"
+    else
+      _afr=$("$_afv" "$ANSWER" "$@") || _afr='bad the check of the file could not run'
+    fi
+    case $_afr in
+      'ok '*)
+        out "   ok: $ANSWER: ${_afr#ok }"
+        note "ok: $ANSWER (${ANSWER_SRC}): ${_afr#ok }"
+        return 0
+        ;;
+    esac
+    out "   refused: ${_afr#bad }"
+    note "the file was refused (ask $((_afn + 1)) of $((ASK_AGAIN_PATH + 1))): ${_afr#bad }"
+    if [ "$_afn" -ge "$ASK_AGAIN_PATH" ]; then
+      fail "the file was refused $((ASK_AGAIN_PATH + 1)) times: ${_afr#bad }"
+      return 1
+    fi
+    _afn=$((_afn + 1))
+    out "   ask again ($_afn of $ASK_AGAIN_PATH): a path you type is taken as it is"
+  done
 }
 
 # affirm asks and fails the step unless the answer is the word.
@@ -974,6 +1038,62 @@ sandbox_started=true
   printf '%s\n' "ok sandbox started, profile version $2, profile digest is the pinned digest"
 }
 
+# review_verdict FILE HASH reads the file named as the template's review and
+# prints "ok TEXT" or "bad REASON". It is a cheap look, not a judgement of the
+# review: a report of qualify-mirror (a JSON file with cases and a template) is
+# the other file step 4 asks for, so it is refused here, as is any JSON file or
+# a file that is not text; the review must hold the template's hash or the word
+# verdict.
+review_verdict() {
+  [ -s "$1" ] || { printf '%s\n' 'bad the file is empty'; return 0; }
+  _rvfirst=$(awk 'NF { s = $0; sub(/^[ \t]+/, "", s); print substr(s, 1, 1); exit }' "$1")
+  case $_rvfirst in
+    '{')
+      if _rvf=$("$BIN/ataniq-canary" fields --file "$1" 2>/dev/null) &&
+        printf '%s\n' "$_rvf" | awk '
+          index($0, "cases.") == 1 || index($0, "cases=") == 1 { c = 1 }
+          index($0, "template.") == 1 || index($0, "template=") == 1 { t = 1 }
+          END { exit !(c && t) }'; then
+        printf '%s\n' 'bad this is a qualify-mirror report (it has cases and a template), not the template'"'"'s review: the report is asked for next'
+      else
+        printf '%s\n' 'bad this is a JSON file: the review is a text or markdown file'
+      fi
+      return 0
+      ;;
+  esac
+  # shellcheck disable=SC2094  # cmp only reads the file
+  if ! tr -d '\000' <"$1" | cmp -s - "$1"; then
+    printf '%s\n' 'bad this is not a text file (it holds a NUL byte)'
+    return 0
+  fi
+  if grep -qF -- "$2" "$1"; then
+    printf '%s\n' "ok the review holds the template's hash"
+  elif grep -qiw -- verdict "$1"; then
+    printf '%s\n' 'ok the review holds the word verdict'
+  else
+    printf '%s\n' "bad the file neither holds the template's hash nor the word verdict, so it does not look like the review"
+  fi
+}
+
+# mirror_verdict FILE HASH reads the file named as the report of qualify-mirror
+# and prints "ok TEXT" or "bad REASON": it must be one JSON object whose
+# template.sha256 is the hash step 4 just computed, so a report made with
+# another template, or a file that is not a report, is refused.
+mirror_verdict() {
+  if ! _mvf=$("$BIN/ataniq-canary" fields --file "$1" 2>/dev/null); then
+    printf '%s\n' 'bad the file is not one JSON object: the report of qualify-mirror is JSON'
+    return 0
+  fi
+  _mvh=$(printf '%s\n' "$_mvf" | awk 'index($0, "template.sha256=") == 1 { print substr($0, 17); exit }')
+  if [ -z "$_mvh" ]; then
+    printf '%s\n' 'bad the file has no template.sha256: it is not the report of qualify-mirror'
+  elif [ "$_mvh" != "$2" ]; then
+    printf '%s\n' "bad the report's template.sha256 ($_mvh) is not the hash of the template ($2): it was made with another template"
+  else
+    printf '%s\n' "ok the report names the template's hash"
+  fi
+}
+
 # -------------------------------------------------------------- self-test ---
 
 # is_number reports whether every argument is a number in plain digits.
@@ -1051,6 +1171,36 @@ self_test() {
       CUR=26
       IN_CHAIN=1
       if roots_deleted_by_owner; then out deleted; else out failed; fi
+      ;;
+    review-verdict)
+      # FILE HASH: what step 4 makes of FILE as the template's review. The
+      # helper is the one of build/canary in the current folder.
+      [ "$#" -eq 2 ] || usage
+      BIN=build/canary
+      review_verdict "$1" "$2"
+      ;;
+    mirror-verdict)
+      # FILE HASH: what step 4 makes of FILE as the report of qualify-mirror.
+      [ "$#" -eq 2 ] || usage
+      BIN=build/canary
+      mirror_verdict "$1" "$2"
+      ;;
+    ask-file)
+      # HINTFILE KEY KIND HASH: asks for a path as step 4 does (KIND review or
+      # mirror) with the paths read from standard input, and prints
+      # "accepted PATH" or "failed". The failure that ends the step is printed
+      # and returned, not ending the run.
+      [ "$#" -eq 4 ] || usage
+      HINTS=$1
+      BIN=build/canary
+      IN_CHAIN=1
+      CUR=4
+      case $3 in
+        review) _verifier=review_verdict ;;
+        mirror) _verifier=mirror_verdict ;;
+        *) usage ;;
+      esac
+      if ask_file "$2" 'Lead: a path' 'the file is looked at' "$_verifier" "$4"; then out "accepted $ANSWER"; else out failed; fi
       ;;
     ask-path)
       # HINTFILE KEY: asks a path prompt with the hint of KEY in HINTFILE
@@ -1421,34 +1571,21 @@ step_1() {
   done_step
 }
 
-# facts_pass reads one fact report (KIND unit: the report of leadunit-qualify;
-# plan: the summary of the launched plan) and fails the step unless it shows
-# that everything passed. What was read is in the evidence.
-facts_pass() {
-  if [ "$DRY" -eq 1 ]; then
-    if [ "$1" = unit ]; then
-      dry 'check: the report parses, its verdict is pass and every entry of checks has the result pass'
-    else
-      dry 'check: the summary parses, every step has the status ok or skipped, exit.code is 0 and every case result is ok or not-checked'
-    fi
+# facts_verdict FILE KIND reads one fact report (KIND unit: the report of
+# leadunit-qualify; plan: the summary of the launched plan) and prints "ok TEXT"
+# when it shows that everything passed and "bad REASON" otherwise. What was read
+# is in the evidence. ask_file calls it before step 2 records the file.
+facts_verdict() {
+  _fl=$EV/out/02-facts-$2.fields
+  if ! "$BIN/ataniq-canary" fields --file "$1" >"$_fl" 2>"$_fl.err"; then
+    printf '%s\n' "bad the file cannot be read as one JSON object: $1"
     return 0
   fi
-  _fl=$EV/out/02-facts-$1.fields
-  if ! "$BIN/ataniq-canary" fields --file "$2" >"$_fl" 2>"$_fl.err"; then
-    fail "the file cannot be read as one JSON object: $2"
-    return 1
-  fi
   _flds=$(cat "$_fl")
-  if [ "$1" = unit ]; then _v=$(unit_facts_verdict "$_flds"); else _v=$(plan_facts_verdict "$_flds"); fi
+  if [ "$2" = unit ]; then _v=$(unit_facts_verdict "$_flds"); else _v=$(plan_facts_verdict "$_flds"); fi
   case $_v in
-    'ok '*)
-      out "   ok: $2: ${_v#ok }"
-      note "ok: $1 facts $2 (fields read: $_fl): ${_v#ok }"
-      ;;
-    *)
-      fail "the $1 facts do not show a pass: ${_v#bad }"
-      return 1
-      ;;
+    'ok '*) printf '%s\n' "ok ${_v#ok } (fields read: $_fl)" ;;
+    *) printf '%s\n' "bad the $2 facts do not show a pass: ${_v#bad }" ;;
   esac
 }
 
@@ -1462,11 +1599,15 @@ step_2() {
       unit) _what='the report of leadunit-qualify with the limits (cs-facts-unit, second run)' ;;
       *) _what='the summary of the launched plan (cs-facts-plan)' ;;
     esac
-    case $_kind in unit) _hk=unit-report ;; *) _hk=plan-summary ;; esac
-    ask_path "Lead: the path of $_what" "$_hk"
-    check "the file is present: $_what" test -f "$ANSWER" || return 0
+    if [ "$_kind" = unit ]; then
+      _hk=unit-report
+      _look='the report parses, its verdict is pass and every entry of checks has the result pass'
+    else
+      _hk=plan-summary
+      _look='the summary parses, every step has the status ok or skipped, exit.code is 0 and every case result is ok or not-checked'
+    fi
+    ask_file "$_hk" "Lead: the path of $_what" "$_look" facts_verdict "$_kind" || return 0
     fact facts.txt "$ANSWER"
-    facts_pass "$_kind" "$ANSWER" || return 0
   done
   if [ "$PASS" = B ]; then
     ask 'Lead: the evidence folder of pass A'
@@ -1569,14 +1710,17 @@ step_4() {
       return 0
     fi
   fi
-  ask_path "Lead: the path of the template's review on file" template-review
-  check 'the review is present' test -f "$ANSWER" || return 0
+  if [ "$DRY" -eq 1 ]; then _th='<hash>'; else _th=$(cat "$EV/template.sha256"); fi
+  ask_file template-review "Lead: the path of the template's review on file" \
+    "the review is a text or markdown file that is not a qualify-mirror report (no JSON file with cases and a template) and holds the template's hash ($_th) or the word verdict" \
+    review_verdict "$_th" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Owner: you have read the template and its note' read || return 0
   out '   Owner: run qualify-mirror once now, yourself, in your own terminal, with the lead present'
   out '   (docs/qualification-lead-mirror.md), with this template and a new output file.'
-  ask_path 'Owner: the path of the report qualify-mirror wrote' mirror-report
-  check 'the report is present' test -f "$ANSWER" || return 0
+  ask_file mirror-report 'Owner: the path of the report qualify-mirror wrote' \
+    "the report is one JSON object whose template.sha256 is the hash computed above ($_th)" \
+    mirror_verdict "$_th" || return 0
   fact template-records.txt "$ANSWER"
   affirm 'Lead: the qualify-mirror run passed' yes || return 0
   result ok
