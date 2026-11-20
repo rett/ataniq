@@ -519,6 +519,7 @@ cc_say '   BEFORE you press Enter at step 14: it waits for a ticket, and the run
 cc_say '   your Enter (a ticket lives 30 seconds). Step 14 asks for the same command once more in a'
 cc_say '   fourth terminal (T4), in the first epoch, where the integrate command of step 20 goes too:'
 cc_say "     $BIN/ataniq-console --attach $HOLDER_RUN --ticket-file $HOLDER_RUN/ticket"
+cc_say '   (In the second epoch the run prints this command with --viewer added: use that one.)'
 cc_say
 cc_say '3. In this terminal (T1), the run (read its dry run first, add --dry):'
 cc_say "     sh $_d/canary-run.sh --pass A --config $CONFIG --evidence $EVIDENCE"

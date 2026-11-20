@@ -192,7 +192,13 @@ func TestCanaryRunKitStepTwelveWaitsForTheSecondWrite(t *testing.T) {
 		}
 		tools := filepath.Join(dir, "tools")
 		calls := filepath.Join(dir, "calls")
-		canaryStub(t, tools, "systemctl", "echo "+state+"\n")
+		if n, ok := strings.CutPrefix(state, "empty"); ok {
+			// The first asks are answered with nothing (a failed systemctl), then active.
+			count := filepath.Join(dir, "asked")
+			canaryStub(t, tools, "systemctl", "n=$(cat "+count+" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"+count+"\n[ $n -le "+n+" ] && exit 1\necho active\n")
+		} else {
+			canaryStub(t, tools, "systemctl", "echo "+state+"\n")
+		}
 		canaryStub(t, tools, "journalctl", "echo \"$*\" >>"+calls+"\necho journal-line\n")
 		canaryStub(t, filepath.Join(dir, "build", "canary"), "ataniq-canary", `[ "$1" = fields ] && cat "$3"`+"\n")
 		for _, tool := range []string{"awk", "date", "sed", "cat", "printf", "sleep"} {
@@ -225,6 +231,8 @@ func TestCanaryRunKitStepTwelveWaitsForTheSecondWrite(t *testing.T) {
 		{"the second write is already there", "active", started, "", "result=ok end=started", false},
 		{"the file names the epoch first and the second write comes later", "active", firstOne, started, "result=ok end=started", false},
 		{"an activating unit is waited for", "activating", firstOne, started, "result=ok end=started", false},
+		{"empty answers for the first asks are asked again", "empty3", firstOne, started, "result=ok end=started", false},
+		{"empty answers for the first asks, file never written", "empty3", "", "", "result=failed end=timeout", true},
 		{"the file is never written", "active", "", "", "result=failed end=timeout", true},
 		{"the file names the epoch and never says started", "active", firstOne, "", "result=failed end=timeout", true},
 		{"the file is the last epoch's", "active", "epoch=1\nsandbox_started=true\n", "", "result=failed end=timeout", true},

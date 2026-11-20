@@ -992,6 +992,18 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 	// show_prop asks the unit's state (read-only; a stub in the tests) and
 	// show_unit_journal prints the journal through runcap (a stub, too).
 	allowed := map[string]string{"show_prop": "systemctl", "show_unit_journal": "runcap"}
+	// The two exempt bodies are pinned, so a later change to what they run
+	// fails here instead of passing the name-based exemption.
+	pinned := canaryFuncs(t, text)
+	if got, want := pinned["show_prop"], " systemctl --user show \"$UNIT\" --property=\"$1\" --value; }"; got != want {
+		t.Errorf("show_prop changed: %q", got)
+	}
+	wantJournal := "\n  if [ -z \"$T_START\" ]; then return 0; fi\n" +
+		"  out \"   the journal of the unit since $T_START (the last 40 lines): the holder says why it ended there\"\n" +
+		"  runcap unit-journal-tail unit_journal 40\n"
+	if got := pinned["show_unit_journal"]; got != wantJournal {
+		t.Errorf("show_unit_journal changed: %q", got)
+	}
 	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
 		for _, word := range []string{"runcap", "systemctl", "step_head", "fact", "manifest_of"} {
 			if allowed[name] == word {
@@ -2986,6 +2998,7 @@ func TestCanaryRunKitPrepareRefuses(t *testing.T) {
 		want string
 	}{
 		{"a root that is not empty", e.prepareArgs(t, nonEmpty), "not empty"},
+		{"a root that is not empty names no delete command", e.prepareArgs(t, nonEmpty), "was not made by canary-prepare.sh; check it before you remove anything"},
 		{"a root in the repository", e.prepareArgs(t, filepath.Join(inRepo, "root")), "repository checkout"},
 		{"the repository itself", e.prepareArgs(t, root(t)), "repository checkout"},
 		{"a root in /tmp", e.prepareArgs(t, filepath.Join(tmpRoot, "root")), "/tmp"},
@@ -3004,6 +3017,12 @@ func TestCanaryRunKitPrepareRefuses(t *testing.T) {
 				out, code := e.run(t, canaryPrepareScript, "", append(slices.Clone(c.args), dry...)...)
 				if code == 0 || !strings.Contains(out, c.want) {
 					t.Errorf("dry %v: exit status %d, want a refusal naming %q:\n%s", dry, code, c.want, out)
+				}
+			}
+			if c.name == "a root that is not empty names no delete command" {
+				out, _ := e.run(t, canaryPrepareScript, "", c.args...)
+				if strings.Contains(out, "rm -r") {
+					t.Errorf("a root without the mark is given a delete command:\n%s", out)
 				}
 			}
 			if calls := e.callLines(t); len(calls) != 0 {
@@ -4270,7 +4289,7 @@ func TestCanaryRunKitStep14StartsTheConsoleBeforeTheMint(t *testing.T) {
 		}
 		return i
 	}
-	show := at(`out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"`)
+	show := at(`out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf$_viewer"`)
 	key := at("wait_key 'Owner: press Enter when the console is up and says it waits for a ticket.")
 	mint := at(`runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role "$_role"`)
 	same := at(`is_eq "$(fld "$LASTOUT" ticket_file)" "$_tf"`)
@@ -4332,7 +4351,14 @@ func TestCanaryRunKitStep14StartsTheConsoleBeforeTheMint(t *testing.T) {
 		return -1
 	}
 	for name, b := range map[string]*canaryBlock{"first epoch": first, "second epoch": secondEpoch} {
-		shown, keyed, minted := lineOf(b, console), lineOf(b, "wait for Enter: Owner: press Enter when the console is up"), lineOf(b, "run: build/canary/ataniqd canary ticket")
+		// The viewer's epoch prints the command with --viewer, the writer's does not.
+		want := console
+		if b == secondEpoch {
+			want += " --viewer"
+		} else if lineOf(b, "--viewer\n") >= 0 || lineOf(b, console+" --viewer") >= 0 {
+			t.Errorf("%s: the writer's console command carries --viewer", name)
+		}
+		shown, keyed, minted := lineOf(b, want), lineOf(b, "wait for Enter: Owner: press Enter when the console is up"), lineOf(b, "run: build/canary/ataniqd canary ticket")
 		if shown < 0 || !(shown < keyed && keyed < minted) {
 			t.Errorf("%s: the dry run does not show the console command with its real folder and ticket file, then wait for Enter, then mint:\n%s", name, strings.Join(b.lines, "\n"))
 		}
