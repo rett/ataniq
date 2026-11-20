@@ -3181,6 +3181,48 @@ func TestCanaryRunKitResetFindsTheRootsProcesses(t *testing.T) {
 	}
 }
 
+// The reset's main flow asks the real /proc: a process that is named ataniqd
+// and runs in the root (a relative config path, so nothing of the root is in
+// its arguments) refuses the reset, in the dry run and without one, and
+// nothing is deleted. Removing the process check from the flow fails this.
+func TestCanaryRunKitResetRefusesWhileADaemonRuns(t *testing.T) {
+	if _, err := os.Stat("/proc/self/cwd"); err != nil {
+		t.Skip("no /proc")
+	}
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep")
+	}
+	e := canaryStubKit(t)
+	r := e.prepared(t)
+	start := func(dir string, args ...string) {
+		t.Helper()
+		cmd := &exec.Cmd{Path: sleep, Args: append([]string{"ataniqd"}, args...), Dir: dir}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	}
+	// One of this user in another folder is not this root's.
+	start(e.dir, "300")
+	if out, code := e.run(t, canaryResetScript, "", "--root", r, "--bin", e.bin, "--dry"); code != 0 {
+		t.Fatalf("a daemon elsewhere refused the dry run: exit status %d:\n%s", code, out)
+	}
+	start(r, "300")
+	for _, more := range [][]string{{"--dry"}, nil} {
+		out, code := e.run(t, canaryResetScript, "", append([]string{"--root", r, "--bin", e.bin}, more...)...)
+		if code == 0 || !strings.Contains(out, "ataniqd or ataniq-holder of this root runs") {
+			t.Errorf("%v: exit status %d, want the refusal of the process check:\n%s", more, code, out)
+		}
+		if strings.Contains(out, "DELETE") || strings.Contains(out, "Type the word") {
+			t.Errorf("%v: the reset went on:\n%s", more, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r, "state/leads/throwaway-one-lead/home/file")); err != nil {
+		t.Errorf("a refusal deleted the provisioned state: %v", err)
+	}
+}
+
 // The word typed in a terminal deletes, and the script's part is what it
 // shows: this runs it under util-linux script, which gives it a terminal, and
 // types the words from the test. It is skipped where script cannot.
