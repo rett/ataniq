@@ -155,8 +155,11 @@ with the reason when the fact is not true; the lead types nothing for it:
 
 The lead still types `yes` where no file holds the fact: that no agent session
 was told about the slice (step 1); that the probe reported once and every
-assertion is ok except 10 (step 12, since `holder.json` keeps the waiver, the
-version and the digest and not the results); that the daemon's start line and
+assertion is ok except 10 (step 12: the holder writes `sandbox_started` only
+after its own judgement of the probe's report passed with every assertion
+required, and the script reads that, but `holder.json` keeps no result and no
+file the script reads shows that the probe reported once, so the lead's word
+stays as a second reading of the report); that the daemon's start line and
 hello list the canary operations (step 10); and, in pass B, that each finding
 of pass A has its fix merged. The owner's prompts are as before: reading the
 template, the sign-off, the paste, the deletions and every other `Owner:`

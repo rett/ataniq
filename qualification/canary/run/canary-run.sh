@@ -1646,9 +1646,13 @@ step_12() {
         ;;
     esac
   fi
-  # The probe's report and the result of each assertion are in no file this
-  # step can read: holder.json keeps the waiver, the version and the digest,
-  # not the results. The lead's word stays for those.
+  # What the check above covers: the holder writes sandbox_started=true only
+  # after its own judgement of the probe's report passed with every assertion
+  # required (a result that is failed, not checked or missing is a problem; only
+  # assertion 10, and only in canary mode, is excused, with the waiver). What it
+  # does not cover is the report itself: holder.json keeps no result, and this
+  # script reads no file that shows the probe reported once. The lead's word
+  # stays as a reading of the probe's report, a second one next to the holder's.
   affirm 'Lead: the probe reported once and every assertion is ok except 10' yes || return 0
   result ok
   done_step

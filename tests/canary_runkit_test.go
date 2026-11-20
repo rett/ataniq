@@ -1966,6 +1966,30 @@ func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
 	}
 }
 
+// The step 12 word is kept, and what the machine check covers is said: the
+// holder writes sandbox_started only after its own gate passed. The comment and
+// the README must not say that the probe's result is "in no file".
+func TestCanaryRunKitStep12SaysWhatTheCheckCovers(t *testing.T) {
+	script := canaryScriptText(t)
+	readme, err := os.ReadFile(filepath.Join(root(t), "qualification/canary/run/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(script, "are in no file") {
+		t.Error("the script says the probe's results are in no file")
+	}
+	for _, want := range []string{"sandbox_started=true only", "assertion 10, and only in canary mode", "affirm 'Lead: the probe reported once and every assertion is ok except 10'"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the script lacks %q", want)
+		}
+	}
+	for _, want := range []string{"the holder writes `sandbox_started` only", "required, and the script reads that"} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("the README lacks %q", want)
+		}
+	}
+}
+
 func TestCanaryRunKitLoadedUnitsLeaveSlicesOut(t *testing.T) {
 	dir := t.TempDir()
 	only := canaryWrite(t, dir, "slices.txt", "ataniq-qualify-ab12.slice loaded active active x\nataniq-old.slice loaded inactive dead y\n")
