@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,40 +162,50 @@ func (w *e2eWorld) spec(digest, mode string) *argSpec {
 	return a
 }
 
-// noLaunch is a launcher that fails the test when it is called.
-type noLaunch struct{ t *testing.T }
-
-func (l noLaunch) Launch([]string) (sandboxstart.Child, error) {
-	l.t.Error("the probe of the plan's digest launched a process")
-	return nil, errors.New("no launch")
-}
-
-// pinDigest finds the profile digest of the plan the holder will build for this
-// command line. It asks the start sequence itself, over the fake system, with
-// the pin at sixty-four zeros and the fields the holder fills in: the sequence
-// refuses at the step verify-plan, before anything is launched, and the refusal
-// names the digest. The holder is not started, so nothing is left in its state
-// folder (the mark lead-has-run included, which the test never makes or
-// removes).
+// pinDigest is the profile digest of the plan the holder will build for this
+// world's command line: sandboxstart.ProfileDigest over the inputs with the
+// fields the holder fills in from that command line (the agent's vector and its
+// environment, converted as the holder converts it). The holder is not started,
+// so nothing is left in its state folder. TestCanaryHolderRefusesAWrongPin holds
+// that the holder's own start computes the same digest.
 func (w *e2eWorld) pinDigest() string {
 	t := w.t
 	t.Helper()
+	a := w.spec("", w.pair.Mode)
 	in := w.in
-	in.AgentArgv = []string{"/ataniq/agent/bin/stand-in", "--sample"}
-	in.AgentEnv = []profile.EnvVar{{Name: "SAMPLE_FLAG", Value: "on"}}
-	in.ExpectedDigest = strings.Repeat("0", 64)
-	in.HolderPaths = []string{filepath.Join(w.runtime, serve.AttachSocket), filepath.Join(w.runtime, serve.ControlSocket)}
-	in.NoLeadHasRun = true
-	_, err := sandboxstart.Run(context.Background(), in, w.sys, noLaunch{t})
-	if err == nil {
-		t.Fatal("the probe of the plan's digest was not refused")
+	in.AgentArgv = append([]string(nil), a.agent...)
+	in.AgentEnv = sandboxstart.AgentEnvOf(a.env)
+	uid, gid := w.sys.IDs()
+	d, err := sandboxstart.ProfileDigest(in, uid, gid)
+	if err != nil {
+		t.Fatal(err)
 	}
-	m := pinnedDigest.FindStringSubmatch(err.Error())
+	return d
+}
+
+// A start pinned to the wrong digest is refused at the step verify-plan, before
+// anything is launched, and the refusal names the digest the holder really
+// computed, which is the one pinDigest gives.
+func TestCanaryHolderRefusesAWrongPin(t *testing.T) {
+	w := newE2EWorld(t)
+	want := w.pinDigest()
+	wrong := strings.Repeat("0", 64)
+	if want == wrong {
+		t.Fatal("the real digest is the wrong pin")
+	}
+	if code := w.runNow(w.spec(wrong, w.pair.Mode).build()); code != exitSandbox {
+		t.Fatalf("the start with the wrong pin exited %d; stderr: %s", code, w.errbuf.String())
+	}
+	m := pinnedDigest.FindStringSubmatch(w.errbuf.String())
 	if m == nil {
-		t.Fatalf("the refusal does not name the digest: %v", err)
+		t.Fatalf("the refusal does not name the digest: %s", w.errbuf.String())
 	}
-	w.sys.reset()
-	return m[1]
+	if m[1] != want {
+		t.Errorf("the holder computed %s, pinDigest says %s", m[1], want)
+	}
+	if n := len(w.launches()); n != 0 {
+		t.Errorf("the refused start launched %d times", n)
+	}
 }
 
 // startHolder runs the holder with the stand-in in place of the plan's process,

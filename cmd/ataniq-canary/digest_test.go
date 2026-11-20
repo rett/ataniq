@@ -4,13 +4,15 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision/provisiontest"
+	"ataniq/internal/leadregistry"
 	"ataniq/internal/leadholder/sandboxstart"
-	"ataniq/internal/leadsandbox/profile"
 )
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}\n$`)
@@ -39,26 +41,57 @@ func TestProfileDigestIsOneHexLineAndStable(t *testing.T) {
 	}
 }
 
+// holderEnvPairs are the --env arguments of the holder command line that the
+// daemon's real builder makes from the world's config: what the holder receives.
+func holderEnvPairs(t *testing.T, w *provisiontest.World) []string {
+	t.Helper()
+	h, err := leadcanary.NewHolderCommand(w.Cfg, filepath.Join(w.State, "daemon.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := w.Cfg.Role
+	argv, _, _, err := h.Build(role,
+		leadregistry.Entry{Role: role, Epoch: 1},
+		leadregistry.Intent{ID: "0123456789abcdef0123456789abcdef", Epoch: 1, UnitName: role.UnitName()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pairs []string
+	for i := 0; i+1 < len(argv) && argv[i] != "--"; i++ {
+		if argv[i] == "--env" {
+			pairs = append(pairs, argv[i+1])
+			i++
+		}
+	}
+	return pairs
+}
+
+// The digest the command prints is the digest of the inputs with the
+// environment the holder really receives: the --env arguments of the command
+// line that the daemon's HolderCommand builds for this config, converted by the
+// function the holder converts them with. The sandboxstart tests hold that the
+// function's answer is the digest of the start's own plan.
 func TestProfileDigestIsWhatTheHoldersFunctionSays(t *testing.T) {
 	w := provisiontest.New(t)
-	w.Cfg.Agent.Env = []string{"SAMPLE_FLAG=one", "SAMPLE_OTHER=two"}
+	w.Cfg.Agent.Env = []string{"SAMPLE_FLAG=one", "SAMPLE_OTHER=two=three"}
 	w.WriteConfig(t)
 	got := mustDigest(t, w, nil)
 
-	// The holder gives the inputs the config's environment and calls this one
-	// function; the sandboxstart tests hold that its answer is the digest of the
-	// start's own plan.
+	pairs := holderEnvPairs(t, w)
+	if len(pairs) != 2 {
+		t.Fatalf("the holder command has the --env pairs %q, want the config's two", pairs)
+	}
 	in, err := sandboxstart.ReadInputs(inputsFile(t, w, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	in.AgentEnv = []profile.EnvVar{{Name: "SAMPLE_FLAG", Value: "one"}, {Name: "SAMPLE_OTHER", Value: "two"}}
+	in.AgentEnv = sandboxstart.AgentEnvOf(pairs)
 	want, err := sandboxstart.ProfileDigest(in, uint32(os.Geteuid()), uint32(os.Getegid()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != want {
-		t.Fatalf("the command printed %s, the function says %s", got, want)
+		t.Fatalf("the command printed %s, the holder's inputs give %s", got, want)
 	}
 	// The environment is part of the digest, and its value is not printed.
 	w.Cfg.Agent.Env = nil
