@@ -122,17 +122,38 @@ func checkInputs(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 	return checkMarkerInSettings(in)
 }
 
+// The names of the holder's two sockets in its runtime folder, as the serving
+// package names them (serve.AttachSocket and serve.ControlSocket). They are
+// kept here because provision does not import the serving package, which pulls
+// in the session pane and the rest of the holder's serving code; a test pins
+// the two names to the serving package's constants.
+const (
+	attachSocket  = "attach.sock"
+	controlSocket = "control.sock"
+)
+
+// holderSocketPaths are the two sockets the holder serves in the runtime
+// folder of the inputs' layout. The holder adds them to the paths the spec
+// checks, and so to the spec's list of mount substrings, whose size is
+// limited: leaving them out would let a long never_mounted list through that
+// the holder then refuses.
+func holderSocketPaths(runtimeRoot, layoutRole string) []string {
+	rt := sandboxstart.RuntimeFolder(runtimeRoot, layoutRole)
+	return []string{filepath.Join(rt, attachSocket), filepath.Join(rt, controlSocket)}
+}
+
 // checkTrial runs the spec trial of the holder's validate step on the inputs
 // with the fields the holder sets from the config (cmd/ataniq-holder: the
-// agent's command line and environment and the pinned digest; its two socket
-// paths only add to the names the spec checks and need the serving package).
-// The refusal names the field of the profile or the spec, or says the text of
-// the fixed refusals of that step that are not about a field; it never holds a
-// value of the file.
+// agent's command line and environment and the pinned digest) and its two
+// socket paths, which come from the inputs' runtime folder (see
+// [holderSocketPaths]). The refusal names the field of the profile or the
+// spec, or says the text of the fixed refusals of that step that are not about
+// a field; it never holds a value of the file.
 func checkTrial(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 	in.AgentArgv = append([]string(nil), cfg.Agent.Argv...)
 	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.Agent.Env)
 	in.ExpectedDigest = cfg.Holder.ProfileDigest
+	in.HolderPaths = holderSocketPaths(in.RuntimeRoot, in.LayoutRole)
 	err := sandboxstart.TrialValidate(in, uint32(os.Geteuid()), uint32(os.Getegid()))
 	if err == nil {
 		return nil
