@@ -233,7 +233,8 @@ path.
   footer mode and arguments, the model argument among them: step 15 prints the
   arguments and the owner confirms the model.
 - `holder.profile_digest` is the pinned digest of the profile, 64 hex digits;
-  the holder refuses a plan whose digest differs.
+  the holder refuses a plan whose digest differs. Compute it with
+  `ataniq-canary profile-digest --config CONFIG --inputs FILE`.
 - The five limits are required and have no default. The values shown are the
   proposed ones: a ceiling of 4 GiB, no swap, 512 tasks, a floor of 1 GiB and a
   share of one half.

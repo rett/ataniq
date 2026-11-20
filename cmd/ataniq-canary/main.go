@@ -9,6 +9,7 @@
 //	ataniq-canary replay-on --config CONFIG
 //	ataniq-canary show --config CONFIG
 //	ataniq-canary check-inputs --config CONFIG --inputs FILE
+//	ataniq-canary profile-digest --config CONFIG --inputs FILE
 //	ataniq-canary fields --file FILE
 //	ataniq-canary scrub-screen --file FILE
 //	ataniq-canary --version
@@ -21,7 +22,9 @@
 // allowed after a first start. show and check-inputs change nothing: show
 // prints the values of the config that the attended run script needs, as
 // key=value lines, and check-inputs checks the sandbox inputs file against the
-// config (show.go). Those four read the config with leadcanary.ReadConfig.
+// config, and profile-digest prints the sandbox profile digest the holder will
+// compute for the config and the inputs file, to pin in holder.profile_digest
+// (show.go). Those five read the config with leadcanary.ReadConfig.
 // fields and scrub-screen read one JSON file and no config: fields prints its
 // values as lines, and scrub-screen replaces the screen text in a copy of the
 // holder's final record by its hash (jsonfile.go). The work of provisioning is
@@ -56,6 +59,7 @@ const usage = `usage: ataniq-canary provision --config CONFIG
        ataniq-canary replay-on --config CONFIG
        ataniq-canary show --config CONFIG
        ataniq-canary check-inputs --config CONFIG --inputs FILE
+       ataniq-canary profile-digest --config CONFIG --inputs FILE
        ataniq-canary fields --file FILE
        ataniq-canary scrub-screen --file FILE
        ataniq-canary --version`
@@ -80,7 +84,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, getenv func(
 	}
 	sub := args[0]
 	switch sub {
-	case "provision", "replay-on", "show", "check-inputs":
+	case "provision", "replay-on", "show", "check-inputs", "profile-digest":
 	case "fields", "scrub-screen":
 		return runFile(sub, args[1:], out, errOut)
 	default:
@@ -92,11 +96,12 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, getenv func(
 	config := fl.String("config", "", "the canary config file")
 	inputs := new(string)
 	need := "--config CONFIG is"
-	if sub == "check-inputs" {
+	withInputs := sub == "check-inputs" || sub == "profile-digest"
+	if withInputs {
 		inputs = fl.String("inputs", "", "the sandbox inputs file")
 		need = "--config CONFIG and --inputs FILE are"
 	}
-	if err := fl.Parse(args[1:]); err != nil || fl.NArg() != 0 || *config == "" || (sub == "check-inputs" && *inputs == "") {
+	if err := fl.Parse(args[1:]); err != nil || fl.NArg() != 0 || *config == "" || (withInputs && *inputs == "") {
 		fmt.Fprintf(errOut, "ataniq-canary %s: %s required and nothing else is accepted\n%s\n", sub, need, usage)
 		return exitUsage
 	}
@@ -116,6 +121,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, getenv func(
 		err = show(cfg, out)
 	case "check-inputs":
 		err = checkInputs(cfg, *inputs, out)
+	case "profile-digest":
+		err = profileDigest(cfg, *inputs, out)
 	default:
 		err = provision.ReplayOn(cfg, opts)
 	}

@@ -52,3 +52,36 @@ func (in Inputs) profileInputs(uid, gid uint32) (profile.Inputs, error) {
 	}
 	return pin, nil
 }
+
+// checkedProfileInputs is the first part of the start's validate step and the
+// whole of ProfileDigest: the checks of the file's own values, the profile's
+// inputs built from them and the profile's own validation. The order is the
+// start's, so a refusal is the same in both.
+func (in Inputs) checkedProfileInputs(uid, gid uint32) (profile.Inputs, error) {
+	if err := in.checkFields(); err != nil {
+		return profile.Inputs{}, err
+	}
+	pin, err := in.profileInputs(uid, gid)
+	if err != nil {
+		return profile.Inputs{}, err
+	}
+	if err := pin.Validate(); err != nil {
+		return profile.Inputs{}, err
+	}
+	return pin, nil
+}
+
+// ProfileDigest is the sandbox profile digest of the inputs: the digest the
+// plan of Run carries (Started.ProfileDigest) and the one a pin
+// (Inputs.ExpectedDigest) is compared with. It is computed from the inputs
+// alone, with the same code as the start's validate step, and reads no file
+// and starts nothing. The caller sets AgentEnv as the holder does, because the
+// extra environment variables are part of the digest. uid and gid are the
+// calling user's; the digest does not cover them.
+func ProfileDigest(in Inputs, uid, gid uint32) (string, error) {
+	pin, err := in.checkedProfileInputs(uid, gid)
+	if err != nil {
+		return "", err
+	}
+	return pin.Digest()
+}
