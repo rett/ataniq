@@ -39,21 +39,22 @@ func TestALeftoverInAFolderThatWouldBeKeptRefusesTheRun(t *testing.T) {
 	}
 	same := func(f func(p Paths) string) place { return place{in: f, named: f} }
 	cases := map[string]place{
-		"a skill":                 same(func(p Paths) string { return p.LeadSkills }),
-		"a file in the home":      same(func(p Paths) string { return p.Home }),
-		"an assignment":           same(func(p Paths) string { return p.AssignmentDir }),
-		"a projection":            same(func(p Paths) string { return p.ProjectionDir }),
-		"a record":                same(func(p Paths) string { return p.Records }),
-		"a request":               same(func(p Paths) string { return p.Requests }),
-		"a mail":                  same(func(p Paths) string { return p.Mail }),
-		"a letter in the mailbox": same(func(p Paths) string { return p.Mailbox }),
-		"a published file":        same(func(p Paths) string { return p.Published }),
-		"a second identity file":  same(func(p Paths) string { return p.GitIdentityDir }),
-		"a file in the tree":      same(func(p Paths) string { return p.Tree }),
-		"a folder in the install": {in: func(p Paths) string { return p.QargiInstall }, named: func(p Paths) string { return p.QargiInstall }, folder: true},
-		"another config folder":   {in: func(p Paths) string { return p.ConfigRoot }, named: func(p Paths) string { return p.ConfigRoot }, folder: true},
-		"a file in the config":    {in: func(p Paths) string { return p.ConfigDir }, named: func(p Paths) string { return p.ConfigRoot }},
-		"a screen":                {in: func(p Paths) string { return p.ReplayDir }, named: func(p Paths) string { return p.Home }},
+		"a skill":                   same(func(p Paths) string { return p.LeadSkills }),
+		"a file in the home":        same(func(p Paths) string { return p.Home }),
+		"an assignment":             same(func(p Paths) string { return p.AssignmentDir }),
+		"a projection":              same(func(p Paths) string { return p.ProjectionDir }),
+		"a record":                  same(func(p Paths) string { return p.Records }),
+		"a request":                 same(func(p Paths) string { return p.Requests }),
+		"a mail":                    same(func(p Paths) string { return p.Mail }),
+		"a letter in the mailbox":   same(func(p Paths) string { return p.Mailbox }),
+		"a published file":          same(func(p Paths) string { return p.Published }),
+		"a lock in the role folder": same(func(p Paths) string { return p.RoleDir }),
+		"a second identity file":    same(func(p Paths) string { return p.GitIdentityDir }),
+		"a file in the tree":        same(func(p Paths) string { return p.Tree }),
+		"a folder in the install":   {in: func(p Paths) string { return p.QargiInstall }, named: func(p Paths) string { return p.QargiInstall }, folder: true},
+		"another config folder":     {in: func(p Paths) string { return p.ConfigRoot }, named: func(p Paths) string { return p.ConfigRoot }, folder: true},
+		"a file in the config":      {in: func(p Paths) string { return p.ConfigDir }, named: func(p Paths) string { return p.ConfigRoot }},
+		"a screen":                  {in: func(p Paths) string { return p.ReplayDir }, named: func(p Paths) string { return p.Home }},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -123,16 +124,20 @@ func TestTheSharedParentsMayHoldOtherThingsAndEmptyFoldersAreKept(t *testing.T) 
 		filepath.Join(p.LeadsDir, "throwaway-two-lead", "home"),
 		filepath.Join(p.MailboxesDir, "throwaway-two-lead"),
 		filepath.Join(p.PublishedDir, "throwaway-two"),
+		filepath.Join(p.RolesDir, "throwaway-two"),
 		filepath.Join(p.LeadDir, "note-of-the-owner"),
 	}
 	for _, d := range others {
 		mkdirs(t, w, d)
 	}
 	provisiontest.WriteFile(t, filepath.Join(others[0], "kept.txt"), []byte("other lead\n"), 0o600)
+	// The lock of another role lies in the roles folder, beside the folders of
+	// the projects.
+	provisiontest.WriteFile(t, filepath.Join(p.RolesDir, "supervisor.lock"), nil, 0o600)
 	// Folders of this lead that an earlier, failed run made and left empty.
 	// None of them holds another: a kept folder that holds even an empty
 	// folder is refused, as the test of the home below shows.
-	empties := []string{p.Holder, p.Tree, p.LeadSkills, p.ConfigRoot, p.Mailbox, p.Published, p.AssignmentDir}
+	empties := []string{p.Holder, p.Tree, p.LeadSkills, p.ConfigRoot, p.Mailbox, p.Published, p.AssignmentDir, p.RoleDir}
 	for _, d := range empties {
 		mkdirs(t, w, d)
 	}

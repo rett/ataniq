@@ -16,6 +16,7 @@ import (
 	"ataniq/internal/leadcanary/provision/provisiontest"
 	"ataniq/internal/leadcanary/standin"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadsandbox/mountpoints"
 	"ataniq/internal/leadsandbox/profile"
 )
@@ -62,6 +63,7 @@ func folderPaths(p Paths) []string {
 	return []string{
 		p.LeadsDir, p.LeadDir, p.Holder, p.Home, p.ConfigRoot, p.ConfigDir, p.Tree, p.GitMeta,
 		p.Records, p.Requests, p.Mail, p.MailboxesDir, p.Mailbox, p.PublishedDir, p.Published, p.MirrorsDir,
+		p.RolesDir, p.RoleDir,
 		p.LeadSkills, p.GitIdentityDir, p.QargiInstall, p.AssignmentDir, p.ProjectionDir,
 		p.ReplayDir, p.RuntimeRoot, p.RuntimeLeads, p.RuntimeFolder,
 	}
@@ -416,5 +418,43 @@ func TestAnExistingFileAtAMadePathIsRefused(t *testing.T) {
 	}
 	if got := readString(t, p.GitIdentityFile); got != "[user]\n\tname = x\n" {
 		t.Fatal("the existing file was replaced")
+	}
+}
+
+// The holder takes the role lock with an open that makes the file and not its
+// folder, and only the lead's provisioning can make the folder: the first
+// attended run's holder refused for the want of it. The test takes the lock the
+// way the holder does, in the tree provisioning made, with no folder made by
+// hand. Without the folder it fails with "no such file or directory".
+func TestTheHoldersRoleLockCanBeTakenInTheTreeProvisioningMade(t *testing.T) {
+	w, p, lines := provisioned(t)
+	if want := w.Cfg.Role.LockPath(w.State); p.RoleLock != want {
+		t.Fatalf("the lock is %s, the holder's --role-lock is %s", p.RoleLock, want)
+	}
+	if want := filepath.Join(w.State, "roles", "throwaway-one", "lead.lock"); p.RoleLock != want {
+		t.Errorf("the lock is %s, want %s", p.RoleLock, want)
+	}
+	// The folder is made, and the lock file is not: the holder makes it.
+	if exists(p.RoleLock) {
+		t.Errorf("provisioning made the lock file %s", p.RoleLock)
+	}
+	joined := "\n" + strings.Join(lines, "\n") + "\n"
+	for _, d := range []string{p.RolesDir, p.RoleDir} {
+		if !strings.Contains(joined, "\nmade folder "+d+"\n") {
+			t.Errorf("no line says that %s was made", d)
+		}
+	}
+	lock, err := session.TakeRoleLock(p.RoleLock)
+	if err != nil {
+		t.Fatalf("TakeRoleLock in the provisioned tree: %v", err)
+	}
+	defer lock.Close()
+	fi := lstat(t, p.RoleLock)
+	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Errorf("the lock file is %v, want a regular file of mode 0600", fi.Mode())
+	}
+	// A second holder for the role is refused, so the file is the lock.
+	if _, err := session.TakeRoleLock(p.RoleLock); !errors.Is(err, session.ErrRoleLocked) {
+		t.Errorf("a second TakeRoleLock: %v, want ErrRoleLocked", err)
 	}
 }

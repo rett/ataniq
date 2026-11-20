@@ -35,6 +35,7 @@ func madePaths(t *testing.T, w *provisiontest.World) []plantable {
 	for _, d := range []string{
 		p.LeadsDir, p.LeadDir, p.Holder, p.Home, p.ConfigRoot, p.ConfigDir, p.Tree, p.GitMeta, p.GitMeta + gitMetaTmpSuffix,
 		p.Records, p.Requests, p.Mail, p.MailboxesDir, p.Mailbox, p.PublishedDir, p.Published,
+		p.RolesDir, p.RoleDir,
 		p.LeadSkills, p.GitIdentityDir, p.QargiInstall, p.AssignmentDir, p.ProjectionDir, p.ReplayDir,
 	} {
 		out = append(out, plantable{d, true, p.StateRoot})
@@ -65,7 +66,7 @@ func madePaths(t *testing.T, w *provisiontest.World) []plantable {
 
 func TestAPlantedSymlinkAtAnyMadePathRefusesTheRun(t *testing.T) {
 	probe := madePaths(t, provisiontest.New(t))
-	if len(probe) < 35 {
+	if len(probe) < 37 {
 		t.Fatalf("only %d paths listed; the test would show little", len(probe))
 	}
 	for i := range probe {
