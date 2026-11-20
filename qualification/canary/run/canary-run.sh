@@ -40,8 +40,14 @@
 # A step that waits for something the owner starts or stops in another
 # terminal (the daemon at step 10 and step 26, the console's ticket at step 14,
 # the listeners at steps 6 and 24) asks for it again every second for up to 60
-# seconds instead of failing at once; the two variables CANARY_RUN_WAIT_TRIES
-# and CANARY_RUN_WAIT_INTERVAL change that for the tests only. The script
+# seconds instead of failing at once. Each ask of the daemon's status is cut
+# off by timeout(1) after 5 seconds (a socket that accepts and never answers
+# would otherwise hold each ask for about 10 seconds, the binary's own limit),
+# and the wait as a whole ends after the 60 seconds plus one such ask, so the
+# longest wait is about 65 seconds. The three variables CANARY_RUN_WAIT_TRIES,
+# CANARY_RUN_WAIT_INTERVAL and CANARY_RUN_STATUS_TIMEOUT change that for the
+# test entry --self-test only: a real run (and --dry) ignores them, so that
+# nothing in the environment can shorten what the script waits for. The script
 # still answers nothing and starts nothing: it only watches.
 #
 # The steps and their numbers are the plan's table. The failure path: in pass
@@ -89,6 +95,8 @@ usage() {
     '                      a path prompt with its hint, and a typed word with the hint file in place' \
     '         wait-daemon | stop-daemon | roots-deleted STATE RUNTIME' \
     '                      the polling and the asking again of steps 10 and 26 (stub ataniqd in build/canary)' \
+    '         ticket-taken FILE' \
+    '                      whether step 14 takes the ticket file for taken (an empty name never is)' \
     '         open-runs LIST REPO | unread-runs LIST | list-scan LIST | loaded-units FILE | tracked-changes FILE' \
     '         unit-facts FIELDS | plan-facts FIELDS | holder-start FIELDS VERSION DIGEST' \
     '         upstream-id FILE NAME | lead-id FILE ROLE BRANCH' \
@@ -125,10 +133,19 @@ if [ "$FAILAT" -ne 0 ] && [ "$DRY" -ne 1 ]; then
 fi
 
 # How long a step waits for what the owner starts or stops in another terminal:
-# WAIT_TRIES asks, WAIT_INTERVAL seconds apart (60 asks, one second apart). The
-# two variables are for the tests only, which make it short.
-WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}
-WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}
+# WAIT_TRIES asks, WAIT_INTERVAL seconds apart (60 asks, one second apart), and
+# an ask of the daemon's status is cut off after STATUS_TIMEOUT seconds. The
+# three variables are read by the test entry (--self-test) only, which makes
+# the wait short; a real run keeps the values here whatever the environment
+# holds.
+WAIT_TRIES=60
+WAIT_INTERVAL=1
+STATUS_TIMEOUT=5
+if [ "$SELFTEST" -eq 1 ]; then
+  WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}
+  WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}
+  STATUS_TIMEOUT=${CANARY_RUN_STATUS_TIMEOUT:-5}
+fi
 case $WAIT_TRIES in '' | *[!0-9]*)
   printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_TRIES is not a number' >&2
   exit 2
@@ -136,6 +153,11 @@ case $WAIT_TRIES in '' | *[!0-9]*)
 esac
 case $WAIT_INTERVAL in '' | *[!0-9.]* | *.*.* | .)
   printf '%s\n' 'canary-run.sh: CANARY_RUN_WAIT_INTERVAL is not a number of seconds' >&2
+  exit 2
+  ;;
+esac
+case $STATUS_TIMEOUT in '' | *[!0-9]* | 0)
+  printf '%s\n' 'canary-run.sh: CANARY_RUN_STATUS_TIMEOUT is not a number of seconds above 0' >&2
   exit 2
   ;;
 esac
@@ -709,18 +731,23 @@ was_done() { case $DONE_STEPS in *" $1 "*) return 0 ;; esac; return 1; }
 # script only watches: it asks quietly, answers nothing and starts nothing.
 
 # poll_until WHAT COMMAND [ARG...] runs COMMAND (output dropped) until it
-# succeeds, for at most WAIT_TRIES more asks, WAIT_INTERVAL seconds apart. It
-# says "waiting for WHAT..." once, and only when the first ask did not
-# succeed, then prints a dot for every 5 asks. It returns 0 as soon as COMMAND
-# succeeds and 1 after the last ask; the caller decides what a failure is.
+# succeeds, for at most WAIT_TRIES more asks, WAIT_INTERVAL seconds apart, and
+# no longer than WAIT_TRIES * WAIT_INTERVAL seconds (rounded up) plus the one
+# ask's own limit, whatever the asks take: a command that hangs is cut off by
+# its caller (daemon_answers, daemon_gone), and the clock ends the wait. It says
+# "waiting for WHAT..." once, and only when the first ask did not succeed, then
+# prints a dot for every 5 asks. It returns 0 as soon as COMMAND succeeds and 1
+# after the last ask; the caller decides what a failure is.
 poll_until() {
   _puw=$1
   shift
+  _pul=$(awk -v t="$WAIT_TRIES" -v i="$WAIT_INTERVAL" -v c="$STATUS_TIMEOUT" 'BEGIN { x = t * i; n = int(x); if (n < x) n++; print n + c }')
+  _pus=$(date +%s)
   if "$@" >/dev/null 2>&1; then return 0; fi
   out "   waiting for $_puw..."
   _pun=0
   _pud=0
-  while [ "$_pun" -lt "$WAIT_TRIES" ]; do
+  while [ "$_pun" -lt "$WAIT_TRIES" ] && [ $(($(date +%s) - _pus)) -le "$_pul" ]; do
     sleep "$WAIT_INTERVAL"
     _pun=$((_pun + 1))
     if "$@" >/dev/null 2>&1; then
@@ -740,21 +767,27 @@ poll_until() {
 
 # daemon_answers succeeds while a daemon answers at the socket, and
 # daemon_gone when none does (the status's exit status 20). Both leave the
-# status's exit status in DAEMON_RC.
-daemon_answers() {
+# status's exit status in DAEMON_RC. Each ask is run by timeout(1) (coreutils,
+# as sha256sum and stat are) and cut off after STATUS_TIMEOUT seconds, which
+# gives the exit status 124: a socket that accepts and never answers is then
+# neither an answering daemon nor a gone one.
+daemon_status() {
   DAEMON_RC=0
-  "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+  timeout -k 1 "$STATUS_TIMEOUT" "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+}
+daemon_answers() {
+  daemon_status
   [ "$DAEMON_RC" -eq 0 ]
 }
 daemon_gone() {
-  DAEMON_RC=0
-  "$BIN/ataniqd" status --socket "$SOCK" >/dev/null 2>&1 || DAEMON_RC=$?
+  daemon_status
   [ "$DAEMON_RC" -eq 20 ]
 }
 
 # ticket_taken succeeds when the ticket file $1 is absent or empty: the
-# console empties it when it takes the single-use ticket. Nothing is read.
-ticket_taken() { [ ! -s "$1" ]; }
+# console empties it when it takes the single-use ticket. Nothing is read. An
+# empty name is no file, so it never counts as taken.
+ticket_taken() { [ -n "$1" ] && [ ! -s "$1" ]; }
 
 # root_present reports whether the path $1 is there, a dangling link too.
 root_present() { [ -e "$1" ] || [ -L "$1" ]; }
@@ -1167,6 +1200,12 @@ self_test() {
       TTY_ASSUMED=1
       chain_trap
       if wait_key 'The test entry waits as the clean-up chain does.'; then out key; else out no-key; fi
+      ;;
+    ticket-taken)
+      # FILE (which may be an empty string): whether step 14 takes the ticket
+      # file for taken. It looks at the size of the file and reads nothing.
+      [ "$#" -eq 1 ] || usage
+      if ticket_taken "$1"; then out taken; else out waiting; fi
       ;;
     wait-daemon)
       # No value. It asks the ataniqd of build/canary in the current folder
@@ -1962,7 +2001,7 @@ step_10() {
   wait_key 'Owner: start the daemon now, yourself; then come back here.'
   DAEMON_UP=1
   if [ "$DRY" -eq 1 ]; then
-    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s, say \"waiting for the daemon to listen...\" once and print a dot every 5 s; go on as soon as it answers"
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s (each ask cut off by timeout after 5 s, so about 65 s at most), say \"waiting for the daemon to listen...\" once and print a dot every 5 s; go on as soon as it answers"
   else
     poll_until 'the daemon to listen' daemon_answers || :
   fi
@@ -2165,7 +2204,10 @@ step_14() {
     dry "watch the ticket file $_tf every second for up to 60 s: the console empties it when it takes the ticket (no content is read); say what was seen and go on to the question either way"
   else
     out '   The script now watches the ticket file, which the console empties when it takes the ticket.'
-    if poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
+    if [ -z "$_tf" ]; then
+      out '   the ticket result names no ticket file, so there is nothing to watch (the question below is still yours to answer)'
+      note 'the ticket result named no ticket file'
+    elif poll_until 'the console to take the ticket' ticket_taken "$_tf"; then
       out '   ok: the ticket was taken'
       note 'the console took the ticket (the ticket file is empty)'
     else
@@ -2696,7 +2738,7 @@ step_26() {
     dry 'ask and record the answer and the time: Owner and lead: look at the lines listed, and remove from the evidence what holds a login URL or code; type clean when the evidence holds none'
     dry "remove the scratch folder of the intake's verify"
     dry "wait for Enter: Owner: stop the daemon yourself (Ctrl-C in its terminal)"
-    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s, say \"waiting for the daemon to stop...\" once and print a dot every 5 s; go on as soon as no daemon answers"
+    dry "ask $BIN/ataniqd status --socket $SOCK every second for up to 60 s (each ask cut off by timeout after 5 s, so about 65 s at most), say \"waiting for the daemon to stop...\" once and print a dot every 5 s; go on as soon as no daemon answers"
     dry "run: $BIN/ataniqd status --socket $SOCK"
     dry 'check: no daemon answers (exit 20); when one still answers do not fail: say "the daemon still answers: stop it with Ctrl-C in its terminal, then press Enter", wait for Enter and ask again, up to 5 more times, recording each ask; fail only after that'
     dry "run: systemctl --user show $UNIT --property=ActiveState --value"

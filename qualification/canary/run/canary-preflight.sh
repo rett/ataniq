@@ -390,7 +390,7 @@ check_mirror_report() {
   fi
 }
 
-# 10. The tools step 3 runs, the sysctl and lingering it reads.
+# 10. The tools step 3 runs and timeout, the sysctl and lingering it reads.
 check_host() {
   _absent=
   for _t in systemctl loginctl git bwrap pasta; do
@@ -400,6 +400,11 @@ check_host() {
     fix "not on PATH (step 3 runs them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
   else
     ok "systemctl, loginctl, git, bwrap and pasta are on PATH"
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    ok "timeout is on PATH (the run cuts off each ask of the daemon's status with it)"
+  else
+    fix "timeout is not on PATH (the run cuts off each ask of the daemon's status with it)" "install coreutils, or put timeout on PATH"
   fi
   _tiocsti=$(cat "$TIOCSTI" 2>/dev/null) || _tiocsti=
   if [ "$_tiocsti" = 0 ]; then

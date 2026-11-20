@@ -86,6 +86,9 @@ time. It opens no browser and holds no credential.
 The steps are those of the plan's table, with the same numbers, 1 to 26. A step
 that a pass does not run is printed as skipped in that pass.
 
+Besides the tools every step names, the polling of the daemon's status uses
+`timeout` of coreutils (the preflight checks that it is on `PATH`).
+
 ### The memory limit at step 11
 
 The unit is created with the three limits of the config. Straight after the
@@ -205,7 +208,14 @@ standard input that is not a terminal.
   empties the ticket file when it takes the ticket; the script asks only
   whether the file is empty, never reads it, and goes on to your question
   whether or not it was seen), and the listeners at steps 6 and 24 (pass B).
-  Step 10 fails, with the old message, only after the minute.
+  Step 10 fails, with the old message, only after the minute. Each ask of the
+  daemon's status is run by `timeout(1)` (coreutils, as `sha256sum` and `stat`
+  are; the preflight checks it is there) and cut off after 5 seconds, which
+  reads as neither "answers" nor "gone" (its exit status 124 is named when step
+  26 fails). Without that cut-off a socket that accepts and never answers would
+  hold each ask for about 10 seconds, the binary's own limit. The wait as a
+  whole ends after the 60 seconds plus one ask's 5 seconds, so a daemon that
+  hangs costs about 65 seconds at most per wait, not 60 asks of 10 seconds.
 - **Step 26 asks again.** A daemon that still answers after your Enter is not a
   failure of the pass: the script says "the daemon still answers: stop it with
   Ctrl-C in its terminal, then press Enter" and asks again, up to 5 more times,
@@ -352,6 +362,7 @@ wrong command line. The checks:
 | `/ataniq` does not exist | Remove it yourself. |
 | The report of `qualify-mirror` exists, parses and names the template's hash (the path: `--mirror-report`, else the hint in `answers.hint`, else `mirror-qual/report.json`) | Run `qualify-mirror` (the commands are printed; the acknowledgement stays yours). |
 | `systemctl`, `loginctl`, `git`, `bwrap` and `pasta` are on `PATH`, the sysctl `dev.tty.legacy_tiocsti` is 0, lingering can be read | The command is printed. |
+| `timeout` (coreutils) is on `PATH`: the run cuts off each ask of the daemon's status with it | Install coreutils, or put `timeout` on `PATH`. |
 | The evidence folder (default `ROOT/evidence`) is writable | `mkdir` it or `chmod` it. |
 
 When ready it prints the three things you type, with the real paths and the
@@ -674,18 +685,24 @@ test entry:
 | `--self-test counters-7501 FIELDS` | The lines of `FIELDS`, which are what `ataniq-canary fields` prints for a final record, that are counters named for 7501, as step 22 prints them, or the line that says there is none. |
 | `--self-test mirror-remote URL PROJECT` | `yes` when `URL` (with or without `file://`) is the mirror's place inside the sandbox for `PROJECT` (`/ataniq/mirror/PROJECT.git`), the one remote step 8 accepts for the lead's tree, and `no` otherwise. |
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
+| `--self-test ticket-taken FILE` | `taken` when the ticket file `FILE` is absent or empty (the console empties it when it takes the ticket), `waiting` when it holds something, and `waiting` for an empty name: step 14 never says "the ticket was taken" for a ticket result that names no file. Only the size is looked at. |
 | `--self-test wait-daemon` | Step 10's polling: it asks the `ataniqd status` of `build/canary` of the current folder as the step does and prints `listens` when it answered within the wait, `silent` when not; "waiting for the daemon to listen..." is said once and a dot follows every 5 asks. |
-| `--self-test stop-daemon` | The daemon's half of step 26: the keys come from standard input, a daemon that still answers is said and asked again up to 5 more times, and the end prints `stopped` or `failed` (the failure that ends the step is printed and returned, not ending the run). |
+| `--self-test stop-daemon` | The daemon's half of step 26: the keys come from standard input, a daemon that still answers is said and asked again up to 5 more times (an end of input is a failure too when a daemon still answers), and the end prints `stopped` or `failed` (the failure that ends the step is printed and returned, not ending the run). |
 | `--self-test roots-deleted STATE RUNTIME` | The roots' half of step 26 the same way: `deleted` or `failed`; a root that is still there is named and asked again up to 5 more times. |
 | `--self-test ask-path HINTFILE KEY` | A path prompt with the hint of `KEY` in `HINTFILE` (it may not exist), the answer read from standard input: prints `answer=` and `source=hint` or `source=typed`. |
 | `--self-test affirm-word HINTFILE WORD` | A typed word asked as every word of the run is, with the hint file in place: `accepted` for exactly `WORD`, `refused` for anything else, an empty answer and the end of the input included. |
 | `--self-test review-verdict FILE HASH`, `mirror-verdict FILE HASH` | What step 4 makes of `FILE` as the template's review or as the report of `qualify-mirror` for the template hash `HASH`: `ok TEXT` or `bad REASON` (uses the `ataniq-canary fields` of `build/canary`). |
 | `--self-test ask-file HINTFILE KEY review\|mirror HASH` | A path prompt of step 4 with its refusals and asking again, the paths read from standard input: prints `accepted PATH` or `failed`. |
 
-Two variables are for the tests only. `CANARY_RUN_WAIT_TRIES` (default 60) and
-`CANARY_RUN_WAIT_INTERVAL` (seconds, default 1) set how long a step waits for
-what the owner does in another terminal: that many asks, that many seconds
-apart; a value that is not a number is refused with exit status 2. For
+Three variables are for the tests only, and only the test entry reads them.
+`CANARY_RUN_WAIT_TRIES` (default 60), `CANARY_RUN_WAIT_INTERVAL` (seconds,
+default 1) and `CANARY_RUN_STATUS_TIMEOUT` (seconds above 0, default 5) set how
+long a step waits for what the owner does in another terminal: that many asks,
+that many seconds apart, each ask of the daemon's status cut off after that many
+seconds; a value that is not a number is refused with exit status 2. They are
+read by `--self-test` and by nothing else: a real run and a `--dry` run keep 60,
+1 and 5 whatever the environment holds, so nothing in the environment can
+shorten what the script waits for. For
 `canary-preflight.sh`, `CANARY_PREFLIGHT_PROC` (default `/proc`),
 `CANARY_PREFLIGHT_TIOCSTI` (default `/proc/sys/dev/tty/legacy_tiocsti`) and
 `CANARY_PREFLIGHT_ATANIQ` (default `/ataniq`) name the places it looks at on the

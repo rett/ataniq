@@ -109,7 +109,7 @@ func canaryRuns(pass string, n int) bool {
 var canaryStubTools = []string{
 	"systemctl", "ss", "loginctl", "git", "bwrap", "pasta", "date", "mkdir", "rmdir", "rm", "cp",
 	"sha256sum", "stat", "awk", "sed", "grep", "cat", "find", "sort", "cut", "tr", "cmp", "diff",
-	"sleep", "env", "mktemp", "id", "sh",
+	"sleep", "env", "mktemp", "id", "sh", "timeout",
 }
 
 // canaryDry runs the script with --dry and the further arguments, as
@@ -3935,6 +3935,8 @@ n=$(cat '%[1]s' 2>/dev/null || echo 0)
 n=$((n + 1))
 echo $n >'%[1]s'
 [ "$1" = status ] || exit 97
+# A socket that accepts and never answers: the ask only ends when it is cut off.
+if [ '%[2]s' = hang ]; then exec sleep 30; fi
 if [ '%[2]s' = up ]; then
   if [ %[3]d -ne 0 ] && [ "$n" -ge %[3]d ]; then exit 0; fi
   exit 20
@@ -3967,7 +3969,7 @@ func (k canaryDaemonKit) calls(t *testing.T) int {
 // to.
 func (k canaryDaemonKit) start(t *testing.T, tries int, args ...string) *canaryKeyWait {
 	t.Helper()
-	env := []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, "CANARY_RUN_WAIT_TRIES=" + strconv.Itoa(tries), "CANARY_RUN_WAIT_INTERVAL=0"}
+	env := []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, "CANARY_RUN_WAIT_TRIES=" + strconv.Itoa(tries), "CANARY_RUN_WAIT_INTERVAL=0", "CANARY_RUN_STATUS_TIMEOUT=1"}
 	return startCanaryKit(t, canaryRunScript, k.dir, env, append([]string{"--self-test"}, args...)...)
 }
 
@@ -4039,14 +4041,27 @@ func canaryLastWord(out string) string {
 // value of the variables is refused, not taken.
 func TestCanaryRunKitWaitDefaultsAndVariables(t *testing.T) {
 	text := canaryScriptText(t)
-	for _, want := range []string{"WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}", "WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}", "ASK_AGAIN=5", `[ $((_pun % 5)) -eq 0 ]`} {
+	for _, want := range []string{"WAIT_TRIES=${CANARY_RUN_WAIT_TRIES:-60}", "WAIT_INTERVAL=${CANARY_RUN_WAIT_INTERVAL:-1}", "STATUS_TIMEOUT=${CANARY_RUN_STATUS_TIMEOUT:-5}", "ASK_AGAIN=5", `[ $((_pun % 5)) -eq 0 ]`} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the script does not hold %q", want)
+		}
+	}
+	// The variables are read in the test entry only: the defaults come first,
+	// and the lines that read the environment are inside the self-test branch.
+	for _, v := range []string{"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_RUN_STATUS_TIMEOUT"} {
+		read := "${" + v + ":-"
+		if n := strings.Count(text, read); n != 1 {
+			t.Fatalf("%s is read %d times, want once", v, n)
+		}
+		at := strings.Index(text, read)
+		if open := strings.LastIndex(text[:at], "if [ \"$SELFTEST\" -eq 1 ]; then"); open < 0 || strings.Contains(text[open:at], "\nfi\n") {
+			t.Errorf("%s is read outside the test entry", v)
 		}
 	}
 	for name, env := range map[string]string{
 		"tries in words": "CANARY_RUN_WAIT_TRIES=many", "negative tries": "CANARY_RUN_WAIT_TRIES=-1",
 		"interval in words": "CANARY_RUN_WAIT_INTERVAL=soon", "two dots": "CANARY_RUN_WAIT_INTERVAL=1.2.3", "a lone dot": "CANARY_RUN_WAIT_INTERVAL=.",
+		"timeout in words": "CANARY_RUN_STATUS_TIMEOUT=soon", "timeout zero": "CANARY_RUN_STATUS_TIMEOUT=0", "timeout with a dot": "CANARY_RUN_STATUS_TIMEOUT=1.5",
 	} {
 		t.Run(name, func(t *testing.T) {
 			k := newCanaryDaemonKit(t, "up", 0)
@@ -4055,13 +4070,85 @@ func TestCanaryRunKitWaitDefaultsAndVariables(t *testing.T) {
 			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, env}
 			out, err := cmd.CombinedOutput()
 			exit, ok := err.(*exec.ExitError)
-			if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "CANARY_RUN_WAIT_") {
+			if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), strings.SplitN(env, "=", 2)[0]) {
 				t.Errorf("%s: %v\n%s", env, err, out)
 			}
 			if k.calls(t) != 0 {
 				t.Error("the daemon was asked with a bad variable")
 			}
 		})
+	}
+	// A real run (and a dry run) does not read them: a bad value there is
+	// not even looked at, so nothing in the environment shortens the wait.
+	k := newCanaryDaemonKit(t, "up", 0)
+	cmd := exec.Command("/bin/sh", filepath.Join(root(t), canaryRunScript), "--pass", "A", "--config", "/nonexistent/sample/canary.json", "--dry")
+	cmd.Dir = k.dir
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + k.dir, "CANARY_RUN_WAIT_TRIES=many", "CANARY_RUN_WAIT_INTERVAL=soon", "CANARY_RUN_STATUS_TIMEOUT=soon"}
+	if out, err := cmd.CombinedOutput(); err != nil || strings.Contains(string(out), "CANARY_RUN_") || !strings.Contains(string(out), "every second for up to 60 s") {
+		t.Errorf("a dry run reads the variables of the test entry: %v\n%s", err, out)
+	}
+}
+
+// An ask of the daemon's status that never ends is cut off, and the wait as a
+// whole is bounded by the limit it states: 60 asks one second apart, plus one
+// ask's own limit. The stub sleeps on a socket that never answers; the tests
+// shorten the wait to 30 asks with no pause and an ask limit of 1 s, so an
+// unbounded wait would take half a minute.
+func TestCanaryRunKitHungStatusIsBounded(t *testing.T) {
+	t.Run("step 10", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "hang", 0)
+		start := time.Now()
+		out, code := k.run(t, 30, "", "wait-daemon")
+		took := time.Since(start)
+		if code != 0 || canaryLastWord(out) != "silent" {
+			t.Fatalf("exit status %d:\n%s", code, out)
+		}
+		if took > 12*time.Second {
+			t.Errorf("the wait took %v: an ask that hangs is not cut off, or the wait is not bounded", took)
+		}
+		if n := k.calls(t); n < 2 || n > 5 {
+			t.Errorf("the daemon was asked %d times in a wait of about 1 s with an ask limit of 1 s", n)
+		}
+	})
+	t.Run("step 26", func(t *testing.T) {
+		k := newCanaryDaemonKit(t, "hang", 0)
+		start := time.Now()
+		// Two Enters, then the input ends: two rounds of about 2 asks, each
+		// cut off after 1 s, and one more ask when no key can be read.
+		out, code := k.run(t, 1, "\n\n", "stop-daemon")
+		if code != 0 || canaryLastWord(out) != "failed" {
+			t.Fatalf("exit status %d:\n%s", code, out)
+		}
+		if took := time.Since(start); took > 9*time.Second {
+			t.Errorf("the step took %v", took)
+		}
+		if !strings.Contains(out, "FAILED at step 26: a daemon still answers at ") || !strings.Contains(out, "exit 124") {
+			t.Errorf("a status that hangs is not told as cut off (exit 124):\n%s", out)
+		}
+	})
+}
+
+// The ticket file of step 14 is taken when it is absent or empty. A ticket
+// result that names no file gives an empty name, which is no file and so never
+// taken: the step must not say "the ticket was taken" for it.
+func TestCanaryRunKitTicketTakenNeedsAFile(t *testing.T) {
+	dir := t.TempDir()
+	full, empty := filepath.Join(dir, "full"), filepath.Join(dir, "empty")
+	canaryWrite(t, dir, "full", "a-ticket")
+	canaryWrite(t, dir, "empty", "")
+	for name, c := range map[string]struct{ arg, want string }{
+		"a file that holds a ticket": {full, "waiting"},
+		"an empty file":              {empty, "taken"},
+		"a file that is absent":      {filepath.Join(dir, "absent"), "taken"},
+		"no name":                    {"", "waiting"},
+	} {
+		if got := strings.TrimSpace(canaryRead(t, "ticket-taken", c.arg)); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
+	step14 := canaryFuncs(t, canaryScriptText(t))["step_14"]
+	if i, j := strings.Index(step14, `[ -z "$_tf" ]`), strings.Index(step14, "poll_until"); i < 0 || j < i {
+		t.Error("step 14 does not look for an empty ticket file name before it watches the file")
 	}
 }
 
@@ -4868,7 +4955,7 @@ type canaryPF struct {
 // canaryPFTools are the real programs the scripts use, linked into the tools
 // folder, which is the whole PATH of a run: so that a program a test leaves
 // out (qargi) is not found anywhere else.
-var canaryPFTools = []string{"sh", "awk", "sed", "tr", "find", "stat", "sha256sum", "cat", "id", "mktemp", "rm", "head", "tail", "cmp", "grep", "git", "env", "date", "ls", "sort", "readlink", "mkdir", "cp", "wc", "sleep"}
+var canaryPFTools = []string{"sh", "awk", "sed", "tr", "find", "stat", "sha256sum", "cat", "id", "mktemp", "rm", "head", "tail", "cmp", "grep", "git", "env", "date", "ls", "sort", "readlink", "mkdir", "cp", "wc", "sleep", "timeout"}
 
 const canaryPFDate = "2021-01-01T00:00:00Z"
 
@@ -5091,8 +5178,8 @@ func TestCanaryRunKitPreflightReady(t *testing.T) {
 		}
 		checks++
 	}
-	if checks != 14 {
-		t.Errorf("%d checks, want 14:\n%s", checks, out)
+	if checks != 15 {
+		t.Errorf("%d checks, want 15:\n%s", checks, out)
 	}
 	for _, want := range []string{
 		"ok:   the binaries are newer than the newest commit that touches the code (by file time: --version names no commit;",
@@ -5344,6 +5431,10 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 		"pasta is not on PATH": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "pasta")) }, nil, 1,
 			[]string{"FIX:  not on PATH (step 3 runs them): pasta -- type: put them on PATH"},
+		},
+		"timeout is not on PATH": {
+			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "timeout")) }, nil, 1,
+			[]string{"FIX:  timeout is not on PATH (the run cuts off each ask of the daemon's status with it) -- type: install coreutils, or put timeout on PATH"},
 		},
 		"the evidence folder is missing": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.root, "evidence")) }, nil, 1,
@@ -5778,7 +5869,7 @@ func TestCanaryRunKitReadmeDocumentsTheEntriesAndTheCommands(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_PREFLIGHT_PROC", "CANARY_PREFLIGHT_TIOCSTI", "CANARY_PREFLIGHT_ATANIQ",
+		"CANARY_RUN_WAIT_TRIES", "CANARY_RUN_WAIT_INTERVAL", "CANARY_RUN_STATUS_TIMEOUT", "CANARY_PREFLIGHT_PROC", "CANARY_PREFLIGHT_TIOCSTI", "CANARY_PREFLIGHT_ATANIQ",
 		"## Easier on the owner", "canary-preflight.sh", "answers.hint", "CHECKLIST.txt", "--template-review PATH", "--unit-report PATH", "--plan-summary PATH",
 		"READY", "NOT READY (n to fix)", "for the tests only",
 	} {
