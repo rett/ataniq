@@ -3140,6 +3140,9 @@ func TestCanaryRunKitResetFindsTheRootsProcesses(t *testing.T) {
 		// Only the current folder ties the daemon to the root: no word of its arguments is relative or in the root.
 		"117": {args: []string{d}, cwd: r},
 		"118": {args: []string{d, "/somewhere/else/config.json"}, cwd: filepath.Join(r, "state")},
+		// A binary path that holds a space is one program name; a space in the path of another program does not make it an ataniqd.
+		"119": {args: []string{"/opt/my builds/ataniqd"}, cwd: r},
+		"120": {args: []string{"/opt/my ataniqd/tool"}, cwd: r},
 		// The root named through a symbolic link of its parent, as a word and as the value of a flag.
 		"108": {args: []string{d, "run", "--canary", filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
 		"109": {args: []string{d, "run", "--canary=" + filepath.Join(e.dir, "parentlink", "set-up", "config.json")}, cwd: elsewhere},
@@ -3167,7 +3170,7 @@ func TestCanaryRunKitResetFindsTheRootsProcesses(t *testing.T) {
 	}
 	canaryWrite(t, proc, "self/cmdline", "")
 	canaryWrite(t, proc, "stat", "x")
-	want := "100 101 106 107 108 109 110 111 112 113 117 118"
+	want := "100 101 106 107 108 109 110 111 112 113 117 118 119"
 	out, code := e.run(t, canaryResetScript, "", "--self-test", "procs-of", r, proc)
 	if got := strings.Join(strings.Fields(out), " "); code != 0 || got != want {
 		t.Errorf("exit status %d, processes: %q, want %s", code, got, want)

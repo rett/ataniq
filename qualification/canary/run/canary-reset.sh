@@ -94,7 +94,9 @@ procs_of() {
     _seen=1
     [ -r "$_pd/cmdline" ] || continue
     _cl=$(tr '\0' ' ' <"$_pd/cmdline" 2>/dev/null) || continue
-    _first=${_cl%% *}
+    # The program is argv0 as a whole (the first word up to its NUL), so a
+    # binary path that holds a space is still read as one name.
+    _first=$(tr '\0' '\n' <"$_pd/cmdline" 2>/dev/null | head -n 1) || continue
     case ${_first##*/} in
       ataniqd | ataniq-holder) ;;
       *) continue ;;
