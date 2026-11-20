@@ -556,14 +556,17 @@ real_dir() {
   (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
 }
 
-# repo_roots REPO prints the resolved path of REPO and, when REPO is a linked
-# work tree, the resolved path of the repository's main work tree. qargi
-# records a run's repo.path as the resolved path of the repository it was
-# started in, which is the main work tree.
+# repo_roots REPO prints the resolved path of REPO and, when REPO is in a work
+# tree whose repository has its main work tree in another folder (a linked
+# work tree), the resolved path of that main work tree as the last line. It
+# prints nothing for an empty argument. qargi records a run's repo.path as the
+# resolved --repo folder the run was started in, which may be a linked work
+# tree, so both sides of a comparison are taken to their main work tree.
 repo_roots() {
+  [ -n "$1" ] || return 0
   _rr=$(real_dir "$1")
   printf '%s\n' "$_rr"
-  _gc=$(cd "$_rr" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P) || return 0
+  _gc=$(cd "$_rr" 2>/dev/null && _g=$(git rev-parse --git-common-dir 2>/dev/null) && [ -n "$_g" ] && cd "$_g" 2>/dev/null && pwd -P) || return 0
   case $_gc in
     */.git)
       _gc=${_gc%/.git}
@@ -573,24 +576,21 @@ repo_roots() {
 }
 
 # open_runs LIST REPO prints the folder of each run that "qargi local list"
-# (the text in the file LIST) shows as open and whose repo.path is REPO or the
-# main work tree of REPO, both sides compared as resolved paths. A run is open
-# unless it is applied (or closed) and, when applied, merged. Residue lines and
-# the rows of a run whose folder is gone ("directory gone") are not rows of an
-# open run it can read; list_gone counts the second kind, and the caller says
-# so.
+# (the text in the file LIST) shows as open and whose repo.path is in the same
+# repository as REPO: the main work tree of each side is compared, as resolved
+# paths, so a run prepared from a linked work tree is seen from the main
+# checkout and from another work tree. A run is open unless it is applied (or
+# closed) and, when applied, merged. Residue lines and the rows of a run whose
+# folder is gone ("directory gone") are not rows of an open run it can read;
+# list_gone counts the second kind, and the caller says so.
 open_runs() {
-  _roots=$(repo_roots "$2")
+  _roots=$(repo_roots "$2" | tail -n 1)
+  [ -n "$_roots" ] || return 0
   awk 'NF == 6 && substr($6, 1, 1) == "/" && ($4 == "no" || ($4 == "yes" && $5 != "yes")) { print $6 }' "$1" |
     while IFS= read -r _r; do
-      _rp=$(real_dir "$(cat "$_r/repo.path" 2>/dev/null || :)")
-      case "
-$_roots
-" in
-        *"
-$_rp
-"*) printf '%s\n' "$_r" ;;
-      esac
+      _rp=$(repo_roots "$(cat "$_r/repo.path" 2>/dev/null || :)" | tail -n 1)
+      [ -n "$_rp" ] || continue
+      if [ "$_rp" = "$_roots" ]; then printf '%s\n' "$_r"; fi
     done
 }
 

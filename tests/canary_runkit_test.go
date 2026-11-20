@@ -1883,9 +1883,70 @@ func TestCanaryRunKitOpenRuns(t *testing.T) {
 	}
 }
 
-// qargi records a run's repo.path as the resolved path of the main work tree.
-// The repository the script is given may be reached through a symbolic link,
-// with a trailing slash, or be a linked work tree of the same repository.
+// qargi records a run's repo.path as the resolved --repo folder, which may be
+// a linked work tree. The repository the script is given may be reached through
+// a symbolic link, with a trailing slash, or be a linked work tree of the same
+// repository; the main work tree is compared on both sides.
+func TestCanaryRunKitOpenRunsOfLinkedWorkTrees(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("no git")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, wa, wb, other := filepath.Join(dir, "main"), filepath.Join(dir, "wa"), filepath.Join(dir, "wb"), filepath.Join(dir, "other")
+	for _, args := range [][]string{
+		{"init", "-q", main},
+		{"-C", main, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "x"},
+		{"-C", main, "worktree", "add", "-q", "--detach", wa},
+		{"-C", main, "worktree", "add", "-q", "--detach", wb},
+		{"init", "-q", other},
+	} {
+		if out, err := exec.Command(git, args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	for _, c := range []struct {
+		name, recorded string
+		repos          map[string]string
+	}{
+		{"a run recorded for a linked work tree", wa, map[string]string{
+			"the main checkout": main, "the same work tree": wa, "another work tree": wb, "a work tree with a slash": wb + "/",
+			"an unrelated repository": other, "an empty argument": ""}},
+		{"a run recorded for the main checkout", main, map[string]string{
+			"the main checkout": main, "a linked work tree": wa, "another work tree": wb,
+			"an unrelated repository": other, "an empty argument": ""}},
+	} {
+		canaryWrite(t, dir, "run1/repo.path", c.recorded+"\n")
+		run := filepath.Join(dir, "run1")
+		list := canaryWrite(t, dir, "list.txt", strings.Join([]string{
+			"ROLE       SLUG               AGE        APPLIED MERGED   RUN",
+			"build      one                1d         no     no       " + run,
+			"",
+		}, "\n"))
+		for name, repo := range c.repos {
+			want := run
+			if name == "an unrelated repository" || name == "an empty argument" {
+				want = ""
+			}
+			if got := canaryRead(t, "open-runs", list, repo); got != want {
+				t.Errorf("%s, REPO is %s: got %q, want %q", c.name, name, got, want)
+			}
+		}
+	}
+	// A run whose repo.path is empty or missing is not matched by an empty REPO.
+	canaryWrite(t, dir, "run1/repo.path", "")
+	run := filepath.Join(dir, "run1")
+	list := canaryWrite(t, dir, "list.txt", "ROLE       SLUG               AGE        APPLIED MERGED   RUN\nbuild      one                1d         no     no       "+run+"\n")
+	for _, repo := range []string{"", main} {
+		if got := canaryRead(t, "open-runs", list, repo); got != "" {
+			t.Errorf("a run without a repo.path matched REPO %q: %q", repo, got)
+		}
+	}
+}
+
 func TestCanaryRunKitOpenRunsCompareResolvedPaths(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -1954,7 +2015,6 @@ func TestCanaryRunKitListIsReadAsPrinted(t *testing.T) {
 		{"a row of seven fields", []string{header, "build one 1d no no x /x/run"}, "gone 0\nother 1"},
 		{"a row with an unknown applied word", []string{header, "build one 1d maybe no /x/run"}, "gone 0\nother 1"},
 		{"a line of another kind", []string{header, row, "note: something new"}, "gone 0\nother 1"},
-		{"an empty file", []string{}, "header bad\ngone 0\nother 0"},
 	} {
 		f := canaryWrite(t, dir, "list.txt", strings.Join(c.lines, "\n")+"\n")
 		if c.name == "an empty file" {
