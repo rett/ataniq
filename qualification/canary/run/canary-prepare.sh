@@ -159,7 +159,7 @@ esac
 # A new root, or an empty folder that already exists.
 if [ -d "$ROOT" ]; then
   if [ -n "$(find "$ROOT" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
-    cc_die "the root is not empty: $ROOT (prepare makes a new set-up; canary-reset.sh puts a failed one back)"
+    cc_die "the root is not empty: $ROOT (prepare makes a new set-up; a root that carries the mark of a finished prepare is put back by canary-reset.sh, and a half-made root, which has no mark, is removed by hand: chmod -R u+w ROOT, then rm -r ROOT)"
   fi
 fi
 

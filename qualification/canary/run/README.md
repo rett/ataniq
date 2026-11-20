@@ -138,6 +138,32 @@ presents a ticket twice to the holder, so it does not claim that a used ticket
 is refused: it shows that a console without a ticket does not attach. The
 second console is tried in the first epoch only.
 
+The ticket's role depends on the epoch. The first epoch's ticket is a writer's:
+the owner pastes the message into that console at step 17. In the second epoch
+the fence writes the message and the owner only watches, so step 14 mints a
+viewer ticket (`--attach-role viewer`). That is deliberate: the writer's attach
+sets the size of the session to the console's session pane, the stand-in draws
+the recorded 120 by 36 screen once and does not redraw, and the fence recognises
+that screen only in a pane of at most 120 columns and at least 36 rows. At most
+windows a writer would make the second epoch's inject end `not-now, not-ready`
+and record a finding. A viewer's attach sets no size (only the writer's Hello
+does), and the console, as a viewer, sends no key, no paste and no size, so the
+screen stays as recorded and the window's size does not matter in the second
+epoch. The owner pastes nothing there. The used-ticket behaviour does not
+change with the role: the first epoch's second console finds the ticket file
+empty and does not attach, and the attach events counted before and after
+(each attach, of any role, is one `attach` event) are the same.
+
+The first epoch's window does matter: the console drops a paste when its window
+is below 100 columns by 30 rows (the cockpit layout is then off), and in a
+larger window the session pane becomes the agent's terminal size. The first
+epoch's screen is an unknown one to the fence anyway, so the inject is expected
+to end `not-now, not-ready` and the owner pastes the message himself: a
+first-epoch paste into an unknown screen is expected to be refused by the fence,
+not a fault. In the first epoch pasta may also write two lines on the agent's
+pane above the stand-in's prompt, about an AVX2 build and a nameserver address;
+that is expected.
+
 Before the second epoch the owner closes the console of the first epoch (`Ctrl+\`
 leaves the session pane, then `q`): a console left open waits on the same ticket
 file and would take the ticket of the second epoch. The script says so before it
@@ -149,7 +175,9 @@ the console is closed.
 In the first epoch of pass A, and in pass B when the fence refuses, the owner
 puts the message into the pane. He does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
-text; the owner copies the whole text of that file and pastes it into the pane
+text between two marker lines (`----- begin of message-1.txt -----` and
+`----- end -----`, the text with no prefix); the owner copies the file's text
+(cat the file), not the lines of the screen, and pastes it into the pane
 with his terminal's paste, so that it arrives as one bracketed paste, and then
 presses Enter in the pane once. The console forwards the paste as a paste, and
 only from session focus: a paste while the console has the focus itself is
@@ -157,6 +185,9 @@ dropped without a word (and the first Enter only moves the focus), so the owner
 first gives the session pane the focus (selects the session terminal and presses
 Enter; the focus bar then names the session, and Ctrl+\ leaves it). The script
 says so before it names the file.
+The stand-in takes the token only from a line that starts with
+`canary-token: `; `no token` in the pane means the paste was not the file's text,
+so paste again (in plain mode that is recoverable).
 Typed keys do not do: the stand-in commits only from a paste followed by
 Enter, and the message has two lines, so with a live agent the Enter after the
 first line would submit half of it.
@@ -372,8 +403,10 @@ secret, and ends with the commands you type next.
 `qualify-mirror` stays your own step: the script writes its config with
 `"i_run_this_on_purpose": false`, and the acknowledgement is yours to change
 ([the mirror qualification manual](../../../docs/qualification-lead-mirror.md)).
-A prepare that fails part way leaves what it made and no mark; remove the root
-by hand and run it again.
+A prepare that fails part way leaves what it made and no mark, and
+`canary-reset.sh` refuses a root with no mark: remove the half-made root by hand
+(`chmod -R u+w ROOT`, then `rm -r ROOT`) and run prepare again. A root that
+carries the mark of a finished prepare is the one `canary-reset.sh` puts back.
 
 ### The preflight
 
@@ -424,8 +457,9 @@ sh qualification/canary/run/canary-reset.sh --root DIR --dry
 sh qualification/canary/run/canary-reset.sh --root DIR [--bin DIR]
 ```
 
-`canary-reset.sh` puts a failed or finished attempt back to a clean slate for
-a rerun. It is run by your hand, in your terminal: it refuses without a
+`canary-reset.sh` puts a failed or finished attempt of a root that carries the
+mark of a finished prepare back to a clean slate for a rerun (a half-made root
+has no mark and is removed by hand). It is run by your hand, in your terminal: it refuses without a
 terminal on standard input (`--dry` needs none). It refuses when any `ataniq-*`
 unit is loaded (slices are left out; a `systemctl` that fails is a refusal
 too), when an `ataniqd` or `ataniq-holder` of this root runs (a path of the root
@@ -592,8 +626,9 @@ documents. For the config above:
   and the marker `guard-hook`. The marker is not part of the profile digest, so
   adding it to an inputs file needs no new pin, but changing the managed-settings
   file changes `managed_settings_sha256` and the digest. `check-inputs` and
-  `profile-digest` read the file `sources.managed_settings` names, the lead's copy, once provisioning has made it, and before that (as prepare asks for the digest) the file `provision.managed_settings` names, which is the file provisioning copies. They do not run the holder's trial of the spec, so the preflight
-  looks for the marker itself. An inputs file from an earlier prepare lacks it:
+  `profile-digest` read the file `sources.managed_settings` names, the lead's copy, once provisioning has made it, and before that (as prepare asks for the digest) the file `provision.managed_settings` names, which is the file provisioning copies. Both run the holder's trial of the spec (`checkTrial` in
+  `internal/leadcanary/provision/inputs.go`), which is the refusal the holder's
+  start would make; the preflight still looks for the marker itself. An inputs file from an earlier prepare lacks it:
   use a fresh root.
 - `qargi_records_inside` is `/ataniq/records`, the inside path provisioning
   prepares the folders for.
@@ -687,12 +722,15 @@ listeners you stopped, and compare the live config folder with
   14. The script tells the owner to close it, and cannot see whether he did; a
   console left open waits on the same ticket file and takes the second epoch's
   ticket for itself.
-- Step 12 reads the waiver in `holder.json` before it waits for `sandbox-started`.
-  The holder writes `holder.json` twice, before its start sequence (with no
-  waiver) and after it, and the report's time limit is 60 seconds, so a step that
-  reads the file in between could see the first. The owner's key before step 12
-  makes that unlikely; this is reasoned, not seen, and it is a known limit (the
-  waiver check belongs after the wait).
+- Step 12 waits for the holder's second write of `holder.json`. The holder
+  writes the file twice, before its start sequence (with the epoch, no waiver
+  and no `sandbox_started`) and after it (with the waiver and `sandbox_started`
+  true), and the first write already names the epoch. The wait ends when the
+  file names the epoch of this start and `sandbox_started` is true, or when the
+  unit is no longer active or activating, or after 90 asks one second apart (more
+  than the 60 seconds of the inputs' report limit). When it ends without the
+  second write, the script prints the tail of the unit's journal and fails the
+  step, so the holder's reason is on the screen.
 - A stop may leave no final record. The unit's `TimeoutStopSec` is 2 seconds
   and the stop's SIGTERM to every process of the unit is followed by SIGKILL
   after 2 seconds, while the holder waits up to 2 seconds for the stream and 5
@@ -764,6 +802,7 @@ test entry:
 | `--self-test unit-stopped STATE` | `stopped` when that active state of the unit lets step 26 show the command that deletes the roots (`inactive` or `failed`), and `not-stopped` for every other one, an empty one too. |
 | `--self-test journal-save EVIDENCE START UNIT` | What step 22 keeps of the unit's journal: it asks the `journalctl` on `PATH` (a stub in the tests) for `UNIT` since `START` and writes the lines to `EVIDENCE/out/22-e1-unit-journal.out`, a folder that exists; it says how many lines, or that the journal could not be read; with an empty `START` (no start was asked) it does nothing. |
 | `--self-test count-lines FILE PATH=VALUE...` | How many lines of `FILE`, which holds one JSON object in each line, hold every `PATH=VALUE` as a whole line of what `ataniq-canary fields` prints for it; a line that is not a whole JSON object is passed over, and a file that is not there counts 0. Step 14 counts the `attach` events of the holder's event log with it, before and after the second console. |
+| `--self-test holder-wait HSTATE EPOCH UNIT` | Step 12's wait for `holder.json`: it prints `result=ok end=started` when `HSTATE/holder.json` names `EPOCH` and has `sandbox_started` true (the `ataniq-canary` of `build/canary` of the current folder reads it, and the `systemctl` on `PATH` answers the unit's state), and otherwise prints the unit's journal and `result=failed end=ended` (the unit is not active or activating) or `end=timeout` (after 1.5 times `CANARY_RUN_WAIT_TRIES` asks, `CANARY_RUN_WAIT_INTERVAL` seconds apart). |
 | `--self-test ticket-taken FILE` | `taken` when the ticket file `FILE` is absent or empty (the console empties it when it takes the ticket), `waiting` when it holds something, and `waiting` for an empty name: step 14 never says "the ticket was taken" for a ticket result that names no file. Only the size is looked at. |
 | `--self-test wait-daemon` | Step 10's polling: it asks the `ataniqd status` of `build/canary` of the current folder as the step does and prints `listens` when it answered within the wait, `silent` when not; "waiting for the daemon to listen..." is said once and a dot follows every 5 asks. |
 | `--self-test stop-daemon` | The daemon's half of step 26: the keys come from standard input, a daemon that still answers is said and asked again up to 5 more times (an end of input is a failure too when a daemon still answers), and the end prints `stopped` or `failed` (the failure that ends the step is printed and returned, not ending the run). |

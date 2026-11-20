@@ -988,8 +988,15 @@ func TestCanaryRunKitSelfTestRefusesBadArguments(t *testing.T) {
 	// hint tests need, and so reach the questions (ask, ask_path, affirm):
 	// they write nothing (no evidence folder), and nothing else reaches them.
 	asks := map[string]bool{"self_test": true, "ask": true, "ask_path": true, "ask_file": true, "affirm": true}
+	// The one exception is the entry holder-wait, which reaches step 12's wait:
+	// show_prop asks the unit's state (read-only; a stub in the tests) and
+	// show_unit_journal prints the journal through runcap (a stub, too).
+	allowed := map[string]string{"show_prop": "systemctl", "show_unit_journal": "runcap"}
 	for _, name := range append([]string{"self_test"}, canaryReach(canaryFuncs(t, text), "self_test")...) {
 		for _, word := range []string{"runcap", "systemctl", "step_head", "fact", "manifest_of"} {
+			if allowed[name] == word {
+				continue
+			}
 			if canaryCalls(canaryFuncs(t, text)[name], word) != 0 {
 				t.Errorf("the test entry reaches %s, which calls %s", name, word)
 			}
@@ -1176,7 +1183,7 @@ func TestCanaryRunKitStepTwelveReadsItsOwnEpoch(t *testing.T) {
 		t.Error("step 11 does not keep the epoch of the start result")
 	}
 	for _, want := range []string{
-		`while [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" != "$START_EPOCH" ]`,
+		`holder_started || return 0`,
 		`is_eq "$(fld "$HSTATE/holder.json" epoch)" "$START_EPOCH" || return 0`,
 		`has_line "$HSTATE/events.jsonl" "epoch=$START_EPOCH" 'state=sandbox-started' 'reason=assertion-10-waived' || return 0`,
 		`has_line "$EVIDENCE" "epoch=$START_EPOCH" 'event=start' "waiver=$WAIVER" || return 0`,
@@ -4265,7 +4272,7 @@ func TestCanaryRunKitStep14StartsTheConsoleBeforeTheMint(t *testing.T) {
 	}
 	show := at(`out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"`)
 	key := at("wait_key 'Owner: press Enter when the console is up and says it waits for a ticket.")
-	mint := at(`runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer`)
+	mint := at(`runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role "$_role"`)
 	same := at(`is_eq "$(fld "$LASTOUT" ticket_file)" "$_tf"`)
 	watch := at("poll_until 'the console to take the ticket' ticket_taken")
 	yes := at("affirm 'Owner: the pane shows the agent' yes")

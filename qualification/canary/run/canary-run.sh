@@ -699,6 +699,61 @@ inject_action() {
 
 show_prop() { systemctl --user show "$UNIT" --property="$1" --value; }
 
+# holder_wait waits for the holder's own record of the start of this epoch. The
+# holder writes holder.json twice: before the start sequence, with the epoch and
+# without sandbox_started, and after it, with the waiver and sandbox_started
+# true. The first write names the epoch already, so the wait ends only when the
+# file names the epoch AND says sandbox_started is true, or when the unit is no
+# longer active or activating (then it ends at once: the journal says why), or
+# after 1.5 times WAIT_TRIES asks, WAIT_INTERVAL seconds apart (90 asks, one
+# second apart: more than the 60 seconds the inputs' report limit allows). It
+# sets HW_END to started, ended or timeout.
+holder_wait() {
+  _hwn=0
+  _hwmax=$((WAIT_TRIES * 3 / 2))
+  HW_END=
+  while :; do
+    if [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" = "$START_EPOCH" ] &&
+      [ "$(fld "$HSTATE/holder.json" sandbox_started 2>/dev/null)" = true ]; then
+      HW_END=started
+      return 0
+    fi
+    case $(show_prop ActiveState 2>/dev/null) in
+      active | activating) ;;
+      *)
+        HW_END=ended
+        return 0
+        ;;
+    esac
+    if [ "$_hwn" -ge "$_hwmax" ]; then
+      HW_END=timeout
+      return 0
+    fi
+    _hwn=$((_hwn + 1))
+    sleep "$WAIT_INTERVAL"
+  done
+}
+
+# holder_started is the wait of step 12: it fails the step, with the unit's
+# journal on the screen first, when the wait ends without the holder's record
+# of a started sandbox.
+holder_started() {
+  holder_wait
+  case $HW_END in
+    started) return 0 ;;
+    ended)
+      show_unit_journal
+      fail "the unit ended before $HSTATE/holder.json named epoch $START_EPOCH with sandbox_started true: the holder did not finish the start (the journal above says why)"
+      return 1
+      ;;
+    *)
+      show_unit_journal
+      fail "$HSTATE/holder.json did not name epoch $START_EPOCH with sandbox_started true within $((WAIT_TRIES * 3 / 2)) asks: the holder is still starting or wrote no record (the journal above says what it said)"
+      return 1
+      ;;
+  esac
+}
+
 # resolved prints the absolute path $1 as the kernel will follow it: the part
 # of it that exists is resolved with cd -P, so no symbolic link is left in it,
 # and the part that does not exist yet is kept as written (mkdir makes it as
@@ -1432,6 +1487,20 @@ self_test() {
       # FILE ROLE BRANCH: the commit of the lead's branch in a branches text.
       [ "$#" -eq 3 ] || usage
       lead_branch_id "$1" "$2" "$3"
+      ;;
+    holder-wait)
+      # HSTATE EPOCH UNIT: step 12's wait for holder.json, as the script asks
+      # it (the helper of build/canary and the unit tool on PATH are stubs in
+      # the tests). It prints "ok" or "failed", and HW_END.
+      [ "$#" -eq 3 ] || usage
+      BIN=build/canary
+      HSTATE=$1
+      START_EPOCH=$2
+      UNIT=$3
+      T_START='2026-11-19 12:00:00'
+      CUR=12
+      IN_CHAIN=1
+      if holder_started; then out "result=ok end=$HW_END"; else out "result=failed end=$HW_END"; fi
       ;;
     has-line)
       # FILE PATH=VALUE...: FILE holds one JSON object in each line. The
@@ -2216,7 +2285,7 @@ step_12() {
     'the probe reported once; every assertion is ok except 10, which is waived by name; the profile is version 4 with the pinned digest; the waiver shows in holder.json, the event log, the evidence and the status line' 'G5'
   wait_key "Step 12 reads the holder's files."
   if [ "$DRY" -eq 1 ]; then
-    dry "wait until $HSTATE/holder.json names the epoch of the start of step 11 (the folder still holds the last epoch's file until the new holder writes its own); fail when it never does"
+    dry "wait until $HSTATE/holder.json names the epoch of the start of step 11 and says sandbox_started is true (the holder writes the file twice, before and after its start; the folder still holds the last epoch's file until the new holder writes its own), for up to 90 s, or until the unit is no longer active; fail when it never does, with the unit's journal printed first"
     dry "print the values of $HSTATE/holder.json with ataniq-canary fields"
     dry "check: its field waiver is exactly: $WAIVER"
     dry "check: a line of $HSTATE/events.jsonl with that epoch holds the state sandbox-started with the reason assertion-10-waived"
@@ -2226,11 +2295,7 @@ step_12() {
     # The state folder is the same in every epoch, so each record is matched
     # by the epoch of this start: a file or a line of an earlier epoch does
     # not pass for this one.
-    _try=0
-    while [ "$(fld "$HSTATE/holder.json" epoch 2>/dev/null)" != "$START_EPOCH" ] && [ "$_try" -lt 30 ]; do
-      _try=$((_try + 1))
-      sleep 1
-    done
+    holder_started || return 0
     runcap holder-json "$BIN/ataniq-canary" fields --file "$HSTATE/holder.json"
     check 'holder.json can be read' is_rc 0 || return 0
     check "holder.json is the one of this start: its epoch is $START_EPOCH" is_eq "$(fld "$HSTATE/holder.json" epoch)" "$START_EPOCH" || return 0
@@ -2305,19 +2370,38 @@ step_13() {
 # in the first epoch only. The owner's yes at the end of each part is the
 # attestation; the script answers nothing.
 step_14() {
-  step_head 14 'Attach the console, then mint a writer ticket' \
-    'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a writer (the ticket lives 30 seconds) and watches the ticket file; in the first epoch the owner then starts the same console once more in a fourth terminal: it finds the ticket file empty and does not attach' \
-    'the console attaches and the pane shows the agent; in the first epoch the second console does not attach and says it waits for a ticket, the ticket file is empty and the event log shows no second attach' 'none'
+  # The first epoch's console is the writer: the owner pastes there, and the
+  # writer's Hello sets the size of the session. In the second epoch the fence
+  # writes and the owner only watches, so the ticket is a viewer's: a viewer's
+  # Hello does not set the size, and the screen the stand-in drew once at its
+  # start stays the size it was recorded at (the fence recognises no other).
+  if [ "$EPOCH_NO" -eq 2 ]; then _role=viewer; else _role=writer; fi
+  if [ "$_role" = viewer ]; then
+    step_head 14 'Attach the console, then mint a viewer ticket' \
+      'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a viewer (the ticket lives 30 seconds) and watches the ticket file; in this epoch the console only watches (read-only: no key, no paste and no size is sent), because the fence writes the message' \
+      'the console attaches read-only and the pane shows the agent; the owner pastes nothing in this epoch' 'none'
+  else
+    step_head 14 'Attach the console, then mint a writer ticket' \
+      'the owner starts the console first, in his own terminal, with the command printed here, and it waits for a ticket; after his Enter the script runs ataniqd canary ticket for a writer (the ticket lives 30 seconds) and watches the ticket file; in the first epoch the owner then starts the same console once more in a fourth terminal: it finds the ticket file empty and does not attach' \
+      'the console attaches and the pane shows the agent; in the first epoch the second console does not attach and says it waits for a ticket, the ticket file is empty and the event log shows no second attach' 'none'
+  fi
   check "the holder's runtime folder is known" test -n "$HRUN" || return 0
   _tf=$HRUN/ticket
   if [ "$EPOCH_NO" -eq 2 ]; then
     out '   Owner: the console of the first epoch must be closed (Ctrl+\ leaves the session pane, then q): one left open waits on the same ticket file and takes this epoch'"'"'s ticket for itself.'
+    out '   In this epoch the console attaches as a read-only VIEWER: you only watch, you paste nothing, and the size of'
+    out '   the window does not matter.'
+  else
+    out '   Owner: this console is the WRITER: you paste into it at step 17. Its window must be at least 100 columns by 30 rows'
+    out '   (below that the console drops a paste). The size of its session pane becomes the agent'"'"'s terminal size.'
+    out '   pasta may write two lines on the agent'"'"'s pane above the stand-in'"'"'s prompt (about an AVX2 build and a'
+    out '   nameserver address): that is expected, not a fault.'
   fi
   out '   Owner: in a third terminal (T3), start the console now, with this command. It waits for a ticket and'
   out '   says "waiting for a ticket". Do not start it later than your Enter below: a ticket lives 30 seconds.'
   out "     $BIN/ataniq-console --attach $HRUN --ticket-file $_tf"
   wait_key 'Owner: press Enter when the console is up and says it waits for a ticket. The ticket is minted then.'
-  runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role writer
+  runcap ticket "$BIN/ataniqd" canary ticket --config "$CONFIG" --attach-role "$_role"
   check 'the ticket was minted' is_rc 0 || return 0
   if [ "$DRY" -eq 1 ]; then
     dry "check: the ticket file the mint names is the one printed above, $_tf (the console was told that file)"
@@ -2466,8 +2550,13 @@ paste_message() {
   out "     $BODY"
   out '   and paste it into the pane with your terminal'"'"'s paste, so that it arrives as ONE paste'
   out '   (a bracketed paste; typed line by line, the first Enter would send half of it).'
+  out '   Copy the file'"'"'s text (cat the file), not the lines of this screen: the stand-in takes the token only'
+  out '   from a line that starts with "canary-token: ". "no token" in the pane means the paste was not the'
+  out '   file'"'"'s text: paste again.'
   out '   Then press Enter in the pane ONCE. The text of the file, to compare with what you paste:'
-  sed 's/^/     | /' "$BODY"
+  out "----- begin of ${BODY##*/} -----"
+  cat "$BODY"
+  out '----- end -----'
 }
 
 step_17() {
@@ -2969,11 +3058,12 @@ second_epoch() {
   CUR=20
   out ''
   out '== second epoch of pass A (after step 20): the stand-in replays the recorded screens'
-  out '   does:     stop with proof; write the replay switch file; steps 11, 12 and 14 again; inject once; then step 22 in full'
+  out '   does:     stop with proof; write the replay switch file; steps 11, 12 and 14 again (the console attaches as a read-only viewer); inject once; then step 22 in full'
   out '   expected: the fence reaches submitted, no reason, whole, inside the real sandbox; order.txt says 7501-first; the stand-in committed. A refusal is recorded with the detail and is a finding for a fix task before pass B'
   out '   serves:   G1, B1'
   out '   Owner: close the console of the first epoch now (Ctrl+\ leaves the session pane, then q).'
   out '   One left open waits on the same ticket file and would take the ticket of the second epoch.'
+  out '   In this epoch you only WATCH: the console of step 14 is a read-only viewer and you paste nothing, the fence writes the message.'
   wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up). Close the first console first.'
   CUR=22
   stop_role || return 0
@@ -2994,6 +3084,7 @@ second_epoch() {
   out '== step 17 [pass A, second epoch]: inject once'
   out '   does:     inject one message; read the result, the stand-in'"'"'s order.txt and result.txt'
   out '   expected: submitted, no reason, whole; order.txt says 7501-first; result.txt says committed'
+  out '   Owner: nothing to paste or press here: watch the pane in the viewer console while the fence writes.'
   out '   serves:   G1, G3'
   make_message
   wait_key 'Inject the one message of the second epoch.'
