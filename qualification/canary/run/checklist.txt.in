@@ -26,6 +26,7 @@ STEP  WHAT YOU DO
   2   Paths of the unit report and the plan summary, then Enter at the rest.
   4   Path of the template review; read; qualify-mirror report path; yes.
   8   Enter (the sandbox inputs file is already written by prepare).
+  9   Enter (the stand-in and probe copies are compared with the built ones).
  10   Start the daemon in T2 BEFORE pressing Enter at step 10, wait for the
       listening line, then Enter in T1:
         @BIN@/ataniqd run --canary @CONFIG@

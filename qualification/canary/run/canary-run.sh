@@ -2032,13 +2032,14 @@ agent_host() {
 
 step_9() {
   if [ "$PASS" = A ]; then
-    step_head 9 'Version check: hash the stand-in' \
-      "hash the agent executable in the inputs file's install folder and the stand-in of $BIN" \
-      'the hash is the one make canary-build produced; both values are recorded; a mismatch refuses the start' 'G3, M9'
-    wait_key 'Step 9 hashes the stand-in.'
+    step_head 9 'Version check: hash the stand-in and the probe' \
+      "hash the agent executable in the inputs file's install folder and the stand-in of $BIN, and the probe the inputs file names and the probe of $BIN" \
+      'each hash is the one make canary-build produced; the values are recorded; a mismatch refuses the start' 'G3, M9'
+    wait_key 'Step 9 hashes the stand-in and the probe.'
     if [ "$DRY" -eq 1 ]; then
       dry "hash the agent executable (the install folder of $INPUTS, then ${AGENT0#"$AGENT_INSIDE"/}) and $BIN/ataniq-canary-standin, and record both"
-      _a=x _b=x
+      dry "hash the probe the inputs file's executables.probe names (the copy prepare makes in the root) and $BIN/ataniq-probe, and record both"
+      _a=x _b=x _pa=x _pb=x
     else
       _host=$(agent_host)
       check 'the agent executable is present' test -f "$_host" || return 0
@@ -2047,8 +2048,16 @@ step_9() {
       printf 'agent %s\nbuilt %s\n' "$_a" "$_b" >"$EV/standin-hash.txt"
       out "   agent: $_a"
       out "   built: $_b"
+      _probe=$(fld "$INPUTS" executables.probe)
+      check 'the probe the inputs name is present' test -f "$_probe" || return 0
+      _pa=$(sha256sum <"$_probe" | awk '{print $1}')
+      _pb=$(sha256sum <"$BIN/ataniq-probe" | awk '{print $1}')
+      printf 'probe %s\nprobe-built %s\n' "$_pa" "$_pb" >>"$EV/standin-hash.txt"
+      out "   probe: $_pa"
+      out "   built probe: $_pb"
     fi
     check 'the agent is the stand-in that make canary-build produced' is_eq "$_a" "$_b" || return 0
+    check 'the probe is the one that make canary-build produced' is_eq "$_pa" "$_pb" || return 0
   else
     step_head 9 'Version check: the bound agent executable' \
       'run the bound agent executable with --version, outside the sandbox, with an empty environment and a home that is an empty temporary folder' \

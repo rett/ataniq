@@ -216,6 +216,37 @@ func TestCheckInputsRefusesASettingsFileThatLacksTheMarker(t *testing.T) {
 	}
 }
 
+// Prepare asks for the digest before anything is provisioned: the lead's copy
+// of the managed settings and its folder are not there, and the config's file
+// is read in its place, by check-inputs and by profile-digest. The marker is
+// still required.
+func TestCheckInputsAndProfileDigestWorkBeforeProvisioning(t *testing.T) {
+	for _, marker := range []string{provisiontest.Marker, "another-text"} {
+		w := provisiontest.New(t)
+		file := configInputs(t, w, nil)
+		p, err := provision.PathsOf(w.Cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Dir(p.ManagedSettings)); err != nil {
+			t.Fatal(err)
+		}
+		provisiontest.WriteManagedSettings(t, w.Cfg.Provision.ManagedSettings, marker)
+		for _, cmd := range []string{"check-inputs", "profile-digest"} {
+			code, out, errOut := do(t, w, cmd, "--config", w.ConfigPath, "--inputs", file)
+			if marker == provisiontest.Marker {
+				if code != 0 || errOut != "" || out == "" {
+					t.Errorf("%s: status %d, out %q, err %q", cmd, code, out, errOut)
+				}
+				continue
+			}
+			if code != exitFailed || out != "" || !strings.Contains(errOut, "sources.managed_marker") {
+				t.Errorf("%s with no marker: status %d, out %q, err %q", cmd, code, out, errOut)
+			}
+		}
+	}
+}
+
 func TestCheckInputsRefusesAFileThatIsNotThere(t *testing.T) {
 	w := provisiontest.New(t)
 	code, out, _ := do(t, w, "check-inputs", "--config", w.ConfigPath, "--inputs", filepath.Join(w.Dir, "absent.json"))

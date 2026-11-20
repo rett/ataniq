@@ -215,9 +215,10 @@ if [ "$DRY" -eq 1 ]; then
   cc_say "[dry]   run: ataniq-intake init --state $ROOT/state --project $CC_PROJECT, then push develop into the mirror"
   cc_say "[dry]   $CONFIG (0600): pass A, stand-in agent, runtime claude 2.1.325, footer_mode manual, inject true, limits 4 GiB, no swap, 512 tasks, 1 GiB floor, 50 percent"
   cc_say "[dry]   $INPUTS (0600), provider_host api.anthropic.com, sources.managed_marker guard-hook"
-  cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-a as 2, report.txt)"
+  cc_say "[dry]   $ROOT/conf/replay-screens (idle-before-paste as 1, collapsed-paste-footer-c as 2, report.txt)"
   cc_say "[dry]   $ROOT/conf/managed-settings.json (valid JSON, naming the PreToolUse hook /ataniq/qargi/guard-hook, the text of the marker) and a no-op $ROOT/conf/guard-hook"
   cc_say "[dry]   $ROOT/agent-install/ataniq-canary-standin, a copy of the built stand-in"
+  cc_say "[dry]   $ROOT/bin/ataniq-probe (0700), a copy of $BIN/ataniq-probe: the inputs file names the copy, because the probe is a bind source and the checkout is never mounted"
   if [ "$PASTA_COPY" -eq 1 ]; then
     cc_say "[dry]   $PASTA_USE, a copy of $PASTA_SRC (the subject is then a copy of passt, not pasta itself)"
   else
@@ -238,11 +239,26 @@ if [ "$BUILD" -eq 1 ]; then
   cc_check_bin "$BIN"
 fi
 
+# half_made_root runs when the script ends. After a failure it says, as the
+# last line, how to remove the root by hand; it removes nothing itself.
+half_made_root() {
+  _rc=$?
+  if [ "$_rc" -ne 0 ] && [ -n "${ROOT_MADE:-}" ]; then
+    printf '%s\n' "$CC_NAME: failed; the half-made root $ROOT has no mark, so canary-reset.sh refuses it: look at it, then remove it by hand (chmod -R u+w $ROOT, then rm -r $ROOT), or prepare again with another --root" >&2
+  fi
+  exit "$_rc"
+}
+
 # the parents get 0700 from the umask
 # shellcheck disable=SC2174
 if [ ! -d "$ROOT" ]; then mkdir -p -m 0700 -- "$ROOT"; fi
 chmod 0700 -- "$ROOT"
 cc_say "making $ROOT"
+# From here a failure leaves a half-made root. Prepare never deletes anything:
+# the last line says how to remove it by hand. The mark that canary-reset.sh
+# requires is written only by a prepare that finished.
+ROOT_MADE=1
+trap half_made_root EXIT
 mkdir -m 0700 -- "$ROOT/evidence" "$ROOT/conf" "$ROOT/agent-install" "$ROOT/bin"
 
 # The throwaway repository: one small commit on develop.
@@ -265,7 +281,7 @@ mkdir -m 0700 -- "$ROOT/conf/replay-screens"
 for _x in json txt; do
   [ -f "$SCREENS/idle-before-paste.$_x" ] || cc_die "the recorded screens are missing in the checkout: $SCREENS"
   cp -- "$SCREENS/idle-before-paste.$_x" "$ROOT/conf/replay-screens/1.$_x"
-  cp -- "$SCREENS/collapsed-paste-footer-a.$_x" "$ROOT/conf/replay-screens/2.$_x"
+  cp -- "$SCREENS/collapsed-paste-footer-c.$_x" "$ROOT/conf/replay-screens/2.$_x"
 done
 printf '%s\n' 'state=idle:app=claude-code' >"$ROOT/conf/replay-screens/report.txt"
 chmod 0600 -- "$ROOT/conf/replay-screens/"*
@@ -288,6 +304,14 @@ chmod 0700 -- "$ROOT/conf/guard-hook"
 
 cp -- "$BIN/ataniq-canary-standin" "$ROOT/agent-install/ataniq-canary-standin"
 chmod 0700 -- "$ROOT/agent-install/ataniq-canary-standin"
+
+# The probe is a bind source, and the checkout (where --bin lies by default) is
+# the first entry of never_mounted, which the holder's validate step refuses as
+# a bind source: the inputs file names this copy in the root, as it names the
+# copy of pasta. Step 9 of the run compares it with the built probe.
+cp -- "$BIN/ataniq-probe" "$ROOT/bin/ataniq-probe"
+chmod 0700 -- "$ROOT/bin/ataniq-probe"
+PROBE_USE=$ROOT/bin/ataniq-probe
 
 if [ "$PASTA_COPY" -eq 1 ]; then
   cp -- "$PASTA_SRC" "$PASTA_USE"
@@ -341,7 +365,7 @@ cat >"$INPUTS" <<EOF
   "version": 1, "canary": true, "project": "$CC_PROJECT", "layout_role": "${CC_PROJECT}-lead",
   "state_root": "$ROOT/state", "runtime_root": "$ROOT/runtime",
   "runtime": "claude", "runtime_version": "2.1.325",
-  "executables": {"pasta": "$PASTA_USE", "bwrap": "$BWRAP", "probe": "$BIN/ataniq-probe"},
+  "executables": {"pasta": "$PASTA_USE", "bwrap": "$BWRAP", "probe": "$PROBE_USE"},
   "sources": {
     "agent_install": "$ROOT/agent-install",
     "managed_settings": "$LEAD/managed-settings.json",

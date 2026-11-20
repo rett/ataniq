@@ -2780,6 +2780,7 @@ func TestCanaryRunKitPrepareMakesTheSetUp(t *testing.T) {
 		"conf/replay-screens/2.txt":           0o600,
 		"conf/replay-screens/report.txt":      0o600,
 		"agent-install/ataniq-canary-standin": 0o700,
+		"bin/ataniq-probe":                    0o700,
 		"mirror-qual/config.json":             0o600,
 		".canary-prepared":                    0o600,
 	}
@@ -2855,7 +2856,7 @@ func TestCanaryRunKitPrepareMakesTheSetUp(t *testing.T) {
 	}
 	settings, _ := os.ReadFile(filepath.Join(r, "conf/managed-settings.json"))
 	sum := sha256.Sum256(settings)
-	if !in.Canary || in.ProviderHost != "api.anthropic.com" || in.Executables["pasta"] != e.pasta(t) || in.Executables["probe"] != e.bin+"/ataniq-probe" ||
+	if !in.Canary || in.ProviderHost != "api.anthropic.com" || in.Executables["pasta"] != e.pasta(t) || in.Executables["probe"] != r+"/bin/ataniq-probe" ||
 		in.Sources["managed_settings_sha256"] != hex.EncodeToString(sum[:]) || in.Sources["agent_install"] != r+"/agent-install" {
 		t.Errorf("sandbox-inputs.json:\n%s", inputs)
 	}
@@ -2888,9 +2889,10 @@ func TestCanaryRunKitPrepareMakesTheSetUp(t *testing.T) {
 	for dst, src := range map[string]string{
 		"conf/replay-screens/1.json":          filepath.Join(screens, "idle-before-paste.json"),
 		"conf/replay-screens/1.txt":           filepath.Join(screens, "idle-before-paste.txt"),
-		"conf/replay-screens/2.json":          filepath.Join(screens, "collapsed-paste-footer-a.json"),
-		"conf/replay-screens/2.txt":           filepath.Join(screens, "collapsed-paste-footer-a.txt"),
+		"conf/replay-screens/2.json":          filepath.Join(screens, "collapsed-paste-footer-c.json"),
+		"conf/replay-screens/2.txt":           filepath.Join(screens, "collapsed-paste-footer-c.txt"),
 		"agent-install/ataniq-canary-standin": filepath.Join(e.bin, "ataniq-canary-standin"),
+		"bin/ataniq-probe":                    filepath.Join(e.bin, "ataniq-probe"),
 	} {
 		a, _ := os.ReadFile(filepath.Join(r, dst))
 		b, err := os.ReadFile(src)

@@ -49,7 +49,7 @@ checkout it lies in and from nowhere else. How it knows each one:
 | `ataniq-canary-standin` | yes, required | yes (and compared with the agent's copy at step 9 of pass A) |
 | `ataniq-console` | no: it holds no canary mode and has no `--version` | yes |
 | `ataniq-intake` | no: it holds no canary mode and has no `--version` | yes |
-| `ataniq-probe` | no: it holds no canary mode and has no `--version` | yes |
+| `ataniq-probe` | no: it holds no canary mode and has no `--version` | yes (and the copy the inputs file names is compared with it at step 9 of pass A) |
 
 Before anything else, and again at step 3, the script runs `--version` of each
 of the four that hold canary mode and refuses to go on when one does not name
@@ -356,7 +356,7 @@ on `develop`, by a made-up author at `example.invalid`), the mirror
 `develop` pushed into it), `conf/` (the sandbox inputs file and the config's
 other files: the replay screens copied from the recorded set of claude 2.1.325,
 a managed-settings file that names the guard hook as its PreToolUse hook, and a no-op guard hook; the inputs file carries `sources.managed_marker`, `guard-hook`, a text the managed settings hold), `agent-install/` with
-a copy of the built stand-in, `config.json`, `mirror-qual/config.json`,
+a copy of the built stand-in, `bin/` with a copy of the built probe (mode 0700; the probe is a bind source and the checkout, where `build/canary` lies, is in `never_mounted`, which the holder refuses, so the inputs file names this copy as `executables.probe`, as it names the copy of pasta), `config.json`, `mirror-qual/config.json`,
 `answers.hint` (the hints for the path prompts: `mirror-report` always, the
 path `qualify-mirror` is told to write; `unit-report`, `plan-summary` and
 `template-review` only for the matching argument; mode 0600, no word and no
@@ -522,7 +522,9 @@ path.
 - `agent.argv` is the agent's command as seen inside the sandbox, where the
   install folder of the inputs file appears as `/ataniq/agent`. For pass A,
   copy `build/canary/ataniq-canary-standin` into that install folder; step 9
-  compares the copy's hash with the built one. For pass B the config is a
+  compares the copy's hash with the built one, and does the same for the probe
+  the inputs file names (`executables.probe`, a copy of `build/canary/ataniq-probe`
+  that is not below the checkout, which `never_mounted` keeps out of the sandbox). For pass B the config is a
   second file with `"kind": "live"`, the live agent's install folder, version,
   footer mode and arguments, the model argument among them: step 15 prints the
   arguments and the owner confirms the model.
@@ -553,7 +555,7 @@ documents. For the config above:
   "executables": {
     "pasta": "/usr/bin/pasta",
     "bwrap": "/usr/bin/bwrap",
-    "probe": "/srv/checkout/build/canary/ataniq-probe"
+    "probe": "/srv/canary/bin/ataniq-probe"
   },
   "sources": {
     "agent_install": "/srv/canary/agent-install",
@@ -568,7 +570,7 @@ documents. For the config above:
     "assignment_dir": "/srv/canary/state/leads/throwaway-one-lead/assignment",
     "projection_dir": "/srv/canary/state/leads/throwaway-one-lead/projection"
   },
-  "never_mounted": ["/srv/sample/checkout", "/srv/sample/dot-ssh"],
+  "never_mounted": ["/srv/checkout", "/srv/sample/dot-ssh"],
   "provider_host": "provider.example.invalid",
   "terminal": {"term": "xterm-256color"},
   "time_limit_seconds": 60
@@ -590,12 +592,12 @@ documents. For the config above:
   and the marker `guard-hook`. The marker is not part of the profile digest, so
   adding it to an inputs file needs no new pin, but changing the managed-settings
   file changes `managed_settings_sha256` and the digest. `check-inputs` and
-  `profile-digest` do not run the holder's trial of the spec, so the preflight
+  `profile-digest` read the file `sources.managed_settings` names, the lead's copy, once provisioning has made it, and before that (as prepare asks for the digest) the file `provision.managed_settings` names, which is the file provisioning copies. They do not run the holder's trial of the spec, so the preflight
   looks for the marker itself. An inputs file from an earlier prepare lacks it:
   use a fresh root.
 - `qargi_records_inside` is `/ataniq/records`, the inside path provisioning
   prepares the folders for.
-- `never_mounted` lists what no bind source may touch: your checkout, the real
+- `never_mounted` lists what no bind source may touch: your checkout (so no executable of `build/canary` can be a bind source: the probe is a copy outside it), the real
   provider folders, `.ssh` and the like. The paths shown are placeholders.
 
 ## The evidence folder
