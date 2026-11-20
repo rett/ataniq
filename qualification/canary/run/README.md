@@ -295,12 +295,19 @@ prompt. The prompt can wait, so the checks (the units, the processes, and that
 after the word and before the first deletion. It then enters the root once
 (links resolved, and it must be the path you gave) and names `state/` and
 `runtime/` relative to that folder from there on, so a root swapped for a link
-while the checks run makes it refuse, and nothing outside the root is deleted
-or made. The folders' modes are opened with `find`, which does not follow a
+while the checks run makes it refuse, and nothing outside the root is ever
+deleted. The folders' modes are opened with `find`, which does not follow a
 link; a change in the meantime is a refusal with nothing more deleted. It then makes `state/` and `runtime/` again (mode 0700) and the mirror
 with `ataniq-intake init` and `develop` pushed from `ROOT/upstream`, with the
 code `canary-prepare.sh` uses, and computes nothing else: the config and the
-pin stay as they were. With `--dry` it prints the plan and deletes nothing.
+pin stay as they were. That step is checked, not fully pinned: the `mkdir`,
+the `chmod` and the push into the mirror name their folders relative to the
+folder entered, but `ataniq-intake init` needs an absolute `--state`, so the
+reset checks again that `ROOT/state` and the folder entered are still `ROOT`
+right before that call. A process of your own user that swaps the root for a
+link within the few milliseconds between that check and that call could still
+make the folders of an empty mirror outside the root; it deletes nothing.
+With `--dry` it prints the plan and deletes nothing.
 After a failed pass, stop what is running first
 ([Undo by hand](#undo-by-hand)); the reset refuses while a unit is loaded.
 
@@ -526,7 +533,9 @@ appears while the prompt waits, and the reset must refuse after the word and
 leave the folder outside the root as it was, modes included. A stub
 `systemctl` that swaps the root, or `state/`, for a link on its second call
 (after the checks of `state/` and `runtime/`, before the deletion) is refused
-the same way. A stand-in
+the same way. A stub `mkdir` that swaps the root, for a link or for a folder of
+its own, just before or just after the reset makes `state/` and `runtime/`
+again is refused too, and nothing is made outside the root. A stand-in
 `ataniqd` (`sleep` under that name) in the root also refuses the real run.
 
 The dry run of a step prints what the step would do; it is not the code a real

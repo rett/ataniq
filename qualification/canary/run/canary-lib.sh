@@ -93,15 +93,34 @@ cc_git() {
   env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git "$@"
 }
 
-# cc_make_state ROOT BIN makes the two roots, ROOT/state and ROOT/runtime,
-# with mode 0700, and the mirror of the throwaway repository with
-# ataniq-intake init, and puts the upstream branch develop of ROOT/upstream in
-# it. Prepare and reset both make the roots with it.
+# cc_make_state ROOT BIN [pinned] makes the two roots, ROOT/state and
+# ROOT/runtime, with mode 0700, and the mirror of the throwaway repository
+# with ataniq-intake init, and puts the upstream branch develop of
+# ROOT/upstream in it. Prepare and reset both make the roots with it.
+#
+# Prepare gives two arguments and the names go through ROOT. The reset gives
+# the word pinned and has entered ROOT with cd -P: then the mkdir, the chmod
+# and the push name their folders relative to that folder, so a ROOT swapped
+# for a link meanwhile does not lead them anywhere. ataniq-intake init needs an
+# absolute --state, so it cannot be pinned: ROOT/state and the folder entered
+# are checked right before the call, and a swap in the few milliseconds
+# between that check and the call is not stopped. What the call makes is the
+# folders of an empty mirror; nothing is deleted.
 cc_make_state() {
-  mkdir -m 0700 -- "$1/state" "$1/runtime"
-  chmod 0700 -- "$1/state" "$1/runtime"
+  _p=$1
+  _m=$1/state/mirrors/$CC_PROJECT.git
+  if [ "${3:-}" = pinned ]; then
+    _p=.
+    _m=../state/mirrors/$CC_PROJECT.git
+  fi
+  mkdir -m 0700 -- "$_p/state" "$_p/runtime"
+  chmod 0700 -- "$_p/state" "$_p/runtime"
+  if [ "${3:-}" = pinned ]; then
+    [ "$(cd -P -- "$1/state" && pwd -P)" = "$1/state" ] && [ "$(pwd -P)" = "$1" ] ||
+      cc_die "$1 was replaced while the folders were made, so nothing more is made"
+  fi
   "$2/ataniq-intake" init --state "$1/state" --project "$CC_PROJECT" >/dev/null ||
     cc_die 'ataniq-intake init failed'
-  cc_git -C "$1/upstream" push -q "$1/state/mirrors/$CC_PROJECT.git" refs/heads/develop:refs/heads/develop ||
+  cc_git -C "$_p/upstream" push -q "$_m" refs/heads/develop:refs/heads/develop ||
     cc_die 'the upstream branch develop could not be put in the mirror'
 }

@@ -3478,7 +3478,8 @@ func TestCanaryRunKitResetChecksAgainAfterTheWord(t *testing.T) {
 // systemctl does it on its second call (the first is before the plan). The
 // root replaced by a link to a folder that holds a state/ and a runtime/ is
 // refused, and a state/ replaced by a link is refused by the deletion's own
-// check; in both nothing outside the root is deleted or made, and the real
+// check; in both nothing outside the root is deleted (what the make-again step
+// does is the test after this one), and the real
 // folders are not touched. Removing the entry into the root, or the link
 // check of the deletion loop, fails one of these.
 func TestCanaryRunKitResetSwapAfterTheSecondCheck(t *testing.T) {
@@ -3547,6 +3548,82 @@ func TestCanaryRunKitResetSwapAfterTheSecondCheck(t *testing.T) {
 				if _, err := os.Stat(p); err != nil {
 					t.Errorf("the provisioned state of the root is gone: %v", err)
 				}
+			}
+		})
+	}
+}
+
+// The make-again step is checked right before each step, not fully pinned: a
+// swap of the root by a same-user process during the mkdir is refused after
+// it, and nothing is created outside the root. A stub mkdir on PATH swaps the
+// root when it is asked for ./state (the step names its folders relative to
+// the folder it entered), before or after it makes them: for a link to a
+// folder outside, and for a new folder of its own that has a state/ (only the
+// check of the folder entered sees that one). What is not tested, because the
+// stub cannot be run between a check and the next call: a swap in the
+// milliseconds between the last check and ataniq-intake. Removing the pwd -P
+// check of the make-again step fails the last case.
+func TestCanaryRunKitResetSwapDuringTheMakeAgain(t *testing.T) {
+	scriptCmd := canaryNeedScript(t)
+	for _, c := range []struct {
+		name  string
+		after bool // swap after the real mkdir, not before
+		swap  func(r, outside string) string
+	}{
+		{"link-before-mkdir", false, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"link-after-mkdir", true, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\nln -s '" + outside + "' '" + r + "'\n"
+		}},
+		{"folder-after-mkdir", true, func(r, outside string) string {
+			return "mv '" + r + "' '" + r + "-real'\n/bin/mkdir -p '" + r + "/state'\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := canaryStubKit(t)
+			r := e.prepared(t)
+			outside := filepath.Join(e.dir, "outside")
+			canaryWrite(t, outside, "keep/precious", "x")
+			list := func() string {
+				var b strings.Builder
+				for _, p := range canaryTree(t, outside) {
+					fmt.Fprintf(&b, "%s %v\n", p, canaryMode(t, p))
+				}
+				return b.String()
+			}
+			before := list()
+			realMkdir := "PATH=/usr/bin:/bin\n"
+			var stub string
+			if c.after {
+				stub = "#!/bin/sh\n" + realMkdir + "mkdir \"$@\" || exit $?\ncase \" $* \" in *' ./state '*)\n" + c.swap(r, outside) + ";;\nesac\n"
+			} else {
+				stub = "#!/bin/sh\n" + realMkdir + "case \" $* \" in *' ./state '*)\n" + c.swap(r, outside) + ";;\nesac\nexec mkdir \"$@\"\n"
+			}
+			out, err := canaryTyped(t, scriptCmd, e, r, "reset", func() {
+				tmp := filepath.Join(e.tools, "mkdir.new")
+				if err := os.WriteFile(tmp, []byte(stub), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(tmp, filepath.Join(e.tools, "mkdir")); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if err == nil || !strings.Contains(out, "was replaced while the folders were made") {
+				t.Errorf("after the swap the reset did not refuse: %v\n%s", err, out)
+			}
+			if strings.Contains(out, "again, and the mirror") {
+				t.Errorf("the reset went on after the swap:\n%s", out)
+			}
+			if after := list(); after != before {
+				t.Errorf("the folder outside the root changed:\nbefore\n%safter\n%s", before, after)
+			}
+			// Nothing of the mirror was made where the root's name points.
+			if _, err := os.Stat(filepath.Join(r, "state", "mirrors")); err == nil {
+				t.Errorf("ataniq-intake ran after the swap: %s/state/mirrors exists", r)
+			}
+			if calls, _ := os.ReadFile(e.calls); strings.Contains(string(calls), "ataniq-intake init") {
+				t.Errorf("ataniq-intake init was called after the swap:\n%s", calls)
 			}
 		})
 	}

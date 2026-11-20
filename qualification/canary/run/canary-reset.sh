@@ -8,15 +8,20 @@
 # canary-prepare.sh made, and makes the two roots and the mirror again as
 # canary-prepare.sh does (the code is shared in canary-lib.sh). It never
 # deletes config.json, upstream, bin, conf, evidence or mirror-qual, and
-# nothing outside the root. It refuses without a terminal on standard input,
+# never deletes anything outside the root. It refuses without a terminal on standard input,
 # while an ataniq-* unit is loaded or an ataniqd or ataniq-holder of the root
 # runs (named in its arguments, or running in the root), and for a root that does not carry the mark of its own prepare. It
 # shows what it will delete and deletes only after the owner types the word
 # reset: the script never answers that prompt. It makes the checks of the units,
 # the processes and the two folders again after the word, before the first
 # deletion, then enters the root and deletes relative to it, so that a root
-# swapped for a link meanwhile is refused and nothing outside is touched.
-# With --dry it prints the plan
+# swapped for a link meanwhile is refused and nothing outside is deleted.
+# The step that makes the folders again is pinned the same way (mkdir, chmod
+# and push relative to the folder entered) and checked again right before
+# ataniq-intake init, which needs an absolute path and so goes through ROOT:
+# a swap of the root by a process of the same user in the milliseconds between
+# that check and that call could still make the folders of an empty mirror
+# outside the root. It deletes nothing there. With --dry it prints the plan
 # and deletes nothing. It starts nothing.
 #
 # --self-test NAME VALUE...: the test entry, which only computes and prints.
@@ -265,8 +270,9 @@ for _k in state runtime; do
   fi
 done
 cc_say "deleted $ROOT/state and $ROOT/runtime"
-# Nothing is made unless the folder entered above is still ROOT.
+# Nothing is made unless the folder entered above is still ROOT; the make
+# checks again right before ataniq-intake (see cc_make_state in canary-lib.sh).
 [ "$(pwd -P)" = "$ROOT" ] || cc_die "$ROOT was replaced after the deletion, so nothing is made again"
-cc_make_state "$ROOT" "$BIN"
+cc_make_state "$ROOT" "$BIN" pinned
 cc_say "made $ROOT/state and $ROOT/runtime again, and the mirror with the branch develop"
 cc_say 'Reset done. Nothing was started. The run script is typed as before.'
