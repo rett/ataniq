@@ -89,3 +89,19 @@ func TestProfileDigestRefusesWrongInputsByField(t *testing.T) {
 		t.Fatalf("digest %q, error %v", d, err)
 	}
 }
+
+func TestAgentEnvOfSplitsAtTheFirstEqualsInOrder(t *testing.T) {
+	if got := AgentEnvOf(nil); got != nil {
+		t.Errorf("no arguments: got %v, want nil", got)
+	}
+	got := AgentEnvOf([]string{"B=two", "A=x=y", "C", "D="})
+	want := []profile.EnvVar{{Name: "B", Value: "two"}, {Name: "A", Value: "x=y"}, {Name: "C"}, {Name: "D"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d: got %v, want %v", i, got[i], want[i])
+		}
+	}
+}

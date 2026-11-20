@@ -5,5 +5,6 @@
   digits, so the owner can pin it in `holder.profile_digest` before the first
   start; a wrong pin made the real start fail at step 12. It checks the file
   against the config as `check-inputs` does, computes the digest with the
-  holder's own code, starts and writes nothing, and prints no path and no
-  environment value.
+  holder's own code, starts and writes nothing, and prints no environment
+  value and no path of its own (a refusal to read the file repeats the path
+  given to `--inputs`, as `check-inputs` does).

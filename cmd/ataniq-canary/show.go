@@ -12,7 +12,6 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/provision"
 	"ataniq/internal/leadholder/sandboxstart"
-	"ataniq/internal/leadsandbox/profile"
 )
 
 // This file holds the two subcommands the attended run script uses for what a
@@ -122,7 +121,7 @@ func checkInputs(cfg leadcanary.Config, file string, out io.Writer) error {
 // with the agent's environment set as the holder sets it (the config's
 // agent.env, in order), so the command and the holder use one computation. It
 // reads the config and the inputs file and starts and writes nothing. A refusal
-// names the field and never a value, and no environment value is printed.
+// names the field and never a value, and no environment value is printed; a file that cannot be read is named by the path given to --inputs, as check-inputs names it.
 func profileDigest(cfg leadcanary.Config, file string, out io.Writer) error {
 	if err := provision.CheckInputs(cfg, file); err != nil {
 		return err
@@ -131,10 +130,7 @@ func profileDigest(cfg leadcanary.Config, file string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	for _, kv := range cfg.Agent.Env {
-		name, val, _ := strings.Cut(kv, "=")
-		in.AgentEnv = append(in.AgentEnv, profile.EnvVar{Name: name, Value: val})
-	}
+	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.Agent.Env)
 	d, err := sandboxstart.ProfileDigest(in, uint32(os.Geteuid()), uint32(os.Getegid()))
 	if err != nil {
 		return fmt.Errorf("the profile digest cannot be computed: %w", err)

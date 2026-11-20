@@ -3,6 +3,8 @@
 package sandboxstart
 
 import (
+	"strings"
+
 	"ataniq/internal/leadsandbox/profile"
 )
 
@@ -84,4 +86,19 @@ func ProfileDigest(in Inputs, uid, gid uint32) (string, error) {
 		return "", err
 	}
 	return pin.Digest()
+}
+
+// AgentEnvOf is Inputs.AgentEnv as the holder sets it from its --env
+// NAME=VALUE arguments (the canary config's agent.env): one variable per
+// argument, in order, split at the first "=". An argument without "=" is a
+// name with an empty value. It returns nil for no arguments. The holder and
+// the profile-digest command both use it, so they cannot compose the
+// environment differently.
+func AgentEnvOf(pairs []string) []profile.EnvVar {
+	var out []profile.EnvVar
+	for _, kv := range pairs {
+		name, val, _ := strings.Cut(kv, "=")
+		out = append(out, profile.EnvVar{Name: name, Value: val})
+	}
+	return out
 }
