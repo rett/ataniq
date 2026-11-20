@@ -121,7 +121,7 @@ func checkInputs(cfg leadcanary.Config, file string, out io.Writer) error {
 // with the agent's environment set as the holder sets it (the config's
 // agent.env, in order), so the command and the holder use one computation. It
 // reads the config and the inputs file and starts and writes nothing. A refusal
-// names the field and never a value, and no environment value is printed.
+// names the field and never a value, and no environment value is printed; a file that cannot be read is named by the path given to --inputs, as check-inputs names it.
 func profileDigest(cfg leadcanary.Config, file string, out io.Writer) error {
 	if err := provision.CheckInputs(cfg, file); err != nil {
 		return err
