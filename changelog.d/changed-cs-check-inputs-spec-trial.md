@@ -4,8 +4,10 @@
   of the profile and the spec on the inputs file (`sandboxstart.TrialValidate`,
   the code the holder runs), with the agent command line, environment and
   pinned digest of the config, and for the runtime `claude` it requires
-  `sources.managed_marker` and a managed-settings file that holds that text,
-  which assertion 8 searches for. An inputs file without the key, as the run
+  `sources.managed_marker`, which the holder requires too, and a
+  managed-settings file that holds that text, which only assertion 8 inside
+  the sandbox checks, after the launch, so that this is earlier than the
+  holder. An inputs file without the key, as the run
   kit's prepare script wrote it, was accepted by step 8 and refused by the
   holder, which then ended the unit at once. A refusal names the field and
   never a value or a path. `docs/canary-slice.md` lists what it checks and
