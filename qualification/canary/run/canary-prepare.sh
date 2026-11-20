@@ -566,7 +566,7 @@ if [ "$PASS" = B ]; then CHECKLIST_TEMPLATE=checklist-b.txt.in; fi
 if [ -n "$MODEL" ]; then
   MODELNOTE="Model: $MODEL (--model); step 15 asks you to confirm it."
 else
-  MODELNOTE='Model: none chosen. Prepare again with --model NAME, or add "--model", "NAME" to agent.argv (the pin does not cover argv).'
+  MODELNOTE='Model: none chosen. Prepare a NEW root with --model NAME, or add "--model", "NAME" to agent.argv in config.json by hand (not pinned) and run preflight again.'
 fi
 sed \
   -e "s|@ROOT@|$(sed_value "$ROOT")|g" \

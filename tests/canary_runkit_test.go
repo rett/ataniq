@@ -2552,7 +2552,7 @@ func TestCanaryRunKitHelpersArePlainShell(t *testing.T) {
 				// prints for the owner to type are text.
 				if bad == "systemctl" && rel == canaryPreflightScript {
 					ok := false
-					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap, pasta and ss are on PATH"} {
+					for _, allowed := range []string{"systemctl --user list-units --all --no-legend --plain 'ataniq-*' 2>", "for _t in systemctl loginctl", `fix "systemctl --user cannot list the units`, `"systemctl --user list-units --all 'ataniq-*'"`, `"systemctl --user stop $_loaded"`, "systemctl, loginctl, git, bwrap, pasta and ss are on PATH", "_tools='systemctl loginctl", "_list='systemctl, loginctl"} {
 						ok = ok || strings.Contains(l, allowed)
 					}
 					if ok {
@@ -5910,11 +5910,7 @@ func TestCanaryRunKitPreflightFixes(t *testing.T) {
 		},
 		"pasta is not on PATH": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "pasta")) }, nil, 1,
-			[]string{"FIX:  not on PATH (steps 3 and 6 run them): pasta -- type: put them on PATH"},
-		},
-		"ss is not on PATH": {
-			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "ss")) }, nil, 1,
-			[]string{"FIX:  not on PATH (steps 3 and 6 run them): ss -- type: put them on PATH"},
+			[]string{"FIX:  not on PATH (step 3 runs them): pasta -- type: put them on PATH"},
 		},
 		"timeout is not on PATH": {
 			func(t *testing.T, p *pf) { os.Remove(filepath.Join(p.tools, "timeout")) }, nil, 1,

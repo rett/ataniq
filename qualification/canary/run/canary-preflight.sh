@@ -332,6 +332,20 @@ check_live_agent() {
     *,DISABLE_AUTOUPDATER,*) ok "agent.env names DISABLE_AUTOUPDATER (names only; no value is read)" ;;
     *) fix "agent.env does not name DISABLE_AUTOUPDATER: the agent may draw an update notice on the screen the fence reads, and the env is part of the pin" "$_fresh" ;;
   esac
+  _hasmodel=0
+  _i=0
+  while [ "$_i" -lt 64 ]; do
+    _av=$(show_field "agent_argv_$_i")
+    [ -n "$_av" ] || break
+    [ "$_av" = --model ] && _hasmodel=1
+    _i=$((_i + 1))
+  done
+  if [ "$_hasmodel" -eq 1 ]; then
+    ok "agent.argv names --model (step 15 asks you to confirm the model)"
+  else
+    fix "agent.argv has no --model: the agent would start on its default model, and step 15 ends the pass when no model is shown" \
+      "edit agent.argv in $CONFIG: add \"--model\", \"NAME\" (not in the pin), then run preflight again; or prepare a NEW root with --model NAME"
+  fi
   _a0=$(show_field agent_argv_0)
   _rest=${_a0#/ataniq/agent/}
   if [ "$_rest" = "$_a0" ] || [ -z "$_rest" ]; then
@@ -507,13 +521,22 @@ check_mirror_report() {
 # 10. The tools step 3 runs and timeout, the sysctl and lingering it reads.
 check_host() {
   _absent=
-  for _t in systemctl loginctl git bwrap pasta ss; do
+  _tools='systemctl loginctl git bwrap pasta'
+  _steps='step 3 runs them'
+  _list='systemctl, loginctl, git, bwrap and pasta'
+  # ss is run only by step 6, which only pass B (a live agent) does.
+  if [ "$(show_field agent_kind)" = live ]; then
+    _tools="$_tools ss"
+    _steps='steps 3 and 6 run them'
+    _list='systemctl, loginctl, git, bwrap, pasta and ss'
+  fi
+  for _t in $_tools; do
     command -v "$_t" >/dev/null 2>&1 || _absent="$_absent $_t"
   done
   if [ -n "$_absent" ]; then
-    fix "not on PATH (steps 3 and 6 run them):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
+    fix "not on PATH ($_steps):$_absent" "put them on PATH (a copy of pasta made by canary-prepare.sh is in $ROOT/bin: PATH=$ROOT/bin:\$PATH)"
   else
-    ok "systemctl, loginctl, git, bwrap, pasta and ss are on PATH"
+    ok "$_list are on PATH"
   fi
   if command -v timeout >/dev/null 2>&1; then
     ok "timeout is on PATH (the run cuts off each ask of the daemon's status with it)"
