@@ -2450,7 +2450,10 @@ make_message() {
 # commits only from a paste, and the body has two lines, so typed line by line
 # the first Enter would submit half of it to a live agent.
 paste_message() {
-  out '   Owner: put the message into the pane yourself. Do NOT type it. Copy the whole text of this file:'
+  out '   Owner: first give the session pane the focus: select the session terminal and press Enter. The focus bar'
+  out '   then names the session (Ctrl+\ leaves it). A paste while the console has the focus itself is dropped'
+  out '   without a word, and the first Enter only moves the focus.'
+  out '   Then put the message into the pane yourself. Do NOT type it. Copy the whole text of this file:'
   out "     $BODY"
   out '   and paste it into the pane with your terminal'"'"'s paste, so that it arrives as ONE paste'
   out '   (a bracketed paste; typed line by line, the first Enter would send half of it).'
@@ -2475,12 +2478,12 @@ step_17() {
     if [ "$PASS" = A ]; then
       dry 'check: the result is not-now, not-ready, written nothing'
       dry 'fail the step on exit status 30 (the daemon refused the message) and on refused, untested (a wrong config: the version is not a tested one)'
-      dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; wait"
+      dry "print the file to paste from, $BODY, and its text; the owner pastes it into the pane with the terminal's paste, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus, because a paste into an unfocused console is dropped silently; wait"
     else
       dry 'fail the step on exit status 30 (the daemon refused the message: the fence was not asked)'
       dry 'on uncertain, not-submitted, partial and on nothing else: the owner presses Enter once in the pane; record the line owner-enter with the time'
       dry 'on uncertain, died: press nothing (the input may hold an open paste); the owner looks at the pane; record what he saw and his decision'
-      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; that is recorded"
+      dry "on any refusal: print the file to paste from, $BODY; the owner pastes the message himself, as one paste, and presses Enter once: he does not type it; he first gives the session pane the focus; that is recorded"
     fi
     result ok
     done_step
@@ -2965,6 +2968,10 @@ second_epoch() {
   wait_key 'The second epoch begins: the role is stopped with proof (the stop of step 22, without the clean-up). Close the first console first.'
   CUR=22
   stop_role || return 0
+  # Step 22 reverts the unit at the end of the pass; the second start must not
+  # load a drop-in of the first one (step 11 sets MemoryMax with --runtime), so
+  # the unit is reverted here too, between the epochs.
+  runcap revert-between-epochs systemctl --user revert "$UNIT"
   CUR=20
   wait_key 'Write the replay switch file.'
   runcap replay-on "$BIN/ataniq-canary" replay-on --config "$CONFIG"

@@ -1087,10 +1087,17 @@ func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
 	for _, want := range []string{
 		"Do NOT type it", `out "     $BODY"`, "with your terminal'\"'\"'s paste", "ONE paste",
 		"a bracketed paste", "press Enter in the pane ONCE", `"$BODY"`,
+		// The console drops a paste that arrives while it has the focus itself,
+		// without a word: the owner is told to focus the session pane first, and
+		// before the instruction to paste.
+		"first give the session pane the focus", "A paste while the console has the focus itself is dropped",
 	} {
 		if !strings.Contains(paste, want) {
 			t.Errorf("paste_message does not say %s", want)
 		}
+	}
+	if f, p := strings.Index(paste, "first give the session pane the focus"), strings.Index(paste, "Do NOT type it"); f < 0 || p < f {
+		t.Error("paste_message does not tell the owner to give the pane the focus before it tells him to paste")
 	}
 	body := funcs["step_17"]
 	if n := canaryCalls(body, "paste_message"); n != 2 {
@@ -1116,7 +1123,7 @@ func TestCanaryRunKitOwnerPastesTheMessage(t *testing.T) {
 			if !strings.HasPrefix(b.heading, "== step 17 [pass "+pass+"]: ") {
 				continue
 			}
-			if b.count("print the file to paste from, ") != 1 || b.count("as one paste, and presses Enter once: he does not type it") != 1 {
+			if b.count("print the file to paste from, ") != 1 || b.count("as one paste, and presses Enter once: he does not type it") != 1 || b.count("gives the session pane the focus") != 1 {
 				t.Errorf("the dry run of step 17 in pass %s does not give the paste instruction:\n%s", pass, strings.Join(b.lines, "\n"))
 			}
 		}
@@ -4455,6 +4462,32 @@ func TestCanaryRunKitKeepsTheUnitJournal(t *testing.T) {
 	}
 }
 
+// Between the epochs the unit is stopped, and reverted too: step 11 of the
+// first epoch set MemoryMax on it with --runtime, and the second start must not
+// load that drop-in (the revert of step 22 comes only at the end of the pass).
+func TestCanaryRunKitSecondEpochRevertsTheUnit(t *testing.T) {
+	body := canaryFuncs(t, canaryScriptText(t))["second_epoch"]
+	stop, revert, eleven := strings.Index(body, "stop_role || return 0"), strings.Index(body, `runcap revert-between-epochs systemctl --user revert "$UNIT"`), strings.Index(body, "step_11")
+	if stop < 0 || revert < stop || eleven < revert {
+		t.Error("the second epoch does not revert the unit after it stopped it and before it starts it again")
+	}
+	out, code := canaryDry(t, "--pass", "A", "--config", "/nonexistent/sample/canary.json")
+	if code != 0 {
+		t.Fatalf("exit status %d:\n%s", code, out)
+	}
+	from := strings.Index(out, "== second epoch of pass A")
+	to := strings.Index(out, "== step 11 [pass A, second epoch]")
+	if from < 0 || to < from {
+		t.Fatalf("the dry run has no second epoch:\n%s", out)
+	}
+	between := out[from:to]
+	stopAt := strings.Index(between, "run: build/canary/ataniqd canary stop")
+	revertAt := strings.Index(between, "run: systemctl --user revert ataniq-lead-throwaway-one.service")
+	if stopAt < 0 || revertAt < stopAt {
+		t.Errorf("the dry run does not revert the unit after the stop, between the epochs:\n%s", between)
+	}
+}
+
 // count-lines is the reading step 14 makes of the event log: how many lines
 // hold every PATH=VALUE, each line read as JSON by the helper.
 func TestCanaryRunKitCountLines(t *testing.T) {
@@ -6131,6 +6164,7 @@ func TestCanaryRunKitChecklistTemplate(t *testing.T) {
 	// 26: the page names a terminal for each of the four things the owner runs,
 	// and sends neither the console nor the intake to the daemon's.
 	for _, want := range []string{
+		"17   In T3 give the session pane the focus first (Enter on it; a paste into\n      an unfocused console is dropped)",
 		"Four terminals: T1 runs\nthe script, T2 the daemon (it stays in front until Ctrl-C at step 26), T3 the\nconsole, T4 the second console of step 14 and the integrate command of 20.",
 		"14   T3: start the console BEFORE you press Enter at step 14; it waits for\n      a ticket",
 		"--ticket-file @HOLDER_RUN@/ticket",

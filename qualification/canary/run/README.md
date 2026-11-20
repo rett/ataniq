@@ -151,7 +151,12 @@ puts the message into the pane. He does not type it. The script prints the
 path of the message file (`message-1.txt` in the evidence folder) and its
 text; the owner copies the whole text of that file and pastes it into the pane
 with his terminal's paste, so that it arrives as one bracketed paste, and then
-presses Enter in the pane once. The console forwards the paste as a paste.
+presses Enter in the pane once. The console forwards the paste as a paste, and
+only from session focus: a paste while the console has the focus itself is
+dropped without a word (and the first Enter only moves the focus), so the owner
+first gives the session pane the focus (selects the session terminal and presses
+Enter; the focus bar then names the session, and Ctrl+\ leaves it). The script
+says so before it names the file.
 Typed keys do not do: the stand-in commits only from a paste followed by
 Enter, and the message has two lines, so with a live agent the Enter after the
 first line would submit half of it.
@@ -676,6 +681,24 @@ listeners you stopped, and compare the live config folder with
   state folder, and step 22 prints them from it, or says that none is named
   for 7501 or that there is no final record.
 - That `hello` lists the canary operations (step 10) is the lead's reading.
+- That the console of the first epoch is closed before the second epoch's step
+  14. The script tells the owner to close it, and cannot see whether he did; a
+  console left open waits on the same ticket file and takes the second epoch's
+  ticket for itself.
+- Step 12 reads the waiver in `holder.json` before it waits for `sandbox-started`.
+  The holder writes `holder.json` twice, before its start sequence (with no
+  waiver) and after it, and the report's time limit is 60 seconds, so a step that
+  reads the file in between could see the first. The owner's key before step 12
+  makes that unlikely; this is reasoned, not seen, and it is a known limit (the
+  waiver check belongs after the wait).
+- A stop may leave no final record. The unit's `TimeoutStopSec` is 2 seconds
+  and the stop's SIGTERM to every process of the unit is followed by SIGKILL
+  after 2 seconds, while the holder waits up to 2 seconds for the stream and 5
+  for the tree after its child's exit. A holder that needs more than 2 seconds
+  to conclude is killed before it writes `final.json`. The script copes with the
+  missing file (it says the holder left no final record), so pass A does not
+  fail, but the 7501 counters of step 22 are then not printed. Reasoned, not
+  seen.
 - The script does not run git in the lead's tree after a lead has run in it.
   The commit is observed through the intake at step 20.
 
