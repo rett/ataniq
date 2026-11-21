@@ -170,6 +170,22 @@ func TestReasonWordsAreShortASCII(t *testing.T) {
 	}
 }
 
+// A holder that says it is busy is delivering something the daemon has no
+// record of, and the daemon keeps the epoch's message spent after it, so the
+// words of that refusal must not say the epoch is free or that nothing was sent
+// at all, and the other holder refusals do not say the epoch is spent.
+func TestTheHolderBusyWordsSayTheEpochsMessageIsSpent(t *testing.T) {
+	busy := reasonWords["holder-busy"]
+	if !strings.Contains(busy, "spent") || strings.Contains(busy, "free") || strings.Contains(busy, "nothing was written") {
+		t.Errorf("holder-busy: %q", busy)
+	}
+	for _, c := range []string{"holder-disabled", "holder-wrong-epoch", "holder-bad-request"} {
+		if strings.Contains(reasonWords[c], "spent") {
+			t.Errorf("%s: %q", c, reasonWords[c])
+		}
+	}
+}
+
 // constNames returns, for each constant of the Go file whose value is a
 // string literal, its name and its value, read from the source.
 func constNames(t *testing.T, path string) map[string]string {

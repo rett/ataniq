@@ -719,9 +719,11 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 //
 // The epoch takes one message, with one exception that is the lead's own: a
 // message that was not delivered (the holder answered not-now or refused with
-// nothing written, or refused the request itself as disabled, wrong-epoch,
-// busy or bad-request) does not spend it, so the lead may send another in the
-// epoch, as [canaryExt.injectFor] says.
+// nothing written, or refused the request itself as disabled, wrong-epoch or
+// bad-request) does not spend it, so the lead may send another in the epoch, as
+// [canaryExt.injectFor] says. A holder's busy is not one of them: it says a
+// delivery is running that the daemon has no record of, which may have reached
+// the lead, so it leaves the epoch spent.
 //
 // The residual: a daemon killed after the frame is written and before the
 // inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
@@ -737,13 +739,21 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
 		if code, held := strings.CutPrefix(f.code, "holder-"); held && holderRefusal(code) {
-			// The holder refused the request and wrote nothing to the lead.
-			// The words kept for an earlier message of the epoch are not this
-			// one's: this one was not delivered. With the refusal in the
+			// The holder refused the request and wrote nothing to the lead for
+			// this message. The words kept for an earlier message of the epoch
+			// are not this one's: with disabled, wrong-epoch and bad-request
+			// this one was not delivered, and with the refusal in the
 			// evidence the epoch's message is free again (see
 			// [canaryExt.injectFor]); when the line could not be written it is
-			// still spent, and the row says so.
-			lr.noteDelivery(p.Epoch, leadwire.MessageResult{Outcome: string(wire.InjectOutcomeRefused)})
+			// still spent, and the row says so. A busy holder is delivering
+			// something the daemon has no record of, so the epoch stays spent
+			// and no word is known of the epoch's message: the row has none,
+			// which the console reads as sent-unsure.
+			words := leadwire.MessageResult{Outcome: string(wire.InjectOutcomeRefused)}
+			if !holderFrees(code) {
+				words = leadwire.MessageResult{}
+			}
+			lr.noteDelivery(p.Epoch, words)
 			if code == wire.CodeWrongEpoch {
 				// The role was stopped and started between the daemon's epoch
 				// check and the holder's read of the frame: a mismatch of the

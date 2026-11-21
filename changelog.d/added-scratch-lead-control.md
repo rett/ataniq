@@ -46,16 +46,19 @@
 - The epoch of a scratch lead takes one message, and a message that was not
   delivered does not spend it. When the holder answers `not-now` or `refused`
   with nothing written, or refuses the request itself (`disabled`,
-  `wrong-epoch`, `busy` or `bad-request`), the epoch's message stays free,
+  `wrong-epoch` or `bad-request`), the epoch's message stays free,
   `lead.list` shows `message_spent` as `false`, and the lead may send another
   message in the same epoch (the same message id is not refused). Everything
   that may have reached the lead stays spent: a submitted or uncertain result,
   no answer, a closed connection, an answer that does not decode, a refusal
-  code the daemon does not know, and a result or refusal that could not be
-  written to the evidence. A restarted daemon reads the evidence back and keeps
-  the epoch free only when the message has its `inject-result` line with
-  `not-now` or `refused` and nothing written, or its `inject-refused` line with
-  one of the holder's four refusals; a daemon killed after the `inject-sent`
+  code the daemon does not know, a result or refusal that could not be written
+  to the evidence, and a holder's `busy` (a holder that says a delivery is
+  running is delivering something the daemon has no record of; the console
+  shows the message as `sent-unsure`). A restarted daemon reads the evidence
+  back and keeps the epoch free only when the message has its `inject-result`
+  line with `not-now` or `refused` and nothing written, or its `inject-refused`
+  line with `holder-disabled`, `holder-wrong-epoch` or `holder-bad-request`; a
+  daemon killed after the `inject-sent`
   line and before the closing line leaves the epoch spent, as does any closing
   line without a matching `inject-sent` line or one that comes twice. The
   canary's rule that every sent message spends the epoch is unchanged. See

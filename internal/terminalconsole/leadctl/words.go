@@ -123,7 +123,7 @@ var reasonWords = map[string]string{
 	"ticket-file":        "the ticket was taken but its file could not be written",
 	"holder-disabled":    "the lead's holder does not take messages",
 	"holder-wrong-epoch": "the holder is at another epoch; read the list and try again",
-	"holder-busy":        "the holder is busy; nothing was written",
+	"holder-busy":        "the holder is busy with an unrecorded delivery; the epoch's message is spent",
 	"holder-bad-request": "the holder did not accept the request; nothing was written",
 	"inject-off":         "messages are off for this lead",
 	"bad-message":        "the message was not accepted",
