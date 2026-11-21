@@ -703,10 +703,19 @@ sandbox does not show, so the agent cannot see it or name anything in it.
   missing.
 - `titles.jsonl`, one JSON line for each window title as it changed, and
   `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
-  `7501;`, the support query included). Each line has `ms` (milliseconds since
-  the start), `bytes` and `cut`; a title or payload is cut at 4096 bytes, stored
-  as a JSON string and never interpreted. The title is read every 100 ms, so a
-  title the agent replaced sooner is not seen.
+  `7501;`, the support query included). Each line has `ms`, the milliseconds
+  since the recording began, measured from the recorder's creation, which the
+  holder makes as it starts the lead, before the sandbox starts (so the first
+  line comes some time after 0); and `bytes`, the length as seen, and `cut`.
+  A title is the pane's title as the pane keeps it, not the raw bytes: invalid
+  UTF-8 becomes U+FFFD, control, line-separator and bidirectional formatting
+  characters are dropped, and it is cut at 256 bytes, by the pane, at a
+  character boundary (the pane's cut is not seen, so `cut` is `false`). Only
+  the OSC 7501 payloads are raw: a payload is cut at 4096 bytes at a character
+  boundary (`cut`: `true`), stored as a JSON string and never interpreted, and
+  its line also has `utf8`, which says whether the bytes kept are valid UTF-8
+  (when they are not, each bad byte is stored as U+FFFD). The title is read
+  every 100 ms, so a title the agent replaced sooner is not seen.
 - `LIMIT.txt`, only when needed: a line when the screens stopped at 400 pairs
   (the titles and the payloads go on being recorded), a line when the recording
   stopped at 8 MiB written in all (`README.txt` and `LIMIT.txt` included),

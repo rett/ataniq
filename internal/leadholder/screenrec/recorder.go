@@ -74,7 +74,10 @@ const Readme = `Screen recording of one start of a scratch lead, written by atan
 
 raw, scrub before use; do not commit.
 
-These files are what the agent drew and sent, unchanged. They may hold a login
+These files are what the agent drew and sent: the screens as the terminal
+showed them, the titles as the terminal keeps them (control and bidirectional
+characters dropped, at most 256 bytes) and the OSC 7501 payloads unchanged.
+They may hold a login
 URL, a login code, a session id, a home path, a host name or anything else the
 agent showed. Scrub them by hand before any of it goes into a fixture, and
 delete this folder once the fixtures are made.
@@ -84,14 +87,18 @@ NNNN.txt, NNNN.json  one distinct screen each, once it stood still for about
                      internal/inject/screen/testdata ("source": "recorded",
                      no description and no "want" yet); "torn": true marks
                      a screen taken mid-frame, not a fixture as it is
-titles.jsonl         each window title as it changed, with "ms"
-osc7501.jsonl        each OSC 7501 payload, with "ms"
+titles.jsonl         each window title as it changed: "ms", "bytes", "cut",
+                     "title"
+osc7501.jsonl        each OSC 7501 payload, raw: "ms", "bytes", "cut",
+                     "utf8" (the bytes kept are valid UTF-8), "payload"
 LIMIT.txt            why the screens or the recording stopped early, and
                      "dropped N", once at the end, when the queue dropped
                      items
 
-"ms" is milliseconds since the holder started recording. A title or payload
-is cut at 4096 bytes ("cut": true) and stored as a JSON string.
+"ms" is the milliseconds since the recording began, measured from the
+recorder's creation, as the holder started the lead (before the sandbox
+started). "bytes" is the length as seen. A payload over 4096 bytes is cut at a
+character boundary ("cut": true); every text is stored as a JSON string.
 `
 
 // Config holds the settings of a Recorder. The zero value is the real thing.
@@ -165,8 +172,9 @@ type Recorder struct {
 	pairsEnded              bool // the writer said that the pairs stopped
 }
 
-// New returns a recorder that queues and writes nothing until Open. Its "ms"
-// counts from now.
+// New returns a recorder that queues and writes nothing until Open. Its "ms",
+// the milliseconds since the recording began, counts from now: the recording
+// begins at the recorder's creation.
 func New(cfg Config) *Recorder {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -224,7 +232,7 @@ type limitError struct{ reason, line string }
 
 func (e *limitError) Error() string { return e.reason }
 
-// elapsed is "ms": the milliseconds since New.
+// elapsed is "ms": the milliseconds since the recording began, at New.
 func (r *Recorder) elapsed() int64 {
 	ms := r.cfg.Now().Sub(r.begun).Milliseconds()
 	if ms < 0 {

@@ -26,18 +26,33 @@
 //     [TornAfter] for that, or that the last look took before it, has
 //     "torn": true in its .json;
 //   - titles.jsonl, one JSON line for each window title the pane shows that
-//     differs from the last one recorded;
+//     differs from the last one recorded: "ms", "bytes", "cut" and "title";
 //   - osc7501.jsonl, one JSON line for each OSC 7501 payload the holder's hook
-//     sees (the data after "7501;"), the support query included;
+//     sees (the data after "7501;"), the support query included: "ms",
+//     "bytes", "cut", "utf8" and "payload";
 //   - LIMIT.txt, only when needed, at most three lines: one when the pairs
 //     stopped at [MaxPairs], one when the recording stopped at [MaxBytes], and
 //     "dropped N", written once when the recording ends, when the queue
 //     dropped N items in all.
 //
-// Every line carries "ms", the milliseconds since the recorder was made. A
-// title or a payload is agent-controlled text: it is cut at [MaxPayload] bytes
-// and stored as a JSON string, never interpreted. A payload that is not valid
-// UTF-8 is stored with the replacement character for each bad byte, which
+// Every line of the two .jsonl files carries "ms": the milliseconds since the
+// recording began, measured from the recorder's creation ([New]), which the
+// holder does as it starts the lead, before the sandbox starts.
+//
+// A title is the pane's title as the pane keeps it, not the raw bytes the
+// agent sent: invalid UTF-8 replaced by U+FFFD, control, line-separator and
+// bidirectional formatting characters dropped, and cut by the pane at
+// sessionpane.MaxTitle (256) bytes at a character boundary. "bytes" is its
+// length; "cut" is true only for a title over [MaxPayload] bytes, which the
+// pane never gives, so the pane's own cut is not seen. A title line has no
+// "utf8": the title is always valid UTF-8.
+//
+// Only an OSC 7501 payload is raw: agent-controlled bytes, stored as a JSON
+// string and never interpreted. One over [MaxPayload] bytes is cut at the
+// start of the character MaxPayload falls in ("cut": true; "bytes" is its
+// length as sent). "utf8" says whether the bytes kept are valid UTF-8, so a
+// valid payload is still marked valid once cut; a payload that is not is
+// stored with the replacement character for each bad byte, which
 // encoding/json makes, and marked "utf8": false.
 //
 // # What it never does
