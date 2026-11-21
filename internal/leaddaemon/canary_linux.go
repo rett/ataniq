@@ -3,6 +3,7 @@
 package leaddaemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -12,8 +13,6 @@ import (
 	"ataniq/internal/leadlifecycle"
 	"ataniq/internal/leadlock"
 	"ataniq/internal/leadregistry"
-	"ataniq/internal/leadrole"
-	"ataniq/internal/leadunit"
 )
 
 // CanaryTag is the build tag of canary mode. A binary built with it says so in
@@ -79,18 +78,14 @@ var newHolderCommand = func(cfg leadcanary.Config, daemonLock string) (leadlifec
 	return h, nil
 }
 
-// canaryMode is the canary parts of one [Run]; nil when canary mode is off.
+// canaryMode is the canary parts of one [Run]; nil when canary mode is off. It
+// holds the router of the roles the daemon runs (one, the config's, in canary
+// mode) and the waits every instance shares.
 type canaryMode struct {
 	d         *daemon
-	cfg       leadcanary.Config
-	preflight leadlifecycle.Preflight
-	holder    leadlifecycle.HolderCommand
+	router    *leadRouter
 	injectFor time.Duration
 	dialFor   time.Duration
-	ev        *leadcanary.Evidence
-	// spent is the epochs whose message the evidence shows as sent, read when
-	// the evidence is opened.
-	spent map[uint64]bool
 }
 
 // canarySetup checks the canary config and builds the parts that need no file.
@@ -122,7 +117,11 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	if err != nil {
 		return nil, fail(StepConfig, "canary mode: %v", err)
 	}
-	m := &canaryMode{d: d, cfg: cfg, preflight: pre, holder: holder, injectFor: c.InjectWait, dialFor: c.DialTimeout}
+	router := newLeadRouter(msgNotCanary)
+	if err := router.add(&leadInstance{cfg: cfg, preflight: pre, holder: holder}); err != nil {
+		return nil, fail(StepConfig, "canary mode: %v", err)
+	}
+	m := &canaryMode{d: d, router: router, injectFor: c.InjectWait, dialFor: c.DialTimeout}
 	if m.injectFor <= 0 {
 		m.injectFor = DefaultInjectWait
 	}
@@ -132,71 +131,96 @@ func (d *daemon) canarySetup() (*canaryMode, error) {
 	return m, nil
 }
 
-// openEvidence opens the evidence file in the state root and reads back the
-// epochs whose one message it shows as sent. Both locks are held, so nothing
-// else appends to the file. A file that cannot be read back line by line
-// refuses the start: the daemon admits no message it cannot rule out. The
-// refusal says what setting the file aside costs: a new file spends no epoch's
-// message, so a lead that still runs in an epoch whose message was sent would
-// be given a second one. The operator stops the role's unit first.
+// openEvidence opens the evidence file of every instance in the state root and
+// reads back the epochs whose one message it shows as sent. Both locks are
+// held, so nothing else appends to the files. A file that cannot be read back
+// line by line refuses the start: the daemon admits no message it cannot rule
+// out. The refusal says what setting the file aside costs: a new file spends no
+// epoch's message, so a lead that still runs in an epoch whose message was sent
+// would be given a second one. The operator stops the role's unit first. When
+// one instance fails, the files already opened are closed.
 func (m *canaryMode) openEvidence() error {
 	if m == nil {
 		return nil
 	}
-	// OpenEvidence judges the file (a regular file of the caller, mode 0600,
-	// one link) and makes it when it is not there.
-	ev, err := leadcanary.OpenEvidence(m.cfg, m.d.Clock.Now)
-	if err != nil {
-		return err
+	for _, role := range m.router.order {
+		in := m.router.byRole[role]
+		// OpenEvidence judges the file (a regular file of the caller, mode
+		// 0600, one link) and makes it when it is not there.
+		ev, err := leadcanary.OpenEvidence(in.cfg, m.d.Clock.Now)
+		if err == nil {
+			var spent map[uint64]bool
+			spent, err = spentEpochs(in.cfg.EvidencePath(), in.cfg.Role.String())
+			if err != nil {
+				_ = ev.Close()
+				err = fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)
+			} else {
+				for epoch := range spent {
+					m.d.logf("canary: the evidence shows the message of epoch %d as sent; the epoch takes no other", epoch)
+				}
+				in.ev, in.spent = ev, spent
+			}
+		}
+		if err != nil {
+			_ = m.closeEvidence()
+			return err
+		}
 	}
-	spent, err := spentEpochs(m.cfg.EvidencePath(), m.cfg.Role.String())
-	if err != nil {
-		_ = ev.Close()
-		return fmt.Errorf("canary mode: %w; no message is admitted from an evidence file that cannot be read back; set the file aside only once the role's unit is stopped, since a new file spends no epoch's message", err)
-	}
-	for epoch := range spent {
-		m.d.logf("canary: the evidence shows the message of epoch %d as sent; the epoch takes no other", epoch)
-	}
-	m.ev, m.spent = ev, spent
 	return nil
 }
 
+// closeEvidence closes every evidence file that is open, in the reverse of the
+// order they were opened, and returns what failed.
 func (m *canaryMode) closeEvidence() error {
-	if m == nil || m.ev == nil {
+	if m == nil {
 		return nil
 	}
-	return m.ev.Close()
+	var errs []error
+	for i := len(m.router.order) - 1; i >= 0; i-- {
+		in := m.router.byRole[m.router.order[i]]
+		if in.ev == nil {
+			continue
+		}
+		errs = append(errs, in.ev.Close())
+		in.ev = nil
+	}
+	return errors.Join(errs...)
 }
 
-// configure gives the lifecycle the canary preflight, the canary holder command
-// and the limits of the config for the config's role.
+// configure gives the lifecycle the router as its preflight and holder command,
+// and the router's limits for the roles it has.
 func (m *canaryMode) configure(o *leadlifecycle.Options) {
 	if m == nil {
 		return
 	}
-	o.Preflight = m.preflight
-	o.Holder = m.holder
-	role, l := m.cfg.Role, m.cfg.Limits
-	o.Limits = func(r leadrole.Role) *leadunit.Limits {
-		if r != role {
-			return nil
-		}
-		return &leadunit.Limits{MemoryMax: l.MemoryMaxBytes, SwapMax: l.SwapMaxBytes, TasksMax: l.TasksMax}
-	}
+	o.Preflight = m.router
+	o.Holder = m.router
+	o.Limits = m.router.Limits
 }
 
-// announce writes the daemon-start line; the daemon is listening.
+// announce writes the daemon-start line of every instance; the daemon is
+// listening.
 func (m *canaryMode) announce() error {
 	if m == nil {
 		return nil
 	}
-	return m.ev.Append(leadcanary.Entry{Event: leadcanary.EventDaemonStart})
+	for _, role := range m.router.order {
+		if err := m.router.byRole[role].ev.Append(leadcanary.Entry{Event: leadcanary.EventDaemonStart}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// extensions returns the canary extension.
+// extensions returns the canary extension: the router's, over one extension of
+// each role.
 func (m *canaryMode) extensions(ctl *leadlifecycle.Controller, reg *leadregistry.Registry) []clientapi.Extension {
 	if m == nil {
 		return nil
 	}
-	return []clientapi.Extension{newCanaryExt(m, ctl, reg)}
+	for _, role := range m.router.order {
+		in := m.router.byRole[role]
+		in.ext = m.newExt(in, ctl, reg)
+	}
+	return []clientapi.Extension{&routerExt{router: m.router}}
 }
