@@ -54,10 +54,12 @@ type Scratch struct {
 	// Sandbox is the clean absolute path of the sandbox template file the
 	// suite runs in, the one the intake's verify takes as --sandbox. It
 	// is optional here and needed to run the real suite; it must not be
-	// in the state folder, where a lead could change it. Work is the
+	// in the state folder, which is kept for the host's records and journal
+	// and free of configuration. Work is the
 	// clean absolute path of the private folder the runs work in, which
 	// must not be in the state folder either. Both lie under a scratch
-	// root (the command checks it) and the template is read by each run.
+	// root (the command checks it), the template is in neither the drop
+	// folder, the mirror nor the work folder, and the template is read by each run.
 	Sandbox string `json:"sandbox,omitempty"`
 	Work    string `json:"work,omitempty"`
 	// Door selects the planner's door. Only [DoorStandIn] is accepted: the

@@ -99,8 +99,9 @@ func related(p, q string) bool { return under(p, q) || under(q, p) }
 
 // checkScratchRoots is the guard of the owner-channel builder: the state folder
 // must not be, lie inside or contain a default folder of the account; every
-// scratch root of the settings must not be, lie inside or contain one either;
-// and the mirror must lie under a scratch root. A path that cannot be resolved
+// scratch root of the settings and the drop folder must not be, lie inside or
+// contain one either (nor the drop folder the state folder); and the mirror must
+// lie under a scratch root. A path that cannot be resolved
 // is refused. It looks at the file system once; it cannot stop a folder from
 // being replaced afterwards, and a bind mount is not caught.
 func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(string) string) error {
@@ -153,11 +154,28 @@ func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(stri
 	if !underRoot(mirror) {
 		return fmt.Errorf("the scratch owner channel refuses the mirror %q: it is not under a scratch root of the settings", sc.Mirror)
 	}
+	// The drop folder is the one place another process is expected to write,
+	// and the collector writes its replies and the taken requests there and
+	// beside it: it is not, lies not inside and does not contain a default
+	// folder or the state folder (whose owner/ folder is part of it).
+	drop, err := resolvePath(sc.Drop)
+	if err != nil {
+		return fmt.Errorf("the scratch owner channel cannot resolve the drop folder: %v", err)
+	}
+	for i, c := range cands {
+		if related(drop, c) {
+			return fmt.Errorf("the scratch owner channel refuses the drop folder %q: it is, lies inside or contains the default folder %q", sc.Drop, defaults[i])
+		}
+	}
+	if related(drop, state) {
+		return fmt.Errorf("the scratch owner channel refuses the drop folder %q: it is, lies inside or contains the state folder (or its owner folder)", sc.Drop)
+	}
 	// The sandbox template and the work folder of the suite are scratch
-	// paths too, and neither is in the state folder, which holds what a
-	// lead can reach (the template could be changed there) or the records
-	// (the work folder is the sandbox's); the work folder and the mirror are
-	// apart, as package verify asks.
+	// paths too. Neither is in the state folder, which is kept for the host's
+	// records and journal and free of configuration (an owner's mistake there
+	// would be hard to see); the work folder and the mirror are apart, as
+	// package verify asks.
+	var tpl, work string
 	for _, f := range []struct{ name, path string }{{"sandbox template", sc.Sandbox}, {"work folder", sc.Work}} {
 		if f.path == "" {
 			continue
@@ -172,9 +190,27 @@ func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(stri
 		if related(p, state) {
 			return fmt.Errorf("the scratch owner channel refuses the %s %q: it is, lies inside or contains the state folder", f.name, f.path)
 		}
-		if f.path == sc.Work && related(p, mirror) {
-			return fmt.Errorf("the scratch owner channel refuses the work folder %q: it is, lies inside or contains the mirror", f.path)
+		if f.path == sc.Work {
+			work = p
+			if related(p, mirror) {
+				return fmt.Errorf("the scratch owner channel refuses the work folder %q: it is, lies inside or contains the mirror", f.path)
+			}
+		} else {
+			tpl = p
 		}
+	}
+	// The template decides which command wraps the gates, and the drop
+	// folder, the mirror and the work folder hold what others write or run
+	// in: the template is in none of them, and the work folder does not hold
+	// the drop folder.
+	if tpl != "" && (under(tpl, drop) || under(tpl, mirror)) {
+		return fmt.Errorf("the scratch owner channel refuses the sandbox template %q: it lies inside the drop folder or the mirror", sc.Sandbox)
+	}
+	if tpl != "" && work != "" && under(tpl, work) {
+		return fmt.Errorf("the scratch owner channel refuses the sandbox template %q: it lies inside the work folder", sc.Sandbox)
+	}
+	if work != "" && related(work, drop) {
+		return fmt.Errorf("the scratch owner channel refuses the work folder %q: it is, lies inside or contains the drop folder", sc.Work)
 	}
 	return nil
 }
