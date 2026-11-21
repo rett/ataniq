@@ -184,6 +184,7 @@ var goldenSettings = []string{
 	"fetch.recurseSubmodules=false",
 	"submodule.recurse=false",
 	"fetch.writeCommitGraph=false",
+	"fetch.bundleURI=",
 	"gc.auto=0",
 	"maintenance.auto=false",
 	"safe.bareRepository=explicit",

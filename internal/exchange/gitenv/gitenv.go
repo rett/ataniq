@@ -709,6 +709,10 @@ func checkMergeTree(args []string) error {
 //     error line is the expected sign.
 //   - core.protectNTFS and core.protectHFS are added, so the fsck checks of
 //     ".git" look-alikes do not depend on the platform.
+//   - fetch.bundleURI is set to the empty string, so that a fetch downloads
+//     no bundle from an address its repository's own config names. git 2.56
+//     reads an empty value as no address and the fetch works as before (a
+//     test fetches with the setting).
 //   - uploadpack.packObjectsHook is not set. It is read from protected
 //     configuration only (the command line, user and system files), never
 //     from a repository's config, and an empty value would make
@@ -749,6 +753,7 @@ func settings(protocols []string) []string {
 		"fetch.recurseSubmodules=false",
 		"submodule.recurse=false",
 		"fetch.writeCommitGraph=false",
+		"fetch.bundleURI=",
 		"gc.auto=0",
 		"maintenance.auto=false",
 		"safe.bareRepository=explicit",
