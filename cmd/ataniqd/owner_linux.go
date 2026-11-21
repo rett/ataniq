@@ -1,0 +1,73 @@
+//go:build linux && ataniq_ownerchannel
+
+package main
+
+import (
+	"flag"
+	"fmt"
+
+	"ataniq/internal/leaddaemon"
+)
+
+// This file is the owner channel of the command: a build with the
+// ataniq_ownerchannel tag. owner_off_linux.go has the same names for every
+// other build.
+
+// ownerUsage is the part of the usage text that only a tagged build has. The
+// text above it is the release build's, byte for byte.
+const ownerUsage = `
+In this build (tag ataniq_ownerchannel) the text above holds only without
+--owner-channel. With run --owner-channel the daemon also serves the owner
+connection, the operations owner.* of the console's approvals, on the same
+socket and the same protocol (ataniq.client/1). It is provisional and
+unqualified.
+
+       ataniqd run --owner-channel
+
+  --owner-channel   register the owner.* operations; without it this build
+                    registers none. The place of the one connection that may
+                    decide goes to a console of the owner that has a
+                    controlling terminal. The daemon refuses to start when
+                    this build has no way to build the host's side of a card.
+`
+
+func init() { usage += ownerUsage }
+
+// ownerFlags are the flags of run that only a build with the tag has.
+type ownerFlags struct{ set bool }
+
+func (o *ownerFlags) define(fs *flag.FlagSet) {
+	fs.BoolVar(&o.set, "owner-channel", false, "serve the owner connection (owner.* operations)")
+}
+
+// ownerServiceBuilder builds the host's side of a card in the daemon's state
+// folder. The daemon calls it once, when it holds its locks and listens, and
+// calls the returned function after the server has ended. The host adapter
+// sets it; it is nil until then, and run --owner-channel is refused while it
+// is.
+var ownerServiceBuilder func(stateDir string) (leaddaemon.OwnerService, func() error, error)
+
+// ownerInspector looks at the peer of a connection that asks to be the
+// decider. A test replaces it, so that none needs a real terminal.
+var ownerInspector leaddaemon.PeerInspector = leaddaemon.ProcInspector{}
+
+// ownerRun sets the daemon's serve hook when --owner-channel was given. It
+// returns a code to end with, or -1 to go on. The roots of cfg are final.
+func (a *app) ownerRun(o *ownerFlags, cfg *leaddaemon.Config) (code int) {
+	if !o.set {
+		return -1
+	}
+	build := ownerServiceBuilder
+	if build == nil {
+		fmt.Fprint(a.stderr, "ataniqd run: --owner-channel: this build cannot build the host's side of a card yet\n")
+		return leaddaemon.ExitConfig
+	}
+	stateDir := cfg.StateDir
+	oc := &leaddaemon.OwnerChannel{
+		Build:     func() (leaddaemon.OwnerService, func() error, error) { return build(stateDir) },
+		Inspector: ownerInspector,
+		Log:       func(format string, args ...any) { fmt.Fprintf(a.stderr, "ataniqd: "+format+"\n", args...) },
+	}
+	cfg.ServeHook = oc.Serve
+	return -1
+}
