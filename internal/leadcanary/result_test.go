@@ -102,3 +102,35 @@ func TestNoAnswerResult(t *testing.T) {
 		t.Fatalf("entry %+v", en)
 	}
 }
+
+func TestReleasesMessageOnlyForANotDeliveredResult(t *testing.T) {
+	for _, r := range validResults {
+		want := (r.Outcome == "not-now" || r.Outcome == "refused") && r.Written == "nothing"
+		if got := leadcanary.ReleasesMessage(r); got != want {
+			t.Errorf("%+v: released %v, want %v", r, got, want)
+		}
+	}
+	// The uncertain "died" result with nothing written is not a release: the
+	// lead's end during the send leaves open what reached it.
+	if leadcanary.ReleasesMessage(wire.InjectResult{Outcome: "uncertain", Reason: "died", Written: "nothing"}) {
+		t.Error("an uncertain result releases the message")
+	}
+	if leadcanary.ReleasesMessage(leadcanary.NoAnswerResult()) {
+		t.Error("the no-answer result releases the message")
+	}
+	// A result the wire would refuse is not believed, even one that reads as
+	// not delivered.
+	for _, r := range []wire.InjectResult{
+		{},
+		{Outcome: "not-now", Reason: "died", Written: "nothing"},
+		{Outcome: "refused", Reason: "text", Written: "nothing", Detail: "bad \x1b detail"},
+		{Outcome: "not-now", Reason: "not-ready", Written: "unknown"},
+	} {
+		if r.Validate() == nil {
+			t.Fatalf("test row %+v is valid", r)
+		}
+		if leadcanary.ReleasesMessage(r) {
+			t.Errorf("%+v releases the message", r)
+		}
+	}
+}
