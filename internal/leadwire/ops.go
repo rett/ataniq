@@ -141,6 +141,13 @@ const (
 	MaxBody = 4096
 	// MaxInjectDetail is the longest detail of a [Delivery], in bytes.
 	MaxInjectDetail = 512
+	// MaxStateReason is the longest [Lead.StateReason], in bytes. The
+	// registry's own codes are at most 30 bytes; the daemon sends "" for a
+	// longer one.
+	MaxStateReason = 32
+	// MaxDeliveryWord is the longest word of a [MessageResult], in bytes. The
+	// holder's words are closed sets whose longest, "not-submitted", has 13.
+	MaxDeliveryWord = 16
 	// MaxMessage is the longest fixed text of a receipt, in bytes.
 	MaxMessage = 256
 	// MaxReceiptLine is the most a stored receipt occupies in the command
