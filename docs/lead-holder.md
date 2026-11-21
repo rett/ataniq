@@ -371,6 +371,14 @@ counters and the pane's are always listed, with zeros. The attach service's
 counters (`attach_refused_*`, `resyncs`, `bad_frames` and the like) are listed
 only after their first hit.
 
+Two of the pane's counters are not caps: `alt_screen_on` and `alt_screen_off`
+count the times the emulator entered and left the alternate screen (a repeated
+set or reset in the same state is not counted). A session that draws a
+fullscreen interface enters it once, soon after its start, so `alt_screen_on`
+above zero says it did; a session that draws on the main screen leaves both at
+zero. The inject fence reads only the alternate screen, so these two numbers
+tell why a screen was not read.
+
 ### What is still slow
 
 The holder bounds how much it keeps, and not every way an agent's output can
