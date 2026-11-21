@@ -746,3 +746,54 @@ func TestLeadReadyKeptByAStopRefusedRoleBusy(t *testing.T) {
 	h.epoch.Store(1)
 	l.waitState("alpha", "ready")
 }
+
+// A server that does not end within the grace is abandoned, and the observers
+// are then not waited for a second grace: the daemon returns its exit 19 error
+// after about one grace, though an observer does not end either (it is held at
+// the ready hook, which the daemon's context does not reach).
+func TestLeadReadyAbandonedServerDoesNotWaitASecondGrace(t *testing.T) {
+	l := newLeadEnv(t)
+	l.readyBounds(time.Minute)
+	cfg := l.daemonConfig()
+	const grace = time.Second
+	cfg.ShutdownGrace = grace
+	l.running = l.startDaemon(cfg)
+	want(t, l.define("alpha"), leadwire.StatusDone, "")
+	want(t, l.define("beta"), leadwire.StatusDone, "")
+	h := newReadyHolder(roleOf("alpha"))
+	h.epoch.Store(1)
+	l.holder("alpha", h.answer)
+	l.holder("beta", submitted)
+
+	observing, stuckStart, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once, onceStart sync.Once
+	t.Cleanup(func() { leadActHook = nil; leadReadyHook = nil })
+	t.Cleanup(func() { close(release) })
+	leadReadyHook = func(string) {
+		once.Do(func() { close(observing) })
+		<-release // an observer that does not end on the context
+	}
+	want(t, l.startLead("alpha"), leadwire.StatusDone, "")
+	select {
+	case <-observing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the observer never reached the hook")
+	}
+	leadActHook = func(op string) {
+		if op == "start" {
+			onceStart.Do(func() { close(stuckStart); <-release })
+		}
+	}
+	// A command that does not end on the context keeps the server from
+	// stopping.
+	go func() {
+		var r leadwire.Receipt
+		_ = l.call(leadwire.OpStart, params("beta", "stuck-1", nil), &r)
+	}()
+	<-stuckStart
+	t0 := time.Now()
+	mustFail(t, l.running.stop(), StepShutdown, ExitShutdown)
+	if d := time.Since(t0); d >= 2*grace-grace/5 {
+		t.Fatalf("the stop took %s: the observers were waited for a second grace of %s", d, grace)
+	}
+}

@@ -351,7 +351,9 @@ on the holder's word, and in no other way:
   evidence file.
 - **At shutdown** the daemon ends the observers and waits for them before it
   closes the registry, so a daemon stopped while a holder does not answer still
-  exits 0 and promptly. A failure of the observer's own (a panic is recovered
+  exits 0 and promptly. When the server itself did not stop within the grace the
+  daemon is already abandoning it (exit 19) and does not wait for the observers
+  a second grace. A failure of the observer's own (a panic is recovered
   and logged) leaves the lead as it is shown.
 
 `ready` is for scratch leads only. The canary has no observer and its lead stays
