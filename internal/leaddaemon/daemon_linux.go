@@ -394,7 +394,14 @@ func Run(ctx context.Context, cfg Config) error {
 			serveErr = &StartupError{Step: StepServe, Err: err}
 		}
 	}
-	if !canary.joinObservers(d.ShutdownGrace) && !abandoned {
+	// A server that was abandoned has already used the grace and leaves the
+	// registry open, so there is nothing an observer could still be waited
+	// for: the observers are told to end, and not waited for a second grace.
+	observerGrace := d.ShutdownGrace
+	if abandoned {
+		observerGrace = 0
+	}
+	if !canary.joinObservers(observerGrace) && !abandoned {
 		abandoned = true
 		d.logf("an observer did not stop within %s", d.ShutdownGrace)
 		if serveErr == nil {

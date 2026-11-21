@@ -615,19 +615,22 @@ func (x *canaryExt) ticketFor(ctx context.Context, attach wire.Role, want uint64
 // does not know are all the uncertain result of [leadcanary.NoAnswerResult],
 // not an error. The holder's refusals disabled, wrong-epoch, busy and
 // bad-request mean that nothing was written to the lead; they are the error
-// unavailable.
+// unavailable, with the code holder-<code>, and an inject-refused line.
 //
-// A lead of scratch mode has one exception to the spent message: an ok answer
-// whose result decodes, is valid and says not-now or refused with nothing
-// written ([leadcanary.ReleasesMessage]) frees the epoch's message again, once
-// the inject-result line is in the evidence (the line is what lets a daemon
-// that starts later read the epoch as free; see scratchSpentEpochs). Every
-// other case stays spent: no answer, a closed connection, an answer that does
-// not decode, an ok answer without a result, an uncertain, partial or whole
-// result, the holder's refusal codes, and a result line that could not be
-// written. The lead may then send another message in the epoch; it needs no
-// other id than the admission asks, and a message id used before is not
-// refused.
+// A lead of scratch mode has two exceptions to the spent message, both of a
+// message that was not delivered, and both once the line that says so is in
+// the evidence (the line is what lets a daemon that starts later read the
+// epoch as free; see scratchSpentEpochs): an ok answer whose result decodes,
+// is valid and says not-now or refused with nothing written
+// ([leadcanary.ReleasesMessage]), freed by the inject-result line, and one of
+// the holder's own refusals above, freed by the inject-refused line with the
+// message id and the code holder-<code>. Every other case stays spent: no
+// answer, a closed connection, an answer that does not decode, an ok answer
+// without a result, an uncertain, partial or whole result, a refusal code the
+// daemon does not know, and a line that could not be written. The lead may
+// then send another message in the epoch; it needs no other id than the
+// admission asks, and a message id used before is not refused. The canary
+// frees nothing: its message stays spent whatever the holder answers.
 func (x *canaryExt) inject(ctx context.Context, p CanaryInjectParams) (any, *clientapi.ErrorBody) {
 	res, f := x.injectFor(ctx, p, 0)
 	if f != nil {
@@ -717,7 +720,14 @@ func (x *canaryExt) injectFor(ctx context.Context, p CanaryInjectParams, want ui
 	case resp.OK && resp.Inject != nil && resp.Inject.Validate() == nil:
 		result = *resp.Inject
 	case !resp.OK && holderRefusal(resp.Code):
-		x.refuse(p.MessageID, epoch, "holder-"+resp.Code)
+		// The holder wrote nothing to the lead. A lead of scratch mode takes
+		// the epoch's message back once the refusal is in the evidence (the
+		// line is what lets a daemon that starts later read the epoch as
+		// free; see scratchSpentEpochs); the canary's message stays spent.
+		if x.refuse(p.MessageID, epoch, "holder-"+resp.Code) && x.scratch {
+			release = true
+			x.logf("lead inject: the message of epoch %d was refused by the holder (%s): the epoch's message is not spent", epoch, SafeText(resp.Code))
+		}
 		return CanaryInjectResult{}, failure("holder-"+resp.Code, msgHolderNo)
 	}
 	if x.recorded(leadcanary.ResultEntry(p.MessageID, epoch, result)) && x.scratch && leadcanary.ReleasesMessage(result) {
@@ -781,11 +791,12 @@ func holderRefusal(code string) bool {
 	return false
 }
 
-// refuse writes an inject-refused line. The message id goes in only when it is
-// well formed: the evidence refuses any other.
-func (x *canaryExt) refuse(messageID string, epoch uint64, code string) {
+// refuse writes an inject-refused line and reports whether it is in the
+// evidence. The message id goes in only when it is well formed: the evidence
+// refuses any other.
+func (x *canaryExt) refuse(messageID string, epoch uint64, code string) bool {
 	if wire.CheckMessageID(messageID) != nil {
 		messageID = ""
 	}
-	x.record(leadcanary.Entry{Event: leadcanary.EventInjectRefused, Epoch: epoch, MessageID: messageID, Code: code})
+	return x.recorded(leadcanary.Entry{Event: leadcanary.EventInjectRefused, Epoch: epoch, MessageID: messageID, Code: code})
 }

@@ -158,8 +158,9 @@ type Lead struct {
 	// Inject says that messages are on for the lead.
 	Inject bool
 	// MessageSpent says that the epoch's message was sent and is not free
-	// again: a message that was not delivered (not-now or refused, nothing
-	// written) leaves it false, and the lead may send another.
+	// again: a message that was not delivered (not-now or refused with nothing
+	// written, or refused by the holder itself) leaves it false, and the lead
+	// may send another.
 	MessageSpent bool
 	// MessageResult is the holder's answer to the epoch's last message, spent
 	// or not, when the adapter has it for the current epoch: all three words

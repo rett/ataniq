@@ -245,6 +245,14 @@ func outcomeWords(r Receipt) string {
 // message that was NOT delivered leaves the epoch's message free, and says so
 // while it is free. The same result of a message that the daemon holds spent
 // (it could not write down the result) reads as spent and not delivered.
+//
+// A spent message is "sent" only when the words say it was submitted. When
+// something may have reached the lead, when the words are not ones this console
+// knows, and when the daemon holds the epoch spent and there are no words at
+// all (a message whose answer was lost, one sent before the console started or
+// by another client, a daemon that was restarted since, a holder answer the
+// daemon could not use), the word is "sent-unsure": the frame was written, and
+// nothing says the lead has the message.
 func msgWord(l Lead, d Delivery) string {
 	f := deliveryOf(d.Outcome, d.Reason, d.Written).fate
 	switch {
@@ -258,10 +266,10 @@ func msgWord(l Lead, d Delivery) string {
 	switch f {
 	case fateNotDelivered:
 		return "spent, not delivered"
-	case fateUnsure:
-		return "sent-unsure"
+	case fateDelivered:
+		return "sent"
 	}
-	return "sent"
+	return "sent-unsure"
 }
 
 // stateWords are the words for a registry state and the reason shown with it,

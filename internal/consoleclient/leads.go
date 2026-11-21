@@ -164,8 +164,9 @@ type LeadRow struct {
 	Unit        string
 	Inject      bool
 	// MessageSpent says that the epoch's message was sent and is not free
-	// again. A message that the holder answered as not delivered (not-now or
-	// refused, nothing written) leaves it false.
+	// again. A message that was not delivered (the holder answered not-now or
+	// refused with nothing written, or refused the request itself) leaves it
+	// false.
 	MessageSpent bool
 	// MessageResult is the holder's answer to the current epoch's last message
 	// when the daemon has it, whether the message is spent or not, and empty

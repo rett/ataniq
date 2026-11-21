@@ -52,8 +52,10 @@ func TestTheMsgColumnAndTheReceiptLineSayTheSameOfAMessage(t *testing.T) {
 			"free (not delivered)", "NOT delivered: nothing was written, the lead could not take it now", notSpent},
 		{"epoch not in the receipt", Receipt{Op: OpInject, Status: Done, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, false,
 			"free (not delivered)", "NOT delivered", notSpent},
+		// A result the console has no words for is not a delivery: the message
+		// is spent, and the row does not say it was sent as if all were well.
 		{"unknown result", Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: "sent!!"}, true,
-			"sent ", "the result is not known to this console", ""},
+			"sent-unsure", "the result is not known to this console", ""},
 		// The daemon holds the epoch spent after a message that was not
 		// delivered when it could not write the result down: the row says so,
 		// and does not say the message is free.
@@ -123,8 +125,8 @@ func TestAMessageThatWasNotDeliveredMayBeSentAgain(t *testing.T) {
 }
 
 // What the view kept of an earlier message of the epoch is not read as the
-// answer to a later message whose answer was lost: the row then says only that
-// the message was sent.
+// answer to a later message whose answer was lost: the row then says that the
+// message was sent and that it is not known whether the lead has it.
 func TestALostAnswerAfterANotDeliveredMessageIsNotReadAsThatMessage(t *testing.T) {
 	notNow := Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
 	g := sendOne(t, notNow, false)
@@ -134,12 +136,12 @@ func TestALostAnswerAfterANotDeliveredMessageIsNotReadAsThatMessage(t *testing.T
 	g.b.listing.Leads[1].MessageSpent = true
 	g.key("enter")
 	rows := g.rows()
-	if !strings.Contains(rows[5], "sent ") || strings.Contains(rows[5], "not delivered") {
+	if !strings.Contains(rows[5], "sent-unsure") || strings.Contains(rows[5], "not delivered") {
 		t.Fatalf("\n%s", g.screen())
 	}
 }
 
-func TestAFreeMessageIsFreeAndASpentOneIsSentWhenNothingIsKnownOfIt(t *testing.T) {
+func TestAFreeMessageIsFreeAndASpentOneIsSentUnsureWhenNothingIsKnownOfIt(t *testing.T) {
 	b := twoLeads(t)
 	b.listing.Leads[0].Inject = false
 	b.listing.Leads[1].Epoch = 3
@@ -148,10 +150,11 @@ func TestAFreeMessageIsFreeAndASpentOneIsSentWhenNothingIsKnownOfIt(t *testing.T
 		t.Fatalf("\n%s", r.screen())
 	}
 	// The daemon says it is spent, this view sent nothing and the adapter
-	// gave no result: it was sent.
+	// gave no result: the frame was written and nothing says what became of
+	// the message.
 	b.listing.Leads[1].MessageSpent = true
 	r.key("r")
-	if rows := r.rows(); !strings.Contains(rows[5], "sent") || strings.Contains(rows[5], "not-delivered") {
+	if rows := r.rows(); !strings.Contains(rows[5], "sent-unsure") || strings.Contains(rows[5], "not delivered") {
 		t.Fatalf("\n%s", r.screen())
 	}
 }
@@ -172,7 +175,7 @@ func TestTheAdaptersResultForTheMessageIsDrawnAndWinsOverWhatTheViewKept(t *test
 	// the row says no more than the daemon's flag does.
 	b.listing.Leads[1].MessageResult = Delivery{OutcomeNotNow, "x", WrittenWhole}
 	r.key("r")
-	if rows := r.rows(); strings.Contains(rows[5], "not delivered") || !strings.Contains(rows[5], "sent") {
+	if rows := r.rows(); strings.Contains(rows[5], "not delivered") || !strings.Contains(rows[5], "sent-unsure") {
 		t.Fatalf("\n%s", r.screen())
 	}
 }
@@ -265,4 +268,44 @@ func (r *countingReader) Read(p []byte) (int, error) {
 		p[i] = r.n
 	}
 	return len(p), nil
+}
+
+// The words of a message that the holder refused itself (the row carries the
+// outcome refused and no other word): not delivered, free when the daemon says
+// the message is not spent, and spent and not delivered when it says it is
+// (the refusal's line could not be written).
+func TestTheMsgColumnSaysAHoldersRefusalWasNotDelivered(t *testing.T) {
+	refused := Delivery{Outcome: OutcomeRefused}
+	for _, c := range []struct {
+		spent bool
+		want  string
+	}{{false, "free (not delivered)"}, {true, "spent, not delivered"}} {
+		if got := msgWord(Lead{Inject: true, MessageSpent: c.spent}, refused); got != c.want {
+			t.Errorf("spent %v: %q, want %q", c.spent, got, c.want)
+		}
+	}
+}
+
+// Every spent message is "sent-unsure" unless its words say it was submitted:
+// words that are not a combination the holder sends, an outcome alone that the
+// console does not know, and no words at all (the daemon holds the epoch spent
+// and has recorded no result) are all drawn so, and a submitted one is "sent".
+func TestASpentMessageIsSentOnlyWhenItsWordsSaySubmitted(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		d    Delivery
+		want string
+	}{
+		{"submitted", Delivery{OutcomeSubmitted, "", WrittenWhole}, "sent"},
+		{"submitted, the outcome alone", Delivery{Outcome: OutcomeSubmitted}, "sent"},
+		{"uncertain", Delivery{OutcomeUncertain, ReasonDied, WrittenUnknown}, "sent-unsure"},
+		{"uncertain, the outcome alone", Delivery{Outcome: OutcomeUncertain}, "sent-unsure"},
+		{"an unknown outcome", Delivery{Outcome: "sent!!"}, "sent-unsure"},
+		{"not a combination the holder sends", Delivery{OutcomeSubmitted, ReasonDied, WrittenNothing}, "sent-unsure"},
+		{"no words", Delivery{}, "sent-unsure"},
+	} {
+		if got := msgWord(Lead{Inject: true, MessageSpent: true}, c.d); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
 }

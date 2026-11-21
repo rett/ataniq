@@ -620,14 +620,14 @@ func (m *leadMode) startFailure(lr *leadRole, err error) outcome {
 
 // stop stops the lead through the lifecycle whatever state the registry shows
 // for it: the lifecycle's Stop signals the role's own units, so it is the way
-// out of unknown and of a unit that a start left behind. An epoch of 0 means
-// the current epoch; any other is compared with the registry's under the
+// out of unknown and of a unit that a start left behind. The lead's ready
+// observer is ended only by a stop that is proven; a refused, failed or
+// unproven stop leaves the epoch running and its observer with it. An epoch of
+// 0 means the current epoch; any other is compared with the registry's under the
 // role's operation lock, which a start of the role also holds, so a stop that
 // was meant for one epoch never stops the next.
 func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome {
 	return m.withRoleLock(lr, "stop", func() outcome {
-		// An observer that has not settled has nothing left to settle.
-		m.cancelReady(lr)
 		if epoch != 0 {
 			e, err := m.reg.Get(lr.role)
 			switch {
@@ -661,6 +661,12 @@ func (m *leadMode) stop(ctx context.Context, lr *leadRole, epoch uint64) outcome
 			m.d.logf("scratch stop %q: the stop returned the state %q without a proof", lr.key, SafeText(string(e.Shown.State)))
 			return uncertainOut(codeStopUnproven, msgStopUnproven)
 		}
+		// The stop is proven: an observer that has not settled has nothing
+		// left to settle. A stop that was refused, failed or proved nothing
+		// leaves the epoch as it was, so it leaves its observer too; a stop
+		// that does go ahead is also covered by the observer's own check (it
+		// sets nothing for a lead that is no longer starting in its epoch).
+		m.cancelReady(lr)
 		lr.in.ext.record(leadcanary.Entry{Event: leadcanary.EventStop, Epoch: e.Epoch})
 		return done(leadwire.StopResult{Role: lr.role.String(), State: string(e.Shown.State), Proof: e.Shown.Proof})
 	})
@@ -712,9 +718,10 @@ func (m *leadMode) ticket(ctx context.Context, lr *leadRole, p leadwire.TicketPa
 // whether a message was sent; the table never replaces it.
 //
 // The epoch takes one message, with one exception that is the lead's own: a
-// message the holder answered as not delivered (not-now or refused, nothing
-// written) does not spend it, so the lead may send another in the epoch, as
-// [canaryExt.injectFor] says.
+// message that was not delivered (the holder answered not-now or refused with
+// nothing written, or refused the request itself as disabled, wrong-epoch,
+// busy or bad-request) does not spend it, so the lead may send another in the
+// epoch, as [canaryExt.injectFor] says.
 //
 // The residual: a daemon killed after the frame is written and before the
 // inject-sent line is, a window of a few milliseconds, leaves the epoch unspent
@@ -729,18 +736,21 @@ func (m *leadMode) inject(ctx context.Context, lr *leadRole, p leadwire.InjectPa
 	}
 	res, f := lr.in.ext.injectFor(ctx, CanaryInjectParams{Role: p.Role, MessageID: p.MessageID, Body: p.Body}, p.Epoch)
 	if f != nil {
-		if f.code == "holder-"+wire.CodeWrongEpoch {
-			// The role was stopped and started between the daemon's epoch
-			// check and the holder's read of the frame: a mismatch of the
-			// epoch, as the daemon's own check answers it. The text of the
-			// refusal is the epoch's, and no text reached the lead.
-			return refusedOut(codeStaleEpoch, msgStaleEpoch)
-		}
 		if code, held := strings.CutPrefix(f.code, "holder-"); held && holderRefusal(code) {
-			// The frame was written, the epoch's message is spent and the
-			// holder answered with a refusal and no result: the words kept
-			// for an earlier message of the epoch are not this one's.
-			lr.noteDelivery(p.Epoch, leadwire.MessageResult{})
+			// The holder refused the request and wrote nothing to the lead.
+			// The words kept for an earlier message of the epoch are not this
+			// one's: this one was not delivered. With the refusal in the
+			// evidence the epoch's message is free again (see
+			// [canaryExt.injectFor]); when the line could not be written it is
+			// still spent, and the row says so.
+			lr.noteDelivery(p.Epoch, leadwire.MessageResult{Outcome: string(wire.InjectOutcomeRefused)})
+			if code == wire.CodeWrongEpoch {
+				// The role was stopped and started between the daemon's epoch
+				// check and the holder's read of the frame: a mismatch of the
+				// epoch, as the daemon's own check answers it. The text of the
+				// refusal is the epoch's, and no text reached the lead.
+				return refusedOut(codeStaleEpoch, msgStaleEpoch)
+			}
 		}
 		return fromFail(f)
 	}

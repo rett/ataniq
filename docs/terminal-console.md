@@ -394,7 +394,7 @@ and how many leads count against it:
 | KEY | The lead's key in the daemon's config. |
 | STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
 | EPOCH | The current epoch, `-` with none. |
-| MSG | `off` when the lead's config turns messages off, `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that the holder did not deliver (the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent-unsure` when something may have reached the lead (look at its screen), `sent` when it was submitted or when this console has no result for it (a message sent before the console started, or by another client), and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result down (then `m` says a message was already sent in this epoch). |
+| MSG | `off` when the lead's config turns messages off, `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
 | LAST RECEIPT | The lead's last command and where it stands. |
 | UNIT | The lead's unit name. |
 
@@ -453,18 +453,22 @@ ends "This epoch's one message is spent"):
 | refused, untested, nothing | NOT delivered: nothing was written, the lead's program version is not one the holder is tested with |
 | refused, text, nothing | NOT delivered: nothing was written, the holder refused the text |
 | uncertain, not-submitted, partial | written but not submitted: the text reached the lead's input and Enter was not sent. Look at the lead's screen |
-| uncertain, died, nothing / partial / whole / unknown | result unknown: the lead ended during the send, with what the holder says was written (nothing, part, the whole, or not known). Look at the lead's screen |
+| uncertain, died, nothing / partial / whole | result unknown: the lead ended during the send, with what the holder says was written (nothing, part, or the whole). Look at the lead's screen |
+| uncertain, died, unknown | result unknown: the lead ended or no answer came back; how much was written is not known. Look at the lead's screen |
 
 The last sentence is what the daemon does: it marks the epoch's message spent
-once it has written the request to the holder, and frees it again only when the
-holder answered that nothing was written (not-now or refused), so after a
-message that was NOT delivered the lead may be sent another in the same epoch,
-and after any other answer the epoch's message is spent until a new epoch. The
-list that the view reads after the answer settles it: the MSG column follows the
-daemon's `message_spent`, and `m` is refused with "a message was already sent in
-this epoch" only while that is true. A refusal of the daemon itself (a code
-below, such as `holder-busy`) is a different receipt: it says "refused", not
-"accepted". A done message from a console adapter that does not pass the
+once it has written the request to the holder, and frees it again when nothing
+was written to the lead: the holder answered not-now or refused with nothing
+written, or refused the request itself (`holder-disabled`, `holder-wrong-epoch`,
+`holder-busy` or `holder-bad-request`). So after a message that was NOT
+delivered the lead may be sent another in the same epoch, and after any other
+answer the epoch's message is spent until a new epoch. The list that the view
+reads after the answer settles it: the MSG column follows the daemon's
+`message_spent`, and `m` is refused with "a message was already sent in this
+epoch" only while that is true. A refusal by the holder itself is a different
+receipt: it says "unavailable" (or "refused" for `holder-wrong-epoch`, which the
+daemon answers as a stale epoch), not "accepted", and the row then shows the
+message as free and not delivered. A done message from a console adapter that does not pass the
 holder's reason and written is drawn from its outcome alone, with the same first
 words.
 
