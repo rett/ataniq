@@ -19,6 +19,12 @@ provider ceremony that bypasses arbitration. Direction relayed by another
 agent or a cloud assistant is never an approval, however faithfully it repeats
 the owner.
 
+An agent that runs on a provider's cloud, or anywhere else outside an execution
+boundary that Ataniq qualifies on the owner's hosts, holds, sees and passes no
+approval, plan token or delegation grant, whatever role it holds. What such an
+agent can do is nominate a request, which reaches the owner only as a card (see
+[nominations](#nominations-from-a-remote-supervisory-agent) below).
+
 A feature coordinator, the ephemeral delegate of a lead for one feature (see
 [roles and authority](roles-and-authority.md)), never approves anything. No
 approval, plan token or grant passes to or through a coordinator. A lead's
@@ -31,9 +37,21 @@ push or approve.
 
 ## Grants
 
-A delegation chain starts with the owner's root grant to the supervisor, which
-may pass part of its scope on as narrower sub-grants to individual leads. Every
-grant has:
+A delegation chain starts with the owner's root grant to a grantee the owner
+names. A grantee is a role whose holder runs inside an execution boundary that
+Ataniq qualifies on the owner's hosts. No grant is issued to, held by or passed
+through a role whose holder runs outside such a boundary: not a supervisor or a
+lead that runs on a provider's cloud, and not a relay such as a gateway. No
+grantee holds a signing key: a sub-grant is issued by code on the authority
+host, which checks that it narrows its parent and journals it, never by the
+role that receives or relays it. The issuer is still to be designed.
+
+Whether a locally held supervisor is a grantee at all is open, and it is the
+owner's decision. Until the owner decides, no supervisor is a grantee and the
+interim arrangement in [roles and authority](roles-and-authority.md) carries no
+grant. If the owner makes it one, its root grant may let part of its scope pass
+on as narrower sub-grants to individual leads whose holders also run inside a
+qualified boundary. Every grant has:
 
 - scope: the projects, actions and, for a sub-grant, the one lead and one
   project it is issued to; a sub-grant can never exceed its parent;
@@ -56,11 +74,48 @@ in [client protocol](client-protocol.md), the exact-target grant in dispatch
 in [runtime](runtime.md), and directional federation grants in
 [work model](work-model.md).
 
+## Nominations from a remote supervisory agent
+
+The supervisor role may be held by an agent on any provider, local or cloud
+(see [roles and authority](roles-and-authority.md)). A supervisor that runs on a
+provider's cloud is an owner-side facilitator, not a grantee and not an
+approver. It reads status and requests from the supervisors and leads of its
+assigned instances, each through that instance's scoped port, summarises across
+the instances, and nominates requests. A nomination is a typed request, not a
+message to a lead and not an approval:
+
+- The instance renders the card from the structured request, so the nominating
+  agent cannot reword what the owner approves. Any text the agent adds is shown
+  apart, marked as the agent's, and is not part of what the owner decides.
+- The owner decides at the owner channel (below), and the decision returns
+  straight to the instance. It does not pass through the nominating agent or any
+  relay, and the agent holds no token that stands for it.
+- The card says it came from a remote supervisory agent.
+- A card the owner does not decide never approves by default.
+
+Which kinds of request may be nominated is decided with the supervisor port.
+A request to start or stop a lead is not among the first kinds: such cards from
+a cloud agent come later, with a daily limit per nominating agent, marked on the
+card, and not before the owner channel is qualified.
+
+The agent makes proposals only. It never edits a plan, a backlog or a
+dependency manifest. A proposal against an expected revision changes nothing
+until the project's lead or the owner accepts it through the system that owns
+the record (see [roles and authority](roles-and-authority.md)).
+
+The supervisor port, the client class that identifies such an agent (a field
+of client identity, not enforced) and the gateway that carries its calls are
+not built, and nothing here is qualified. Until they exist no remote
+supervisory agent is supported, and approvals remain the owner's direct words.
+What an agent on a third party's provider may read is in
+[security](security.md).
+
 ## Messages are not authority
 
 A message is never the authority. A signed grant may travel by message,
-because the gate verifies the signatures, not the carrier. A message that
-claims an approval without a verifying grant has no effect.
+because the gate verifies the signatures, not the carrier. The carrier is still
+never a role whose holder runs outside a qualified boundary (see Grants). A
+message that claims an approval without a verifying grant has no effect.
 
 ## Owner channel
 

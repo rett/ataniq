@@ -28,6 +28,23 @@ start does not substitute for adversarial tests. Capability changes or changed
 versions require requalification. Native direct access is unsupported if it
 bypasses required client authorization, audit, budget or approval controls.
 
+An agent on a provider's cloud in a supervisory role is outside every boundary
+the owner's hosts qualify. It reaches an instance only through that instance's
+scoped supervisor port, as a client of a class that carries no approval, grant
+or credential, and it is never given a control-plane, client, runner or
+federation credential. The provider's own console is a second way to drive its
+session and is no approval path. The supervisor port, the client class and the
+gateway are not built; until they are, such an agent is unsupported.
+
+Data goes to a third-party provider only per project, with the owner's consent,
+and the instance records what was sent. The first projects are scratch
+projects, and the data is the digest of daemon-written state plus the
+transcripts of leads. Free text a lead wrote is untrusted. The session that
+reads transcripts is never the session that acts: it returns a summary under a
+schema, and a session that nominates, proposes or messages never receives the
+raw text. This split is enforced in the instance or its gateway, not asked of
+the agent in a prompt.
+
 ## Containment and termination
 
 The execution boundary must identify the full process tree and apply the
@@ -68,5 +85,7 @@ the qualified boundary is empty before reporting stopped. Simulate an
 unreachable remote child and assert unknown, not stopped. Open active content
 that attempts to read console credentials or contact a forbidden endpoint and
 assert denial. Revoke artifact access and assert subsequent preview and download
-requests fail. These scenarios require a real qualified boundary and have not
-been executed.
+requests fail. Have a supervisory agent on a provider present an approval, a
+grant or a reworded card and assert refusal, and assert a session that read lead
+transcripts cannot make a write call. These scenarios require a real qualified
+boundary and have not been executed.
