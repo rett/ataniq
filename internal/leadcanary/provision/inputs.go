@@ -161,27 +161,32 @@ const (
 )
 
 // holderSocketPaths are the two sockets the holder serves in the runtime
-// folder of the inputs' layout. The holder adds them to the paths the spec
-// checks, and so to the spec's list of mount substrings, whose size is
-// limited: leaving them out would let a long never_mounted list through that
-// the holder then refuses.
-func holderSocketPaths(runtimeRoot, layoutRole string) []string {
+// folder of the inputs' layout, and the recording's folder when the lead
+// records its screens. The holder adds them to the paths the spec checks, and
+// so to the spec's list of mount substrings, whose size is limited: leaving
+// them out would let a long never_mounted list through that the holder then
+// refuses.
+func holderSocketPaths(runtimeRoot, layoutRole string, record bool) []string {
 	rt := sandboxstart.RuntimeFolder(runtimeRoot, layoutRole)
-	return []string{filepath.Join(rt, attachSocket), filepath.Join(rt, controlSocket)}
+	out := []string{filepath.Join(rt, attachSocket), filepath.Join(rt, controlSocket)}
+	if record {
+		out = append(out, filepath.Join(rt, leadcanary.RecordDirName))
+	}
+	return out
 }
 
 // checkTrial runs the spec trial of the holder's validate step on the inputs
 // with the fields the holder sets from the config (cmd/ataniq-holder: the
 // agent's command line and environment and the pinned digest) and its two
-// socket paths, which come from the inputs' runtime folder (see
-// [holderSocketPaths]). The refusal names the field of the profile or the
+// socket paths and, for a lead that records, the recording's folder, which
+// come from the inputs' runtime folder (see [holderSocketPaths]). The refusal names the field of the profile or the
 // spec, or says the text of the fixed refusals of that step that are not about
 // a field; it never holds a value of the file.
 func checkTrial(cfg leadcanary.Config, in sandboxstart.Inputs) error {
 	in.AgentArgv = append([]string(nil), cfg.Agent.Argv...)
 	in.AgentEnv = sandboxstart.AgentEnvOf(cfg.Agent.Env)
 	in.ExpectedDigest = cfg.Holder.ProfileDigest
-	in.HolderPaths = holderSocketPaths(in.RuntimeRoot, in.LayoutRole)
+	in.HolderPaths = holderSocketPaths(in.RuntimeRoot, in.LayoutRole, cfg.RecordScreens)
 	err := sandboxstart.TrialValidate(in, uint32(os.Geteuid()), uint32(os.Getegid()))
 	if err == nil {
 		return nil

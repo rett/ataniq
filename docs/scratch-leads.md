@@ -95,8 +95,9 @@ canary slice, independent of each other:
    that has `scratch-root.json` is refused for a throwaway lead, whatever else
    it holds. The daemon, the holder and provisioning share the one check.
 3. **The invocation.** The daemon runs with `--scratch CONFIG`, a config that
-   lists the lead, and the holder is started with `--canary`, and with
-   `--inject` only when that lead's config says `"inject": true`. The holder's
+   lists the lead, and the holder is started with `--canary`, with
+   `--inject` only when that lead's config says `"inject": true`, and with
+   `--record-dir` only when it says `"record_screens": true`. The holder's
    flag keeps its name: it selects the waiver path, not the prefix.
 
 ## The owner's steps
@@ -205,6 +206,7 @@ yours to choose, and nothing here is a real path.
 | `leads[].upstream_branch` | The branch fetched from `source` into the mirror, and the one the lead's tree starts from. |
 | `leads[].agent`, `leads[].inject`, `leads[].limits` | As the canary config's `agent`, `inject` and `limits`, for this lead; [the canary slice guide](canary-slice.md#the-config-file) has each field and its bounds. |
 | `leads[].profile_digest` | Optional. A pin of the lead's sandbox profile digest: 64 lower-case hex digits, not all zeros. See [The profile digest](#the-profile-digest-and-the-pin). |
+| `leads[].record_screens` | Optional, `false` when absent: `true` or `false` and nothing else (a string, a number or `null` is refused, as for `inject`). With `true` the lead's holder records the agent's screens, window titles and OSC 7501 payloads, raw, for the owner who makes fixtures by hand. See [Recording screens](#recording-screens). |
 
 The names follow from the key. For the key `alpha` the project is
 `scratch-alpha`, the role `scratch-alpha/lead`, the layout and intake role
@@ -228,6 +230,7 @@ own:
 | `<state root>/lead-commands.jsonl` | The command table, one for the daemon. |
 | `<state root>/mirrors/scratch-<key>.git` | The lead's mirror, made by the define from `source`; kept when a later step fails. |
 | `<runtime root>/leads/<layout role>/` | The holder's runtime folder, with its attach socket and the lead's ticket file (`ticket`, mode 0600). One per lead. |
+| `<runtime root>/leads/<layout role>/record/` | Only for a lead whose config says `"record_screens": true`, once it has started: the raw recording of that start, made by the holder (mode 0700, files 0600). Nothing of Ataniq reads it back. See [Recording screens](#recording-screens). |
 
 Every lead's per-lead files are in its own folder, so leads share no evidence
 file, no inputs file and no ticket file.
@@ -400,7 +403,7 @@ operation; every code is a word of lower-case letters, digits and dashes.
 | Operation | Refused | Unavailable | Uncertain |
 | --- | --- | --- | --- |
 | `lead.define` | `role-busy`, `record-invalid`, `provision-incomplete`, `digest-pin`, `provision-refused`, `registry-refused` | `provision-failed` | `registry-broken`, `failed` |
-| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
+| `lead.start` | `role-busy`, `not-provisioned`, `folder-missing`, `max-running`, `role-not-defined`, `not-managed`, `preflight`, `record-folder-left`, `foreign-unit`, `unit-loaded`, `limits`, `launch-refused`, `epoch-exhausted`, `registry-refused` | `start-failed`, `previous-unit-not-gone`, `intent-pending` | `launch-uncertain`, `daemon-stopping`, `registry-check`, `registry-broken`, `failed` |
 | `lead.stop` | `role-busy`, `stale-epoch`, `role-not-defined`, `not-managed` | `intent-pending`, `failed` | `stop-unproven`, `daemon-stopping`, `registry-broken`, `failed` |
 | `lead.ticket` | `stale-epoch`, `not-running`, `ticket-refused` | `holder-unreachable`, `ticket-failed`, `ticket-lost`, `ticket-file` | |
 | `lead.inject` | `stale-epoch`, `inject-off`, `not-running`, `second-message`, `message-in-flight`, and the admission codes of the canary slice (`bad-id`, `body-too-long`, `empty-body` and the like) | `holder-unreachable`, and `holder-` with the holder's refusal (`disabled`, `busy`, `bad-request`; the epoch's message stays free after `disabled` and `bad-request`, and stays spent after `busy`) | |
@@ -658,6 +661,121 @@ or the record), which is the same code. The pin catches a change made after it
 was taken; it cannot show that the first digest was the right one. Read the
 profile and the managed settings yourself before the first define.
 
+## Recording screens
+
+The screen recorder is for the owner who makes the fixtures of a new agent
+version by hand ([the lead injection guide](lead-injection.md#adding-a-version),
+step 1). It is owner-only and code behind the `ataniq_canary` tag, like the
+rest of this guide.
+
+**How to record.** Set `"record_screens": true` in the lead's entry of the
+scratch config and start the daemon again (it reads the config at start). Each
+`lead.start` of that lead then starts its holder with
+`--record-dir <runtime root>/leads/<layout role>/record`.
+
+**A start of a recording lead whose `record` folder is still there is
+refused**, so that an earlier recording is neither added to nor replaced. The
+daemon looks first, before anything changes: anything at that name (a folder,
+a file, a link) refuses `lead.start` with the code `record-folder-left`, which
+the console shows as "refused: an earlier record folder is there: move or
+delete it, or turn record_screens off", and the receipt's fixed message "the
+lead's record folder from an earlier recording is still there; move or delete
+it, or set record_screens to false"; the daemon's log says the same with no
+path, and nothing is started. Move or delete the folder, or set
+the field back to `false` and start the daemon again. The holder keeps its own
+check: it refuses the flag without `--canary`, for any other folder, and when
+the folder exists (one made between the daemon's look and the holder's start),
+and then exits 2 with "--record-dir exists already". The unit has then only
+ended, so the reason is in **the unit's journal**, where everything the holder
+says goes: `journalctl --user --unit UNIT`, where `UNIT` is the lead's unit,
+`ataniq-lead-scratch-<key>.service` (the `unit` of the start's receipt and of
+`lead.list`).
+
+Once the sandbox has started, the holder makes the folder, mode 0700, and says
+one line in that journal, `recording screens to record`, with no host path, or
+`not recording screens:` and the reason (by errno) when it cannot make it; the
+lead then goes on without a recording. A start that fails makes no folder. The folder is one of the holder's paths that assertion 1 holds the
+sandbox does not show, so the agent cannot see it or name anything in it.
+
+**What it writes**, every file mode 0600:
+
+- `README.txt`, which says the files are raw: scrub before use; do not commit.
+- `0001.txt` and `0001.json`, `0002.txt` and `0002.json`, and so on: one pair
+  for each distinct screen, in the fixture format of
+  `internal/inject/screen/testdata` (the `.txt` is the screen text; the `.json`
+  holds the size, the cursor, the alternate-screen flag, the title and the faint
+  spans, `"source": "recorded"`, an empty description and no `want`). The
+  screen is the snapshot the fence reads, and the holder takes it, as the fence
+  does, only while the terminal parser is between sequences and no
+  synchronized-output frame (mode 2026) is open. A snapshot that has waited
+  2 seconds for that is taken anyway, and so is the last one when the session
+  ended in the middle of a frame; its `.json` then says `"torn": true` (the
+  field is absent otherwise). A torn pair may show half a frame: it is not a
+  fixture as it is, so drop it or check it by hand and remove the field. The
+  holder takes a snapshot only after
+  output or a resize, only once the screen has had no output and no resize for
+  about 300 ms (the settle rule), and at most one every 500 ms; the last screen,
+  when the session ends, is taken at once. The settle rule keeps a screen that
+  keeps changing, such as the working screen with its animated spinner and its
+  elapsed time, from using up the 400 pairs in a few minutes. Such a screen is
+  sampled instead: once it has changed for 3 seconds without standing still
+  for 300 ms, the holder takes one snapshot, and one more every 3 seconds
+  while it goes on, each waiting for a whole frame as above (and marked torn
+  after 2 seconds of waiting). The `.json` of a sample says `"sampled": true`
+  (the field is absent otherwise), so a working screen is in the recording
+  for the fixtures that need one. A sample is a pair like any other: it counts
+  toward the 400, and a screen that then stands still is taken by the settle
+  rule, unless it is the same as the sample just taken (no screen is written
+  twice in a row). So a screen shown for less than 300 ms is not recorded, a
+  screen that never stands still is recorded once every 3 seconds, and a
+  screen replaced within 500 ms of the last pair may be missing.
+- `titles.jsonl`, one JSON line for each window title as it changed, and
+  `osc7501.jsonl`, one JSON line for each OSC 7501 payload (the data after
+  `7501;`, the support query included). Each line has `ms`, the milliseconds
+  since the recording began, measured from the recorder's creation, which the
+  holder makes as it starts the lead, before the sandbox starts (so the first
+  line comes some time after 0); and `bytes`, the length as seen, and `cut`.
+  A title is the pane's title as the pane keeps it, not the raw bytes: invalid
+  UTF-8 becomes U+FFFD, control, line-separator and bidirectional formatting
+  characters are dropped, and it is cut at 256 bytes, by the pane, at a
+  character boundary (the pane's cut is not seen, so `cut` is `false`). Only
+  the OSC 7501 payloads are raw: a payload is cut at 4096 bytes at a character
+  boundary (`cut`: `true`), stored as a JSON string and never interpreted, and
+  its line also has `utf8`, which says whether the bytes kept are valid UTF-8
+  (when they are not, each bad byte is stored as U+FFFD). The title is read
+  every 100 ms, so a title the agent replaced sooner is not seen.
+- `LIMIT.txt`, only when needed: a line when the screens stopped at 400 pairs
+  (the titles and the payloads go on being recorded), a line when the recording
+  stopped at 8 MiB written in all (`README.txt` and `LIMIT.txt` included),
+  and `dropped N`, written once when the recording ends, when the recorder's
+  small queue dropped N of its oldest items in all to keep up. It holds at
+  most these three lines.
+
+The recorder never blocks the agent or its screen. At 400 pairs it stops taking
+screens and says so in one line of the journal; when it would pass 8 MiB or a
+write fails, it stops recording, says so in one line of the journal (by errno,
+with no path), and the lead goes on. When the session ends, the recorder takes
+one last look at the screen, whatever the time since the last pair, and the
+holder waits up to 2 seconds for it to write what it holds before it exits: the
+last pair is the screen the agent showed at its end, with its cursor,
+alternate-screen flag, title and faint spans. If the recorder does not finish
+in time, the holder says so in one line of the journal and exits all the same.
+
+**The files are raw.** Nothing scrubs them: they may hold a login URL, a login
+code, a session id, a home path or a host name, whatever the agent showed. The
+daemon, the console and the evidence never read the folder, and no receipt,
+evidence line or daemon log names it (the holder's command line in its unit
+carries the flag, as it carries the runtime folder). Scrub by hand what you take into a
+fixture, as [the fixtures](lead-injection.md#the-fixtures) of the injection
+guide say, and never commit the folder.
+
+**A recording of the login screen holds a login URL and code.** Treat the
+folder as you would a credential: delete it
+(`<runtime root>/leads/<layout role>/record`) once the fixtures are made, and
+set `record_screens` back to `false`. If a copy of a recording that holds a
+login code or a session id left the machine, take the session as leaked: sign
+the agent out of it, so that it is revoked, before the lead goes on.
+
 ## Failure handling and owner recovery
 
 The daemon refuses to start when the config, a root or the root marker is not
@@ -850,6 +968,7 @@ which settles it at its reconcile, as before.
 | The operations and scratch mode of the daemon (tagged) | `internal/leaddaemon`: `lead_ext_linux.go`, `lead_mode_linux.go`, `canary_router_linux.go` |
 | The scratch config, names and per-lead evidence (tagged) | [`internal/leadcanary`](../internal/leadcanary/doc.go) |
 | Provisioning of a scratch lead, `scratch-clean` (tagged) | [`internal/leadcanary/provision`](../internal/leadcanary/provision/doc.go) |
+| The screen recorder (tagged) | [`internal/leadholder/screenrec`](../internal/leadholder/screenrec/doc.go), and `--record-dir` in `cmd/ataniq-holder/canary_linux.go` |
 | The owner's commands | [`cmd/ataniq-canary`](../cmd/ataniq-canary/main.go) (`scratch-init`, `scratch-clean`), [`cmd/ataniqd`](../cmd/ataniqd/doc.go) (`run --scratch`) |
 | The console's client | [`internal/consoleclient`](../internal/consoleclient/doc.go) |
 | The console's view | [`internal/terminalconsole/leadctl`](../internal/terminalconsole/leadctl/doc.go) |

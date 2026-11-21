@@ -6,7 +6,9 @@ package main
 // build with the ataniq_canary tag: --canary starts the agent through the start
 // sequence of the lead sandbox (package sandboxstart), which waives assertion
 // 10, and --inject opens the path from a control request to the agent's
-// terminal. Scratch mode is not changed by the tag.
+// terminal. --record-dir records the agent's screens, titles and OSC 7501
+// payloads for the owner's fixtures (see "The recording" below). Scratch mode is
+// not changed by the tag.
 //
 // # The order of a start
 //
@@ -56,8 +58,25 @@ package main
 // When the child had been launched, final.json is the session's record of the
 // sandbox's first process, which was stopped; it is not the record of an agent
 // that served.
+//
+// # The recording
+//
+// With --record-dir, which must be exactly the folder "record" in --runtime-dir
+// and must not exist (both refused before the role lock), the start wraps the
+// hook of the status protocol so that each payload is also given to a
+// recorder (package screenrec), and adds the folder to the holder paths the
+// sandbox must not show. Only once the start succeeded does serve make the
+// folder, 0700, say one line "recording screens to record" and watch the pane;
+// a start that fails makes no folder. Once the session is over the recorder
+// takes a last look at the pane, and run waits for it (finish, at most
+// recordWait) before it returns. A recorder that cannot make its folder,
+// or that stops early, says so in one line and changes nothing else: the
+// agent, the pane and the service go on as without the flag. Without the flag
+// nothing of this runs, and the hook, the holder paths and the session's
+// configuration are the ones of a holder that has no recorder.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -78,12 +97,14 @@ import (
 	"ataniq/internal/leadholder/eventlog"
 	"ataniq/internal/leadholder/injectbridge"
 	"ataniq/internal/leadholder/sandboxstart"
+	"ataniq/internal/leadholder/screenrec"
 	"ataniq/internal/leadholder/serve"
 	"ataniq/internal/leadholder/session"
 	"ataniq/internal/leadholder/wire"
 	"ataniq/internal/leadrole"
 	"ataniq/internal/leadsandbox/assert"
 	"ataniq/internal/leadsandbox/profile"
+	"ataniq/internal/terminalconsole/sessionpane"
 )
 
 // canaryTag is the build tag the version line names.
@@ -102,7 +123,7 @@ This build carries the tag ataniq_canary and has a second mode, for the canary
 slice only:
 
   ataniq-holder --canary [--inject] --sandbox-inputs FILE [--expected-mode TEXT]
-                and every flag of the first form but --scratch
+                [--record-dir DIR] and every flag of the first form but --scratch
 
 --canary starts the agent in the lead sandbox, through the start sequence, and
 waives assertion 10 (no qualification record). It needs --sandbox-inputs, the
@@ -111,8 +132,11 @@ throwaway project (the state root carries the canary marker) or a scratch
 project (it carries the scratch root marker, and no canary marker), and the
 roots must not be the default ones. --inject opens
 injection through the control socket; --expected-mode is the permission mode the
-agent's footer must show for a delivery; --inject needs a non-empty one. The
-three are refused without --canary.
+agent's footer must show for a delivery; --inject needs a non-empty one.
+--record-dir records the agent's screens, window titles and OSC 7501 payloads,
+raw, into DIR, which must be the folder "record" in --runtime-dir and must not
+exist; the holder makes it once the sandbox has started. The four are refused
+without --canary.
 
 Exit status 4: the start sequence of the sandbox refused or failed; no agent is
 left and holder.json is removed.
@@ -124,6 +148,7 @@ const (
 	flagInject       = "inject"
 	flagInputs       = "sandbox-inputs"
 	flagExpectedMode = "expected-mode"
+	flagRecordDir    = "record-dir"
 )
 
 // maxExpectedMode bounds --expected-mode.
@@ -131,14 +156,16 @@ const maxExpectedMode = 256
 
 // modeFlags are the flags of canary mode.
 type modeFlags struct {
-	canary, inject       bool
-	inputs, expectedMode *value
+	canary, inject                  bool
+	inputs, expectedMode, recordDir *value
 }
 
 // modeConfig is what the flags of canary mode select.
 type modeConfig struct {
 	canary, inject       bool
 	inputs, expectedMode string
+	// recordDir is --record-dir, empty when the screens are not recorded.
+	recordDir string
 }
 
 // addModeFlags adds the flags of canary mode to the parser of a command line.
@@ -149,6 +176,8 @@ func addModeFlags(p *flagParser) {
 	p.mode.expectedMode = &value{p: p, name: flagExpectedMode}
 	p.fs.Var(p.mode.inputs, flagInputs, "")
 	p.fs.Var(p.mode.expectedMode, flagExpectedMode, "")
+	p.mode.recordDir = &value{p: p, name: flagRecordDir}
+	p.fs.Var(p.mode.recordDir, flagRecordDir, "")
 }
 
 // canaryFlagNames lists the flags canary mode adds to the scratch command line
@@ -171,12 +200,15 @@ func canaryFlagNames() []string {
 }
 
 // modeOf applies the rules of the two modes: exactly one of --scratch and
-// --canary; --inject, --sandbox-inputs and --expected-mode only with --canary;
-// --canary needs --sandbox-inputs.
+// --canary; --inject, --sandbox-inputs, --expected-mode and --record-dir only
+// with --canary; --canary needs --sandbox-inputs.
 func (p *flagParser) modeOf() (modeConfig, error) {
 	m := p.mode
 	if !m.canary && (m.inject || m.inputs.set || m.expectedMode.set) {
 		return modeConfig{}, usageError("--inject, --sandbox-inputs and --expected-mode are flags of canary mode: they need --canary")
+	}
+	if !m.canary && m.recordDir.set {
+		return modeConfig{}, usageError("--record-dir is a flag of canary mode: it needs --canary")
 	}
 	switch {
 	case m.canary && p.scratch:
@@ -199,7 +231,10 @@ func (p *flagParser) modeOf() (modeConfig, error) {
 	if len(m.expectedMode.s) > maxExpectedMode || !plain(m.expectedMode.s) {
 		return modeConfig{}, usageError("--expected-mode must be plain text of at most 256 bytes")
 	}
-	return modeConfig{canary: true, inject: m.inject, inputs: m.inputs.s, expectedMode: m.expectedMode.s}, nil
+	if m.recordDir.set && !absPlain(m.recordDir.s) {
+		return modeConfig{}, usageError("--record-dir must be an absolute path of plain text")
+	}
+	return modeConfig{canary: true, inject: m.inject, inputs: m.inputs.s, expectedMode: m.expectedMode.s, recordDir: m.recordDir.s}, nil
 }
 
 // canaryDeps are the seams of canary mode, for tests. The zero value is the
@@ -224,6 +259,11 @@ type canaryDeps struct {
 	// pumpStarted, when set, is given the counter pump as the service is
 	// built.
 	pumpStarted func(*counterPump)
+	// tweakRecorder changes the recorder's settings (its bounds and timings)
+	// and recorderStarted is given the recorder once its folder is made. They
+	// are for tests.
+	tweakRecorder   func(*screenrec.Config)
+	recorderStarted func(*screenrec.Recorder)
 }
 
 // leadHasRunMark is the durable mark in the holder's state folder that says a
@@ -254,7 +294,16 @@ type canaryMode struct {
 	sys sandboxstart.System
 
 	tracker *osc7501.Tracker
+	// rec is the screen recorder, with --record-dir only.
+	rec *screenrec.Recorder
+	// watched is closed when the recorder's Watch has returned, its writer
+	// done; nil when nothing watches the pane.
+	watched chan struct{}
 }
+
+// recordWait is how long the holder waits, once the session is over, for the
+// recorder's last look and for its writer to write what is queued.
+const recordWait = 2 * time.Second
 
 // vettedMode is what the checks of the command line before the role lock
 // leave for selectMode.
@@ -325,6 +374,18 @@ func vetMode(cfg config, d deps, out holderOut) (vettedMode, int) {
 		return refuse("--state-dir is not the holder folder of the lead under the state root of the sandbox inputs")
 	case cfg.runtimeDir != sandboxstart.RuntimeFolder(in.RuntimeRoot, in.LayoutRole):
 		return refuse("--runtime-dir is not the lead's runtime folder under the runtime root of the sandbox inputs")
+	}
+	if rd := cfg.mode.recordDir; rd != "" {
+		// The folder is fixed: no other path can be named, and the agent can
+		// name none.
+		if rd != filepath.Join(cfg.runtimeDir, screenrec.DirName) {
+			return refuse("--record-dir is not the folder %s in --runtime-dir", screenrec.DirName)
+		}
+		// A recording is raw, so an earlier one is neither added to nor
+		// replaced: the owner moves or deletes it by hand.
+		if _, err := os.Lstat(rd); !errors.Is(err, os.ErrNotExist) {
+			return refuse("--record-dir exists already (an earlier recording may be in it): move or delete it by hand before a start that records")
+		}
 	}
 	return vettedMode{in: in}, exitOK
 }
@@ -484,7 +545,12 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	// stop rule's, set here and not left to the session's default.
 	scfg.Dir = "/"
 	scfg.StopGrace = assert.StopTermWait
-	scfg.OSC = append(append([]session.OSCHook(nil), scfg.OSC...), injectbridge.Hook(m.tracker, nil))
+	hook := injectbridge.Hook(m.tracker, nil)
+	if cfg.mode.recordDir != "" {
+		m.rec = screenrec.New(m.recorderConfig(out))
+		hook = recordingHook(hook, m.rec)
+	}
+	scfg.OSC = append(append([]session.OSCHook(nil), scfg.OSC...), hook)
 	scfg.PTY.NoControllingTerminal = true
 	launch := &sessionLauncher{base: scfg, start: m.d.canary.startSession}
 	if launch.start == nil {
@@ -494,6 +560,10 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	// fail ends a start that did not succeed: no agent, no lock held by a
 	// session, no state file, and the refusal in the event log.
 	fail := func(code int, reason, format string, args ...any) (*session.Session, int) {
+		if m.rec != nil {
+			// Nothing was made: the folder is made once the start succeeded.
+			m.rec.Close()
+		}
 		switch {
 		case launch.sess != nil:
 			_ = launch.sess.Close()
@@ -516,6 +586,11 @@ func (m *canaryMode) start(sc startContext) (*session.Session, int) {
 	in.HolderPaths = []string{
 		filepath.Join(cfg.runtimeDir, serve.AttachSocket),
 		filepath.Join(cfg.runtimeDir, serve.ControlSocket),
+	}
+	if cfg.mode.recordDir != "" {
+		// The recording is the holder's, like its sockets: assertion 1 holds
+		// that the sandbox does not show it.
+		in.HolderPaths = append(in.HolderPaths, cfg.mode.recordDir)
 	}
 	// The sequence hides the layout's holder folder itself, which --state-dir
 	// is exactly (vetMode).
@@ -639,6 +714,79 @@ func (m *canaryMode) serve(sess *session.Session, vcfg *serve.Config) {
 	go pump.run(every)
 	if m.cfg.mode.inject {
 		vcfg.Deliverer = countingDeliverer{pump: pump, next: injectbridge.NewDeliverer(bridge, m.cfg.mode.expectedMode)}
+	}
+	if m.rec != nil {
+		m.startRecording(sess)
+	}
+}
+
+// recorderConfig is the recorder's configuration: its one log line goes to the
+// holder's stderr.
+func (m *canaryMode) recorderConfig(out holderOut) screenrec.Config {
+	c := screenrec.Config{Logf: func(format string, args ...any) { out.line(format, args...) }}
+	if m.d.canary.tweakRecorder != nil {
+		m.d.canary.tweakRecorder(&c)
+	}
+	return c
+}
+
+// oscPrefix is the command number and its separator, which the emulator
+// hands the hook before the payload.
+var oscPrefix = []byte(strconv.Itoa(injectbridge.OSCCommand) + ";")
+
+// recordingHook gives each payload of the status protocol to the recorder,
+// which copies at most screenrec.MaxPayload bytes and returns, and then to the
+// hook, whose answer is the answer. The recorder is given the payload after
+// "7501;", as the recorded payloads of internal/inject/osc7501/testdata are
+// written; the hook is given the string as it was.
+func recordingHook(h session.OSCHook, rec *screenrec.Recorder) session.OSCHook {
+	next := h.Fn
+	h.Fn = func(data []byte) ([]byte, bool) {
+		rec.OSC7501(bytes.TrimPrefix(data, oscPrefix))
+		return next(data)
+	}
+	return h
+}
+
+// startRecording makes the recording's folder and watches the pane until the
+// session is over. A folder that cannot be made is said in one line, and
+// nothing is recorded.
+func (m *canaryMode) startRecording(sess *session.Session) {
+	out := holderOut{m.d.stderr}
+	if err := m.rec.Open(m.cfg.mode.recordDir); err != nil {
+		// The recorder's error names a step and an errno, never a path.
+		out.line("not recording screens: %v", err)
+		return
+	}
+	out.line("recording screens to %s", screenrec.DirName)
+	if m.d.canary.recorderStarted != nil {
+		m.d.canary.recorderStarted(m.rec)
+	}
+	screen := func(fn func(screenrec.Pane, uint64)) {
+		sess.Screen(func(p *sessionpane.Pane, pos uint64) { fn(p, pos) })
+	}
+	m.watched = make(chan struct{})
+	go func() {
+		defer close(m.watched)
+		m.rec.Watch(screen, sess.Done())
+	}()
+}
+
+// finish waits, at most recordWait, for the recorder: when the session is over
+// Watch takes its last look at the pane and the writer writes what is queued,
+// so the screen shown at the end and the last payloads are on disk before the
+// holder exits. A recorder that does not finish in time is said in one line,
+// and the holder exits all the same.
+func (m *canaryMode) finish() {
+	if m.watched == nil {
+		return
+	}
+	t := time.NewTimer(recordWait)
+	defer t.Stop()
+	select {
+	case <-m.watched:
+	case <-t.C:
+		holderOut{m.d.stderr}.line("recording screens: the recorder did not finish in %s; the last screens may be missing", recordWait)
 	}
 }
 

@@ -137,8 +137,14 @@ A new version of a runtime is a table entry, recorded fixtures and a review. It
 is not an edit of the packages that read the agent.
 
 1. Record the screens, window titles and OSC 7501 reports of the new version
-   from attended runs, with the screen recorder if the checkout has one, and
-   scrub them as [The fixtures](#the-fixtures) says. Put the screens in
+   from attended runs, with the screen recorder: a scratch lead whose config
+   says `"record_screens": true` writes them, raw, into the `record` folder of
+   its runtime folder, one pair in the fixture format for each distinct screen,
+   and a sample every 3 seconds of a working screen that never stands still
+   (see [Recording screens](scratch-leads.md#recording-screens)). Scrub them by
+   hand as [The fixtures](#the-fixtures) says, and delete the folder once the
+   fixtures are made: a recording of the login screen holds a login URL and
+   code. Put the screens in
    `internal/inject/screen/testdata/<runtime>-<version>/` and the titles and
    reports in the files of `internal/inject/title/testdata` and
    `internal/inject/osc7501/testdata`, with the same kinds of screen the

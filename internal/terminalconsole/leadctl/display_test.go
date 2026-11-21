@@ -21,6 +21,7 @@ func TestEveryReceiptIsShownInTheViewsOwnFixedWords(t *testing.T) {
 		{"in progress", Receipt{Op: OpStart, Status: InProgress}, []string{"start: accepted, still running"}, nil},
 		{"done", Receipt{Op: OpStart, Status: Done}, []string{"start: accepted, done"}, nil},
 		{"refused", Receipt{Op: OpStart, Status: Refused, Code: "max-running"}, []string{"start: refused: the limit of running leads is reached"}, nil},
+		{"record folder left", Receipt{Op: OpStart, Status: Refused, Code: "record-folder-left"}, []string{"start: refused: an earlier record folder is there: move or delete it, or turn record_screens off"}, []string{"preflight"}},
 		{"unavailable", Receipt{Op: OpStart, Status: Unavailable, Code: "holder-unreachable"}, []string{"start: unavailable: the lead's holder could not be reached"}, nil},
 		{"uncertain", Receipt{Op: OpStart, Status: Uncertain}, []string{"start: uncertain: the outcome is not known", "nothing is sent again for you"}, nil},
 		{"unknown code", Receipt{Op: OpStart, Status: Refused, Code: "a code from the future"}, []string{"refused: the reason is not known to this console"}, []string{"future"}},

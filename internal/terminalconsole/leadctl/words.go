@@ -103,6 +103,7 @@ var reasonWords = map[string]string{
 	"not-provisioned":        "the lead is not provisioned; define it first",
 	"folder-missing":         "a folder of the lead is missing or not private",
 	"preflight":              "the preflight refused the start",
+	"record-folder-left":     "an earlier record folder is there: move or delete it, or turn record_screens off",
 	"foreign-unit":           "a unit with the lead's name is not its own unit",
 	"unit-loaded":            "a unit with the lead's name is already loaded",
 	"limits":                 "the unit's limits are outside the bounds",

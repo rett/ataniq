@@ -68,6 +68,7 @@ const (
 	codeRoleNotDefined   = "role-not-defined"
 	codeNotManaged       = "not-managed"
 	codePreflight        = "preflight"
+	codeRecordLeft       = "record-folder-left"
 	codeForeignUnit      = "foreign-unit"
 	codeUnitLoaded       = "unit-loaded"
 	codeLimits           = "limits"
@@ -540,6 +541,13 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 				return refusedOut(codeFolderMissing, f.msg)
 			}
 			unix.Close(fd)
+		}
+		// A recording lead whose record folder is still there: its holder
+		// would refuse the start. The code is its own, so that the console
+		// says why; the receipt's message is the fixed text.
+		if lr.in.ext.recordFolderLeft() {
+			m.d.logf("scratch start %q: %s", lr.key, logRecordLeft)
+			return refusedOut(codeRecordLeft, msgRecordLeft)
 		}
 		if !m.reserve(lr) {
 			return refusedOut(leadwire.CodeMaxRunning, msgMaxRunning)

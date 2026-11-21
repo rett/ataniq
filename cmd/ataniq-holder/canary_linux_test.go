@@ -26,10 +26,10 @@ import (
 	"ataniq/internal/leadsandbox/profile"
 )
 
-// The flags canary mode adds are these four, and the scratch command line is
+// The flags canary mode adds are these five, and the scratch command line is
 // the launcher's still.
 func TestCanaryFlagSet(t *testing.T) {
-	want := "canary expected-mode inject sandbox-inputs"
+	want := "canary expected-mode inject record-dir sandbox-inputs"
 	if got := strings.Join(canaryFlagNames(), " "); got != want {
 		t.Errorf("canary mode adds %q, want %q", got, want)
 	}
@@ -97,7 +97,7 @@ func TestCanaryHelp(t *testing.T) {
 	if code := c.runNow([]string{"--help"}); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	for _, want := range []string{"--canary", "--inject", "--sandbox-inputs FILE", "--expected-mode TEXT", "Exit status 4"} {
+	for _, want := range []string{"--canary", "--inject", "--sandbox-inputs FILE", "--expected-mode TEXT", "--record-dir DIR", "Exit status 4"} {
 		if !strings.Contains(c.errbuf.String(), want) {
 			t.Errorf("the help does not say %q", want)
 		}

@@ -12,6 +12,7 @@ import (
 func TestCanaryFlagsAreUnknownWithoutTheTag(t *testing.T) {
 	for _, extra := range [][]string{
 		{"--canary"}, {"--inject"}, {"--sandbox-inputs", "/x/inputs.json"}, {"--expected-mode", "sample mode"},
+		{"--record-dir", "/x/record"},
 		{"--canary", "--inject", "--sandbox-inputs", "/x/inputs.json", "--expected-mode", "sample mode"},
 	} {
 		for _, scratch := range []bool{true, false} {
@@ -40,7 +41,7 @@ func TestNoTagInTheVersionOrTheHelp(t *testing.T) {
 	if code := r.runNow([]string{"--help"}); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	for _, word := range []string{"canary", "--inject", "sandbox-inputs", "expected-mode"} {
+	for _, word := range []string{"canary", "--inject", "sandbox-inputs", "expected-mode", "record-dir"} {
 		if strings.Contains(r.errbuf.String(), word) {
 			t.Errorf("the help of a build without the tag says %q", word)
 		}
