@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -56,6 +57,14 @@ type Collector struct {
 	submit  SubmitFunc
 	now     func() time.Time
 	log     func(string)
+	// known says whether the service knows a request id: it has handled the
+	// request in this process or the door holds a record for it. It is set
+	// by [Open]; without it the collector never answers a request that was
+	// taken before (see [Collector.Scan]).
+	known func(ctx context.Context, id string) (bool, error)
+
+	mu    sync.Mutex
+	swept bool
 }
 
 // NewCollector returns the collector of the mailbox's folder for one project.
@@ -92,7 +101,64 @@ func (c *Collector) logf(format string, a ...any) {
 // reply is left where it is. Scan returns when each was handed over or
 // answered, which for a request that is verified is when the verification has
 // ended, or when ctx ends.
+//
+// The first Scan of a collector that was given the service's knowledge also
+// answers the requests a stop left behind: a request taken into the collected
+// folder that has no reply and that the service does not know (no status of
+// this process, no record at the door) was lost between the move and the
+// service, and is answered once with request-invalid and a line that asks for
+// a new request under a new id. A reply that exists is never written over, a
+// request the door holds is left to its own outcome, and a door that cannot be
+// listed answers nothing and leaves the sweep to the next Scan.
 func (c *Collector) Scan(ctx context.Context) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n, err := c.scan(ctx)
+	if err != nil {
+		return n, err
+	}
+	c.sweep(ctx)
+	return n, nil
+}
+
+// sweep answers the taken requests that were lost, once for the collector.
+func (c *Collector) sweep(ctx context.Context) {
+	if c.swept || c.known == nil {
+		return
+	}
+	entries, err := os.ReadDir(filepath.Join(c.mail.dir, collectedDir))
+	if err != nil {
+		return
+	}
+	var ids []string
+	for _, e := range entries {
+		if m := requestName.FindStringSubmatch(e.Name()); m != nil && e.Type().IsRegular() {
+			ids = append(ids, m[1])
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := os.Lstat(c.mail.ReplyPath(id)); err == nil {
+			continue
+		}
+		known, err := c.known(ctx, id)
+		if err != nil {
+			c.logf("a request taken before could not be looked up, so it was not answered: %s", oneLine(err.Error()))
+			return
+		}
+		if known {
+			continue
+		}
+		c.refuse(ctx, id, record.CodeRequestInvalid, "the request was taken but not handled before the daemon stopped: send it again under a new request id")
+		c.logf("a request taken before and never handled was answered request-invalid")
+	}
+	c.swept = true
+}
+
+func (c *Collector) scan(ctx context.Context) (int, error) {
 	entries, err := os.ReadDir(c.mail.dir)
 	if err != nil {
 		return 0, err
@@ -199,7 +265,9 @@ var errTooLarge = errors.New("hostadapter: the file is larger than its cap")
 // move links the file into the collected folder under name and removes it
 // from the drop folder. It fails when the name is taken. A crash between the
 // link and the remove leaves the file in both folders; the next scan finds the
-// name taken and sets the file aside, without a reply.
+// name taken and sets the file aside, without a reply. A crash between the
+// move and the service leaves a taken request nobody answers: the first Scan
+// of the next collector answers it (see [Collector.Scan]).
 func (c *Collector) move(path, name string) error {
 	if err := os.Link(path, filepath.Join(c.mail.dir, collectedDir, name)); err != nil {
 		return err

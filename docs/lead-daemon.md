@@ -287,7 +287,9 @@ commit identity, the gates and the folder requests are dropped in. `sandbox`
 and `work` are required: the daemon refuses `--owner-channel` without them or
 with paths that are not scratch paths. A request is a file named after its
 request id with the suffix `.request` in the drop folder, and its reply is a
-file beside it, the only reply this build writes. The suite is the intake's
+file beside it, the only reply this build writes. A request that a stop left taken but never
+handled gets one `request-invalid` reply, asking for a new request id, from the
+first scan after the next start. The suite is the intake's
 merge-mode verification (`internal/intake/verify` with its real runner): the
 merge is fetched through the pin under `refs/ataniq/pending/`, checked to have
 two parents with the target's tip first, and the gates run in the sandbox. The
