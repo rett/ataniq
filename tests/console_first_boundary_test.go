@@ -70,6 +70,8 @@ const (
 	pkgArrival      = "internal/terminalconsole/arrival"
 	pkgApprovals    = "internal/terminalconsole/approvals"
 	pkgLimitView    = "internal/terminalconsole/limitview"
+	pkgLeadCtl      = "internal/terminalconsole/leadctl"
+	pkgLeadWire     = "internal/leadwire"
 	pkgConsoleCmd   = "cmd/ataniq-console"
 )
 
@@ -90,14 +92,16 @@ var boundaryTable = map[string][]string{
 	pkgOwnerJournal: {pkgRecord},
 	pkgOwnerChannel: {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgDoor, pkgOwnerJournal, pkgOwnerWire},
 	pkgDemo:         {pkgRecord, pkgCard, pkgLimits, pkgPresence, pkgLeadText},
-	pkgConsoleView:  {pkgClientAPI, pkgOwnerWire, pkgRecord, pkgCard, pkgLimits},
+	pkgConsoleView:  {pkgClientAPI, pkgOwnerWire, pkgRecord, pkgCard, pkgLimits, pkgLeadWire},
 	pkgPager:        {pkgLeadText},
 	pkgArrival:      {pkgPresence},
 	pkgApprovals:    {pkgCard, pkgRecord, pkgLimits, pkgLeadText, pkgPager},
 	pkgLimitView:    {pkgLimits},
+	pkgLeadCtl:      {},
+	pkgLeadWire:     {},
 	pkgConsole: {
 		pkgSessionPane, pkgSessionPlay,
-		pkgPager, pkgArrival, pkgApprovals, pkgLimitView, pkgCard, pkgRecord, pkgLimits, pkgPresence, pkgLeadText,
+		pkgPager, pkgArrival, pkgApprovals, pkgLimitView, pkgLeadCtl, pkgCard, pkgRecord, pkgLimits, pkgPresence, pkgLeadText,
 	},
 	pkgConsoleCmd: {pkgConsole, pkgLeadAttach, pkgConsoleView, pkgDemo, pkgApprovals},
 }
