@@ -40,12 +40,14 @@ func TestTheScratchSettingsRefuseARepeatedKey(t *testing.T) {
 		t.Fatalf("the control was refused: %v", err)
 	}
 	for name, text := range map[string]string{
-		"the door, real then stand-in": scratchJSON(`"door":"real","door":"stand-in"`, okIdentity, okSeat, okGate),
-		"the door, stand-in twice":     scratchJSON(`"door":"stand-in","door":"stand-in"`, okIdentity, okSeat, okGate),
-		"a key of the identity":        scratchJSON(okDoor, `"identity":{"name":"A","name":"B","email":"host@example.invalid"}`, okSeat, okGate),
-		"a key of the seat":            scratchJSON(okDoor, okIdentity, `"seat":{"epoch":7,"epoch":8,"seat_rev":12}`, okGate),
-		"a key of a gate":              scratchJSON(okDoor, okIdentity, okSeat, `{"name":"suite","argv":["make"],"argv":["true"]}`),
-		"a key of the second gate":     scratchJSON(okDoor, okIdentity, okSeat, okGate+`,{"name":"a","name":"b","argv":["x"]}`),
+		"the door, real then stand-in":   scratchJSON(`"door":"real","door":"stand-in"`, okIdentity, okSeat, okGate),
+		"the door, by case":              scratchJSON(`"door":"real","Door":"stand-in"`, okIdentity, okSeat, okGate),
+		"a key of the identity, by case": scratchJSON(okDoor, `"identity":{"name":"A","Name":"B","email":"host@example.invalid"}`, okSeat, okGate),
+		"the door, stand-in twice":       scratchJSON(`"door":"stand-in","door":"stand-in"`, okIdentity, okSeat, okGate),
+		"a key of the identity":          scratchJSON(okDoor, `"identity":{"name":"A","name":"B","email":"host@example.invalid"}`, okSeat, okGate),
+		"a key of the seat":              scratchJSON(okDoor, okIdentity, `"seat":{"epoch":7,"epoch":8,"seat_rev":12}`, okGate),
+		"a key of a gate":                scratchJSON(okDoor, okIdentity, okSeat, `{"name":"suite","argv":["make"],"argv":["true"]}`),
+		"a key of the second gate":       scratchJSON(okDoor, okIdentity, okSeat, okGate+`,{"name":"a","name":"b","argv":["x"]}`),
 	} {
 		err := loadScratchText(t, text)
 		if err == nil || !strings.Contains(err.Error(), "appears twice") {
