@@ -112,6 +112,38 @@ func TestExitStatusThreeGivesTheThreeFactsAndTheFinalRecord(t *testing.T) {
 	}
 }
 
+// The pane's alternate-screen switches are in the final record and in the
+// exit event, as well as in the live counters: they say which renderer the
+// agent drew with.
+func TestAlternateScreenCountersReachTheFinalRecordAndTheExitEvent(t *testing.T) {
+	e := newEnv(t)
+	s := e.start("mode 1049; say ALT; unmode 1049; say MAIN; exit 0")
+	waitDone(t, s)
+	rec, err := s.Final()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(e.stateDir, FinalName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disk FinalRecord
+	if err := json.Unmarshal(b, &disk); err != nil {
+		t.Fatal(err)
+	}
+	evs := eventsNamed(e.events(), eventlog.EventExit)
+	if len(evs) != 1 {
+		t.Fatalf("exit events %d", len(evs))
+	}
+	for where, c := range map[string]map[string]uint64{"Final()": rec.Counters, "final.json": disk.Counters, "exit event": evs[0].Counters} {
+		for _, name := range []string{"alt_screen_on", "alt_screen_off"} {
+			if v, ok := c[name]; !ok || v != 1 {
+				t.Errorf("%s: %s = %d (present %t), want 1", where, name, v, ok)
+			}
+		}
+	}
+}
+
 func TestLiveFactsWhileTheAgentRuns(t *testing.T) {
 	e := newEnv(t)
 	s := e.start("raw; say READY; wait")

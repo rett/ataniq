@@ -682,6 +682,8 @@ var reservedCounters = map[string]bool{
 	"held_output_full":       true,
 	"log_errors":             true,
 	"clipboard_blocked":      true,
+	"alt_screen_on":          true,
+	"alt_screen_off":         true,
 	"output_bytes":           true,
 	"extra_counters_dropped": true,
 	"final_screen_truncated": true,
@@ -758,6 +760,11 @@ func (s *Session) Counters() map[string]uint64 {
 	out["held_output_full"] = c.heldOutputFull.Load()
 	out["log_errors"] = c.logErrors.Load()
 	out["clipboard_blocked"] = uint64(s.pane.ClipboardBlocked())
+	// The pane's alternate-screen switches go into the final record and the
+	// exit event too: they say which renderer the agent drew with.
+	pcs := s.pane.Counters()
+	out["alt_screen_on"] = pcs.AltScreenOn
+	out["alt_screen_off"] = pcs.AltScreenOff
 	// Read without the output lock: a fence's Frozen holds it for as long as
 	// its write takes, and the status answer must not wait for that.
 	out["output_bytes"] = s.posA.Load()
