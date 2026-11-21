@@ -18,8 +18,12 @@ const (
 	maxLeads = 32
 	// maxRole is the longest role the view passes back to the backend.
 	maxRole = 128
-	// maxBody is the longest message, in bytes: the lead holder's own cap.
-	maxBody = 4096
+	// maxBody is the longest message, in bytes: the daemon's admission refuses
+	// a longer body with body-too-long (leadcanary.MaxBodyBytes, which a
+	// test reads from its source, as this package imports nothing of the
+	// repository). It is less than leadwire.MaxBody, which is only the cap
+	// of the wire.
+	maxBody = 2048
 	// maxPath is the longest folder or ticket file the view hands to the
 	// parent.
 	maxPath = 4096
