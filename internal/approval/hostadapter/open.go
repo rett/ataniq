@@ -172,6 +172,21 @@ func Open(ctx context.Context, cfg OpenConfig) (*Opened, error) {
 			_ = svc.Close()
 			return fail(err)
 		}
+		col.known = func(ctx context.Context, id string) (bool, error) {
+			if _, ok := svc.Status(id); ok {
+				return true, nil
+			}
+			list, err := cfg.Door.List(ctx)
+			if err != nil {
+				return false, err
+			}
+			for _, e := range list {
+				if e.RequestID == id {
+					return true, nil
+				}
+			}
+			return false, nil
+		}
 		o.Collector = col
 		scan, tick := cfg.ScanEvery, cfg.TickEvery
 		if scan == 0 {

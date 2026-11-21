@@ -269,13 +269,17 @@ door, which keeps nothing across a restart. Its keys:
 - `"door"`: must be `"stand-in"`. Any other value, or none, is refused.
 - `"roots"`: the scratch folders, one of which holds the mirror. The daemon
   refuses a state folder, a root or a mirror that is, lies inside or contains
-  the account's default state or runtime folder.
+  the account's default state or runtime folder. It refuses a drop folder that
+  is, lies inside or contains a default folder or the state folder (so its
+  `owner/` folder too).
 - `"sandbox"`: the clean absolute path of the sandbox template file, the same
   template `ataniq-intake verify --sandbox` takes (see
   [lead-intake.md](lead-intake.md)). It lies under a scratch root and not in
-  the state folder, where a lead could change it.
+  the state folder, which is kept for the host's records and journal and free
+  of configuration, and not in the drop folder, the mirror or the work folder.
 - `"work"`: the clean absolute path of the folder the runs work in, under a
-  scratch root, outside the state folder and apart from the mirror. The daemon
+  scratch root, outside the state folder and apart from the mirror and the drop
+  folder. The daemon
   makes it with mode 0700 when it is not there (its parent must exist).
 
 The settings also name the project, its mirror, the role, the target, the
@@ -283,7 +287,9 @@ commit identity, the gates and the folder requests are dropped in. `sandbox`
 and `work` are required: the daemon refuses `--owner-channel` without them or
 with paths that are not scratch paths. A request is a file named after its
 request id with the suffix `.request` in the drop folder, and its reply is a
-file beside it, the only reply this build writes. The suite is the intake's
+file beside it, the only reply this build writes. A request that a stop left taken but never
+handled gets one `request-invalid` reply, asking for a new request id, from the
+first scan after the next start. The suite is the intake's
 merge-mode verification (`internal/intake/verify` with its real runner): the
 merge is fetched through the pin under `refs/ataniq/pending/`, checked to have
 two parents with the target's tip first, and the gates run in the sandbox. The

@@ -303,3 +303,140 @@ func TestApplyReportsNotAppliedWhereNothingWasWritten(t *testing.T) {
 		}
 	})
 }
+
+// takenLost plants a request as a stop between the move and the service leaves
+// it: in the collected folder only, with no reply and no status.
+func (r *rig) takenLost(id string, b []byte) {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.drop, collectedDir, id+requestSuffix), b, 0o600); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// A request taken into the collected folder that the service never saw, with
+// no reply, is answered request-invalid once by the first scan of the next
+// collector, with a line that asks for a new id; the second scan, and a reply
+// that exists, change nothing, and the suite never runs for it.
+func TestARequestLostBetweenTheMoveAndTheServiceIsAnsweredOnce(t *testing.T) {
+	r := newRig(t, execFeature)
+	lost, b := r.request("x", nil)
+	r.takenLost(lost, b)
+	// A taken request that has a reply (a refusal of a stop before this one).
+	answered, bAnswered := r.request("x", nil)
+	r.takenLost(answered, bAnswered)
+	if err := r.o.Host.mailbox.Reply(context.Background(), ownerchannel.Reply{
+		Project: "project-a", RequestID: answered, Code: record.CodeFeatureMoved, Line: "an earlier reply",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The same request with a copy left in the drop folder (a stop between
+	// the link and the remove).
+	both, bBoth := r.request("x", nil)
+	r.takenLost(both, bBoth)
+	r.dropFile(both, bBoth)
+
+	r.restart()
+	before := r.replyOf(answered)
+	if before == "" {
+		t.Fatal("the earlier reply is missing")
+	}
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{lost, both} {
+		rp := r.readReply(id)
+		if rp.Code != string(record.CodeRequestInvalid) || rp.State != "" || rp.PendingID != "" || !strings.Contains(rp.Line, "new request id") {
+			t.Errorf("the reply for %s: %+v", id, rp)
+		}
+	}
+	if r.replyOf(answered) != before {
+		t.Errorf("a reply that existed was written over: %s", r.replyOf(answered))
+	}
+	if _, err := os.Lstat(filepath.Join(r.drop, both+requestSuffix)); err == nil {
+		t.Errorf("the left-over copy is still in the drop folder")
+	}
+	if r.suite.count() != 0 {
+		t.Errorf("the suite ran for a lost request")
+	}
+	if _, ok := r.o.Service.Status(lost); ok {
+		t.Errorf("the service saw the lost request")
+	}
+	// Once: the next Scan writes nothing, and a request taken after the
+	// first Scan and left unanswered is not swept (nothing of this process
+	// is lost that way).
+	first := r.replyOf(lost)
+	late, bLate := r.request("x", nil)
+	r.takenLost(late, bLate)
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.replyOf(lost) != first || r.replyOf(late) != "" {
+		t.Errorf("a later Scan answered: lost %q late %q", r.replyOf(lost), r.replyOf(late))
+	}
+}
+
+// A taken request whose card the door holds is no lost request: after a
+// restart, which forgets the service's statuses, the first scan leaves it to
+// its own outcome, and the owner's decision is still its reply.
+func TestARequestTheDoorHoldsIsNotAnsweredAsLostAfterARestart(t *testing.T) {
+	r := newRig(t, execFeature)
+	p := r.card()
+	var id string
+	for _, e := range func() []string {
+		m, _ := filepath.Glob(filepath.Join(r.drop, collectedDir, "*"+requestSuffix))
+		return m
+	}() {
+		id = strings.TrimSuffix(filepath.Base(e), requestSuffix)
+	}
+	if id == "" {
+		t.Fatal("no taken request")
+	}
+	r.restart()
+	if _, ok := r.o.Service.Status(id); ok {
+		t.Fatal("the restart kept the status")
+	}
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.replyOf(id); got != "" {
+		t.Fatalf("a request the door holds was answered: %s", got)
+	}
+	res, err := r.decide(p, true)
+	if err != nil || res.State != record.StateApplied {
+		t.Fatalf("Decide: %+v, %v", res, err)
+	}
+	if rp := r.readReply(id); rp.State != string(record.StateApplied) {
+		t.Errorf("the reply: %+v", rp)
+	}
+}
+
+// A collector that was not given the service's knowledge, and one whose door
+// cannot be listed, answer nothing: they cannot tell a lost request from one
+// in flight.
+func TestTheSweepAnswersNothingWhenItCannotTellWhatTheServiceKnows(t *testing.T) {
+	r := newRig(t, execFeature)
+	id, b := r.request("x", nil)
+	r.takenLost(id, b)
+	r.o.Collector.known = nil
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.replyOf(id); got != "" {
+		t.Errorf("answered without the service's knowledge: %s", got)
+	}
+	r.o.Collector.known = func(context.Context, string) (bool, error) { return false, errors.New("the door is down") }
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.replyOf(id); got != "" {
+		t.Errorf("answered when the door could not be listed: %s", got)
+	}
+	// The sweep is not spent: the next Scan, with the door back, answers.
+	r.o.Collector.known = func(context.Context, string) (bool, error) { return false, nil }
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if rp := r.readReply(id); rp.Code != string(record.CodeRequestInvalid) {
+		t.Errorf("the reply: %+v", rp)
+	}
+}

@@ -54,10 +54,12 @@ type Scratch struct {
 	// Sandbox is the clean absolute path of the sandbox template file the
 	// suite runs in, the one the intake's verify takes as --sandbox. It
 	// is optional here and needed to run the real suite; it must not be
-	// in the state folder, where a lead could change it. Work is the
+	// in the state folder, which is kept for the host's records and journal
+	// and free of configuration. Work is the
 	// clean absolute path of the private folder the runs work in, which
 	// must not be in the state folder either. Both lie under a scratch
-	// root (the command checks it) and the template is read by each run.
+	// root (the command checks it), the template is in neither the drop
+	// folder, the mirror nor the work folder, and the template is read by each run.
 	Sandbox string `json:"sandbox,omitempty"`
 	Work    string `json:"work,omitempty"`
 	// Door selects the planner's door. Only [DoorStandIn] is accepted: the
@@ -103,6 +105,9 @@ func LoadScratch(path string) (Scratch, error) {
 	if err != nil {
 		return Scratch{}, errors.New("hostadapter: the scratch settings file could not be read")
 	}
+	if err := noRepeatedKey(b); err != nil {
+		return Scratch{}, errors.New("hostadapter: the scratch settings are not valid: a key appears twice in one object")
+	}
 	var s Scratch
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -136,6 +141,57 @@ func LoadScratch(path string) (Scratch, error) {
 	}
 	return s, nil
 }
+
+// noRepeatedKey returns an error when a JSON object of b, at any depth, names
+// one key twice. The decoder of package json keeps the last value of a repeated
+// key without a word, so the text is scanned token by token first. A text that
+// is not JSON is left to the decoder, which refuses it.
+func noRepeatedKey(b []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var value func() error
+	value = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		d, ok := tok.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch d {
+		case '{':
+			seen := map[string]bool{}
+			for dec.More() {
+				k, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := k.(string)
+				if seen[key] {
+					return errRepeatedKey
+				}
+				seen[key] = true
+				if err := value(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for dec.More() {
+				if err := value(); err != nil {
+					return err
+				}
+			}
+		}
+		_, err = dec.Token() // the closing delimiter
+		return err
+	}
+	if err := value(); errors.Is(err, errRepeatedKey) {
+		return err
+	}
+	return nil
+}
+
+var errRepeatedKey = errors.New("a key appears twice in one object")
 
 // VerifySuiteOf is the real suite the settings describe, with the real runner.
 // It refuses settings that name no sandbox template or no work folder, and

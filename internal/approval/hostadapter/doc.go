@@ -38,7 +38,11 @@
 //   - [Collector] is a file-drop collector for the scratch pass: it reads
 //     request files from a folder, refuses a feature name outside the
 //     grammar before anything is built, and gives the rest to the service.
-//     The real spool is out of scope.
+//     A request a stop left taken but never handled (in the collected
+//     folder, with no reply, unknown to the service and to the door) is
+//     answered request-invalid once by the first scan after the start, never
+//     over a reply that exists and never resubmitted. The real spool is out
+//     of scope.
 //
 // # What it does not do
 //

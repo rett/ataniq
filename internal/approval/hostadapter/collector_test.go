@@ -90,6 +90,12 @@ func TestTheCollectorRefusesAFeatureNameOutsideTheGrammar(t *testing.T) {
 // each with its own code, and none reaches the service.
 func TestTheCollectorAnswersABadRequestFileWithAReplyFile(t *testing.T) {
 	r := newRig(t, execFeature)
+	// The first Scan of a collector answers a request a stop left taken and
+	// unhandled, so one scan comes first: the taken request below is the one
+	// of a collector that went on.
+	if _, err := r.o.Collector.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	write := func(name string, b []byte) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(r.drop, name), b, 0o600); err != nil {
