@@ -160,6 +160,12 @@ func (v view) Ended() bool                { return v.v.Ended() }
 // Pending asks the session at each call; it is never remembered.
 func (v view) Pending() bool { return v.v.Pending() }
 
+// SnapshotOf is the conversion the View's Snapshot makes, for a reader outside
+// a fence: the holder's screen recorder takes the pane's text snapshot the way
+// the fence does (sessionpane.Pane.TextSnapshot) and converts it here, so that
+// what it records is the screen.Snapshot the library reads.
+func SnapshotOf(ts sessionpane.TextSnapshot) screen.Snapshot { return snapshotOf(ts) }
+
 // snapshotOf converts the pane's text snapshot to the library's, field by
 // field. The faint spans are offsets in the text of their row in both, so
 // they are copied as they are; no span gives a nil list.

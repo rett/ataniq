@@ -29,6 +29,8 @@
 //     set is the control server's deliverer; this package does not import the
 //     server.
 //   - [Counts] reads the tracker's totals for the holder's counters.
+//   - [SnapshotOf] is the View's conversion of the pane's text snapshot, for
+//     the holder's screen recorder, which reads the screen outside a fence.
 //
 // The package starts nothing and keeps no state beyond the tracker it is
 // given.
