@@ -1481,3 +1481,69 @@ func TestDecodeLeadJSONIsStrict(t *testing.T) {
 		}
 	}
 }
+
+// A start whose answer was lost twice keeps its id, and a stop in between
+// leaves the list nothing to clear it with. The next press of start replays
+// the old id and gets the old done receipt: it must say that it answers an
+// earlier command, and the press after it is a new command.
+func TestAFinalReceiptOfAKeptIdSaysItIsEarlier(t *testing.T) {
+	d := startLeadDaemon(t)
+	l := newLeadsWith(t, d.dir, 200*time.Millisecond)
+
+	// A first press that is answered is never earlier.
+	fresh, err := l.Ticket(testRole, 0, false)
+	if err != nil || fresh.Status != LeadDone || fresh.Earlier {
+		t.Fatalf("a first answer: %+v %v", fresh, err)
+	}
+
+	// The daemon carries the start out and cannot answer, twice.
+	gate := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(free)
+	d.on(leadwire.OpStart, func(params json.RawMessage) (any, *clientapi.ErrorBody) {
+		_, _ = d.handle(leadwire.OpStart, params)
+		<-gate
+		return nil, &clientapi.ErrorBody{Code: "internal", Message: "late"}
+	})
+	if _, err := l.Start(testRole); !errors.Is(err, ErrAnswerLost) {
+		t.Fatalf("Start: %v", err)
+	}
+	ids := d.ids(leadwire.OpStart)
+	if len(ids) != 2 || ids[0] != ids[1] || l.pendingCount() != 1 {
+		t.Fatalf("ids = %v, pending %d", ids, l.pendingCount())
+	}
+	free()
+	d.on(leadwire.OpStart, func(params json.RawMessage) (any, *clientapi.ErrorBody) { return d.handle(leadwire.OpStart, params) })
+
+	// The owner stops the lead: the stop is its last command now, so a list
+	// does not show the start's id and the client keeps it.
+	stop, err := l.Stop(testRole, 0)
+	if err != nil || stop.Status != LeadDone || stop.Earlier {
+		t.Fatalf("Stop: %+v %v", stop, err)
+	}
+	d.setList(leadwire.ListResult{MaxRunning: 2, Leads: []leadwire.Lead{{
+		Key: "alpha", Role: testRole, Provision: "done", State: "stopped",
+		Last: &leadwire.Receipt{CommandID: stop.CommandID, Op: leadwire.OpStop, Role: testRole, Status: leadwire.StatusDone, AdmittedAt: testTime},
+	}}})
+	if _, err := l.List(); err != nil || l.pendingCount() != 1 {
+		t.Fatalf("List: %v, pending %d", err, l.pendingCount())
+	}
+
+	// The next press of start gets the old receipt, and says so.
+	old, err := l.Start(testRole)
+	if err != nil || old.Status != LeadDone || old.CommandID != ids[0] || !old.Earlier {
+		t.Fatalf("the press after the stop: %+v %v; want the earlier done receipt of %s", old, err, ids[0])
+	}
+	if d.ran(leadwire.OpStart) != 1 || l.pendingCount() != 0 {
+		t.Fatalf("ran %d starts, pending %d", d.ran(leadwire.OpStart), l.pendingCount())
+	}
+	// The press after that is a new command, answered as itself.
+	next, err := l.Start(testRole)
+	if err != nil || next.Status != LeadDone || next.CommandID == ids[0] || next.Earlier {
+		t.Fatalf("the next press: %+v %v", next, err)
+	}
+	if d.ran(leadwire.OpStart) != 2 {
+		t.Fatalf("ran %d starts", d.ran(leadwire.OpStart))
+	}
+}

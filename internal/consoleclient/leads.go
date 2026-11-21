@@ -126,6 +126,14 @@ type LeadReceipt struct {
 	Outcome string
 	// Folder and TicketFile are the result of a done ticket.
 	Folder, TicketFile string
+	// Earlier says that this final receipt answers a command that an earlier
+	// call of this client sent and kept (its answer was lost, or it had none
+	// that was final), not the call that returned it. The command is not run
+	// again, and the receipt may be old: a view must not show it as the
+	// outcome of the press that returned it. The id is forgotten with the
+	// receipt, so the next press is a new command. It is false in every other
+	// receipt, and in the summary of a lead's last command.
+	Earlier bool
 }
 
 // LeadRow is one lead of a [LeadListing]. Role is exactly as the daemon sent
@@ -207,7 +215,9 @@ type leadKey struct {
 //     before (nothing, or in-progress), so the daemon runs the command at
 //     most once. A final receipt (done, refused, unavailable or uncertain)
 //     forgets the id; so does a list that shows the id as the last command
-//     of a lead with a final status. An answer that is lost is asked for by
+//     of a lead with a final status. A final receipt of an id that an
+//     earlier call kept has [LeadReceipt.Earlier] set: it answers that
+//     call's command, which may be long past. An answer that is lost is asked for by
 //     repeating the same id and arguments once on a new connection, before
 //     anything else; if that is lost too the call returns [ErrAnswerLost]
 //     and the id is kept. A new id is never sent for a command that has no
@@ -497,23 +507,24 @@ func (l *Leads) Send(role string, epoch uint64, messageID, body string) (LeadRec
 }
 
 // claim returns the id of the command k: the kept one when the same command
-// was sent and has no final receipt, and a new one, kept now, otherwise.
-func (l *Leads) claim(k leadKey) (string, error) {
+// was sent and has no final receipt, and a new one, kept now, otherwise. kept
+// says that the id was kept from an earlier call.
+func (l *Leads) claim(k leadKey) (id string, kept bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if id, ok := l.pending[k]; ok {
-		return id, nil
+		return id, true, nil
 	}
 	if len(l.pending) >= MaxPendingCommands {
-		return "", ErrTooManyPending
+		return "", false, ErrTooManyPending
 	}
 	var b [16]byte
 	if _, err := io.ReadFull(l.random, b[:]); err != nil {
-		return "", ErrNoCommandID
+		return "", false, ErrNoCommandID
 	}
-	id := hex.EncodeToString(b[:])
+	id = hex.EncodeToString(b[:])
 	l.pending[k] = id
-	return id, nil
+	return id, false, nil
 }
 
 // release forgets the id of the command k, when it is still the one kept.
@@ -553,7 +564,7 @@ func (l *Leads) command(k leadKey, mk func(id string) any) (LeadReceipt, error) 
 	if err != nil {
 		return LeadReceipt{}, err
 	}
-	id, err := l.claim(k)
+	id, kept, err := l.claim(k)
 	if err != nil {
 		return LeadReceipt{}, err
 	}
@@ -588,7 +599,7 @@ func (l *Leads) command(k leadKey, mk func(id string) any) (LeadReceipt, error) 
 			return LeadReceipt{}, ErrAnswerLost
 		}
 	}
-	return l.settle(c, k, id, raw)
+	return l.settle(c, k, id, kept, raw)
 }
 
 // refusal maps an error response to a command. Only before admission does
@@ -619,8 +630,10 @@ func (l *Leads) refusal(c *clientapi.Client, k leadKey, id string, e *clientapi.
 }
 
 // settle checks the receipt of a command that was answered, forgets the
-// command's id when the receipt is final, and builds the caller's value.
-func (l *Leads) settle(c *clientapi.Client, k leadKey, id string, raw json.RawMessage) (LeadReceipt, error) {
+// command's id when the receipt is final, and builds the caller's value. kept
+// says that the id was kept from an earlier call, so a final receipt is the
+// answer to that call's command.
+func (l *Leads) settle(c *clientapi.Client, k leadKey, id string, kept bool, raw json.RawMessage) (LeadReceipt, error) {
 	bad := func() (LeadReceipt, error) {
 		l.drop(c)
 		return LeadReceipt{}, &Unavailable{State: StateBadAnswer}
@@ -641,6 +654,7 @@ func (l *Leads) settle(c *clientapi.Client, k leadKey, id string, raw json.RawMe
 	}
 	if r.Status.Final() {
 		l.release(k, id)
+		out.Earlier = kept
 	}
 	if r.Status == leadwire.StatusDone && !fillResult(&out, k, r.Result) {
 		return bad()

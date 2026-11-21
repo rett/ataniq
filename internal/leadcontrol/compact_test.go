@@ -237,3 +237,36 @@ func TestAFailedCompactionLeavesTheTableAsItWas(t *testing.T) {
 	}
 	openAt(t, path, Options{MaxReceipts: 2})
 }
+
+// The file holds a tombstone that the running table has since forgotten. The
+// key must not be admitted: an admit line after its tombstone is a file that
+// Open refuses as corrupt.
+func TestAKeyWhoseTombstoneIsOnlyInTheFileIsNotWrittenAfterIt(t *testing.T) {
+	path := tablePath(t)
+	o := Options{MaxReceipts: 1, MaxTombstones: 1}
+	fill(t, path, o, 2) // c0 is dropped in memory only
+	tb := openAt(t, path, o)
+	// Open compacted the file: the tombstone of c0, then c1.
+	if got := kinds(fileLines(t, path)); got["tombstone"] != 1 || got["admit"] != 1 {
+		t.Fatalf("file = %v", got)
+	}
+	// c2 evicts c1: its tombstone pushes the tombstone of c0 out of memory.
+	admitFresh(t, tb, bind(t, "c2"))
+	finish(t, tb, "c2", StatusDone)
+	if _, _, err := tb.Admit(bind(t, "c1")); !errors.Is(err, ErrExpired) {
+		t.Fatalf("c1 (tombstone in memory): %v, want ErrExpired", err)
+	}
+	// c0's tombstone is only in the file now.
+	before, _ := os.ReadFile(path)
+	if _, _, err := tb.Admit(bind(t, "c0")); !errors.Is(err, ErrExpired) {
+		t.Fatalf("c0 (tombstone only in the file): %v, want ErrExpired", err)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("a refused Admit wrote to the file:\n%q\n%q", before, after)
+	}
+	if err := tb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Whatever the table wrote, its own Open takes it.
+	openAt(t, path, o)
+}

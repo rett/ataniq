@@ -392,8 +392,9 @@ func TestAWriteFailureClosesTheTableForGood(t *testing.T) {
 	if _, err := tb.Finish("ok", StatusDone, "", "", nil); !errors.Is(err, ErrBroken) {
 		t.Fatalf("Finish after the failure: %v, want ErrBroken", err)
 	}
-	if _, _, err := tb.Admit(bind(t, "ok")); !errors.Is(err, ErrBroken) {
-		t.Fatalf("a replay after the failure: %v, want ErrBroken", err)
+	// A replay of a key the table holds is answered with its receipt.
+	if r, fresh, err := tb.Admit(bind(t, "ok")); err != nil || fresh || r.Status != StatusInProgress {
+		t.Fatalf("a replay after the failure: %+v, %v, %v; want the receipt in progress", r, fresh, err)
 	}
 	_ = tb.Close()
 
@@ -444,5 +445,41 @@ func TestNegativeBoundsAreRefused(t *testing.T) {
 		if _, err := Open(tablePath(t), o); !errors.Is(err, ErrInvalid) {
 			t.Errorf("Open(%+v): %v, want ErrInvalid", o, err)
 		}
+	}
+}
+
+// A command that was admitted and whose finish could not be written keeps its
+// receipt: a replay is answered with it, not with "nothing was admitted".
+func TestReplayOfAnAdmittedCommandOnABrokenTable(t *testing.T) {
+	path := tablePath(t)
+	tb := openAt(t, path, Options{})
+	b := bind(t, "k1")
+	admitFresh(t, tb, b)
+	tb.write = func([]byte) (int, error) { return 0, errors.New("disk full") }
+	if _, err := tb.Finish("k1", StatusDone, "", "", nil); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Finish: %v, want ErrBroken", err)
+	}
+	r, fresh, err := tb.Admit(b)
+	if err != nil || fresh || r.Status != StatusInProgress || r.CommandID != "k1" {
+		t.Fatalf("replay: %+v, fresh %v, err %v; want the receipt in progress", r, fresh, err)
+	}
+	// The same key with another payload is still a conflict.
+	other := b
+	other.Digest = digestOf("another payload")
+	if _, _, err := tb.Admit(other); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed payload: %v, want ErrConflict", err)
+	}
+	// Nothing new is admitted, and the command stays open for no one: a finish
+	// fails too.
+	if _, _, err := tb.Admit(bind(t, "k2")); !errors.Is(err, ErrBroken) {
+		t.Fatalf("a new key: %v, want ErrBroken", err)
+	}
+	if _, err := tb.Finish("k1", StatusDone, "", "", nil); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Finish again: %v, want ErrBroken", err)
+	}
+	// A closed table answers nothing.
+	_ = tb.Close()
+	if _, _, err := tb.Admit(b); !errors.Is(err, ErrClosed) {
+		t.Fatalf("closed: %v, want ErrClosed", err)
 	}
 }

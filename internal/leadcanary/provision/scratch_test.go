@@ -689,3 +689,26 @@ func equalLists(a, b []string) bool {
 	}
 	return true
 }
+
+// The record's name is what makes a lead provisioned, so the folder that holds
+// the record is synced after the record is written, not only the record itself.
+func TestProvisionScratchSyncsTheFolderOfTheRecord(t *testing.T) {
+	w := provisiontest.NewScratch(t)
+	cfg := w.Leads(t)[0]
+	p, err := PathsOf(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var synced []string
+	var recordThere []bool
+	opts := Options{Getenv: w.Getenv(), afterFolderSync: func(folder string) {
+		synced = append(synced, folder)
+		recordThere = append(recordThere, exists(p.LeadRecord))
+	}}
+	if _, err := ProvisionScratch(context.Background(), cfg, w.Config.Sandbox, opts); err != nil {
+		t.Fatalf("ProvisionScratch: %v", err)
+	}
+	if len(synced) != 1 || synced[0] != p.ScratchDir || !recordThere[0] {
+		t.Fatalf("folders synced after the record: %q (record there: %v); want just %s, with the record written", synced, recordThere, p.ScratchDir)
+	}
+}

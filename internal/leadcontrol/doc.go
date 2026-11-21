@@ -37,7 +37,9 @@
 // client and id, and a replay of a tombstoned key is [ErrExpired]: a dropped
 // command is never run again. At most MaxTombstones tombstones are kept, the
 // newest; a key older than that looks new, which is the residual risk named in
-// the design. While MaxReceipts receipts are all not final, a new key is
+// the design. A tombstone that the file holds is kept in memory for the run of
+// the process, so a key is never admitted after its tombstone in the file,
+// which Open would refuse as corrupt. While MaxReceipts receipts are all not final, a new key is
 // refused with [ErrFull] and nothing is admitted.
 //
 // A command id that belongs to a receipt that is not final may not be used by
@@ -49,8 +51,10 @@
 // between two runs is not damage.
 //
 // A failed write or sync of the file closes the table for good ([ErrBroken]):
-// what reached the disk is unknown, so no later line may follow it. The next
-// Open replays whatever is there.
+// what reached the disk is unknown, so no later line may follow it. The table
+// still answers a replay of a key it holds with the receipt it holds (in
+// progress when the finish could not be written), and refuses everything else.
+// The next Open replays whatever is there.
 //
 // The client string is a namespace, not an identity: the client API gives the
 // daemon no peer identity beyond the user's own, so nothing here authenticates

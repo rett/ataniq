@@ -35,6 +35,10 @@ type Options struct {
 	// Log receives one line for each folder or file made or kept, and for
 	// the clone and the marker. It never receives the content of a file.
 	Log func(string)
+
+	// afterFolderSync is a test seam: it is called with the absolute path of a
+	// folder after provisioning synced it.
+	afterFolderSync func(folder string)
 }
 
 func (o Options) getenv() func(string) string {

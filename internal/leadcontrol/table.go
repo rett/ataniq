@@ -199,10 +199,15 @@ type Table struct {
 	tombs         map[[sha256.Size]byte]struct{}
 	tombOrder     [][sha256.Size]byte // oldest first
 	trimmed       bool                // a tombstone was forgotten
-	write         func([]byte) (int, error)
-	sync          func() error
-	closed        bool
-	broken        error
+	// fileTombs holds the tombstones that the file has since Open. Only Open
+	// writes tombstones, so the set never grows, and it keeps a key that the
+	// running table has forgotten from being admitted after its tombstone, which
+	// the next Open would refuse as corrupt.
+	fileTombs map[[sha256.Size]byte]struct{}
+	write     func([]byte) (int, error)
+	sync      func() error
+	closed    bool
+	broken    error
 }
 
 // Open opens the table at path, creating the file with mode 0600 when it is
@@ -247,33 +252,52 @@ func Open(path string, o Options) (*Table, error) {
 		return nil, err
 	}
 	t.write, t.sync = t.f.Write, t.f.Sync
+	t.fileTombs = make(map[[sha256.Size]byte]struct{}, len(t.tombs))
+	for h := range t.tombs {
+		t.fileTombs[h] = struct{}{}
+	}
 	return t, nil
 }
 
 // Admit binds the command to its key and makes the binding durable before it
 // returns. For a key that is held with the same operation, role and digest it
 // returns the stored receipt and false, and the command must not run again,
-// whatever the status. For a new key it returns a receipt in progress and true,
-// and the caller may act. A key held with anything else is [ErrConflict], a
-// dropped key is [ErrExpired], and a table whose every slot is open is
-// [ErrFull]; none of them admits anything.
+// whatever the status, also on a table that can no longer be written
+// ([ErrBroken]): a command that was admitted keeps its receipt, in progress
+// when its finish could not be written. For a new key it returns a receipt in
+// progress and true, and the caller may act. A key held with anything else is
+// [ErrConflict], a dropped key is [ErrExpired], and a table whose every slot is
+// open is [ErrFull]; none of them admits anything.
 func (t *Table) Admit(b Binding) (r Receipt, fresh bool, err error) {
 	if err := b.validate(); err != nil {
 		return Receipt{}, false, err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if err := t.usable(); err != nil {
-		return Receipt{}, false, err
+	if t.closed {
+		return Receipt{}, false, ErrClosed
 	}
 	k := key{b.Client, b.ID}
 	if e, ok := t.receipts[k]; ok {
+		// A held key is answered even when the table cannot be written: the
+		// receipt is what the table knows, and a client that asks again must not
+		// be told that nothing was admitted.
 		if e.rec.Op != b.Op || e.role != b.Role || e.digest != b.Digest {
 			return Receipt{}, false, ErrConflict
 		}
 		return e.rec.clone(), false, nil
 	}
-	if _, ok := t.tombs[k.hash()]; ok {
+	if t.broken != nil {
+		// Nothing new is admitted.
+		return Receipt{}, false, t.broken
+	}
+	h := k.hash()
+	if _, ok := t.tombs[h]; ok {
+		return Receipt{}, false, ErrExpired
+	}
+	if _, ok := t.fileTombs[h]; ok {
+		// The running table forgot this tombstone, the file still has it: an
+		// admit line after it would make the next Open fail.
 		return Receipt{}, false, ErrExpired
 	}
 	if _, ok := t.open[b.ID]; ok {
