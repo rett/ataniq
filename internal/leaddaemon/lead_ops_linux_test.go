@@ -980,7 +980,10 @@ func TestLeadDefineAndStartTogether(t *testing.T) {
 	for _, r := range got {
 		switch {
 		case r.Status == leadwire.StatusDone,
-			r.Status == leadwire.StatusRefused && (r.Code == "role-busy" || r.Code == codeRoleNotDefined):
+			// A start that comes after another start of the role has finished is
+			// refused by the registry, which admits a launch from desired,
+			// stopped and ended only.
+			r.Status == leadwire.StatusRefused && (r.Code == "role-busy" || r.Code == codeRoleNotDefined || r.Code == codeLaunchRefused):
 		default:
 			t.Errorf("%s: %s %s %s", r.Op, r.Status, r.Code, r.Message)
 		}
