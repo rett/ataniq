@@ -165,6 +165,11 @@ func Integrate(ctx context.Context, src Source, req IntegrateRequest) (IntakeRec
 			return IntakeRecord{}, fmt.Errorf("%w: the sign-off is for tip %s; the target is now at %s and %s at %s, which does not contain it: %w",
 				ErrMoved, req.SignOff.Tip, nf.Base, leadtext.Escape(req.Review.TipRef), nf.Tip, err)
 		}
+		var mb *MergeBaseError
+		if errors.As(err, &mb) {
+			return IntakeRecord{}, fmt.Errorf("%w: the sign-off is for tip %s, a merge onto %s; the target is now at %s: %w",
+				ErrMoved, req.SignOff.Tip, mb.Parent, mb.Base, err)
+		}
 		return IntakeRecord{}, err
 	}
 	if rev.Base == rev.Tip {

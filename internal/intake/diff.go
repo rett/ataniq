@@ -32,6 +32,13 @@ func Diff(ctx context.Context, src Source, r *Review, w io.Writer, lim Limits) e
 	if err != nil {
 		return err
 	}
+	if r.Merge {
+		// A review made in merge mode is of a host-built merge, and the
+		// repository's attribute file is checked before its patch is read.
+		if err := checkAttributes(src); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(w, "ataniq intake diff base=%s tip=%s\n", r.Base, r.Tip); err != nil {
 		return err
 	}

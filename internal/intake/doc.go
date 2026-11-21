@@ -54,7 +54,7 @@
 //
 // This package does not import the mirror package. It takes a repository and
 // full ref names, and checks only that the base ref is under refs/heads/ and
-// the tip ref under refs/leads/.
+// the tip ref under refs/leads/ (under [PendingPrefix] in merge mode).
 //
 // # Text from the lead
 //
@@ -171,6 +171,54 @@
 // run it, because the mirror is read-only in its sandbox and the records
 // folder is not mounted there; that is a property of the sandbox plan and of
 // the command that calls this package, not something this package checks.
+//
+// # Merge mode
+//
+// A lead never supplies a merge. When a feature is to be finished, the host
+// builds the merge of the feature into the target itself (package mergebuild,
+// which this package does not import) and pins it under [PendingPrefix]. A
+// [Request] with Merge set reviews that merge: BaseRef is the target branch,
+// whose tip is the base, and TipRef is the pin. Everything above holds, with
+// "tip" meaning the merge. In addition:
+//
+//   - The tip must be a commit of exactly two parents whose first is the base
+//     ([ErrNotMerge] otherwise; a first parent that is not the target's tip is
+//     a *[MergeBaseError], and [Integrate] reports it as [ErrMoved], since the
+//     target moved after the merge was built).
+//   - The review is of base..merge, so it holds the feature's commits and the
+//     merge, and the net change is what the merge brings in, never the
+//     target's own earlier changes.
+//   - The repository's "info/attributes" is checked ([gitenv.CheckInfoAttributes],
+//     [ErrAttributes]) before each pinned diff: by Inspect, [Diff] of a merge
+//     review and [Summarize]. Lead mode does not run it, as before.
+//   - A path that is odd gets the flag [FlagOddPath].
+//   - [Integrate] moves the target from the base to the merge, with the same
+//     compare-and-swap, and nothing else: the pin stays (the host removes it),
+//     and the lead's branches, tags and HEAD are not touched.
+//
+// The lead mode is unchanged: a [Request] without Merge takes a tip under
+// refs/leads/ only, and a pin is refused there as a ref name.
+//
+// # The summary
+//
+// [Summarize] gives the fuller account that the owner's card shows, from the
+// ids of a review: the number of changed paths, the lines added and removed,
+// the bytes of new content, a row for each path, and the lists of binary
+// files, symbolic links, mode changes, submodules and odd paths. A path is
+// binary by content, not by git's heuristic or an attribute: a NUL byte
+// anywhere in either side, or a side over [TextCap] (1 MiB). A binary path has
+// its sizes and no line counts. The lines of every other path come from git
+// diff --numstat with renames off, so a rename is a deletion and an addition,
+// both counted. [Summary] is raw lead text in its paths.
+//
+// # Odd paths
+//
+// [OddPath] says why the execution-config matcher cannot be trusted with a
+// path: bytes that are not UTF-8, a control or invisible character, a colon, a
+// "~" and a digit, or a form that is not NFC. The module carries no
+// normalization tables, so the NFC test is a superset (it also flags a path
+// with a combining mark that is in form C). Merge mode flags such a path
+// [FlagOddPath], so it needs its own sign-off whatever the matcher says of it.
 //
 // # What it does not do
 //
