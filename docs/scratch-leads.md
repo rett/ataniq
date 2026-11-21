@@ -771,10 +771,12 @@ What the timer does not do:
 The console's leads view does not read the list by a timer for a lead that is
 `unknown`: press `r` after the 40 s to see the settled lead. The row's line, the
 refusal of a stop (`intent-pending`) and the refusal for the limit of running
-leads (while an unknown lead is listed) say that the launch settles by itself 40
-s after the start and that a restart of the daemon is what is left if the lead
-is still `unknown` after that. The console does not know when the window ends,
-so it names no time but the 40 s.
+leads (while a lead is listed that the timer is for) say that the launch
+settles by itself 40 s after the start and that a restart of the daemon is what
+is left if the lead is still `unknown` after that. The console does not know
+when the window ends, so it names no time but the 40 s. For a listed lead that
+is `unknown` for another reason (the daemon has no timer for it) the refusal for
+the limit only says that the lead holds a slot until it is settled.
 
 A lead that is still `unknown` after that, because its unit is loaded or the
 manager never answered, is settled by `lead.stop` (a unit of ours that is loaded

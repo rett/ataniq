@@ -413,11 +413,16 @@ after that, stopping the lead (the way out when the launch's own unit was
 adopted, which leaves the lead `unknown`) or a restart of the daemon is what is
 left. The same words answer a `lead.stop` that is refused with `intent-pending`
 (and a `lead.start` with that code): reading the list does not settle a launch,
-so the line does not tell the owner to read it. While such a lead is listed, a
-start refused because the limit of running leads is reached adds that the
-unknown lead holds a slot until its launch settles by itself, 40 s after the
-start, and that if it is still unknown after that the lead is stopped or the
-daemon restarted. The view does not read the list by a timer for an `unknown`
+so the line does not tell the owner to read it. While such a lead is listed (or one
+that is `unknown` with the reason `control-group-not-proven-empty`, which the
+daemon's timer tries again), a start refused because the limit of running leads
+is reached adds that the unknown lead holds a slot until its launch settles by
+itself, 40 s after the start, and that if it is still unknown after that the
+lead is stopped or the daemon restarted. When a listed lead is `unknown` for any
+other reason (a unit that is not the lead's own, a registry that was recovered,
+a reboot, or none given), the daemon has no timer for it and the refusal adds
+only that the unknown lead holds a slot until it is settled and that the lead is
+stopped or the daemon restarted. The view does not read the list by a timer for an `unknown`
 lead, so the settled lead shows at the next reading (`r`).
 See [a lead left unknown after a killed
 daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).

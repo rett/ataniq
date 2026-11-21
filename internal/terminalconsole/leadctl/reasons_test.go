@@ -454,6 +454,37 @@ func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
 	r.key("s")
 	r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot",
 		"until its launch settles by itself, 40 s after the start; if it is still unknown after that, stop the lead or restart")
+	// A lead unknown for a reason the daemon has a timer for says the same
+	// (a control group that was not proven empty is tried again by the timer).
+	for _, reason := range []string{"launch-reply-lost", "control-group-not-proven-empty"} {
+		b = twoLeads(t)
+		b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", reason
+		b.answer = refuse
+		r = newRig(t, b, 220, 30)
+		r.key("s")
+		r.seen("until its launch settles by itself, 40 s after the start")
+	}
+	// A lead unknown for any other reason, or none given, has no timer: the
+	// refusal makes no promise of a self-settle, and says what is left.
+	for _, reason := range []string{"registry-recovered", "competing-unit", "foreign-unit", "stale-unit", "host-rebooted", ""} {
+		b = twoLeads(t)
+		b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", reason
+		b.answer = refuse
+		r = newRig(t, b, 220, 30)
+		r.key("s")
+		r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot until it is settled; stop the lead or restart")
+		r.notSeen("by itself", "40 s")
+	}
+	// One that settles by itself beside one that does not: no promise.
+	b = twoLeads(t)
+	b.listing.Leads[0].State, b.listing.Leads[0].StateReason = "unknown", "launch-unsettled"
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "competing-unit"
+	b.answer = refuse
+	r = newRig(t, b, 220, 30)
+	r.key("j")
+	r.key("s")
+	r.seen("holds a slot until it is settled")
+	r.notSeen("by itself")
 	// Without one the refusal is the plain line.
 	b = twoLeads(t)
 	b.answer = refuse
@@ -519,6 +550,9 @@ func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
 		if len(w) > 80 {
 			t.Errorf("%s: %d bytes", name, len(w))
 		}
+	}
+	if len(maxRunningPlainTail) > 100 || strings.Contains(maxRunningPlainTail, "by itself") {
+		t.Errorf("the plain tail: %q", maxRunningPlainTail)
 	}
 	if len(maxRunningUnknownTail) > 155 {
 		t.Errorf("the tail is %d bytes", len(maxRunningUnknownTail))
