@@ -547,6 +547,14 @@ func (m *leadMode) start(ctx context.Context, lr *leadRole) outcome {
 		defer m.release(lr)
 		e, err := m.ctl.Start(ctx, lr.role)
 		if err != nil {
+			if errors.Is(err, leadlifecycle.ErrStartFailed) && e.Shown.State == leadregistry.StateUnknown {
+				// The lifecycle could not prove the unit gone after the failed
+				// launch (it could not inspect it, found it loaded, or the name
+				// is held), so it left the role unknown. "Nothing was started"
+				// would be a claim of what is not known.
+				m.d.logf("scratch start %q: %s", lr.key, SafeText(err.Error()))
+				return uncertainOut(codeLaunchUncertain, msgLaunchUncertain)
+			}
 			return m.startFailure(lr, err)
 		}
 		unit := ""

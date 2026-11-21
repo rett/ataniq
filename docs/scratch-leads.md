@@ -264,7 +264,11 @@ What each does:
 - **`lead.start`** starts the lead's unit through the lifecycle, after the check
   that the lead's folders exist and are private and the `max_running` check. It
   refuses a lead that has no holder command, which is a lead whose define has not
-  finished (`not-provisioned`).
+  finished (`not-provisioned`). A start that failed is `unavailable`
+  (`start-failed`, "nothing was started") only when the lifecycle proved the
+  unit absent afterwards; when it could not (the unit could not be inspected,
+  one is loaded, or the manager says the name is taken) the lead is shown
+  `unknown` and the start is `uncertain` (`launch-uncertain`).
 - **`lead.stop`** is the owner's way out of every state, `unknown` included: it
   signals the role's own units. With an `epoch` that is not the registry's it is
   refused `stale-epoch`, so a stop meant for one epoch never stops the next. It

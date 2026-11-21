@@ -451,6 +451,43 @@ func TestLeadUnknownCountsAndStopReachesTheLifecycle(t *testing.T) {
 	}
 }
 
+// A start that failed and left the role unknown (the manager refused it because
+// the unit name is taken, and the lifecycle could not prove nothing was
+// started) is uncertain, with the text that says the role is shown unknown, and
+// not unavailable with the text "nothing was started". A start that failed and
+// whose absence the lifecycle proved stays unavailable/start-failed.
+func TestLeadStartFailedLeavingUnknownIsUncertain(t *testing.T) {
+	l := newLeadEnv(t)
+	l.start()
+	want(t, l.define("alpha"), leadwire.StatusDone, "")
+	l.holder("alpha", submitted)
+
+	l.gate.setHook(func(ctx context.Context, spec leadunit.Spec) (leadunit.State, error, bool) {
+		return leadunit.State{}, leadunit.ErrUnitExists, true
+	})
+	r := l.startLead("alpha")
+	want(t, r, leadwire.StatusUncertain, codeLaunchUncertain)
+	if r.Message != msgLaunchUncertain {
+		t.Fatalf("the text: %q", r.Message)
+	}
+	if row := l.row("alpha"); row.State != "unknown" {
+		t.Fatalf("the row: %+v", row)
+	}
+
+	// A refused launch whose absence is proven is still unavailable, and the
+	// lead is stopped again.
+	l.gate.setHook(nil)
+	want(t, l.stopLead("alpha", 0), leadwire.StatusDone, "")
+	l.gate.setHook(func(ctx context.Context, spec leadunit.Spec) (leadunit.State, error, bool) {
+		return leadunit.State{}, errors.New("the manager refused"), true
+	})
+	f := l.startLead("alpha")
+	want(t, f, leadwire.StatusUnavailable, codeStartFailed)
+	if row := l.row("alpha"); row.State != "stopped" {
+		t.Fatalf("the row after a proven failed start: %+v", row)
+	}
+}
+
 // The cap counts every lead whose shown state is not desired, stopped or ended,
 // so a lead that is stopping and one that is unknown both hold a place, and a
 // lead with a pending intent or a start in flight does too. A start is reserved
