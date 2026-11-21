@@ -141,7 +141,7 @@ type ServePlan struct {
 	// env -i.
 	UploadPack []string
 	// Repository is the path of the lead's clone as the serving half
-	// sees it, inside the sandbox.
+	// sees it, inside the sandbox. It holds no "@[" (see Validate).
 	Repository string
 	// Measure prints the size of the clone's object store: the first
 	// whitespace-delimited token of the first output line is a decimal
@@ -157,6 +157,12 @@ func (p ServePlan) Validate() error {
 	}
 	if err := validPath(p.Repository); err != nil {
 		return fmt.Errorf("repository: %w", err)
+	}
+	if strings.Contains(p.Repository, "@[") {
+		// The fetch gives the owner's git this path as a "file://" URL, and
+		// git cuts "[...]" after "@[" out of the path of such a URL, however
+		// it is written, so the sandbox would be asked for another path.
+		return errors.New(`repository: path holds "@[", which git changes in the URL of a fetch`)
 	}
 	if err := p.Measure.Validate(); err != nil {
 		return fmt.Errorf("measure: %w", err)

@@ -2,6 +2,8 @@ package leadmirror
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"sort"
 
@@ -131,13 +133,18 @@ func (r *runner) caseFetch(ctx context.Context) error {
 	if c.insideOK {
 		inside = c.inside
 	}
-	cs.fact("clone", "What the harness planted in the lead's clone, and how the serving half sees the clone's path.", map[string]any{
+	onHost := "unknown: the planner gave no serve plan"
+	if c.insideOK {
+		onHost = pathOnHost(c.inside, c.tree)
+	}
+	cs.fact("clone", "What the harness planted in the lead's clone, how the serving half sees the clone's path, and whether that path exists on the host (the fetch names the path to git as a file:// URL, which git never reads as a bundle, and refuses a path that exists as a second layer).", map[string]any{
 		"hook_names":           hookNames,
 		"hook_folders":         []string{".git/hooks", ".git/" + leadHooksFolder},
 		"config_keys":          []string{"core.fsmonitor", "core.hooksPath", "uploadpack.packObjectsHook", "core.alternateRefsCommand"},
 		"lead_branches":        []string{"main (not the upstream commit)", "feature"},
 		"lead_tags":            []string{"lead-only", upstreamTag + " (not the upstream tag's object)"},
 		"repository_inside":    inside,
+		"repository_on_host":   onHost,
 		"canary_names_planted": len(planted),
 	})
 
@@ -198,4 +205,33 @@ func (r *runner) controlFacts(ctx context.Context, c *caseEnv, planted []string)
 		return nil, err
 	}
 	return merge(errorFacts(serr), cf), nil
+}
+
+// pathOnHost says what the host has at the template's repository path, as the
+// fetch's own check sees it (the entry itself, no symlink followed at the last
+// name): "absent", "the clone's own path", or what exists there.
+func pathOnHost(path, tree string) string {
+	if path == tree {
+		return "the clone's own path"
+	}
+	fi, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		switch m := fi.Mode(); {
+		case m.IsRegular():
+			return "exists: a regular file"
+		case m&fs.ModeSymlink != 0:
+			return "exists: a symbolic link"
+		case m.IsDir():
+			return "exists: a folder"
+		}
+		return "exists: a file of another kind"
+	case errors.Is(err, fs.ErrNotExist):
+		return "absent"
+	}
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return "cannot be checked: " + err.Error()
 }

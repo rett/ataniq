@@ -128,6 +128,10 @@ func TestFetchRefusesWithoutAUsableTemplate(t *testing.T) {
 	if err := os.WriteFile(junk, []byte(`{"version":1,"serve":{"upload_pack":["relative"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	atBracket := filepath.Join(w.other, "at-bracket.json")
+	if err := os.WriteFile(atBracket, []byte(`{"version":1,"serve":{"upload_pack":["/sb"],"repository":"/work/a@[b]c","measure":["/du"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	real := writeTemplate(t, w, s, true, true)
 	link := filepath.Join(w.other, "link.json")
 	if err := os.Symlink(real, link); err != nil {
@@ -139,6 +143,7 @@ func TestFetchRefusesWithoutAUsableTemplate(t *testing.T) {
 		"missing":          missing,
 		"too big":          huge,
 		"invalid":          junk,
+		"at-bracket path":  atBracket,
 		"a symlink":        link,
 		"without serve":    verifyOnly,
 		"relative missing": "no-such-template.json",
@@ -148,6 +153,9 @@ func TestFetchRefusesWithoutAUsableTemplate(t *testing.T) {
 			t.Fatalf("%s: exit %d\n%s\n%s", name, code, out, errb)
 		}
 		noControl(t, name, errb)
+		if path == atBracket && !strings.Contains(errb, `nothing was run: sandbox template: serve: repository: path holds "@["`) {
+			t.Fatalf("%s: the refusal does not say why:\n%s", name, errb)
+		}
 	}
 	if _, err := os.Stat(s.marker); err == nil {
 		t.Fatal("the upload-pack program ran")

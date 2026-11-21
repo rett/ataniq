@@ -21,18 +21,18 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		{"fetch", []string{"--depth=1", "--no-tags", "--prune", "--end-of-options", "/srv/src"}},
 		{"fetch", []string{"--atomic", "--prune", "--no-tags", "--end-of-options", "/srv/src"}},
 		{"fetch", []string{"-q", "--quiet", "--no-recurse-submodules", "--no-write-fetch-head", "--", "/srv/src"}},
-		{"log", []string{"--max-count=1", "--format=%H", "--first-parent", "--no-walk", "--end-of-options", "HEAD"}},
+		{"rev-list", []string{"--max-count=1", "--format=%H", "--first-parent", "--no-walk", "--end-of-options", "HEAD"}},
 		{"config", []string{"--file=/dev/stdin", "--list", "-z"}},
 		{"for-each-ref", []string{"--count=5", "--format=%(refname)", "refs/heads/-x"}},
 		// A flag that takes a value in one subcommand is valueless in others.
-		{"log", []string{"-m", "--end-of-options", "HEAD"}},
+		{"rev-list", []string{"-m", "--end-of-options", "HEAD"}},
 		{"diff-tree", []string{"-r", "-m", "--end-of-options", "HEAD"}},
 		{"rev-list", []string{"--count", "--end-of-options", "HEAD"}},
 		{"update-ref", []string{"--no-deref", "--stdin", "-z"}},
 		{"rev-parse", []string{"--verify", "-", "x"}},
 		// After the end of the options git reads no options.
 		{"fetch", []string{"--end-of-options", "-o", "--depth", "1", "--upload-pack=x"}},
-		{"log", []string{"--", "-o", "--exec", "-"}},
+		{"rev-list", []string{"--", "-o", "--exec", "-"}},
 	} {
 		if _, err := g.Argv(Cmd{GitDir: ok, Args: append([]string{tc.sub}, tc.args...)}); err != nil {
 			t.Errorf("%s %q: %v", tc.sub, tc.args, err)
@@ -55,9 +55,9 @@ func TestOptionsBeforeTheEndAreStrict(t *testing.T) {
 		// The same without a marker, and other separate values.
 		{"--depth 1", "fetch", []string{"--depth", "1", "--end-of-options", "/abs/src"}, `"--depth"`},
 		{"-j 4", "fetch", []string{"-j", "4", "/abs/src"}, `"-j"`},
-		{"-n 1", "log", []string{"-n", "1"}, `"-n"`},
-		{"-1", "log", []string{"-1"}, `"-1"`},
-		{"-n1", "log", []string{"-n1"}, `"-n1"`},
+		{"-n 1", "rev-list", []string{"-n", "1"}, `"-n"`},
+		{"-1", "rev-list", []string{"-1"}, `"-1"`},
+		{"-n1", "rev-list", []string{"-n1"}, `"-n1"`},
 		{"joined short values", "fetch", []string{"-ofoo"}, `"-ofoo"`},
 		{"unknown long flag", "fetch", []string{"--force"}, `"--force"`},
 		{"a look-alike of a listed flag", "fetch", []string{"--prune-x"}, `"--prune-x"`},
@@ -277,7 +277,7 @@ func TestConfigDoesNotEndTheOptionsAtDashDash(t *testing.T) {
 		{"config", "--end-of-options", "--file=/x/victim", "a.b", "c"},
 		{"config", "--get", "--end-of-options", "a.b"},
 		{"config", "--file=/dev/stdin", "--list", "-z"},
-		{"log", "--", "--file=/x"},
+		{"rev-list", "--", "--file=/x"},
 		{"rev-parse", "--", "--git-dir"},
 	} {
 		if _, err := g.Argv(Cmd{GitDir: ok, Args: args}); err != nil {

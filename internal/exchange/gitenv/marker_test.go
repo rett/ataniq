@@ -129,7 +129,7 @@ func TestMarkerProbesSeeAnOption(t *testing.T) {
 func TestMarkerReadThenDie(t *testing.T) {
 	g := needGit(t)
 	const died = "must come before non-option arguments"
-	for _, sub := range []string{"rev-parse", "rev-list", "log", "diff", "diff-tree"} {
+	for _, sub := range []string{"rev-parse", "rev-list", "diff", "diff-tree"} {
 		c, repo := markerCase(t, g, sub)
 		for _, p := range markerProbes {
 			out, err := rawGit(t, g, c, sub, append([]string{"--end-of-options"}, p.args...)...)

@@ -232,6 +232,7 @@ func TestParseTemplateRefusals(t *testing.T) {
 		"brace pair":              serve("upload_pack", `["/sb","{{tree}}"]`),
 		"brace in env":            serve("measure_env", `["A={x}"]`),
 		"brace in repository":     serve("repository", `"/r/{"`),
+		"at-bracket in repo":      serve("repository", `"/r/a@[b]c"`),
 		"unterminated":            serve("upload_pack", `["/sb","{tree"]`),
 		"empty prefix":            verify("prefix", `[]`),
 		"relative prefix":         verify("prefix", `["sb"]`),

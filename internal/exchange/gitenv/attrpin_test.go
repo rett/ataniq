@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// These tests cover the attribute pin: for "diff", "diff-tree", "merge-tree"
-// and "log", Argv sets the attribute source to the empty tree, so that a
+// These tests cover the attribute pin: for "diff", "diff-tree" and
+// "merge-tree", Argv sets the attribute source to the empty tree, so that a
 // ".gitattributes" in a tree a lead wrote changes nothing. The first two
 // tests look at the command line. The others ask the installed git, in
 // temporary bare repositories, and each has a control that shows the test can
@@ -25,7 +25,7 @@ const thePin = "attr.tree=" + emptyTreeID
 // gets it. The builder never writes "--attr-source" and never sets
 // GIT_ATTR_SOURCE, both of which would come before the setting.
 func TestAttributePinIsOnTheseSubcommands(t *testing.T) {
-	want := []string{"diff", "diff-tree", "merge-tree", "log"}
+	want := []string{"diff", "diff-tree", "merge-tree"}
 	if !reflect.DeepEqual(attrPinned, want) {
 		t.Fatalf("attrPinned = %q, want %q", attrPinned, want)
 	}
@@ -84,7 +84,7 @@ func TestAttributePinIsOnTheseSubcommands(t *testing.T) {
 		{"diff", "--no-renames", "--end-of-options", "a", "b"},
 		{"diff-tree", "-r", "--stdin"},
 		{"merge-tree", "--write-tree", "--name-only", "--end-of-options", strings.Repeat("a", 40), strings.Repeat("b", 40)},
-		{"log", "--max-count=1", "--", "attr.tree=HEAD"},
+		{"diff", "--no-renames", "--", "attr.tree=HEAD"},
 	} {
 		argv, err := g.Argv(Cmd{GitDir: "/srv/r.git", Args: args})
 		if err != nil {
@@ -155,8 +155,8 @@ func TestAttrSourceInArgsIsRefused(t *testing.T) {
 	// Names that only look alike are not refused by this rule.
 	for _, args := range [][]string{
 		{"fetch", "--atomic", "--all"},
-		{"log", "--end-of-options", "refs/heads/--attr-source"},
-		{"log", "--max-count=1", "--", "attr-source"},
+		{"rev-list", "--end-of-options", "refs/heads/--attr-source"},
+		{"rev-list", "--max-count=1", "--", "attr-source"},
 	} {
 		if _, err := g.Argv(Cmd{GitDir: ok, Args: args}); err != nil {
 			t.Errorf("Argv refused %q: %v", args, err)
@@ -172,7 +172,6 @@ type pinned struct {
 	diffTree string // "diff-tree -r -p" of the same
 	numstat  string // "diff-tree -r --numstat" of the same
 	diffStat string // "diff --numstat" of the same
-	log      string // "log -p" of theirs
 	// The merge of ours and theirs, which change different lines: the exit
 	// status, and the blob of the merged file when the status is 0.
 	cleanStatus int
@@ -245,7 +244,6 @@ func (s *mergeScene) pinned(t *testing.T, ch change, extraEnv ...string) pinned 
 	p.diffTree = must("diff-tree", "-r", "-p", "--no-color", "--no-renames", "--full-index", "--end-of-options", s.base, s.theirs)
 	p.numstat = must("diff-tree", "-r", "--numstat", "--no-renames", "--end-of-options", s.base, s.theirs)
 	p.diffStat = must("diff", "--numstat", "--no-renames", "--end-of-options", s.base, s.theirs)
-	p.log = must("log", "--max-count=1", "--format=%s", "-p", "--no-color", "--no-renames", "--full-index", "--end-of-options", s.theirs)
 
 	out, status := s.runPinned(t, ch, extraEnv, "merge-tree", "--write-tree", "--end-of-options", s.ours, s.theirs)
 	p.cleanStatus = status
@@ -270,7 +268,7 @@ func (s *mergeScene) pinned(t *testing.T, ch change, extraEnv ...string) pinned 
 // merge that holds both changes, and a conflict.
 func (s *mergeScene) checkPlain(t *testing.T, p pinned) {
 	t.Helper()
-	for name, patch := range map[string]string{"diff": p.diff, "diff-tree": p.diffTree, "log": p.log} {
+	for name, patch := range map[string]string{"diff": p.diff, "diff-tree": p.diffTree} {
 		if !strings.Contains(patch, "\n-8\n+eight-theirs\n") || strings.Contains(patch, "Binary files") {
 			t.Errorf("the control: %s does not show the changed line as text:\n%s", name, patch)
 		}
@@ -291,8 +289,8 @@ func (s *mergeScene) checkPlain(t *testing.T, p pinned) {
 var attributeCases = []string{"* -diff", "* binary", "* merge=union", "* merge=binary"}
 
 // TestAttributesInTreesChangeNothing is the start-up test of the pin. For
-// each attribute line, "diff", "diff-tree -p", the line counts, "log -p"
-// and "merge-tree --write-tree", built through Argv and Env, give exactly
+// each attribute line, "diff", "diff-tree -p", the line counts and
+// "merge-tree --write-tree", built through Argv and Env, give exactly
 // what the same trees without the file give: the same patch, the same
 // counts, the same blob for a clean merge and the same exit status for a
 // conflicting one.
@@ -339,7 +337,7 @@ func TestAttributesInTreesChangeNothing(t *testing.T) {
 			}
 			switch line {
 			case "* -diff":
-				if !strings.Contains(control.diff, "Binary files") || !strings.Contains(control.diffTree, "Binary files") || !strings.Contains(control.log, "Binary files") {
+				if !strings.Contains(control.diff, "Binary files") || !strings.Contains(control.diffTree, "Binary files") {
 					t.Errorf("control: %q read from HEAD did not hide the patch:\n%+v", line, control)
 				}
 			case "* binary":

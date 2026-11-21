@@ -110,10 +110,16 @@ following.
   `sh` with the environment of the harness, so the argv must clear the
   environment itself (for example `bwrap --clearenv`).
 - `repository` is the clone's path inside the sandbox, and a path that does not
-  exist on the host. The owner-side git of the fetch looks at that path on the
-  host first: a git bundle file there is read by that git itself, and
-  `upload_pack` is never started (see
-  [the sandbox template](lead-intake.md#the-sandbox-template)).
+  exist on the host. The owner-side git of the fetch is given it as a
+  `file://` URL, so it starts `upload_pack` and never reads a git bundle file
+  at that path itself (see
+  [the sandbox template](lead-intake.md#the-sandbox-template)). It holds no
+  `@[`, which git changes in a URL; such a template is refused at load. As a second
+  layer the fetch refuses a path that exists on the host, a regular file, a
+  symlink or a folder alike, before anything runs (`mirror.ErrRepositoryPath`),
+  so a template with such a path gives a refused `s16-fetch.fetch` and no other
+  fact of the fetch. A path that does not exist, and the clone's own path while
+  it is a folder (which a fake planner gives), pass.
 - `measure` prints the size of the clone's object store, and runs in the same
   kind of sandbox.
 - The sandbox gives `git-upload-pack` what it needs to run and nothing else.
@@ -200,7 +206,7 @@ branches through the template, with the default limits.
 
 | Fact | Observed values |
 | --- | --- |
-| `s16-fetch.clone` | What was planted; `repository_inside`, the clone's path as the serving half sees it; the number of canary names. |
+| `s16-fetch.clone` | What was planted; `repository_inside`, the clone's path as the serving half sees it; `repository_on_host`, what the host has at that path, as the fetch's own check sees it (the entry itself, no symlink followed at the last name): `absent`, `the clone's own path`, `exists: a regular file`, `exists: a symbolic link`, `exists: a folder`, `exists: a file of another kind`, `cannot be checked: <cause>`, or `unknown: the planner gave no serve plan`; the number of canary names. Anything that `exists` or `cannot be checked` makes the fetch refuse the path. |
 | `s16-fetch.fetch` | The fetch result and error; `updates` (lead ref, old and new id); `source_bytes` (the sandbox's measure), `mirror_before_bytes`, `staged_bytes`, `mirror_after_bytes`; `outside_changed`; `serve_requests` (planner requests the fetch made). |
 | `s16-fetch.upstream-refs` | `refs/heads/*` and `refs/tags/*` of the mirror `before` and `after` (name, id, type), and whether they are `identical`. |
 | `s16-fetch.lead-refs` | The lead's refs in the mirror `before` and `after`. |
@@ -254,7 +260,7 @@ execution-config rules.
 | Fact | Observed values |
 | --- | --- |
 | `s19-review.fetch` | The fetch values, and the lead refs after. |
-| `s19-review.inspect` | The result; `base` and `tip`; `commits` (id and subject); `changes` (path, status, modes, flag kinds); `flagged` (kind, path, pattern, reason); `flagged_paths`; `unflagged_changed_paths`; `rule_count`. |
+| `s19-review.inspect` | The result (`error_classes` can hold `intake.ErrCommitEncoding` or `intake.ErrCommitFormat`: see the notes below); `base` and `tip`; `commits` (id and subject); `changes` (path, status, modes, flag kinds); `flagged` (kind, path, pattern, reason); `flagged_paths`; `unflagged_changed_paths`; `rule_count`. |
 | `s19-review.upstream-refs` | The upstream refs before the fetch and after the review, and whether they are `identical`. They show that neither the fetch nor the review moved the upstream branch. |
 
 ### Case `verification`
@@ -323,6 +329,17 @@ tip, it holds `verification.not-run`.
 - Flagged paths show what the intake's rules mark for a separate sign-off. A
   path that is not flagged is not shown to be harmless. The harness does not
   run the sign-off, the integration or the lead's code.
+- `repository_on_host` is the harness's reading of the template's `repository`
+  path on the host, taken before the fetch with the same rule as the fetch. It
+  is not a report on the sandbox: it says whether the second layer of the fetch
+  would refuse the path. A race (a file that appears after it) is not covered
+  by it, and is not read as a bundle either, because the source is a `file://`
+  URL.
+- The intake reads the commits of the review branch as raw objects and
+  converts no text, whatever the commit's `encoding` header says (see
+  [how the commits are read](lead-intake.md#review)). The harness has no
+  commit with such a header, so no fact here shows that refusal; the package's
+  tests do.
 - `serve_requests` shows how many times the planner was asked for a serve
   plan during that call. The harness asks the planner once per case, before the
   fetches, only to learn the clone's path as the sandbox sees it.

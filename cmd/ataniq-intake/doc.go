@@ -39,9 +39,11 @@
 // recorded but the update ended unclearly or the records folder could not be
 // synced (a warning on standard error); 1 a refusal that the owner can act on
 // (sign-off incomplete, not verified, moved, nothing to integrate, a limit, a
-// hostile tree, busy, no usable sandbox); 2 usage; 3 any other failure,
-// among them an update whose outcome is unknown: the owner looks at the
-// upstream branch with branches before trying again.
+// hostile tree, a commit that names an encoding other than UTF-8 or is not in
+// the form git writes, a template path that exists on the host, busy, no
+// usable sandbox); 2 usage; 3 any other failure, among them an update whose
+// outcome is unknown: the owner looks at the upstream branch with branches
+// before trying again.
 //
 // The command is provisional.
 package main
