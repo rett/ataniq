@@ -1,16 +1,18 @@
 # Approvals and delegation
 
-Status: proposed, owner-approved direction; no grant format, signer, owner
-channel or gate verification is implemented or qualified. Today approvals are
-the owner's direct words. The formats, key handling and storage are still to be
-designed and reviewed. A statement marked "Proposed" is a proposal for the owner
-to decide, not part of the owner-approved direction.
+Status: owner-approved direction, specification only; no grant format, signer,
+owner channel or gate verification is implemented or qualified. Today approvals
+are the owner's direct words. The formats, key handling and storage are still to
+be designed and reviewed. A paragraph that begins "Proposed, not yet the
+owner's decision" is a proposal for the owner to decide, not part of the
+owner-approved direction.
 
 ## Who can approve
 
 Only two things approve anything:
 
-- The owner's direct words, given in the owner's own session.
+- The owner's direct words, given in the owner's own session or at the owner
+  channel (see [owner channel](#owner-channel) below).
 - A delegation-chain grant whose signatures verify back to the owner's root
   key.
 
@@ -87,20 +89,21 @@ The supervisor role may be held by an agent on any provider, local or cloud
 (see [roles and authority](roles-and-authority.md)). A supervisor that runs on a
 provider's cloud is an owner-side facilitator, not a grantee and not an
 approver. Each instance assigns it as its own remote supervisory client and
-fences it alone. It reads status and requests from the supervisors and leads of
-its assigned instances, each through that instance's scoped port, and may
-summarise across the instances; that summary is for the owner and is not served
-to any instance. It nominates requests. A nomination or a proposal to an
+fences it alone. It reads status and requests from the leads of its assigned
+instances, and from a local supervisor of an instance where one is assigned,
+each through that instance's scoped port, and may summarise across the
+instances; that summary is made for the owner outside every instance and is
+served to no instance. It nominates requests. A nomination or a proposal to an
 instance names only that instance's records. A nomination is a reference to a
 request, not a message to a lead and not an approval:
 
-- A nomination names a request that already exists in the instance, made there
-  by a lead inside the boundary, by its identity and revision. The agent
-  supplies no field of what is approved, and no text of its own appears on the
-  card in the first version. The instance renders the card from its own record,
-  and the card is bound to the immutable approval record of
-  [client protocol](client-protocol.md). A nomination of an unknown, changed or
-  already decided request is refused. If the request changes, the card is stale
+- A nomination names a request that already exists in the instance, an
+  outstanding approval of [client protocol](client-protocol.md) made there by a
+  lead of that instance, by its identity and revision. The agent supplies no
+  field of what is approved, and no text of its own appears on the card in the
+  first version. The instance renders the card from its own record, and the card
+  is bound to that outstanding approval's immutable approval record. A
+  nomination of an unknown, changed or already decided request is refused. If the request changes, the card is stale
   and decides nothing.
 - The owner decides at the owner channel (below), and the decision returns
   straight to the instance. It does not pass through the nominating agent or any
