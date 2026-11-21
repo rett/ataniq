@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ataniq/internal/approval/mergebuild"
 	"ataniq/internal/intake/execconfig"
@@ -50,6 +51,15 @@ type Scratch struct {
 	// Seat is what the stand-in door is given: the epoch a request must
 	// name and the revision of the seat's record.
 	Seat ScratchSeat `json:"seat"`
+	// Sandbox is the clean absolute path of the sandbox template file the
+	// suite runs in, the one the intake's verify takes as --sandbox. It
+	// is optional here and needed to run the real suite; it must not be
+	// in the state folder, where a lead could change it. Work is the
+	// clean absolute path of the private folder the runs work in, which
+	// must not be in the state folder either. Both lie under a scratch
+	// root (the command checks it) and the template is read by each run.
+	Sandbox string `json:"sandbox,omitempty"`
+	Work    string `json:"work,omitempty"`
 	// Door selects the planner's door. Only [DoorStandIn] is accepted: the
 	// settings must say that the pass runs on the stand-in.
 	Door string `json:"door"`
@@ -105,6 +115,11 @@ func LoadScratch(path string) (Scratch, error) {
 	if s.Seat.Epoch < 0 || s.Seat.SeatRev < 0 || s.Drop == "" || !filepath.IsAbs(s.Drop) || filepath.Clean(s.Drop) != s.Drop {
 		return Scratch{}, errors.New("hostadapter: the scratch settings name no clean absolute drop folder, or a negative number")
 	}
+	for _, p := range []string{s.Sandbox, s.Work} {
+		if p != "" && (!filepath.IsAbs(p) || filepath.Clean(p) != p || strings.ContainsAny(p, "\x00\n")) {
+			return Scratch{}, errors.New("hostadapter: the scratch settings name a sandbox template or a work folder that is not a clean absolute path")
+		}
+	}
 	if s.Door != DoorStandIn {
 		return Scratch{}, errors.New("hostadapter: the scratch settings do not select the stand-in door (\"door\": \"stand-in\")")
 	}
@@ -120,6 +135,20 @@ func LoadScratch(path string) (Scratch, error) {
 		return Scratch{}, err
 	}
 	return s, nil
+}
+
+// VerifySuiteOf is the real suite the settings describe, with the real runner.
+// It refuses settings that name no sandbox template or no work folder, and
+// starts nothing.
+func (s Scratch) VerifySuiteOf() (*VerifySuite, error) {
+	if s.Sandbox == "" || s.Work == "" {
+		return nil, errors.New("hostadapter: the scratch settings name no \"sandbox\" template and \"work\" folder, so there is no suite to run")
+	}
+	v := &VerifySuite{Template: s.Sandbox, WorkRoot: s.Work}
+	if err := v.Check(); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 // ProjectOf is the [Project] the settings describe, with the built-in rule set.

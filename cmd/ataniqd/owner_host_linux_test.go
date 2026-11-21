@@ -91,17 +91,82 @@ func TestTheCommandRegistersTheHostAdapterAsTheBuilder(t *testing.T) {
 	}
 }
 
-// Without a suite runner the build refuses, with words that name what is
-// missing, before it opens anything.
-func TestTheBuilderRefusesWithoutASuiteRunner(t *testing.T) {
+// Without a test's suite the build makes the real one from the settings, and
+// settings that name no sandbox template or no work folder are refused, with
+// words that name what is missing, before anything is opened.
+func TestTheBuilderRefusesSettingsThatNameNoSuite(t *testing.T) {
 	useSuite(t, nil)
 	state, _ := scratchSettings(t, nil)
 	svc, closer, err := buildOwnerService(state)
-	if err == nil || svc != nil || closer != nil || !strings.Contains(err.Error(), "no verification suite") {
+	if err == nil || svc != nil || closer != nil || !strings.Contains(err.Error(), `no "sandbox" template`) {
 		t.Fatalf("buildOwnerService = %v, %v, %v", svc, closer != nil, err)
 	}
 	if _, err := os.Lstat(filepath.Join(state, "owner", hostadapter.JournalName)); err == nil {
 		t.Errorf("a journal was made for a build that refused")
+	}
+}
+
+// With the sandbox template and the work folder named, the builder makes the
+// real suite and the service, and starts nothing: the template is not read
+// (it does not even exist here), the work folder is made private, and no
+// request is verified.
+func TestTheBuilderMakesTheRealSuiteFromTheSettingsAndStartsNothing(t *testing.T) {
+	useSuite(t, nil)
+	state, _ := scratchSettings(t, nil)
+	base := filepath.Dir(state)
+	writeScratch(t, state, base, func(s *hostadapter.Scratch) {
+		s.Sandbox, s.Work = base+"/sandbox.json", base+"/work"
+	})
+	svc, closer, err := buildOwnerService(state)
+	if err != nil || svc == nil || closer == nil {
+		t.Fatalf("buildOwnerService = %v, %v, %v", svc, closer != nil, err)
+	}
+	defer closer()
+	st, err := os.Lstat(base + "/work")
+	if err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+		t.Errorf("the work folder: %v, %v", st, err)
+	}
+	if _, err := os.Lstat(base + "/sandbox.json"); err == nil {
+		t.Errorf("a template was made")
+	}
+	// Nothing is under the work folder: no run started.
+	if ents, err := os.ReadDir(base + "/work"); err != nil || len(ents) != 0 {
+		t.Errorf("the work folder holds %v, %v", ents, err)
+	}
+}
+
+// The sandbox template and the work folder are scratch paths: under a scratch
+// root, outside the state folder, and the work folder apart from the mirror.
+func TestTheGuardRefusesASandboxOrWorkFolderThatIsNotScratch(t *testing.T) {
+	useSuite(t, nil)
+	for name, mutate := range map[string]func(base, state string, s *hostadapter.Scratch){
+		"a template in the state folder": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = state+"/owner/sandbox.json", base+"/work"
+		},
+		"a template outside the roots": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = "/usr/share/sandbox.json", base+"/work"
+		},
+		"a work folder in the state folder": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = base+"/sandbox.json", state+"/work"
+		},
+		"a work folder outside the roots": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = base+"/sandbox.json", "/var/tmp/ataniq-work"
+		},
+		"a work folder that is the mirror": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = base+"/sandbox.json", s.Mirror
+		},
+		"a work folder that holds the mirror": func(base, state string, s *hostadapter.Scratch) {
+			s.Sandbox, s.Work = base+"/sandbox.json", base
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state, _ := scratchSettings(t, nil)
+			base := filepath.Dir(state)
+			writeScratch(t, state, base, func(s *hostadapter.Scratch) { mutate(base, state, s) })
+			if _, err := checkOwnerScratch(state, ownerGetenv); err == nil {
+				t.Errorf("the settings were accepted")
+			}
+		})
 	}
 }
 
@@ -117,9 +182,11 @@ func TestTheBuilderRefusesMissingAndBadSettings(t *testing.T) {
 		t.Errorf("a state folder with no owner folder built a service")
 	}
 	for name, mutate := range map[string]func(*hostadapter.Scratch){
-		"a relative drop folder": func(s *hostadapter.Scratch) { s.Drop = "drop" },
-		"no gate":                func(s *hostadapter.Scratch) { s.Gates = nil },
-		"a bad project name":     func(s *hostadapter.Scratch) { s.Project = "Bad Name" },
+		"a relative drop folder":          func(s *hostadapter.Scratch) { s.Drop = "drop" },
+		"a relative sandbox template":     func(s *hostadapter.Scratch) { s.Sandbox = "sandbox.json" },
+		"a work folder that is not clean": func(s *hostadapter.Scratch) { s.Work = "/a/../b" },
+		"no gate":                         func(s *hostadapter.Scratch) { s.Gates = nil },
+		"a bad project name":              func(s *hostadapter.Scratch) { s.Project = "Bad Name" },
 		"a target that is not a branch": func(s *hostadapter.Scratch) {
 			s.Target = "refs/tags/v1"
 		},
@@ -300,9 +367,10 @@ func TestOwnerRunWithTheHostAdapterServesTheOwnerOperations(t *testing.T) {
 	_ = j.Close()
 }
 
-// A daemon whose build has no suite runner refuses to serve the owner channel
-// and says why, with the serve step's exit code, and makes no socket.
-func TestOwnerRunWithoutASuiteRunnerStopsTheDaemon(t *testing.T) {
+// A daemon whose settings name no suite refuses to serve the owner channel
+// before it takes a lock and says why, with the configuration's exit code, and
+// makes no socket.
+func TestOwnerRunWithSettingsThatNameNoSuiteStopsTheDaemon(t *testing.T) {
 	useSuite(t, nil)
 	state, _ := scratchSettings(t, nil)
 	runtime := filepath.Dir(state) + "/r"
@@ -311,7 +379,10 @@ func TestOwnerRunWithoutASuiteRunnerStopsTheDaemon(t *testing.T) {
 	}
 	ta := newTestApp(t, nil)
 	code := ta.run([]string{"run", "--state-dir", state, "--runtime-dir", runtime, "--owner-channel"})
-	if code != leaddaemon.ExitServe || !strings.Contains(ta.err.String(), "no verification suite") {
+	if code != leaddaemon.ExitConfig || !strings.Contains(ta.err.String(), `no "sandbox" template`) {
 		t.Fatalf("exit %d: %q", code, ta.err.String())
+	}
+	if _, err := os.Lstat(runtime + "/daemon.sock"); err == nil {
+		t.Errorf("a socket was made")
 	}
 }

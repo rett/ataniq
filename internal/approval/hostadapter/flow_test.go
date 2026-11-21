@@ -86,7 +86,7 @@ func TestARequestFileLeadsToAPinnedMergeAReviewAndAPendingRecord(t *testing.T) {
 	if len(b.Evidence) != 1 || b.Evidence[0].Kind != record.EvidenceSuite {
 		t.Fatalf("evidence %+v", b.Evidence)
 	}
-	recs, err := r.o.Host.suiteRecords("project-a", b.Merge.Commit)
+	recs, err := r.o.Host.suiteRecords("project-a", b.Merge.Commit, b.Merge.Parents[0])
 	if err != nil || len(recs) != 1 || !recs[0].rec.Passed || recs[0].id != b.Evidence[0].RecordID || recs[0].sha != b.Evidence[0].RecordSHA256 {
 		t.Errorf("records %+v, %v", recs, err)
 	}

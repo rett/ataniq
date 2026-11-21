@@ -142,12 +142,41 @@ func checkScratchRoots(stateDir string, sc hostadapter.Scratch, getenv func(stri
 	if err != nil {
 		return fmt.Errorf("the scratch owner channel cannot resolve the mirror: %v", err)
 	}
-	for _, r := range roots {
-		if under(mirror, r) {
-			return nil
+	underRoot := func(p string) bool {
+		for _, r := range roots {
+			if under(p, r) {
+				return true
+			}
+		}
+		return false
+	}
+	if !underRoot(mirror) {
+		return fmt.Errorf("the scratch owner channel refuses the mirror %q: it is not under a scratch root of the settings", sc.Mirror)
+	}
+	// The sandbox template and the work folder of the suite are scratch
+	// paths too, and neither is in the state folder, which holds what a
+	// lead can reach (the template could be changed there) or the records
+	// (the work folder is the sandbox's); the work folder and the mirror are
+	// apart, as package verify asks.
+	for _, f := range []struct{ name, path string }{{"sandbox template", sc.Sandbox}, {"work folder", sc.Work}} {
+		if f.path == "" {
+			continue
+		}
+		p, err := resolvePath(f.path)
+		if err != nil {
+			return fmt.Errorf("the scratch owner channel cannot resolve the %s: %v", f.name, err)
+		}
+		if !underRoot(p) {
+			return fmt.Errorf("the scratch owner channel refuses the %s %q: it is not under a scratch root of the settings", f.name, f.path)
+		}
+		if related(p, state) {
+			return fmt.Errorf("the scratch owner channel refuses the %s %q: it is, lies inside or contains the state folder", f.name, f.path)
+		}
+		if f.path == sc.Work && related(p, mirror) {
+			return fmt.Errorf("the scratch owner channel refuses the work folder %q: it is, lies inside or contains the mirror", f.path)
 		}
 	}
-	return fmt.Errorf("the scratch owner channel refuses the mirror %q: it is not under a scratch root of the settings", sc.Mirror)
+	return nil
 }
 
 // checkOwnerScratch reads the settings of the state folder and applies the

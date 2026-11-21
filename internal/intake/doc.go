@@ -129,10 +129,13 @@
 // reads the refs as they are now), and goes on only when the fresh review's
 // tip and digest are the ones the owner signed ([ErrMoved] otherwise, naming
 // the old and the new ids), the sign-off passes [Review.CheckSignOff], and the
-// newest verification record in the store for this project and tip is a clean
-// pass ([ErrNotVerified] otherwise, so a later failed run withdraws an
+// newest verification record in the store that counts for this review is a
+// clean pass ([ErrNotVerified] otherwise, so a later failed run withdraws an
 // earlier pass; a pass whose output was cut, or that was stopped, is not
-// clean). Then it moves the upstream branch to the tip with one
+// clean). Only the records of the review's mode count: for a lead branch the
+// records of the project and the tip that are not merge records, and for a
+// merge the merge-mode records whose merge is the tip and whose base is the
+// review's base (see Merge mode). Then it moves the upstream branch to the tip with one
 // compare-and-swap, git update-ref in a transaction on standard input that
 // expects the target to be at the base the review saw, and writes an
 // [IntakeRecord]. The move is fast-forward only: Inspect has refused a tip
@@ -161,9 +164,10 @@
 // After the sign-off the code runs as the owner, as any merged code does. The
 // review at intake is the boundary: what the owner signs is what enters
 // the history. A verification pass is evidence, not proof (see package
-// verify). Any passing record for the project and the tip counts, whatever
-// gates it ran: this package does not compare the record's plan (gates) with
-// the project's current gates or the record's lead ref with the review's. The
+// verify). Any passing record of the review's mode for the project and the tip
+// (for a merge, on the review's base) counts, whatever gates it ran: this
+// package does not compare the record's plan (gates) with the project's
+// current gates or the record's lead ref with the review's. The
 // gates that were run are in the [IntakeRecord] that [Integrate] returns, in
 // its Verification field. The command that calls [Integrate] must show them
 // to the owner before the sign-off (with the review output) and after it (with
@@ -192,6 +196,12 @@
 //     [ErrAttributes]) before each pinned diff: by Inspect, [Diff] of a merge
 //     review and [Summarize]. Lead mode does not run it, as before.
 //   - A path that is odd gets the flag [FlagOddPath].
+//   - Only a merge-mode verification record counts for the merge, one whose
+//     tip is the merge and whose base is the review's base. A lead-mode record
+//     of the same commit id, and a merge record made against another base, are
+//     no evidence and do not withdraw a pass. The host adapter of the owner
+//     channel (package hostadapter, tagged build) makes these records, one for
+//     each run of the suite on the merge, and counts them by the same rule.
 //   - [Integrate] moves the target from the base to the merge, with the same
 //     compare-and-swap, and nothing else: the pin stays (the host removes it),
 //     and the lead's branches, tags and HEAD are not touched.

@@ -39,9 +39,13 @@ mirror; the daemon refuses (the configuration's exit code) a state folder, a
 root or a mirror that is, lies inside or contains the account's default state
 or runtime folder, and prints "owner channel: STAND-IN door, scratch state: no
 real approval" at start. A request is a file
-<request id>.request in the drop folder, and its reply is a file beside it. It
-is provisional and unqualified, and no suite runs in this build yet, so the
-daemon refuses --owner-channel until one is installed.
+<request id>.request in the drop folder, and its reply is a file beside it.
+The suite of a request's merge runs in the verification sandbox, as the
+intake's verify does: the settings name "sandbox", the sandbox template file,
+and "work", the folder the runs work in, both under a scratch root and outside
+the state folder, and the daemon refuses to start without them. Starting
+starts no sandbox; one starts when a request is verified. It is provisional and
+unqualified.
 `
 
 func init() { usage += ownerUsage }
