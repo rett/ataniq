@@ -196,7 +196,7 @@ type Colors struct {
 }
 
 // DefaultPoll is how often the list is read again while a receipt is in
-// progress.
+// progress or a lead is starting or stopping.
 const DefaultPoll = 2 * time.Second
 
 // Options configure a Model.
@@ -210,8 +210,8 @@ type Options struct {
 	// After makes a command that sends a message once d has passed. Nil
 	// means tea.Tick. A test gives its own clock.
 	After func(d time.Duration, fn func(time.Time) tea.Msg) tea.Cmd
-	// Poll is how often the list is read while a receipt is in progress.
-	// Zero means DefaultPoll.
+	// Poll is how often the list is read while a receipt is in progress or a
+	// lead is starting or stopping. Zero means DefaultPoll.
 	Poll time.Duration
 }
 

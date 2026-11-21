@@ -326,7 +326,22 @@ func (m *Model) receiptText() string {
 	if m.status == nil {
 		return ""
 	}
-	return receiptLine(*m.status, m.heldFor(*m.status))
+	line := receiptLine(*m.status, m.heldFor(*m.status))
+	if m.status.Status == Refused && m.status.Code == "max-running" && m.anyUnknown() {
+		line += maxRunningUnknownTail
+	}
+	return line
+}
+
+// anyUnknown says whether the list shows a lead whose state is unknown, which
+// counts against the limit of running leads.
+func (m *Model) anyUnknown() bool {
+	for _, l := range m.leads {
+		if l.State == "unknown" {
+			return true
+		}
+	}
+	return false
 }
 
 // heldFor is what the list says of the epoch's message for a receipt: the row

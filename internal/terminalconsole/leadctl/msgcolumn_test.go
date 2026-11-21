@@ -323,7 +323,7 @@ func TestTheMsgColumnSaysAHoldersRefusalWasNotDelivered(t *testing.T) {
 		spent bool
 		want  string
 	}{{false, "free (not delivered)"}, {true, "spent, not delivered"}} {
-		if got := msgWord(Lead{Inject: true, MessageSpent: c.spent}, refused); got != c.want {
+		if got := msgWord(Lead{Inject: true, State: "ready", Epoch: 3, MessageSpent: c.spent}, refused); got != c.want {
 			t.Errorf("spent %v: %q, want %q", c.spent, got, c.want)
 		}
 	}
@@ -347,8 +347,53 @@ func TestASpentMessageIsSentOnlyWhenItsWordsSaySubmitted(t *testing.T) {
 		{"not a combination the holder sends", Delivery{OutcomeSubmitted, ReasonDied, WrittenNothing}, "sent-unsure"},
 		{"no words", Delivery{}, "sent-unsure"},
 	} {
-		if got := msgWord(Lead{Inject: true, MessageSpent: true}, c.d); got != c.want {
+		if got := msgWord(Lead{Inject: true, State: "ready", Epoch: 3, MessageSpent: true}, c.d); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// A lead that is not running has no message to speak of: the epoch's words
+// belong to its last epoch and the column draws "-", except "off", which is the
+// lead's config and stays.
+func TestTheMsgColumnOfALeadThatIsNotRunningIsADash(t *testing.T) {
+	words := Delivery{Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}
+	for _, c := range []struct {
+		name string
+		l    Lead
+		want string
+	}{
+		{"stopped with its last epoch", Lead{State: "stopped", Epoch: 3}, "-"},
+		{"ended", Lead{State: "ended", Epoch: 3}, "-"},
+		{"desired", Lead{State: "desired", Epoch: 1}, "-"},
+		{"unknown", Lead{State: "unknown", Epoch: 2}, "-"},
+		{"no epoch", Lead{State: "ready"}, "-"},
+		{"no state", Lead{Epoch: 3}, "-"},
+		{"stopped and spent", Lead{State: "stopped", Epoch: 3, MessageSpent: true}, "-"},
+		{"starting", Lead{State: "starting", Epoch: 1}, "free (not delivered)"},
+		{"ready", Lead{State: "ready", Epoch: 3}, "free (not delivered)"},
+		{"stopping", Lead{State: "stopping", Epoch: 3}, "free (not delivered)"},
+	} {
+		l := c.l
+		l.Inject = true
+		if got := msgWord(l, words); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+		l.Inject = false
+		if got := msgWord(l, words); got != "off" {
+			t.Errorf("%s with messages off: %q, want off", c.name, got)
+		}
+	}
+}
+
+func TestTheMsgColumnOfAStoppedLeadIsADashAfterItsMessageWasSent(t *testing.T) {
+	g := sendOne(t, Receipt{Op: OpInject, Status: Done, Epoch: 3, Outcome: OutcomeNotNow, Reason: ReasonNotReady, Written: WrittenNothing}, false)
+	if !strings.Contains(g.rows()[5], "free (not delivered)") {
+		t.Fatalf("the running lead:\n%s", g.screen())
+	}
+	// The lead stops; the list still carries the last epoch.
+	g.m.leads[1].State = "stopped"
+	if row := g.rows()[5]; strings.Contains(row, "free") || strings.Contains(row, "not delivered") {
+		t.Fatalf("a stopped lead keeps the words of its last epoch:\n%s", g.screen())
 	}
 }

@@ -394,7 +394,7 @@ and how many leads count against it:
 | KEY | The lead's key in the daemon's config. |
 | STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
 | EPOCH | The current epoch, `-` with none. |
-| MSG | `off` when the lead's config turns messages off, `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
+| MSG | `off` when the lead's config turns messages off, `-` for a lead that is not running (its state is stopped, ended, desired or unknown, or it has no epoch: the words of its last epoch's message are not drawn), `free` while the epoch's message is not spent, and `free (not delivered)` while it is free after a message that was not delivered (the holder answered not-now or refused with nothing written, or refused the request itself as disabled, wrong-epoch or bad-request; the receipt line says why): another can be sent with `m`. Once the message is spent, what became of it: `sent` only when its words say it was submitted; `sent-unsure` when something may have reached the lead (look at its screen), when the words are not ones the console knows, and when the daemon holds the epoch spent and has no words for it (the holder answered busy, which says it is delivering something the daemon has no record of; the answer was lost, the message was sent before the console started or by another client, or the daemon was restarted since and a later command hides the receipt): the request was written and nothing says what became of the message; and `spent, not delivered` for a message that was not delivered but that the daemon holds as spent anyway, because it could not write the result, or the holder's refusal, down (then `m` says a message was already sent in this epoch). |
 | LAST RECEIPT | The lead's last command and where it stands. |
 | UNIT | The lead's unit name. |
 
@@ -403,7 +403,16 @@ state needs words. For state `ready` with the reason `holder-ready` it reads
 "KEY: ready (holder-ready): the holder is up and the agent started; its login is
 not observed", which says what the daemon observed and no more: the agent's login
 is not looked at. The line gives way to the message editor, the stop question and
-a note, and a state or reason the console has no words for adds no line.
+a note, and a state or reason the console has no words for adds no line. A lead
+that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
+start whose launch the daemon cannot yet say anything about, as after the daemon
+was killed in the middle of a start) gets "launch not settled; a daemon restart
+after the 40 s launch window settles it". The same words answer a `lead.stop` or
+`lead.start` that is refused with `intent-pending`: reading the list does not
+settle a launch, so the line does not tell the owner to read it. While such a lead is
+listed, a start refused because the limit of running leads is reached adds that an
+unknown lead holds a slot, and what settles it. See [a lead left unknown after a
+killed daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
 
 Everything in the view that comes from the daemon (names, states, units) is cut
 to a short ASCII subset and drawn one character at a time, and the text of an
@@ -419,7 +428,7 @@ error is never drawn.
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
 | m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
 | w, v | Ask for an attach ticket as a writer or as a viewer (below). |
-| r | Read the list again. |
+| r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: nothing in the list changes it. |
 | Esc | Close the view. |
 | Ctrl+C | Quit, dropping an open field first. |
 
@@ -435,7 +444,7 @@ view's own, chosen by the receipt's status, and are not the daemon's text:
 
 | Shown | Status | Meaning |
 | --- | --- | --- |
-| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The row is read again every two seconds until it is final. |
+| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The list is read again every two seconds until it is final. |
 | accepted (done) | done | The command was carried out. For a message the line says what became of it, from the holder's own three words (outcome, reason, written), and whether the epoch's message is spent (next table). |
 | refused | refused | The daemon changed nothing that matters; the line gives the reason in the view's words. |
 | unavailable | unavailable | The command could not be carried out; the line gives the reason. |
@@ -483,7 +492,11 @@ message is spent, and the row shows it as `sent-unsure` (the message that was
 refused was not written, and what the holder was delivering is not known to have
 reached the lead nor known not to have: look at the lead's screen). A done message from a console adapter that does not pass the
 holder's reason and written is drawn from its outcome alone, with the same first
-words.
+words. The line stays the same when the list is read again: the daemon's list
+holds the last command of each lead as a summary without its result, so the
+view keeps the words of the answer to the press (the holder's three words of a
+message) while the list shows the same command, and takes a list receipt's own
+words when it has any.
 
 "Accepted" means that the daemon took the command into its durable table, not
 that it is done. The view has words for every reason code the daemon sends.
@@ -517,7 +530,10 @@ runs, and when it ends the cockpit opens again with the leads view open and the
 list read afresh. So the owner goes list, attach, back. `--daemon` still cannot
 be combined with `--attach`: the loop is internal. A ticket is single use and the
 lead has one ticket file, so ask for a ticket and attach before asking for
-another for the same lead. An attach that cannot be made (for example, the
+another for the same lead. A refused ticket reads "the holder refused the ticket;
+a writer may already be attached": the holder grants one writer at a time, and
+the receipt carries no reason beyond the refusal, so the line says what is likely
+and no more. An attach that cannot be made (for example, the
 attach socket's path is too long for a unix socket address) is told in one line
 and the cockpit comes back.
 

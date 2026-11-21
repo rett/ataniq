@@ -416,3 +416,74 @@ func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
 		}
 	}
 }
+
+// A lead left unknown by a launch that was never settled: the list never
+// settles it, so the words say what does (a daemon restart after the launch
+// window) and not "read the list".
+func TestAnUnsettledLaunchSaysWhatSettlesIt(t *testing.T) {
+	b := twoLeads(t)
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "launch-unsettled"
+	b.listing.Leads[1].Epoch = 1
+	b.answer = func(c call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: Op(c.op), Status: Unavailable, Code: "intent-pending"}, nil
+	}
+	r := newRig(t, b, 150, 30)
+	r.key("j")
+	// The row says it before any command is sent.
+	r.seen("beta: unknown (launch-unsettled): launch not settled; a daemon restart after the 40 s launch window settles it")
+	r.key("x")
+	r.key("y")
+	r.seen("stop: unavailable: launch not settled; a daemon restart after the 40 s launch window settles it")
+	r.notSeen("read the list")
+	r.key("s")
+	r.seen("start: unavailable: launch not settled; a daemon restart after the 40 s launch window settles it")
+}
+
+func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
+	refuse := func(call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: OpStart, Status: Refused, Code: "max-running"}, nil
+	}
+	// With a lead unknown in the list the refusal says what holds the slot.
+	b := twoLeads(t)
+	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "launch-unsettled"
+	b.answer = refuse
+	r := newRig(t, b, 220, 30)
+	r.key("s")
+	r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot",
+		"only a daemon restart after the 40 s launch window does")
+	// Without one the refusal is the plain line.
+	b = twoLeads(t)
+	b.answer = refuse
+	r = newRig(t, b, 220, 30)
+	r.key("s")
+	r.seen("start: refused: the limit of running leads is reached")
+	r.notSeen("unknown lead", "launch window")
+	// Another refusal is left alone even with an unknown lead listed.
+	b = twoLeads(t)
+	b.listing.Leads[1].State = "unknown"
+	b.answer = func(call) (Receipt, error) {
+		return Receipt{CommandID: "x1", Op: OpStart, Status: Refused, Code: "role-busy"}, nil
+	}
+	r = newRig(t, b, 220, 30)
+	r.key("s")
+	r.notSeen("An unknown lead")
+}
+
+// The receipt of a refused ticket carries only ticket-refused (the daemon logs
+// the holder's code), so the words say that a writer may already be attached
+// without claiming it is.
+func TestARefusedTicketSaysAWriterMayAlreadyBeAttached(t *testing.T) {
+	for _, key := range []string{"w", "v"} {
+		b := twoLeads(t)
+		b.answer = func(call) (Receipt, error) {
+			return Receipt{CommandID: "t1", Op: OpTicket, Status: Refused, Code: "ticket-refused"}, nil
+		}
+		r := newRig(t, b, 150, 30)
+		r.key("j")
+		r.key(key)
+		r.seen("attach ticket: refused: the holder refused the ticket; a writer may already be attached")
+		if len(r.actions) != 0 {
+			t.Fatalf("%s attached: %+v", key, r.actions)
+		}
+	}
+}

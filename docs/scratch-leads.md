@@ -316,7 +316,11 @@ on the holder's word, and in no other way:
   lead that the 60 s did not settle stays `starting`, the daemon logs that
   once, and it is observed again the next time the daemon starts. A `lead.start`
   never waits for the observer, and no client call does: the start's receipt is
-  answered with `starting` at once.
+  answered with `starting` at once. The console's leads view reads the list
+  again every two seconds while a lead is shown `starting` (or `stopping`), so
+  the row turns `ready` without a key, and stops when none is; a lead left
+  `starting` by a silent holder is read until the owner stops it or closes the
+  view.
 - **What it takes.** The holder answers `ok` with a status for the **same epoch
   and the same role** as the registry shows. A refusal (`wrong-epoch` included),
   no answer, an answer with no status and a status of another epoch or role are
@@ -503,7 +507,11 @@ still the role's last; a later command (a ticket, say) hides it, and the row the
 says nothing of the answer, whatever `message_spent` says. The rows of
 `lead.list` stay under 8 KiB for eight leads with the longest values, which is
 why the row's receipt is the summary form without its `message`, and a replay of
-the command's id gives the full receipt.
+the command's id gives the full receipt. The console's status line keeps the
+words of the answer to a press when the list is read again: the row's receipt
+of the same command has no result, so the line keeps the three words of a done
+message (and the folder and ticket file of a done ticket) from the answer, and a
+row's receipt that has words of its own is shown as it is.
 
 The console's client cleans both members to fixed words (a word outside the
 grammar becomes `unrecognised`), and its leads view draws the `ready` line and
@@ -515,7 +523,11 @@ empty: the view then shows
 the plain state, and the MSG column says `sent-unsure` for a spent message
 (nothing says what became of it) and `free` for a free one. A message's
 receipt carries the same three words, which the view draws as the answer to the
-press.
+press. The registry keeps a lead's last epoch after a stop and for an unknown
+start, and the row's message flag and words are that epoch's, so the view draws
+the MSG column of a lead that is not running (state `stopped`, `ended`,
+`desired` or `unknown`, or no epoch) as `-` and not from them; `off` still shows
+for a lead whose messages are off.
 
 The ticket file is **per lead** (`<runtime root>/leads/<layout role>/ticket`) and
 has one name, so there is **one ticket at a time per role**: the tickets of one
@@ -523,7 +535,9 @@ lead are made one after the other, and a later ticket replaces the file. A
 ticket is single use and the holder grants a writer ticket only while there is
 no writer and no other ticket for that place is waiting ([the lead holder
 guide](lead-holder.md)), so a second writer ticket may be refused
-(`ticket-refused`). The console reads the file when it attaches; mint a ticket
+(`ticket-refused`; the daemon logs the holder's code, `busy` among them, and the
+receipt carries only `ticket-refused`, so the console says "the holder refused the
+ticket; a writer may already be attached"). The console reads the file when it attaches; mint a ticket
 and attach before minting another for the same lead. Tickets of two leads do
 not cross.
 
@@ -690,6 +704,30 @@ still run, and `lead.stop` is the way out. A start that was `uncertain` after a
 daemon restart is settled as the lead daemon guide says of the [reconcile at
 start](lead-daemon.md#reconcile-and-what-starts-by-itself) and [the late-start
 window](lead-daemon.md#the-late-start-window); the console never sends it again.
+
+### A lead left unknown after a killed daemon
+
+A daemon that is killed in the middle of a start (or whose start loses its
+reply) leaves the lead `unknown`, with the reason `launch-unsettled` or
+`launch-reply-lost`, and counted against `max_running`. While the launch is
+unsettled `lead.stop` and `lead.start` are answered `unavailable` with
+`intent-pending`, and a start of another lead can be refused `max-running`
+because the unknown lead holds the slot. **Reading the list does not settle it,
+and neither does the console:** the daemon reconciles once, when it starts, and
+it closes the launch intent as abandoned (the lead then reads `stopped`) only
+when the late-start window of 30 s plus its margin of 10 s has passed since the
+registry stamped the intent (see [the late-start
+window](lead-daemon.md#the-late-start-window)). A daemon that was restarted
+inside that window leaves the lead `unknown` for good until it is restarted
+again.
+
+So the owner's recovery is: wait until 40 s have passed since the start, stop the
+daemon, start it again, and read the list. The lead is `stopped` and the slot is
+free. The console says the same: the row's line, the refusal of the stop or the
+start (`intent-pending`) and the refusal for the limit of running leads (while an
+unknown lead is listed) all say that the launch is not settled and that a daemon
+restart after the 40 s launch window settles it. The console does not know when
+the window ends, so it names no time.
 
 ## What scratch mode leaves open
 

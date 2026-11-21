@@ -1985,16 +1985,17 @@ step_4() {
 
 step_5() {
   if [ "$PASS" = A ]; then
-    skip 5 "Revocation: the owner confirms the provider's account page can revoke a login" 'G2'
+    skip 5 "Revocation: the owner notes the provider's account page before the login" 'G2'
     return 0
   fi
   step_head 5 'Revocation' \
-    "the owner opens the account page of the account the sandbox login will use and confirms that it lists the login as its own entry that can be revoked on its own, or that a separate throwaway account is used for the login; the script opens no browser" \
-    '"confirmed", with the time, only when the login will be an entry of its own or the account is a throwaway; otherwise "no", which ends the pass here' 'G2'
-  out '   Pass B run 1 showed that the provider lists Claude Code logins as rows named Unknown, with no entry that can be'
-  out '   identified as the login made in the pass: a page that lists logins is not enough, so the question below is narrower.'
-  ask 'Owner: type confirmed only if the account used for the sandbox login lists that login as its own entry that can be revoked on its own, OR if a separate throwaway account is used for it; otherwise type no (the pass ends)'
-  check 'the owner confirmed an identifiable revocable login, or a throwaway account' is_eq "$ANSWER" confirmed || return 0
+    "the owner opens the account page of the account the sandbox login will use and notes the rows it lists now, with each one's last-active time (the before state), and will note the new row after the login at step 15; the script opens no browser" \
+    '"confirmed", with the time, once the rows are noted; otherwise "no", which ends the pass here' 'G2'
+  out '   Pass B run 1 saw the provider list Claude Code logins as rows named Unknown and could not match one to the login made in'
+  out '   the pass. The owner believes that login had already been revoked when it was revoked; that is not verified. So this pass'
+  out '   checks before and after: note the rows now, the new row and its last-active time after the login, and at step 23 that it is gone.'
+  ask 'Owner: type confirmed once you have noted the rows the account page lists now (a separate throwaway account may be used for the login if you prefer); otherwise type no (the pass ends)'
+  check 'the owner noted the account page'"'"'s rows before the login' is_eq "$ANSWER" confirmed || return 0
   result confirmed
   done_step
 }
@@ -2575,6 +2576,7 @@ step_15() {
     awk 'FILENAME == ARGV[1] { before[$0] = 1; next } !($0 in before) { $1 = $2 = $3 = ""; sub(/^ +/, ""); print "     " $0 }' \
       "$EV/canary-config-before.txt" "$EV/canary-config-after.txt"
   fi
+  out '   Now open the account page and note the new row and its last-active time, against the rows you noted at step 5; step 23 checks that it is gone.'
   result ok
   done_step
 }
@@ -3026,7 +3028,7 @@ step_23() {
     return 0
   fi
   step_head 23 'Revoke' \
-    "the owner revokes the login on the provider's account page, whatever the logout showed, and confirms it is gone from the list; the credential is treated as exposed" \
+    "the owner revokes the login on the provider's account page, whatever the logout showed, and confirms that its row is gone from the list and that the session no longer works; the credential is treated as exposed" \
     '"revoked", with the time' 'G2'
   if [ "$IN_CHAIN" -eq 1 ] && was_done 23; then
     wait_key 'This step ended earlier in this run.'
@@ -3045,8 +3047,9 @@ step_23() {
   out '   Identify the login as a new row whose last-active time falls during this run, and revoke ONLY that row, no other, and not'
   out '   "log out of all devices" on an account that holds your own sessions: the lead'"'"'s among them use logins of the same account.'
   out '   On a separate throwaway account used for this login only, "log out of all devices" revokes it completely and is the way.'
-  out '   When no row can be identified (the provider lists only Unknown rows), do not guess: type cannot-identify: and what you see.'
-  ask 'Owner: revoke the login on the account page yourself; type revoked when it is gone from the list, no-login when no login was ever made in this pass, or cannot-identify: <what you see> when no row can be identified (a finding)'
+  out '   Compare with what you noted after the login: after the revoke its row must be gone and the session must no longer work.'
+  out '   When no row can be identified (run 1 saw only rows named Unknown; whether the login was already revoked then is not verified), do not guess: type cannot-identify: and what you see.'
+  ask 'Owner: revoke the login on the account page yourself; type revoked when its row is gone from the list and the session no longer works, no-login when no login was ever made in this pass, or cannot-identify: <what you see> when no row can be identified (a finding)'
   case $ANSWER in
     revoked) result revoked ;;
     no-login) result 'nothing to act on: no login was made' ;;
