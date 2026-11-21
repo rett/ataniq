@@ -99,10 +99,15 @@ type Request struct {
 	// "refs/heads/".
 	BaseRef string
 	// TipRef is the full name of the lead's branch. It must start with
-	// "refs/leads/".
+	// "refs/leads/", or with [PendingPrefix] in merge mode.
 	TipRef string
 	// Rules is the execution-config set. The zero Set matches nothing.
 	Rules execconfig.Set
+	// Merge selects merge mode: BaseRef is the target branch, whose tip
+	// is the base, and TipRef is the pin of a merge the host built, under
+	// [PendingPrefix] instead of refs/leads/. The tip must be a commit of
+	// two parents whose first is the base. See merge.go.
+	Merge bool
 	// Limits bounds the call. Zero fields take their defaults.
 	Limits Limits
 }
@@ -137,6 +142,9 @@ const (
 	FlagSubmodule  FlagKind = "submodule"
 	FlagAliased    FlagKind = "aliased"
 	FlagHistory    FlagKind = "history-only"
+	// FlagOddPath marks a path the matcher cannot read safely: see
+	// [OddPath]. Merge mode only.
+	FlagOddPath FlagKind = "odd-path"
 )
 
 // Flag marks one path.
@@ -190,6 +198,10 @@ type Review struct {
 	// and then by kind, one for each kind and path: the flags of the
 	// changes and the history-only flags.
 	Flagged []Flag
+	// Merge is true for a review made in merge mode: TipRef is a pin of a
+	// host-built merge and Base is the target's tip, the merge's first
+	// parent.
+	Merge bool
 }
 
 // NotFastForwardError is returned when the base is not an ancestor of the
@@ -220,15 +232,22 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	if err := checkRefName(req.BaseRef, "refs/heads/"); err != nil {
 		return nil, err
 	}
-	if err := checkRefName(req.TipRef, "refs/leads/"); err != nil {
+	if err := checkRefName(req.TipRef, tipPrefix(req.Merge)); err != nil {
 		return nil, err
+	}
+	if req.Merge {
+		// Run before any pinned diff: git reads info/attributes whatever
+		// the attribute source is.
+		if err := checkAttributes(src); err != nil {
+			return nil, err
+		}
 	}
 	r := newRunner(src, lim)
 	base, tip, err := r.resolve(ctx, req.BaseRef, req.TipRef)
 	if err != nil {
 		return nil, err
 	}
-	rev := &Review{BaseRef: req.BaseRef, TipRef: req.TipRef, Base: base, Tip: tip}
+	rev := &Review{BaseRef: req.BaseRef, TipRef: req.TipRef, Base: base, Tip: tip, Merge: req.Merge}
 	if base == tip {
 		return rev, nil
 	}
@@ -237,6 +256,11 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	}
 	if rev.Commits, err = r.commits(ctx, base, tip, lim); err != nil {
 		return nil, err
+	}
+	if req.Merge {
+		if err := checkMergeShape(rev); err != nil {
+			return nil, err
+		}
 	}
 	if rev.Changes, err = r.changes(ctx, base, tip, lim); err != nil {
 		return nil, err
@@ -247,6 +271,9 @@ func Inspect(ctx context.Context, src Source, req Request) (*Review, error) {
 	aliases, err := r.aliasFlags(ctx, req.Rules, tip, rev.Changes, lim)
 	if err != nil {
 		return nil, err
+	}
+	if req.Merge {
+		addOddPathFlags(rev.Changes)
 	}
 	// The commits of the branch run from the base's tree to the tip's, and a
 	// symlink that the branch removed or retargeted stood for its folder in
