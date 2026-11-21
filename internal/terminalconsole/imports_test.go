@@ -13,9 +13,9 @@ import (
 // allowedOwn lists, by name, the packages of this repository a non-test file
 // of the cockpit package may import. Its own subpackages: the session pane and
 // the replay, and the approvals pieces it places (the pager, the arrival
-// strip, the approvals view and the limit's screen). And what those pieces
-// speak in: the card and the record, the limit's rules, the presence tracker,
-// and the text escaping of lead-written text. The sample backend and the
+// strip, the approvals view and the limit's screen) and the leads view. And
+// what those pieces speak in: the card and the record, the limit's rules, the
+// presence tracker, and the text escaping of lead-written text. The sample backend and the
 // daemon's client are not here: they reach the console as values, handed over
 // by the command.
 var allowedOwn = map[string]bool{
@@ -25,6 +25,7 @@ var allowedOwn = map[string]bool{
 	"ataniq/internal/terminalconsole/arrival":       true,
 	"ataniq/internal/terminalconsole/approvals":     true,
 	"ataniq/internal/terminalconsole/limitview":     true,
+	"ataniq/internal/terminalconsole/leadctl":       true,
 	"ataniq/internal/approval/card":                 true,
 	"ataniq/internal/approval/record":               true,
 	"ataniq/internal/approval/presence":             true,
@@ -73,6 +74,8 @@ func TestImportGuardRules(t *testing.T) {
 		{"ataniq/internal/terminalconsole/sessionreplay", false}, {"network", false},
 		{"ataniq/internal/terminalconsole/pager", false}, {"ataniq/internal/terminalconsole/arrival", false},
 		{"ataniq/internal/terminalconsole/approvals", false}, {"ataniq/internal/terminalconsole/limitview", false},
+		{"ataniq/internal/terminalconsole/leadctl", false}, {"ataniq/internal/terminalconsole/leadctl/other", true},
+		{"ataniq/internal/leadwire", true}, {"ataniq/internal/leadcontrol", true},
 		{"ataniq/internal/approval/card", false}, {"ataniq/internal/approval/record", false},
 		{"ataniq/internal/approval/presence", false}, {"ataniq/internal/approval/limits", false},
 		{"ataniq/internal/exchange/leadtext", false},
