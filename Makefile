@@ -1,4 +1,4 @@
-.PHONY: bootstrap doctor test test-canary canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
+.PHONY: bootstrap doctor test test-canary test-ownerchannel canary-build test-dev test-patched qualification-host-build qualification-leadsandbox-build changelog-fold changelog-check
 
 # The patched charmbracelet modules in third_party/patched are directory
 # replacements, so ./... does not reach them; they are tested by package name
@@ -34,6 +34,19 @@ test-patched: doctor
 test-canary: doctor
 	@pkgs=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_canary' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
 	sh scripts/go-tool.sh test -tags ataniq_canary $$pkgs ./tests/
+
+# The tests of the code behind the owner channel's build tag, which make test
+# does not build, in two runs: with that tag alone, and with it and the canary
+# tag together, since no other target builds the pair. Each run covers every
+# package that holds a Go file whose build constraint names a tag it sets, found
+# here by the same grep as make test-canary (it reads the same folders and the
+# same line forms), and ./tests/, which holds the checks of both tags. It builds
+# no binary and runs nothing but tests.
+test-ownerchannel: doctor
+	@own=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_ownerchannel' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	both=$$(grep -rl --include='*.go' --exclude-dir='.?*' --exclude-dir='_*' --exclude-dir=testdata -E '^[[:space:]]*//(go:build|[[:space:]]*\+build)[[:space:]].*ataniq_(canary|ownerchannel)' . | while IFS= read -r f; do dirname "$$f"; done | LC_ALL=C sort -u); \
+	sh scripts/go-tool.sh test -tags ataniq_ownerchannel $$own ./tests/ && \
+	sh scripts/go-tool.sh test -tags ataniq_ownerchannel,ataniq_canary $$both ./tests/
 
 # The binaries of the attended canary run, built with the canary build tag into
 # build/canary/, which git ignores: the daemon, the holder, the provisioning
