@@ -19,6 +19,8 @@
 // does not write to any agent and does not persist anything.
 //
 // The package is provisional and unqualified: it is built from recorded
-// sessions of one version per runtime (claude 2.1.325, codex 0.169), with no
-// live qualification yet.
+// sessions of the versions in the table of package versions (claude 2.1.325,
+// codex 0.169 today), with no live qualification yet. It reads no version
+// itself: a report names an app, and the table says which apps the tested
+// versions report.
 package osc7501
