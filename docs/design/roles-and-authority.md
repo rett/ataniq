@@ -1,9 +1,9 @@
 # Roles and authority split
 
-Status: proposed, owner-approved direction; none of it is implemented or
-qualified. Role assignment, handoff, the supervisor, the feature coordinator
-and the lead registry exist only as this specification. Their contracts are
-still to be designed and reviewed before any runtime work.
+Status: owner-approved direction, specification only; none of it is
+implemented or qualified. Role assignment, handoff, the supervisor, the feature
+coordinator and the lead registry exist only as this specification. Their
+contracts are still to be designed and reviewed before any runtime work.
 
 ## Lead and supervisor roles
 
@@ -40,14 +40,16 @@ A cloud holder is an owner-side facilitator. Each instance assigns it as its own
 remote supervisory client, an instance-owned role record, and fences it alone;
 no instance depends on another's record of it. Through the scoped port of each
 instance it is assigned, it reads status and requests from that instance's
-supervisor and leads. It summarises across instances for the owner only: the
-summary is not served to any instance, and a nomination or proposal to an
+leads, and from a local supervisor of that instance where one is assigned. It
+summarises across instances for the owner only: the summary is made outside
+every instance and is served to no instance, and a nomination or proposal to an
 instance names only that instance's records. It nominates requests that become
 owner cards; a nomination names a request that already exists in the instance
 and carries no field of what is approved. It makes proposals only and never
-edits a plan or a dependency manifest; the record's own system accepts or
-refuses a proposal. Which of its sessions reads lead transcripts and which acts
-is enforced by the instance, by client identity; see [security](security.md).
+edits a plan, a backlog or a dependency manifest; the record's own system
+accepts or refuses a proposal. Which of its sessions reads lead transcripts and
+which acts is enforced by the instance, by client identity; see
+[security](security.md).
 See [approvals](approvals.md) for the card and [security](security.md) for the
 data that may reach a provider. The supervisor port, its port credential, the
 client class and the gateway are not built, so no remote holder is supported

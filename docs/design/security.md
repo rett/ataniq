@@ -49,15 +49,18 @@ state plus the transcripts of leads. Free text a lead wrote is untrusted, in a
 transcript and in a request. The session that reads transcripts is never the
 session that acts. The instance enforces this by client identity, not by a
 prompt, and it is not asked of the agent in a prompt: it serves a transcript
-only to a client that can make no nomination, proposal or other write call
-except returning its summary, and accepts a write call only from a client it has
-never served a transcript. A request's free-text fields are served to no client
-that can make a write call; such a client is served typed fields only. The
-reading session returns its summary to the instance under a schema; the
-instance checks it and serves it on, and any free text in it stays untrusted. A
-summary across instances is served to the owner only, never to an instance. What
-a provider does between two of its own sessions is outside the instance's
-control and is not claimed.
+only to a client whose one write call is returning its summary under a schema,
+and accepts a nomination, a proposal or any other write call only from a client
+it has never served a transcript. A returned summary changes no record but the
+summary itself. A request's free-text fields are served to no client that can
+make a write call; such a client is served typed fields only. The reading
+session returns its summary to the instance under a schema; the instance checks
+it and serves its free text, which stays untrusted, to the owner only. A client
+that can make a write call is served at most the summary's typed fields. A
+summary across instances is made for the owner outside every instance and is
+served to no instance; how it reaches the owner is decided with the supervisor
+port. What a provider does between two of its own sessions is outside the
+instance's control and is not claimed.
 
 ## Containment and termination
 
@@ -103,5 +106,6 @@ requests fail. Have a supervisory agent on a provider present an approval, a
 grant, a nomination that carries text or fields of its own, or a nomination of
 an unknown, changed or already decided request or of another instance's record,
 and assert refusal; send it a call shaped like a grant and assert refusal; and
-assert a session that read lead transcripts cannot make a write call. These
-scenarios require a real qualified boundary and have not been executed.
+assert a session that read lead transcripts can make no call but returning its
+summary. These scenarios require a real qualified boundary and have not been
+executed.
