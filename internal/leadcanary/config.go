@@ -105,6 +105,13 @@ type Config struct {
 	Limits Limits `json:"limits"`
 	// Provision names what the provisioning command copies and sets.
 	Provision ProvisionConfig `json:"provision"`
+
+	// Reserved is the kind of reserved project prefix the role carries. The
+	// zero value is leadrole.ReservedThrowaway, so a config that was read from
+	// a canary config file, which has no such key, is a throwaway one and its
+	// JSON is unchanged. Only [ScratchConfig.Leads] sets
+	// leadrole.ReservedScratch.
+	Reserved leadrole.Reserved `json:"-"`
 }
 
 // HolderConfig is the holder part of the config.
@@ -165,6 +172,11 @@ type ProvisionConfig struct {
 	Mirror string `json:"mirror"`
 	// UpstreamBranch is the branch the tree starts from.
 	UpstreamBranch string `json:"upstream_branch"`
+	// Source is the absolute path of the local repository the mirror's
+	// upstream branch is fetched from when provisioning makes the mirror. It
+	// is set only for a scratch lead ([ScratchConfig.Leads]) and is not a key
+	// of the canary config file, where the owner makes the mirror by hand.
+	Source string `json:"-"`
 	// GitName and GitEmail are the lead's git identity.
 	GitName  string `json:"git_name"`
 	GitEmail string `json:"git_email"`
@@ -185,8 +197,8 @@ func (c Config) Validate() error {
 	if c.Version != ConfigVersion {
 		return bad("version", "must be %d", ConfigVersion)
 	}
-	if _, _, err := Names(c.Role); err != nil {
-		return bad("role", "must be the lead of a throwaway project whose layout name fits")
+	if _, _, err := NamesFor(c.Reserved, c.Role); err != nil {
+		return bad("role", "must be the lead of a %s project whose layout name fits", c.Reserved)
 	}
 	if err := checkAbs("state_root", c.StateRoot); err != nil {
 		return err
@@ -206,7 +218,23 @@ func (c Config) Validate() error {
 	if err := c.Limits.validate(); err != nil {
 		return err
 	}
-	return c.Provision.validate()
+	return c.validateProvision()
+}
+
+// validateProvision checks the provision part and the one rule of the reserved
+// kind that it carries: a scratch lead names the local repository its mirror
+// is made from, a throwaway one has none.
+func (c Config) validateProvision() error {
+	if err := c.Provision.validate(); err != nil {
+		return err
+	}
+	switch {
+	case c.Reserved == leadrole.ReservedScratch:
+		return checkAbs("provision.source", c.Provision.Source)
+	case c.Provision.Source != "":
+		return bad("provision.source", "is for a scratch lead only")
+	}
+	return nil
 }
 
 func (h HolderConfig) validate() error {
@@ -343,7 +371,8 @@ func (p ProvisionConfig) validate() error {
 
 // CheckRoots runs the shared root check of canary mode
 // (canaryroot.Check) on the config's roots and project: the project must carry
-// the throwaway prefix, neither root may be, lie inside or contain a default
+// a reserved prefix (the throwaway one for a canary config, the scratch one for
+// a scratch lead, whose marker is the scratch root marker), neither root may be, lie inside or contain a default
 // state or runtime folder of the account (the environment's, through getenv,
 // and the account's), the two roots must not nest, and the state root must
 // carry the marker that provisioning wrote for the project. The daemon calls it
@@ -356,7 +385,7 @@ func (c Config) CheckRoots(getenv func(string) string) error {
 // when the role is not the canary role or the roots are not valid for the
 // layout.
 func (c Config) Layout() (profile.Layout, error) {
-	layoutRole, _, err := Names(c.Role)
+	layoutRole, _, err := NamesFor(c.Reserved, c.Role)
 	if err != nil {
 		return profile.Layout{}, err
 	}
@@ -371,7 +400,7 @@ func (c Config) Layout() (profile.Layout, error) {
 // "<runtime root>/leads/<layout role>", which the holder is given as
 // --runtime-dir. Its "report" folder is where the probe's report FIFO lies.
 func (c Config) HolderRuntimeDir() (string, error) {
-	layoutRole, _, err := Names(c.Role)
+	layoutRole, _, err := NamesFor(c.Reserved, c.Role)
 	if err != nil {
 		return "", err
 	}

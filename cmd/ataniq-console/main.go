@@ -91,7 +91,7 @@ func parse(args []string, errout io.Writer) (cfg config, code int, ok bool) {
 	viewer := flags.Bool("viewer", false, "with --attach: ask for the read-only place; the ticket decides which place the holder grants")
 	shiftEnter := flags.String("shift-enter", shiftEnters[0].String(), "with --attach: what Shift+Enter sends: "+strings.Join(shiftEnterNames(), ", "))
 	noBell := flags.Bool("no-bell", false, "with --demo or --daemon: do not ring the terminal's bell when a card arrives while you are away (the bell is on by default)")
-	daemon := flags.String("daemon", "", "show the daemon's leads, and its approvals when it serves the owner channel: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
+	daemon := flags.String("daemon", "", "show the daemon's leads, its approvals when it serves the owner channel, and its lead control (key L) when it has one: the folder that holds the daemon's socket (provisional; not with --demo or --attach)")
 	usage := func() {
 		fmt.Fprintln(errout, usageLine)
 		flags.SetOutput(errout)
@@ -240,6 +240,24 @@ func demoModel(cfg config) *terminalconsole.Model {
 	return terminalconsole.NewWithOptions(terminalconsole.Fixture{}, o)
 }
 
+// runProgram returns the runner of consoles on the terminal: a Bubble Tea
+// program that writes to out. With openLeads it sends the key that opens the
+// leads view, which the program takes once it runs.
+func runProgram(out io.Writer) consoleRunner {
+	return func(m *terminalconsole.Model, openLeads bool) error {
+		program := tea.NewProgram(m, tea.WithOutput(out))
+		if openLeads {
+			// Send returns when the program takes the message or has ended.
+			go program.Send(openLeadsKey())
+		}
+		_, err := program.Run()
+		if err != nil {
+			program.Kill()
+		}
+		return err
+	}
+}
+
 func run(args []string, out, errout io.Writer) int {
 	cfg, code, ok := parse(args, errout)
 	if !ok {
@@ -250,13 +268,7 @@ func run(args []string, out, errout io.Writer) int {
 	case cfg.attach != nil:
 		model = attachModel(cfg)
 	case cfg.daemon != "":
-		m, closeOwner, err := daemonConsole(cfg)
-		if err != nil {
-			fmt.Fprintln(errout, "error:", err)
-			return 1
-		}
-		defer closeOwner()
-		model = m
+		return runDaemon(cfg, out, errout)
 	case cfg.demo:
 		model = demoModel(cfg)
 	default:
@@ -267,13 +279,29 @@ func run(args []string, out, errout io.Writer) int {
 	// holder sees a clean detach. Quitting from the console closes it first;
 	// a second Close does nothing.
 	defer model.Close()
-	program := tea.NewProgram(model, tea.WithOutput(out))
-	_, err := program.Run()
-	if err != nil {
-		program.Kill()
+	if err := runProgram(out)(model, false); err != nil {
 		fmt.Fprintln(errout, "console:", err)
 		return 1
 	}
 	return 0
 }
+
+// runDaemon runs --daemon: the daemon's console, and the attaches the leads
+// view asks for, which the loop runs one kind at a time. See daemonLoop.
+func runDaemon(cfg config, out, errout io.Writer) int {
+	rig, err := newDaemonRig(cfg, newLeadsClient)
+	if err != nil {
+		fmt.Fprintln(errout, "error:", err)
+		return 1
+	}
+	defer rig.Close()
+	run := runProgram(out)
+	return daemonLoop{
+		rig:    rig,
+		run:    run,
+		attach: map[attachKind]attachRunner{attachTerminal: terminalAttach(cfg, run)},
+		errout: errout,
+	}.loop()
+}
+
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

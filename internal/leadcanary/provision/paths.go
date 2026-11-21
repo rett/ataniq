@@ -9,6 +9,7 @@ import (
 	"ataniq/internal/leadcanary"
 	"ataniq/internal/leadcanary/standin"
 	"ataniq/internal/leadholder/canaryroot"
+	"ataniq/internal/leadrole"
 	"ataniq/internal/leadsandbox/profile"
 )
 
@@ -115,11 +116,23 @@ type Paths struct {
 	// [ReplayOn] writes.
 	ReplayDir    string
 	ReplaySwitch string
+
+	// For a scratch lead only (empty for the canary's): ScratchRoot is
+	// <state root>/scratch, which holds one folder per scratch lead,
+	// ScratchDir the lead's own folder <state root>/scratch/<layout role>
+	// (the sandbox inputs file and the record that provisioning is done lie in
+	// it, outside the lead's folder so that the lead's sandbox never sees
+	// them), SandboxInputs the inputs file in it and LeadRecord the record.
+	ScratchRoot   string
+	ScratchDir    string
+	SandboxInputs string
+	LeadRecord    string
 }
 
 // PathsOf works out every path of the config. It fails when the role is not
-// the canary role, the layout is not valid or agent.runtime is not a runtime
-// the sandbox profile knows, and does not look at the file system.
+// the role of the config's reserved kind, the layout is not valid or
+// agent.runtime is not a runtime the sandbox profile knows, and does not look
+// at the file system.
 func PathsOf(cfg leadcanary.Config) (Paths, error) {
 	l, err := cfg.Layout()
 	if err != nil {
@@ -141,7 +154,7 @@ func PathsOf(cfg leadcanary.Config) (Paths, error) {
 	roleLock := cfg.Role.LockPath(cfg.StateRoot)
 	roleDir := path.Dir(roleLock)
 	replay := path.Join(l.Home(), standin.ReplayDir)
-	return Paths{
+	p := Paths{
 		Layout: l, Runtime: rt,
 		StateRoot: cfg.StateRoot, RuntimeRoot: cfg.RuntimeRoot,
 		Marker:   path.Join(cfg.StateRoot, canaryroot.MarkerName),
@@ -168,7 +181,14 @@ func PathsOf(cfg leadcanary.Config) (Paths, error) {
 
 		ReplayDir:    replay,
 		ReplaySwitch: path.Join(replay, standin.SwitchFile),
-	}, nil
+	}
+	if cfg.Reserved == leadrole.ReservedScratch {
+		p.ScratchRoot = path.Join(cfg.StateRoot, leadcanary.ScratchDirName)
+		p.ScratchDir = path.Join(p.ScratchRoot, l.Role)
+		p.SandboxInputs = path.Join(p.ScratchDir, leadcanary.SandboxInputsName)
+		p.LeadRecord = path.Join(p.ScratchDir, LeadRecordName)
+	}
+	return p, nil
 }
 
 // stateRel gives abs relative to the state root, for a lookup beneath its

@@ -9,13 +9,15 @@ recording, it is not a live session, and nothing you type reaches a process.
 With `--attach` it shows a live scratch session that a holder keeps, for a
 scratch agent only (see
 [Attaching to a holder](#attaching-to-a-holder)). With `--daemon` it shows the
-daemon's leads, read-only (see [The daemon view](#the-daemon-view)). No mode is
-a production backend. The console does not send instructions, steer or
-interrupt leads. It has an approvals view, but in this release a decision there
-changes nothing (see [Approvals](#approvals) and
+daemon's leads, read-only (see [The daemon view](#the-daemon-view)), and, only
+when the daemon is a tagged one that serves lead control, a leads view that
+drives scratch leads (see [Lead control](#lead-control-scratch-daemon-only)).
+No mode is a production backend. Apart from that leads view, the console does
+not send instructions, steer or interrupt leads. It has an approvals view, but
+in this release a decision there changes nothing (see [Approvals](#approvals) and
 [What is a sample](#what-is-a-sample-and-what-is-not-qualified)). It
-integrates no provider and no durable command and receipt path, and it opens
-no network listener. Without `--demo`, `--attach` and `--daemon` the
+integrates no provider, and the only durable command and receipt path it has is
+that of a scratch daemon's lead control; it opens no network listener. Without `--demo`, `--attach` and `--daemon` the
 command reports that the backend is unavailable and exits with status 1.
 
 In a local terminal, run `make doctor`, then build with the selected offline
@@ -97,6 +99,7 @@ bar and the key bar show which one is active.
 | r | Replay the recording from its start, in a new pane. |
 | F12 | Zoom the session terminal to the whole window, or leave zoom. |
 | g | Open the approvals view (see [Approvals](#approvals)). |
+| L | Open the leads view, `--daemon` only (see [Lead control](#lead-control-scratch-daemon-only)). |
 | Esc | Close help or the action list. |
 | q, Ctrl+C | Quit. |
 
@@ -321,8 +324,10 @@ imitate activity: presence is a convenience and a record, not a fence.
 socket, shows the projects with their lead and coordinators and each one's
 state, and asks the daemon again every few seconds. The view is read-only:
 every control is unavailable with its reason, and it has no session terminal.
-With no daemon, a slow one or one that speaks another protocol, it says so with
-the next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
+The leads view of a daemon with lead control (`L`) and the approvals of a daemon
+with the owner channel are the two places that act, each on its own screen. With
+no daemon, a slow one or one that speaks another protocol, it says so with the
+next step and keeps asking. See [the lead daemon guide](lead-daemon.md).
 
 ## The owner channel (tagged daemon only)
 
@@ -360,6 +365,109 @@ confirm code appears in no place: the console draws it and keeps it in its
 model. If a request is interrupted, the daemon answers it request-invalid and the
 lead must ask again.
 
+## Lead control (scratch daemon only)
+
+With `--daemon DIR` the console asks the daemon for `hello` when it starts and
+offers the leads view only when the answer lists all
+six operations of the lead control plane (`lead.list`, `lead.define`,
+`lead.start`, `lead.stop`, `lead.ticket` and `lead.inject`). Only a daemon built
+with the canary tag and started with `ataniqd run --scratch CONFIG` lists them
+(see [the scratch leads guide](scratch-leads.md)); the console client is in every
+build and behind no tag. **When the daemon lists none, the console has no lead
+control.** `L` then opens a screen that says "no lead control in this daemon",
+and Esc closes it. A daemon that lists only some of the six is treated the same
+way. The console asks once, when it starts, so start it again after the daemon
+was started with `--scratch`.
+
+### Opening the view and what it shows
+
+`L` (capital L) opens the leads view from console focus. It does nothing in
+session focus, where every key goes to the session, and in the approvals list
+`L` is still that view's own key (the limit's screen). Below the cockpit's size
+the single-column pages take it too, but not over a live session.
+
+The view lists the daemon's leads, one row each, with the daemon's `max_running`
+and how many leads count against it:
+
+| Column | Meaning |
+| --- | --- |
+| KEY | The lead's key in the daemon's config. |
+| STATE | The registry's state of the lead, with `*` after it while a command for the lead has no answer yet. |
+| EPOCH | The current epoch, `-` with none. |
+| MSG | `off` when the lead's config turns messages off, `sent` when the epoch's one message was sent, else `free`. |
+| LAST RECEIPT | The lead's last command and where it stands. |
+| UNIT | The lead's unit name. |
+
+Everything in the view that comes from the daemon (names, states, units) is cut
+to a short ASCII subset and drawn one character at a time, and the text of an
+error is never drawn.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| j, k, Up, Down | Move over the rows. |
+| d | Define the lead under the cursor: the daemon provisions it and registers it. |
+| s | Start it. |
+| x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
+| m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
+| w, v | Ask for an attach ticket as a writer or as a viewer (below). |
+| r | Read the list again. |
+| Esc | Close the view. |
+| Ctrl+C | Quit, dropping an open field first. |
+
+While a command for a lead has no answer yet, the keys that would send another
+for that lead do nothing and say so. `m` says why it does nothing when the lead
+has no epoch, when messages are off, when the epoch's message was sent, and when
+an earlier message of the epoch has no final answer.
+
+### Receipts
+
+Every command is shown with the daemon's receipt for it. The words are the
+view's own, chosen by the receipt's status, and are not the daemon's text:
+
+| Shown | Status | Meaning |
+| --- | --- | --- |
+| accepted (running) | in-progress | The daemon admitted the command and it has not ended. The row is read again every two seconds until it is final. |
+| accepted (done) | done | The command was carried out. For a message the line adds what the lead did with it: submitted, could not take it now (nothing written), refused (nothing written), or "it may have reached the lead; look at the lead's screen before you decide". |
+| refused | refused | The daemon changed nothing that matters; the line gives the reason in the view's words. |
+| unavailable | unavailable | The command could not be carried out; the line gives the reason. |
+| uncertain | uncertain | The daemon does not know what happened, as after a restart while the command ran. Read the lead's state, then decide; nothing is sent again for you. |
+
+"Accepted" means that the daemon took the command into its durable table, not
+that it is done. The view has words for every reason code the daemon sends.
+Only a code from a newer daemon, one that is not in that set, is drawn as "the
+reason is not known to this console"; an outcome it does not know is drawn as
+"the result is not known to this console".
+
+**Earlier receipts.** After a lost answer the console's client asks once more,
+on a new connection, with the same command id and the same arguments, and the
+daemon answers with the receipt it holds: it never runs the command again. A
+receipt that comes back for a command of an earlier press (the answer was lost,
+or it had none that was final) is not shown as the answer to the press that
+returned it, because "done" would then read as something just done, and an old
+ticket may be spent. The view says instead "no answer came back: the command may
+or may not have run. The list was read again; nothing was sent a second time"
+(for a message: "no answer came back: the message may or may not have reached the
+lead. Read the list; it shows whether the epoch's message was sent"), and reads
+the list, which shows the lead's last command. The client forgets the id with the
+final receipt, so the next press is a new command. A message whose answer was
+lost is not made again for the epoch.
+
+### Attach: list, attach, back
+
+`w` and `v` send a ticket command. When its receipt is done, the leads view asks
+the console to attach to that lead, and the command line does what `--attach`
+does for the lead's folder and ticket file, as a writer or as a viewer: the
+cockpit ends, the attach screen of [Attaching to a holder](#attaching-to-a-holder)
+runs, and when it ends the cockpit opens again with the leads view open and the
+list read afresh. So the owner goes list, attach, back. `--daemon` still cannot
+be combined with `--attach`: the loop is internal. A ticket is single use and the
+lead has one ticket file, so ask for a ticket and attach before asking for
+another for the same lead. An attach that cannot be made (for example, the
+attach socket's path is too long for a unix socket address) is told in one line
+and the cockpit comes back.
+
 ## What is a sample and what is not qualified
 
 - No approval is possible with a release daemon: a release daemon contains no
@@ -369,7 +477,11 @@ lead must ask again.
 - The sample cards of `--demo` change nothing: the header says "sample cards: a
   decision changes nothing".
 - The daemon view is read-only, except for the approvals of a daemon that
-  serves the owner channel (see [The owner channel](#the-owner-channel-tagged-daemon-only)).
+  serves the owner channel (see [The owner channel](#the-owner-channel-tagged-daemon-only))
+  and the leads view of a daemon that serves lead control, which is a scratch
+  daemon of a tagged build: it drives scratch leads on throwaway repositories
+  and nothing else (see [Lead control](#lead-control-scratch-daemon-only)).
+  With any other daemon `L` says "no lead control in this daemon".
 - Nothing here has been qualified on a real lead.
 
 ## Flags
@@ -398,8 +510,9 @@ ataniq-console --daemon DIR [--theme dark|light] [--no-bell]
   is yours: `lf` sends a line feed (Ctrl+J), `csi-u` sends the enhanced form
   `CSI 13;2u`, which only an agent that reads it understands, and
   `backslash-cr` sends a backslash and Enter, the line continuation.
-- `--daemon DIR` shows the daemon's leads, read-only, and its approvals when
-  the daemon serves the owner channel. DIR is the folder that
+- `--daemon DIR` shows the daemon's leads, read-only, its approvals when
+  the daemon serves the owner channel, and the leads view (`L`) when the daemon
+  serves lead control. DIR is the folder that
   holds the daemon's socket. It cannot be combined with `--demo`, `--attach`,
   `--recording`, `--linger`, `--return-key`, `--ticket-file`, `--viewer` or
   `--shift-enter`. See [The daemon view](#the-daemon-view).

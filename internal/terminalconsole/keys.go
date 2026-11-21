@@ -73,3 +73,32 @@ func (r ReturnKey) matches(k tea.KeyPressMsg) bool {
 	}
 	return withoutLocks(k.Mod) == tea.ModCtrl && k.Code == r.code && k.Text == ""
 }
+
+// isLeadsKey reports whether k is the key that opens the leads view: capital
+// L, typed as shift and l or as the text "L", with no other modifier but lock
+// states.
+func isLeadsKey(k tea.KeyPressMsg) bool {
+	if k.Mod&^(tea.ModShift|lockMods) != 0 {
+		return false
+	}
+	if k.Text != "" {
+		return k.Text == "L"
+	}
+	return k.Code == 'L' || (k.Code == 'l' && k.Mod&tea.ModShift != 0)
+}
+
+// opensLeads reports whether the key press opens the leads view. Like g for
+// approvals it is a key of console focus: while the session has the focus the
+// key goes to the session, and while an approvals screen, the overlay or zoom
+// has the keys it is theirs. Below the cockpit's size the single-column pages
+// have it, but not over a live session, whose one page has no keys of its
+// own.
+func (m *Model) opensLeads(k tea.KeyPressMsg) bool {
+	if !isLeadsKey(k) || m.apprOpen() || m.leadsOpen() {
+		return false
+	}
+	if !m.layout().cockpit {
+		return !m.live.on()
+	}
+	return m.focus == consoleFocus && !m.zoom && m.overlay == ""
+}

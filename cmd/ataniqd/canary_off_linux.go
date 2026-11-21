@@ -8,7 +8,8 @@ import (
 	"ataniq/internal/leaddaemon"
 )
 
-// This build has no canary mode: no flag, no command, nothing to register.
+// This build has no canary mode and no scratch mode: no --canary or --scratch
+// flag, no command, nothing to register.
 // canary_linux.go has the same names for a build with the ataniq_canary tag.
 
 // canaryUsage is the part of the usage text that only a tagged build has.
