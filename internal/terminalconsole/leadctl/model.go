@@ -218,8 +218,9 @@ func (m *Model) needsPoll() bool {
 
 // changesByItself says whether a lead in this registry state is moving on
 // without a command: starting turns ready (or stopped or ended) when its holder
-// is observed, and stopping turns stopped. unknown is not one of them: it holds
-// until a daemon restart settles it, so no reading of the list changes it.
+// is observed, and stopping turns stopped. unknown is not one of them: the view
+// does not read the list for it by a timer, so a lead whose launch the daemon
+// settles after the window shows it at the next reading the owner asks for.
 func changesByItself(state string) bool { return state == "starting" || state == "stopping" }
 
 // onListed takes in the answer to a list request. An answer to a request that

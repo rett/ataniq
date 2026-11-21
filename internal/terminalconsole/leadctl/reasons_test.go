@@ -418,8 +418,8 @@ func TestTheDaemonSpendsTheMessageWhenTheRequestIsWrittenUnlessItWasNotDelivered
 }
 
 // A lead left unknown by a launch that was never settled: the list never
-// settles it, so the words say what does (a daemon restart after the launch
-// window) and not "read the list".
+// settles it, so the words say what does (the daemon, 40 s after the start,
+// and a daemon restart when it does not) and not "read the list".
 func TestAnUnsettledLaunchSaysWhatSettlesIt(t *testing.T) {
 	b := twoLeads(t)
 	b.listing.Leads[1].State, b.listing.Leads[1].StateReason = "unknown", "launch-unsettled"
@@ -430,13 +430,13 @@ func TestAnUnsettledLaunchSaysWhatSettlesIt(t *testing.T) {
 	r := newRig(t, b, 150, 30)
 	r.key("j")
 	// The row says it before any command is sent.
-	r.seen("beta: unknown (launch-unsettled): launch not settled; a daemon restart after the 40 s launch window settles it")
+	r.seen("beta: unknown (launch-unsettled): launch settles by itself 40 s after the start; if not, restart the daemon")
 	r.key("x")
 	r.key("y")
-	r.seen("stop: unavailable: launch not settled; a daemon restart after the 40 s launch window settles it")
+	r.seen("stop: unavailable: launch settles by itself 40 s after the start; if not, restart the daemon")
 	r.notSeen("read the list")
 	r.key("s")
-	r.seen("start: unavailable: launch not settled; a daemon restart after the 40 s launch window settles it")
+	r.seen("start: unavailable: launch settles by itself 40 s after the start; if not, restart the daemon")
 }
 
 func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
@@ -450,7 +450,7 @@ func TestAMaxRunningRefusalNamesAnUnknownLeadThatHoldsASlot(t *testing.T) {
 	r := newRig(t, b, 220, 30)
 	r.key("s")
 	r.seen("start: refused: the limit of running leads is reached. An unknown lead holds a slot",
-		"only a daemon restart after the 40 s launch window does")
+		"until its launch settles by itself, 40 s after the start; if it is still unknown after that, restart the daemon")
 	// Without one the refusal is the plain line.
 	b = twoLeads(t)
 	b.answer = refuse
@@ -485,5 +485,38 @@ func TestARefusedTicketSaysAWriterMayAlreadyBeAttached(t *testing.T) {
 		if len(r.actions) != 0 {
 			t.Fatalf("%s attached: %+v", key, r.actions)
 		}
+	}
+}
+
+// The words of a launch that is not settled say that the daemon settles it by
+// itself after the 40 s window, and name the restart as what is left, and the
+// tail of the max-running refusal does the same; each stays within the byte
+// caps of its kind (the state and reason words 80, the tail what it was).
+func TestUnsettledWordsNameTheWindowAndTheFallback(t *testing.T) {
+	for name, w := range map[string]string{
+		"state line":       stateWords[[2]string{"unknown", "launch-unsettled"}],
+		"reply lost":       stateWords[[2]string{"unknown", "launch-reply-lost"}],
+		"intent-pending":   reasonWords["intent-pending"],
+		"max-running tail": maxRunningUnknownTail,
+	} {
+		for _, part := range []string{"by itself", "40 s after the start", "restart the daemon"} {
+			if !strings.Contains(w, part) {
+				t.Errorf("%s: %q lacks %q", name, w, part)
+			}
+		}
+		if strings.Contains(w, "only a daemon restart") || strings.Contains(w, "launch window") {
+			t.Errorf("%s: %q still says that only a restart settles the launch", name, w)
+		}
+	}
+	for name, w := range map[string]string{
+		"state line":     stateWords[[2]string{"unknown", "launch-unsettled"}],
+		"intent-pending": reasonWords["intent-pending"],
+	} {
+		if len(w) > 80 {
+			t.Errorf("%s: %d bytes", name, len(w))
+		}
+	}
+	if len(maxRunningUnknownTail) > 155 {
+		t.Errorf("the tail is %d bytes", len(maxRunningUnknownTail))
 	}
 }

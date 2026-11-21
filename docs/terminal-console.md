@@ -406,13 +406,19 @@ is not looked at. The line gives way to the message editor, the stop question an
 a note, and a state or reason the console has no words for adds no line. A lead
 that is `unknown` with the reason `launch-unsettled` or `launch-reply-lost` (a
 start whose launch the daemon cannot yet say anything about, as after the daemon
-was killed in the middle of a start) gets "launch not settled; a daemon restart
-after the 40 s launch window settles it". The same words answer a `lead.stop` or
-`lead.start` that is refused with `intent-pending`: reading the list does not
-settle a launch, so the line does not tell the owner to read it. While such a lead is
-listed, a start refused because the limit of running leads is reached adds that an
-unknown lead holds a slot, and what settles it. See [a lead left unknown after a
-killed daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
+was killed in the middle of a start) gets "launch settles by itself 40 s after
+the start; if not, restart the daemon": the daemon in scratch mode settles the
+launch itself when the 40 s window ends, and a restart of the daemon is what is
+left if the lead is still `unknown` after that. The same words answer a
+`lead.stop` that is refused with `intent-pending` (and a `lead.start` with that
+code): reading the list does not settle a launch, so the line does not tell the
+owner to read it. While such a lead is listed, a start refused because the
+limit of running leads is reached adds that the unknown lead holds a slot until
+its launch settles by itself, 40 s after the start, and that if it is still
+unknown after that the daemon is restarted. The view does not read the list by a
+timer for an `unknown` lead, so the settled lead shows at the next reading (`r`).
+See [a lead left unknown after a killed
+daemon](scratch-leads.md#a-lead-left-unknown-after-a-killed-daemon).
 
 Everything in the view that comes from the daemon (names, states, units) is cut
 to a short ASCII subset and drawn one character at a time, and the text of an
@@ -428,7 +434,7 @@ error is never drawn.
 | x | Ask "Stop KEY (epoch N)?"; only y stops it, any other key keeps it running. |
 | m | Open a one-line editor for a message to the lead, for the epoch the row shows. Enter sends it once, Esc drops it, Ctrl+U clears it, and every printable key, q and j included, is text. It holds at most 2048 bytes, the daemon's limit, and stops taking text there. |
 | w, v | Ask for an attach ticket as a writer or as a viewer (below). |
-| r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: nothing in the list changes it. |
+| r | Read the list again now. The view also reads it every two seconds by itself while a receipt is in progress and while a lead is `starting` or `stopping`, so a started lead turns `ready` without this key, and stops reading when none is. A lead that is `unknown` is not read by a timer: press this key to see a launch that the daemon has settled since. |
 | Esc | Close the view. |
 | Ctrl+C | Quit, dropping an open field first. |
 

@@ -138,16 +138,19 @@ var reasonWords = map[string]string{
 	"bad-text":           "the message text was not accepted",
 }
 
-// unsettledWords is what a launch that is not settled needs: reading the list
-// does not settle it (only the daemon's reconcile at its start does, and only
-// once the late-start window of 30 s and its margin of 10 s have passed since
-// the launch was recorded).
-const unsettledWords = "launch not settled; a daemon restart after the 40 s launch window settles it"
+// unsettledWords is what a launch that is not settled needs: the daemon in
+// scratch mode settles it itself once the late-start window of 30 s and its
+// margin of 10 s have passed since the launch was recorded (reading the list
+// does not settle it). A daemon that does not (one that cannot ask the unit
+// manager, or has no timer) settles it at its reconcile when it is restarted
+// after that, which is the fallback the words name.
+const unsettledWords = "launch settles by itself 40 s after the start; if not, restart the daemon"
 
 // maxRunningUnknownTail is added to the refusal for the limit of running
 // leads while the list shows a lead that is unknown: an unknown lead counts
-// as running, and it stays so until its launch is settled.
-const maxRunningUnknownTail = ". An unknown lead holds a slot: its launch is not settled, and reading the list does not settle it; only a daemon restart after the 40 s launch window does"
+// as running, and it stays so until its launch is settled, which the daemon
+// does itself 40 s after the start (a restart is the fallback).
+const maxRunningUnknownTail = ". An unknown lead holds a slot until its launch settles by itself, 40 s after the start; if it is still unknown after that, restart the daemon"
 
 const unknownReason = "the reason is not known to this console"
 
@@ -336,7 +339,7 @@ func msgWord(l Lead, d Delivery) string {
 var stateWords = map[[2]string]string{
 	{"ready", "holder-ready"}: "the holder is up and the agent started; its login is not observed",
 	// A launch whose reply was lost, or that a restarted daemon found inside
-	// its window: the list never settles it.
+	// its window: the daemon settles it when the window ends.
 	{"unknown", "launch-unsettled"}:  unsettledWords,
 	{"unknown", "launch-reply-lost"}: unsettledWords,
 }

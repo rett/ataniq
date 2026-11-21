@@ -91,21 +91,23 @@
 - The console's leads view reads the list again every two seconds while a lead
   is `starting` or `stopping`, as it already did while a receipt is in
   progress, so a started lead turns `ready` without `r` and the reading stops
-  when none is. A lead that is `unknown` is not read by a timer, because the
-  list does not change it. See `docs/terminal-console.md`.
+  when none is. A lead that is `unknown` is not read by a timer. See
+  `docs/terminal-console.md`.
 - The console's leads view draws `-` in the MSG column of a lead that is not
   running (state stopped, ended, desired or unknown, or no epoch), where it
   drew the words of the lead's last epoch's message; `off` stays for a lead
   whose messages are off. See `docs/terminal-console.md`.
 - The console's leads view says what settles a lead whose launch is not
   settled. A lead that is `unknown` with the reason `launch-unsettled` or
-  `launch-reply-lost` gets the line "launch not settled; a daemon restart after
-  the 40 s launch window settles it", the same words answer a stop or a start
-  refused with `intent-pending` (which no longer tells the owner to read the
+  `launch-reply-lost` gets the line "launch settles by itself 40 s after the
+  start; if not, restart the daemon", the same words answer a stop or a start
+  refused with `intent-pending` (which does not tell the owner to read the
   list, because reading it does not settle the launch), and a start refused for
   the limit of running leads while an unknown lead is listed says that the
-  unknown lead holds a slot and what settles it. `docs/scratch-leads.md` has the
-  recovery after a killed daemon. See `docs/terminal-console.md`.
+  unknown lead holds a slot until its launch settles by itself, 40 s after the
+  start, and that a restart of the daemon is what is left if it is still
+  unknown after that. `docs/scratch-leads.md` has the recovery after a killed
+  daemon. See `docs/terminal-console.md`.
 - The console's leads view words a refused attach ticket "the holder refused
   the ticket; a writer may already be attached", because the receipt carries no
   reason beyond `ticket-refused` and the holder grants one writer at a time. See
