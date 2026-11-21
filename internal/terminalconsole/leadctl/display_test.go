@@ -53,7 +53,7 @@ func TestEveryReceiptIsShownInTheViewsOwnFixedWords(t *testing.T) {
 
 func TestTheTableShowsTheLastReceiptOfEachLead(t *testing.T) {
 	b := twoLeads(t)
-	b.listing.Leads[0].Last = &Receipt{Op: OpDefine, Status: Refused, Code: "registry"}
+	b.listing.Leads[0].Last = &Receipt{Op: OpDefine, Status: Refused, Code: "registry-refused"}
 	b.listing.Leads[1].Last = &Receipt{Op: OpInject, Status: Uncertain}
 	r := newRig(t, b, 140, 30)
 	rows := r.rows()
