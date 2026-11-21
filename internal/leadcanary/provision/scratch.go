@@ -257,7 +257,20 @@ func (r *run) finishScratch() error {
 	if err != nil {
 		return err
 	}
-	return r.state.file(r.p.stateRel(r.p.LeadRecord), data, 0o600)
+	if err := r.state.file(r.p.stateRel(r.p.LeadRecord), data, 0o600); err != nil {
+		return err
+	}
+	// The file is synced, its name in the folder is not: the record's name is
+	// what makes the lead provisioned, so make it durable before the define is
+	// reported as done.
+	folder := filepath.Dir(r.p.LeadRecord)
+	if err := r.state.root.Sync(r.p.stateRel(folder)); err != nil {
+		return fmt.Errorf("%s: %w", folder, err)
+	}
+	if r.opts.afterFolderSync != nil {
+		r.opts.afterFolderSync(folder)
+	}
+	return nil
 }
 
 // leadRecord is the JSON of the record.
